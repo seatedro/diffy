@@ -1,151 +1,283 @@
 import QtQuick
+import QtQuick.Layouts
+import Diffy.Native 1.0
 
 Rectangle {
     id: root
-    property var fileData: ({})
-    property string layoutMode: "unified"
 
-    color: "#131826"
-    border.color: "#253048"
-    radius: 12
+    required property QtObject theme
+    property var fileData: ({})
+    property var rowsModel: []
+    property string layoutMode: "unified"
+    property string leftRef: ""
+    property string rightRef: ""
+    property string renderer: "builtin"
+    property var surfacePalette: ({
+        "canvas": theme.canvas,
+        "panelTint": theme.panelTint,
+        "panelStrong": theme.panelStrong,
+        "divider": theme.divider,
+        "textBase": theme.textBase,
+        "textMuted": theme.textMuted,
+        "textFaint": theme.textFaint,
+        "accentSoft": theme.accentSoft,
+        "successText": theme.successText,
+        "successBorder": theme.successBorder,
+        "dangerText": theme.dangerText,
+        "dangerBorder": theme.dangerBorder,
+        "lineContext": theme.lineContext,
+        "lineAdd": theme.lineAdd,
+        "lineAddAccent": theme.lineAddAccent,
+        "lineDel": theme.lineDel,
+        "lineDelAccent": theme.lineDelAccent
+    })
 
     function hasData() {
         return fileData && fileData.path !== undefined
     }
 
-    function bgForKind(kind) {
-        if (kind === "add") {
-            return "#183726"
+    function statusColor(status) {
+        if (status === "A") {
+            return theme.successText
         }
-        if (kind === "del") {
-            return "#462024"
+        if (status === "D") {
+            return theme.dangerText
         }
-        return "transparent"
+        if (status === "R") {
+            return theme.warningText
+        }
+        return theme.accentStrong
     }
 
-    Column {
-        anchors.fill: parent
-        anchors.margins: 10
-        spacing: 8
-
-        Text {
-            visible: root.hasData()
-            text: root.hasData() ? fileData.path : ""
-            color: "#e2ebff"
-            font.family: "IBM Plex Sans"
-            font.bold: true
-            font.pixelSize: 16
+    function statusFill(status) {
+        if (status === "A") {
+            return theme.successBg
         }
+        if (status === "D") {
+            return theme.dangerBg
+        }
+        if (status === "R") {
+            return theme.warningBg
+        }
+        return theme.accentSoft
+    }
 
-        Rectangle {
-            visible: root.hasData() && fileData.isBinary
-            color: "#1c2436"
-            border.color: "#30405f"
-            radius: 8
-            width: parent.width
-            implicitHeight: 56
+    function statusLabel(status) {
+        if (status === "A") {
+            return "Added"
+        }
+        if (status === "D") {
+            return "Deleted"
+        }
+        if (status === "R") {
+            return "Renamed"
+        }
+        return "Modified"
+    }
 
-            Text {
-                anchors.centerIn: parent
-                text: "Binary/non-text change. Content diff unavailable."
-                color: "#a7b6d4"
-                font.family: "IBM Plex Sans"
+    color: "transparent"
+    border.width: 0
+
+    Rectangle {
+        id: headerPanel
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.margins: 0
+        radius: 0
+        color: theme.panel
+        border.width: 0
+        implicitHeight: root.hasData() ? 58 : 100
+
+        Column {
+            anchors.fill: parent
+            anchors.margins: 10
+            spacing: 6
+
+            RowLayout {
+                visible: root.hasData()
+                width: parent.width
+                spacing: 8
+
+                Rectangle {
+                    Layout.preferredWidth: statusText.implicitWidth + 16
+                    width: statusText.implicitWidth + 16
+                    height: 18
+                    radius: 4
+                    color: root.hasData() ? root.statusFill(fileData.status) : theme.panelStrong
+
+                    Text {
+                        id: statusText
+                        anchors.centerIn: parent
+                        text: root.hasData() ? root.statusLabel(fileData.status) : ""
+                        color: root.hasData() ? root.statusColor(fileData.status) : theme.textMuted
+                        font.family: theme.sans
+                        font.pixelSize: 9
+                        font.bold: true
+                    }
+                }
+
+                Rectangle {
+                    Layout.preferredWidth: rendererText.implicitWidth + 16
+                    width: rendererText.implicitWidth + 16
+                    height: 18
+                    radius: 4
+                    color: renderer === "difftastic" ? theme.warningBg : theme.accentSoft
+                    border.color: renderer === "difftastic" ? theme.warningBorder : theme.borderSoft
+
+                    Text {
+                        id: rendererText
+                        anchors.centerIn: parent
+                        text: renderer === "difftastic" ? "difftastic" : "built-in"
+                        color: renderer === "difftastic" ? theme.warningText : theme.accentStrong
+                        font.family: theme.sans
+                        font.pixelSize: 9
+                        font.bold: true
+                    }
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    text: root.hasData() ? fileData.path : ""
+                    color: theme.textStrong
+                    font.family: theme.sans
+                    font.pixelSize: 14
+                    font.bold: true
+                    elide: Text.ElideMiddle
+                }
+
+                RowLayout {
+                    id: metadata
+                    Layout.alignment: Qt.AlignRight
+                    spacing: 12
+
+                    Text {
+                        text: leftRef + " -> " + rightRef
+                        color: theme.textMuted
+                        font.family: theme.mono
+                        font.pixelSize: 10
+                    }
+
+                    Text {
+                        text: "+" + fileData.additions
+                        color: theme.successText
+                        font.family: theme.mono
+                        font.pixelSize: 10
+                    }
+
+                    Text {
+                        text: "-" + fileData.deletions
+                        color: theme.dangerText
+                        font.family: theme.mono
+                        font.pixelSize: 10
+                    }
+
+                    Text {
+                        text: layoutMode === "split" ? "split" : "unified"
+                        color: theme.textFaint
+                        font.family: theme.sans
+                        font.pixelSize: 10
+                    }
+                }
             }
-        }
-
-        Flickable {
-            visible: root.hasData() && !fileData.isBinary
-            width: parent.width
-            height: parent.height - 60
-            clip: true
-            contentWidth: diffColumn.width
-            contentHeight: diffColumn.implicitHeight
 
             Column {
-                id: diffColumn
-                width: parent.width
-                spacing: 10
+                visible: !root.hasData()
+                anchors.horizontalCenter: parent.horizontalCenter
+                spacing: 6
 
-                Repeater {
-                    model: root.hasData() ? fileData.hunks : []
+                Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "No diff selected"
+                    color: theme.textStrong
+                    font.family: theme.sans
+                    font.pixelSize: 20
+                    font.bold: true
+                }
 
-                    delegate: Column {
-                        required property var modelData
-                        width: parent.width
-                        spacing: 4
-
-                        Rectangle {
-                            width: parent.width
-                            height: 26
-                            color: "#1d2a42"
-                            radius: 6
-                            Text {
-                                anchors.left: parent.left
-                                anchors.leftMargin: 8
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: modelData.header
-                                color: "#9bb0d6"
-                                font.family: "JetBrains Mono"
-                                font.pixelSize: 11
-                            }
-                        }
-
-                        Repeater {
-                            model: modelData.lines
-
-                            delegate: Rectangle {
-                                required property var modelData
-                                width: parent.width
-                                color: root.bgForKind(modelData.kind)
-                                radius: 4
-                                implicitHeight: lineText.implicitHeight + 6
-
-                                Row {
-                                    anchors.fill: parent
-                                    anchors.margins: 3
-                                    spacing: 8
-
-                                    Text {
-                                        text: modelData.oldLine > 0 ? modelData.oldLine : ""
-                                        width: 52
-                                        horizontalAlignment: Text.AlignRight
-                                        color: "#7f91b4"
-                                        font.family: "JetBrains Mono"
-                                        font.pixelSize: 12
-                                    }
-
-                                    Text {
-                                        text: modelData.newLine > 0 ? modelData.newLine : ""
-                                        width: 52
-                                        horizontalAlignment: Text.AlignRight
-                                        color: "#7f91b4"
-                                        font.family: "JetBrains Mono"
-                                        font.pixelSize: 12
-                                    }
-
-                                    Text {
-                                        id: lineText
-                                        text: root.layoutMode === "split" && modelData.kind === "del" ? modelData.text + "    |" : modelData.text
-                                        color: modelData.kind === "ctx" ? "#d7e1f6" : "#eaf0ff"
-                                        font.family: "JetBrains Mono"
-                                        font.pixelSize: 12
-                                        wrapMode: Text.WrapAnywhere
-                                        width: parent.width - 130
-                                    }
-                                }
-                            }
-                        }
-                    }
+                Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "Open a repository, choose refs, run compare, then select a file."
+                    color: theme.textMuted
+                    font.family: theme.sans
+                    font.pixelSize: 13
                 }
             }
         }
 
-        Text {
-            visible: !root.hasData()
-            anchors.horizontalCenter: parent.horizontalCenter
-            text: "Select refs and click Compare"
-            color: "#7a8cae"
-            font.family: "IBM Plex Sans"
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 1
+            color: theme.divider
+        }
+    }
+
+    Rectangle {
+        visible: root.hasData() && fileData.isBinary
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: headerPanel.bottom
+        anchors.bottom: parent.bottom
+        anchors.margins: 0
+        radius: 0
+        color: theme.canvas
+        border.color: theme.warningBorder
+
+        Column {
+            anchors.centerIn: parent
+            spacing: 6
+
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: "Binary or non-text change"
+                color: theme.textStrong
+                font.family: theme.sans
+                font.pixelSize: 20
+                font.bold: true
+            }
+
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: "This file only exposes metadata in the current renderer."
+                color: theme.warningText
+                font.family: theme.sans
+                font.pixelSize: 13
+            }
+        }
+    }
+
+    Rectangle {
+        visible: root.hasData() && !fileData.isBinary
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: headerPanel.bottom
+        anchors.bottom: parent.bottom
+        anchors.margins: 0
+        radius: 0
+        color: theme.canvas
+        border.width: 0
+
+        Flickable {
+            id: diffViewport
+            anchors.fill: parent
+            anchors.margins: 0
+            clip: true
+            contentWidth: Math.max(width, surface.contentWidth)
+            contentHeight: surface.contentHeight
+            boundsBehavior: Flickable.StopAtBounds
+
+            DiffSurface {
+                id: surface
+                objectName: "diffSurface"
+                width: diffViewport.contentWidth
+                height: contentHeight
+                rowsModel: root.rowsModel
+                layoutMode: root.layoutMode
+                palette: root.surfacePalette
+                monoFontFamily: theme.mono
+            }
         }
     }
 }

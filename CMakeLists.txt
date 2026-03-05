@@ -24,6 +24,7 @@ qt_add_executable(diffy
   src/core/GitRepositoryService.cpp
   src/core/UnifiedDiffParser.cpp
   src/core/DiffController.cpp
+  src/ui/DiffSurfaceItem.cpp
   src/renderers/BuiltinGitRenderer.cpp
   src/renderers/DifftasticRenderer.cpp
 )

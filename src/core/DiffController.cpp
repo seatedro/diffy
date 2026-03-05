@@ -5,6 +5,29 @@
 #include "core/DiffTypes.h"
 
 namespace diffy {
+namespace {
+
+QVariantList flattenFileRows(const QVariantMap& file) {
+  QVariantList rows;
+  const QVariantList hunks = file.value("hunks").toList();
+  for (qsizetype hunkIndex = 0; hunkIndex < hunks.size(); ++hunkIndex) {
+    const QVariantMap hunk = hunks.at(hunkIndex).toMap();
+    rows.push_back(QVariantMap{{"rowType", "hunk"},
+                               {"hunkIndex", static_cast<int>(hunkIndex)},
+                               {"header", hunk.value("header")}});
+
+    const QVariantList lines = hunk.value("lines").toList();
+    for (const QVariant& lineValue : lines) {
+      QVariantMap row = lineValue.toMap();
+      row.insert("rowType", "line");
+      row.insert("hunkIndex", static_cast<int>(hunkIndex));
+      rows.push_back(row);
+    }
+  }
+  return rows;
+}
+
+}  // namespace
 
 DiffController::DiffController(QObject* parent)
     : QObject(parent), builtinRenderer_(&parser_), settings_("diffy", "diffy") {
@@ -121,6 +144,12 @@ void DiffController::setSelectedFileIndex(int index) {
   }
   selectedFileIndex_ = index;
   emit selectedFileIndexChanged();
+  emit selectedFileChanged();
+  rebuildSelectedFileRows();
+}
+
+QVariantList DiffController::selectedFileRows() const {
+  return selectedFileRows_;
 }
 
 QString DiffController::errorMessage() const {
@@ -133,6 +162,8 @@ bool DiffController::hasDifftastic() const {
 
 bool DiffController::openRepository(const QString& path) {
   clearError();
+
+  const bool repoChanged = repoPath_ != path;
 
   QString error;
   if (!gitService_.openRepository(path, &error)) {
@@ -149,13 +180,25 @@ bool DiffController::openRepository(const QString& path) {
   }
   emit refsChanged();
 
+  if (repoChanged) {
+    files_.clear();
+    emit filesChanged();
+    selectedFileIndex_ = -1;
+    emit selectedFileIndexChanged();
+    emit selectedFileChanged();
+    rebuildSelectedFileRows();
+  }
+
   if (!refs_.isEmpty()) {
-    if (leftRef_.isEmpty()) {
-      leftRef_ = refs_.first();
+    const QString defaultLeft = refs_.first();
+    const QString defaultRight = refs_.size() > 1 ? refs_.at(1) : refs_.first();
+
+    if (repoChanged || leftRef_.isEmpty()) {
+      leftRef_ = defaultLeft;
       emit leftRefChanged();
     }
-    if (rightRef_.isEmpty()) {
-      rightRef_ = refs_.size() > 1 ? refs_.at(1) : refs_.first();
+    if (repoChanged || rightRef_.isEmpty()) {
+      rightRef_ = defaultRight;
       emit rightRefChanged();
     }
   }
@@ -218,6 +261,8 @@ void DiffController::compare() {
     selectedFileIndex_ = -1;
   }
   emit selectedFileIndexChanged();
+  emit selectedFileChanged();
+  rebuildSelectedFileRows();
 
   persistSettings();
 }
@@ -231,6 +276,15 @@ QVariantMap DiffController::selectedFile() const {
     return {};
   }
   return files_.at(selectedFileIndex_).toMap();
+}
+
+void DiffController::rebuildSelectedFileRows() {
+  QVariantList rows;
+  if (selectedFileIndex_ >= 0 && selectedFileIndex_ < files_.size()) {
+    rows = flattenFileRows(files_.at(selectedFileIndex_).toMap());
+  }
+  selectedFileRows_ = rows;
+  emit selectedFileRowsChanged();
 }
 
 void DiffController::setError(const QString& error) {

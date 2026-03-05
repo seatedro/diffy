@@ -7,6 +7,8 @@
 #include <QVariantList>
 #include <QVariantMap>
 
+#include "text/TextRope.h"
+
 namespace diffy {
 
 class DiffSurfaceItem : public QQuickPaintedItem {
@@ -62,16 +64,16 @@ class DiffSurfaceItem : public QQuickPaintedItem {
     QString kind;
     int oldLine = -1;
     int newLine = -1;
-    QString text;
     QVector<TokenSpan> tokens;
     QString leftKind;
     QString rightKind;
     int leftLine = -1;
     int rightLine = -1;
-    QString leftText;
-    QString rightText;
     QVector<TokenSpan> leftTokens;
     QVector<TokenSpan> rightTokens;
+    TextRange textRange;
+    TextRange leftTextRange;
+    TextRange rightTextRange;
     qreal top = 0;
     qreal height = 0;
   };
@@ -122,6 +124,7 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   QString layoutMode_ = "unified";
   QVariantMap palette_;
   QString monoFontFamily_ = "JetBrains Mono";
+  TextRope textRope_;
 
   QVector<Row> sourceRows_;
   QVector<Row> displayRows_;

@@ -212,6 +212,7 @@ void DiffSurfaceItem::paint(QPainter* painter) {
 void DiffSurfaceItem::rebuildRows() {
   sourceRows_.clear();
   rowOffsets_.clear();
+  textRope_.clear();
 
   const QFontMetricsF metrics(monoFont(monoFontFamily_, 12));
   lineHeight_ = metrics.height();
@@ -226,7 +227,7 @@ void DiffSurfaceItem::rebuildRows() {
     row.kind = rowMap.value("kind").toString();
     row.oldLine = rowMap.contains("oldLine") ? rowMap.value("oldLine").toInt() : -1;
     row.newLine = rowMap.contains("newLine") ? rowMap.value("newLine").toInt() : -1;
-    row.text = rowMap.value("text").toString();
+    row.textRange = textRope_.append(rowMap.value("text").toString());
     row.tokens = parseTokens(rowMap.value("tokens").toList());
     sourceRows_.push_back(row);
   }
@@ -254,9 +255,9 @@ void DiffSurfaceItem::rebuildDisplayRows() {
     top += row.height;
     maxLineNumber = std::max(maxLineNumber, std::max(row.oldLine, row.newLine));
     maxLineNumber = std::max(maxLineNumber, std::max(row.leftLine, row.rightLine));
-    maxTextWidth_ = std::max(maxTextWidth_, metrics.horizontalAdvance(row.text));
-    maxTextWidth_ = std::max(maxTextWidth_, metrics.horizontalAdvance(row.leftText));
-    maxTextWidth_ = std::max(maxTextWidth_, metrics.horizontalAdvance(row.rightText));
+    maxTextWidth_ = std::max(maxTextWidth_, metrics.horizontalAdvance(textRope_.slice(row.textRange)));
+    maxTextWidth_ = std::max(maxTextWidth_, metrics.horizontalAdvance(textRope_.slice(row.leftTextRange)));
+    maxTextWidth_ = std::max(maxTextWidth_, metrics.horizontalAdvance(textRope_.slice(row.rightTextRange)));
     displayRows_.push_back(row);
   };
 
@@ -278,8 +279,8 @@ void DiffSurfaceItem::rebuildDisplayRows() {
         row.rightKind = "ctx";
         row.leftLine = sourceRow.oldLine;
         row.rightLine = sourceRow.newLine;
-        row.leftText = sourceRow.text;
-        row.rightText = sourceRow.text;
+        row.leftTextRange = sourceRow.textRange;
+        row.rightTextRange = sourceRow.textRange;
         row.leftTokens = sourceRow.tokens;
         row.rightTokens = sourceRow.tokens;
         appendRow(row);
@@ -315,7 +316,7 @@ void DiffSurfaceItem::rebuildDisplayRows() {
             const Row& left = deletions.at(rowIndex);
             row.leftKind = "del";
             row.leftLine = left.oldLine;
-            row.leftText = left.text;
+            row.leftTextRange = left.textRange;
             row.leftTokens = left.tokens;
             row.oldLine = left.oldLine;
           } else {
@@ -326,7 +327,7 @@ void DiffSurfaceItem::rebuildDisplayRows() {
             const Row& right = additions.at(rowIndex);
             row.rightKind = "add";
             row.rightLine = right.newLine;
-            row.rightText = right.text;
+            row.rightTextRange = right.textRange;
             row.rightTokens = right.tokens;
             row.newLine = right.newLine;
           } else {
@@ -471,7 +472,8 @@ void DiffSurfaceItem::drawUnifiedRow(QPainter* painter, const QRectF& rowRect, c
   const QColor tokenBg = row.kind == "add" ? paletteColor("successBorder", QColor("#38482f"))
                                            : row.kind == "del" ? paletteColor("dangerBorder", QColor("#4c2b2c"))
                                                                : paletteColor("accentSoft", QColor("#293b5b"));
-  drawTextRun(painter, QPointF(textClip.left(), baselineY), textClip, row.text, row.tokens, textColor, tokenBg);
+  drawTextRun(painter, QPointF(textClip.left(), baselineY), textClip, textRope_.slice(row.textRange), row.tokens,
+              textColor, tokenBg);
 }
 
 void DiffSurfaceItem::drawSplitRow(QPainter* painter, const QRectF& rowRect, const Row& row, bool selected) const {
@@ -519,13 +521,15 @@ void DiffSurfaceItem::drawSplitRow(QPainter* painter, const QRectF& rowRect, con
   const QRectF rightTextClip(rightRect.left() + 48.0, rightRect.top(), rightRect.width() - 56.0, rightRect.height());
 
   if (row.leftKind != "spacer") {
-    drawTextRun(painter, QPointF(leftTextClip.left(), baselineY), leftTextClip, row.leftText, row.leftTokens,
+    drawTextRun(painter, QPointF(leftTextClip.left(), baselineY), leftTextClip,
+                textRope_.slice(row.leftTextRange), row.leftTokens,
                 paletteColor("textBase", QColor("#c8ccd4")),
                 paletteColor("dangerBorder", QColor("#4c2b2c")));
   }
 
   if (row.rightKind != "spacer") {
-    drawTextRun(painter, QPointF(rightTextClip.left(), baselineY), rightTextClip, row.rightText, row.rightTokens,
+    drawTextRun(painter, QPointF(rightTextClip.left(), baselineY), rightTextClip,
+                textRope_.slice(row.rightTextRange), row.rightTokens,
                 paletteColor("textBase", QColor("#c8ccd4")),
                 paletteColor("successBorder", QColor("#38482f")));
   }
@@ -587,18 +591,18 @@ QString DiffSurfaceItem::selectedText() const {
 
     if (layoutMode_ == "split") {
       if (row.leftKind == "ctx" && row.rightKind == "ctx") {
-        parts.push_back(" " + row.leftText);
+        parts.push_back(" " + textRope_.slice(row.leftTextRange));
       } else {
         if (row.leftKind != "spacer") {
-          parts.push_back("-" + row.leftText);
+          parts.push_back("-" + textRope_.slice(row.leftTextRange));
         }
         if (row.rightKind != "spacer") {
-          parts.push_back("+" + row.rightText);
+          parts.push_back("+" + textRope_.slice(row.rightTextRange));
         }
       }
     } else {
       const QString prefix = row.kind == "add" ? "+" : row.kind == "del" ? "-" : " ";
-      parts.push_back(prefix + row.text);
+      parts.push_back(prefix + textRope_.slice(row.textRange));
     }
   }
 

@@ -23,6 +23,18 @@ target_include_directories(test_unified_diff_parser PRIVATE
 target_link_libraries(test_unified_diff_parser PRIVATE Qt6::Core Qt6::Test)
 add_test(NAME test_unified_diff_parser COMMAND test_unified_diff_parser)
 
+qt_add_executable(test_text_rope
+  test_text_rope.cpp
+  ../src/text/TextRope.cpp
+)
+
+target_include_directories(test_text_rope PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+
+target_link_libraries(test_text_rope PRIVATE Qt6::Core Qt6::Test)
+add_test(NAME test_text_rope COMMAND test_text_rope)
+
 qt_add_executable(test_diff_controller
   test_diff_controller.cpp
   ../src/core/CompareSpec.cpp

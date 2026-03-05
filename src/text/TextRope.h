@@ -1,7 +1,9 @@
 #pragma once
 
-#include <QString>
 #include <QVector>
+
+#include <string>
+#include <string_view>
 
 namespace diffy {
 
@@ -19,14 +21,14 @@ class TextRope {
   TextRope() = default;
 
   void clear();
-  TextRange append(const QString& text);
-  QString slice(const TextRange& range) const;
+  TextRange append(std::string_view text);
+  std::string slice(const TextRange& range) const;
   qsizetype size() const;
 
  private:
   struct Chunk {
     qsizetype start = 0;
-    QString text;
+    std::string text;
   };
 
   QVector<Chunk> chunks_;

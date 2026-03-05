@@ -15,10 +15,10 @@ class TextRopeTest : public QObject {
     const TextRange third = rope.append("!");
 
     QCOMPARE(rope.size(), 12);
-    QCOMPARE(rope.slice(first), QString("hello"));
-    QCOMPARE(rope.slice(second), QString(" world"));
-    QCOMPARE(rope.slice(third), QString("!"));
-    QCOMPARE(rope.slice(TextRange{3, 7}), QString("lo worl"));
+    QCOMPARE(QString::fromStdString(rope.slice(first)), QString("hello"));
+    QCOMPARE(QString::fromStdString(rope.slice(second)), QString(" world"));
+    QCOMPARE(QString::fromStdString(rope.slice(third)), QString("!"));
+    QCOMPARE(QString::fromStdString(rope.slice(TextRange{3, 7})), QString("lo worl"));
   }
 
   void emptyAppendsDoNotBreakOffsets() {
@@ -29,7 +29,7 @@ class TextRopeTest : public QObject {
     QCOMPARE(empty.length, 0);
     QCOMPARE(text.start, 0);
     QCOMPARE(text.length, 3);
-    QCOMPARE(rope.slice(text), QString("abc"));
+    QCOMPARE(QString::fromStdString(rope.slice(text)), QString("abc"));
   }
 };
 

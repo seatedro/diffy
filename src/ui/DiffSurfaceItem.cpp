@@ -138,10 +138,9 @@ int DiffSurfaceItem::displayRowCount() const {
 
 void DiffSurfaceItem::paint(QPainter* painter) {
   ++paintCount_;
-  emit paintCountChanged();
 
-  const QRectF fullRect = boundingRect();
-  painter->fillRect(fullRect, paletteColor("canvas", QColor("#282c33")));
+  const QRectF exposedRect = painter->clipBoundingRect();
+  painter->fillRect(exposedRect, paletteColor("canvas", QColor("#282c33")));
 
   if (displayRows_.isEmpty()) {
     return;
@@ -150,7 +149,19 @@ void DiffSurfaceItem::paint(QPainter* painter) {
   painter->setRenderHint(QPainter::TextAntialiasing, true);
   painter->setRenderHint(QPainter::Antialiasing, false);
 
-  for (int rowIndex = 0; rowIndex < displayRows_.size(); ++rowIndex) {
+  const qreal visibleTop = viewportHeight_ > 0 ? std::max<qreal>(0.0, viewportY_ - hunkHeight_) : exposedRect.top();
+  const qreal visibleBottom = viewportHeight_ > 0 ? viewportY_ + viewportHeight_ + hunkHeight_ : exposedRect.bottom();
+
+  int firstRow = rowIndexAtY(visibleTop);
+  int lastRow = rowIndexAtY(visibleBottom);
+  if (firstRow < 0) {
+    firstRow = 0;
+  }
+  if (lastRow < 0) {
+    lastRow = displayRows_.size() - 1;
+  }
+
+  for (int rowIndex = firstRow; rowIndex <= lastRow && rowIndex < displayRows_.size(); ++rowIndex) {
     const Row& row = displayRows_.at(rowIndex);
     const QRectF rowRect(0, row.top, width(), row.height);
     const bool selected = rowSelected(rowIndex);
@@ -213,6 +224,7 @@ void DiffSurfaceItem::rebuildRows() {
   sourceRows_.clear();
   rowOffsets_.clear();
   textRope_.clear();
+  textCache_.clear();
 
   const QFontMetricsF metrics(monoFont(monoFontFamily_, 12));
   lineHeight_ = metrics.height();
@@ -227,7 +239,7 @@ void DiffSurfaceItem::rebuildRows() {
     row.kind = rowMap.value("kind").toString();
     row.oldLine = rowMap.contains("oldLine") ? rowMap.value("oldLine").toInt() : -1;
     row.newLine = rowMap.contains("newLine") ? rowMap.value("newLine").toInt() : -1;
-    row.textRange = textRope_.append(rowMap.value("text").toString());
+    row.textRange = textRope_.append(rowMap.value("text").toString().toUtf8().toStdString());
     row.tokens = parseTokens(rowMap.value("tokens").toList());
     sourceRows_.push_back(row);
   }
@@ -255,9 +267,9 @@ void DiffSurfaceItem::rebuildDisplayRows() {
     top += row.height;
     maxLineNumber = std::max(maxLineNumber, std::max(row.oldLine, row.newLine));
     maxLineNumber = std::max(maxLineNumber, std::max(row.leftLine, row.rightLine));
-    maxTextWidth_ = std::max(maxTextWidth_, metrics.horizontalAdvance(textRope_.slice(row.textRange)));
-    maxTextWidth_ = std::max(maxTextWidth_, metrics.horizontalAdvance(textRope_.slice(row.leftTextRange)));
-    maxTextWidth_ = std::max(maxTextWidth_, metrics.horizontalAdvance(textRope_.slice(row.rightTextRange)));
+    maxTextWidth_ = std::max(maxTextWidth_, metrics.horizontalAdvance(textForRange(row.textRange)));
+    maxTextWidth_ = std::max(maxTextWidth_, metrics.horizontalAdvance(textForRange(row.leftTextRange)));
+    maxTextWidth_ = std::max(maxTextWidth_, metrics.horizontalAdvance(textForRange(row.rightTextRange)));
     displayRows_.push_back(row);
   };
 
@@ -387,6 +399,16 @@ bool DiffSurfaceItem::rowSelected(int rowIndex) const {
   return rowIndex >= start && rowIndex <= end;
 }
 
+QString DiffSurfaceItem::textForRange(const TextRange& range) const {
+  const quint64 key = (static_cast<quint64>(range.start) << 32) | static_cast<quint64>(range.length);
+  if (const auto it = textCache_.constFind(key); it != textCache_.constEnd()) {
+    return it.value();
+  }
+  const QString text = QString::fromUtf8(textRope_.slice(range));
+  textCache_.insert(key, text);
+  return text;
+}
+
 QColor DiffSurfaceItem::paletteColor(const QString& key, const QColor& fallback) const {
   const QVariant value = palette_.value(key);
   if (!value.isValid()) {
@@ -472,7 +494,7 @@ void DiffSurfaceItem::drawUnifiedRow(QPainter* painter, const QRectF& rowRect, c
   const QColor tokenBg = row.kind == "add" ? paletteColor("successBorder", QColor("#38482f"))
                                            : row.kind == "del" ? paletteColor("dangerBorder", QColor("#4c2b2c"))
                                                                : paletteColor("accentSoft", QColor("#293b5b"));
-  drawTextRun(painter, QPointF(textClip.left(), baselineY), textClip, textRope_.slice(row.textRange), row.tokens,
+  drawTextRun(painter, QPointF(textClip.left(), baselineY), textClip, textForRange(row.textRange), row.tokens,
               textColor, tokenBg);
 }
 
@@ -537,14 +559,14 @@ void DiffSurfaceItem::drawSplitRow(QPainter* painter, const QRectF& rowRect, con
 
   if (row.leftKind != "spacer") {
     drawTextRun(painter, QPointF(leftTextClip.left(), baselineY), leftTextClip,
-                textRope_.slice(row.leftTextRange), row.leftTokens,
+                textForRange(row.leftTextRange), row.leftTokens,
                 paletteColor("textBase", QColor("#c8ccd4")),
                 paletteColor("dangerBorder", QColor("#4c2b2c")));
   }
 
   if (row.rightKind != "spacer") {
     drawTextRun(painter, QPointF(rightTextClip.left(), baselineY), rightTextClip,
-                textRope_.slice(row.rightTextRange), row.rightTokens,
+                textForRange(row.rightTextRange), row.rightTokens,
                 paletteColor("textBase", QColor("#c8ccd4")),
                 paletteColor("successBorder", QColor("#38482f")));
   }
@@ -606,18 +628,18 @@ QString DiffSurfaceItem::selectedText() const {
 
     if (layoutMode_ == "split") {
       if (row.leftKind == "ctx" && row.rightKind == "ctx") {
-        parts.push_back(" " + textRope_.slice(row.leftTextRange));
+        parts.push_back(" " + textForRange(row.leftTextRange));
       } else {
         if (row.leftKind != "spacer") {
-          parts.push_back("-" + textRope_.slice(row.leftTextRange));
+          parts.push_back("-" + textForRange(row.leftTextRange));
         }
         if (row.rightKind != "spacer") {
-          parts.push_back("+" + textRope_.slice(row.rightTextRange));
+          parts.push_back("+" + textForRange(row.rightTextRange));
         }
       }
     } else {
       const QString prefix = row.kind == "add" ? "+" : row.kind == "del" ? "-" : " ";
-      parts.push_back(prefix + textRope_.slice(row.textRange));
+      parts.push_back(prefix + textForRange(row.textRange));
     }
   }
 

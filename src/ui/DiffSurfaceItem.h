@@ -6,6 +6,7 @@
 #include <QHoverEvent>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QHash>
 
 #include "text/TextRope.h"
 
@@ -100,6 +101,7 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   qreal digitWidth() const;
   qreal unifiedGutterWidth() const;
   QString selectedText() const;
+  QString textForRange(const TextRange& range) const;
 
   void drawHunkRow(QPainter* painter, const QRectF& rowRect, const Row& row) const;
   void drawUnifiedRow(QPainter* painter, const QRectF& rowRect, const Row& row, bool selected) const;
@@ -143,6 +145,7 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   int selectionAnchorRow_ = -1;
   int selectionCursorRow_ = -1;
   int hoveredRow_ = -1;
+  mutable QHash<quint64, QString> textCache_;
 };
 
 }  // namespace diffy

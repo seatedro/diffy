@@ -9,22 +9,22 @@ void TextRope::clear() {
   size_ = 0;
 }
 
-TextRange TextRope::append(const QString& text) {
-  const TextRange range{size_, text.size()};
-  if (!text.isEmpty()) {
-    chunks_.push_back(Chunk{size_, text});
+TextRange TextRope::append(std::string_view text) {
+  const TextRange range{size_, static_cast<qsizetype>(text.size())};
+  if (!text.empty()) {
+    chunks_.push_back(Chunk{size_, std::string(text)});
     size_ += text.size();
   }
   return range;
 }
 
-QString TextRope::slice(const TextRange& range) const {
+std::string TextRope::slice(const TextRange& range) const {
   if (range.length <= 0 || chunks_.isEmpty()) {
     return {};
   }
 
   const qsizetype end = range.start + range.length;
-  QString result;
+  std::string result;
   result.reserve(range.length);
 
   for (const Chunk& chunk : chunks_) {
@@ -41,7 +41,7 @@ QString TextRope::slice(const TextRange& range) const {
     const qsizetype sliceEnd = std::min(end, chunkEnd);
     const qsizetype localStart = sliceStart - chunkStart;
     const qsizetype localLength = sliceEnd - sliceStart;
-    result.append(chunk.text.mid(localStart, localLength));
+    result.append(chunk.text.substr(localStart, localLength));
   }
 
   return result;

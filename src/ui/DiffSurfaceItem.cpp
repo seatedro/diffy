@@ -350,7 +350,7 @@ void DiffSurfaceItem::rebuildDisplayRows() {
 void DiffSurfaceItem::recalculateMetrics() {
   qreal newContentWidth = 0;
   if (layoutMode_ == "split") {
-    const qreal sideBase = 56.0;
+    const qreal sideBase = 72.0;
     newContentWidth = maxTextWidth_ * 2.0 + sideBase * 2.0 + 1.0;
   } else {
     newContentWidth = unifiedGutterWidth() + maxTextWidth_ + 24.0;
@@ -479,6 +479,7 @@ void DiffSurfaceItem::drawUnifiedRow(QPainter* painter, const QRectF& rowRect, c
 void DiffSurfaceItem::drawSplitRow(QPainter* painter, const QRectF& rowRect, const Row& row, bool selected) const {
   const QRectF leftRect(rowRect.left(), rowRect.top(), rowRect.width() / 2.0, rowRect.height());
   const QRectF rightRect(leftRect.right(), rowRect.top(), rowRect.width() - leftRect.width(), rowRect.height());
+  const qreal sideGutterWidth = 58.0;
 
   const QColor leftBg = row.leftKind == "del" ? paletteColor("lineDelAccent", QColor("#35262b"))
                                           : paletteColor("lineContext", QColor("#282c33"));
@@ -492,6 +493,14 @@ void DiffSurfaceItem::drawSplitRow(QPainter* painter, const QRectF& rowRect, con
     painter->fillRect(leftRect, selection);
     painter->fillRect(rightRect, selection);
   }
+  painter->fillRect(QRectF(leftRect.left(), rowRect.top(), sideGutterWidth, rowRect.height()),
+                    paletteColor("panelTint", QColor("#504945")));
+  painter->fillRect(QRectF(rightRect.left(), rowRect.top(), sideGutterWidth, rowRect.height()),
+                    paletteColor("panelTint", QColor("#504945")));
+  painter->fillRect(QRectF(leftRect.left() + sideGutterWidth, rowRect.top(), 1.0, rowRect.height()),
+                    paletteColor("divider", QColor("#504945")));
+  painter->fillRect(QRectF(rightRect.left() + sideGutterWidth, rowRect.top(), 1.0, rowRect.height()),
+                    paletteColor("divider", QColor("#504945")));
   painter->fillRect(QRectF(leftRect.right(), rowRect.top(), 1.0, rowRect.height()),
                     paletteColor("divider", QColor("#363c46")));
 
@@ -506,6 +515,10 @@ void DiffSurfaceItem::drawSplitRow(QPainter* painter, const QRectF& rowRect, con
 
   painter->setFont(monoFont(monoFontFamily_, 10));
   painter->setPen(paletteColor("textFaint", QColor("#878a98")));
+  painter->drawText(QRectF(leftRect.left() + 6.0, leftRect.top(), 10.0, leftRect.height()), Qt::AlignVCenter,
+                    row.leftKind == "del" ? "-" : row.leftKind == "ctx" ? " " : " ");
+  painter->drawText(QRectF(rightRect.left() + 6.0, rightRect.top(), 10.0, rightRect.height()), Qt::AlignVCenter,
+                    row.rightKind == "add" ? "+" : row.rightKind == "ctx" ? " " : " ");
   painter->drawText(QRectF(leftRect.left() + 8.0, leftRect.top(), 34.0, leftRect.height()),
                     Qt::AlignRight | Qt::AlignVCenter,
                     row.leftLine > 0 ? QString::number(row.leftLine) : QString());
@@ -517,8 +530,10 @@ void DiffSurfaceItem::drawSplitRow(QPainter* painter, const QRectF& rowRect, con
   const QFontMetricsF textMetrics(textFont);
   painter->setFont(textFont);
   const qreal baselineY = rowRect.top() + (rowRect.height() - textMetrics.height()) / 2.0 + textMetrics.ascent();
-  const QRectF leftTextClip(leftRect.left() + 48.0, leftRect.top(), leftRect.width() - 56.0, leftRect.height());
-  const QRectF rightTextClip(rightRect.left() + 48.0, rightRect.top(), rightRect.width() - 56.0, rightRect.height());
+  const QRectF leftTextClip(leftRect.left() + sideGutterWidth + 8.0, leftRect.top(),
+                            leftRect.width() - sideGutterWidth - 12.0, leftRect.height());
+  const QRectF rightTextClip(rightRect.left() + sideGutterWidth + 8.0, rightRect.top(),
+                             rightRect.width() - sideGutterWidth - 12.0, rightRect.height());
 
   if (row.leftKind != "spacer") {
     drawTextRun(painter, QPointF(leftTextClip.left(), baselineY), leftTextClip,

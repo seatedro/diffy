@@ -54,5 +54,5 @@ qt_add_executable(test_app_smoke
   test_app_smoke.cpp
 )
 
-target_link_libraries(test_app_smoke PRIVATE Qt6::Core Qt6::Test)
+target_link_libraries(test_app_smoke PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
 add_test(NAME test_app_smoke COMMAND test_app_smoke)

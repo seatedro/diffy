@@ -20,6 +20,7 @@ Rectangle {
         "textBase": theme.textBase,
         "textMuted": theme.textMuted,
         "textFaint": theme.textFaint,
+        "selectionBg": theme.selectionBg,
         "accentSoft": theme.accentSoft,
         "successText": theme.successText,
         "successBorder": theme.successBorder,
@@ -44,9 +45,9 @@ Rectangle {
             return theme.dangerText
         }
         if (status === "R") {
-            return theme.warningText
+            return theme.accentStrong
         }
-        return theme.accentStrong
+        return theme.warningText
     }
 
     function statusFill(status) {
@@ -57,9 +58,9 @@ Rectangle {
             return theme.dangerBg
         }
         if (status === "R") {
-            return theme.warningBg
+            return theme.accentSoft
         }
-        return theme.accentSoft
+        return theme.warningBg
     }
 
     function statusLabel(status) {
@@ -85,14 +86,14 @@ Rectangle {
         anchors.top: parent.top
         anchors.margins: 0
         radius: 0
-        color: theme.panel
+        color: theme.panelStrong
         border.width: 0
-        implicitHeight: root.hasData() ? 58 : 100
+        implicitHeight: root.hasData() ? 54 : 92
 
         Column {
             anchors.fill: parent
-            anchors.margins: 10
-            spacing: 6
+            anchors.margins: 8
+            spacing: 4
 
             RowLayout {
                 visible: root.hasData()
@@ -102,7 +103,7 @@ Rectangle {
                 Rectangle {
                     Layout.preferredWidth: statusText.implicitWidth + 16
                     width: statusText.implicitWidth + 16
-                    height: 18
+                    height: 17
                     radius: 4
                     color: root.hasData() ? root.statusFill(fileData.status) : theme.panelStrong
 
@@ -112,7 +113,7 @@ Rectangle {
                         text: root.hasData() ? root.statusLabel(fileData.status) : ""
                         color: root.hasData() ? root.statusColor(fileData.status) : theme.textMuted
                         font.family: theme.sans
-                        font.pixelSize: 9
+                        font.pixelSize: 8
                         font.bold: true
                     }
                 }
@@ -120,7 +121,7 @@ Rectangle {
                 Rectangle {
                     Layout.preferredWidth: rendererText.implicitWidth + 16
                     width: rendererText.implicitWidth + 16
-                    height: 18
+                    height: 17
                     radius: 4
                     color: renderer === "difftastic" ? theme.warningBg : theme.accentSoft
                     border.color: renderer === "difftastic" ? theme.warningBorder : theme.borderSoft
@@ -131,7 +132,7 @@ Rectangle {
                         text: renderer === "difftastic" ? "difftastic" : "built-in"
                         color: renderer === "difftastic" ? theme.warningText : theme.accentStrong
                         font.family: theme.sans
-                        font.pixelSize: 9
+                        font.pixelSize: 8
                         font.bold: true
                     }
                 }
@@ -141,7 +142,7 @@ Rectangle {
                     text: root.hasData() ? fileData.path : ""
                     color: theme.textStrong
                     font.family: theme.sans
-                    font.pixelSize: 14
+                    font.pixelSize: 13
                     font.bold: true
                     elide: Text.ElideMiddle
                 }
@@ -149,34 +150,34 @@ Rectangle {
                 RowLayout {
                     id: metadata
                     Layout.alignment: Qt.AlignRight
-                    spacing: 12
+                    spacing: 10
 
                     Text {
                         text: leftRef + " -> " + rightRef
                         color: theme.textMuted
                         font.family: theme.mono
-                        font.pixelSize: 10
+                        font.pixelSize: 9
                     }
 
                     Text {
                         text: "+" + fileData.additions
                         color: theme.successText
                         font.family: theme.mono
-                        font.pixelSize: 10
+                        font.pixelSize: 9
                     }
 
                     Text {
                         text: "-" + fileData.deletions
                         color: theme.dangerText
                         font.family: theme.mono
-                        font.pixelSize: 10
+                        font.pixelSize: 9
                     }
 
                     Text {
                         text: layoutMode === "split" ? "split" : "unified"
                         color: theme.textFaint
                         font.family: theme.sans
-                        font.pixelSize: 10
+                        font.pixelSize: 9
                     }
                 }
             }
@@ -188,21 +189,21 @@ Rectangle {
 
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: "No diff selected"
-                    color: theme.textStrong
-                    font.family: theme.sans
-                    font.pixelSize: 20
-                    font.bold: true
-                }
+                text: "No diff selected"
+                color: theme.textStrong
+                font.family: theme.sans
+                font.pixelSize: 18
+                font.bold: true
+            }
 
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: "Open a repository, choose refs, run compare, then select a file."
-                    color: theme.textMuted
-                    font.family: theme.sans
-                    font.pixelSize: 13
-                }
+                text: "Open a repository, choose refs, run compare, then select a file."
+                color: theme.textMuted
+                font.family: theme.sans
+                font.pixelSize: 12
             }
+        }
         }
 
         Rectangle {
@@ -275,6 +276,8 @@ Rectangle {
                 height: contentHeight
                 rowsModel: root.rowsModel
                 layoutMode: root.layoutMode
+                viewportY: diffViewport.contentY
+                viewportHeight: diffViewport.height
                 palette: root.surfacePalette
                 monoFontFamily: theme.mono
             }

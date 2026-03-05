@@ -1,6 +1,9 @@
 #pragma once
 
 #include <QQuickPaintedItem>
+#include <QMouseEvent>
+#include <QKeyEvent>
+#include <QHoverEvent>
 #include <QVariantList>
 #include <QVariantMap>
 
@@ -14,6 +17,8 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   Q_PROPERTY(QString monoFontFamily READ monoFontFamily WRITE setMonoFontFamily NOTIFY monoFontFamilyChanged)
   Q_PROPERTY(qreal contentHeight READ contentHeight NOTIFY contentHeightChanged)
   Q_PROPERTY(qreal contentWidth READ contentWidth NOTIFY contentWidthChanged)
+  Q_PROPERTY(qreal viewportY READ viewportY WRITE setViewportY NOTIFY viewportYChanged)
+  Q_PROPERTY(qreal viewportHeight READ viewportHeight WRITE setViewportHeight NOTIFY viewportHeightChanged)
   Q_PROPERTY(int paintCount READ paintCount NOTIFY paintCountChanged)
   Q_PROPERTY(int displayRowCount READ displayRowCount NOTIFY displayRowCountChanged)
 
@@ -34,6 +39,12 @@ class DiffSurfaceItem : public QQuickPaintedItem {
 
   qreal contentHeight() const;
   qreal contentWidth() const;
+  qreal viewportY() const;
+  void setViewportY(qreal value);
+
+  qreal viewportHeight() const;
+  void setViewportHeight(qreal value);
+
   int paintCount() const;
   int displayRowCount() const;
 
@@ -72,6 +83,8 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   void monoFontFamilyChanged();
   void contentHeightChanged();
   void contentWidthChanged();
+  void viewportYChanged();
+  void viewportHeightChanged();
   void paintCountChanged();
   void displayRowCountChanged();
 
@@ -80,13 +93,15 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   void rebuildDisplayRows();
   void recalculateMetrics();
   int rowIndexAtY(qreal y) const;
+  bool rowSelected(int rowIndex) const;
   QColor paletteColor(const QString& key, const QColor& fallback) const;
   qreal digitWidth() const;
   qreal unifiedGutterWidth() const;
+  QString selectedText() const;
 
   void drawHunkRow(QPainter* painter, const QRectF& rowRect, const Row& row) const;
-  void drawUnifiedRow(QPainter* painter, const QRectF& rowRect, const Row& row) const;
-  void drawSplitRow(QPainter* painter, const QRectF& rowRect, const Row& row) const;
+  void drawUnifiedRow(QPainter* painter, const QRectF& rowRect, const Row& row, bool selected) const;
+  void drawSplitRow(QPainter* painter, const QRectF& rowRect, const Row& row, bool selected) const;
   void drawTextRun(QPainter* painter,
                    const QPointF& baseline,
                    const QRectF& clipRect,
@@ -94,6 +109,14 @@ class DiffSurfaceItem : public QQuickPaintedItem {
                    const QVector<TokenSpan>& tokens,
                    const QColor& textColor,
                    const QColor& tokenBackground) const;
+
+ protected:
+  void mousePressEvent(QMouseEvent* event) override;
+  void mouseMoveEvent(QMouseEvent* event) override;
+  void mouseReleaseEvent(QMouseEvent* event) override;
+  void hoverMoveEvent(QHoverEvent* event) override;
+  void hoverLeaveEvent(QHoverEvent* event) override;
+  void keyPressEvent(QKeyEvent* event) override;
 
   QVariantList rowsModel_;
   QString layoutMode_ = "unified";
@@ -106,12 +129,17 @@ class DiffSurfaceItem : public QQuickPaintedItem {
 
   qreal contentHeight_ = 0;
   qreal contentWidth_ = 0;
+  qreal viewportY_ = 0;
+  qreal viewportHeight_ = 0;
   qreal lineHeight_ = 0;
   qreal rowHeight_ = 0;
   qreal hunkHeight_ = 24;
   int lineNumberDigits_ = 3;
   qreal maxTextWidth_ = 0;
   int paintCount_ = 0;
+  int selectionAnchorRow_ = -1;
+  int selectionCursorRow_ = -1;
+  int hoveredRow_ = -1;
 };
 
 }  // namespace diffy

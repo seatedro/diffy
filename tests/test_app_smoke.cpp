@@ -1,9 +1,12 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QImage>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QSet>
 #include <QTemporaryDir>
+#include <QUuid>
 #include <QtTest/QtTest>
 
 namespace {
@@ -69,6 +72,7 @@ struct SmokeResult {
   int exitCode = -1;
   QString stdoutText;
   QString stderrText;
+  QString capturePath;
 };
 
 SmokeResult runDiffySmoke(const QString& repoPath, const QStringList& extraEnv) {
@@ -80,6 +84,7 @@ SmokeResult runDiffySmoke(const QString& repoPath, const QStringList& extraEnv) 
     return result;
   }
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+  result.capturePath = QDir::temp().filePath(QString("diffy-smoke-%1.png").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
   env.insert("QT_QPA_PLATFORM", "offscreen");
   env.insert("QT_QUICK_BACKEND", "software");
   env.insert("XDG_CONFIG_HOME", configDir.path());
@@ -90,7 +95,8 @@ SmokeResult runDiffySmoke(const QString& repoPath, const QStringList& extraEnv) 
   env.insert("DIFFY_REQUIRE_RESULTS", "1");
   env.insert("DIFFY_PRINT_STATE", "1");
   env.insert("DIFFY_FATAL_RUNTIME_WARNINGS", "1");
-  env.insert("DIFFY_EXIT_AFTER_MS", "1000");
+  env.insert("DIFFY_CAPTURE_PATH", result.capturePath);
+  env.insert("DIFFY_EXIT_AFTER_MS", "1800");
   for (const QString& entry : extraEnv) {
     const int separator = entry.indexOf('=');
     env.insert(entry.left(separator), entry.mid(separator + 1));
@@ -132,6 +138,30 @@ QVariantMap parseStateLine(const QString& stdoutText) {
                      {"error", match.captured(11).trimmed()}};
 }
 
+int sampleRegionDiversity(const QImage& image, int xStart, int xEnd, int yStart, int yEnd) {
+  QSet<QRgb> colors;
+  for (int y = yStart; y < yEnd; y += 4) {
+    for (int x = xStart; x < xEnd; x += 4) {
+      colors.insert(image.pixel(x, y));
+    }
+  }
+  return colors.size();
+}
+
+int diffRegionColorDiversity(const QString& imagePath) {
+  QImage image(imagePath);
+  if (image.isNull()) {
+    return 0;
+  }
+
+  const int yStart = image.height() * 30 / 100;
+  const int yEnd = image.height() * 60 / 100;
+
+  const int leftRegion = sampleRegionDiversity(image, image.width() * 22 / 100, image.width() * 58 / 100, yStart, yEnd);
+  const int rightRegion = sampleRegionDiversity(image, image.width() * 58 / 100, image.width() * 95 / 100, yStart, yEnd);
+  return std::max(leftRegion, rightRegion);
+}
+
 }  // namespace
 
 class AppSmokeTest : public QObject {
@@ -162,6 +192,8 @@ class AppSmokeTest : public QObject {
     QVERIFY(state.value("itemHeight").toDouble() > 0.0);
     QVERIFY(state.value("displayRows").toInt() > 0);
     QVERIFY(state.value("paintCount").toInt() > 0);
+    QVERIFY2(QFileInfo::exists(result.capturePath), qPrintable(result.capturePath));
+    QVERIFY(diffRegionColorDiversity(result.capturePath) > 5);
     QCOMPARE(state.value("error").toString(), QString("none"));
   }
 
@@ -186,6 +218,8 @@ class AppSmokeTest : public QObject {
     QVERIFY(state.value("itemHeight").toDouble() > 0.0);
     QVERIFY(state.value("displayRows").toInt() > 0);
     QVERIFY(state.value("paintCount").toInt() > 0);
+    QVERIFY2(QFileInfo::exists(result.capturePath), qPrintable(result.capturePath));
+    QVERIFY(diffRegionColorDiversity(result.capturePath) > 5);
     QCOMPARE(state.value("error").toString(), QString("none"));
   }
 };

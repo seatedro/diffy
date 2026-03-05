@@ -34,9 +34,9 @@ Rectangle {
             return theme.dangerText
         }
         if (status === "R") {
-            return theme.warningText
+            return theme.accentStrong
         }
-        return theme.accentStrong
+        return theme.warningText
     }
 
     function statusFill(status) {
@@ -47,9 +47,9 @@ Rectangle {
             return theme.dangerBg
         }
         if (status === "R") {
-            return theme.warningBg
+            return theme.accentSoft
         }
-        return theme.accentSoft
+        return theme.warningBg
     }
 
     function repoName() {
@@ -105,7 +105,7 @@ Rectangle {
             anchors.right: parent.right
             anchors.top: parent.top
             height: 56
-            color: theme.panel
+            color: theme.panelStrong
 
             Column {
                 anchors.fill: parent
@@ -122,7 +122,7 @@ Rectangle {
                         text: "Changes"
                         color: theme.textStrong
                         font.family: theme.sans
-                        font.pixelSize: 13
+                        font.pixelSize: 12
                         font.bold: true
                     }
 
@@ -130,7 +130,7 @@ Rectangle {
                         text: files.length + " files"
                         color: theme.textFaint
                         font.family: theme.sans
-                        font.pixelSize: 11
+                        font.pixelSize: 10
                     }
                 }
 
@@ -141,21 +141,21 @@ Rectangle {
                         text: "+" + totalAdditions()
                         color: theme.successText
                         font.family: theme.mono
-                        font.pixelSize: 11
+                        font.pixelSize: 10
                     }
 
                     Text {
                         text: "-" + totalDeletions()
                         color: theme.dangerText
                         font.family: theme.mono
-                        font.pixelSize: 11
+                        font.pixelSize: 10
                     }
 
                     Text {
                         text: compareLabel()
                         color: theme.textFaint
                         font.family: theme.mono
-                        font.pixelSize: 10
+                        font.pixelSize: 9
                         elide: Text.ElideRight
                         width: parent.width - 110
                     }
@@ -189,9 +189,9 @@ Rectangle {
                 required property var modelData
 
                 width: ListView.view.width
-                height: 36
+                height: 34
                 radius: 0
-                color: root.selectedIndex === index ? theme.selectionBg : "transparent"
+                color: root.selectedIndex === index ? theme.selectionBg : (mouseArea.containsMouse ? theme.panelStrong : "transparent")
                 border.width: 0
 
                 Rectangle {
@@ -220,7 +220,7 @@ Rectangle {
                     text: modelData.path
                     color: root.selectedIndex === index ? theme.textStrong : theme.textBase
                     font.family: theme.sans
-                    font.pixelSize: 12
+                    font.pixelSize: 11
                     elide: Text.ElideMiddle
                 }
 
@@ -236,25 +236,26 @@ Rectangle {
                         text: "bin"
                         color: theme.warningText
                         font.family: theme.mono
-                        font.pixelSize: 10
+                        font.pixelSize: 9
                     }
 
                     Text {
                         text: "+" + modelData.additions
                         color: theme.successText
                         font.family: theme.mono
-                        font.pixelSize: 10
+                        font.pixelSize: 9
                     }
 
                     Text {
                         text: "-" + modelData.deletions
                         color: theme.dangerText
                         font.family: theme.mono
-                        font.pixelSize: 10
+                        font.pixelSize: 9
                     }
                 }
 
                 MouseArea {
+                    id: mouseArea
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
@@ -268,7 +269,7 @@ Rectangle {
                 text: "Run compare to populate the changes list."
                 color: theme.textFaint
                 font.family: theme.sans
-                font.pixelSize: 12
+                font.pixelSize: 11
             }
         }
     }

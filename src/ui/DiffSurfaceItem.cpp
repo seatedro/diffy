@@ -1,8 +1,10 @@
 #include "ui/DiffSurfaceItem.h"
 
+#include <QClipboard>
 #include <QColor>
 #include <QFont>
 #include <QFontMetricsF>
+#include <QGuiApplication>
 #include <QPainter>
 #include <QtMath>
 
@@ -33,7 +35,9 @@ QVector<DiffSurfaceItem::TokenSpan> parseTokens(const QVariantList& tokenValues)
 
 DiffSurfaceItem::DiffSurfaceItem(QQuickItem* parent) : QQuickPaintedItem(parent) {
   setOpaquePainting(false);
-  setAcceptedMouseButtons(Qt::NoButton);
+  setAcceptedMouseButtons(Qt::LeftButton);
+  setAcceptHoverEvents(true);
+  setFocus(true);
   connect(this, &QQuickItem::widthChanged, this, [this]() { update(); });
   connect(this, &QQuickItem::heightChanged, this, [this]() { update(); });
 }
@@ -98,6 +102,32 @@ qreal DiffSurfaceItem::contentWidth() const {
   return contentWidth_;
 }
 
+qreal DiffSurfaceItem::viewportY() const {
+  return viewportY_;
+}
+
+void DiffSurfaceItem::setViewportY(qreal value) {
+  if (qFuzzyCompare(viewportY_, value)) {
+    return;
+  }
+  viewportY_ = value;
+  update();
+  emit viewportYChanged();
+}
+
+qreal DiffSurfaceItem::viewportHeight() const {
+  return viewportHeight_;
+}
+
+void DiffSurfaceItem::setViewportHeight(qreal value) {
+  if (qFuzzyCompare(viewportHeight_, value)) {
+    return;
+  }
+  viewportHeight_ = value;
+  update();
+  emit viewportHeightChanged();
+}
+
 int DiffSurfaceItem::paintCount() const {
   return paintCount_;
 }
@@ -123,16 +153,58 @@ void DiffSurfaceItem::paint(QPainter* painter) {
   for (int rowIndex = 0; rowIndex < displayRows_.size(); ++rowIndex) {
     const Row& row = displayRows_.at(rowIndex);
     const QRectF rowRect(0, row.top, width(), row.height);
+    const bool selected = rowSelected(rowIndex);
+    const bool hovered = hoveredRow_ == rowIndex;
 
     if (row.rowType == "hunk") {
       drawHunkRow(painter, rowRect, row);
+      if (selected) {
+        QColor selection = paletteColor("selectionBg", QColor("#3c3836"));
+        selection.setAlpha(110);
+        painter->fillRect(rowRect, selection);
+      } else if (hovered) {
+        QColor hover = paletteColor("panelTint", QColor("#504945"));
+        hover.setAlpha(90);
+        painter->fillRect(rowRect, hover);
+      }
       continue;
     }
 
     if (layoutMode_ == "split") {
-      drawSplitRow(painter, rowRect, row);
+      drawSplitRow(painter, rowRect, row, selected || hovered);
     } else {
-      drawUnifiedRow(painter, rowRect, row);
+      drawUnifiedRow(painter, rowRect, row, selected || hovered);
+    }
+  }
+
+  if (viewportHeight_ > 0) {
+    int stickyIndex = -1;
+    for (int rowIndex = 0; rowIndex < displayRows_.size(); ++rowIndex) {
+      const Row& row = displayRows_.at(rowIndex);
+      if (row.rowType == "hunk" && row.top <= viewportY_) {
+        stickyIndex = rowIndex;
+      }
+      if (row.top > viewportY_) {
+        break;
+      }
+    }
+
+    if (stickyIndex >= 0) {
+      qreal stickyY = viewportY_;
+      for (int nextIndex = stickyIndex + 1; nextIndex < displayRows_.size(); ++nextIndex) {
+        const Row& nextRow = displayRows_.at(nextIndex);
+        if (nextRow.rowType == "hunk") {
+          stickyY = std::min(stickyY, nextRow.top - hunkHeight_);
+          break;
+        }
+      }
+
+      painter->save();
+      QColor shadow = paletteColor("canvas", QColor("#282828"));
+      shadow.setAlpha(210);
+      painter->fillRect(QRectF(0, stickyY, width(), hunkHeight_), shadow);
+      drawHunkRow(painter, QRectF(0, stickyY, width(), hunkHeight_), displayRows_.at(stickyIndex));
+      painter->restore();
     }
   }
 }
@@ -305,6 +377,15 @@ int DiffSurfaceItem::rowIndexAtY(qreal y) const {
                     static_cast<int>(displayRows_.size() - 1));
 }
 
+bool DiffSurfaceItem::rowSelected(int rowIndex) const {
+  if (selectionAnchorRow_ < 0 || selectionCursorRow_ < 0) {
+    return false;
+  }
+  const int start = std::min(selectionAnchorRow_, selectionCursorRow_);
+  const int end = std::max(selectionAnchorRow_, selectionCursorRow_);
+  return rowIndex >= start && rowIndex <= end;
+}
+
 QColor DiffSurfaceItem::paletteColor(const QString& key, const QColor& fallback) const {
   const QVariant value = palette_.value(key);
   if (!value.isValid()) {
@@ -334,7 +415,7 @@ void DiffSurfaceItem::drawHunkRow(QPainter* painter, const QRectF& rowRect, cons
                     Qt::AlignVCenter | Qt::AlignLeft, row.header);
 }
 
-void DiffSurfaceItem::drawUnifiedRow(QPainter* painter, const QRectF& rowRect, const Row& row) const {
+void DiffSurfaceItem::drawUnifiedRow(QPainter* painter, const QRectF& rowRect, const Row& row, bool selected) const {
   QColor background = paletteColor("lineContext", QColor("#282c33"));
   if (row.kind == "add") {
     background = paletteColor("lineAdd", QColor("#1f2d24"));
@@ -343,6 +424,11 @@ void DiffSurfaceItem::drawUnifiedRow(QPainter* painter, const QRectF& rowRect, c
   }
 
   painter->fillRect(rowRect, background);
+  if (selected) {
+    QColor selection = paletteColor("selectionBg", QColor("#3c3836"));
+    selection.setAlpha(90);
+    painter->fillRect(rowRect, selection);
+  }
 
   const qreal gutterWidth = unifiedGutterWidth();
   const QRectF gutterRect(rowRect.left(), rowRect.top(), gutterWidth, rowRect.height());
@@ -388,7 +474,7 @@ void DiffSurfaceItem::drawUnifiedRow(QPainter* painter, const QRectF& rowRect, c
   drawTextRun(painter, QPointF(textClip.left(), baselineY), textClip, row.text, row.tokens, textColor, tokenBg);
 }
 
-void DiffSurfaceItem::drawSplitRow(QPainter* painter, const QRectF& rowRect, const Row& row) const {
+void DiffSurfaceItem::drawSplitRow(QPainter* painter, const QRectF& rowRect, const Row& row, bool selected) const {
   const QRectF leftRect(rowRect.left(), rowRect.top(), rowRect.width() / 2.0, rowRect.height());
   const QRectF rightRect(leftRect.right(), rowRect.top(), rowRect.width() - leftRect.width(), rowRect.height());
 
@@ -398,6 +484,12 @@ void DiffSurfaceItem::drawSplitRow(QPainter* painter, const QRectF& rowRect, con
                                            : paletteColor("lineContext", QColor("#282c33"));
   painter->fillRect(leftRect, leftBg);
   painter->fillRect(rightRect, rightBg);
+  if (selected) {
+    QColor selection = paletteColor("selectionBg", QColor("#3c3836"));
+    selection.setAlpha(90);
+    painter->fillRect(leftRect, selection);
+    painter->fillRect(rightRect, selection);
+  }
   painter->fillRect(QRectF(leftRect.right(), rowRect.top(), 1.0, rowRect.height()),
                     paletteColor("divider", QColor("#363c46")));
 
@@ -476,6 +568,101 @@ void DiffSurfaceItem::drawTextRun(QPainter* painter,
   painter->setPen(textColor);
   painter->drawText(baseline, text);
   painter->restore();
+}
+
+QString DiffSurfaceItem::selectedText() const {
+  if (selectionAnchorRow_ < 0 || selectionCursorRow_ < 0 || displayRows_.isEmpty()) {
+    return {};
+  }
+
+  QStringList parts;
+  const int start = std::min(selectionAnchorRow_, selectionCursorRow_);
+  const int end = std::max(selectionAnchorRow_, selectionCursorRow_);
+  for (int rowIndex = start; rowIndex <= end && rowIndex < displayRows_.size(); ++rowIndex) {
+    const Row& row = displayRows_.at(rowIndex);
+    if (row.rowType == "hunk") {
+      parts.push_back(row.header);
+      continue;
+    }
+
+    if (layoutMode_ == "split") {
+      if (row.leftKind == "ctx" && row.rightKind == "ctx") {
+        parts.push_back(" " + row.leftText);
+      } else {
+        if (row.leftKind != "spacer") {
+          parts.push_back("-" + row.leftText);
+        }
+        if (row.rightKind != "spacer") {
+          parts.push_back("+" + row.rightText);
+        }
+      }
+    } else {
+      const QString prefix = row.kind == "add" ? "+" : row.kind == "del" ? "-" : " ";
+      parts.push_back(prefix + row.text);
+    }
+  }
+
+  return parts.join('\n');
+}
+
+void DiffSurfaceItem::mousePressEvent(QMouseEvent* event) {
+  forceActiveFocus(Qt::MouseFocusReason);
+  const int rowIndex = rowIndexAtY(event->position().y());
+  selectionAnchorRow_ = rowIndex;
+  selectionCursorRow_ = rowIndex;
+  update();
+  QQuickPaintedItem::mousePressEvent(event);
+}
+
+void DiffSurfaceItem::mouseMoveEvent(QMouseEvent* event) {
+  if (selectionAnchorRow_ >= 0) {
+    selectionCursorRow_ = rowIndexAtY(event->position().y());
+    update();
+  }
+  QQuickPaintedItem::mouseMoveEvent(event);
+}
+
+void DiffSurfaceItem::mouseReleaseEvent(QMouseEvent* event) {
+  if (selectionAnchorRow_ >= 0) {
+    selectionCursorRow_ = rowIndexAtY(event->position().y());
+    update();
+  }
+  QQuickPaintedItem::mouseReleaseEvent(event);
+}
+
+void DiffSurfaceItem::keyPressEvent(QKeyEvent* event) {
+  if (event->matches(QKeySequence::Copy)) {
+    const QString text = selectedText();
+    if (!text.isEmpty()) {
+      if (QClipboard* clipboard = QGuiApplication::clipboard()) {
+        clipboard->setText(text);
+      }
+      event->accept();
+      return;
+    }
+  }
+  if (event->matches(QKeySequence::SelectAll)) {
+    if (!displayRows_.isEmpty()) {
+      selectionAnchorRow_ = 0;
+      selectionCursorRow_ = displayRows_.size() - 1;
+      update();
+    }
+    event->accept();
+    return;
+  }
+  QQuickPaintedItem::keyPressEvent(event);
+}
+
+void DiffSurfaceItem::hoverMoveEvent(QHoverEvent* event) {
+  hoveredRow_ = rowIndexAtY(event->position().y());
+  update();
+  QQuickPaintedItem::hoverMoveEvent(event);
+}
+
+void DiffSurfaceItem::hoverLeaveEvent(QHoverEvent* event) {
+  hoveredRow_ = -1;
+  update();
+  QQuickPaintedItem::hoverLeaveEvent(event);
 }
 
 }  // namespace diffy

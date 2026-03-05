@@ -15,8 +15,8 @@ Window {
 
     property bool compactControls: width < 1260
     property bool stackPanels: width < 1140
-    property int chromeMargin: 12
-    property int chromeGap: 10
+    property int chromeMargin: 8
+    property int chromeGap: 8
 
     QtObject {
         id: theme
@@ -24,46 +24,47 @@ Window {
         readonly property string sans: "IBM Plex Sans"
         readonly property string mono: "JetBrains Mono"
 
-        readonly property color appBg: "#282c33"
-        readonly property color canvas: "#282c33"
-        readonly property color panel: "#2f343e"
-        readonly property color panelStrong: "#3b414d"
-        readonly property color panelTint: "#353b45"
+        readonly property color appBg: "#1d2021"
+        readonly property color canvas: "#282828"
+        readonly property color panel: "#32302f"
+        readonly property color panelStrong: "#3c3836"
+        readonly property color panelTint: "#504945"
+        readonly property color toolbarBg: "#282828"
 
-        readonly property color borderSoft: "#464b57"
-        readonly property color borderStrong: "#363c46"
-        readonly property color divider: "#363c46"
+        readonly property color borderSoft: "#504945"
+        readonly property color borderStrong: "#665c54"
+        readonly property color divider: "#504945"
 
-        readonly property color textStrong: "#dce0e5"
-        readonly property color textBase: "#c8ccd4"
-        readonly property color textMuted: "#a9afbc"
-        readonly property color textFaint: "#878a98"
+        readonly property color textStrong: "#fbf1c7"
+        readonly property color textBase: "#ebdbb2"
+        readonly property color textMuted: "#d5c4a1"
+        readonly property color textFaint: "#a89984"
 
-        readonly property color accent: "#74ade8"
-        readonly property color accentStrong: "#74ade8"
-        readonly property color accentSoft: "#293b5b"
+        readonly property color accent: "#83a598"
+        readonly property color accentStrong: "#83a598"
+        readonly property color accentSoft: "#3b4b4f"
 
-        readonly property color successBg: "#1f3025"
-        readonly property color successBorder: "#38482f"
-        readonly property color successText: "#a1c181"
+        readonly property color successBg: "#32361a"
+        readonly property color successBorder: "#4a5a1c"
+        readonly property color successText: "#b8bb26"
 
-        readonly property color dangerBg: "#301f24"
-        readonly property color dangerBorder: "#4c2b2c"
-        readonly property color dangerText: "#d07277"
+        readonly property color dangerBg: "#3c1f1e"
+        readonly property color dangerBorder: "#7c3a31"
+        readonly property color dangerText: "#fb4934"
 
-        readonly property color warningBg: "#30281f"
-        readonly property color warningBorder: "#5d4c2f"
-        readonly property color warningText: "#dec184"
+        readonly property color warningBg: "#4a3b16"
+        readonly property color warningBorder: "#7c6f27"
+        readonly property color warningText: "#fabd2f"
 
-        readonly property color selectionBg: "#293b5b"
-        readonly property color selectionBorder: "#47679e"
+        readonly property color selectionBg: "#3c3836"
+        readonly property color selectionBorder: "#83a598"
 
-        readonly property color lineContext: "#282c33"
-        readonly property color lineContextAlt: "#2b3038"
-        readonly property color lineAdd: "#1f2d24"
-        readonly property color lineAddAccent: "#22332a"
-        readonly property color lineDel: "#2d2024"
-        readonly property color lineDelAccent: "#35262b"
+        readonly property color lineContext: "#282828"
+        readonly property color lineContextAlt: "#232323"
+        readonly property color lineAdd: "#2d3216"
+        readonly property color lineAddAccent: "#32361a"
+        readonly property color lineDel: "#3c1f1e"
+        readonly property color lineDelAccent: "#442624"
     }
 
     function nextCompareMode(value) {
@@ -150,27 +151,40 @@ Window {
 
         Rectangle {
             Layout.fillWidth: true
-            color: theme.canvas
-            radius: 8
-            border.color: theme.borderStrong
-            implicitHeight: headerColumn.implicitHeight + 24
+            color: theme.toolbarBg
+            radius: 10
+            border.color: theme.borderSoft
+            implicitHeight: headerColumn.implicitHeight + 18
 
             ColumnLayout {
                 id: headerColumn
                 anchors.fill: parent
-                anchors.margins: 10
+                anchors.margins: 8
                 spacing: 8
 
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 10
 
-                    Text {
-                        text: "diffy"
-                        color: theme.textStrong
-                        font.family: theme.sans
-                        font.pixelSize: 19
-                        font.bold: true
+                    Column {
+                        spacing: 0
+
+                        Text {
+                            text: "LOCAL GIT REVIEW"
+                            color: theme.textFaint
+                            font.family: theme.sans
+                            font.pixelSize: 9
+                            font.bold: true
+                            font.letterSpacing: 1.2
+                        }
+
+                        Text {
+                            text: "diffy"
+                            color: theme.textStrong
+                            font.family: theme.sans
+                            font.pixelSize: 20
+                            font.bold: true
+                        }
                     }
 
                     Rectangle {
@@ -184,7 +198,7 @@ Window {
                             id: repoChipLabel
                             anchors.centerIn: parent
                             text: repoLabel()
-                            color: theme.textMuted
+                            color: theme.textBase
                             font.family: theme.sans
                             font.pixelSize: 11
                             font.bold: true
@@ -209,7 +223,7 @@ Window {
                                 id: modeChip
                                 anchors.centerIn: parent
                                 text: compareModeLabel(diffController.compareMode)
-                                color: theme.textFaint
+                                color: theme.textMuted
                                 font.family: theme.mono
                                 font.pixelSize: 10
                             }
@@ -326,9 +340,9 @@ Window {
         Rectangle {
             visible: diffController.refs.length > 0
             Layout.fillWidth: true
-            color: theme.canvas
+            color: theme.panel
             radius: 6
-            border.color: theme.borderStrong
+            border.color: theme.borderSoft
             implicitHeight: 34
 
             Row {
@@ -360,7 +374,7 @@ Window {
                         width: chipText.implicitWidth + 20
                         height: 24
                         radius: 4
-                        color: leftRefField.text === modelData || rightRefField.text === modelData ? theme.accentSoft : theme.panel
+                        color: leftRefField.text === modelData || rightRefField.text === modelData ? theme.accentSoft : theme.panelStrong
                         border.color: leftRefField.text === modelData || rightRefField.text === modelData ? theme.selectionBorder : theme.borderSoft
 
                         Text {
@@ -406,9 +420,9 @@ Window {
         Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            color: theme.canvas
-            radius: 8
-            border.color: theme.borderStrong
+            color: theme.panel
+            radius: 10
+            border.color: theme.borderSoft
 
             FileListPane {
                 id: filePane

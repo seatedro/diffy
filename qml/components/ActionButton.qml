@@ -20,7 +20,7 @@ Rectangle {
         if (tone === "danger") {
             return theme.dangerBg
         }
-        return active ? theme.accentSoft : theme.panel
+        return mouseArea.containsMouse ? theme.panelStrong : theme.panel
     }
 
     function borderColor() {
@@ -38,7 +38,7 @@ Rectangle {
 
     function textColor() {
         if (tone === "accent") {
-            return active ? "#ffffff" : theme.accentStrong
+            return active ? theme.appBg : theme.accentStrong
         }
         if (tone === "success") {
             return theme.successText
@@ -46,13 +46,13 @@ Rectangle {
         if (tone === "danger") {
             return theme.dangerText
         }
-        return active ? theme.accentStrong : theme.textBase
+        return active ? theme.accentStrong : theme.textMuted
     }
 
-    implicitWidth: Math.max(compact ? 78 : 100, label.implicitWidth + (compact ? 22 : 30))
-    implicitHeight: compact ? 32 : 36
-    radius: 6
-    color: mouseArea.containsMouse ? Qt.lighter(fillColor(), 1.03) : fillColor()
+    implicitWidth: Math.max(compact ? 74 : 96, label.implicitWidth + (compact ? 20 : 28))
+    implicitHeight: compact ? 28 : 32
+    radius: 4
+    color: mouseArea.containsMouse ? Qt.lighter(fillColor(), 1.04) : fillColor()
     border.width: 1
     border.color: borderColor()
 
@@ -65,7 +65,7 @@ Rectangle {
         anchors.centerIn: parent
         color: root.textColor()
         font.family: theme.sans
-        font.pixelSize: compact ? 12 : 13
+        font.pixelSize: compact ? 11 : 12
         font.bold: active || tone !== "neutral"
     }
 

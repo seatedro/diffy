@@ -1,0 +1,5 @@
+https://github.com/Wilfred/difftastic.git
+https://github.com/dandavison/delta.git
+https://github.com/helix-editor/helix.git
+https://github.com/zed-industries/zed.git
+https://github.com/lapce/lapce.git

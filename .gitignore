@@ -1,0 +1,15 @@
+# Local reference repos (large/untracked)
+.docs/refs/
+.docs/refs.partial.*/
+
+# devenv generated artifacts
+.devenv/
+.devenv.flake.nix
+
+# Build output
+build/
+cmake-build-*/
+
+# Editor/system
+.DS_Store
+*.swp

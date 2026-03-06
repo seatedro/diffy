@@ -3,7 +3,6 @@ import QtQuick
 Rectangle {
     id: root
 
-    required property QtObject theme
     property alias text: label.text
     property string tone: "neutral"
     property bool active: false

@@ -4,7 +4,6 @@ import QtQuick.Controls
 Rectangle {
     id: root
 
-    required property QtObject theme
     property var files: []
     property int selectedIndex: -1
     property string repoPath: ""
@@ -15,65 +14,28 @@ Rectangle {
     signal fileSelected(int index)
 
     function statusLabel(status) {
-        if (status === "A") {
-            return "Added"
-        }
-        if (status === "D") {
-            return "Deleted"
-        }
-        if (status === "R") {
-            return "Renamed"
-        }
+        if (status === "A") return "Added"
+        if (status === "D") return "Deleted"
+        if (status === "R") return "Renamed"
         return "Modified"
     }
 
     function statusColor(status) {
-        if (status === "A") {
-            return theme.successText
-        }
-        if (status === "D") {
-            return theme.dangerText
-        }
-        if (status === "R") {
-            return theme.accentStrong
-        }
+        if (status === "A") return theme.successText
+        if (status === "D") return theme.dangerText
+        if (status === "R") return theme.accentStrong
         return theme.warningText
-    }
-
-    function statusFill(status) {
-        if (status === "A") {
-            return theme.successBg
-        }
-        if (status === "D") {
-            return theme.dangerBg
-        }
-        if (status === "R") {
-            return theme.accentSoft
-        }
-        return theme.warningBg
-    }
-
-    function repoName() {
-        if (repoPath.length === 0) {
-            return "No repository"
-        }
-        var parts = repoPath.split("/")
-        return parts.length > 0 ? parts[parts.length - 1] : repoPath
     }
 
     function totalAdditions() {
         var total = 0
-        for (var i = 0; i < files.length; ++i) {
-            total += files[i].additions
-        }
+        for (var i = 0; i < files.length; ++i) total += files[i].additions
         return total
     }
 
     function totalDeletions() {
         var total = 0
-        for (var i = 0; i < files.length; ++i) {
-            total += files[i].deletions
-        }
+        for (var i = 0; i < files.length; ++i) total += files[i].deletions
         return total
     }
 
@@ -81,11 +43,7 @@ Rectangle {
     border.width: 0
 
     Rectangle {
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: parent.top
-        anchors.bottom: parent.bottom
-        anchors.margins: 0
+        anchors.fill: parent
         radius: 0
         color: theme.panel
         border.width: 0
@@ -153,9 +111,6 @@ Rectangle {
             id: fileListView
             anchors.fill: parent
             anchors.topMargin: 37
-            anchors.leftMargin: 0
-            anchors.rightMargin: 0
-            anchors.bottomMargin: 0
             model: root.files
             clip: true
             spacing: 0

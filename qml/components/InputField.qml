@@ -3,7 +3,6 @@ import QtQuick
 Rectangle {
     id: root
 
-    required property QtObject theme
     property alias text: input.text
     property alias placeholderText: placeholder.text
     property bool monospace: false

@@ -6,7 +6,6 @@ import Diffy.Native 1.0
 Rectangle {
     id: root
 
-    required property QtObject theme
     property var fileData: ({})
     property var rowsModel: []
     property string layoutMode: "unified"
@@ -40,41 +39,23 @@ Rectangle {
     }
 
     function statusColor(status) {
-        if (status === "A") {
-            return theme.successText
-        }
-        if (status === "D") {
-            return theme.dangerText
-        }
-        if (status === "R") {
-            return theme.accentStrong
-        }
+        if (status === "A") return theme.successText
+        if (status === "D") return theme.dangerText
+        if (status === "R") return theme.accentStrong
         return theme.warningText
     }
 
     function statusFill(status) {
-        if (status === "A") {
-            return theme.successBg
-        }
-        if (status === "D") {
-            return theme.dangerBg
-        }
-        if (status === "R") {
-            return theme.accentSoft
-        }
+        if (status === "A") return theme.successBg
+        if (status === "D") return theme.dangerBg
+        if (status === "R") return theme.accentSoft
         return theme.warningBg
     }
 
     function statusLabel(status) {
-        if (status === "A") {
-            return "Added"
-        }
-        if (status === "D") {
-            return "Deleted"
-        }
-        if (status === "R") {
-            return "Renamed"
-        }
+        if (status === "A") return "Added"
+        if (status === "D") return "Deleted"
+        if (status === "R") return "Renamed"
         return "Modified"
     }
 
@@ -87,7 +68,6 @@ Rectangle {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.margins: 0
         radius: 0
         color: theme.canvas
         border.width: 0
@@ -194,7 +174,6 @@ Rectangle {
         anchors.right: parent.right
         anchors.top: headerPanel.visible ? headerPanel.bottom : parent.top
         anchors.bottom: parent.bottom
-        anchors.margins: 0
         radius: 0
         color: theme.canvas
         border.color: theme.warningBorder
@@ -228,7 +207,6 @@ Rectangle {
         anchors.right: parent.right
         anchors.top: headerPanel.visible ? headerPanel.bottom : parent.top
         anchors.bottom: parent.bottom
-        anchors.margins: 0
         radius: 0
         color: theme.canvas
         border.width: 0
@@ -237,7 +215,6 @@ Rectangle {
             id: diffViewport
             objectName: "diffViewport"
             anchors.fill: parent
-            anchors.margins: 0
             clip: true
             contentWidth: Math.max(width, surface.contentWidth)
             contentHeight: surface.contentHeight

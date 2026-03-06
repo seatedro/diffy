@@ -269,6 +269,88 @@ std::vector<std::string> GitRepositoryService::listReferences(std::string* error
   return refs;
 }
 
+std::vector<GitRepositoryService::BranchInfo> GitRepositoryService::listBranches(std::string* error) const {
+  std::vector<BranchInfo> branches;
+  if (repo_ == nullptr) {
+    if (error) *error = "Repository is not open";
+    return branches;
+  }
+
+  git_branch_iterator* iter = nullptr;
+  if (git_branch_iterator_new(&iter, repo_, GIT_BRANCH_ALL) != 0) {
+    if (error) *error = lastGitErrorString("Failed to iterate branches");
+    return branches;
+  }
+
+  git_reference* ref = nullptr;
+  git_branch_t type{};
+  while (git_branch_next(&ref, &type, iter) == 0) {
+    const char* name = nullptr;
+    if (git_branch_name(&name, ref) == 0 && name != nullptr) {
+      BranchInfo info;
+      info.name = name;
+      info.isRemote = (type == GIT_BRANCH_REMOTE);
+      info.isHead = (git_branch_is_head(ref) == 1);
+      branches.push_back(std::move(info));
+    }
+    git_reference_free(ref);
+  }
+  git_branch_iterator_free(iter);
+
+  std::sort(branches.begin(), branches.end(), [](const BranchInfo& a, const BranchInfo& b) {
+    if (a.isHead != b.isHead) return a.isHead;
+    if (a.isRemote != b.isRemote) return !a.isRemote;
+    return a.name < b.name;
+  });
+
+  return branches;
+}
+
+std::vector<GitRepositoryService::CommitInfo> GitRepositoryService::listCommits(
+    std::string_view ref, int limit, std::string* error) const {
+  std::vector<CommitInfo> commits;
+  if (repo_ == nullptr) {
+    if (error) *error = "Repository is not open";
+    return commits;
+  }
+
+  git_oid startOid{};
+  if (!resolveToCommitOid(repo_, ref, &startOid, error)) {
+    return commits;
+  }
+
+  git_revwalk* walk = nullptr;
+  if (git_revwalk_new(&walk, repo_) != 0) {
+    if (error) *error = lastGitErrorString("Failed to create revwalk");
+    return commits;
+  }
+
+  git_revwalk_sorting(walk, GIT_SORT_TIME);
+  git_revwalk_push(walk, &startOid);
+
+  git_oid oid{};
+  int count = 0;
+  while (count < limit && git_revwalk_next(&oid, walk) == 0) {
+    git_commit* commit = nullptr;
+    if (git_commit_lookup(&commit, repo_, &oid) != 0) continue;
+
+    CommitInfo info;
+    info.oid = oidToStdString(oid);
+    const char* summary = git_commit_summary(commit);
+    if (summary) info.summary = summary;
+    const git_signature* author = git_commit_author(commit);
+    if (author && author->name) info.authorName = author->name;
+    info.timestamp = git_commit_time(commit);
+    commits.push_back(std::move(info));
+
+    git_commit_free(commit);
+    ++count;
+  }
+
+  git_revwalk_free(walk);
+  return commits;
+}
+
 bool GitRepositoryService::resolveComparison(std::string_view leftRef,
                                              std::string_view rightRef,
                                              CompareMode mode,

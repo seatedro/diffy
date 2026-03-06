@@ -24,6 +24,21 @@ class GitRepositoryService {
 
   std::vector<std::string> listReferences(std::string* error) const;
 
+  struct BranchInfo {
+    std::string name;
+    bool isRemote = false;
+    bool isHead = false;
+  };
+  std::vector<BranchInfo> listBranches(std::string* error) const;
+
+  struct CommitInfo {
+    std::string oid;
+    std::string summary;
+    std::string authorName;
+    int64_t timestamp = 0;
+  };
+  std::vector<CommitInfo> listCommits(std::string_view ref, int limit, std::string* error) const;
+
   bool resolveComparison(std::string_view leftRef,
                          std::string_view rightRef,
                          CompareMode mode,

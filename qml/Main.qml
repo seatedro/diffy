@@ -452,6 +452,12 @@ Window {
     Item {
         visible: diffController.repositoryPickerVisible
         anchors.fill: parent
+        onVisibleChanged: {
+            if (visible) {
+                pickerList.currentIndex = 0
+                pickerPopover.forceActiveFocus()
+            }
+        }
 
         MouseArea {
             anchors.fill: parent
@@ -475,6 +481,33 @@ Window {
             radius: 8
             color: theme.toolbarBg
             border.color: theme.borderStrong
+            focus: diffController.repositoryPickerVisible
+
+            Keys.onPressed: function(event) {
+                if (event.key === Qt.Key_Escape) {
+                    diffController.closeRepositoryPicker()
+                    event.accepted = true
+                    return
+                }
+                if (event.key === Qt.Key_Up) {
+                    pickerList.decrementCurrentIndex()
+                    event.accepted = true
+                    return
+                }
+                if (event.key === Qt.Key_Down) {
+                    pickerList.incrementCurrentIndex()
+                    event.accepted = true
+                    return
+                }
+                if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                    if (diffController.repositoryPickerModel.currentPathIsRepository && pickerList.currentIndex < 0) {
+                        diffController.openCurrentRepositoryFromPicker()
+                    } else if (pickerList.currentIndex >= 0) {
+                        diffController.activateRepositoryPickerEntry(pickerList.currentIndex)
+                    }
+                    event.accepted = true
+                }
+            }
 
             ColumnLayout {
                 anchors.fill: parent
@@ -518,7 +551,7 @@ Window {
                     visible: diffController.repositoryPickerModel.currentPathIsRepository
                     implicitHeight: 28
                     radius: 4
-                    color: openCurrentMouse.containsMouse ? theme.panelStrong : theme.panel
+                    color: openCurrentMouse.containsMouse || pickerList.currentIndex < 0 ? theme.panelStrong : theme.panel
 
                     RowLayout {
                         anchors.fill: parent
@@ -567,6 +600,7 @@ Window {
                     clip: true
                     spacing: 0
                     model: diffController.repositoryPickerModel
+                    currentIndex: diffController.repositoryPickerModel.currentPathIsRepository ? -1 : 0
 
                     delegate: Rectangle {
                         required property int index
@@ -576,7 +610,7 @@ Window {
 
                         width: ListView.view.width
                         height: 26
-                        color: mouseArea.containsMouse ? theme.panelStrong : "transparent"
+                        color: mouseArea.containsMouse || pickerList.currentIndex === index ? theme.panelStrong : "transparent"
 
                         RowLayout {
                             anchors.fill: parent
@@ -616,7 +650,10 @@ Window {
                             id: mouseArea
                             anchors.fill: parent
                             hoverEnabled: true
-                            onClicked: diffController.activateRepositoryPickerEntry(index)
+                            onClicked: {
+                                pickerList.currentIndex = index
+                                diffController.activateRepositoryPickerEntry(index)
+                            }
                         }
                     }
                 }

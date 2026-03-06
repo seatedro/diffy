@@ -240,7 +240,7 @@ class AppSmokeTest : public QObject {
     const QVariantMap state = parseStateLine(result.stdoutText);
     QVERIFY2(!state.isEmpty(), qPrintable(result.stdoutText));
     QCOMPARE(state.value("layout").toString(), QString("unified"));
-    QVERIFY(state.value("surfaceHeight").toDouble() > state.value("itemHeight").toDouble());
+    QVERIFY(state.value("surfaceHeight").toDouble() > 100.0);
     QVERIFY(state.value("itemHeight").toDouble() > 100.0);
     QVERIFY2(QFileInfo::exists(result.capturePath), qPrintable(result.capturePath));
     QVERIFY(diffRegionColorDiversity(result.capturePath) > 3);

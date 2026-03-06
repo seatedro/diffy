@@ -154,17 +154,17 @@ Window {
             color: theme.toolbarBg
             radius: 8
             border.color: theme.borderSoft
-            implicitHeight: headerColumn.implicitHeight + 12
+            implicitHeight: headerColumn.implicitHeight + 10
 
             ColumnLayout {
                 id: headerColumn
                 anchors.fill: parent
-                anchors.margins: 6
-                spacing: 6
+                anchors.margins: 5
+                spacing: 5
 
                 RowLayout {
                     Layout.fillWidth: true
-                    spacing: 8
+                    spacing: 6
 
                     Text {
                         text: "diffy"
@@ -197,41 +197,22 @@ Window {
                     }
 
                     Row {
-                        spacing: 6
+                        spacing: 8
 
-                        Rectangle {
-                            width: modeChip.implicitWidth + 16
-                            height: 20
-                            radius: 5
-                            color: theme.panelTint
-                            border.color: theme.borderSoft
-
-                            Text {
-                                id: modeChip
-                                anchors.centerIn: parent
-                                text: compareModeLabel(diffController.compareMode)
-                                color: theme.textMuted
-                                font.family: theme.mono
-                                font.pixelSize: 9
-                            }
+                        Text {
+                            visible: diffController.leftRef.length > 0 && diffController.rightRef.length > 0
+                            text: compareModeLabel(diffController.compareMode) + "  " + diffController.leftRef + " -> " + diffController.rightRef
+                            color: theme.textFaint
+                            font.family: theme.mono
+                            font.pixelSize: 9
                         }
 
-                        Rectangle {
-                            width: rendererChip.implicitWidth + 16
-                            height: 20
-                            radius: 5
-                            color: diffController.renderer === "difftastic" ? theme.warningBg : theme.accentSoft
-                            border.color: diffController.renderer === "difftastic" ? theme.warningBorder : theme.borderSoft
-
-                            Text {
-                                id: rendererChip
-                                anchors.centerIn: parent
-                                text: diffController.renderer === "difftastic" ? "difftastic" : "built-in"
-                                color: diffController.renderer === "difftastic" ? theme.warningText : theme.accentStrong
-                                font.family: theme.sans
-                                font.pixelSize: 9
-                                font.bold: true
-                            }
+                        Text {
+                            text: diffController.renderer === "difftastic" ? "difftastic" : "built-in"
+                            color: diffController.renderer === "difftastic" ? theme.warningText : theme.accentStrong
+                            font.family: theme.sans
+                            font.pixelSize: 9
+                            font.bold: true
                         }
                     }
                 }

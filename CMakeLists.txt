@@ -39,6 +39,7 @@ target_compile_options(diffy_core PRIVATE ${LIBGIT2_CFLAGS_OTHER})
 qt_add_executable(diffy
   src/main.cpp
   src/app/DiffController.cpp
+  src/app/RepositoryPickerModel.cpp
   src/app/QtDiffTypes.cpp
   src/model/DiffDisplayModel.cpp
   src/model/DiffRowListModel.cpp

@@ -54,14 +54,15 @@ void printAutomationState(QObject* root, const diffy::DiffController& controller
   const double surfaceItemHeight = surface != nullptr ? surface->property("height").toDouble() : -1.0;
   const int paintCount = surface != nullptr ? surface->property("paintCount").toInt() : -1;
   const int displayRowCount = surface != nullptr ? surface->property("displayRowCount").toInt() : -1;
+  const int pickerVisible = controller.repositoryPickerVisible() ? 1 : 0;
   const QString errorText = controller.errorMessage().isEmpty() ? "none" : controller.errorMessage().simplified();
   const QString layout = controller.layoutMode().isEmpty() ? "none" : controller.layoutMode();
 
   std::fprintf(stdout,
-               "DIFFY_STATE files=%d rows=%d selected=%d layout=%s surface_height=%.1f surface_width=%.1f item_width=%.1f item_height=%.1f display_rows=%d paint_count=%d error=%s\n",
+               "DIFFY_STATE files=%d rows=%d selected=%d layout=%s surface_height=%.1f surface_width=%.1f item_width=%.1f item_height=%.1f display_rows=%d paint_count=%d picker_visible=%d error=%s\n",
                static_cast<int>(controller.files().size()), controller.selectedFileRowCount(),
                controller.selectedFileIndex(), qPrintable(layout), surfaceHeight, surfaceWidth,
-               surfaceItemWidth, surfaceItemHeight, displayRowCount, paintCount, qPrintable(errorText));
+               surfaceItemWidth, surfaceItemHeight, displayRowCount, paintCount, pickerVisible, qPrintable(errorText));
   std::fflush(stdout);
 }
 
@@ -92,6 +93,10 @@ bool applyStartupAutomation(diffy::DiffController* controller, QString* error) {
   const QString renderer = envString("DIFFY_START_RENDERER");
   if (!renderer.isEmpty()) {
     controller->setRenderer(renderer);
+  }
+
+  if (envFlagEnabled("DIFFY_OPEN_REPO_PICKER")) {
+    controller->openRepositoryPicker();
   }
 
   if (envFlagEnabled("DIFFY_START_COMPARE")) {

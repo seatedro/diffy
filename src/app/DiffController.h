@@ -6,6 +6,7 @@
 #include <QVariant>
 #include <vector>
 
+#include "app/RepositoryPickerModel.h"
 #include "core/CompareSpec.h"
 #include "core/GitRepositoryService.h"
 #include "model/DiffRowListModel.h"
@@ -28,6 +29,8 @@ class DiffController : public QObject {
   Q_PROPERTY(QVariantMap selectedFile READ selectedFile NOTIFY selectedFileChanged)
   Q_PROPERTY(QObject* selectedFileRowsModel READ selectedFileRowsModel CONSTANT)
   Q_PROPERTY(int selectedFileRowCount READ selectedFileRowCount NOTIFY selectedFileRowsChanged)
+  Q_PROPERTY(bool repositoryPickerVisible READ repositoryPickerVisible NOTIFY repositoryPickerVisibleChanged)
+  Q_PROPERTY(QObject* repositoryPickerModel READ repositoryPickerModel CONSTANT)
   Q_PROPERTY(QString errorMessage READ errorMessage NOTIFY errorMessageChanged)
   Q_PROPERTY(bool hasDifftastic READ hasDifftastic NOTIFY hasDifftasticChanged)
 
@@ -60,12 +63,18 @@ class DiffController : public QObject {
   void setSelectedFileIndex(int index);
   QObject* selectedFileRowsModel() const;
   int selectedFileRowCount() const;
+  bool repositoryPickerVisible() const;
+  QObject* repositoryPickerModel() const;
 
   QString errorMessage() const;
   bool hasDifftastic() const;
 
   Q_INVOKABLE bool openRepository(const QString& path);
-  Q_INVOKABLE bool chooseRepositoryAndOpen();
+  Q_INVOKABLE void openRepositoryPicker();
+  Q_INVOKABLE void closeRepositoryPicker();
+  Q_INVOKABLE void navigateRepositoryPickerUp();
+  Q_INVOKABLE void activateRepositoryPickerEntry(int index);
+  Q_INVOKABLE void openCurrentRepositoryFromPicker();
   Q_INVOKABLE void compare();
   Q_INVOKABLE void selectFile(int index);
   Q_INVOKABLE QVariantMap selectedFile() const;
@@ -82,6 +91,7 @@ class DiffController : public QObject {
   void selectedFileIndexChanged();
   void selectedFileChanged();
   void selectedFileRowsChanged();
+  void repositoryPickerVisibleChanged();
   void errorMessageChanged();
   void hasDifftasticChanged();
 
@@ -107,6 +117,8 @@ class DiffController : public QObject {
   std::vector<FileDiff> fileDiffs_;
   QVariantList files_;
   DiffRowListModel selectedFileRowsModel_;
+  RepositoryPickerModel repositoryPickerModel_;
+  bool repositoryPickerVisible_ = false;
   int selectedFileIndex_ = -1;
   QString errorMessage_;
   bool hasDifftastic_ = false;

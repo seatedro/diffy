@@ -35,6 +35,7 @@ add_test(NAME test_text_rope COMMAND test_text_rope)
 qt_add_executable(test_diff_controller
   test_diff_controller.cpp
   ../src/app/DiffController.cpp
+  ../src/app/RepositoryPickerModel.cpp
   ../src/app/QtDiffTypes.cpp
   ../src/model/DiffRowListModel.cpp
   ../src/renderers/BuiltinGitRenderer.cpp
@@ -57,6 +58,25 @@ target_link_libraries(test_diff_controller PRIVATE
 
 target_compile_options(test_diff_controller PRIVATE ${TREESITTER_CFLAGS_OTHER})
 add_test(NAME test_diff_controller COMMAND test_diff_controller)
+
+qt_add_executable(test_repository_picker_model
+  test_repository_picker_model.cpp
+  ../src/app/RepositoryPickerModel.cpp
+)
+
+target_include_directories(test_repository_picker_model PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+  ${LIBGIT2_INCLUDE_DIRS}
+)
+
+target_link_libraries(test_repository_picker_model PRIVATE
+  Qt6::Core
+  Qt6::Test
+  ${LIBGIT2_LIBRARIES}
+)
+
+target_compile_options(test_repository_picker_model PRIVATE ${LIBGIT2_CFLAGS_OTHER})
+add_test(NAME test_repository_picker_model COMMAND test_repository_picker_model)
 
 qt_add_executable(test_builtin_git_renderer
   test_builtin_git_renderer.cpp

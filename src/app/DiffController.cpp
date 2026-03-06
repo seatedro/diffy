@@ -1,6 +1,6 @@
 #include "app/DiffController.h"
 
-#include <QFileDialog>
+#include <QDir>
 #include <QStandardPaths>
 
 #include "app/QtDiffTypes.h"
@@ -9,7 +9,7 @@
 
 namespace diffy {
 DiffController::DiffController(QObject* parent)
-    : QObject(parent), settings_("diffy", "diffy"), selectedFileRowsModel_(this) {
+    : QObject(parent), settings_("diffy", "diffy"), selectedFileRowsModel_(this), repositoryPickerModel_(this) {
   repoPath_ = settings_.value("repoPath").toString();
   leftRef_ = settings_.value("leftRef").toString();
   rightRef_ = settings_.value("rightRef").toString();
@@ -139,6 +139,14 @@ int DiffController::selectedFileRowCount() const {
   return selectedFileRowsModel_.count();
 }
 
+bool DiffController::repositoryPickerVisible() const {
+  return repositoryPickerVisible_;
+}
+
+QObject* DiffController::repositoryPickerModel() const {
+  return const_cast<RepositoryPickerModel*>(&repositoryPickerModel_);
+}
+
 QString DiffController::errorMessage() const {
   return errorMessage_;
 }
@@ -199,14 +207,44 @@ bool DiffController::openRepository(const QString& path) {
   return true;
 }
 
-bool DiffController::chooseRepositoryAndOpen() {
+void DiffController::openRepositoryPicker() {
   const QString startPath = repoPath_.isEmpty() ? QDir::homePath() : repoPath_;
-  const QString selected = QFileDialog::getExistingDirectory(nullptr, "Open Repository", startPath,
-                                                             QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
-  if (selected.isEmpty()) {
-    return false;
+  repositoryPickerModel_.setCurrentPath(startPath);
+  if (!repositoryPickerVisible_) {
+    repositoryPickerVisible_ = true;
+    emit repositoryPickerVisibleChanged();
   }
-  return openRepository(selected);
+}
+
+void DiffController::closeRepositoryPicker() {
+  if (!repositoryPickerVisible_) {
+    return;
+  }
+  repositoryPickerVisible_ = false;
+  emit repositoryPickerVisibleChanged();
+}
+
+void DiffController::navigateRepositoryPickerUp() {
+  repositoryPickerModel_.goUp();
+}
+
+void DiffController::activateRepositoryPickerEntry(int index) {
+  if (repositoryPickerModel_.entryIsRepository(index)) {
+    if (openRepository(repositoryPickerModel_.entryPath(index))) {
+      closeRepositoryPicker();
+    }
+    return;
+  }
+  repositoryPickerModel_.navigateToEntry(index);
+}
+
+void DiffController::openCurrentRepositoryFromPicker() {
+  if (!repositoryPickerModel_.currentPathIsRepository()) {
+    return;
+  }
+  if (openRepository(repositoryPickerModel_.currentPath())) {
+    closeRepositoryPicker();
+  }
 }
 
 void DiffController::compare() {

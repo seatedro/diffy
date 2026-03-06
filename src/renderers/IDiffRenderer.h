@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 #include <QString>
 
 #include "core/DiffTypes.h"
@@ -7,9 +9,9 @@
 namespace diffy {
 
 struct RenderRequest {
-  QString repoPath;
-  QString leftRevision;
-  QString rightRevision;
+  std::string repoPath;
+  std::string leftRevision;
+  std::string rightRevision;
 };
 
 class IDiffRenderer {

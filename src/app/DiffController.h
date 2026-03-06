@@ -8,7 +8,6 @@
 
 #include "core/CompareSpec.h"
 #include "core/GitRepositoryService.h"
-#include "core/UnifiedDiffParser.h"
 #include "model/DiffRowListModel.h"
 #include "renderers/BuiltinGitRenderer.h"
 #include "renderers/DifftasticRenderer.h"
@@ -93,7 +92,6 @@ class DiffController : public QObject {
   void persistSettings();
 
   GitRepositoryService gitService_;
-  UnifiedDiffParser parser_;
   BuiltinGitRenderer builtinRenderer_;
   DifftasticRenderer difftasticRenderer_;
 

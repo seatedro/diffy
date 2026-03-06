@@ -9,7 +9,7 @@
 
 namespace diffy {
 DiffController::DiffController(QObject* parent)
-    : QObject(parent), builtinRenderer_(&parser_), settings_("diffy", "diffy"), selectedFileRowsModel_(this) {
+    : QObject(parent), settings_("diffy", "diffy"), selectedFileRowsModel_(this) {
   repoPath_ = settings_.value("repoPath").toString();
   leftRef_ = settings_.value("leftRef").toString();
   rightRef_ = settings_.value("rightRef").toString();
@@ -257,7 +257,7 @@ void DiffController::compare() {
     return;
   }
 
-  RenderRequest request{repoPath_, QString::fromStdString(resolvedLeft), QString::fromStdString(resolvedRight)};
+  RenderRequest request{repoPath_.toStdString(), resolvedLeft, resolvedRight};
   DiffDocument document;
 
   IDiffRenderer* renderer = &builtinRenderer_;

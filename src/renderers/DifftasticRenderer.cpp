@@ -119,8 +119,12 @@ bool DifftasticRenderer::render(const RenderRequest& request, DiffDocument* out,
   }
 
   QByteArray changedFilesOutput;
-  if (!runGit(request.repoPath,
-              {"diff", "--name-status", request.leftRevision, request.rightRevision},
+  const QString repoPath = QString::fromStdString(request.repoPath);
+  const QString leftRevision = QString::fromStdString(request.leftRevision);
+  const QString rightRevision = QString::fromStdString(request.rightRevision);
+
+  if (!runGit(repoPath,
+              {"diff", "--name-status", leftRevision, rightRevision},
               &changedFilesOutput,
               error)) {
     return false;
@@ -151,8 +155,8 @@ bool DifftasticRenderer::render(const RenderRequest& request, DiffDocument* out,
   }
 
   DiffDocument doc;
-  doc.leftRevision = request.leftRevision.toStdString();
-  doc.rightRevision = request.rightRevision.toStdString();
+  doc.leftRevision = request.leftRevision;
+  doc.rightRevision = request.rightRevision;
 
   QTemporaryDir tempDir;
   if (!tempDir.isValid()) {
@@ -171,16 +175,16 @@ bool DifftasticRenderer::render(const RenderRequest& request, DiffDocument* out,
     QByteArray newContent;
 
     if (changed.status != "A") {
-      runGit(request.repoPath,
-             {"show", QString("%1:%2").arg(request.leftRevision, changed.oldPath)},
+      runGit(repoPath,
+             {"show", QString("%1:%2").arg(leftRevision, changed.oldPath)},
              &oldContent,
              nullptr,
              true);
     }
 
     if (changed.status != "D") {
-      runGit(request.repoPath,
-             {"show", QString("%1:%2").arg(request.rightRevision, changed.newPath)},
+      runGit(repoPath,
+             {"show", QString("%1:%2").arg(rightRevision, changed.newPath)},
              &newContent,
              nullptr,
              true);

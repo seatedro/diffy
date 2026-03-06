@@ -147,11 +147,12 @@ class BuiltinGitRendererTest : public QObject {
     const QString repoPath = createRepoWithMixedChanges();
     QVERIFY(!repoPath.isEmpty());
 
-    BuiltinGitRenderer renderer(nullptr);
+    BuiltinGitRenderer renderer;
     DiffDocument document;
     QString error;
 
-    QVERIFY2(renderer.render(RenderRequest{repoPath, "HEAD~1", "HEAD"}, &document, &error), qPrintable(error));
+    QVERIFY2(renderer.render(RenderRequest{repoPath.toStdString(), "HEAD~1", "HEAD"}, &document, &error),
+             qPrintable(error));
     QCOMPARE(document.files.size(), 5);
 
     const FileDiff* modified = findFile(document.files, "modify.txt");

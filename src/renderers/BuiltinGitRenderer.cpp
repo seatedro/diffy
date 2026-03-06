@@ -5,11 +5,6 @@
 namespace diffy {
 namespace {
 
-std::string toUtf8(const QString& value) {
-  const QByteArray utf8 = value.toUtf8();
-  return std::string(utf8.constData(), static_cast<size_t>(utf8.size()));
-}
-
 QString lastGitError(const QString& fallback) {
   if (const git_error* err = git_error_last(); err && err->message) {
     return QString::fromUtf8(err->message);
@@ -48,14 +43,13 @@ std::vector<TokenSpan> fullLineTokens(const std::string& text) {
   return std::vector<TokenSpan>{TokenSpan{0, static_cast<int>(text.size())}};
 }
 
-bool lookupCommit(git_repository* repo, const QString& revision, git_commit** outCommit, QString* error) {
+bool lookupCommit(git_repository* repo, const std::string& revision, git_commit** outCommit, QString* error) {
   git_object* object = nullptr;
   git_object* peeled = nullptr;
 
-  const QByteArray revUtf8 = revision.toUtf8();
-  if (git_revparse_single(&object, repo, revUtf8.constData()) != 0) {
+  if (git_revparse_single(&object, repo, revision.c_str()) != 0) {
     if (error) {
-      *error = lastGitError(QString("Failed to resolve revision: %1").arg(revision));
+      *error = lastGitError(QString("Failed to resolve revision: %1").arg(QString::fromStdString(revision)));
     }
     return false;
   }
@@ -63,7 +57,7 @@ bool lookupCommit(git_repository* repo, const QString& revision, git_commit** ou
   if (git_object_peel(&peeled, object, GIT_OBJECT_COMMIT) != 0) {
     git_object_free(object);
     if (error) {
-      *error = lastGitError(QString("Revision is not a commit: %1").arg(revision));
+      *error = lastGitError(QString("Revision is not a commit: %1").arg(QString::fromStdString(revision)));
     }
     return false;
   }
@@ -88,8 +82,6 @@ std::string pathForDelta(const git_diff_delta* delta) {
 
 }  // namespace
 
-BuiltinGitRenderer::BuiltinGitRenderer(const UnifiedDiffParser* parser) : parser_(parser) {}
-
 QString BuiltinGitRenderer::id() const {
   return "builtin";
 }
@@ -113,9 +105,9 @@ bool BuiltinGitRenderer::render(const RenderRequest& request, DiffDocument* out,
     git_libgit2_shutdown();
   };
 
-  if (git_repository_open_ext(&repo, request.repoPath.toUtf8().constData(), 0, nullptr) != 0) {
+  if (git_repository_open_ext(&repo, request.repoPath.c_str(), 0, nullptr) != 0) {
     if (error) {
-      *error = lastGitError(QString("Failed to open repository: %1").arg(request.repoPath));
+      *error = lastGitError(QString("Failed to open repository: %1").arg(QString::fromStdString(request.repoPath)));
     }
     cleanup();
     return false;
@@ -150,8 +142,8 @@ bool BuiltinGitRenderer::render(const RenderRequest& request, DiffDocument* out,
   git_diff_find_similar(diff, &findOptions);
 
   DiffDocument document;
-  document.leftRevision = toUtf8(request.leftRevision);
-  document.rightRevision = toUtf8(request.rightRevision);
+  document.leftRevision = request.leftRevision;
+  document.rightRevision = request.rightRevision;
 
   const size_t deltaCount = git_diff_num_deltas(diff);
   for (size_t deltaIndex = 0; deltaIndex < deltaCount; ++deltaIndex) {

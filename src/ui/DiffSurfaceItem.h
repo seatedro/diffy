@@ -96,6 +96,7 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   void rebuildDisplayRows();
   void recalculateMetrics();
   int rowIndexAtY(qreal y) const;
+  int stickyRowIndexAtY(qreal y) const;
   bool rowSelected(int rowIndex) const;
   QColor paletteColor(const QString& key, const QColor& fallback) const;
   qreal digitWidth() const;
@@ -145,6 +146,9 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   int selectionAnchorRow_ = -1;
   int selectionCursorRow_ = -1;
   int hoveredRow_ = -1;
+  int firstVisibleRow_ = -1;
+  int lastVisibleRow_ = -1;
+  int stickyVisibleRow_ = -1;
   mutable QHash<quint64, QString> textCache_;
 };
 

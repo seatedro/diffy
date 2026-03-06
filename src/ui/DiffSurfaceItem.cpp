@@ -111,7 +111,15 @@ void DiffSurfaceItem::setViewportY(qreal value) {
     return;
   }
   viewportY_ = value;
-  update();
+  const int nextFirst = rowIndexAtY(std::max<qreal>(0.0, viewportY_ - hunkHeight_));
+  const int nextLast = rowIndexAtY(viewportY_ + viewportHeight_ + hunkHeight_);
+  const int nextSticky = stickyRowIndexAtY(viewportY_);
+  if (nextFirst != firstVisibleRow_ || nextLast != lastVisibleRow_ || nextSticky != stickyVisibleRow_) {
+    firstVisibleRow_ = nextFirst;
+    lastVisibleRow_ = nextLast;
+    stickyVisibleRow_ = nextSticky;
+    update();
+  }
   emit viewportYChanged();
 }
 
@@ -124,6 +132,9 @@ void DiffSurfaceItem::setViewportHeight(qreal value) {
     return;
   }
   viewportHeight_ = value;
+  firstVisibleRow_ = rowIndexAtY(std::max<qreal>(0.0, viewportY_ - hunkHeight_));
+  lastVisibleRow_ = rowIndexAtY(viewportY_ + viewportHeight_ + hunkHeight_);
+  stickyVisibleRow_ = stickyRowIndexAtY(viewportY_);
   update();
   emit viewportHeightChanged();
 }
@@ -388,6 +399,20 @@ int DiffSurfaceItem::rowIndexAtY(qreal y) const {
   }
   return std::clamp(static_cast<int>(std::distance(rowOffsets_.cbegin(), it) - 1), 0,
                     static_cast<int>(displayRows_.size() - 1));
+}
+
+int DiffSurfaceItem::stickyRowIndexAtY(qreal y) const {
+  int stickyIndex = -1;
+  for (int rowIndex = 0; rowIndex < displayRows_.size(); ++rowIndex) {
+    const Row& row = displayRows_.at(rowIndex);
+    if (row.rowType == "hunk" && row.top <= y) {
+      stickyIndex = rowIndex;
+    }
+    if (row.top > y) {
+      break;
+    }
+  }
+  return stickyIndex;
 }
 
 bool DiffSurfaceItem::rowSelected(int rowIndex) const {

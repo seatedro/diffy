@@ -6,32 +6,8 @@
 #include "core/DiffTypes.h"
 
 namespace diffy {
-namespace {
-
-QVariantList flattenFileRows(const QVariantMap& file) {
-  QVariantList rows;
-  const QVariantList hunks = file.value("hunks").toList();
-  for (qsizetype hunkIndex = 0; hunkIndex < hunks.size(); ++hunkIndex) {
-    const QVariantMap hunk = hunks.at(hunkIndex).toMap();
-    rows.push_back(QVariantMap{{"rowType", "hunk"},
-                               {"hunkIndex", static_cast<int>(hunkIndex)},
-                               {"header", hunk.value("header")}});
-
-    const QVariantList lines = hunk.value("lines").toList();
-    for (const QVariant& lineValue : lines) {
-      QVariantMap row = lineValue.toMap();
-      row.insert("rowType", "line");
-      row.insert("hunkIndex", static_cast<int>(hunkIndex));
-      rows.push_back(row);
-    }
-  }
-  return rows;
-}
-
-}  // namespace
-
 DiffController::DiffController(QObject* parent)
-    : QObject(parent), builtinRenderer_(&parser_), settings_("diffy", "diffy") {
+    : QObject(parent), builtinRenderer_(&parser_), settings_("diffy", "diffy"), selectedFileRowsModel_(this) {
   repoPath_ = settings_.value("repoPath").toString();
   leftRef_ = settings_.value("leftRef").toString();
   rightRef_ = settings_.value("rightRef").toString();
@@ -149,8 +125,12 @@ void DiffController::setSelectedFileIndex(int index) {
   rebuildSelectedFileRows();
 }
 
-QVariantList DiffController::selectedFileRows() const {
-  return selectedFileRows_;
+QObject* DiffController::selectedFileRowsModel() const {
+  return const_cast<DiffRowListModel*>(&selectedFileRowsModel_);
+}
+
+int DiffController::selectedFileRowCount() const {
+  return selectedFileRowsModel_.count();
 }
 
 QString DiffController::errorMessage() const {
@@ -182,6 +162,7 @@ bool DiffController::openRepository(const QString& path) {
   emit refsChanged();
 
   if (repoChanged) {
+    fileDiffs_.clear();
     files_.clear();
     emit filesChanged();
     selectedFileIndex_ = -1;
@@ -263,7 +244,8 @@ void DiffController::compare() {
     return;
   }
 
-  files_ = filesToVariantList(document.files);
+  fileDiffs_ = document.files;
+  files_ = filesToVariantList(fileDiffs_);
   emit filesChanged();
 
   if (!files_.isEmpty()) {
@@ -290,11 +272,11 @@ QVariantMap DiffController::selectedFile() const {
 }
 
 void DiffController::rebuildSelectedFileRows() {
-  QVariantList rows;
-  if (selectedFileIndex_ >= 0 && selectedFileIndex_ < files_.size()) {
-    rows = flattenFileRows(files_.at(selectedFileIndex_).toMap());
+  if (selectedFileIndex_ >= 0 && selectedFileIndex_ < fileDiffs_.size()) {
+    selectedFileRowsModel_.setRows(flattenFileRows(fileDiffs_.at(selectedFileIndex_)));
+  } else {
+    selectedFileRowsModel_.clear();
   }
-  selectedFileRows_ = rows;
   emit selectedFileRowsChanged();
 }
 

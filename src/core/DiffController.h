@@ -8,6 +8,7 @@
 #include "core/CompareSpec.h"
 #include "core/GitRepositoryService.h"
 #include "core/UnifiedDiffParser.h"
+#include "model/DiffRowListModel.h"
 #include "renderers/BuiltinGitRenderer.h"
 #include "renderers/DifftasticRenderer.h"
 
@@ -25,7 +26,8 @@ class DiffController : public QObject {
   Q_PROPERTY(QVariantList files READ files NOTIFY filesChanged)
   Q_PROPERTY(int selectedFileIndex READ selectedFileIndex WRITE setSelectedFileIndex NOTIFY selectedFileIndexChanged)
   Q_PROPERTY(QVariantMap selectedFile READ selectedFile NOTIFY selectedFileChanged)
-  Q_PROPERTY(QVariantList selectedFileRows READ selectedFileRows NOTIFY selectedFileRowsChanged)
+  Q_PROPERTY(QObject* selectedFileRowsModel READ selectedFileRowsModel CONSTANT)
+  Q_PROPERTY(int selectedFileRowCount READ selectedFileRowCount NOTIFY selectedFileRowsChanged)
   Q_PROPERTY(QString errorMessage READ errorMessage NOTIFY errorMessageChanged)
   Q_PROPERTY(bool hasDifftastic READ hasDifftastic NOTIFY hasDifftasticChanged)
 
@@ -56,7 +58,8 @@ class DiffController : public QObject {
 
   int selectedFileIndex() const;
   void setSelectedFileIndex(int index);
-  QVariantList selectedFileRows() const;
+  QObject* selectedFileRowsModel() const;
+  int selectedFileRowCount() const;
 
   QString errorMessage() const;
   bool hasDifftastic() const;
@@ -102,8 +105,9 @@ class DiffController : public QObject {
   QString compareMode_ = "two-dot";
   QString renderer_ = "builtin";
   QString layoutMode_ = "unified";
+  QVector<FileDiff> fileDiffs_;
   QVariantList files_;
-  QVariantList selectedFileRows_;
+  DiffRowListModel selectedFileRowsModel_;
   int selectedFileIndex_ = -1;
   QString errorMessage_;
   bool hasDifftastic_ = false;

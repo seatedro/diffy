@@ -42,6 +42,7 @@ qt_add_executable(test_diff_controller
   ../src/core/DiffTypes.cpp
   ../src/core/GitRepositoryService.cpp
   ../src/core/UnifiedDiffParser.cpp
+  ../src/model/DiffRowListModel.cpp
   ../src/renderers/BuiltinGitRenderer.cpp
   ../src/renderers/DifftasticRenderer.cpp
 )

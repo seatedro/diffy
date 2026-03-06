@@ -27,6 +27,7 @@ Rectangle {
         "dangerText": theme.dangerText,
         "dangerBorder": theme.dangerBorder,
         "lineContext": theme.lineContext,
+        "lineContextAlt": theme.lineContextAlt,
         "lineAdd": theme.lineAdd,
         "lineAddAccent": theme.lineAddAccent,
         "lineDel": theme.lineDel,
@@ -86,13 +87,13 @@ Rectangle {
         anchors.top: parent.top
         anchors.margins: 0
         radius: 0
-        color: theme.panelStrong
+        color: theme.canvas
         border.width: 0
-        implicitHeight: root.hasData() ? 42 : 76
+        implicitHeight: root.hasData() ? 34 : 76
 
         Column {
             anchors.fill: parent
-            anchors.margins: 6
+            anchors.margins: root.hasData() ? 4 : 6
             spacing: 3
 
             RowLayout {
@@ -103,7 +104,7 @@ Rectangle {
                 Rectangle {
                     Layout.preferredWidth: statusText.implicitWidth + 16
                     width: statusText.implicitWidth + 16
-                    height: 15
+                    height: 14
                     radius: 4
                     color: root.hasData() ? root.statusFill(fileData.status) : theme.panelStrong
 
@@ -118,31 +119,12 @@ Rectangle {
                     }
                 }
 
-                Rectangle {
-                    Layout.preferredWidth: rendererText.implicitWidth + 16
-                    width: rendererText.implicitWidth + 16
-                    height: 15
-                    radius: 4
-                    color: renderer === "difftastic" ? theme.warningBg : theme.accentSoft
-                    border.color: renderer === "difftastic" ? theme.warningBorder : theme.borderSoft
-
-                    Text {
-                        id: rendererText
-                        anchors.centerIn: parent
-                        text: renderer === "difftastic" ? "difftastic" : "built-in"
-                        color: renderer === "difftastic" ? theme.warningText : theme.accentStrong
-                        font.family: theme.sans
-                        font.pixelSize: 7
-                        font.bold: true
-                    }
-                }
-
                 Text {
                     Layout.fillWidth: true
                     text: root.hasData() ? fileData.path : ""
                     color: theme.textStrong
                     font.family: theme.sans
-                    font.pixelSize: 12
+                    font.pixelSize: 11
                     font.bold: true
                     elide: Text.ElideMiddle
                 }
@@ -150,14 +132,7 @@ Rectangle {
                 RowLayout {
                     id: metadata
                     Layout.alignment: Qt.AlignRight
-                    spacing: 8
-
-                    Text {
-                        text: leftRef + " -> " + rightRef
-                        color: theme.textMuted
-                        font.family: theme.mono
-                        font.pixelSize: 8
-                    }
+                    spacing: 7
 
                     Text {
                         text: "+" + fileData.additions
@@ -170,13 +145,6 @@ Rectangle {
                         text: "-" + fileData.deletions
                         color: theme.dangerText
                         font.family: theme.mono
-                        font.pixelSize: 8
-                    }
-
-                    Text {
-                        text: layoutMode === "split" ? "split" : "unified"
-                        color: theme.textFaint
-                        font.family: theme.sans
                         font.pixelSize: 8
                     }
                 }

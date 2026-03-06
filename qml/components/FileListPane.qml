@@ -60,16 +60,6 @@ Rectangle {
         return parts.length > 0 ? parts[parts.length - 1] : repoPath
     }
 
-    function compareLabel() {
-        if (compareMode === "three-dot") {
-            return leftRef + "..." + rightRef
-        }
-        if (compareMode === "single-commit") {
-            return rightRef.length > 0 ? rightRef : leftRef
-        }
-        return leftRef + ".." + rightRef
-    }
-
     function totalAdditions() {
         var total = 0
         for (var i = 0; i < files.length; ++i) {
@@ -104,61 +94,61 @@ Rectangle {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
-            height: 42
-            color: theme.panelStrong
+            height: 34
+            color: theme.panel
 
-            Column {
+            Row {
                 anchors.fill: parent
                 anchors.leftMargin: 10
                 anchors.rightMargin: 10
-                anchors.topMargin: 6
-                anchors.bottomMargin: 6
-                spacing: 2
+                spacing: 7
 
-                Row {
-                    spacing: 8
-
-                    Text {
-                        text: "Changes"
-                        color: theme.textStrong
-                        font.family: theme.sans
-                        font.pixelSize: 11
-                        font.bold: true
-                    }
-
-                    Text {
-                        text: files.length + " files"
-                        color: theme.textFaint
-                        font.family: theme.sans
-                        font.pixelSize: 9
-                    }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Changes"
+                    color: theme.textStrong
+                    font.family: theme.sans
+                    font.pixelSize: 10
+                    font.bold: true
                 }
 
-                Row {
-                    spacing: 10
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: repoName()
+                    color: theme.textFaint
+                    font.family: theme.sans
+                    font.pixelSize: 8
+                    elide: Text.ElideRight
+                    width: 54
+                }
 
-                    Text {
-                        text: "+" + totalAdditions()
-                        color: theme.successText
-                        font.family: theme.mono
-                        font.pixelSize: 9
-                    }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: files.length + " files"
+                    color: theme.textFaint
+                    font.family: theme.sans
+                    font.pixelSize: 8
+                }
 
-                    Text {
-                        text: "-" + totalDeletions()
-                        color: theme.dangerText
-                        font.family: theme.mono
-                        font.pixelSize: 9
-                    }
+                Item {
+                    width: 1
+                    height: 1
+                }
 
-                    Text {
-                        text: compareLabel()
-                        color: theme.textFaint
-                        font.family: theme.mono
-                        font.pixelSize: 9
-                        elide: Text.ElideRight
-                        width: parent.width - 94
-                    }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "+" + totalAdditions()
+                    color: theme.successText
+                    font.family: theme.mono
+                    font.pixelSize: 8
+                }
+
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "-" + totalDeletions()
+                    color: theme.dangerText
+                    font.family: theme.mono
+                    font.pixelSize: 8
                 }
             }
         }
@@ -173,7 +163,7 @@ Rectangle {
 
         ListView {
             anchors.fill: parent
-            anchors.topMargin: 43
+            anchors.topMargin: 35
             anchors.leftMargin: 0
             anchors.rightMargin: 0
             anchors.bottomMargin: 0
@@ -189,26 +179,26 @@ Rectangle {
                 required property var modelData
 
                 width: ListView.view.width
-                height: 30
+                height: 27
                 radius: 0
-                color: root.selectedIndex === index ? theme.selectionBg : (mouseArea.containsMouse ? theme.panelStrong : "transparent")
+                color: root.selectedIndex === index ? theme.selectionBg : (mouseArea.containsMouse ? theme.panel : "transparent")
                 border.width: 0
 
                 Rectangle {
                     anchors.left: parent.left
                     anchors.top: parent.top
                     anchors.bottom: parent.bottom
-                    width: root.selectedIndex === index ? 2 : 0
-                    color: theme.selectionBorder
+                    width: root.selectedIndex === index ? 4 : 0
+                    color: theme.accentStrong
                 }
 
                 Rectangle {
                     anchors.left: parent.left
-                    anchors.leftMargin: 10
+                    anchors.leftMargin: 11
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 6
-                    height: 6
-                    radius: 3
+                    width: 5
+                    height: 5
+                    radius: 2.5
                     color: root.statusColor(modelData.status)
                 }
 
@@ -216,41 +206,42 @@ Rectangle {
                     anchors.left: parent.left
                     anchors.leftMargin: 22
                     anchors.verticalCenter: parent.verticalCenter
-                    width: parent.width - counts.implicitWidth - 44
+                    width: parent.width - counts.implicitWidth - 38
                     text: modelData.path
                     color: root.selectedIndex === index ? theme.textStrong : theme.textBase
                     font.family: theme.sans
-                    font.pixelSize: 10
+                    font.pixelSize: 9
+                    font.bold: root.selectedIndex === index
                     elide: Text.ElideMiddle
                 }
 
                 Row {
                     id: counts
                     anchors.right: parent.right
-                    anchors.rightMargin: 10
+                    anchors.rightMargin: 8
                     anchors.verticalCenter: parent.verticalCenter
-                    spacing: 8
+                    spacing: 5
 
                     Text {
                         visible: modelData.isBinary
                         text: "bin"
-                        color: theme.warningText
+                        color: theme.textFaint
                         font.family: theme.mono
-                        font.pixelSize: 8
+                        font.pixelSize: 7
                     }
 
                     Text {
                         text: "+" + modelData.additions
                         color: theme.successText
                         font.family: theme.mono
-                        font.pixelSize: 8
+                        font.pixelSize: 7
                     }
 
                     Text {
                         text: "-" + modelData.deletions
                         color: theme.dangerText
                         font.family: theme.mono
-                        font.pixelSize: 8
+                        font.pixelSize: 7
                     }
                 }
 

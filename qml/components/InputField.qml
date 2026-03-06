@@ -7,9 +7,10 @@ Rectangle {
     property alias text: input.text
     property alias placeholderText: placeholder.text
     property bool monospace: false
+    property bool compact: false
     signal submitted(string value)
 
-    implicitHeight: 30
+    implicitHeight: compact ? 26 : 30
     radius: 4
     color: theme.panelStrong
     border.width: 1
@@ -24,11 +25,11 @@ Rectangle {
         anchors.fill: parent
         anchors.leftMargin: 12
         anchors.rightMargin: 12
-        anchors.topMargin: 5
-        anchors.bottomMargin: 5
+        anchors.topMargin: root.compact ? 4 : 5
+        anchors.bottomMargin: root.compact ? 4 : 5
         color: theme.textStrong
         font.family: root.monospace ? theme.mono : theme.sans
-        font.pixelSize: 11
+        font.pixelSize: root.compact ? 10 : 11
         clip: true
         selectByMouse: true
         selectedTextColor: "#ffffff"

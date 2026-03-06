@@ -15,6 +15,7 @@ Window {
 
     property bool compactControls: width < 1260
     property bool stackPanels: width < 1140
+    property bool editingRepoPath: false
     property int chromeMargin: 6
     property int chromeGap: 6
 
@@ -108,6 +109,16 @@ Window {
         diffController.compare()
     }
 
+    function submitRepoPath() {
+        var nextPath = repoField.text.trim()
+        if (nextPath.length === 0) {
+            return
+        }
+        if (diffController.openRepository(nextPath)) {
+            window.editingRepoPath = false
+        }
+    }
+
     function assignQuickRef(refName) {
         if (leftRefField.activeFocus || leftRefField.text.length === 0) {
             leftRefField.text = refName
@@ -133,6 +144,7 @@ Window {
 
         function onRepoPathChanged() {
             repoField.text = diffController.repoPath
+            window.editingRepoPath = false
         }
 
         function onLeftRefChanged() {
@@ -154,166 +166,181 @@ Window {
             color: theme.toolbarBg
             radius: 8
             border.color: theme.borderSoft
-            implicitHeight: headerColumn.implicitHeight + 10
+            implicitHeight: 40
 
-            ColumnLayout {
-                id: headerColumn
+            RowLayout {
                 anchors.fill: parent
                 anchors.margins: 5
-                spacing: 5
+                spacing: 6
 
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 6
-
-                    Text {
-                        text: "diffy"
-                        color: theme.textStrong
-                        font.family: theme.sans
-                        font.pixelSize: 18
-                        font.bold: true
-                    }
-
-                    Rectangle {
-                        width: repoChipLabel.implicitWidth + 16
-                        height: 20
-                        radius: 5
-                        color: theme.panelTint
-                        border.color: theme.borderSoft
-
-                        Text {
-                            id: repoChipLabel
-                            anchors.centerIn: parent
-                            text: repoLabel()
-                            color: theme.textBase
-                            font.family: theme.sans
-                            font.pixelSize: 10
-                            font.bold: true
-                        }
-                    }
-
-                    Item {
-                        Layout.fillWidth: true
-                    }
-
-                    Row {
-                        spacing: 8
-
-                        Text {
-                            visible: diffController.leftRef.length > 0 && diffController.rightRef.length > 0
-                            text: compareModeLabel(diffController.compareMode) + "  " + diffController.leftRef + " -> " + diffController.rightRef
-                            color: theme.textFaint
-                            font.family: theme.mono
-                            font.pixelSize: 9
-                        }
-
-                        Text {
-                            text: diffController.renderer === "difftastic" ? "difftastic" : "built-in"
-                            color: diffController.renderer === "difftastic" ? theme.warningText : theme.accentStrong
-                            font.family: theme.sans
-                            font.pixelSize: 9
-                            font.bold: true
-                        }
-                    }
+                Text {
+                    text: "diffy"
+                    color: theme.textStrong
+                    font.family: theme.sans
+                    font.pixelSize: 17
+                    font.bold: true
                 }
 
                 Rectangle {
+                    Layout.preferredWidth: window.compactControls ? 320 : 420
                     Layout.fillWidth: true
-                    height: 1
-                    color: theme.divider
-                }
+                    implicitHeight: 28
+                    radius: 5
+                    color: theme.panel
+                    border.color: window.editingRepoPath ? theme.selectionBorder : theme.borderSoft
 
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 6
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.margins: 5
+                        spacing: 6
 
-                    InputField {
-                        id: repoField
-                        theme: theme
-                        Layout.fillWidth: true
-                        text: diffController.repoPath
-                        placeholderText: "Local git repository path"
-                        onSubmitted: diffController.openRepository(text)
-                    }
+                        Rectangle {
+                            Layout.preferredWidth: repoChipLabel.implicitWidth + 14
+                            implicitHeight: 16
+                            radius: 4
+                            color: theme.panelTint
+                            border.color: theme.borderSoft
 
-                    ActionButton {
-                        theme: theme
-                        text: "Browse"
-                        tone: "neutral"
-                        onClicked: {
-                            if (diffController.chooseRepositoryAndOpen()) {
+                            Text {
+                                id: repoChipLabel
+                                anchors.centerIn: parent
+                                text: repoLabel()
+                                color: theme.textBase
+                                font.family: theme.sans
+                                font.pixelSize: 9
+                                font.bold: true
+                            }
+                        }
+
+                        Item {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 18
+
+                            Text {
+                                anchors.fill: parent
+                                visible: !window.editingRepoPath
+                                text: diffController.repoPath.length > 0 ? diffController.repoPath : "Choose a local repository"
+                                color: diffController.repoPath.length > 0 ? theme.textMuted : theme.textFaint
+                                font.family: theme.mono
+                                font.pixelSize: 9
+                                elide: Text.ElideMiddle
+                                verticalAlignment: Text.AlignVCenter
+                            }
+
+                            TextInput {
+                                id: repoField
+                                anchors.fill: parent
+                                visible: window.editingRepoPath
+                                text: diffController.repoPath
+                                color: theme.textStrong
+                                font.family: theme.mono
+                                font.pixelSize: 9
+                                clip: true
+                                selectByMouse: true
+                                selectedTextColor: "#ffffff"
+                                selectionColor: theme.accent
+                                onAccepted: submitRepoPath()
+                            }
+                        }
+
+                        ActionButton {
+                            visible: !window.editingRepoPath
+                            theme: theme
+                            text: "Edit"
+                            compact: true
+                            onClicked: {
+                                window.editingRepoPath = true
+                                repoField.forceActiveFocus()
+                                repoField.selectAll()
+                            }
+                        }
+
+                        ActionButton {
+                            visible: window.editingRepoPath
+                            theme: theme
+                            text: "Open"
+                            compact: true
+                            tone: "success"
+                            onClicked: submitRepoPath()
+                        }
+
+                        ActionButton {
+                            visible: window.editingRepoPath
+                            theme: theme
+                            text: "Cancel"
+                            compact: true
+                            onClicked: {
                                 repoField.text = diffController.repoPath
+                                window.editingRepoPath = false
+                            }
+                        }
+
+                        ActionButton {
+                            theme: theme
+                            text: "Browse"
+                            compact: true
+                            onClicked: {
+                                if (diffController.chooseRepositoryAndOpen()) {
+                                    repoField.text = diffController.repoPath
+                                }
                             }
                         }
                     }
-
-                    ActionButton {
-                        theme: theme
-                        text: "Open"
-                        tone: "success"
-                        onClicked: diffController.openRepository(repoField.text)
-                    }
-
-                    ActionButton {
-                        theme: theme
-                        text: "Compare"
-                        tone: "accent"
-                        active: true
-                        onClicked: runCompare()
-                    }
                 }
 
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 6
+                InputField {
+                    id: leftRefField
+                    theme: theme
+                    compact: true
+                    Layout.preferredWidth: window.compactControls ? 150 : 172
+                    monospace: true
+                    text: diffController.leftRef
+                    placeholderText: "Left ref"
+                    onSubmitted: runCompare()
+                }
 
-                    InputField {
-                        id: leftRefField
-                        theme: theme
-                        Layout.preferredWidth: 220
-                        Layout.fillWidth: true
-                        monospace: true
-                        text: diffController.leftRef
-                        placeholderText: "Left ref"
-                        onSubmitted: diffController.leftRef = text
-                    }
+                ActionButton {
+                    theme: theme
+                    text: compareModeLabel(diffController.compareMode)
+                    compact: true
+                    onClicked: diffController.compareMode = nextCompareMode(diffController.compareMode)
+                }
 
-                    InputField {
-                        id: rightRefField
-                        theme: theme
-                        Layout.preferredWidth: 220
-                        Layout.fillWidth: true
-                        monospace: true
-                        text: diffController.rightRef
-                        placeholderText: "Right ref"
-                        onSubmitted: diffController.rightRef = text
-                    }
+                InputField {
+                    id: rightRefField
+                    theme: theme
+                    compact: true
+                    Layout.preferredWidth: window.compactControls ? 150 : 172
+                    monospace: true
+                    text: diffController.rightRef
+                    placeholderText: "Right ref"
+                    onSubmitted: runCompare()
+                }
 
-                    ActionButton {
-                        theme: theme
-                        text: compareModeLabel(diffController.compareMode)
-                        compact: true
-                        active: false
-                        onClicked: diffController.compareMode = nextCompareMode(diffController.compareMode)
-                    }
+                ActionButton {
+                    theme: theme
+                    text: diffController.renderer === "difftastic" ? "Difftastic" : "Built-in"
+                    compact: true
+                    tone: diffController.renderer === "difftastic" ? "accent" : "neutral"
+                    active: diffController.renderer === "difftastic"
+                    onClicked: diffController.renderer = nextRenderer(diffController.renderer)
+                }
 
-                    ActionButton {
-                        theme: theme
-                        text: diffController.renderer === "difftastic" ? "Difftastic" : "Built-in"
-                        compact: true
-                        tone: diffController.renderer === "difftastic" ? "accent" : "neutral"
-                        active: diffController.renderer === "difftastic"
-                        onClicked: diffController.renderer = nextRenderer(diffController.renderer)
-                    }
+                ActionButton {
+                    theme: theme
+                    text: diffController.layoutMode === "split" ? "Split" : "Unified"
+                    compact: true
+                    active: diffController.layoutMode === "split"
+                    onClicked: diffController.layoutMode = diffController.layoutMode === "unified" ? "split" : "unified"
+                }
 
-                    ActionButton {
-                        theme: theme
-                        text: diffController.layoutMode === "split" ? "Split" : "Unified"
-                        compact: true
-                        tone: "neutral"
-                        active: diffController.layoutMode === "split"
-                        onClicked: diffController.layoutMode = diffController.layoutMode === "unified" ? "split" : "unified"
-                    }
+                ActionButton {
+                    theme: theme
+                    text: "Compare"
+                    tone: "accent"
+                    compact: true
+                    active: true
+                    onClicked: runCompare()
                 }
             }
         }
@@ -350,8 +377,8 @@ Window {
                 theme: theme
                 x: 0
                 y: 0
-                width: window.stackPanels ? parent.width : Math.max(220, Math.min(260, parent.width * 0.2))
-                height: window.stackPanels ? 240 : parent.height
+                width: window.stackPanels ? parent.width : Math.max(196, Math.min(224, parent.width * 0.18))
+                height: window.stackPanels ? 220 : parent.height
                 files: diffController.files
                 selectedIndex: diffController.selectedFileIndex
                 repoPath: diffController.repoPath
@@ -390,7 +417,7 @@ Window {
                 width: window.stackPanels ? parent.width : parent.width - filePane.width - 1
                 height: window.stackPanels ? parent.height - filePane.height - 1 : parent.height
                 fileData: diffController.selectedFile
-                rowsModel: diffController.selectedFileRows
+                rowsModel: diffController.selectedFileRowsModel
                 layoutMode: diffController.layoutMode
                 leftRef: diffController.leftRef
                 rightRef: diffController.rightRef

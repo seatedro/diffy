@@ -59,7 +59,7 @@ void printAutomationState(QObject* root, const diffy::DiffController& controller
 
   std::fprintf(stdout,
                "DIFFY_STATE files=%d rows=%d selected=%d layout=%s surface_height=%.1f surface_width=%.1f item_width=%.1f item_height=%.1f display_rows=%d paint_count=%d error=%s\n",
-               static_cast<int>(controller.files().size()), static_cast<int>(controller.selectedFileRows().size()),
+               static_cast<int>(controller.files().size()), controller.selectedFileRowCount(),
                controller.selectedFileIndex(), qPrintable(layout), surfaceHeight, surfaceWidth,
                surfaceItemWidth, surfaceItemHeight, displayRowCount, paintCount, qPrintable(errorText));
   std::fflush(stdout);
@@ -112,7 +112,7 @@ bool applyStartupAutomation(diffy::DiffController* controller, QString* error) {
       }
       return false;
     }
-    if (controller->selectedFileRows().isEmpty()) {
+    if (controller->selectedFileRowCount() == 0) {
       if (error != nullptr) {
         *error = controller->errorMessage().isEmpty() ? "Startup compare produced no visible rows"
                                                       : controller->errorMessage();

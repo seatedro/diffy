@@ -30,6 +30,15 @@ std::vector<DiffTokenSpan> parseTokens(const QVariantList& tokenValues) {
   return tokens;
 }
 
+std::vector<DiffTokenSpan> parseTokens(const QVector<TokenSpan>& tokenValues) {
+  std::vector<DiffTokenSpan> tokens;
+  tokens.reserve(tokenValues.size());
+  for (const TokenSpan& tokenValue : tokenValues) {
+    tokens.push_back(DiffTokenSpan{tokenValue.start, tokenValue.length});
+  }
+  return tokens;
+}
+
 DiffLayoutMode toLayoutMode(const QString& mode) {
   return mode == "split" ? DiffLayoutMode::Split : DiffLayoutMode::Unified;
 }
@@ -70,15 +79,27 @@ DiffSurfaceItem::DiffSurfaceItem(QQuickItem* parent) : QQuickPaintedItem(parent)
   connect(this, &QQuickItem::heightChanged, this, [this]() { update(); });
 }
 
-QVariantList DiffSurfaceItem::rowsModel() const {
-  return rowsModel_;
+QObject* DiffSurfaceItem::rowsModel() const {
+  return rowsModelObject_;
 }
 
-void DiffSurfaceItem::setRowsModel(const QVariantList& rows) {
-  if (rowsModel_ == rows) {
+void DiffSurfaceItem::setRowsModel(QObject* model) {
+  if (rowsModelObject_ == model) {
     return;
   }
-  rowsModel_ = rows;
+  if (rowsModelObject_ != nullptr) {
+    disconnect(rowsModelObject_, nullptr, this, nullptr);
+  }
+
+  rowsModelObject_ = model;
+  rowsModel_ = qobject_cast<DiffRowListModel*>(model);
+  if (rowsModel_ != nullptr) {
+    connect(rowsModel_, &QAbstractItemModel::modelReset, this, &DiffSurfaceItem::rebuildRows);
+    connect(rowsModel_, &QAbstractItemModel::rowsInserted, this, [this]() { rebuildRows(); });
+    connect(rowsModel_, &QAbstractItemModel::rowsRemoved, this, [this]() { rebuildRows(); });
+    connect(rowsModel_, &QAbstractItemModel::dataChanged, this, [this]() { rebuildRows(); });
+  }
+
   rebuildRows();
   emit rowsModelChanged();
 }
@@ -274,19 +295,24 @@ void DiffSurfaceItem::rebuildRows() {
   hunkHeight_ = 24.0;
 
   std::vector<DiffSourceRow> sourceRows;
-  sourceRows.reserve(rowsModel_.size());
+  sourceRows.reserve(rowsModel_ != nullptr ? rowsModel_->rows().size() : 0);
 
-  for (const QVariant& rowValue : rowsModel_) {
-    const QVariantMap rowMap = rowValue.toMap();
-    DiffSourceRow row;
-    row.rowType = parseRowType(rowMap.value("rowType").toString());
-    row.header = rowMap.value("header").toString().toStdString();
-    row.kind = parseLineKind(rowMap.value("kind").toString());
-    row.oldLine = rowMap.contains("oldLine") ? rowMap.value("oldLine").toInt() : -1;
-    row.newLine = rowMap.contains("newLine") ? rowMap.value("newLine").toInt() : -1;
-    row.textRange = textRope_.append(rowMap.value("text").toString().toUtf8().toStdString());
-    row.tokens = parseTokens(rowMap.value("tokens").toList());
-    sourceRows.push_back(std::move(row));
+  if (rowsModel_ != nullptr) {
+    for (const FlattenedDiffRow& rowValue : rowsModel_->rows()) {
+      DiffSourceRow row;
+      row.rowType =
+          rowValue.rowType == FlattenedDiffRow::RowType::Hunk ? DiffRowType::Hunk : DiffRowType::Line;
+      row.header = rowValue.header.toStdString();
+      row.kind = rowValue.kind == LineKind::Addition
+                     ? DiffLineKind::Addition
+                     : rowValue.kind == LineKind::Deletion ? DiffLineKind::Deletion : DiffLineKind::Context;
+      row.oldLine = rowValue.oldLine;
+      row.newLine = rowValue.newLine;
+      const QByteArray textUtf8 = rowValue.text.toUtf8();
+      row.textRange = textRope_.append(std::string(textUtf8.constData(), textUtf8.size()));
+      row.tokens = parseTokens(rowValue.tokens);
+      sourceRows.push_back(std::move(row));
+    }
   }
 
   displayModel_.setSourceRows(std::move(sourceRows));
@@ -441,11 +467,18 @@ void DiffSurfaceItem::drawSplitRow(QPainter* painter, const QRectF& rowRect, con
   const QRectF leftRect(rowRect.left(), rowRect.top(), rowRect.width() / 2.0, rowRect.height());
   const QRectF rightRect(leftRect.right(), rowRect.top(), rowRect.width() - leftRect.width(), rowRect.height());
   const qreal sideGutterWidth = 58.0;
+  const bool leftSpacer = row.leftKind == DiffLineKind::Spacer;
+  const bool rightSpacer = row.rightKind == DiffLineKind::Spacer;
 
-  const QColor leftBg = row.leftKind == DiffLineKind::Deletion ? paletteColor("lineDelAccent", QColor("#35262b"))
-                                                               : paletteColor("lineContext", QColor("#282c33"));
-  const QColor rightBg = row.rightKind == DiffLineKind::Addition ? paletteColor("lineAddAccent", QColor("#22332a"))
-                                                                 : paletteColor("lineContext", QColor("#282c33"));
+  const QColor spacerBg = paletteColor("lineContextAlt", QColor("#232323"));
+  const QColor leftBg = leftSpacer ? spacerBg
+                                   : row.leftKind == DiffLineKind::Deletion
+                                         ? paletteColor("lineDelAccent", QColor("#35262b"))
+                                         : paletteColor("lineContext", QColor("#282c33"));
+  const QColor rightBg = rightSpacer ? spacerBg
+                                     : row.rightKind == DiffLineKind::Addition
+                                           ? paletteColor("lineAddAccent", QColor("#22332a"))
+                                           : paletteColor("lineContext", QColor("#282c33"));
   painter->fillRect(leftRect, leftBg);
   painter->fillRect(rightRect, rightBg);
   if (selected) {
@@ -497,14 +530,27 @@ void DiffSurfaceItem::drawSplitRow(QPainter* painter, const QRectF& rowRect, con
   const QRectF rightTextClip(rightRect.left() + sideGutterWidth + 8.0, rowRect.top(),
                              rightRect.width() - sideGutterWidth - 12.0, rowRect.height());
 
-  if (row.leftKind != DiffLineKind::Spacer) {
+  if (leftSpacer) {
+    QColor guide = paletteColor("divider", QColor("#504945"));
+    guide.setAlpha(150);
+    painter->fillRect(QRectF(leftTextClip.left(), rowRect.top() + 3.0, 1.0, std::max<qreal>(0.0, rowRect.height() - 6.0)),
+                      guide);
+  }
+  if (rightSpacer) {
+    QColor guide = paletteColor("divider", QColor("#504945"));
+    guide.setAlpha(150);
+    painter->fillRect(QRectF(rightTextClip.left(), rowRect.top() + 3.0, 1.0, std::max<qreal>(0.0, rowRect.height() - 6.0)),
+                      guide);
+  }
+
+  if (!leftSpacer) {
     drawTextRun(painter, QPointF(leftTextClip.left(), baselineY), leftTextClip,
                 textForRange(row.leftTextRange), row.leftTokens,
                 paletteColor("textBase", QColor("#c8ccd4")),
                 paletteColor("dangerBorder", QColor("#4c2b2c")));
   }
 
-  if (row.rightKind != DiffLineKind::Spacer) {
+  if (!rightSpacer) {
     drawTextRun(painter, QPointF(rightTextClip.left(), baselineY), rightTextClip,
                 textForRange(row.rightTextRange), row.rightTokens,
                 paletteColor("textBase", QColor("#c8ccd4")),

@@ -49,8 +49,8 @@ Rectangle {
         return active ? theme.accentStrong : theme.textMuted
     }
 
-    implicitWidth: Math.max(compact ? 68 : 88, label.implicitWidth + (compact ? 16 : 24))
-    implicitHeight: compact ? 24 : 28
+    implicitWidth: Math.max(compact ? 58 : 88, label.implicitWidth + (compact ? 14 : 24))
+    implicitHeight: compact ? 26 : 28
     radius: 4
     color: mouseArea.containsMouse ? Qt.lighter(fillColor(), 1.04) : fillColor()
     border.width: 1

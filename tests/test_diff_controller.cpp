@@ -5,6 +5,7 @@
 #include <QtTest/QtTest>
 
 #include "core/DiffController.h"
+#include "model/DiffRowListModel.h"
 
 using namespace diffy;
 
@@ -67,20 +68,26 @@ QString initRepositoryWithoutDiff() {
   return repoDir->path();
 }
 
-bool rowKindsContain(const QVariantList& rows, const QString& kind) {
-  for (const QVariant& rowValue : rows) {
-    const QVariantMap row = rowValue.toMap();
-    if (row.value("kind").toString() == kind) {
+bool rowKindsContain(const DiffRowListModel* rows, const QString& kind) {
+  if (rows == nullptr) {
+    return false;
+  }
+
+  for (int rowIndex = 0; rowIndex < rows->rowCount(); ++rowIndex) {
+    if (rows->index(rowIndex, 0).data(DiffRowListModel::KindRole).toString() == kind) {
       return true;
     }
   }
   return false;
 }
 
-bool rowsContainType(const QVariantList& rows, const QString& rowType) {
-  for (const QVariant& rowValue : rows) {
-    const QVariantMap row = rowValue.toMap();
-    if (row.value("rowType").toString() == rowType) {
+bool rowsContainType(const DiffRowListModel* rows, const QString& rowType) {
+  if (rows == nullptr) {
+    return false;
+  }
+
+  for (int rowIndex = 0; rowIndex < rows->rowCount(); ++rowIndex) {
+    if (rows->index(rowIndex, 0).data(DiffRowListModel::RowTypeRole).toString() == rowType) {
       return true;
     }
   }
@@ -112,8 +119,10 @@ class DiffControllerTest : public QObject {
     QCOMPARE(controller.files().size(), 1);
     QCOMPARE(controller.selectedFile().value("path").toString(), QString("notes.txt"));
 
-    const QVariantList rows = controller.selectedFileRows();
-    QVERIFY(!rows.isEmpty());
+    const auto* rows = qobject_cast<DiffRowListModel*>(controller.selectedFileRowsModel());
+    QVERIFY(rows != nullptr);
+    QVERIFY(rows->rowCount() > 0);
+    QCOMPARE(controller.selectedFileRowCount(), rows->rowCount());
     QVERIFY(rowsContainType(rows, "hunk"));
     QVERIFY(rowKindsContain(rows, "add"));
     QVERIFY(rowKindsContain(rows, "del"));
@@ -136,7 +145,7 @@ class DiffControllerTest : public QObject {
     QCOMPARE(controller.files().size(), 0);
     QCOMPARE(controller.selectedFileIndex(), -1);
     QVERIFY(controller.selectedFile().isEmpty());
-    QVERIFY(controller.selectedFileRows().isEmpty());
+    QCOMPARE(controller.selectedFileRowCount(), 0);
   }
 };
 

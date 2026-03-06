@@ -5,17 +5,17 @@
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QQuickPaintedItem>
-#include <QVariantList>
 #include <QVariantMap>
 
 #include "model/DiffDisplayModel.h"
+#include "model/DiffRowListModel.h"
 #include "text/TextRope.h"
 
 namespace diffy {
 
 class DiffSurfaceItem : public QQuickPaintedItem {
   Q_OBJECT
-  Q_PROPERTY(QVariantList rowsModel READ rowsModel WRITE setRowsModel NOTIFY rowsModelChanged)
+  Q_PROPERTY(QObject* rowsModel READ rowsModel WRITE setRowsModel NOTIFY rowsModelChanged)
   Q_PROPERTY(QString layoutMode READ layoutMode WRITE setLayoutMode NOTIFY layoutModeChanged)
   Q_PROPERTY(QVariantMap palette READ palette WRITE setPalette NOTIFY paletteChanged)
   Q_PROPERTY(QString monoFontFamily READ monoFontFamily WRITE setMonoFontFamily NOTIFY monoFontFamilyChanged)
@@ -30,8 +30,8 @@ class DiffSurfaceItem : public QQuickPaintedItem {
  public:
   explicit DiffSurfaceItem(QQuickItem* parent = nullptr);
 
-  QVariantList rowsModel() const;
-  void setRowsModel(const QVariantList& rows);
+  QObject* rowsModel() const;
+  void setRowsModel(QObject* model);
 
   QString layoutMode() const;
   void setLayoutMode(const QString& mode);
@@ -103,7 +103,8 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   void keyPressEvent(QKeyEvent* event) override;
 
  private:
-  QVariantList rowsModel_;
+  QObject* rowsModelObject_ = nullptr;
+  DiffRowListModel* rowsModel_ = nullptr;
   QString layoutMode_ = "unified";
   QVariantMap palette_;
   QString monoFontFamily_ = "JetBrains Mono";

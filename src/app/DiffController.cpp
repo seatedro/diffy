@@ -4,6 +4,7 @@
 #include <QStandardPaths>
 
 #include "app/QtDiffTypes.h"
+#include "core/GitHubApi.h"
 #include "core/GitHubPullRequest.h"
 #include "core/DiffTypes.h"
 
@@ -18,6 +19,16 @@ DiffController::DiffController(QObject* parent)
   layoutMode_ = settings_.value("layoutMode", "unified").toString();
 
   hasDifftastic_ = !QStandardPaths::findExecutable("difft").isEmpty();
+
+  githubToken_ = settings_.value("githubToken").toString();
+  if (githubToken_.isEmpty()) {
+    const QByteArray envToken = qgetenv("GITHUB_TOKEN");
+    if (!envToken.isEmpty()) {
+      githubToken_ = QString::fromUtf8(envToken);
+    }
+  }
+
+  recentRepositories_ = settings_.value("recentRepositories").toStringList();
 
   languageRegistry_.loadBuiltinGrammars();
   builtinRenderer_.setSyntax(&languageRegistry_, &highlighter_);
@@ -36,7 +47,24 @@ DiffController::DiffController(QObject* parent)
       if (rightRef_.isEmpty() && refs_.size() > 1) {
         rightRef_ = refs_.at(1);
       }
+      currentView_ = "compare";
     }
+  }
+}
+
+QString DiffController::currentView() const {
+  return currentView_;
+}
+
+QStringList DiffController::recentRepositories() const {
+  return recentRepositories_;
+}
+
+void DiffController::goBack() {
+  if (currentView_ == "diff") {
+    setCurrentView("compare");
+  } else if (currentView_ == "compare") {
+    setCurrentView("welcome");
   }
 }
 
@@ -142,6 +170,38 @@ int DiffController::selectedFileRowCount() const {
   return selectedFileRowsModel_.count();
 }
 
+QVariantList DiffController::branches() const {
+  return branches_;
+}
+
+QVariantList DiffController::commits() const {
+  return commits_;
+}
+
+QVariantMap DiffController::pullRequestInfo() const {
+  return pullRequestInfo_;
+}
+
+bool DiffController::pullRequestLoading() const {
+  return pullRequestLoading_;
+}
+
+QString DiffController::githubToken() const {
+  return githubToken_;
+}
+
+void DiffController::setGithubToken(const QString& token) {
+  const QString trimmed = token.trimmed();
+  if (githubToken_ == trimmed) return;
+  githubToken_ = trimmed;
+  settings_.setValue("githubToken", githubToken_);
+  emit githubTokenChanged();
+}
+
+bool DiffController::hasGithubToken() const {
+  return !githubToken_.isEmpty();
+}
+
 bool DiffController::repositoryPickerVisible() const {
   return repositoryPickerVisible_;
 }
@@ -206,6 +266,9 @@ bool DiffController::openRepository(const QString& path) {
     }
   }
 
+  addRecentRepository(repoPath_);
+  loadBranches();
+  setCurrentView("compare");
   persistSettings();
   return true;
 }
@@ -253,6 +316,12 @@ void DiffController::openCurrentRepositoryFromPicker() {
 void DiffController::compare() {
   clearError();
 
+  if (parseGitHubPullRequestUrl(leftRef_.toStdString()).has_value() ||
+      parseGitHubPullRequestUrl(rightRef_.toStdString()).has_value()) {
+    setError("Use the \"Open PR\" section below to load a pull request URL.");
+    return;
+  }
+
   if (!gitService_.isOpen()) {
     if (repoPath_.isEmpty() || !openRepository(repoPath_)) {
       setError("Open a repository before running compare");
@@ -264,36 +333,9 @@ void DiffController::compare() {
   std::string resolvedRight;
   std::string resolveError;
 
-  QString pullRequestUrl;
-  if (parseGitHubPullRequestUrl(leftRef_.toStdString()).has_value()) {
-    pullRequestUrl = leftRef_;
-  }
-  if (parseGitHubPullRequestUrl(rightRef_.toStdString()).has_value()) {
-    if (!pullRequestUrl.isEmpty() && rightRef_ != pullRequestUrl) {
-      setError("Only one GitHub pull request URL can be compared at a time");
-      return;
-    }
-    pullRequestUrl = rightRef_;
-  }
-
-  if (!pullRequestUrl.isEmpty()) {
-    std::string pullLeft;
-    std::string pullRight;
-    std::string pullError;
-    if (!gitService_.resolvePullRequestComparison(pullRequestUrl.toStdString(), &pullLeft, &pullRight,
-                                                  &pullError)) {
-      setError(QString::fromStdString(pullError));
-      return;
-    }
-    resolvedLeft = pullLeft;
-    resolvedRight = pullRight;
-    if (compareMode_ != "three-dot") {
-      compareMode_ = "three-dot";
-      emit compareModeChanged();
-    }
-  } else if (!gitService_.resolveComparison(leftRef_.toStdString(), rightRef_.toStdString(),
-                                            compareModeFromString(compareMode_.toStdString()), &resolvedLeft,
-                                            &resolvedRight, &resolveError)) {
+  if (!gitService_.resolveComparison(leftRef_.toStdString(), rightRef_.toStdString(),
+                                     compareModeFromString(compareMode_.toStdString()), &resolvedLeft,
+                                     &resolvedRight, &resolveError)) {
     setError(QString::fromStdString(resolveError));
     return;
   }
@@ -338,6 +380,7 @@ void DiffController::compare() {
   emit selectedFileChanged();
   rebuildSelectedFileRows();
 
+  setCurrentView("diff");
   persistSettings();
 }
 
@@ -361,6 +404,95 @@ void DiffController::rebuildSelectedFileRows() {
   emit selectedFileRowsChanged();
 }
 
+void DiffController::loadBranches() {
+  std::string error;
+  const auto branchList = gitService_.listBranches(&error);
+  branches_.clear();
+  for (const auto& branch : branchList) {
+    branches_.append(QVariantMap{
+        {"name", QString::fromStdString(branch.name)},
+        {"isRemote", branch.isRemote},
+        {"isHead", branch.isHead},
+    });
+  }
+  emit branchesChanged();
+}
+
+void DiffController::loadCommits(const QString& ref) {
+  std::string error;
+  const auto commitList = gitService_.listCommits(ref.toStdString(), 100, &error);
+  commits_.clear();
+  for (const auto& commit : commitList) {
+    commits_.append(QVariantMap{
+        {"oid", QString::fromStdString(commit.oid)},
+        {"summary", QString::fromStdString(commit.summary)},
+        {"author", QString::fromStdString(commit.authorName)},
+        {"timestamp", static_cast<qint64>(commit.timestamp)},
+    });
+  }
+  emit commitsChanged();
+}
+
+void DiffController::openPullRequest(const QString& url) {
+  clearError();
+
+  const auto parsed = parseGitHubPullRequestUrl(url.toStdString());
+  if (!parsed.has_value()) {
+    setError("Not a valid GitHub pull request URL");
+    return;
+  }
+
+  pullRequestLoading_ = true;
+  emit pullRequestLoadingChanged();
+
+  std::string apiError;
+  const auto pr = fetchPullRequest(parsed->owner, parsed->repo, parsed->number,
+                                    githubToken_.toStdString(), &apiError);
+
+  pullRequestLoading_ = false;
+  emit pullRequestLoadingChanged();
+
+  if (!pr.has_value()) {
+    setError(QString::fromStdString(apiError));
+    pullRequestInfo_.clear();
+    emit pullRequestInfoChanged();
+    return;
+  }
+
+  pullRequestInfo_ = QVariantMap{
+      {"title", QString::fromStdString(pr->title)},
+      {"baseBranch", QString::fromStdString(pr->baseBranch)},
+      {"headBranch", QString::fromStdString(pr->headBranch)},
+      {"baseSha", QString::fromStdString(pr->baseSha)},
+      {"headSha", QString::fromStdString(pr->headSha)},
+      {"state", QString::fromStdString(pr->state)},
+      {"author", QString::fromStdString(pr->authorLogin)},
+      {"number", pr->number},
+      {"additions", pr->additions},
+      {"deletions", pr->deletions},
+      {"changedFiles", pr->changedFiles},
+  };
+  emit pullRequestInfoChanged();
+
+  if (!gitService_.isOpen()) {
+    setError("Open a local clone of " + QString::fromStdString(parsed->owner) + "/" +
+             QString::fromStdString(parsed->repo) + " first, then try the PR URL again.");
+    return;
+  }
+
+  leftRef_ = QString::fromStdString(pr->baseSha);
+  emit leftRefChanged();
+  rightRef_ = QString::fromStdString(pr->headSha);
+  emit rightRefChanged();
+
+  if (compareMode_ != "three-dot") {
+    compareMode_ = "three-dot";
+    emit compareModeChanged();
+  }
+
+  compare();
+}
+
 void DiffController::setError(const QString& error) {
   errorMessage_ = error;
   emit errorMessageChanged();
@@ -372,6 +504,25 @@ void DiffController::clearError() {
   }
   errorMessage_.clear();
   emit errorMessageChanged();
+}
+
+void DiffController::setCurrentView(const QString& view) {
+  if (currentView_ == view) {
+    return;
+  }
+  currentView_ = view;
+  emit currentViewChanged();
+}
+
+void DiffController::addRecentRepository(const QString& path) {
+  recentRepositories_.removeAll(path);
+  recentRepositories_.prepend(path);
+  constexpr int kMaxRecents = 10;
+  while (recentRepositories_.size() > kMaxRecents) {
+    recentRepositories_.removeLast();
+  }
+  settings_.setValue("recentRepositories", recentRepositories_);
+  emit recentRepositoriesChanged();
 }
 
 void DiffController::persistSettings() {

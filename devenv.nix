@@ -6,6 +6,7 @@
     pkgs.pkg-config
     pkgs.git
     pkgs.gcc
+    pkgs.curl
     pkgs.libgit2
     pkgs.tree-sitter
     pkgs.qt6.qtbase

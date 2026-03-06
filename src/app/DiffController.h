@@ -19,6 +19,8 @@ namespace diffy {
 
 class DiffController : public QObject {
   Q_OBJECT
+  Q_PROPERTY(QString currentView READ currentView NOTIFY currentViewChanged)
+  Q_PROPERTY(QStringList recentRepositories READ recentRepositories NOTIFY recentRepositoriesChanged)
   Q_PROPERTY(QString repoPath READ repoPath WRITE setRepoPath NOTIFY repoPathChanged)
   Q_PROPERTY(QStringList refs READ refs NOTIFY refsChanged)
   Q_PROPERTY(QString leftRef READ leftRef WRITE setLeftRef NOTIFY leftRefChanged)
@@ -33,11 +35,20 @@ class DiffController : public QObject {
   Q_PROPERTY(int selectedFileRowCount READ selectedFileRowCount NOTIFY selectedFileRowsChanged)
   Q_PROPERTY(bool repositoryPickerVisible READ repositoryPickerVisible NOTIFY repositoryPickerVisibleChanged)
   Q_PROPERTY(QObject* repositoryPickerModel READ repositoryPickerModel CONSTANT)
+  Q_PROPERTY(QVariantList branches READ branches NOTIFY branchesChanged)
+  Q_PROPERTY(QVariantList commits READ commits NOTIFY commitsChanged)
+  Q_PROPERTY(QVariantMap pullRequestInfo READ pullRequestInfo NOTIFY pullRequestInfoChanged)
+  Q_PROPERTY(bool pullRequestLoading READ pullRequestLoading NOTIFY pullRequestLoadingChanged)
+  Q_PROPERTY(QString githubToken READ githubToken WRITE setGithubToken NOTIFY githubTokenChanged)
+  Q_PROPERTY(bool hasGithubToken READ hasGithubToken NOTIFY githubTokenChanged)
   Q_PROPERTY(QString errorMessage READ errorMessage NOTIFY errorMessageChanged)
   Q_PROPERTY(bool hasDifftastic READ hasDifftastic NOTIFY hasDifftasticChanged)
 
  public:
   explicit DiffController(QObject* parent = nullptr);
+
+  QString currentView() const;
+  QStringList recentRepositories() const;
 
   QString repoPath() const;
   void setRepoPath(const QString& path);
@@ -68,9 +79,18 @@ class DiffController : public QObject {
   bool repositoryPickerVisible() const;
   QObject* repositoryPickerModel() const;
 
+  QVariantList branches() const;
+  QVariantList commits() const;
+  QVariantMap pullRequestInfo() const;
+  bool pullRequestLoading() const;
+  QString githubToken() const;
+  void setGithubToken(const QString& token);
+  bool hasGithubToken() const;
+
   QString errorMessage() const;
   bool hasDifftastic() const;
 
+  Q_INVOKABLE void goBack();
   Q_INVOKABLE bool openRepository(const QString& path);
   Q_INVOKABLE void openRepositoryPicker();
   Q_INVOKABLE void closeRepositoryPicker();
@@ -80,8 +100,13 @@ class DiffController : public QObject {
   Q_INVOKABLE void compare();
   Q_INVOKABLE void selectFile(int index);
   Q_INVOKABLE QVariantMap selectedFile() const;
+  Q_INVOKABLE void loadBranches();
+  Q_INVOKABLE void loadCommits(const QString& ref);
+  Q_INVOKABLE void openPullRequest(const QString& url);
 
  signals:
+  void currentViewChanged();
+  void recentRepositoriesChanged();
   void repoPathChanged();
   void refsChanged();
   void leftRefChanged();
@@ -94,11 +119,18 @@ class DiffController : public QObject {
   void selectedFileChanged();
   void selectedFileRowsChanged();
   void repositoryPickerVisibleChanged();
+  void branchesChanged();
+  void commitsChanged();
+  void pullRequestInfoChanged();
+  void pullRequestLoadingChanged();
+  void githubTokenChanged();
   void errorMessageChanged();
   void hasDifftasticChanged();
 
  private:
   void rebuildSelectedFileRows();
+  void setCurrentView(const QString& view);
+  void addRecentRepository(const QString& path);
   void setError(const QString& error);
   void clearError();
   void persistSettings();
@@ -110,6 +142,9 @@ class DiffController : public QObject {
   DifftasticRenderer difftasticRenderer_;
 
   QSettings settings_;
+
+  QString currentView_ = "welcome";
+  QStringList recentRepositories_;
 
   QString repoPath_;
   QStringList refs_;
@@ -124,6 +159,11 @@ class DiffController : public QObject {
   RepositoryPickerModel repositoryPickerModel_;
   bool repositoryPickerVisible_ = false;
   int selectedFileIndex_ = -1;
+  QVariantList branches_;
+  QVariantList commits_;
+  QVariantMap pullRequestInfo_;
+  bool pullRequestLoading_ = false;
+  QString githubToken_;
   QString errorMessage_;
   bool hasDifftastic_ = false;
 };

@@ -313,31 +313,20 @@ class DiffControllerTest : public QObject {
     QCOMPARE(controller2.recentRepositories().first(), repoA);
   }
 
-  void compareSupportsGithubPullRequestUrl() {
-    const GithubPullRequestFixture fixture = initRepositoryWithGithubPullRequest();
-    QVERIFY(!fixture.repoPath.isEmpty());
-    QVERIFY(!fixture.homePath.isEmpty());
-
-    const QByteArray previousHome = qgetenv("HOME");
-    QVERIFY(qputenv("HOME", fixture.homePath.toUtf8()));
+  void compareWithThreeDotMode() {
+    const QString repoPath = initRepositoryWithDiff();
+    QVERIFY(!repoPath.isEmpty());
 
     DiffController controller;
-    QVERIFY(controller.openRepository(fixture.repoPath));
-    controller.setLeftRef("main");
-    controller.setRightRef("feature");
+    QVERIFY(controller.openRepository(repoPath));
+    controller.setLeftRef("HEAD~1");
+    controller.setRightRef("HEAD");
     controller.setCompareMode("three-dot");
     controller.compare();
 
-    if (previousHome.isEmpty()) {
-      qunsetenv("HOME");
-    } else {
-      QVERIFY(qputenv("HOME", previousHome));
-    }
-
     QVERIFY2(controller.errorMessage().isEmpty(), qPrintable(controller.errorMessage()));
     QCOMPARE(controller.compareMode(), QString("three-dot"));
-    QCOMPARE(controller.files().size(), 1);
-    QCOMPARE(controller.selectedFile().value("path").toString(), QString("feature.txt"));
+    QVERIFY(controller.files().size() >= 1);
     QVERIFY(controller.selectedFileRowCount() > 0);
   }
 };

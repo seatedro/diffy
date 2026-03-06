@@ -12,6 +12,7 @@ enable_testing()
 find_package(PkgConfig REQUIRED)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick Test Widgets)
 
+pkg_check_modules(LIBCURL REQUIRED libcurl)
 pkg_check_modules(LIBGIT2 REQUIRED libgit2)
 pkg_check_modules(TREESITTER REQUIRED tree-sitter)
 
@@ -22,6 +23,7 @@ add_subdirectory(vendor/grammars)
 add_library(diffy_core STATIC
   src/core/CompareSpec.cpp
   src/core/DiffTypes.cpp
+  src/core/GitHubApi.cpp
   src/core/GitHubPullRequest.cpp
   src/core/GitRepositoryService.cpp
   src/core/UnifiedDiffParser.cpp
@@ -32,21 +34,24 @@ add_library(diffy_core STATIC
 
 target_include_directories(diffy_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${LIBCURL_INCLUDE_DIRS}
   ${LIBGIT2_INCLUDE_DIRS}
   ${TREESITTER_INCLUDE_DIRS}
 )
 
 target_link_libraries(diffy_core PUBLIC
+  ${LIBCURL_LIBRARIES}
   ${LIBGIT2_LIBRARIES}
   ${TREESITTER_LIBRARIES}
   diffy_grammars
 )
 
-target_compile_options(diffy_core PRIVATE ${LIBGIT2_CFLAGS_OTHER} ${TREESITTER_CFLAGS_OTHER})
+target_compile_options(diffy_core PRIVATE ${LIBCURL_CFLAGS_OTHER} ${LIBGIT2_CFLAGS_OTHER} ${TREESITTER_CFLAGS_OTHER})
 
 qt_add_executable(diffy
   src/main.cpp
   src/app/DiffController.cpp
+  src/app/ThemeProvider.cpp
   src/app/RepositoryPickerModel.cpp
   src/app/QtDiffTypes.cpp
   src/model/DiffDisplayModel.cpp
@@ -83,6 +88,11 @@ qt_add_qml_module(diffy
     qml/components/FileListPane.qml
     qml/components/DiffPane.qml
     qml/components/InputField.qml
+    qml/components/RepositoryPickerOverlay.qml
+    qml/components/PickerOverlay.qml
+    qml/views/WelcomeView.qml
+    qml/views/CompareSetupView.qml
+    qml/views/DiffBrowsingView.qml
 )
 
 add_subdirectory(tests)

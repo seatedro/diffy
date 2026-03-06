@@ -272,10 +272,11 @@ Rectangle {
             DiffSurface {
                 id: surface
                 objectName: "diffSurface"
-                width: diffViewport.contentWidth
-                height: contentHeight
+                width: diffViewport.width
+                height: diffViewport.height
                 rowsModel: root.rowsModel
                 layoutMode: root.layoutMode
+                viewportX: diffViewport.contentX
                 viewportY: diffViewport.contentY
                 viewportHeight: diffViewport.height
                 palette: root.surfacePalette

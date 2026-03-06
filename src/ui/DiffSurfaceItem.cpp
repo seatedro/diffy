@@ -130,6 +130,19 @@ qreal DiffSurfaceItem::contentWidth() const {
   return contentWidth_;
 }
 
+qreal DiffSurfaceItem::viewportX() const {
+  return viewportX_;
+}
+
+void DiffSurfaceItem::setViewportX(qreal value) {
+  if (qFuzzyCompare(viewportX_, value)) {
+    return;
+  }
+  viewportX_ = value;
+  update();
+  emit viewportXChanged();
+}
+
 qreal DiffSurfaceItem::viewportY() const {
   return viewportY_;
 }
@@ -203,7 +216,7 @@ void DiffSurfaceItem::paint(QPainter* painter) {
 
   for (int rowIndex = firstRow; rowIndex <= lastRow && rowIndex < static_cast<int>(rows.size()); ++rowIndex) {
     const DiffDisplayRow& row = rows.at(rowIndex);
-    const QRectF rowRect(0, row.top, width(), row.height);
+    const QRectF rowRect(-viewportX_, row.top - viewportY_, std::max(width(), contentWidth_), row.height);
     const bool selected = rowSelected(rowIndex);
     const bool hovered = hoveredRow_ == rowIndex;
 
@@ -243,8 +256,9 @@ void DiffSurfaceItem::paint(QPainter* painter) {
       painter->save();
       QColor shadow = paletteColor("canvas", QColor("#282828"));
       shadow.setAlpha(210);
-      painter->fillRect(QRectF(0, stickyY, width(), hunkHeight_), shadow);
-      drawHunkRow(painter, QRectF(0, stickyY, width(), hunkHeight_), rows.at(stickyIndex));
+      const qreal stickyViewportY = stickyY - viewportY_;
+      painter->fillRect(QRectF(-viewportX_, stickyViewportY, std::max(width(), contentWidth_), hunkHeight_), shadow);
+      drawHunkRow(painter, QRectF(-viewportX_, stickyViewportY, std::max(width(), contentWidth_), hunkHeight_), rows.at(stickyIndex));
       painter->restore();
     }
   }
@@ -575,7 +589,7 @@ QString DiffSurfaceItem::selectedText() const {
 
 void DiffSurfaceItem::mousePressEvent(QMouseEvent* event) {
   forceActiveFocus(Qt::MouseFocusReason);
-  const int rowIndex = displayModel_.rowIndexAtY(event->position().y());
+  const int rowIndex = displayModel_.rowIndexAtY(event->position().y() + viewportY_);
   selectionAnchorRow_ = rowIndex;
   selectionCursorRow_ = rowIndex;
   update();
@@ -584,7 +598,7 @@ void DiffSurfaceItem::mousePressEvent(QMouseEvent* event) {
 
 void DiffSurfaceItem::mouseMoveEvent(QMouseEvent* event) {
   if (selectionAnchorRow_ >= 0) {
-    selectionCursorRow_ = displayModel_.rowIndexAtY(event->position().y());
+    selectionCursorRow_ = displayModel_.rowIndexAtY(event->position().y() + viewportY_);
     update();
   }
   QQuickPaintedItem::mouseMoveEvent(event);
@@ -592,14 +606,14 @@ void DiffSurfaceItem::mouseMoveEvent(QMouseEvent* event) {
 
 void DiffSurfaceItem::mouseReleaseEvent(QMouseEvent* event) {
   if (selectionAnchorRow_ >= 0) {
-    selectionCursorRow_ = displayModel_.rowIndexAtY(event->position().y());
+    selectionCursorRow_ = displayModel_.rowIndexAtY(event->position().y() + viewportY_);
     update();
   }
   QQuickPaintedItem::mouseReleaseEvent(event);
 }
 
 void DiffSurfaceItem::hoverMoveEvent(QHoverEvent* event) {
-  hoveredRow_ = displayModel_.rowIndexAtY(event->position().y());
+  hoveredRow_ = displayModel_.rowIndexAtY(event->position().y() + viewportY_);
   update();
   QQuickPaintedItem::hoverMoveEvent(event);
 }

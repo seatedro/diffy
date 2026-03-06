@@ -21,6 +21,7 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   Q_PROPERTY(QString monoFontFamily READ monoFontFamily WRITE setMonoFontFamily NOTIFY monoFontFamilyChanged)
   Q_PROPERTY(qreal contentHeight READ contentHeight NOTIFY contentHeightChanged)
   Q_PROPERTY(qreal contentWidth READ contentWidth NOTIFY contentWidthChanged)
+  Q_PROPERTY(qreal viewportX READ viewportX WRITE setViewportX NOTIFY viewportXChanged)
   Q_PROPERTY(qreal viewportY READ viewportY WRITE setViewportY NOTIFY viewportYChanged)
   Q_PROPERTY(qreal viewportHeight READ viewportHeight WRITE setViewportHeight NOTIFY viewportHeightChanged)
   Q_PROPERTY(int paintCount READ paintCount NOTIFY paintCountChanged)
@@ -43,6 +44,8 @@ class DiffSurfaceItem : public QQuickPaintedItem {
 
   qreal contentHeight() const;
   qreal contentWidth() const;
+  qreal viewportX() const;
+  void setViewportX(qreal value);
 
   qreal viewportY() const;
   void setViewportY(qreal value);
@@ -62,6 +65,7 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   void monoFontFamilyChanged();
   void contentHeightChanged();
   void contentWidthChanged();
+  void viewportXChanged();
   void viewportYChanged();
   void viewportHeightChanged();
   void paintCountChanged();
@@ -109,6 +113,7 @@ class DiffSurfaceItem : public QQuickPaintedItem {
 
   qreal contentHeight_ = 0;
   qreal contentWidth_ = 0;
+  qreal viewportX_ = 0;
   qreal viewportY_ = 0;
   qreal viewportHeight_ = 0;
   qreal lineHeight_ = 0;

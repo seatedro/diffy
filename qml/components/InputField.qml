@@ -9,7 +9,7 @@ Rectangle {
     property bool monospace: false
     signal submitted(string value)
 
-    implicitHeight: 34
+    implicitHeight: 30
     radius: 4
     color: theme.panelStrong
     border.width: 1
@@ -24,11 +24,11 @@ Rectangle {
         anchors.fill: parent
         anchors.leftMargin: 12
         anchors.rightMargin: 12
-        anchors.topMargin: 7
-        anchors.bottomMargin: 7
+        anchors.topMargin: 5
+        anchors.bottomMargin: 5
         color: theme.textStrong
         font.family: root.monospace ? theme.mono : theme.sans
-        font.pixelSize: 12
+        font.pixelSize: 11
         clip: true
         selectByMouse: true
         selectedTextColor: "#ffffff"

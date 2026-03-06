@@ -15,8 +15,8 @@ Window {
 
     property bool compactControls: width < 1260
     property bool stackPanels: width < 1140
-    property int chromeMargin: 8
-    property int chromeGap: 8
+    property int chromeMargin: 6
+    property int chromeGap: 6
 
     QtObject {
         id: theme
@@ -152,45 +152,32 @@ Window {
         Rectangle {
             Layout.fillWidth: true
             color: theme.toolbarBg
-            radius: 10
+            radius: 8
             border.color: theme.borderSoft
-            implicitHeight: headerColumn.implicitHeight + 18
+            implicitHeight: headerColumn.implicitHeight + 12
 
             ColumnLayout {
                 id: headerColumn
                 anchors.fill: parent
-                anchors.margins: 8
-                spacing: 8
+                anchors.margins: 6
+                spacing: 6
 
                 RowLayout {
                     Layout.fillWidth: true
-                    spacing: 10
+                    spacing: 8
 
-                    Column {
-                        spacing: 0
-
-                        Text {
-                            text: "LOCAL GIT REVIEW"
-                            color: theme.textFaint
-                            font.family: theme.sans
-                            font.pixelSize: 9
-                            font.bold: true
-                            font.letterSpacing: 1.2
-                        }
-
-                        Text {
-                            text: "diffy"
-                            color: theme.textStrong
-                            font.family: theme.sans
-                            font.pixelSize: 20
-                            font.bold: true
-                        }
+                    Text {
+                        text: "diffy"
+                        color: theme.textStrong
+                        font.family: theme.sans
+                        font.pixelSize: 18
+                        font.bold: true
                     }
 
                     Rectangle {
-                        width: repoChipLabel.implicitWidth + 18
-                        height: 22
-                        radius: 6
+                        width: repoChipLabel.implicitWidth + 16
+                        height: 20
+                        radius: 5
                         color: theme.panelTint
                         border.color: theme.borderSoft
 
@@ -200,7 +187,7 @@ Window {
                             text: repoLabel()
                             color: theme.textBase
                             font.family: theme.sans
-                            font.pixelSize: 11
+                            font.pixelSize: 10
                             font.bold: true
                         }
                     }
@@ -210,12 +197,12 @@ Window {
                     }
 
                     Row {
-                        spacing: 8
+                        spacing: 6
 
                         Rectangle {
-                            width: modeChip.implicitWidth + 20
-                            height: 24
-                            radius: 6
+                            width: modeChip.implicitWidth + 16
+                            height: 20
+                            radius: 5
                             color: theme.panelTint
                             border.color: theme.borderSoft
 
@@ -225,14 +212,14 @@ Window {
                                 text: compareModeLabel(diffController.compareMode)
                                 color: theme.textMuted
                                 font.family: theme.mono
-                                font.pixelSize: 10
+                                font.pixelSize: 9
                             }
                         }
 
                         Rectangle {
-                            width: rendererChip.implicitWidth + 20
-                            height: 24
-                            radius: 6
+                            width: rendererChip.implicitWidth + 16
+                            height: 20
+                            radius: 5
                             color: diffController.renderer === "difftastic" ? theme.warningBg : theme.accentSoft
                             border.color: diffController.renderer === "difftastic" ? theme.warningBorder : theme.borderSoft
 
@@ -242,7 +229,7 @@ Window {
                                 text: diffController.renderer === "difftastic" ? "difftastic" : "built-in"
                                 color: diffController.renderer === "difftastic" ? theme.warningText : theme.accentStrong
                                 font.family: theme.sans
-                                font.pixelSize: 10
+                                font.pixelSize: 9
                                 font.bold: true
                             }
                         }
@@ -257,12 +244,12 @@ Window {
 
                 Flow {
                     Layout.fillWidth: true
-                    spacing: 8
+                    spacing: 6
 
                     InputField {
                         id: repoField
                         theme: theme
-                        width: window.compactControls ? parent.width : Math.max(360, parent.width - 202)
+                        width: window.compactControls ? parent.width : Math.max(320, parent.width - 184)
                         text: diffController.repoPath
                         placeholderText: "Local git repository path"
                         onSubmitted: diffController.openRepository(text)
@@ -286,12 +273,12 @@ Window {
 
                 Flow {
                     Layout.fillWidth: true
-                    spacing: 8
+                    spacing: 6
 
                     InputField {
                         id: leftRefField
                         theme: theme
-                        width: window.compactControls ? Math.max(220, (parent.width - 10) / 2) : 248
+                        width: window.compactControls ? Math.max(210, (parent.width - 8) / 2) : 220
                         monospace: true
                         text: diffController.leftRef
                         placeholderText: "Left ref"
@@ -301,7 +288,7 @@ Window {
                     InputField {
                         id: rightRefField
                         theme: theme
-                        width: window.compactControls ? Math.max(220, (parent.width - 10) / 2) : 248
+                        width: window.compactControls ? Math.max(210, (parent.width - 8) / 2) : 220
                         monospace: true
                         text: diffController.rightRef
                         placeholderText: "Right ref"
@@ -312,7 +299,7 @@ Window {
                         theme: theme
                         text: compareModeLabel(diffController.compareMode)
                         compact: true
-                        active: true
+                        active: false
                         onClicked: diffController.compareMode = nextCompareMode(diffController.compareMode)
                     }
 
@@ -341,38 +328,38 @@ Window {
             visible: diffController.refs.length > 0
             Layout.fillWidth: true
             color: theme.panel
-            radius: 6
+            radius: 5
             border.color: theme.borderSoft
-            implicitHeight: 34
+            implicitHeight: 30
 
             Row {
                 anchors.fill: parent
-                anchors.margins: 5
-                spacing: 8
+                anchors.margins: 4
+                spacing: 6
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
                     text: "refs"
                     color: theme.textFaint
                     font.family: theme.sans
-                    font.pixelSize: 11
+                    font.pixelSize: 10
                     font.bold: true
                 }
 
                 ListView {
                     anchors.verticalCenter: parent.verticalCenter
-                    width: parent.width - 80
-                    height: 24
+                    width: parent.width - 60
+                    height: 20
                     orientation: ListView.Horizontal
-                    spacing: 8
+                    spacing: 6
                     clip: true
                     model: diffController.refs
                     boundsBehavior: Flickable.StopAtBounds
 
                     delegate: Rectangle {
                         required property var modelData
-                        width: chipText.implicitWidth + 20
-                        height: 24
+                        width: chipText.implicitWidth + 14
+                        height: 20
                         radius: 4
                         color: leftRefField.text === modelData || rightRefField.text === modelData ? theme.accentSoft : theme.panelStrong
                         border.color: leftRefField.text === modelData || rightRefField.text === modelData ? theme.selectionBorder : theme.borderSoft
@@ -383,7 +370,7 @@ Window {
                             text: modelData
                             color: leftRefField.text === modelData || rightRefField.text === modelData ? theme.accentStrong : theme.textMuted
                             font.family: theme.mono
-                            font.pixelSize: 10
+                            font.pixelSize: 9
                         }
 
                         MouseArea {
@@ -400,7 +387,7 @@ Window {
         Rectangle {
             visible: diffController.errorMessage.length > 0
             Layout.fillWidth: true
-            implicitHeight: errorText.implicitHeight + 18
+            implicitHeight: errorText.implicitHeight + 14
             radius: 6
             color: theme.dangerBg
             border.color: theme.dangerBorder
@@ -408,11 +395,11 @@ Window {
             Text {
                 id: errorText
                 anchors.fill: parent
-                anchors.margins: 10
+                anchors.margins: 8
                 text: diffController.errorMessage
                 color: theme.dangerText
                 font.family: theme.sans
-                font.pixelSize: 13
+                font.pixelSize: 12
                 wrapMode: Text.Wrap
             }
         }
@@ -421,7 +408,7 @@ Window {
             Layout.fillWidth: true
             Layout.fillHeight: true
             color: theme.panel
-            radius: 10
+            radius: 8
             border.color: theme.borderSoft
 
             FileListPane {
@@ -429,8 +416,8 @@ Window {
                 theme: theme
                 x: 0
                 y: 0
-                width: window.stackPanels ? parent.width : Math.max(260, Math.min(300, parent.width * 0.22))
-                height: window.stackPanels ? 268 : parent.height
+                width: window.stackPanels ? parent.width : Math.max(220, Math.min(260, parent.width * 0.2))
+                height: window.stackPanels ? 240 : parent.height
                 files: diffController.files
                 selectedIndex: diffController.selectedFileIndex
                 repoPath: diffController.repoPath

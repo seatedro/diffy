@@ -104,16 +104,16 @@ Rectangle {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
-            height: 56
+            height: 42
             color: theme.panelStrong
 
             Column {
                 anchors.fill: parent
-                anchors.leftMargin: 12
+                anchors.leftMargin: 10
                 anchors.rightMargin: 10
-                anchors.topMargin: 8
-                anchors.bottomMargin: 8
-                spacing: 4
+                anchors.topMargin: 6
+                anchors.bottomMargin: 6
+                spacing: 2
 
                 Row {
                     spacing: 8
@@ -122,7 +122,7 @@ Rectangle {
                         text: "Changes"
                         color: theme.textStrong
                         font.family: theme.sans
-                        font.pixelSize: 12
+                        font.pixelSize: 11
                         font.bold: true
                     }
 
@@ -130,7 +130,7 @@ Rectangle {
                         text: files.length + " files"
                         color: theme.textFaint
                         font.family: theme.sans
-                        font.pixelSize: 10
+                        font.pixelSize: 9
                     }
                 }
 
@@ -141,14 +141,14 @@ Rectangle {
                         text: "+" + totalAdditions()
                         color: theme.successText
                         font.family: theme.mono
-                        font.pixelSize: 10
+                        font.pixelSize: 9
                     }
 
                     Text {
                         text: "-" + totalDeletions()
                         color: theme.dangerText
                         font.family: theme.mono
-                        font.pixelSize: 10
+                        font.pixelSize: 9
                     }
 
                     Text {
@@ -157,7 +157,7 @@ Rectangle {
                         font.family: theme.mono
                         font.pixelSize: 9
                         elide: Text.ElideRight
-                        width: parent.width - 110
+                        width: parent.width - 94
                     }
                 }
             }
@@ -173,7 +173,7 @@ Rectangle {
 
         ListView {
             anchors.fill: parent
-            anchors.topMargin: 57
+            anchors.topMargin: 43
             anchors.leftMargin: 0
             anchors.rightMargin: 0
             anchors.bottomMargin: 0
@@ -189,7 +189,7 @@ Rectangle {
                 required property var modelData
 
                 width: ListView.view.width
-                height: 34
+                height: 30
                 radius: 0
                 color: root.selectedIndex === index ? theme.selectionBg : (mouseArea.containsMouse ? theme.panelStrong : "transparent")
                 border.width: 0
@@ -214,13 +214,13 @@ Rectangle {
 
                 Text {
                     anchors.left: parent.left
-                    anchors.leftMargin: 24
+                    anchors.leftMargin: 22
                     anchors.verticalCenter: parent.verticalCenter
                     width: parent.width - counts.implicitWidth - 44
                     text: modelData.path
                     color: root.selectedIndex === index ? theme.textStrong : theme.textBase
                     font.family: theme.sans
-                    font.pixelSize: 11
+                    font.pixelSize: 10
                     elide: Text.ElideMiddle
                 }
 
@@ -236,21 +236,21 @@ Rectangle {
                         text: "bin"
                         color: theme.warningText
                         font.family: theme.mono
-                        font.pixelSize: 9
+                        font.pixelSize: 8
                     }
 
                     Text {
                         text: "+" + modelData.additions
                         color: theme.successText
                         font.family: theme.mono
-                        font.pixelSize: 9
+                        font.pixelSize: 8
                     }
 
                     Text {
                         text: "-" + modelData.deletions
                         color: theme.dangerText
                         font.family: theme.mono
-                        font.pixelSize: 9
+                        font.pixelSize: 8
                     }
                 }
 
@@ -269,7 +269,7 @@ Rectangle {
                 text: "Run compare to populate the changes list."
                 color: theme.textFaint
                 font.family: theme.sans
-                font.pixelSize: 11
+                font.pixelSize: 10
             }
         }
     }

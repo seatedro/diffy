@@ -90,6 +90,7 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   void viewportHeightChanged();
   void paintCountChanged();
   void displayRowCountChanged();
+  void scrollToYRequested(qreal value);
 
  private:
   void rebuildRows();
@@ -102,6 +103,7 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   qreal unifiedGutterWidth() const;
   QString selectedText() const;
   QString textForRange(const TextRange& range) const;
+  int currentRowIndex() const;
 
   void drawFileHeaderRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row) const;
   void drawHunkRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row) const;

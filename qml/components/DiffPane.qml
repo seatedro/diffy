@@ -258,6 +258,9 @@ Rectangle {
                 viewportHeight: diffViewport.height
                 palette: root.surfacePalette
                 monoFontFamily: theme.mono
+                onScrollToYRequested: function(value) {
+                    diffViewport.contentY = Math.max(0, value)
+                }
             }
         }
     }

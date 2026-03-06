@@ -75,6 +75,8 @@ class DiffDisplayModel {
   int rowIndexAtY(double y) const;
   int fileHeaderRowIndex() const;
   int stickyHunkRowIndexAtY(double y) const;
+  int nextHunkRowIndex(int rowIndex) const;
+  int previousHunkRowIndex(int rowIndex) const;
 
  private:
   std::vector<DiffSourceRow> sourceRows_;

@@ -474,6 +474,16 @@ QString DiffSurfaceItem::textForRange(const TextRange& range) const {
   return text;
 }
 
+int DiffSurfaceItem::currentRowIndex() const {
+  if (selectionCursorRow_ >= 0) {
+    return selectionCursorRow_;
+  }
+  if (hoveredRow_ >= 0) {
+    return hoveredRow_;
+  }
+  return displayModel_.rowIndexAtY(viewportY_);
+}
+
 void DiffSurfaceItem::drawFileHeaderRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row) const {
   painter->fillRect(rowRect, paletteColor("canvas", QColor("#282828")));
   painter->fillRect(QRectF(rowRect.left(), rowRect.bottom() - 1.0, rowRect.width(), 1.0),
@@ -769,6 +779,8 @@ void DiffSurfaceItem::hoverLeaveEvent(QHoverEvent* event) {
 }
 
 void DiffSurfaceItem::keyPressEvent(QKeyEvent* event) {
+  const auto& rows = displayModel_.rows();
+
   if (event->matches(QKeySequence::Copy)) {
     const QString text = selectedText();
     if (!text.isEmpty()) {
@@ -781,10 +793,65 @@ void DiffSurfaceItem::keyPressEvent(QKeyEvent* event) {
   }
 
   if (event->matches(QKeySequence::SelectAll)) {
-    const auto& rows = displayModel_.rows();
     if (!rows.empty()) {
       selectionAnchorRow_ = 0;
-      selectionCursorRow_ = rows.size() - 1;
+      selectionCursorRow_ = static_cast<int>(rows.size()) - 1;
+      update();
+    }
+    event->accept();
+    return;
+  }
+
+  if (rows.empty()) {
+    QQuickPaintedItem::keyPressEvent(event);
+    return;
+  }
+
+  const int rowIndex = std::clamp(currentRowIndex(), 0, static_cast<int>(rows.size()) - 1);
+  const DiffDisplayRow& row = rows.at(rowIndex);
+
+  if (event->key() == Qt::Key_PageDown) {
+    emit scrollToYRequested(viewportY_ + viewportHeight_ * 0.9);
+    event->accept();
+    return;
+  }
+
+  if (event->key() == Qt::Key_PageUp) {
+    emit scrollToYRequested(std::max<qreal>(0.0, viewportY_ - viewportHeight_ * 0.9));
+    event->accept();
+    return;
+  }
+
+  if (event->key() == Qt::Key_Home) {
+    emit scrollToYRequested(0.0);
+    event->accept();
+    return;
+  }
+
+  if (event->key() == Qt::Key_End) {
+    emit scrollToYRequested(std::max<qreal>(0.0, contentHeight_ - viewportHeight_));
+    event->accept();
+    return;
+  }
+
+  if (event->modifiers() == Qt::AltModifier && event->key() == Qt::Key_Down) {
+    const int nextHunk = displayModel_.nextHunkRowIndex(rowIndex);
+    if (nextHunk >= 0) {
+      selectionAnchorRow_ = nextHunk;
+      selectionCursorRow_ = nextHunk;
+      emit scrollToYRequested(rows.at(nextHunk).top);
+      update();
+    }
+    event->accept();
+    return;
+  }
+
+  if (event->modifiers() == Qt::AltModifier && event->key() == Qt::Key_Up) {
+    const int previousHunk = displayModel_.previousHunkRowIndex(rowIndex);
+    if (previousHunk >= 0) {
+      selectionAnchorRow_ = previousHunk;
+      selectionCursorRow_ = previousHunk;
+      emit scrollToYRequested(rows.at(previousHunk).top);
       update();
     }
     event->accept();

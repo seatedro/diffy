@@ -169,4 +169,24 @@ int DiffDisplayModel::stickyHunkRowIndexAtY(double y) const {
   return stickyIndex;
 }
 
+int DiffDisplayModel::nextHunkRowIndex(int rowIndex) const {
+  const int start = std::max(0, rowIndex + 1);
+  for (int index = start; index < static_cast<int>(displayRows_.size()); ++index) {
+    if (displayRows_.at(index).rowType == DiffRowType::Hunk) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+int DiffDisplayModel::previousHunkRowIndex(int rowIndex) const {
+  const int start = std::min(rowIndex - 1, static_cast<int>(displayRows_.size()) - 1);
+  for (int index = start; index >= 0; --index) {
+    if (displayRows_.at(index).rowType == DiffRowType::Hunk) {
+      return index;
+    }
+  }
+  return -1;
+}
+
 }  // namespace diffy

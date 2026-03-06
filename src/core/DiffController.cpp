@@ -1,5 +1,6 @@
 #include "core/DiffController.h"
 
+#include <QFileDialog>
 #include <QStandardPaths>
 
 #include "core/DiffTypes.h"
@@ -205,6 +206,16 @@ bool DiffController::openRepository(const QString& path) {
 
   persistSettings();
   return true;
+}
+
+bool DiffController::chooseRepositoryAndOpen() {
+  const QString startPath = repoPath_.isEmpty() ? QDir::homePath() : repoPath_;
+  const QString selected = QFileDialog::getExistingDirectory(nullptr, "Open Repository", startPath,
+                                                             QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+  if (selected.isEmpty()) {
+    return false;
+  }
+  return openRepository(selected);
 }
 
 void DiffController::compare() {

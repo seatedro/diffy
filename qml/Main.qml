@@ -242,14 +242,14 @@ Window {
                     color: theme.divider
                 }
 
-                Flow {
+                RowLayout {
                     Layout.fillWidth: true
                     spacing: 6
 
                     InputField {
                         id: repoField
                         theme: theme
-                        width: window.compactControls ? parent.width : Math.max(320, parent.width - 184)
+                        Layout.fillWidth: true
                         text: diffController.repoPath
                         placeholderText: "Local git repository path"
                         onSubmitted: diffController.openRepository(text)
@@ -257,7 +257,18 @@ Window {
 
                     ActionButton {
                         theme: theme
-                        text: "Open Repo"
+                        text: "Browse"
+                        tone: "neutral"
+                        onClicked: {
+                            if (diffController.chooseRepositoryAndOpen()) {
+                                repoField.text = diffController.repoPath
+                            }
+                        }
+                    }
+
+                    ActionButton {
+                        theme: theme
+                        text: "Open"
                         tone: "success"
                         onClicked: diffController.openRepository(repoField.text)
                     }
@@ -271,14 +282,15 @@ Window {
                     }
                 }
 
-                Flow {
+                RowLayout {
                     Layout.fillWidth: true
                     spacing: 6
 
                     InputField {
                         id: leftRefField
                         theme: theme
-                        width: window.compactControls ? Math.max(210, (parent.width - 8) / 2) : 220
+                        Layout.preferredWidth: 220
+                        Layout.fillWidth: true
                         monospace: true
                         text: diffController.leftRef
                         placeholderText: "Left ref"
@@ -288,7 +300,8 @@ Window {
                     InputField {
                         id: rightRefField
                         theme: theme
-                        width: window.compactControls ? Math.max(210, (parent.width - 8) / 2) : 220
+                        Layout.preferredWidth: 220
+                        Layout.fillWidth: true
                         monospace: true
                         text: diffController.rightRef
                         placeholderText: "Right ref"
@@ -319,66 +332,6 @@ Window {
                         tone: "neutral"
                         active: diffController.layoutMode === "split"
                         onClicked: diffController.layoutMode = diffController.layoutMode === "unified" ? "split" : "unified"
-                    }
-                }
-            }
-        }
-
-        Rectangle {
-            visible: diffController.refs.length > 0
-            Layout.fillWidth: true
-            color: theme.panel
-            radius: 5
-            border.color: theme.borderSoft
-            implicitHeight: 30
-
-            Row {
-                anchors.fill: parent
-                anchors.margins: 4
-                spacing: 6
-
-                Text {
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: "refs"
-                    color: theme.textFaint
-                    font.family: theme.sans
-                    font.pixelSize: 10
-                    font.bold: true
-                }
-
-                ListView {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: parent.width - 60
-                    height: 20
-                    orientation: ListView.Horizontal
-                    spacing: 6
-                    clip: true
-                    model: diffController.refs
-                    boundsBehavior: Flickable.StopAtBounds
-
-                    delegate: Rectangle {
-                        required property var modelData
-                        width: chipText.implicitWidth + 14
-                        height: 20
-                        radius: 4
-                        color: leftRefField.text === modelData || rightRefField.text === modelData ? theme.accentSoft : theme.panelStrong
-                        border.color: leftRefField.text === modelData || rightRefField.text === modelData ? theme.selectionBorder : theme.borderSoft
-
-                        Text {
-                            id: chipText
-                            anchors.centerIn: parent
-                            text: modelData
-                            color: leftRefField.text === modelData || rightRefField.text === modelData ? theme.accentStrong : theme.textMuted
-                            font.family: theme.mono
-                            font.pixelSize: 9
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: assignQuickRef(modelData)
-                        }
                     }
                 }
             }

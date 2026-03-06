@@ -10,7 +10,7 @@ set(CMAKE_AUTOUIC ON)
 enable_testing()
 
 find_package(PkgConfig REQUIRED)
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick Test)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick Test Widgets)
 
 pkg_check_modules(LIBGIT2 REQUIRED libgit2)
 pkg_check_modules(TREESITTER REQUIRED tree-sitter)
@@ -42,6 +42,7 @@ target_link_libraries(diffy PRIVATE
   Qt6::Gui
   Qt6::Qml
   Qt6::Quick
+  Qt6::Widgets
   ${LIBGIT2_LIBRARIES}
   ${TREESITTER_LIBRARIES}
 )

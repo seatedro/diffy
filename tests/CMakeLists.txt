@@ -55,12 +55,33 @@ target_include_directories(test_diff_controller PRIVATE
 target_link_libraries(test_diff_controller PRIVATE
   Qt6::Core
   Qt6::Test
+  Qt6::Widgets
   ${LIBGIT2_LIBRARIES}
   ${TREESITTER_LIBRARIES}
 )
 
 target_compile_options(test_diff_controller PRIVATE ${LIBGIT2_CFLAGS_OTHER} ${TREESITTER_CFLAGS_OTHER})
 add_test(NAME test_diff_controller COMMAND test_diff_controller)
+
+qt_add_executable(test_builtin_git_renderer
+  test_builtin_git_renderer.cpp
+  ../src/core/DiffTypes.cpp
+  ../src/renderers/BuiltinGitRenderer.cpp
+)
+
+target_include_directories(test_builtin_git_renderer PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+  ${LIBGIT2_INCLUDE_DIRS}
+)
+
+target_link_libraries(test_builtin_git_renderer PRIVATE
+  Qt6::Core
+  Qt6::Test
+  ${LIBGIT2_LIBRARIES}
+)
+
+target_compile_options(test_builtin_git_renderer PRIVATE ${LIBGIT2_CFLAGS_OTHER})
+add_test(NAME test_builtin_git_renderer COMMAND test_builtin_git_renderer)
 
 qt_add_executable(test_app_smoke
   test_app_smoke.cpp

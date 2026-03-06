@@ -184,26 +184,29 @@ Rectangle {
 
             Column {
                 visible: !root.hasData()
-                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.centerIn: parent
+                width: parent.width
                 spacing: 6
 
                 Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                text: "No diff selected"
-                color: theme.textStrong
-                font.family: theme.sans
-                font.pixelSize: 16
-                font.bold: true
-            }
+                    width: parent.width
+                    text: "No diff selected"
+                    color: theme.textStrong
+                    font.family: theme.sans
+                    font.pixelSize: 16
+                    font.bold: true
+                    horizontalAlignment: Text.AlignHCenter
+                }
 
                 Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                text: "Open a repository, choose refs, run compare, then select a file."
-                color: theme.textMuted
-                font.family: theme.sans
-                font.pixelSize: 11
+                    width: parent.width
+                    text: "Open a repository, choose refs, run compare, then select a file."
+                    color: theme.textMuted
+                    font.family: theme.sans
+                    font.pixelSize: 11
+                    horizontalAlignment: Text.AlignHCenter
+                }
             }
-        }
         }
 
         Rectangle {

@@ -7,6 +7,7 @@
 #include <QDebug>
 #include <QImage>
 #include <QLibraryInfo>
+#include <QApplication>
 #include <QTimer>
 #include <QQmlComponent>
 #include <QQmlApplicationEngine>
@@ -126,9 +127,9 @@ bool applyStartupAutomation(diffy::DiffController* controller, QString* error) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
-  QGuiApplication app(argc, argv);
-  QGuiApplication::setOrganizationName("diffy");
-  QGuiApplication::setApplicationName("diffy");
+  QApplication app(argc, argv);
+  QApplication::setOrganizationName("diffy");
+  QApplication::setApplicationName("diffy");
   app.addLibraryPath(QLibraryInfo::path(QLibraryInfo::PluginsPath));
 
   const bool fatalRuntimeWarnings = envFlagEnabled("DIFFY_FATAL_RUNTIME_WARNINGS");

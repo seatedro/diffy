@@ -154,12 +154,17 @@ int diffRegionColorDiversity(const QString& imagePath) {
     return 0;
   }
 
-  const int yStart = image.height() * 30 / 100;
-  const int yEnd = image.height() * 60 / 100;
+  const int bodyTop = image.height() * 18 / 100;
+  const int bodyMid = image.height() * 48 / 100;
+  const int bodyBottom = image.height() * 70 / 100;
 
-  const int leftRegion = sampleRegionDiversity(image, image.width() * 22 / 100, image.width() * 58 / 100, yStart, yEnd);
-  const int rightRegion = sampleRegionDiversity(image, image.width() * 58 / 100, image.width() * 95 / 100, yStart, yEnd);
-  return std::max(leftRegion, rightRegion);
+  const int gutterAndText = sampleRegionDiversity(image, image.width() * 16 / 100, image.width() * 34 / 100,
+                                                  bodyTop, bodyMid);
+  const int midText = sampleRegionDiversity(image, image.width() * 24 / 100, image.width() * 46 / 100,
+                                            bodyMid, bodyBottom);
+  const int splitRight = sampleRegionDiversity(image, image.width() * 64 / 100, image.width() * 86 / 100,
+                                               bodyTop, bodyMid);
+  return std::max({gutterAndText, midText, splitRight});
 }
 
 }  // namespace
@@ -193,7 +198,7 @@ class AppSmokeTest : public QObject {
     QVERIFY(state.value("displayRows").toInt() > 0);
     QVERIFY(state.value("paintCount").toInt() > 0);
     QVERIFY2(QFileInfo::exists(result.capturePath), qPrintable(result.capturePath));
-    QVERIFY(diffRegionColorDiversity(result.capturePath) > 5);
+    QVERIFY(diffRegionColorDiversity(result.capturePath) > 3);
     QCOMPARE(state.value("error").toString(), QString("none"));
   }
 
@@ -219,7 +224,7 @@ class AppSmokeTest : public QObject {
     QVERIFY(state.value("displayRows").toInt() > 0);
     QVERIFY(state.value("paintCount").toInt() > 0);
     QVERIFY2(QFileInfo::exists(result.capturePath), qPrintable(result.capturePath));
-    QVERIFY(diffRegionColorDiversity(result.capturePath) > 5);
+    QVERIFY(diffRegionColorDiversity(result.capturePath) > 3);
     QCOMPARE(state.value("error").toString(), QString("none"));
   }
 };

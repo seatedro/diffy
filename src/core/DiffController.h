@@ -62,6 +62,7 @@ class DiffController : public QObject {
   bool hasDifftastic() const;
 
   Q_INVOKABLE bool openRepository(const QString& path);
+  Q_INVOKABLE bool chooseRepositoryAndOpen();
   Q_INVOKABLE void compare();
   Q_INVOKABLE void selectFile(int index);
   Q_INVOKABLE QVariantMap selectedFile() const;

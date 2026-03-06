@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "core/SyntaxTypes.h"
 #include "text/TextRope.h"
 
 namespace diffy {
@@ -29,6 +30,7 @@ enum class DiffLayoutMode {
 struct DiffTokenSpan {
   int start = 0;
   int length = 0;
+  SyntaxTokenKind syntaxKind = SyntaxTokenKind::None;
 };
 
 struct DiffSourceRow {

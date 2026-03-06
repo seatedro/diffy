@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 
 Rectangle {
     id: root
@@ -94,53 +95,40 @@ Rectangle {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
-            height: 34
+            height: 36
             color: theme.panel
 
             Row {
                 anchors.fill: parent
-                anchors.leftMargin: 10
+                anchors.leftMargin: 12
                 anchors.rightMargin: 10
-                spacing: 7
+                spacing: 8
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
                     text: "Changes"
                     color: theme.textStrong
                     font.family: theme.sans
-                    font.pixelSize: 10
+                    font.pixelSize: 11
                     font.bold: true
                 }
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: repoName()
+                    text: files.length + (files.length === 1 ? " file" : " files")
                     color: theme.textFaint
                     font.family: theme.sans
-                    font.pixelSize: 8
-                    elide: Text.ElideRight
-                    width: 54
+                    font.pixelSize: 10
                 }
 
-                Text {
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: files.length + " files"
-                    color: theme.textFaint
-                    font.family: theme.sans
-                    font.pixelSize: 8
-                }
-
-                Item {
-                    width: 1
-                    height: 1
-                }
+                Item { width: 1; height: 1 }
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
                     text: "+" + totalAdditions()
                     color: theme.successText
                     font.family: theme.mono
-                    font.pixelSize: 8
+                    font.pixelSize: 9
                 }
 
                 Text {
@@ -148,7 +136,7 @@ Rectangle {
                     text: "-" + totalDeletions()
                     color: theme.dangerText
                     font.family: theme.mono
-                    font.pixelSize: 8
+                    font.pixelSize: 9
                 }
             }
         }
@@ -162,8 +150,9 @@ Rectangle {
         }
 
         ListView {
+            id: fileListView
             anchors.fill: parent
-            anchors.topMargin: 35
+            anchors.topMargin: 37
             anchors.leftMargin: 0
             anchors.rightMargin: 0
             anchors.bottomMargin: 0
@@ -174,43 +163,55 @@ Rectangle {
             reuseItems: true
             boundsBehavior: Flickable.StopAtBounds
 
+            ScrollBar.vertical: ScrollBar {
+                policy: fileListView.contentHeight > fileListView.height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
+                contentItem: Rectangle {
+                    implicitWidth: 4
+                    radius: 2
+                    color: theme.textFaint
+                    opacity: parent.active ? 0.6 : 0.3
+                    Behavior on opacity { NumberAnimation { duration: 120 } }
+                }
+                background: Item {}
+            }
+
             delegate: Rectangle {
                 required property int index
                 required property var modelData
 
                 width: ListView.view.width
-                height: 27
+                height: 30
                 radius: 0
-                color: root.selectedIndex === index ? theme.selectionBg : (mouseArea.containsMouse ? theme.panel : "transparent")
+                color: root.selectedIndex === index ? theme.selectionBg : (mouseArea.containsMouse ? theme.panelStrong : "transparent")
                 border.width: 0
 
                 Rectangle {
                     anchors.left: parent.left
                     anchors.top: parent.top
                     anchors.bottom: parent.bottom
-                    width: root.selectedIndex === index ? 4 : 0
-                    color: theme.accentStrong
+                    width: root.selectedIndex === index ? 3 : 0
+                    color: theme.accent
                 }
 
                 Rectangle {
                     anchors.left: parent.left
-                    anchors.leftMargin: 11
+                    anchors.leftMargin: 12
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 5
-                    height: 5
-                    radius: 2.5
+                    width: 6
+                    height: 6
+                    radius: 3
                     color: root.statusColor(modelData.status)
                 }
 
                 Text {
                     anchors.left: parent.left
-                    anchors.leftMargin: 22
+                    anchors.leftMargin: 26
                     anchors.verticalCenter: parent.verticalCenter
-                    width: parent.width - counts.implicitWidth - 38
+                    width: parent.width - counts.implicitWidth - 42
                     text: modelData.path
                     color: root.selectedIndex === index ? theme.textStrong : theme.textBase
                     font.family: theme.sans
-                    font.pixelSize: 9
+                    font.pixelSize: 11
                     font.bold: root.selectedIndex === index
                     elide: Text.ElideMiddle
                 }
@@ -218,7 +219,7 @@ Rectangle {
                 Row {
                     id: counts
                     anchors.right: parent.right
-                    anchors.rightMargin: 8
+                    anchors.rightMargin: 10
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 5
 
@@ -227,21 +228,21 @@ Rectangle {
                         text: "bin"
                         color: theme.textFaint
                         font.family: theme.mono
-                        font.pixelSize: 7
+                        font.pixelSize: 9
                     }
 
                     Text {
                         text: "+" + modelData.additions
                         color: theme.successText
                         font.family: theme.mono
-                        font.pixelSize: 7
+                        font.pixelSize: 9
                     }
 
                     Text {
                         text: "-" + modelData.deletions
                         color: theme.dangerText
                         font.family: theme.mono
-                        font.pixelSize: 7
+                        font.pixelSize: 9
                     }
                 }
 

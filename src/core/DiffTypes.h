@@ -4,6 +4,8 @@
 #include <string_view>
 #include <vector>
 
+#include "core/SyntaxTypes.h"
+
 namespace diffy {
 
 enum class LineKind {
@@ -15,6 +17,7 @@ enum class LineKind {
 struct TokenSpan {
   int start = 0;
   int length = 0;
+  SyntaxTokenKind syntaxKind = SyntaxTokenKind::None;
 };
 
 struct DiffLine {

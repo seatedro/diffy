@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls
 import QtQuick.Window
 import "components"
 
@@ -17,8 +18,8 @@ Window {
     property bool stackPanels: width < 1140
     property bool editingRepoPath: false
     property string pendingPullRequestField: ""
-    property int chromeMargin: 6
-    property int chromeGap: 6
+    property int chromeMargin: 8
+    property int chromeGap: 8
 
     QtObject {
         id: theme
@@ -63,10 +64,10 @@ Window {
 
         readonly property color lineContext: "#282828"
         readonly property color lineContextAlt: "#232323"
-        readonly property color lineAdd: "#2d3216"
-        readonly property color lineAddAccent: "#32361a"
-        readonly property color lineDel: "#3c1f1e"
-        readonly property color lineDelAccent: "#442624"
+        readonly property color lineAdd: "#2a3a1e"
+        readonly property color lineAddAccent: "#324420"
+        readonly property color lineDel: "#3d2020"
+        readonly property color lineDelAccent: "#4c2828"
     }
 
     function nextCompareMode(value) {
@@ -183,21 +184,32 @@ Window {
 
             RowLayout {
                 anchors.fill: parent
-                anchors.margins: 5
+                anchors.leftMargin: 8
+                anchors.rightMargin: 6
+                anchors.topMargin: 4
+                anchors.bottomMargin: 4
                 spacing: 6
 
                 Text {
                     text: "diffy"
                     color: theme.textStrong
                     font.family: theme.sans
-                    font.pixelSize: 17
+                    font.pixelSize: 15
                     font.bold: true
                 }
 
                 Rectangle {
+                    width: 1
+                    Layout.fillHeight: true
+                    Layout.topMargin: 4
+                    Layout.bottomMargin: 4
+                    color: theme.borderSoft
+                }
+
+                Rectangle {
                     id: repoPanel
-                    Layout.preferredWidth: window.compactControls ? 320 : 420
-                    Layout.fillWidth: true
+                    Layout.preferredWidth: window.compactControls ? 280 : 360
+                    Layout.maximumWidth: 420
                     implicitHeight: 28
                     radius: 5
                     color: theme.panel
@@ -205,12 +217,13 @@ Window {
 
                     RowLayout {
                         anchors.fill: parent
-                        anchors.margins: 5
+                        anchors.leftMargin: 6
+                        anchors.rightMargin: 6
                         spacing: 6
 
                         Rectangle {
                             Layout.preferredWidth: repoChipLabel.implicitWidth + 14
-                            implicitHeight: 16
+                            implicitHeight: 18
                             radius: 4
                             color: theme.panelTint
                             border.color: theme.borderSoft
@@ -221,14 +234,14 @@ Window {
                                 text: repoLabel()
                                 color: theme.textBase
                                 font.family: theme.sans
-                                font.pixelSize: 9
+                                font.pixelSize: 10
                                 font.bold: true
                             }
                         }
 
                         Item {
                             Layout.fillWidth: true
-                            Layout.preferredHeight: 18
+                            Layout.preferredHeight: 20
 
                             Text {
                                 anchors.fill: parent
@@ -236,7 +249,7 @@ Window {
                                 text: diffController.repoPath.length > 0 ? diffController.repoPath : "Choose a local repository"
                                 color: diffController.repoPath.length > 0 ? theme.textMuted : theme.textFaint
                                 font.family: theme.mono
-                                font.pixelSize: 9
+                                font.pixelSize: 10
                                 elide: Text.ElideMiddle
                                 verticalAlignment: Text.AlignVCenter
                             }
@@ -248,11 +261,12 @@ Window {
                                 text: diffController.repoPath
                                 color: theme.textStrong
                                 font.family: theme.mono
-                                font.pixelSize: 9
+                                font.pixelSize: 10
                                 clip: true
                                 selectByMouse: true
                                 selectedTextColor: "#ffffff"
                                 selectionColor: theme.accent
+                                verticalAlignment: Text.AlignVCenter
                                 onAccepted: submitRepoPath()
                             }
                         }
@@ -298,14 +312,22 @@ Window {
                     }
                 }
 
+                Rectangle {
+                    width: 1
+                    Layout.fillHeight: true
+                    Layout.topMargin: 4
+                    Layout.bottomMargin: 4
+                    color: theme.borderSoft
+                }
+
                 InputField {
                     id: leftRefField
                     theme: theme
                     compact: true
-                    Layout.preferredWidth: window.compactControls ? 150 : 172
+                    Layout.preferredWidth: window.compactControls ? 140 : 168
                     monospace: true
                     text: diffController.leftRef
-                    placeholderText: "Left ref or PR URL"
+                    placeholderText: "Left ref"
                     onTextChanged: {
                         if (window.isPullRequestUrl(text)) {
                             window.pendingPullRequestField = "left"
@@ -326,10 +348,10 @@ Window {
                     id: rightRefField
                     theme: theme
                     compact: true
-                    Layout.preferredWidth: window.compactControls ? 150 : 172
+                    Layout.preferredWidth: window.compactControls ? 140 : 168
                     monospace: true
                     text: diffController.rightRef
-                    placeholderText: "Right ref or PR URL"
+                    placeholderText: "Right ref"
                     onTextChanged: {
                         if (window.isPullRequestUrl(text)) {
                             window.pendingPullRequestField = "right"
@@ -337,6 +359,16 @@ Window {
                         }
                     }
                     onSubmitted: runCompare()
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Rectangle {
+                    width: 1
+                    Layout.fillHeight: true
+                    Layout.topMargin: 4
+                    Layout.bottomMargin: 4
+                    color: theme.borderSoft
                 }
 
                 ActionButton {
@@ -393,13 +425,14 @@ Window {
             color: theme.panel
             radius: 8
             border.color: theme.borderSoft
+            clip: true
 
             FileListPane {
                 id: filePane
                 theme: theme
                 x: 0
                 y: 0
-                width: window.stackPanels ? parent.width : Math.max(196, Math.min(224, parent.width * 0.18))
+                width: window.stackPanels ? parent.width : Math.max(220, Math.min(280, parent.width * 0.20))
                 height: window.stackPanels ? 220 : parent.height
                 files: diffController.files
                 selectedIndex: diffController.selectedFileIndex

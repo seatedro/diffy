@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 import QtQuick.Layouts
 import Diffy.Native 1.0
 
@@ -241,6 +242,32 @@ Rectangle {
             contentWidth: Math.max(width, surface.contentWidth)
             contentHeight: surface.contentHeight
             boundsBehavior: Flickable.StopAtBounds
+
+            ScrollBar.vertical: ScrollBar {
+                policy: diffViewport.contentHeight > diffViewport.height ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+                contentItem: Rectangle {
+                    implicitWidth: 6
+                    radius: 3
+                    color: theme.textFaint
+                    opacity: parent.active ? 0.6 : 0.3
+                    Behavior on opacity { NumberAnimation { duration: 120 } }
+                }
+                background: Item {}
+            }
+
+            ScrollBar.horizontal: ScrollBar {
+                id: hScrollBar
+                policy: diffViewport.contentWidth > diffViewport.width ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
+                interactive: false
+                contentItem: Rectangle {
+                    implicitHeight: 6
+                    radius: 3
+                    color: theme.textFaint
+                    opacity: hScrollBar.active ? 0.6 : 0.3
+                    Behavior on opacity { NumberAnimation { duration: 120 } }
+                }
+                background: Item {}
+            }
 
             DiffSurface {
                 id: surface

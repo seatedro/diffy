@@ -29,6 +29,7 @@ std::vector<FlattenedDiffRow> flattenFileRows(const FileDiff& file) {
           .newLine = line.newLine,
           .text = QString::fromUtf8(line.text),
           .tokens = line.tokens,
+          .changeSpans = line.changeSpans,
       });
     }
   }

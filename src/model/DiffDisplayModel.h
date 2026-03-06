@@ -41,6 +41,7 @@ struct DiffSourceRow {
   int oldLine = -1;
   int newLine = -1;
   std::vector<DiffTokenSpan> tokens;
+  std::vector<DiffTokenSpan> changeSpans;
   TextRange textRange;
 };
 
@@ -52,12 +53,15 @@ struct DiffDisplayRow {
   int oldLine = -1;
   int newLine = -1;
   std::vector<DiffTokenSpan> tokens;
+  std::vector<DiffTokenSpan> changeSpans;
   DiffLineKind leftKind = DiffLineKind::Spacer;
   DiffLineKind rightKind = DiffLineKind::Spacer;
   int leftLine = -1;
   int rightLine = -1;
   std::vector<DiffTokenSpan> leftTokens;
+  std::vector<DiffTokenSpan> leftChangeSpans;
   std::vector<DiffTokenSpan> rightTokens;
+  std::vector<DiffTokenSpan> rightChangeSpans;
   TextRange textRange;
   TextRange leftTextRange;
   TextRange rightTextRange;

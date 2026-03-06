@@ -21,6 +21,7 @@ struct FlattenedDiffRow {
   int newLine = -1;
   QString text;
   std::vector<TokenSpan> tokens;
+  std::vector<TokenSpan> changeSpans;
 };
 
 std::vector<FlattenedDiffRow> flattenFileRows(const FileDiff& file);

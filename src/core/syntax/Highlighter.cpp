@@ -70,7 +70,7 @@ std::vector<TokenSpan> Highlighter::highlight(const GrammarInfo& grammar, std::s
 
   uint32_t errorOffset = 0;
   TSQueryError errorType = TSQueryErrorNone;
-  TSQuery* query = ts_query_new(grammar.language, grammar.highlightsQuery.c_str(),
+  TSQuery* query = ts_query_new(grammar.language, grammar.highlightsQuery.data(),
                                  static_cast<uint32_t>(grammar.highlightsQuery.size()),
                                  &errorOffset, &errorType);
   if (query == nullptr) {

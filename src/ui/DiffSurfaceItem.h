@@ -114,6 +114,7 @@ class DiffSurfaceItem : public QQuickPaintedItem {
                    const QRectF& clipRect,
                    const QString& text,
                    const std::vector<DiffTokenSpan>& tokens,
+                   const std::vector<DiffTokenSpan>& changeSpans,
                    const QColor& textColor,
                    const QColor& tokenBackground) const;
 

@@ -434,6 +434,7 @@ void DiffSurfaceItem::rebuildRows() {
       const QByteArray textUtf8 = rowValue.text.toUtf8();
       row.textRange = textRope_.append(std::string(textUtf8.constData(), textUtf8.size()));
       row.tokens = parseTokens(rowValue.tokens);
+      row.changeSpans = parseTokens(rowValue.changeSpans);
       sourceRows.push_back(std::move(row));
     }
   }
@@ -618,7 +619,7 @@ void DiffSurfaceItem::drawUnifiedRow(QPainter* painter, const QRectF& rowRect, c
                                                                   ? paletteColor("dangerBorder", QColor("#4c2b2c"))
                                                                   : paletteColor("accentSoft", QColor("#293b5b"));
   drawTextRun(painter, QPointF(textClip.left(), baselineY), textClip, textForRange(row.textRange), row.tokens,
-              paletteColor("textBase", QColor("#c8ccd4")), tokenBg);
+              row.changeSpans, paletteColor("textBase", QColor("#c8ccd4")), tokenBg);
 }
 
 void DiffSurfaceItem::drawSplitRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row,
@@ -714,14 +715,14 @@ void DiffSurfaceItem::drawSplitRow(QPainter* painter, const QRectF& rowRect, con
 
   if (!leftSpacer) {
     drawTextRun(painter, QPointF(leftTextClip.left(), baselineY), leftTextClip,
-                textForRange(row.leftTextRange), row.leftTokens,
+                textForRange(row.leftTextRange), row.leftTokens, row.leftChangeSpans,
                 paletteColor("textBase", QColor("#c8ccd4")),
                 paletteColor("dangerBorder", QColor("#4c2b2c")));
   }
 
   if (!rightSpacer) {
     drawTextRun(painter, QPointF(rightTextClip.left(), baselineY), rightTextClip,
-                textForRange(row.rightTextRange), row.rightTokens,
+                textForRange(row.rightTextRange), row.rightTokens, row.rightChangeSpans,
                 paletteColor("textBase", QColor("#c8ccd4")),
                 paletteColor("successBorder", QColor("#38482f")));
   }
@@ -732,6 +733,7 @@ void DiffSurfaceItem::drawTextRun(QPainter* painter,
                                   const QRectF& clipRect,
                                   const QString& text,
                                   const std::vector<DiffTokenSpan>& tokens,
+                                  const std::vector<DiffTokenSpan>& changeSpans,
                                   const QColor& textColor,
                                   const QColor& tokenBackground) const {
   painter->save();
@@ -741,29 +743,30 @@ void DiffSurfaceItem::drawTextRun(QPainter* painter,
   const QFontMetricsF metrics(textFont);
   painter->setFont(textFont);
 
+  for (const DiffTokenSpan& span : changeSpans) {
+    const int start = std::max(0, span.start);
+    const int end = std::min(static_cast<int>(text.size()), span.start + span.length);
+    if (end <= start) {
+      continue;
+    }
+    const qreal startX = baseline.x() + metrics.horizontalAdvance(text.left(start));
+    const qreal spanWidth = metrics.horizontalAdvance(text.mid(start, end - start));
+    const QRectF spanRect(startX - 1.0, baseline.y() - metrics.ascent() - 1.0,
+                          spanWidth + 2.0, metrics.height() + 2.0);
+    painter->fillRect(spanRect, tokenBackground);
+  }
+
   bool hasSyntax = false;
   auto sortedTokens = tokens;
-  if (!sortedTokens.empty() && !text.isEmpty()) {
+  if (!sortedTokens.empty()) {
     std::sort(sortedTokens.begin(), sortedTokens.end(), [](const DiffTokenSpan& lhs, const DiffTokenSpan& rhs) {
       return lhs.start < rhs.start;
     });
-
-    for (const DiffTokenSpan& token : sortedTokens) {
-      const int start = std::max(0, token.start);
-      const int end = std::min(static_cast<int>(text.size()), token.start + token.length);
-      if (end <= start) {
-        continue;
-      }
-
-      if (token.syntaxKind != SyntaxTokenKind::None) {
+    for (const auto& t : sortedTokens) {
+      if (t.syntaxKind != SyntaxTokenKind::None) {
         hasSyntax = true;
+        break;
       }
-
-      const qreal startX = baseline.x() + metrics.horizontalAdvance(text.left(start));
-      const qreal tokenWidth = metrics.horizontalAdvance(text.mid(start, end - start));
-      const QRectF tokenRect(startX - 1.0, baseline.y() - metrics.ascent() - 1.0,
-                             tokenWidth + 2.0, metrics.height() + 2.0);
-      painter->fillRect(tokenRect, tokenBackground);
     }
   }
 

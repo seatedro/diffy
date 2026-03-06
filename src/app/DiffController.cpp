@@ -19,10 +19,7 @@ DiffController::DiffController(QObject* parent)
 
   hasDifftastic_ = !QStandardPaths::findExecutable("difft").isEmpty();
 
-  const QString grammarPaths = QString::fromLocal8Bit(qgetenv("DIFFY_GRAMMAR_PATHS"));
-  if (!grammarPaths.isEmpty()) {
-    languageRegistry_.discoverGrammars(grammarPaths.toStdString());
-  }
+  languageRegistry_.loadBuiltinGrammars();
   builtinRenderer_.setSyntax(&languageRegistry_, &highlighter_);
 
   if (!repoPath_.isEmpty()) {

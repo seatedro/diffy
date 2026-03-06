@@ -37,6 +37,7 @@ void DiffDisplayModel::rebuild(DiffLayoutMode mode, double rowHeight, double hun
       row.oldLine = sourceRow.oldLine;
       row.newLine = sourceRow.newLine;
       row.tokens = sourceRow.tokens;
+      row.changeSpans = sourceRow.changeSpans;
       row.textRange = sourceRow.textRange;
       appendRow(std::move(row));
     }
@@ -99,6 +100,7 @@ void DiffDisplayModel::rebuild(DiffLayoutMode mode, double rowHeight, double hun
           row.leftKind = DiffLineKind::Deletion;
           row.leftLine = left.oldLine;
           row.leftTokens = left.tokens;
+          row.leftChangeSpans = left.changeSpans;
           row.leftTextRange = left.textRange;
           row.oldLine = left.oldLine;
         }
@@ -108,6 +110,7 @@ void DiffDisplayModel::rebuild(DiffLayoutMode mode, double rowHeight, double hun
           row.rightKind = DiffLineKind::Addition;
           row.rightLine = right.newLine;
           row.rightTokens = right.tokens;
+          row.rightChangeSpans = right.changeSpans;
           row.rightTextRange = right.textRange;
           row.newLine = right.newLine;
         }

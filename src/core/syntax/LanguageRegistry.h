@@ -11,27 +11,19 @@ namespace diffy {
 
 struct GrammarInfo {
   std::string name;
-  std::string parserPath;
-  std::string highlightsQuery;
+  std::string_view highlightsQuery;
   const TSLanguage* language = nullptr;
-  void* dlHandle = nullptr;
 };
 
 class LanguageRegistry {
  public:
   LanguageRegistry();
-  ~LanguageRegistry();
 
-  LanguageRegistry(const LanguageRegistry&) = delete;
-  LanguageRegistry& operator=(const LanguageRegistry&) = delete;
-
-  void discoverGrammars(const std::string& searchPaths);
+  void loadBuiltinGrammars();
   const GrammarInfo* grammarForExtension(std::string_view extension) const;
   const GrammarInfo* grammarForName(std::string_view name) const;
 
  private:
-  bool loadGrammar(GrammarInfo& info);
-
   std::vector<GrammarInfo> grammars_;
   std::unordered_map<std::string, size_t> extensionMap_;
   std::unordered_map<std::string, size_t> nameMap_;

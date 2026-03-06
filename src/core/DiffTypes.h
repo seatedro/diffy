@@ -26,6 +26,7 @@ struct DiffLine {
   LineKind kind = LineKind::Context;
   std::string text;
   std::vector<TokenSpan> tokens;
+  std::vector<TokenSpan> changeSpans;
 };
 
 struct Hunk {

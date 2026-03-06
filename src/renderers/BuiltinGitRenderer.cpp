@@ -235,11 +235,11 @@ bool BuiltinGitRenderer::render(const RenderRequest& request, DiffDocument* out,
         if (gitLine->origin == GIT_DIFF_LINE_ADDITION) {
           line.kind = LineKind::Addition;
           line.oldLine = -1;
-          line.tokens = fullLineTokens(line.text);
+          line.changeSpans = fullLineTokens(line.text);
         } else if (gitLine->origin == GIT_DIFF_LINE_DELETION) {
           line.kind = LineKind::Deletion;
           line.newLine = -1;
-          line.tokens = fullLineTokens(line.text);
+          line.changeSpans = fullLineTokens(line.text);
         } else {
           line.kind = LineKind::Context;
         }
@@ -266,8 +266,8 @@ bool BuiltinGitRenderer::render(const RenderRequest& request, DiffDocument* out,
           DiffLine& add = hunk.lines[addStart + pairIdx];
           auto wordResult = computeWordDiff(del.text, add.text);
           if (!wordResult.leftTokens.empty() || !wordResult.rightTokens.empty()) {
-            del.tokens = std::move(wordResult.leftTokens);
-            add.tokens = std::move(wordResult.rightTokens);
+            del.changeSpans = std::move(wordResult.leftTokens);
+            add.changeSpans = std::move(wordResult.rightTokens);
           }
         }
       }
@@ -360,13 +360,6 @@ void BuiltinGitRenderer::applySyntaxHighlighting(DiffDocument& document) const {
         }
 
         DiffLine& line = file.hunks[ref.hunkIdx].lines[ref.lineIdx];
-        bool hasWordDiffTokens = false;
-        for (const auto& t : line.tokens) {
-          if (t.syntaxKind == SyntaxTokenKind::None) {
-            hasWordDiffTokens = true;
-            break;
-          }
-        }
 
         std::vector<TokenSpan> syntaxTokens;
         for (size_t si = tokenIdx; si < tokens.size(); ++si) {
@@ -386,18 +379,7 @@ void BuiltinGitRenderer::applySyntaxHighlighting(DiffDocument& document) const {
         }
 
         if (!syntaxTokens.empty()) {
-          if (hasWordDiffTokens) {
-            for (auto& t : line.tokens) {
-              for (const auto& st : syntaxTokens) {
-                if (st.start <= t.start && st.start + st.length >= t.start + t.length) {
-                  t.syntaxKind = st.syntaxKind;
-                  break;
-                }
-              }
-            }
-          } else {
-            line.tokens = std::move(syntaxTokens);
-          }
+          line.tokens = std::move(syntaxTokens);
         }
       }
     };

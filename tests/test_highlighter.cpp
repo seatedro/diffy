@@ -1,7 +1,5 @@
 #include <QTest>
 
-#include <cstdlib>
-
 #include "core/SyntaxTypes.h"
 #include "core/syntax/Highlighter.h"
 #include "core/syntax/LanguageRegistry.h"
@@ -13,24 +11,12 @@ class TestHighlighter : public QObject {
   diffy::LanguageRegistry registry_;
   diffy::Highlighter highlighter_;
 
-  bool hasGrammars_ = false;
-
  private slots:
   void initTestCase() {
-    const char* paths = std::getenv("DIFFY_GRAMMAR_PATHS");
-    if (paths != nullptr && paths[0] != '\0') {
-      registry_.discoverGrammars(paths);
-      hasGrammars_ = registry_.grammarForName("cpp") != nullptr;
-    }
-    if (!hasGrammars_) {
-      qWarning("DIFFY_GRAMMAR_PATHS not set or no cpp grammar found; skipping grammar-dependent tests");
-    }
+    registry_.loadBuiltinGrammars();
   }
 
   void extensionMapping() {
-    if (!hasGrammars_) {
-      QSKIP("No grammars available");
-    }
     QVERIFY(registry_.grammarForExtension(".cpp") != nullptr);
     QVERIFY(registry_.grammarForExtension(".rs") != nullptr);
     QVERIFY(registry_.grammarForExtension(".py") != nullptr);
@@ -38,9 +24,6 @@ class TestHighlighter : public QObject {
   }
 
   void cppKeyword() {
-    if (!hasGrammars_) {
-      QSKIP("No grammars available");
-    }
     const auto* grammar = registry_.grammarForExtension(".cpp");
     QVERIFY(grammar != nullptr);
 
@@ -62,9 +45,6 @@ class TestHighlighter : public QObject {
   }
 
   void pythonString() {
-    if (!hasGrammars_) {
-      QSKIP("No grammars available");
-    }
     const auto* grammar = registry_.grammarForExtension(".py");
     QVERIFY(grammar != nullptr);
 
@@ -82,9 +62,6 @@ class TestHighlighter : public QObject {
   }
 
   void emptySource() {
-    if (!hasGrammars_) {
-      QSKIP("No grammars available");
-    }
     const auto* grammar = registry_.grammarForExtension(".cpp");
     auto tokens = highlighter_.highlight(*grammar, "");
     QVERIFY(tokens.empty());

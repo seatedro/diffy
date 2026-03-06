@@ -94,8 +94,9 @@ Rectangle {
         implicitHeight: !root.hasData() ? 76 : 34
 
         Column {
-            anchors.fill: parent
-            anchors.margins: root.hasData() ? 4 : 6
+            x: root.hasData() ? 4 : 6
+            y: root.hasData() ? 4 : 6
+            width: parent.width - 2 * (root.hasData() ? 4 : 6)
             spacing: 3
 
             RowLayout {
@@ -154,7 +155,6 @@ Rectangle {
 
             Column {
                 visible: !root.hasData()
-                anchors.centerIn: parent
                 width: parent.width
                 spacing: 6
 
@@ -272,6 +272,8 @@ Rectangle {
             DiffSurface {
                 id: surface
                 objectName: "diffSurface"
+                x: diffViewport.contentX
+                y: diffViewport.contentY
                 width: diffViewport.width
                 height: diffViewport.height
                 rowsModel: root.rowsModel

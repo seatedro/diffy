@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(diffy LANGUAGES CXX)
+project(diffy LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,6 +16,8 @@ pkg_check_modules(LIBGIT2 REQUIRED libgit2)
 pkg_check_modules(TREESITTER REQUIRED tree-sitter)
 
 qt_standard_project_setup()
+
+add_subdirectory(vendor/grammars)
 
 add_library(diffy_core STATIC
   src/core/CompareSpec.cpp
@@ -37,7 +39,7 @@ target_include_directories(diffy_core PUBLIC
 target_link_libraries(diffy_core PUBLIC
   ${LIBGIT2_LIBRARIES}
   ${TREESITTER_LIBRARIES}
-  ${CMAKE_DL_LIBS}
+  diffy_grammars
 )
 
 target_compile_options(diffy_core PRIVATE ${LIBGIT2_CFLAGS_OTHER} ${TREESITTER_CFLAGS_OTHER})

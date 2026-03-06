@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 project(diffy LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -17,13 +17,27 @@ pkg_check_modules(TREESITTER REQUIRED tree-sitter)
 
 qt_standard_project_setup()
 
-qt_add_executable(diffy
-  src/main.cpp
+add_library(diffy_core STATIC
   src/core/CompareSpec.cpp
   src/core/DiffTypes.cpp
   src/core/GitHubPullRequest.cpp
   src/core/GitRepositoryService.cpp
   src/core/UnifiedDiffParser.cpp
+)
+
+target_include_directories(diffy_core PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${LIBGIT2_INCLUDE_DIRS}
+)
+
+target_link_libraries(diffy_core PUBLIC
+  ${LIBGIT2_LIBRARIES}
+)
+
+target_compile_options(diffy_core PRIVATE ${LIBGIT2_CFLAGS_OTHER})
+
+qt_add_executable(diffy
+  src/main.cpp
   src/app/DiffController.cpp
   src/app/QtDiffTypes.cpp
   src/model/DiffDisplayModel.cpp
@@ -36,21 +50,20 @@ qt_add_executable(diffy
 
 target_include_directories(diffy PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
-  ${LIBGIT2_INCLUDE_DIRS}
   ${TREESITTER_INCLUDE_DIRS}
 )
 
 target_link_libraries(diffy PRIVATE
+  diffy_core
   Qt6::Core
   Qt6::Gui
   Qt6::Qml
   Qt6::Quick
   Qt6::Widgets
-  ${LIBGIT2_LIBRARIES}
   ${TREESITTER_LIBRARIES}
 )
 
-target_compile_options(diffy PRIVATE ${LIBGIT2_CFLAGS_OTHER} ${TREESITTER_CFLAGS_OTHER})
+target_compile_options(diffy PRIVATE ${TREESITTER_CFLAGS_OTHER})
 
 qt_add_qml_module(diffy
   URI Diffy

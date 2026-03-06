@@ -1,8 +1,10 @@
-#include "core/DiffController.h"
+#include "app/DiffController.h"
 
 #include <QFileDialog>
 #include <QStandardPaths>
 
+#include "app/QtDiffTypes.h"
+#include "core/GitHubPullRequest.h"
 #include "core/DiffTypes.h"
 
 namespace diffy {
@@ -18,9 +20,13 @@ DiffController::DiffController(QObject* parent)
   hasDifftastic_ = !QStandardPaths::findExecutable("difft").isEmpty();
 
   if (!repoPath_.isEmpty()) {
-    QString openError;
-    if (gitService_.openRepository(repoPath_, &openError)) {
-      refs_ = gitService_.listReferences(nullptr);
+    std::string openError;
+    if (gitService_.openRepository(repoPath_.toStdString(), &openError)) {
+      const auto refs = gitService_.listReferences(nullptr);
+      refs_.clear();
+      for (const std::string& ref : refs) {
+        refs_.push_back(QString::fromStdString(ref));
+      }
       if (leftRef_.isEmpty() && !refs_.isEmpty()) {
         leftRef_ = refs_.first();
       }
@@ -146,18 +152,22 @@ bool DiffController::openRepository(const QString& path) {
 
   const bool repoChanged = repoPath_ != path;
 
-  QString error;
-  if (!gitService_.openRepository(path, &error)) {
-    setError(error);
+  std::string error;
+  if (!gitService_.openRepository(path.toStdString(), &error)) {
+    setError(QString::fromStdString(error));
     return false;
   }
 
   repoPath_ = path;
   emit repoPathChanged();
 
-  refs_ = gitService_.listReferences(&error);
-  if (!error.isEmpty()) {
-    setError(error);
+  refs_.clear();
+  const auto refs = gitService_.listReferences(&error);
+  for (const std::string& ref : refs) {
+    refs_.push_back(QString::fromStdString(ref));
+  }
+  if (!error.empty()) {
+    setError(QString::fromStdString(error));
   }
   emit refsChanged();
 
@@ -209,17 +219,45 @@ void DiffController::compare() {
     }
   }
 
-  QString resolvedLeft;
-  QString resolvedRight;
-  QString resolveError;
+  std::string resolvedLeft;
+  std::string resolvedRight;
+  std::string resolveError;
 
-  if (!gitService_.resolveComparison(leftRef_, rightRef_, compareModeFromString(compareMode_), &resolvedLeft,
-                                     &resolvedRight, &resolveError)) {
-    setError(resolveError);
+  QString pullRequestUrl;
+  if (parseGitHubPullRequestUrl(leftRef_.toStdString()).has_value()) {
+    pullRequestUrl = leftRef_;
+  }
+  if (parseGitHubPullRequestUrl(rightRef_.toStdString()).has_value()) {
+    if (!pullRequestUrl.isEmpty() && rightRef_ != pullRequestUrl) {
+      setError("Only one GitHub pull request URL can be compared at a time");
+      return;
+    }
+    pullRequestUrl = rightRef_;
+  }
+
+  if (!pullRequestUrl.isEmpty()) {
+    std::string pullLeft;
+    std::string pullRight;
+    std::string pullError;
+    if (!gitService_.resolvePullRequestComparison(pullRequestUrl.toStdString(), &pullLeft, &pullRight,
+                                                  &pullError)) {
+      setError(QString::fromStdString(pullError));
+      return;
+    }
+    resolvedLeft = pullLeft;
+    resolvedRight = pullRight;
+    if (compareMode_ != "three-dot") {
+      compareMode_ = "three-dot";
+      emit compareModeChanged();
+    }
+  } else if (!gitService_.resolveComparison(leftRef_.toStdString(), rightRef_.toStdString(),
+                                            compareModeFromString(compareMode_.toStdString()), &resolvedLeft,
+                                            &resolvedRight, &resolveError)) {
+    setError(QString::fromStdString(resolveError));
     return;
   }
 
-  RenderRequest request{repoPath_, resolvedLeft, resolvedRight};
+  RenderRequest request{repoPath_, QString::fromStdString(resolvedLeft), QString::fromStdString(resolvedRight)};
   DiffDocument document;
 
   IDiffRenderer* renderer = &builtinRenderer_;
@@ -272,7 +310,7 @@ QVariantMap DiffController::selectedFile() const {
 }
 
 void DiffController::rebuildSelectedFileRows() {
-  if (selectedFileIndex_ >= 0 && selectedFileIndex_ < fileDiffs_.size()) {
+  if (selectedFileIndex_ >= 0 && selectedFileIndex_ < static_cast<int>(fileDiffs_.size())) {
     selectedFileRowsModel_.setRows(flattenFileRows(fileDiffs_.at(selectedFileIndex_)));
   } else {
     selectedFileRowsModel_.clear();

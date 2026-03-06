@@ -6,6 +6,7 @@ Native Qt/C++ Git diff viewer with a modern PR-style interface.
 Initial v1 scaffold with:
 - Repository open + ref listing
 - Compare modes: `..`, `...`, single commit
+- GitHub PR URL compare support for open local clones
 - Renderer abstraction with built-in renderer and optional difftastic renderer
 - QML desktop UI shell
 

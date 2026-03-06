@@ -20,10 +20,10 @@ struct FlattenedDiffRow {
   int oldLine = -1;
   int newLine = -1;
   QString text;
-  QVector<TokenSpan> tokens;
+  std::vector<TokenSpan> tokens;
 };
 
-QVector<FlattenedDiffRow> flattenFileRows(const FileDiff& file);
+std::vector<FlattenedDiffRow> flattenFileRows(const FileDiff& file);
 
 class DiffRowListModel : public QAbstractListModel {
   Q_OBJECT
@@ -49,15 +49,15 @@ class DiffRowListModel : public QAbstractListModel {
 
   int count() const;
   void clear();
-  void setRows(QVector<FlattenedDiffRow> rows);
+  void setRows(std::vector<FlattenedDiffRow> rows);
 
-  const QVector<FlattenedDiffRow>& rows() const;
+  const std::vector<FlattenedDiffRow>& rows() const;
 
  signals:
   void countChanged();
 
  private:
-  QVector<FlattenedDiffRow> rows_;
+  std::vector<FlattenedDiffRow> rows_;
 };
 
 }  // namespace diffy

@@ -1,7 +1,8 @@
 #pragma once
 
-#include <QString>
-#include <QStringList>
+#include <string>
+#include <string_view>
+#include <vector>
 
 #include <git2.h>
 
@@ -17,22 +18,27 @@ class GitRepositoryService {
   GitRepositoryService(const GitRepositoryService&) = delete;
   GitRepositoryService& operator=(const GitRepositoryService&) = delete;
 
-  bool openRepository(const QString& path, QString* error);
+  bool openRepository(const std::string& path, std::string* error);
   bool isOpen() const;
-  QString repositoryPath() const;
+  std::string repositoryPath() const;
 
-  QStringList listReferences(QString* error) const;
+  std::vector<std::string> listReferences(std::string* error) const;
 
-  bool resolveComparison(const QString& leftRef,
-                         const QString& rightRef,
+  bool resolveComparison(std::string_view leftRef,
+                         std::string_view rightRef,
                          CompareMode mode,
-                         QString* outLeftRevision,
-                         QString* outRightRevision,
-                         QString* error) const;
+                         std::string* outLeftRevision,
+                         std::string* outRightRevision,
+                         std::string* error) const;
+
+  bool resolvePullRequestComparison(const std::string& pullRequestUrl,
+                                    std::string* outLeftRevision,
+                                    std::string* outRightRevision,
+                                    std::string* error) const;
 
  private:
   git_repository* repo_ = nullptr;
-  QString repositoryPath_;
+  std::string repositoryPath_;
 };
 
 }  // namespace diffy

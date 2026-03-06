@@ -1,6 +1,7 @@
 #pragma once
 
-#include <QString>
+#include <string>
+#include <string_view>
 
 namespace diffy {
 
@@ -21,21 +22,21 @@ enum class RendererKind {
 };
 
 struct CompareSpec {
-  QString repoPath;
-  QString leftRef;
-  QString rightRef;
+  std::string repoPath;
+  std::string leftRef;
+  std::string rightRef;
   CompareMode mode = CompareMode::TwoDot;
   LayoutMode layout = LayoutMode::Unified;
   RendererKind renderer = RendererKind::Builtin;
 };
 
-QString compareModeToString(CompareMode mode);
-CompareMode compareModeFromString(const QString& value);
+std::string_view compareModeToString(CompareMode mode);
+CompareMode compareModeFromString(std::string_view value);
 
-QString layoutModeToString(LayoutMode mode);
-LayoutMode layoutModeFromString(const QString& value);
+std::string_view layoutModeToString(LayoutMode mode);
+LayoutMode layoutModeFromString(std::string_view value);
 
-QString rendererKindToString(RendererKind kind);
-RendererKind rendererKindFromString(const QString& value);
+std::string_view rendererKindToString(RendererKind kind);
+RendererKind rendererKindFromString(std::string_view value);
 
 }  // namespace diffy

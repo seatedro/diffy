@@ -9,14 +9,15 @@ QString rowTypeToString(FlattenedDiffRow::RowType rowType) {
 
 }  // namespace
 
-QVector<FlattenedDiffRow> flattenFileRows(const FileDiff& file) {
-  QVector<FlattenedDiffRow> rows;
-  for (qsizetype hunkIndex = 0; hunkIndex < file.hunks.size(); ++hunkIndex) {
+std::vector<FlattenedDiffRow> flattenFileRows(const FileDiff& file) {
+  std::vector<FlattenedDiffRow> rows;
+  rows.reserve(file.hunks.size());
+  for (size_t hunkIndex = 0; hunkIndex < file.hunks.size(); ++hunkIndex) {
     const Hunk& hunk = file.hunks.at(hunkIndex);
     rows.push_back(FlattenedDiffRow{
         .rowType = FlattenedDiffRow::RowType::Hunk,
         .hunkIndex = static_cast<int>(hunkIndex),
-        .header = hunk.header,
+        .header = QString::fromUtf8(hunk.header),
     });
 
     for (const DiffLine& line : hunk.lines) {
@@ -26,7 +27,7 @@ QVector<FlattenedDiffRow> flattenFileRows(const FileDiff& file) {
           .kind = line.kind,
           .oldLine = line.oldLine,
           .newLine = line.newLine,
-          .text = line.text,
+          .text = QString::fromUtf8(line.text),
           .tokens = line.tokens,
       });
     }
@@ -57,7 +58,8 @@ QVariant DiffRowListModel::data(const QModelIndex& index, int role) const {
     case HeaderRole:
       return row.header;
     case KindRole:
-      return lineKindToString(row.kind);
+      return QString::fromLatin1(lineKindToString(row.kind).data(),
+                                 static_cast<int>(lineKindToString(row.kind).size()));
     case OldLineRole:
       return row.oldLine;
     case NewLineRole:
@@ -65,7 +67,7 @@ QVariant DiffRowListModel::data(const QModelIndex& index, int role) const {
     case TextRole:
       return row.text;
     case TokenCountRole:
-      return row.tokens.size();
+      return static_cast<int>(row.tokens.size());
     default:
       return {};
   }
@@ -92,17 +94,17 @@ void DiffRowListModel::clear() {
   setRows({});
 }
 
-void DiffRowListModel::setRows(QVector<FlattenedDiffRow> rows) {
-  const int previousCount = rows_.size();
+void DiffRowListModel::setRows(std::vector<FlattenedDiffRow> rows) {
+  const int previousCount = static_cast<int>(rows_.size());
   beginResetModel();
   rows_ = std::move(rows);
   endResetModel();
-  if (previousCount != rows_.size()) {
+  if (previousCount != static_cast<int>(rows_.size())) {
     emit countChanged();
   }
 }
 
-const QVector<FlattenedDiffRow>& DiffRowListModel::rows() const {
+const std::vector<FlattenedDiffRow>& DiffRowListModel::rows() const {
   return rows_;
 }
 

@@ -30,7 +30,7 @@ std::vector<DiffTokenSpan> parseTokens(const QVariantList& tokenValues) {
   return tokens;
 }
 
-std::vector<DiffTokenSpan> parseTokens(const QVector<TokenSpan>& tokenValues) {
+std::vector<DiffTokenSpan> parseTokens(const std::vector<TokenSpan>& tokenValues) {
   std::vector<DiffTokenSpan> tokens;
   tokens.reserve(tokenValues.size());
   for (const TokenSpan& tokenValue : tokenValues) {

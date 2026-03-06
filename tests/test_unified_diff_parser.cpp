@@ -9,7 +9,7 @@ class UnifiedDiffParserTest : public QObject {
 
  private slots:
   void parsesSingleFilePatch() {
-    const QString patch =
+    const std::string patch =
         "diff --git a/src/a.cpp b/src/a.cpp\n"
         "index 111..222 100644\n"
         "--- a/src/a.cpp\n"
@@ -25,13 +25,13 @@ class UnifiedDiffParserTest : public QObject {
     DiffDocument doc = parser.parse("left", "right", patch);
 
     QCOMPARE(doc.files.size(), 1);
-    const FileDiff file = doc.files.first();
-    QCOMPARE(file.path, QString("src/a.cpp"));
+    const FileDiff file = doc.files.front();
+    QCOMPARE(file.path, std::string("src/a.cpp"));
     QCOMPARE(file.hunks.size(), 1);
     QCOMPARE(file.additions, 2);
     QCOMPARE(file.deletions, 1);
 
-    const Hunk hunk = file.hunks.first();
+    const Hunk hunk = file.hunks.front();
     QCOMPARE(hunk.lines.size(), 5);
     QCOMPARE(hunk.lines.at(1).kind, LineKind::Deletion);
     QCOMPARE(hunk.lines.at(2).kind, LineKind::Addition);

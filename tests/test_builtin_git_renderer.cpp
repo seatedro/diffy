@@ -78,7 +78,7 @@ QString createRepoWithMixedChanges() {
   return repoDir->path();
 }
 
-const FileDiff* findFile(const QVector<FileDiff>& files, const QString& path) {
+const FileDiff* findFile(const std::vector<FileDiff>& files, std::string_view path) {
   for (const FileDiff& file : files) {
     if (file.path == path) {
       return &file;
@@ -156,22 +156,22 @@ class BuiltinGitRendererTest : public QObject {
 
     const FileDiff* modified = findFile(document.files, "modify.txt");
     QVERIFY(modified != nullptr);
-    QCOMPARE(modified->status, QString("M"));
+    QCOMPARE(QString::fromUtf8(modified->status), QString("M"));
     QCOMPARE(modified->additions, 2);
     QCOMPARE(modified->deletions, 1);
-    QVERIFY(!modified->hunks.isEmpty());
+    QVERIFY(!modified->hunks.empty());
 
     const FileDiff* added = findFile(document.files, "added.txt");
     QVERIFY(added != nullptr);
-    QCOMPARE(added->status, QString("A"));
+    QCOMPARE(QString::fromUtf8(added->status), QString("A"));
 
     const FileDiff* deleted = findFile(document.files, "delete.txt");
     QVERIFY(deleted != nullptr);
-    QCOMPARE(deleted->status, QString("D"));
+    QCOMPARE(QString::fromUtf8(deleted->status), QString("D"));
 
     const FileDiff* renamed = findFile(document.files, "renamed.txt");
     QVERIFY(renamed != nullptr);
-    QCOMPARE(renamed->status, QString("R"));
+    QCOMPARE(QString::fromUtf8(renamed->status), QString("R"));
 
     const FileDiff* binary = findFile(document.files, "binary.bin");
     QVERIFY(binary != nullptr);
@@ -185,10 +185,10 @@ class BuiltinGitRendererTest : public QObject {
     const auto gitStatuses = parseNameStatus(nameStatusOutput);
     const auto gitNumstat = parseNumstat(numstatOutput);
 
-    QCOMPARE(gitStatuses.value("modify.txt"), modified->status);
-    QCOMPARE(gitStatuses.value("added.txt"), added->status);
-    QCOMPARE(gitStatuses.value("delete.txt"), deleted->status);
-    QCOMPARE(gitStatuses.value("renamed.txt"), renamed->status);
+    QCOMPARE(gitStatuses.value("modify.txt"), QString::fromUtf8(modified->status));
+    QCOMPARE(gitStatuses.value("added.txt"), QString::fromUtf8(added->status));
+    QCOMPARE(gitStatuses.value("delete.txt"), QString::fromUtf8(deleted->status));
+    QCOMPARE(gitStatuses.value("renamed.txt"), QString::fromUtf8(renamed->status));
     QCOMPARE(gitStatuses.value("binary.bin"), QString("M"));
 
     QCOMPARE(gitNumstat.value("modify.txt").first, modified->additions);

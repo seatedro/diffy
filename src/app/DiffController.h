@@ -4,6 +4,7 @@
 #include <QSettings>
 #include <QStringList>
 #include <QVariant>
+#include <vector>
 
 #include "core/CompareSpec.h"
 #include "core/GitRepositoryService.h"
@@ -105,7 +106,7 @@ class DiffController : public QObject {
   QString compareMode_ = "two-dot";
   QString renderer_ = "builtin";
   QString layoutMode_ = "unified";
-  QVector<FileDiff> fileDiffs_;
+  std::vector<FileDiff> fileDiffs_;
   QVariantList files_;
   DiffRowListModel selectedFileRowsModel_;
   int selectedFileIndex_ = -1;

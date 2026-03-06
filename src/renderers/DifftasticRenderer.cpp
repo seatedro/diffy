@@ -92,6 +92,10 @@ QString extractSideText(const QJsonObject& side, QVector<TokenSpan>* outTokens) 
   return text;
 }
 
+std::vector<TokenSpan> toStdTokens(const QVector<TokenSpan>& tokens) {
+  return {tokens.begin(), tokens.end()};
+}
+
 int lineNumberFromSide(const QJsonObject& side) {
   if (!side.contains("line_number")) {
     return -1;
@@ -147,8 +151,8 @@ bool DifftasticRenderer::render(const RenderRequest& request, DiffDocument* out,
   }
 
   DiffDocument doc;
-  doc.leftRevision = request.leftRevision;
-  doc.rightRevision = request.rightRevision;
+  doc.leftRevision = request.leftRevision.toStdString();
+  doc.rightRevision = request.rightRevision.toStdString();
 
   QTemporaryDir tempDir;
   if (!tempDir.isValid()) {
@@ -229,11 +233,11 @@ bool DifftasticRenderer::render(const RenderRequest& request, DiffDocument* out,
     if (!parseDifftasticJson(difft.readAllStandardOutput(), changed.newPath, changed.status, &fileDiff, error)) {
       return false;
     }
-    if (fileDiff.path.isEmpty()) {
-      fileDiff.path = changed.newPath;
+    if (fileDiff.path.empty()) {
+      fileDiff.path = changed.newPath.toStdString();
     }
-    if (fileDiff.status.isEmpty()) {
-      fileDiff.status = changed.status;
+    if (fileDiff.status.empty()) {
+      fileDiff.status = changed.status.toStdString();
     }
 
     doc.files.push_back(fileDiff);
@@ -278,7 +282,7 @@ bool DifftasticRenderer::parseDifftasticJson(const QByteArray& json,
   }
 
   FileDiff file;
-  file.path = fileObject.value("path").toString(fallbackPath);
+  file.path = fileObject.value("path").toString(fallbackPath).toStdString();
 
   const QString status = fileObject.value("status").toString();
   if (status == "created") {
@@ -288,7 +292,7 @@ bool DifftasticRenderer::parseDifftasticJson(const QByteArray& json,
   } else if (status == "unchanged") {
     file.status = "U";
   } else {
-    file.status = fallbackStatus;
+    file.status = fallbackStatus.toStdString();
   }
 
   if (fileObject.value("language").toString() == "binary") {
@@ -327,21 +331,23 @@ bool DifftasticRenderer::parseDifftasticJson(const QByteArray& json,
       const bool hasRhs = !rhs.isEmpty() && (!rhsText.isEmpty() || rhsLine > 0);
 
       if (hasLhs && hasRhs && lhsText == rhsText) {
-        hunk.lines.push_back(DiffLine{lhsLine, rhsLine, LineKind::Context, lhsText, {}});
+        hunk.lines.push_back(DiffLine{lhsLine, rhsLine, LineKind::Context, lhsText.toStdString(), {}});
         continue;
       }
 
       if (hasLhs) {
-        hunk.lines.push_back(DiffLine{lhsLine, -1, LineKind::Deletion, lhsText, lhsTokens});
+        hunk.lines.push_back(
+            DiffLine{lhsLine, -1, LineKind::Deletion, lhsText.toStdString(), toStdTokens(lhsTokens)});
         file.deletions += 1;
       }
       if (hasRhs) {
-        hunk.lines.push_back(DiffLine{-1, rhsLine, LineKind::Addition, rhsText, rhsTokens});
+        hunk.lines.push_back(
+            DiffLine{-1, rhsLine, LineKind::Addition, rhsText.toStdString(), toStdTokens(rhsTokens)});
         file.additions += 1;
       }
     }
 
-    if (!hunk.lines.isEmpty()) {
+    if (!hunk.lines.empty()) {
       file.hunks.push_back(hunk);
     }
   }

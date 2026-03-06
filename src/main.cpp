@@ -17,7 +17,7 @@
 #include <QQuickWindow>
 #include <qqml.h>
 
-#include "core/DiffController.h"
+#include "app/DiffController.h"
 #include "ui/DiffSurfaceItem.h"
 
 namespace {

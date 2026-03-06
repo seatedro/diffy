@@ -2,9 +2,10 @@
 #include <QProcess>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QDir>
 #include <QtTest/QtTest>
 
-#include "core/DiffController.h"
+#include "app/DiffController.h"
 #include "model/DiffRowListModel.h"
 
 using namespace diffy;
@@ -66,6 +67,62 @@ QString initRepositoryWithoutDiff() {
          {"-c", "user.name=diffy", "-c", "user.email=diffy@example.com", "commit", "-m", "initial"});
 
   return repoDir->path();
+}
+
+struct GithubPullRequestFixture {
+  QString repoPath;
+  QString homePath;
+  QString pullRequestUrl;
+};
+
+GithubPullRequestFixture initRepositoryWithGithubPullRequest() {
+  auto* rootDir = new QTemporaryDir;
+  if (!rootDir->isValid()) {
+    delete rootDir;
+    return {};
+  }
+
+  const QString remotePath = rootDir->filePath("origin.git");
+  const QString seedPath = rootDir->filePath("seed");
+  const QString workPath = rootDir->filePath("work");
+  const QString homePath = rootDir->filePath("home");
+  QDir().mkpath(seedPath);
+  QDir().mkpath(homePath);
+
+  runGit(rootDir->path(), {"init", "--bare", remotePath});
+  runGit(rootDir->path(), {"init", seedPath});
+
+  writeFile(QDir(seedPath).filePath("feature.txt"), "base\n");
+  runGit(seedPath, {"add", "feature.txt"});
+  runGit(seedPath,
+         {"-c", "user.name=diffy", "-c", "user.email=diffy@example.com", "commit", "-m", "base"});
+  runGit(seedPath, {"branch", "-M", "main"});
+  runGit(seedPath, {"remote", "add", "origin", remotePath});
+  runGit(seedPath, {"push", "-u", "origin", "main"});
+
+  runGit(seedPath, {"checkout", "-b", "feature/pr-1"});
+  writeFile(QDir(seedPath).filePath("feature.txt"), "base\nfeature line\n");
+  runGit(seedPath, {"add", "feature.txt"});
+  runGit(seedPath,
+         {"-c", "user.name=diffy", "-c", "user.email=diffy@example.com", "commit", "-m", "feature"});
+  runGit(seedPath, {"push", "origin", "HEAD:refs/pull/1/head"});
+
+  runGit(seedPath, {"checkout", "main"});
+  runGit(seedPath,
+         {"-c", "user.name=diffy", "-c", "user.email=diffy@example.com", "merge", "--no-ff", "feature/pr-1", "-m",
+          "Merge PR 1"});
+  runGit(seedPath, {"push", "origin", "HEAD:refs/pull/1/merge"});
+
+  runGit(rootDir->path(), {"clone", remotePath, workPath});
+  runGit(workPath, {"remote", "set-url", "origin", "https://github.com/example/diffy.git"});
+
+  writeFile(QDir(homePath).filePath(".gitconfig"),
+            QString("[url \"file://%1\"]\n\tinsteadOf = https://github.com/example/diffy.git\n")
+                .arg(remotePath));
+
+  return {.repoPath = workPath,
+          .homePath = homePath,
+          .pullRequestUrl = "https://github.com/example/diffy/pull/1"};
 }
 
 bool rowKindsContain(const DiffRowListModel* rows, const QString& kind) {
@@ -146,6 +203,33 @@ class DiffControllerTest : public QObject {
     QCOMPARE(controller.selectedFileIndex(), -1);
     QVERIFY(controller.selectedFile().isEmpty());
     QCOMPARE(controller.selectedFileRowCount(), 0);
+  }
+
+  void compareSupportsGithubPullRequestUrl() {
+    const GithubPullRequestFixture fixture = initRepositoryWithGithubPullRequest();
+    QVERIFY(!fixture.repoPath.isEmpty());
+    QVERIFY(!fixture.homePath.isEmpty());
+
+    const QByteArray previousHome = qgetenv("HOME");
+    QVERIFY(qputenv("HOME", fixture.homePath.toUtf8()));
+
+    DiffController controller;
+    QVERIFY(controller.openRepository(fixture.repoPath));
+    controller.setLeftRef(fixture.pullRequestUrl);
+    controller.setRightRef(QString());
+    controller.compare();
+
+    if (previousHome.isEmpty()) {
+      qunsetenv("HOME");
+    } else {
+      QVERIFY(qputenv("HOME", previousHome));
+    }
+
+    QVERIFY2(controller.errorMessage().isEmpty(), qPrintable(controller.errorMessage()));
+    QCOMPARE(controller.compareMode(), QString("three-dot"));
+    QCOMPARE(controller.files().size(), 1);
+    QCOMPARE(controller.selectedFile().value("path").toString(), QString("feature.txt"));
+    QVERIFY(controller.selectedFileRowCount() > 0);
   }
 };
 

@@ -21,12 +21,14 @@ qt_add_executable(diffy
   src/main.cpp
   src/core/CompareSpec.cpp
   src/core/DiffTypes.cpp
+  src/core/GitHubPullRequest.cpp
   src/core/GitRepositoryService.cpp
   src/core/UnifiedDiffParser.cpp
+  src/app/DiffController.cpp
+  src/app/QtDiffTypes.cpp
   src/model/DiffDisplayModel.cpp
   src/model/DiffRowListModel.cpp
   src/text/TextRope.cpp
-  src/core/DiffController.cpp
   src/ui/DiffSurfaceItem.cpp
   src/renderers/BuiltinGitRenderer.cpp
   src/renderers/DifftasticRenderer.cpp

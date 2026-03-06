@@ -16,11 +16,11 @@ class CompareSpecTest : public QObject {
   }
 
   void roundtripsRendererAndLayout() {
-    QCOMPARE(rendererKindToString(rendererKindFromString("builtin")), QString("builtin"));
-    QCOMPARE(rendererKindToString(rendererKindFromString("difftastic")), QString("difftastic"));
+    QCOMPARE(rendererKindToString(rendererKindFromString("builtin")), std::string_view("builtin"));
+    QCOMPARE(rendererKindToString(rendererKindFromString("difftastic")), std::string_view("difftastic"));
 
-    QCOMPARE(layoutModeToString(layoutModeFromString("split")), QString("split"));
-    QCOMPARE(layoutModeToString(layoutModeFromString("anything")), QString("unified"));
+    QCOMPARE(layoutModeToString(layoutModeFromString("split")), std::string_view("split"));
+    QCOMPARE(layoutModeToString(layoutModeFromString("anything")), std::string_view("unified"));
   }
 };
 

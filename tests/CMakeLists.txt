@@ -38,10 +38,12 @@ add_test(NAME test_text_rope COMMAND test_text_rope)
 qt_add_executable(test_diff_controller
   test_diff_controller.cpp
   ../src/core/CompareSpec.cpp
-  ../src/core/DiffController.cpp
+  ../src/app/DiffController.cpp
   ../src/core/DiffTypes.cpp
+  ../src/core/GitHubPullRequest.cpp
   ../src/core/GitRepositoryService.cpp
   ../src/core/UnifiedDiffParser.cpp
+  ../src/app/QtDiffTypes.cpp
   ../src/model/DiffRowListModel.cpp
   ../src/renderers/BuiltinGitRenderer.cpp
   ../src/renderers/DifftasticRenderer.cpp

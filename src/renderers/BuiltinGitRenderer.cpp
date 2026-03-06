@@ -5,6 +5,11 @@
 namespace diffy {
 namespace {
 
+std::string toUtf8(const QString& value) {
+  const QByteArray utf8 = value.toUtf8();
+  return std::string(utf8.constData(), static_cast<size_t>(utf8.size()));
+}
+
 QString lastGitError(const QString& fallback) {
   if (const git_error* err = git_error_last(); err && err->message) {
     return QString::fromUtf8(err->message);
@@ -12,7 +17,7 @@ QString lastGitError(const QString& fallback) {
   return fallback;
 }
 
-QString mapDeltaStatus(git_delta_t status) {
+std::string mapDeltaStatus(git_delta_t status) {
   switch (status) {
     case GIT_DELTA_ADDED:
       return "A";
@@ -25,7 +30,7 @@ QString mapDeltaStatus(git_delta_t status) {
   }
 }
 
-QString normalizePatchText(const git_diff_line* line) {
+std::string normalizePatchText(const git_diff_line* line) {
   QByteArray content(line->content, static_cast<int>(line->content_len));
   if (content.endsWith('\n')) {
     content.chop(1);
@@ -33,14 +38,14 @@ QString normalizePatchText(const git_diff_line* line) {
   if (content.endsWith('\r')) {
     content.chop(1);
   }
-  return QString::fromUtf8(content);
+  return std::string(content.constData(), static_cast<size_t>(content.size()));
 }
 
-QVector<TokenSpan> fullLineTokens(const QString& text) {
-  if (text.isEmpty()) {
+std::vector<TokenSpan> fullLineTokens(const std::string& text) {
+  if (text.empty()) {
     return {};
   }
-  return QVector<TokenSpan>{TokenSpan{0, static_cast<int>(text.size())}};
+  return std::vector<TokenSpan>{TokenSpan{0, static_cast<int>(text.size())}};
 }
 
 bool lookupCommit(git_repository* repo, const QString& revision, git_commit** outCommit, QString* error) {
@@ -68,15 +73,15 @@ bool lookupCommit(git_repository* repo, const QString& revision, git_commit** ou
   return true;
 }
 
-QString pathForDelta(const git_diff_delta* delta) {
+std::string pathForDelta(const git_diff_delta* delta) {
   if (delta->status == GIT_DELTA_DELETED && delta->old_file.path != nullptr) {
-    return QString::fromUtf8(delta->old_file.path);
+    return delta->old_file.path;
   }
   if (delta->new_file.path != nullptr) {
-    return QString::fromUtf8(delta->new_file.path);
+    return delta->new_file.path;
   }
   if (delta->old_file.path != nullptr) {
-    return QString::fromUtf8(delta->old_file.path);
+    return delta->old_file.path;
   }
   return "unknown";
 }
@@ -145,8 +150,8 @@ bool BuiltinGitRenderer::render(const RenderRequest& request, DiffDocument* out,
   git_diff_find_similar(diff, &findOptions);
 
   DiffDocument document;
-  document.leftRevision = request.leftRevision;
-  document.rightRevision = request.rightRevision;
+  document.leftRevision = toUtf8(request.leftRevision);
+  document.rightRevision = toUtf8(request.rightRevision);
 
   const size_t deltaCount = git_diff_num_deltas(diff);
   for (size_t deltaIndex = 0; deltaIndex < deltaCount; ++deltaIndex) {
@@ -162,7 +167,7 @@ bool BuiltinGitRenderer::render(const RenderRequest& request, DiffDocument* out,
     git_patch* patch = nullptr;
     if (git_patch_from_diff(&patch, diff, deltaIndex) != 0) {
       if (error) {
-        *error = lastGitError(QString("Failed to build patch for %1").arg(file.path));
+        *error = lastGitError(QString("Failed to build patch for %1").arg(QString::fromUtf8(file.path)));
       }
       cleanup();
       return false;
@@ -193,7 +198,7 @@ bool BuiltinGitRenderer::render(const RenderRequest& request, DiffDocument* out,
       }
 
       Hunk hunk;
-      hunk.header = QString::fromUtf8(gitHunk->header, static_cast<int>(gitHunk->header_len)).trimmed();
+      hunk.header = QString::fromUtf8(gitHunk->header, static_cast<int>(gitHunk->header_len)).trimmed().toStdString();
       hunk.collapsed = false;
 
       for (size_t lineIndex = 0; lineIndex < lineCount; ++lineIndex) {

@@ -295,7 +295,7 @@ Window {
                     Layout.preferredWidth: window.compactControls ? 150 : 172
                     monospace: true
                     text: diffController.leftRef
-                    placeholderText: "Left ref"
+                    placeholderText: "Left ref or PR URL"
                     onSubmitted: runCompare()
                 }
 

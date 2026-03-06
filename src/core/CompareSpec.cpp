@@ -2,7 +2,7 @@
 
 namespace diffy {
 
-QString compareModeToString(CompareMode mode) {
+std::string_view compareModeToString(CompareMode mode) {
   switch (mode) {
     case CompareMode::TwoDot:
       return "two-dot";
@@ -14,7 +14,7 @@ QString compareModeToString(CompareMode mode) {
   return "two-dot";
 }
 
-CompareMode compareModeFromString(const QString& value) {
+CompareMode compareModeFromString(std::string_view value) {
   if (value == "three-dot") {
     return CompareMode::ThreeDot;
   }
@@ -24,28 +24,28 @@ CompareMode compareModeFromString(const QString& value) {
   return CompareMode::TwoDot;
 }
 
-QString layoutModeToString(LayoutMode mode) {
+std::string_view layoutModeToString(LayoutMode mode) {
   if (mode == LayoutMode::Split) {
     return "split";
   }
   return "unified";
 }
 
-LayoutMode layoutModeFromString(const QString& value) {
+LayoutMode layoutModeFromString(std::string_view value) {
   if (value == "split") {
     return LayoutMode::Split;
   }
   return LayoutMode::Unified;
 }
 
-QString rendererKindToString(RendererKind kind) {
+std::string_view rendererKindToString(RendererKind kind) {
   if (kind == RendererKind::Difftastic) {
     return "difftastic";
   }
   return "builtin";
 }
 
-RendererKind rendererKindFromString(const QString& value) {
+RendererKind rendererKindFromString(std::string_view value) {
   if (value == "difftastic") {
     return RendererKind::Difftastic;
   }

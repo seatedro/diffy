@@ -1,6 +1,6 @@
 #pragma once
 
-#include <QString>
+#include <string_view>
 
 #include "core/DiffTypes.h"
 
@@ -8,9 +8,9 @@ namespace diffy {
 
 class UnifiedDiffParser {
  public:
-  DiffDocument parse(const QString& leftRevision,
-                     const QString& rightRevision,
-                     const QString& diffText) const;
+  DiffDocument parse(std::string_view leftRevision,
+                     std::string_view rightRevision,
+                     std::string_view diffText) const;
 };
 
 }  // namespace diffy

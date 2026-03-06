@@ -3,6 +3,7 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QFileSystemWatcher>
 #include <QGuiApplication>
 #include <QDebug>
 #include <QImage>
@@ -18,6 +19,7 @@
 #include <qqml.h>
 
 #include "app/DiffController.h"
+#include "app/ThemeProvider.h"
 #include "ui/DiffSurfaceItem.h"
 
 namespace {
@@ -57,10 +59,11 @@ void printAutomationState(QObject* root, const diffy::DiffController& controller
   const int pickerVisible = controller.repositoryPickerVisible() ? 1 : 0;
   const QString errorText = controller.errorMessage().isEmpty() ? "none" : controller.errorMessage().simplified();
   const QString layout = controller.layoutMode().isEmpty() ? "none" : controller.layoutMode();
+  const QString currentView = controller.currentView();
 
   std::fprintf(stdout,
-               "DIFFY_STATE files=%d rows=%d selected=%d layout=%s surface_height=%.1f surface_width=%.1f item_width=%.1f item_height=%.1f display_rows=%d paint_count=%d picker_visible=%d error=%s\n",
-               static_cast<int>(controller.files().size()), controller.selectedFileRowCount(),
+               "DIFFY_STATE current_view=%s files=%d rows=%d selected=%d layout=%s surface_height=%.1f surface_width=%.1f item_width=%.1f item_height=%.1f display_rows=%d paint_count=%d picker_visible=%d error=%s\n",
+               qPrintable(currentView), static_cast<int>(controller.files().size()), controller.selectedFileRowCount(),
                controller.selectedFileIndex(), qPrintable(layout), surfaceHeight, surfaceWidth,
                surfaceItemWidth, surfaceItemHeight, displayRowCount, paintCount, pickerVisible, qPrintable(errorText));
   std::fflush(stdout);
@@ -178,6 +181,7 @@ int main(int argc, char* argv[]) {
                      }
                    });
 
+  diffy::ThemeProvider themeProvider;
   diffy::DiffController controller;
 
   QString automationError;
@@ -186,6 +190,7 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
+  engine.rootContext()->setContextProperty("theme", &themeProvider);
   engine.rootContext()->setContextProperty("diffController", &controller);
 
   const QUrl mainUrl(QStringLiteral("qrc:/Diffy/qml/Main.qml"));
@@ -223,7 +228,7 @@ int main(int argc, char* argv[]) {
   if (!startScrollY.isEmpty()) {
     bool ok = false;
     const double scrollY = startScrollY.toDouble(&ok);
-    if (ok) {
+    if (ok && controller.currentView() == "diff") {
       QTimer::singleShot(120, &app, [root, scrollY]() {
         if (QObject* viewport = root != nullptr ? root->findChild<QObject*>("diffViewport") : nullptr) {
           viewport->setProperty("contentY", scrollY);

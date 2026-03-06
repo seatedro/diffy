@@ -119,24 +119,25 @@ SmokeResult runDiffySmoke(const QString& repoPath, const QStringList& extraEnv) 
 
 QVariantMap parseStateLine(const QString& stdoutText) {
   const QRegularExpression linePattern(
-      R"(DIFFY_STATE files=(\d+) rows=(\d+) selected=(-?\d+) layout=([^\s]+) surface_height=([0-9.]+) surface_width=([0-9.]+) item_width=([0-9.]+) item_height=([0-9.]+) display_rows=(\d+) paint_count=(\d+) picker_visible=(\d+) error=(.+))");
+      R"(DIFFY_STATE current_view=([^\s]+) files=(\d+) rows=(\d+) selected=(-?\d+) layout=([^\s]+) surface_height=([0-9.-]+) surface_width=([0-9.-]+) item_width=([0-9.-]+) item_height=([0-9.-]+) display_rows=(-?\d+) paint_count=(-?\d+) picker_visible=(\d+) error=(.+))");
   const QRegularExpressionMatch match = linePattern.match(stdoutText);
   if (!match.hasMatch()) {
     return {};
   }
 
-  return QVariantMap{{"files", match.captured(1).toInt()},
-                     {"rows", match.captured(2).toInt()},
-                     {"selected", match.captured(3).toInt()},
-                     {"layout", match.captured(4)},
-                     {"surfaceHeight", match.captured(5).toDouble()},
-                     {"surfaceWidth", match.captured(6).toDouble()},
-                     {"itemWidth", match.captured(7).toDouble()},
-                     {"itemHeight", match.captured(8).toDouble()},
-                     {"displayRows", match.captured(9).toInt()},
-                     {"paintCount", match.captured(10).toInt()},
-                     {"pickerVisible", match.captured(11).toInt()},
-                     {"error", match.captured(12).trimmed()}};
+  return QVariantMap{{"currentView", match.captured(1)},
+                     {"files", match.captured(2).toInt()},
+                     {"rows", match.captured(3).toInt()},
+                     {"selected", match.captured(4).toInt()},
+                     {"layout", match.captured(5)},
+                     {"surfaceHeight", match.captured(6).toDouble()},
+                     {"surfaceWidth", match.captured(7).toDouble()},
+                     {"itemWidth", match.captured(8).toDouble()},
+                     {"itemHeight", match.captured(9).toDouble()},
+                     {"displayRows", match.captured(10).toInt()},
+                     {"paintCount", match.captured(11).toInt()},
+                     {"pickerVisible", match.captured(12).toInt()},
+                     {"error", match.captured(13).trimmed()}};
 }
 
 int sampleRegionDiversity(const QImage& image, int xStart, int xEnd, int yStart, int yEnd) {
@@ -189,6 +190,7 @@ class AppSmokeTest : public QObject {
 
     const QVariantMap state = parseStateLine(result.stdoutText);
     QVERIFY2(!state.isEmpty(), qPrintable(result.stdoutText));
+    QCOMPARE(state.value("currentView").toString(), QString("diff"));
     QVERIFY(state.value("files").toInt() >= 2);
     QVERIFY(state.value("rows").toInt() > 0);
     QCOMPARE(state.value("layout").toString(), QString("unified"));
@@ -214,6 +216,7 @@ class AppSmokeTest : public QObject {
 
     const QVariantMap state = parseStateLine(result.stdoutText);
     QVERIFY2(!state.isEmpty(), qPrintable(result.stdoutText));
+    QCOMPARE(state.value("currentView").toString(), QString("diff"));
     QVERIFY(state.value("files").toInt() >= 2);
     QVERIFY(state.value("rows").toInt() > 0);
     QCOMPARE(state.value("selected").toInt(), 1);
@@ -240,6 +243,7 @@ class AppSmokeTest : public QObject {
 
     const QVariantMap state = parseStateLine(result.stdoutText);
     QVERIFY2(!state.isEmpty(), qPrintable(result.stdoutText));
+    QCOMPARE(state.value("currentView").toString(), QString("diff"));
     QCOMPARE(state.value("layout").toString(), QString("unified"));
     QVERIFY(state.value("surfaceHeight").toDouble() > 100.0);
     QVERIFY(state.value("itemHeight").toDouble() > 100.0);
@@ -257,6 +261,7 @@ class AppSmokeTest : public QObject {
 
     const QVariantMap state = parseStateLine(result.stdoutText);
     QVERIFY2(!state.isEmpty(), qPrintable(result.stdoutText));
+    QCOMPARE(state.value("currentView").toString(), QString("diff"));
     QCOMPARE(state.value("pickerVisible").toInt(), 1);
     QVERIFY2(QFileInfo::exists(result.capturePath), qPrintable(result.capturePath));
   }

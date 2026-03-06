@@ -1,3 +1,5 @@
+#include <memory>
+
 #include <QFile>
 #include <QProcess>
 #include <QStandardPaths>
@@ -156,10 +158,23 @@ bool rowsContainType(const DiffRowListModel* rows, const QString& rowType) {
 class DiffControllerTest : public QObject {
   Q_OBJECT
 
+  std::unique_ptr<QTemporaryDir> configDir_;
+
  private slots:
   void initTestCase() {
     QVERIFY2(!QStandardPaths::findExecutable("git").isEmpty(), "git is required for diff controller tests");
-    QVERIFY(qputenv("XDG_CONFIG_HOME", QByteArray("/tmp/diffy-test-config")));
+  }
+
+  void init() {
+    configDir_.reset(new QTemporaryDir);
+    QVERIFY(configDir_->isValid());
+    QVERIFY(qputenv("XDG_CONFIG_HOME", configDir_->path().toUtf8()));
+    QSettings::setPath(QSettings::NativeFormat, QSettings::UserScope, configDir_->path());
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, configDir_->path());
+  }
+
+  void cleanup() {
+    configDir_.reset();
   }
 
   void compareProducesVisibleRows() {
@@ -205,6 +220,99 @@ class DiffControllerTest : public QObject {
     QCOMPARE(controller.selectedFileRowCount(), 0);
   }
 
+  void startupViewIsWelcomeWithoutRepo() {
+    DiffController controller;
+    QCOMPARE(controller.currentView(), QString("welcome"));
+  }
+
+  void startupViewIsCompareWithRestoredRepo() {
+    const QString repoPath = initRepositoryWithDiff();
+    QVERIFY(!repoPath.isEmpty());
+
+    {
+      DiffController controller;
+      QVERIFY(controller.openRepository(repoPath));
+      QCOMPARE(controller.currentView(), QString("compare"));
+    }
+
+    DiffController controller2;
+    QCOMPARE(controller2.currentView(), QString("compare"));
+    QCOMPARE(controller2.repoPath(), repoPath);
+  }
+
+  void openRepositoryTransitionsToCompare() {
+    const QString repoPath = initRepositoryWithDiff();
+    QVERIFY(!repoPath.isEmpty());
+
+    DiffController controller;
+    QCOMPARE(controller.currentView(), QString("welcome"));
+    QVERIFY(controller.openRepository(repoPath));
+    QCOMPARE(controller.currentView(), QString("compare"));
+  }
+
+  void compareTransitionsToDiff() {
+    const QString repoPath = initRepositoryWithDiff();
+    QVERIFY(!repoPath.isEmpty());
+
+    DiffController controller;
+    QVERIFY(controller.openRepository(repoPath));
+    QCOMPARE(controller.currentView(), QString("compare"));
+
+    controller.setLeftRef("HEAD~1");
+    controller.setRightRef("HEAD");
+    controller.compare();
+    QCOMPARE(controller.currentView(), QString("diff"));
+  }
+
+  void goBackTransitions() {
+    const QString repoPath = initRepositoryWithDiff();
+    QVERIFY(!repoPath.isEmpty());
+
+    DiffController controller;
+    QVERIFY(controller.openRepository(repoPath));
+    controller.setLeftRef("HEAD~1");
+    controller.setRightRef("HEAD");
+    controller.compare();
+    QCOMPARE(controller.currentView(), QString("diff"));
+
+    controller.goBack();
+    QCOMPARE(controller.currentView(), QString("compare"));
+
+    controller.goBack();
+    QCOMPARE(controller.currentView(), QString("welcome"));
+
+    controller.goBack();
+    QCOMPARE(controller.currentView(), QString("welcome"));
+  }
+
+  void recentRepositoriesPersistAndDedup() {
+    const QString repoA = initRepositoryWithDiff();
+    const QString repoB = initRepositoryWithoutDiff();
+    QVERIFY(!repoA.isEmpty());
+    QVERIFY(!repoB.isEmpty());
+
+    {
+      DiffController controller;
+      QVERIFY(controller.recentRepositories().isEmpty());
+
+      QVERIFY(controller.openRepository(repoA));
+      QCOMPARE(controller.recentRepositories().size(), 1);
+      QCOMPARE(controller.recentRepositories().first(), repoA);
+
+      QVERIFY(controller.openRepository(repoB));
+      QCOMPARE(controller.recentRepositories().size(), 2);
+      QCOMPARE(controller.recentRepositories().first(), repoB);
+
+      QVERIFY(controller.openRepository(repoA));
+      QCOMPARE(controller.recentRepositories().size(), 2);
+      QCOMPARE(controller.recentRepositories().first(), repoA);
+    }
+
+    DiffController controller2;
+    QCOMPARE(controller2.recentRepositories().size(), 2);
+    QCOMPARE(controller2.recentRepositories().first(), repoA);
+  }
+
   void compareSupportsGithubPullRequestUrl() {
     const GithubPullRequestFixture fixture = initRepositoryWithGithubPullRequest();
     QVERIFY(!fixture.repoPath.isEmpty());
@@ -215,8 +323,9 @@ class DiffControllerTest : public QObject {
 
     DiffController controller;
     QVERIFY(controller.openRepository(fixture.repoPath));
-    controller.setLeftRef(fixture.pullRequestUrl);
-    controller.setRightRef(QString());
+    controller.setLeftRef("main");
+    controller.setRightRef("feature");
+    controller.setCompareMode("three-dot");
     controller.compare();
 
     if (previousHome.isEmpty()) {

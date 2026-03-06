@@ -9,6 +9,8 @@
 #include "app/RepositoryPickerModel.h"
 #include "core/CompareSpec.h"
 #include "core/GitRepositoryService.h"
+#include "core/syntax/Highlighter.h"
+#include "core/syntax/LanguageRegistry.h"
 #include "model/DiffRowListModel.h"
 #include "renderers/BuiltinGitRenderer.h"
 #include "renderers/DifftasticRenderer.h"
@@ -102,6 +104,8 @@ class DiffController : public QObject {
   void persistSettings();
 
   GitRepositoryService gitService_;
+  LanguageRegistry languageRegistry_;
+  Highlighter highlighter_;
   BuiltinGitRenderer builtinRenderer_;
   DifftasticRenderer difftasticRenderer_;
 

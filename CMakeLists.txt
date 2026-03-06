@@ -23,18 +23,24 @@ add_library(diffy_core STATIC
   src/core/GitHubPullRequest.cpp
   src/core/GitRepositoryService.cpp
   src/core/UnifiedDiffParser.cpp
+  src/core/WordDiff.cpp
+  src/core/syntax/LanguageRegistry.cpp
+  src/core/syntax/Highlighter.cpp
 )
 
 target_include_directories(diffy_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${LIBGIT2_INCLUDE_DIRS}
+  ${TREESITTER_INCLUDE_DIRS}
 )
 
 target_link_libraries(diffy_core PUBLIC
   ${LIBGIT2_LIBRARIES}
+  ${TREESITTER_LIBRARIES}
+  ${CMAKE_DL_LIBS}
 )
 
-target_compile_options(diffy_core PRIVATE ${LIBGIT2_CFLAGS_OTHER})
+target_compile_options(diffy_core PRIVATE ${LIBGIT2_CFLAGS_OTHER} ${TREESITTER_CFLAGS_OTHER})
 
 qt_add_executable(diffy
   src/main.cpp

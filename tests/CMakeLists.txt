@@ -96,6 +96,29 @@ target_link_libraries(test_builtin_git_renderer PRIVATE
 
 add_test(NAME test_builtin_git_renderer COMMAND test_builtin_git_renderer)
 
+qt_add_executable(test_word_diff
+  test_word_diff.cpp
+)
+
+target_include_directories(test_word_diff PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+
+target_link_libraries(test_word_diff PRIVATE diffy_core Qt6::Core Qt6::Test)
+add_test(NAME test_word_diff COMMAND test_word_diff)
+
+qt_add_executable(test_highlighter
+  test_highlighter.cpp
+)
+
+target_include_directories(test_highlighter PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+  ${TREESITTER_INCLUDE_DIRS}
+)
+
+target_link_libraries(test_highlighter PRIVATE diffy_core Qt6::Core Qt6::Test)
+add_test(NAME test_highlighter COMMAND test_highlighter)
+
 qt_add_executable(test_app_smoke
   test_app_smoke.cpp
 )

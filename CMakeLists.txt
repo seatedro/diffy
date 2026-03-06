@@ -23,6 +23,7 @@ qt_add_executable(diffy
   src/core/DiffTypes.cpp
   src/core/GitRepositoryService.cpp
   src/core/UnifiedDiffParser.cpp
+  src/model/DiffDisplayModel.cpp
   src/text/TextRope.cpp
   src/core/DiffController.cpp
   src/ui/DiffSurfaceItem.cpp

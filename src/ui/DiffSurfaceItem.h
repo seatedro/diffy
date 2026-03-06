@@ -1,13 +1,14 @@
 #pragma once
 
-#include <QQuickPaintedItem>
-#include <QMouseEvent>
-#include <QKeyEvent>
+#include <QHash>
 #include <QHoverEvent>
+#include <QKeyEvent>
+#include <QMouseEvent>
+#include <QQuickPaintedItem>
 #include <QVariantList>
 #include <QVariantMap>
-#include <QHash>
 
+#include "model/DiffDisplayModel.h"
 #include "text/TextRope.h"
 
 namespace diffy {
@@ -42,6 +43,7 @@ class DiffSurfaceItem : public QQuickPaintedItem {
 
   qreal contentHeight() const;
   qreal contentWidth() const;
+
   qreal viewportY() const;
   void setViewportY(qreal value);
 
@@ -52,32 +54,6 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   int displayRowCount() const;
 
   void paint(QPainter* painter) override;
-
- public:
-  struct TokenSpan {
-    int start = 0;
-    int length = 0;
-  };
-
-  struct Row {
-    QString rowType;
-    QString header;
-    QString kind;
-    int oldLine = -1;
-    int newLine = -1;
-    QVector<TokenSpan> tokens;
-    QString leftKind;
-    QString rightKind;
-    int leftLine = -1;
-    int rightLine = -1;
-    QVector<TokenSpan> leftTokens;
-    QVector<TokenSpan> rightTokens;
-    TextRange textRange;
-    TextRange leftTextRange;
-    TextRange rightTextRange;
-    qreal top = 0;
-    qreal height = 0;
-  };
 
  signals:
   void rowsModelChanged();
@@ -95,8 +71,7 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   void rebuildRows();
   void rebuildDisplayRows();
   void recalculateMetrics();
-  int rowIndexAtY(qreal y) const;
-  int stickyRowIndexAtY(qreal y) const;
+
   bool rowSelected(int rowIndex) const;
   QColor paletteColor(const QString& key, const QColor& fallback) const;
   qreal digitWidth() const;
@@ -104,14 +79,14 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   QString selectedText() const;
   QString textForRange(const TextRange& range) const;
 
-  void drawHunkRow(QPainter* painter, const QRectF& rowRect, const Row& row) const;
-  void drawUnifiedRow(QPainter* painter, const QRectF& rowRect, const Row& row, bool selected) const;
-  void drawSplitRow(QPainter* painter, const QRectF& rowRect, const Row& row, bool selected) const;
+  void drawHunkRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row) const;
+  void drawUnifiedRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row, bool selected) const;
+  void drawSplitRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row, bool selected) const;
   void drawTextRun(QPainter* painter,
                    const QPointF& baseline,
                    const QRectF& clipRect,
                    const QString& text,
-                   const QVector<TokenSpan>& tokens,
+                   const std::vector<DiffTokenSpan>& tokens,
                    const QColor& textColor,
                    const QColor& tokenBackground) const;
 
@@ -123,15 +98,14 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   void hoverLeaveEvent(QHoverEvent* event) override;
   void keyPressEvent(QKeyEvent* event) override;
 
+ private:
   QVariantList rowsModel_;
   QString layoutMode_ = "unified";
   QVariantMap palette_;
   QString monoFontFamily_ = "JetBrains Mono";
-  TextRope textRope_;
 
-  QVector<Row> sourceRows_;
-  QVector<Row> displayRows_;
-  QVector<qreal> rowOffsets_;
+  TextRope textRope_;
+  DiffDisplayModel displayModel_;
 
   qreal contentHeight_ = 0;
   qreal contentWidth_ = 0;
@@ -142,6 +116,7 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   qreal hunkHeight_ = 24;
   int lineNumberDigits_ = 3;
   qreal maxTextWidth_ = 0;
+
   int paintCount_ = 0;
   int selectionAnchorRow_ = -1;
   int selectionCursorRow_ = -1;
@@ -149,6 +124,7 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   int firstVisibleRow_ = -1;
   int lastVisibleRow_ = -1;
   int stickyVisibleRow_ = -1;
+
   mutable QHash<quint64, QString> textCache_;
 };
 

@@ -2,12 +2,14 @@
 
 #include <git2.h>
 
+#include <algorithm>
+
 namespace diffy {
 namespace {
 
-QString lastGitError(const QString& fallback) {
+std::string lastGitError(const std::string& fallback) {
   if (const git_error* err = git_error_last(); err && err->message) {
-    return QString::fromUtf8(err->message);
+    return err->message;
   }
   return fallback;
 }
@@ -26,14 +28,14 @@ std::string mapDeltaStatus(git_delta_t status) {
 }
 
 std::string normalizePatchText(const git_diff_line* line) {
-  QByteArray content(line->content, static_cast<int>(line->content_len));
-  if (content.endsWith('\n')) {
-    content.chop(1);
+  std::string content(line->content, static_cast<size_t>(line->content_len));
+  if (!content.empty() && content.back() == '\n') {
+    content.pop_back();
   }
-  if (content.endsWith('\r')) {
-    content.chop(1);
+  if (!content.empty() && content.back() == '\r') {
+    content.pop_back();
   }
-  return std::string(content.constData(), static_cast<size_t>(content.size()));
+  return content;
 }
 
 std::vector<TokenSpan> fullLineTokens(const std::string& text) {
@@ -43,13 +45,13 @@ std::vector<TokenSpan> fullLineTokens(const std::string& text) {
   return std::vector<TokenSpan>{TokenSpan{0, static_cast<int>(text.size())}};
 }
 
-bool lookupCommit(git_repository* repo, const std::string& revision, git_commit** outCommit, QString* error) {
+bool lookupCommit(git_repository* repo, const std::string& revision, git_commit** outCommit, std::string* error) {
   git_object* object = nullptr;
   git_object* peeled = nullptr;
 
   if (git_revparse_single(&object, repo, revision.c_str()) != 0) {
     if (error) {
-      *error = lastGitError(QString("Failed to resolve revision: %1").arg(QString::fromStdString(revision)));
+      *error = lastGitError("Failed to resolve revision: " + revision);
     }
     return false;
   }
@@ -57,7 +59,7 @@ bool lookupCommit(git_repository* repo, const std::string& revision, git_commit*
   if (git_object_peel(&peeled, object, GIT_OBJECT_COMMIT) != 0) {
     git_object_free(object);
     if (error) {
-      *error = lastGitError(QString("Revision is not a commit: %1").arg(QString::fromStdString(revision)));
+      *error = lastGitError("Revision is not a commit: " + revision);
     }
     return false;
   }
@@ -80,13 +82,27 @@ std::string pathForDelta(const git_diff_delta* delta) {
   return "unknown";
 }
 
+std::string trimAscii(std::string value) {
+  while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back())) != 0) {
+    value.pop_back();
+  }
+  size_t start = 0;
+  while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start])) != 0) {
+    ++start;
+  }
+  if (start > 0) {
+    value.erase(0, start);
+  }
+  return value;
+}
+
 }  // namespace
 
-QString BuiltinGitRenderer::id() const {
+std::string_view BuiltinGitRenderer::id() const {
   return "builtin";
 }
 
-bool BuiltinGitRenderer::render(const RenderRequest& request, DiffDocument* out, QString* error) {
+bool BuiltinGitRenderer::render(const RenderRequest& request, DiffDocument* out, std::string* error) {
   git_libgit2_init();
   git_repository* repo = nullptr;
   git_commit* leftCommit = nullptr;
@@ -107,7 +123,7 @@ bool BuiltinGitRenderer::render(const RenderRequest& request, DiffDocument* out,
 
   if (git_repository_open_ext(&repo, request.repoPath.c_str(), 0, nullptr) != 0) {
     if (error) {
-      *error = lastGitError(QString("Failed to open repository: %1").arg(QString::fromStdString(request.repoPath)));
+      *error = lastGitError("Failed to open repository: " + request.repoPath);
     }
     cleanup();
     return false;
@@ -159,7 +175,7 @@ bool BuiltinGitRenderer::render(const RenderRequest& request, DiffDocument* out,
     git_patch* patch = nullptr;
     if (git_patch_from_diff(&patch, diff, deltaIndex) != 0) {
       if (error) {
-        *error = lastGitError(QString("Failed to build patch for %1").arg(QString::fromUtf8(file.path)));
+        *error = lastGitError("Failed to build patch for " + file.path);
       }
       cleanup();
       return false;
@@ -190,7 +206,7 @@ bool BuiltinGitRenderer::render(const RenderRequest& request, DiffDocument* out,
       }
 
       Hunk hunk;
-      hunk.header = QString::fromUtf8(gitHunk->header, static_cast<int>(gitHunk->header_len)).trimmed().toStdString();
+      hunk.header = trimAscii(std::string(gitHunk->header, static_cast<size_t>(gitHunk->header_len)));
       hunk.collapsed = false;
 
       for (size_t lineIndex = 0; lineIndex < lineCount; ++lineIndex) {

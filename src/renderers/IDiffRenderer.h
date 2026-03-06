@@ -1,8 +1,7 @@
 #pragma once
 
 #include <string>
-
-#include <QString>
+#include <string_view>
 
 #include "core/DiffTypes.h"
 
@@ -18,8 +17,8 @@ class IDiffRenderer {
  public:
   virtual ~IDiffRenderer() = default;
 
-  virtual QString id() const = 0;
-  virtual bool render(const RenderRequest& request, DiffDocument* out, QString* error) = 0;
+  virtual std::string_view id() const = 0;
+  virtual bool render(const RenderRequest& request, DiffDocument* out, std::string* error) = 0;
 };
 
 }  // namespace diffy

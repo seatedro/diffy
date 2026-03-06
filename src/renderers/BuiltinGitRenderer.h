@@ -6,8 +6,8 @@ namespace diffy {
 
 class BuiltinGitRenderer : public IDiffRenderer {
  public:
-  QString id() const override;
-  bool render(const RenderRequest& request, DiffDocument* out, QString* error) override;
+  std::string_view id() const override;
+  bool render(const RenderRequest& request, DiffDocument* out, std::string* error) override;
 };
 
 }  // namespace diffy

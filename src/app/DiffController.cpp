@@ -265,20 +265,22 @@ void DiffController::compare() {
     renderer = &difftasticRenderer_;
   }
 
-  QString renderError;
+  std::string renderError;
   bool rendered = renderer->render(request, &document, &renderError);
   if (!rendered && renderer == &difftasticRenderer_) {
     DiffDocument fallback;
-    QString fallbackError;
+    std::string fallbackError;
     if (builtinRenderer_.render(request, &fallback, &fallbackError)) {
       document = fallback;
-      setError(QString("difftastic failed (%1). Fell back to built-in renderer.").arg(renderError));
+      setError(QString("difftastic failed (%1). Fell back to built-in renderer.")
+                   .arg(QString::fromStdString(renderError)));
     } else {
-      setError(QString("difftastic failed (%1); built-in fallback failed (%2)").arg(renderError, fallbackError));
+      setError(QString("difftastic failed (%1); built-in fallback failed (%2)")
+                   .arg(QString::fromStdString(renderError), QString::fromStdString(fallbackError)));
       return;
     }
   } else if (!rendered) {
-    setError(renderError);
+    setError(QString::fromStdString(renderError));
     return;
   }
 

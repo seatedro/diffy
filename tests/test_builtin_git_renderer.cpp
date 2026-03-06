@@ -149,10 +149,10 @@ class BuiltinGitRendererTest : public QObject {
 
     BuiltinGitRenderer renderer;
     DiffDocument document;
-    QString error;
+    std::string error;
 
     QVERIFY2(renderer.render(RenderRequest{repoPath.toStdString(), "HEAD~1", "HEAD"}, &document, &error),
-             qPrintable(error));
+             error.c_str());
     QCOMPARE(document.files.size(), 5);
 
     const FileDiff* modified = findFile(document.files, "modify.txt");

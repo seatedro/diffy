@@ -22,9 +22,9 @@ struct ChangedPath {
   bool isBinary = false;
 };
 
-QString lastGitError(const QString& fallback) {
+std::string lastGitError(const std::string& fallback) {
   if (const git_error* err = git_error_last(); err && err->message) {
-    return QString::fromUtf8(err->message);
+    return err->message;
   }
   return fallback;
 }
@@ -42,13 +42,13 @@ QString mapStatus(git_delta_t rawStatus) {
   return "M";
 }
 
-bool lookupCommit(git_repository* repo, const std::string& revision, git_commit** outCommit, QString* error) {
+bool lookupCommit(git_repository* repo, const std::string& revision, git_commit** outCommit, std::string* error) {
   git_object* object = nullptr;
   git_object* peeled = nullptr;
 
   if (git_revparse_single(&object, repo, revision.c_str()) != 0) {
     if (error) {
-      *error = lastGitError(QString("Failed to resolve revision: %1").arg(QString::fromStdString(revision)));
+      *error = lastGitError("Failed to resolve revision: " + revision);
     }
     return false;
   }
@@ -56,7 +56,7 @@ bool lookupCommit(git_repository* repo, const std::string& revision, git_commit*
   if (git_object_peel(&peeled, object, GIT_OBJECT_COMMIT) != 0) {
     git_object_free(object);
     if (error) {
-      *error = lastGitError(QString("Revision is not a commit: %1").arg(QString::fromStdString(revision)));
+      *error = lastGitError("Revision is not a commit: " + revision);
     }
     return false;
   }
@@ -84,7 +84,7 @@ bool loadBlobContent(git_repository* repo,
                      bool present,
                      QByteArray* outContent,
                      bool* outIsBinary,
-                     QString* error) {
+                     std::string* error) {
   if (!present) {
     if (outContent != nullptr) {
       outContent->clear();
@@ -98,7 +98,7 @@ bool loadBlobContent(git_repository* repo,
   git_blob* blob = nullptr;
   if (git_blob_lookup(&blob, repo, &oid) != 0) {
     if (error) {
-      *error = lastGitError("Failed to load blob for difftastic rendering");
+      *error = lastGitError(std::string("Failed to load blob for difftastic rendering"));
     }
     return false;
   }
@@ -120,7 +120,7 @@ bool collectChangedPaths(git_repository* repo,
                          const std::string& leftRevision,
                          const std::string& rightRevision,
                          QVector<ChangedPath>* outPaths,
-                         QString* error) {
+                         std::string* error) {
   git_commit* leftCommit = nullptr;
   git_commit* rightCommit = nullptr;
   git_tree* leftTree = nullptr;
@@ -143,7 +143,7 @@ bool collectChangedPaths(git_repository* repo,
 
   if (git_commit_tree(&leftTree, leftCommit) != 0 || git_commit_tree(&rightTree, rightCommit) != 0) {
     if (error) {
-      *error = lastGitError("Failed to load commit trees");
+      *error = lastGitError(std::string("Failed to load commit trees"));
     }
     cleanup();
     return false;
@@ -153,7 +153,7 @@ bool collectChangedPaths(git_repository* repo,
   diffOptions.context_lines = 3;
   if (git_diff_tree_to_tree(&diff, repo, leftTree, rightTree, &diffOptions) != 0) {
     if (error) {
-      *error = lastGitError("Failed to compute repository diff");
+      *error = lastGitError(std::string("Failed to compute repository diff"));
     }
     cleanup();
     return false;
@@ -231,11 +231,11 @@ int lineNumberFromSide(const QJsonObject& side) {
 
 }  // namespace
 
-QString DifftasticRenderer::id() const {
+std::string_view DifftasticRenderer::id() const {
   return "difftastic";
 }
 
-bool DifftasticRenderer::render(const RenderRequest& request, DiffDocument* out, QString* error) {
+bool DifftasticRenderer::render(const RenderRequest& request, DiffDocument* out, std::string* error) {
   if (QStandardPaths::findExecutable("difft").isEmpty()) {
     if (error) {
       *error = "difftastic executable `difft` was not found in PATH";
@@ -253,7 +253,7 @@ bool DifftasticRenderer::render(const RenderRequest& request, DiffDocument* out,
   const QString repoPath = QString::fromStdString(request.repoPath);
   if (git_repository_open_ext(&repo, request.repoPath.c_str(), 0, nullptr) != 0) {
     if (error) {
-      *error = lastGitError(QString("Failed to open repository: %1").arg(repoPath));
+      *error = lastGitError("Failed to open repository: " + request.repoPath);
     }
     cleanup();
     return false;
@@ -270,12 +270,12 @@ bool DifftasticRenderer::render(const RenderRequest& request, DiffDocument* out,
   doc.rightRevision = request.rightRevision;
 
   QTemporaryDir tempDir;
-  if (!tempDir.isValid()) {
-    if (error) {
-      *error = "Failed to create temporary directory for difftastic rendering";
-    }
-    cleanup();
-    return false;
+    if (!tempDir.isValid()) {
+      if (error) {
+        *error = "Failed to create temporary directory for difftastic rendering";
+      }
+      cleanup();
+      return false;
   }
 
   int index = 0;
@@ -296,7 +296,7 @@ bool DifftasticRenderer::render(const RenderRequest& request, DiffDocument* out,
     QFile oldFile(oldTempPath);
     if (!oldFile.open(QIODevice::WriteOnly)) {
       if (error) {
-        *error = QString("Failed to write temp file: %1").arg(oldTempPath);
+        *error = QString("Failed to write temp file: %1").arg(oldTempPath).toStdString();
       }
       cleanup();
       return false;
@@ -307,7 +307,7 @@ bool DifftasticRenderer::render(const RenderRequest& request, DiffDocument* out,
     QFile newFile(newTempPath);
     if (!newFile.open(QIODevice::WriteOnly)) {
       if (error) {
-        *error = QString("Failed to write temp file: %1").arg(newTempPath);
+        *error = QString("Failed to write temp file: %1").arg(newTempPath).toStdString();
       }
       cleanup();
       return false;
@@ -334,7 +334,8 @@ bool DifftasticRenderer::render(const RenderRequest& request, DiffDocument* out,
 
     if (difft.exitStatus() != QProcess::NormalExit || difft.exitCode() != 0) {
       if (error) {
-        *error = QString("difftastic failed: %1").arg(QString::fromUtf8(difft.readAllStandardError()).trimmed());
+        *error =
+            QString("difftastic failed: %1").arg(QString::fromUtf8(difft.readAllStandardError()).trimmed()).toStdString();
       }
       cleanup();
       return false;
@@ -364,12 +365,12 @@ bool DifftasticRenderer::parseDifftasticJson(const QByteArray& json,
                                              const QString& fallbackPath,
                                              const QString& fallbackStatus,
                                              FileDiff* outFile,
-                                             QString* error) const {
+                                             std::string* error) const {
   QJsonParseError parseError;
   const QJsonDocument doc = QJsonDocument::fromJson(json, &parseError);
   if (parseError.error != QJsonParseError::NoError) {
     if (error) {
-      *error = QString("Failed to parse difftastic JSON: %1").arg(parseError.errorString());
+      *error = QString("Failed to parse difftastic JSON: %1").arg(parseError.errorString()).toStdString();
     }
     return false;
   }

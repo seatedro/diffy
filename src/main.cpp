@@ -214,9 +214,22 @@ int main(int argc, char* argv[]) {
     });
   }
 
+  const QString startScrollY = envString("DIFFY_START_SCROLL_Y");
+  if (!startScrollY.isEmpty()) {
+    bool ok = false;
+    const double scrollY = startScrollY.toDouble(&ok);
+    if (ok) {
+      QTimer::singleShot(120, &app, [root, scrollY]() {
+        if (QObject* viewport = root != nullptr ? root->findChild<QObject*>("diffViewport") : nullptr) {
+          viewport->setProperty("contentY", scrollY);
+        }
+      });
+    }
+  }
+
   const QString capturePath = envString("DIFFY_CAPTURE_PATH");
   if (!capturePath.isEmpty()) {
-    QTimer::singleShot(150, &app, [root, capturePath]() {
+    QTimer::singleShot(220, &app, [root, capturePath]() {
       if (auto* window = qobject_cast<QQuickWindow*>(root)) {
         const QImage image = window->grabWindow();
         image.save(capturePath);

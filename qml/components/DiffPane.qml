@@ -265,6 +265,7 @@ Rectangle {
 
         Flickable {
             id: diffViewport
+            objectName: "diffViewport"
             anchors.fill: parent
             anchors.margins: 0
             clip: true

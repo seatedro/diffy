@@ -227,6 +227,24 @@ class AppSmokeTest : public QObject {
     QVERIFY(diffRegionColorDiversity(result.capturePath) > 3);
     QCOMPARE(state.value("error").toString(), QString("none"));
   }
+
+  void scrollsUnifiedViewportWithoutShrinkingSurface() {
+    const QString repoPath = initRepositoryWithMultipleDiffs();
+    QVERIFY(!repoPath.isEmpty());
+
+    const SmokeResult result = runDiffySmoke(repoPath, {"DIFFY_START_SCROLL_Y=420"});
+    QVERIFY2(result.stderrText != "diffy smoke test timed out", qPrintable(result.stderrText));
+    QCOMPARE(result.exitCode, 0);
+    QVERIFY2(result.stderrText.trimmed().isEmpty(), qPrintable(result.stderrText));
+
+    const QVariantMap state = parseStateLine(result.stdoutText);
+    QVERIFY2(!state.isEmpty(), qPrintable(result.stdoutText));
+    QCOMPARE(state.value("layout").toString(), QString("unified"));
+    QVERIFY(state.value("surfaceHeight").toDouble() > state.value("itemHeight").toDouble());
+    QVERIFY(state.value("itemHeight").toDouble() > 100.0);
+    QVERIFY2(QFileInfo::exists(result.capturePath), qPrintable(result.capturePath));
+    QVERIFY(diffRegionColorDiversity(result.capturePath) > 3);
+  }
 };
 
 QTEST_GUILESS_MAIN(AppSmokeTest)

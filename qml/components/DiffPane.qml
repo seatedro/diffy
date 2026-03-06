@@ -82,6 +82,7 @@ Rectangle {
 
     Rectangle {
         id: headerPanel
+        visible: !root.hasData() || fileData.isBinary
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
@@ -89,7 +90,7 @@ Rectangle {
         radius: 0
         color: theme.canvas
         border.width: 0
-        implicitHeight: root.hasData() ? 34 : 76
+        implicitHeight: !root.hasData() ? 76 : 34
 
         Column {
             anchors.fill: parent
@@ -97,7 +98,7 @@ Rectangle {
             spacing: 3
 
             RowLayout {
-                visible: root.hasData()
+                visible: root.hasData() && fileData.isBinary
                 width: parent.width
                 spacing: 8
 
@@ -190,7 +191,7 @@ Rectangle {
         visible: root.hasData() && fileData.isBinary
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.top: headerPanel.bottom
+        anchors.top: headerPanel.visible ? headerPanel.bottom : parent.top
         anchors.bottom: parent.bottom
         anchors.margins: 0
         radius: 0
@@ -224,7 +225,7 @@ Rectangle {
         visible: root.hasData() && !fileData.isBinary
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.top: headerPanel.bottom
+        anchors.top: headerPanel.visible ? headerPanel.bottom : parent.top
         anchors.bottom: parent.bottom
         anchors.margins: 0
         radius: 0
@@ -248,6 +249,10 @@ Rectangle {
                 height: diffViewport.height
                 rowsModel: root.rowsModel
                 layoutMode: root.layoutMode
+                filePath: root.hasData() ? fileData.path : ""
+                fileStatus: root.hasData() ? fileData.status : ""
+                additions: root.hasData() ? fileData.additions : 0
+                deletions: root.hasData() ? fileData.deletions : 0
                 viewportX: diffViewport.contentX
                 viewportY: diffViewport.contentY
                 viewportHeight: diffViewport.height

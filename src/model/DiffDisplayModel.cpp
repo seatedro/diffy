@@ -8,7 +8,7 @@ void DiffDisplayModel::setSourceRows(std::vector<DiffSourceRow> rows) {
   sourceRows_ = std::move(rows);
 }
 
-void DiffDisplayModel::rebuild(DiffLayoutMode mode, double rowHeight, double hunkHeight) {
+void DiffDisplayModel::rebuild(DiffLayoutMode mode, double rowHeight, double hunkHeight, double fileHeaderHeight) {
   displayRows_.clear();
   rowOffsets_.clear();
 
@@ -17,7 +17,9 @@ void DiffDisplayModel::rebuild(DiffLayoutMode mode, double rowHeight, double hun
 
   auto appendRow = [&](DiffDisplayRow row) {
     row.top = top;
-    row.height = row.rowType == DiffRowType::Hunk ? hunkHeight : rowHeight;
+    row.height = row.rowType == DiffRowType::FileHeader ? fileHeaderHeight
+               : row.rowType == DiffRowType::Hunk         ? hunkHeight
+                                                         : rowHeight;
     rowOffsets_.push_back(top);
     top += row.height;
     maxLineNumber = std::max(maxLineNumber, std::max(row.oldLine, row.newLine));
@@ -30,6 +32,7 @@ void DiffDisplayModel::rebuild(DiffLayoutMode mode, double rowHeight, double hun
       DiffDisplayRow row;
       row.rowType = sourceRow.rowType;
       row.header = sourceRow.header;
+      row.detail = sourceRow.detail;
       row.kind = sourceRow.kind;
       row.oldLine = sourceRow.oldLine;
       row.newLine = sourceRow.newLine;
@@ -40,10 +43,11 @@ void DiffDisplayModel::rebuild(DiffLayoutMode mode, double rowHeight, double hun
   } else {
     for (size_t index = 0; index < sourceRows_.size(); ++index) {
       const DiffSourceRow& sourceRow = sourceRows_.at(index);
-      if (sourceRow.rowType == DiffRowType::Hunk) {
+      if (sourceRow.rowType == DiffRowType::FileHeader || sourceRow.rowType == DiffRowType::Hunk) {
         DiffDisplayRow row;
-        row.rowType = DiffRowType::Hunk;
+        row.rowType = sourceRow.rowType;
         row.header = sourceRow.header;
+        row.detail = sourceRow.detail;
         appendRow(std::move(row));
         continue;
       }
@@ -142,7 +146,16 @@ int DiffDisplayModel::rowIndexAtY(double y) const {
                     static_cast<int>(displayRows_.size() - 1));
 }
 
-int DiffDisplayModel::stickyRowIndexAtY(double y) const {
+int DiffDisplayModel::fileHeaderRowIndex() const {
+  for (int rowIndex = 0; rowIndex < static_cast<int>(displayRows_.size()); ++rowIndex) {
+    if (displayRows_.at(rowIndex).rowType == DiffRowType::FileHeader) {
+      return rowIndex;
+    }
+  }
+  return -1;
+}
+
+int DiffDisplayModel::stickyHunkRowIndexAtY(double y) const {
   int stickyIndex = -1;
   for (int rowIndex = 0; rowIndex < static_cast<int>(displayRows_.size()); ++rowIndex) {
     const DiffDisplayRow& row = displayRows_.at(rowIndex);

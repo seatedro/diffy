@@ -8,6 +8,7 @@
 namespace diffy {
 
 enum class DiffRowType {
+  FileHeader,
   Hunk,
   Line,
 };
@@ -33,6 +34,7 @@ struct DiffTokenSpan {
 struct DiffSourceRow {
   DiffRowType rowType = DiffRowType::Line;
   std::string header;
+  std::string detail;
   DiffLineKind kind = DiffLineKind::Context;
   int oldLine = -1;
   int newLine = -1;
@@ -43,6 +45,7 @@ struct DiffSourceRow {
 struct DiffDisplayRow {
   DiffRowType rowType = DiffRowType::Line;
   std::string header;
+  std::string detail;
   DiffLineKind kind = DiffLineKind::Context;
   int oldLine = -1;
   int newLine = -1;
@@ -63,14 +66,15 @@ struct DiffDisplayRow {
 class DiffDisplayModel {
  public:
   void setSourceRows(std::vector<DiffSourceRow> rows);
-  void rebuild(DiffLayoutMode mode, double rowHeight, double hunkHeight);
+  void rebuild(DiffLayoutMode mode, double rowHeight, double hunkHeight, double fileHeaderHeight);
 
   const std::vector<DiffDisplayRow>& rows() const;
   double contentHeight() const;
   int lineNumberDigits() const;
 
   int rowIndexAtY(double y) const;
-  int stickyRowIndexAtY(double y) const;
+  int fileHeaderRowIndex() const;
+  int stickyHunkRowIndexAtY(double y) const;
 
  private:
   std::vector<DiffSourceRow> sourceRows_;

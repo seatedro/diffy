@@ -17,6 +17,10 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   Q_OBJECT
   Q_PROPERTY(QObject* rowsModel READ rowsModel WRITE setRowsModel NOTIFY rowsModelChanged)
   Q_PROPERTY(QString layoutMode READ layoutMode WRITE setLayoutMode NOTIFY layoutModeChanged)
+  Q_PROPERTY(QString filePath READ filePath WRITE setFilePath NOTIFY filePathChanged)
+  Q_PROPERTY(QString fileStatus READ fileStatus WRITE setFileStatus NOTIFY fileStatusChanged)
+  Q_PROPERTY(int additions READ additions WRITE setAdditions NOTIFY additionsChanged)
+  Q_PROPERTY(int deletions READ deletions WRITE setDeletions NOTIFY deletionsChanged)
   Q_PROPERTY(QVariantMap palette READ palette WRITE setPalette NOTIFY paletteChanged)
   Q_PROPERTY(QString monoFontFamily READ monoFontFamily WRITE setMonoFontFamily NOTIFY monoFontFamilyChanged)
   Q_PROPERTY(qreal contentHeight READ contentHeight NOTIFY contentHeightChanged)
@@ -35,6 +39,18 @@ class DiffSurfaceItem : public QQuickPaintedItem {
 
   QString layoutMode() const;
   void setLayoutMode(const QString& mode);
+
+  QString filePath() const;
+  void setFilePath(const QString& path);
+
+  QString fileStatus() const;
+  void setFileStatus(const QString& status);
+
+  int additions() const;
+  void setAdditions(int value);
+
+  int deletions() const;
+  void setDeletions(int value);
 
   QVariantMap palette() const;
   void setPalette(const QVariantMap& palette);
@@ -61,6 +77,10 @@ class DiffSurfaceItem : public QQuickPaintedItem {
  signals:
   void rowsModelChanged();
   void layoutModeChanged();
+  void filePathChanged();
+  void fileStatusChanged();
+  void additionsChanged();
+  void deletionsChanged();
   void paletteChanged();
   void monoFontFamilyChanged();
   void contentHeightChanged();
@@ -83,6 +103,7 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   QString selectedText() const;
   QString textForRange(const TextRange& range) const;
 
+  void drawFileHeaderRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row) const;
   void drawHunkRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row) const;
   void drawUnifiedRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row, bool selected) const;
   void drawSplitRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row, bool selected) const;
@@ -106,6 +127,10 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   QObject* rowsModelObject_ = nullptr;
   DiffRowListModel* rowsModel_ = nullptr;
   QString layoutMode_ = "unified";
+  QString filePath_;
+  QString fileStatus_ = "M";
+  int additions_ = 0;
+  int deletions_ = 0;
   QVariantMap palette_;
   QString monoFontFamily_ = "JetBrains Mono";
 
@@ -119,6 +144,7 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   qreal viewportHeight_ = 0;
   qreal lineHeight_ = 0;
   qreal rowHeight_ = 0;
+  qreal fileHeaderHeight_ = 28;
   qreal hunkHeight_ = 24;
   int lineNumberDigits_ = 3;
   qreal maxTextWidth_ = 0;

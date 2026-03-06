@@ -44,6 +44,9 @@ DiffLayoutMode toLayoutMode(const QString& mode) {
 }
 
 DiffRowType parseRowType(const QString& value) {
+  if (value == "file-header") {
+    return DiffRowType::FileHeader;
+  }
   return value == "hunk" ? DiffRowType::Hunk : DiffRowType::Line;
 }
 
@@ -117,6 +120,58 @@ void DiffSurfaceItem::setLayoutMode(const QString& mode) {
   emit layoutModeChanged();
 }
 
+QString DiffSurfaceItem::filePath() const {
+  return filePath_;
+}
+
+void DiffSurfaceItem::setFilePath(const QString& path) {
+  if (filePath_ == path) {
+    return;
+  }
+  filePath_ = path;
+  rebuildRows();
+  emit filePathChanged();
+}
+
+QString DiffSurfaceItem::fileStatus() const {
+  return fileStatus_;
+}
+
+void DiffSurfaceItem::setFileStatus(const QString& status) {
+  if (fileStatus_ == status) {
+    return;
+  }
+  fileStatus_ = status;
+  rebuildRows();
+  emit fileStatusChanged();
+}
+
+int DiffSurfaceItem::additions() const {
+  return additions_;
+}
+
+void DiffSurfaceItem::setAdditions(int value) {
+  if (additions_ == value) {
+    return;
+  }
+  additions_ = value;
+  rebuildRows();
+  emit additionsChanged();
+}
+
+int DiffSurfaceItem::deletions() const {
+  return deletions_;
+}
+
+void DiffSurfaceItem::setDeletions(int value) {
+  if (deletions_ == value) {
+    return;
+  }
+  deletions_ = value;
+  rebuildRows();
+  emit deletionsChanged();
+}
+
 QVariantMap DiffSurfaceItem::palette() const {
   return palette_;
 }
@@ -175,7 +230,7 @@ void DiffSurfaceItem::setViewportY(qreal value) {
   viewportY_ = value;
   const int nextFirst = displayModel_.rowIndexAtY(std::max<qreal>(0.0, viewportY_ - hunkHeight_));
   const int nextLast = displayModel_.rowIndexAtY(viewportY_ + viewportHeight_ + hunkHeight_);
-  const int nextSticky = displayModel_.stickyRowIndexAtY(viewportY_);
+  const int nextSticky = displayModel_.stickyHunkRowIndexAtY(viewportY_);
   if (nextFirst != firstVisibleRow_ || nextLast != lastVisibleRow_ || nextSticky != stickyVisibleRow_) {
     firstVisibleRow_ = nextFirst;
     lastVisibleRow_ = nextLast;
@@ -196,7 +251,7 @@ void DiffSurfaceItem::setViewportHeight(qreal value) {
   viewportHeight_ = value;
   firstVisibleRow_ = displayModel_.rowIndexAtY(std::max<qreal>(0.0, viewportY_ - hunkHeight_));
   lastVisibleRow_ = displayModel_.rowIndexAtY(viewportY_ + viewportHeight_ + hunkHeight_);
-  stickyVisibleRow_ = displayModel_.stickyRowIndexAtY(viewportY_);
+  stickyVisibleRow_ = displayModel_.stickyHunkRowIndexAtY(viewportY_);
   update();
   emit viewportHeightChanged();
 }
@@ -241,6 +296,11 @@ void DiffSurfaceItem::paint(QPainter* painter) {
     const bool selected = rowSelected(rowIndex);
     const bool hovered = hoveredRow_ == rowIndex;
 
+    if (row.rowType == DiffRowType::FileHeader) {
+      drawFileHeaderRow(painter, rowRect, row);
+      continue;
+    }
+
     if (row.rowType == DiffRowType::Hunk) {
       drawHunkRow(painter, rowRect, row);
       if (selected) {
@@ -263,9 +323,22 @@ void DiffSurfaceItem::paint(QPainter* painter) {
   }
 
   if (viewportHeight_ > 0) {
-    const int stickyIndex = displayModel_.stickyRowIndexAtY(viewportY_);
+    const int fileHeaderIndex = displayModel_.fileHeaderRowIndex();
+    qreal stickyOffset = 0.0;
+    if (fileHeaderIndex >= 0 && viewportY_ > 0) {
+      painter->save();
+      QColor shadow = paletteColor("canvas", QColor("#282828"));
+      shadow.setAlpha(225);
+      painter->fillRect(QRectF(-viewportX_, 0.0, std::max(width(), contentWidth_), fileHeaderHeight_), shadow);
+      drawFileHeaderRow(painter, QRectF(-viewportX_, 0.0, std::max(width(), contentWidth_), fileHeaderHeight_),
+                        rows.at(fileHeaderIndex));
+      painter->restore();
+      stickyOffset = fileHeaderHeight_;
+    }
+
+    const int stickyIndex = displayModel_.stickyHunkRowIndexAtY(viewportY_);
     if (stickyIndex >= 0) {
-      qreal stickyY = viewportY_;
+      qreal stickyY = viewportY_ + stickyOffset;
       for (int nextIndex = stickyIndex + 1; nextIndex < static_cast<int>(rows.size()); ++nextIndex) {
         const DiffDisplayRow& nextRow = rows.at(nextIndex);
         if (nextRow.rowType == DiffRowType::Hunk) {
@@ -292,10 +365,20 @@ void DiffSurfaceItem::rebuildRows() {
   const QFontMetricsF metrics(monoFont(monoFontFamily_, 12));
   lineHeight_ = metrics.height();
   rowHeight_ = qCeil(lineHeight_ + 6.0);
+  fileHeaderHeight_ = 28.0;
   hunkHeight_ = 24.0;
 
   std::vector<DiffSourceRow> sourceRows;
-  sourceRows.reserve(rowsModel_ != nullptr ? rowsModel_->rows().size() : 0);
+  sourceRows.reserve((rowsModel_ != nullptr ? rowsModel_->rows().size() : 0) + (filePath_.isEmpty() ? 0 : 1));
+
+  if (!filePath_.isEmpty()) {
+    DiffSourceRow headerRow;
+    headerRow.rowType = DiffRowType::FileHeader;
+    headerRow.header = filePath_.toStdString();
+    headerRow.detail = fileStatus_.toStdString() + " +" + std::to_string(additions_) + " -" +
+                       std::to_string(deletions_);
+    sourceRows.push_back(std::move(headerRow));
+  }
 
   if (rowsModel_ != nullptr) {
     for (const FlattenedDiffRow& rowValue : rowsModel_->rows()) {
@@ -320,7 +403,7 @@ void DiffSurfaceItem::rebuildRows() {
 }
 
 void DiffSurfaceItem::rebuildDisplayRows() {
-  displayModel_.rebuild(toLayoutMode(layoutMode_), rowHeight_, hunkHeight_);
+  displayModel_.rebuild(toLayoutMode(layoutMode_), rowHeight_, hunkHeight_, fileHeaderHeight_);
   contentHeight_ = displayModel_.contentHeight();
   lineNumberDigits_ = displayModel_.lineNumberDigits();
   maxTextWidth_ = 0;
@@ -389,6 +472,21 @@ QString DiffSurfaceItem::textForRange(const TextRange& range) const {
   const QString text = QString::fromUtf8(textRope_.slice(range));
   textCache_.insert(key, text);
   return text;
+}
+
+void DiffSurfaceItem::drawFileHeaderRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row) const {
+  painter->fillRect(rowRect, paletteColor("canvas", QColor("#282828")));
+  painter->fillRect(QRectF(rowRect.left(), rowRect.bottom() - 1.0, rowRect.width(), 1.0),
+                    paletteColor("divider", QColor("#363c46")));
+
+  painter->setFont(monoFont(monoFontFamily_, 10));
+  painter->setPen(paletteColor("textStrong", QColor("#fbf1c7")));
+  painter->drawText(QRectF(rowRect.left() + 10.0, rowRect.top(), rowRect.width() - 140.0, rowRect.height()),
+                    Qt::AlignVCenter | Qt::AlignLeft, QString::fromStdString(row.header));
+
+  painter->setPen(paletteColor("textFaint", QColor("#a89984")));
+  painter->drawText(QRectF(rowRect.right() - 130.0, rowRect.top(), 120.0, rowRect.height()),
+                    Qt::AlignVCenter | Qt::AlignRight, QString::fromStdString(row.detail));
 }
 
 void DiffSurfaceItem::drawHunkRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row) const {

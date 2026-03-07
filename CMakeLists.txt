@@ -97,11 +97,16 @@ qt_add_qml_module(diffy
   QML_FILES
     qml/Main.qml
     qml/components/ActionButton.qml
-    qml/components/FileListPane.qml
+    qml/components/Badge.qml
+    qml/components/Card.qml
     qml/components/DiffPane.qml
+    qml/components/FileListPane.qml
     qml/components/InputField.qml
-    qml/components/RepositoryPickerOverlay.qml
     qml/components/PickerOverlay.qml
+    qml/components/ProgressBar.qml
+    qml/components/RepositoryPickerOverlay.qml
+    qml/components/SegmentedControl.qml
+    qml/components/Toast.qml
     qml/views/WelcomeView.qml
     qml/views/CompareSetupView.qml
     qml/views/DiffBrowsingView.qml

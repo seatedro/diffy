@@ -7,28 +7,28 @@ Rectangle {
     property alias placeholderText: placeholder.text
     property bool monospace: false
     property bool compact: false
+    property bool error: false
     signal submitted(string value)
 
     implicitHeight: compact ? 26 : 30
-    radius: 4
+    radius: theme.radiusSm
     color: theme.panelStrong
-    border.width: 1
-    border.color: input.activeFocus ? theme.selectionBorder : theme.borderSoft
+    border.width: input.activeFocus ? 1.5 : 1
+    border.color: root.error ? theme.dangerBorder : (input.activeFocus ? theme.accent : theme.borderSoft)
 
-    Behavior on border.color {
-        ColorAnimation { duration: 90 }
-    }
+    Behavior on border.color { ColorAnimation { duration: 90 } }
+    Behavior on border.width { NumberAnimation { duration: 90 } }
 
     TextInput {
         id: input
         anchors.fill: parent
-        anchors.leftMargin: 12
-        anchors.rightMargin: 12
-        anchors.topMargin: root.compact ? 4 : 5
-        anchors.bottomMargin: root.compact ? 4 : 5
+        anchors.leftMargin: theme.sp3
+        anchors.rightMargin: theme.sp3
+        anchors.topMargin: root.compact ? theme.sp1 : 5
+        anchors.bottomMargin: root.compact ? theme.sp1 : 5
         color: theme.textStrong
         font.family: root.monospace ? theme.mono : theme.sans
-        font.pixelSize: root.compact ? 11 : 12
+        font.pixelSize: root.compact ? theme.fontSmall + 1 : theme.fontBody
         clip: true
         selectByMouse: true
         selectedTextColor: "#ffffff"

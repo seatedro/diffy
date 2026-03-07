@@ -12,8 +12,8 @@ Rectangle {
 
     ColumnLayout {
         anchors.centerIn: parent
-        spacing: 24
-        width: Math.min(480, parent.width - 48)
+        spacing: theme.sp6
+        width: Math.min(480, parent.width - theme.sp12)
 
         Text {
             Layout.alignment: Qt.AlignHCenter
@@ -26,7 +26,7 @@ Rectangle {
 
         Text {
             Layout.alignment: Qt.AlignHCenter
-            Layout.topMargin: 8
+            Layout.topMargin: theme.sp2
             text: "Native Git diff viewer"
             color: theme.textFaint
             font.family: theme.sans
@@ -43,25 +43,21 @@ Rectangle {
 
         ColumnLayout {
             Layout.fillWidth: true
-            Layout.topMargin: 16
+            Layout.topMargin: theme.sp4
             visible: diffController.recentRepositories.length > 0
-            spacing: 6
+            spacing: theme.sp2
 
             Text {
                 text: "Recent"
                 color: theme.textFaint
                 font.family: theme.sans
-                font.pixelSize: 10
+                font.pixelSize: theme.fontSmall
                 font.bold: true
             }
 
-            Rectangle {
+            Card {
                 Layout.fillWidth: true
-                implicitHeight: recentList.contentHeight
-                Layout.maximumHeight: 240
-                color: theme.panel
-                radius: 6
-                border.color: theme.borderSoft
+                implicitHeight: Math.min(recentList.contentHeight, 240)
                 clip: true
 
                 ListView {
@@ -77,15 +73,16 @@ Rectangle {
                         width: ListView.view.width
                         height: 36
                         color: recentMouse.containsMouse ? theme.panelStrong : "transparent"
+                        radius: index === 0 ? theme.radiusLg : (index === ListView.view.count - 1 ? theme.radiusLg : 0)
 
                         Text {
                             anchors.fill: parent
-                            anchors.leftMargin: 12
-                            anchors.rightMargin: 12
+                            anchors.leftMargin: theme.sp3
+                            anchors.rightMargin: theme.sp3
                             text: modelData
                             color: theme.textBase
                             font.family: theme.mono
-                            font.pixelSize: 12
+                            font.pixelSize: theme.fontBody
                             elide: Text.ElideMiddle
                             verticalAlignment: Text.AlignVCenter
                         }

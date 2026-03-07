@@ -146,6 +146,17 @@ Rectangle {
                 radius: 0
                 color: root.selectedIndex === index ? theme.selectionBg : (mouseArea.containsMouse ? theme.panelStrong : "transparent")
                 border.width: 0
+                opacity: 0
+
+                Component.onCompleted: staggerAnim.start()
+
+                NumberAnimation on opacity {
+                    id: staggerAnim
+                    running: false
+                    from: 0; to: 1
+                    duration: 150
+                    easing.type: Easing.OutCubic
+                }
 
                 Rectangle {
                     anchors.left: parent.left

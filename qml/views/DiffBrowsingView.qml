@@ -67,23 +67,24 @@ Rectangle {
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: 8
-        spacing: 8
+        anchors.margins: theme.sp2
+        spacing: theme.sp2
 
+        // --- Toolbar ---
         Rectangle {
             Layout.fillWidth: true
             color: theme.toolbarBg
-            radius: 8
+            radius: theme.radiusLg
             border.color: theme.borderSoft
             implicitHeight: 48
 
             RowLayout {
                 anchors.fill: parent
-                anchors.leftMargin: 12
-                anchors.rightMargin: 10
-                anchors.topMargin: 4
-                anchors.bottomMargin: 4
-                spacing: 8
+                anchors.leftMargin: theme.sp3
+                anchors.rightMargin: theme.sp3
+                anchors.topMargin: theme.sp1
+                anchors.bottomMargin: theme.sp1
+                spacing: theme.sp2
 
                 ActionButton {
                     text: "Back"
@@ -94,8 +95,8 @@ Rectangle {
                 Rectangle {
                     width: 1
                     Layout.fillHeight: true
-                    Layout.topMargin: 4
-                    Layout.bottomMargin: 4
+                    Layout.topMargin: theme.sp1
+                    Layout.bottomMargin: theme.sp1
                     color: theme.borderSoft
                 }
 
@@ -103,15 +104,15 @@ Rectangle {
                     text: repoLabel()
                     color: theme.textStrong
                     font.family: theme.sans
-                    font.pixelSize: 13
+                    font.pixelSize: theme.fontSubtitle - 1
                     font.bold: true
                 }
 
                 Rectangle {
                     width: 1
                     Layout.fillHeight: true
-                    Layout.topMargin: 4
-                    Layout.bottomMargin: 4
+                    Layout.topMargin: theme.sp1
+                    Layout.bottomMargin: theme.sp1
                     color: theme.borderSoft
                 }
 
@@ -159,26 +160,27 @@ Rectangle {
                 Rectangle {
                     width: 1
                     Layout.fillHeight: true
-                    Layout.topMargin: 4
-                    Layout.bottomMargin: 4
+                    Layout.topMargin: theme.sp1
+                    Layout.bottomMargin: theme.sp1
                     color: theme.borderSoft
                 }
 
-                ActionButton {
-                    text: diffController.renderer === "difftastic" ? "Difftastic" : "Built-in"
-                    compact: true
-                    tone: diffController.renderer === "difftastic" ? "accent" : "neutral"
-                    active: diffController.renderer === "difftastic"
-                    toolTip: "Toggle diff renderer"
-                    onClicked: diffController.renderer = nextRenderer(diffController.renderer)
+                SegmentedControl {
+                    options: [
+                        {label: "Built-in", value: "builtin"},
+                        {label: "Difftastic", value: "difftastic"}
+                    ]
+                    currentValue: diffController.renderer
+                    onValueChanged: function(v) { diffController.renderer = v }
                 }
 
-                ActionButton {
-                    text: diffController.layoutMode === "split" ? "Split" : "Unified"
-                    compact: true
-                    active: diffController.layoutMode === "split"
-                    toolTip: "Toggle split/unified layout"
-                    onClicked: diffController.layoutMode = diffController.layoutMode === "unified" ? "split" : "unified"
+                SegmentedControl {
+                    options: [
+                        {label: "Unified", value: "unified"},
+                        {label: "Split", value: "split"}
+                    ]
+                    currentValue: diffController.layoutMode
+                    onValueChanged: function(v) { diffController.layoutMode = v }
                 }
 
                 ActionButton {
@@ -192,31 +194,33 @@ Rectangle {
             }
         }
 
+        // --- Error banner ---
         Rectangle {
             visible: diffController.errorMessage.length > 0
             Layout.fillWidth: true
-            implicitHeight: diffErrorText.implicitHeight + 14
-            radius: 6
+            implicitHeight: diffErrorText.implicitHeight + theme.sp4
+            radius: theme.radiusMd
             color: theme.dangerBg
             border.color: theme.dangerBorder
 
             Text {
                 id: diffErrorText
                 anchors.fill: parent
-                anchors.margins: 8
+                anchors.margins: theme.sp2
                 text: diffController.errorMessage
                 color: theme.dangerText
                 font.family: theme.sans
-                font.pixelSize: 12
+                font.pixelSize: theme.fontBody
                 wrapMode: Text.Wrap
             }
         }
 
+        // --- Main content ---
         Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
             color: theme.panel
-            radius: 8
+            radius: theme.radiusLg
             border.color: theme.borderSoft
             clip: true
 

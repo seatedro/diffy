@@ -18,6 +18,16 @@ Window {
         color: theme.appBg
     }
 
+    // Global progress bar at top of window
+    ProgressBar {
+        id: globalProgress
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        z: 100
+        active: diffController.comparing || diffController.pullRequestLoading
+    }
+
     WelcomeView {
         id: welcomeView
         anchors.fill: parent
@@ -47,6 +57,15 @@ Window {
 
     RepositoryPickerOverlay {
         anchors.fill: parent
+    }
+
+    // Global toast
+    Toast {
+        id: globalToast
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: theme.sp8
+        z: 200
     }
 
     Shortcut {

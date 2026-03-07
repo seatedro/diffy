@@ -11,66 +11,50 @@ Rectangle {
     signal clicked()
 
     function fillColor() {
-        if (tone === "accent") {
-            return active ? theme.accent : theme.accentSoft
-        }
-        if (tone === "success") {
-            return theme.successBg
-        }
-        if (tone === "danger") {
-            return theme.dangerBg
-        }
+        if (tone === "accent") return active ? theme.accent : theme.accentSoft
+        if (tone === "success") return theme.successBg
+        if (tone === "danger") return theme.dangerBg
         return mouseArea.containsMouse ? theme.panelStrong : theme.panel
     }
 
     function borderColor() {
-        if (tone === "accent") {
-            return active ? theme.accent : theme.selectionBorder
-        }
-        if (tone === "success") {
-            return theme.successBorder
-        }
-        if (tone === "danger") {
-            return theme.dangerBorder
-        }
+        if (tone === "accent") return active ? theme.accent : theme.selectionBorder
+        if (tone === "success") return theme.successBorder
+        if (tone === "danger") return theme.dangerBorder
         return active ? theme.selectionBorder : theme.borderSoft
     }
 
     function textColor() {
-        if (tone === "accent") {
-            return active ? theme.appBg : theme.accentStrong
-        }
-        if (tone === "success") {
-            return theme.successText
-        }
-        if (tone === "danger") {
-            return theme.dangerText
-        }
+        if (tone === "accent") return active ? theme.appBg : theme.accentStrong
+        if (tone === "success") return theme.successText
+        if (tone === "danger") return theme.dangerText
         return active ? theme.accentStrong : theme.textMuted
     }
 
     activeFocusOnTab: true
 
-    implicitWidth: Math.max(compact ? 58 : 88, label.implicitWidth + (compact ? 14 : 24))
+    implicitWidth: Math.max(compact ? 58 : 88, label.implicitWidth + (compact ? theme.sp4 : theme.sp6))
     implicitHeight: compact ? 28 : 32
-    radius: 4
+    radius: theme.radiusSm
     color: mouseArea.pressed ? Qt.darker(fillColor(), 1.1) : (mouseArea.containsMouse ? Qt.lighter(fillColor(), 1.04) : fillColor())
     border.width: active ? 1.5 : 1
     border.color: borderColor()
 
-    Behavior on color {
-        ColorAnimation { duration: 90 }
-    }
+    scale: mouseArea.pressed ? 0.97 : 1.0
+    Behavior on scale { NumberAnimation { duration: 80; easing.type: Easing.OutCubic } }
+
+    Behavior on color { ColorAnimation { duration: 90 } }
 
     Text {
         id: label
         anchors.centerIn: parent
         color: root.textColor()
         font.family: theme.sans
-        font.pixelSize: compact ? 11 : 12
+        font.pixelSize: compact ? theme.fontSmall + 1 : theme.fontBody
         font.bold: active || tone !== "neutral"
     }
 
+    // Focus ring
     Rectangle {
         anchors.fill: parent
         anchors.margins: -2
@@ -92,14 +76,15 @@ Rectangle {
     Keys.onReturnPressed: root.clicked()
     Keys.onSpacePressed: root.clicked()
 
+    // Hand-rolled tooltip
     Rectangle {
         id: tipBg
-        visible: root.toolTip.length > 0 && tipTimer.running === false && tipShown
+        visible: root.toolTip.length > 0 && tipShown
         x: (root.width - width) / 2
-        y: root.height + 4
-        width: tipLabel.implicitWidth + 12
-        height: tipLabel.implicitHeight + 6
-        radius: 3
+        y: root.height + theme.sp1
+        width: tipLabel.implicitWidth + theme.sp3
+        height: tipLabel.implicitHeight + theme.sp1
+        radius: theme.radiusSm
         color: theme.panelStrong
         border.color: theme.borderSoft
         z: 100
@@ -112,7 +97,7 @@ Rectangle {
             text: root.toolTip
             color: theme.textBase
             font.family: theme.sans
-            font.pixelSize: 10
+            font.pixelSize: theme.fontSmall
         }
     }
 

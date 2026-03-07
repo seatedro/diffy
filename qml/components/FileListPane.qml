@@ -19,17 +19,17 @@ Rectangle {
     }
 
     function statusLabel(status) {
-        if (status === "A") return "Added"
-        if (status === "D") return "Deleted"
-        if (status === "R") return "Renamed"
-        return "Modified"
+        if (status === "A") return "A"
+        if (status === "D") return "D"
+        if (status === "R") return "R"
+        return "M"
     }
 
-    function statusColor(status) {
-        if (status === "A") return theme.successText
-        if (status === "D") return theme.dangerText
-        if (status === "R") return theme.accentStrong
-        return theme.warningText
+    function statusVariant(status) {
+        if (status === "A") return "success"
+        if (status === "D") return "danger"
+        if (status === "R") return "accent"
+        return "warning"
     }
 
     function totalAdditions() {
@@ -63,16 +63,16 @@ Rectangle {
 
             Row {
                 anchors.fill: parent
-                anchors.leftMargin: 12
-                anchors.rightMargin: 10
-                spacing: 8
+                anchors.leftMargin: theme.sp3
+                anchors.rightMargin: theme.sp3
+                spacing: theme.sp2
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
                     text: "Changes"
                     color: theme.textStrong
                     font.family: theme.sans
-                    font.pixelSize: 12
+                    font.pixelSize: theme.fontBody
                     font.bold: true
                 }
 
@@ -81,7 +81,7 @@ Rectangle {
                     text: files.length + (files.length === 1 ? " file" : " files")
                     color: theme.textFaint
                     font.family: theme.sans
-                    font.pixelSize: 10
+                    font.pixelSize: theme.fontSmall
                 }
 
                 Item { width: 1; height: 1 }
@@ -91,7 +91,7 @@ Rectangle {
                     text: "+" + totalAdditions()
                     color: theme.successText
                     font.family: theme.mono
-                    font.pixelSize: 10
+                    font.pixelSize: theme.fontSmall
                 }
 
                 Text {
@@ -99,7 +99,7 @@ Rectangle {
                     text: "-" + totalDeletions()
                     color: theme.dangerText
                     font.family: theme.mono
-                    font.pixelSize: 10
+                    font.pixelSize: theme.fontSmall
                 }
             }
         }
@@ -155,25 +155,24 @@ Rectangle {
                     color: theme.accent
                 }
 
-                Rectangle {
+                Badge {
+                    id: statusBadge
                     anchors.left: parent.left
-                    anchors.leftMargin: 12
+                    anchors.leftMargin: theme.sp2
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 6
-                    height: 6
-                    radius: 3
-                    color: root.statusColor(modelData.status)
+                    text: root.statusLabel(modelData.status)
+                    variant: root.statusVariant(modelData.status)
                 }
 
                 Text {
-                    anchors.left: parent.left
-                    anchors.leftMargin: 26
+                    anchors.left: statusBadge.right
+                    anchors.leftMargin: theme.sp2
                     anchors.verticalCenter: parent.verticalCenter
-                    width: parent.width - counts.implicitWidth - 42
+                    width: parent.width - statusBadge.width - counts.implicitWidth - theme.sp8 - theme.sp2
                     text: modelData.path
                     color: root.selectedIndex === index ? theme.textStrong : theme.textBase
                     font.family: theme.sans
-                    font.pixelSize: 11
+                    font.pixelSize: theme.fontSmall + 1
                     font.bold: root.selectedIndex === index
                     elide: Text.ElideLeft
                 }
@@ -181,7 +180,7 @@ Rectangle {
                 Row {
                     id: counts
                     anchors.right: parent.right
-                    anchors.rightMargin: 10
+                    anchors.rightMargin: theme.sp3
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 5
 
@@ -190,21 +189,21 @@ Rectangle {
                         text: "bin"
                         color: theme.textFaint
                         font.family: theme.mono
-                        font.pixelSize: 10
+                        font.pixelSize: theme.fontSmall
                     }
 
                     Text {
                         text: "+" + modelData.additions
                         color: theme.successText
                         font.family: theme.mono
-                        font.pixelSize: 10
+                        font.pixelSize: theme.fontSmall
                     }
 
                     Text {
                         text: "-" + modelData.deletions
                         color: theme.dangerText
                         font.family: theme.mono
-                        font.pixelSize: 10
+                        font.pixelSize: theme.fontSmall
                     }
                 }
 
@@ -223,7 +222,7 @@ Rectangle {
                 text: "Run compare to populate the changes list."
                 color: theme.textFaint
                 font.family: theme.sans
-                font.pixelSize: 10
+                font.pixelSize: theme.fontSmall
             }
         }
     }

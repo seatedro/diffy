@@ -313,6 +313,40 @@ class DiffControllerTest : public QObject {
     QCOMPARE(controller2.recentRepositories().first(), repoA);
   }
 
+  void displayRefsAbbreviateShas() {
+    const QString repoPath = initRepositoryWithDiff();
+    QVERIFY(!repoPath.isEmpty());
+
+    QProcess revParse;
+    revParse.setProgram("git");
+    revParse.setWorkingDirectory(repoPath);
+    revParse.setArguments({"rev-parse", "HEAD"});
+    revParse.start();
+    QVERIFY(revParse.waitForFinished(30000));
+    QCOMPARE(revParse.exitCode(), 0);
+    const QString headSha = QString::fromUtf8(revParse.readAllStandardOutput()).trimmed();
+    QCOMPARE(headSha.size(), 40);
+
+    DiffController controller;
+    QVERIFY(controller.openRepository(repoPath));
+    controller.setLeftRef(headSha);
+
+    const QString display = controller.leftRefDisplay();
+    QVERIFY2(display != headSha, qPrintable("Expected abbreviated ref, got raw SHA"));
+    QVERIFY2(display.size() < 40, qPrintable("Expected short display, got: " + display));
+  }
+
+  void displayRefsPassthroughBranchNames() {
+    const QString repoPath = initRepositoryWithDiff();
+    QVERIFY(!repoPath.isEmpty());
+
+    DiffController controller;
+    QVERIFY(controller.openRepository(repoPath));
+    controller.setLeftRef("HEAD~1");
+
+    QCOMPARE(controller.leftRefDisplay(), QString("HEAD~1"));
+  }
+
   void compareWithThreeDotMode() {
     const QString repoPath = initRepositoryWithDiff();
     QVERIFY(!repoPath.isEmpty());

@@ -351,6 +351,46 @@ std::vector<GitRepositoryService::CommitInfo> GitRepositoryService::listCommits(
   return commits;
 }
 
+std::string GitRepositoryService::resolveOidToBranchName(const std::string& oidHex) const {
+  if (repo_ == nullptr || oidHex.size() != GIT_OID_HEXSZ) {
+    return {};
+  }
+
+  git_oid targetOid{};
+  if (git_oid_fromstr(&targetOid, oidHex.c_str()) != 0) {
+    return {};
+  }
+
+  git_branch_iterator* iter = nullptr;
+  if (git_branch_iterator_new(&iter, repo_, GIT_BRANCH_LOCAL) != 0) {
+    return {};
+  }
+
+  std::string result;
+  git_reference* ref = nullptr;
+  git_branch_t type{};
+  while (git_branch_next(&ref, &type, iter) == 0) {
+    git_reference* resolved = nullptr;
+    if (git_reference_resolve(&resolved, ref) == 0) {
+      const git_oid* tipOid = git_reference_target(resolved);
+      if (tipOid != nullptr && git_oid_equal(tipOid, &targetOid)) {
+        const char* name = nullptr;
+        if (git_branch_name(&name, ref) == 0 && name != nullptr) {
+          result = name;
+        }
+        git_reference_free(resolved);
+        git_reference_free(ref);
+        break;
+      }
+      git_reference_free(resolved);
+    }
+    git_reference_free(ref);
+  }
+  git_branch_iterator_free(iter);
+
+  return result;
+}
+
 bool GitRepositoryService::resolveComparison(std::string_view leftRef,
                                              std::string_view rightRef,
                                              CompareMode mode,

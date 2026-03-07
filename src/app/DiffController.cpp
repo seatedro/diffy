@@ -1,5 +1,7 @@
 #include "app/DiffController.h"
 
+#include <algorithm>
+
 #include <QDir>
 #include <QStandardPaths>
 
@@ -106,6 +108,14 @@ void DiffController::setRightRef(const QString& value) {
   }
   rightRef_ = value;
   emit rightRefChanged();
+}
+
+QString DiffController::leftRefDisplay() const {
+  return abbreviateRef(leftRef_);
+}
+
+QString DiffController::rightRefDisplay() const {
+  return abbreviateRef(rightRef_);
 }
 
 QString DiffController::compareMode() const {
@@ -523,6 +533,24 @@ void DiffController::addRecentRepository(const QString& path) {
   }
   settings_.setValue("recentRepositories", recentRepositories_);
   emit recentRepositoriesChanged();
+}
+
+QString DiffController::abbreviateRef(const QString& ref) const {
+  if (ref.size() != 40) {
+    return ref;
+  }
+  const QByteArray ascii = ref.toLatin1();
+  const bool allHex = std::all_of(ascii.begin(), ascii.end(), [](char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+  });
+  if (!allHex) {
+    return ref;
+  }
+  const std::string branchName = gitService_.resolveOidToBranchName(ref.toStdString());
+  if (!branchName.empty()) {
+    return QString::fromStdString(branchName);
+  }
+  return ref.left(8);
 }
 
 void DiffController::persistSettings() {

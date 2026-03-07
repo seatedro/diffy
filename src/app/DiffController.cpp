@@ -180,6 +180,10 @@ int DiffController::selectedFileRowCount() const {
   return selectedFileRowsModel_.count();
 }
 
+bool DiffController::comparing() const {
+  return comparing_;
+}
+
 QVariantList DiffController::branches() const {
   return branches_;
 }
@@ -325,16 +329,25 @@ void DiffController::openCurrentRepositoryFromPicker() {
 
 void DiffController::compare() {
   clearError();
+  comparing_ = true;
+  emit comparingChanged();
+
+  auto finishComparing = [this]() {
+    comparing_ = false;
+    emit comparingChanged();
+  };
 
   if (parseGitHubPullRequestUrl(leftRef_.toStdString()).has_value() ||
       parseGitHubPullRequestUrl(rightRef_.toStdString()).has_value()) {
     setError("Use the \"Open PR\" section below to load a pull request URL.");
+    finishComparing();
     return;
   }
 
   if (!gitService_.isOpen()) {
     if (repoPath_.isEmpty() || !openRepository(repoPath_)) {
       setError("Open a repository before running compare");
+      finishComparing();
       return;
     }
   }
@@ -347,6 +360,7 @@ void DiffController::compare() {
                                      compareModeFromString(compareMode_.toStdString()), &resolvedLeft,
                                      &resolvedRight, &resolveError)) {
     setError(QString::fromStdString(resolveError));
+    finishComparing();
     return;
   }
 
@@ -370,10 +384,12 @@ void DiffController::compare() {
     } else {
       setError(QString("difftastic failed (%1); built-in fallback failed (%2)")
                    .arg(QString::fromStdString(renderError), QString::fromStdString(fallbackError)));
+      finishComparing();
       return;
     }
   } else if (!rendered) {
     setError(QString::fromStdString(renderError));
+    finishComparing();
     return;
   }
 
@@ -390,6 +406,7 @@ void DiffController::compare() {
   emit selectedFileChanged();
   rebuildSelectedFileRows();
 
+  finishComparing();
   setCurrentView("diff");
   persistSettings();
 }

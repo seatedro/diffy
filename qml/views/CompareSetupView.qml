@@ -7,6 +7,7 @@ Rectangle {
 
     property bool compactControls: width < 800
     property string pickerTarget: ""
+    property bool prExpanded: !diffController.hasGithubToken
 
     signal browseRequested()
 
@@ -165,11 +166,20 @@ Rectangle {
             Item { Layout.fillWidth: true }
 
             ActionButton {
-                text: "Compare"
+                text: diffController.comparing ? "Comparing…" : "Compare"
                 tone: "accent"
                 active: true
                 onClicked: root.runCompare()
             }
+        }
+
+        Text {
+            visible: diffController.comparing
+            text: "Comparing…"
+            color: theme.textFaint
+            font.family: theme.sans
+            font.pixelSize: 12
+            Layout.alignment: Qt.AlignHCenter
         }
 
         Rectangle {
@@ -211,11 +221,17 @@ Rectangle {
                     spacing: 8
 
                     Text {
-                        text: "GitHub Pull Request"
+                        text: (root.prExpanded ? "▾ " : "▸ ") + "GitHub Pull Request"
                         color: theme.textStrong
                         font.family: theme.sans
                         font.pixelSize: 11
                         font.bold: true
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.prExpanded = !root.prExpanded
+                        }
                     }
 
                     Item { Layout.fillWidth: true }
@@ -241,7 +257,7 @@ Rectangle {
                 }
 
                 RowLayout {
-                    visible: !diffController.hasGithubToken
+                    visible: root.prExpanded && !diffController.hasGithubToken
                     Layout.fillWidth: true
                     spacing: 8
 
@@ -266,7 +282,7 @@ Rectangle {
                 }
 
                 Text {
-                    visible: !diffController.hasGithubToken
+                    visible: root.prExpanded && !diffController.hasGithubToken
                     text: "A token is required for private repos. Create one at github.com/settings/tokens with repo scope."
                     color: theme.textFaint
                     font.family: theme.sans
@@ -276,6 +292,7 @@ Rectangle {
                 }
 
                 RowLayout {
+                    visible: root.prExpanded
                     Layout.fillWidth: true
                     spacing: 8
 
@@ -303,7 +320,7 @@ Rectangle {
                 }
 
                 Rectangle {
-                    visible: diffController.pullRequestInfo.title !== undefined
+                    visible: root.prExpanded && diffController.pullRequestInfo.title !== undefined
                     Layout.fillWidth: true
                     implicitHeight: prInfoCol.implicitHeight + 12
                     radius: 4

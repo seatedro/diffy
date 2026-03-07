@@ -40,6 +40,7 @@ class DiffController : public QObject {
   Q_PROPERTY(QVariantList branches READ branches NOTIFY branchesChanged)
   Q_PROPERTY(QVariantList commits READ commits NOTIFY commitsChanged)
   Q_PROPERTY(QVariantMap pullRequestInfo READ pullRequestInfo NOTIFY pullRequestInfoChanged)
+  Q_PROPERTY(bool comparing READ comparing NOTIFY comparingChanged)
   Q_PROPERTY(bool pullRequestLoading READ pullRequestLoading NOTIFY pullRequestLoadingChanged)
   Q_PROPERTY(QString githubToken READ githubToken WRITE setGithubToken NOTIFY githubTokenChanged)
   Q_PROPERTY(bool hasGithubToken READ hasGithubToken NOTIFY githubTokenChanged)
@@ -85,6 +86,7 @@ class DiffController : public QObject {
 
   QVariantList branches() const;
   QVariantList commits() const;
+  bool comparing() const;
   QVariantMap pullRequestInfo() const;
   bool pullRequestLoading() const;
   QString githubToken() const;
@@ -126,6 +128,7 @@ class DiffController : public QObject {
   void branchesChanged();
   void commitsChanged();
   void pullRequestInfoChanged();
+  void comparingChanged();
   void pullRequestLoadingChanged();
   void githubTokenChanged();
   void errorMessageChanged();
@@ -167,6 +170,7 @@ class DiffController : public QObject {
   QVariantList branches_;
   QVariantList commits_;
   QVariantMap pullRequestInfo_;
+  bool comparing_ = false;
   bool pullRequestLoading_ = false;
   QString githubToken_;
   QString errorMessage_;

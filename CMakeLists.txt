@@ -106,7 +106,6 @@ qt_add_qml_module(diffy
     qml/components/FileListPane.qml
     qml/components/InputField.qml
     qml/components/ProgressBar.qml
-    qml/components/RepositoryPickerOverlay.qml
     qml/components/SegmentedControl.qml
     qml/components/ShortcutOverlay.qml
     qml/components/SplitHandle.qml

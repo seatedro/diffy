@@ -112,6 +112,7 @@ class DiffController : public QObject {
   Q_INVOKABLE void goBack();
   Q_INVOKABLE bool openRepository(const QString& path);
   Q_INVOKABLE void openRepositoryPicker();
+  Q_INVOKABLE void openRepositoryFromDialog();
   Q_INVOKABLE void closeRepositoryPicker();
   Q_INVOKABLE void navigateRepositoryPickerUp();
   Q_INVOKABLE void activateRepositoryPickerEntry(int index);

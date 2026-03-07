@@ -8,6 +8,7 @@ Rectangle {
     property bool compactControls: width < 1260
     property bool stackPanels: width < 1140
     property string pendingPullRequestField: ""
+    property real filePaneWidth: Math.max(220, Math.min(280, width * 0.20))
 
     function nextCompareMode(value) {
         if (value === "two-dot") return "three-dot"
@@ -228,7 +229,7 @@ Rectangle {
                 id: filePane
                 x: 0
                 y: 0
-                width: root.stackPanels ? parent.width : Math.max(220, Math.min(280, parent.width * 0.20))
+                width: root.stackPanels ? parent.width : root.filePaneWidth
                 height: root.stackPanels ? 220 : parent.height
                 files: diffController.files
                 selectedIndex: diffController.selectedFileIndex
@@ -242,13 +243,14 @@ Rectangle {
                 }
             }
 
-            Rectangle {
+            SplitHandle {
                 visible: !root.stackPanels
                 x: filePane.width
                 y: 0
-                width: 1
-                height: parent.height
-                color: theme.divider
+                position: root.filePaneWidth
+                minBefore: 160
+                maxBefore: 400
+                onDragged: function(v) { root.filePaneWidth = v }
             }
 
             Rectangle {
@@ -262,9 +264,9 @@ Rectangle {
 
             DiffPane {
                 id: diffPane
-                x: root.stackPanels ? 0 : filePane.width + 1
+                x: root.stackPanels ? 0 : filePane.width + 5
                 y: root.stackPanels ? filePane.height + 1 : 0
-                width: root.stackPanels ? parent.width : parent.width - filePane.width - 1
+                width: root.stackPanels ? parent.width : parent.width - filePane.width - 5
                 height: root.stackPanels ? parent.height - filePane.height - 1 : parent.height
                 fileData: diffController.selectedFile
                 rowsModel: diffController.selectedFileRowsModel

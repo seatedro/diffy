@@ -119,6 +119,17 @@ target_include_directories(test_highlighter PRIVATE
 target_link_libraries(test_highlighter PRIVATE diffy_core Qt6::Core Qt6::Test)
 add_test(NAME test_highlighter COMMAND test_highlighter)
 
+qt_add_executable(test_fuzzy_match
+  test_fuzzy_match.cpp
+)
+
+target_include_directories(test_fuzzy_match PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+
+target_link_libraries(test_fuzzy_match PRIVATE diffy_core Qt6::Core Qt6::Test)
+add_test(NAME test_fuzzy_match COMMAND test_fuzzy_match)
+
 qt_add_executable(test_app_smoke
   test_app_smoke.cpp
 )

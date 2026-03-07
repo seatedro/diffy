@@ -115,6 +115,7 @@ class DiffController : public QObject {
   Q_INVOKABLE void loadBranches();
   Q_INVOKABLE void loadCommits(const QString& ref);
   Q_INVOKABLE void openPullRequest(const QString& url);
+  Q_INVOKABLE QVariantList fuzzyFilter(const QString& query, const QVariantList& items, const QString& labelKey);
   Q_INVOKABLE void startOAuthLogin();
   Q_INVOKABLE void cancelOAuthLogin();
 

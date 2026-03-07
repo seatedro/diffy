@@ -33,6 +33,7 @@ add_subdirectory(vendor/grammars)
 add_library(diffy_core STATIC
   src/core/CompareSpec.cpp
   src/core/DiffTypes.cpp
+  src/core/FuzzyMatch.cpp
   src/core/GitHubApi.cpp
   src/core/GitHubDeviceFlow.cpp
   src/core/GitHubPullRequest.cpp

@@ -25,19 +25,11 @@ Rectangle {
     }
 
     function filterItems() {
-        var query = searchField.text.toLowerCase()
+        var query = searchField.text
         if (query.length === 0) {
             filteredItems = items
         } else {
-            var result = []
-            for (var i = 0; i < items.length; ++i) {
-                var item = items[i]
-                var haystack = (item.label + " " + (item.detail || "") + " " + (item.category || "")).toLowerCase()
-                if (haystack.indexOf(query) >= 0) {
-                    result.push(item)
-                }
-            }
-            filteredItems = result
+            filteredItems = diffController.fuzzyFilter(query, items, "label")
         }
         selectedIdx = 0
     }

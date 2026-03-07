@@ -106,6 +106,7 @@ qt_add_qml_module(diffy
     qml/components/ProgressBar.qml
     qml/components/RepositoryPickerOverlay.qml
     qml/components/SegmentedControl.qml
+    qml/components/ShortcutOverlay.qml
     qml/components/Toast.qml
     qml/views/WelcomeView.qml
     qml/views/CompareSetupView.qml

@@ -13,6 +13,32 @@ Window {
     title: "diffy"
     color: theme.appBg
 
+    property string previousView: "welcome"
+
+    function viewIndex(name) {
+        if (name === "welcome") return 0
+        if (name === "compare") return 1
+        return 2
+    }
+
+    Connections {
+        target: diffController
+        function onCurrentViewChanged() {
+            var oldIdx = viewIndex(window.previousView)
+            var newIdx = viewIndex(diffController.currentView)
+            var goingForward = newIdx > oldIdx
+
+            // Slide outgoing view
+            var outgoing = oldIdx === 0 ? welcomeView : (oldIdx === 1 ? compareView : diffView)
+            var incoming = newIdx === 0 ? welcomeView : (newIdx === 1 ? compareView : diffView)
+
+            outgoing.slideOut(goingForward)
+            incoming.slideIn(goingForward)
+
+            window.previousView = diffController.currentView
+        }
+    }
+
     Rectangle {
         anchors.fill: parent
         color: theme.appBg
@@ -33,7 +59,23 @@ Window {
         anchors.fill: parent
         visible: opacity > 0
         opacity: diffController.currentView === "welcome" ? 1.0 : 0.0
-        Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.InOutQuad } }
+
+        property real slideX: 0
+        transform: Translate { x: welcomeView.slideX }
+
+        function slideIn(forward) {
+            slideX = forward ? -100 : 100
+            slideAnim.to = 0
+            slideAnim.start()
+        }
+        function slideOut(forward) {
+            slideAnim.to = forward ? -100 : 100
+            slideAnim.start()
+        }
+
+        NumberAnimation on opacity { duration: 180; easing.type: Easing.InOutQuad }
+        NumberAnimation { id: slideAnim; target: welcomeView; property: "slideX"; duration: 220; easing.type: Easing.OutCubic }
+
         onOpenRepositoryRequested: diffController.openRepositoryPicker()
         onOpenRecentRequested: function(path) { diffController.openRepository(path) }
     }
@@ -43,7 +85,23 @@ Window {
         anchors.fill: parent
         visible: opacity > 0
         opacity: diffController.currentView === "compare" ? 1.0 : 0.0
-        Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.InOutQuad } }
+
+        property real slideX: 0
+        transform: Translate { x: compareView.slideX }
+
+        function slideIn(forward) {
+            slideX = forward ? 100 : -100
+            compSlideAnim.to = 0
+            compSlideAnim.start()
+        }
+        function slideOut(forward) {
+            compSlideAnim.to = forward ? -100 : 100
+            compSlideAnim.start()
+        }
+
+        NumberAnimation on opacity { duration: 180; easing.type: Easing.InOutQuad }
+        NumberAnimation { id: compSlideAnim; target: compareView; property: "slideX"; duration: 220; easing.type: Easing.OutCubic }
+
         onBrowseRequested: diffController.openRepositoryPicker()
     }
 
@@ -52,11 +110,30 @@ Window {
         anchors.fill: parent
         visible: opacity > 0
         opacity: diffController.currentView === "diff" ? 1.0 : 0.0
-        Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.InOutQuad } }
+
+        property real slideX: 0
+        transform: Translate { x: diffView.slideX }
+
+        function slideIn(forward) {
+            slideX = forward ? 100 : -100
+            diffSlideAnim.to = 0
+            diffSlideAnim.start()
+        }
+        function slideOut(forward) {
+            diffSlideAnim.to = forward ? -100 : 100
+            diffSlideAnim.start()
+        }
+
+        NumberAnimation on opacity { duration: 180; easing.type: Easing.InOutQuad }
+        NumberAnimation { id: diffSlideAnim; target: diffView; property: "slideX"; duration: 220; easing.type: Easing.OutCubic }
     }
 
     RepositoryPickerOverlay {
         anchors.fill: parent
+    }
+
+    ShortcutOverlay {
+        id: shortcutOverlay
     }
 
     // Global toast
@@ -71,11 +148,18 @@ Window {
     Shortcut {
         sequence: "Escape"
         onActivated: {
-            if (diffController.repositoryPickerVisible) {
+            if (shortcutOverlay.showing) {
+                shortcutOverlay.showing = false
+            } else if (diffController.repositoryPickerVisible) {
                 diffController.closeRepositoryPicker()
             } else {
                 diffController.goBack()
             }
         }
+    }
+
+    Shortcut {
+        sequence: "Shift+/"
+        onActivated: shortcutOverlay.showing = !shortcutOverlay.showing
     }
 }

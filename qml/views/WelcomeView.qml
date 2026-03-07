@@ -13,23 +13,24 @@ Rectangle {
     ColumnLayout {
         anchors.centerIn: parent
         spacing: 24
-        width: Math.min(420, parent.width - 48)
+        width: Math.min(480, parent.width - 48)
 
         Text {
             Layout.alignment: Qt.AlignHCenter
             text: "diffy"
             color: theme.textStrong
             font.family: theme.sans
-            font.pixelSize: 32
+            font.pixelSize: 40
             font.bold: true
         }
 
         Text {
             Layout.alignment: Qt.AlignHCenter
+            Layout.topMargin: 8
             text: "Native Git diff viewer"
             color: theme.textFaint
             font.family: theme.sans
-            font.pixelSize: 13
+            font.pixelSize: 15
         }
 
         ActionButton {
@@ -42,6 +43,7 @@ Rectangle {
 
         ColumnLayout {
             Layout.fillWidth: true
+            Layout.topMargin: 16
             visible: diffController.recentRepositories.length > 0
             spacing: 6
 
@@ -73,7 +75,7 @@ Rectangle {
                         required property string modelData
 
                         width: ListView.view.width
-                        height: 32
+                        height: 36
                         color: recentMouse.containsMouse ? theme.panelStrong : "transparent"
 
                         Text {
@@ -83,7 +85,7 @@ Rectangle {
                             text: modelData
                             color: theme.textBase
                             font.family: theme.mono
-                            font.pixelSize: 11
+                            font.pixelSize: 12
                             elide: Text.ElideMiddle
                             verticalAlignment: Text.AlignVCenter
                         }

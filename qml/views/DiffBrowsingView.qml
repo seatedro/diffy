@@ -170,7 +170,7 @@ Rectangle {
                 }
 
                 ActionButton {
-                    text: "Compare"
+                    text: diffController.comparing ? "Comparing…" : "Compare"
                     tone: "accent"
                     compact: true
                     active: true

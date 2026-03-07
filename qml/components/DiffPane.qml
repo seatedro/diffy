@@ -139,29 +139,12 @@ Rectangle {
                 }
             }
 
-            Column {
+            EmptyState {
                 visible: !root.hasData()
-                width: parent.width
-                spacing: 6
-
-                Text {
-                    width: parent.width
-                    text: "No diff selected"
-                    color: theme.textStrong
-                    font.family: theme.sans
-                    font.pixelSize: 16
-                    font.bold: true
-                    horizontalAlignment: Text.AlignHCenter
-                }
-
-                Text {
-                    width: parent.width
-                    text: "Open a repository, choose refs, run compare, then select a file."
-                    color: theme.textMuted
-                    font.family: theme.sans
-                    font.pixelSize: 11
-                    horizontalAlignment: Text.AlignHCenter
-                }
+                anchors.centerIn: parent
+                icon: "◇"
+                title: "No diff selected"
+                subtitle: "Choose refs and run compare, then select a file."
             }
         }
 
@@ -184,26 +167,11 @@ Rectangle {
         color: theme.canvas
         border.color: theme.warningBorder
 
-        Column {
+        EmptyState {
             anchors.centerIn: parent
-            spacing: 6
-
-            Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: "Binary or non-text change"
-                color: theme.textStrong
-                font.family: theme.sans
-                font.pixelSize: 20
-                font.bold: true
-            }
-
-            Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: "This file only exposes metadata in the current renderer."
-                color: theme.warningText
-                font.family: theme.sans
-                font.pixelSize: 13
-            }
+            icon: "⬡"
+            title: "Binary or non-text change"
+            subtitle: "This file only exposes metadata in the current renderer."
         }
     }
 

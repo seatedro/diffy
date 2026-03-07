@@ -216,13 +216,11 @@ Rectangle {
                 }
             }
 
-            Text {
+            EmptyState {
                 visible: root.files.length === 0
                 anchors.centerIn: parent
-                text: "Run compare to populate the changes list."
-                color: theme.textFaint
-                font.family: theme.sans
-                font.pixelSize: theme.fontSmall
+                title: "No changes"
+                subtitle: "Run compare to see files."
             }
         }
     }

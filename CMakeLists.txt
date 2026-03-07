@@ -100,6 +100,7 @@ qt_add_qml_module(diffy
     qml/components/Badge.qml
     qml/components/Card.qml
     qml/components/DiffPane.qml
+    qml/components/EmptyState.qml
     qml/components/FileListPane.qml
     qml/components/InputField.qml
     qml/components/PickerOverlay.qml

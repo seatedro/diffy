@@ -157,7 +157,7 @@ Window {
 
         // Actions
         items.push({label: "Compare", detail: "", category: "Action", type: "action", value: "compare"})
-        items.push({label: "Go Back", detail: "Esc", category: "Action", type: "action", value: "back"})
+        items.push({label: "Go Back", detail: "Alt+←", category: "Action", type: "action", value: "back"})
         items.push({label: "Open Repository", detail: "", category: "Action", type: "action", value: "openRepo"})
         items.push({label: "Keyboard Shortcuts", detail: "?", category: "Action", type: "action", value: "shortcuts"})
 
@@ -200,14 +200,19 @@ Window {
     Shortcut {
         sequence: "Escape"
         onActivated: {
-            if (shortcutOverlay.showing) {
+            if (commandPalette.showing) {
+                commandPalette.close()
+            } else if (shortcutOverlay.showing) {
                 shortcutOverlay.showing = false
             } else if (diffController.repositoryPickerVisible) {
                 diffController.closeRepositoryPicker()
-            } else {
-                diffController.goBack()
             }
         }
+    }
+
+    Shortcut {
+        sequence: "Alt+Left"
+        onActivated: diffController.goBack()
     }
 
     Shortcut {

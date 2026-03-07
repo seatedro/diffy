@@ -136,6 +136,58 @@ Window {
         id: shortcutOverlay
     }
 
+    CommandPalette {
+        id: commandPalette
+        onActionTriggered: function(item) {
+            if (item.type === "file") {
+                diffController.selectFile(item.index)
+            } else if (item.type === "branch") {
+                diffController.leftRef = item.value
+            } else if (item.type === "action") {
+                if (item.value === "compare") diffController.compare()
+                else if (item.value === "back") diffController.goBack()
+                else if (item.value === "openRepo") diffController.openRepositoryPicker()
+                else if (item.value === "shortcuts") shortcutOverlay.showing = true
+            }
+        }
+    }
+
+    function openCommandPalette() {
+        var items = []
+
+        // Actions
+        items.push({label: "Compare", detail: "", category: "Action", type: "action", value: "compare"})
+        items.push({label: "Go Back", detail: "Esc", category: "Action", type: "action", value: "back"})
+        items.push({label: "Open Repository", detail: "", category: "Action", type: "action", value: "openRepo"})
+        items.push({label: "Keyboard Shortcuts", detail: "?", category: "Action", type: "action", value: "shortcuts"})
+
+        // Changed files
+        var files = diffController.files
+        for (var i = 0; i < files.length; ++i) {
+            items.push({
+                label: files[i].path,
+                detail: "+" + files[i].additions + " -" + files[i].deletions,
+                category: "File",
+                type: "file",
+                index: i
+            })
+        }
+
+        // Branches
+        var branches = diffController.branches
+        for (var j = 0; j < branches.length; ++j) {
+            items.push({
+                label: branches[j].name,
+                detail: branches[j].isHead ? "HEAD" : "",
+                category: "Branch",
+                type: "branch",
+                value: branches[j].name
+            })
+        }
+
+        commandPalette.open(items)
+    }
+
     // Global toast
     Toast {
         id: globalToast
@@ -161,5 +213,15 @@ Window {
     Shortcut {
         sequence: "Shift+/"
         onActivated: shortcutOverlay.showing = !shortcutOverlay.showing
+    }
+
+    Shortcut {
+        sequence: "Ctrl+K"
+        onActivated: window.openCommandPalette()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+P"
+        onActivated: window.openCommandPalette()
     }
 }

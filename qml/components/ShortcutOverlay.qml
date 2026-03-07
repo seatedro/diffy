@@ -65,7 +65,9 @@ Rectangle {
 
             ShortcutRow { key: "j / k"; desc: "Next / previous file" }
             ShortcutRow { key: "n / N"; desc: "Next / previous hunk" }
-            ShortcutRow { key: "Escape"; desc: "Go back" }
+            ShortcutRow { key: "Alt+←"; desc: "Go back" }
+            ShortcutRow { key: "Ctrl+K"; desc: "Command palette" }
+            ShortcutRow { key: "Escape"; desc: "Close overlay / picker" }
 
             // Scrolling
             Text {

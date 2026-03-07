@@ -13,6 +13,11 @@ Rectangle {
     property string renderer: "builtin"
     signal fileSelected(int index)
 
+    onSelectedIndexChanged: {
+        if (selectedIndex >= 0)
+            fileListView.positionViewAtIndex(selectedIndex, ListView.Contain)
+    }
+
     function statusLabel(status) {
         if (status === "A") return "Added"
         if (status === "D") return "Deleted"
@@ -112,8 +117,10 @@ Rectangle {
             anchors.fill: parent
             anchors.topMargin: 37
             model: root.files
+            currentIndex: root.selectedIndex
             clip: true
             spacing: 0
+            highlightFollowsCurrentItem: false
             cacheBuffer: 480
             reuseItems: true
             boundsBehavior: Flickable.StopAtBounds

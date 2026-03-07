@@ -48,6 +48,14 @@ Rectangle {
         target: diffController
         function onLeftRefChanged() { leftRefField.text = diffController.leftRefDisplay }
         function onRightRefChanged() { rightRefField.text = diffController.rightRefDisplay }
+        function onCurrentViewChanged() {
+            if (diffController.currentView === "diff")
+                diffPane.focusSurface()
+        }
+        function onSelectedFileIndexChanged() {
+            if (diffController.currentView === "diff")
+                diffPane.focusSurface()
+        }
     }
 
     Timer {
@@ -260,6 +268,16 @@ Rectangle {
                 leftRef: diffController.leftRef
                 rightRef: diffController.rightRef
                 renderer: diffController.renderer
+                onNextFileRequested: {
+                    var next = diffController.selectedFileIndex + 1
+                    if (next < diffController.files.length)
+                        diffController.selectFile(next)
+                }
+                onPreviousFileRequested: {
+                    var prev = diffController.selectedFileIndex - 1
+                    if (prev >= 0)
+                        diffController.selectFile(prev)
+                }
             }
         }
     }

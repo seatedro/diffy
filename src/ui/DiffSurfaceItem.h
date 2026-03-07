@@ -91,6 +91,8 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   void paintCountChanged();
   void displayRowCountChanged();
   void scrollToYRequested(qreal value);
+  void nextFileRequested();
+  void previousFileRequested();
 
  private:
   void rebuildRows();

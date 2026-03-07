@@ -7,7 +7,10 @@
 #include <vector>
 
 #include "app/RepositoryPickerModel.h"
+#include <QTimer>
+
 #include "core/CompareSpec.h"
+#include "core/GitHubDeviceFlow.h"
 #include "core/GitRepositoryService.h"
 #include "core/syntax/Highlighter.h"
 #include "core/syntax/LanguageRegistry.h"
@@ -44,6 +47,9 @@ class DiffController : public QObject {
   Q_PROPERTY(bool pullRequestLoading READ pullRequestLoading NOTIFY pullRequestLoadingChanged)
   Q_PROPERTY(QString githubToken READ githubToken WRITE setGithubToken NOTIFY githubTokenChanged)
   Q_PROPERTY(bool hasGithubToken READ hasGithubToken NOTIFY githubTokenChanged)
+  Q_PROPERTY(bool oauthInProgress READ oauthInProgress NOTIFY oauthStateChanged)
+  Q_PROPERTY(QString oauthUserCode READ oauthUserCode NOTIFY oauthStateChanged)
+  Q_PROPERTY(QString oauthVerificationUri READ oauthVerificationUri NOTIFY oauthStateChanged)
   Q_PROPERTY(QString errorMessage READ errorMessage NOTIFY errorMessageChanged)
   Q_PROPERTY(bool hasDifftastic READ hasDifftastic NOTIFY hasDifftasticChanged)
 
@@ -109,6 +115,12 @@ class DiffController : public QObject {
   Q_INVOKABLE void loadBranches();
   Q_INVOKABLE void loadCommits(const QString& ref);
   Q_INVOKABLE void openPullRequest(const QString& url);
+  Q_INVOKABLE void startOAuthLogin();
+  Q_INVOKABLE void cancelOAuthLogin();
+
+  bool oauthInProgress() const;
+  QString oauthUserCode() const;
+  QString oauthVerificationUri() const;
 
  signals:
   void currentViewChanged();
@@ -131,6 +143,7 @@ class DiffController : public QObject {
   void comparingChanged();
   void pullRequestLoadingChanged();
   void githubTokenChanged();
+  void oauthStateChanged();
   void errorMessageChanged();
   void hasDifftasticChanged();
 
@@ -175,6 +188,12 @@ class DiffController : public QObject {
   QString githubToken_;
   QString errorMessage_;
   bool hasDifftastic_ = false;
+  QString githubClientId_;
+  QTimer oauthPollTimer_;
+  QString oauthDeviceCode_;
+  QString oauthUserCode_;
+  QString oauthVerificationUri_;
+  int oauthPollInterval_ = 5;
 };
 
 }  // namespace diffy

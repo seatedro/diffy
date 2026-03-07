@@ -76,7 +76,7 @@ Window {
         NumberAnimation on opacity { duration: 180; easing.type: Easing.InOutQuad }
         NumberAnimation { id: slideAnim; target: welcomeView; property: "slideX"; duration: 220; easing.type: Easing.OutCubic }
 
-        onOpenRepositoryRequested: diffController.openRepositoryPicker()
+        onOpenRepositoryRequested: window.openRepoPicker()
         onOpenRecentRequested: function(path) { diffController.openRepository(path) }
     }
 
@@ -102,7 +102,7 @@ Window {
         NumberAnimation on opacity { duration: 180; easing.type: Easing.InOutQuad }
         NumberAnimation { id: compSlideAnim; target: compareView; property: "slideX"; duration: 220; easing.type: Easing.OutCubic }
 
-        onBrowseRequested: diffController.openRepositoryPicker()
+        onBrowseRequested: window.openRepoPicker()
         onPickBranchRequested: function(target) { window.openBranchPicker(target) }
     }
 
@@ -129,10 +129,6 @@ Window {
         NumberAnimation { id: diffSlideAnim; target: diffView; property: "slideX"; duration: 220; easing.type: Easing.OutCubic }
     }
 
-    RepositoryPickerOverlay {
-        anchors.fill: parent
-    }
-
     ShortcutOverlay {
         id: shortcutOverlay
     }
@@ -149,16 +145,36 @@ Window {
                     diffController.leftRef = item.value
                 }
                 window.branchPickTarget = ""
+            } else if (item.type === "repo") {
+                diffController.openRepository(item.value)
             } else if (item.type === "action") {
                 if (item.value === "compare") diffController.compare()
                 else if (item.value === "back") diffController.goBack()
-                else if (item.value === "openRepo") diffController.openRepositoryPicker()
+                else if (item.value === "openRepo") window.openRepoPicker()
+                else if (item.value === "browseRepo") diffController.openRepositoryFromDialog()
                 else if (item.value === "shortcuts") shortcutOverlay.showing = true
             }
         }
     }
 
     property string branchPickTarget: ""
+
+    function openRepoPicker() {
+        var items = []
+        items.push({label: "Browse filesystem…", detail: "", category: "Action", type: "action", value: "browseRepo"})
+        var recents = diffController.recentRepositories
+        for (var i = 0; i < recents.length; ++i) {
+            var parts = recents[i].split("/")
+            items.push({
+                label: parts[parts.length - 1],
+                detail: recents[i],
+                category: "Recent",
+                type: "repo",
+                value: recents[i]
+            })
+        }
+        commandPalette.open(items)
+    }
 
     function openBranchPicker(target) {
         branchPickTarget = target
@@ -228,8 +244,6 @@ Window {
                 commandPalette.close()
             } else if (shortcutOverlay.showing) {
                 shortcutOverlay.showing = false
-            } else if (diffController.repositoryPickerVisible) {
-                diffController.closeRepositoryPicker()
             }
         }
     }

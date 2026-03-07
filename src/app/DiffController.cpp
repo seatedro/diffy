@@ -6,6 +6,7 @@
 #include <QStandardPaths>
 
 #include "app/QtDiffTypes.h"
+#include "core/FuzzyMatch.h"
 #include "core/GitHubApi.h"
 #include "core/GitHubPullRequest.h"
 #include "core/DiffTypes.h"
@@ -560,6 +561,24 @@ void DiffController::openPullRequest(const QString& url) {
   }
 
   compare();
+}
+
+QVariantList DiffController::fuzzyFilter(const QString& query, const QVariantList& items, const QString& labelKey) {
+  if (query.isEmpty()) return items;
+
+  std::vector<std::string> labels;
+  labels.reserve(items.size());
+  for (const auto& item : items) {
+    labels.push_back(item.toMap().value(labelKey).toString().toStdString());
+  }
+
+  const auto ranked = fuzzyRank(query.toStdString(), labels);
+  QVariantList result;
+  result.reserve(ranked.size());
+  for (const auto& r : ranked) {
+    result.append(items.at(r.index));
+  }
+  return result;
 }
 
 void DiffController::startOAuthLogin() {

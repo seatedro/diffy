@@ -46,8 +46,8 @@ Rectangle {
 
     Connections {
         target: diffController
-        function onLeftRefChanged() { leftRefField.text = diffController.leftRef }
-        function onRightRefChanged() { rightRefField.text = diffController.rightRef }
+        function onLeftRefChanged() { leftRefField.text = diffController.leftRefDisplay }
+        function onRightRefChanged() { rightRefField.text = diffController.rightRefDisplay }
     }
 
     Timer {
@@ -67,19 +67,18 @@ Rectangle {
             color: theme.toolbarBg
             radius: 8
             border.color: theme.borderSoft
-            implicitHeight: 40
+            implicitHeight: 48
 
             RowLayout {
                 anchors.fill: parent
-                anchors.leftMargin: 8
-                anchors.rightMargin: 6
+                anchors.leftMargin: 12
+                anchors.rightMargin: 10
                 anchors.topMargin: 4
                 anchors.bottomMargin: 4
-                spacing: 6
+                spacing: 8
 
                 ActionButton {
-                    text: "←"
-                    compact: true
+                    text: "Back"
                     onClicked: diffController.goBack()
                 }
 
@@ -112,7 +111,7 @@ Rectangle {
                     compact: true
                     Layout.preferredWidth: root.compactControls ? 140 : 168
                     monospace: true
-                    text: diffController.leftRef
+                    text: diffController.leftRefDisplay
                     placeholderText: "Left ref"
                     onTextChanged: {
                         if (root.isPullRequestUrl(text)) {
@@ -134,7 +133,7 @@ Rectangle {
                     compact: true
                     Layout.preferredWidth: root.compactControls ? 140 : 168
                     monospace: true
-                    text: diffController.rightRef
+                    text: diffController.rightRefDisplay
                     placeholderText: "Right ref"
                     onTextChanged: {
                         if (root.isPullRequestUrl(text)) {

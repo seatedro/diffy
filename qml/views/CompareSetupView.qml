@@ -43,8 +43,8 @@ Rectangle {
 
     Connections {
         target: diffController
-        function onLeftRefChanged() { leftRefField.text = diffController.leftRef }
-        function onRightRefChanged() { rightRefField.text = diffController.rightRef }
+        function onLeftRefChanged() { leftRefField.text = diffController.leftRefDisplay }
+        function onRightRefChanged() { rightRefField.text = diffController.rightRefDisplay }
     }
 
     ColumnLayout {
@@ -102,13 +102,13 @@ Rectangle {
                 id: leftRefField
                 Layout.fillWidth: true
                 monospace: true
-                text: diffController.leftRef
+                text: diffController.leftRefDisplay
                 placeholderText: "Base ref (e.g. main)"
                 onSubmitted: root.runCompare()
             }
 
             ActionButton {
-                text: "⌥"
+                text: "Branch"
                 compact: true
                 onClicked: {
                     root.pickerTarget = "left"
@@ -127,13 +127,13 @@ Rectangle {
                 id: rightRefField
                 Layout.fillWidth: true
                 monospace: true
-                text: diffController.rightRef
+                text: diffController.rightRefDisplay
                 placeholderText: "Head ref (e.g. feature)"
                 onSubmitted: root.runCompare()
             }
 
             ActionButton {
-                text: "⌥"
+                text: "Branch"
                 compact: true
                 onClicked: {
                     root.pickerTarget = "right"

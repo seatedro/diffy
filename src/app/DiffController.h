@@ -25,6 +25,8 @@ class DiffController : public QObject {
   Q_PROPERTY(QStringList refs READ refs NOTIFY refsChanged)
   Q_PROPERTY(QString leftRef READ leftRef WRITE setLeftRef NOTIFY leftRefChanged)
   Q_PROPERTY(QString rightRef READ rightRef WRITE setRightRef NOTIFY rightRefChanged)
+  Q_PROPERTY(QString leftRefDisplay READ leftRefDisplay NOTIFY leftRefChanged)
+  Q_PROPERTY(QString rightRefDisplay READ rightRefDisplay NOTIFY rightRefChanged)
   Q_PROPERTY(QString compareMode READ compareMode WRITE setCompareMode NOTIFY compareModeChanged)
   Q_PROPERTY(QString renderer READ renderer WRITE setRenderer NOTIFY rendererChanged)
   Q_PROPERTY(QString layoutMode READ layoutMode WRITE setLayoutMode NOTIFY layoutModeChanged)
@@ -57,9 +59,11 @@ class DiffController : public QObject {
 
   QString leftRef() const;
   void setLeftRef(const QString& value);
+  QString leftRefDisplay() const;
 
   QString rightRef() const;
   void setRightRef(const QString& value);
+  QString rightRefDisplay() const;
 
   QString compareMode() const;
   void setCompareMode(const QString& value);
@@ -133,6 +137,7 @@ class DiffController : public QObject {
   void addRecentRepository(const QString& path);
   void setError(const QString& error);
   void clearError();
+  QString abbreviateRef(const QString& ref) const;
   void persistSettings();
 
   GitRepositoryService gitService_;

@@ -46,6 +46,8 @@ class GitRepositoryService {
                          std::string* outRightRevision,
                          std::string* error) const;
 
+  std::string resolveOidToBranchName(const std::string& oidHex) const;
+
   bool resolvePullRequestComparison(const std::string& pullRequestUrl,
                                     std::string* outLeftRevision,
                                     std::string* outRightRevision,

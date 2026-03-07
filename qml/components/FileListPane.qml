@@ -168,7 +168,7 @@ Rectangle {
                     font.family: theme.sans
                     font.pixelSize: 11
                     font.bold: root.selectedIndex === index
-                    elide: Text.ElideMiddle
+                    elide: Text.ElideLeft
                 }
 
                 Row {

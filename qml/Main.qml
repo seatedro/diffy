@@ -8,8 +8,8 @@ Window {
     visible: true
     width: 1540
     height: 940
-    minimumWidth: 960
-    minimumHeight: 720
+    minimumWidth: 480
+    minimumHeight: 400
     title: "diffy"
     color: theme.appBg
 
@@ -103,6 +103,7 @@ Window {
         NumberAnimation { id: compSlideAnim; target: compareView; property: "slideX"; duration: 220; easing.type: Easing.OutCubic }
 
         onBrowseRequested: diffController.openRepositoryPicker()
+        onPickBranchRequested: function(target) { window.openBranchPicker(target) }
     }
 
     DiffBrowsingView {
@@ -142,7 +143,12 @@ Window {
             if (item.type === "file") {
                 diffController.selectFile(item.index)
             } else if (item.type === "branch") {
-                diffController.leftRef = item.value
+                if (window.branchPickTarget === "right") {
+                    diffController.rightRef = item.value
+                } else {
+                    diffController.leftRef = item.value
+                }
+                window.branchPickTarget = ""
             } else if (item.type === "action") {
                 if (item.value === "compare") diffController.compare()
                 else if (item.value === "back") diffController.goBack()
@@ -150,6 +156,24 @@ Window {
                 else if (item.value === "shortcuts") shortcutOverlay.showing = true
             }
         }
+    }
+
+    property string branchPickTarget: ""
+
+    function openBranchPicker(target) {
+        branchPickTarget = target
+        var items = []
+        var branches = diffController.branches
+        for (var i = 0; i < branches.length; ++i) {
+            items.push({
+                label: branches[i].name,
+                detail: branches[i].isHead ? "HEAD" : (branches[i].isRemote ? "remote" : ""),
+                category: "Branch",
+                type: "branch",
+                value: branches[i].name
+            })
+        }
+        commandPalette.open(items)
     }
 
     function openCommandPalette() {

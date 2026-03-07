@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QFontMetricsF>
 #include <QHash>
 #include <QHoverEvent>
 #include <QKeyEvent>
@@ -28,6 +29,8 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   Q_PROPERTY(qreal viewportX READ viewportX WRITE setViewportX NOTIFY viewportXChanged)
   Q_PROPERTY(qreal viewportY READ viewportY WRITE setViewportY NOTIFY viewportYChanged)
   Q_PROPERTY(qreal viewportHeight READ viewportHeight WRITE setViewportHeight NOTIFY viewportHeightChanged)
+  Q_PROPERTY(bool wrapEnabled READ wrapEnabled WRITE setWrapEnabled NOTIFY wrapEnabledChanged)
+  Q_PROPERTY(int wrapColumn READ wrapColumn WRITE setWrapColumn NOTIFY wrapColumnChanged)
   Q_PROPERTY(int paintCount READ paintCount NOTIFY paintCountChanged)
   Q_PROPERTY(int displayRowCount READ displayRowCount NOTIFY displayRowCountChanged)
 
@@ -69,6 +72,11 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   qreal viewportHeight() const;
   void setViewportHeight(qreal value);
 
+  bool wrapEnabled() const;
+  void setWrapEnabled(bool value);
+  int wrapColumn() const;
+  void setWrapColumn(int value);
+
   int paintCount() const;
   int displayRowCount() const;
 
@@ -88,6 +96,8 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   void viewportXChanged();
   void viewportYChanged();
   void viewportHeightChanged();
+  void wrapEnabledChanged();
+  void wrapColumnChanged();
   void paintCountChanged();
   void displayRowCountChanged();
   void scrollToYRequested(qreal value);
@@ -98,6 +108,7 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   void rebuildRows();
   void rebuildDisplayRows();
   void recalculateMetrics();
+  void applyWordWrap();
 
   bool rowSelected(int rowIndex) const;
   QColor paletteColor(const QString& key, const QColor& fallback) const;
@@ -111,6 +122,15 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   void drawHunkRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row) const;
   void drawUnifiedRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row, bool selected) const;
   void drawSplitRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row, bool selected) const;
+  void drawTextRunWrapped(QPainter* painter,
+                         const QPointF& baseline,
+                         const QRectF& clipRect,
+                         const QString& text,
+                         const std::vector<DiffTokenSpan>& tokens,
+                         const std::vector<DiffTokenSpan>& changeSpans,
+                         const QColor& textColor,
+                         const QColor& tokenBackground,
+                         const QFontMetricsF& metrics) const;
   void drawTextRun(QPainter* painter,
                    const QPointF& baseline,
                    const QRectF& clipRect,
@@ -152,6 +172,8 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   qreal fileHeaderHeight_ = 28;
   qreal hunkHeight_ = 24;
   int lineNumberDigits_ = 3;
+  bool wrapEnabled_ = false;
+  int wrapColumn_ = 0;
   qreal maxTextWidth_ = 0;
 
   int paintCount_ = 0;

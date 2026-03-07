@@ -105,7 +105,6 @@ qt_add_qml_module(diffy
     qml/components/EmptyState.qml
     qml/components/FileListPane.qml
     qml/components/InputField.qml
-    qml/components/PickerOverlay.qml
     qml/components/ProgressBar.qml
     qml/components/RepositoryPickerOverlay.qml
     qml/components/SegmentedControl.qml

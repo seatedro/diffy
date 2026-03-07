@@ -128,6 +128,14 @@ const std::vector<DiffDisplayRow>& DiffDisplayModel::rows() const {
   return displayRows_;
 }
 
+std::vector<DiffDisplayRow>& DiffDisplayModel::mutableRows() {
+  return displayRows_;
+}
+
+std::vector<double>& DiffDisplayModel::mutableOffsets() {
+  return rowOffsets_;
+}
+
 double DiffDisplayModel::contentHeight() const {
   return contentHeight_;
 }

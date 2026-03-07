@@ -22,6 +22,8 @@ DiffController::DiffController(QObject* parent)
   renderer_ = settings_.value("renderer", "builtin").toString();
   layoutMode_ = settings_.value("layoutMode", "unified").toString();
 
+  wrapEnabled_ = settings_.value("wrapEnabled", false).toBool();
+  wrapColumn_ = settings_.value("wrapColumn", 0).toInt();
   hasDifftastic_ = !QStandardPaths::findExecutable("difft").isEmpty();
 
   githubToken_ = settings_.value("githubToken").toString();
@@ -260,6 +262,24 @@ bool DiffController::repositoryPickerVisible() const {
 
 QObject* DiffController::repositoryPickerModel() const {
   return const_cast<RepositoryPickerModel*>(&repositoryPickerModel_);
+}
+
+bool DiffController::wrapEnabled() const { return wrapEnabled_; }
+
+void DiffController::setWrapEnabled(bool value) {
+  if (wrapEnabled_ == value) return;
+  wrapEnabled_ = value;
+  settings_.setValue("wrapEnabled", wrapEnabled_);
+  emit wrapEnabledChanged();
+}
+
+int DiffController::wrapColumn() const { return wrapColumn_; }
+
+void DiffController::setWrapColumn(int value) {
+  if (wrapColumn_ == value) return;
+  wrapColumn_ = value;
+  settings_.setValue("wrapColumn", wrapColumn_);
+  emit wrapColumnChanged();
 }
 
 QString DiffController::errorMessage() const {
@@ -550,9 +570,20 @@ void DiffController::openPullRequest(const QString& url) {
     return;
   }
 
-  leftRef_ = QString::fromStdString(pr->baseSha);
+  log::info("controller", "fetching PR refs from remote for #{}", parsed->number);
+
+  std::string resolvedLeft;
+  std::string resolvedRight;
+  std::string resolveError;
+  if (!gitService_.resolvePullRequestComparison(url.toStdString(), &resolvedLeft, &resolvedRight, &resolveError)) {
+    log::error("controller", "failed to resolve PR comparison: {}", resolveError);
+    setError(QString::fromStdString(resolveError));
+    return;
+  }
+
+  leftRef_ = QString::fromStdString(resolvedLeft);
   emit leftRefChanged();
-  rightRef_ = QString::fromStdString(pr->headSha);
+  rightRef_ = QString::fromStdString(resolvedRight);
   emit rightRefChanged();
 
   if (compareMode_ != "three-dot") {

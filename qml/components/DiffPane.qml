@@ -12,6 +12,12 @@ Rectangle {
     property string leftRef: ""
     property string rightRef: ""
     property string renderer: "builtin"
+    signal nextFileRequested()
+    signal previousFileRequested()
+
+    function focusSurface() {
+        surface.forceActiveFocus()
+    }
     property var surfacePalette: ({
         "canvas": theme.canvas,
         "panelTint": theme.panelTint,
@@ -253,6 +259,8 @@ Rectangle {
                 y: diffViewport.contentY
                 width: diffViewport.width
                 height: diffViewport.height
+                focus: true
+                activeFocusOnTab: true
                 rowsModel: root.rowsModel
                 layoutMode: root.layoutMode
                 filePath: root.hasData() ? fileData.path : ""
@@ -267,6 +275,8 @@ Rectangle {
                 onScrollToYRequested: function(value) {
                     diffViewport.contentY = Math.max(0, value)
                 }
+                onNextFileRequested: root.nextFileRequested()
+                onPreviousFileRequested: root.previousFileRequested()
             }
         }
     }

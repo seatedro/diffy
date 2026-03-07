@@ -953,6 +953,54 @@ void DiffSurfaceItem::keyPressEvent(QKeyEvent* event) {
     return;
   }
 
+  if (event->key() == Qt::Key_Space && event->modifiers() == Qt::NoModifier) {
+    emit scrollToYRequested(viewportY_ + viewportHeight_ * 0.9);
+    event->accept();
+    return;
+  }
+
+  if (event->key() == Qt::Key_Space && event->modifiers() == Qt::ShiftModifier) {
+    emit scrollToYRequested(std::max<qreal>(0.0, viewportY_ - viewportHeight_ * 0.9));
+    event->accept();
+    return;
+  }
+
+  if (event->key() == Qt::Key_N && event->modifiers() == Qt::NoModifier) {
+    const int nextHunk = displayModel_.nextHunkRowIndex(rowIndex);
+    if (nextHunk >= 0) {
+      selectionAnchorRow_ = nextHunk;
+      selectionCursorRow_ = nextHunk;
+      emit scrollToYRequested(rows.at(nextHunk).top);
+      update();
+    }
+    event->accept();
+    return;
+  }
+
+  if (event->key() == Qt::Key_N && event->modifiers() == Qt::ShiftModifier) {
+    const int previousHunk = displayModel_.previousHunkRowIndex(rowIndex);
+    if (previousHunk >= 0) {
+      selectionAnchorRow_ = previousHunk;
+      selectionCursorRow_ = previousHunk;
+      emit scrollToYRequested(rows.at(previousHunk).top);
+      update();
+    }
+    event->accept();
+    return;
+  }
+
+  if (event->key() == Qt::Key_J && event->modifiers() == Qt::NoModifier) {
+    emit nextFileRequested();
+    event->accept();
+    return;
+  }
+
+  if (event->key() == Qt::Key_K && event->modifiers() == Qt::NoModifier) {
+    emit previousFileRequested();
+    event->accept();
+    return;
+  }
+
   QQuickPaintedItem::keyPressEvent(event);
 }
 

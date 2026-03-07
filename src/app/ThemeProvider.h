@@ -53,6 +53,34 @@ class ThemeProvider : public QObject {
   Q_PROPERTY(QColor lineDel MEMBER lineDel_ CONSTANT)
   Q_PROPERTY(QColor lineDelAccent MEMBER lineDelAccent_ CONSTANT)
 
+  // Spacing scale (4px grid)
+  Q_PROPERTY(int sp1 MEMBER sp1_ CONSTANT)   // 4
+  Q_PROPERTY(int sp2 MEMBER sp2_ CONSTANT)   // 8
+  Q_PROPERTY(int sp3 MEMBER sp3_ CONSTANT)   // 12
+  Q_PROPERTY(int sp4 MEMBER sp4_ CONSTANT)   // 16
+  Q_PROPERTY(int sp6 MEMBER sp6_ CONSTANT)   // 24
+  Q_PROPERTY(int sp8 MEMBER sp8_ CONSTANT)   // 32
+  Q_PROPERTY(int sp12 MEMBER sp12_ CONSTANT) // 48
+
+  // Typography scale
+  Q_PROPERTY(int fontCaption MEMBER fontCaption_ CONSTANT)
+  Q_PROPERTY(int fontSmall MEMBER fontSmall_ CONSTANT)
+  Q_PROPERTY(int fontBody MEMBER fontBody_ CONSTANT)
+  Q_PROPERTY(int fontSubtitle MEMBER fontSubtitle_ CONSTANT)
+  Q_PROPERTY(int fontTitle MEMBER fontTitle_ CONSTANT)
+  Q_PROPERTY(int fontHeading MEMBER fontHeading_ CONSTANT)
+
+  // Border-radius scale
+  Q_PROPERTY(int radiusSm MEMBER radiusSm_ CONSTANT)
+  Q_PROPERTY(int radiusMd MEMBER radiusMd_ CONSTANT)
+  Q_PROPERTY(int radiusLg MEMBER radiusLg_ CONSTANT)
+  Q_PROPERTY(int radiusXl MEMBER radiusXl_ CONSTANT)
+
+  // Elevation shadow colors
+  Q_PROPERTY(QColor shadowSm MEMBER shadowSm_ CONSTANT)
+  Q_PROPERTY(QColor shadowMd MEMBER shadowMd_ CONSTANT)
+  Q_PROPERTY(QColor shadowLg MEMBER shadowLg_ CONSTANT)
+
  public:
   explicit ThemeProvider(QObject* parent = nullptr) : QObject(parent) {}
 
@@ -101,6 +129,30 @@ class ThemeProvider : public QObject {
   QColor lineAddAccent_{"#324420"};
   QColor lineDel_{"#3d2020"};
   QColor lineDelAccent_{"#4c2828"};
+
+  int sp1_ = 4;
+  int sp2_ = 8;
+  int sp3_ = 12;
+  int sp4_ = 16;
+  int sp6_ = 24;
+  int sp8_ = 32;
+  int sp12_ = 48;
+
+  int fontCaption_ = 9;
+  int fontSmall_ = 10;
+  int fontBody_ = 12;
+  int fontSubtitle_ = 14;
+  int fontTitle_ = 18;
+  int fontHeading_ = 24;
+
+  int radiusSm_ = 4;
+  int radiusMd_ = 6;
+  int radiusLg_ = 8;
+  int radiusXl_ = 12;
+
+  QColor shadowSm_{"#1a000000"};
+  QColor shadowMd_{"#33000000"};
+  QColor shadowLg_{"#4d000000"};
 };
 
 }  // namespace diffy

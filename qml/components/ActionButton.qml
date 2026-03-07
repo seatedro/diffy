@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls
 
 Rectangle {
     id: root
@@ -8,6 +7,7 @@ Rectangle {
     property string tone: "neutral"
     property bool active: false
     property bool compact: false
+    property string toolTip: ""
     signal clicked()
 
     function fillColor() {
@@ -48,8 +48,6 @@ Rectangle {
         }
         return active ? theme.accentStrong : theme.textMuted
     }
-
-    property string toolTip: ""
 
     activeFocusOnTab: true
 
@@ -94,9 +92,46 @@ Rectangle {
     Keys.onReturnPressed: root.clicked()
     Keys.onSpacePressed: root.clicked()
 
-    ToolTip {
-        visible: root.toolTip.length > 0 && mouseArea.containsMouse
-        delay: 600
-        text: root.toolTip
+    Rectangle {
+        id: tipBg
+        visible: root.toolTip.length > 0 && tipTimer.running === false && tipShown
+        x: (root.width - width) / 2
+        y: root.height + 4
+        width: tipLabel.implicitWidth + 12
+        height: tipLabel.implicitHeight + 6
+        radius: 3
+        color: theme.panelStrong
+        border.color: theme.borderSoft
+        z: 100
+
+        property bool tipShown: false
+
+        Text {
+            id: tipLabel
+            anchors.centerIn: parent
+            text: root.toolTip
+            color: theme.textBase
+            font.family: theme.sans
+            font.pixelSize: 10
+        }
+    }
+
+    Timer {
+        id: tipTimer
+        interval: 600
+        repeat: false
+        onTriggered: tipBg.tipShown = true
+    }
+
+    Connections {
+        target: mouseArea
+        function onContainsMouseChanged() {
+            if (mouseArea.containsMouse) {
+                tipTimer.start()
+            } else {
+                tipTimer.stop()
+                tipBg.tipShown = false
+            }
+        }
     }
 }

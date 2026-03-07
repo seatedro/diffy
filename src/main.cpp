@@ -5,6 +5,7 @@
 #include <QFileInfo>
 #include <QFileSystemWatcher>
 #include <QGuiApplication>
+#include <QStandardPaths>
 #include <QDebug>
 #include <QImage>
 #include <QLibraryInfo>
@@ -20,6 +21,7 @@
 
 #include "app/DiffController.h"
 #include "app/ThemeProvider.h"
+#include "core/Log.h"
 #include "ui/DiffSurfaceItem.h"
 
 namespace {
@@ -139,6 +141,14 @@ int main(int argc, char* argv[]) {
   QApplication::setOrganizationName("diffy");
   QApplication::setApplicationName("diffy");
   app.addLibraryPath(QLibraryInfo::path(QLibraryInfo::PluginsPath));
+
+  const QString logDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+  QDir().mkpath(logDir);
+  diffy::log::init((logDir + "/diffy.log").toStdString());
+  if (envFlagEnabled("DIFFY_LOG_DEBUG")) {
+    diffy::log::setLevel(spdlog::level::debug);
+  }
+  diffy::log::info("app", "diffy starting");
 
   const bool fatalRuntimeWarnings = envFlagEnabled("DIFFY_FATAL_RUNTIME_WARNINGS");
   g_runtimeWarningSeen.store(false);

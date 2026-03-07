@@ -8,24 +8,40 @@
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
+      qt = pkgs.qt6;
     in
     {
-      devShells.${system}.default = pkgs.mkShell {
+      packages.${system}.default = pkgs.stdenv.mkDerivation {
+        pname = "diffy";
+        version = "0.1.0";
+        src = self;
+
         nativeBuildInputs = [
-          pkgs.nodejs_22
           pkgs.cmake
           pkgs.ninja
           pkgs.pkg-config
           pkgs.git
-          pkgs.gcc
+          qt.wrapQtAppsHook
         ];
 
         buildInputs = [
           pkgs.curl
           pkgs.libgit2
           pkgs.tree-sitter
-          pkgs.qt6.qtbase
-          pkgs.qt6.qtdeclarative
+          qt.qtbase
+          qt.qtdeclarative
+        ];
+
+        cmakeFlags = [ "-G" "Ninja" ];
+      };
+
+      devShells.${system}.default = pkgs.mkShell {
+        inputsFrom = [ self.packages.${system}.default ];
+
+        packages = [
+          pkgs.nodejs_22
+          pkgs.git
+          pkgs.gcc
         ];
 
         shellHook = ''

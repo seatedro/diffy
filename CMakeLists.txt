@@ -16,6 +16,16 @@ pkg_check_modules(LIBCURL REQUIRED libcurl)
 pkg_check_modules(LIBGIT2 REQUIRED libgit2)
 pkg_check_modules(TREESITTER REQUIRED tree-sitter)
 
+include(FetchContent)
+FetchContent_Declare(
+  spdlog
+  GIT_REPOSITORY https://github.com/gabime/spdlog.git
+  GIT_TAG        v1.15.3
+  GIT_SHALLOW    TRUE
+)
+set(SPDLOG_FMT_EXTERNAL OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(spdlog)
+
 qt_standard_project_setup()
 
 add_subdirectory(vendor/grammars)
@@ -24,6 +34,7 @@ add_library(diffy_core STATIC
   src/core/CompareSpec.cpp
   src/core/DiffTypes.cpp
   src/core/GitHubApi.cpp
+  src/core/GitHubDeviceFlow.cpp
   src/core/GitHubPullRequest.cpp
   src/core/GitRepositoryService.cpp
   src/core/UnifiedDiffParser.cpp
@@ -44,6 +55,7 @@ target_link_libraries(diffy_core PUBLIC
   ${LIBGIT2_LIBRARIES}
   ${TREESITTER_LIBRARIES}
   diffy_grammars
+  spdlog::spdlog
 )
 
 target_compile_options(diffy_core PRIVATE ${LIBCURL_CFLAGS_OTHER} ${LIBGIT2_CFLAGS_OTHER} ${TREESITTER_CFLAGS_OTHER})

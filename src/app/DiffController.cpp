@@ -9,6 +9,7 @@
 #include "core/GitHubApi.h"
 #include "core/GitHubPullRequest.h"
 #include "core/DiffTypes.h"
+#include "core/Log.h"
 
 namespace diffy {
 DiffController::DiffController(QObject* parent)
@@ -29,6 +30,42 @@ DiffController::DiffController(QObject* parent)
       githubToken_ = QString::fromUtf8(envToken);
     }
   }
+
+  githubClientId_ = "Ov23lijXMwtY1XmHedUM";
+  const QByteArray envClientId = qgetenv("DIFFY_GITHUB_CLIENT_ID");
+  if (!envClientId.isEmpty()) {
+    githubClientId_ = QString::fromUtf8(envClientId);
+  }
+
+  connect(&oauthPollTimer_, &QTimer::timeout, this, [this]() {
+    const auto response = pollForToken(githubClientId_.toStdString(), oauthDeviceCode_.toStdString());
+    switch (response.result) {
+      case PollResult::Complete:
+        oauthPollTimer_.stop();
+        setGithubToken(QString::fromStdString(response.accessToken));
+        oauthDeviceCode_.clear();
+        oauthUserCode_.clear();
+        oauthVerificationUri_.clear();
+        emit oauthStateChanged();
+        log::info("github-auth", "OAuth login complete");
+        break;
+      case PollResult::Pending:
+        break;
+      case PollResult::SlowDown:
+        oauthPollInterval_ = std::min(oauthPollInterval_ + 5, 30);
+        oauthPollTimer_.setInterval(oauthPollInterval_ * 1000);
+        break;
+      case PollResult::ExpiredToken:
+      case PollResult::Error:
+        oauthPollTimer_.stop();
+        oauthDeviceCode_.clear();
+        oauthUserCode_.clear();
+        oauthVerificationUri_.clear();
+        emit oauthStateChanged();
+        setError(QString::fromStdString(response.error));
+        break;
+    }
+  });
 
   recentRepositories_ = settings_.value("recentRepositories").toStringList();
 
@@ -463,11 +500,16 @@ void DiffController::loadCommits(const QString& ref) {
 void DiffController::openPullRequest(const QString& url) {
   clearError();
 
+  log::info("controller", "openPullRequest: {}", url.toStdString());
+
   const auto parsed = parseGitHubPullRequestUrl(url.toStdString());
   if (!parsed.has_value()) {
+    log::warn("controller", "failed to parse PR URL");
     setError("Not a valid GitHub pull request URL");
     return;
   }
+
+  log::info("controller", "parsed: {}/{} #{}", parsed->owner, parsed->repo, parsed->number);
 
   pullRequestLoading_ = true;
   emit pullRequestLoadingChanged();
@@ -518,6 +560,50 @@ void DiffController::openPullRequest(const QString& url) {
   }
 
   compare();
+}
+
+void DiffController::startOAuthLogin() {
+  clearError();
+
+  if (githubClientId_.isEmpty()) {
+    setError("Set DIFFY_GITHUB_CLIENT_ID or configure a GitHub OAuth App client ID first.");
+    return;
+  }
+
+  std::string flowError;
+  const auto deviceCode = requestDeviceCode(githubClientId_.toStdString(), "repo", &flowError);
+  if (!deviceCode.has_value()) {
+    setError(QString::fromStdString(flowError));
+    return;
+  }
+
+  oauthDeviceCode_ = QString::fromStdString(deviceCode->deviceCode);
+  oauthUserCode_ = QString::fromStdString(deviceCode->userCode);
+  oauthVerificationUri_ = QString::fromStdString(deviceCode->verificationUri);
+  oauthPollInterval_ = deviceCode->interval;
+  emit oauthStateChanged();
+
+  oauthPollTimer_.start(oauthPollInterval_ * 1000);
+}
+
+void DiffController::cancelOAuthLogin() {
+  oauthPollTimer_.stop();
+  oauthDeviceCode_.clear();
+  oauthUserCode_.clear();
+  oauthVerificationUri_.clear();
+  emit oauthStateChanged();
+}
+
+bool DiffController::oauthInProgress() const {
+  return !oauthDeviceCode_.isEmpty();
+}
+
+QString DiffController::oauthUserCode() const {
+  return oauthUserCode_;
+}
+
+QString DiffController::oauthVerificationUri() const {
+  return oauthVerificationUri_;
 }
 
 void DiffController::setError(const QString& error) {

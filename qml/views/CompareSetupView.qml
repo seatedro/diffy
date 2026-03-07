@@ -7,7 +7,7 @@ Rectangle {
 
     property bool compactControls: width < 800
     property string pickerTarget: ""
-    property bool prExpanded: !diffController.hasGithubToken
+    property bool prExpanded: true
 
     signal browseRequested()
 
@@ -21,11 +21,6 @@ Rectangle {
         if (value === "three-dot") return "A...B"
         if (value === "single-commit") return "Commit"
         return "A..B"
-    }
-
-    function nextRenderer(value) {
-        if (!diffController.hasDifftastic) return "builtin"
-        return value === "builtin" ? "difftastic" : "builtin"
     }
 
     function repoLabel() {
@@ -46,22 +41,27 @@ Rectangle {
         target: diffController
         function onLeftRefChanged() { leftRefField.text = diffController.leftRefDisplay }
         function onRightRefChanged() { rightRefField.text = diffController.rightRefDisplay }
+        function onOauthStateChanged() {
+            if (diffController.oauthVerificationUri.length > 0) {
+                Qt.openUrlExternally(diffController.oauthVerificationUri)
+            }
+        }
     }
 
     ColumnLayout {
         anchors.centerIn: parent
-        spacing: 20
-        width: Math.min(640, parent.width - 48)
+        spacing: theme.sp4
+        width: Math.min(640, parent.width - theme.sp12)
 
         RowLayout {
             Layout.fillWidth: true
-            spacing: 8
+            spacing: theme.sp2
 
             Text {
                 text: repoLabel()
                 color: theme.textStrong
                 font.family: theme.sans
-                font.pixelSize: 18
+                font.pixelSize: theme.fontTitle
                 font.bold: true
             }
 
@@ -84,7 +84,7 @@ Rectangle {
             text: diffController.repoPath
             color: theme.textFaint
             font.family: theme.mono
-            font.pixelSize: 10
+            font.pixelSize: theme.fontSmall
             elide: Text.ElideMiddle
             Layout.fillWidth: true
         }
@@ -95,9 +95,10 @@ Rectangle {
             color: theme.borderSoft
         }
 
+        // --- Ref inputs ---
         RowLayout {
             Layout.fillWidth: true
-            spacing: 8
+            spacing: theme.sp2
 
             InputField {
                 id: leftRefField
@@ -144,26 +145,10 @@ Rectangle {
             }
         }
 
+        // --- Compare button row (no renderer/layout — those are on diff view) ---
         RowLayout {
             Layout.fillWidth: true
-            spacing: 8
-
-            ActionButton {
-                text: diffController.renderer === "difftastic" ? "Difftastic" : "Built-in"
-                compact: true
-                tone: diffController.renderer === "difftastic" ? "accent" : "neutral"
-                active: diffController.renderer === "difftastic"
-                toolTip: "Toggle diff renderer"
-                onClicked: diffController.renderer = nextRenderer(diffController.renderer)
-            }
-
-            ActionButton {
-                text: diffController.layoutMode === "split" ? "Split" : "Unified"
-                compact: true
-                active: diffController.layoutMode === "split"
-                toolTip: "Toggle split/unified layout"
-                onClicked: diffController.layoutMode = diffController.layoutMode === "unified" ? "split" : "unified"
-            }
+            spacing: theme.sp2
 
             Item { Layout.fillWidth: true }
 
@@ -171,63 +156,66 @@ Rectangle {
                 text: diffController.comparing ? "Comparing…" : "Compare"
                 tone: "accent"
                 active: true
-                toolTip: "Run comparison"
                 onClicked: root.runCompare()
             }
         }
 
+        // --- Comparing indicator ---
         Text {
             visible: diffController.comparing
             text: "Comparing…"
             color: theme.textFaint
             font.family: theme.sans
-            font.pixelSize: 12
+            font.pixelSize: theme.fontBody
             Layout.alignment: Qt.AlignHCenter
         }
 
+        // --- Error banner ---
         Rectangle {
             visible: diffController.errorMessage.length > 0
             Layout.fillWidth: true
-            implicitHeight: errorText.implicitHeight + 14
-            radius: 6
+            implicitHeight: errorText.implicitHeight + theme.sp4
+            radius: theme.radiusMd
             color: theme.dangerBg
             border.color: theme.dangerBorder
 
             Text {
                 id: errorText
                 anchors.fill: parent
-                anchors.margins: 8
+                anchors.margins: theme.sp2
                 text: diffController.errorMessage
                 color: theme.dangerText
                 font.family: theme.sans
-                font.pixelSize: 12
+                font.pixelSize: theme.fontBody
                 wrapMode: Text.Wrap
             }
         }
 
+        // --- GitHub Pull Request section ---
         Rectangle {
             Layout.fillWidth: true
-            Layout.topMargin: 4
-            implicitHeight: prSection.implicitHeight + 20
-            radius: 6
+            Layout.topMargin: theme.sp1
+            implicitHeight: prSection.implicitHeight + theme.sp4
+            radius: theme.radiusMd
             color: theme.panel
             border.color: theme.borderSoft
 
             ColumnLayout {
                 id: prSection
                 anchors.fill: parent
-                anchors.margins: 10
-                spacing: 8
+                anchors.margins: theme.sp3
+                spacing: theme.sp2
 
+                // Header
                 RowLayout {
                     Layout.fillWidth: true
-                    spacing: 8
+                    spacing: theme.sp2
 
                     Text {
                         text: (root.prExpanded ? "▾ " : "▸ ") + "GitHub Pull Request"
                         color: theme.textStrong
                         font.family: theme.sans
-                        font.pixelSize: 12
+                        font.pixelSize: theme.fontBody
                         font.bold: true
 
                         MouseArea {
@@ -239,65 +227,153 @@ Rectangle {
 
                     Item { Layout.fillWidth: true }
 
-                    Rectangle {
+                    // Authenticated badge + logout
+                    RowLayout {
                         visible: diffController.hasGithubToken
-                        implicitWidth: tokenOkLabel.implicitWidth + 14
-                        implicitHeight: 18
-                        radius: 4
-                        color: theme.successBg
-                        border.color: theme.successBorder
+                        spacing: theme.sp1
 
-                        Text {
-                            id: tokenOkLabel
-                            anchors.centerIn: parent
-                            text: "Token set"
-                            color: theme.successText
-                            font.family: theme.sans
-                            font.pixelSize: 8
-                            font.bold: true
+                        Rectangle {
+                            implicitWidth: tokenOkLabel.implicitWidth + theme.sp4
+                            implicitHeight: 18
+                            radius: theme.radiusSm
+                            color: theme.successBg
+                            border.color: theme.successBorder
+
+                            Text {
+                                id: tokenOkLabel
+                                anchors.centerIn: parent
+                                text: "Authenticated"
+                                color: theme.successText
+                                font.family: theme.sans
+                                font.pixelSize: 8
+                                font.bold: true
+                            }
+                        }
+
+                        ActionButton {
+                            text: "Logout"
+                            compact: true
+                            onClicked: diffController.githubToken = ""
                         }
                     }
                 }
 
-                RowLayout {
-                    visible: root.prExpanded && !diffController.hasGithubToken
+                // --- Not authenticated: login options ---
+                ColumnLayout {
+                    visible: root.prExpanded && !diffController.hasGithubToken && !diffController.oauthInProgress
                     Layout.fillWidth: true
-                    spacing: 8
-
-                    InputField {
-                        id: tokenField
-                        Layout.fillWidth: true
-                        monospace: true
-                        placeholderText: "GitHub personal access token"
-                        onSubmitted: diffController.githubToken = text
-                    }
+                    spacing: theme.sp3
 
                     ActionButton {
-                        text: "Save Token"
-                        compact: true
-                        tone: "success"
-                        onClicked: {
-                            if (tokenField.text.length > 0) {
-                                diffController.githubToken = tokenField.text
+                        text: "Login with GitHub"
+                        tone: "accent"
+                        active: true
+                        onClicked: diffController.startOAuthLogin()
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: 1
+                        color: theme.borderSoft
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "  or  "
+                            color: theme.textFaint
+                            font.family: theme.sans
+                            font.pixelSize: theme.fontCaption
+
+                            Rectangle {
+                                anchors.fill: parent
+                                color: theme.panel
+                                z: -1
                             }
                         }
                     }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: theme.sp2
+
+                        InputField {
+                            id: tokenField
+                            Layout.fillWidth: true
+                            monospace: true
+                            placeholderText: "Paste a personal access token"
+                            onSubmitted: {
+                                if (text.length > 0) diffController.githubToken = text
+                            }
+                        }
+
+                        ActionButton {
+                            text: "Save"
+                            compact: true
+                            tone: "success"
+                            onClicked: {
+                                if (tokenField.text.length > 0) {
+                                    diffController.githubToken = tokenField.text
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "Token needs <b>repo</b> scope. Create one at github.com/settings/tokens"
+                        color: theme.textFaint
+                        font.family: theme.sans
+                        font.pixelSize: theme.fontCaption
+                        textFormat: Text.RichText
+                        Layout.fillWidth: true
+                    }
                 }
 
-                Text {
-                    visible: root.prExpanded && !diffController.hasGithubToken
-                    text: "A token is required for private repos. Create one at github.com/settings/tokens with repo scope."
-                    color: theme.textFaint
-                    font.family: theme.sans
-                    font.pixelSize: 9
-                    wrapMode: Text.Wrap
+                // --- OAuth in progress ---
+                ColumnLayout {
+                    visible: root.prExpanded && diffController.oauthInProgress
                     Layout.fillWidth: true
+                    spacing: theme.sp3
+
+                    Text {
+                        text: "A browser tab has been opened. Enter the code:"
+                        color: theme.textMuted
+                        font.family: theme.sans
+                        font.pixelSize: theme.fontBody
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+
+                    Text {
+                        text: diffController.oauthUserCode
+                        color: theme.textStrong
+                        font.family: theme.mono
+                        font.pixelSize: theme.fontHeading
+                        font.bold: true
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+
+                    RowLayout {
+                        Layout.alignment: Qt.AlignHCenter
+                        spacing: theme.sp2
+
+                        Text {
+                            text: "Waiting for authorization…"
+                            color: theme.textFaint
+                            font.family: theme.sans
+                            font.pixelSize: theme.fontSmall
+                        }
+
+                        ActionButton {
+                            text: "Cancel"
+                            compact: true
+                            onClicked: diffController.cancelOAuthLogin()
+                        }
+                    }
                 }
 
+                // --- Authenticated: PR URL input ---
                 RowLayout {
-                    visible: root.prExpanded
+                    visible: root.prExpanded && diffController.hasGithubToken
                     Layout.fillWidth: true
-                    spacing: 8
+                    spacing: theme.sp2
 
                     InputField {
                         id: prUrlField
@@ -305,82 +381,83 @@ Rectangle {
                         monospace: true
                         placeholderText: "https://github.com/owner/repo/pull/123"
                         onSubmitted: {
-                            if (diffController.hasGithubToken) diffController.openPullRequest(text)
+                            if (text.length > 0) diffController.openPullRequest(text)
                         }
                     }
 
                     ActionButton {
                         text: diffController.pullRequestLoading ? "Loading…" : "Open PR"
                         compact: true
-                        tone: diffController.hasGithubToken ? "accent" : "neutral"
-                        active: diffController.hasGithubToken
+                        tone: "accent"
+                        active: true
                         onClicked: {
-                            if (prUrlField.text.length > 0 && diffController.hasGithubToken) {
+                            if (prUrlField.text.length > 0) {
                                 diffController.openPullRequest(prUrlField.text)
                             }
                         }
                     }
                 }
 
+                // --- PR info card ---
                 Rectangle {
                     visible: root.prExpanded && diffController.pullRequestInfo.title !== undefined
                     Layout.fillWidth: true
-                    implicitHeight: prInfoCol.implicitHeight + 12
-                    radius: 4
+                    implicitHeight: prInfoCol.implicitHeight + theme.sp3
+                    radius: theme.radiusSm
                     color: theme.panelStrong
 
                     ColumnLayout {
                         id: prInfoCol
                         anchors.fill: parent
-                        anchors.margins: 8
-                        spacing: 4
+                        anchors.margins: theme.sp2
+                        spacing: theme.sp1
 
                         Text {
                             Layout.fillWidth: true
                             text: diffController.pullRequestInfo.title || ""
                             color: theme.textStrong
                             font.family: theme.sans
-                            font.pixelSize: 11
+                            font.pixelSize: theme.fontBody
                             font.bold: true
                             wrapMode: Text.Wrap
                         }
 
                         RowLayout {
-                            spacing: 8
+                            spacing: theme.sp2
 
                             Text {
                                 text: "#" + (diffController.pullRequestInfo.number || "")
                                 color: theme.textFaint
                                 font.family: theme.mono
-                                font.pixelSize: 9
+                                font.pixelSize: theme.fontCaption
                             }
 
                             Text {
                                 text: (diffController.pullRequestInfo.author || "")
                                 color: theme.textMuted
                                 font.family: theme.sans
-                                font.pixelSize: 9
+                                font.pixelSize: theme.fontCaption
                             }
 
                             Text {
                                 text: (diffController.pullRequestInfo.baseBranch || "") + " ← " + (diffController.pullRequestInfo.headBranch || "")
                                 color: theme.accentStrong
                                 font.family: theme.mono
-                                font.pixelSize: 9
+                                font.pixelSize: theme.fontCaption
                             }
 
                             Text {
                                 text: "+" + (diffController.pullRequestInfo.additions || 0)
                                 color: theme.successText
                                 font.family: theme.mono
-                                font.pixelSize: 9
+                                font.pixelSize: theme.fontCaption
                             }
 
                             Text {
                                 text: "-" + (diffController.pullRequestInfo.deletions || 0)
                                 color: theme.dangerText
                                 font.family: theme.mono
-                                font.pixelSize: 9
+                                font.pixelSize: theme.fontCaption
                             }
                         }
                     }

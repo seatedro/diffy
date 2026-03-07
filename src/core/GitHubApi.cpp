@@ -7,6 +7,8 @@
 
 #include <curl/curl.h>
 
+#include "core/Log.h"
+
 namespace diffy {
 namespace {
 
@@ -91,9 +93,12 @@ std::optional<PullRequestInfo> fetchPullRequest(const std::string& owner,
                                                  const std::string& token,
                                                  std::string* error) {
   const std::string url = "https://api.github.com/repos/" + owner + "/" + repo + "/pulls/" + std::to_string(number);
+  log::info("github", "GET {}", url);
+  log::info("github", "auth: {}", token.empty() ? "none" : "Bearer <redacted>");
 
   CURL* curl = curl_easy_init();
   if (!curl) {
+    log::error("github", "curl_easy_init failed");
     if (error) *error = "Failed to initialize HTTP client";
     return std::nullopt;
   }
@@ -123,27 +128,42 @@ std::optional<PullRequestInfo> fetchPullRequest(const std::string& owner,
   curl_easy_cleanup(curl);
 
   if (res != CURLE_OK) {
-    if (error) *error = std::string("HTTP request failed: ") + curl_easy_strerror(res);
+    const std::string msg = std::string("HTTP request failed: ") + curl_easy_strerror(res);
+    log::error("github", "{}", msg);
+    if (error) *error = msg;
     return std::nullopt;
+  }
+
+  log::info("github", "HTTP {} — {} bytes", httpCode, responseBody.size());
+  if (httpCode != 200) {
+    log::warn("github", "response body: {}", responseBody.substr(0, 500));
   }
 
   if (httpCode == 404) {
     if (error) {
       *error = "Pull request not found: " + owner + "/" + repo + "#" + std::to_string(number);
       if (token.empty()) {
-        *error += ". For private repos, enter a GitHub token.";
+        *error += ". For private repos, set a GitHub token.";
+      } else {
+        *error += ". Verify the token has 'repo' scope for private repositories.";
       }
     }
     return std::nullopt;
   }
 
   if (httpCode == 403 || httpCode == 401) {
-    if (error) *error = "GitHub API authentication required. Set GITHUB_TOKEN environment variable.";
+    const auto apiMessage = std::string(extractJsonString(responseBody, "message"));
+    const std::string msg = "GitHub API auth error (HTTP " + std::to_string(httpCode) + ")" +
+                            (apiMessage.empty() ? "" : ": " + apiMessage);
+    log::error("github", "{}", msg);
+    if (error) *error = msg;
     return std::nullopt;
   }
 
   if (httpCode != 200) {
-    if (error) *error = "GitHub API returned HTTP " + std::to_string(httpCode);
+    const std::string msg = "GitHub API returned HTTP " + std::to_string(httpCode);
+    log::error("github", "{}", msg);
+    if (error) *error = msg;
     return std::nullopt;
   }
 
@@ -175,10 +195,13 @@ std::optional<PullRequestInfo> fetchPullRequest(const std::string& owner,
   }
 
   if (info.baseBranch.empty() || info.headBranch.empty()) {
+    log::error("github", "failed to parse PR metadata from response ({} bytes)", responseBody.size());
     if (error) *error = "Failed to parse PR metadata from GitHub API response";
     return std::nullopt;
   }
 
+  log::info("github", "PR #{}: {} ({}...{}) +{} -{}", number, info.title,
+            info.baseBranch, info.headBranch, info.additions, info.deletions);
   return info;
 }
 

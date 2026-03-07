@@ -5,6 +5,8 @@
 # devenv generated artifacts
 .devenv/
 .devenv.flake.nix
+.direnv/
+.envrc
 
 # Build output
 build/

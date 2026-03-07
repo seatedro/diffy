@@ -238,6 +238,28 @@ void DiffSurfaceItem::setMonoFontFamily(const QString& family) {
   emit monoFontFamilyChanged();
 }
 
+bool DiffSurfaceItem::wrapEnabled() const {
+  return wrapEnabled_;
+}
+
+void DiffSurfaceItem::setWrapEnabled(bool value) {
+  if (wrapEnabled_ == value) return;
+  wrapEnabled_ = value;
+  rebuildRows();
+  emit wrapEnabledChanged();
+}
+
+int DiffSurfaceItem::wrapColumn() const {
+  return wrapColumn_;
+}
+
+void DiffSurfaceItem::setWrapColumn(int value) {
+  if (wrapColumn_ == value) return;
+  wrapColumn_ = value;
+  if (wrapEnabled_) rebuildRows();
+  emit wrapColumnChanged();
+}
+
 qreal DiffSurfaceItem::contentHeight() const {
   return contentHeight_;
 }
@@ -462,7 +484,9 @@ void DiffSurfaceItem::rebuildDisplayRows() {
 
 void DiffSurfaceItem::recalculateMetrics() {
   qreal newContentWidth = 0;
-  if (layoutMode_ == "split") {
+  if (wrapEnabled_) {
+    newContentWidth = width();
+  } else if (layoutMode_ == "split") {
     const qreal sideGutter = 22.0 + digitWidth() * (lineNumberDigits_ + 1) + 12.0;
     newContentWidth = maxTextWidth_ * 2.0 + sideGutter * 2.0 + 1.0;
   } else {
@@ -474,9 +498,63 @@ void DiffSurfaceItem::recalculateMetrics() {
     emit contentWidthChanged();
   }
 
+  if (wrapEnabled_) {
+    applyWordWrap();
+  }
+
   emit contentHeightChanged();
   update();
 }
+
+void DiffSurfaceItem::applyWordWrap() {
+  auto& rows = displayModel_.mutableRows();
+  auto& offsets = displayModel_.mutableOffsets();
+  if (rows.empty()) return;
+
+  const QFontMetricsF metrics(monoFont(monoFontFamily_, 12));
+  const qreal charWidth = metrics.horizontalAdvance('M');
+
+  qreal availableWidth = 0;
+  if (wrapColumn_ > 0) {
+    availableWidth = charWidth * wrapColumn_;
+  } else if (layoutMode_ == "split") {
+    const qreal sideGutter = 22.0 + digitWidth() * (lineNumberDigits_ + 1) + 12.0;
+    availableWidth = std::max(charWidth * 20.0, (width() - 1.0) / 2.0 - sideGutter - 8.0);
+  } else {
+    availableWidth = std::max(charWidth * 20.0, width() - unifiedGutterWidth() - 24.0);
+  }
+
+  qreal top = 0;
+  for (size_t i = 0; i < rows.size(); ++i) {
+    auto& row = rows[i];
+    offsets[i] = top;
+    row.top = top;
+
+    if (row.rowType != DiffRowType::Line) {
+      top += row.height;
+      continue;
+    }
+
+    qreal textWidth = metrics.horizontalAdvance(textForRange(row.textRange));
+    if (layoutMode_ == "split") {
+      textWidth = std::max(
+          metrics.horizontalAdvance(textForRange(row.leftTextRange)),
+          metrics.horizontalAdvance(textForRange(row.rightTextRange)));
+    }
+
+    if (availableWidth > 0 && textWidth > availableWidth) {
+      const int wrapLines = static_cast<int>(std::ceil(textWidth / availableWidth));
+      row.height = rowHeight_ * wrapLines;
+    } else {
+      row.height = rowHeight_;
+    }
+
+    top += row.height;
+  }
+
+  contentHeight_ = top;
+}
+
 
 bool DiffSurfaceItem::rowSelected(int rowIndex) const {
   if (selectionAnchorRow_ < 0 || selectionCursorRow_ < 0) {
@@ -611,14 +689,16 @@ void DiffSurfaceItem::drawUnifiedRow(QPainter* painter, const QRectF& rowRect, c
   const QFont textFont = monoFont(monoFontFamily_, 12);
   const QFontMetricsF textMetrics(textFont);
   painter->setFont(textFont);
-  const qreal baselineY = rowRect.top() + (rowRect.height() - textMetrics.height()) / 2.0 + textMetrics.ascent();
+  const qreal unifiedBaselineY = wrapEnabled_
+      ? rowRect.top() + (rowHeight_ - textMetrics.height()) / 2.0 + textMetrics.ascent()
+      : rowRect.top() + (rowRect.height() - textMetrics.height()) / 2.0 + textMetrics.ascent();
   const QRectF textClip(rowRect.left() + gutterWidth + 8.0, rowRect.top(),
                         rowRect.width() - gutterWidth - 12.0, rowRect.height());
   const QColor tokenBg = row.kind == DiffLineKind::Addition ? paletteColor("successBorder", QColor("#38482f"))
                                                             : row.kind == DiffLineKind::Deletion
                                                                   ? paletteColor("dangerBorder", QColor("#4c2b2c"))
                                                                   : paletteColor("accentSoft", QColor("#293b5b"));
-  drawTextRun(painter, QPointF(textClip.left(), baselineY), textClip, textForRange(row.textRange), row.tokens,
+  drawTextRun(painter, QPointF(textClip.left(), unifiedBaselineY), textClip, textForRange(row.textRange), row.tokens,
               row.changeSpans, paletteColor("textBase", QColor("#c8ccd4")), tokenBg);
 }
 
@@ -694,7 +774,9 @@ void DiffSurfaceItem::drawSplitRow(QPainter* painter, const QRectF& rowRect, con
   const QFont textFont = monoFont(monoFontFamily_, 12);
   const QFontMetricsF textMetrics(textFont);
   painter->setFont(textFont);
-  const qreal baselineY = rowRect.top() + (rowRect.height() - textMetrics.height()) / 2.0 + textMetrics.ascent();
+  const qreal baselineY = wrapEnabled_
+      ? rowRect.top() + (rowHeight_ - textMetrics.height()) / 2.0 + textMetrics.ascent()
+      : rowRect.top() + (rowRect.height() - textMetrics.height()) / 2.0 + textMetrics.ascent();
   const QRectF leftTextClip(leftRect.left() + sideGutterWidth + 8.0, rowRect.top(),
                             leftRect.width() - sideGutterWidth - 12.0, rowRect.height());
   const QRectF rightTextClip(rightRect.left() + sideGutterWidth + 8.0, rowRect.top(),
@@ -742,6 +824,12 @@ void DiffSurfaceItem::drawTextRun(QPainter* painter,
   const QFont textFont = monoFont(monoFontFamily_, 12);
   const QFontMetricsF metrics(textFont);
   painter->setFont(textFont);
+
+  if (wrapEnabled_) {
+    drawTextRunWrapped(painter, baseline, clipRect, text, tokens, changeSpans, textColor, tokenBackground, metrics);
+    painter->restore();
+    return;
+  }
 
   for (const DiffTokenSpan& span : changeSpans) {
     const int start = std::max(0, span.start);
@@ -799,6 +887,110 @@ void DiffSurfaceItem::drawTextRun(QPainter* painter,
     painter->drawText(baseline, text);
   }
   painter->restore();
+}
+
+void DiffSurfaceItem::drawTextRunWrapped(QPainter* painter,
+                                          const QPointF& baseline,
+                                          const QRectF& clipRect,
+                                          const QString& text,
+                                          const std::vector<DiffTokenSpan>& tokens,
+                                          const std::vector<DiffTokenSpan>& changeSpans,
+                                          const QColor& textColor,
+                                          const QColor& tokenBackground,
+                                          const QFontMetricsF& metrics) const {
+  const qreal availWidth = clipRect.width();
+  const qreal lineH = metrics.height() + 2.0;
+  const qreal originX = clipRect.left();
+
+  auto charPositions = [&](const QString& str) -> std::vector<qreal> {
+    std::vector<qreal> positions(str.size() + 1, 0.0);
+    for (int i = 0; i < str.size(); ++i) {
+      positions[i + 1] = metrics.horizontalAdvance(str.left(i + 1));
+    }
+    return positions;
+  };
+
+  const auto charX = charPositions(text);
+
+  auto wrapLine = [&](int charIdx) -> int {
+    if (availWidth <= 0) return 0;
+    return static_cast<int>(charX[charIdx] / availWidth);
+  };
+
+  auto xForChar = [&](int charIdx) -> qreal {
+    return originX + charX[charIdx] - wrapLine(charIdx) * availWidth;
+  };
+
+  auto yForChar = [&](int charIdx) -> qreal {
+    return baseline.y() + wrapLine(charIdx) * lineH;
+  };
+
+  for (const DiffTokenSpan& span : changeSpans) {
+    const int start = std::max(0, span.start);
+    const int end = std::min(static_cast<int>(text.size()), span.start + span.length);
+    if (end <= start) continue;
+
+    for (int line = wrapLine(start); line <= wrapLine(end - 1); ++line) {
+      int lineStart = start;
+      int lineEnd = end;
+      for (int c = start; c < end; ++c) {
+        if (wrapLine(c) == line) { lineStart = c; break; }
+      }
+      for (int c = end - 1; c >= start; --c) {
+        if (wrapLine(c) == line) { lineEnd = c + 1; break; }
+      }
+      const qreal sx = xForChar(lineStart);
+      const qreal sw = xForChar(lineEnd) - sx;
+      const qreal sy = baseline.y() + line * lineH;
+      painter->fillRect(QRectF(sx - 1.0, sy - metrics.ascent() - 1.0, sw + 2.0, metrics.height() + 2.0),
+                        tokenBackground);
+    }
+  }
+
+  auto drawSegment = [&](int start, int end, const QColor& color) {
+    if (end <= start) return;
+    painter->setPen(color);
+    int segStart = start;
+    while (segStart < end) {
+      int segLine = wrapLine(segStart);
+      int segEnd = segStart;
+      while (segEnd < end && wrapLine(segEnd) == segLine) ++segEnd;
+      painter->drawText(QPointF(xForChar(segStart), yForChar(segStart)),
+                        text.mid(segStart, segEnd - segStart));
+      segStart = segEnd;
+    }
+  };
+
+  bool hasSyntax = false;
+  auto sortedTokens = tokens;
+  if (!sortedTokens.empty()) {
+    std::sort(sortedTokens.begin(), sortedTokens.end(), [](const DiffTokenSpan& a, const DiffTokenSpan& b) {
+      return a.start < b.start;
+    });
+    for (const auto& t : sortedTokens) {
+      if (t.syntaxKind != SyntaxTokenKind::None) { hasSyntax = true; break; }
+    }
+  }
+
+  if (hasSyntax) {
+    int cursor = 0;
+    for (const DiffTokenSpan& token : sortedTokens) {
+      const int tokStart = std::max(0, token.start);
+      const int tokEnd = std::min(static_cast<int>(text.size()), token.start + token.length);
+      if (tokEnd <= tokStart) continue;
+      if (tokStart > cursor) {
+        drawSegment(cursor, tokStart, textColor);
+      }
+      const QColor fg = syntaxForeground(token.syntaxKind);
+      drawSegment(tokStart, tokEnd, fg.isValid() ? fg : textColor);
+      cursor = tokEnd;
+    }
+    if (cursor < text.size()) {
+      drawSegment(cursor, text.size(), textColor);
+    }
+  } else {
+    drawSegment(0, text.size(), textColor);
+  }
 }
 
 QString DiffSurfaceItem::selectedText() const {

@@ -51,6 +51,8 @@ class DiffController : public QObject {
   Q_PROPERTY(QString oauthUserCode READ oauthUserCode NOTIFY oauthStateChanged)
   Q_PROPERTY(QString oauthVerificationUri READ oauthVerificationUri NOTIFY oauthStateChanged)
   Q_PROPERTY(QString errorMessage READ errorMessage NOTIFY errorMessageChanged)
+  Q_PROPERTY(bool wrapEnabled READ wrapEnabled WRITE setWrapEnabled NOTIFY wrapEnabledChanged)
+  Q_PROPERTY(int wrapColumn READ wrapColumn WRITE setWrapColumn NOTIFY wrapColumnChanged)
   Q_PROPERTY(bool hasDifftastic READ hasDifftastic NOTIFY hasDifftasticChanged)
 
  public:
@@ -99,6 +101,11 @@ class DiffController : public QObject {
   void setGithubToken(const QString& token);
   bool hasGithubToken() const;
 
+  bool wrapEnabled() const;
+  void setWrapEnabled(bool value);
+  int wrapColumn() const;
+  void setWrapColumn(int value);
+
   QString errorMessage() const;
   bool hasDifftastic() const;
 
@@ -145,6 +152,8 @@ class DiffController : public QObject {
   void pullRequestLoadingChanged();
   void githubTokenChanged();
   void oauthStateChanged();
+  void wrapEnabledChanged();
+  void wrapColumnChanged();
   void errorMessageChanged();
   void hasDifftasticChanged();
 
@@ -188,6 +197,8 @@ class DiffController : public QObject {
   bool pullRequestLoading_ = false;
   QString githubToken_;
   QString errorMessage_;
+  bool wrapEnabled_ = false;
+  int wrapColumn_ = 0;
   bool hasDifftastic_ = false;
   QString githubClientId_;
   QTimer oauthPollTimer_;

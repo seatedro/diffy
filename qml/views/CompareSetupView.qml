@@ -6,10 +6,10 @@ Rectangle {
     id: root
 
     property bool compactControls: width < 800
-    property string pickerTarget: ""
     property bool prExpanded: true
 
     signal browseRequested()
+    signal pickBranchRequested(string target)
 
     function nextCompareMode(value) {
         if (value === "two-dot") return "three-dot"
@@ -112,11 +112,7 @@ Rectangle {
             ActionButton {
                 text: "Branch"
                 compact: true
-                onClicked: {
-                    root.pickerTarget = "left"
-                    branchPicker.model = diffController.branches
-                    branchPicker.showing = true
-                }
+                onClicked: root.pickBranchRequested("left")
             }
 
             ActionButton {
@@ -137,11 +133,7 @@ Rectangle {
             ActionButton {
                 text: "Branch"
                 compact: true
-                onClicked: {
-                    root.pickerTarget = "right"
-                    branchPicker.model = diffController.branches
-                    branchPicker.showing = true
-                }
+                onClicked: root.pickBranchRequested("right")
             }
         }
 
@@ -466,20 +458,4 @@ Rectangle {
         }
     }
 
-    PickerOverlay {
-        id: branchPicker
-        anchors.fill: parent
-        title: "Select Branch"
-        displayRole: "name"
-        badgeRole: "isHead"
-        onItemSelected: function(index, item) {
-            if (root.pickerTarget === "left") {
-                diffController.leftRef = item.name
-            } else {
-                diffController.rightRef = item.name
-            }
-            branchPicker.showing = false
-        }
-        onDismissed: branchPicker.showing = false
-    }
 }

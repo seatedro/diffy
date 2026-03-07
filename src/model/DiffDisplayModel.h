@@ -75,6 +75,8 @@ class DiffDisplayModel {
   void rebuild(DiffLayoutMode mode, double rowHeight, double hunkHeight, double fileHeaderHeight);
 
   const std::vector<DiffDisplayRow>& rows() const;
+  std::vector<DiffDisplayRow>& mutableRows();
+  std::vector<double>& mutableOffsets();
   double contentHeight() const;
   int lineNumberDigits() const;
 

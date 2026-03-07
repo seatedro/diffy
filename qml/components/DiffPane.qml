@@ -12,6 +12,8 @@ Rectangle {
     property string leftRef: ""
     property string rightRef: ""
     property string renderer: "builtin"
+    property bool wrapEnabled: false
+    property int wrapColumn: 0
     signal nextFileRequested()
     signal previousFileRequested()
 
@@ -208,8 +210,7 @@ Rectangle {
 
             ScrollBar.horizontal: ScrollBar {
                 id: hScrollBar
-                policy: diffViewport.contentWidth > diffViewport.width ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
-                interactive: false
+                policy: diffViewport.contentWidth > diffViewport.width ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
                 contentItem: Rectangle {
                     implicitHeight: 6
                     radius: 3
@@ -239,6 +240,8 @@ Rectangle {
                 viewportY: diffViewport.contentY
                 viewportHeight: diffViewport.height
                 palette: root.surfacePalette
+                wrapEnabled: root.wrapEnabled
+                wrapColumn: root.wrapColumn
                 monoFontFamily: theme.mono
                 onScrollToYRequested: function(value) {
                     diffViewport.contentY = Math.max(0, value)

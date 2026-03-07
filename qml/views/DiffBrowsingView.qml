@@ -5,10 +5,11 @@ import "../components"
 Rectangle {
     id: root
 
-    property bool compactControls: width < 1260
-    property bool stackPanels: width < 1140
+    property bool compactControls: width < 1100
+    property bool stackPanels: width < 800
+    property bool hideFilePane: width < 600
     property string pendingPullRequestField: ""
-    property real filePaneWidth: Math.max(220, Math.min(280, width * 0.20))
+    property real filePaneWidth: Math.max(180, Math.min(260, width * 0.20))
 
     function nextCompareMode(value) {
         if (value === "two-dot") return "three-dot"
@@ -119,8 +120,9 @@ Rectangle {
 
                 InputField {
                     id: leftRefField
+                    visible: !root.compactControls
                     compact: true
-                    Layout.preferredWidth: root.compactControls ? 140 : 168
+                    Layout.preferredWidth: 168
                     monospace: true
                     text: diffController.leftRefDisplay
                     placeholderText: "Left ref"
@@ -134,6 +136,7 @@ Rectangle {
                 }
 
                 ActionButton {
+                    visible: !root.compactControls
                     text: compareModeLabel(diffController.compareMode)
                     compact: true
                     toolTip: "Toggle compare mode"
@@ -142,8 +145,9 @@ Rectangle {
 
                 InputField {
                     id: rightRefField
+                    visible: !root.compactControls
                     compact: true
-                    Layout.preferredWidth: root.compactControls ? 140 : 168
+                    Layout.preferredWidth: 168
                     monospace: true
                     text: diffController.rightRefDisplay
                     placeholderText: "Right ref"
@@ -182,6 +186,14 @@ Rectangle {
                     ]
                     currentValue: diffController.layoutMode
                     onValueChanged: function(v) { diffController.layoutMode = v }
+                }
+
+                ActionButton {
+                    text: diffController.wrapEnabled ? "Wrap" : "No Wrap"
+                    compact: true
+                    active: diffController.wrapEnabled
+                    toolTip: "Toggle word wrap"
+                    onClicked: diffController.wrapEnabled = !diffController.wrapEnabled
                 }
 
                 ActionButton {
@@ -229,8 +241,9 @@ Rectangle {
                 id: filePane
                 x: 0
                 y: 0
-                width: root.stackPanels ? parent.width : root.filePaneWidth
-                height: root.stackPanels ? 220 : parent.height
+                visible: !root.hideFilePane
+                width: root.hideFilePane ? 0 : (root.stackPanels ? parent.width : root.filePaneWidth)
+                height: root.stackPanels ? 180 : parent.height
                 files: diffController.files
                 selectedIndex: diffController.selectedFileIndex
                 repoPath: diffController.repoPath
@@ -244,7 +257,7 @@ Rectangle {
             }
 
             SplitHandle {
-                visible: !root.stackPanels
+                visible: !root.stackPanels && !root.hideFilePane
                 x: filePane.width
                 y: 0
                 position: root.filePaneWidth
@@ -264,9 +277,9 @@ Rectangle {
 
             DiffPane {
                 id: diffPane
-                x: root.stackPanels ? 0 : filePane.width + 5
+                x: (root.stackPanels || root.hideFilePane) ? 0 : filePane.width + 5
                 y: root.stackPanels ? filePane.height + 1 : 0
-                width: root.stackPanels ? parent.width : parent.width - filePane.width - 5
+                width: (root.stackPanels || root.hideFilePane) ? parent.width : parent.width - filePane.width - 5
                 height: root.stackPanels ? parent.height - filePane.height - 1 : parent.height
                 fileData: diffController.selectedFile
                 rowsModel: diffController.selectedFileRowsModel
@@ -274,6 +287,8 @@ Rectangle {
                 leftRef: diffController.leftRef
                 rightRef: diffController.rightRef
                 renderer: diffController.renderer
+                wrapEnabled: diffController.wrapEnabled
+                wrapColumn: diffController.wrapColumn
                 onNextFileRequested: {
                     var next = diffController.selectedFileIndex + 1
                     if (next < diffController.files.length)

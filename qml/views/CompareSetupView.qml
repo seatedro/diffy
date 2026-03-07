@@ -153,6 +153,7 @@ Rectangle {
                 compact: true
                 tone: diffController.renderer === "difftastic" ? "accent" : "neutral"
                 active: diffController.renderer === "difftastic"
+                toolTip: "Toggle diff renderer"
                 onClicked: diffController.renderer = nextRenderer(diffController.renderer)
             }
 
@@ -160,6 +161,7 @@ Rectangle {
                 text: diffController.layoutMode === "split" ? "Split" : "Unified"
                 compact: true
                 active: diffController.layoutMode === "split"
+                toolTip: "Toggle split/unified layout"
                 onClicked: diffController.layoutMode = diffController.layoutMode === "unified" ? "split" : "unified"
             }
 
@@ -169,6 +171,7 @@ Rectangle {
                 text: diffController.comparing ? "Comparing…" : "Compare"
                 tone: "accent"
                 active: true
+                toolTip: "Run comparison"
                 onClicked: root.runCompare()
             }
         }
@@ -224,7 +227,7 @@ Rectangle {
                         text: (root.prExpanded ? "▾ " : "▸ ") + "GitHub Pull Request"
                         color: theme.textStrong
                         font.family: theme.sans
-                        font.pixelSize: 11
+                        font.pixelSize: 12
                         font.bold: true
 
                         MouseArea {

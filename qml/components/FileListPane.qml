@@ -67,7 +67,7 @@ Rectangle {
                     text: "Changes"
                     color: theme.textStrong
                     font.family: theme.sans
-                    font.pixelSize: 11
+                    font.pixelSize: 12
                     font.bold: true
                 }
 
@@ -86,7 +86,7 @@ Rectangle {
                     text: "+" + totalAdditions()
                     color: theme.successText
                     font.family: theme.mono
-                    font.pixelSize: 9
+                    font.pixelSize: 10
                 }
 
                 Text {
@@ -94,7 +94,7 @@ Rectangle {
                     text: "-" + totalDeletions()
                     color: theme.dangerText
                     font.family: theme.mono
-                    font.pixelSize: 9
+                    font.pixelSize: 10
                 }
             }
         }
@@ -183,21 +183,21 @@ Rectangle {
                         text: "bin"
                         color: theme.textFaint
                         font.family: theme.mono
-                        font.pixelSize: 9
+                        font.pixelSize: 10
                     }
 
                     Text {
                         text: "+" + modelData.additions
                         color: theme.successText
                         font.family: theme.mono
-                        font.pixelSize: 9
+                        font.pixelSize: 10
                     }
 
                     Text {
                         text: "-" + modelData.deletions
                         color: theme.dangerText
                         font.family: theme.mono
-                        font.pixelSize: 9
+                        font.pixelSize: 10
                     }
                 }
 

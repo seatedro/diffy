@@ -79,6 +79,7 @@ Rectangle {
 
                 ActionButton {
                     text: "Back"
+                    toolTip: "Return to compare setup"
                     onClicked: diffController.goBack()
                 }
 
@@ -125,6 +126,7 @@ Rectangle {
                 ActionButton {
                     text: compareModeLabel(diffController.compareMode)
                     compact: true
+                    toolTip: "Toggle compare mode"
                     onClicked: diffController.compareMode = nextCompareMode(diffController.compareMode)
                 }
 
@@ -159,6 +161,7 @@ Rectangle {
                     compact: true
                     tone: diffController.renderer === "difftastic" ? "accent" : "neutral"
                     active: diffController.renderer === "difftastic"
+                    toolTip: "Toggle diff renderer"
                     onClicked: diffController.renderer = nextRenderer(diffController.renderer)
                 }
 
@@ -166,6 +169,7 @@ Rectangle {
                     text: diffController.layoutMode === "split" ? "Split" : "Unified"
                     compact: true
                     active: diffController.layoutMode === "split"
+                    toolTip: "Toggle split/unified layout"
                     onClicked: diffController.layoutMode = diffController.layoutMode === "unified" ? "split" : "unified"
                 }
 
@@ -174,6 +178,7 @@ Rectangle {
                     tone: "accent"
                     compact: true
                     active: true
+                    toolTip: "Run comparison"
                     onClicked: root.runCompare()
                 }
             }

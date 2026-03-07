@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 
 Rectangle {
     id: root
@@ -48,11 +49,15 @@ Rectangle {
         return active ? theme.accentStrong : theme.textMuted
     }
 
+    property string toolTip: ""
+
+    activeFocusOnTab: true
+
     implicitWidth: Math.max(compact ? 58 : 88, label.implicitWidth + (compact ? 14 : 24))
-    implicitHeight: compact ? 26 : 28
+    implicitHeight: compact ? 28 : 32
     radius: 4
-    color: mouseArea.containsMouse ? Qt.lighter(fillColor(), 1.04) : fillColor()
-    border.width: 1
+    color: mouseArea.pressed ? Qt.darker(fillColor(), 1.1) : (mouseArea.containsMouse ? Qt.lighter(fillColor(), 1.04) : fillColor())
+    border.width: active ? 1.5 : 1
     border.color: borderColor()
 
     Behavior on color {
@@ -64,8 +69,18 @@ Rectangle {
         anchors.centerIn: parent
         color: root.textColor()
         font.family: theme.sans
-        font.pixelSize: compact ? 10 : 11
+        font.pixelSize: compact ? 11 : 12
         font.bold: active || tone !== "neutral"
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        anchors.margins: -2
+        radius: root.radius + 2
+        color: "transparent"
+        border.width: 2
+        border.color: theme.accent
+        visible: root.activeFocus
     }
 
     MouseArea {
@@ -74,5 +89,14 @@ Rectangle {
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
         onClicked: root.clicked()
+    }
+
+    Keys.onReturnPressed: root.clicked()
+    Keys.onSpacePressed: root.clicked()
+
+    ToolTip {
+        visible: root.toolTip.length > 0 && mouseArea.containsMouse
+        delay: 600
+        text: root.toolTip
     }
 }

@@ -23,7 +23,7 @@ Window {
         anchors.fill: parent
         visible: opacity > 0
         opacity: diffController.currentView === "welcome" ? 1.0 : 0.0
-        Behavior on opacity { NumberAnimation { duration: 150; easing.type: Easing.InOutQuad } }
+        Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.InOutQuad } }
         onOpenRepositoryRequested: diffController.openRepositoryPicker()
         onOpenRecentRequested: function(path) { diffController.openRepository(path) }
     }
@@ -33,7 +33,7 @@ Window {
         anchors.fill: parent
         visible: opacity > 0
         opacity: diffController.currentView === "compare" ? 1.0 : 0.0
-        Behavior on opacity { NumberAnimation { duration: 150; easing.type: Easing.InOutQuad } }
+        Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.InOutQuad } }
         onBrowseRequested: diffController.openRepositoryPicker()
     }
 
@@ -42,7 +42,7 @@ Window {
         anchors.fill: parent
         visible: opacity > 0
         opacity: diffController.currentView === "diff" ? 1.0 : 0.0
-        Behavior on opacity { NumberAnimation { duration: 150; easing.type: Easing.InOutQuad } }
+        Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.InOutQuad } }
     }
 
     RepositoryPickerOverlay {

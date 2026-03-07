@@ -28,7 +28,7 @@ Rectangle {
         anchors.bottomMargin: root.compact ? 4 : 5
         color: theme.textStrong
         font.family: root.monospace ? theme.mono : theme.sans
-        font.pixelSize: root.compact ? 10 : 11
+        font.pixelSize: root.compact ? 11 : 12
         clip: true
         selectByMouse: true
         selectedTextColor: "#ffffff"

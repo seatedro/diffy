@@ -102,6 +102,7 @@ qt_add_qml_module(diffy
     qml/components/Card.qml
     qml/components/CommandPalette.qml
     qml/components/DiffPane.qml
+    qml/components/DiffStatsBar.qml
     qml/components/EmptyState.qml
     qml/components/FileListPane.qml
     qml/components/InputField.qml

@@ -10,6 +10,8 @@ Run a repeatable Diffy performance scenario matrix and summarize DIFFY_STATE tim
 Options:
   --binary PATH              Diffy binary to execute.
                              Default: ./build/Release/diffy if present, otherwise ./build/diffy
+  --json-out FILE            Write machine-readable results to FILE.
+  --json-ident NAME          Save results to .perf-runs/NAME.diffy.json
   --runs N                   Number of repetitions per scenario. Default: 5
   --repo PATH                Repository for real-repo scenarios.
                              Default: ~/exa/monorepo-master
@@ -56,6 +58,8 @@ switch_from_file="rust/services/apollo/src/config.rs"
 switch_to_file="rust/services/apollo/src/contents/get_contents.rs"
 requested_scenario=""
 keep_workdir=false
+json_out=""
+json_ident=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -65,6 +69,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --runs)
       runs="$2"
+      shift 2
+      ;;
+    --json-out)
+      json_out="$2"
+      shift 2
+      ;;
+    --json-ident)
+      json_ident="$2"
       shift 2
       ;;
     --repo)
@@ -131,6 +143,16 @@ fi
 if ! [[ "$runs" =~ ^[1-9][0-9]*$ ]]; then
   echo "--runs must be a positive integer" >&2
   exit 1
+fi
+
+if [[ -n "$json_ident" && -n "$json_out" ]]; then
+  echo "--json-ident and --json-out are mutually exclusive" >&2
+  exit 1
+fi
+
+if [[ -n "$json_ident" ]]; then
+  mkdir -p "${repo_root}/.perf-runs"
+  json_out="${repo_root}/.perf-runs/${json_ident}.diffy.json"
 fi
 
 work_dir="$(mktemp -d /tmp/diffy-perf-matrix-XXXXXX)"
@@ -627,6 +649,33 @@ print_summary_table "Action Cache Deltas (median / max)" \
   "action_hits_delta_med_max" \
   "action_misses_delta_med_max" \
   "action_resident_delta_med_max"
+
+if [[ -n "$json_out" ]]; then
+  export_args=()
+  for scenario in "${scenario_names[@]}"; do
+    export_args+=(--scenario "$scenario")
+  done
+  if [[ -n "$json_ident" ]]; then
+    export_args+=(--ident "$json_ident")
+  fi
+  uv run "${repo_root}/scripts/perf_export.py" \
+    --work-dir "${work_dir}" \
+    --output "${json_out}" \
+    --repo-root "${repo_root}" \
+    --binary "${binary}" \
+    --runs "${runs}" \
+    --repo "${repo}" \
+    --left "${left_ref}" \
+    --right "${right_ref}" \
+    --compare-mode "${compare_mode}" \
+    --unified-file "${unified_file}" \
+    --scroll-file "${scroll_file}" \
+    --split-file "${split_file}" \
+    --switch-from-file "${switch_from_file}" \
+    --switch-to-file "${switch_to_file}" \
+    "${export_args[@]}"
+  printf '\nSaved JSON results to: %s\n' "${json_out}"
+fi
 
 if [[ "$keep_workdir" == true ]]; then
   printf '\nRaw scenario files kept at: %s\n' "${work_dir}"

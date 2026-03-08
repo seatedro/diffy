@@ -4,6 +4,7 @@
     pkgs.cmake
     pkgs.ninja
     pkgs.pkg-config
+    pkgs.uv
     pkgs.git
     pkgs.gcc
     pkgs.jq

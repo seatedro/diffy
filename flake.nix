@@ -49,6 +49,7 @@
 
         packages = [
           pkgs.nodejs_22
+          pkgs.uv
           pkgs.git
           pkgs.gcc
           pkgs.jq

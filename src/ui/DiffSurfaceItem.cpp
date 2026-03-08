@@ -7,6 +7,7 @@
 #include <QGuiApplication>
 #include <QImage>
 #include <QPainter>
+#include <QPointer>
 #include <QQuickWindow>
 #include <QRunnable>
 #include <QSGClipNode>
@@ -16,17 +17,50 @@
 #include <QSGSimpleTextureNode>
 #include <QStyleHints>
 #include <QSet>
+#include <QThread>
 #include <QTimer>
+#include <QThreadPool>
 #include <QVector>
 #include <QtMath>
 
 #include <algorithm>
 #include <chrono>
+#include <functional>
 #include <limits>
 
 #include "core/syntax/SyntaxTypes.h"
 
 namespace diffy {
+
+struct DiffRasterRow {
+  DiffDisplayRow row;
+  QString text;
+  QString leftText;
+  QString rightText;
+};
+
+struct DiffRasterSnapshot {
+  quint64 generation = 0;
+  QVariantMap palette;
+  QString monoFontFamily;
+  QString layoutMode;
+  bool wrapEnabled = false;
+  int wrapColumn = 0;
+  qreal rowHeight = 0.0;
+  qreal fileHeaderHeight = 0.0;
+  qreal hunkHeight = 0.0;
+  int lineNumberDigits = 0;
+  qreal visibleWidth = 0.0;
+  qreal unifiedRowWidth = 0.0;
+  qreal splitTextLogicalWidth = 0.0;
+  qreal leftPaneWidth = 0.0;
+  qreal rightPaneWidth = 0.0;
+  qreal leftViewportX = 0.0;
+  qreal rightViewportX = 0.0;
+  qreal devicePixelRatio = 1.0;
+  std::vector<DiffRasterRow> rows;
+};
+
 namespace {
 
 using PerfClock = std::chrono::steady_clock;
@@ -108,6 +142,13 @@ constexpr int kMaxLineLayoutCacheEntries = 4096;
 constexpr int kMaxWrappedLayoutCacheEntries = 4096;
 constexpr int kTilePrewarmBatchSize = 12;
 constexpr int kTilePrewarmRowMargin = 4;
+constexpr int kSyncRasterFallbackTileBudget = 6;
+constexpr double kSyncRasterFallbackMsBudget = 2.0;
+constexpr int kViewportSyncRasterFallbackTileBudget = 8;
+constexpr double kViewportSyncRasterFallbackMsBudget = 3.0;
+constexpr int kCurrentViewportRasterPriority = 2;
+constexpr int kVisibleTileRequestPriority = 3;
+constexpr int kAlternatePrewarmRasterPriority = -1;
 
 quint64 tileKey(quint64 contentGeneration,
                 quint64 geometryGeneration,
@@ -275,6 +316,557 @@ qint64 wrapWidthCacheKey(qreal wrapWidth) {
   return qRound64(wrapWidth * 1000.0);
 }
 
+QColor snapshotPaletteColor(const DiffRasterSnapshot& snapshot, const char* key, const QColor& fallback) {
+  const QVariant value = snapshot.palette.value(QString::fromLatin1(key));
+  if (!value.isValid()) {
+    return fallback;
+  }
+  const QColor color = value.value<QColor>();
+  return color.isValid() ? color : fallback;
+}
+
+struct SnapshotLineLayout {
+  qreal width = 0.0;
+  std::vector<qreal> prefixAdvances;
+};
+
+struct SnapshotWrappedLayout {
+  int lineCount = 1;
+  std::vector<int> charWrapLines;
+};
+
+class SnapshotRenderer {
+ public:
+  explicit SnapshotRenderer(const DiffRasterSnapshot& snapshot) : snapshot_(snapshot) {}
+
+  QImage renderTileImage(const TileSpec& spec) const {
+    Q_ASSERT(spec.rowIndex >= 0);
+    Q_ASSERT(spec.rowIndex < static_cast<int>(snapshot_.rows.size()));
+    const DiffRasterRow& row = snapshot_.rows.at(spec.rowIndex);
+    const QSize pixelSize(qMax(1, qCeil(spec.targetRect.width() * snapshot_.devicePixelRatio)),
+                          qMax(1, qCeil(row.row.height * snapshot_.devicePixelRatio)));
+    QImage image(pixelSize, QImage::Format_ARGB32_Premultiplied);
+    image.setDevicePixelRatio(snapshot_.devicePixelRatio);
+    image.fill(snapshotPaletteColor(snapshot_, "canvas", QColor("#282828")).rgb());
+
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
+    painter.setRenderHint(QPainter::Antialiasing, false);
+    painter.translate(-spec.logicalX, -row.row.top);
+
+    switch (spec.layer) {
+      case TileLayer::UnifiedRow: {
+        const QRectF rowRect(0.0, row.row.top, snapshot_.unifiedRowWidth, row.row.height);
+        if (row.row.rowType == DiffRowType::FileHeader) {
+          drawFileHeaderRow(&painter, rowRect, row);
+        } else if (row.row.rowType == DiffRowType::Hunk) {
+          drawHunkRow(&painter, rowRect, row);
+        } else {
+          drawUnifiedRow(&painter, rowRect, row);
+        }
+        break;
+      }
+      case TileLayer::SplitFullRow: {
+        const QRectF rowRect(0.0, row.row.top, snapshot_.visibleWidth, row.row.height);
+        if (row.row.rowType == DiffRowType::FileHeader) {
+          drawFileHeaderRow(&painter, rowRect, row);
+        } else if (row.row.rowType == DiffRowType::Hunk) {
+          drawHunkRow(&painter, rowRect, row);
+        } else {
+          drawSplitRow(&painter, rowRect, row, snapshot_.leftViewportX, snapshot_.rightViewportX);
+        }
+        break;
+      }
+      case TileLayer::SplitLeftFixedRow:
+      case TileLayer::SplitRightFixedRow: {
+        const bool isLeftPane = spec.layer == TileLayer::SplitLeftFixedRow;
+        const qreal paneWidth = isLeftPane ? snapshot_.leftPaneWidth : snapshot_.rightPaneWidth;
+        drawSplitPaneFixedRow(&painter, QRectF(0.0, row.row.top, paneWidth, row.row.height), row, isLeftPane);
+        break;
+      }
+      case TileLayer::SplitLeftTextRow:
+      case TileLayer::SplitRightTextRow: {
+        const bool isLeftPane = spec.layer == TileLayer::SplitLeftTextRow;
+        drawSplitPaneTextRow(&painter, QRectF(0.0, row.row.top, snapshot_.splitTextLogicalWidth, row.row.height), row,
+                             isLeftPane);
+        break;
+      }
+      case TileLayer::StickyRow: {
+        const QRectF rowRect(0.0, row.row.top, spec.targetRect.width(), row.row.height);
+        if (row.row.rowType == DiffRowType::FileHeader) {
+          drawFileHeaderRow(&painter, rowRect, row);
+        } else if (row.row.rowType == DiffRowType::Hunk) {
+          drawHunkRow(&painter, rowRect, row);
+        }
+        break;
+      }
+    }
+
+    painter.end();
+    return image;
+  }
+
+ private:
+  qreal digitWidth() const {
+    const QFontMetricsF metrics(monoFont(snapshot_.monoFontFamily, 11));
+    return metrics.horizontalAdvance(QLatin1Char('9'));
+  }
+
+  qreal unifiedGutterWidth() const {
+    return 12.0 + 14.0 + digitWidth() * (snapshot_.lineNumberDigits * 2 + 2) + 28.0;
+  }
+
+  SnapshotLineLayout lineLayoutForText(const QString& text, int pixelSize) const {
+    SnapshotLineLayout layout;
+    const QFontMetricsF metrics(monoFont(snapshot_.monoFontFamily, pixelSize));
+    layout.prefixAdvances.reserve(static_cast<size_t>(text.size() + 1));
+    layout.prefixAdvances.push_back(0.0);
+    for (int i = 0; i < text.size(); ++i) {
+      layout.prefixAdvances.push_back(layout.prefixAdvances.back() + metrics.horizontalAdvance(text.at(i)));
+    }
+    layout.width = layout.prefixAdvances.empty() ? 0.0 : layout.prefixAdvances.back();
+    return layout;
+  }
+
+  SnapshotWrappedLayout wrappedLayoutForText(const QString& text, int pixelSize, qreal wrapWidth) const {
+    SnapshotWrappedLayout wrappedLayout;
+    const SnapshotLineLayout layout = lineLayoutForText(text, pixelSize);
+    wrappedLayout.charWrapLines.resize(layout.prefixAdvances.size(), 0);
+    if (wrapWidth > 0.0 && !layout.prefixAdvances.empty()) {
+      int currentLine = 0;
+      qreal nextBoundary = wrapWidth;
+      for (size_t index = 0; index < layout.prefixAdvances.size(); ++index) {
+        while (layout.prefixAdvances[index] >= nextBoundary) {
+          ++currentLine;
+          nextBoundary += wrapWidth;
+        }
+        wrappedLayout.charWrapLines[index] = currentLine;
+      }
+      wrappedLayout.lineCount = currentLine + 1;
+    }
+    return wrappedLayout;
+  }
+
+  void drawFileHeaderRow(QPainter* painter, const QRectF& rowRect, const DiffRasterRow& row) const {
+    painter->fillRect(rowRect, snapshotPaletteColor(snapshot_, "canvas", QColor("#282828")));
+    painter->fillRect(QRectF(rowRect.left(), rowRect.bottom() - 1.0, rowRect.width(), 1.0),
+                      snapshotPaletteColor(snapshot_, "divider", QColor("#363c46")));
+
+    painter->setFont(monoFont(snapshot_.monoFontFamily, 11));
+    painter->setPen(snapshotPaletteColor(snapshot_, "textStrong", QColor("#fbf1c7")));
+    painter->drawText(QRectF(rowRect.left() + 12.0, rowRect.top(), rowRect.width() - 160.0, rowRect.height()),
+                      Qt::AlignVCenter | Qt::AlignLeft, QString::fromStdString(row.row.header));
+
+    painter->setPen(snapshotPaletteColor(snapshot_, "textMuted", QColor("#d5c4a1")));
+    painter->drawText(QRectF(rowRect.right() - 140.0, rowRect.top(), 130.0, rowRect.height()),
+                      Qt::AlignVCenter | Qt::AlignRight, QString::fromStdString(row.row.detail));
+  }
+
+  void drawHunkRow(QPainter* painter, const QRectF& rowRect, const DiffRasterRow& row) const {
+    painter->fillRect(QRectF(rowRect.left(), rowRect.top(), rowRect.width(), 1.0),
+                      snapshotPaletteColor(snapshot_, "divider", QColor("#363c46")));
+    painter->fillRect(QRectF(rowRect.left(), rowRect.top() + 1.0, rowRect.width(), rowRect.height() - 2.0),
+                      snapshotPaletteColor(snapshot_, "panelStrong", QColor("#3b414d")));
+    painter->fillRect(QRectF(rowRect.left(), rowRect.bottom() - 1.0, rowRect.width(), 1.0),
+                      snapshotPaletteColor(snapshot_, "divider", QColor("#363c46")));
+
+    painter->setFont(monoFont(snapshot_.monoFontFamily, 11));
+    painter->setPen(snapshotPaletteColor(snapshot_, "textMuted", QColor("#a9afbc")));
+    painter->drawText(QRectF(rowRect.left() + 10.0, rowRect.top(), rowRect.width() - 20.0, rowRect.height()),
+                      Qt::AlignVCenter | Qt::AlignLeft, QString::fromStdString(row.row.header));
+  }
+
+  void drawUnifiedRow(QPainter* painter, const QRectF& rowRect, const DiffRasterRow& row) const {
+    QColor background = snapshotPaletteColor(snapshot_, "lineContext", QColor("#282c33"));
+    if (row.row.kind == DiffLineKind::Addition) {
+      background = snapshotPaletteColor(snapshot_, "lineAdd", QColor("#1f2d24"));
+    } else if (row.row.kind == DiffLineKind::Deletion) {
+      background = snapshotPaletteColor(snapshot_, "lineDel", QColor("#2d2024"));
+    }
+
+    painter->fillRect(rowRect, background);
+
+    const qreal gutterWidth = unifiedGutterWidth();
+    const QRectF gutterRect(rowRect.left(), rowRect.top(), gutterWidth, rowRect.height());
+    painter->fillRect(gutterRect, snapshotPaletteColor(snapshot_, "panelTint", QColor("#353b45")));
+    painter->fillRect(QRectF(gutterRect.right(), rowRect.top(), 1.0, rowRect.height()),
+                      snapshotPaletteColor(snapshot_, "divider", QColor("#363c46")));
+
+    if (row.row.kind == DiffLineKind::Addition || row.row.kind == DiffLineKind::Deletion) {
+      const QColor marker = row.row.kind == DiffLineKind::Addition
+                                ? snapshotPaletteColor(snapshot_, "successText", QColor("#a1c181"))
+                                : snapshotPaletteColor(snapshot_, "dangerText", QColor("#d07277"));
+      painter->fillRect(QRectF(rowRect.left(), rowRect.top(), 3.0, rowRect.height()), marker);
+    }
+
+    painter->setFont(monoFont(snapshot_.monoFontFamily, 11));
+    painter->setPen(row.row.kind == DiffLineKind::Addition
+                        ? snapshotPaletteColor(snapshot_, "successText", QColor("#a1c181"))
+                        : row.row.kind == DiffLineKind::Deletion
+                              ? snapshotPaletteColor(snapshot_, "dangerText", QColor("#d07277"))
+                              : snapshotPaletteColor(snapshot_, "textMuted", QColor("#a9afbc")));
+    painter->drawText(QRectF(rowRect.left() + 6.0, rowRect.top(), 12.0, rowRect.height()), Qt::AlignVCenter,
+                      kindSymbol(row.row.kind));
+
+    painter->setPen(snapshotPaletteColor(snapshot_, "textMuted", QColor("#d5c4a1")));
+    const qreal numberWidth = digitWidth() * snapshot_.lineNumberDigits;
+    painter->drawText(QRectF(rowRect.left() + 22.0, rowRect.top(), numberWidth, rowRect.height()),
+                      Qt::AlignRight | Qt::AlignVCenter,
+                      row.row.oldLine > 0 ? QString::number(row.row.oldLine) : QString());
+
+    painter->fillRect(QRectF(rowRect.left() + 26.0 + numberWidth, rowRect.top() + 4.0, 1.0, rowRect.height() - 8.0),
+                      snapshotPaletteColor(snapshot_, "divider", QColor("#504945")));
+
+    painter->drawText(QRectF(rowRect.left() + 32.0 + numberWidth, rowRect.top(), numberWidth, rowRect.height()),
+                      Qt::AlignRight | Qt::AlignVCenter,
+                      row.row.newLine > 0 ? QString::number(row.row.newLine) : QString());
+
+    const QFont textFont = monoFont(snapshot_.monoFontFamily, 12);
+    const QFontMetricsF textMetrics(textFont);
+    painter->setFont(textFont);
+    const qreal baselineY = snapshot_.wrapEnabled
+                                ? rowRect.top() + (snapshot_.rowHeight - textMetrics.height()) / 2.0 + textMetrics.ascent()
+                                : rowRect.top() + (rowRect.height() - textMetrics.height()) / 2.0 + textMetrics.ascent();
+    const QRectF textClip(rowRect.left() + gutterWidth + 8.0, rowRect.top(), rowRect.width() - gutterWidth - 12.0,
+                          rowRect.height());
+    const QColor tokenBg = row.row.kind == DiffLineKind::Addition
+                               ? snapshotPaletteColor(snapshot_, "successBorder", QColor("#38482f"))
+                               : row.row.kind == DiffLineKind::Deletion
+                                     ? snapshotPaletteColor(snapshot_, "dangerBorder", QColor("#4c2b2c"))
+                                     : snapshotPaletteColor(snapshot_, "accentSoft", QColor("#293b5b"));
+    const SnapshotLineLayout layout = lineLayoutForText(row.text, 12);
+    drawTextRun(painter, QPointF(textClip.left(), baselineY), textClip, row.text, row.row.tokens, row.row.changeSpans,
+                layout.prefixAdvances, snapshotPaletteColor(snapshot_, "textBase", QColor("#c8ccd4")), tokenBg);
+  }
+
+  void drawSplitPaneFixedRow(QPainter* painter, const QRectF& rowRect, const DiffRasterRow& row, bool isLeftPane) const {
+    const qreal sideGutterWidth = 22.0 + digitWidth() * (snapshot_.lineNumberDigits + 1) + 12.0;
+    const DiffLineKind lineKind = isLeftPane ? row.row.leftKind : row.row.rightKind;
+    const int lineNumber = isLeftPane ? row.row.leftLine : row.row.rightLine;
+    const bool spacer = lineKind == DiffLineKind::Spacer;
+
+    QColor background = splitPaneBackgroundColor(row.row, isLeftPane);
+    if (spacer) {
+      background = snapshotPaletteColor(snapshot_, "lineContextAlt", background);
+    } else if (isLeftPane && lineKind == DiffLineKind::Deletion) {
+      background = snapshotPaletteColor(snapshot_, "lineDelAccent", background);
+    } else if (!isLeftPane && lineKind == DiffLineKind::Addition) {
+      background = snapshotPaletteColor(snapshot_, "lineAddAccent", background);
+    } else {
+      background = snapshotPaletteColor(snapshot_, "lineContext", background);
+    }
+
+    painter->fillRect(rowRect, background);
+    painter->fillRect(QRectF(rowRect.left(), rowRect.top(), sideGutterWidth, rowRect.height()),
+                      snapshotPaletteColor(snapshot_, "panelTint", QColor("#504945")));
+    painter->fillRect(QRectF(rowRect.left() + sideGutterWidth, rowRect.top(), 1.0, rowRect.height()),
+                      snapshotPaletteColor(snapshot_, "divider", QColor("#504945")));
+    if (isLeftPane) {
+      painter->fillRect(QRectF(rowRect.right(), rowRect.top(), 1.0, rowRect.height()),
+                        snapshotPaletteColor(snapshot_, "divider", QColor("#363c46")));
+    }
+
+    if (isLeftPane && lineKind == DiffLineKind::Deletion) {
+      painter->fillRect(QRectF(rowRect.left(), rowRect.top(), 3.0, rowRect.height()),
+                        snapshotPaletteColor(snapshot_, "dangerText", QColor("#d07277")));
+    }
+    if (!isLeftPane && lineKind == DiffLineKind::Addition) {
+      painter->fillRect(QRectF(rowRect.left(), rowRect.top(), 3.0, rowRect.height()),
+                        snapshotPaletteColor(snapshot_, "successText", QColor("#a1c181")));
+    }
+
+    painter->setFont(monoFont(snapshot_.monoFontFamily, 11));
+    painter->setPen(snapshotPaletteColor(snapshot_, "textMuted", QColor("#d5c4a1")));
+    painter->drawText(QRectF(rowRect.left() + 6.0, rowRect.top(), 12.0, rowRect.height()), Qt::AlignVCenter,
+                      kindSymbol(lineKind));
+    const qreal splitNumberWidth = digitWidth() * snapshot_.lineNumberDigits;
+    painter->drawText(QRectF(rowRect.left() + 20.0, rowRect.top(), splitNumberWidth, rowRect.height()),
+                      Qt::AlignRight | Qt::AlignVCenter, lineNumber > 0 ? QString::number(lineNumber) : QString());
+
+    if (spacer) {
+      QColor guide = snapshotPaletteColor(snapshot_, "divider", QColor("#504945"));
+      guide.setAlpha(150);
+      painter->fillRect(QRectF(rowRect.left() + sideGutterWidth + 8.0, rowRect.top() + 3.0, 1.0,
+                               std::max<qreal>(0.0, rowRect.height() - 6.0)),
+                        guide);
+    }
+  }
+
+  void drawSplitPaneTextRow(QPainter* painter, const QRectF& rowRect, const DiffRasterRow& row, bool isLeftPane) const {
+    const DiffLineKind lineKind = isLeftPane ? row.row.leftKind : row.row.rightKind;
+    QColor background = splitPaneBackgroundColor(row.row, isLeftPane);
+    if (lineKind == DiffLineKind::Spacer) {
+      background = snapshotPaletteColor(snapshot_, "lineContextAlt", background);
+    } else if (isLeftPane && lineKind == DiffLineKind::Deletion) {
+      background = snapshotPaletteColor(snapshot_, "lineDelAccent", background);
+    } else if (!isLeftPane && lineKind == DiffLineKind::Addition) {
+      background = snapshotPaletteColor(snapshot_, "lineAddAccent", background);
+    } else {
+      background = snapshotPaletteColor(snapshot_, "lineContext", background);
+    }
+    painter->fillRect(rowRect, background);
+
+    if (lineKind == DiffLineKind::Spacer) {
+      return;
+    }
+
+    const QString& text = isLeftPane ? row.leftText : row.rightText;
+    const std::vector<DiffTokenSpan>& tokens = isLeftPane ? row.row.leftTokens : row.row.rightTokens;
+    const std::vector<DiffTokenSpan>& changeSpans =
+        isLeftPane ? row.row.leftChangeSpans : row.row.rightChangeSpans;
+    const SnapshotLineLayout layout = lineLayoutForText(text, 12);
+    const QFont textFont = monoFont(snapshot_.monoFontFamily, 12);
+    const QFontMetricsF textMetrics(textFont);
+    painter->setFont(textFont);
+    const qreal baselineY = snapshot_.wrapEnabled
+                                ? rowRect.top() + (snapshot_.rowHeight - textMetrics.height()) / 2.0 + textMetrics.ascent()
+                                : rowRect.top() + (rowRect.height() - textMetrics.height()) / 2.0 + textMetrics.ascent();
+    drawTextRun(painter, QPointF(rowRect.left(), baselineY), rowRect, text, tokens, changeSpans,
+                layout.prefixAdvances, snapshotPaletteColor(snapshot_, "textBase", QColor("#c8ccd4")),
+                isLeftPane ? snapshotPaletteColor(snapshot_, "dangerBorder", QColor("#4c2b2c"))
+                           : snapshotPaletteColor(snapshot_, "successBorder", QColor("#38482f")));
+  }
+
+  void drawSplitRow(QPainter* painter,
+                    const QRectF& rowRect,
+                    const DiffRasterRow& row,
+                    qreal leftViewportX,
+                    qreal rightViewportX) const {
+    const QRectF leftRect(rowRect.left(), rowRect.top(), rowRect.width() / 2.0, rowRect.height());
+    const QRectF rightRect(leftRect.right(), rowRect.top(), rowRect.width() - leftRect.width(), rowRect.height());
+    const qreal sideGutterWidth = 22.0 + digitWidth() * (snapshot_.lineNumberDigits + 1) + 12.0;
+    const qreal textInset = sideGutterWidth + 8.0;
+    const qreal leftTextWidth = std::max<qreal>(0.0, leftRect.width() - sideGutterWidth - 12.0);
+    const qreal rightTextWidth = std::max<qreal>(0.0, rightRect.width() - sideGutterWidth - 12.0);
+    drawSplitPaneFixedRow(painter, leftRect, row, true);
+    drawSplitPaneFixedRow(painter, rightRect, row, false);
+
+    painter->save();
+    painter->setClipRect(QRectF(leftRect.left() + textInset, rowRect.top(), leftTextWidth, rowRect.height()));
+    painter->translate(leftRect.left() + textInset - leftViewportX, 0.0);
+    drawSplitPaneTextRow(painter, QRectF(0.0, rowRect.top(), leftTextWidth, rowRect.height()), row, true);
+    painter->restore();
+
+    painter->save();
+    painter->setClipRect(QRectF(rightRect.left() + textInset, rowRect.top(), rightTextWidth, rowRect.height()));
+    painter->translate(rightRect.left() + textInset - rightViewportX, 0.0);
+    drawSplitPaneTextRow(painter, QRectF(0.0, rowRect.top(), rightTextWidth, rowRect.height()), row, false);
+    painter->restore();
+  }
+
+  void drawTextRun(QPainter* painter,
+                   const QPointF& baseline,
+                   const QRectF& clipRect,
+                   const QString& text,
+                   const std::vector<DiffTokenSpan>& tokens,
+                   const std::vector<DiffTokenSpan>& changeSpans,
+                   const std::vector<qreal>& charX,
+                   const QColor& textColor,
+                   const QColor& tokenBackground) const {
+    painter->save();
+    painter->setClipRect(clipRect);
+
+    const QFont textFont = monoFont(snapshot_.monoFontFamily, 12);
+    const QFontMetricsF metrics(textFont);
+    painter->setFont(textFont);
+
+    if (snapshot_.wrapEnabled) {
+      drawTextRunWrapped(painter, baseline, clipRect, text, tokens, changeSpans, charX, textColor, tokenBackground,
+                         metrics);
+      painter->restore();
+      return;
+    }
+
+    for (const DiffTokenSpan& span : changeSpans) {
+      const int start = std::max(0, span.start);
+      const int end = std::min(static_cast<int>(text.size()), span.start + span.length);
+      if (end <= start) {
+        continue;
+      }
+      const qreal startX = baseline.x() + charX[start];
+      const qreal spanWidth = charX[end] - charX[start];
+      painter->fillRect(QRectF(startX - 1.0, baseline.y() - metrics.ascent() - 1.0, spanWidth + 2.0,
+                               metrics.height() + 2.0),
+                        tokenBackground);
+    }
+
+    bool hasSyntax = false;
+    auto sortedTokens = tokens;
+    if (!sortedTokens.empty()) {
+      std::sort(sortedTokens.begin(), sortedTokens.end(), [](const DiffTokenSpan& lhs, const DiffTokenSpan& rhs) {
+        return lhs.start < rhs.start;
+      });
+      for (const auto& token : sortedTokens) {
+        if (token.syntaxKind != SyntaxTokenKind::None) {
+          hasSyntax = true;
+          break;
+        }
+      }
+    }
+
+    if (hasSyntax) {
+      int cursor = 0;
+      for (const DiffTokenSpan& token : sortedTokens) {
+        const int tokStart = std::max(0, token.start);
+        const int tokEnd = std::min(static_cast<int>(text.size()), token.start + token.length);
+        if (tokEnd <= tokStart) {
+          continue;
+        }
+        if (tokStart > cursor) {
+          painter->setPen(textColor);
+          painter->drawText(QPointF(baseline.x() + charX[cursor], baseline.y()), text.mid(cursor, tokStart - cursor));
+        }
+        const QColor fg = syntaxForeground(token.syntaxKind);
+        painter->setPen(fg.isValid() ? fg : textColor);
+        painter->drawText(QPointF(baseline.x() + charX[tokStart], baseline.y()), text.mid(tokStart, tokEnd - tokStart));
+        cursor = tokEnd;
+      }
+      if (cursor < text.size()) {
+        painter->setPen(textColor);
+        painter->drawText(QPointF(baseline.x() + charX[cursor], baseline.y()), text.mid(cursor));
+      }
+    } else {
+      painter->setPen(textColor);
+      painter->drawText(baseline, text);
+    }
+
+    painter->restore();
+  }
+
+  void drawTextRunWrapped(QPainter* painter,
+                          const QPointF& baseline,
+                          const QRectF& clipRect,
+                          const QString& text,
+                          const std::vector<DiffTokenSpan>& tokens,
+                          const std::vector<DiffTokenSpan>& changeSpans,
+                          const std::vector<qreal>& charX,
+                          const QColor& textColor,
+                          const QColor& tokenBackground,
+                          const QFontMetricsF& metrics) const {
+    const auto wrappedLayout = wrappedLayoutForText(text, 12, clipRect.width());
+    const qreal lineH = metrics.height() + 2.0;
+    const qreal originX = clipRect.left();
+
+    auto wrapLine = [&](int charIdx) -> int {
+      if (wrappedLayout.charWrapLines.empty()) {
+        return 0;
+      }
+      const int clampedIndex = std::clamp(charIdx, 0, static_cast<int>(wrappedLayout.charWrapLines.size()) - 1);
+      return wrappedLayout.charWrapLines[clampedIndex];
+    };
+
+    auto xForChar = [&](int charIdx) -> qreal {
+      const qreal availWidth = clipRect.width();
+      return originX + charX[charIdx] - wrapLine(charIdx) * availWidth;
+    };
+
+    auto yForChar = [&](int charIdx) -> qreal { return baseline.y() + wrapLine(charIdx) * lineH; };
+
+    for (const DiffTokenSpan& span : changeSpans) {
+      const int start = std::max(0, span.start);
+      const int end = std::min(static_cast<int>(text.size()), span.start + span.length);
+      if (end <= start) {
+        continue;
+      }
+
+      for (int line = wrapLine(start); line <= wrapLine(end - 1); ++line) {
+        int lineStart = start;
+        int lineEnd = end;
+        for (int c = start; c < end; ++c) {
+          if (wrapLine(c) == line) {
+            lineStart = c;
+            break;
+          }
+        }
+        for (int c = end - 1; c >= start; --c) {
+          if (wrapLine(c) == line) {
+            lineEnd = c + 1;
+            break;
+          }
+        }
+        const qreal sx = xForChar(lineStart);
+        const qreal sw = xForChar(lineEnd) - sx;
+        const qreal sy = baseline.y() + line * lineH;
+        painter->fillRect(QRectF(sx - 1.0, sy - metrics.ascent() - 1.0, sw + 2.0, metrics.height() + 2.0),
+                          tokenBackground);
+      }
+    }
+
+    auto drawSegment = [&](int start, int end, const QColor& color) {
+      if (end <= start) {
+        return;
+      }
+      painter->setPen(color);
+      int segStart = start;
+      while (segStart < end) {
+        const int segLine = wrapLine(segStart);
+        int segEnd = segStart;
+        while (segEnd < end && wrapLine(segEnd) == segLine) {
+          ++segEnd;
+        }
+        painter->drawText(QPointF(xForChar(segStart), yForChar(segStart)), text.mid(segStart, segEnd - segStart));
+        segStart = segEnd;
+      }
+    };
+
+    bool hasSyntax = false;
+    auto sortedTokens = tokens;
+    if (!sortedTokens.empty()) {
+      std::sort(sortedTokens.begin(), sortedTokens.end(), [](const DiffTokenSpan& lhs, const DiffTokenSpan& rhs) {
+        return lhs.start < rhs.start;
+      });
+      for (const auto& token : sortedTokens) {
+        if (token.syntaxKind != SyntaxTokenKind::None) {
+          hasSyntax = true;
+          break;
+        }
+      }
+    }
+
+    if (hasSyntax) {
+      int cursor = 0;
+      for (const DiffTokenSpan& token : sortedTokens) {
+        const int tokStart = std::max(0, token.start);
+        const int tokEnd = std::min(static_cast<int>(text.size()), token.start + token.length);
+        if (tokEnd <= tokStart) {
+          continue;
+        }
+        if (tokStart > cursor) {
+          drawSegment(cursor, tokStart, textColor);
+        }
+        const QColor fg = syntaxForeground(token.syntaxKind);
+        drawSegment(tokStart, tokEnd, fg.isValid() ? fg : textColor);
+        cursor = tokEnd;
+      }
+      if (cursor < text.size()) {
+        drawSegment(cursor, text.size(), textColor);
+      }
+    } else {
+      drawSegment(0, text.size(), textColor);
+    }
+  }
+
+  const DiffRasterSnapshot& snapshot_;
+};
+
+class RasterTileJob final : public QRunnable {
+ public:
+  using OnReady = std::function<void(QImage)>;
+
+  RasterTileJob(std::shared_ptr<const DiffRasterSnapshot> snapshot, TileSpec spec, OnReady onReady)
+      : snapshot_(std::move(snapshot)), spec_(std::move(spec)), onReady_(std::move(onReady)) {}
+
+  void run() override {
+    QImage image = SnapshotRenderer(*snapshot_).renderTileImage(spec_);
+    onReady_(std::move(image));
+  }
+
+ private:
+  std::shared_ptr<const DiffRasterSnapshot> snapshot_;
+  TileSpec spec_;
+  OnReady onReady_;
+};
+
 }  // namespace
 
 DiffSurfaceItem::DiffSurfaceItem(QQuickItem* parent) : QQuickItem(parent) {
@@ -283,8 +875,16 @@ DiffSurfaceItem::DiffSurfaceItem(QQuickItem* parent) : QQuickItem(parent) {
   setAcceptedMouseButtons(Qt::LeftButton);
   setAcceptHoverEvents(true);
   setFocus(true);
-  connect(this, &QQuickItem::widthChanged, this, [this]() { scheduleMetricsRecalc(); });
-  connect(this, &QQuickItem::heightChanged, this, [this]() { update(); });
+  rasterThreadPool_.setMaxThreadCount(std::max(1, QThread::idealThreadCount() - 1));
+  rasterThreadPool_.setExpiryTimeout(5000);
+  connect(this, &QQuickItem::widthChanged, this, [this]() {
+    invalidateRasterJobs();
+    scheduleMetricsRecalc();
+  });
+  connect(this, &QQuickItem::heightChanged, this, [this]() {
+    invalidateRasterJobs();
+    update();
+  });
 }
 
 QObject* DiffSurfaceItem::rowsModel() const {
@@ -332,6 +932,8 @@ void DiffSurfaceItem::scheduleRowsRebuild() {
   if (rowsRebuildQueued_) {
     return;
   }
+  viewportJumpFallbackArmed_ = false;
+  invalidateRasterJobs(true);
   rowsRebuildQueued_ = true;
   QTimer::singleShot(0, this, [this]() {
     rowsRebuildQueued_ = false;
@@ -373,6 +975,23 @@ void DiffSurfaceItem::scheduleAlternateLayoutPrewarm() {
   });
 }
 
+void DiffSurfaceItem::scheduleCurrentTileRaster() {
+  if (currentTileRasterQueued_ || rowsModel_ == nullptr || rowsModel_->rows().empty() || rowsRebuildQueued_ ||
+      metricsRecalcQueued_ || width() <= 0.0 || height() <= 0.0) {
+    return;
+  }
+
+  currentTileRasterQueued_ = true;
+  QTimer::singleShot(0, this, [this]() {
+    currentTileRasterQueued_ = false;
+    if (rowsModel_ == nullptr || rowsModel_->rows().empty() || rowsRebuildQueued_ || metricsRecalcQueued_ ||
+        width() <= 0.0 || height() <= 0.0) {
+      return;
+    }
+    dispatchTileRaster(layoutMode_, kCurrentViewportRasterPriority);
+  });
+}
+
 DiffLayoutConfig DiffSurfaceItem::buildLayoutConfig(const QString& mode) const {
   DiffLayoutConfig config;
   config.mode = toLayoutMode(mode);
@@ -411,6 +1030,78 @@ qreal DiffSurfaceItem::contentWidthForLayout(const QString& mode) const {
   return unifiedGutterWidth() + maxTextWidth_ + 24.0;
 }
 
+QImage DiffSurfaceItem::renderTileImageInline(const std::vector<DiffDisplayRow>& rows,
+                                              const TileSpec& spec,
+                                              qreal visibleWidth,
+                                              qreal unifiedRowWidth,
+                                              qreal splitTextLogicalWidth,
+                                              qreal leftPaneWidth,
+                                              qreal rightPaneWidth,
+                                              qreal devicePixelRatio) const {
+  Q_ASSERT(spec.rowIndex >= 0);
+  Q_ASSERT(spec.rowIndex < static_cast<int>(rows.size()));
+  const DiffDisplayRow& row = rows.at(spec.rowIndex);
+  const QSize pixelSize(qMax(1, qCeil(spec.targetRect.width() * devicePixelRatio)),
+                        qMax(1, qCeil(row.height * devicePixelRatio)));
+  QImage image(pixelSize, QImage::Format_ARGB32_Premultiplied);
+  image.setDevicePixelRatio(devicePixelRatio);
+  image.fill(paletteColor("canvas", QColor("#282828")).rgb());
+
+  QPainter painter(&image);
+  painter.setRenderHint(QPainter::TextAntialiasing, true);
+  painter.setRenderHint(QPainter::Antialiasing, false);
+  painter.translate(-spec.logicalX, -row.top);
+
+  switch (spec.layer) {
+    case TileLayer::UnifiedRow: {
+      const QRectF rowRect(0.0, row.top, unifiedRowWidth, row.height);
+      if (row.rowType == DiffRowType::FileHeader) {
+        drawFileHeaderRow(&painter, rowRect, row);
+      } else if (row.rowType == DiffRowType::Hunk) {
+        drawHunkRow(&painter, rowRect, row);
+      } else {
+        drawUnifiedRow(&painter, rowRect, row, false);
+      }
+      break;
+    }
+    case TileLayer::SplitFullRow: {
+      const QRectF rowRect(0.0, row.top, visibleWidth, row.height);
+      if (row.rowType == DiffRowType::FileHeader) {
+        drawFileHeaderRow(&painter, rowRect, row);
+      } else if (row.rowType == DiffRowType::Hunk) {
+        drawHunkRow(&painter, rowRect, row);
+      } else {
+        drawSplitRow(&painter, rowRect, row, false, leftViewportX_, rightViewportX_);
+      }
+      break;
+    }
+    case TileLayer::SplitLeftFixedRow:
+    case TileLayer::SplitRightFixedRow: {
+      const bool isLeftPane = spec.layer == TileLayer::SplitLeftFixedRow;
+      const qreal paneWidth = isLeftPane ? leftPaneWidth : rightPaneWidth;
+      drawSplitPaneFixedRow(&painter, QRectF(0.0, row.top, paneWidth, row.height), row, isLeftPane, false);
+      break;
+    }
+    case TileLayer::SplitLeftTextRow:
+    case TileLayer::SplitRightTextRow: {
+      const bool isLeftPane = spec.layer == TileLayer::SplitLeftTextRow;
+      drawSplitPaneTextRow(&painter, QRectF(0.0, row.top, splitTextLogicalWidth, row.height), row, isLeftPane);
+      break;
+    }
+    case TileLayer::StickyRow: {
+      const QRectF rowRect(0.0, row.top, spec.targetRect.width(), row.height);
+      if (row.rowType == DiffRowType::FileHeader) {
+        drawFileHeaderRow(&painter, rowRect, row);
+      } else if (row.rowType == DiffRowType::Hunk) {
+        drawHunkRow(&painter, rowRect, row);
+      }
+      break;
+    }
+  }
+  painter.end();
+  return image;
+}
+
 std::vector<TileSpec> DiffSurfaceItem::buildPrewarmTileSpecs(const QString& mode) {
   if (width() <= 0.0 || height() <= 0.0) {
     return {};
@@ -447,24 +1138,29 @@ std::vector<TileSpec> DiffSurfaceItem::buildPrewarmTileSpecs(const QString& mode
       displayModel_.rowIndexAtY(config, std::max<qreal>(0.0, viewportY_ - hunkHeight_)), 0, static_cast<int>(rows.size()) - 1);
   const int lastRow = std::clamp(
       displayModel_.rowIndexAtY(config, viewportY_ + viewportHeight_ + hunkHeight_), firstRow, static_cast<int>(rows.size()) - 1);
-  const int prewarmStart = std::max(0, firstRow - kTilePrewarmRowMargin);
-  const int prewarmEnd = std::min(static_cast<int>(rows.size()) - 1, lastRow + kTilePrewarmRowMargin);
   QSet<int> addedRows;
-  for (int rowIndex = prewarmStart; rowIndex <= prewarmEnd; ++rowIndex) {
+  auto appendRow = [&](int rowIndex) {
+    if (rowIndex < 0 || rowIndex >= static_cast<int>(rows.size()) || addedRows.contains(rowIndex)) {
+      return;
+    }
     orderedRows.push_back(rowIndex);
     addedRows.insert(rowIndex);
-  }
+  };
 
   const int stickyIndex = displayModel_.stickyHunkRowIndexAtY(config, viewportY_);
-  if (stickyIndex >= 0 && !addedRows.contains(stickyIndex)) {
-    orderedRows.push_back(stickyIndex);
-    addedRows.insert(stickyIndex);
-  }
+  appendRow(stickyIndex);
 
   const int headerIndex = displayModel_.fileHeaderRowIndex(config);
-  if (headerIndex >= 0 && viewportY_ > 0.0 && !addedRows.contains(headerIndex)) {
-    orderedRows.push_back(headerIndex);
-    addedRows.insert(headerIndex);
+  if (headerIndex >= 0 && viewportY_ > 0.0) {
+    appendRow(headerIndex);
+  }
+
+  for (int rowIndex = firstRow; rowIndex <= lastRow; ++rowIndex) {
+    appendRow(rowIndex);
+  }
+  for (int margin = 1; margin <= kTilePrewarmRowMargin; ++margin) {
+    appendRow(firstRow - margin);
+    appendRow(lastRow + margin);
   }
 
   std::vector<TileSpec> specs;
@@ -547,69 +1243,146 @@ void DiffSurfaceItem::scheduleAlternateTilePrewarm() {
     return;
   }
 
-  const QString alternateMode = layoutMode_ == "split" ? QStringLiteral("unified") : QStringLiteral("split");
-  alternateTilePrewarmMode_ = alternateMode;
-  alternateTilePrewarmSpecs_ = buildPrewarmTileSpecs(alternateMode);
-  alternateTilePrewarmIndex_ = 0;
-  alternateTilePrewarmScheduledKeys_.clear();
-  pendingTileJobCount_ = static_cast<int>(alternateTilePrewarmSpecs_.size());
-  updateTileStats();
-  if (alternateTilePrewarmSpecs_.empty()) {
-    return;
-  }
-
   alternateTilePrewarmQueued_ = true;
-  QTimer::singleShot(0, this, [this]() { rasterPrewarmBatch(); });
+  QTimer::singleShot(0, this, [this]() {
+    alternateTilePrewarmQueued_ = false;
+    if (rowsModel_ == nullptr || rowsModel_->rows().empty() || width() <= 0.0 || height() <= 0.0) {
+      return;
+    }
+    const QString alternateMode = layoutMode_ == "split" ? QStringLiteral("unified") : QStringLiteral("split");
+    dispatchTileRaster(alternateMode, kAlternatePrewarmRasterPriority);
+  });
 }
 
-void DiffSurfaceItem::rasterPrewarmBatch() {
-  alternateTilePrewarmQueued_ = false;
-  if (alternateTilePrewarmSpecs_.empty() || alternateTilePrewarmIndex_ >= alternateTilePrewarmSpecs_.size() ||
-      width() <= 0.0 || height() <= 0.0) {
+void DiffSurfaceItem::invalidateRasterJobs(bool clearReadyImages) {
+  rasterThreadPool_.clear();
+  {
+    const std::lock_guard<std::mutex> lock(readyTileImagesMutex_);
+    if (clearReadyImages) {
+      readyTileImages_.clear();
+    }
+  }
+  {
+    const std::lock_guard<std::mutex> lock(rasterJobStateMutex_);
+    pendingRasterKeys_.clear();
     pendingTileJobCount_ = 0;
-    updateTileStats();
+    ++rasterGeneration_;
+  }
+  updateTileStats();
+}
+
+std::shared_ptr<const DiffRasterSnapshot> DiffSurfaceItem::buildRasterSnapshot(const QString& mode) {
+  const DiffLayoutConfig config = buildLayoutConfig(mode);
+  const auto& rows = displayModel_.cachedRows(config);
+  if (rows.empty()) {
+    return {};
+  }
+
+  auto snapshot = std::make_shared<DiffRasterSnapshot>();
+  snapshot->generation = rasterGeneration_;
+  snapshot->palette = palette_;
+  snapshot->monoFontFamily = monoFontFamily_;
+  snapshot->layoutMode = mode;
+  snapshot->wrapEnabled = wrapEnabled_;
+  snapshot->wrapColumn = wrapColumn_;
+  snapshot->rowHeight = rowHeight_;
+  snapshot->fileHeaderHeight = fileHeaderHeight_;
+  snapshot->hunkHeight = hunkHeight_;
+  snapshot->lineNumberDigits = lineNumberDigits_;
+  snapshot->visibleWidth = width();
+  snapshot->leftPaneWidth = width() / 2.0;
+  snapshot->rightPaneWidth = width() - snapshot->leftPaneWidth;
+  const qreal sideGutterWidth = 22.0 + digitWidth() * (lineNumberDigits_ + 1) + 12.0;
+  const qreal splitTextInset = sideGutterWidth + 8.0;
+  const qreal leftTextViewportWidth = std::max<qreal>(0.0, snapshot->leftPaneWidth - splitTextInset - 12.0);
+  const qreal rightTextViewportWidth = std::max<qreal>(0.0, snapshot->rightPaneWidth - splitTextInset - 12.0);
+  snapshot->unifiedRowWidth = std::max(width(), contentWidthForLayout(mode));
+  snapshot->splitTextLogicalWidth =
+      std::max({maxTextWidth_ + 12.0, leftTextViewportWidth, rightTextViewportWidth});
+  snapshot->leftViewportX = leftViewportX_;
+  snapshot->rightViewportX = rightViewportX_;
+  snapshot->devicePixelRatio = window() != nullptr ? window()->effectiveDevicePixelRatio() : 1.0;
+  snapshot->rows.reserve(rows.size());
+  for (const DiffDisplayRow& row : rows) {
+    DiffRasterRow rasterRow;
+    rasterRow.row = row;
+    if (!row.textRange.isEmpty()) {
+      rasterRow.text = textForRange(row.textRange);
+    }
+    if (!row.leftTextRange.isEmpty()) {
+      rasterRow.leftText = textForRange(row.leftTextRange);
+    }
+    if (!row.rightTextRange.isEmpty()) {
+      rasterRow.rightText = textForRange(row.rightTextRange);
+    }
+    snapshot->rows.push_back(std::move(rasterRow));
+  }
+  return snapshot;
+}
+
+void DiffSurfaceItem::queueRasterJobs(const std::shared_ptr<const DiffRasterSnapshot>& snapshot,
+                                      const std::vector<TileSpec>& specs,
+                                      int priority) {
+  if (!snapshot || specs.empty()) {
     return;
   }
 
-  const DiffLayoutConfig config = buildLayoutConfig(alternateTilePrewarmMode_);
-  const auto& rows = displayModel_.cachedRows(config);
-  const qreal visibleWidth = width();
-  const qreal visibleHeight = height();
-  const qreal contentWidth = contentWidthForLayout(alternateTilePrewarmMode_);
-  const qreal unifiedRowWidth = std::max(visibleWidth, contentWidth);
-  const qreal leftPaneWidth = visibleWidth / 2.0;
-  const qreal rightPaneWidth = visibleWidth - leftPaneWidth;
-  const qreal sideGutterWidth = 22.0 + digitWidth() * (lineNumberDigits_ + 1) + 12.0;
-  const qreal splitTextInset = sideGutterWidth + 8.0;
-  const qreal leftTextViewportWidth = std::max<qreal>(0.0, leftPaneWidth - splitTextInset - 12.0);
-  const qreal rightTextViewportWidth = std::max<qreal>(0.0, rightPaneWidth - splitTextInset - 12.0);
-  const qreal splitTextLogicalWidth = std::max({maxTextWidth_ + 12.0, leftTextViewportWidth, rightTextViewportWidth});
-  const qreal devicePixelRatio = window() != nullptr ? window()->effectiveDevicePixelRatio() : 1.0;
-
-  int rastered = 0;
-  while (alternateTilePrewarmIndex_ < alternateTilePrewarmSpecs_.size() && rastered < kTilePrewarmBatchSize) {
-    const TileSpec& spec = alternateTilePrewarmSpecs_.at(alternateTilePrewarmIndex_++);
-    if (alternateTilePrewarmScheduledKeys_.contains(spec.key)) {
-      continue;
-    }
-    alternateTilePrewarmScheduledKeys_.insert(spec.key);
-    QImage image = renderTileImage(rows, spec, visibleWidth, unifiedRowWidth, splitTextLogicalWidth, leftPaneWidth,
-                                   rightPaneWidth, devicePixelRatio);
+  for (const TileSpec& spec : specs) {
     {
-      const std::lock_guard<std::mutex> lock(readyTileImagesMutex_);
-      readyTileImages_.insert(spec.key, image);
+      const std::lock_guard<std::mutex> lock(rasterJobStateMutex_);
+      if (pendingRasterKeys_.contains(spec.key)) {
+        continue;
+      }
+      pendingRasterKeys_.insert(spec.key);
+      pendingTileJobCount_ = pendingRasterKeys_.size();
     }
-    ++rastered;
+    auto self = QPointer<DiffSurfaceItem>(this);
+    auto onReady = [self, generation = snapshot->generation, key = spec.key](QImage image) mutable {
+      if (!self) {
+        return;
+      }
+      QMetaObject::invokeMethod(
+          self,
+          [self, generation, key, image = std::move(image)]() mutable {
+            if (self) {
+              self->acceptRasteredTile(generation, key, std::move(image));
+            }
+          },
+          Qt::QueuedConnection);
+    };
+    auto* job = new RasterTileJob(snapshot, spec, std::move(onReady));
+    job->setAutoDelete(true);
+    rasterThreadPool_.start(job, priority);
   }
-
-  pendingTileJobCount_ = static_cast<int>(alternateTilePrewarmSpecs_.size() - alternateTilePrewarmIndex_);
   updateTileStats();
-  if (alternateTilePrewarmIndex_ < alternateTilePrewarmSpecs_.size()) {
-    alternateTilePrewarmQueued_ = true;
-    QTimer::singleShot(0, this, [this]() { rasterPrewarmBatch(); });
-  } else {
-    update();
+}
+
+void DiffSurfaceItem::dispatchTileRaster(const QString& mode, int priority) {
+  const auto snapshot = buildRasterSnapshot(mode);
+  if (!snapshot) {
+    return;
   }
+  queueRasterJobs(snapshot, buildPrewarmTileSpecs(mode), priority);
+}
+
+void DiffSurfaceItem::acceptRasteredTile(quint64 generation, quint64 key, QImage image) {
+  {
+    const std::lock_guard<std::mutex> lock(rasterJobStateMutex_);
+    if (generation != rasterGeneration_) {
+      pendingRasterKeys_.remove(key);
+      pendingTileJobCount_ = pendingRasterKeys_.size();
+      updateTileStats();
+      return;
+    }
+    pendingRasterKeys_.remove(key);
+    pendingTileJobCount_ = pendingRasterKeys_.size();
+  }
+  {
+    const std::lock_guard<std::mutex> lock(readyTileImagesMutex_);
+    readyTileImages_.insert(key, std::move(image));
+  }
+  updateTileStats();
+  update();
 }
 
 void DiffSurfaceItem::setRowsModel(QObject* model) {
@@ -629,6 +1402,7 @@ void DiffSurfaceItem::setRowsModel(QObject* model) {
     connect(rowsModel_, &QAbstractItemModel::dataChanged, this, [this]() { scheduleRowsRebuild(); });
   }
 
+  invalidateRasterJobs(true);
   scheduleRowsRebuild();
   emit rowsModelChanged();
 }
@@ -644,6 +1418,8 @@ void DiffSurfaceItem::setLayoutMode(const QString& mode) {
   layoutMode_ = mode;
   leftViewportX_ = 0;
   rightViewportX_ = 0;
+  viewportJumpFallbackArmed_ = false;
+  invalidateRasterJobs();
   scheduleMetricsRecalc();
   emit layoutModeChanged();
 }
@@ -657,6 +1433,7 @@ void DiffSurfaceItem::setCompareGeneration(int value) {
     return;
   }
   compareGeneration_ = value;
+  invalidateRasterJobs(true);
   invalidateContentTiles();
   emit compareGenerationChanged();
 }
@@ -676,6 +1453,7 @@ void DiffSurfaceItem::setFilePath(const QString& path) {
     return;
   }
   if (updateFileHeader()) {
+    invalidateRasterJobs();
     scheduleMetricsRecalc();
   } else {
     update();
@@ -699,6 +1477,7 @@ void DiffSurfaceItem::setFileStatus(const QString& status) {
     return;
   }
   if (updateFileHeader()) {
+    invalidateRasterJobs();
     scheduleMetricsRecalc();
   } else {
     update();
@@ -722,6 +1501,7 @@ void DiffSurfaceItem::setAdditions(int value) {
     return;
   }
   if (updateFileHeader()) {
+    invalidateRasterJobs();
     scheduleMetricsRecalc();
   } else {
     update();
@@ -745,6 +1525,7 @@ void DiffSurfaceItem::setDeletions(int value) {
     return;
   }
   if (updateFileHeader()) {
+    invalidateRasterJobs();
     scheduleMetricsRecalc();
   } else {
     update();
@@ -762,6 +1543,7 @@ void DiffSurfaceItem::setPalette(const QVariantMap& palette) {
     return;
   }
   palette_ = palette;
+  invalidateRasterJobs();
   invalidatePaletteTiles();
   emit paletteChanged();
 }
@@ -775,6 +1557,7 @@ void DiffSurfaceItem::setMonoFontFamily(const QString& family) {
     return;
   }
   monoFontFamily_ = family;
+  invalidateRasterJobs(true);
   scheduleRowsRebuild();
   emit monoFontFamilyChanged();
 }
@@ -790,6 +1573,8 @@ void DiffSurfaceItem::setWrapEnabled(bool value) {
     leftViewportX_ = 0;
     rightViewportX_ = 0;
   }
+  viewportJumpFallbackArmed_ = false;
+  invalidateRasterJobs();
   scheduleMetricsRecalc();
   emit wrapEnabledChanged();
 }
@@ -801,7 +1586,10 @@ int DiffSurfaceItem::wrapColumn() const {
 void DiffSurfaceItem::setWrapColumn(int value) {
   if (wrapColumn_ == value) return;
   wrapColumn_ = value;
-  if (wrapEnabled_) scheduleMetricsRecalc();
+  if (wrapEnabled_) {
+    invalidateRasterJobs();
+    scheduleMetricsRecalc();
+  }
   emit wrapColumnChanged();
 }
 
@@ -821,7 +1609,12 @@ void DiffSurfaceItem::setViewportX(qreal value) {
   if (qFuzzyCompare(viewportX_, value)) {
     return;
   }
+  const qreal delta = qAbs(viewportX_ - value);
   viewportX_ = value;
+  if (delta > std::max<qreal>(64.0, width() * 0.25)) {
+    invalidateRasterJobs(false);
+  }
+  scheduleCurrentTileRaster();
   update();
   emit viewportXChanged();
 }
@@ -836,7 +1629,12 @@ void DiffSurfaceItem::setLeftViewportX(qreal value) {
   }
   value = std::max(0.0, value);
   if (qFuzzyCompare(leftViewportX_, value)) return;
+  const qreal delta = qAbs(leftViewportX_ - value);
   leftViewportX_ = value;
+  if (delta > std::max<qreal>(64.0, width() * 0.125)) {
+    invalidateRasterJobs(false);
+  }
+  scheduleCurrentTileRaster();
   update();
   emit leftViewportXChanged();
 }
@@ -851,7 +1649,12 @@ void DiffSurfaceItem::setRightViewportX(qreal value) {
   }
   value = std::max(0.0, value);
   if (qFuzzyCompare(rightViewportX_, value)) return;
+  const qreal delta = qAbs(rightViewportX_ - value);
   rightViewportX_ = value;
+  if (delta > std::max<qreal>(64.0, width() * 0.125)) {
+    invalidateRasterJobs(false);
+  }
+  scheduleCurrentTileRaster();
   update();
   emit rightViewportXChanged();
 }
@@ -864,6 +1667,8 @@ void DiffSurfaceItem::setViewportY(qreal value) {
   if (qFuzzyCompare(viewportY_, value)) {
     return;
   }
+  const qreal delta = qAbs(viewportY_ - value);
+  const bool largeJump = delta > std::max<qreal>(rowHeight_ * 8.0, viewportHeight_ * 0.5);
   viewportY_ = value;
   const int nextFirst = displayModel_.rowIndexAtY(std::max<qreal>(0.0, viewportY_ - hunkHeight_));
   const int nextLast = displayModel_.rowIndexAtY(viewportY_ + viewportHeight_ + hunkHeight_);
@@ -871,6 +1676,11 @@ void DiffSurfaceItem::setViewportY(qreal value) {
   firstVisibleRow_ = nextFirst;
   lastVisibleRow_ = nextLast;
   stickyVisibleRow_ = nextSticky;
+  if (largeJump) {
+    viewportJumpFallbackArmed_ = true;
+    invalidateRasterJobs(false);
+  }
+  scheduleCurrentTileRaster();
   update();
   emit viewportYChanged();
 }
@@ -887,6 +1697,8 @@ void DiffSurfaceItem::setViewportHeight(qreal value) {
   firstVisibleRow_ = displayModel_.rowIndexAtY(std::max<qreal>(0.0, viewportY_ - hunkHeight_));
   lastVisibleRow_ = displayModel_.rowIndexAtY(viewportY_ + viewportHeight_ + hunkHeight_);
   stickyVisibleRow_ = displayModel_.stickyHunkRowIndexAtY(viewportY_);
+  invalidateRasterJobs(false);
+  scheduleCurrentTileRaster();
   update();
   emit viewportHeightChanged();
 }
@@ -988,6 +1800,7 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
   emit paintCountChanged();
   double rasterTimeMs = 0;
   double textureUploadTimeMs = 0;
+  int syncRasterFallbackTiles = 0;
 
   const QRectF viewportClip = clipRect().intersected(QRectF(0.0, 0.0, width(), height()));
   const qreal visibleTopInItem = std::clamp(viewportClip.top(), 0.0, height());
@@ -1015,6 +1828,14 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
       readyTileImages_.clear();
     }
   }
+  const int firstRow = std::max(0, displayModel_.rowIndexAtY(std::max<qreal>(0.0, viewportY_ + visibleTopInItem - hunkHeight_)));
+  const int lastRow = std::max(firstRow, displayModel_.rowIndexAtY(viewportY_ + visibleBottomInItem + hunkHeight_));
+  const int fileHeaderIndex = displayModel_.fileHeaderRowIndex();
+  const bool hasStickyHeader = fileHeaderIndex >= 0 && viewportY_ > 0;
+  const int stickyIndex = displayModel_.stickyHunkRowIndexAtY(viewportY_);
+  double viewportRasterTimeMs = 0;
+  int syncViewportFallbackTiles = 0;
+  bool missingViewportCriticalTile = false;
 
   struct RenderCommand {
     enum class Kind {
@@ -1048,10 +1869,13 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
   };
 
   QSet<quint64> pinnedKeys;
+  QSet<quint64> framePostedRasterKeys;
 
   auto residentTextureForSpec = [&](const TileSpec& spec) -> QSGTexture* {
     ++tileUseTick_;
     pinnedKeys.insert(spec.key);
+    const bool viewportCriticalSpec =
+        spec.layer == TileLayer::StickyRow || (spec.rowIndex >= firstRow && spec.rowIndex <= lastRow);
 
     if (auto it = residentTextureCache_.find(spec.key); it != residentTextureCache_.end() && it.value() != nullptr) {
       residentTextureLastUsed_[spec.key] = tileUseTick_;
@@ -1064,12 +1888,64 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
       image = imageIt.value();
       ++tileCacheHits_;
     } else {
-      const PerfClock::time_point rasterStart = PerfClock::now();
-      image = renderTileImage(rows, spec, visibleWidth, unifiedRowWidth, splitTextLogicalWidth, leftPaneWidth,
-                              rightPaneWidth, devicePixelRatio);
-      rasterTimeMs += elapsedMs(rasterStart);
-      tileImageCache_.insert(spec.key, image);
-      ++tileCacheMisses_;
+      bool alreadyPending = false;
+      {
+        const std::lock_guard<std::mutex> lock(rasterJobStateMutex_);
+        alreadyPending = pendingRasterKeys_.contains(spec.key);
+      }
+      const bool allowViewportFallback =
+          viewportJumpFallbackArmed_ && viewportCriticalSpec &&
+          syncViewportFallbackTiles < kViewportSyncRasterFallbackTileBudget &&
+          viewportRasterTimeMs < kViewportSyncRasterFallbackMsBudget;
+      const bool allowGeneralFallback = syncRasterFallbackTiles < kSyncRasterFallbackTileBudget &&
+                                        rasterTimeMs < kSyncRasterFallbackMsBudget;
+      if (allowViewportFallback || allowGeneralFallback) {
+        const PerfClock::time_point rasterStart = PerfClock::now();
+        image = renderTileImageInline(rows, spec, visibleWidth, unifiedRowWidth, splitTextLogicalWidth, leftPaneWidth,
+                                      rightPaneWidth, devicePixelRatio);
+        const double syncRasterMs = elapsedMs(rasterStart);
+        rasterTimeMs += syncRasterMs;
+        if (allowViewportFallback) {
+          viewportRasterTimeMs += syncRasterMs;
+          ++syncViewportFallbackTiles;
+        } else {
+          ++syncRasterFallbackTiles;
+        }
+        tileImageCache_.insert(spec.key, image);
+        ++tileCacheMisses_;
+      } else {
+        if (viewportJumpFallbackArmed_ && viewportCriticalSpec) {
+          missingViewportCriticalTile = true;
+        }
+        if (!alreadyPending && !framePostedRasterKeys.contains(spec.key)) {
+          framePostedRasterKeys.insert(spec.key);
+          ++tileCacheMisses_;
+          const TileSpec requestedSpec = spec;
+          const QString requestedMode = layoutMode_;
+          quint64 requestedGeneration = 0;
+          {
+            const std::lock_guard<std::mutex> lock(rasterJobStateMutex_);
+            requestedGeneration = rasterGeneration_;
+          }
+          QMetaObject::invokeMethod(
+              this,
+              [this, requestedSpec, requestedMode, requestedGeneration]() {
+                {
+                  const std::lock_guard<std::mutex> lock(rasterJobStateMutex_);
+                  if (requestedGeneration != rasterGeneration_) {
+                    return;
+                  }
+                }
+                const auto snapshot = buildRasterSnapshot(requestedMode);
+                if (!snapshot) {
+                  return;
+                }
+                queueRasterJobs(snapshot, {requestedSpec}, kVisibleTileRequestPriority);
+              },
+              Qt::QueuedConnection);
+        }
+        return nullptr;
+      }
     }
     tileImageLastUsed_[spec.key] = tileUseTick_;
 
@@ -1150,17 +2026,6 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
       queueTextureNode(commands, spec);
     }
   };
-
-  const int firstRow = firstVisibleRow_ >= 0
-                           ? std::max(0, displayModel_.rowIndexAtY(std::max<qreal>(0.0, viewportY_ + visibleTopInItem - hunkHeight_)))
-                           : std::max(0, displayModel_.rowIndexAtY(std::max<qreal>(0.0, viewportY_ + visibleTopInItem - hunkHeight_)));
-  const int lastRow = lastVisibleRow_ >= 0
-                          ? std::max(firstRow, displayModel_.rowIndexAtY(viewportY_ + visibleBottomInItem + hunkHeight_))
-                          : std::max(firstRow, displayModel_.rowIndexAtY(viewportY_ + visibleBottomInItem + hunkHeight_));
-
-  const int fileHeaderIndex = displayModel_.fileHeaderRowIndex();
-  const bool hasStickyHeader = fileHeaderIndex >= 0 && viewportY_ > 0;
-  const int stickyIndex = displayModel_.stickyHunkRowIndexAtY(viewportY_);
 
   qreal stickyOffset = hasStickyHeader ? fileHeaderHeight_ : 0.0;
   qreal stickyViewportY = -1.0;
@@ -1388,7 +2253,12 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
           node->setOwnsTexture(false);
         }
         node->key = command.key;
-        node->setTexture(residentTextureForSpec(command.spec));
+        QSGTexture* texture = residentTextureForSpec(command.spec);
+        if (texture == nullptr) {
+          delete node;
+          continue;
+        }
+        node->setTexture(texture);
         node->setRect(command.spec.targetRect);
         parent->appendChildNode(node);
         continue;
@@ -1409,11 +2279,11 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
     }
   };
 
+  reconcileCommands(stickyGroup, stickyCommands);
   reconcileCommands(baseGroup, baseCommands);
   reconcileCommands(leftTextClip, leftTextCommands);
   reconcileCommands(rightTextClip, rightTextCommands);
   reconcileCommands(overlayGroup, overlayCommands);
-  reconcileCommands(stickyGroup, stickyCommands);
 
   auto evictCache = [&](int limit, auto& cache, auto& lastUsed, auto deleter) {
     while (cache.size() > limit) {
@@ -1447,7 +2317,11 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
     residentTextureLastUsed_.remove(key);
   });
 
-  if (textureUploadCount_ > uploadsBefore && !followupUpdateQueued_) {
+  if (viewportJumpFallbackArmed_ && !missingViewportCriticalTile) {
+    viewportJumpFallbackArmed_ = false;
+  }
+
+  if ((missingViewportCriticalTile || textureUploadCount_ > uploadsBefore) && !followupUpdateQueued_) {
     followupUpdateQueued_ = true;
     QTimer::singleShot(16, this, [this]() {
       followupUpdateQueued_ = false;
@@ -1468,6 +2342,7 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
 }
 
 void DiffSurfaceItem::releaseResources() {
+  rasterThreadPool_.clear();
   QVector<QSGTexture*> textures;
   textures.reserve(residentTextureCache_.size());
   for (auto it = residentTextureCache_.begin(); it != residentTextureCache_.end(); ++it) {
@@ -1567,6 +2442,7 @@ void DiffSurfaceItem::recalculateMetrics() {
 
   rebuildDisplayRows();
   emit contentHeightChanged();
+  scheduleCurrentTileRaster();
   update();
   updateTileStats();
   if (setPerfValue(lastMetricsRecalcTimeMs_, elapsedMs(recalcStart))) {
@@ -1757,79 +2633,6 @@ quint64 DiffSurfaceItem::tileGeometryKey(qreal visibleWidth,
                                         qreal unifiedRowWidth,
                                         qreal splitTextLogicalWidth) const {
   return tileGeometryKey(layoutMode_, contentWidth_, visibleWidth, visibleHeight, unifiedRowWidth, splitTextLogicalWidth);
-}
-
-QImage DiffSurfaceItem::renderTileImage(const std::vector<DiffDisplayRow>& rows,
-                                        const TileSpec& spec,
-                                        qreal visibleWidth,
-                                        qreal unifiedRowWidth,
-                                        qreal splitTextLogicalWidth,
-                                        qreal leftPaneWidth,
-                                        qreal rightPaneWidth,
-                                        qreal devicePixelRatio) const {
-  const std::lock_guard<std::recursive_mutex> lock(rasterStateMutex_);
-  Q_ASSERT(spec.rowIndex >= 0);
-  Q_ASSERT(spec.rowIndex < static_cast<int>(rows.size()));
-  const DiffDisplayRow& row = rows.at(spec.rowIndex);
-  const QSize pixelSize(qMax(1, qCeil(spec.targetRect.width() * devicePixelRatio)),
-                        qMax(1, qCeil(row.height * devicePixelRatio)));
-  QImage image(pixelSize, QImage::Format_ARGB32_Premultiplied);
-  image.setDevicePixelRatio(devicePixelRatio);
-  image.fill(paletteColor("canvas", QColor("#282828")).rgb());
-
-  QPainter painter(&image);
-  painter.setRenderHint(QPainter::TextAntialiasing, true);
-  painter.setRenderHint(QPainter::Antialiasing, false);
-  painter.translate(-spec.logicalX, -row.top);
-
-  switch (spec.layer) {
-    case TileLayer::UnifiedRow: {
-      const QRectF rowRect(0.0, row.top, unifiedRowWidth, row.height);
-      if (row.rowType == DiffRowType::FileHeader) {
-        drawFileHeaderRow(&painter, rowRect, row);
-      } else if (row.rowType == DiffRowType::Hunk) {
-        drawHunkRow(&painter, rowRect, row);
-      } else {
-        drawUnifiedRow(&painter, rowRect, row, false);
-      }
-      break;
-    }
-    case TileLayer::SplitFullRow: {
-      const QRectF rowRect(0.0, row.top, visibleWidth, row.height);
-      if (row.rowType == DiffRowType::FileHeader) {
-        drawFileHeaderRow(&painter, rowRect, row);
-      } else if (row.rowType == DiffRowType::Hunk) {
-        drawHunkRow(&painter, rowRect, row);
-      } else {
-        drawSplitRow(&painter, rowRect, row, false, leftViewportX_, rightViewportX_);
-      }
-      break;
-    }
-    case TileLayer::SplitLeftFixedRow:
-    case TileLayer::SplitRightFixedRow: {
-      const bool isLeftPane = spec.layer == TileLayer::SplitLeftFixedRow;
-      const qreal paneWidth = isLeftPane ? leftPaneWidth : rightPaneWidth;
-      drawSplitPaneFixedRow(&painter, QRectF(0.0, row.top, paneWidth, row.height), row, isLeftPane, false);
-      break;
-    }
-    case TileLayer::SplitLeftTextRow:
-    case TileLayer::SplitRightTextRow: {
-      const bool isLeftPane = spec.layer == TileLayer::SplitLeftTextRow;
-      drawSplitPaneTextRow(&painter, QRectF(0.0, row.top, splitTextLogicalWidth, row.height), row, isLeftPane);
-      break;
-    }
-    case TileLayer::StickyRow: {
-      const QRectF rowRect(0.0, row.top, spec.targetRect.width(), row.height);
-      if (row.rowType == DiffRowType::FileHeader) {
-        drawFileHeaderRow(&painter, rowRect, row);
-      } else if (row.rowType == DiffRowType::Hunk) {
-        drawHunkRow(&painter, rowRect, row);
-      }
-      break;
-    }
-  }
-  painter.end();
-  return image;
 }
 
 void DiffSurfaceItem::drawFileHeaderRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row) const {

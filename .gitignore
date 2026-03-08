@@ -12,6 +12,7 @@
 # Build output
 build/
 cmake-build-*/
+.perf-runs/
 
 # Editor/system
 .DS_Store

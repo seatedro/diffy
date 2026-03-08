@@ -45,10 +45,23 @@ inline size_t qHash(const WrappedLineLayoutCacheKey& key, size_t seed = 0) {
   return qHashMulti(seed, key.base, key.wrapWidthMilli);
 }
 
+struct PreparedRowsCacheKey {
+  int compareGeneration = 0;
+  QString filePath;
+  QString family;
+
+  bool operator==(const PreparedRowsCacheKey& other) const = default;
+};
+
+inline size_t qHash(const PreparedRowsCacheKey& key, size_t seed = 0) {
+  return qHashMulti(seed, key.compareGeneration, key.filePath, key.family);
+}
+
 class DiffSurfaceItem : public QQuickItem {
   Q_OBJECT
   Q_PROPERTY(QObject* rowsModel READ rowsModel WRITE setRowsModel NOTIFY rowsModelChanged)
   Q_PROPERTY(QString layoutMode READ layoutMode WRITE setLayoutMode NOTIFY layoutModeChanged)
+  Q_PROPERTY(int compareGeneration READ compareGeneration WRITE setCompareGeneration NOTIFY compareGenerationChanged)
   Q_PROPERTY(QString filePath READ filePath WRITE setFilePath NOTIFY filePathChanged)
   Q_PROPERTY(QString fileStatus READ fileStatus WRITE setFileStatus NOTIFY fileStatusChanged)
   Q_PROPERTY(int additions READ additions WRITE setAdditions NOTIFY additionsChanged)
@@ -86,6 +99,8 @@ class DiffSurfaceItem : public QQuickItem {
 
   QString layoutMode() const;
   void setLayoutMode(const QString& mode);
+  int compareGeneration() const;
+  void setCompareGeneration(int value);
 
   QString filePath() const;
   void setFilePath(const QString& path);
@@ -145,6 +160,7 @@ class DiffSurfaceItem : public QQuickItem {
 signals:
   void rowsModelChanged();
   void layoutModeChanged();
+  void compareGenerationChanged();
   void filePathChanged();
   void fileStatusChanged();
   void additionsChanged();
@@ -190,6 +206,12 @@ signals:
     std::vector<int> charWrapLines;
   };
 
+  struct PreparedRows {
+    TextRope textRope;
+    std::vector<DiffSourceRow> sourceRows;
+    qreal maxTextWidth = 0.0;
+  };
+
   bool rowSelected(int rowIndex) const;
   QColor paletteColor(const QString& key, const QColor& fallback) const;
   qreal digitWidth() const;
@@ -200,6 +222,12 @@ signals:
   const CachedLineLayout& lineLayoutForRange(const TextRange& range, int pixelSize) const;
   const CachedWrappedLayout& wrappedLayoutForText(const QString& text, int pixelSize, qreal wrapWidth) const;
   int currentRowIndex() const;
+  PreparedRowsCacheKey preparedRowsCacheKey() const;
+  quint64 tileContentKey() const;
+  quint64 tileGeometryKey(qreal visibleWidth,
+                          qreal visibleHeight,
+                          qreal unifiedRowWidth,
+                          qreal splitTextLogicalWidth) const;
   void drawFileHeaderRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row) const;
   void drawHunkRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row) const;
   void drawUnifiedRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row, bool selected) const;
@@ -253,6 +281,7 @@ signals:
   QObject* rowsModelObject_ = nullptr;
   DiffRowListModel* rowsModel_ = nullptr;
   QString layoutMode_ = "unified";
+  int compareGeneration_ = 0;
   QString filePath_;
   QString fileStatus_ = "M";
   int additions_ = 0;
@@ -294,12 +323,11 @@ signals:
   mutable QHash<WrappedLineLayoutCacheKey, CachedWrappedLayout> wrappedLayoutCache_;
   mutable QHash<WrappedLineLayoutCacheKey, quint64> wrappedLayoutLastUsed_;
   mutable quint64 wrappedLayoutUseTick_ = 0;
+  QHash<PreparedRowsCacheKey, PreparedRows> preparedRowsCache_;
   mutable QHash<quint64, QImage> tileImageCache_;
   mutable QHash<quint64, quint64> tileImageLastUsed_;
   mutable QHash<quint64, QSGTexture*> residentTextureCache_;
   mutable QHash<quint64, quint64> residentTextureLastUsed_;
-  quint64 tileContentGeneration_ = 1;
-  quint64 tileGeometryGeneration_ = 1;
   quint64 tilePaletteGeneration_ = 1;
   quint64 tileUseTick_ = 0;
   int tileCacheHits_ = 0;

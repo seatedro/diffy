@@ -195,6 +195,10 @@ void DiffController::setLayoutMode(const QString& value) {
   emit layoutModeChanged();
 }
 
+int DiffController::compareGeneration() const {
+  return compareGeneration_;
+}
+
 QVariantList DiffController::files() const {
   return files_;
 }
@@ -321,6 +325,7 @@ bool DiffController::openRepository(const QString& path) {
   emit refsChanged();
 
   if (repoChanged) {
+    ++compareGeneration_;
     fileDiffs_.clear();
     resetFileRowCaches();
     files_.clear();
@@ -328,6 +333,7 @@ bool DiffController::openRepository(const QString& path) {
     selectedFileIndex_ = -1;
     rebuildSelectedFileRows();
     Q_ASSERT(selectedFileRowsModel_.count() == 0);
+    emit compareGenerationChanged();
     emit selectedFileIndexChanged();
     emit selectedFileChanged();
   }
@@ -467,6 +473,7 @@ void DiffController::compare() {
     return;
   }
 
+  ++compareGeneration_;
   fileDiffs_ = document.files;
   resetFileRowCaches();
   files_ = filesToVariantList(fileDiffs_);
@@ -483,6 +490,7 @@ void DiffController::compare() {
   } else {
     Q_ASSERT(selectedFileRowsModel_.count() == 0);
   }
+  emit compareGenerationChanged();
   emit selectedFileIndexChanged();
   emit selectedFileChanged();
   QTimer::singleShot(0, this, [this]() { prefetchFileRows(); });

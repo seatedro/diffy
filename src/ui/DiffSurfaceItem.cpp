@@ -318,13 +318,11 @@ QObject* DiffSurfaceItem::rowsModel() const {
 }
 
 void DiffSurfaceItem::invalidateContentTiles() {
-  ++tileContentGeneration_;
   update();
   updateTileStats();
 }
 
 void DiffSurfaceItem::invalidateGeometryTiles() {
-  ++tileGeometryGeneration_;
   update();
   updateTileStats();
 }
@@ -360,7 +358,6 @@ void DiffSurfaceItem::scheduleRowsRebuild() {
   if (rowsRebuildQueued_) {
     return;
   }
-  ++tileContentGeneration_;
   rowsRebuildQueued_ = true;
   QTimer::singleShot(0, this, [this]() {
     rowsRebuildQueued_ = false;
@@ -373,7 +370,6 @@ void DiffSurfaceItem::scheduleMetricsRecalc() {
   if (rowsRebuildQueued_ || metricsRecalcQueued_) {
     return;
   }
-  ++tileGeometryGeneration_;
   metricsRecalcQueued_ = true;
   QTimer::singleShot(0, this, [this]() {
     metricsRecalcQueued_ = false;
@@ -419,6 +415,20 @@ void DiffSurfaceItem::setLayoutMode(const QString& mode) {
   emit layoutModeChanged();
 }
 
+int DiffSurfaceItem::compareGeneration() const {
+  return compareGeneration_;
+}
+
+void DiffSurfaceItem::setCompareGeneration(int value) {
+  if (compareGeneration_ == value) {
+    return;
+  }
+  compareGeneration_ = value;
+  preparedRowsCache_.clear();
+  invalidateContentTiles();
+  emit compareGenerationChanged();
+}
+
 QString DiffSurfaceItem::filePath() const {
   return filePath_;
 }
@@ -428,7 +438,6 @@ void DiffSurfaceItem::setFilePath(const QString& path) {
     return;
   }
   filePath_ = path;
-  ++tileContentGeneration_;
   if (rowsRebuildQueued_) {
     updateFileHeader();
     emit filePathChanged();
@@ -452,7 +461,6 @@ void DiffSurfaceItem::setFileStatus(const QString& status) {
     return;
   }
   fileStatus_ = status;
-  ++tileContentGeneration_;
   if (rowsRebuildQueued_) {
     updateFileHeader();
     emit fileStatusChanged();
@@ -476,7 +484,6 @@ void DiffSurfaceItem::setAdditions(int value) {
     return;
   }
   additions_ = value;
-  ++tileContentGeneration_;
   if (rowsRebuildQueued_) {
     updateFileHeader();
     emit additionsChanged();
@@ -500,7 +507,6 @@ void DiffSurfaceItem::setDeletions(int value) {
     return;
   }
   deletions_ = value;
-  ++tileContentGeneration_;
   if (rowsRebuildQueued_) {
     updateFileHeader();
     emit deletionsChanged();
@@ -765,6 +771,9 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
   const qreal rightTextViewportWidth = std::max<qreal>(0.0, rightPaneWidth - splitTextInset - 12.0);
   const qreal splitTextLogicalWidth = std::max({maxTextWidth_ + 12.0, leftTextViewportWidth, rightTextViewportWidth});
   const qreal devicePixelRatio = quickWindow->effectiveDevicePixelRatio();
+  const quint64 currentTileContentKey = tileContentKey();
+  const quint64 currentTileGeometryKey =
+      tileGeometryKey(visibleWidth, visibleHeight, unifiedRowWidth, splitTextLogicalWidth);
 
   struct RenderCommand {
     enum class Kind {
@@ -911,8 +920,7 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
   };
 
   auto keyForTile = [&](TileLayer layer, int rowIndex, int columnIndex) {
-    return tileKey(tileContentGeneration_, tileGeometryGeneration_, tilePaletteGeneration_, layer, rowIndex,
-                   columnIndex);
+    return tileKey(currentTileContentKey, currentTileGeometryKey, tilePaletteGeneration_, layer, rowIndex, columnIndex);
   };
 
   auto queueWholeRowTexture = [&](std::vector<RenderCommand>& commands,
@@ -1312,7 +1320,6 @@ void DiffSurfaceItem::releaseResources() {
 
 void DiffSurfaceItem::rebuildRows() {
   const PerfClock::time_point rebuildStart = PerfClock::now();
-  textRope_.clear();
   textCache_.clear();
   leftViewportX_ = 0;
   rightViewportX_ = 0;
@@ -1322,33 +1329,51 @@ void DiffSurfaceItem::rebuildRows() {
   rowHeight_ = qCeil(lineHeight_ + 8.0);
   fileHeaderHeight_ = 32.0;
   hunkHeight_ = 28.0;
-  maxTextWidth_ = 0;
+  const PreparedRowsCacheKey key = preparedRowsCacheKey();
+  auto preparedIt = preparedRowsCache_.find(key);
+  if (preparedIt != preparedRowsCache_.end()) {
+    textRope_ = preparedIt->textRope;
+    maxTextWidth_ = preparedIt->maxTextWidth;
+    displayModel_.setSourceRows(preparedIt->sourceRows);
+  } else {
+    textRope_.clear();
+    maxTextWidth_ = 0;
 
-  std::vector<DiffSourceRow> sourceRows;
-  sourceRows.reserve((rowsModel_ != nullptr ? rowsModel_->rows().size() : 0) + (filePath_.isEmpty() ? 0 : 1));
+    std::vector<DiffSourceRow> sourceRows;
+    sourceRows.reserve((rowsModel_ != nullptr ? rowsModel_->rows().size() : 0) + (filePath_.isEmpty() ? 0 : 1));
 
-  if (rowsModel_ != nullptr) {
-    for (const FlattenedDiffRow& rowValue : rowsModel_->rows()) {
-      DiffSourceRow row;
-      row.rowType =
-          rowValue.rowType == FlattenedDiffRow::RowType::Hunk ? DiffRowType::Hunk : DiffRowType::Line;
-      row.header = rowValue.header.toStdString();
-      row.kind = rowValue.kind == LineKind::Addition
-                     ? DiffLineKind::Addition
-                     : rowValue.kind == LineKind::Deletion ? DiffLineKind::Deletion : DiffLineKind::Context;
-      row.oldLine = rowValue.oldLine;
-      row.newLine = rowValue.newLine;
-      const QByteArray textUtf8 = rowValue.text.toUtf8();
-      row.textRange = textRope_.append(std::string(textUtf8.constData(), textUtf8.size()));
-      row.textWidth = lineLayoutForRange(row.textRange, 12).width;
-      row.tokens = parseTokens(rowValue.tokens);
-      row.changeSpans = parseTokens(rowValue.changeSpans);
-      maxTextWidth_ = std::max(maxTextWidth_, row.textWidth);
-      sourceRows.push_back(std::move(row));
+    if (rowsModel_ != nullptr) {
+      for (const FlattenedDiffRow& rowValue : rowsModel_->rows()) {
+        DiffSourceRow row;
+        row.rowType =
+            rowValue.rowType == FlattenedDiffRow::RowType::Hunk ? DiffRowType::Hunk : DiffRowType::Line;
+        row.header = rowValue.header.toStdString();
+        row.kind = rowValue.kind == LineKind::Addition
+                       ? DiffLineKind::Addition
+                       : rowValue.kind == LineKind::Deletion ? DiffLineKind::Deletion : DiffLineKind::Context;
+        row.oldLine = rowValue.oldLine;
+        row.newLine = rowValue.newLine;
+        const QByteArray textUtf8 = rowValue.text.toUtf8();
+        row.textRange = textRope_.append(std::string(textUtf8.constData(), textUtf8.size()));
+        row.textWidth = lineLayoutForRange(row.textRange, 12).width;
+        row.tokens = parseTokens(rowValue.tokens);
+        row.changeSpans = parseTokens(rowValue.changeSpans);
+        maxTextWidth_ = std::max(maxTextWidth_, row.textWidth);
+        sourceRows.push_back(std::move(row));
+      }
     }
-  }
 
-  displayModel_.setSourceRows(std::move(sourceRows));
+    PreparedRows prepared;
+    prepared.textRope = textRope_;
+    prepared.sourceRows = sourceRows;
+    prepared.maxTextWidth = maxTextWidth_;
+    preparedRowsCache_.insert(key, std::move(prepared));
+    while (preparedRowsCache_.size() > 64) {
+      preparedRowsCache_.erase(preparedRowsCache_.begin());
+    }
+
+    displayModel_.setSourceRows(std::move(sourceRows));
+  }
   updateFileHeader();
   if (setPerfValue(lastRowsRebuildTimeMs_, elapsedMs(rebuildStart))) {
     emit perfStatsChanged();
@@ -1570,6 +1595,29 @@ int DiffSurfaceItem::currentRowIndex() const {
     return hoveredRow_;
   }
   return displayModel_.rowIndexAtY(viewportY_);
+}
+
+PreparedRowsCacheKey DiffSurfaceItem::preparedRowsCacheKey() const {
+  PreparedRowsCacheKey key;
+  key.compareGeneration = compareGeneration_;
+  key.filePath = filePath_;
+  key.family = monoFontFamily_;
+  return key;
+}
+
+quint64 DiffSurfaceItem::tileContentKey() const {
+  return qHashMulti(0u, compareGeneration_, filePath_, fileStatus_, additions_, deletions_);
+}
+
+quint64 DiffSurfaceItem::tileGeometryKey(qreal visibleWidth,
+                                        qreal visibleHeight,
+                                        qreal unifiedRowWidth,
+                                        qreal splitTextLogicalWidth) const {
+  return qHashMulti(0u, layoutMode_, wrapEnabled_, wrapColumn_, qRound64(width() * 100.0),
+                    qRound64(height() * 100.0), qRound64(visibleWidth * 100.0), qRound64(visibleHeight * 100.0),
+                    qRound64(contentWidth_ * 100.0), qRound64(unifiedRowWidth * 100.0),
+                    qRound64(splitTextLogicalWidth * 100.0), qRound64(maxTextWidth_ * 100.0), lineNumberDigits_,
+                    qRound64(rowHeight_ * 100.0), qRound64(fileHeaderHeight_ * 100.0), qRound64(hunkHeight_ * 100.0));
 }
 
 void DiffSurfaceItem::drawFileHeaderRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row) const {

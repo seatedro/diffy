@@ -13,5 +13,8 @@ class AppSmokeTest : public QObject {
   void wheelScrollsSplitViewportDespiteHorizontalTrackpadNoise();
   void switchesFromSplitToUnifiedWhileScrolled();
   void warmSplitReverseWheelDoesNotUploadMoreTextures();
+  void switchesFilesAndKeepsTimingMetricsAvailable();
+  void longChangedLineSupportsSplitHorizontalScrollAndTimingMetrics();
+  void splitDeletedFileKeepsSpacerBackgroundInBlankPane();
   void opensInAppRepositoryPickerWithoutWarnings();
 };

@@ -10,6 +10,8 @@
 #include <QWheelEvent>
 #include <QVariantMap>
 
+#include <vector>
+
 #include "model/DiffDisplayModel.h"
 #include "model/DiffRowListModel.h"
 #include "text/TextRope.h"
@@ -46,6 +48,12 @@ class DiffSurfaceItem : public QQuickItem {
   Q_PROPERTY(int textureUploadCount READ textureUploadCount NOTIFY tileStatsChanged)
   Q_PROPERTY(int residentTileCount READ residentTileCount NOTIFY tileStatsChanged)
   Q_PROPERTY(int pendingTileJobCount READ pendingTileJobCount NOTIFY tileStatsChanged)
+  Q_PROPERTY(double lastPaintTimeMs READ lastPaintTimeMs NOTIFY perfStatsChanged)
+  Q_PROPERTY(double lastRasterTimeMs READ lastRasterTimeMs NOTIFY perfStatsChanged)
+  Q_PROPERTY(double lastTextureUploadTimeMs READ lastTextureUploadTimeMs NOTIFY perfStatsChanged)
+  Q_PROPERTY(double lastRowsRebuildTimeMs READ lastRowsRebuildTimeMs NOTIFY perfStatsChanged)
+  Q_PROPERTY(double lastDisplayRowsRebuildTimeMs READ lastDisplayRowsRebuildTimeMs NOTIFY perfStatsChanged)
+  Q_PROPERTY(double lastMetricsRecalcTimeMs READ lastMetricsRecalcTimeMs NOTIFY perfStatsChanged)
 
  public:
   explicit DiffSurfaceItem(QQuickItem* parent = nullptr);
@@ -103,6 +111,12 @@ class DiffSurfaceItem : public QQuickItem {
   int textureUploadCount() const;
   int residentTileCount() const;
   int pendingTileJobCount() const;
+  double lastPaintTimeMs() const;
+  double lastRasterTimeMs() const;
+  double lastTextureUploadTimeMs() const;
+  double lastRowsRebuildTimeMs() const;
+  double lastDisplayRowsRebuildTimeMs() const;
+  double lastMetricsRecalcTimeMs() const;
 
  signals:
   void rowsModelChanged();
@@ -125,6 +139,7 @@ class DiffSurfaceItem : public QQuickItem {
   void paintCountChanged();
   void displayRowCountChanged();
   void tileStatsChanged();
+  void perfStatsChanged();
   void scrollToYRequested(qreal value);
   void nextFileRequested();
   void previousFileRequested();
@@ -138,12 +153,18 @@ class DiffSurfaceItem : public QQuickItem {
   void invalidateTiles();
   void updateTileStats();
 
+  struct CachedLineLayout {
+    qreal width = 0;
+    std::vector<qreal> prefixAdvances;
+  };
+
   bool rowSelected(int rowIndex) const;
   QColor paletteColor(const QString& key, const QColor& fallback) const;
   qreal digitWidth() const;
   qreal unifiedGutterWidth() const;
   QString selectedText() const;
   QString textForRange(const TextRange& range) const;
+  const CachedLineLayout& lineLayoutForRange(const TextRange& range, int pixelSize) const;
   int currentRowIndex() const;
   void drawFileHeaderRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row) const;
   void drawHunkRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row) const;
@@ -169,6 +190,7 @@ class DiffSurfaceItem : public QQuickItem {
                          const QString& text,
                          const std::vector<DiffTokenSpan>& tokens,
                          const std::vector<DiffTokenSpan>& changeSpans,
+                         const std::vector<qreal>& prefixAdvances,
                          const QColor& textColor,
                          const QColor& tokenBackground,
                          const QFontMetricsF& metrics) const;
@@ -178,6 +200,7 @@ class DiffSurfaceItem : public QQuickItem {
                    const QString& text,
                    const std::vector<DiffTokenSpan>& tokens,
                    const std::vector<DiffTokenSpan>& changeSpans,
+                   const std::vector<qreal>& prefixAdvances,
                    const QColor& textColor,
                    const QColor& tokenBackground) const;
 
@@ -231,6 +254,7 @@ class DiffSurfaceItem : public QQuickItem {
   int stickyVisibleRow_ = -1;
 
   mutable QHash<quint64, QString> textCache_;
+  mutable QHash<quint64, CachedLineLayout> lineLayoutCache_;
   mutable QHash<quint64, QImage> tileImageCache_;
   mutable QHash<quint64, quint64> tileImageLastUsed_;
   mutable QHash<quint64, QSGTexture*> residentTextureCache_;
@@ -241,6 +265,12 @@ class DiffSurfaceItem : public QQuickItem {
   int tileCacheMisses_ = 0;
   int textureUploadCount_ = 0;
   int pendingTileJobCount_ = 0;
+  double lastPaintTimeMs_ = 0;
+  double lastRasterTimeMs_ = 0;
+  double lastTextureUploadTimeMs_ = 0;
+  double lastRowsRebuildTimeMs_ = 0;
+  double lastDisplayRowsRebuildTimeMs_ = 0;
+  double lastMetricsRecalcTimeMs_ = 0;
   bool followupUpdateQueued_ = false;
   bool rowsRebuildQueued_ = false;
   bool metricsRecalcQueued_ = false;

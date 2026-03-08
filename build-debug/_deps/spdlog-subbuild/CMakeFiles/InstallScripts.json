@@ -1,7 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/home/rohit/personal/diffy/build-debug/_deps/spdlog-subbuild/cmake_install.cmake"
-	],
-	"Parallel" : false
-}

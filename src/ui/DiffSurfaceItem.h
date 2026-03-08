@@ -130,6 +130,8 @@ class DiffSurfaceItem : public QQuickItem {
   void previousFileRequested();
 
  private:
+  void scheduleRowsRebuild();
+  void scheduleMetricsRecalc();
   void rebuildRows();
   void rebuildDisplayRows();
   void recalculateMetrics();
@@ -240,6 +242,8 @@ class DiffSurfaceItem : public QQuickItem {
   int textureUploadCount_ = 0;
   int pendingTileJobCount_ = 0;
   bool followupUpdateQueued_ = false;
+  bool rowsRebuildQueued_ = false;
+  bool metricsRecalcQueued_ = false;
 };
 
 }  // namespace diffy

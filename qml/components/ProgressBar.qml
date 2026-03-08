@@ -5,7 +5,7 @@ Rectangle {
 
     property bool active: false
 
-    implicitHeight: 2
+    implicitHeight: 3
     color: "transparent"
     clip: true
 

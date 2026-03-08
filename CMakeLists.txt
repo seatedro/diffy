@@ -13,7 +13,7 @@ option(DIFFY_ENABLE_QML_DEBUG "Enable QML debugging for live preview workflows" 
 option(DIFFY_FAST_QML_DEV "Disable QML cache generation for faster local iteration" OFF)
 
 find_package(PkgConfig REQUIRED)
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick Test Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick Test Widgets Concurrent)
 
 pkg_check_modules(LIBCURL REQUIRED libcurl)
 pkg_check_modules(LIBGIT2 REQUIRED libgit2)
@@ -95,6 +95,7 @@ target_link_libraries(diffy PRIVATE
   Qt6::Qml
   Qt6::Quick
   Qt6::Widgets
+  Qt6::Concurrent
   ${TREESITTER_LIBRARIES}
 )
 
@@ -117,6 +118,7 @@ qt_add_qml_module(diffy
     qml/components/DiffStatsBar.qml
     qml/components/EmptyState.qml
     qml/components/FileListPane.qml
+    qml/components/Icon.qml
     qml/components/InputField.qml
     qml/components/ProgressBar.qml
     qml/components/SegmentedControl.qml

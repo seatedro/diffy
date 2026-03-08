@@ -209,6 +209,10 @@ class DiffControllerTest : public QObject {
     configDir_.reset();
   }
 
+  void waitForCompare(DiffController& controller) {
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.comparing(), 10000);
+  }
+
   void compareProducesVisibleRows() {
     const QString repoPath = initRepositoryWithDiff();
     QVERIFY(!repoPath.isEmpty());
@@ -218,6 +222,7 @@ class DiffControllerTest : public QObject {
     controller.setLeftRef("HEAD~1");
     controller.setRightRef("HEAD");
     controller.compare();
+    waitForCompare(controller);
 
     QVERIFY2(controller.errorMessage().isEmpty(), qPrintable(controller.errorMessage()));
     QCOMPARE(controller.files().size(), 1);
@@ -243,6 +248,7 @@ class DiffControllerTest : public QObject {
     controller.setLeftRef("HEAD~1");
     controller.setRightRef("HEAD");
     controller.compare();
+    waitForCompare(controller);
     QVERIFY(!controller.files().isEmpty());
 
     QVERIFY(controller.openRepository(repoWithoutDiff));
@@ -389,6 +395,7 @@ class DiffControllerTest : public QObject {
     controller.setRightRef("HEAD");
     controller.setCompareMode("three-dot");
     controller.compare();
+    waitForCompare(controller);
 
     QVERIFY2(controller.errorMessage().isEmpty(), qPrintable(controller.errorMessage()));
     QCOMPARE(controller.compareMode(), QString("three-dot"));
@@ -405,6 +412,7 @@ class DiffControllerTest : public QObject {
     controller.setLeftRef("HEAD~1");
     controller.setRightRef("HEAD");
     controller.compare();
+    waitForCompare(controller);
 
     int targetIndex = -1;
     for (int index = 0; index < controller.files().size(); ++index) {

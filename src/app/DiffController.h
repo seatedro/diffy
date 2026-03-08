@@ -1,9 +1,11 @@
 #pragma once
 
+#include <QFutureWatcher>
 #include <QObject>
 #include <QSettings>
 #include <QStringList>
 #include <QVariant>
+#include <memory>
 #include <vector>
 
 #include "app/RepositoryPickerModel.h"
@@ -19,6 +21,14 @@
 #include "renderers/DifftasticRenderer.h"
 
 namespace diffy {
+
+struct CompareResult {
+  std::vector<FileDiff> fileDiffs;
+  QVariantList files;
+  std::string errorMessage;
+  bool usedFallback = false;
+  std::string fallbackMessage;
+};
 
 class DiffController : public QObject {
   Q_OBJECT
@@ -58,6 +68,7 @@ class DiffController : public QObject {
 
  public:
   explicit DiffController(QObject* parent = nullptr);
+  ~DiffController() override;
 
   QString currentView() const;
   QStringList recentRepositories() const;
@@ -168,6 +179,8 @@ class DiffController : public QObject {
   void prefetchFileRows();
   void resetPreparedRowsPrewarmOrder();
   void schedulePreparedRowsPrewarm();
+  void highlightSelectedFile();
+  void startBackgroundHighlighting();
   void setCurrentView(const QString& view);
   void addRecentRepository(const QString& path);
   void setError(const QString& error);
@@ -216,6 +229,8 @@ class DiffController : public QObject {
   bool preparedRowsPrewarmQueued_ = false;
   int preparedRowsPrewarmVersion_ = 0;
   std::vector<int> preparedRowsPrewarmOrder_;
+  std::unique_ptr<QFutureWatcher<CompareResult>> compareWatcher_;
+  std::unique_ptr<QFutureWatcher<void>> highlightWatcher_;
   QString githubClientId_;
   QTimer oauthPollTimer_;
   QString oauthDeviceCode_;

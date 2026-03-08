@@ -8,13 +8,14 @@ Rectangle {
     property bool monospace: false
     property bool compact: false
     property bool error: false
+    property bool borderless: false
     signal submitted(string value)
 
     implicitHeight: compact ? 26 : 30
-    radius: theme.radiusSm
-    color: theme.panelStrong
-    border.width: input.activeFocus ? 1.5 : 1
-    border.color: root.error ? theme.dangerBorder : (input.activeFocus ? theme.accent : theme.borderSoft)
+    radius: borderless ? 0 : theme.radiusSm
+    color: borderless ? "transparent" : theme.panelStrong
+    border.width: borderless ? 0 : (input.activeFocus ? 1.5 : 1)
+    border.color: borderless ? "transparent" : (root.error ? theme.dangerBorder : (input.activeFocus ? theme.accent : theme.borderSoft))
 
     Behavior on border.color { ColorAnimation { duration: 90 } }
     Behavior on border.width { NumberAnimation { duration: 90 } }

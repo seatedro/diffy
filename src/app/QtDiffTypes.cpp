@@ -47,10 +47,19 @@ QVariantMap fileDiffToVariant(const FileDiff& file) {
                      {"hunks", hunks}};
 }
 
+QVariantMap fileDiffSummaryToVariant(const FileDiff& file) {
+  return QVariantMap{{"path", QString::fromUtf8(file.path)},
+                     {"status", QString::fromUtf8(file.status)},
+                     {"isBinary", file.isBinary},
+                     {"additions", file.additions},
+                     {"deletions", file.deletions}};
+}
+
 QVariantList filesToVariantList(const std::vector<FileDiff>& files) {
   QVariantList result;
+  result.reserve(static_cast<qsizetype>(files.size()));
   for (const FileDiff& file : files) {
-    result.push_back(fileDiffToVariant(file));
+    result.push_back(fileDiffSummaryToVariant(file));
   }
   return result;
 }

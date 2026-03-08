@@ -661,7 +661,7 @@ void DiffController::schedulePreparedRowsPrewarm() {
   if (preparedRowsPrewarmQueued_) {
     return;
   }
-  if (QGuiApplication::instance() == nullptr) {
+  if (qobject_cast<QGuiApplication*>(QCoreApplication::instance()) == nullptr) {
     return;
   }
 

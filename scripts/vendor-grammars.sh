@@ -3,35 +3,34 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENDOR_DIR="$ROOT_DIR/vendor/grammars"
+LOCK_FILE="$ROOT_DIR/vendor/grammars.lock"
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
-declare -A GRAMMARS=(
-  [c]="https://github.com/tree-sitter/tree-sitter-c.git"
-  [cpp]="https://github.com/tree-sitter/tree-sitter-cpp.git"
-  [rust]="https://github.com/tree-sitter/tree-sitter-rust.git"
-  [python]="https://github.com/tree-sitter/tree-sitter-python.git"
-  [javascript]="https://github.com/tree-sitter/tree-sitter-javascript.git"
-  [go]="https://github.com/tree-sitter/tree-sitter-go.git"
-  [bash]="https://github.com/tree-sitter/tree-sitter-bash.git"
-  [json]="https://github.com/tree-sitter/tree-sitter-json.git"
-  [toml]="https://github.com/tree-sitter-grammars/tree-sitter-toml.git"
-  [zig]="https://github.com/tree-sitter-grammars/tree-sitter-zig.git"
-  [nix]="https://github.com/nix-community/tree-sitter-nix.git"
-)
-
 mkdir -p "$VENDOR_DIR"
 
-for lang in "${!GRAMMARS[@]}"; do
-  url="${GRAMMARS[$lang]}"
+if [[ ! -f "$LOCK_FILE" ]]; then
+  echo "Missing lock file: $LOCK_FILE" >&2
+  exit 1
+fi
+
+while read -r lang url commit; do
+  if [[ -z "${lang:-}" || "${lang:0:1}" == "#" ]]; then
+    continue
+  fi
+
   dest="$VENDOR_DIR/$lang"
   clone_dir="$TEMP_DIR/$lang"
 
-  echo "Fetching $lang from $url"
-  git clone --depth=1 --filter=blob:none "$url" "$clone_dir" 2>/dev/null
+  echo "Fetching $lang at $commit from $url"
+  git init -q "$clone_dir"
+  git -C "$clone_dir" remote add origin "$url"
+  git -C "$clone_dir" fetch -q --depth=1 origin "$commit"
+  git -C "$clone_dir" checkout -q FETCH_HEAD
 
-  rm -rf "$dest"
-  mkdir -p "$dest/src"
+  mkdir -p "$dest"
+  rm -rf "$dest/src"
+  mkdir -p "$dest/src" "$dest/queries"
 
   # Copy parser source
   if [[ -f "$clone_dir/src/parser.c" ]]; then
@@ -51,12 +50,12 @@ for lang in "${!GRAMMARS[@]}"; do
   fi
 
   # Copy highlights query
-  mkdir -p "$dest/queries"
+  rm -f "$dest/queries/highlights.scm"
   if [[ -f "$clone_dir/queries/highlights.scm" ]]; then
     cp "$clone_dir/queries/highlights.scm" "$dest/queries/"
   fi
 
   echo "  -> $dest"
-done
+done < "$LOCK_FILE"
 
-echo "Done. Vendored ${#GRAMMARS[@]} grammars."
+echo "Done. Vendored grammars from $LOCK_FILE."

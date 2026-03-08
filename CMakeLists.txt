@@ -11,6 +11,7 @@ enable_testing()
 
 option(DIFFY_ENABLE_QML_DEBUG "Enable QML debugging for live preview workflows" OFF)
 option(DIFFY_FAST_QML_DEV "Disable QML cache generation for faster local iteration" OFF)
+option(DIFFY_AUTO_VENDOR_GRAMMARS "Automatically materialize pinned tree-sitter grammar sources during configure" ON)
 
 find_package(PkgConfig REQUIRED)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick Test Widgets Concurrent)
@@ -31,6 +32,35 @@ FetchContent_MakeAvailable(spdlog)
 
 if(DIFFY_FAST_QML_DEV)
   set(QT_QML_NO_CACHEGEN TRUE)
+endif()
+
+set(DIFFY_GRAMMAR_LANGS
+  bash c cpp go javascript json nix python rust toml zig
+)
+
+set(DIFFY_MISSING_GRAMMARS "")
+foreach(lang ${DIFFY_GRAMMAR_LANGS})
+  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/vendor/grammars/${lang}/src/parser.c")
+    list(APPEND DIFFY_MISSING_GRAMMARS "${lang}")
+  endif()
+endforeach()
+
+if(DIFFY_MISSING_GRAMMARS)
+  if(NOT DIFFY_AUTO_VENDOR_GRAMMARS)
+    string(JOIN ", " DIFFY_MISSING_GRAMMARS_TEXT ${DIFFY_MISSING_GRAMMARS})
+    message(FATAL_ERROR
+      "Missing vendored tree-sitter grammar sources for: ${DIFFY_MISSING_GRAMMARS_TEXT}\n"
+      "Run ./scripts/vendor-grammars.sh before configuring the build."
+    )
+  endif()
+
+  string(JOIN ", " DIFFY_MISSING_GRAMMARS_TEXT ${DIFFY_MISSING_GRAMMARS})
+  message(STATUS "Materializing vendored tree-sitter grammars for: ${DIFFY_MISSING_GRAMMARS_TEXT}")
+  execute_process(
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/vendor-grammars.sh"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMAND_ERROR_IS_FATAL ANY
+  )
 endif()
 
 qt_standard_project_setup()

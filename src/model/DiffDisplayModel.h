@@ -100,16 +100,18 @@ class DiffDisplayModel {
 
  private:
   void recomputeLineNumberDigits();
-  void rebuildTopology();
+  void clearTopologyCaches();
+  void rebuildTopology(std::vector<DiffDisplayRow>& targetRows, DiffLayoutMode mode) const;
   void rebuildMetrics(const DiffLayoutConfig& config);
 
   std::optional<DiffSourceRow> fileHeaderRow_;
   std::vector<DiffSourceRow> sourceRows_;
+  std::vector<DiffDisplayRow> unifiedTopologyRows_;
+  std::vector<DiffDisplayRow> splitTopologyRows_;
   std::vector<DiffDisplayRow> displayRows_;
   std::vector<double> rowOffsets_;
   double contentHeight_ = 0;
   int lineNumberDigits_ = 3;
-  DiffLayoutMode layoutMode_ = DiffLayoutMode::Unified;
 };
 
 }  // namespace diffy

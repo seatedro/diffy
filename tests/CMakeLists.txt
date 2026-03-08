@@ -49,7 +49,9 @@ qt_add_executable(test_diff_controller
   ../src/app/DiffController.cpp
   ../src/app/RepositoryPickerModel.cpp
   ../src/app/QtDiffTypes.cpp
+  ../src/model/DiffPreparedRows.cpp
   ../src/model/DiffRowListModel.cpp
+  ../src/text/TextRope.cpp
   ../src/renderers/BuiltinGitRenderer.cpp
   ../src/renderers/DifftasticRenderer.cpp
 )

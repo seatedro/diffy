@@ -1,6 +1,6 @@
 #include <QTest>
 
-#include "core/WordDiff.h"
+#include "core/diff/WordDiff.h"
 
 class TestWordDiff : public QObject {
   Q_OBJECT

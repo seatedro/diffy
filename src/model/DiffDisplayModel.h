@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "core/SyntaxTypes.h"
+#include "core/syntax/SyntaxTypes.h"
 #include "text/TextRope.h"
 
 namespace diffy {

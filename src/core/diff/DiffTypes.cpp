@@ -1,4 +1,4 @@
-#include "core/DiffTypes.h"
+#include "core/diff/DiffTypes.h"
 
 namespace diffy {
 

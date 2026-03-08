@@ -1,6 +1,6 @@
 #include <QtTest/QtTest>
 
-#include "core/FuzzyMatch.h"
+#include "core/search/FuzzyMatch.h"
 
 using namespace diffy;
 
@@ -40,7 +40,7 @@ class FuzzyMatchTest : public QObject {
   void rankReturnsOrderedResults() {
     std::vector<std::string> candidates = {
         "src/app/DiffController.cpp",
-        "src/core/DiffTypes.h",
+        "src/core/diff/DiffTypes.h",
         "src/ui/DiffSurfaceItem.cpp",
         "CMakeLists.txt",
         "README.md",

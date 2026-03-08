@@ -1,6 +1,6 @@
 #include <QTest>
 
-#include "core/SyntaxTypes.h"
+#include "core/syntax/SyntaxTypes.h"
 #include "core/syntax/Highlighter.h"
 #include "core/syntax/LanguageRegistry.h"
 

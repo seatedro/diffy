@@ -105,6 +105,24 @@ void DiffRowListModel::setRows(std::vector<FlattenedDiffRow> rows) {
   }
 }
 
+void DiffRowListModel::clearPreparedRows() {
+  preparedRowsCache_.clear();
+}
+
+const PreparedRows* DiffRowListModel::preparedRows(const PreparedRowsCacheKey& key) const {
+  if (const auto it = preparedRowsCache_.constFind(key); it != preparedRowsCache_.constEnd()) {
+    return &it.value();
+  }
+  return nullptr;
+}
+
+void DiffRowListModel::storePreparedRows(PreparedRowsCacheKey key, PreparedRows prepared) {
+  preparedRowsCache_.insert(std::move(key), std::move(prepared));
+  while (preparedRowsCache_.size() > 64) {
+    preparedRowsCache_.erase(preparedRowsCache_.begin());
+  }
+}
+
 const std::vector<FlattenedDiffRow>& DiffRowListModel::rows() const {
   return rows_;
 }

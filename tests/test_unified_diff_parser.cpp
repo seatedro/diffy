@@ -1,6 +1,6 @@
 #include <QtTest/QtTest>
 
-#include "core/UnifiedDiffParser.h"
+#include "core/diff/UnifiedDiffParser.h"
 
 using namespace diffy;
 

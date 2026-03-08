@@ -1,11 +1,11 @@
-#include "core/GitHubDeviceFlow.h"
+#include "core/vcs/github/GitHubDeviceFlow.h"
 
 #include <cstring>
 #include <string_view>
 
 #include <curl/curl.h>
 
-#include "core/Log.h"
+#include "core/support/Log.h"
 
 namespace diffy {
 namespace {

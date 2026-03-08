@@ -3,7 +3,8 @@
 #include <QAbstractListModel>
 #include <QVector>
 
-#include "core/DiffTypes.h"
+#include "core/diff/DiffTypes.h"
+#include "model/DiffPreparedRows.h"
 
 namespace diffy {
 
@@ -51,6 +52,9 @@ class DiffRowListModel : public QAbstractListModel {
   int count() const;
   void clear();
   void setRows(std::vector<FlattenedDiffRow> rows);
+  void clearPreparedRows();
+  const PreparedRows* preparedRows(const PreparedRowsCacheKey& key) const;
+  void storePreparedRows(PreparedRowsCacheKey key, PreparedRows prepared);
 
   const std::vector<FlattenedDiffRow>& rows() const;
 
@@ -59,6 +63,7 @@ class DiffRowListModel : public QAbstractListModel {
 
  private:
   std::vector<FlattenedDiffRow> rows_;
+  QHash<PreparedRowsCacheKey, PreparedRows> preparedRowsCache_;
 };
 
 }  // namespace diffy

@@ -1,6 +1,6 @@
 #include <QtTest/QtTest>
 
-#include "core/CompareSpec.h"
+#include "core/vcs/CompareSpec.h"
 
 using namespace diffy;
 

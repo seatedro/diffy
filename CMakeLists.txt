@@ -38,15 +38,15 @@ qt_standard_project_setup()
 add_subdirectory(vendor/grammars)
 
 add_library(diffy_core STATIC
-  src/core/CompareSpec.cpp
-  src/core/DiffTypes.cpp
-  src/core/FuzzyMatch.cpp
-  src/core/GitHubApi.cpp
-  src/core/GitHubDeviceFlow.cpp
-  src/core/GitHubPullRequest.cpp
-  src/core/GitRepositoryService.cpp
-  src/core/UnifiedDiffParser.cpp
-  src/core/WordDiff.cpp
+  src/core/vcs/CompareSpec.cpp
+  src/core/diff/DiffTypes.cpp
+  src/core/search/FuzzyMatch.cpp
+  src/core/vcs/github/GitHubApi.cpp
+  src/core/vcs/github/GitHubDeviceFlow.cpp
+  src/core/vcs/github/GitHubPullRequest.cpp
+  src/core/vcs/git/GitRepositoryService.cpp
+  src/core/diff/UnifiedDiffParser.cpp
+  src/core/diff/WordDiff.cpp
   src/core/syntax/LanguageRegistry.cpp
   src/core/syntax/Highlighter.cpp
 )
@@ -74,6 +74,7 @@ qt_add_executable(diffy
   src/app/ThemeProvider.cpp
   src/app/RepositoryPickerModel.cpp
   src/app/QtDiffTypes.cpp
+  src/model/DiffPreparedRows.cpp
   src/model/DiffDisplayModel.cpp
   src/model/DiffRowListModel.cpp
   src/text/TextRope.cpp

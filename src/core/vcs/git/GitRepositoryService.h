@@ -6,7 +6,7 @@
 
 #include <git2.h>
 
-#include "core/CompareSpec.h"
+#include "core/vcs/CompareSpec.h"
 
 namespace diffy {
 

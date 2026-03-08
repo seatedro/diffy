@@ -4,16 +4,25 @@
 
 #include <QDir>
 #include <QFileDialog>
+#include <QGuiApplication>
 #include <QStandardPaths>
 
 #include "app/QtDiffTypes.h"
-#include "core/FuzzyMatch.h"
-#include "core/GitHubApi.h"
-#include "core/GitHubPullRequest.h"
-#include "core/DiffTypes.h"
-#include "core/Log.h"
+#include "core/search/FuzzyMatch.h"
+#include "core/vcs/github/GitHubApi.h"
+#include "core/vcs/github/GitHubPullRequest.h"
+#include "core/diff/DiffTypes.h"
+#include "core/support/Log.h"
+#include "model/DiffPreparedRows.h"
 
 namespace diffy {
+namespace {
+
+constexpr int kPreparedRowsPrewarmBatchSize = 2;
+const QString kPreparedRowsPrewarmFontFamily = QStringLiteral("JetBrains Mono");
+
+}  // namespace
+
 DiffController::DiffController(QObject* parent)
     : QObject(parent), settings_("diffy", "diffy"), selectedFileRowsModel_(this), repositoryPickerModel_(this) {
   repoPath_ = settings_.value("repoPath").toString();
@@ -220,6 +229,8 @@ void DiffController::setSelectedFileIndex(int index) {
   }
   emit selectedFileIndexChanged();
   emit selectedFileChanged();
+  resetPreparedRowsPrewarmOrder();
+  schedulePreparedRowsPrewarm();
 }
 
 QObject* DiffController::selectedFileRowsModel() const {
@@ -494,6 +505,8 @@ void DiffController::compare() {
   emit selectedFileIndexChanged();
   emit selectedFileChanged();
   QTimer::singleShot(0, this, [this]() { prefetchFileRows(); });
+  resetPreparedRowsPrewarmOrder();
+  schedulePreparedRowsPrewarm();
 
   finishComparing();
   setCurrentView("diff");
@@ -534,12 +547,78 @@ void DiffController::resetFileRowCaches() {
   flattenedFileRowsReady_.clear();
   flattenedFileRowsCache_.resize(fileDiffs_.size());
   flattenedFileRowsReady_.resize(fileDiffs_.size(), false);
+  selectedFileRowsModel_.clearPreparedRows();
+  preparedRowsPrewarmIndex_ = 0;
+  preparedRowsPrewarmQueued_ = false;
+  preparedRowsPrewarmOrder_.clear();
+  ++preparedRowsPrewarmVersion_;
 }
 
 void DiffController::prefetchFileRows() {
   for (int index = 0; index < static_cast<int>(fileDiffs_.size()); ++index) {
     flattenedRowsForFile(index);
   }
+}
+
+void DiffController::resetPreparedRowsPrewarmOrder() {
+  preparedRowsPrewarmIndex_ = 0;
+  preparedRowsPrewarmQueued_ = false;
+  preparedRowsPrewarmOrder_.clear();
+  ++preparedRowsPrewarmVersion_;
+  if (selectedFileIndex_ < 0 || selectedFileIndex_ >= static_cast<int>(fileDiffs_.size())) {
+    return;
+  }
+
+  preparedRowsPrewarmOrder_.push_back(selectedFileIndex_);
+  for (int offset = 1; offset <= 3; ++offset) {
+    const int forwardIndex = selectedFileIndex_ + offset;
+    if (forwardIndex < static_cast<int>(fileDiffs_.size())) {
+      preparedRowsPrewarmOrder_.push_back(forwardIndex);
+    }
+  }
+  const int previousIndex = selectedFileIndex_ - 1;
+  if (previousIndex >= 0) {
+    preparedRowsPrewarmOrder_.push_back(previousIndex);
+  }
+}
+
+void DiffController::schedulePreparedRowsPrewarm() {
+  if (preparedRowsPrewarmQueued_) {
+    return;
+  }
+  if (QGuiApplication::instance() == nullptr) {
+    return;
+  }
+
+  preparedRowsPrewarmQueued_ = true;
+  const int generation = compareGeneration_;
+  const int version = preparedRowsPrewarmVersion_;
+  QTimer::singleShot(0, this, [this, generation, version]() {
+    preparedRowsPrewarmQueued_ = false;
+    if (generation != compareGeneration_ || version != preparedRowsPrewarmVersion_) {
+      return;
+    }
+
+    int warmedCount = 0;
+    while (preparedRowsPrewarmIndex_ < static_cast<int>(preparedRowsPrewarmOrder_.size()) &&
+           warmedCount < kPreparedRowsPrewarmBatchSize) {
+      const int index = preparedRowsPrewarmOrder_.at(static_cast<size_t>(preparedRowsPrewarmIndex_++));
+      PreparedRowsCacheKey key;
+      key.compareGeneration = compareGeneration_;
+      key.filePath = QString::fromStdString(fileDiffs_.at(static_cast<size_t>(index)).path);
+      key.family = kPreparedRowsPrewarmFontFamily;
+      if (selectedFileRowsModel_.preparedRows(key) == nullptr) {
+        selectedFileRowsModel_.storePreparedRows(
+            key, prepareRowsForSurface(flattenedRowsForFile(index), kPreparedRowsPrewarmFontFamily));
+      }
+      ++warmedCount;
+    }
+
+    if (generation == compareGeneration_ && version == preparedRowsPrewarmVersion_ &&
+        preparedRowsPrewarmIndex_ < static_cast<int>(preparedRowsPrewarmOrder_.size())) {
+      schedulePreparedRowsPrewarm();
+    }
+  });
 }
 
 void DiffController::rebuildSelectedFileRows() {

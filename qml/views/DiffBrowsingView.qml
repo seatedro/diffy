@@ -102,12 +102,69 @@ Rectangle {
                     color: theme.borderSoft
                 }
 
-                Text {
-                    text: repoLabel()
-                    color: theme.textStrong
-                    font.family: theme.sans
-                    font.pixelSize: theme.fontSubtitle - 1
-                    font.bold: true
+                Row {
+                    spacing: theme.sp1
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: repoLabel()
+                        color: theme.textStrong
+                        font.family: theme.sans
+                        font.pixelSize: theme.fontSubtitle - 1
+                        font.bold: true
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: window.openRepoPicker()
+                        }
+                    }
+
+                    Text {
+                        visible: diffController.leftRef.length > 0
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "›"
+                        color: theme.textFaint
+                        font.family: theme.sans
+                        font.pixelSize: theme.fontSubtitle - 1
+                    }
+
+                    Text {
+                        visible: diffController.leftRef.length > 0
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: diffController.leftRefDisplay + ".." + diffController.rightRefDisplay
+                        color: theme.textMuted
+                        font.family: theme.mono
+                        font.pixelSize: theme.fontSmall
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: window.openBranchPicker("left")
+                        }
+                    }
+
+                    Text {
+                        visible: diffController.selectedFile.path !== undefined
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "›"
+                        color: theme.textFaint
+                        font.family: theme.sans
+                        font.pixelSize: theme.fontSubtitle - 1
+                    }
+
+                    Text {
+                        visible: diffController.selectedFile.path !== undefined
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: {
+                            var p = diffController.selectedFile.path || ""
+                            var parts = p.split("/")
+                            return parts[parts.length - 1]
+                        }
+                        color: theme.textBase
+                        font.family: theme.mono
+                        font.pixelSize: theme.fontSmall
+                    }
                 }
 
                 Rectangle {

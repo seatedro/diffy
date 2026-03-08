@@ -119,6 +119,45 @@ Rectangle {
             color: theme.divider
         }
 
+        Column {
+            visible: root.files.length === 0 && diffController.comparing
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.topMargin: 37
+            spacing: 2
+
+            Repeater {
+                model: 6
+                Rectangle {
+                    width: parent.width
+                    height: 30
+                    color: "transparent"
+
+                    Row {
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.leftMargin: theme.sp2
+                        anchors.rightMargin: theme.sp3
+                        spacing: theme.sp2
+
+                        Skeleton {
+                            width: 20
+                            height: 12
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        Skeleton {
+                            width: parent.width * (0.4 + Math.random() * 0.3)
+                            height: 12
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                    }
+                }
+            }
+        }
+
         ListView {
             id: fileListView
             anchors.fill: parent

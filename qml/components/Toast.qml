@@ -13,7 +13,9 @@ Rectangle {
         message = msg
         variant = v || "neutral"
         duration = dur || 4000
+        slideY = 20
         opacity = 1
+        slideY = 0
         dismissTimer.restart()
     }
 
@@ -41,11 +43,16 @@ Rectangle {
     color: bgColor()
     border.color: borderCol()
     border.width: 1
+    property real slideY: 20
     opacity: 0
     visible: opacity > 0
+    transform: Translate { y: root.slideY }
 
     Behavior on opacity {
         NumberAnimation { duration: 200; easing.type: Easing.OutCubic }
+    }
+    Behavior on slideY {
+        SpringAnimation { spring: 3; damping: 0.7 }
     }
 
     Text {
@@ -78,6 +85,7 @@ Rectangle {
             cursorShape: Qt.PointingHandCursor
             onClicked: {
                 root.opacity = 0
+                root.slideY = 20
                 root.dismissed()
             }
         }
@@ -88,6 +96,7 @@ Rectangle {
         interval: root.duration
         onTriggered: {
             root.opacity = 0
+            root.slideY = 20
             root.dismissed()
         }
     }

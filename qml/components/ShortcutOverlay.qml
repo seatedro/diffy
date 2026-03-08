@@ -23,8 +23,16 @@ Rectangle {
         radius: theme.radiusXl
         color: theme.panel
         border.color: theme.borderSoft
+        scale: root.showing ? 1.0 : 0.95
+        opacity: root.showing ? 1.0 : 0
 
-        // Shadow
+        Behavior on scale {
+            SpringAnimation { spring: 3; damping: 0.7 }
+        }
+        Behavior on opacity {
+            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+        }
+
         Rectangle {
             anchors.fill: parent
             anchors.topMargin: 4

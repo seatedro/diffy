@@ -15,50 +15,69 @@ double wrappedLineHeight(double baseHeight, bool wrapEnabled, double textWidth, 
 
 }  // namespace
 
-void DiffDisplayModel::setSourceRows(std::vector<DiffSourceRow> rows) {
-  sourceRows_ = std::move(rows);
+void DiffDisplayModel::recomputeLineNumberDigits() {
   int maxLineNumber = 0;
+  if (fileHeaderRow_) {
+    maxLineNumber = std::max(maxLineNumber, std::max(fileHeaderRow_->oldLine, fileHeaderRow_->newLine));
+  }
   for (const DiffSourceRow& row : sourceRows_) {
     maxLineNumber = std::max(maxLineNumber, std::max(row.oldLine, row.newLine));
   }
   lineNumberDigits_ = std::max(3, static_cast<int>(std::to_string(std::max(0, maxLineNumber)).size()));
 }
 
-void DiffDisplayModel::rebuild(const DiffLayoutConfig& config) {
+void DiffDisplayModel::setFileHeader(std::optional<DiffSourceRow> row) {
+  const bool hadHeader = fileHeaderRow_.has_value();
+  fileHeaderRow_ = std::move(row);
+  recomputeLineNumberDigits();
+  if (hadHeader != fileHeaderRow_.has_value()) {
+    rebuildTopology();
+    return;
+  }
+
+  if (!fileHeaderRow_ || displayRows_.empty() || displayRows_.front().rowType != DiffRowType::FileHeader) {
+    return;
+  }
+
+  DiffDisplayRow& headerRow = displayRows_.front();
+  headerRow.header = fileHeaderRow_->header;
+  headerRow.detail = fileHeaderRow_->detail;
+}
+
+void DiffDisplayModel::setSourceRows(std::vector<DiffSourceRow> rows) {
+  sourceRows_ = std::move(rows);
+  recomputeLineNumberDigits();
+  rebuildTopology();
+}
+
+void DiffDisplayModel::rebuildTopology() {
   displayRows_.clear();
-  rowOffsets_.clear();
-
-  double top = 0;
-
-  auto appendRow = [&](DiffDisplayRow row, double textWidth) {
-    row.top = top;
-    if (row.rowType == DiffRowType::FileHeader) {
-      row.height = config.fileHeaderHeight;
-    } else if (row.rowType == DiffRowType::Hunk) {
-      row.height = config.hunkHeight;
-    } else {
-      const double wrapWidth =
-          config.mode == DiffLayoutMode::Split ? config.splitWrapWidth : config.unifiedWrapWidth;
-      row.height = wrappedLineHeight(config.rowHeight, config.wrapEnabled, textWidth, wrapWidth);
-    }
-    rowOffsets_.push_back(top);
-    top += row.height;
+  auto appendRow = [&](DiffDisplayRow row) {
     displayRows_.push_back(std::move(row));
   };
 
-  if (config.mode == DiffLayoutMode::Unified) {
+  if (fileHeaderRow_) {
+    DiffDisplayRow row;
+    row.rowType = fileHeaderRow_->rowType;
+    row.header = fileHeaderRow_->header;
+    row.detail = fileHeaderRow_->detail;
+    appendRow(std::move(row));
+  }
+
+  if (layoutMode_ == DiffLayoutMode::Unified) {
     for (const DiffSourceRow& sourceRow : sourceRows_) {
       DiffDisplayRow row;
       row.rowType = sourceRow.rowType;
       row.header = sourceRow.header;
       row.detail = sourceRow.detail;
+      row.textWidth = sourceRow.textWidth;
       row.kind = sourceRow.kind;
       row.oldLine = sourceRow.oldLine;
       row.newLine = sourceRow.newLine;
       row.tokens = sourceRow.tokens;
       row.changeSpans = sourceRow.changeSpans;
       row.textRange = sourceRow.textRange;
-      appendRow(std::move(row), sourceRow.textWidth);
+      appendRow(std::move(row));
     }
   } else {
     for (size_t index = 0; index < sourceRows_.size(); ++index) {
@@ -68,13 +87,14 @@ void DiffDisplayModel::rebuild(const DiffLayoutConfig& config) {
         row.rowType = sourceRow.rowType;
         row.header = sourceRow.header;
         row.detail = sourceRow.detail;
-        appendRow(std::move(row), 0);
+        appendRow(std::move(row));
         continue;
       }
 
       if (sourceRow.kind == DiffLineKind::Context) {
         DiffDisplayRow row;
         row.rowType = DiffRowType::Line;
+        row.textWidth = sourceRow.textWidth;
         row.kind = DiffLineKind::Context;
         row.oldLine = sourceRow.oldLine;
         row.newLine = sourceRow.newLine;
@@ -86,7 +106,7 @@ void DiffDisplayModel::rebuild(const DiffLayoutConfig& config) {
         row.rightTokens = sourceRow.tokens;
         row.leftTextRange = sourceRow.textRange;
         row.rightTextRange = sourceRow.textRange;
-        appendRow(std::move(row), sourceRow.textWidth);
+        appendRow(std::move(row));
         continue;
       }
 
@@ -136,12 +156,45 @@ void DiffDisplayModel::rebuild(const DiffLayoutConfig& config) {
 
         const double leftTextWidth = rowIndex < deletions.size() ? deletions.at(rowIndex).textWidth : 0;
         const double rightTextWidth = rowIndex < additions.size() ? additions.at(rowIndex).textWidth : 0;
-        appendRow(std::move(row), std::max(leftTextWidth, rightTextWidth));
+        row.textWidth = std::max(leftTextWidth, rightTextWidth);
+        appendRow(std::move(row));
       }
     }
   }
+}
+
+void DiffDisplayModel::rebuildMetrics(const DiffLayoutConfig& config) {
+  rowOffsets_.clear();
+  rowOffsets_.reserve(displayRows_.size());
+
+  double top = 0;
+  for (DiffDisplayRow& row : displayRows_) {
+    row.top = top;
+    if (row.rowType == DiffRowType::FileHeader) {
+      row.height = config.fileHeaderHeight;
+    } else if (row.rowType == DiffRowType::Hunk) {
+      row.height = config.hunkHeight;
+    } else {
+      const double wrapWidth =
+          config.mode == DiffLayoutMode::Split ? config.splitWrapWidth : config.unifiedWrapWidth;
+      row.height = wrappedLineHeight(config.rowHeight, config.wrapEnabled, row.textWidth, wrapWidth);
+    }
+    rowOffsets_.push_back(top);
+    top += row.height;
+  }
 
   contentHeight_ = top;
+}
+
+void DiffDisplayModel::rebuild(const DiffLayoutConfig& config) {
+  if (layoutMode_ != config.mode) {
+    layoutMode_ = config.mode;
+    rebuildTopology();
+  } else if (displayRows_.empty() && (!sourceRows_.empty() || fileHeaderRow_)) {
+    rebuildTopology();
+  }
+
+  rebuildMetrics(config);
 }
 
 const std::vector<DiffDisplayRow>& DiffDisplayModel::rows() const {

@@ -22,6 +22,29 @@ class QSGTexture;
 
 namespace diffy {
 
+struct LineLayoutCacheKey {
+  QString text;
+  QString family;
+  int pixelSize = 0;
+
+  bool operator==(const LineLayoutCacheKey& other) const = default;
+};
+
+struct WrappedLineLayoutCacheKey {
+  LineLayoutCacheKey base;
+  qint64 wrapWidthMilli = -1;
+
+  bool operator==(const WrappedLineLayoutCacheKey& other) const = default;
+};
+
+inline size_t qHash(const LineLayoutCacheKey& key, size_t seed = 0) {
+  return qHashMulti(seed, key.text, key.family, key.pixelSize);
+}
+
+inline size_t qHash(const WrappedLineLayoutCacheKey& key, size_t seed = 0) {
+  return qHashMulti(seed, key.base, key.wrapWidthMilli);
+}
+
 class DiffSurfaceItem : public QQuickItem {
   Q_OBJECT
   Q_PROPERTY(QObject* rowsModel READ rowsModel WRITE setRowsModel NOTIFY rowsModelChanged)
@@ -117,8 +140,9 @@ class DiffSurfaceItem : public QQuickItem {
   double lastRowsRebuildTimeMs() const;
   double lastDisplayRowsRebuildTimeMs() const;
   double lastMetricsRecalcTimeMs() const;
+  Q_INVOKABLE void resetPerfStats();
 
- signals:
+signals:
   void rowsModelChanged();
   void layoutModeChanged();
   void filePathChanged();
@@ -147,15 +171,23 @@ class DiffSurfaceItem : public QQuickItem {
  private:
   void scheduleRowsRebuild();
   void scheduleMetricsRecalc();
+  bool updateFileHeader();
   void rebuildRows();
   void rebuildDisplayRows();
   void recalculateMetrics();
-  void invalidateTiles();
+  void invalidateContentTiles();
+  void invalidateGeometryTiles();
+  void invalidatePaletteTiles();
   void updateTileStats();
 
   struct CachedLineLayout {
     qreal width = 0;
     std::vector<qreal> prefixAdvances;
+  };
+
+  struct CachedWrappedLayout {
+    int lineCount = 1;
+    std::vector<int> charWrapLines;
   };
 
   bool rowSelected(int rowIndex) const;
@@ -164,7 +196,9 @@ class DiffSurfaceItem : public QQuickItem {
   qreal unifiedGutterWidth() const;
   QString selectedText() const;
   QString textForRange(const TextRange& range) const;
+  const CachedLineLayout& lineLayoutForText(const QString& text, int pixelSize) const;
   const CachedLineLayout& lineLayoutForRange(const TextRange& range, int pixelSize) const;
+  const CachedWrappedLayout& wrappedLayoutForText(const QString& text, int pixelSize, qreal wrapWidth) const;
   int currentRowIndex() const;
   void drawFileHeaderRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row) const;
   void drawHunkRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row) const;
@@ -254,12 +288,19 @@ class DiffSurfaceItem : public QQuickItem {
   int stickyVisibleRow_ = -1;
 
   mutable QHash<quint64, QString> textCache_;
-  mutable QHash<quint64, CachedLineLayout> lineLayoutCache_;
+  mutable QHash<LineLayoutCacheKey, CachedLineLayout> lineLayoutCache_;
+  mutable QHash<LineLayoutCacheKey, quint64> lineLayoutLastUsed_;
+  mutable quint64 lineLayoutUseTick_ = 0;
+  mutable QHash<WrappedLineLayoutCacheKey, CachedWrappedLayout> wrappedLayoutCache_;
+  mutable QHash<WrappedLineLayoutCacheKey, quint64> wrappedLayoutLastUsed_;
+  mutable quint64 wrappedLayoutUseTick_ = 0;
   mutable QHash<quint64, QImage> tileImageCache_;
   mutable QHash<quint64, quint64> tileImageLastUsed_;
   mutable QHash<quint64, QSGTexture*> residentTextureCache_;
   mutable QHash<quint64, quint64> residentTextureLastUsed_;
-  quint64 tileGeneration_ = 1;
+  quint64 tileContentGeneration_ = 1;
+  quint64 tileGeometryGeneration_ = 1;
+  quint64 tilePaletteGeneration_ = 1;
   quint64 tileUseTick_ = 0;
   int tileCacheHits_ = 0;
   int tileCacheMisses_ = 0;

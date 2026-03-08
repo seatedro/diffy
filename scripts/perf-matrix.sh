@@ -177,6 +177,12 @@ max_metric_from_log() {
   grep 'DIFFY_STATE' "$log_path" | sed -n "s/.*${key}=\\([^ ]*\\).*/\\1/p" | sort -g | tail -n 1
 }
 
+metric_delta() {
+  local before="$1"
+  local after="$2"
+  awk -v before="$before" -v after="$after" 'BEGIN { printf "%.3f", after - before }'
+}
+
 median_file() {
   sort -g "$1" | awk '
     { values[++n] = $1 }
@@ -271,11 +277,136 @@ collect_summary() {
     > "${work_dir}/${scenario}.resident_med_max"
 }
 
+collect_action_summary() {
+  local scenario="$1"
+  local metric
+  for metric in \
+    action_last_paint_ms action_last_raster_ms action_last_upload_ms \
+    action_last_rows_rebuild_ms action_last_display_rows_rebuild_ms action_last_metrics_ms \
+    action_texture_uploads_delta action_tile_cache_hits_delta action_tile_cache_misses_delta action_resident_tiles_delta; do
+    local values_file="${work_dir}/${scenario}.${metric}.values"
+    printf '%s\n' "$(median_file "$values_file")" > "${work_dir}/${scenario}.${metric}.median"
+    printf '%s\n' "$(max_file "$values_file")" > "${work_dir}/${scenario}.${metric}.max"
+  done
+
+  printf '%s / %s' \
+    "$(cat "${work_dir}/${scenario}.action_last_paint_ms.median")" \
+    "$(cat "${work_dir}/${scenario}.action_last_paint_ms.max")" \
+    > "${work_dir}/${scenario}.action_paint_med_max"
+  printf '%s / %s' \
+    "$(cat "${work_dir}/${scenario}.action_last_raster_ms.median")" \
+    "$(cat "${work_dir}/${scenario}.action_last_raster_ms.max")" \
+    > "${work_dir}/${scenario}.action_raster_med_max"
+  printf '%s / %s' \
+    "$(cat "${work_dir}/${scenario}.action_last_upload_ms.median")" \
+    "$(cat "${work_dir}/${scenario}.action_last_upload_ms.max")" \
+    > "${work_dir}/${scenario}.action_upload_med_max"
+  printf '%s / %s' \
+    "$(cat "${work_dir}/${scenario}.action_last_rows_rebuild_ms.median")" \
+    "$(cat "${work_dir}/${scenario}.action_last_rows_rebuild_ms.max")" \
+    > "${work_dir}/${scenario}.action_rows_med_max"
+  printf '%s / %s' \
+    "$(cat "${work_dir}/${scenario}.action_last_display_rows_rebuild_ms.median")" \
+    "$(cat "${work_dir}/${scenario}.action_last_display_rows_rebuild_ms.max")" \
+    > "${work_dir}/${scenario}.action_display_rows_med_max"
+  printf '%s / %s' \
+    "$(cat "${work_dir}/${scenario}.action_last_metrics_ms.median")" \
+    "$(cat "${work_dir}/${scenario}.action_last_metrics_ms.max")" \
+    > "${work_dir}/${scenario}.action_metrics_med_max"
+  printf '%s / %s' \
+    "$(cat "${work_dir}/${scenario}.action_texture_uploads_delta.median")" \
+    "$(cat "${work_dir}/${scenario}.action_texture_uploads_delta.max")" \
+    > "${work_dir}/${scenario}.action_uploads_delta_med_max"
+  printf '%s / %s' \
+    "$(cat "${work_dir}/${scenario}.action_tile_cache_hits_delta.median")" \
+    "$(cat "${work_dir}/${scenario}.action_tile_cache_hits_delta.max")" \
+    > "${work_dir}/${scenario}.action_hits_delta_med_max"
+  printf '%s / %s' \
+    "$(cat "${work_dir}/${scenario}.action_tile_cache_misses_delta.median")" \
+    "$(cat "${work_dir}/${scenario}.action_tile_cache_misses_delta.max")" \
+    > "${work_dir}/${scenario}.action_misses_delta_med_max"
+  printf '%s / %s' \
+    "$(cat "${work_dir}/${scenario}.action_resident_tiles_delta.median")" \
+    "$(cat "${work_dir}/${scenario}.action_resident_tiles_delta.max")" \
+    > "${work_dir}/${scenario}.action_resident_delta_med_max"
+}
+
+write_na_action_summary() {
+  local scenario="$1"
+  local key
+  for key in \
+    action_paint_med_max action_raster_med_max action_upload_med_max \
+    action_rows_med_max action_display_rows_med_max action_metrics_med_max \
+    action_uploads_delta_med_max action_hits_delta_med_max action_misses_delta_med_max action_resident_delta_med_max; do
+    printf 'n/a' > "${work_dir}/${scenario}.${key}"
+  done
+}
+
+action_state_pre=""
+action_state_post=""
+
+find_action_states() {
+  local scenario="$1"
+  local log_path="$2"
+  mapfile -t scenario_states < <(grep 'DIFFY_STATE' "${log_path}" || true)
+  action_state_pre=""
+  action_state_post=""
+  if [[ "${#scenario_states[@]}" -lt 2 ]]; then
+    return 1
+  fi
+
+  local index
+  case "${scenario}" in
+    layout-switch)
+      for ((index = 0; index < ${#scenario_states[@]} - 1; ++index)); do
+        local current_layout next_layout
+        current_layout="$(extract_metric "${scenario_states[index]}" "layout")"
+        next_layout="$(extract_metric "${scenario_states[index + 1]}" "layout")"
+        if [[ "${current_layout}" != "${next_layout}" && "${next_layout}" == "unified" ]]; then
+          action_state_pre="${scenario_states[index]}"
+          action_state_post="${scenario_states[index + 1]}"
+          return 0
+        fi
+      done
+      ;;
+    file-switch)
+      for ((index = 0; index < ${#scenario_states[@]} - 1; ++index)); do
+        local current_path next_path
+        current_path="$(extract_metric "${scenario_states[index]}" "selected_path")"
+        next_path="$(extract_metric "${scenario_states[index + 1]}" "selected_path")"
+        if [[ -n "${current_path}" && -n "${next_path}" && "${current_path}" != "${next_path}" && "${next_path}" != "none" ]]; then
+          action_state_pre="${scenario_states[index]}"
+          action_state_post="${scenario_states[index + 1]}"
+          return 0
+        fi
+      done
+      ;;
+    warm-split-horizontal|long-line-split-scroll)
+      for ((index = 0; index < ${#scenario_states[@]} - 1; ++index)); do
+        local current_left next_left current_right next_right
+        current_left="$(extract_metric "${scenario_states[index]}" "left_viewport_x")"
+        next_left="$(extract_metric "${scenario_states[index + 1]}" "left_viewport_x")"
+        current_right="$(extract_metric "${scenario_states[index]}" "right_viewport_x")"
+        next_right="$(extract_metric "${scenario_states[index + 1]}" "right_viewport_x")"
+        if [[ -n "${current_left}" && -n "${next_left}" ]] && \
+           ([[ "${current_left}" != "${next_left}" ]] || [[ "${current_right}" != "${next_right}" ]]); then
+          action_state_pre="${scenario_states[index]}"
+          action_state_post="${scenario_states[index + 1]}"
+          return 0
+        fi
+      done
+      ;;
+  esac
+
+  return 1
+}
+
 run_scenario() {
   local scenario="$1"
   shift
   local extra_env=("$@")
   local run
+  local has_action_metrics=false
 
   printf 'Running %-26s' "${scenario}"
   : > "${work_dir}/${scenario}.states"
@@ -295,9 +426,9 @@ run_scenario() {
       export DIFFY_START_COMPARE=1
       export DIFFY_REQUIRE_RESULTS=1
       export DIFFY_PRINT_STATE=1
-      export DIFFY_PRINT_STATE_DELAY_MS=120
-      export DIFFY_PRINT_STATE_REPEAT_MS=180
-      export DIFFY_PRINT_STATE_COUNT=6
+      export DIFFY_PRINT_STATE_DELAY_MS=80
+      export DIFFY_PRINT_STATE_REPEAT_MS=120
+      export DIFFY_PRINT_STATE_COUNT=8
       export DIFFY_CAPTURE_DELAY_MS=980
       export DIFFY_EXIT_AFTER_MS=1300
       export DIFFY_FATAL_RUNTIME_WARNINGS=1
@@ -349,9 +480,34 @@ run_scenario() {
       fi
       printf '%s\n' "${value}" >> "${work_dir}/${scenario}.${metric}.values"
     done
+
+    if find_action_states "${scenario}" "${stdout_log}"; then
+      has_action_metrics=true
+      for metric in \
+        last_paint_ms last_raster_ms last_upload_ms \
+        last_rows_rebuild_ms last_display_rows_rebuild_ms last_metrics_ms; do
+        local action_value
+        action_value="$(extract_metric "${action_state_post}" "${metric}")"
+        printf '%s\n' "${action_value}" >> "${work_dir}/${scenario}.action_${metric}.values"
+      done
+
+      local counter
+      for counter in texture_uploads tile_cache_hits tile_cache_misses resident_tiles; do
+        local before_value after_value
+        before_value="$(extract_metric "${action_state_pre}" "${counter}")"
+        after_value="$(extract_metric "${action_state_post}" "${counter}")"
+        printf '%s\n' "$(metric_delta "${before_value}" "${after_value}")" \
+          >> "${work_dir}/${scenario}.action_${counter}_delta.values"
+      done
+    fi
   done
   printf '\n'
   collect_summary "$scenario"
+  if [[ "${has_action_metrics}" == true ]]; then
+    collect_action_summary "$scenario"
+  else
+    write_na_action_summary "$scenario"
+  fi
 }
 
 scenario_names=(
@@ -404,12 +560,15 @@ for scenario in "${scenario_names[@]}"; do
         "DIFFY_START_LAYOUT=split" \
         "DIFFY_START_FILE_PATH=${split_file}" \
         "DIFFY_START_SCROLL_Y=2500" \
+        "DIFFY_RESET_SURFACE_STATS_AFTER_MS=160" \
+        "DIFFY_START_WHEEL_AFTER_MS=220" \
         "DIFFY_START_WHEEL_PIXEL_X=-160"
       ;;
     file-switch)
       run_scenario "${scenario}" \
         "DIFFY_START_LAYOUT=unified" \
         "DIFFY_START_FILE_PATH=${switch_from_file}" \
+        "DIFFY_RESET_SURFACE_STATS_AFTER_MS=160" \
         "DIFFY_SWITCH_FILE_TO_PATH=${switch_to_file}" \
         "DIFFY_SWITCH_FILE_AFTER_MS=220"
       ;;
@@ -418,6 +577,7 @@ for scenario in "${scenario_names[@]}"; do
         "DIFFY_START_LAYOUT=split" \
         "DIFFY_START_FILE_PATH=${split_file}" \
         "DIFFY_START_SCROLL_Y=1200" \
+        "DIFFY_RESET_SURFACE_STATS_AFTER_MS=160" \
         "DIFFY_SWITCH_LAYOUT_TO=unified" \
         "DIFFY_SWITCH_LAYOUT_AFTER_MS=260"
       ;;
@@ -429,6 +589,8 @@ for scenario in "${scenario_names[@]}"; do
         "DIFFY_START_COMPARE_MODE=two-dot" \
         "DIFFY_START_LAYOUT=split" \
         "DIFFY_START_FILE_PATH=src/long.cpp" \
+        "DIFFY_RESET_SURFACE_STATS_AFTER_MS=160" \
+        "DIFFY_START_WHEEL_AFTER_MS=220" \
         "DIFFY_START_WHEEL_PIXEL_X=-160"
       ;;
   esac
@@ -449,6 +611,22 @@ print_summary_table "Cache Counters (median / max)" \
   "hits_med_max" \
   "misses_med_max" \
   "resident_med_max"
+
+print_summary_table "Action Render Timings (median / max ms)" \
+  "action_paint_med_max" \
+  "action_raster_med_max" \
+  "action_upload_med_max"
+
+print_summary_table "Action Layout Timings (median / max ms)" \
+  "action_rows_med_max" \
+  "action_display_rows_med_max" \
+  "action_metrics_med_max"
+
+print_summary_table "Action Cache Deltas (median / max)" \
+  "action_uploads_delta_med_max" \
+  "action_hits_delta_med_max" \
+  "action_misses_delta_med_max" \
+  "action_resident_delta_med_max"
 
 if [[ "$keep_workdir" == true ]]; then
   printf '\nRaw scenario files kept at: %s\n' "${work_dir}"

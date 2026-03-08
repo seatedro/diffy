@@ -133,7 +133,6 @@ class DiffSurfaceItem : public QQuickItem {
   void rebuildRows();
   void rebuildDisplayRows();
   void recalculateMetrics();
-  void applyWordWrap();
   void invalidateTiles();
   void updateTileStats();
 

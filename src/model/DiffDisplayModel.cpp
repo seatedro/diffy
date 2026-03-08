@@ -1,33 +1,52 @@
 #include "model/DiffDisplayModel.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace diffy {
+namespace {
+
+double wrappedLineHeight(double baseHeight, bool wrapEnabled, double textWidth, double availableWidth) {
+  if (!wrapEnabled || baseHeight <= 0 || availableWidth <= 0 || textWidth <= availableWidth) {
+    return baseHeight;
+  }
+  return baseHeight * std::ceil(textWidth / availableWidth);
+}
+
+}  // namespace
 
 void DiffDisplayModel::setSourceRows(std::vector<DiffSourceRow> rows) {
   sourceRows_ = std::move(rows);
+  int maxLineNumber = 0;
+  for (const DiffSourceRow& row : sourceRows_) {
+    maxLineNumber = std::max(maxLineNumber, std::max(row.oldLine, row.newLine));
+  }
+  lineNumberDigits_ = std::max(3, static_cast<int>(std::to_string(std::max(0, maxLineNumber)).size()));
 }
 
-void DiffDisplayModel::rebuild(DiffLayoutMode mode, double rowHeight, double hunkHeight, double fileHeaderHeight) {
+void DiffDisplayModel::rebuild(const DiffLayoutConfig& config) {
   displayRows_.clear();
   rowOffsets_.clear();
 
-  int maxLineNumber = 0;
   double top = 0;
 
-  auto appendRow = [&](DiffDisplayRow row) {
+  auto appendRow = [&](DiffDisplayRow row, double textWidth) {
     row.top = top;
-    row.height = row.rowType == DiffRowType::FileHeader ? fileHeaderHeight
-               : row.rowType == DiffRowType::Hunk         ? hunkHeight
-                                                         : rowHeight;
+    if (row.rowType == DiffRowType::FileHeader) {
+      row.height = config.fileHeaderHeight;
+    } else if (row.rowType == DiffRowType::Hunk) {
+      row.height = config.hunkHeight;
+    } else {
+      const double wrapWidth =
+          config.mode == DiffLayoutMode::Split ? config.splitWrapWidth : config.unifiedWrapWidth;
+      row.height = wrappedLineHeight(config.rowHeight, config.wrapEnabled, textWidth, wrapWidth);
+    }
     rowOffsets_.push_back(top);
     top += row.height;
-    maxLineNumber = std::max(maxLineNumber, std::max(row.oldLine, row.newLine));
-    maxLineNumber = std::max(maxLineNumber, std::max(row.leftLine, row.rightLine));
     displayRows_.push_back(std::move(row));
   };
 
-  if (mode == DiffLayoutMode::Unified) {
+  if (config.mode == DiffLayoutMode::Unified) {
     for (const DiffSourceRow& sourceRow : sourceRows_) {
       DiffDisplayRow row;
       row.rowType = sourceRow.rowType;
@@ -39,7 +58,7 @@ void DiffDisplayModel::rebuild(DiffLayoutMode mode, double rowHeight, double hun
       row.tokens = sourceRow.tokens;
       row.changeSpans = sourceRow.changeSpans;
       row.textRange = sourceRow.textRange;
-      appendRow(std::move(row));
+      appendRow(std::move(row), sourceRow.textWidth);
     }
   } else {
     for (size_t index = 0; index < sourceRows_.size(); ++index) {
@@ -49,7 +68,7 @@ void DiffDisplayModel::rebuild(DiffLayoutMode mode, double rowHeight, double hun
         row.rowType = sourceRow.rowType;
         row.header = sourceRow.header;
         row.detail = sourceRow.detail;
-        appendRow(std::move(row));
+        appendRow(std::move(row), 0);
         continue;
       }
 
@@ -67,7 +86,7 @@ void DiffDisplayModel::rebuild(DiffLayoutMode mode, double rowHeight, double hun
         row.rightTokens = sourceRow.tokens;
         row.leftTextRange = sourceRow.textRange;
         row.rightTextRange = sourceRow.textRange;
-        appendRow(std::move(row));
+        appendRow(std::move(row), sourceRow.textWidth);
         continue;
       }
 
@@ -115,25 +134,18 @@ void DiffDisplayModel::rebuild(DiffLayoutMode mode, double rowHeight, double hun
           row.newLine = right.newLine;
         }
 
-        appendRow(std::move(row));
+        const double leftTextWidth = rowIndex < deletions.size() ? deletions.at(rowIndex).textWidth : 0;
+        const double rightTextWidth = rowIndex < additions.size() ? additions.at(rowIndex).textWidth : 0;
+        appendRow(std::move(row), std::max(leftTextWidth, rightTextWidth));
       }
     }
   }
 
   contentHeight_ = top;
-  lineNumberDigits_ = std::max(3, static_cast<int>(std::to_string(std::max(0, maxLineNumber)).size()));
 }
 
 const std::vector<DiffDisplayRow>& DiffDisplayModel::rows() const {
   return displayRows_;
-}
-
-std::vector<DiffDisplayRow>& DiffDisplayModel::mutableRows() {
-  return displayRows_;
-}
-
-std::vector<double>& DiffDisplayModel::mutableOffsets() {
-  return rowOffsets_;
 }
 
 double DiffDisplayModel::contentHeight() const {

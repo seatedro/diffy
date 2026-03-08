@@ -40,9 +40,20 @@ struct DiffSourceRow {
   DiffLineKind kind = DiffLineKind::Context;
   int oldLine = -1;
   int newLine = -1;
+  double textWidth = 0;
   std::vector<DiffTokenSpan> tokens;
   std::vector<DiffTokenSpan> changeSpans;
   TextRange textRange;
+};
+
+struct DiffLayoutConfig {
+  DiffLayoutMode mode = DiffLayoutMode::Unified;
+  double rowHeight = 0;
+  double hunkHeight = 0;
+  double fileHeaderHeight = 0;
+  bool wrapEnabled = false;
+  double unifiedWrapWidth = 0;
+  double splitWrapWidth = 0;
 };
 
 struct DiffDisplayRow {
@@ -72,11 +83,9 @@ struct DiffDisplayRow {
 class DiffDisplayModel {
  public:
   void setSourceRows(std::vector<DiffSourceRow> rows);
-  void rebuild(DiffLayoutMode mode, double rowHeight, double hunkHeight, double fileHeaderHeight);
+  void rebuild(const DiffLayoutConfig& config);
 
   const std::vector<DiffDisplayRow>& rows() const;
-  std::vector<DiffDisplayRow>& mutableRows();
-  std::vector<double>& mutableOffsets();
   double contentHeight() const;
   int lineNumberDigits() const;
 

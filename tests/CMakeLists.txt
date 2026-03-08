@@ -32,6 +32,18 @@ target_include_directories(test_text_rope PRIVATE
 target_link_libraries(test_text_rope PRIVATE Qt6::Core Qt6::Test)
 add_test(NAME test_text_rope COMMAND test_text_rope)
 
+qt_add_executable(test_diff_display_model
+  test_diff_display_model.cpp
+  ../src/model/DiffDisplayModel.cpp
+)
+
+target_include_directories(test_diff_display_model PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+)
+
+target_link_libraries(test_diff_display_model PRIVATE Qt6::Core Qt6::Test)
+add_test(NAME test_diff_display_model COMMAND test_diff_display_model)
+
 qt_add_executable(test_diff_controller
   test_diff_controller.cpp
   ../src/app/DiffController.cpp

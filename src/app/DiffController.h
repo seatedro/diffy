@@ -52,6 +52,7 @@ class DiffController : public QObject {
   Q_PROPERTY(bool repositoryPickerVisible READ repositoryPickerVisible NOTIFY repositoryPickerVisibleChanged)
   Q_PROPERTY(QObject* repositoryPickerModel READ repositoryPickerModel CONSTANT)
   Q_PROPERTY(QVariantList branches READ branches NOTIFY branchesChanged)
+  Q_PROPERTY(QVariantList tags READ tags NOTIFY tagsChanged)
   Q_PROPERTY(QVariantList commits READ commits NOTIFY commitsChanged)
   Q_PROPERTY(QVariantMap pullRequestInfo READ pullRequestInfo NOTIFY pullRequestInfoChanged)
   Q_PROPERTY(bool comparing READ comparing NOTIFY comparingChanged)
@@ -106,6 +107,7 @@ class DiffController : public QObject {
   QObject* repositoryPickerModel() const;
 
   QVariantList branches() const;
+  QVariantList tags() const;
   QVariantList commits() const;
   bool comparing() const;
   QVariantMap pullRequestInfo() const;
@@ -134,7 +136,11 @@ class DiffController : public QObject {
   Q_INVOKABLE void selectFile(int index);
   Q_INVOKABLE QVariantMap selectedFile() const;
   Q_INVOKABLE void loadBranches();
+  Q_INVOKABLE void loadTags();
   Q_INVOKABLE void loadCommits(const QString& ref);
+  Q_INVOKABLE QVariantList searchCommits(const QString& hexPrefix);
+  Q_INVOKABLE void recordRecentBranch(const QString& name);
+  Q_INVOKABLE QVariantList recentBranchesForRepo();
   Q_INVOKABLE void openPullRequest(const QString& url);
   Q_INVOKABLE QVariantList fuzzyFilter(const QString& query, const QVariantList& items, const QString& labelKey);
   Q_INVOKABLE void startOAuthLogin();
@@ -161,6 +167,7 @@ class DiffController : public QObject {
   void selectedFileRowsChanged();
   void repositoryPickerVisibleChanged();
   void branchesChanged();
+  void tagsChanged();
   void commitsChanged();
   void pullRequestInfoChanged();
   void comparingChanged();
@@ -216,6 +223,7 @@ class DiffController : public QObject {
   bool repositoryPickerVisible_ = false;
   int selectedFileIndex_ = -1;
   QVariantList branches_;
+  QVariantList tags_;
   QVariantList commits_;
   QVariantMap pullRequestInfo_;
   bool comparing_ = false;

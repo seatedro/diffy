@@ -157,6 +157,11 @@ void DiffController::setLeftRef(const QString& value) {
     return;
   }
   leftRef_ = value;
+  if (value.size() != 40 || !std::all_of(value.toLatin1().begin(), value.toLatin1().end(), [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+      })) {
+    recordRecentBranch(value);
+  }
   emit leftRefChanged();
 }
 
@@ -169,6 +174,11 @@ void DiffController::setRightRef(const QString& value) {
     return;
   }
   rightRef_ = value;
+  if (value.size() != 40 || !std::all_of(value.toLatin1().begin(), value.toLatin1().end(), [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+      })) {
+    recordRecentBranch(value);
+  }
   emit rightRefChanged();
 }
 
@@ -259,6 +269,10 @@ bool DiffController::comparing() const {
 
 QVariantList DiffController::branches() const {
   return branches_;
+}
+
+QVariantList DiffController::tags() const {
+  return tags_;
 }
 
 QVariantList DiffController::commits() const {
@@ -744,7 +758,59 @@ void DiffController::loadBranches() {
         {"isHead", branch.isHead},
     });
   }
+  log::info("controller", "loadBranches: {} branches loaded", branches_.size());
   emit branchesChanged();
+  loadTags();
+}
+
+void DiffController::loadTags() {
+  std::string error;
+  const auto tagList = gitService_.listTags(&error);
+  tags_.clear();
+  for (const auto& tag : tagList) {
+    tags_.append(QVariantMap{
+        {"name", QString::fromStdString(tag.name)},
+        {"targetOid", QString::fromStdString(tag.targetOid)},
+    });
+  }
+  emit tagsChanged();
+}
+
+QVariantList DiffController::searchCommits(const QString& hexPrefix) {
+  std::string error;
+  const auto commits = gitService_.searchCommitsByPartialOid(hexPrefix.toStdString(), 10, &error);
+  QVariantList result;
+  for (const auto& commit : commits) {
+    result.append(QVariantMap{
+        {"oid", QString::fromStdString(commit.oid)},
+        {"summary", QString::fromStdString(commit.summary)},
+        {"author", QString::fromStdString(commit.authorName)},
+        {"timestamp", static_cast<qint64>(commit.timestamp)},
+    });
+  }
+  return result;
+}
+
+void DiffController::recordRecentBranch(const QString& name) {
+  const QString key = "recentBranches/" + repoPath_;
+  QStringList recents = settings_.value(key).toStringList();
+  recents.removeAll(name);
+  recents.prepend(name);
+  constexpr int kMaxRecentBranches = 8;
+  while (recents.size() > kMaxRecentBranches) {
+    recents.removeLast();
+  }
+  settings_.setValue(key, recents);
+}
+
+QVariantList DiffController::recentBranchesForRepo() {
+  const QString key = "recentBranches/" + repoPath_;
+  const QStringList recents = settings_.value(key).toStringList();
+  QVariantList result;
+  for (const auto& name : recents) {
+    result.append(QVariantMap{{"name", name}});
+  }
+  return result;
 }
 
 void DiffController::loadCommits(const QString& ref) {

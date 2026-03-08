@@ -30,8 +30,10 @@ Rectangle {
     }
 
     function runCompare() {
-        diffController.leftRef = leftRefField.text
-        diffController.rightRef = rightRefField.text
+        if (leftRefField.text !== diffController.leftRefDisplay)
+            diffController.leftRef = leftRefField.text
+        if (rightRefField.text !== diffController.rightRefDisplay)
+            diffController.rightRef = rightRefField.text
         diffController.compare()
     }
 
@@ -100,19 +102,53 @@ Rectangle {
             Layout.fillWidth: true
             spacing: theme.sp2
 
-            InputField {
-                id: leftRefField
+            Rectangle {
+                id: leftRefCard
                 Layout.fillWidth: true
-                monospace: true
-                text: diffController.leftRefDisplay
-                placeholderText: "Base ref (e.g. main)"
-                onSubmitted: root.runCompare()
-            }
+                implicitHeight: 30
+                radius: theme.radiusSm
+                color: leftSetupMouse.containsMouse ? theme.panelStrong : theme.panel
+                border.width: 1
+                border.color: theme.borderSoft
+                Behavior on color { ColorAnimation { duration: 100 } }
 
-            ActionButton {
-                text: "Branch"
-                compact: true
-                onClicked: root.pickBranchRequested("left")
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: theme.sp3
+                    anchors.rightMargin: theme.sp2
+                    spacing: theme.sp2
+
+                    InputField {
+                        id: leftRefField
+                        Layout.fillWidth: true
+                        monospace: true
+                        borderless: true
+                        compact: true
+                        text: diffController.leftRefDisplay
+                        placeholderText: "Base ref (e.g. main)"
+                        onSubmitted: root.runCompare()
+                    }
+
+                    Icon {
+                        svg: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>'
+                        size: 14
+                        color: theme.textFaint
+
+                        MouseArea {
+                            anchors.fill: parent
+                            anchors.margins: -4
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: window.openBranchPicker("left", leftRefCard)
+                        }
+                    }
+                }
+
+                MouseArea {
+                    id: leftSetupMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    acceptedButtons: Qt.NoButton
+                }
             }
 
             ActionButton {
@@ -121,19 +157,53 @@ Rectangle {
                 onClicked: diffController.compareMode = nextCompareMode(diffController.compareMode)
             }
 
-            InputField {
-                id: rightRefField
+            Rectangle {
+                id: rightRefCard
                 Layout.fillWidth: true
-                monospace: true
-                text: diffController.rightRefDisplay
-                placeholderText: "Head ref (e.g. feature)"
-                onSubmitted: root.runCompare()
-            }
+                implicitHeight: 30
+                radius: theme.radiusSm
+                color: rightSetupMouse.containsMouse ? theme.panelStrong : theme.panel
+                border.width: 1
+                border.color: theme.borderSoft
+                Behavior on color { ColorAnimation { duration: 100 } }
 
-            ActionButton {
-                text: "Branch"
-                compact: true
-                onClicked: root.pickBranchRequested("right")
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: theme.sp3
+                    anchors.rightMargin: theme.sp2
+                    spacing: theme.sp2
+
+                    InputField {
+                        id: rightRefField
+                        Layout.fillWidth: true
+                        monospace: true
+                        borderless: true
+                        compact: true
+                        text: diffController.rightRefDisplay
+                        placeholderText: "Head ref (e.g. feature)"
+                        onSubmitted: root.runCompare()
+                    }
+
+                    Icon {
+                        svg: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>'
+                        size: 14
+                        color: theme.textFaint
+
+                        MouseArea {
+                            anchors.fill: parent
+                            anchors.margins: -4
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: window.openBranchPicker("right", rightRefCard)
+                        }
+                    }
+                }
+
+                MouseArea {
+                    id: rightSetupMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    acceptedButtons: Qt.NoButton
+                }
             }
         }
 

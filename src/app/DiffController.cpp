@@ -208,9 +208,14 @@ void DiffController::setSelectedFileIndex(int index) {
     return;
   }
   selectedFileIndex_ = index;
+  rebuildSelectedFileRows();
+  if (index >= 0 && index < static_cast<int>(fileDiffs_.size())) {
+    Q_ASSERT(selectedFileRowsModel_.count() == static_cast<int>(flattenedRowsForFile(index).size()));
+  } else {
+    Q_ASSERT(selectedFileRowsModel_.count() == 0);
+  }
   emit selectedFileIndexChanged();
   emit selectedFileChanged();
-  rebuildSelectedFileRows();
 }
 
 QObject* DiffController::selectedFileRowsModel() const {
@@ -321,9 +326,10 @@ bool DiffController::openRepository(const QString& path) {
     files_.clear();
     emit filesChanged();
     selectedFileIndex_ = -1;
+    rebuildSelectedFileRows();
+    Q_ASSERT(selectedFileRowsModel_.count() == 0);
     emit selectedFileIndexChanged();
     emit selectedFileChanged();
-    rebuildSelectedFileRows();
   }
 
   if (!refs_.isEmpty()) {
@@ -471,9 +477,14 @@ void DiffController::compare() {
   } else {
     selectedFileIndex_ = -1;
   }
+  rebuildSelectedFileRows();
+  if (selectedFileIndex_ >= 0) {
+    Q_ASSERT(selectedFileRowsModel_.count() == static_cast<int>(flattenedRowsForFile(selectedFileIndex_).size()));
+  } else {
+    Q_ASSERT(selectedFileRowsModel_.count() == 0);
+  }
   emit selectedFileIndexChanged();
   emit selectedFileChanged();
-  rebuildSelectedFileRows();
   QTimer::singleShot(0, this, [this]() { prefetchFileRows(); });
 
   finishComparing();

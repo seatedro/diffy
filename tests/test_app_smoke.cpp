@@ -507,7 +507,9 @@ void AppSmokeTest::switchesFilesAndKeepsTimingMetricsAvailable() {
     const QVariantMap state = parseStateLine(result.stdoutText);
     QVERIFY2(!state.isEmpty(), qPrintable(result.stdoutText));
     QCOMPARE(state.value("currentView").toString(), QString("diff"));
+    QCOMPARE(state.value("selectedPath").toString(), QString("src/example.cpp"));
     QVERIFY(state.value("rows").toInt() >= 8);
+    QCOMPARE(state.value("displayRows").toInt(), state.value("rows").toInt() + 1);
     QVERIFY(state.value("paintCount").toInt() > 0);
     verifyTimingMetrics(state);
     QVERIFY2(QFileInfo::exists(result.capturePath), qPrintable(result.capturePath));

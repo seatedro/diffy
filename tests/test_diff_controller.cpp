@@ -2,6 +2,7 @@
 
 #include <QFile>
 #include <QProcess>
+#include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QDir>
@@ -67,6 +68,37 @@ QString initRepositoryWithoutDiff() {
   runGit(repoDir->path(), {"add", "readme.txt"});
   runGit(repoDir->path(),
          {"-c", "user.name=diffy", "-c", "user.email=diffy@example.com", "commit", "-m", "initial"});
+
+  return repoDir->path();
+}
+
+QString initRepositoryWithMultipleDiffs() {
+  auto* repoDir = new QTemporaryDir;
+  if (!repoDir->isValid()) {
+    delete repoDir;
+    return {};
+  }
+
+  runGit(repoDir->path(), {"init"});
+  QDir().mkpath(repoDir->filePath("src"));
+  QDir().mkpath(repoDir->filePath("include"));
+
+  writeFile(repoDir->filePath("src/example.cpp"),
+            "#include <string>\n\nint add(int a, int b) {\n  return a + b;\n}\n");
+  writeFile(repoDir->filePath("include/example.h"),
+            "#pragma once\n\nint add(int a, int b);\n");
+  runGit(repoDir->path(), {"add", "src/example.cpp", "include/example.h"});
+  runGit(repoDir->path(),
+         {"-c", "user.name=diffy", "-c", "user.email=diffy@example.com", "commit", "-m", "initial"});
+
+  writeFile(repoDir->filePath("src/example.cpp"),
+            "#include <string>\n#include <vector>\n\nint add(int a, int b) {\n  const int total = a + b;\n"
+            "  return total;\n}\n\nint sub(int a, int b) {\n  return a - b;\n}\n");
+  writeFile(repoDir->filePath("include/example.h"),
+            "#pragma once\n\nint add(int a, int b);\nint sub(int a, int b);\n");
+  runGit(repoDir->path(), {"add", "src/example.cpp", "include/example.h"});
+  runGit(repoDir->path(),
+         {"-c", "user.name=diffy", "-c", "user.email=diffy@example.com", "commit", "-m", "update"});
 
   return repoDir->path();
 }
@@ -362,6 +394,55 @@ class DiffControllerTest : public QObject {
     QCOMPARE(controller.compareMode(), QString("three-dot"));
     QVERIFY(controller.files().size() >= 1);
     QVERIFY(controller.selectedFileRowCount() > 0);
+  }
+
+  void selectingFileRebuildsRowsBeforeSelectedFileSignal() {
+    const QString repoPath = initRepositoryWithMultipleDiffs();
+    QVERIFY(!repoPath.isEmpty());
+
+    DiffController controller;
+    QVERIFY(controller.openRepository(repoPath));
+    controller.setLeftRef("HEAD~1");
+    controller.setRightRef("HEAD");
+    controller.compare();
+
+    int targetIndex = -1;
+    for (int index = 0; index < controller.files().size(); ++index) {
+      if (controller.files().at(index).toMap().value("path").toString() == "src/example.cpp") {
+        targetIndex = index;
+        break;
+      }
+    }
+    QVERIFY(targetIndex >= 0);
+    QVERIFY(targetIndex != controller.selectedFileIndex());
+
+    controller.selectFile(targetIndex);
+    const int expectedRowCount = controller.selectedFileRowCount();
+    QVERIFY(expectedRowCount > 0);
+
+    controller.selectFile(0);
+    QVERIFY(controller.selectedFileIndex() == 0);
+
+    QStringList eventOrder;
+    bool rowsReadyAtFileSignal = false;
+    QSignalSpy rowsSpy(&controller, &DiffController::selectedFileRowsChanged);
+    QSignalSpy fileSpy(&controller, &DiffController::selectedFileChanged);
+
+    connect(&controller, &DiffController::selectedFileRowsChanged, &controller, [&]() {
+      eventOrder.push_back("rows");
+    });
+    connect(&controller, &DiffController::selectedFileChanged, &controller, [&]() {
+      eventOrder.push_back("file");
+      rowsReadyAtFileSignal = controller.selectedFileRowCount() == expectedRowCount &&
+                              controller.selectedFile().value("path").toString() == "src/example.cpp";
+    });
+
+    controller.selectFile(targetIndex);
+
+    QCOMPARE(rowsSpy.count(), 1);
+    QCOMPARE(fileSpy.count(), 1);
+    QCOMPARE(eventOrder, QStringList({"rows", "file"}));
+    QVERIFY(rowsReadyAtFileSignal);
   }
 };
 

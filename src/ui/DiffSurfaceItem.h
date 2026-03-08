@@ -6,6 +6,7 @@
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QQuickPaintedItem>
+#include <QWheelEvent>
 #include <QVariantMap>
 
 #include "model/DiffDisplayModel.h"
@@ -28,6 +29,8 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   Q_PROPERTY(qreal contentWidth READ contentWidth NOTIFY contentWidthChanged)
   Q_PROPERTY(qreal viewportX READ viewportX WRITE setViewportX NOTIFY viewportXChanged)
   Q_PROPERTY(qreal viewportY READ viewportY WRITE setViewportY NOTIFY viewportYChanged)
+  Q_PROPERTY(qreal leftViewportX READ leftViewportX WRITE setLeftViewportX NOTIFY leftViewportXChanged)
+  Q_PROPERTY(qreal rightViewportX READ rightViewportX WRITE setRightViewportX NOTIFY rightViewportXChanged)
   Q_PROPERTY(qreal viewportHeight READ viewportHeight WRITE setViewportHeight NOTIFY viewportHeightChanged)
   Q_PROPERTY(bool wrapEnabled READ wrapEnabled WRITE setWrapEnabled NOTIFY wrapEnabledChanged)
   Q_PROPERTY(int wrapColumn READ wrapColumn WRITE setWrapColumn NOTIFY wrapColumnChanged)
@@ -69,6 +72,12 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   qreal viewportY() const;
   void setViewportY(qreal value);
 
+  qreal leftViewportX() const;
+  void setLeftViewportX(qreal value);
+
+  qreal rightViewportX() const;
+  void setRightViewportX(qreal value);
+
   qreal viewportHeight() const;
   void setViewportHeight(qreal value);
 
@@ -95,6 +104,8 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   void contentWidthChanged();
   void viewportXChanged();
   void viewportYChanged();
+  void leftViewportXChanged();
+  void rightViewportXChanged();
   void viewportHeightChanged();
   void wrapEnabledChanged();
   void wrapColumnChanged();
@@ -144,6 +155,7 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   void mousePressEvent(QMouseEvent* event) override;
   void mouseMoveEvent(QMouseEvent* event) override;
   void mouseReleaseEvent(QMouseEvent* event) override;
+  void wheelEvent(QWheelEvent* event) override;
   void hoverMoveEvent(QHoverEvent* event) override;
   void hoverLeaveEvent(QHoverEvent* event) override;
   void keyPressEvent(QKeyEvent* event) override;
@@ -166,6 +178,8 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   qreal contentWidth_ = 0;
   qreal viewportX_ = 0;
   qreal viewportY_ = 0;
+  qreal leftViewportX_ = 0;
+  qreal rightViewportX_ = 0;
   qreal viewportHeight_ = 0;
   qreal lineHeight_ = 0;
   qreal rowHeight_ = 0;

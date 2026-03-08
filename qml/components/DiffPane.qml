@@ -81,73 +81,68 @@ Rectangle {
         border.width: 0
         implicitHeight: !root.hasData() ? 76 : 34
 
-        Column {
-            x: root.hasData() ? 4 : 6
-            y: root.hasData() ? 4 : 6
-            width: parent.width - 2 * (root.hasData() ? 4 : 6)
-            spacing: 3
+        RowLayout {
+            visible: root.hasData() && fileData.isBinary
+            x: 4
+            y: 4
+            width: parent.width - 8
+            spacing: 8
+
+            Rectangle {
+                Layout.preferredWidth: statusText.implicitWidth + 16
+                width: statusText.implicitWidth + 16
+                height: 14
+                radius: 4
+                color: root.hasData() ? root.statusFill(fileData.status) : theme.panelStrong
+
+                Text {
+                    id: statusText
+                    anchors.centerIn: parent
+                    text: root.hasData() ? root.statusLabel(fileData.status) : ""
+                    color: root.hasData() ? root.statusColor(fileData.status) : theme.textMuted
+                    font.family: theme.sans
+                    font.pixelSize: 7
+                    font.bold: true
+                }
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: root.hasData() ? fileData.path : ""
+                color: theme.textStrong
+                font.family: theme.sans
+                font.pixelSize: 11
+                font.bold: true
+                elide: Text.ElideMiddle
+            }
 
             RowLayout {
-                visible: root.hasData() && fileData.isBinary
-                width: parent.width
-                spacing: 8
+                id: metadata
+                Layout.alignment: Qt.AlignRight
+                spacing: 7
 
-                Rectangle {
-                    Layout.preferredWidth: statusText.implicitWidth + 16
-                    width: statusText.implicitWidth + 16
-                    height: 14
-                    radius: 4
-                    color: root.hasData() ? root.statusFill(fileData.status) : theme.panelStrong
-
-                    Text {
-                        id: statusText
-                        anchors.centerIn: parent
-                        text: root.hasData() ? root.statusLabel(fileData.status) : ""
-                        color: root.hasData() ? root.statusColor(fileData.status) : theme.textMuted
-                        font.family: theme.sans
-                        font.pixelSize: 7
-                        font.bold: true
-                    }
+                Text {
+                    text: "+" + fileData.additions
+                    color: theme.successText
+                    font.family: theme.mono
+                    font.pixelSize: 8
                 }
 
                 Text {
-                    Layout.fillWidth: true
-                    text: root.hasData() ? fileData.path : ""
-                    color: theme.textStrong
-                    font.family: theme.sans
-                    font.pixelSize: 11
-                    font.bold: true
-                    elide: Text.ElideMiddle
-                }
-
-                RowLayout {
-                    id: metadata
-                    Layout.alignment: Qt.AlignRight
-                    spacing: 7
-
-                    Text {
-                        text: "+" + fileData.additions
-                        color: theme.successText
-                        font.family: theme.mono
-                        font.pixelSize: 8
-                    }
-
-                    Text {
-                        text: "-" + fileData.deletions
-                        color: theme.dangerText
-                        font.family: theme.mono
-                        font.pixelSize: 8
-                    }
+                    text: "-" + fileData.deletions
+                    color: theme.dangerText
+                    font.family: theme.mono
+                    font.pixelSize: 8
                 }
             }
+        }
 
-            EmptyState {
-                visible: !root.hasData()
-                anchors.centerIn: parent
-                icon: "◇"
-                title: "No diff selected"
-                subtitle: "Choose refs and run compare, then select a file."
-            }
+        EmptyState {
+            visible: !root.hasData()
+            anchors.centerIn: parent
+            icon: "◇"
+            title: "No diff selected"
+            subtitle: "Choose refs and run compare, then select a file."
         }
 
         Rectangle {
@@ -210,7 +205,7 @@ Rectangle {
 
             ScrollBar.horizontal: ScrollBar {
                 id: hScrollBar
-                policy: diffViewport.contentWidth > diffViewport.width ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+                policy: root.layoutMode === "split" ? ScrollBar.AlwaysOff : (diffViewport.contentWidth > diffViewport.width ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff)
                 contentItem: Rectangle {
                     implicitHeight: 6
                     radius: 3

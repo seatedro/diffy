@@ -156,6 +156,8 @@ void DiffSurfaceItem::setLayoutMode(const QString& mode) {
     return;
   }
   layoutMode_ = mode;
+  leftViewportX_ = 0;
+  rightViewportX_ = 0;
   rebuildDisplayRows();
   emit layoutModeChanged();
 }
@@ -281,6 +283,30 @@ void DiffSurfaceItem::setViewportX(qreal value) {
   emit viewportXChanged();
 }
 
+qreal DiffSurfaceItem::leftViewportX() const {
+  return leftViewportX_;
+}
+
+void DiffSurfaceItem::setLeftViewportX(qreal value) {
+  value = std::max(0.0, value);
+  if (qFuzzyCompare(leftViewportX_, value)) return;
+  leftViewportX_ = value;
+  update();
+  emit leftViewportXChanged();
+}
+
+qreal DiffSurfaceItem::rightViewportX() const {
+  return rightViewportX_;
+}
+
+void DiffSurfaceItem::setRightViewportX(qreal value) {
+  value = std::max(0.0, value);
+  if (qFuzzyCompare(rightViewportX_, value)) return;
+  rightViewportX_ = value;
+  update();
+  emit rightViewportXChanged();
+}
+
 qreal DiffSurfaceItem::viewportY() const {
   return viewportY_;
 }
@@ -352,9 +378,13 @@ void DiffSurfaceItem::paint(QPainter* painter) {
     lastRow = rows.size() - 1;
   }
 
+  const bool isSplit = layoutMode_ == "split";
+
   for (int rowIndex = firstRow; rowIndex <= lastRow && rowIndex < static_cast<int>(rows.size()); ++rowIndex) {
     const DiffDisplayRow& row = rows.at(rowIndex);
-    const QRectF rowRect(-viewportX_, row.top - viewportY_, std::max(width(), contentWidth_), row.height);
+    const qreal rowX = isSplit ? 0.0 : -viewportX_;
+    const qreal rowW = isSplit ? width() : std::max(width(), contentWidth_);
+    const QRectF rowRect(rowX, row.top - viewportY_, rowW, row.height);
     const bool selected = rowSelected(rowIndex);
     const bool hovered = hoveredRow_ == rowIndex;
 
@@ -385,14 +415,16 @@ void DiffSurfaceItem::paint(QPainter* painter) {
   }
 
   if (viewportHeight_ > 0) {
+    const qreal stickyX = isSplit ? 0.0 : -viewportX_;
+    const qreal stickyW = isSplit ? width() : std::max(width(), contentWidth_);
     const int fileHeaderIndex = displayModel_.fileHeaderRowIndex();
     qreal stickyOffset = 0.0;
     if (fileHeaderIndex >= 0 && viewportY_ > 0) {
       painter->save();
       QColor shadow = paletteColor("canvas", QColor("#282828"));
       shadow.setAlpha(225);
-      painter->fillRect(QRectF(-viewportX_, 0.0, std::max(width(), contentWidth_), fileHeaderHeight_), shadow);
-      drawFileHeaderRow(painter, QRectF(-viewportX_, 0.0, std::max(width(), contentWidth_), fileHeaderHeight_),
+      painter->fillRect(QRectF(stickyX, 0.0, stickyW, fileHeaderHeight_), shadow);
+      drawFileHeaderRow(painter, QRectF(stickyX, 0.0, stickyW, fileHeaderHeight_),
                         rows.at(fileHeaderIndex));
       painter->restore();
       stickyOffset = fileHeaderHeight_;
@@ -413,8 +445,8 @@ void DiffSurfaceItem::paint(QPainter* painter) {
       QColor shadow = paletteColor("canvas", QColor("#282828"));
       shadow.setAlpha(210);
       const qreal stickyViewportY = stickyY - viewportY_;
-      painter->fillRect(QRectF(-viewportX_, stickyViewportY, std::max(width(), contentWidth_), hunkHeight_), shadow);
-      drawHunkRow(painter, QRectF(-viewportX_, stickyViewportY, std::max(width(), contentWidth_), hunkHeight_), rows.at(stickyIndex));
+      painter->fillRect(QRectF(stickyX, stickyViewportY, stickyW, hunkHeight_), shadow);
+      drawHunkRow(painter, QRectF(stickyX, stickyViewportY, stickyW, hunkHeight_), rows.at(stickyIndex));
       painter->restore();
     }
   }
@@ -423,6 +455,8 @@ void DiffSurfaceItem::paint(QPainter* painter) {
 void DiffSurfaceItem::rebuildRows() {
   textRope_.clear();
   textCache_.clear();
+  leftViewportX_ = 0;
+  rightViewportX_ = 0;
 
   const QFontMetricsF metrics(monoFont(monoFontFamily_, 12));
   lineHeight_ = metrics.height();
@@ -488,7 +522,7 @@ void DiffSurfaceItem::recalculateMetrics() {
     newContentWidth = width();
   } else if (layoutMode_ == "split") {
     const qreal sideGutter = 22.0 + digitWidth() * (lineNumberDigits_ + 1) + 12.0;
-    newContentWidth = maxTextWidth_ * 2.0 + sideGutter * 2.0 + 1.0;
+    newContentWidth = std::max(width(), maxTextWidth_ + sideGutter + 12.0);
   } else {
     newContentWidth = unifiedGutterWidth() + maxTextWidth_ + 24.0;
   }
@@ -796,14 +830,14 @@ void DiffSurfaceItem::drawSplitRow(QPainter* painter, const QRectF& rowRect, con
   }
 
   if (!leftSpacer) {
-    drawTextRun(painter, QPointF(leftTextClip.left(), baselineY), leftTextClip,
+    drawTextRun(painter, QPointF(leftTextClip.left() - leftViewportX_, baselineY), leftTextClip,
                 textForRange(row.leftTextRange), row.leftTokens, row.leftChangeSpans,
                 paletteColor("textBase", QColor("#c8ccd4")),
                 paletteColor("dangerBorder", QColor("#4c2b2c")));
   }
 
   if (!rightSpacer) {
-    drawTextRun(painter, QPointF(rightTextClip.left(), baselineY), rightTextClip,
+    drawTextRun(painter, QPointF(rightTextClip.left() - rightViewportX_, baselineY), rightTextClip,
                 textForRange(row.rightTextRange), row.rightTokens, row.rightChangeSpans,
                 paletteColor("textBase", QColor("#c8ccd4")),
                 paletteColor("successBorder", QColor("#38482f")));
@@ -1053,6 +1087,37 @@ void DiffSurfaceItem::mouseReleaseEvent(QMouseEvent* event) {
   QQuickPaintedItem::mouseReleaseEvent(event);
 }
 
+void DiffSurfaceItem::wheelEvent(QWheelEvent* event) {
+  if (layoutMode_ != "split") {
+    QQuickPaintedItem::wheelEvent(event);
+    return;
+  }
+
+  qreal hPixels = 0;
+  if (!event->pixelDelta().isNull()) {
+    hPixels = event->pixelDelta().x();
+    if (qFuzzyIsNull(hPixels) && (event->modifiers() & Qt::ShiftModifier))
+      hPixels = event->pixelDelta().y();
+  } else {
+    hPixels = event->angleDelta().x() / 120.0 * 40.0;
+    if (qFuzzyIsNull(hPixels) && (event->modifiers() & Qt::ShiftModifier))
+      hPixels = event->angleDelta().y() / 120.0 * 40.0;
+  }
+
+  if (!qFuzzyIsNull(hPixels)) {
+    const bool isRight = event->position().x() > width() / 2.0;
+    if (isRight) {
+      setRightViewportX(rightViewportX_ - hPixels);
+    } else {
+      setLeftViewportX(leftViewportX_ - hPixels);
+    }
+    event->accept();
+    return;
+  }
+
+  QQuickPaintedItem::wheelEvent(event);
+}
+
 void DiffSurfaceItem::hoverMoveEvent(QHoverEvent* event) {
   hoveredRow_ = displayModel_.rowIndexAtY(event->position().y() + viewportY_);
   update();
@@ -1117,6 +1182,14 @@ void DiffSurfaceItem::keyPressEvent(QKeyEvent* event) {
 
   if (event->key() == Qt::Key_End) {
     emit scrollToYRequested(std::max<qreal>(0.0, contentHeight_ - viewportHeight_));
+    event->accept();
+    return;
+  }
+
+  if (layoutMode_ == "split" && (event->key() == Qt::Key_Left || event->key() == Qt::Key_Right)) {
+    const qreal step = event->key() == Qt::Key_Right ? 40.0 : -40.0;
+    setLeftViewportX(leftViewportX_ + step);
+    setRightViewportX(rightViewportX_ + step);
     event->accept();
     return;
   }

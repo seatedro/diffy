@@ -7,12 +7,18 @@ It aims to support:
 - branch range compares with `..` and `...`
 - single-commit diffs
 - a modern PR-style desktop UI
+- remote repositories
+- PR review and merge tools
+- speed
 
 ## Build
 
+The configure step materializes the pinned tree-sitter grammar sources if they are missing.
+
 ```bash
 nix develop
-cmake -S . -B build -G Ninja
-cmake --build build
-./build/diffy
+cmake --preset Release
+cmake --build --preset Release
+ctest --preset Release
+./build/Release/diffy
 ```

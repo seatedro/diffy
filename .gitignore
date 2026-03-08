@@ -9,6 +9,7 @@
 .envrc
 .diffy-dev.env
 AGENTS.md
+vendor/grammars/*/src/
 
 # Build output
 build/

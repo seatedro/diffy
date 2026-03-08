@@ -10,6 +10,7 @@ QString lineKindToQString(LineKind kind);
 QVariantMap lineToVariant(const DiffLine& line);
 QVariantMap hunkToVariant(const Hunk& hunk);
 QVariantMap fileDiffToVariant(const FileDiff& file);
+QVariantMap fileDiffSummaryToVariant(const FileDiff& file);
 QVariantList filesToVariantList(const std::vector<FileDiff>& files);
 
 }  // namespace diffy

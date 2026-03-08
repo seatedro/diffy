@@ -429,6 +429,11 @@ void DiffSurfaceItem::setFilePath(const QString& path) {
   }
   filePath_ = path;
   ++tileContentGeneration_;
+  if (rowsRebuildQueued_) {
+    updateFileHeader();
+    emit filePathChanged();
+    return;
+  }
   if (updateFileHeader()) {
     scheduleMetricsRecalc();
   } else {
@@ -448,6 +453,11 @@ void DiffSurfaceItem::setFileStatus(const QString& status) {
   }
   fileStatus_ = status;
   ++tileContentGeneration_;
+  if (rowsRebuildQueued_) {
+    updateFileHeader();
+    emit fileStatusChanged();
+    return;
+  }
   if (updateFileHeader()) {
     scheduleMetricsRecalc();
   } else {
@@ -467,6 +477,11 @@ void DiffSurfaceItem::setAdditions(int value) {
   }
   additions_ = value;
   ++tileContentGeneration_;
+  if (rowsRebuildQueued_) {
+    updateFileHeader();
+    emit additionsChanged();
+    return;
+  }
   if (updateFileHeader()) {
     scheduleMetricsRecalc();
   } else {
@@ -486,6 +501,11 @@ void DiffSurfaceItem::setDeletions(int value) {
   }
   deletions_ = value;
   ++tileContentGeneration_;
+  if (rowsRebuildQueued_) {
+    updateFileHeader();
+    emit deletionsChanged();
+    return;
+  }
   if (updateFileHeader()) {
     scheduleMetricsRecalc();
   } else {

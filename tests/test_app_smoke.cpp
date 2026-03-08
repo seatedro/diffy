@@ -344,6 +344,34 @@ class AppSmokeTest : public QObject {
     QCOMPARE(state.value("pendingTileJobs").toInt(), 0);
   }
 
+  void switchesFromSplitToUnifiedWhileScrolled() {
+    const QString repoPath = initRepositoryWithTallDiff();
+    QVERIFY(!repoPath.isEmpty());
+
+    const SmokeResult result =
+        runDiffySmoke(repoPath, {"DIFFY_START_LAYOUT=split",
+                                 "DIFFY_START_FILE_INDEX=0",
+                                 "DIFFY_START_SCROLL_Y=1200",
+                                 "DIFFY_SWITCH_LAYOUT_TO=unified",
+                                 "DIFFY_SWITCH_LAYOUT_AFTER_MS=260",
+                                 "DIFFY_PRINT_STATE_DELAY_MS=900",
+                                 "DIFFY_CAPTURE_DELAY_MS=980",
+                                 "DIFFY_EXIT_AFTER_MS=1250"});
+    QVERIFY2(result.stderrText != "diffy smoke test timed out", qPrintable(result.stderrText));
+    QCOMPARE(result.exitCode, 0);
+    QVERIFY2(result.stderrText.trimmed().isEmpty(), qPrintable(result.stderrText));
+
+    const QVariantMap state = parseStateLine(result.stdoutText);
+    QVERIFY2(!state.isEmpty(), qPrintable(result.stdoutText));
+    QCOMPARE(state.value("layout").toString(), QString("unified"));
+    QVERIFY(state.value("viewportY").toDouble() >= 1000.0);
+    QVERIFY(state.value("paintCount").toInt() > 0);
+    QVERIFY(state.value("residentTiles").toInt() > 0);
+    QVERIFY(state.value("textureUploads").toInt() > 0);
+    QCOMPARE(state.value("pendingTileJobs").toInt(), 0);
+    QVERIFY2(QFileInfo::exists(result.capturePath), qPrintable(result.capturePath));
+  }
+
   void warmSplitReverseWheelDoesNotUploadMoreTextures() {
     const QString repoPath = initRepositoryWithTallDiff();
     QVERIFY(!repoPath.isEmpty());

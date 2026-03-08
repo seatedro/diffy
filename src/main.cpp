@@ -300,6 +300,15 @@ int main(int argc, char* argv[]) {
     }
   }
 
+  const QString switchLayoutTo = envString("DIFFY_SWITCH_LAYOUT_TO");
+  if (!switchLayoutTo.isEmpty()) {
+    bool switchDelayOk = false;
+    const int switchLayoutDelayMs = envString("DIFFY_SWITCH_LAYOUT_AFTER_MS").toInt(&switchDelayOk);
+    QTimer::singleShot(switchDelayOk ? switchLayoutDelayMs : 180, &app, [&controller, switchLayoutTo]() {
+      controller.setLayoutMode(switchLayoutTo);
+    });
+  }
+
   const auto scheduleWheelEvent = [&app, root](int delayMs, int pixelX, int pixelY, int angleX, int angleY) {
     QTimer::singleShot(delayMs, &app, [root, pixelX, pixelY, angleX, angleY]() {
       auto* surface = root != nullptr ? qobject_cast<QQuickItem*>(root->findChild<QObject*>("diffSurface")) : nullptr;

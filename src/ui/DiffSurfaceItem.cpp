@@ -116,6 +116,14 @@ quint64 tileKey(quint64 generation, TileLayer layer, int rowIndex, int columnInd
   return hash;
 }
 
+quint64 overlayKey(int layer, int rowIndex, int slot) {
+  quint64 hash = 0xd1f7000000000000ULL;
+  hash ^= static_cast<quint64>(layer + 1) * 0x9e3779b97f4a7c15ULL;
+  hash ^= static_cast<quint64>(rowIndex + 2) * 0xbf58476d1ce4e5b9ULL;
+  hash ^= static_cast<quint64>(slot + 1) * 0x94d049bb133111ebULL;
+  return hash;
+}
+
 struct TileSpec {
   quint64 key = 0;
   TileLayer layer = TileLayer::UnifiedRow;
@@ -130,15 +138,40 @@ class TextureTileNode final : public QSGSimpleTextureNode {
   quint64 key = 0;
 };
 
-QSGClipNode* createClipNode(const QRectF& rect) {
-  auto* clipNode = new QSGClipNode;
-  auto* geometry = new QSGGeometry(QSGGeometry::defaultAttributes_Point2D(), 4);
-  geometry->setDrawingMode(QSGGeometry::DrawTriangleStrip);
+class RectTileNode final : public QSGSimpleRectNode {
+ public:
+  quint64 key = 0;
+};
+
+class LayerGroupNode final : public QSGNode {
+ public:
+  int layer = 0;
+};
+
+class TextClipNode final : public QSGClipNode {
+ public:
+  int layer = 0;
+};
+
+void updateClipNodeRect(QSGClipNode* clipNode, const QRectF& rect) {
+  if (clipNode == nullptr) {
+    return;
+  }
+  auto* geometry = clipNode->geometry();
+  if (geometry == nullptr) {
+    geometry = new QSGGeometry(QSGGeometry::defaultAttributes_Point2D(), 4);
+    geometry->setDrawingMode(QSGGeometry::DrawTriangleStrip);
+    clipNode->setGeometry(geometry);
+    clipNode->setFlag(QSGNode::OwnsGeometry);
+  }
   QSGGeometry::updateRectGeometry(geometry, rect);
-  clipNode->setGeometry(geometry);
-  clipNode->setFlag(QSGNode::OwnsGeometry);
   clipNode->setIsRectangular(true);
   clipNode->setClipRect(rect);
+}
+
+QSGClipNode* createClipNode(const QRectF& rect) {
+  auto* clipNode = new QSGClipNode;
+  updateClipNodeRect(clipNode, rect);
   return clipNode;
 }
 
@@ -421,7 +454,7 @@ void DiffSurfaceItem::setLeftViewportX(qreal value) {
   value = std::max(0.0, value);
   if (qFuzzyCompare(leftViewportX_, value)) return;
   leftViewportX_ = value;
-  invalidateTiles();
+  update();
   emit leftViewportXChanged();
 }
 
@@ -436,7 +469,7 @@ void DiffSurfaceItem::setRightViewportX(qreal value) {
   value = std::max(0.0, value);
   if (qFuzzyCompare(rightViewportX_, value)) return;
   rightViewportX_ = value;
-  invalidateTiles();
+  update();
   emit rightViewportXChanged();
 }
 
@@ -507,14 +540,17 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
   Q_UNUSED(data);
 
   auto* root = oldNode != nullptr ? oldNode : new QSGNode;
-  while (QSGNode* child = root->firstChild()) {
-    root->removeChildNode(child);
-    delete child;
-  }
+  auto clearChildren = [](QSGNode* parent) {
+    while (QSGNode* child = parent->firstChild()) {
+      parent->removeChildNode(child);
+      delete child;
+    }
+  };
 
   auto* quickWindow = window();
   const auto& rows = displayModel_.rows();
   if (quickWindow == nullptr || width() <= 0 || height() <= 0 || rows.empty()) {
+    clearChildren(root);
     return root;
   }
 
@@ -534,12 +570,35 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
   const qreal splitTextLogicalWidth = std::max({maxTextWidth_ + 12.0, leftTextViewportWidth, rightTextViewportWidth});
   const qreal devicePixelRatio = quickWindow->effectiveDevicePixelRatio();
 
-  auto appendRectNode = [](QSGNode* parent, const QRectF& rect, const QColor& color) {
-    if (parent == nullptr || !rect.isValid() || rect.width() <= 0.0 || rect.height() <= 0.0 || !color.isValid() ||
-        color.alpha() == 0) {
+  struct RenderCommand {
+    enum class Kind {
+      Rect,
+      Texture,
+    };
+
+    Kind kind = Kind::Rect;
+    quint64 key = 0;
+    QRectF rect;
+    QColor color;
+    TileSpec spec;
+  };
+
+  std::vector<RenderCommand> baseCommands;
+  std::vector<RenderCommand> leftTextCommands;
+  std::vector<RenderCommand> rightTextCommands;
+  std::vector<RenderCommand> overlayCommands;
+  std::vector<RenderCommand> stickyCommands;
+
+  auto queueRectNode = [&](std::vector<RenderCommand>& commands, quint64 key, const QRectF& rect, const QColor& color) {
+    if (!rect.isValid() || rect.width() <= 0.0 || rect.height() <= 0.0 || !color.isValid() || color.alpha() == 0) {
       return;
     }
-    parent->appendChildNode(new QSGSimpleRectNode(rect, color));
+    RenderCommand command;
+    command.kind = RenderCommand::Kind::Rect;
+    command.key = key;
+    command.rect = rect;
+    command.color = color;
+    commands.push_back(std::move(command));
   };
 
   auto renderImage = [&](const TileSpec& spec) -> QImage {
@@ -636,25 +695,23 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
     return texture;
   };
 
-  auto appendTextureNode = [&](QSGNode* parent, const TileSpec& spec) {
-    if (parent == nullptr || spec.targetRect.width() <= 0.0 || spec.targetRect.height() <= 0.0) {
+  auto queueTextureNode = [&](std::vector<RenderCommand>& commands, const TileSpec& spec) {
+    if (spec.targetRect.width() <= 0.0 || spec.targetRect.height() <= 0.0) {
       return;
     }
-    const DiffDisplayRow& row = rows.at(spec.rowIndex);
-    auto* node = new TextureTileNode;
-    node->key = spec.key;
-    node->setFiltering(QSGTexture::Nearest);
-    node->setOwnsTexture(false);
-    node->setTexture(residentTextureForSpec(spec));
-    node->setRect(spec.targetRect);
-    parent->appendChildNode(node);
+    RenderCommand command;
+    command.kind = RenderCommand::Kind::Texture;
+    command.key = spec.key;
+    command.rect = spec.targetRect;
+    command.spec = spec;
+    commands.push_back(std::move(command));
   };
 
-  auto appendWholeRowTexture = [&](QSGNode* parent,
-                                   TileLayer layer,
-                                   int rowIndex,
-                                   qreal logicalX,
-                                   const QRectF& targetRect) {
+  auto queueWholeRowTexture = [&](std::vector<RenderCommand>& commands,
+                                  TileLayer layer,
+                                  int rowIndex,
+                                  qreal logicalX,
+                                  const QRectF& targetRect) {
     TileSpec spec;
     spec.layer = layer;
     spec.rowIndex = rowIndex;
@@ -662,18 +719,18 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
     spec.logicalX = logicalX;
     spec.key = tileKey(tileGeneration_, layer, rowIndex, 0);
     spec.targetRect = targetRect;
-    appendTextureNode(parent, spec);
+    queueTextureNode(commands, spec);
   };
 
-  auto appendTileColumns = [&](QSGNode* parent,
-                               TileLayer layer,
-                               int rowIndex,
-                               qreal logicalOffset,
-                               qreal viewportSpan,
-                               qreal logicalWidth,
-                               qreal baseX,
-                               qreal y) {
-    if (parent == nullptr || viewportSpan <= 0.0 || logicalWidth <= 0.0) {
+  auto queueTileColumns = [&](std::vector<RenderCommand>& commands,
+                              TileLayer layer,
+                              int rowIndex,
+                              qreal logicalOffset,
+                              qreal viewportSpan,
+                              qreal logicalWidth,
+                              qreal baseX,
+                              qreal y) {
+    if (viewportSpan <= 0.0 || logicalWidth <= 0.0) {
       return;
     }
 
@@ -698,7 +755,7 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
       spec.logicalX = logicalX;
       spec.key = tileKey(tileGeneration_, layer, rowIndex, columnIndex);
       spec.targetRect = QRectF(baseX + logicalX - logicalOffset, y, tileWidth, rows.at(rowIndex).height);
-      appendTextureNode(parent, spec);
+      queueTextureNode(commands, spec);
     }
   };
 
@@ -708,10 +765,68 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
   const int lastRow = lastVisibleRow_ >= 0
                           ? lastVisibleRow_
                           : std::max(firstRow, displayModel_.rowIndexAtY(viewportY_ + visibleHeight + hunkHeight_));
-  auto* rootClip = createClipNode(QRectF(0.0, 0.0, visibleWidth, visibleHeight));
-  root->appendChildNode(rootClip);
-  appendRectNode(rootClip, QRectF(0.0, 0.0, visibleWidth, visibleHeight),
-                 paletteColor("canvas", QColor("#282c33")));
+  baseCommands.reserve(static_cast<size_t>(std::max(16, lastRow - firstRow + 8)));
+  leftTextCommands.reserve(static_cast<size_t>(std::max(8, lastRow - firstRow + 4)));
+  rightTextCommands.reserve(static_cast<size_t>(std::max(8, lastRow - firstRow + 4)));
+  overlayCommands.reserve(static_cast<size_t>(std::max(8, lastRow - firstRow + 4)));
+  stickyCommands.reserve(4);
+  QSGClipNode* rootClip = dynamic_cast<QSGClipNode*>(root->firstChild());
+  if (rootClip == nullptr) {
+    clearChildren(root);
+    rootClip = createClipNode(QRectF(0.0, 0.0, visibleWidth, visibleHeight));
+    root->appendChildNode(rootClip);
+  } else {
+    updateClipNodeRect(rootClip, QRectF(0.0, 0.0, visibleWidth, visibleHeight));
+    while (QSGNode* extra = rootClip->nextSibling()) {
+      root->removeChildNode(extra);
+      delete extra;
+    }
+  }
+
+  LayerGroupNode* baseGroup = dynamic_cast<LayerGroupNode*>(rootClip->firstChild());
+  TextClipNode* leftTextClip = baseGroup != nullptr ? dynamic_cast<TextClipNode*>(baseGroup->nextSibling()) : nullptr;
+  TextClipNode* rightTextClip =
+      leftTextClip != nullptr ? dynamic_cast<TextClipNode*>(leftTextClip->nextSibling()) : nullptr;
+  LayerGroupNode* overlayGroup =
+      rightTextClip != nullptr ? dynamic_cast<LayerGroupNode*>(rightTextClip->nextSibling()) : nullptr;
+  LayerGroupNode* stickyGroup =
+      overlayGroup != nullptr ? dynamic_cast<LayerGroupNode*>(overlayGroup->nextSibling()) : nullptr;
+
+  const bool validLayerTree = baseGroup != nullptr && baseGroup->layer == 1 && leftTextClip != nullptr &&
+                              leftTextClip->layer == 2 && rightTextClip != nullptr && rightTextClip->layer == 3 &&
+                              overlayGroup != nullptr && overlayGroup->layer == 4 && stickyGroup != nullptr &&
+                              stickyGroup->layer == 5 && stickyGroup->nextSibling() == nullptr;
+
+  if (!validLayerTree) {
+    clearChildren(rootClip);
+
+    baseGroup = new LayerGroupNode;
+    baseGroup->layer = 1;
+    rootClip->appendChildNode(baseGroup);
+
+    leftTextClip = new TextClipNode;
+    leftTextClip->layer = 2;
+    rootClip->appendChildNode(leftTextClip);
+
+    rightTextClip = new TextClipNode;
+    rightTextClip->layer = 3;
+    rootClip->appendChildNode(rightTextClip);
+
+    overlayGroup = new LayerGroupNode;
+    overlayGroup->layer = 4;
+    rootClip->appendChildNode(overlayGroup);
+
+    stickyGroup = new LayerGroupNode;
+    stickyGroup->layer = 5;
+    rootClip->appendChildNode(stickyGroup);
+  }
+
+  updateClipNodeRect(leftTextClip, QRectF(splitTextInset, 0.0, leftTextViewportWidth, visibleHeight));
+  updateClipNodeRect(rightTextClip,
+                     QRectF(leftPaneWidth + splitTextInset, 0.0, rightTextViewportWidth, visibleHeight));
+
+  queueRectNode(baseCommands, overlayKey(0, -1, 0), QRectF(0.0, 0.0, visibleWidth, visibleHeight),
+                paletteColor("canvas", QColor("#282c33")));
 
   if (layoutMode_ == "split") {
     for (int rowIndex = firstRow; rowIndex <= lastRow && rowIndex < static_cast<int>(rows.size()); ++rowIndex) {
@@ -721,13 +836,26 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
         continue;
       }
 
-      appendWholeRowTexture(rootClip, TileLayer::SplitFullRow, rowIndex, 0.0, QRectF(0.0, y, visibleWidth, row.height));
+      if (row.rowType == DiffRowType::Line) {
+        queueWholeRowTexture(baseCommands, TileLayer::SplitLeftFixedRow, rowIndex, 0.0,
+                             QRectF(0.0, y, leftPaneWidth, row.height));
+        queueWholeRowTexture(baseCommands, TileLayer::SplitRightFixedRow, rowIndex, 0.0,
+                             QRectF(leftPaneWidth, y, rightPaneWidth, row.height));
+        queueTileColumns(leftTextCommands, TileLayer::SplitLeftTextRow, rowIndex, leftViewportX_, leftTextViewportWidth,
+                         splitTextLogicalWidth, splitTextInset, y);
+        queueTileColumns(rightTextCommands, TileLayer::SplitRightTextRow, rowIndex, rightViewportX_,
+                         rightTextViewportWidth, splitTextLogicalWidth, leftPaneWidth + splitTextInset, y);
+      } else {
+        queueWholeRowTexture(baseCommands, TileLayer::SplitFullRow, rowIndex, 0.0,
+                             QRectF(0.0, y, visibleWidth, row.height));
+      }
       if (row.rowType == DiffRowType::Line && (rowSelected(rowIndex) || hoveredRow_ == rowIndex)) {
         const qreal leftPaneWidth = visibleWidth / 2.0;
         const qreal rightPaneWidth = visibleWidth - leftPaneWidth;
-        appendRectNode(rootClip, QRectF(0.0, y, leftPaneWidth, row.height), splitSelectionColor(row, true));
-        appendRectNode(rootClip, QRectF(leftPaneWidth, y, rightPaneWidth, row.height),
-                       splitSelectionColor(row, false));
+        queueRectNode(overlayCommands, overlayKey(1, rowIndex, 0), QRectF(0.0, y, leftPaneWidth, row.height),
+                      splitSelectionColor(row, true));
+        queueRectNode(overlayCommands, overlayKey(1, rowIndex, 1), QRectF(leftPaneWidth, y, rightPaneWidth, row.height),
+                      splitSelectionColor(row, false));
       } else if (row.rowType == DiffRowType::Hunk) {
         QColor overlay;
         if (rowSelected(rowIndex)) {
@@ -737,7 +865,7 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
           overlay = paletteColor("panelTint", QColor("#504945"));
           overlay.setAlpha(90);
         }
-        appendRectNode(rootClip, QRectF(0.0, y, visibleWidth, row.height), overlay);
+        queueRectNode(overlayCommands, overlayKey(2, rowIndex, 0), QRectF(0.0, y, visibleWidth, row.height), overlay);
       }
     }
   } else {
@@ -748,9 +876,11 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
         continue;
       }
 
-      appendTileColumns(rootClip, TileLayer::UnifiedRow, rowIndex, viewportX_, visibleWidth, unifiedRowWidth, 0.0, y);
+      queueTileColumns(baseCommands, TileLayer::UnifiedRow, rowIndex, viewportX_, visibleWidth, unifiedRowWidth, 0.0,
+                       y);
       if (row.rowType == DiffRowType::Line && (rowSelected(rowIndex) || hoveredRow_ == rowIndex)) {
-        appendRectNode(rootClip, QRectF(-viewportX_, y, unifiedRowWidth, row.height), unifiedSelectionColor(row));
+        queueRectNode(overlayCommands, overlayKey(3, rowIndex, 0), QRectF(-viewportX_, y, unifiedRowWidth, row.height),
+                      unifiedSelectionColor(row));
       } else if (row.rowType == DiffRowType::Hunk) {
         QColor overlay;
         if (rowSelected(rowIndex)) {
@@ -760,7 +890,8 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
           overlay = paletteColor("panelTint", QColor("#504945"));
           overlay.setAlpha(90);
         }
-        appendRectNode(rootClip, QRectF(-viewportX_, y, unifiedRowWidth, row.height), overlay);
+        queueRectNode(overlayCommands, overlayKey(4, rowIndex, 0), QRectF(-viewportX_, y, unifiedRowWidth, row.height),
+                      overlay);
       }
     }
   }
@@ -768,8 +899,8 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
   const int fileHeaderIndex = displayModel_.fileHeaderRowIndex();
   qreal stickyOffset = 0.0;
   if (fileHeaderIndex >= 0 && viewportY_ > 0) {
-    appendRectNode(rootClip, QRectF(0.0, 0.0, visibleWidth, fileHeaderHeight_),
-                   paletteColor("canvas", QColor("#282828")));
+    queueRectNode(stickyCommands, overlayKey(5, fileHeaderIndex, 0), QRectF(0.0, 0.0, visibleWidth, fileHeaderHeight_),
+                  paletteColor("canvas", QColor("#282828")));
     const TileSpec stickyHeaderSpec{tileKey(tileGeneration_,
                                             TileLayer::StickyRow,
                                             fileHeaderIndex, 0),
@@ -778,7 +909,7 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
                                     0,
                                     0.0,
                                     QRectF(0.0, 0.0, visibleWidth, rows.at(fileHeaderIndex).height)};
-    appendTextureNode(rootClip, stickyHeaderSpec);
+    queueTextureNode(stickyCommands, stickyHeaderSpec);
     stickyOffset = fileHeaderHeight_;
   }
 
@@ -794,8 +925,8 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
     }
 
     const qreal stickyViewportY = stickyY - viewportY_;
-    appendRectNode(rootClip, QRectF(0.0, stickyViewportY, visibleWidth, hunkHeight_),
-                   paletteColor("canvas", QColor("#282828")));
+    queueRectNode(stickyCommands, overlayKey(6, stickyIndex, 0), QRectF(0.0, stickyViewportY, visibleWidth, hunkHeight_),
+                  paletteColor("canvas", QColor("#282828")));
     const TileSpec stickyHunkSpec{tileKey(tileGeneration_,
                                           TileLayer::StickyRow,
                                           stickyIndex, 0),
@@ -804,8 +935,73 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
                                   0,
                                   0.0,
                                   QRectF(0.0, stickyViewportY, visibleWidth, rows.at(stickyIndex).height)};
-    appendTextureNode(rootClip, stickyHunkSpec);
+    queueTextureNode(stickyCommands, stickyHunkSpec);
   }
+
+  auto updateRectNode = [](RectTileNode* node, quint64 key, const QRectF& rect, const QColor& color) {
+    node->key = key;
+    node->setRect(rect);
+    node->setColor(color);
+  };
+
+  auto updateTextureNode = [&](TextureTileNode* node, const TileSpec& spec) {
+    node->key = spec.key;
+    node->setFiltering(QSGTexture::Nearest);
+    node->setOwnsTexture(false);
+    node->setTexture(residentTextureForSpec(spec));
+    node->setRect(spec.targetRect);
+  };
+
+  auto reconcileCommands = [&](QSGNode* parent, const std::vector<RenderCommand>& commands) {
+    QSGNode* cursor = parent->firstChild();
+    for (const RenderCommand& command : commands) {
+      if (command.kind == RenderCommand::Kind::Texture) {
+        auto* node = cursor != nullptr ? dynamic_cast<TextureTileNode*>(cursor) : nullptr;
+        if (node != nullptr && node->key == command.key) {
+          updateTextureNode(node, command.spec);
+          cursor = cursor->nextSibling();
+          continue;
+        }
+
+        auto* newNode = new TextureTileNode;
+        updateTextureNode(newNode, command.spec);
+        if (cursor != nullptr) {
+          parent->insertChildNodeBefore(newNode, cursor);
+        } else {
+          parent->appendChildNode(newNode);
+        }
+        continue;
+      }
+
+      auto* node = cursor != nullptr ? dynamic_cast<RectTileNode*>(cursor) : nullptr;
+      if (node != nullptr && node->key == command.key) {
+        updateRectNode(node, command.key, command.rect, command.color);
+        cursor = cursor->nextSibling();
+        continue;
+      }
+
+      auto* newNode = new RectTileNode;
+      updateRectNode(newNode, command.key, command.rect, command.color);
+      if (cursor != nullptr) {
+        parent->insertChildNodeBefore(newNode, cursor);
+      } else {
+        parent->appendChildNode(newNode);
+      }
+    }
+
+    while (cursor != nullptr) {
+      QSGNode* next = cursor->nextSibling();
+      parent->removeChildNode(cursor);
+      delete cursor;
+      cursor = next;
+    }
+  };
+
+  reconcileCommands(baseGroup, baseCommands);
+  reconcileCommands(leftTextClip, leftTextCommands);
+  reconcileCommands(rightTextClip, rightTextCommands);
+  reconcileCommands(overlayGroup, overlayCommands);
+  reconcileCommands(stickyGroup, stickyCommands);
 
   auto evictCache = [&](int limit, auto& cache, auto& lastUsed, auto deleter) {
     while (cache.size() > limit) {

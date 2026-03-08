@@ -101,6 +101,13 @@ Rectangle {
                     font.family: theme.mono
                     font.pixelSize: theme.fontSmall
                 }
+
+                DiffStatsBar {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 40
+                    additions: totalAdditions()
+                    deletions: totalDeletions()
+                }
             }
         }
 
@@ -215,6 +222,13 @@ Rectangle {
                         color: theme.dangerText
                         font.family: theme.mono
                         font.pixelSize: theme.fontSmall
+                    }
+
+                    DiffStatsBar {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 30
+                        additions: modelData.additions
+                        deletions: modelData.deletions
                     }
                 }
 

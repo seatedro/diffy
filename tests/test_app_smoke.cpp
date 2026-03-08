@@ -9,6 +9,8 @@
 #include <QUuid>
 #include <QtTest/QtTest>
 
+#include "test_app_smoke.h"
+
 namespace {
 
 void writeFile(const QString& path, const QString& contents) {
@@ -234,15 +236,11 @@ int splitTopHunkDiversity(const QString& imagePath) {
 
 }  // namespace
 
-class AppSmokeTest : public QObject {
-  Q_OBJECT
-
- private slots:
-  void initTestCase() {
+void AppSmokeTest::initTestCase() {
     QVERIFY2(QFileInfo(diffyBinaryPath()).exists(), "diffy binary must exist");
-  }
+}
 
-  void launchesUnifiedAndPrintsSurfaceState() {
+void AppSmokeTest::launchesUnifiedAndPrintsSurfaceState() {
     const QString repoPath = initRepositoryWithMultipleDiffs();
     QVERIFY(!repoPath.isEmpty());
 
@@ -272,9 +270,9 @@ class AppSmokeTest : public QObject {
     QVERIFY(state.value("textureUploads").toInt() > 0);
     QVERIFY(state.value("residentTiles").toInt() > 0);
     QCOMPARE(state.value("error").toString(), QString("none"));
-  }
+}
 
-  void launchesSplitSecondFileAndPrintsSurfaceState() {
+void AppSmokeTest::launchesSplitSecondFileAndPrintsSurfaceState() {
     const QString repoPath = initRepositoryWithMultipleDiffs();
     QVERIFY(!repoPath.isEmpty());
 
@@ -302,9 +300,9 @@ class AppSmokeTest : public QObject {
     QVERIFY2(QFileInfo::exists(result.capturePath), qPrintable(result.capturePath));
     QVERIFY2(splitTopHunkDiversity(result.capturePath) > 2, qPrintable(result.capturePath));
     QCOMPARE(state.value("error").toString(), QString("none"));
-  }
+}
 
-  void scrollsUnifiedViewportWithoutShrinkingSurface() {
+void AppSmokeTest::scrollsUnifiedViewportWithoutShrinkingSurface() {
     const QString repoPath = initRepositoryWithMultipleDiffs();
     QVERIFY(!repoPath.isEmpty());
 
@@ -320,9 +318,9 @@ class AppSmokeTest : public QObject {
     QVERIFY(state.value("surfaceHeight").toDouble() > 100.0);
     QVERIFY(state.value("itemHeight").toDouble() > 100.0);
     QVERIFY2(QFileInfo::exists(result.capturePath), qPrintable(result.capturePath));
-  }
+}
 
-  void wheelScrollsSplitViewportDespiteHorizontalTrackpadNoise() {
+void AppSmokeTest::wheelScrollsSplitViewportDespiteHorizontalTrackpadNoise() {
     const QString repoPath = initRepositoryWithTallDiff();
     QVERIFY(!repoPath.isEmpty());
 
@@ -342,9 +340,9 @@ class AppSmokeTest : public QObject {
     QVERIFY(state.value("residentTiles").toInt() > 0);
     QVERIFY(state.value("textureUploads").toInt() > 0);
     QCOMPARE(state.value("pendingTileJobs").toInt(), 0);
-  }
+}
 
-  void switchesFromSplitToUnifiedWhileScrolled() {
+void AppSmokeTest::switchesFromSplitToUnifiedWhileScrolled() {
     const QString repoPath = initRepositoryWithTallDiff();
     QVERIFY(!repoPath.isEmpty());
 
@@ -370,9 +368,9 @@ class AppSmokeTest : public QObject {
     QVERIFY(state.value("textureUploads").toInt() > 0);
     QCOMPARE(state.value("pendingTileJobs").toInt(), 0);
     QVERIFY2(QFileInfo::exists(result.capturePath), qPrintable(result.capturePath));
-  }
+}
 
-  void warmSplitReverseWheelDoesNotUploadMoreTextures() {
+void AppSmokeTest::warmSplitReverseWheelDoesNotUploadMoreTextures() {
     const QString repoPath = initRepositoryWithTallDiff();
     QVERIFY(!repoPath.isEmpty());
 
@@ -396,9 +394,9 @@ class AppSmokeTest : public QObject {
     QVERIFY(states.at(0).value("residentTiles").toInt() > 0);
     QCOMPARE(states.at(1).value("textureUploads").toInt(), states.at(0).value("textureUploads").toInt());
     QCOMPARE(states.at(1).value("pendingTileJobs").toInt(), 0);
-  }
+}
 
-  void opensInAppRepositoryPickerWithoutWarnings() {
+void AppSmokeTest::opensInAppRepositoryPickerWithoutWarnings() {
     const QString repoPath = initRepositoryWithMultipleDiffs();
     QVERIFY(!repoPath.isEmpty());
 
@@ -412,8 +410,6 @@ class AppSmokeTest : public QObject {
     QCOMPARE(state.value("currentView").toString(), QString("diff"));
     QCOMPARE(state.value("pickerVisible").toInt(), 1);
     QVERIFY2(QFileInfo::exists(result.capturePath), qPrintable(result.capturePath));
-  }
-};
+}
 
 QTEST_GUILESS_MAIN(AppSmokeTest)
-#include "test_app_smoke.moc"

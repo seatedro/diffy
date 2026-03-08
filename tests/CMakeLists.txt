@@ -132,6 +132,7 @@ add_test(NAME test_fuzzy_match COMMAND test_fuzzy_match)
 
 qt_add_executable(test_app_smoke
   test_app_smoke.cpp
+  test_app_smoke.h
 )
 
 target_link_libraries(test_app_smoke PRIVATE Qt6::Core Qt6::Gui Qt6::Test)

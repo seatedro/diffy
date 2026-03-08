@@ -148,6 +148,11 @@ class LayerGroupNode final : public QSGNode {
   int layer = 0;
 };
 
+class LayerClipNode final : public QSGClipNode {
+ public:
+  int layer = 0;
+};
+
 class TextClipNode final : public QSGClipNode {
  public:
   int layer = 0;
@@ -631,6 +636,8 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
   };
 
   auto renderImage = [&](const TileSpec& spec) -> QImage {
+    Q_ASSERT(spec.rowIndex >= 0);
+    Q_ASSERT(spec.rowIndex < static_cast<int>(rows.size()));
     const DiffDisplayRow& row = rows.at(spec.rowIndex);
     const QSize pixelSize(qMax(1, qCeil(spec.targetRect.width() * devicePixelRatio)),
                           qMax(1, qCeil(row.height * devicePixelRatio)));
@@ -718,6 +725,7 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
     tileImageLastUsed_[spec.key] = tileUseTick_;
 
     QSGTexture* texture = quickWindow->createTextureFromImage(image);
+    Q_ASSERT(texture != nullptr);
     residentTextureCache_.insert(spec.key, texture);
     residentTextureLastUsed_[spec.key] = tileUseTick_;
     ++textureUploadCount_;
@@ -794,6 +802,35 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
   const int lastRow = lastVisibleRow_ >= 0
                           ? lastVisibleRow_
                           : std::max(firstRow, displayModel_.rowIndexAtY(viewportY_ + visibleHeight + hunkHeight_));
+
+  const int fileHeaderIndex = displayModel_.fileHeaderRowIndex();
+  const bool hasStickyHeader = fileHeaderIndex >= 0 && viewportY_ > 0;
+  const int stickyIndex = displayModel_.stickyHunkRowIndexAtY(viewportY_);
+
+  qreal stickyOffset = hasStickyHeader ? fileHeaderHeight_ : 0.0;
+  qreal stickyViewportY = -1.0;
+  if (stickyIndex >= 0) {
+    qreal stickyY = viewportY_ + stickyOffset;
+    for (int nextIndex = stickyIndex + 1; nextIndex < static_cast<int>(rows.size()); ++nextIndex) {
+      const DiffDisplayRow& nextRow = rows.at(nextIndex);
+      if (nextRow.rowType == DiffRowType::Hunk) {
+        stickyY = std::min(stickyY, nextRow.top - hunkHeight_);
+        break;
+      }
+    }
+    stickyViewportY = stickyY - viewportY_;
+  }
+
+  qreal occludedTop = 0.0;
+  if (hasStickyHeader) {
+    occludedTop = fileHeaderHeight_;
+  }
+  if (stickyViewportY >= 0.0) {
+    occludedTop = std::max(occludedTop, stickyViewportY + hunkHeight_);
+  }
+  Q_ASSERT(occludedTop >= 0.0);
+  Q_ASSERT(occludedTop <= visibleHeight + 0.001);
+
   baseCommands.reserve(static_cast<size_t>(std::max(16, lastRow - firstRow + 8)));
   leftTextCommands.reserve(static_cast<size_t>(std::max(8, lastRow - firstRow + 4)));
   rightTextCommands.reserve(static_cast<size_t>(std::max(8, lastRow - firstRow + 4)));
@@ -812,47 +849,69 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
     }
   }
 
-  LayerGroupNode* baseGroup = dynamic_cast<LayerGroupNode*>(rootClip->firstChild());
+  LayerClipNode* contentClip = dynamic_cast<LayerClipNode*>(rootClip->firstChild());
+  LayerGroupNode* stickyGroup =
+      contentClip != nullptr ? dynamic_cast<LayerGroupNode*>(contentClip->nextSibling()) : nullptr;
+  LayerGroupNode* baseGroup = contentClip != nullptr ? dynamic_cast<LayerGroupNode*>(contentClip->firstChild()) : nullptr;
   TextClipNode* leftTextClip = baseGroup != nullptr ? dynamic_cast<TextClipNode*>(baseGroup->nextSibling()) : nullptr;
   TextClipNode* rightTextClip =
       leftTextClip != nullptr ? dynamic_cast<TextClipNode*>(leftTextClip->nextSibling()) : nullptr;
   LayerGroupNode* overlayGroup =
       rightTextClip != nullptr ? dynamic_cast<LayerGroupNode*>(rightTextClip->nextSibling()) : nullptr;
-  LayerGroupNode* stickyGroup =
-      overlayGroup != nullptr ? dynamic_cast<LayerGroupNode*>(overlayGroup->nextSibling()) : nullptr;
 
-  const bool validLayerTree = baseGroup != nullptr && baseGroup->layer == 1 && leftTextClip != nullptr &&
+  const bool validLayerTree = contentClip != nullptr && contentClip->layer == 1 && stickyGroup != nullptr &&
+                              stickyGroup->layer == 5 && stickyGroup->nextSibling() == nullptr &&
+                              baseGroup != nullptr && baseGroup->layer == 2 && leftTextClip != nullptr &&
                               leftTextClip->layer == 2 && rightTextClip != nullptr && rightTextClip->layer == 3 &&
-                              overlayGroup != nullptr && overlayGroup->layer == 4 && stickyGroup != nullptr &&
-                              stickyGroup->layer == 5 && stickyGroup->nextSibling() == nullptr;
+                              overlayGroup != nullptr && overlayGroup->layer == 4 && overlayGroup->nextSibling() == nullptr;
 
   if (!validLayerTree) {
     clearChildren(rootClip);
 
+    contentClip = new LayerClipNode;
+    contentClip->layer = 1;
+    rootClip->appendChildNode(contentClip);
+
     baseGroup = new LayerGroupNode;
-    baseGroup->layer = 1;
-    rootClip->appendChildNode(baseGroup);
+    baseGroup->layer = 2;
+    contentClip->appendChildNode(baseGroup);
 
     leftTextClip = new TextClipNode;
     leftTextClip->layer = 2;
-    rootClip->appendChildNode(leftTextClip);
+    contentClip->appendChildNode(leftTextClip);
 
     rightTextClip = new TextClipNode;
     rightTextClip->layer = 3;
-    rootClip->appendChildNode(rightTextClip);
+    contentClip->appendChildNode(rightTextClip);
 
     overlayGroup = new LayerGroupNode;
     overlayGroup->layer = 4;
-    rootClip->appendChildNode(overlayGroup);
+    contentClip->appendChildNode(overlayGroup);
 
     stickyGroup = new LayerGroupNode;
     stickyGroup->layer = 5;
     rootClip->appendChildNode(stickyGroup);
   }
 
-  updateClipNodeRect(leftTextClip, QRectF(splitTextInset, 0.0, leftTextViewportWidth, visibleHeight));
+  Q_ASSERT(contentClip != nullptr);
+  Q_ASSERT(baseGroup != nullptr);
+  Q_ASSERT(leftTextClip != nullptr);
+  Q_ASSERT(rightTextClip != nullptr);
+  Q_ASSERT(overlayGroup != nullptr);
+  Q_ASSERT(stickyGroup != nullptr);
+  Q_ASSERT(baseGroup->parent() == contentClip);
+  Q_ASSERT(leftTextClip->parent() == contentClip);
+  Q_ASSERT(rightTextClip->parent() == contentClip);
+  Q_ASSERT(overlayGroup->parent() == contentClip);
+  Q_ASSERT(stickyGroup->parent() == rootClip);
+
+  updateClipNodeRect(contentClip, QRectF(0.0, occludedTop, visibleWidth, std::max<qreal>(0.0, visibleHeight - occludedTop)));
+  updateClipNodeRect(leftTextClip,
+                     QRectF(splitTextInset, occludedTop, leftTextViewportWidth,
+                            std::max<qreal>(0.0, visibleHeight - occludedTop)));
   updateClipNodeRect(rightTextClip,
-                     QRectF(leftPaneWidth + splitTextInset, 0.0, rightTextViewportWidth, visibleHeight));
+                     QRectF(leftPaneWidth + splitTextInset, occludedTop, rightTextViewportWidth,
+                            std::max<qreal>(0.0, visibleHeight - occludedTop)));
 
   queueRectNode(baseCommands, overlayKey(0, -1, 0), QRectF(0.0, 0.0, visibleWidth, visibleHeight),
                 paletteColor("canvas", QColor("#282c33")));
@@ -925,9 +984,7 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
     }
   }
 
-  const int fileHeaderIndex = displayModel_.fileHeaderRowIndex();
-  qreal stickyOffset = 0.0;
-  if (fileHeaderIndex >= 0 && viewportY_ > 0) {
+  if (hasStickyHeader) {
     queueRectNode(stickyCommands, overlayKey(5, fileHeaderIndex, 0), QRectF(0.0, 0.0, visibleWidth, fileHeaderHeight_),
                   paletteColor("canvas", QColor("#282828")));
     const TileSpec stickyHeaderSpec{tileKey(tileGeneration_,
@@ -939,21 +996,9 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
                                     0.0,
                                     QRectF(0.0, 0.0, visibleWidth, rows.at(fileHeaderIndex).height)};
     queueTextureNode(stickyCommands, stickyHeaderSpec);
-    stickyOffset = fileHeaderHeight_;
   }
 
-  const int stickyIndex = displayModel_.stickyHunkRowIndexAtY(viewportY_);
   if (stickyIndex >= 0) {
-    qreal stickyY = viewportY_ + stickyOffset;
-    for (int nextIndex = stickyIndex + 1; nextIndex < static_cast<int>(rows.size()); ++nextIndex) {
-      const DiffDisplayRow& nextRow = rows.at(nextIndex);
-      if (nextRow.rowType == DiffRowType::Hunk) {
-        stickyY = std::min(stickyY, nextRow.top - hunkHeight_);
-        break;
-      }
-    }
-
-    const qreal stickyViewportY = stickyY - viewportY_;
     queueRectNode(stickyCommands, overlayKey(6, stickyIndex, 0), QRectF(0.0, stickyViewportY, visibleWidth, hunkHeight_),
                   paletteColor("canvas", QColor("#282828")));
     const TileSpec stickyHunkSpec{tileKey(tileGeneration_,
@@ -965,6 +1010,11 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
                                   0.0,
                                   QRectF(0.0, stickyViewportY, visibleWidth, rows.at(stickyIndex).height)};
     queueTextureNode(stickyCommands, stickyHunkSpec);
+  }
+
+  if (layoutMode_ != "split") {
+    Q_ASSERT(leftTextCommands.empty());
+    Q_ASSERT(rightTextCommands.empty());
   }
 
   auto updateRectNode = [](RectTileNode* node, quint64 key, const QRectF& rect, const QColor& color) {

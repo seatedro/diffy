@@ -1,31 +1,11 @@
 #pragma once
 
 #include <QAbstractListModel>
-#include <QVector>
 
-#include "core/diff/DiffTypes.h"
-#include "model/DiffPreparedRows.h"
+#include "core/rendering/FlatDiffRows.h"
+#include "core/rendering/PreparedRows.h"
 
 namespace diffy {
-
-struct FlattenedDiffRow {
-  enum class RowType {
-    Hunk,
-    Line,
-  };
-
-  RowType rowType = RowType::Line;
-  int hunkIndex = -1;
-  QString header;
-  LineKind kind = LineKind::Context;
-  int oldLine = -1;
-  int newLine = -1;
-  QString text;
-  std::vector<TokenSpan> tokens;
-  std::vector<TokenSpan> changeSpans;
-};
-
-std::vector<FlattenedDiffRow> flattenFileRows(const FileDiff& file);
 
 class DiffRowListModel : public QAbstractListModel {
   Q_OBJECT
@@ -51,18 +31,18 @@ class DiffRowListModel : public QAbstractListModel {
 
   int count() const;
   void clear();
-  void setRows(std::vector<FlattenedDiffRow> rows);
+  void setRows(std::vector<FlatDiffRow> rows);
   void clearPreparedRows();
   const PreparedRows* preparedRows(const PreparedRowsCacheKey& key) const;
   void storePreparedRows(PreparedRowsCacheKey key, PreparedRows prepared);
 
-  const std::vector<FlattenedDiffRow>& rows() const;
+  const std::vector<FlatDiffRow>& rows() const;
 
  signals:
   void countChanged();
 
  private:
-  std::vector<FlattenedDiffRow> rows_;
+  std::vector<FlatDiffRow> rows_;
   QHash<PreparedRowsCacheKey, PreparedRows> preparedRowsCache_;
 };
 

@@ -1,17 +1,22 @@
-#include "renderers/DifftasticRenderer.h"
+#include "core/compare/backends/DifftasticBackend.h"
 
 #include <git2.h>
+#include <simdjson.h>
 
+#include <QByteArray>
 #include <QFile>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
 #include <QProcess>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QString>
+#include <QVector>
 
 namespace diffy {
 namespace {
+
+using simdjson::dom::array;
+using simdjson::dom::element;
+using simdjson::dom::object;
 
 struct ChangedPath {
   QString status;
@@ -194,49 +199,100 @@ bool collectChangedPaths(git_repository* repo,
   return true;
 }
 
-QString extractSideText(const QJsonObject& side, QVector<TokenSpan>* outTokens) {
-  const QJsonArray changes = side.value("changes").toArray();
-  QString text;
-  for (const QJsonValue& changeValue : changes) {
-    const QJsonObject change = changeValue.toObject();
-    const QString part = change.value("content").toString();
-    if (part.isEmpty()) {
-      continue;
-    }
-    const int start = text.size();
-    text += part;
-    if (outTokens != nullptr) {
-      outTokens->push_back(TokenSpan{start, static_cast<int>(part.size())});
+std::string mapFileStatus(std::string_view status, std::string_view fallbackStatus) {
+  if (status == "created") {
+    return "A";
+  }
+  if (status == "deleted") {
+    return "D";
+  }
+  if (status == "unchanged") {
+    return "U";
+  }
+  return std::string(fallbackStatus);
+}
+
+std::string getStringOrDefault(const object& jsonObject, std::string_view key, std::string_view fallback = {}) {
+  std::string_view value;
+  if (jsonObject.at_key(key).get_string().get(value) == simdjson::SUCCESS) {
+    return std::string(value);
+  }
+  return std::string(fallback);
+}
+
+bool getObjectField(const object& jsonObject, std::string_view key, object& value) {
+  return jsonObject.at_key(key).get_object().get(value) == simdjson::SUCCESS;
+}
+
+bool getArrayField(const object& jsonObject, std::string_view key, array& value) {
+  return jsonObject.at_key(key).get_array().get(value) == simdjson::SUCCESS;
+}
+
+std::string extractSideText(const object& side, std::vector<TokenSpan>* outTokens) {
+  array changes;
+  std::string text;
+  if (getArrayField(side, "changes", changes)) {
+    for (element changeValue : changes) {
+      object change;
+      if (changeValue.get_object().get(change) != simdjson::SUCCESS) {
+        continue;
+      }
+
+      const std::string part = getStringOrDefault(change, "content");
+      if (part.empty()) {
+        continue;
+      }
+      const int start = static_cast<int>(text.size());
+      text += part;
+      if (outTokens != nullptr) {
+        outTokens->push_back(TokenSpan{start, static_cast<int>(part.size())});
+      }
     }
   }
 
-  if (text.isEmpty()) {
-    text = side.value("text").toString();
+  if (text.empty()) {
+    text = getStringOrDefault(side, "text");
   }
-
   return text;
 }
 
-std::vector<TokenSpan> toStdTokens(const QVector<TokenSpan>& tokens) {
-  return {tokens.begin(), tokens.end()};
-}
-
-int lineNumberFromSide(const QJsonObject& side) {
-  if (!side.contains("line_number")) {
+int lineNumberFromSide(const object& side) {
+  int64_t lineNumber = -1;
+  if (side.at_key("line_number").get_int64().get(lineNumber) != simdjson::SUCCESS) {
     return -1;
   }
-  // difftastic JSON line numbers are zero-based.
-  return side.value("line_number").toInt(-1) + 1;
+  return static_cast<int>(lineNumber) + 1;
+}
+
+bool firstFileObject(const element& root, object& fileObject) {
+  if (root.get_object().get(fileObject) == simdjson::SUCCESS) {
+    return true;
+  }
+
+  array files;
+  if (root.get_array().get(files) != simdjson::SUCCESS) {
+    return false;
+  }
+  for (element fileValue : files) {
+    if (fileValue.get_object().get(fileObject) == simdjson::SUCCESS) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace
 
-std::string_view DifftasticRenderer::id() const {
+bool DifftasticBackend::isAvailable() {
+  return !QStandardPaths::findExecutable("difft").isEmpty();
+}
+
+std::string_view DifftasticBackend::id() const {
   return "difftastic";
 }
 
-bool DifftasticRenderer::render(const RenderRequest& request, DiffDocument* out, std::string* error) {
-  if (QStandardPaths::findExecutable("difft").isEmpty()) {
+bool DifftasticBackend::compare(const CompareRequest& request, DiffDocument* out, std::string* error) const {
+  if (!isAvailable()) {
     if (error) {
       *error = "difftastic executable `difft` was not found in PATH";
     }
@@ -250,7 +306,6 @@ bool DifftasticRenderer::render(const RenderRequest& request, DiffDocument* out,
     git_libgit2_shutdown();
   };
 
-  const QString repoPath = QString::fromStdString(request.repoPath);
   if (git_repository_open_ext(&repo, request.repoPath.c_str(), 0, nullptr) != 0) {
     if (error) {
       *error = lastGitError("Failed to open repository: " + request.repoPath);
@@ -270,12 +325,12 @@ bool DifftasticRenderer::render(const RenderRequest& request, DiffDocument* out,
   doc.rightRevision = request.rightRevision;
 
   QTemporaryDir tempDir;
-    if (!tempDir.isValid()) {
-      if (error) {
-        *error = "Failed to create temporary directory for difftastic rendering";
-      }
-      cleanup();
-      return false;
+  if (!tempDir.isValid()) {
+    if (error) {
+      *error = "Failed to create temporary directory for difftastic rendering";
+    }
+    cleanup();
+    return false;
   }
 
   int index = 0;
@@ -341,8 +396,10 @@ bool DifftasticRenderer::render(const RenderRequest& request, DiffDocument* out,
       return false;
     }
 
+    const QByteArray json = difft.readAllStandardOutput();
     FileDiff fileDiff;
-    if (!parseDifftasticJson(difft.readAllStandardOutput(), changed.newPath, changed.status, &fileDiff, error)) {
+    if (!parseDifftasticJson(std::string_view(json.constData(), static_cast<size_t>(json.size())),
+                             changed.newPath.toStdString(), changed.status.toStdString(), &fileDiff, error)) {
       return false;
     }
     if (fileDiff.path.empty()) {
@@ -352,120 +409,105 @@ bool DifftasticRenderer::render(const RenderRequest& request, DiffDocument* out,
       fileDiff.status = changed.status.toStdString();
     }
 
-    doc.files.push_back(fileDiff);
+    doc.files.push_back(std::move(fileDiff));
     ++index;
   }
 
   cleanup();
-  *out = doc;
+  *out = std::move(doc);
   return true;
 }
 
-bool DifftasticRenderer::parseDifftasticJson(const QByteArray& json,
-                                             const QString& fallbackPath,
-                                             const QString& fallbackStatus,
-                                             FileDiff* outFile,
-                                             std::string* error) const {
-  QJsonParseError parseError;
-  const QJsonDocument doc = QJsonDocument::fromJson(json, &parseError);
-  if (parseError.error != QJsonParseError::NoError) {
+bool DifftasticBackend::parseDifftasticJson(std::string_view json,
+                                            std::string_view fallbackPath,
+                                            std::string_view fallbackStatus,
+                                            FileDiff* outFile,
+                                            std::string* error) const {
+  simdjson::dom::parser parser;
+  simdjson::padded_string padded(json);
+  element root;
+  if (const auto parseError = parser.parse(padded).get(root); parseError != simdjson::SUCCESS) {
     if (error) {
-      *error = QString("Failed to parse difftastic JSON: %1").arg(parseError.errorString()).toStdString();
+      *error = "Failed to parse difftastic JSON: " + std::string(simdjson::error_message(parseError));
     }
     return false;
   }
 
-  QJsonObject fileObject;
-  if (doc.isObject()) {
-    fileObject = doc.object();
-  } else if (doc.isArray()) {
-    const QJsonArray array = doc.array();
-    if (array.isEmpty() || !array.first().isObject()) {
-      if (error) {
-        *error = "difftastic JSON payload did not include a file object";
-      }
-      return false;
-    }
-    fileObject = array.first().toObject();
-  } else {
+  object fileObject;
+  if (!firstFileObject(root, fileObject)) {
     if (error) {
-      *error = "difftastic JSON payload was neither object nor array";
+      *error = "difftastic JSON payload did not include a file object";
     }
     return false;
   }
 
   FileDiff file;
-  file.path = fileObject.value("path").toString(fallbackPath).toStdString();
+  file.path = getStringOrDefault(fileObject, "path", fallbackPath);
+  file.status = mapFileStatus(getStringOrDefault(fileObject, "status"), fallbackStatus);
 
-  const QString status = fileObject.value("status").toString();
-  if (status == "created") {
-    file.status = "A";
-  } else if (status == "deleted") {
-    file.status = "D";
-  } else if (status == "unchanged") {
-    file.status = "U";
-  } else {
-    file.status = fallbackStatus.toStdString();
-  }
-
-  if (fileObject.value("language").toString() == "binary") {
+  if (getStringOrDefault(fileObject, "language") == "binary") {
     file.isBinary = true;
-    *outFile = file;
+    *outFile = std::move(file);
     return true;
   }
 
-  const QJsonArray chunks = fileObject.value("chunks").toArray();
-  for (const QJsonValue& chunkValue : chunks) {
-    if (!chunkValue.isArray()) {
+  array chunks;
+  if (!getArrayField(fileObject, "chunks", chunks)) {
+    *outFile = std::move(file);
+    return true;
+  }
+
+  for (element chunkValue : chunks) {
+    array lines;
+    if (chunkValue.get_array().get(lines) != simdjson::SUCCESS) {
       continue;
     }
 
     Hunk hunk;
     hunk.header = "@@";
 
-    const QJsonArray lines = chunkValue.toArray();
-    for (const QJsonValue& lineValue : lines) {
-      if (!lineValue.isObject()) {
+    for (element lineValue : lines) {
+      object lineObject;
+      if (lineValue.get_object().get(lineObject) != simdjson::SUCCESS) {
         continue;
       }
 
-      const QJsonObject lineObject = lineValue.toObject();
-      const QJsonObject lhs = lineObject.value("lhs").toObject();
-      const QJsonObject rhs = lineObject.value("rhs").toObject();
+      object lhs;
+      object rhs;
+      const bool hasLhsObject = getObjectField(lineObject, "lhs", lhs);
+      const bool hasRhsObject = getObjectField(lineObject, "rhs", rhs);
 
-      QVector<TokenSpan> lhsTokens;
-      QVector<TokenSpan> rhsTokens;
-      const QString lhsText = extractSideText(lhs, &lhsTokens);
-      const QString rhsText = extractSideText(rhs, &rhsTokens);
-      const int lhsLine = lineNumberFromSide(lhs);
-      const int rhsLine = lineNumberFromSide(rhs);
+      std::vector<TokenSpan> lhsTokens;
+      std::vector<TokenSpan> rhsTokens;
+      const std::string lhsText = hasLhsObject ? extractSideText(lhs, &lhsTokens) : std::string{};
+      const std::string rhsText = hasRhsObject ? extractSideText(rhs, &rhsTokens) : std::string{};
+      const int lhsLine = hasLhsObject ? lineNumberFromSide(lhs) : -1;
+      const int rhsLine = hasRhsObject ? lineNumberFromSide(rhs) : -1;
 
-      const bool hasLhs = !lhs.isEmpty() && (!lhsText.isEmpty() || lhsLine > 0);
-      const bool hasRhs = !rhs.isEmpty() && (!rhsText.isEmpty() || rhsLine > 0);
+      const bool hasLhs = hasLhsObject && (!lhsText.empty() || lhsLine > 0);
+      const bool hasRhs = hasRhsObject && (!rhsText.empty() || rhsLine > 0);
 
       if (hasLhs && hasRhs && lhsText == rhsText) {
-        hunk.lines.push_back(DiffLine{lhsLine, rhsLine, LineKind::Context, lhsText.toStdString(), {}});
+        hunk.lines.push_back(DiffLine{lhsLine, rhsLine, LineKind::Context, lhsText, {}});
         continue;
       }
 
       if (hasLhs) {
-        hunk.lines.push_back(
-            DiffLine{lhsLine, -1, LineKind::Deletion, lhsText.toStdString(), toStdTokens(lhsTokens)});
+        hunk.lines.push_back(DiffLine{lhsLine, -1, LineKind::Deletion, lhsText, std::move(lhsTokens)});
         file.deletions += 1;
       }
       if (hasRhs) {
-        hunk.lines.push_back(
-            DiffLine{-1, rhsLine, LineKind::Addition, rhsText.toStdString(), toStdTokens(rhsTokens)});
+        hunk.lines.push_back(DiffLine{-1, rhsLine, LineKind::Addition, rhsText, std::move(rhsTokens)});
         file.additions += 1;
       }
     }
 
     if (!hunk.lines.empty()) {
-      file.hunks.push_back(hunk);
+      file.hunks.push_back(std::move(hunk));
     }
   }
 
-  *outFile = file;
+  *outFile = std::move(file);
   return true;
 }
 

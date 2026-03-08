@@ -1,4 +1,4 @@
-#include "app/RepositoryPickerModel.h"
+#include "app/models/RepositoryPickerModel.h"
 
 #include <QDir>
 #include <QFileInfo>

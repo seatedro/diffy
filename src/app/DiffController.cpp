@@ -4,23 +4,32 @@
 
 #include <QDir>
 #include <QFileDialog>
+#include <QFont>
+#include <QFontMetricsF>
 #include <QGuiApplication>
-#include <QStandardPaths>
 #include <QtConcurrent>
 
 #include "app/QtDiffTypes.h"
+#include "core/compare/backends/DifftasticBackend.h"
+#include "core/rendering/PreparedRows.h"
 #include "core/search/FuzzyMatch.h"
 #include "core/vcs/github/GitHubApi.h"
 #include "core/vcs/github/GitHubPullRequest.h"
 #include "core/diff/DiffTypes.h"
 #include "core/support/Log.h"
-#include "model/DiffPreparedRows.h"
 
 namespace diffy {
 namespace {
 
 constexpr int kPreparedRowsPrewarmBatchSize = 2;
 const QString kPreparedRowsPrewarmFontFamily = QStringLiteral("JetBrains Mono");
+
+QFont monoFont(const QString& family, qreal pixelSize) {
+  QFont font(family);
+  font.setStyleHint(QFont::Monospace);
+  font.setPixelSize(qRound(pixelSize));
+  return font;
+}
 
 }  // namespace
 
@@ -35,7 +44,7 @@ DiffController::DiffController(QObject* parent)
 
   wrapEnabled_ = settings_.value("wrapEnabled", false).toBool();
   wrapColumn_ = settings_.value("wrapColumn", 0).toInt();
-  hasDifftastic_ = !QStandardPaths::findExecutable("difft").isEmpty();
+  hasDifftastic_ = DifftasticBackend::isAvailable();
 
   githubToken_ = settings_.value("githubToken").toString();
   if (githubToken_.isEmpty()) {
@@ -84,7 +93,6 @@ DiffController::DiffController(QObject* parent)
   recentRepositories_ = settings_.value("recentRepositories").toStringList();
 
   languageRegistry_.loadBuiltinGrammars();
-  builtinRenderer_.setSyntax(&languageRegistry_, &highlighter_);
 
   if (!repoPath_.isEmpty()) {
     std::string openError;
@@ -245,7 +253,7 @@ void DiffController::setSelectedFileIndex(int index) {
   selectedFileIndex_ = index;
   rebuildSelectedFileRows();
   if (index >= 0 && index < static_cast<int>(fileDiffs_.size())) {
-    Q_ASSERT(selectedFileRowsModel_.count() == static_cast<int>(flattenedRowsForFile(index).size()));
+    Q_ASSERT(selectedFileRowsModel_.count() == static_cast<int>(flatRowsForFile(index).size()));
   } else {
     Q_ASSERT(selectedFileRowsModel_.count() == 0);
   }
@@ -493,13 +501,13 @@ void DiffController::compare() {
 
   setCurrentView("diff");
 
-  RenderRequest request{repoPath_.toStdString(), resolvedLeft, resolvedRight};
-  std::string rendererChoice = renderer_.toStdString();
-  const LanguageRegistry* langReg = &languageRegistry_;
+  CompareRequest request{repoPath_.toStdString(), resolvedLeft, resolvedRight};
+  std::string backendChoice = renderer_.toStdString();
+  CompareService* compareService = &compareService_;
 
-  compareWatcher_ = std::make_unique<QFutureWatcher<CompareResult>>();
+  compareWatcher_ = std::make_unique<QFutureWatcher<CompareOutput>>();
 
-  connect(compareWatcher_.get(), &QFutureWatcher<CompareResult>::finished, this, [this]() {
+  connect(compareWatcher_.get(), &QFutureWatcher<CompareOutput>::finished, this, [this]() {
     auto result = compareWatcher_->result();
     compareWatcher_.reset();
 
@@ -517,7 +525,7 @@ void DiffController::compare() {
     ++compareGeneration_;
     fileDiffs_ = std::move(result.fileDiffs);
     resetFileRowCaches();
-    files_ = std::move(result.files);
+    files_ = filesToVariantList(fileDiffs_);
     emit filesChanged();
 
     if (!files_.isEmpty()) {
@@ -528,7 +536,7 @@ void DiffController::compare() {
     highlightSelectedFile();
     rebuildSelectedFileRows();
     if (selectedFileIndex_ >= 0) {
-      Q_ASSERT(selectedFileRowsModel_.count() == static_cast<int>(flattenedRowsForFile(selectedFileIndex_).size()));
+      Q_ASSERT(selectedFileRowsModel_.count() == static_cast<int>(flatRowsForFile(selectedFileIndex_).size()));
     } else {
       Q_ASSERT(selectedFileRowsModel_.count() == 0);
     }
@@ -545,44 +553,9 @@ void DiffController::compare() {
     persistSettings();
   });
 
-  QFuture<CompareResult> future = QtConcurrent::run(
-      [request = std::move(request), rendererChoice = std::move(rendererChoice), langReg]() -> CompareResult {
-        CompareResult result;
-
-        Highlighter highlighter;
-        BuiltinGitRenderer builtinRenderer;
-        builtinRenderer.setSyntax(langReg, &highlighter);
-        DifftasticRenderer difftasticRenderer;
-
-        IDiffRenderer* renderer = &builtinRenderer;
-        if (rendererChoice == "difftastic") {
-          renderer = &difftasticRenderer;
-        }
-
-        DiffDocument document;
-        std::string renderError;
-        bool rendered = renderer->render(request, &document, &renderError);
-        if (!rendered && renderer == &difftasticRenderer) {
-          DiffDocument fallback;
-          std::string fallbackError;
-          if (builtinRenderer.render(request, &fallback, &fallbackError)) {
-            document = fallback;
-            result.usedFallback = true;
-            result.fallbackMessage =
-                "difftastic failed (" + renderError + "). Fell back to built-in renderer.";
-          } else {
-            result.errorMessage =
-                "difftastic failed (" + renderError + "); built-in fallback failed (" + fallbackError + ")";
-            return result;
-          }
-        } else if (!rendered) {
-          result.errorMessage = renderError;
-          return result;
-        }
-
-        result.fileDiffs = std::move(document.files);
-        result.files = filesToVariantList(result.fileDiffs);
-        return result;
+  QFuture<CompareOutput> future =
+      QtConcurrent::run([compareService, request = std::move(request), backendChoice = std::move(backendChoice)]() {
+        return compareService->compare(request, backendChoice);
       });
 
   compareWatcher_->setFuture(future);
@@ -599,29 +572,29 @@ QVariantMap DiffController::selectedFile() const {
   return files_.at(selectedFileIndex_).toMap();
 }
 
-const std::vector<FlattenedDiffRow>& DiffController::flattenedRowsForFile(int index) {
-  static const std::vector<FlattenedDiffRow> emptyRows;
+const std::vector<FlatDiffRow>& DiffController::flatRowsForFile(int index) {
+  static const std::vector<FlatDiffRow> emptyRows;
   if (index < 0 || index >= static_cast<int>(fileDiffs_.size())) {
     return emptyRows;
   }
 
-  if (flattenedFileRowsCache_.size() != fileDiffs_.size()) {
+  if (flatFileRowsCache_.size() != fileDiffs_.size()) {
     resetFileRowCaches();
   }
 
-  if (!flattenedFileRowsReady_.at(static_cast<size_t>(index))) {
-    flattenedFileRowsCache_.at(static_cast<size_t>(index)) = flattenFileRows(fileDiffs_.at(static_cast<size_t>(index)));
-    flattenedFileRowsReady_.at(static_cast<size_t>(index)) = true;
+  if (!flatFileRowsReady_.at(static_cast<size_t>(index))) {
+    flatFileRowsCache_.at(static_cast<size_t>(index)) = flattenFileDiff(fileDiffs_.at(static_cast<size_t>(index)));
+    flatFileRowsReady_.at(static_cast<size_t>(index)) = true;
   }
 
-  return flattenedFileRowsCache_.at(static_cast<size_t>(index));
+  return flatFileRowsCache_.at(static_cast<size_t>(index));
 }
 
 void DiffController::resetFileRowCaches() {
-  flattenedFileRowsCache_.clear();
-  flattenedFileRowsReady_.clear();
-  flattenedFileRowsCache_.resize(fileDiffs_.size());
-  flattenedFileRowsReady_.resize(fileDiffs_.size(), false);
+  flatFileRowsCache_.clear();
+  flatFileRowsReady_.clear();
+  flatFileRowsCache_.resize(fileDiffs_.size());
+  flatFileRowsReady_.resize(fileDiffs_.size(), false);
   selectedFileRowsModel_.clearPreparedRows();
   preparedRowsPrewarmIndex_ = 0;
   preparedRowsPrewarmQueued_ = false;
@@ -631,7 +604,7 @@ void DiffController::resetFileRowCaches() {
 
 void DiffController::prefetchFileRows() {
   for (int index = 0; index < static_cast<int>(fileDiffs_.size()); ++index) {
-    flattenedRowsForFile(index);
+    flatRowsForFile(index);
   }
 }
 
@@ -675,16 +648,19 @@ void DiffController::schedulePreparedRowsPrewarm() {
     }
 
     int warmedCount = 0;
+    const QFontMetricsF metrics(monoFont(kPreparedRowsPrewarmFontFamily, 12));
+    const TextWidthMeasure measureTextWidth = [&metrics](std::string_view text) {
+      return metrics.horizontalAdvance(QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())));
+    };
     while (preparedRowsPrewarmIndex_ < static_cast<int>(preparedRowsPrewarmOrder_.size()) &&
            warmedCount < kPreparedRowsPrewarmBatchSize) {
       const int index = preparedRowsPrewarmOrder_.at(static_cast<size_t>(preparedRowsPrewarmIndex_++));
       PreparedRowsCacheKey key;
       key.compareGeneration = compareGeneration_;
-      key.filePath = QString::fromStdString(fileDiffs_.at(static_cast<size_t>(index)).path);
-      key.family = kPreparedRowsPrewarmFontFamily;
+      key.filePath = fileDiffs_.at(static_cast<size_t>(index)).path;
+      key.family = kPreparedRowsPrewarmFontFamily.toStdString();
       if (selectedFileRowsModel_.preparedRows(key) == nullptr) {
-        selectedFileRowsModel_.storePreparedRows(
-            key, prepareRowsForSurface(flattenedRowsForFile(index), kPreparedRowsPrewarmFontFamily));
+        selectedFileRowsModel_.storePreparedRows(key, prepareRowsForDisplay(flatRowsForFile(index), measureTextWidth));
       }
       ++warmedCount;
     }
@@ -699,7 +675,7 @@ void DiffController::highlightSelectedFile() {
   if (selectedFileIndex_ < 0 || selectedFileIndex_ >= static_cast<int>(fileDiffs_.size())) {
     return;
   }
-  BuiltinGitRenderer::highlightFile(languageRegistry_, highlighter_, fileDiffs_.at(selectedFileIndex_));
+  syntaxAnnotator_.annotateFile(languageRegistry_, highlighter_, fileDiffs_.at(selectedFileIndex_));
 }
 
 void DiffController::startBackgroundHighlighting() {
@@ -713,6 +689,7 @@ void DiffController::startBackgroundHighlighting() {
   }
 
   const LanguageRegistry* langReg = &languageRegistry_;
+  const DiffSyntaxAnnotator* syntaxAnnotator = &syntaxAnnotator_;
   std::vector<FileDiff>* diffs = &fileDiffs_;
   int skipIndex = selectedFileIndex_;
 
@@ -726,21 +703,16 @@ void DiffController::startBackgroundHighlighting() {
   });
 
   QFuture<void> future = QtConcurrent::run(
-      [diffs, langReg, skipIndex]() {
+      [diffs, langReg, syntaxAnnotator, skipIndex]() {
         Highlighter highlighter;
-        for (size_t i = 0; i < diffs->size(); ++i) {
-          if (static_cast<int>(i) == skipIndex) {
-            continue;
-          }
-          BuiltinGitRenderer::highlightFile(*langReg, highlighter, diffs->at(i));
-        }
+        syntaxAnnotator->annotateFiles(*langReg, highlighter, *diffs, skipIndex);
       });
 
   highlightWatcher_->setFuture(future);
 }
 void DiffController::rebuildSelectedFileRows() {
   if (selectedFileIndex_ >= 0 && selectedFileIndex_ < static_cast<int>(fileDiffs_.size())) {
-    selectedFileRowsModel_.setRows(flattenedRowsForFile(selectedFileIndex_));
+    selectedFileRowsModel_.setRows(flatRowsForFile(selectedFileIndex_));
   } else {
     selectedFileRowsModel_.clear();
   }

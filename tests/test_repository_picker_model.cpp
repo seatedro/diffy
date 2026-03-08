@@ -4,7 +4,7 @@
 #include <QTemporaryDir>
 #include <QtTest/QtTest>
 
-#include "app/RepositoryPickerModel.h"
+#include "app/models/RepositoryPickerModel.h"
 
 using namespace diffy;
 

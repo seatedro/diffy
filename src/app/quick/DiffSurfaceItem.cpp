@@ -1,4 +1,4 @@
-#include "ui/DiffSurfaceItem.h"
+#include "app/quick/DiffSurfaceItem.h"
 
 #include <QClipboard>
 #include <QColor>
@@ -2378,6 +2378,9 @@ void DiffSurfaceItem::rebuildRows() {
   rightViewportX_ = 0;
 
   const QFontMetricsF metrics(monoFont(monoFontFamily_, 12));
+  const TextWidthMeasure measureTextWidth = [&metrics](std::string_view text) {
+    return metrics.horizontalAdvance(QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())));
+  };
   lineHeight_ = metrics.height();
   rowHeight_ = qCeil(lineHeight_ + 8.0);
   fileHeaderHeight_ = 32.0;
@@ -2391,11 +2394,11 @@ void DiffSurfaceItem::rebuildRows() {
     displayModel_.setSourceRows(prepared->sourceRows);
   } else {
     if (rowsModel_ != nullptr) {
-      rowsModel_->storePreparedRows(key, prepareRowsForSurface(rowsModel_->rows(), monoFontFamily_));
+      rowsModel_->storePreparedRows(key, prepareRowsForDisplay(rowsModel_->rows(), measureTextWidth));
       prepared = rowsModel_->preparedRows(key);
     }
     if (prepared == nullptr) {
-      localPrepared = prepareRowsForSurface({}, monoFontFamily_);
+      localPrepared = prepareRowsForDisplay({}, measureTextWidth);
       prepared = &localPrepared;
     }
     textRope_ = prepared->textRope;
@@ -2608,8 +2611,8 @@ int DiffSurfaceItem::currentRowIndex() const {
 PreparedRowsCacheKey DiffSurfaceItem::preparedRowsCacheKey() const {
   PreparedRowsCacheKey key;
   key.compareGeneration = compareGeneration_;
-  key.filePath = filePath_;
-  key.family = monoFontFamily_;
+  key.filePath = filePath_.toStdString();
+  key.family = monoFontFamily_.toStdString();
   return key;
 }
 

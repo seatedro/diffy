@@ -17,10 +17,10 @@
 #include <mutex>
 #include <vector>
 
-#include "model/DiffPreparedRows.h"
-#include "model/DiffDisplayModel.h"
-#include "model/DiffRowListModel.h"
-#include "text/TextRope.h"
+#include "app/models/DiffRowListModel.h"
+#include "core/rendering/DiffLayoutEngine.h"
+#include "core/rendering/PreparedRows.h"
+#include "core/text/TextRope.h"
 
 class QPainter;
 class QSGNode;
@@ -326,7 +326,7 @@ signals:
   QString monoFontFamily_ = "JetBrains Mono";
 
   TextRope textRope_;
-  DiffDisplayModel displayModel_;
+  DiffLayoutEngine displayModel_;
 
   qreal contentHeight_ = 0;
   qreal contentWidth_ = 0;

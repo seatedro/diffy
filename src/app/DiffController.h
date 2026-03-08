@@ -8,27 +8,20 @@
 #include <memory>
 #include <vector>
 
-#include "app/RepositoryPickerModel.h"
 #include <QTimer>
 
+#include "app/models/DiffRowListModel.h"
+#include "app/models/RepositoryPickerModel.h"
+#include "core/compare/CompareService.h"
+#include "core/rendering/FlatDiffRows.h"
 #include "core/vcs/CompareSpec.h"
 #include "core/vcs/github/GitHubDeviceFlow.h"
 #include "core/vcs/git/GitRepositoryService.h"
+#include "core/syntax/DiffSyntaxAnnotator.h"
 #include "core/syntax/Highlighter.h"
 #include "core/syntax/LanguageRegistry.h"
-#include "model/DiffRowListModel.h"
-#include "renderers/BuiltinGitRenderer.h"
-#include "renderers/DifftasticRenderer.h"
 
 namespace diffy {
-
-struct CompareResult {
-  std::vector<FileDiff> fileDiffs;
-  QVariantList files;
-  std::string errorMessage;
-  bool usedFallback = false;
-  std::string fallbackMessage;
-};
 
 class DiffController : public QObject {
   Q_OBJECT
@@ -181,7 +174,7 @@ class DiffController : public QObject {
 
  private:
   void rebuildSelectedFileRows();
-  const std::vector<FlattenedDiffRow>& flattenedRowsForFile(int index);
+  const std::vector<FlatDiffRow>& flatRowsForFile(int index);
   void resetFileRowCaches();
   void prefetchFileRows();
   void resetPreparedRowsPrewarmOrder();
@@ -198,8 +191,8 @@ class DiffController : public QObject {
   GitRepositoryService gitService_;
   LanguageRegistry languageRegistry_;
   Highlighter highlighter_;
-  BuiltinGitRenderer builtinRenderer_;
-  DifftasticRenderer difftasticRenderer_;
+  CompareService compareService_;
+  DiffSyntaxAnnotator syntaxAnnotator_;
 
   QSettings settings_;
 
@@ -215,8 +208,8 @@ class DiffController : public QObject {
   QString layoutMode_ = "unified";
   int compareGeneration_ = 0;
   std::vector<FileDiff> fileDiffs_;
-  std::vector<std::vector<FlattenedDiffRow>> flattenedFileRowsCache_;
-  std::vector<bool> flattenedFileRowsReady_;
+  std::vector<std::vector<FlatDiffRow>> flatFileRowsCache_;
+  std::vector<bool> flatFileRowsReady_;
   QVariantList files_;
   DiffRowListModel selectedFileRowsModel_;
   RepositoryPickerModel repositoryPickerModel_;
@@ -237,7 +230,7 @@ class DiffController : public QObject {
   bool preparedRowsPrewarmQueued_ = false;
   int preparedRowsPrewarmVersion_ = 0;
   std::vector<int> preparedRowsPrewarmOrder_;
-  std::unique_ptr<QFutureWatcher<CompareResult>> compareWatcher_;
+  std::unique_ptr<QFutureWatcher<CompareOutput>> compareWatcher_;
   std::unique_ptr<QFutureWatcher<void>> highlightWatcher_;
   QString githubClientId_;
   QTimer oauthPollTimer_;

@@ -23,7 +23,7 @@
 #include "app/DiffController.h"
 #include "app/ThemeProvider.h"
 #include "core/support/Log.h"
-#include "ui/DiffSurfaceItem.h"
+#include "app/quick/DiffSurfaceItem.h"
 
 namespace {
 

@@ -27,8 +27,14 @@ FetchContent_Declare(
   GIT_TAG        v1.15.3
   GIT_SHALLOW    TRUE
 )
+FetchContent_Declare(
+  simdjson
+  GIT_REPOSITORY https://github.com/simdjson/simdjson.git
+  GIT_TAG        v4.3.1
+  GIT_SHALLOW    TRUE
+)
 set(SPDLOG_FMT_EXTERNAL OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(spdlog)
+FetchContent_MakeAvailable(spdlog simdjson)
 
 if(DIFFY_FAST_QML_DEV)
   set(QT_QML_NO_CACHEGEN TRUE)
@@ -68,8 +74,14 @@ qt_standard_project_setup()
 add_subdirectory(vendor/grammars)
 
 add_library(diffy_core STATIC
+  src/core/compare/CompareService.cpp
+  src/core/compare/backends/GitDiffBackend.cpp
+  src/core/compare/backends/DifftasticBackend.cpp
   src/core/vcs/CompareSpec.cpp
   src/core/diff/DiffTypes.cpp
+  src/core/rendering/FlatDiffRows.cpp
+  src/core/rendering/PreparedRows.cpp
+  src/core/rendering/DiffLayoutEngine.cpp
   src/core/search/FuzzyMatch.cpp
   src/core/vcs/github/GitHubApi.cpp
   src/core/vcs/github/GitHubDeviceFlow.cpp
@@ -77,8 +89,10 @@ add_library(diffy_core STATIC
   src/core/vcs/git/GitRepositoryService.cpp
   src/core/diff/UnifiedDiffParser.cpp
   src/core/diff/WordDiff.cpp
+  src/core/syntax/DiffSyntaxAnnotator.cpp
   src/core/syntax/LanguageRegistry.cpp
   src/core/syntax/Highlighter.cpp
+  src/core/text/TextRope.cpp
 )
 
 target_include_directories(diffy_core PUBLIC
@@ -89,36 +103,32 @@ target_include_directories(diffy_core PUBLIC
 )
 
 target_link_libraries(diffy_core PUBLIC
+  Qt6::Core
+  Qt6::Gui
   ${LIBCURL_LIBRARIES}
   ${LIBGIT2_LIBRARIES}
   ${TREESITTER_LIBRARIES}
   diffy_grammars
   spdlog::spdlog
+  simdjson::simdjson
 )
 
 target_compile_options(diffy_core PRIVATE ${LIBCURL_CFLAGS_OTHER} ${LIBGIT2_CFLAGS_OTHER} ${TREESITTER_CFLAGS_OTHER})
 
-qt_add_executable(diffy
-  src/main.cpp
+add_library(diffy_app STATIC
   src/app/DiffController.cpp
   src/app/ThemeProvider.cpp
-  src/app/RepositoryPickerModel.cpp
   src/app/QtDiffTypes.cpp
-  src/model/DiffPreparedRows.cpp
-  src/model/DiffDisplayModel.cpp
-  src/model/DiffRowListModel.cpp
-  src/text/TextRope.cpp
-  src/ui/DiffSurfaceItem.cpp
-  src/renderers/BuiltinGitRenderer.cpp
-  src/renderers/DifftasticRenderer.cpp
+  src/app/models/DiffRowListModel.cpp
+  src/app/models/RepositoryPickerModel.cpp
+  src/app/quick/DiffSurfaceItem.cpp
 )
 
-target_include_directories(diffy PRIVATE
+target_include_directories(diffy_app PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
-  ${TREESITTER_INCLUDE_DIRS}
 )
 
-target_link_libraries(diffy PRIVATE
+target_link_libraries(diffy_app PUBLIC
   diffy_core
   Qt6::Core
   Qt6::Gui
@@ -129,7 +139,11 @@ target_link_libraries(diffy PRIVATE
   ${TREESITTER_LIBRARIES}
 )
 
-target_compile_options(diffy PRIVATE ${TREESITTER_CFLAGS_OTHER})
+qt_add_executable(diffy
+  src/main.cpp
+)
+
+target_link_libraries(diffy PRIVATE diffy_app)
 
 if(DIFFY_ENABLE_QML_DEBUG)
   target_compile_definitions(diffy PRIVATE QT_QML_DEBUG)

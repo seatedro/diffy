@@ -86,7 +86,12 @@ class DiffDisplayModel {
  public:
   void setFileHeader(std::optional<DiffSourceRow> row);
   void setSourceRows(std::vector<DiffSourceRow> rows);
+  void prewarm(const DiffLayoutConfig& config);
   void rebuild(const DiffLayoutConfig& config);
+  const std::vector<DiffDisplayRow>& cachedRows(const DiffLayoutConfig& config);
+  int rowIndexAtY(const DiffLayoutConfig& config, double y);
+  int stickyHunkRowIndexAtY(const DiffLayoutConfig& config, double y);
+  int fileHeaderRowIndex(const DiffLayoutConfig& config);
 
   const std::vector<DiffDisplayRow>& rows() const;
   double contentHeight() const;
@@ -99,15 +104,29 @@ class DiffDisplayModel {
   int previousHunkRowIndex(int rowIndex) const;
 
  private:
+  struct LayoutCacheEntry {
+    bool valid = false;
+    DiffLayoutConfig config;
+    std::vector<DiffDisplayRow> rows;
+    std::vector<double> rowOffsets;
+    double contentHeight = 0;
+  };
+
   void recomputeLineNumberDigits();
   void clearTopologyCaches();
   void rebuildTopology(std::vector<DiffDisplayRow>& targetRows, DiffLayoutMode mode) const;
-  void rebuildMetrics(const DiffLayoutConfig& config);
+  void invalidateLayoutCaches();
+  LayoutCacheEntry& layoutCache(DiffLayoutMode mode);
+  const LayoutCacheEntry& layoutCache(DiffLayoutMode mode) const;
+  void ensureLayoutCache(const DiffLayoutConfig& config);
+  static bool sameConfig(const DiffLayoutConfig& lhs, const DiffLayoutConfig& rhs);
 
   std::optional<DiffSourceRow> fileHeaderRow_;
   std::vector<DiffSourceRow> sourceRows_;
   std::vector<DiffDisplayRow> unifiedTopologyRows_;
   std::vector<DiffDisplayRow> splitTopologyRows_;
+  LayoutCacheEntry unifiedLayoutCache_;
+  LayoutCacheEntry splitLayoutCache_;
   std::vector<DiffDisplayRow> displayRows_;
   std::vector<double> rowOffsets_;
   double contentHeight_ = 0;

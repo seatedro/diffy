@@ -368,6 +368,15 @@ int main(int argc, char* argv[]) {
     });
   }
 
+  const QString secondSwitchLayoutTo = envString("DIFFY_SWITCH_SECOND_LAYOUT_TO");
+  if (!secondSwitchLayoutTo.isEmpty()) {
+    bool switchDelayOk = false;
+    const int switchLayoutDelayMs = envString("DIFFY_SWITCH_SECOND_LAYOUT_AFTER_MS").toInt(&switchDelayOk);
+    QTimer::singleShot(switchDelayOk ? switchLayoutDelayMs : 360, &app, [&controller, secondSwitchLayoutTo]() {
+      controller.setLayoutMode(secondSwitchLayoutTo);
+    });
+  }
+
   const auto selectFileByPath = [&controller](const QString& selectedFilePath) {
     const QVariantList files = controller.files();
     for (int index = 0; index < files.size(); ++index) {
@@ -385,6 +394,16 @@ int main(int argc, char* argv[]) {
     const int switchFileDelayMs = envString("DIFFY_SWITCH_FILE_AFTER_MS").toInt(&switchDelayOk);
     QTimer::singleShot(switchDelayOk ? switchFileDelayMs : 180, &app, [&controller, switchFileToPath, selectFileByPath]() {
       selectFileByPath(switchFileToPath);
+    });
+  }
+
+  const QString secondSwitchFileToPath = envString("DIFFY_SWITCH_SECOND_FILE_TO_PATH");
+  if (!secondSwitchFileToPath.isEmpty()) {
+    bool switchDelayOk = false;
+    const int switchFileDelayMs = envString("DIFFY_SWITCH_SECOND_FILE_AFTER_MS").toInt(&switchDelayOk);
+    QTimer::singleShot(switchDelayOk ? switchFileDelayMs : 360, &app,
+                       [&controller, secondSwitchFileToPath, selectFileByPath]() {
+      selectFileByPath(secondSwitchFileToPath);
     });
   }
 

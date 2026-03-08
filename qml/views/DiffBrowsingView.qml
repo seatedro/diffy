@@ -341,6 +341,7 @@ Rectangle {
                 fileData: diffController.selectedFile
                 rowsModel: diffController.selectedFileRowsModel
                 layoutMode: diffController.layoutMode
+                compareGeneration: diffController.compareGeneration
                 leftRef: diffController.leftRef
                 rightRef: diffController.rightRef
                 renderer: diffController.renderer

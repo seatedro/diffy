@@ -33,6 +33,7 @@ class DiffController : public QObject {
   Q_PROPERTY(QString compareMode READ compareMode WRITE setCompareMode NOTIFY compareModeChanged)
   Q_PROPERTY(QString renderer READ renderer WRITE setRenderer NOTIFY rendererChanged)
   Q_PROPERTY(QString layoutMode READ layoutMode WRITE setLayoutMode NOTIFY layoutModeChanged)
+  Q_PROPERTY(int compareGeneration READ compareGeneration NOTIFY compareGenerationChanged)
   Q_PROPERTY(QVariantList files READ files NOTIFY filesChanged)
   Q_PROPERTY(int selectedFileIndex READ selectedFileIndex WRITE setSelectedFileIndex NOTIFY selectedFileIndexChanged)
   Q_PROPERTY(QVariantMap selectedFile READ selectedFile NOTIFY selectedFileChanged)
@@ -82,6 +83,7 @@ class DiffController : public QObject {
 
   QString layoutMode() const;
   void setLayoutMode(const QString& value);
+  int compareGeneration() const;
 
   QVariantList files() const;
 
@@ -141,6 +143,7 @@ class DiffController : public QObject {
   void compareModeChanged();
   void rendererChanged();
   void layoutModeChanged();
+  void compareGenerationChanged();
   void filesChanged();
   void selectedFileIndexChanged();
   void selectedFileChanged();
@@ -188,6 +191,7 @@ class DiffController : public QObject {
   QString compareMode_ = "two-dot";
   QString renderer_ = "builtin";
   QString layoutMode_ = "unified";
+  int compareGeneration_ = 0;
   std::vector<FileDiff> fileDiffs_;
   std::vector<std::vector<FlattenedDiffRow>> flattenedFileRowsCache_;
   std::vector<bool> flattenedFileRowsReady_;

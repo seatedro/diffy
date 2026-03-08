@@ -9,6 +9,7 @@ Rectangle {
     property var fileData: ({})
     property var rowsModel: []
     property string layoutMode: "unified"
+    property int compareGeneration: 0
     property string leftRef: ""
     property string rightRef: ""
     property string renderer: "builtin"
@@ -228,6 +229,7 @@ Rectangle {
                 activeFocusOnTab: true
                 rowsModel: root.rowsModel
                 layoutMode: root.layoutMode
+                compareGeneration: root.compareGeneration
                 filePath: root.hasData() ? fileData.path : ""
                 fileStatus: root.hasData() ? fileData.status : ""
                 additions: root.hasData() ? fileData.additions : 0

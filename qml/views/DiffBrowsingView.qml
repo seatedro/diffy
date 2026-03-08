@@ -8,7 +8,6 @@ Rectangle {
     property bool compactControls: width < 1100
     property bool stackPanels: width < 800
     property bool hideFilePane: width < 600
-    property string pendingPullRequestField: ""
     property real filePaneWidth: Math.max(180, Math.min(260, width * 0.20))
 
     readonly property string iconArrowLeft: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>'
@@ -46,28 +45,20 @@ Rectangle {
         return parts.length > 0 ? parts[parts.length - 1] : diffController.repoPath
     }
 
-    function isPullRequestUrl(value) {
-        return /^https?:\/\/github\.com\/[^\/]+\/[^\/]+\/pull\/\d+(?:\/.*)?$/i.test(value.trim())
-    }
-
     function runCompare() {
-        diffController.leftRef = leftRefField.text
-        diffController.rightRef = rightRefField.text
         diffController.compare()
     }
 
     function swapRefs() {
-        var tmp = leftRefField.text
-        leftRefField.text = rightRefField.text
-        rightRefField.text = tmp
+        var tmpLeft = diffController.leftRef
+        diffController.leftRef = diffController.rightRef
+        diffController.rightRef = tmpLeft
     }
 
     color: theme.appBg
 
     Connections {
         target: diffController
-        function onLeftRefChanged() { leftRefField.text = diffController.leftRefDisplay }
-        function onRightRefChanged() { rightRefField.text = diffController.rightRefDisplay }
         function onCurrentViewChanged() {
             if (diffController.currentView === "diff")
                 diffPane.focusSurface()
@@ -76,13 +67,6 @@ Rectangle {
             if (diffController.currentView === "diff")
                 diffPane.focusSurface()
         }
-    }
-
-    Timer {
-        id: pullRequestTimer
-        interval: 180
-        repeat: false
-        onTriggered: root.runCompare()
     }
 
     ColumnLayout {
@@ -241,21 +225,22 @@ Rectangle {
 
                 // ── Left ref card ──
                 Rectangle {
+                    id: leftRefCard
                     Layout.fillWidth: true
                     Layout.preferredHeight: 38
+                    property bool pickerOpen: refPickerDropdown.showing && refPickerDropdown.target === "left" && refPickerDropdown.anchorItem === leftRefCard
                     radius: theme.radiusMd
-                    color: leftRefField.activeFocus ? Qt.lighter(theme.panelStrong, 1.08) : (leftCardMouse.containsMouse ? theme.panelStrong : theme.panel)
-                    border.color: leftRefField.activeFocus ? theme.accent : "transparent"
-                    border.width: leftRefField.activeFocus ? 1.5 : 0
+                    color: pickerOpen ? theme.panel : (leftCardMouse.containsMouse ? theme.panelStrong : theme.panel)
+                    border.width: 1
+                    border.color: pickerOpen ? theme.borderSoft : (leftCardMouse.containsMouse ? theme.borderSoft : "transparent")
                     Behavior on color { ColorAnimation { duration: 100 } }
-                    Behavior on border.color { ColorAnimation { duration: 100 } }
 
                     MouseArea {
                         id: leftCardMouse
                         anchors.fill: parent
                         hoverEnabled: true
-                        cursorShape: Qt.IBeamCursor
-                        onClicked: leftRefField.forceActiveFocus()
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: window.openBranchPicker("left", leftRefCard)
                     }
 
                     RowLayout {
@@ -280,21 +265,14 @@ Rectangle {
                             color: theme.accent
                         }
 
-                        InputField {
-                            id: leftRefField
+                        Text {
                             Layout.fillWidth: true
-                            compact: true
-                            monospace: true
-                            borderless: true
-                            text: diffController.leftRefDisplay
-                            placeholderText: "base ref"
-                            onTextChanged: {
-                                if (root.isPullRequestUrl(text)) {
-                                    root.pendingPullRequestField = "left"
-                                    pullRequestTimer.restart()
-                                }
-                            }
-                            onSubmitted: root.runCompare()
+                            text: diffController.leftRefDisplay || "base ref"
+                            color: diffController.leftRefDisplay.length > 0 ? theme.textStrong : theme.textFaint
+                            font.family: theme.mono
+                            font.pixelSize: theme.fontSmall + 1
+                            elide: Text.ElideRight
+                            verticalAlignment: Text.AlignVCenter
                         }
                     }
                 }
@@ -371,21 +349,22 @@ Rectangle {
 
                 // ── Right ref card ──
                 Rectangle {
+                    id: rightRefCard
                     Layout.fillWidth: true
                     Layout.preferredHeight: 38
+                    property bool pickerOpen: refPickerDropdown.showing && refPickerDropdown.target === "right" && refPickerDropdown.anchorItem === rightRefCard
                     radius: theme.radiusMd
-                    color: rightRefField.activeFocus ? Qt.lighter(theme.panelStrong, 1.08) : (rightCardMouse.containsMouse ? theme.panelStrong : theme.panel)
-                    border.color: rightRefField.activeFocus ? theme.accent : "transparent"
-                    border.width: rightRefField.activeFocus ? 1.5 : 0
+                    color: pickerOpen ? theme.panel : (rightCardMouse.containsMouse ? theme.panelStrong : theme.panel)
+                    border.width: 1
+                    border.color: pickerOpen ? theme.borderSoft : (rightCardMouse.containsMouse ? theme.borderSoft : "transparent")
                     Behavior on color { ColorAnimation { duration: 100 } }
-                    Behavior on border.color { ColorAnimation { duration: 100 } }
 
                     MouseArea {
                         id: rightCardMouse
                         anchors.fill: parent
                         hoverEnabled: true
-                        cursorShape: Qt.IBeamCursor
-                        onClicked: rightRefField.forceActiveFocus()
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: window.openBranchPicker("right", rightRefCard)
                     }
 
                     RowLayout {
@@ -410,21 +389,14 @@ Rectangle {
                             color: theme.accent
                         }
 
-                        InputField {
-                            id: rightRefField
+                        Text {
                             Layout.fillWidth: true
-                            compact: true
-                            monospace: true
-                            borderless: true
-                            text: diffController.rightRefDisplay
-                            placeholderText: "head ref"
-                            onTextChanged: {
-                                if (root.isPullRequestUrl(text)) {
-                                    root.pendingPullRequestField = "right"
-                                    pullRequestTimer.restart()
-                                }
-                            }
-                            onSubmitted: root.runCompare()
+                            text: diffController.rightRefDisplay || "head ref"
+                            color: diffController.rightRefDisplay.length > 0 ? theme.textStrong : theme.textFaint
+                            font.family: theme.mono
+                            font.pixelSize: theme.fontSmall + 1
+                            elide: Text.ElideRight
+                            verticalAlignment: Text.AlignVCenter
                         }
                     }
                 }

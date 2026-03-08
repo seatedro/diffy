@@ -118,9 +118,11 @@ qt_add_qml_module(diffy
     qml/components/DiffStatsBar.qml
     qml/components/EmptyState.qml
     qml/components/FileListPane.qml
+    qml/components/FilterComboBox.qml
     qml/components/Icon.qml
     qml/components/InputField.qml
     qml/components/ProgressBar.qml
+    qml/components/RefPickerDropdown.qml
     qml/components/SegmentedControl.qml
     qml/components/ShortcutOverlay.qml
     qml/components/Skeleton.qml

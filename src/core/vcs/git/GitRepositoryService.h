@@ -46,6 +46,16 @@ class GitRepositoryService {
                          std::string* outRightRevision,
                          std::string* error) const;
 
+  struct TagInfo {
+    std::string name;
+    std::string targetOid;
+  };
+  std::vector<TagInfo> listTags(std::string* error) const;
+
+  std::vector<CommitInfo> searchCommitsByPartialOid(std::string_view hexPrefix,
+                                                    int limit,
+                                                    std::string* error) const;
+
   std::string resolveOidToBranchName(const std::string& oidHex) const;
 
   bool resolvePullRequestComparison(const std::string& pullRequestUrl,

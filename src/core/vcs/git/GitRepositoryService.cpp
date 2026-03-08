@@ -351,6 +351,92 @@ std::vector<GitRepositoryService::CommitInfo> GitRepositoryService::listCommits(
   return commits;
 }
 
+std::vector<GitRepositoryService::TagInfo> GitRepositoryService::listTags(std::string* error) const {
+  std::vector<TagInfo> tags;
+  if (repo_ == nullptr) {
+    if (error) *error = "Repository is not open";
+    return tags;
+  }
+
+  git_strarray tagNames{};
+  if (git_tag_list(&tagNames, repo_) != 0) {
+    if (error) *error = lastGitErrorString("Failed to list tags");
+    return tags;
+  }
+
+  for (size_t i = 0; i < tagNames.count; ++i) {
+    TagInfo info;
+    info.name = tagNames.strings[i];
+
+    git_object* obj = nullptr;
+    const std::string refName = "refs/tags/" + info.name;
+    if (git_revparse_single(&obj, repo_, refName.c_str()) == 0) {
+      git_object* peeled = nullptr;
+      if (git_object_peel(&peeled, obj, GIT_OBJECT_COMMIT) == 0) {
+        info.targetOid = oidToStdString(*git_object_id(peeled));
+        git_object_free(peeled);
+      }
+      git_object_free(obj);
+    }
+
+    tags.push_back(std::move(info));
+  }
+
+  git_strarray_dispose(&tagNames);
+  std::sort(tags.begin(), tags.end(), [](const TagInfo& a, const TagInfo& b) {
+    return a.name < b.name;
+  });
+  return tags;
+}
+
+std::vector<GitRepositoryService::CommitInfo> GitRepositoryService::searchCommitsByPartialOid(
+    std::string_view hexPrefix, int limit, std::string* error) const {
+  std::vector<CommitInfo> results;
+  if (repo_ == nullptr) {
+    if (error) *error = "Repository is not open";
+    return results;
+  }
+  if (hexPrefix.size() < 4) {
+    return results;
+  }
+
+  git_odb* odb = nullptr;
+  if (git_repository_odb(&odb, repo_) != 0) {
+    if (error) *error = lastGitErrorString("Failed to open ODB");
+    return results;
+  }
+
+  git_oid shortOid{};
+  if (git_oid_fromstrp(&shortOid, std::string(hexPrefix).c_str()) != 0) {
+    git_odb_free(odb);
+    return results;
+  }
+
+  git_odb_object* odbObj = nullptr;
+  if (git_odb_read_prefix(&odbObj, odb, &shortOid, hexPrefix.size()) == 0) {
+    const git_oid* fullOid = git_odb_object_id(odbObj);
+    if (git_odb_object_type(odbObj) == GIT_OBJECT_COMMIT) {
+      git_commit* commit = nullptr;
+      if (git_commit_lookup(&commit, repo_, fullOid) == 0) {
+        CommitInfo info;
+        info.oid = oidToStdString(*fullOid);
+        const char* summary = git_commit_summary(commit);
+        if (summary) info.summary = summary;
+        const git_signature* author = git_commit_author(commit);
+        if (author && author->name) info.authorName = author->name;
+        info.timestamp = git_commit_time(commit);
+        results.push_back(std::move(info));
+        git_commit_free(commit);
+      }
+    }
+    git_odb_object_free(odbObj);
+  }
+
+  git_odb_free(odb);
+  (void)limit;
+  return results;
+}
+
 std::string GitRepositoryService::resolveOidToBranchName(const std::string& oidHex) const {
   if (repo_ == nullptr || oidHex.size() != GIT_OID_HEXSZ) {
     return {};

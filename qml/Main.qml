@@ -159,6 +159,21 @@ Window {
 
     property string branchPickTarget: ""
 
+    RefPickerDropdown {
+        id: refPickerDropdown
+        onRefSelected: function(target, value) {
+            if (target === "right") {
+                diffController.rightRef = value
+            } else {
+                diffController.leftRef = value
+            }
+        }
+    }
+
+    function openRefPicker(target, anchorElement) {
+        refPickerDropdown.open(target, anchorElement)
+    }
+
     function openRepoPicker() {
         var items = []
         items.push({label: "Browse filesystem…", detail: "", category: "Action", type: "action", value: "browseRepo"})
@@ -176,20 +191,24 @@ Window {
         commandPalette.open(items)
     }
 
-    function openBranchPicker(target) {
-        branchPickTarget = target
-        var items = []
-        var branches = diffController.branches
-        for (var i = 0; i < branches.length; ++i) {
-            items.push({
-                label: branches[i].name,
-                detail: branches[i].isHead ? "HEAD" : (branches[i].isRemote ? "remote" : ""),
-                category: "Branch",
-                type: "branch",
-                value: branches[i].name
-            })
+    function openBranchPicker(target, anchorElement) {
+        if (anchorElement) {
+            openRefPicker(target, anchorElement)
+        } else {
+            branchPickTarget = target
+            var items = []
+            var branches = diffController.branches
+            for (var i = 0; i < branches.length; ++i) {
+                items.push({
+                    label: branches[i].name,
+                    detail: branches[i].isHead ? "HEAD" : (branches[i].isRemote ? "remote" : ""),
+                    category: "Branch",
+                    type: "branch",
+                    value: branches[i].name
+                })
+            }
+            commandPalette.open(items)
         }
-        commandPalette.open(items)
     }
 
     function openCommandPalette() {
@@ -240,7 +259,9 @@ Window {
     Shortcut {
         sequence: "Escape"
         onActivated: {
-            if (commandPalette.showing) {
+            if (refPickerDropdown.showing) {
+                refPickerDropdown.close()
+            } else if (commandPalette.showing) {
                 commandPalette.close()
             } else if (shortcutOverlay.showing) {
                 shortcutOverlay.showing = false

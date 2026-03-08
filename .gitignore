@@ -8,6 +8,7 @@
 .direnv/
 .envrc
 .diffy-dev.env
+AGENTS.md
 
 # Build output
 build/

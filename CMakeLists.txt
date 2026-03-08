@@ -9,6 +9,9 @@ set(CMAKE_AUTOUIC ON)
 
 enable_testing()
 
+option(DIFFY_ENABLE_QML_DEBUG "Enable QML debugging for live preview workflows" OFF)
+option(DIFFY_FAST_QML_DEV "Disable QML cache generation for faster local iteration" OFF)
+
 find_package(PkgConfig REQUIRED)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick Test Widgets)
 
@@ -25,6 +28,10 @@ FetchContent_Declare(
 )
 set(SPDLOG_FMT_EXTERNAL OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(spdlog)
+
+if(DIFFY_FAST_QML_DEV)
+  set(QT_QML_NO_CACHEGEN TRUE)
+endif()
 
 qt_standard_project_setup()
 
@@ -91,6 +98,10 @@ target_link_libraries(diffy PRIVATE
 )
 
 target_compile_options(diffy PRIVATE ${TREESITTER_CFLAGS_OTHER})
+
+if(DIFFY_ENABLE_QML_DEBUG)
+  target_compile_definitions(diffy PRIVATE QT_QML_DEBUG)
+endif()
 
 qt_add_qml_module(diffy
   URI Diffy

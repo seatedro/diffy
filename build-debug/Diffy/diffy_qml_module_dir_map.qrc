@@ -1,0 +1,6 @@
+<RCC>
+  <qresource prefix="/">
+    <file alias="/Diffy">/home/rohit/personal/diffy/build-debug/Diffy</file>
+
+  </qresource>
+</RCC>

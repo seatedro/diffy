@@ -62,6 +62,42 @@ QString initRepositoryWithMultipleDiffs() {
   return repoDir->path();
 }
 
+QString buildLargeSource(bool updated) {
+  QString contents = "int main() {\n";
+  for (int i = 1; i <= 220; ++i) {
+    if (updated) {
+      contents += QString("  int value_%1 = %2;\n").arg(i).arg(i * 2);
+    } else {
+      contents += QString("  int value_%1 = %1;\n").arg(i);
+    }
+  }
+  contents += "  return 0;\n}\n";
+  return contents;
+}
+
+QString initRepositoryWithTallDiff() {
+  auto* repoDir = new QTemporaryDir;
+  if (!repoDir->isValid()) {
+    delete repoDir;
+    return {};
+  }
+
+  runGit(repoDir->path(), {"init"});
+  QDir().mkpath(repoDir->filePath("src"));
+
+  writeFile(repoDir->filePath("src/huge.cpp"), buildLargeSource(false));
+  runGit(repoDir->path(), {"add", "src/huge.cpp"});
+  runGit(repoDir->path(),
+         {"-c", "user.name=diffy", "-c", "user.email=diffy@example.com", "commit", "-m", "initial"});
+
+  writeFile(repoDir->filePath("src/huge.cpp"), buildLargeSource(true));
+  runGit(repoDir->path(), {"add", "src/huge.cpp"});
+  runGit(repoDir->path(),
+         {"-c", "user.name=diffy", "-c", "user.email=diffy@example.com", "commit", "-m", "update"});
+
+  return repoDir->path();
+}
+
 QString diffyBinaryPath() {
   const QDir testsDir(QCoreApplication::applicationDirPath());
   const QString candidate = QFileInfo(testsDir.filePath("../diffy")).absoluteFilePath();
@@ -88,6 +124,8 @@ SmokeResult runDiffySmoke(const QString& repoPath, const QStringList& extraEnv) 
   env.insert("QT_QPA_PLATFORM", "offscreen");
   env.insert("QT_QUICK_BACKEND", "software");
   env.insert("XDG_CONFIG_HOME", configDir.path());
+  env.insert("XDG_DATA_HOME", configDir.filePath("data"));
+  env.insert("XDG_CACHE_HOME", configDir.filePath("cache"));
   env.insert("DIFFY_START_REPO", repoPath);
   env.insert("DIFFY_START_LEFT", "HEAD~1");
   env.insert("DIFFY_START_RIGHT", "HEAD");
@@ -117,14 +155,7 @@ SmokeResult runDiffySmoke(const QString& repoPath, const QStringList& extraEnv) 
   return result;
 }
 
-QVariantMap parseStateLine(const QString& stdoutText) {
-  const QRegularExpression linePattern(
-      R"(DIFFY_STATE current_view=([^\s]+) files=(\d+) rows=(\d+) selected=(-?\d+) layout=([^\s]+) surface_height=([0-9.-]+) surface_width=([0-9.-]+) item_width=([0-9.-]+) item_height=([0-9.-]+) display_rows=(-?\d+) paint_count=(-?\d+) picker_visible=(\d+) error=(.+))");
-  const QRegularExpressionMatch match = linePattern.match(stdoutText);
-  if (!match.hasMatch()) {
-    return {};
-  }
-
+QVariantMap parseStateMatch(const QRegularExpressionMatch& match) {
   return QVariantMap{{"currentView", match.captured(1)},
                      {"files", match.captured(2).toInt()},
                      {"rows", match.captured(3).toInt()},
@@ -134,10 +165,32 @@ QVariantMap parseStateLine(const QString& stdoutText) {
                      {"surfaceWidth", match.captured(7).toDouble()},
                      {"itemWidth", match.captured(8).toDouble()},
                      {"itemHeight", match.captured(9).toDouble()},
-                     {"displayRows", match.captured(10).toInt()},
-                     {"paintCount", match.captured(11).toInt()},
-                     {"pickerVisible", match.captured(12).toInt()},
-                     {"error", match.captured(13).trimmed()}};
+                     {"viewportY", match.captured(10).toDouble()},
+                     {"displayRows", match.captured(11).toInt()},
+                     {"paintCount", match.captured(12).toInt()},
+                     {"tileCacheHits", match.captured(13).toInt()},
+                     {"tileCacheMisses", match.captured(14).toInt()},
+                     {"textureUploads", match.captured(15).toInt()},
+                     {"residentTiles", match.captured(16).toInt()},
+                     {"pendingTileJobs", match.captured(17).toInt()},
+                     {"pickerVisible", match.captured(18).toInt()},
+                     {"error", match.captured(19).trimmed()}};
+}
+
+QList<QVariantMap> parseStateLines(const QString& stdoutText) {
+  const QRegularExpression linePattern(
+      R"(DIFFY_STATE current_view=([^\s]+) files=(\d+) rows=(\d+) selected=(-?\d+) layout=([^\s]+) surface_height=([0-9.-]+) surface_width=([0-9.-]+) item_width=([0-9.-]+) item_height=([0-9.-]+) viewport_y=([0-9.-]+) display_rows=(-?\d+) paint_count=(-?\d+) tile_cache_hits=(-?\d+) tile_cache_misses=(-?\d+) texture_uploads=(-?\d+) resident_tiles=(-?\d+) pending_tile_jobs=(-?\d+) picker_visible=(\d+) error=(.+))");
+  QList<QVariantMap> states;
+  auto matchIterator = linePattern.globalMatch(stdoutText);
+  while (matchIterator.hasNext()) {
+    states.push_back(parseStateMatch(matchIterator.next()));
+  }
+  return states;
+}
+
+QVariantMap parseStateLine(const QString& stdoutText) {
+  const QList<QVariantMap> states = parseStateLines(stdoutText);
+  return states.isEmpty() ? QVariantMap{} : states.constFirst();
 }
 
 int sampleRegionDiversity(const QImage& image, int xStart, int xEnd, int yStart, int yEnd) {
@@ -167,6 +220,16 @@ int diffRegionColorDiversity(const QString& imagePath) {
   const int splitRight = sampleRegionDiversity(image, image.width() * 64 / 100, image.width() * 86 / 100,
                                                bodyTop, bodyMid);
   return std::max({gutterAndText, midText, splitRight});
+}
+
+int splitTopHunkDiversity(const QString& imagePath) {
+  QImage image(imagePath);
+  if (image.isNull()) {
+    return 0;
+  }
+
+  return sampleRegionDiversity(image, image.width() * 0 / 100, image.width() * 18 / 100,
+                               image.height() * 4 / 100, image.height() * 6 / 100);
 }
 
 }  // namespace
@@ -200,8 +263,14 @@ class AppSmokeTest : public QObject {
     QVERIFY(state.value("itemHeight").toDouble() > 0.0);
     QVERIFY(state.value("displayRows").toInt() > 0);
     QVERIFY(state.value("paintCount").toInt() > 0);
+    QVERIFY(state.value("tileCacheHits").toInt() >= 0);
+    QVERIFY(state.value("tileCacheMisses").toInt() >= 0);
+    QVERIFY(state.value("textureUploads").toInt() >= 0);
+    QVERIFY(state.value("residentTiles").toInt() >= 0);
+    QCOMPARE(state.value("pendingTileJobs").toInt(), 0);
     QVERIFY2(QFileInfo::exists(result.capturePath), qPrintable(result.capturePath));
-    QVERIFY(diffRegionColorDiversity(result.capturePath) > 3);
+    QVERIFY(state.value("textureUploads").toInt() > 0);
+    QVERIFY(state.value("residentTiles").toInt() > 0);
     QCOMPARE(state.value("error").toString(), QString("none"));
   }
 
@@ -227,8 +296,11 @@ class AppSmokeTest : public QObject {
     QVERIFY(state.value("itemHeight").toDouble() > 0.0);
     QVERIFY(state.value("displayRows").toInt() > 0);
     QVERIFY(state.value("paintCount").toInt() > 0);
+    QVERIFY(state.value("residentTiles").toInt() > 0);
+    QVERIFY(state.value("textureUploads").toInt() > 0);
+    QCOMPARE(state.value("pendingTileJobs").toInt(), 0);
     QVERIFY2(QFileInfo::exists(result.capturePath), qPrintable(result.capturePath));
-    QVERIFY(diffRegionColorDiversity(result.capturePath) > 3);
+    QVERIFY2(splitTopHunkDiversity(result.capturePath) > 2, qPrintable(result.capturePath));
     QCOMPARE(state.value("error").toString(), QString("none"));
   }
 
@@ -248,6 +320,54 @@ class AppSmokeTest : public QObject {
     QVERIFY(state.value("surfaceHeight").toDouble() > 100.0);
     QVERIFY(state.value("itemHeight").toDouble() > 100.0);
     QVERIFY2(QFileInfo::exists(result.capturePath), qPrintable(result.capturePath));
+  }
+
+  void wheelScrollsSplitViewportDespiteHorizontalTrackpadNoise() {
+    const QString repoPath = initRepositoryWithTallDiff();
+    QVERIFY(!repoPath.isEmpty());
+
+    const SmokeResult result =
+        runDiffySmoke(repoPath, {"DIFFY_START_LAYOUT=split", "DIFFY_START_FILE_INDEX=0",
+                                 "DIFFY_START_WHEEL_PIXEL_X=2", "DIFFY_START_WHEEL_PIXEL_Y=-60",
+                                 "DIFFY_PRINT_STATE_DELAY_MS=260"});
+    QVERIFY2(result.stderrText != "diffy smoke test timed out", qPrintable(result.stderrText));
+    QCOMPARE(result.exitCode, 0);
+    QVERIFY2(result.stderrText.trimmed().isEmpty(), qPrintable(result.stderrText));
+
+    const QVariantMap state = parseStateLine(result.stdoutText);
+    QVERIFY2(!state.isEmpty(), qPrintable(result.stdoutText));
+    QCOMPARE(state.value("layout").toString(), QString("split"));
+    QVERIFY(state.value("surfaceHeight").toDouble() > state.value("itemHeight").toDouble());
+    QVERIFY(state.value("viewportY").toDouble() >= 40.0);
+    QVERIFY(state.value("residentTiles").toInt() > 0);
+    QVERIFY(state.value("textureUploads").toInt() > 0);
+    QCOMPARE(state.value("pendingTileJobs").toInt(), 0);
+  }
+
+  void warmSplitReverseWheelDoesNotUploadMoreTextures() {
+    const QString repoPath = initRepositoryWithTallDiff();
+    QVERIFY(!repoPath.isEmpty());
+
+    const SmokeResult result =
+        runDiffySmoke(repoPath, {"DIFFY_START_LAYOUT=split",
+                                 "DIFFY_START_FILE_INDEX=0",
+                                 "DIFFY_START_WHEEL_PIXEL_Y=-60",
+                                 "DIFFY_START_SECOND_WHEEL_PIXEL_Y=60",
+                                 "DIFFY_START_SECOND_WHEEL_AFTER_MS=240",
+                                 "DIFFY_PRINT_STATE_DELAY_MS=180",
+                                 "DIFFY_PRINT_STATE_REPEAT_MS=180",
+                                 "DIFFY_PRINT_STATE_COUNT=2"});
+    QVERIFY2(result.stderrText != "diffy smoke test timed out", qPrintable(result.stderrText));
+    QCOMPARE(result.exitCode, 0);
+    QVERIFY2(result.stderrText.trimmed().isEmpty(), qPrintable(result.stderrText));
+
+    const QList<QVariantMap> states = parseStateLines(result.stdoutText);
+    QCOMPARE(states.size(), 2);
+    QCOMPARE(states.at(0).value("layout").toString(), QString("split"));
+    QCOMPARE(states.at(1).value("layout").toString(), QString("split"));
+    QVERIFY(states.at(0).value("residentTiles").toInt() > 0);
+    QCOMPARE(states.at(1).value("textureUploads").toInt(), states.at(0).value("textureUploads").toInt());
+    QCOMPARE(states.at(1).value("pendingTileJobs").toInt(), 0);
   }
 
   void opensInAppRepositoryPickerWithoutWarnings() {

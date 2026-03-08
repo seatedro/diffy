@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <atomic>
+#include <algorithm>
 
 #include <QDir>
 #include <QFileInfo>
@@ -50,24 +51,64 @@ QString envString(const char* name) {
   return QString::fromLocal8Bit(qgetenv(name));
 }
 
+QString discoverQmlSourceRoot() {
+  QDir dir(QCoreApplication::applicationDirPath());
+  for (int depth = 0; depth < 6; ++depth) {
+    if (QFileInfo::exists(dir.filePath("qml/Main.qml"))) {
+      return dir.absolutePath();
+    }
+    if (!dir.cdUp()) {
+      break;
+    }
+  }
+  return {};
+}
+
+QUrl mainQmlUrl(QQmlApplicationEngine* engine) {
+  const QUrl resourceUrl(QStringLiteral("qrc:/Diffy/qml/Main.qml"));
+  if (!envFlagEnabled("DIFFY_QML_SOURCE")) {
+    return resourceUrl;
+  }
+
+  const QString sourceRoot = discoverQmlSourceRoot();
+  if (sourceRoot.isEmpty()) {
+    std::fprintf(stderr,
+                 "DIFFY_QML_SOURCE=1 was set but qml/Main.qml could not be found relative to %s\n",
+                 qPrintable(QCoreApplication::applicationDirPath()));
+    std::fflush(stderr);
+    return resourceUrl;
+  }
+
+  const QString qmlDir = QDir(sourceRoot).filePath("qml");
+  engine->addImportPath(qmlDir);
+  return QUrl::fromLocalFile(QDir(qmlDir).filePath("Main.qml"));
+}
+
 void printAutomationState(QObject* root, const diffy::DiffController& controller) {
   QObject* surface = root != nullptr ? root->findChild<QObject*>("diffSurface") : nullptr;
   const double surfaceHeight = surface != nullptr ? surface->property("contentHeight").toDouble() : -1.0;
   const double surfaceWidth = surface != nullptr ? surface->property("contentWidth").toDouble() : -1.0;
   const double surfaceItemWidth = surface != nullptr ? surface->property("width").toDouble() : -1.0;
   const double surfaceItemHeight = surface != nullptr ? surface->property("height").toDouble() : -1.0;
+  const double viewportY = surface != nullptr ? surface->property("viewportY").toDouble() : -1.0;
   const int paintCount = surface != nullptr ? surface->property("paintCount").toInt() : -1;
   const int displayRowCount = surface != nullptr ? surface->property("displayRowCount").toInt() : -1;
+  const int tileCacheHits = surface != nullptr ? surface->property("tileCacheHits").toInt() : -1;
+  const int tileCacheMisses = surface != nullptr ? surface->property("tileCacheMisses").toInt() : -1;
+  const int textureUploads = surface != nullptr ? surface->property("textureUploadCount").toInt() : -1;
+  const int residentTiles = surface != nullptr ? surface->property("residentTileCount").toInt() : -1;
+  const int pendingTileJobs = surface != nullptr ? surface->property("pendingTileJobCount").toInt() : -1;
   const int pickerVisible = controller.repositoryPickerVisible() ? 1 : 0;
   const QString errorText = controller.errorMessage().isEmpty() ? "none" : controller.errorMessage().simplified();
   const QString layout = controller.layoutMode().isEmpty() ? "none" : controller.layoutMode();
   const QString currentView = controller.currentView();
 
   std::fprintf(stdout,
-               "DIFFY_STATE current_view=%s files=%d rows=%d selected=%d layout=%s surface_height=%.1f surface_width=%.1f item_width=%.1f item_height=%.1f display_rows=%d paint_count=%d picker_visible=%d error=%s\n",
+               "DIFFY_STATE current_view=%s files=%d rows=%d selected=%d layout=%s surface_height=%.1f surface_width=%.1f item_width=%.1f item_height=%.1f viewport_y=%.1f display_rows=%d paint_count=%d tile_cache_hits=%d tile_cache_misses=%d texture_uploads=%d resident_tiles=%d pending_tile_jobs=%d picker_visible=%d error=%s\n",
                qPrintable(currentView), static_cast<int>(controller.files().size()), controller.selectedFileRowCount(),
                controller.selectedFileIndex(), qPrintable(layout), surfaceHeight, surfaceWidth,
-               surfaceItemWidth, surfaceItemHeight, displayRowCount, paintCount, pickerVisible, qPrintable(errorText));
+               surfaceItemWidth, surfaceItemHeight, viewportY, displayRowCount, paintCount, tileCacheHits,
+               tileCacheMisses, textureUploads, residentTiles, pendingTileJobs, pickerVisible, qPrintable(errorText));
   std::fflush(stdout);
 }
 
@@ -203,7 +244,7 @@ int main(int argc, char* argv[]) {
   engine.rootContext()->setContextProperty("theme", &themeProvider);
   engine.rootContext()->setContextProperty("diffController", &controller);
 
-  const QUrl mainUrl(QStringLiteral("qrc:/Diffy/qml/Main.qml"));
+  const QUrl mainUrl = mainQmlUrl(&engine);
   QQmlComponent component(&engine, mainUrl);
   if (component.isError()) {
     const QList<QQmlError> errors = component.errors();
@@ -229,9 +270,21 @@ int main(int argc, char* argv[]) {
   QObject::connect(&app, &QCoreApplication::aboutToQuit, root, &QObject::deleteLater);
 
   if (envFlagEnabled("DIFFY_PRINT_STATE")) {
-    QTimer::singleShot(100, &app, [&controller, root]() {
-      printAutomationState(root, controller);
-    });
+    bool delayOk = false;
+    bool repeatOk = false;
+    bool countOk = false;
+    const int printStateDelayMs = envString("DIFFY_PRINT_STATE_DELAY_MS").toInt(&delayOk);
+    const int printStateRepeatMs = envString("DIFFY_PRINT_STATE_REPEAT_MS").toInt(&repeatOk);
+    const int printStateCount = envString("DIFFY_PRINT_STATE_COUNT").toInt(&countOk);
+    const int firstDelayMs = delayOk ? printStateDelayMs : 100;
+    const int repeatDelayMs = repeatOk ? printStateRepeatMs : 0;
+    const int totalPrints = std::max(1, countOk ? printStateCount : 1);
+
+    for (int printIndex = 0; printIndex < totalPrints; ++printIndex) {
+      QTimer::singleShot(firstDelayMs + repeatDelayMs * printIndex, &app, [&controller, root]() {
+        printAutomationState(root, controller);
+      });
+    }
   }
 
   const QString startScrollY = envString("DIFFY_START_SCROLL_Y");
@@ -247,9 +300,66 @@ int main(int argc, char* argv[]) {
     }
   }
 
+  const auto scheduleWheelEvent = [&app, root](int delayMs, int pixelX, int pixelY, int angleX, int angleY) {
+    QTimer::singleShot(delayMs, &app, [root, pixelX, pixelY, angleX, angleY]() {
+      auto* surface = root != nullptr ? qobject_cast<QQuickItem*>(root->findChild<QObject*>("diffSurface")) : nullptr;
+      if (surface == nullptr) {
+        return;
+      }
+
+      const QPoint pixelDelta(pixelX, pixelY);
+      const QPoint angleDelta(angleX, angleY);
+      const QPointF localPos(surface->width() / 2.0, surface->height() / 2.0);
+      const QPointF scenePos = surface->mapToScene(localPos);
+      QWheelEvent event(localPos, scenePos, pixelDelta, angleDelta, Qt::NoButton, Qt::NoModifier,
+                        Qt::ScrollUpdate, false);
+      QCoreApplication::sendEvent(surface, &event);
+    });
+  };
+
+  const QString startWheelPixelX = envString("DIFFY_START_WHEEL_PIXEL_X");
+  const QString startWheelPixelY = envString("DIFFY_START_WHEEL_PIXEL_Y");
+  const QString startWheelAngleX = envString("DIFFY_START_WHEEL_ANGLE_X");
+  const QString startWheelAngleY = envString("DIFFY_START_WHEEL_ANGLE_Y");
+  if (!startWheelPixelX.isEmpty() || !startWheelPixelY.isEmpty() || !startWheelAngleX.isEmpty() ||
+      !startWheelAngleY.isEmpty()) {
+    bool pixelXOk = false;
+    bool pixelYOk = false;
+    bool angleXOk = false;
+    bool angleYOk = false;
+    const int pixelX = startWheelPixelX.toInt(&pixelXOk);
+    const int pixelY = startWheelPixelY.toInt(&pixelYOk);
+    const int angleX = startWheelAngleX.toInt(&angleXOk);
+    const int angleY = startWheelAngleY.toInt(&angleYOk);
+    scheduleWheelEvent(120, pixelXOk ? pixelX : 0, pixelYOk ? pixelY : 0, angleXOk ? angleX : 0,
+                       angleYOk ? angleY : 0);
+  }
+
+  const QString secondWheelPixelX = envString("DIFFY_START_SECOND_WHEEL_PIXEL_X");
+  const QString secondWheelPixelY = envString("DIFFY_START_SECOND_WHEEL_PIXEL_Y");
+  const QString secondWheelAngleX = envString("DIFFY_START_SECOND_WHEEL_ANGLE_X");
+  const QString secondWheelAngleY = envString("DIFFY_START_SECOND_WHEEL_ANGLE_Y");
+  if (!secondWheelPixelX.isEmpty() || !secondWheelPixelY.isEmpty() || !secondWheelAngleX.isEmpty() ||
+      !secondWheelAngleY.isEmpty()) {
+    bool delayOk = false;
+    bool pixelXOk = false;
+    bool pixelYOk = false;
+    bool angleXOk = false;
+    bool angleYOk = false;
+    const int secondWheelDelayMs = envString("DIFFY_START_SECOND_WHEEL_AFTER_MS").toInt(&delayOk);
+    const int pixelX = secondWheelPixelX.toInt(&pixelXOk);
+    const int pixelY = secondWheelPixelY.toInt(&pixelYOk);
+    const int angleX = secondWheelAngleX.toInt(&angleXOk);
+    const int angleY = secondWheelAngleY.toInt(&angleYOk);
+    scheduleWheelEvent(delayOk ? secondWheelDelayMs : 240, pixelXOk ? pixelX : 0, pixelYOk ? pixelY : 0,
+                       angleXOk ? angleX : 0, angleYOk ? angleY : 0);
+  }
+
   const QString capturePath = envString("DIFFY_CAPTURE_PATH");
   if (!capturePath.isEmpty()) {
-    QTimer::singleShot(220, &app, [root, capturePath]() {
+    bool captureDelayOk = false;
+    const int captureDelayMs = envString("DIFFY_CAPTURE_DELAY_MS").toInt(&captureDelayOk);
+    QTimer::singleShot(captureDelayOk ? captureDelayMs : 360, &app, [root, capturePath]() {
       if (auto* window = qobject_cast<QQuickWindow*>(root)) {
         const QImage image = window->grabWindow();
         image.save(capturePath);

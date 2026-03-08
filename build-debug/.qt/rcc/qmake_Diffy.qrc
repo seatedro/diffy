@@ -1,0 +1,6 @@
+<RCC>
+  <qresource prefix="/Diffy">
+    <file alias="qmldir">/home/rohit/personal/diffy/build-debug/Diffy/qmldir</file>
+  </qresource>
+</RCC>
+

@@ -7,6 +7,7 @@
 .devenv.flake.nix
 .direnv/
 .envrc
+.diffy-dev.env
 
 # Build output
 build/

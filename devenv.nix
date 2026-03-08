@@ -6,6 +6,12 @@
     pkgs.pkg-config
     pkgs.git
     pkgs.gcc
+    pkgs.jq
+    pkgs.gdb
+    pkgs.lldb
+    pkgs.rr
+    pkgs.strace
+    pkgs.watchexec
     pkgs.curl
     pkgs.libgit2
     pkgs.tree-sitter
@@ -15,5 +21,7 @@
 
   enterShell = ''
     echo "devenv ready: cmake -S . -B build -G Ninja && cmake --build build"
+    echo "debug preset: cmake --preset Debug && cmake --build --preset Debug"
+    echo "debug ready: gdb ./build/Debug/diffy | lldb ./build/Debug/diffy | rr record ./build/Debug/diffy"
   '';
 }

@@ -268,7 +268,7 @@ DiffSurfaceItem::DiffSurfaceItem(QQuickItem* parent) : QQuickItem(parent) {
   setAcceptedMouseButtons(Qt::LeftButton);
   setAcceptHoverEvents(true);
   setFocus(true);
-  connect(this, &QQuickItem::widthChanged, this, [this]() { recalculateMetrics(); });
+  connect(this, &QQuickItem::widthChanged, this, [this]() { scheduleMetricsRecalc(); });
   connect(this, &QQuickItem::heightChanged, this, [this]() { update(); });
 }
 
@@ -286,6 +286,31 @@ void DiffSurfaceItem::updateTileStats() {
   emit tileStatsChanged();
 }
 
+void DiffSurfaceItem::scheduleRowsRebuild() {
+  if (rowsRebuildQueued_) {
+    return;
+  }
+  rowsRebuildQueued_ = true;
+  QTimer::singleShot(0, this, [this]() {
+    rowsRebuildQueued_ = false;
+    metricsRecalcQueued_ = false;
+    rebuildRows();
+  });
+}
+
+void DiffSurfaceItem::scheduleMetricsRecalc() {
+  if (rowsRebuildQueued_ || metricsRecalcQueued_) {
+    return;
+  }
+  metricsRecalcQueued_ = true;
+  QTimer::singleShot(0, this, [this]() {
+    metricsRecalcQueued_ = false;
+    if (!rowsRebuildQueued_) {
+      recalculateMetrics();
+    }
+  });
+}
+
 void DiffSurfaceItem::setRowsModel(QObject* model) {
   if (rowsModelObject_ == model) {
     return;
@@ -297,13 +322,13 @@ void DiffSurfaceItem::setRowsModel(QObject* model) {
   rowsModelObject_ = model;
   rowsModel_ = qobject_cast<DiffRowListModel*>(model);
   if (rowsModel_ != nullptr) {
-    connect(rowsModel_, &QAbstractItemModel::modelReset, this, &DiffSurfaceItem::rebuildRows);
-    connect(rowsModel_, &QAbstractItemModel::rowsInserted, this, [this]() { rebuildRows(); });
-    connect(rowsModel_, &QAbstractItemModel::rowsRemoved, this, [this]() { rebuildRows(); });
-    connect(rowsModel_, &QAbstractItemModel::dataChanged, this, [this]() { rebuildRows(); });
+    connect(rowsModel_, &QAbstractItemModel::modelReset, this, [this]() { scheduleRowsRebuild(); });
+    connect(rowsModel_, &QAbstractItemModel::rowsInserted, this, [this]() { scheduleRowsRebuild(); });
+    connect(rowsModel_, &QAbstractItemModel::rowsRemoved, this, [this]() { scheduleRowsRebuild(); });
+    connect(rowsModel_, &QAbstractItemModel::dataChanged, this, [this]() { scheduleRowsRebuild(); });
   }
 
-  rebuildRows();
+  scheduleRowsRebuild();
   emit rowsModelChanged();
 }
 
@@ -318,7 +343,7 @@ void DiffSurfaceItem::setLayoutMode(const QString& mode) {
   layoutMode_ = mode;
   leftViewportX_ = 0;
   rightViewportX_ = 0;
-  recalculateMetrics();
+  scheduleMetricsRecalc();
   emit layoutModeChanged();
 }
 
@@ -331,7 +356,7 @@ void DiffSurfaceItem::setFilePath(const QString& path) {
     return;
   }
   filePath_ = path;
-  rebuildRows();
+  scheduleRowsRebuild();
   emit filePathChanged();
 }
 
@@ -344,7 +369,7 @@ void DiffSurfaceItem::setFileStatus(const QString& status) {
     return;
   }
   fileStatus_ = status;
-  rebuildRows();
+  scheduleRowsRebuild();
   emit fileStatusChanged();
 }
 
@@ -357,7 +382,7 @@ void DiffSurfaceItem::setAdditions(int value) {
     return;
   }
   additions_ = value;
-  rebuildRows();
+  scheduleRowsRebuild();
   emit additionsChanged();
 }
 
@@ -370,7 +395,7 @@ void DiffSurfaceItem::setDeletions(int value) {
     return;
   }
   deletions_ = value;
-  rebuildRows();
+  scheduleRowsRebuild();
   emit deletionsChanged();
 }
 
@@ -396,7 +421,7 @@ void DiffSurfaceItem::setMonoFontFamily(const QString& family) {
     return;
   }
   monoFontFamily_ = family;
-  rebuildRows();
+  scheduleRowsRebuild();
   emit monoFontFamilyChanged();
 }
 
@@ -411,7 +436,7 @@ void DiffSurfaceItem::setWrapEnabled(bool value) {
     leftViewportX_ = 0;
     rightViewportX_ = 0;
   }
-  recalculateMetrics();
+  scheduleMetricsRecalc();
   emit wrapEnabledChanged();
 }
 
@@ -422,7 +447,7 @@ int DiffSurfaceItem::wrapColumn() const {
 void DiffSurfaceItem::setWrapColumn(int value) {
   if (wrapColumn_ == value) return;
   wrapColumn_ = value;
-  if (wrapEnabled_) recalculateMetrics();
+  if (wrapEnabled_) scheduleMetricsRecalc();
   emit wrapColumnChanged();
 }
 

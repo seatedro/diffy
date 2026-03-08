@@ -9,9 +9,11 @@
 #include <QQuickItem>
 #include <QRectF>
 #include <QSet>
+#include <QThreadPool>
 #include <QWheelEvent>
 #include <QVariantMap>
 
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -25,6 +27,8 @@ class QSGNode;
 class QSGTexture;
 
 namespace diffy {
+
+struct DiffRasterSnapshot;
 
 struct LineLayoutCacheKey {
   QString text;
@@ -199,9 +203,11 @@ signals:
   void scheduleRowsRebuild();
   void scheduleMetricsRecalc();
   void scheduleAlternateLayoutPrewarm();
+  void scheduleCurrentTileRaster();
   DiffLayoutConfig buildLayoutConfig(const QString& mode) const;
   void scheduleAlternateTilePrewarm();
-  void rasterPrewarmBatch();
+  void dispatchTileRaster(const QString& mode, int priority);
+  void invalidateRasterJobs(bool clearReadyImages = false);
   bool updateFileHeader();
   void rebuildRows();
   void rebuildDisplayRows();
@@ -232,16 +238,21 @@ signals:
   const CachedWrappedLayout& wrappedLayoutForText(const QString& text, int pixelSize, qreal wrapWidth) const;
   int currentRowIndex() const;
   PreparedRowsCacheKey preparedRowsCacheKey() const;
+  std::shared_ptr<const DiffRasterSnapshot> buildRasterSnapshot(const QString& mode);
   qreal contentWidthForLayout(const QString& mode) const;
   std::vector<TileSpec> buildPrewarmTileSpecs(const QString& mode);
-  QImage renderTileImage(const std::vector<DiffDisplayRow>& rows,
-                         const TileSpec& spec,
-                         qreal visibleWidth,
-                         qreal unifiedRowWidth,
-                         qreal splitTextLogicalWidth,
-                         qreal leftPaneWidth,
-                         qreal rightPaneWidth,
-                         qreal devicePixelRatio) const;
+  QImage renderTileImageInline(const std::vector<DiffDisplayRow>& rows,
+                               const TileSpec& spec,
+                               qreal visibleWidth,
+                               qreal unifiedRowWidth,
+                               qreal splitTextLogicalWidth,
+                               qreal leftPaneWidth,
+                               qreal rightPaneWidth,
+                               qreal devicePixelRatio) const;
+  void queueRasterJobs(const std::shared_ptr<const DiffRasterSnapshot>& snapshot,
+                       const std::vector<TileSpec>& specs,
+                       int priority);
+  void acceptRasteredTile(quint64 generation, quint64 key, QImage image);
   quint64 tileContentKey() const;
   quint64 tileGeometryKey(const QString& mode,
                           qreal contentWidth,
@@ -368,12 +379,13 @@ signals:
   bool rowsRebuildQueued_ = false;
   bool metricsRecalcQueued_ = false;
   bool alternateLayoutPrewarmQueued_ = false;
+  bool currentTileRasterQueued_ = false;
   bool alternateTilePrewarmQueued_ = false;
-  QString alternateTilePrewarmMode_;
-  std::vector<TileSpec> alternateTilePrewarmSpecs_;
-  size_t alternateTilePrewarmIndex_ = 0;
-  QSet<quint64> alternateTilePrewarmScheduledKeys_;
-  mutable std::recursive_mutex rasterStateMutex_;
+  bool viewportJumpFallbackArmed_ = false;
+  quint64 rasterGeneration_ = 1;
+  QThreadPool rasterThreadPool_;
+  mutable std::mutex rasterJobStateMutex_;
+  QSet<quint64> pendingRasterKeys_;
   mutable std::mutex readyTileImagesMutex_;
   mutable QHash<quint64, QImage> readyTileImages_;
 };

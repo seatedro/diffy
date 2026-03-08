@@ -7,18 +7,18 @@
 
 namespace diffy {
 
-struct RenderRequest {
+struct CompareRequest {
   std::string repoPath;
   std::string leftRevision;
   std::string rightRevision;
 };
 
-class IDiffRenderer {
+class IDiffBackend {
  public:
-  virtual ~IDiffRenderer() = default;
+  virtual ~IDiffBackend() = default;
 
   virtual std::string_view id() const = 0;
-  virtual bool render(const RenderRequest& request, DiffDocument* out, std::string* error) = 0;
+  virtual bool compare(const CompareRequest& request, DiffDocument* out, std::string* error) const = 0;
 };
 
 }  // namespace diffy

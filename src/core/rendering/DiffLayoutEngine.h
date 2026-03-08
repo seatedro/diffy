@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "core/syntax/SyntaxTypes.h"
-#include "text/TextRope.h"
+#include "core/text/TextRope.h"
 
 namespace diffy {
 
@@ -82,7 +82,7 @@ struct DiffDisplayRow {
   double height = 0;
 };
 
-class DiffDisplayModel {
+class DiffLayoutEngine {
  public:
   void setFileHeader(std::optional<DiffSourceRow> row);
   void setSourceRows(std::vector<DiffSourceRow> rows);

@@ -1,4 +1,4 @@
-#include "model/DiffDisplayModel.h"
+#include "core/rendering/DiffLayoutEngine.h"
 
 #include <algorithm>
 #include <cmath>
@@ -15,7 +15,7 @@ double wrappedLineHeight(double baseHeight, bool wrapEnabled, double textWidth, 
 
 }  // namespace
 
-bool DiffDisplayModel::sameConfig(const DiffLayoutConfig& lhs, const DiffLayoutConfig& rhs) {
+bool DiffLayoutEngine::sameConfig(const DiffLayoutConfig& lhs, const DiffLayoutConfig& rhs) {
   return lhs.mode == rhs.mode && lhs.wrapEnabled == rhs.wrapEnabled &&
          std::abs(lhs.rowHeight - rhs.rowHeight) <= 0.001 &&
          std::abs(lhs.hunkHeight - rhs.hunkHeight) <= 0.001 &&
@@ -24,20 +24,20 @@ bool DiffDisplayModel::sameConfig(const DiffLayoutConfig& lhs, const DiffLayoutC
          std::abs(lhs.splitWrapWidth - rhs.splitWrapWidth) <= 0.001;
 }
 
-DiffDisplayModel::LayoutCacheEntry& DiffDisplayModel::layoutCache(DiffLayoutMode mode) {
+DiffLayoutEngine::LayoutCacheEntry& DiffLayoutEngine::layoutCache(DiffLayoutMode mode) {
   return mode == DiffLayoutMode::Unified ? unifiedLayoutCache_ : splitLayoutCache_;
 }
 
-const DiffDisplayModel::LayoutCacheEntry& DiffDisplayModel::layoutCache(DiffLayoutMode mode) const {
+const DiffLayoutEngine::LayoutCacheEntry& DiffLayoutEngine::layoutCache(DiffLayoutMode mode) const {
   return mode == DiffLayoutMode::Unified ? unifiedLayoutCache_ : splitLayoutCache_;
 }
 
-void DiffDisplayModel::invalidateLayoutCaches() {
+void DiffLayoutEngine::invalidateLayoutCaches() {
   unifiedLayoutCache_ = {};
   splitLayoutCache_ = {};
 }
 
-void DiffDisplayModel::recomputeLineNumberDigits() {
+void DiffLayoutEngine::recomputeLineNumberDigits() {
   int maxLineNumber = 0;
   if (fileHeaderRow_) {
     maxLineNumber = std::max(maxLineNumber, std::max(fileHeaderRow_->oldLine, fileHeaderRow_->newLine));
@@ -48,7 +48,7 @@ void DiffDisplayModel::recomputeLineNumberDigits() {
   lineNumberDigits_ = std::max(3, static_cast<int>(std::to_string(std::max(0, maxLineNumber)).size()));
 }
 
-void DiffDisplayModel::setFileHeader(std::optional<DiffSourceRow> row) {
+void DiffLayoutEngine::setFileHeader(std::optional<DiffSourceRow> row) {
   const bool hadHeader = fileHeaderRow_.has_value();
   fileHeaderRow_ = std::move(row);
   recomputeLineNumberDigits();
@@ -74,13 +74,13 @@ void DiffDisplayModel::setFileHeader(std::optional<DiffSourceRow> row) {
   invalidateLayoutCaches();
 }
 
-void DiffDisplayModel::setSourceRows(std::vector<DiffSourceRow> rows) {
+void DiffLayoutEngine::setSourceRows(std::vector<DiffSourceRow> rows) {
   sourceRows_ = std::move(rows);
   recomputeLineNumberDigits();
   clearTopologyCaches();
 }
 
-void DiffDisplayModel::clearTopologyCaches() {
+void DiffLayoutEngine::clearTopologyCaches() {
   unifiedTopologyRows_.clear();
   splitTopologyRows_.clear();
   displayRows_.clear();
@@ -89,7 +89,7 @@ void DiffDisplayModel::clearTopologyCaches() {
   invalidateLayoutCaches();
 }
 
-void DiffDisplayModel::rebuildTopology(std::vector<DiffDisplayRow>& targetRows, DiffLayoutMode mode) const {
+void DiffLayoutEngine::rebuildTopology(std::vector<DiffDisplayRow>& targetRows, DiffLayoutMode mode) const {
   targetRows.clear();
   auto appendRow = [&](DiffDisplayRow row) {
     targetRows.push_back(std::move(row));
@@ -202,7 +202,7 @@ void DiffDisplayModel::rebuildTopology(std::vector<DiffDisplayRow>& targetRows, 
   }
 }
 
-void DiffDisplayModel::ensureLayoutCache(const DiffLayoutConfig& config) {
+void DiffLayoutEngine::ensureLayoutCache(const DiffLayoutConfig& config) {
   LayoutCacheEntry& entry = layoutCache(config.mode);
   if (entry.valid && sameConfig(entry.config, config)) {
     return;
@@ -246,16 +246,16 @@ void DiffDisplayModel::ensureLayoutCache(const DiffLayoutConfig& config) {
   entry.valid = true;
 }
 
-void DiffDisplayModel::prewarm(const DiffLayoutConfig& config) {
+void DiffLayoutEngine::prewarm(const DiffLayoutConfig& config) {
   ensureLayoutCache(config);
 }
 
-const std::vector<DiffDisplayRow>& DiffDisplayModel::cachedRows(const DiffLayoutConfig& config) {
+const std::vector<DiffDisplayRow>& DiffLayoutEngine::cachedRows(const DiffLayoutConfig& config) {
   ensureLayoutCache(config);
   return layoutCache(config.mode).rows;
 }
 
-int DiffDisplayModel::rowIndexAtY(const DiffLayoutConfig& config, double y) {
+int DiffLayoutEngine::rowIndexAtY(const DiffLayoutConfig& config, double y) {
   ensureLayoutCache(config);
   const LayoutCacheEntry& entry = layoutCache(config.mode);
   if (entry.rows.empty()) {
@@ -270,7 +270,7 @@ int DiffDisplayModel::rowIndexAtY(const DiffLayoutConfig& config, double y) {
                     static_cast<int>(entry.rows.size() - 1));
 }
 
-int DiffDisplayModel::stickyHunkRowIndexAtY(const DiffLayoutConfig& config, double y) {
+int DiffLayoutEngine::stickyHunkRowIndexAtY(const DiffLayoutConfig& config, double y) {
   ensureLayoutCache(config);
   const LayoutCacheEntry& entry = layoutCache(config.mode);
   int stickyIndex = -1;
@@ -286,7 +286,7 @@ int DiffDisplayModel::stickyHunkRowIndexAtY(const DiffLayoutConfig& config, doub
   return stickyIndex;
 }
 
-int DiffDisplayModel::fileHeaderRowIndex(const DiffLayoutConfig& config) {
+int DiffLayoutEngine::fileHeaderRowIndex(const DiffLayoutConfig& config) {
   ensureLayoutCache(config);
   const LayoutCacheEntry& entry = layoutCache(config.mode);
   for (int rowIndex = 0; rowIndex < static_cast<int>(entry.rows.size()); ++rowIndex) {
@@ -297,7 +297,7 @@ int DiffDisplayModel::fileHeaderRowIndex(const DiffLayoutConfig& config) {
   return -1;
 }
 
-void DiffDisplayModel::rebuild(const DiffLayoutConfig& config) {
+void DiffLayoutEngine::rebuild(const DiffLayoutConfig& config) {
   ensureLayoutCache(config);
   const LayoutCacheEntry& entry = layoutCache(config.mode);
   displayRows_ = entry.rows;
@@ -305,19 +305,19 @@ void DiffDisplayModel::rebuild(const DiffLayoutConfig& config) {
   contentHeight_ = entry.contentHeight;
 }
 
-const std::vector<DiffDisplayRow>& DiffDisplayModel::rows() const {
+const std::vector<DiffDisplayRow>& DiffLayoutEngine::rows() const {
   return displayRows_;
 }
 
-double DiffDisplayModel::contentHeight() const {
+double DiffLayoutEngine::contentHeight() const {
   return contentHeight_;
 }
 
-int DiffDisplayModel::lineNumberDigits() const {
+int DiffLayoutEngine::lineNumberDigits() const {
   return lineNumberDigits_;
 }
 
-int DiffDisplayModel::rowIndexAtY(double y) const {
+int DiffLayoutEngine::rowIndexAtY(double y) const {
   if (displayRows_.empty()) {
     return -1;
   }
@@ -330,7 +330,7 @@ int DiffDisplayModel::rowIndexAtY(double y) const {
                     static_cast<int>(displayRows_.size() - 1));
 }
 
-int DiffDisplayModel::fileHeaderRowIndex() const {
+int DiffLayoutEngine::fileHeaderRowIndex() const {
   for (int rowIndex = 0; rowIndex < static_cast<int>(displayRows_.size()); ++rowIndex) {
     if (displayRows_.at(rowIndex).rowType == DiffRowType::FileHeader) {
       return rowIndex;
@@ -339,7 +339,7 @@ int DiffDisplayModel::fileHeaderRowIndex() const {
   return -1;
 }
 
-int DiffDisplayModel::stickyHunkRowIndexAtY(double y) const {
+int DiffLayoutEngine::stickyHunkRowIndexAtY(double y) const {
   int stickyIndex = -1;
   for (int rowIndex = 0; rowIndex < static_cast<int>(displayRows_.size()); ++rowIndex) {
     const DiffDisplayRow& row = displayRows_.at(rowIndex);
@@ -353,7 +353,7 @@ int DiffDisplayModel::stickyHunkRowIndexAtY(double y) const {
   return stickyIndex;
 }
 
-int DiffDisplayModel::nextHunkRowIndex(int rowIndex) const {
+int DiffLayoutEngine::nextHunkRowIndex(int rowIndex) const {
   const int start = std::max(0, rowIndex + 1);
   for (int index = start; index < static_cast<int>(displayRows_.size()); ++index) {
     if (displayRows_.at(index).rowType == DiffRowType::Hunk) {
@@ -363,7 +363,7 @@ int DiffDisplayModel::nextHunkRowIndex(int rowIndex) const {
   return -1;
 }
 
-int DiffDisplayModel::previousHunkRowIndex(int rowIndex) const {
+int DiffLayoutEngine::previousHunkRowIndex(int rowIndex) const {
   const int start = std::min(rowIndex - 1, static_cast<int>(displayRows_.size()) - 1);
   for (int index = start; index >= 0; --index) {
     if (displayRows_.at(index).rowType == DiffRowType::Hunk) {

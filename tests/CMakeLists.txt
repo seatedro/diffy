@@ -22,38 +22,28 @@ add_test(NAME test_unified_diff_parser COMMAND test_unified_diff_parser)
 
 qt_add_executable(test_text_rope
   test_text_rope.cpp
-  ../src/text/TextRope.cpp
 )
 
 target_include_directories(test_text_rope PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../src
 )
 
-target_link_libraries(test_text_rope PRIVATE Qt6::Core Qt6::Test)
+target_link_libraries(test_text_rope PRIVATE diffy_core Qt6::Core Qt6::Test)
 add_test(NAME test_text_rope COMMAND test_text_rope)
 
-qt_add_executable(test_diff_display_model
-  test_diff_display_model.cpp
-  ../src/model/DiffDisplayModel.cpp
+qt_add_executable(test_diff_layout_engine
+  test_diff_layout_engine.cpp
 )
 
-target_include_directories(test_diff_display_model PRIVATE
+target_include_directories(test_diff_layout_engine PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../src
 )
 
-target_link_libraries(test_diff_display_model PRIVATE Qt6::Core Qt6::Test)
-add_test(NAME test_diff_display_model COMMAND test_diff_display_model)
+target_link_libraries(test_diff_layout_engine PRIVATE diffy_core Qt6::Core Qt6::Test)
+add_test(NAME test_diff_layout_engine COMMAND test_diff_layout_engine)
 
 qt_add_executable(test_diff_controller
   test_diff_controller.cpp
-  ../src/app/DiffController.cpp
-  ../src/app/RepositoryPickerModel.cpp
-  ../src/app/QtDiffTypes.cpp
-  ../src/model/DiffPreparedRows.cpp
-  ../src/model/DiffRowListModel.cpp
-  ../src/text/TextRope.cpp
-  ../src/renderers/BuiltinGitRenderer.cpp
-  ../src/renderers/DifftasticRenderer.cpp
 )
 
 target_include_directories(test_diff_controller PRIVATE
@@ -63,20 +53,13 @@ target_include_directories(test_diff_controller PRIVATE
 )
 
 target_link_libraries(test_diff_controller PRIVATE
-  diffy_core
-  Qt6::Core
+  diffy_app
   Qt6::Test
-  Qt6::Widgets
-  Qt6::Concurrent
-  ${TREESITTER_LIBRARIES}
 )
-
-target_compile_options(test_diff_controller PRIVATE ${TREESITTER_CFLAGS_OTHER})
 add_test(NAME test_diff_controller COMMAND test_diff_controller)
 
 qt_add_executable(test_repository_picker_model
   test_repository_picker_model.cpp
-  ../src/app/RepositoryPickerModel.cpp
 )
 
 target_include_directories(test_repository_picker_model PRIVATE
@@ -85,31 +68,28 @@ target_include_directories(test_repository_picker_model PRIVATE
 )
 
 target_link_libraries(test_repository_picker_model PRIVATE
-  Qt6::Core
+  diffy_app
   Qt6::Test
-  ${LIBGIT2_LIBRARIES}
 )
 
-target_compile_options(test_repository_picker_model PRIVATE ${LIBGIT2_CFLAGS_OTHER})
 add_test(NAME test_repository_picker_model COMMAND test_repository_picker_model)
 
-qt_add_executable(test_builtin_git_renderer
-  test_builtin_git_renderer.cpp
-  ../src/renderers/BuiltinGitRenderer.cpp
+qt_add_executable(test_git_diff_backend
+  test_git_diff_backend.cpp
 )
 
-target_include_directories(test_builtin_git_renderer PRIVATE
+target_include_directories(test_git_diff_backend PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../src
   ${LIBGIT2_INCLUDE_DIRS}
 )
 
-target_link_libraries(test_builtin_git_renderer PRIVATE
+target_link_libraries(test_git_diff_backend PRIVATE
   diffy_core
   Qt6::Core
   Qt6::Test
 )
 
-add_test(NAME test_builtin_git_renderer COMMAND test_builtin_git_renderer)
+add_test(NAME test_git_diff_backend COMMAND test_git_diff_backend)
 
 qt_add_executable(test_word_diff
   test_word_diff.cpp

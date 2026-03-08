@@ -9,7 +9,7 @@
 #include <QtTest/QtTest>
 
 #include "app/DiffController.h"
-#include "model/DiffRowListModel.h"
+#include "app/models/DiffRowListModel.h"
 
 using namespace diffy;
 

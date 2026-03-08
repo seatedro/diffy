@@ -5,7 +5,7 @@
 #include <QTemporaryDir>
 #include <QtTest/QtTest>
 
-#include "renderers/BuiltinGitRenderer.h"
+#include "core/compare/backends/GitDiffBackend.h"
 
 using namespace diffy;
 
@@ -139,7 +139,7 @@ QHash<QString, QPair<int, int>> parseNumstat(const QByteArray& output) {
 
 }  // namespace
 
-class BuiltinGitRendererTest : public QObject {
+class GitDiffBackendTest : public QObject {
   Q_OBJECT
 
  private slots:
@@ -147,11 +147,11 @@ class BuiltinGitRendererTest : public QObject {
     const QString repoPath = createRepoWithMixedChanges();
     QVERIFY(!repoPath.isEmpty());
 
-    BuiltinGitRenderer renderer;
+    GitDiffBackend renderer;
     DiffDocument document;
     std::string error;
 
-    QVERIFY2(renderer.render(RenderRequest{repoPath.toStdString(), "HEAD~1", "HEAD"}, &document, &error),
+    QVERIFY2(renderer.compare(CompareRequest{repoPath.toStdString(), "HEAD~1", "HEAD"}, &document, &error),
              error.c_str());
     QCOMPARE(document.files.size(), 5);
 
@@ -205,5 +205,5 @@ class BuiltinGitRendererTest : public QObject {
   }
 };
 
-QTEST_MAIN(BuiltinGitRendererTest)
-#include "test_builtin_git_renderer.moc"
+QTEST_MAIN(GitDiffBackendTest)
+#include "test_git_diff_backend.moc"

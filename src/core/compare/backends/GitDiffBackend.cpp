@@ -1,14 +1,11 @@
-#include "renderers/BuiltinGitRenderer.h"
+#include "core/compare/backends/GitDiffBackend.h"
 
 #include <git2.h>
 
 #include <algorithm>
-#include <filesystem>
-#include <sstream>
+#include <cctype>
 
 #include "core/diff/WordDiff.h"
-#include "core/syntax/Highlighter.h"
-#include "core/syntax/LanguageRegistry.h"
 
 namespace diffy {
 namespace {
@@ -104,11 +101,11 @@ std::string trimAscii(std::string value) {
 
 }  // namespace
 
-std::string_view BuiltinGitRenderer::id() const {
+std::string_view GitDiffBackend::id() const {
   return "builtin";
 }
 
-bool BuiltinGitRenderer::render(const RenderRequest& request, DiffDocument* out, std::string* error) {
+bool GitDiffBackend::compare(const CompareRequest& request, DiffDocument* out, std::string* error) const {
   git_libgit2_init();
   git_repository* repo = nullptr;
   git_commit* leftCommit = nullptr;
@@ -247,138 +244,41 @@ bool BuiltinGitRenderer::render(const RenderRequest& request, DiffDocument* out,
         hunk.lines.push_back(line);
       }
 
-      for (size_t lineIdx = 0; lineIdx < hunk.lines.size();) {
-        if (hunk.lines[lineIdx].kind != LineKind::Deletion) {
-          ++lineIdx;
+      for (size_t lineIndex = 0; lineIndex < hunk.lines.size();) {
+        if (hunk.lines[lineIndex].kind != LineKind::Deletion) {
+          ++lineIndex;
           continue;
         }
-        size_t delStart = lineIdx;
-        while (lineIdx < hunk.lines.size() && hunk.lines[lineIdx].kind == LineKind::Deletion) {
-          ++lineIdx;
+        size_t deletionStart = lineIndex;
+        while (lineIndex < hunk.lines.size() && hunk.lines[lineIndex].kind == LineKind::Deletion) {
+          ++lineIndex;
         }
-        size_t addStart = lineIdx;
-        while (lineIdx < hunk.lines.size() && hunk.lines[lineIdx].kind == LineKind::Addition) {
-          ++lineIdx;
+        const size_t additionStart = lineIndex;
+        while (lineIndex < hunk.lines.size() && hunk.lines[lineIndex].kind == LineKind::Addition) {
+          ++lineIndex;
         }
-        size_t pairCount = std::min(lineIdx - addStart, addStart - delStart);
-        for (size_t pairIdx = 0; pairIdx < pairCount; ++pairIdx) {
-          DiffLine& del = hunk.lines[delStart + pairIdx];
-          DiffLine& add = hunk.lines[addStart + pairIdx];
-          auto wordResult = computeWordDiff(del.text, add.text);
+        const size_t pairCount = std::min(lineIndex - additionStart, additionStart - deletionStart);
+        for (size_t pairIndex = 0; pairIndex < pairCount; ++pairIndex) {
+          DiffLine& deletion = hunk.lines[deletionStart + pairIndex];
+          DiffLine& addition = hunk.lines[additionStart + pairIndex];
+          auto wordResult = computeWordDiff(deletion.text, addition.text);
           if (!wordResult.leftTokens.empty() || !wordResult.rightTokens.empty()) {
-            del.changeSpans = std::move(wordResult.leftTokens);
-            add.changeSpans = std::move(wordResult.rightTokens);
+            deletion.changeSpans = std::move(wordResult.leftTokens);
+            addition.changeSpans = std::move(wordResult.rightTokens);
           }
         }
       }
 
-      file.hunks.push_back(hunk);
+      file.hunks.push_back(std::move(hunk));
     }
 
     git_patch_free(patch);
-    document.files.push_back(file);
+    document.files.push_back(std::move(file));
   }
 
   cleanup();
-
-  *out = document;
+  *out = std::move(document);
   return true;
-}
-
-void BuiltinGitRenderer::setSyntax(const LanguageRegistry* registry, const Highlighter* highlighter) {
-  languageRegistry_ = registry;
-  highlighter_ = highlighter;
-}
-
-void BuiltinGitRenderer::highlightFile(const LanguageRegistry& registry, const Highlighter& highlighter,
-                                       FileDiff& file) {
-  if (file.isBinary) {
-    return;
-  }
-
-  std::string ext;
-  if (auto dotPos = file.path.rfind('.'); dotPos != std::string::npos) {
-    ext = file.path.substr(dotPos);
-  }
-  if (ext.empty()) {
-    return;
-  }
-
-  const GrammarInfo* grammar = registry.grammarForExtension(ext);
-  if (grammar == nullptr) {
-    return;
-  }
-
-  std::string oldContent;
-  std::string newContent;
-  struct LineRef {
-    size_t hunkIdx;
-    size_t lineIdx;
-    size_t contentOffset;
-    size_t contentLen;
-  };
-  std::vector<LineRef> oldLineRefs;
-  std::vector<LineRef> newLineRefs;
-
-  for (size_t hi = 0; hi < file.hunks.size(); ++hi) {
-    const Hunk& hunk = file.hunks[hi];
-    for (size_t li = 0; li < hunk.lines.size(); ++li) {
-      const DiffLine& line = hunk.lines[li];
-      if (line.kind == LineKind::Deletion || line.kind == LineKind::Context) {
-        size_t offset = oldContent.size();
-        oldContent += line.text;
-        oldContent += '\n';
-        oldLineRefs.push_back({hi, li, offset, line.text.size()});
-      }
-      if (line.kind == LineKind::Addition || line.kind == LineKind::Context) {
-        size_t offset = newContent.size();
-        newContent += line.text;
-        newContent += '\n';
-        newLineRefs.push_back({hi, li, offset, line.text.size()});
-      }
-    }
-  }
-
-  auto oldTokens = highlighter.highlight(*grammar, oldContent);
-  auto newTokens = highlighter.highlight(*grammar, newContent);
-
-  auto distributeTokens = [&](const std::vector<TokenSpan>& tokens, const std::vector<LineRef>& lineRefs) {
-    size_t tokenIdx = 0;
-    for (const LineRef& ref : lineRefs) {
-      const int lineStart = static_cast<int>(ref.contentOffset);
-      const int lineEnd = lineStart + static_cast<int>(ref.contentLen);
-
-      while (tokenIdx < tokens.size() && tokens[tokenIdx].start + tokens[tokenIdx].length <= lineStart) {
-        ++tokenIdx;
-      }
-
-      DiffLine& line = file.hunks[ref.hunkIdx].lines[ref.lineIdx];
-
-      std::vector<TokenSpan> syntaxTokens;
-      for (size_t si = tokenIdx; si < tokens.size(); ++si) {
-        const TokenSpan& tok = tokens[si];
-        if (tok.start >= lineEnd) {
-          break;
-        }
-        int clampedStart = std::max(tok.start, lineStart);
-        int clampedEnd = std::min(tok.start + tok.length, lineEnd);
-        if (clampedEnd > clampedStart) {
-          syntaxTokens.push_back(TokenSpan{
-              clampedStart - lineStart,
-              clampedEnd - clampedStart,
-              tok.syntaxKind,
-          });
-        }
-      }
-
-      if (!syntaxTokens.empty()) {
-        line.tokens = std::move(syntaxTokens);
-      }
-    }
-  };
-
-  distributeTokens(oldTokens, oldLineRefs);
-  distributeTokens(newTokens, newLineRefs);
 }
 
 }  // namespace diffy

@@ -1,6 +1,6 @@
 #include <QtTest/QtTest>
 
-#include "text/TextRope.h"
+#include "core/text/TextRope.h"
 
 using namespace diffy;
 

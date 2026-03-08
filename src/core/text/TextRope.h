@@ -1,15 +1,14 @@
 #pragma once
 
-#include <QVector>
-
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace diffy {
 
 struct TextRange {
-  qsizetype start = 0;
-  qsizetype length = 0;
+  size_t start = 0;
+  size_t length = 0;
 
   bool isEmpty() const {
     return length == 0;
@@ -23,16 +22,16 @@ class TextRope {
   void clear();
   TextRange append(std::string_view text);
   std::string slice(const TextRange& range) const;
-  qsizetype size() const;
+  size_t size() const;
 
  private:
   struct Chunk {
-    qsizetype start = 0;
+    size_t start = 0;
     std::string text;
   };
 
-  QVector<Chunk> chunks_;
-  qsizetype size_ = 0;
+  std::vector<Chunk> chunks_;
+  size_t size_ = 0;
 };
 
 }  // namespace diffy

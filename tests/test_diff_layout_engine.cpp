@@ -1,6 +1,6 @@
 #include <QtTest/QtTest>
 
-#include "model/DiffDisplayModel.h"
+#include "core/rendering/DiffLayoutEngine.h"
 
 using namespace diffy;
 
@@ -32,12 +32,12 @@ DiffSourceRow makeLine(DiffLineKind kind, int oldLine, int newLine, double textW
 
 }  // namespace
 
-class DiffDisplayModelTest : public QObject {
+class DiffLayoutEngineTest : public QObject {
   Q_OBJECT
 
  private slots:
   void unifiedLayoutTracksOffsetsAndWrap() {
-    DiffDisplayModel model;
+    DiffLayoutEngine model;
     model.setSourceRows({
         makeFileHeader(),
         makeHunk(),
@@ -82,7 +82,7 @@ class DiffDisplayModelTest : public QObject {
   }
 
   void splitLayoutPairsDeleteAddBlocksAndWrapsTallestSide() {
-    DiffDisplayModel model;
+    DiffLayoutEngine model;
     model.setSourceRows({
         makeHunk(),
         makeLine(DiffLineKind::Deletion, 10, -1, 35.0),
@@ -128,7 +128,7 @@ class DiffDisplayModelTest : public QObject {
   }
 
   void stickyAndHunkNavigationFollowDisplayRows() {
-    DiffDisplayModel model;
+    DiffLayoutEngine model;
     model.setSourceRows({
         makeFileHeader(),
         makeHunk("@@ first @@"),
@@ -156,7 +156,7 @@ class DiffDisplayModelTest : public QObject {
   }
 
   void prewarmAlternateLayoutDoesNotDisturbActiveLayout() {
-    DiffDisplayModel model;
+    DiffLayoutEngine model;
     model.setSourceRows({
         makeFileHeader(),
         makeHunk(),
@@ -195,5 +195,5 @@ class DiffDisplayModelTest : public QObject {
   }
 };
 
-QTEST_GUILESS_MAIN(DiffDisplayModelTest)
-#include "test_diff_display_model.moc"
+QTEST_GUILESS_MAIN(DiffLayoutEngineTest)
+#include "test_diff_layout_engine.moc"

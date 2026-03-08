@@ -41,7 +41,7 @@ class FuzzyMatchTest : public QObject {
     std::vector<std::string> candidates = {
         "src/app/DiffController.cpp",
         "src/core/diff/DiffTypes.h",
-        "src/ui/DiffSurfaceItem.cpp",
+        "src/app/quick/DiffSurfaceItem.cpp",
         "CMakeLists.txt",
         "README.md",
     };

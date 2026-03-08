@@ -1837,6 +1837,7 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
   int syncViewportFallbackTiles = 0;
   bool missingViewportCriticalTile = false;
 
+
   struct RenderCommand {
     enum class Kind {
       Rect,
@@ -2133,6 +2134,7 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
   updateClipNodeRect(rightTextClip,
                      QRectF(leftPaneWidth + splitTextInset, occludedTop, rightTextViewportWidth,
                             std::max<qreal>(0.0, visibleBottomInItem - occludedTop)));
+
 
   queueRectNode(baseCommands, overlayKey(0, -1, 0), QRectF(0.0, 0.0, visibleWidth, visibleHeight),
                 paletteColor("canvas", QColor("#282c33")));

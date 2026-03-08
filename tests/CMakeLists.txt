@@ -67,6 +67,7 @@ target_link_libraries(test_diff_controller PRIVATE
   Qt6::Core
   Qt6::Test
   Qt6::Widgets
+  Qt6::Concurrent
   ${TREESITTER_LIBRARIES}
 )
 

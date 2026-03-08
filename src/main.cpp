@@ -170,6 +170,9 @@ bool applyStartupAutomation(diffy::DiffController* controller, QString* error) {
 
   if (envFlagEnabled("DIFFY_START_COMPARE")) {
     controller->compare();
+    while (controller->comparing()) {
+      QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+    }
   }
 
   const auto selectFileByPath = [controller](const QString& selectedFilePath) -> bool {

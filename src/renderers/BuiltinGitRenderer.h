@@ -14,9 +14,9 @@ class BuiltinGitRenderer : public IDiffRenderer {
 
   void setSyntax(const LanguageRegistry* registry, const Highlighter* highlighter);
 
- private:
-  void applySyntaxHighlighting(DiffDocument& document) const;
+  static void highlightFile(const LanguageRegistry& registry, const Highlighter& highlighter, FileDiff& file);
 
+ private:
   const LanguageRegistry* languageRegistry_ = nullptr;
   const Highlighter* highlighter_ = nullptr;
 };

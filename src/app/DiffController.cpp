@@ -6,6 +6,7 @@
 #include <QFileDialog>
 #include <QGuiApplication>
 #include <QStandardPaths>
+#include <QtConcurrent>
 
 #include "app/QtDiffTypes.h"
 #include "core/search/FuzzyMatch.h"
@@ -101,6 +102,17 @@ DiffController::DiffController(QObject* parent)
       }
       currentView_ = "compare";
     }
+  }
+}
+
+DiffController::~DiffController() {
+  if (highlightWatcher_) {
+    highlightWatcher_->disconnect();
+    highlightWatcher_->waitForFinished();
+  }
+  if (compareWatcher_) {
+    compareWatcher_->disconnect();
+    compareWatcher_->waitForFinished();
   }
 }
 
@@ -420,6 +432,16 @@ void DiffController::openCurrentRepositoryFromPicker() {
 
 void DiffController::compare() {
   clearError();
+
+  if (highlightWatcher_) {
+    highlightWatcher_->disconnect();
+    highlightWatcher_.reset();
+  }
+  if (compareWatcher_) {
+    compareWatcher_->disconnect();
+    compareWatcher_.reset();
+  }
+
   comparing_ = true;
   emit comparingChanged();
 
@@ -455,62 +477,101 @@ void DiffController::compare() {
     return;
   }
 
+  setCurrentView("diff");
+
   RenderRequest request{repoPath_.toStdString(), resolvedLeft, resolvedRight};
-  DiffDocument document;
+  std::string rendererChoice = renderer_.toStdString();
+  const LanguageRegistry* langReg = &languageRegistry_;
 
-  IDiffRenderer* renderer = &builtinRenderer_;
-  if (renderer_ == "difftastic") {
-    renderer = &difftasticRenderer_;
-  }
+  compareWatcher_ = std::make_unique<QFutureWatcher<CompareResult>>();
 
-  std::string renderError;
-  bool rendered = renderer->render(request, &document, &renderError);
-  if (!rendered && renderer == &difftasticRenderer_) {
-    DiffDocument fallback;
-    std::string fallbackError;
-    if (builtinRenderer_.render(request, &fallback, &fallbackError)) {
-      document = fallback;
-      setError(QString("difftastic failed (%1). Fell back to built-in renderer.")
-                   .arg(QString::fromStdString(renderError)));
-    } else {
-      setError(QString("difftastic failed (%1); built-in fallback failed (%2)")
-                   .arg(QString::fromStdString(renderError), QString::fromStdString(fallbackError)));
-      finishComparing();
+  connect(compareWatcher_.get(), &QFutureWatcher<CompareResult>::finished, this, [this]() {
+    auto result = compareWatcher_->result();
+    compareWatcher_.reset();
+
+    if (!result.errorMessage.empty()) {
+      setError(QString::fromStdString(result.errorMessage));
+      comparing_ = false;
+      emit comparingChanged();
       return;
     }
-  } else if (!rendered) {
-    setError(QString::fromStdString(renderError));
-    finishComparing();
-    return;
-  }
 
-  ++compareGeneration_;
-  fileDiffs_ = document.files;
-  resetFileRowCaches();
-  files_ = filesToVariantList(fileDiffs_);
-  emit filesChanged();
+    if (result.usedFallback) {
+      setError(QString::fromStdString(result.fallbackMessage));
+    }
 
-  if (!files_.isEmpty()) {
-    selectedFileIndex_ = 0;
-  } else {
-    selectedFileIndex_ = -1;
-  }
-  rebuildSelectedFileRows();
-  if (selectedFileIndex_ >= 0) {
-    Q_ASSERT(selectedFileRowsModel_.count() == static_cast<int>(flattenedRowsForFile(selectedFileIndex_).size()));
-  } else {
-    Q_ASSERT(selectedFileRowsModel_.count() == 0);
-  }
-  emit compareGenerationChanged();
-  emit selectedFileIndexChanged();
-  emit selectedFileChanged();
-  QTimer::singleShot(0, this, [this]() { prefetchFileRows(); });
-  resetPreparedRowsPrewarmOrder();
-  schedulePreparedRowsPrewarm();
+    ++compareGeneration_;
+    fileDiffs_ = std::move(result.fileDiffs);
+    resetFileRowCaches();
+    files_ = std::move(result.files);
+    emit filesChanged();
 
-  finishComparing();
-  setCurrentView("diff");
-  persistSettings();
+    if (!files_.isEmpty()) {
+      selectedFileIndex_ = 0;
+    } else {
+      selectedFileIndex_ = -1;
+    }
+    highlightSelectedFile();
+    rebuildSelectedFileRows();
+    if (selectedFileIndex_ >= 0) {
+      Q_ASSERT(selectedFileRowsModel_.count() == static_cast<int>(flattenedRowsForFile(selectedFileIndex_).size()));
+    } else {
+      Q_ASSERT(selectedFileRowsModel_.count() == 0);
+    }
+    emit compareGenerationChanged();
+    emit selectedFileIndexChanged();
+    emit selectedFileChanged();
+    startBackgroundHighlighting();
+    QTimer::singleShot(0, this, [this]() { prefetchFileRows(); });
+    resetPreparedRowsPrewarmOrder();
+    schedulePreparedRowsPrewarm();
+
+    comparing_ = false;
+    emit comparingChanged();
+    persistSettings();
+  });
+
+  QFuture<CompareResult> future = QtConcurrent::run(
+      [request = std::move(request), rendererChoice = std::move(rendererChoice), langReg]() -> CompareResult {
+        CompareResult result;
+
+        Highlighter highlighter;
+        BuiltinGitRenderer builtinRenderer;
+        builtinRenderer.setSyntax(langReg, &highlighter);
+        DifftasticRenderer difftasticRenderer;
+
+        IDiffRenderer* renderer = &builtinRenderer;
+        if (rendererChoice == "difftastic") {
+          renderer = &difftasticRenderer;
+        }
+
+        DiffDocument document;
+        std::string renderError;
+        bool rendered = renderer->render(request, &document, &renderError);
+        if (!rendered && renderer == &difftasticRenderer) {
+          DiffDocument fallback;
+          std::string fallbackError;
+          if (builtinRenderer.render(request, &fallback, &fallbackError)) {
+            document = fallback;
+            result.usedFallback = true;
+            result.fallbackMessage =
+                "difftastic failed (" + renderError + "). Fell back to built-in renderer.";
+          } else {
+            result.errorMessage =
+                "difftastic failed (" + renderError + "); built-in fallback failed (" + fallbackError + ")";
+            return result;
+          }
+        } else if (!rendered) {
+          result.errorMessage = renderError;
+          return result;
+        }
+
+        result.fileDiffs = std::move(document.files);
+        result.files = filesToVariantList(result.fileDiffs);
+        return result;
+      });
+
+  compareWatcher_->setFuture(future);
 }
 
 void DiffController::selectFile(int index) {
@@ -620,7 +681,49 @@ void DiffController::schedulePreparedRowsPrewarm() {
     }
   });
 }
+void DiffController::highlightSelectedFile() {
+  if (selectedFileIndex_ < 0 || selectedFileIndex_ >= static_cast<int>(fileDiffs_.size())) {
+    return;
+  }
+  BuiltinGitRenderer::highlightFile(languageRegistry_, highlighter_, fileDiffs_.at(selectedFileIndex_));
+}
 
+void DiffController::startBackgroundHighlighting() {
+  if (highlightWatcher_) {
+    highlightWatcher_->disconnect();
+    highlightWatcher_.reset();
+  }
+
+  if (fileDiffs_.size() <= 1) {
+    return;
+  }
+
+  const LanguageRegistry* langReg = &languageRegistry_;
+  std::vector<FileDiff>* diffs = &fileDiffs_;
+  int skipIndex = selectedFileIndex_;
+
+  highlightWatcher_ = std::make_unique<QFutureWatcher<void>>();
+  connect(highlightWatcher_.get(), &QFutureWatcher<void>::finished, this, [this]() {
+    highlightWatcher_.reset();
+    resetFileRowCaches();
+    rebuildSelectedFileRows();
+    resetPreparedRowsPrewarmOrder();
+    schedulePreparedRowsPrewarm();
+  });
+
+  QFuture<void> future = QtConcurrent::run(
+      [diffs, langReg, skipIndex]() {
+        Highlighter highlighter;
+        for (size_t i = 0; i < diffs->size(); ++i) {
+          if (static_cast<int>(i) == skipIndex) {
+            continue;
+          }
+          BuiltinGitRenderer::highlightFile(*langReg, highlighter, diffs->at(i));
+        }
+      });
+
+  highlightWatcher_->setFuture(future);
+}
 void DiffController::rebuildSelectedFileRows() {
   if (selectedFileIndex_ >= 0 && selectedFileIndex_ < static_cast<int>(fileDiffs_.size())) {
     selectedFileRowsModel_.setRows(flattenedRowsForFile(selectedFileIndex_));

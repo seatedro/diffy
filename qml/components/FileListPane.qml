@@ -120,11 +120,12 @@ Rectangle {
         }
 
         Column {
-            visible: root.files.length === 0 && diffController.comparing
+            visible: diffController.comparing
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
             anchors.topMargin: 37
+            z: 10
             spacing: 2
 
             Repeater {
@@ -281,7 +282,7 @@ Rectangle {
             }
 
             EmptyState {
-                visible: root.files.length === 0
+                visible: root.files.length === 0 && !diffController.comparing
                 anchors.centerIn: parent
                 title: "No changes"
                 subtitle: "Run compare to see files."

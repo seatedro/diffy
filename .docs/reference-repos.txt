@@ -5,3 +5,4 @@ https://github.com/zed-industries/zed.git
 https://github.com/lapce/lapce.git
 https://github.com/tree-sitter/tree-sitter.git
 https://github.com/qt/qtdeclarative.git
+https://github.com/qt/qtbase.git

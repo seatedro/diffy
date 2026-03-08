@@ -74,7 +74,7 @@ Rectangle {
 
     Rectangle {
         id: headerPanel
-        visible: !root.hasData() || fileData.isBinary
+        visible: (!root.hasData() && !diffController.comparing) || (root.hasData() && fileData.isBinary)
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
@@ -153,6 +153,96 @@ Rectangle {
             anchors.bottom: parent.bottom
             height: 1
             color: theme.divider
+        }
+    }
+
+    Rectangle {
+        id: skeletonState
+        visible: diffController.comparing
+        anchors.fill: parent
+        color: theme.canvas
+        clip: true
+        z: 10
+
+        property var codeWidths: [0.45, 0.65, 0.30, 0.55, 0.70, 0.40, 0.55, 0.60, 0.35, 0.50, 0.45, 0.70, 0.20, 0.50, 0.50, 0.45, 0.60, 0.35, 0.55, 0.65, 0.40, 0.50, 0.45, 0.60, 0.35, 0.55, 0.30, 0.40]
+
+        Column {
+            id: skeletonColumn
+            width: skeletonState.width
+            spacing: 0
+
+            Rectangle {
+                width: skeletonColumn.width
+                height: 34
+                color: theme.canvas
+
+                Row {
+                    anchors.verticalCenter: parent.verticalCenter
+                    x: theme.sp2
+                    spacing: theme.sp2
+
+                    Skeleton { width: 48; height: 14 }
+                    Skeleton { width: 180; height: 14 }
+                }
+
+                Row {
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.right: parent.right
+                    anchors.rightMargin: theme.sp3
+                    spacing: theme.sp2
+
+                    Skeleton { width: 24; height: 10 }
+                    Skeleton { width: 24; height: 10 }
+                }
+
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    height: 1
+                    color: theme.divider
+                }
+            }
+
+            Repeater {
+                model: 28
+
+                Rectangle {
+                    required property int index
+
+                    property bool isHunk: index === 0 || index === 13
+                    property bool isDel: (index >= 6 && index <= 7) || (index >= 17 && index <= 18)
+                    property bool isAdd: (index >= 8 && index <= 11) || (index >= 19 && index <= 22)
+
+                    width: skeletonColumn.width
+                    height: isHunk ? 28 : 22
+                    color: {
+                        if (isHunk) return theme.panelTint
+                        if (isDel) return theme.lineDel
+                        if (isAdd) return theme.lineAdd
+                        return index % 2 === 0 ? theme.lineContext : theme.lineContextAlt
+                    }
+
+                    Skeleton {
+                        visible: isHunk
+                        anchors.verticalCenter: parent.verticalCenter
+                        x: theme.sp3
+                        width: 160
+                        height: 12
+                    }
+
+                    Row {
+                        visible: !isHunk
+                        anchors.verticalCenter: parent.verticalCenter
+                        x: theme.sp1
+                        spacing: theme.sp1
+
+                        Skeleton { width: 28; height: 10; opacity: 0.5 }
+                        Skeleton { width: 28; height: 10; opacity: 0.5 }
+                        Skeleton { width: skeletonColumn.width * skeletonState.codeWidths[index] * 0.55; height: 12 }
+                    }
+                }
+            }
         }
     }
 

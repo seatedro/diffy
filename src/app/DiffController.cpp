@@ -317,6 +317,7 @@ bool DiffController::openRepository(const QString& path) {
 
   if (repoChanged) {
     fileDiffs_.clear();
+    resetFileRowCaches();
     files_.clear();
     emit filesChanged();
     selectedFileIndex_ = -1;
@@ -461,6 +462,7 @@ void DiffController::compare() {
   }
 
   fileDiffs_ = document.files;
+  resetFileRowCaches();
   files_ = filesToVariantList(fileDiffs_);
   emit filesChanged();
 
@@ -472,6 +474,7 @@ void DiffController::compare() {
   emit selectedFileIndexChanged();
   emit selectedFileChanged();
   rebuildSelectedFileRows();
+  QTimer::singleShot(0, this, [this]() { prefetchFileRows(); });
 
   finishComparing();
   setCurrentView("diff");
@@ -489,9 +492,40 @@ QVariantMap DiffController::selectedFile() const {
   return files_.at(selectedFileIndex_).toMap();
 }
 
+const std::vector<FlattenedDiffRow>& DiffController::flattenedRowsForFile(int index) {
+  static const std::vector<FlattenedDiffRow> emptyRows;
+  if (index < 0 || index >= static_cast<int>(fileDiffs_.size())) {
+    return emptyRows;
+  }
+
+  if (flattenedFileRowsCache_.size() != fileDiffs_.size()) {
+    resetFileRowCaches();
+  }
+
+  if (!flattenedFileRowsReady_.at(static_cast<size_t>(index))) {
+    flattenedFileRowsCache_.at(static_cast<size_t>(index)) = flattenFileRows(fileDiffs_.at(static_cast<size_t>(index)));
+    flattenedFileRowsReady_.at(static_cast<size_t>(index)) = true;
+  }
+
+  return flattenedFileRowsCache_.at(static_cast<size_t>(index));
+}
+
+void DiffController::resetFileRowCaches() {
+  flattenedFileRowsCache_.clear();
+  flattenedFileRowsReady_.clear();
+  flattenedFileRowsCache_.resize(fileDiffs_.size());
+  flattenedFileRowsReady_.resize(fileDiffs_.size(), false);
+}
+
+void DiffController::prefetchFileRows() {
+  for (int index = 0; index < static_cast<int>(fileDiffs_.size()); ++index) {
+    flattenedRowsForFile(index);
+  }
+}
+
 void DiffController::rebuildSelectedFileRows() {
   if (selectedFileIndex_ >= 0 && selectedFileIndex_ < static_cast<int>(fileDiffs_.size())) {
-    selectedFileRowsModel_.setRows(flattenFileRows(fileDiffs_.at(selectedFileIndex_)));
+    selectedFileRowsModel_.setRows(flattenedRowsForFile(selectedFileIndex_));
   } else {
     selectedFileRowsModel_.clear();
   }

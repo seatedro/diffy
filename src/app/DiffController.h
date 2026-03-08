@@ -160,6 +160,9 @@ class DiffController : public QObject {
 
  private:
   void rebuildSelectedFileRows();
+  const std::vector<FlattenedDiffRow>& flattenedRowsForFile(int index);
+  void resetFileRowCaches();
+  void prefetchFileRows();
   void setCurrentView(const QString& view);
   void addRecentRepository(const QString& path);
   void setError(const QString& error);
@@ -186,6 +189,8 @@ class DiffController : public QObject {
   QString renderer_ = "builtin";
   QString layoutMode_ = "unified";
   std::vector<FileDiff> fileDiffs_;
+  std::vector<std::vector<FlattenedDiffRow>> flattenedFileRowsCache_;
+  std::vector<bool> flattenedFileRowsReady_;
   QVariantList files_;
   DiffRowListModel selectedFileRowsModel_;
   RepositoryPickerModel repositoryPickerModel_;

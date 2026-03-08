@@ -31,29 +31,42 @@ void DiffDisplayModel::setFileHeader(std::optional<DiffSourceRow> row) {
   fileHeaderRow_ = std::move(row);
   recomputeLineNumberDigits();
   if (hadHeader != fileHeaderRow_.has_value()) {
-    rebuildTopology();
+    clearTopologyCaches();
     return;
   }
 
-  if (!fileHeaderRow_ || displayRows_.empty() || displayRows_.front().rowType != DiffRowType::FileHeader) {
+  if (!fileHeaderRow_) {
     return;
   }
 
-  DiffDisplayRow& headerRow = displayRows_.front();
-  headerRow.header = fileHeaderRow_->header;
-  headerRow.detail = fileHeaderRow_->detail;
+  auto updateHeaderRow = [this](std::vector<DiffDisplayRow>& rows) {
+    if (rows.empty() || rows.front().rowType != DiffRowType::FileHeader) {
+      return;
+    }
+    rows.front().header = fileHeaderRow_->header;
+    rows.front().detail = fileHeaderRow_->detail;
+  };
+  updateHeaderRow(unifiedTopologyRows_);
+  updateHeaderRow(splitTopologyRows_);
+  updateHeaderRow(displayRows_);
 }
 
 void DiffDisplayModel::setSourceRows(std::vector<DiffSourceRow> rows) {
   sourceRows_ = std::move(rows);
   recomputeLineNumberDigits();
-  rebuildTopology();
+  clearTopologyCaches();
 }
 
-void DiffDisplayModel::rebuildTopology() {
+void DiffDisplayModel::clearTopologyCaches() {
+  unifiedTopologyRows_.clear();
+  splitTopologyRows_.clear();
   displayRows_.clear();
+}
+
+void DiffDisplayModel::rebuildTopology(std::vector<DiffDisplayRow>& targetRows, DiffLayoutMode mode) const {
+  targetRows.clear();
   auto appendRow = [&](DiffDisplayRow row) {
-    displayRows_.push_back(std::move(row));
+    targetRows.push_back(std::move(row));
   };
 
   if (fileHeaderRow_) {
@@ -64,7 +77,7 @@ void DiffDisplayModel::rebuildTopology() {
     appendRow(std::move(row));
   }
 
-  if (layoutMode_ == DiffLayoutMode::Unified) {
+  if (mode == DiffLayoutMode::Unified) {
     for (const DiffSourceRow& sourceRow : sourceRows_) {
       DiffDisplayRow row;
       row.rowType = sourceRow.rowType;
@@ -187,11 +200,16 @@ void DiffDisplayModel::rebuildMetrics(const DiffLayoutConfig& config) {
 }
 
 void DiffDisplayModel::rebuild(const DiffLayoutConfig& config) {
-  if (layoutMode_ != config.mode) {
-    layoutMode_ = config.mode;
-    rebuildTopology();
-  } else if (displayRows_.empty() && (!sourceRows_.empty() || fileHeaderRow_)) {
-    rebuildTopology();
+  if (config.mode == DiffLayoutMode::Unified) {
+    if (unifiedTopologyRows_.empty() && (!sourceRows_.empty() || fileHeaderRow_)) {
+      rebuildTopology(unifiedTopologyRows_, DiffLayoutMode::Unified);
+    }
+    displayRows_ = unifiedTopologyRows_;
+  } else {
+    if (splitTopologyRows_.empty() && (!sourceRows_.empty() || fileHeaderRow_)) {
+      rebuildTopology(splitTopologyRows_, DiffLayoutMode::Split);
+    }
+    displayRows_ = splitTopologyRows_;
   }
 
   rebuildMetrics(config);

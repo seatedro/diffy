@@ -91,6 +91,8 @@ void printAutomationState(QObject* root, const diffy::DiffController& controller
   const double surfaceItemWidth = surface != nullptr ? surface->property("width").toDouble() : -1.0;
   const double surfaceItemHeight = surface != nullptr ? surface->property("height").toDouble() : -1.0;
   const double viewportY = surface != nullptr ? surface->property("viewportY").toDouble() : -1.0;
+  const double leftViewportX = surface != nullptr ? surface->property("leftViewportX").toDouble() : -1.0;
+  const double rightViewportX = surface != nullptr ? surface->property("rightViewportX").toDouble() : -1.0;
   const int paintCount = surface != nullptr ? surface->property("paintCount").toInt() : -1;
   const int displayRowCount = surface != nullptr ? surface->property("displayRowCount").toInt() : -1;
   const int tileCacheHits = surface != nullptr ? surface->property("tileCacheHits").toInt() : -1;
@@ -112,13 +114,17 @@ void printAutomationState(QObject* root, const diffy::DiffController& controller
   const QString errorText = controller.errorMessage().isEmpty() ? "none" : controller.errorMessage().simplified();
   const QString layout = controller.layoutMode().isEmpty() ? "none" : controller.layoutMode();
   const QString currentView = controller.currentView();
+  const QString selectedPath = controller.selectedFile().value("path").toString();
+  const QByteArray encodedSelectedPath =
+      QUrl::toPercentEncoding(selectedPath.isEmpty() ? QStringLiteral("none") : selectedPath, "/._-");
 
   std::fprintf(stdout,
-               "DIFFY_STATE current_view=%s files=%d rows=%d selected=%d layout=%s surface_height=%.1f surface_width=%.1f item_width=%.1f item_height=%.1f viewport_y=%.1f display_rows=%d paint_count=%d tile_cache_hits=%d tile_cache_misses=%d texture_uploads=%d resident_tiles=%d pending_tile_jobs=%d last_paint_ms=%.3f last_raster_ms=%.3f last_upload_ms=%.3f last_rows_rebuild_ms=%.3f last_display_rows_rebuild_ms=%.3f last_metrics_ms=%.3f picker_visible=%d error=%s\n",
+               "DIFFY_STATE current_view=%s files=%d rows=%d selected=%d layout=%s surface_height=%.1f surface_width=%.1f item_width=%.1f item_height=%.1f viewport_y=%.1f left_viewport_x=%.1f right_viewport_x=%.1f selected_path=%s display_rows=%d paint_count=%d tile_cache_hits=%d tile_cache_misses=%d texture_uploads=%d resident_tiles=%d pending_tile_jobs=%d last_paint_ms=%.3f last_raster_ms=%.3f last_upload_ms=%.3f last_rows_rebuild_ms=%.3f last_display_rows_rebuild_ms=%.3f last_metrics_ms=%.3f picker_visible=%d error=%s\n",
                qPrintable(currentView), static_cast<int>(controller.files().size()), controller.selectedFileRowCount(),
                controller.selectedFileIndex(), qPrintable(layout), surfaceHeight, surfaceWidth,
-               surfaceItemWidth, surfaceItemHeight, viewportY, displayRowCount, paintCount, tileCacheHits,
-               tileCacheMisses, textureUploads, residentTiles, pendingTileJobs, lastPaintTimeMs, lastRasterTimeMs,
+               surfaceItemWidth, surfaceItemHeight, viewportY, leftViewportX, rightViewportX,
+               encodedSelectedPath.constData(), displayRowCount, paintCount, tileCacheHits, tileCacheMisses,
+               textureUploads, residentTiles, pendingTileJobs, lastPaintTimeMs, lastRasterTimeMs,
                lastTextureUploadTimeMs, lastRowsRebuildTimeMs, lastDisplayRowsRebuildTimeMs, lastMetricsRecalcTimeMs,
                pickerVisible, qPrintable(errorText));
   std::fflush(stdout);
@@ -329,6 +335,17 @@ int main(int argc, char* argv[]) {
     }
   }
 
+  const QString resetPerfStatsAfter = envString("DIFFY_RESET_SURFACE_STATS_AFTER_MS");
+  if (!resetPerfStatsAfter.isEmpty()) {
+    bool resetOk = false;
+    const int resetDelayMs = resetPerfStatsAfter.toInt(&resetOk);
+    QTimer::singleShot(resetOk ? resetDelayMs : 160, &app, [root]() {
+      if (QObject* surface = root != nullptr ? root->findChild<QObject*>("diffSurface") : nullptr) {
+        QMetaObject::invokeMethod(surface, "resetPerfStats");
+      }
+    });
+  }
+
   const QString startScrollY = envString("DIFFY_START_SCROLL_Y");
   if (!startScrollY.isEmpty()) {
     bool ok = false;
@@ -394,15 +411,17 @@ int main(int argc, char* argv[]) {
   const QString startWheelAngleY = envString("DIFFY_START_WHEEL_ANGLE_Y");
   if (!startWheelPixelX.isEmpty() || !startWheelPixelY.isEmpty() || !startWheelAngleX.isEmpty() ||
       !startWheelAngleY.isEmpty()) {
+    bool delayOk = false;
     bool pixelXOk = false;
     bool pixelYOk = false;
     bool angleXOk = false;
     bool angleYOk = false;
+    const int wheelDelayMs = envString("DIFFY_START_WHEEL_AFTER_MS").toInt(&delayOk);
     const int pixelX = startWheelPixelX.toInt(&pixelXOk);
     const int pixelY = startWheelPixelY.toInt(&pixelYOk);
     const int angleX = startWheelAngleX.toInt(&angleXOk);
     const int angleY = startWheelAngleY.toInt(&angleYOk);
-    scheduleWheelEvent(120, pixelXOk ? pixelX : 0, pixelYOk ? pixelY : 0, angleXOk ? angleX : 0,
+    scheduleWheelEvent(delayOk ? wheelDelayMs : 120, pixelXOk ? pixelX : 0, pixelYOk ? pixelY : 0, angleXOk ? angleX : 0,
                        angleYOk ? angleY : 0);
   }
 

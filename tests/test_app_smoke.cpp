@@ -225,26 +225,29 @@ QVariantMap parseStateMatch(const QRegularExpressionMatch& match) {
                      {"itemWidth", match.captured(8).toDouble()},
                      {"itemHeight", match.captured(9).toDouble()},
                      {"viewportY", match.captured(10).toDouble()},
-                     {"displayRows", match.captured(11).toInt()},
-                     {"paintCount", match.captured(12).toInt()},
-                     {"tileCacheHits", match.captured(13).toInt()},
-                     {"tileCacheMisses", match.captured(14).toInt()},
-                     {"textureUploads", match.captured(15).toInt()},
-                     {"residentTiles", match.captured(16).toInt()},
-                     {"pendingTileJobs", match.captured(17).toInt()},
-                     {"lastPaintMs", match.captured(18).toDouble()},
-                     {"lastRasterMs", match.captured(19).toDouble()},
-                     {"lastUploadMs", match.captured(20).toDouble()},
-                     {"lastRowsRebuildMs", match.captured(21).toDouble()},
-                     {"lastDisplayRowsRebuildMs", match.captured(22).toDouble()},
-                     {"lastMetricsMs", match.captured(23).toDouble()},
-                     {"pickerVisible", match.captured(24).toInt()},
-                     {"error", match.captured(25).trimmed()}};
+                     {"leftViewportX", match.captured(11).toDouble()},
+                     {"rightViewportX", match.captured(12).toDouble()},
+                     {"selectedPath", match.captured(13)},
+                     {"displayRows", match.captured(14).toInt()},
+                     {"paintCount", match.captured(15).toInt()},
+                     {"tileCacheHits", match.captured(16).toInt()},
+                     {"tileCacheMisses", match.captured(17).toInt()},
+                     {"textureUploads", match.captured(18).toInt()},
+                     {"residentTiles", match.captured(19).toInt()},
+                     {"pendingTileJobs", match.captured(20).toInt()},
+                     {"lastPaintMs", match.captured(21).toDouble()},
+                     {"lastRasterMs", match.captured(22).toDouble()},
+                     {"lastUploadMs", match.captured(23).toDouble()},
+                     {"lastRowsRebuildMs", match.captured(24).toDouble()},
+                     {"lastDisplayRowsRebuildMs", match.captured(25).toDouble()},
+                     {"lastMetricsMs", match.captured(26).toDouble()},
+                     {"pickerVisible", match.captured(27).toInt()},
+                     {"error", match.captured(28).trimmed()}};
 }
 
 QList<QVariantMap> parseStateLines(const QString& stdoutText) {
   const QRegularExpression linePattern(
-      R"(DIFFY_STATE current_view=([^\s]+) files=(\d+) rows=(\d+) selected=(-?\d+) layout=([^\s]+) surface_height=([0-9.-]+) surface_width=([0-9.-]+) item_width=([0-9.-]+) item_height=([0-9.-]+) viewport_y=([0-9.-]+) display_rows=(-?\d+) paint_count=(-?\d+) tile_cache_hits=(-?\d+) tile_cache_misses=(-?\d+) texture_uploads=(-?\d+) resident_tiles=(-?\d+) pending_tile_jobs=(-?\d+) last_paint_ms=([0-9.-]+) last_raster_ms=([0-9.-]+) last_upload_ms=([0-9.-]+) last_rows_rebuild_ms=([0-9.-]+) last_display_rows_rebuild_ms=([0-9.-]+) last_metrics_ms=([0-9.-]+) picker_visible=(\d+) error=(.+))");
+      R"(DIFFY_STATE current_view=([^\s]+) files=(\d+) rows=(\d+) selected=(-?\d+) layout=([^\s]+) surface_height=([0-9.-]+) surface_width=([0-9.-]+) item_width=([0-9.-]+) item_height=([0-9.-]+) viewport_y=([0-9.-]+) left_viewport_x=([0-9.-]+) right_viewport_x=([0-9.-]+) selected_path=([^\s]+) display_rows=(-?\d+) paint_count=(-?\d+) tile_cache_hits=(-?\d+) tile_cache_misses=(-?\d+) texture_uploads=(-?\d+) resident_tiles=(-?\d+) pending_tile_jobs=(-?\d+) last_paint_ms=([0-9.-]+) last_raster_ms=([0-9.-]+) last_upload_ms=([0-9.-]+) last_rows_rebuild_ms=([0-9.-]+) last_display_rows_rebuild_ms=([0-9.-]+) last_metrics_ms=([0-9.-]+) picker_visible=(\d+) error=(.+))");
   QList<QVariantMap> states;
   auto matchIterator = linePattern.globalMatch(stdoutText);
   while (matchIterator.hasNext()) {

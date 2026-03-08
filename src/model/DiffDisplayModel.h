@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -60,6 +61,7 @@ struct DiffDisplayRow {
   DiffRowType rowType = DiffRowType::Line;
   std::string header;
   std::string detail;
+  double textWidth = 0;
   DiffLineKind kind = DiffLineKind::Context;
   int oldLine = -1;
   int newLine = -1;
@@ -82,6 +84,7 @@ struct DiffDisplayRow {
 
 class DiffDisplayModel {
  public:
+  void setFileHeader(std::optional<DiffSourceRow> row);
   void setSourceRows(std::vector<DiffSourceRow> rows);
   void rebuild(const DiffLayoutConfig& config);
 
@@ -96,11 +99,17 @@ class DiffDisplayModel {
   int previousHunkRowIndex(int rowIndex) const;
 
  private:
+  void recomputeLineNumberDigits();
+  void rebuildTopology();
+  void rebuildMetrics(const DiffLayoutConfig& config);
+
+  std::optional<DiffSourceRow> fileHeaderRow_;
   std::vector<DiffSourceRow> sourceRows_;
   std::vector<DiffDisplayRow> displayRows_;
   std::vector<double> rowOffsets_;
   double contentHeight_ = 0;
   int lineNumberDigits_ = 3;
+  DiffLayoutMode layoutMode_ = DiffLayoutMode::Unified;
 };
 
 }  // namespace diffy

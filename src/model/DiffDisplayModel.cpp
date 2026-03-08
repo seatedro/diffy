@@ -15,6 +15,28 @@ double wrappedLineHeight(double baseHeight, bool wrapEnabled, double textWidth, 
 
 }  // namespace
 
+bool DiffDisplayModel::sameConfig(const DiffLayoutConfig& lhs, const DiffLayoutConfig& rhs) {
+  return lhs.mode == rhs.mode && lhs.wrapEnabled == rhs.wrapEnabled &&
+         std::abs(lhs.rowHeight - rhs.rowHeight) <= 0.001 &&
+         std::abs(lhs.hunkHeight - rhs.hunkHeight) <= 0.001 &&
+         std::abs(lhs.fileHeaderHeight - rhs.fileHeaderHeight) <= 0.001 &&
+         std::abs(lhs.unifiedWrapWidth - rhs.unifiedWrapWidth) <= 0.001 &&
+         std::abs(lhs.splitWrapWidth - rhs.splitWrapWidth) <= 0.001;
+}
+
+DiffDisplayModel::LayoutCacheEntry& DiffDisplayModel::layoutCache(DiffLayoutMode mode) {
+  return mode == DiffLayoutMode::Unified ? unifiedLayoutCache_ : splitLayoutCache_;
+}
+
+const DiffDisplayModel::LayoutCacheEntry& DiffDisplayModel::layoutCache(DiffLayoutMode mode) const {
+  return mode == DiffLayoutMode::Unified ? unifiedLayoutCache_ : splitLayoutCache_;
+}
+
+void DiffDisplayModel::invalidateLayoutCaches() {
+  unifiedLayoutCache_ = {};
+  splitLayoutCache_ = {};
+}
+
 void DiffDisplayModel::recomputeLineNumberDigits() {
   int maxLineNumber = 0;
   if (fileHeaderRow_) {
@@ -49,6 +71,7 @@ void DiffDisplayModel::setFileHeader(std::optional<DiffSourceRow> row) {
   updateHeaderRow(unifiedTopologyRows_);
   updateHeaderRow(splitTopologyRows_);
   updateHeaderRow(displayRows_);
+  invalidateLayoutCaches();
 }
 
 void DiffDisplayModel::setSourceRows(std::vector<DiffSourceRow> rows) {
@@ -61,6 +84,9 @@ void DiffDisplayModel::clearTopologyCaches() {
   unifiedTopologyRows_.clear();
   splitTopologyRows_.clear();
   displayRows_.clear();
+  rowOffsets_.clear();
+  contentHeight_ = 0;
+  invalidateLayoutCaches();
 }
 
 void DiffDisplayModel::rebuildTopology(std::vector<DiffDisplayRow>& targetRows, DiffLayoutMode mode) const {
@@ -176,12 +202,31 @@ void DiffDisplayModel::rebuildTopology(std::vector<DiffDisplayRow>& targetRows, 
   }
 }
 
-void DiffDisplayModel::rebuildMetrics(const DiffLayoutConfig& config) {
-  rowOffsets_.clear();
-  rowOffsets_.reserve(displayRows_.size());
+void DiffDisplayModel::ensureLayoutCache(const DiffLayoutConfig& config) {
+  LayoutCacheEntry& entry = layoutCache(config.mode);
+  if (entry.valid && sameConfig(entry.config, config)) {
+    return;
+  }
+
+  const std::vector<DiffDisplayRow>* topologyRows = nullptr;
+  if (config.mode == DiffLayoutMode::Unified) {
+    if (unifiedTopologyRows_.empty() && (!sourceRows_.empty() || fileHeaderRow_)) {
+      rebuildTopology(unifiedTopologyRows_, DiffLayoutMode::Unified);
+    }
+    topologyRows = &unifiedTopologyRows_;
+  } else {
+    if (splitTopologyRows_.empty() && (!sourceRows_.empty() || fileHeaderRow_)) {
+      rebuildTopology(splitTopologyRows_, DiffLayoutMode::Split);
+    }
+    topologyRows = &splitTopologyRows_;
+  }
+
+  entry.rows = *topologyRows;
+  entry.rowOffsets.clear();
+  entry.rowOffsets.reserve(entry.rows.size());
 
   double top = 0;
-  for (DiffDisplayRow& row : displayRows_) {
+  for (DiffDisplayRow& row : entry.rows) {
     row.top = top;
     if (row.rowType == DiffRowType::FileHeader) {
       row.height = config.fileHeaderHeight;
@@ -192,27 +237,72 @@ void DiffDisplayModel::rebuildMetrics(const DiffLayoutConfig& config) {
           config.mode == DiffLayoutMode::Split ? config.splitWrapWidth : config.unifiedWrapWidth;
       row.height = wrappedLineHeight(config.rowHeight, config.wrapEnabled, row.textWidth, wrapWidth);
     }
-    rowOffsets_.push_back(top);
+    entry.rowOffsets.push_back(top);
     top += row.height;
   }
 
-  contentHeight_ = top;
+  entry.contentHeight = top;
+  entry.config = config;
+  entry.valid = true;
+}
+
+void DiffDisplayModel::prewarm(const DiffLayoutConfig& config) {
+  ensureLayoutCache(config);
+}
+
+const std::vector<DiffDisplayRow>& DiffDisplayModel::cachedRows(const DiffLayoutConfig& config) {
+  ensureLayoutCache(config);
+  return layoutCache(config.mode).rows;
+}
+
+int DiffDisplayModel::rowIndexAtY(const DiffLayoutConfig& config, double y) {
+  ensureLayoutCache(config);
+  const LayoutCacheEntry& entry = layoutCache(config.mode);
+  if (entry.rows.empty()) {
+    return -1;
+  }
+
+  const auto it = std::upper_bound(entry.rowOffsets.cbegin(), entry.rowOffsets.cend(), y);
+  if (it == entry.rowOffsets.cbegin()) {
+    return 0;
+  }
+  return std::clamp(static_cast<int>(std::distance(entry.rowOffsets.cbegin(), it) - 1), 0,
+                    static_cast<int>(entry.rows.size() - 1));
+}
+
+int DiffDisplayModel::stickyHunkRowIndexAtY(const DiffLayoutConfig& config, double y) {
+  ensureLayoutCache(config);
+  const LayoutCacheEntry& entry = layoutCache(config.mode);
+  int stickyIndex = -1;
+  for (int rowIndex = 0; rowIndex < static_cast<int>(entry.rows.size()); ++rowIndex) {
+    const DiffDisplayRow& row = entry.rows.at(rowIndex);
+    if (row.rowType == DiffRowType::Hunk && row.top <= y) {
+      stickyIndex = rowIndex;
+    }
+    if (row.top > y) {
+      break;
+    }
+  }
+  return stickyIndex;
+}
+
+int DiffDisplayModel::fileHeaderRowIndex(const DiffLayoutConfig& config) {
+  ensureLayoutCache(config);
+  const LayoutCacheEntry& entry = layoutCache(config.mode);
+  for (int rowIndex = 0; rowIndex < static_cast<int>(entry.rows.size()); ++rowIndex) {
+    if (entry.rows.at(rowIndex).rowType == DiffRowType::FileHeader) {
+      return rowIndex;
+    }
+  }
+  return -1;
 }
 
 void DiffDisplayModel::rebuild(const DiffLayoutConfig& config) {
-  if (config.mode == DiffLayoutMode::Unified) {
-    if (unifiedTopologyRows_.empty() && (!sourceRows_.empty() || fileHeaderRow_)) {
-      rebuildTopology(unifiedTopologyRows_, DiffLayoutMode::Unified);
-    }
-    displayRows_ = unifiedTopologyRows_;
-  } else {
-    if (splitTopologyRows_.empty() && (!sourceRows_.empty() || fileHeaderRow_)) {
-      rebuildTopology(splitTopologyRows_, DiffLayoutMode::Split);
-    }
-    displayRows_ = splitTopologyRows_;
-  }
-
-  rebuildMetrics(config);
+  ensureLayoutCache(config);
+  const LayoutCacheEntry& entry = layoutCache(config.mode);
+  displayRows_ = entry.rows;
+  rowOffsets_ = entry.rowOffsets;
+  contentHeight_ = entry.contentHeight;
 }
 
 const std::vector<DiffDisplayRow>& DiffDisplayModel::rows() const {

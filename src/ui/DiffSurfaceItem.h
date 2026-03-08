@@ -7,9 +7,12 @@
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QQuickItem>
+#include <QRectF>
+#include <QSet>
 #include <QWheelEvent>
 #include <QVariantMap>
 
+#include <mutex>
 #include <vector>
 
 #include "model/DiffPreparedRows.h"
@@ -45,6 +48,25 @@ inline size_t qHash(const LineLayoutCacheKey& key, size_t seed = 0) {
 inline size_t qHash(const WrappedLineLayoutCacheKey& key, size_t seed = 0) {
   return qHashMulti(seed, key.base, key.wrapWidthMilli);
 }
+
+enum class TileLayer {
+  UnifiedRow = 1,
+  SplitFullRow = 2,
+  SplitLeftFixedRow = 3,
+  SplitRightFixedRow = 4,
+  SplitLeftTextRow = 5,
+  SplitRightTextRow = 6,
+  StickyRow = 7,
+};
+
+struct TileSpec {
+  quint64 key = 0;
+  TileLayer layer = TileLayer::UnifiedRow;
+  int rowIndex = -1;
+  int columnIndex = 0;
+  qreal logicalX = 0.0;
+  QRectF targetRect;
+};
 
 class DiffSurfaceItem : public QQuickItem {
   Q_OBJECT
@@ -176,6 +198,10 @@ signals:
  private:
   void scheduleRowsRebuild();
   void scheduleMetricsRecalc();
+  void scheduleAlternateLayoutPrewarm();
+  DiffLayoutConfig buildLayoutConfig(const QString& mode) const;
+  void scheduleAlternateTilePrewarm();
+  void rasterPrewarmBatch();
   bool updateFileHeader();
   void rebuildRows();
   void rebuildDisplayRows();
@@ -206,7 +232,23 @@ signals:
   const CachedWrappedLayout& wrappedLayoutForText(const QString& text, int pixelSize, qreal wrapWidth) const;
   int currentRowIndex() const;
   PreparedRowsCacheKey preparedRowsCacheKey() const;
+  qreal contentWidthForLayout(const QString& mode) const;
+  std::vector<TileSpec> buildPrewarmTileSpecs(const QString& mode);
+  QImage renderTileImage(const std::vector<DiffDisplayRow>& rows,
+                         const TileSpec& spec,
+                         qreal visibleWidth,
+                         qreal unifiedRowWidth,
+                         qreal splitTextLogicalWidth,
+                         qreal leftPaneWidth,
+                         qreal rightPaneWidth,
+                         qreal devicePixelRatio) const;
   quint64 tileContentKey() const;
+  quint64 tileGeometryKey(const QString& mode,
+                          qreal contentWidth,
+                          qreal visibleWidth,
+                          qreal visibleHeight,
+                          qreal unifiedRowWidth,
+                          qreal splitTextLogicalWidth) const;
   quint64 tileGeometryKey(qreal visibleWidth,
                           qreal visibleHeight,
                           qreal unifiedRowWidth,
@@ -325,6 +367,15 @@ signals:
   bool followupUpdateQueued_ = false;
   bool rowsRebuildQueued_ = false;
   bool metricsRecalcQueued_ = false;
+  bool alternateLayoutPrewarmQueued_ = false;
+  bool alternateTilePrewarmQueued_ = false;
+  QString alternateTilePrewarmMode_;
+  std::vector<TileSpec> alternateTilePrewarmSpecs_;
+  size_t alternateTilePrewarmIndex_ = 0;
+  QSet<quint64> alternateTilePrewarmScheduledKeys_;
+  mutable std::recursive_mutex rasterStateMutex_;
+  mutable std::mutex readyTileImagesMutex_;
+  mutable QHash<quint64, QImage> readyTileImages_;
 };
 
 }  // namespace diffy

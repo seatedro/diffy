@@ -154,6 +154,45 @@ class DiffDisplayModelTest : public QObject {
     QCOMPARE(model.previousHunkRowIndex(4), 3);
     QCOMPARE(model.previousHunkRowIndex(3), 1);
   }
+
+  void prewarmAlternateLayoutDoesNotDisturbActiveLayout() {
+    DiffDisplayModel model;
+    model.setSourceRows({
+        makeFileHeader(),
+        makeHunk(),
+        makeLine(DiffLineKind::Deletion, 10, -1, 90.0),
+        makeLine(DiffLineKind::Addition, -1, 10, 110.0),
+        makeLine(DiffLineKind::Context, 11, 11, 30.0),
+    });
+
+    DiffLayoutConfig unified;
+    unified.mode = DiffLayoutMode::Unified;
+    unified.rowHeight = 10.0;
+    unified.hunkHeight = 12.0;
+    unified.fileHeaderHeight = 14.0;
+    unified.wrapEnabled = true;
+    unified.unifiedWrapWidth = 40.0;
+    unified.splitWrapWidth = 40.0;
+
+    DiffLayoutConfig split = unified;
+    split.mode = DiffLayoutMode::Split;
+
+    model.rebuild(unified);
+    const std::vector<DiffDisplayRow> beforeRows = model.rows();
+    const double beforeHeight = model.contentHeight();
+
+    model.prewarm(split);
+
+    QCOMPARE(model.rows().size(), beforeRows.size());
+    QCOMPARE(model.contentHeight(), beforeHeight);
+    QCOMPARE(model.rows().at(0).height, beforeRows.at(0).height);
+    QCOMPARE(model.rows().at(1).height, beforeRows.at(1).height);
+
+    model.rebuild(split);
+    QCOMPARE(model.rows().size(), static_cast<size_t>(4));
+    QCOMPARE(static_cast<int>(model.rows().at(2).leftKind), static_cast<int>(DiffLineKind::Deletion));
+    QCOMPARE(static_cast<int>(model.rows().at(2).rightKind), static_cast<int>(DiffLineKind::Addition));
+  }
 };
 
 QTEST_GUILESS_MAIN(DiffDisplayModelTest)

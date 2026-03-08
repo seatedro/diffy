@@ -4,7 +4,7 @@
 #include <string_view>
 #include <vector>
 
-#include "core/SyntaxTypes.h"
+#include "core/syntax/SyntaxTypes.h"
 
 namespace diffy {
 

@@ -1,11 +1,11 @@
-#include "core/GitRepositoryService.h"
+#include "core/vcs/git/GitRepositoryService.h"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <optional>
 
-#include "core/GitHubPullRequest.h"
+#include "core/vcs/github/GitHubPullRequest.h"
 
 namespace diffy {
 namespace {

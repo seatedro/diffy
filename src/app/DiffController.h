@@ -9,9 +9,9 @@
 #include "app/RepositoryPickerModel.h"
 #include <QTimer>
 
-#include "core/CompareSpec.h"
-#include "core/GitHubDeviceFlow.h"
-#include "core/GitRepositoryService.h"
+#include "core/vcs/CompareSpec.h"
+#include "core/vcs/github/GitHubDeviceFlow.h"
+#include "core/vcs/git/GitRepositoryService.h"
 #include "core/syntax/Highlighter.h"
 #include "core/syntax/LanguageRegistry.h"
 #include "model/DiffRowListModel.h"
@@ -166,6 +166,8 @@ class DiffController : public QObject {
   const std::vector<FlattenedDiffRow>& flattenedRowsForFile(int index);
   void resetFileRowCaches();
   void prefetchFileRows();
+  void resetPreparedRowsPrewarmOrder();
+  void schedulePreparedRowsPrewarm();
   void setCurrentView(const QString& view);
   void addRecentRepository(const QString& path);
   void setError(const QString& error);
@@ -210,6 +212,10 @@ class DiffController : public QObject {
   bool wrapEnabled_ = false;
   int wrapColumn_ = 0;
   bool hasDifftastic_ = false;
+  int preparedRowsPrewarmIndex_ = 0;
+  bool preparedRowsPrewarmQueued_ = false;
+  int preparedRowsPrewarmVersion_ = 0;
+  std::vector<int> preparedRowsPrewarmOrder_;
   QString githubClientId_;
   QTimer oauthPollTimer_;
   QString oauthDeviceCode_;

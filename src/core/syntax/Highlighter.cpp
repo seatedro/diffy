@@ -6,7 +6,7 @@
 
 #include <tree_sitter/api.h>
 
-#include "core/SyntaxTypes.h"
+#include "core/syntax/SyntaxTypes.h"
 
 namespace diffy {
 namespace {

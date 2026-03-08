@@ -3,7 +3,7 @@
 #include <string_view>
 #include <vector>
 
-#include "core/DiffTypes.h"
+#include "core/diff/DiffTypes.h"
 #include "core/syntax/LanguageRegistry.h"
 
 namespace diffy {

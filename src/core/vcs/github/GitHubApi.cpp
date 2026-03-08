@@ -1,4 +1,4 @@
-#include "core/GitHubApi.h"
+#include "core/vcs/github/GitHubApi.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -7,7 +7,7 @@
 
 #include <curl/curl.h>
 
-#include "core/Log.h"
+#include "core/support/Log.h"
 
 namespace diffy {
 namespace {

@@ -24,7 +24,7 @@
 #include <chrono>
 #include <limits>
 
-#include "core/SyntaxTypes.h"
+#include "core/syntax/SyntaxTypes.h"
 
 namespace diffy {
 namespace {
@@ -253,15 +253,6 @@ std::vector<DiffTokenSpan> parseTokens(const QVariantList& tokenValues) {
   return tokens;
 }
 
-std::vector<DiffTokenSpan> parseTokens(const std::vector<TokenSpan>& tokenValues) {
-  std::vector<DiffTokenSpan> tokens;
-  tokens.reserve(tokenValues.size());
-  for (const TokenSpan& tokenValue : tokenValues) {
-    tokens.push_back(DiffTokenSpan{tokenValue.start, tokenValue.length, tokenValue.syntaxKind});
-  }
-  return tokens;
-}
-
 DiffLayoutMode toLayoutMode(const QString& mode) {
   return mode == "split" ? DiffLayoutMode::Split : DiffLayoutMode::Unified;
 }
@@ -424,7 +415,6 @@ void DiffSurfaceItem::setCompareGeneration(int value) {
     return;
   }
   compareGeneration_ = value;
-  preparedRowsCache_.clear();
   invalidateContentTiles();
   emit compareGenerationChanged();
 }
@@ -1330,49 +1320,24 @@ void DiffSurfaceItem::rebuildRows() {
   fileHeaderHeight_ = 32.0;
   hunkHeight_ = 28.0;
   const PreparedRowsCacheKey key = preparedRowsCacheKey();
-  auto preparedIt = preparedRowsCache_.find(key);
-  if (preparedIt != preparedRowsCache_.end()) {
-    textRope_ = preparedIt->textRope;
-    maxTextWidth_ = preparedIt->maxTextWidth;
-    displayModel_.setSourceRows(preparedIt->sourceRows);
+  const PreparedRows* prepared = rowsModel_ != nullptr ? rowsModel_->preparedRows(key) : nullptr;
+  PreparedRows localPrepared;
+  if (prepared != nullptr) {
+    textRope_ = prepared->textRope;
+    maxTextWidth_ = prepared->maxTextWidth;
+    displayModel_.setSourceRows(prepared->sourceRows);
   } else {
-    textRope_.clear();
-    maxTextWidth_ = 0;
-
-    std::vector<DiffSourceRow> sourceRows;
-    sourceRows.reserve((rowsModel_ != nullptr ? rowsModel_->rows().size() : 0) + (filePath_.isEmpty() ? 0 : 1));
-
     if (rowsModel_ != nullptr) {
-      for (const FlattenedDiffRow& rowValue : rowsModel_->rows()) {
-        DiffSourceRow row;
-        row.rowType =
-            rowValue.rowType == FlattenedDiffRow::RowType::Hunk ? DiffRowType::Hunk : DiffRowType::Line;
-        row.header = rowValue.header.toStdString();
-        row.kind = rowValue.kind == LineKind::Addition
-                       ? DiffLineKind::Addition
-                       : rowValue.kind == LineKind::Deletion ? DiffLineKind::Deletion : DiffLineKind::Context;
-        row.oldLine = rowValue.oldLine;
-        row.newLine = rowValue.newLine;
-        const QByteArray textUtf8 = rowValue.text.toUtf8();
-        row.textRange = textRope_.append(std::string(textUtf8.constData(), textUtf8.size()));
-        row.textWidth = lineLayoutForRange(row.textRange, 12).width;
-        row.tokens = parseTokens(rowValue.tokens);
-        row.changeSpans = parseTokens(rowValue.changeSpans);
-        maxTextWidth_ = std::max(maxTextWidth_, row.textWidth);
-        sourceRows.push_back(std::move(row));
-      }
+      rowsModel_->storePreparedRows(key, prepareRowsForSurface(rowsModel_->rows(), monoFontFamily_));
+      prepared = rowsModel_->preparedRows(key);
     }
-
-    PreparedRows prepared;
-    prepared.textRope = textRope_;
-    prepared.sourceRows = sourceRows;
-    prepared.maxTextWidth = maxTextWidth_;
-    preparedRowsCache_.insert(key, std::move(prepared));
-    while (preparedRowsCache_.size() > 64) {
-      preparedRowsCache_.erase(preparedRowsCache_.begin());
+    if (prepared == nullptr) {
+      localPrepared = prepareRowsForSurface({}, monoFontFamily_);
+      prepared = &localPrepared;
     }
-
-    displayModel_.setSourceRows(std::move(sourceRows));
+    textRope_ = prepared->textRope;
+    maxTextWidth_ = prepared->maxTextWidth;
+    displayModel_.setSourceRows(prepared->sourceRows);
   }
   updateFileHeader();
   if (setPerfValue(lastRowsRebuildTimeMs_, elapsedMs(rebuildStart))) {

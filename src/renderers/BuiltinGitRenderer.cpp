@@ -6,7 +6,7 @@
 #include <filesystem>
 #include <sstream>
 
-#include "core/WordDiff.h"
+#include "core/diff/WordDiff.h"
 #include "core/syntax/Highlighter.h"
 #include "core/syntax/LanguageRegistry.h"
 

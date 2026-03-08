@@ -12,6 +12,7 @@
 
 #include <vector>
 
+#include "model/DiffPreparedRows.h"
 #include "model/DiffDisplayModel.h"
 #include "model/DiffRowListModel.h"
 #include "text/TextRope.h"
@@ -43,18 +44,6 @@ inline size_t qHash(const LineLayoutCacheKey& key, size_t seed = 0) {
 
 inline size_t qHash(const WrappedLineLayoutCacheKey& key, size_t seed = 0) {
   return qHashMulti(seed, key.base, key.wrapWidthMilli);
-}
-
-struct PreparedRowsCacheKey {
-  int compareGeneration = 0;
-  QString filePath;
-  QString family;
-
-  bool operator==(const PreparedRowsCacheKey& other) const = default;
-};
-
-inline size_t qHash(const PreparedRowsCacheKey& key, size_t seed = 0) {
-  return qHashMulti(seed, key.compareGeneration, key.filePath, key.family);
 }
 
 class DiffSurfaceItem : public QQuickItem {
@@ -206,12 +195,6 @@ signals:
     std::vector<int> charWrapLines;
   };
 
-  struct PreparedRows {
-    TextRope textRope;
-    std::vector<DiffSourceRow> sourceRows;
-    qreal maxTextWidth = 0.0;
-  };
-
   bool rowSelected(int rowIndex) const;
   QColor paletteColor(const QString& key, const QColor& fallback) const;
   qreal digitWidth() const;
@@ -323,7 +306,6 @@ signals:
   mutable QHash<WrappedLineLayoutCacheKey, CachedWrappedLayout> wrappedLayoutCache_;
   mutable QHash<WrappedLineLayoutCacheKey, quint64> wrappedLayoutLastUsed_;
   mutable quint64 wrappedLayoutUseTick_ = 0;
-  QHash<PreparedRowsCacheKey, PreparedRows> preparedRowsCache_;
   mutable QHash<quint64, QImage> tileImageCache_;
   mutable QHash<quint64, quint64> tileImageLastUsed_;
   mutable QHash<quint64, QSGTexture*> residentTextureCache_;

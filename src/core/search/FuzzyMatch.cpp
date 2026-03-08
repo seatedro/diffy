@@ -1,4 +1,4 @@
-#include "core/FuzzyMatch.h"
+#include "core/search/FuzzyMatch.h"
 
 #include <algorithm>
 #include <cctype>

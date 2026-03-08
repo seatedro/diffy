@@ -1,4 +1,4 @@
-#include "core/GitHubPullRequest.h"
+#include "core/vcs/github/GitHubPullRequest.h"
 
 #include <charconv>
 #include <cctype>

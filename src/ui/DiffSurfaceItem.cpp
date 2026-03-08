@@ -21,12 +21,27 @@
 #include <QtMath>
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 
 #include "core/SyntaxTypes.h"
 
 namespace diffy {
 namespace {
+
+using PerfClock = std::chrono::steady_clock;
+
+double elapsedMs(PerfClock::time_point start) {
+  return std::chrono::duration<double, std::milli>(PerfClock::now() - start).count();
+}
+
+bool setPerfValue(double& target, double value) {
+  if (qAbs(target - value) <= 0.001) {
+    return false;
+  }
+  target = value;
+  return true;
+}
 
 QColor syntaxForeground(SyntaxTokenKind kind) {
   switch (kind) {
@@ -214,6 +229,20 @@ QColor splitSelectionColor(const DiffDisplayRow& row, bool isLeftPane) {
   return selection;
 }
 
+QColor splitPaneBackgroundColor(const DiffDisplayRow& row, bool isLeftPane) {
+  const DiffLineKind lineKind = isLeftPane ? row.leftKind : row.rightKind;
+  if (lineKind == DiffLineKind::Spacer) {
+    return QColor("#232323");
+  }
+  if (isLeftPane && lineKind == DiffLineKind::Deletion) {
+    return QColor("#35262b");
+  }
+  if (!isLeftPane && lineKind == DiffLineKind::Addition) {
+    return QColor("#22332a");
+  }
+  return QColor("#282c33");
+}
+
 std::vector<DiffTokenSpan> parseTokens(const QVariantList& tokenValues) {
   std::vector<DiffTokenSpan> tokens;
   tokens.reserve(tokenValues.size());
@@ -270,6 +299,7 @@ QString kindSymbol(DiffLineKind kind) {
 
 DiffSurfaceItem::DiffSurfaceItem(QQuickItem* parent) : QQuickItem(parent) {
   setFlag(ItemHasContents, true);
+  setFlag(ItemObservesViewport, true);
   setAcceptedMouseButtons(Qt::LeftButton);
   setAcceptHoverEvents(true);
   setFocus(true);
@@ -295,6 +325,7 @@ void DiffSurfaceItem::scheduleRowsRebuild() {
   if (rowsRebuildQueued_) {
     return;
   }
+  ++tileGeneration_;
   rowsRebuildQueued_ = true;
   QTimer::singleShot(0, this, [this]() {
     rowsRebuildQueued_ = false;
@@ -307,6 +338,7 @@ void DiffSurfaceItem::scheduleMetricsRecalc() {
   if (rowsRebuildQueued_ || metricsRecalcQueued_) {
     return;
   }
+  ++tileGeneration_;
   metricsRecalcQueued_ = true;
   QTimer::singleShot(0, this, [this]() {
     metricsRecalcQueued_ = false;
@@ -488,7 +520,7 @@ void DiffSurfaceItem::setLeftViewportX(qreal value) {
   value = std::max(0.0, value);
   if (qFuzzyCompare(leftViewportX_, value)) return;
   leftViewportX_ = value;
-  update();
+  invalidateTiles();
   emit leftViewportXChanged();
 }
 
@@ -503,7 +535,7 @@ void DiffSurfaceItem::setRightViewportX(qreal value) {
   value = std::max(0.0, value);
   if (qFuzzyCompare(rightViewportX_, value)) return;
   rightViewportX_ = value;
-  update();
+  invalidateTiles();
   emit rightViewportXChanged();
 }
 
@@ -570,9 +602,34 @@ int DiffSurfaceItem::pendingTileJobCount() const {
   return pendingTileJobCount_;
 }
 
+double DiffSurfaceItem::lastPaintTimeMs() const {
+  return lastPaintTimeMs_;
+}
+
+double DiffSurfaceItem::lastRasterTimeMs() const {
+  return lastRasterTimeMs_;
+}
+
+double DiffSurfaceItem::lastTextureUploadTimeMs() const {
+  return lastTextureUploadTimeMs_;
+}
+
+double DiffSurfaceItem::lastRowsRebuildTimeMs() const {
+  return lastRowsRebuildTimeMs_;
+}
+
+double DiffSurfaceItem::lastDisplayRowsRebuildTimeMs() const {
+  return lastDisplayRowsRebuildTimeMs_;
+}
+
+double DiffSurfaceItem::lastMetricsRecalcTimeMs() const {
+  return lastMetricsRecalcTimeMs_;
+}
+
 QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData* data) {
   Q_UNUSED(data);
 
+  const PerfClock::time_point paintStart = PerfClock::now();
   auto* root = oldNode != nullptr ? oldNode : new QSGNode;
   auto clearChildren = [](QSGNode* parent) {
     while (QSGNode* child = parent->firstChild()) {
@@ -583,7 +640,12 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
 
   auto* quickWindow = window();
   const auto& rows = displayModel_.rows();
-  if (quickWindow == nullptr || width() <= 0 || height() <= 0 || rows.empty()) {
+  if (quickWindow == nullptr || width() <= 0 || height() <= 0) {
+    clearChildren(root);
+    return root;
+  }
+
+  if (rows.empty()) {
     clearChildren(root);
     return root;
   }
@@ -591,9 +653,14 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
   const int uploadsBefore = textureUploadCount_;
   ++paintCount_;
   emit paintCountChanged();
+  double rasterTimeMs = 0;
+  double textureUploadTimeMs = 0;
 
+  const QRectF viewportClip = clipRect().intersected(QRectF(0.0, 0.0, width(), height()));
+  const qreal visibleTopInItem = std::clamp(viewportClip.top(), 0.0, height());
+  const qreal visibleBottomInItem = std::clamp(viewportClip.top() + viewportClip.height(), visibleTopInItem, height());
   const qreal visibleWidth = width();
-  const qreal visibleHeight = height();
+  const qreal visibleHeight = visibleBottomInItem - visibleTopInItem;
   const qreal unifiedRowWidth = std::max(visibleWidth, contentWidth_);
   const qreal leftPaneWidth = visibleWidth / 2.0;
   const qreal rightPaneWidth = visibleWidth - leftPaneWidth;
@@ -718,13 +785,17 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
       image = imageIt.value();
       ++tileCacheHits_;
     } else {
+      const PerfClock::time_point rasterStart = PerfClock::now();
       image = renderImage(spec);
+      rasterTimeMs += elapsedMs(rasterStart);
       tileImageCache_.insert(spec.key, image);
       ++tileCacheMisses_;
     }
     tileImageLastUsed_[spec.key] = tileUseTick_;
 
+    const PerfClock::time_point uploadStart = PerfClock::now();
     QSGTexture* texture = quickWindow->createTextureFromImage(image);
+    textureUploadTimeMs += elapsedMs(uploadStart);
     Q_ASSERT(texture != nullptr);
     residentTextureCache_.insert(spec.key, texture);
     residentTextureLastUsed_[spec.key] = tileUseTick_;
@@ -797,11 +868,11 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
   };
 
   const int firstRow = firstVisibleRow_ >= 0
-                           ? firstVisibleRow_
-                           : std::max(0, displayModel_.rowIndexAtY(std::max<qreal>(0.0, viewportY_ - hunkHeight_)));
+                           ? std::max(0, displayModel_.rowIndexAtY(std::max<qreal>(0.0, viewportY_ + visibleTopInItem - hunkHeight_)))
+                           : std::max(0, displayModel_.rowIndexAtY(std::max<qreal>(0.0, viewportY_ + visibleTopInItem - hunkHeight_)));
   const int lastRow = lastVisibleRow_ >= 0
-                          ? lastVisibleRow_
-                          : std::max(firstRow, displayModel_.rowIndexAtY(viewportY_ + visibleHeight + hunkHeight_));
+                          ? std::max(firstRow, displayModel_.rowIndexAtY(viewportY_ + visibleBottomInItem + hunkHeight_))
+                          : std::max(firstRow, displayModel_.rowIndexAtY(viewportY_ + visibleBottomInItem + hunkHeight_));
 
   const int fileHeaderIndex = displayModel_.fileHeaderRowIndex();
   const bool hasStickyHeader = fileHeaderIndex >= 0 && viewportY_ > 0;
@@ -810,7 +881,7 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
   qreal stickyOffset = hasStickyHeader ? fileHeaderHeight_ : 0.0;
   qreal stickyViewportY = -1.0;
   if (stickyIndex >= 0) {
-    qreal stickyY = viewportY_ + stickyOffset;
+    qreal stickyY = viewportY_ + visibleTopInItem + stickyOffset;
     for (int nextIndex = stickyIndex + 1; nextIndex < static_cast<int>(rows.size()); ++nextIndex) {
       const DiffDisplayRow& nextRow = rows.at(nextIndex);
       if (nextRow.rowType == DiffRowType::Hunk) {
@@ -822,14 +893,14 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
   }
 
   qreal occludedTop = 0.0;
-  if (hasStickyHeader) {
-    occludedTop = fileHeaderHeight_;
+  if (hasStickyHeader || visibleTopInItem > 0.0) {
+    occludedTop = visibleTopInItem + (hasStickyHeader ? fileHeaderHeight_ : 0.0);
   }
   if (stickyViewportY >= 0.0) {
     occludedTop = std::max(occludedTop, stickyViewportY + hunkHeight_);
   }
-  Q_ASSERT(occludedTop >= 0.0);
-  Q_ASSERT(occludedTop <= visibleHeight + 0.001);
+  Q_ASSERT(occludedTop >= visibleTopInItem - 0.001);
+  Q_ASSERT(occludedTop <= visibleBottomInItem + 0.001);
 
   baseCommands.reserve(static_cast<size_t>(std::max(16, lastRow - firstRow + 8)));
   leftTextCommands.reserve(static_cast<size_t>(std::max(8, lastRow - firstRow + 4)));
@@ -839,10 +910,10 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
   QSGClipNode* rootClip = dynamic_cast<QSGClipNode*>(root->firstChild());
   if (rootClip == nullptr) {
     clearChildren(root);
-    rootClip = createClipNode(QRectF(0.0, 0.0, visibleWidth, visibleHeight));
+    rootClip = createClipNode(QRectF(0.0, visibleTopInItem, visibleWidth, visibleHeight));
     root->appendChildNode(rootClip);
   } else {
-    updateClipNodeRect(rootClip, QRectF(0.0, 0.0, visibleWidth, visibleHeight));
+    updateClipNodeRect(rootClip, QRectF(0.0, visibleTopInItem, visibleWidth, visibleHeight));
     while (QSGNode* extra = rootClip->nextSibling()) {
       root->removeChildNode(extra);
       delete extra;
@@ -905,13 +976,14 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
   Q_ASSERT(overlayGroup->parent() == contentClip);
   Q_ASSERT(stickyGroup->parent() == rootClip);
 
-  updateClipNodeRect(contentClip, QRectF(0.0, occludedTop, visibleWidth, std::max<qreal>(0.0, visibleHeight - occludedTop)));
+  updateClipNodeRect(contentClip, QRectF(0.0, occludedTop, visibleWidth,
+                                         std::max<qreal>(0.0, visibleBottomInItem - occludedTop)));
   updateClipNodeRect(leftTextClip,
                      QRectF(splitTextInset, occludedTop, leftTextViewportWidth,
-                            std::max<qreal>(0.0, visibleHeight - occludedTop)));
+                            std::max<qreal>(0.0, visibleBottomInItem - occludedTop)));
   updateClipNodeRect(rightTextClip,
                      QRectF(leftPaneWidth + splitTextInset, occludedTop, rightTextViewportWidth,
-                            std::max<qreal>(0.0, visibleHeight - occludedTop)));
+                            std::max<qreal>(0.0, visibleBottomInItem - occludedTop)));
 
   queueRectNode(baseCommands, overlayKey(0, -1, 0), QRectF(0.0, 0.0, visibleWidth, visibleHeight),
                 paletteColor("canvas", QColor("#282c33")));
@@ -920,23 +992,12 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
     for (int rowIndex = firstRow; rowIndex <= lastRow && rowIndex < static_cast<int>(rows.size()); ++rowIndex) {
       const DiffDisplayRow& row = rows.at(rowIndex);
       const qreal y = row.top - viewportY_;
-      if (y + row.height < 0.0 || y > visibleHeight) {
+      if (y + row.height < visibleTopInItem || y > visibleBottomInItem) {
         continue;
       }
 
-      if (row.rowType == DiffRowType::Line) {
-        queueWholeRowTexture(baseCommands, TileLayer::SplitLeftFixedRow, rowIndex, 0.0,
-                             QRectF(0.0, y, leftPaneWidth, row.height));
-        queueWholeRowTexture(baseCommands, TileLayer::SplitRightFixedRow, rowIndex, 0.0,
-                             QRectF(leftPaneWidth, y, rightPaneWidth, row.height));
-        queueTileColumns(leftTextCommands, TileLayer::SplitLeftTextRow, rowIndex, leftViewportX_, leftTextViewportWidth,
-                         splitTextLogicalWidth, splitTextInset, y);
-        queueTileColumns(rightTextCommands, TileLayer::SplitRightTextRow, rowIndex, rightViewportX_,
-                         rightTextViewportWidth, splitTextLogicalWidth, leftPaneWidth + splitTextInset, y);
-      } else {
-        queueWholeRowTexture(baseCommands, TileLayer::SplitFullRow, rowIndex, 0.0,
-                             QRectF(0.0, y, visibleWidth, row.height));
-      }
+      queueWholeRowTexture(baseCommands, TileLayer::SplitFullRow, rowIndex, 0.0,
+                           QRectF(0.0, y, visibleWidth, row.height));
       if (row.rowType == DiffRowType::Line && (rowSelected(rowIndex) || hoveredRow_ == rowIndex)) {
         const qreal leftPaneWidth = visibleWidth / 2.0;
         const qreal rightPaneWidth = visibleWidth - leftPaneWidth;
@@ -960,7 +1021,7 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
     for (int rowIndex = firstRow; rowIndex <= lastRow && rowIndex < static_cast<int>(rows.size()); ++rowIndex) {
       const DiffDisplayRow& row = rows.at(rowIndex);
       const qreal y = row.top - viewportY_;
-      if (y + row.height < 0.0 || y > visibleHeight) {
+      if (y + row.height < visibleTopInItem || y > visibleBottomInItem) {
         continue;
       }
 
@@ -984,20 +1045,6 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
     }
   }
 
-  if (hasStickyHeader) {
-    queueRectNode(stickyCommands, overlayKey(5, fileHeaderIndex, 0), QRectF(0.0, 0.0, visibleWidth, fileHeaderHeight_),
-                  paletteColor("canvas", QColor("#282828")));
-    const TileSpec stickyHeaderSpec{tileKey(tileGeneration_,
-                                            TileLayer::StickyRow,
-                                            fileHeaderIndex, 0),
-                                    TileLayer::StickyRow,
-                                    fileHeaderIndex,
-                                    0,
-                                    0.0,
-                                    QRectF(0.0, 0.0, visibleWidth, rows.at(fileHeaderIndex).height)};
-    queueTextureNode(stickyCommands, stickyHeaderSpec);
-  }
-
   if (stickyIndex >= 0) {
     queueRectNode(stickyCommands, overlayKey(6, stickyIndex, 0), QRectF(0.0, stickyViewportY, visibleWidth, hunkHeight_),
                   paletteColor("canvas", QColor("#282828")));
@@ -1012,75 +1059,53 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
     queueTextureNode(stickyCommands, stickyHunkSpec);
   }
 
+  if (hasStickyHeader) {
+    queueRectNode(stickyCommands, overlayKey(5, fileHeaderIndex, 0),
+                  QRectF(0.0, visibleTopInItem, visibleWidth, fileHeaderHeight_),
+                  paletteColor("canvas", QColor("#282828")));
+    const TileSpec stickyHeaderSpec{tileKey(tileGeneration_,
+                                            TileLayer::StickyRow,
+                                            fileHeaderIndex, 0),
+                                    TileLayer::StickyRow,
+                                    fileHeaderIndex,
+                                    0,
+                                    0.0,
+                                    QRectF(0.0, visibleTopInItem, visibleWidth, rows.at(fileHeaderIndex).height)};
+    queueTextureNode(stickyCommands, stickyHeaderSpec);
+  }
+
   if (layoutMode_ != "split") {
     Q_ASSERT(leftTextCommands.empty());
     Q_ASSERT(rightTextCommands.empty());
   }
 
-  auto updateRectNode = [](RectTileNode* node, quint64 key, const QRectF& rect, const QColor& color) {
-    node->key = key;
-    node->setRect(rect);
-    node->setColor(color);
-  };
-
-  auto updateTextureNode = [&](TextureTileNode* node, const TileSpec& spec) {
-    node->key = spec.key;
-    node->setFiltering(QSGTexture::Nearest);
-    node->setOwnsTexture(false);
-    node->setTexture(residentTextureForSpec(spec));
-    node->setRect(spec.targetRect);
-  };
-
-  auto reconcileCommands = [&](QSGNode* parent, const std::vector<RenderCommand>& commands) {
-    QSGNode* cursor = parent->firstChild();
+  auto appendCommands = [&](QSGNode* parent, const std::vector<RenderCommand>& commands) {
+    clearChildren(parent);
     for (const RenderCommand& command : commands) {
       if (command.kind == RenderCommand::Kind::Texture) {
-        auto* node = cursor != nullptr ? dynamic_cast<TextureTileNode*>(cursor) : nullptr;
-        if (node != nullptr && node->key == command.key) {
-          updateTextureNode(node, command.spec);
-          cursor = cursor->nextSibling();
-          continue;
-        }
-
-        auto* newNode = new TextureTileNode;
-        updateTextureNode(newNode, command.spec);
-        if (cursor != nullptr) {
-          parent->insertChildNodeBefore(newNode, cursor);
-        } else {
-          parent->appendChildNode(newNode);
-        }
+        auto* node = new TextureTileNode;
+        node->key = command.key;
+        node->setFiltering(QSGTexture::Nearest);
+        node->setOwnsTexture(false);
+        node->setTexture(residentTextureForSpec(command.spec));
+        node->setRect(command.spec.targetRect);
+        parent->appendChildNode(node);
         continue;
       }
 
-      auto* node = cursor != nullptr ? dynamic_cast<RectTileNode*>(cursor) : nullptr;
-      if (node != nullptr && node->key == command.key) {
-        updateRectNode(node, command.key, command.rect, command.color);
-        cursor = cursor->nextSibling();
-        continue;
-      }
-
-      auto* newNode = new RectTileNode;
-      updateRectNode(newNode, command.key, command.rect, command.color);
-      if (cursor != nullptr) {
-        parent->insertChildNodeBefore(newNode, cursor);
-      } else {
-        parent->appendChildNode(newNode);
-      }
-    }
-
-    while (cursor != nullptr) {
-      QSGNode* next = cursor->nextSibling();
-      parent->removeChildNode(cursor);
-      delete cursor;
-      cursor = next;
+      auto* node = new RectTileNode;
+      node->key = command.key;
+      node->setRect(command.rect);
+      node->setColor(command.color);
+      parent->appendChildNode(node);
     }
   };
 
-  reconcileCommands(baseGroup, baseCommands);
-  reconcileCommands(leftTextClip, leftTextCommands);
-  reconcileCommands(rightTextClip, rightTextCommands);
-  reconcileCommands(overlayGroup, overlayCommands);
-  reconcileCommands(stickyGroup, stickyCommands);
+  appendCommands(baseGroup, baseCommands);
+  appendCommands(leftTextClip, leftTextCommands);
+  appendCommands(rightTextClip, rightTextCommands);
+  appendCommands(overlayGroup, overlayCommands);
+  appendCommands(stickyGroup, stickyCommands);
 
   auto evictCache = [&](int limit, auto& cache, auto& lastUsed, auto deleter) {
     while (cache.size() > limit) {
@@ -1123,6 +1148,13 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
   }
 
   updateTileStats();
+  bool perfChanged = false;
+  perfChanged |= setPerfValue(lastPaintTimeMs_, elapsedMs(paintStart));
+  perfChanged |= setPerfValue(lastRasterTimeMs_, rasterTimeMs);
+  perfChanged |= setPerfValue(lastTextureUploadTimeMs_, textureUploadTimeMs);
+  if (perfChanged) {
+    emit perfStatsChanged();
+  }
 
   return root;
 }
@@ -1155,8 +1187,10 @@ void DiffSurfaceItem::releaseResources() {
 }
 
 void DiffSurfaceItem::rebuildRows() {
+  const PerfClock::time_point rebuildStart = PerfClock::now();
   textRope_.clear();
   textCache_.clear();
+  lineLayoutCache_.clear();
   leftViewportX_ = 0;
   rightViewportX_ = 0;
 
@@ -1191,8 +1225,8 @@ void DiffSurfaceItem::rebuildRows() {
       row.oldLine = rowValue.oldLine;
       row.newLine = rowValue.newLine;
       const QByteArray textUtf8 = rowValue.text.toUtf8();
-      row.textWidth = metrics.horizontalAdvance(rowValue.text);
       row.textRange = textRope_.append(std::string(textUtf8.constData(), textUtf8.size()));
+      row.textWidth = lineLayoutForRange(row.textRange, 12).width;
       row.tokens = parseTokens(rowValue.tokens);
       row.changeSpans = parseTokens(rowValue.changeSpans);
       maxTextWidth_ = std::max(maxTextWidth_, row.textWidth);
@@ -1201,10 +1235,14 @@ void DiffSurfaceItem::rebuildRows() {
   }
 
   displayModel_.setSourceRows(std::move(sourceRows));
+  if (setPerfValue(lastRowsRebuildTimeMs_, elapsedMs(rebuildStart))) {
+    emit perfStatsChanged();
+  }
   recalculateMetrics();
 }
 
 void DiffSurfaceItem::rebuildDisplayRows() {
+  const PerfClock::time_point rebuildStart = PerfClock::now();
   DiffLayoutConfig config;
   config.mode = toLayoutMode(layoutMode_);
   config.rowHeight = rowHeight_;
@@ -1235,9 +1273,13 @@ void DiffSurfaceItem::rebuildDisplayRows() {
   lastVisibleRow_ = displayModel_.rowIndexAtY(viewportY_ + viewportHeight_ + hunkHeight_);
   stickyVisibleRow_ = displayModel_.stickyHunkRowIndexAtY(viewportY_);
   emit displayRowCountChanged();
+  if (setPerfValue(lastDisplayRowsRebuildTimeMs_, elapsedMs(rebuildStart))) {
+    emit perfStatsChanged();
+  }
 }
 
 void DiffSurfaceItem::recalculateMetrics() {
+  const PerfClock::time_point recalcStart = PerfClock::now();
   lineNumberDigits_ = displayModel_.lineNumberDigits();
   qreal newContentWidth = 0;
   if (wrapEnabled_) {
@@ -1257,6 +1299,9 @@ void DiffSurfaceItem::recalculateMetrics() {
   rebuildDisplayRows();
   emit contentHeightChanged();
   invalidateTiles();
+  if (setPerfValue(lastMetricsRecalcTimeMs_, elapsedMs(recalcStart))) {
+    emit perfStatsChanged();
+  }
 }
 
 
@@ -1295,6 +1340,26 @@ QString DiffSurfaceItem::textForRange(const TextRange& range) const {
   const QString text = QString::fromUtf8(textRope_.slice(range));
   textCache_.insert(key, text);
   return text;
+}
+
+const DiffSurfaceItem::CachedLineLayout& DiffSurfaceItem::lineLayoutForRange(const TextRange& range, int pixelSize) const {
+  const quint64 key =
+      qHashMulti(0u, static_cast<quint64>(range.start), static_cast<quint64>(range.length), pixelSize, monoFontFamily_);
+  if (const auto it = lineLayoutCache_.constFind(key); it != lineLayoutCache_.constEnd()) {
+    return it.value();
+  }
+
+  CachedLineLayout layout;
+  const QString text = textForRange(range);
+  const QFontMetricsF metrics(monoFont(monoFontFamily_, pixelSize));
+  layout.prefixAdvances.reserve(static_cast<size_t>(text.size() + 1));
+  layout.prefixAdvances.push_back(0.0);
+  for (int i = 0; i < text.size(); ++i) {
+    layout.prefixAdvances.push_back(layout.prefixAdvances.back() + metrics.horizontalAdvance(text.at(i)));
+  }
+  layout.width = layout.prefixAdvances.empty() ? 0.0 : layout.prefixAdvances.back();
+  auto inserted = lineLayoutCache_.insert(key, std::move(layout));
+  return inserted.value();
 }
 
 int DiffSurfaceItem::currentRowIndex() const {
@@ -1402,8 +1467,10 @@ void DiffSurfaceItem::drawUnifiedRow(QPainter* painter, const QRectF& rowRect, c
                                                             : row.kind == DiffLineKind::Deletion
                                                                   ? paletteColor("dangerBorder", QColor("#4c2b2c"))
                                                                   : paletteColor("accentSoft", QColor("#293b5b"));
-  drawTextRun(painter, QPointF(textClip.left(), unifiedBaselineY), textClip, textForRange(row.textRange), row.tokens,
-              row.changeSpans, paletteColor("textBase", QColor("#c8ccd4")), tokenBg);
+  const QString text = textForRange(row.textRange);
+  const CachedLineLayout& layout = lineLayoutForRange(row.textRange, 12);
+  drawTextRun(painter, QPointF(textClip.left(), unifiedBaselineY), textClip, text, row.tokens, row.changeSpans,
+              layout.prefixAdvances, paletteColor("textBase", QColor("#c8ccd4")), tokenBg);
 }
 
 void DiffSurfaceItem::drawSplitPaneFixedRow(QPainter* painter,
@@ -1416,16 +1483,15 @@ void DiffSurfaceItem::drawSplitPaneFixedRow(QPainter* painter,
   const int lineNumber = isLeftPane ? row.leftLine : row.rightLine;
   const bool spacer = lineKind == DiffLineKind::Spacer;
 
-  const QColor spacerBg = paletteColor("lineContextAlt", QColor("#232323"));
-  QColor background = spacerBg;
-  if (!spacer) {
-    if (isLeftPane && lineKind == DiffLineKind::Deletion) {
-      background = paletteColor("lineDelAccent", QColor("#35262b"));
-    } else if (!isLeftPane && lineKind == DiffLineKind::Addition) {
-      background = paletteColor("lineAddAccent", QColor("#22332a"));
-    } else {
-      background = paletteColor("lineContext", QColor("#282c33"));
-    }
+  QColor background = splitPaneBackgroundColor(row, isLeftPane);
+  if (spacer) {
+    background = paletteColor("lineContextAlt", background);
+  } else if (isLeftPane && lineKind == DiffLineKind::Deletion) {
+    background = paletteColor("lineDelAccent", background);
+  } else if (!isLeftPane && lineKind == DiffLineKind::Addition) {
+    background = paletteColor("lineAddAccent", background);
+  } else {
+    background = paletteColor("lineContext", background);
   }
 
   painter->fillRect(rowRect, background);
@@ -1473,6 +1539,19 @@ void DiffSurfaceItem::drawSplitPaneTextRow(QPainter* painter,
                                            const QRectF& rowRect,
                                            const DiffDisplayRow& row,
                                            bool isLeftPane) const {
+  const DiffLineKind lineKind = isLeftPane ? row.leftKind : row.rightKind;
+  QColor background = splitPaneBackgroundColor(row, isLeftPane);
+  if (lineKind == DiffLineKind::Spacer) {
+    background = paletteColor("lineContextAlt", background);
+  } else if (isLeftPane && lineKind == DiffLineKind::Deletion) {
+    background = paletteColor("lineDelAccent", background);
+  } else if (!isLeftPane && lineKind == DiffLineKind::Addition) {
+    background = paletteColor("lineAddAccent", background);
+  } else {
+    background = paletteColor("lineContext", background);
+  }
+  painter->fillRect(rowRect, background);
+
   const bool spacer = isLeftPane ? row.leftKind == DiffLineKind::Spacer : row.rightKind == DiffLineKind::Spacer;
   if (spacer) {
     return;
@@ -1481,13 +1560,15 @@ void DiffSurfaceItem::drawSplitPaneTextRow(QPainter* painter,
   const TextRange& textRange = isLeftPane ? row.leftTextRange : row.rightTextRange;
   const std::vector<DiffTokenSpan>& tokens = isLeftPane ? row.leftTokens : row.rightTokens;
   const std::vector<DiffTokenSpan>& changeSpans = isLeftPane ? row.leftChangeSpans : row.rightChangeSpans;
+  const QString text = textForRange(textRange);
+  const CachedLineLayout& layout = lineLayoutForRange(textRange, 12);
   const QFont textFont = monoFont(monoFontFamily_, 12);
   const QFontMetricsF textMetrics(textFont);
   painter->setFont(textFont);
   const qreal baselineY = wrapEnabled_
       ? rowRect.top() + (rowHeight_ - textMetrics.height()) / 2.0 + textMetrics.ascent()
       : rowRect.top() + (rowRect.height() - textMetrics.height()) / 2.0 + textMetrics.ascent();
-  drawTextRun(painter, QPointF(rowRect.left(), baselineY), rowRect, textForRange(textRange), tokens, changeSpans,
+  drawTextRun(painter, QPointF(rowRect.left(), baselineY), rowRect, text, tokens, changeSpans, layout.prefixAdvances,
               paletteColor("textBase", QColor("#c8ccd4")),
               isLeftPane ? paletteColor("dangerBorder", QColor("#4c2b2c"))
                          : paletteColor("successBorder", QColor("#38482f")));
@@ -1527,6 +1608,7 @@ void DiffSurfaceItem::drawTextRun(QPainter* painter,
                                   const QString& text,
                                   const std::vector<DiffTokenSpan>& tokens,
                                   const std::vector<DiffTokenSpan>& changeSpans,
+                                  const std::vector<qreal>& charX,
                                   const QColor& textColor,
                                   const QColor& tokenBackground) const {
   painter->save();
@@ -1537,12 +1619,11 @@ void DiffSurfaceItem::drawTextRun(QPainter* painter,
   painter->setFont(textFont);
 
   if (wrapEnabled_) {
-    drawTextRunWrapped(painter, baseline, clipRect, text, tokens, changeSpans, textColor, tokenBackground, metrics);
+    drawTextRunWrapped(painter, baseline, clipRect, text, tokens, changeSpans, charX, textColor, tokenBackground,
+                       metrics);
     painter->restore();
     return;
   }
-
-  const auto charX = prefixAdvances(text, metrics);
 
   for (const DiffTokenSpan& span : changeSpans) {
     const int start = std::max(0, span.start);
@@ -1606,13 +1687,13 @@ void DiffSurfaceItem::drawTextRunWrapped(QPainter* painter,
                                           const QString& text,
                                           const std::vector<DiffTokenSpan>& tokens,
                                           const std::vector<DiffTokenSpan>& changeSpans,
+                                          const std::vector<qreal>& charX,
                                           const QColor& textColor,
                                           const QColor& tokenBackground,
                                           const QFontMetricsF& metrics) const {
   const qreal availWidth = clipRect.width();
   const qreal lineH = metrics.height() + 2.0;
   const qreal originX = clipRect.left();
-  const auto charX = prefixAdvances(text, metrics);
 
   auto wrapLine = [&](int charIdx) -> int {
     if (availWidth <= 0) return 0;

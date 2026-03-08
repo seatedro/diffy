@@ -98,17 +98,29 @@ void printAutomationState(QObject* root, const diffy::DiffController& controller
   const int textureUploads = surface != nullptr ? surface->property("textureUploadCount").toInt() : -1;
   const int residentTiles = surface != nullptr ? surface->property("residentTileCount").toInt() : -1;
   const int pendingTileJobs = surface != nullptr ? surface->property("pendingTileJobCount").toInt() : -1;
+  const double lastPaintTimeMs = surface != nullptr ? surface->property("lastPaintTimeMs").toDouble() : -1.0;
+  const double lastRasterTimeMs = surface != nullptr ? surface->property("lastRasterTimeMs").toDouble() : -1.0;
+  const double lastTextureUploadTimeMs =
+      surface != nullptr ? surface->property("lastTextureUploadTimeMs").toDouble() : -1.0;
+  const double lastRowsRebuildTimeMs =
+      surface != nullptr ? surface->property("lastRowsRebuildTimeMs").toDouble() : -1.0;
+  const double lastDisplayRowsRebuildTimeMs =
+      surface != nullptr ? surface->property("lastDisplayRowsRebuildTimeMs").toDouble() : -1.0;
+  const double lastMetricsRecalcTimeMs =
+      surface != nullptr ? surface->property("lastMetricsRecalcTimeMs").toDouble() : -1.0;
   const int pickerVisible = controller.repositoryPickerVisible() ? 1 : 0;
   const QString errorText = controller.errorMessage().isEmpty() ? "none" : controller.errorMessage().simplified();
   const QString layout = controller.layoutMode().isEmpty() ? "none" : controller.layoutMode();
   const QString currentView = controller.currentView();
 
   std::fprintf(stdout,
-               "DIFFY_STATE current_view=%s files=%d rows=%d selected=%d layout=%s surface_height=%.1f surface_width=%.1f item_width=%.1f item_height=%.1f viewport_y=%.1f display_rows=%d paint_count=%d tile_cache_hits=%d tile_cache_misses=%d texture_uploads=%d resident_tiles=%d pending_tile_jobs=%d picker_visible=%d error=%s\n",
+               "DIFFY_STATE current_view=%s files=%d rows=%d selected=%d layout=%s surface_height=%.1f surface_width=%.1f item_width=%.1f item_height=%.1f viewport_y=%.1f display_rows=%d paint_count=%d tile_cache_hits=%d tile_cache_misses=%d texture_uploads=%d resident_tiles=%d pending_tile_jobs=%d last_paint_ms=%.3f last_raster_ms=%.3f last_upload_ms=%.3f last_rows_rebuild_ms=%.3f last_display_rows_rebuild_ms=%.3f last_metrics_ms=%.3f picker_visible=%d error=%s\n",
                qPrintable(currentView), static_cast<int>(controller.files().size()), controller.selectedFileRowCount(),
                controller.selectedFileIndex(), qPrintable(layout), surfaceHeight, surfaceWidth,
                surfaceItemWidth, surfaceItemHeight, viewportY, displayRowCount, paintCount, tileCacheHits,
-               tileCacheMisses, textureUploads, residentTiles, pendingTileJobs, pickerVisible, qPrintable(errorText));
+               tileCacheMisses, textureUploads, residentTiles, pendingTileJobs, lastPaintTimeMs, lastRasterTimeMs,
+               lastTextureUploadTimeMs, lastRowsRebuildTimeMs, lastDisplayRowsRebuildTimeMs, lastMetricsRecalcTimeMs,
+               pickerVisible, qPrintable(errorText));
   std::fflush(stdout);
 }
 
@@ -131,6 +143,11 @@ bool applyStartupAutomation(diffy::DiffController* controller, QString* error) {
     controller->setRightRef(rightRef);
   }
 
+  const QString compareMode = envString("DIFFY_START_COMPARE_MODE");
+  if (!compareMode.isEmpty()) {
+    controller->setCompareMode(compareMode);
+  }
+
   const QString layoutMode = envString("DIFFY_START_LAYOUT");
   if (!layoutMode.isEmpty()) {
     controller->setLayoutMode(layoutMode);
@@ -149,10 +166,35 @@ bool applyStartupAutomation(diffy::DiffController* controller, QString* error) {
     controller->compare();
   }
 
+  const auto selectFileByPath = [controller](const QString& selectedFilePath) -> bool {
+    const QVariantList files = controller->files();
+    for (int index = 0; index < files.size(); ++index) {
+      const QString path = files.at(index).toMap().value("path").toString();
+      if (path == selectedFilePath || path.endsWith(selectedFilePath)) {
+        controller->selectFile(index);
+        return true;
+      }
+    }
+    return false;
+  };
+
   bool ok = false;
   const int selectedFileIndex = envString("DIFFY_START_FILE_INDEX").toInt(&ok);
   if (ok) {
     controller->selectFile(selectedFileIndex);
+  }
+
+  const QString selectedFilePath = envString("DIFFY_START_FILE_PATH");
+  if (!selectedFilePath.isEmpty()) {
+    selectFileByPath(selectedFilePath);
+  }
+
+  if (envFlagEnabled("DIFFY_PRINT_FILE_LIST")) {
+    const QVariantList files = controller->files();
+    for (int index = 0; index < files.size(); ++index) {
+      const QString path = files.at(index).toMap().value("path").toString();
+      std::fprintf(stdout, "DIFFY_FILE index=%d path=%s\n", index, qPrintable(path));
+    }
   }
 
   if (envFlagEnabled("DIFFY_REQUIRE_RESULTS")) {
@@ -306,6 +348,26 @@ int main(int argc, char* argv[]) {
     const int switchLayoutDelayMs = envString("DIFFY_SWITCH_LAYOUT_AFTER_MS").toInt(&switchDelayOk);
     QTimer::singleShot(switchDelayOk ? switchLayoutDelayMs : 180, &app, [&controller, switchLayoutTo]() {
       controller.setLayoutMode(switchLayoutTo);
+    });
+  }
+
+  const auto selectFileByPath = [&controller](const QString& selectedFilePath) {
+    const QVariantList files = controller.files();
+    for (int index = 0; index < files.size(); ++index) {
+      const QString path = files.at(index).toMap().value("path").toString();
+      if (path == selectedFilePath || path.endsWith(selectedFilePath)) {
+        controller.selectFile(index);
+        return;
+      }
+    }
+  };
+
+  const QString switchFileToPath = envString("DIFFY_SWITCH_FILE_TO_PATH");
+  if (!switchFileToPath.isEmpty()) {
+    bool switchDelayOk = false;
+    const int switchFileDelayMs = envString("DIFFY_SWITCH_FILE_AFTER_MS").toInt(&switchDelayOk);
+    QTimer::singleShot(switchDelayOk ? switchFileDelayMs : 180, &app, [&controller, switchFileToPath, selectFileByPath]() {
+      selectFileByPath(switchFileToPath);
     });
   }
 

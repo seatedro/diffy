@@ -318,7 +318,7 @@ void DiffSurfaceItem::setLayoutMode(const QString& mode) {
   layoutMode_ = mode;
   leftViewportX_ = 0;
   rightViewportX_ = 0;
-  rebuildDisplayRows();
+  recalculateMetrics();
   emit layoutModeChanged();
 }
 
@@ -396,7 +396,7 @@ void DiffSurfaceItem::setMonoFontFamily(const QString& family) {
     return;
   }
   monoFontFamily_ = family;
-  recalculateMetrics();
+  rebuildRows();
   emit monoFontFamilyChanged();
 }
 
@@ -407,7 +407,11 @@ bool DiffSurfaceItem::wrapEnabled() const {
 void DiffSurfaceItem::setWrapEnabled(bool value) {
   if (wrapEnabled_ == value) return;
   wrapEnabled_ = value;
-  rebuildRows();
+  if (wrapEnabled_) {
+    leftViewportX_ = 0;
+    rightViewportX_ = 0;
+  }
+  recalculateMetrics();
   emit wrapEnabledChanged();
 }
 
@@ -418,7 +422,7 @@ int DiffSurfaceItem::wrapColumn() const {
 void DiffSurfaceItem::setWrapColumn(int value) {
   if (wrapColumn_ == value) return;
   wrapColumn_ = value;
-  if (wrapEnabled_) rebuildRows();
+  if (wrapEnabled_) recalculateMetrics();
   emit wrapColumnChanged();
 }
 
@@ -1086,6 +1090,7 @@ void DiffSurfaceItem::rebuildRows() {
   rowHeight_ = qCeil(lineHeight_ + 8.0);
   fileHeaderHeight_ = 32.0;
   hunkHeight_ = 28.0;
+  maxTextWidth_ = 0;
 
   std::vector<DiffSourceRow> sourceRows;
   sourceRows.reserve((rowsModel_ != nullptr ? rowsModel_->rows().size() : 0) + (filePath_.isEmpty() ? 0 : 1));
@@ -1111,35 +1116,54 @@ void DiffSurfaceItem::rebuildRows() {
       row.oldLine = rowValue.oldLine;
       row.newLine = rowValue.newLine;
       const QByteArray textUtf8 = rowValue.text.toUtf8();
+      row.textWidth = metrics.horizontalAdvance(rowValue.text);
       row.textRange = textRope_.append(std::string(textUtf8.constData(), textUtf8.size()));
       row.tokens = parseTokens(rowValue.tokens);
       row.changeSpans = parseTokens(rowValue.changeSpans);
+      maxTextWidth_ = std::max(maxTextWidth_, row.textWidth);
       sourceRows.push_back(std::move(row));
     }
   }
 
   displayModel_.setSourceRows(std::move(sourceRows));
-  rebuildDisplayRows();
-}
-
-void DiffSurfaceItem::rebuildDisplayRows() {
-  displayModel_.rebuild(toLayoutMode(layoutMode_), rowHeight_, hunkHeight_, fileHeaderHeight_);
-  contentHeight_ = displayModel_.contentHeight();
-  lineNumberDigits_ = displayModel_.lineNumberDigits();
-  maxTextWidth_ = 0;
-
-  const QFontMetricsF widthMetrics(monoFont(monoFontFamily_, 12));
-  for (const DiffDisplayRow& row : displayModel_.rows()) {
-    maxTextWidth_ = std::max(maxTextWidth_, widthMetrics.horizontalAdvance(textForRange(row.textRange)));
-    maxTextWidth_ = std::max(maxTextWidth_, widthMetrics.horizontalAdvance(textForRange(row.leftTextRange)));
-    maxTextWidth_ = std::max(maxTextWidth_, widthMetrics.horizontalAdvance(textForRange(row.rightTextRange)));
-  }
-
-  emit displayRowCountChanged();
   recalculateMetrics();
 }
 
+void DiffSurfaceItem::rebuildDisplayRows() {
+  DiffLayoutConfig config;
+  config.mode = toLayoutMode(layoutMode_);
+  config.rowHeight = rowHeight_;
+  config.hunkHeight = hunkHeight_;
+  config.fileHeaderHeight = fileHeaderHeight_;
+  config.wrapEnabled = wrapEnabled_;
+
+  if (wrapEnabled_) {
+    const QFontMetricsF metrics(monoFont(monoFontFamily_, 12));
+    const qreal charWidth = metrics.horizontalAdvance('M');
+    if (wrapColumn_ > 0) {
+      config.unifiedWrapWidth = charWidth * wrapColumn_;
+      config.splitWrapWidth = charWidth * wrapColumn_;
+    } else if (layoutMode_ == "split") {
+      const qreal sideGutter = 22.0 + digitWidth() * (lineNumberDigits_ + 1) + 12.0;
+      config.splitWrapWidth = std::max(charWidth * 20.0, (width() - 1.0) / 2.0 - sideGutter - 8.0);
+      config.unifiedWrapWidth = std::max(charWidth * 20.0, width() - unifiedGutterWidth() - 24.0);
+    } else {
+      config.unifiedWrapWidth = std::max(charWidth * 20.0, width() - unifiedGutterWidth() - 24.0);
+      config.splitWrapWidth = std::max(charWidth * 20.0, (width() - 1.0) / 2.0);
+    }
+  }
+
+  displayModel_.rebuild(config);
+  contentHeight_ = displayModel_.contentHeight();
+  lineNumberDigits_ = displayModel_.lineNumberDigits();
+  firstVisibleRow_ = displayModel_.rowIndexAtY(std::max<qreal>(0.0, viewportY_ - hunkHeight_));
+  lastVisibleRow_ = displayModel_.rowIndexAtY(viewportY_ + viewportHeight_ + hunkHeight_);
+  stickyVisibleRow_ = displayModel_.stickyHunkRowIndexAtY(viewportY_);
+  emit displayRowCountChanged();
+}
+
 void DiffSurfaceItem::recalculateMetrics() {
+  lineNumberDigits_ = displayModel_.lineNumberDigits();
   qreal newContentWidth = 0;
   if (wrapEnabled_) {
     newContentWidth = width();
@@ -1155,61 +1179,9 @@ void DiffSurfaceItem::recalculateMetrics() {
     emit contentWidthChanged();
   }
 
-  if (wrapEnabled_) {
-    applyWordWrap();
-  }
-
+  rebuildDisplayRows();
   emit contentHeightChanged();
   invalidateTiles();
-}
-
-void DiffSurfaceItem::applyWordWrap() {
-  auto& rows = displayModel_.mutableRows();
-  auto& offsets = displayModel_.mutableOffsets();
-  if (rows.empty()) return;
-
-  const QFontMetricsF metrics(monoFont(monoFontFamily_, 12));
-  const qreal charWidth = metrics.horizontalAdvance('M');
-
-  qreal availableWidth = 0;
-  if (wrapColumn_ > 0) {
-    availableWidth = charWidth * wrapColumn_;
-  } else if (layoutMode_ == "split") {
-    const qreal sideGutter = 22.0 + digitWidth() * (lineNumberDigits_ + 1) + 12.0;
-    availableWidth = std::max(charWidth * 20.0, (width() - 1.0) / 2.0 - sideGutter - 8.0);
-  } else {
-    availableWidth = std::max(charWidth * 20.0, width() - unifiedGutterWidth() - 24.0);
-  }
-
-  qreal top = 0;
-  for (size_t i = 0; i < rows.size(); ++i) {
-    auto& row = rows[i];
-    offsets[i] = top;
-    row.top = top;
-
-    if (row.rowType != DiffRowType::Line) {
-      top += row.height;
-      continue;
-    }
-
-    qreal textWidth = metrics.horizontalAdvance(textForRange(row.textRange));
-    if (layoutMode_ == "split") {
-      textWidth = std::max(
-          metrics.horizontalAdvance(textForRange(row.leftTextRange)),
-          metrics.horizontalAdvance(textForRange(row.rightTextRange)));
-    }
-
-    if (availableWidth > 0 && textWidth > availableWidth) {
-      const int wrapLines = static_cast<int>(std::ceil(textWidth / availableWidth));
-      row.height = rowHeight_ * wrapLines;
-    } else {
-      row.height = rowHeight_;
-    }
-
-    top += row.height;
-  }
-
-  contentHeight_ = top;
 }
 
 

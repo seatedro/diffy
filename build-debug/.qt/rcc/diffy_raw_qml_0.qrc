@@ -1,0 +1,24 @@
+<RCC>
+  <qresource prefix="/Diffy/">
+    <file alias="qml/Main.qml">/home/rohit/personal/diffy/qml/Main.qml</file>
+    <file alias="qml/components/ActionButton.qml">/home/rohit/personal/diffy/qml/components/ActionButton.qml</file>
+    <file alias="qml/components/Badge.qml">/home/rohit/personal/diffy/qml/components/Badge.qml</file>
+    <file alias="qml/components/Card.qml">/home/rohit/personal/diffy/qml/components/Card.qml</file>
+    <file alias="qml/components/CommandPalette.qml">/home/rohit/personal/diffy/qml/components/CommandPalette.qml</file>
+    <file alias="qml/components/DiffPane.qml">/home/rohit/personal/diffy/qml/components/DiffPane.qml</file>
+    <file alias="qml/components/DiffStatsBar.qml">/home/rohit/personal/diffy/qml/components/DiffStatsBar.qml</file>
+    <file alias="qml/components/EmptyState.qml">/home/rohit/personal/diffy/qml/components/EmptyState.qml</file>
+    <file alias="qml/components/FileListPane.qml">/home/rohit/personal/diffy/qml/components/FileListPane.qml</file>
+    <file alias="qml/components/InputField.qml">/home/rohit/personal/diffy/qml/components/InputField.qml</file>
+    <file alias="qml/components/ProgressBar.qml">/home/rohit/personal/diffy/qml/components/ProgressBar.qml</file>
+    <file alias="qml/components/SegmentedControl.qml">/home/rohit/personal/diffy/qml/components/SegmentedControl.qml</file>
+    <file alias="qml/components/ShortcutOverlay.qml">/home/rohit/personal/diffy/qml/components/ShortcutOverlay.qml</file>
+    <file alias="qml/components/Skeleton.qml">/home/rohit/personal/diffy/qml/components/Skeleton.qml</file>
+    <file alias="qml/components/SplitHandle.qml">/home/rohit/personal/diffy/qml/components/SplitHandle.qml</file>
+    <file alias="qml/components/Toast.qml">/home/rohit/personal/diffy/qml/components/Toast.qml</file>
+    <file alias="qml/views/WelcomeView.qml">/home/rohit/personal/diffy/qml/views/WelcomeView.qml</file>
+    <file alias="qml/views/CompareSetupView.qml">/home/rohit/personal/diffy/qml/views/CompareSetupView.qml</file>
+    <file alias="qml/views/DiffBrowsingView.qml">/home/rohit/personal/diffy/qml/views/DiffBrowsingView.qml</file>
+  </qresource>
+</RCC>
+

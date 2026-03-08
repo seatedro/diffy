@@ -3,9 +3,10 @@
 #include <QFontMetricsF>
 #include <QHash>
 #include <QHoverEvent>
+#include <QImage>
 #include <QKeyEvent>
 #include <QMouseEvent>
-#include <QQuickPaintedItem>
+#include <QQuickItem>
 #include <QWheelEvent>
 #include <QVariantMap>
 
@@ -13,9 +14,13 @@
 #include "model/DiffRowListModel.h"
 #include "text/TextRope.h"
 
+class QPainter;
+class QSGNode;
+class QSGTexture;
+
 namespace diffy {
 
-class DiffSurfaceItem : public QQuickPaintedItem {
+class DiffSurfaceItem : public QQuickItem {
   Q_OBJECT
   Q_PROPERTY(QObject* rowsModel READ rowsModel WRITE setRowsModel NOTIFY rowsModelChanged)
   Q_PROPERTY(QString layoutMode READ layoutMode WRITE setLayoutMode NOTIFY layoutModeChanged)
@@ -36,6 +41,11 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   Q_PROPERTY(int wrapColumn READ wrapColumn WRITE setWrapColumn NOTIFY wrapColumnChanged)
   Q_PROPERTY(int paintCount READ paintCount NOTIFY paintCountChanged)
   Q_PROPERTY(int displayRowCount READ displayRowCount NOTIFY displayRowCountChanged)
+  Q_PROPERTY(int tileCacheHits READ tileCacheHits NOTIFY tileStatsChanged)
+  Q_PROPERTY(int tileCacheMisses READ tileCacheMisses NOTIFY tileStatsChanged)
+  Q_PROPERTY(int textureUploadCount READ textureUploadCount NOTIFY tileStatsChanged)
+  Q_PROPERTY(int residentTileCount READ residentTileCount NOTIFY tileStatsChanged)
+  Q_PROPERTY(int pendingTileJobCount READ pendingTileJobCount NOTIFY tileStatsChanged)
 
  public:
   explicit DiffSurfaceItem(QQuickItem* parent = nullptr);
@@ -88,8 +98,11 @@ class DiffSurfaceItem : public QQuickPaintedItem {
 
   int paintCount() const;
   int displayRowCount() const;
-
-  void paint(QPainter* painter) override;
+  int tileCacheHits() const;
+  int tileCacheMisses() const;
+  int textureUploadCount() const;
+  int residentTileCount() const;
+  int pendingTileJobCount() const;
 
  signals:
   void rowsModelChanged();
@@ -111,6 +124,7 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   void wrapColumnChanged();
   void paintCountChanged();
   void displayRowCountChanged();
+  void tileStatsChanged();
   void scrollToYRequested(qreal value);
   void nextFileRequested();
   void previousFileRequested();
@@ -120,6 +134,8 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   void rebuildDisplayRows();
   void recalculateMetrics();
   void applyWordWrap();
+  void invalidateTiles();
+  void updateTileStats();
 
   bool rowSelected(int rowIndex) const;
   QColor paletteColor(const QString& key, const QColor& fallback) const;
@@ -128,11 +144,24 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   QString selectedText() const;
   QString textForRange(const TextRange& range) const;
   int currentRowIndex() const;
-
   void drawFileHeaderRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row) const;
   void drawHunkRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row) const;
   void drawUnifiedRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row, bool selected) const;
-  void drawSplitRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row, bool selected) const;
+  void drawSplitPaneFixedRow(QPainter* painter,
+                             const QRectF& rowRect,
+                             const DiffDisplayRow& row,
+                             bool isLeftPane,
+                             bool selected) const;
+  void drawSplitPaneTextRow(QPainter* painter,
+                            const QRectF& rowRect,
+                            const DiffDisplayRow& row,
+                            bool isLeftPane) const;
+  void drawSplitRow(QPainter* painter,
+                    const QRectF& rowRect,
+                    const DiffDisplayRow& row,
+                    bool selected,
+                    qreal leftViewportX,
+                    qreal rightViewportX) const;
   void drawTextRunWrapped(QPainter* painter,
                          const QPointF& baseline,
                          const QRectF& clipRect,
@@ -152,6 +181,8 @@ class DiffSurfaceItem : public QQuickPaintedItem {
                    const QColor& tokenBackground) const;
 
  protected:
+  QSGNode* updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData* data) override;
+  void releaseResources() override;
   void mousePressEvent(QMouseEvent* event) override;
   void mouseMoveEvent(QMouseEvent* event) override;
   void mouseReleaseEvent(QMouseEvent* event) override;
@@ -199,6 +230,17 @@ class DiffSurfaceItem : public QQuickPaintedItem {
   int stickyVisibleRow_ = -1;
 
   mutable QHash<quint64, QString> textCache_;
+  mutable QHash<quint64, QImage> tileImageCache_;
+  mutable QHash<quint64, quint64> tileImageLastUsed_;
+  mutable QHash<quint64, QSGTexture*> residentTextureCache_;
+  mutable QHash<quint64, quint64> residentTextureLastUsed_;
+  quint64 tileGeneration_ = 1;
+  quint64 tileUseTick_ = 0;
+  int tileCacheHits_ = 0;
+  int tileCacheMisses_ = 0;
+  int textureUploadCount_ = 0;
+  int pendingTileJobCount_ = 0;
+  bool followupUpdateQueued_ = false;
 };
 
 }  // namespace diffy

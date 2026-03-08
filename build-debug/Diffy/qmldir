@@ -1,0 +1,24 @@
+module Diffy
+typeinfo diffy.qmltypes
+prefer :/Diffy/
+Main 1.0 qml/Main.qml
+ActionButton 1.0 qml/components/ActionButton.qml
+Badge 1.0 qml/components/Badge.qml
+Card 1.0 qml/components/Card.qml
+CommandPalette 1.0 qml/components/CommandPalette.qml
+DiffPane 1.0 qml/components/DiffPane.qml
+DiffStatsBar 1.0 qml/components/DiffStatsBar.qml
+EmptyState 1.0 qml/components/EmptyState.qml
+FileListPane 1.0 qml/components/FileListPane.qml
+InputField 1.0 qml/components/InputField.qml
+ProgressBar 1.0 qml/components/ProgressBar.qml
+SegmentedControl 1.0 qml/components/SegmentedControl.qml
+ShortcutOverlay 1.0 qml/components/ShortcutOverlay.qml
+Skeleton 1.0 qml/components/Skeleton.qml
+SplitHandle 1.0 qml/components/SplitHandle.qml
+Toast 1.0 qml/components/Toast.qml
+WelcomeView 1.0 qml/views/WelcomeView.qml
+CompareSetupView 1.0 qml/views/CompareSetupView.qml
+DiffBrowsingView 1.0 qml/views/DiffBrowsingView.qml
+depends QtQuick
+

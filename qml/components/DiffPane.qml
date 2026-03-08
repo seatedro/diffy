@@ -25,6 +25,7 @@ Rectangle {
         "panelTint": theme.panelTint,
         "panelStrong": theme.panelStrong,
         "divider": theme.divider,
+        "textStrong": theme.textStrong,
         "textBase": theme.textBase,
         "textMuted": theme.textMuted,
         "textFaint": theme.textFaint,
@@ -239,7 +240,8 @@ Rectangle {
                 wrapColumn: root.wrapColumn
                 monoFontFamily: theme.mono
                 onScrollToYRequested: function(value) {
-                    diffViewport.contentY = Math.max(0, value)
+                    var maxScroll = Math.max(0, diffViewport.contentHeight - diffViewport.height)
+                    diffViewport.contentY = Math.max(0, Math.min(value, maxScroll))
                 }
                 onNextFileRequested: root.nextFileRequested()
                 onPreviousFileRequested: root.previousFileRequested()

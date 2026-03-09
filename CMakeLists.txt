@@ -143,6 +143,10 @@ qt_add_executable(diffy
   src/main.cpp
 )
 
+set_target_properties(diffy PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
+
 target_link_libraries(diffy PRIVATE diffy_app)
 
 if(DIFFY_ENABLE_QML_DEBUG)

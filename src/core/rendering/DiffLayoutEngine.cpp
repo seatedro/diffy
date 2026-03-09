@@ -272,6 +272,11 @@ const std::vector<DiffDisplayRow>& DiffLayoutEngine::cachedRows(const DiffLayout
   return layoutCache(config.mode).rows;
 }
 
+const TokenBuffer& DiffLayoutEngine::cachedTokenBuffer(const DiffLayoutConfig& config) {
+  ensureLayoutCache(config);
+  return layoutCache(config.mode).tokenBuffer;
+}
+
 int DiffLayoutEngine::rowIndexAtY(const DiffLayoutConfig& config, double y) {
   ensureLayoutCache(config);
   const LayoutCacheEntry& entry = layoutCache(config.mode);

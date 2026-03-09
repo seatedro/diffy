@@ -20,7 +20,7 @@ Rectangle {
         height: root.horizontal ? 1 : parent.height
         color: dragArea.containsMouse || dragArea.pressed ? theme.accent : theme.divider
 
-        Behavior on color { ColorAnimation { duration: 120 } }
+        Behavior on color { ColorAnimation { duration: 45 } }
     }
 
     // Wider hit area

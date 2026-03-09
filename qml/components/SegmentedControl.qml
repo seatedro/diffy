@@ -8,6 +8,8 @@ Rectangle {
     property string currentValue: ""
     signal valueChanged(string value)
 
+    activeFocusOnTab: true
+
     implicitWidth: row.implicitWidth + theme.sp1
     implicitHeight: 28
     radius: theme.radiusMd
@@ -33,7 +35,7 @@ Rectangle {
                     ? theme.accent
                     : (segMouse.containsMouse ? theme.panelTint : "transparent")
 
-                Behavior on color { ColorAnimation { duration: 90 } }
+                Behavior on color { ColorAnimation { duration: 35 } }
 
                 Text {
                     id: segLabel
@@ -54,5 +56,15 @@ Rectangle {
                 }
             }
         }
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        anchors.margins: -2
+        radius: root.radius + 2
+        color: "transparent"
+        border.width: 2
+        border.color: theme.accent
+        visible: root.activeFocus
     }
 }

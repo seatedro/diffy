@@ -202,14 +202,6 @@ class ThemeProvider : public QObject {
   void initializeThemes();
   void registerTheme(const QString& name, const ThemeColors& dark, const ThemeColors& light);
   void loadTheme(const QString& name, const QString& mode);
-  static ThemeColors gruvboxDark();
-  static ThemeColors gruvboxLight();
-  static ThemeColors kanagawaDark();
-  static ThemeColors kanagawaLight();
-  static ThemeColors rosePineDark();
-  static ThemeColors rosePineLight();
-  static ThemeColors catppuccinDark();
-  static ThemeColors catppuccinLight();
 
   QString currentTheme_;
   QString currentMode_;

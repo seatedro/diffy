@@ -171,6 +171,7 @@ class DiffSurfaceItem : public QQuickItem {
   double lastDisplayRowsRebuildTimeMs() const;
   double lastMetricsRecalcTimeMs() const;
   Q_INVOKABLE void resetPerfStats();
+  Q_INVOKABLE void dumpPerfReport() const;
 
 signals:
   void rowsModelChanged();
@@ -392,6 +393,34 @@ signals:
   QSet<quint64> pendingRasterKeys_;
   mutable std::mutex readyTileImagesMutex_;
   mutable QHash<quint64, QImage> readyTileImages_;
+
+  struct PerfBucket {
+    double sum = 0;
+    double peak = 0;
+    int count = 0;
+    void record(double ms) {
+      sum += ms;
+      if (ms > peak) peak = ms;
+      ++count;
+    }
+    double avg() const { return count > 0 ? sum / count : 0; }
+  };
+
+  struct PerfSession {
+    PerfBucket paint;
+    PerfBucket raster;
+    PerfBucket upload;
+    PerfBucket rebuild;
+    PerfBucket displayRebuild;
+    PerfBucket metrics;
+    int totalFrames = 0;
+    int droppedFrames = 0;
+    int totalCacheHits = 0;
+    int totalCacheMisses = 0;
+    std::chrono::steady_clock::time_point startTime = std::chrono::steady_clock::now();
+  };
+
+  PerfSession perfSession_;
 };
 
 }  // namespace diffy

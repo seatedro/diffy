@@ -647,8 +647,9 @@ void DiffController::schedulePreparedRowsPrewarm() {
 
     int warmedCount = 0;
     const QFontMetricsF metrics(monoFont(kPreparedRowsPrewarmFontFamily, 12));
-    const TextWidthMeasure measureTextWidth = [&metrics](std::string_view text) {
-      return metrics.horizontalAdvance(QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())));
+    const double charWidth = metrics.horizontalAdvance(QLatin1Char('M'));
+    const TextWidthMeasure measureTextWidth = [charWidth](std::string_view text) {
+      return charWidth * static_cast<double>(text.size());
     };
     while (preparedRowsPrewarmIndex_ < static_cast<int>(preparedRowsPrewarmOrder_.size()) &&
            warmedCount < kPreparedRowsPrewarmBatchSize) {

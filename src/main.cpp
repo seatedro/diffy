@@ -320,6 +320,14 @@ int main(int argc, char* argv[]) {
 
   QObject::connect(&app, &QCoreApplication::aboutToQuit, root, &QObject::deleteLater);
 
+  if (envFlagEnabled("DIFFY_DEBUG")) {
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, [root]() {
+      if (auto* surface = root ? root->findChild<diffy::DiffSurfaceItem*>("diffSurface") : nullptr) {
+        surface->dumpPerfReport();
+      }
+    });
+  }
+
   if (envFlagEnabled("DIFFY_PRINT_STATE")) {
     bool delayOk = false;
     bool repeatOk = false;

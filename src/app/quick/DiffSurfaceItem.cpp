@@ -28,6 +28,7 @@
 #include <functional>
 #include <limits>
 
+#include "core/support/Log.h"
 #include "core/syntax/SyntaxTypes.h"
 
 namespace diffy {
@@ -1797,6 +1798,58 @@ void DiffSurfaceItem::resetPerfStats() {
   emit perfStatsChanged();
 }
 
+void DiffSurfaceItem::dumpPerfReport() const {
+  const auto& s = perfSession_;
+  const double elapsed = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - s.startTime).count();
+  const double avgFps = elapsed > 0 ? s.totalFrames / elapsed : 0;
+  const double dropRate = s.totalFrames > 0 ? 100.0 * s.droppedFrames / s.totalFrames : 0;
+
+  auto bar = [](double ms, double budget) -> std::string {
+    const int filled = std::clamp(static_cast<int>(ms / budget * 20.0), 0, 20);
+    return std::string(filled, '#') + std::string(20 - filled, '.');
+  };
+
+  log::info("perf", "session {:.1f}s  frames {}  avg {:.0f} fps  dropped {} ({:.1f}%)",
+            elapsed, s.totalFrames, avgFps, s.droppedFrames, dropRate);
+  log::info("perf", "cache {} hits / {} misses  tex uploads {}",
+            tileCacheHits_, tileCacheMisses_, textureUploadCount_);
+  log::info("perf", "            avg ms    peak ms   budget  histogram");
+  log::info("perf", "paint    {:8.2f}  {:8.2f}    8.33  [{}]", s.paint.avg(), s.paint.peak, bar(s.paint.peak, 8.33));
+  log::info("perf", "raster   {:8.2f}  {:8.2f}    4.00  [{}]", s.raster.avg(), s.raster.peak, bar(s.raster.peak, 4.0));
+  log::info("perf", "upload   {:8.2f}  {:8.2f}    2.00  [{}]", s.upload.avg(), s.upload.peak, bar(s.upload.peak, 2.0));
+  log::info("perf", "rebuild  {:8.2f}  {:8.2f}   50.00  [{}]", s.rebuild.avg(), s.rebuild.peak, bar(s.rebuild.peak, 50.0));
+  log::info("perf", "layout   {:8.2f}  {:8.2f}   50.00  [{}]", s.displayRebuild.avg(), s.displayRebuild.peak, bar(s.displayRebuild.peak, 50.0));
+  log::info("perf", "metrics  {:8.2f}  {:8.2f}   50.00  [{}]", s.metrics.avg(), s.metrics.peak, bar(s.metrics.peak, 50.0));
+
+  double worstPeak = 0;
+  const char* worstName = "none";
+  if (s.paint.peak > worstPeak) { worstPeak = s.paint.peak; worstName = "paint"; }
+  if (s.raster.peak > worstPeak) { worstPeak = s.raster.peak; worstName = "raster"; }
+  if (s.upload.peak > worstPeak) { worstPeak = s.upload.peak; worstName = "upload"; }
+  if (s.rebuild.peak > worstPeak) { worstPeak = s.rebuild.peak; worstName = "rebuild"; }
+  if (s.displayRebuild.peak > worstPeak) { worstPeak = s.displayRebuild.peak; worstName = "layout"; }
+  if (s.metrics.peak > worstPeak) { worstPeak = s.metrics.peak; worstName = "metrics"; }
+
+  log::info("perf", "worst op: {} @ {:.2f} ms", worstName, worstPeak);
+
+  if (avgFps < 120.0 && s.totalFrames > 10) {
+    log::warn("perf", "target 120 fps not met (avg {:.0f} fps)", avgFps);
+    if (s.paint.peak > 8.33) {
+      log::warn("perf", "bottleneck: paint peak {:.2f}ms exceeds 8.33ms frame budget", s.paint.peak);
+    }
+    if (s.raster.peak > 4.0) {
+      log::warn("perf", "bottleneck: sync raster peak {:.2f}ms", s.raster.peak);
+    }
+    if (s.rebuild.peak > 16.0) {
+      log::warn("perf", "bottleneck: rebuild peak {:.2f}ms (file switch)", s.rebuild.peak);
+    }
+    if (s.metrics.peak > 16.0) {
+      log::warn("perf", "bottleneck: metrics peak {:.2f}ms (layout recalc)", s.metrics.peak);
+    }
+  }
+}
+
 QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData* data) {
   Q_UNUSED(data);
 
@@ -2354,12 +2407,21 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
   }
 
   updateTileStats();
+  const double framePaintMs = elapsedMs(paintStart);
   bool perfChanged = false;
-  perfChanged |= setPerfValue(lastPaintTimeMs_, elapsedMs(paintStart));
+  perfChanged |= setPerfValue(lastPaintTimeMs_, framePaintMs);
   perfChanged |= setPerfValue(lastRasterTimeMs_, rasterTimeMs);
   perfChanged |= setPerfValue(lastTextureUploadTimeMs_, textureUploadTimeMs);
   if (perfChanged) {
     emit perfStatsChanged();
+  }
+
+  perfSession_.paint.record(framePaintMs);
+  perfSession_.raster.record(rasterTimeMs);
+  perfSession_.upload.record(textureUploadTimeMs);
+  ++perfSession_.totalFrames;
+  if (framePaintMs > 8.33) {
+    ++perfSession_.droppedFrames;
   }
 
   return root;
@@ -2400,8 +2462,9 @@ void DiffSurfaceItem::rebuildRows() {
   rightViewportX_ = 0;
 
   const QFontMetricsF metrics(monoFont(monoFontFamily_, 12));
-  const TextWidthMeasure measureTextWidth = [&metrics](std::string_view text) {
-    return metrics.horizontalAdvance(QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())));
+  const double charWidth = metrics.horizontalAdvance(QLatin1Char('M'));
+  const TextWidthMeasure measureTextWidth = [charWidth](std::string_view text) {
+    return charWidth * static_cast<double>(text.size());
   };
   lineHeight_ = metrics.height();
   rowHeight_ = qCeil(lineHeight_ + 8.0);
@@ -2428,7 +2491,9 @@ void DiffSurfaceItem::rebuildRows() {
     displayModel_.setSourceRows(prepared->sourceRows, prepared->tokenBuffer);
   }
   updateFileHeader();
-  if (setPerfValue(lastRowsRebuildTimeMs_, elapsedMs(rebuildStart))) {
+  const double rebuildMs = elapsedMs(rebuildStart);
+  perfSession_.rebuild.record(rebuildMs);
+  if (setPerfValue(lastRowsRebuildTimeMs_, rebuildMs)) {
     emit perfStatsChanged();
   }
   recalculateMetrics();
@@ -2444,7 +2509,9 @@ void DiffSurfaceItem::rebuildDisplayRows() {
   lastVisibleRow_ = displayModel_.rowIndexAtY(viewportY_ + viewportHeight_ + hunkHeight_);
   stickyVisibleRow_ = displayModel_.stickyHunkRowIndexAtY(viewportY_);
   emit displayRowCountChanged();
-  if (setPerfValue(lastDisplayRowsRebuildTimeMs_, elapsedMs(rebuildStart))) {
+  const double displayRebuildMs = elapsedMs(rebuildStart);
+  perfSession_.displayRebuild.record(displayRebuildMs);
+  if (setPerfValue(lastDisplayRowsRebuildTimeMs_, displayRebuildMs)) {
     emit perfStatsChanged();
   }
 }
@@ -2472,7 +2539,9 @@ void DiffSurfaceItem::recalculateMetrics() {
   scheduleCurrentTileRaster();
   update();
   updateTileStats();
-  if (setPerfValue(lastMetricsRecalcTimeMs_, elapsedMs(recalcStart))) {
+  const double metricsMs = elapsedMs(recalcStart);
+  perfSession_.metrics.record(metricsMs);
+  if (setPerfValue(lastMetricsRecalcTimeMs_, metricsMs)) {
     emit perfStatsChanged();
   }
   scheduleAlternateLayoutPrewarm();

@@ -1,5 +1,0 @@
-<RCC>
-  <qresource prefix="/themes">
-    <file alias="ghostty_themes.json">ghostty_themes.json</file>
-  </qresource>
-</RCC>

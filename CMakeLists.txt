@@ -12,6 +12,7 @@ enable_testing()
 option(DIFFY_ENABLE_QML_DEBUG "Enable QML debugging for live preview workflows" OFF)
 option(DIFFY_FAST_QML_DEV "Disable QML cache generation for faster local iteration" OFF)
 option(DIFFY_AUTO_VENDOR_GRAMMARS "Automatically materialize pinned tree-sitter grammar sources during configure" ON)
+option(DIFFY_REGENERATE_GHOSTTY_THEMES "Regenerate Ghostty theme dataset during build" OFF)
 
 find_package(PkgConfig REQUIRED)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick Test Widgets Concurrent)
@@ -73,6 +74,28 @@ qt_standard_project_setup()
 
 add_subdirectory(vendor/grammars)
 
+set(DIFFY_THEME_JSON_PATH "${CMAKE_CURRENT_SOURCE_DIR}/src/app/ghostty_themes.json")
+if(DIFFY_REGENERATE_GHOSTTY_THEMES)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  set(DIFFY_THEME_JSON_PATH "${CMAKE_CURRENT_BINARY_DIR}/generated/ghostty_themes.json")
+  add_custom_command(
+    OUTPUT "${DIFFY_THEME_JSON_PATH}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/generated"
+    COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_ghostty_themes.py"
+            --output "${DIFFY_THEME_JSON_PATH}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_ghostty_themes.py"
+    VERBATIM
+  )
+  add_custom_target(diffy_ghostty_themes_data DEPENDS "${DIFFY_THEME_JSON_PATH}")
+endif()
+
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/app/ThemeProviderThemes.qrc.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/ThemeProviderThemes.qrc"
+  @ONLY
+)
+
 add_library(diffy_core STATIC
   src/core/compare/CompareService.cpp
   src/core/compare/backends/GitDiffBackend.cpp
@@ -118,12 +141,16 @@ target_compile_options(diffy_core PRIVATE ${LIBCURL_CFLAGS_OTHER} ${LIBGIT2_CFLA
 add_library(diffy_app STATIC
   src/app/DiffController.cpp
   src/app/ThemeProvider.cpp
-  src/app/ThemeProviderThemes.qrc
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/ThemeProviderThemes.qrc"
   src/app/QtDiffTypes.cpp
   src/app/models/DiffRowListModel.cpp
   src/app/models/RepositoryPickerModel.cpp
   src/app/quick/DiffSurfaceItem.cpp
 )
+
+if(DIFFY_REGENERATE_GHOSTTY_THEMES)
+  add_dependencies(diffy_app diffy_ghostty_themes_data)
+endif()
 
 target_include_directories(diffy_app PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src

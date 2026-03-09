@@ -34,6 +34,12 @@ Rectangle {
         return ".."
     }
 
+    function compareModeDescription(value) {
+        if (value === "three-dot") return "Three-dot range comparison"
+        if (value === "single-commit") return "Single commit diff"
+        return "Two-dot merge base comparison"
+    }
+
     function nextRenderer(value) {
         if (!diffController.hasDifftastic) return "builtin"
         return value === "builtin" ? "difftastic" : "builtin"
@@ -100,6 +106,10 @@ Rectangle {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: diffController.goBack()
+                        onContainsMouseChanged: {
+                            if (containsMouse) window.showTooltip(parent, "Go back (Alt+←)", "bottom")
+                            else window.hideTooltip()
+                        }
                     }
                 }
 
@@ -116,6 +126,10 @@ Rectangle {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: window.openRepoPicker()
+                        onContainsMouseChanged: {
+                            if (containsMouse) window.showTooltip(parent, "Change repository", "bottom")
+                            else window.hideTooltip()
+                        }
                     }
                 }
 
@@ -141,6 +155,10 @@ Rectangle {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: window.openBranchPicker("left")
+                        onContainsMouseChanged: {
+                            if (containsMouse) window.showTooltip(parent, "Change refs", "bottom")
+                            else window.hideTooltip()
+                        }
                     }
                 }
 
@@ -198,8 +216,13 @@ Rectangle {
 
                     MouseArea {
                         anchors.fill: parent
+                        hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: window.openCommandPalette()
+                        onContainsMouseChanged: {
+                            if (containsMouse) window.showTooltip(parent, "Command palette (Ctrl+K)", "bottom")
+                            else window.hideTooltip()
+                        }
                     }
                 }
             }
@@ -241,6 +264,10 @@ Rectangle {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: window.openBranchPicker("left", leftRefCard)
+                        onContainsMouseChanged: {
+                            if (containsMouse) window.showTooltip(leftRefCard, "Base reference — click to change", "bottom")
+                            else window.hideTooltip()
+                        }
                     }
 
                     RowLayout {
@@ -314,6 +341,10 @@ Rectangle {
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: diffController.compareMode = nextCompareMode(diffController.compareMode)
+                                onContainsMouseChanged: {
+                                    if (containsMouse) window.showTooltip(parent, compareModeDescription(diffController.compareMode), "bottom")
+                                    else window.hideTooltip()
+                                }
                             }
                         }
 
@@ -342,6 +373,10 @@ Rectangle {
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: root.swapRefs()
+                                onContainsMouseChanged: {
+                                    if (containsMouse) window.showTooltip(parent, "Swap base and head", "bottom")
+                                    else window.hideTooltip()
+                                }
                             }
                         }
                     }
@@ -365,6 +400,10 @@ Rectangle {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: window.openBranchPicker("right", rightRefCard)
+                        onContainsMouseChanged: {
+                            if (containsMouse) window.showTooltip(rightRefCard, "Head reference — click to change", "bottom")
+                            else window.hideTooltip()
+                        }
                     }
 
                     RowLayout {

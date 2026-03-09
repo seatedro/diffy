@@ -4,7 +4,7 @@ import QtQuick.Layouts
 Rectangle {
     id: root
 
-    property var options: []  // [{label: "Unified", value: "unified"}, ...]
+    property var options: []  // [{label: "Unified", value: "unified", tooltip: ""}, ...]
     property string currentValue: ""
     signal valueChanged(string value)
 
@@ -51,6 +51,12 @@ Rectangle {
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: root.valueChanged(modelData.value)
+                    onContainsMouseChanged: {
+                        if (containsMouse && modelData.tooltip)
+                            window.showTooltip(parent, modelData.tooltip, "bottom")
+                        else
+                            window.hideTooltip()
+                    }
                 }
             }
         }

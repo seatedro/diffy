@@ -75,6 +75,7 @@ Rectangle {
             ShortcutRow { key: "n / N"; desc: "Next / previous hunk" }
             ShortcutRow { key: "Alt+←"; desc: "Go back" }
             ShortcutRow { key: "Ctrl+K"; desc: "Command palette" }
+            ShortcutRow { key: "Ctrl+Shift+T"; desc: "Cycle theme" }
             ShortcutRow { key: "Escape"; desc: "Close overlay / picker" }
 
             // Scrolling

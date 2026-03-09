@@ -12,6 +12,10 @@ const QStringList& modeNames() {
   return kModeNames;
 }
 
+QColor hexColor(const char* value) {
+  return QColor(QString::fromLatin1(value));
+}
+
 QString normalizeModeName(const QString& mode) {
   if (mode == "light") {
     return QStringLiteral("light");
@@ -57,6 +61,58 @@ ThemeColors parseThemeColors(const simdjson::dom::object& obj) {
   };
 }
 
+ThemeColors builtInDarkThemeColors() {
+  return {
+      hexColor("#1b1e24"), hexColor("#20242b"), hexColor("#282d36"), hexColor("#323844"), hexColor("#2b4d6d"),
+      hexColor("#20242b"),
+
+      hexColor("#39414d"), hexColor("#4e5968"), hexColor("#39414d"),
+
+      hexColor("#f2f5f8"), hexColor("#e2e7ec"), hexColor("#a9b3bf"), hexColor("#7f8894"),
+
+      hexColor("#5da9f6"), hexColor("#8cc3ff"), hexColor("#23394d"),
+
+      hexColor("#24352a"), hexColor("#335843"), hexColor("#7dd69c"),
+
+      hexColor("#3a2728"), hexColor("#6a3f40"), hexColor("#f28b82"),
+
+      hexColor("#3d3224"), hexColor("#705734"), hexColor("#f3c56c"),
+
+      hexColor("#2f3b4f"), hexColor("#5da9f6"),
+
+      hexColor("#20242b"), hexColor("#232831"), hexColor("#24342a"), hexColor("#2d4736"), hexColor("#382728"),
+      hexColor("#4a3133"),
+
+      hexColor("#1a000000"), hexColor("#33000000"), hexColor("#4d000000")
+  };
+}
+
+ThemeColors builtInLightThemeColors() {
+  return {
+      hexColor("#f7f7f5"), hexColor("#fbfbfa"), hexColor("#f1f1ef"), hexColor("#e6e6e3"), hexColor("#d7e4f2"),
+      hexColor("#fbfbfa"),
+
+      hexColor("#d3d3cf"), hexColor("#b4b4af"), hexColor("#d3d3cf"),
+
+      hexColor("#1e1f21"), hexColor("#2a2c2f"), hexColor("#5f646b"), hexColor("#858b93"),
+
+      hexColor("#0f68a0"), hexColor("#0b4f79"), hexColor("#d8e7f1"),
+
+      hexColor("#e8f1ea"), hexColor("#cfe2d4"), hexColor("#2f6f3e"),
+
+      hexColor("#f6e8e6"), hexColor("#ecc9c4"), hexColor("#b63424"),
+
+      hexColor("#f5efe1"), hexColor("#e7d6b5"), hexColor("#8a5a18"),
+
+      hexColor("#dbe9f6"), hexColor("#0f68a0"),
+
+      hexColor("#fbfbfa"), hexColor("#f7f7f5"), hexColor("#edf5ef"), hexColor("#d8eadf"), hexColor("#f9ecea"),
+      hexColor("#f1d6d1"),
+
+      hexColor("#0a000000"), hexColor("#15000000"), hexColor("#22000000")
+  };
+}
+
 bool hasThemeNameInsensitive(const QStringList& names, const QString& candidate) {
   for (const QString& existing : names) {
     if (existing.compare(candidate, Qt::CaseInsensitive) == 0) {
@@ -71,7 +127,8 @@ bool hasThemeNameInsensitive(const QStringList& names, const QString& candidate)
 ThemeProvider::ThemeProvider(QObject* parent) : QObject(parent) {
   initializeThemes();
 
-  const QString fallbackTheme = themeNames_.value(0);
+  const QString fallbackTheme =
+      themes_.contains(QStringLiteral("Diffy")) ? QStringLiteral("Diffy") : themeNames_.value(0);
   const QString storedThemeRaw = settings_.value("theme", fallbackTheme).toString();
   const QString storedModeRaw = settings_.value("themeMode", "").toString();
 
@@ -90,7 +147,7 @@ ThemeProvider::ThemeProvider(QObject* parent) : QObject(parent) {
 
   QString resolvedMode = normalizeModeName(storedModeRaw);
   if (!modeNames().contains(resolvedMode)) {
-    resolvedMode = QStringLiteral("dark");
+    resolvedMode = QStringLiteral("light");
   }
 
   currentTheme_ = resolvedTheme;
@@ -102,6 +159,8 @@ void ThemeProvider::initializeThemes() {
   if (!themeNames_.isEmpty()) {
     return;
   }
+
+  registerTheme(QStringLiteral("Diffy"), builtInDarkThemeColors(), builtInLightThemeColors());
 
   QFile f(QStringLiteral(":/themes/ghostty_themes.json"));
   if (!f.open(QIODevice::ReadOnly)) {
@@ -197,7 +256,7 @@ void ThemeProvider::setTheme(const QString& name, bool persist) {
   }
 
   if (!themes_.contains(resolvedTheme)) {
-    resolvedTheme = themeNames_.value(0);
+    resolvedTheme = themes_.contains(QStringLiteral("Diffy")) ? QStringLiteral("Diffy") : themeNames_.value(0);
   }
 
   if (resolvedTheme == currentTheme_) {
@@ -246,7 +305,8 @@ void ThemeProvider::toggleMode(bool persist) {
 
 void ThemeProvider::loadTheme(const QString& name, const QString& mode) {
   if (!themes_.contains(name)) {
-    const QString fallback = themeNames_.value(0);
+    const QString fallback =
+        themes_.contains(QStringLiteral("Diffy")) ? QStringLiteral("Diffy") : themeNames_.value(0);
     if (fallback.isEmpty()) {
       return;
     }

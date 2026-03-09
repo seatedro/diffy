@@ -21,28 +21,39 @@ Rectangle {
     function focusSurface() {
         surface.forceActiveFocus()
     }
-    property var surfacePalette: ({
-        "canvas": theme.canvas,
-        "panelTint": theme.panelTint,
-        "panelStrong": theme.panelStrong,
-        "divider": theme.divider,
-        "textStrong": theme.textStrong,
-        "textBase": theme.textBase,
-        "textMuted": theme.textMuted,
-        "textFaint": theme.textFaint,
-        "selectionBg": theme.selectionBg,
-        "accentSoft": theme.accentSoft,
-        "successText": theme.successText,
-        "successBorder": theme.successBorder,
-        "dangerText": theme.dangerText,
-        "dangerBorder": theme.dangerBorder,
-        "lineContext": theme.lineContext,
-        "lineContextAlt": theme.lineContextAlt,
-        "lineAdd": theme.lineAdd,
-        "lineAddAccent": theme.lineAddAccent,
-        "lineDel": theme.lineDel,
-        "lineDelAccent": theme.lineDelAccent
-    })
+    property var surfacePalette: buildPalette()
+
+    function buildPalette() {
+        return {
+            "canvas": theme.canvas,
+            "panelTint": theme.panelTint,
+            "panelStrong": theme.panelStrong,
+            "divider": theme.divider,
+            "textStrong": theme.textStrong,
+            "textBase": theme.textBase,
+            "textMuted": theme.textMuted,
+            "textFaint": theme.textFaint,
+            "selectionBg": theme.selectionBg,
+            "accentSoft": theme.accentSoft,
+            "successText": theme.successText,
+            "successBorder": theme.successBorder,
+            "dangerText": theme.dangerText,
+            "dangerBorder": theme.dangerBorder,
+            "lineContext": theme.lineContext,
+            "lineContextAlt": theme.lineContextAlt,
+            "lineAdd": theme.lineAdd,
+            "lineAddAccent": theme.lineAddAccent,
+            "lineDel": theme.lineDel,
+            "lineDelAccent": theme.lineDelAccent
+        }
+    }
+
+    Connections {
+        target: theme
+        function onThemeChanged() {
+            root.surfacePalette = root.buildPalette()
+        }
+    }
 
     function hasData() {
         return fileData && fileData.path !== undefined

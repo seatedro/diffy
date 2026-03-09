@@ -153,6 +153,7 @@ Window {
                 else if (item.value === "openRepo") window.openRepoPicker()
                 else if (item.value === "browseRepo") diffController.openRepositoryFromDialog()
                 else if (item.value === "shortcuts") shortcutOverlay.showing = true
+                else if (item.value && item.value.startsWith("theme:")) theme.setTheme(item.value.substring(6))
             }
         }
     }
@@ -219,6 +220,16 @@ Window {
         items.push({label: "Go Back", detail: "Alt+←", category: "Action", type: "action", value: "back"})
         items.push({label: "Open Repository", detail: "", category: "Action", type: "action", value: "openRepo"})
         items.push({label: "Keyboard Shortcuts", detail: "?", category: "Action", type: "action", value: "shortcuts"})
+        var themes = theme.availableThemes
+        for (var t = 0; t < themes.length; ++t) {
+            items.push({
+                label: "Theme: " + themes[t],
+                detail: theme.currentTheme === themes[t] ? "active" : "",
+                category: "Theme",
+                type: "action",
+                value: "theme:" + themes[t]
+            })
+        }
 
         // Changed files
         var files = diffController.files
@@ -287,5 +298,16 @@ Window {
     Shortcut {
         sequence: "Ctrl+P"
         onActivated: window.openCommandPalette()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+Shift+T"
+        onActivated: {
+            var themes = theme.availableThemes
+            var idx = themes.indexOf(theme.currentTheme)
+            var next = (idx + 1) % themes.length
+            theme.setTheme(themes[next])
+            globalToast.show("Theme: " + themes[next], "neutral", 1500)
+        }
     }
 }

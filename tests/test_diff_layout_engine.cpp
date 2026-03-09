@@ -43,7 +43,7 @@ class DiffLayoutEngineTest : public QObject {
         makeHunk(),
         makeLine(DiffLineKind::Context, 98, 98, 20.0),
         makeLine(DiffLineKind::Addition, -1, 1205, 120.0),
-    });
+    }, TokenBuffer{});
 
     DiffLayoutConfig config;
     config.mode = DiffLayoutMode::Unified;
@@ -89,7 +89,7 @@ class DiffLayoutEngineTest : public QObject {
         makeLine(DiffLineKind::Deletion, 11, -1, 15.0),
         makeLine(DiffLineKind::Addition, -1, 10, 90.0),
         makeLine(DiffLineKind::Context, 12, 11, 20.0),
-    });
+    }, TokenBuffer{});
 
     DiffLayoutConfig config;
     config.mode = DiffLayoutMode::Split;
@@ -135,7 +135,7 @@ class DiffLayoutEngineTest : public QObject {
         makeLine(DiffLineKind::Context, 1, 1, 12.0),
         makeHunk("@@ second @@"),
         makeLine(DiffLineKind::Addition, -1, 2, 18.0),
-    });
+    }, TokenBuffer{});
 
     DiffLayoutConfig config;
     config.mode = DiffLayoutMode::Unified;
@@ -163,7 +163,7 @@ class DiffLayoutEngineTest : public QObject {
         makeLine(DiffLineKind::Deletion, 10, -1, 90.0),
         makeLine(DiffLineKind::Addition, -1, 10, 110.0),
         makeLine(DiffLineKind::Context, 11, 11, 30.0),
-    });
+    }, TokenBuffer{});
 
     DiffLayoutConfig unified;
     unified.mode = DiffLayoutMode::Unified;

@@ -6,7 +6,7 @@
 
 #include "core/rendering/DiffLayoutEngine.h"
 #include "core/rendering/FlatDiffRows.h"
-#include "core/text/TextRope.h"
+#include "core/text/TextBuffer.h"
 
 namespace diffy {
 
@@ -30,7 +30,8 @@ inline size_t qHash(const PreparedRowsCacheKey& key, size_t seed = 0) {
 }
 
 struct PreparedRows {
-  TextRope textRope;
+  TextBuffer textBuffer;
+  TokenBuffer tokenBuffer;
   std::vector<DiffSourceRow> sourceRows;
   double maxTextWidth = 0.0;
 };

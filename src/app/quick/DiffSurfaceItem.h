@@ -20,7 +20,7 @@
 #include "app/models/DiffRowListModel.h"
 #include "core/rendering/DiffLayoutEngine.h"
 #include "core/rendering/PreparedRows.h"
-#include "core/text/TextRope.h"
+#include "core/text/TextBuffer.h"
 
 class QPainter;
 class QSGNode;
@@ -238,7 +238,7 @@ signals:
   const CachedWrappedLayout& wrappedLayoutForText(const QString& text, int pixelSize, qreal wrapWidth) const;
   int currentRowIndex() const;
   PreparedRowsCacheKey preparedRowsCacheKey() const;
-  std::shared_ptr<const DiffRasterSnapshot> buildRasterSnapshot(const QString& mode);
+  std::shared_ptr<const DiffRasterSnapshot> buildRasterSnapshot(const QString& mode, const QSet<int>& neededRows);
   qreal contentWidthForLayout(const QString& mode) const;
   std::vector<TileSpec> buildPrewarmTileSpecs(const QString& mode);
   QImage renderTileImageInline(const std::vector<DiffDisplayRow>& rows,
@@ -286,8 +286,10 @@ signals:
                          const QPointF& baseline,
                          const QRectF& clipRect,
                          const QString& text,
-                         const std::vector<DiffTokenSpan>& tokens,
-                         const std::vector<DiffTokenSpan>& changeSpans,
+                         const DiffTokenSpan* tokens,
+                         size_t tokenCount,
+                         const DiffTokenSpan* changeSpans,
+                         size_t changeSpanCount,
                          const std::vector<qreal>& prefixAdvances,
                          const QColor& textColor,
                          const QColor& tokenBackground,
@@ -296,8 +298,10 @@ signals:
                    const QPointF& baseline,
                    const QRectF& clipRect,
                    const QString& text,
-                   const std::vector<DiffTokenSpan>& tokens,
-                   const std::vector<DiffTokenSpan>& changeSpans,
+                   const DiffTokenSpan* tokens,
+                   size_t tokenCount,
+                   const DiffTokenSpan* changeSpans,
+                   size_t changeSpanCount,
                    const std::vector<qreal>& prefixAdvances,
                    const QColor& textColor,
                    const QColor& tokenBackground) const;
@@ -325,7 +329,7 @@ signals:
   QVariantMap palette_;
   QString monoFontFamily_ = "JetBrains Mono";
 
-  TextRope textRope_;
+  TextBuffer textBuffer_;
   DiffLayoutEngine displayModel_;
 
   qreal contentHeight_ = 0;

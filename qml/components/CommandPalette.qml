@@ -10,6 +10,8 @@ Rectangle {
     property int selectedIdx: 0
 
     signal actionTriggered(var item)
+    signal itemHighlighted(var item)
+    signal closed()
 
     function open(sourceItems) {
         items = sourceItems
@@ -17,11 +19,15 @@ Rectangle {
         filterItems()
         showing = true
         searchField.forceActiveFocus()
+        emitHighlighted()
     }
 
     function close() {
+        if (!showing) return
         showing = false
         searchField.text = ""
+        itemHighlighted(null)
+        closed()
     }
 
     function filterItems() {
@@ -32,12 +38,27 @@ Rectangle {
             filteredItems = diffController.fuzzyFilter(query, items, "label")
         }
         selectedIdx = 0
+        emitHighlighted()
+    }
+
+    function highlightedItem() {
+        if (selectedIdx >= 0 && selectedIdx < filteredItems.length) {
+            return filteredItems[selectedIdx]
+        }
+        return null
+    }
+
+    function emitHighlighted() {
+        itemHighlighted(highlightedItem())
     }
 
     function activateSelected() {
         if (selectedIdx >= 0 && selectedIdx < filteredItems.length) {
-            actionTriggered(filteredItems[selectedIdx])
-            close()
+            var item = filteredItems[selectedIdx]
+            actionTriggered(item)
+            if (!item.keepOpen) {
+                close()
+            }
         }
     }
 
@@ -45,6 +66,7 @@ Rectangle {
     anchors.fill: parent
     color: "#66000000"
     z: 250
+    onSelectedIdxChanged: emitHighlighted()
 
     MouseArea {
         anchors.fill: parent
@@ -190,6 +212,7 @@ Rectangle {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
+                        onEntered: root.selectedIdx = index
                         onClicked: {
                             root.selectedIdx = index
                             root.activateSelected()

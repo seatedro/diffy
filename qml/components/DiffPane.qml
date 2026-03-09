@@ -15,6 +15,7 @@ Rectangle {
     property string renderer: "builtin"
     property bool wrapEnabled: false
     property int wrapColumn: 0
+    property alias surfaceItem: surface
     signal nextFileRequested()
     signal previousFileRequested()
 

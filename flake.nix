@@ -6,10 +6,10 @@
   outputs =
     { self, nixpkgs }:
     let
-      system = "x86_64-linux";
-      pkgs = import nixpkgs { inherit system; };
-      qt = pkgs.qt6;
-      devCommand = pkgs.writeShellScriptBin "dev" ''
+      supportedSystems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
+      forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
+      pkgsFor = system: import nixpkgs { inherit system; };
+      mkDevCommand = pkgs: pkgs.writeShellScriptBin "dev" ''
         set -euo pipefail
         repo_root="''${DIFFY_REPO_ROOT:-$PWD}"
         if [ ! -x "$repo_root/scripts/dev-loop.sh" ]; then
@@ -20,55 +20,70 @@
       '';
     in
     {
-      packages.${system}.default = pkgs.stdenv.mkDerivation {
-        pname = "diffy";
-        version = "0.1.0";
-        src = self;
+      packages = forAllSystems (system:
+        let
+          pkgs = pkgsFor system;
+          qt = pkgs.qt6;
+        in
+        {
+          default = pkgs.stdenv.mkDerivation {
+            pname = "diffy";
+            version = "0.1.0";
+            src = self;
 
-        nativeBuildInputs = [
-          pkgs.cmake
-          pkgs.ninja
-          pkgs.pkg-config
-          pkgs.git
-          qt.wrapQtAppsHook
-        ];
+            nativeBuildInputs = [
+              pkgs.cmake
+              pkgs.ninja
+              pkgs.pkg-config
+              pkgs.git
+              qt.wrapQtAppsHook
+            ];
 
-        buildInputs = [
-          pkgs.curl
-          pkgs.libgit2
-          pkgs.tree-sitter
-          qt.qtbase
-          qt.qtdeclarative
-        ];
+            buildInputs = [
+              pkgs.curl
+              pkgs.libgit2
+              pkgs.tree-sitter
+              qt.qtbase
+              qt.qtdeclarative
+            ];
 
-        cmakeFlags = [ "-G" "Ninja" ];
-      };
+            cmakeFlags = [ "-G" "Ninja" ];
+          };
+        });
 
-      devShells.${system}.default = pkgs.mkShell {
-        inputsFrom = [ self.packages.${system}.default ];
+      devShells = forAllSystems (system:
+        let
+          pkgs = pkgsFor system;
+          isLinux = pkgs.stdenv.isLinux;
+        in
+        {
+          default = pkgs.mkShell {
+            inputsFrom = [ self.packages.${system}.default ];
 
-        packages = [
-          pkgs.nodejs_22
-          pkgs.uv
-          pkgs.git
-          pkgs.gcc
-          pkgs.jq
-          pkgs.gdb
-          pkgs.lldb
-          pkgs.rr
-          pkgs.strace
-          pkgs.watchexec
-          devCommand
-        ];
+            packages = [
+              pkgs.nodejs_22
+              pkgs.uv
+              pkgs.git
+              pkgs.jq
+              pkgs.lldb
+              pkgs.watchexec
+              (mkDevCommand pkgs)
+            ] ++ pkgs.lib.optionals isLinux [
+              pkgs.gcc
+              pkgs.gdb
+              pkgs.rr
+              pkgs.strace
+            ];
 
-        shellHook = ''
-          export DIFFY_REPO_ROOT="$PWD"
-          echo "Diffy dev shell ready"
-          echo "Build: cmake -S . -B build -G Ninja && cmake --build build"
-          echo "Debug preset: cmake --preset Debug && cmake --build --preset Debug"
-          echo "Debug binary: gdb ./build/Debug/diffy | lldb ./build/Debug/diffy | rr record ./build/Debug/diffy"
-          echo "Loop: dev once | dev watch | dev preview"
-        '';
-      };
+            shellHook = ''
+              export DIFFY_REPO_ROOT="$PWD"
+              echo "Diffy dev shell ready"
+              echo "Build: cmake -S . -B build -G Ninja && cmake --build build"
+              echo "Debug preset: cmake --preset Debug && cmake --build --preset Debug"
+              echo "Debug binary: gdb ./build/Debug/diffy | lldb ./build/Debug/diffy | rr record ./build/Debug/diffy"
+              echo "Loop: dev once | dev watch | dev preview"
+            '';
+          };
+        });
     };
 }

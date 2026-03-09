@@ -159,8 +159,19 @@ QString initRepositoryWithDeletedFileDiff() {
 
 QString diffyBinaryPath() {
   const QDir testsDir(QCoreApplication::applicationDirPath());
-  const QString candidate = QFileInfo(testsDir.filePath("../diffy")).absoluteFilePath();
-  return QFileInfo(candidate).canonicalFilePath();
+  const QStringList candidates = {
+      QFileInfo(testsDir.filePath("../bin/diffy")).absoluteFilePath(),
+      QFileInfo(testsDir.filePath("../diffy")).absoluteFilePath(),
+  };
+
+  for (const QString& candidate : candidates) {
+    const QString canonicalPath = QFileInfo(candidate).canonicalFilePath();
+    if (!canonicalPath.isEmpty()) {
+      return canonicalPath;
+    }
+  }
+
+  return {};
 }
 
 struct SmokeResult {

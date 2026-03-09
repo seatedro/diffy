@@ -237,6 +237,18 @@ class TextureCleanupJob final : public QRunnable {
   QVector<QSGTexture*> textures_;
 };
 
+void disposeTextures(QQuickWindow* quickWindow, QVector<QSGTexture*> textures, QQuickWindow::RenderStage stage) {
+  if (textures.isEmpty()) {
+    return;
+  }
+
+  if (quickWindow != nullptr) {
+    quickWindow->scheduleRenderJob(new TextureCleanupJob(std::move(textures)), stage);
+  } else {
+    qDeleteAll(textures);
+  }
+}
+
 QColor unifiedSelectionColor(const DiffDisplayRow& row) {
   QColor selection("#45433d");
   if (row.kind == DiffLineKind::Addition) {
@@ -1299,15 +1311,23 @@ void DiffSurfaceItem::invalidateRasterJobs(bool clearReadyImages) {
     pendingTileJobCount_ = 0;
     ++rasterGeneration_;
   }
+  QVector<QSGTexture*> texturesToDispose;
   if (clearReadyImages) {
     tileImageCache_.clear();
     tileImageLastUsed_.clear();
+    texturesToDispose.reserve(residentTextureCache_.size());
     for (auto it = residentTextureCache_.begin(); it != residentTextureCache_.end(); ++it) {
-      delete it.value();
+      if (it.value() != nullptr) {
+        texturesToDispose.push_back(it.value());
+      }
     }
     residentTextureCache_.clear();
     residentTextureLastUsed_.clear();
   }
+  // Texture nodes from the previous frame remain live until the scene graph has
+  // synchronized the new row set. Dispose old textures only after the next
+  // frame finishes rendering.
+  disposeTextures(window(), std::move(texturesToDispose), QQuickWindow::AfterRenderingStage);
   updateTileStats();
 }
 
@@ -2503,14 +2523,7 @@ void DiffSurfaceItem::releaseResources() {
   tileImageLastUsed_.clear();
   updateTileStats();
 
-  if (!textures.isEmpty()) {
-    if (QQuickWindow* quickWindow = window()) {
-      quickWindow->scheduleRenderJob(new TextureCleanupJob(std::move(textures)),
-                                     QQuickWindow::BeforeSynchronizingStage);
-    } else {
-      qDeleteAll(textures);
-    }
-  }
+  disposeTextures(window(), std::move(textures), QQuickWindow::BeforeSynchronizingStage);
 
   QQuickItem::releaseResources();
 }
@@ -2669,7 +2682,7 @@ const DiffSurfaceItem::CachedLineLayout& DiffSurfaceItem::lineLayoutForText(cons
   }
   layout.width = text.isEmpty() ? 0.0 : charWidth * text.size();
 
-  auto inserted = lineLayoutCache_.insert(key, std::move(layout));
+  lineLayoutCache_.insert(key, std::move(layout));
   lineLayoutLastUsed_.insert(key, lineLayoutUseTick_);
   while (lineLayoutCache_.size() > kMaxLineLayoutCacheEntries) {
     auto victimIt = lineLayoutLastUsed_.cbegin();
@@ -2698,6 +2711,8 @@ const DiffSurfaceItem::CachedLineLayout& DiffSurfaceItem::lineLayoutForText(cons
     lineLayoutCache_.remove(victimIt.key());
     lineLayoutLastUsed_.erase(victimIt);
   }
+  const auto inserted = lineLayoutCache_.constFind(key);
+  Q_ASSERT(inserted != lineLayoutCache_.constEnd());
   return inserted.value();
 }
 
@@ -2735,7 +2750,7 @@ const DiffSurfaceItem::CachedWrappedLayout& DiffSurfaceItem::wrappedLayoutForTex
     wrappedLayout.lineCount = currentLine + 1;
   }
 
-  auto inserted = wrappedLayoutCache_.insert(key, std::move(wrappedLayout));
+  wrappedLayoutCache_.insert(key, std::move(wrappedLayout));
   wrappedLayoutLastUsed_.insert(key, wrappedLayoutUseTick_);
   while (wrappedLayoutCache_.size() > kMaxWrappedLayoutCacheEntries) {
     auto victimIt = wrappedLayoutLastUsed_.cbegin();
@@ -2750,6 +2765,8 @@ const DiffSurfaceItem::CachedWrappedLayout& DiffSurfaceItem::wrappedLayoutForTex
     wrappedLayoutCache_.remove(victimIt.key());
     wrappedLayoutLastUsed_.erase(victimIt);
   }
+  const auto inserted = wrappedLayoutCache_.constFind(key);
+  Q_ASSERT(inserted != wrappedLayoutCache_.constEnd());
   return inserted.value();
 }
 

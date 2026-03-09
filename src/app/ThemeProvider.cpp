@@ -1,17 +1,11 @@
 #include "app/ThemeProvider.h"
 
+#include <QFile>
+
+#include <simdjson.h>
+
 namespace diffy {
 namespace {
-
-const QStringList& themeNames() {
-  static const QStringList kThemeNames = {
-      "gruvbox",
-      "kanagawa",
-      "rose-pine",
-      "catppuccin",
-  };
-  return kThemeNames;
-}
 
 const QStringList& modeNames() {
   static const QStringList kModeNames = {"dark", "light"};
@@ -19,9 +13,6 @@ const QStringList& modeNames() {
 }
 
 QString normalizeThemeName(const QString& name) {
-  if (themeNames().contains(name)) {
-    return name;
-  }
   if (name == "gruvbox-dark" || name == "gruvbox-light") {
     return QStringLiteral("gruvbox");
   }
@@ -57,15 +48,69 @@ QString normalizeModeName(const QString& mode) {
   return QString();
 }
 
+QColor parseColor(const simdjson::dom::object& obj, const char* key) {
+  std::string_view value;
+  if (obj.at_key(key).get_string().get(value) != simdjson::SUCCESS) {
+    return {};
+  }
+  return QColor(QString::fromUtf8(value.data(), static_cast<int>(value.size())));
+}
+
+ThemeColors parseThemeColors(const simdjson::dom::object& obj) {
+  return {
+      parseColor(obj, "appBg"),       parseColor(obj, "canvas"),        parseColor(obj, "panel"),
+      parseColor(obj, "panelStrong"), parseColor(obj, "panelTint"),     parseColor(obj, "toolbarBg"),
+
+      parseColor(obj, "borderSoft"),  parseColor(obj, "borderStrong"),  parseColor(obj, "divider"),
+
+      parseColor(obj, "textStrong"),  parseColor(obj, "textBase"),      parseColor(obj, "textMuted"),
+      parseColor(obj, "textFaint"),
+
+      parseColor(obj, "accent"),      parseColor(obj, "accentStrong"),  parseColor(obj, "accentSoft"),
+
+      parseColor(obj, "successBg"),   parseColor(obj, "successBorder"), parseColor(obj, "successText"),
+
+      parseColor(obj, "dangerBg"),    parseColor(obj, "dangerBorder"),  parseColor(obj, "dangerText"),
+
+      parseColor(obj, "warningBg"),   parseColor(obj, "warningBorder"), parseColor(obj, "warningText"),
+
+      parseColor(obj, "selectionBg"), parseColor(obj, "selectionBorder"),
+
+      parseColor(obj, "lineContext"), parseColor(obj, "lineContextAlt"), parseColor(obj, "lineAdd"),
+      parseColor(obj, "lineAddAccent"), parseColor(obj, "lineDel"), parseColor(obj, "lineDelAccent"),
+
+      parseColor(obj, "shadowSm"),    parseColor(obj, "shadowMd"),      parseColor(obj, "shadowLg")
+  };
+}
+
+bool hasThemeNameInsensitive(const QStringList& names, const QString& candidate) {
+  for (const QString& existing : names) {
+    if (existing.compare(candidate, Qt::CaseInsensitive) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
 ThemeProvider::ThemeProvider(QObject* parent) : QObject(parent) {
+  initializeThemes();
+
   const QString storedThemeRaw = settings_.value("theme", "gruvbox").toString();
   const QString storedModeRaw = settings_.value("themeMode", "").toString();
 
   QString resolvedTheme = normalizeThemeName(storedThemeRaw);
-  if (!themeNames().contains(resolvedTheme)) {
-    resolvedTheme = QStringLiteral("gruvbox");
+  if (!themes_.contains(resolvedTheme)) {
+    for (const QString& candidate : themeNames_) {
+      if (candidate.compare(resolvedTheme, Qt::CaseInsensitive) == 0) {
+        resolvedTheme = candidate;
+        break;
+      }
+    }
+  }
+  if (!themes_.contains(resolvedTheme)) {
+    resolvedTheme = themes_.contains("gruvbox") ? QStringLiteral("gruvbox") : themeNames_.value(0);
   }
 
   QString resolvedMode = normalizeModeName(storedModeRaw);
@@ -81,6 +126,81 @@ ThemeProvider::ThemeProvider(QObject* parent) : QObject(parent) {
   loadTheme(currentTheme_, currentMode_);
 }
 
+void ThemeProvider::initializeThemes() {
+  if (!themeNames_.isEmpty()) {
+    return;
+  }
+
+  registerTheme("gruvbox", gruvboxDark(), gruvboxLight());
+  registerTheme("kanagawa", kanagawaDark(), kanagawaLight());
+  registerTheme("rose-pine", rosePineDark(), rosePineLight());
+  registerTheme("catppuccin", catppuccinDark(), catppuccinLight());
+
+  QFile f(QStringLiteral(":/themes/ghostty_themes.json"));
+  if (!f.open(QIODevice::ReadOnly)) {
+    return;
+  }
+
+  const QByteArray jsonBytes = f.readAll();
+  simdjson::dom::parser parser;
+  simdjson::padded_string padded(std::string_view(jsonBytes.constData(), static_cast<size_t>(jsonBytes.size())));
+  simdjson::dom::element root;
+  if (parser.parse(padded).get(root) != simdjson::SUCCESS) {
+    return;
+  }
+
+  simdjson::dom::object rootObj;
+  if (root.get_object().get(rootObj) != simdjson::SUCCESS) {
+    return;
+  }
+
+  simdjson::dom::array themes;
+  if (rootObj.at_key("themes").get_array().get(themes) != simdjson::SUCCESS) {
+    return;
+  }
+
+  for (simdjson::dom::element value : themes) {
+    simdjson::dom::object obj;
+    if (value.get_object().get(obj) != simdjson::SUCCESS) {
+      continue;
+    }
+
+    std::string_view nameRaw;
+    if (obj.at_key("name").get_string().get(nameRaw) != simdjson::SUCCESS) {
+      continue;
+    }
+    const QString name = QString::fromUtf8(nameRaw.data(), static_cast<int>(nameRaw.size())).trimmed();
+    if (name.isEmpty() || hasThemeNameInsensitive(themeNames_, name)) {
+      continue;
+    }
+
+    simdjson::dom::object darkObj;
+    simdjson::dom::object lightObj;
+    if (obj.at_key("dark").get_object().get(darkObj) != simdjson::SUCCESS ||
+        obj.at_key("light").get_object().get(lightObj) != simdjson::SUCCESS) {
+      continue;
+    }
+
+    const ThemeColors dark = parseThemeColors(darkObj);
+    const ThemeColors light = parseThemeColors(lightObj);
+    if (!dark.appBg.isValid() || !light.appBg.isValid()) {
+      continue;
+    }
+
+    registerTheme(name, dark, light);
+  }
+}
+
+void ThemeProvider::registerTheme(const QString& name, const ThemeColors& dark, const ThemeColors& light) {
+  if (themes_.contains(name)) {
+    themes_[name] = {.dark = dark, .light = light};
+    return;
+  }
+
+  themes_.insert(name, {.dark = dark, .light = light});
+  themeNames_.append(name);
+}
+
 QString ThemeProvider::currentTheme() const {
   return currentTheme_;
 }
@@ -90,7 +210,7 @@ QString ThemeProvider::currentMode() const {
 }
 
 QStringList ThemeProvider::availableThemes() const {
-  return themeNames();
+  return themeNames_;
 }
 
 QStringList ThemeProvider::availableModes() const {
@@ -99,8 +219,18 @@ QStringList ThemeProvider::availableModes() const {
 
 void ThemeProvider::setTheme(const QString& name, bool persist) {
   QString resolvedTheme = normalizeThemeName(name);
-  if (!themeNames().contains(resolvedTheme)) {
-    resolvedTheme = QStringLiteral("gruvbox");
+
+  if (!themes_.contains(resolvedTheme)) {
+    for (const QString& candidate : themeNames_) {
+      if (candidate.compare(resolvedTheme, Qt::CaseInsensitive) == 0) {
+        resolvedTheme = candidate;
+        break;
+      }
+    }
+  }
+
+  if (!themes_.contains(resolvedTheme)) {
+    resolvedTheme = themes_.contains("gruvbox") ? QStringLiteral("gruvbox") : themeNames_.value(0);
   }
 
   if (resolvedTheme == currentTheme_) {
@@ -148,17 +278,15 @@ void ThemeProvider::toggleMode(bool persist) {
 }
 
 void ThemeProvider::loadTheme(const QString& name, const QString& mode) {
-  if (name == "gruvbox") {
-    colors_ = mode == "light" ? gruvboxLight() : gruvboxDark();
-  } else if (name == "kanagawa") {
-    colors_ = mode == "light" ? kanagawaLight() : kanagawaDark();
-  } else if (name == "rose-pine") {
-    colors_ = mode == "light" ? rosePineLight() : rosePineDark();
-  } else if (name == "catppuccin") {
-    colors_ = mode == "light" ? catppuccinLight() : catppuccinDark();
-  } else {
-    colors_ = mode == "light" ? gruvboxLight() : gruvboxDark();
+  if (!themes_.contains(name)) {
+    const QString fallback = themes_.contains("gruvbox") ? QStringLiteral("gruvbox") : themeNames_.value(0);
+    const ThemeVariants fallbackVariants = themes_.value(fallback);
+    colors_ = mode == "light" ? fallbackVariants.light : fallbackVariants.dark;
+    return;
   }
+
+  const ThemeVariants variants = themes_.value(name);
+  colors_ = mode == "light" ? variants.light : variants.dark;
 }
 
 ThemeColors ThemeProvider::gruvboxDark() {

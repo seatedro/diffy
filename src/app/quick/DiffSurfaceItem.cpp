@@ -357,6 +357,14 @@ class SnapshotRenderer {
     Q_ASSERT(spec.rowIndex >= 0);
     const auto it = snapshot_.rows.constFind(spec.rowIndex);
     Q_ASSERT(it != snapshot_.rows.constEnd());
+    if (Q_UNLIKELY(it == snapshot_.rows.constEnd())) {
+      QImage blank(QSize(qMax(1, qCeil(spec.targetRect.width() * snapshot_.devicePixelRatio)),
+                         qMax(1, qCeil(spec.targetRect.height() * snapshot_.devicePixelRatio))),
+                   QImage::Format_ARGB32_Premultiplied);
+      blank.setDevicePixelRatio(snapshot_.devicePixelRatio);
+      blank.fill(Qt::transparent);
+      return blank;
+    }
     const DiffRasterRow& row = it.value();
     const QSize pixelSize(qMax(1, qCeil(spec.targetRect.width() * snapshot_.devicePixelRatio)),
                           qMax(1, qCeil(row.row.height * snapshot_.devicePixelRatio)));
@@ -1291,6 +1299,15 @@ void DiffSurfaceItem::invalidateRasterJobs(bool clearReadyImages) {
     pendingTileJobCount_ = 0;
     ++rasterGeneration_;
   }
+  if (clearReadyImages) {
+    tileImageCache_.clear();
+    tileImageLastUsed_.clear();
+    for (auto it = residentTextureCache_.begin(); it != residentTextureCache_.end(); ++it) {
+      delete it.value();
+    }
+    residentTextureCache_.clear();
+    residentTextureLastUsed_.clear();
+  }
   updateTileStats();
 }
 
@@ -1327,7 +1344,26 @@ std::shared_ptr<const DiffRasterSnapshot> DiffSurfaceItem::buildRasterSnapshot(c
   snapshot->rightViewportX = rightViewportX_;
   snapshot->devicePixelRatio = window() != nullptr ? window()->effectiveDevicePixelRatio() : 1.0;
   snapshot->rows.reserve(neededRows.size());
-  const auto& tokenBuf = displayModel_.tokenBuffer();
+  const auto& tokenBuf = displayModel_.cachedTokenBuffer(config);
+#ifndef NDEBUG
+  for (const int rowIndex : neededRows) {
+    if (rowIndex < 0 || rowIndex >= static_cast<int>(rows.size())) continue;
+    const DiffDisplayRow& row = rows.at(rowIndex);
+    auto checkRange = [&](const TokenRange& range, const char* name) {
+      if (!range.empty() && range.start + range.count > static_cast<uint32_t>(tokenBuf.size())) {
+        log::error("render", "buildRasterSnapshot: {} out of bounds for row {} "
+                   "(range.start={}, range.count={}, bufSize={})",
+                   name, rowIndex, range.start, range.count, tokenBuf.size());
+      }
+    };
+    checkRange(row.tokens, "tokens");
+    checkRange(row.changeSpans, "changeSpans");
+    checkRange(row.leftTokens, "leftTokens");
+    checkRange(row.leftChangeSpans, "leftChangeSpans");
+    checkRange(row.rightTokens, "rightTokens");
+    checkRange(row.rightChangeSpans, "rightChangeSpans");
+  }
+#endif
   for (const int rowIndex : neededRows) {
     if (rowIndex < 0 || rowIndex >= static_cast<int>(rows.size())) {
       continue;
@@ -1350,6 +1386,30 @@ std::shared_ptr<const DiffRasterSnapshot> DiffSurfaceItem::buildRasterSnapshot(c
     rasterRow.leftChangeSpans.assign(tokenBuf.begin(row.leftChangeSpans), tokenBuf.end(row.leftChangeSpans));
     rasterRow.rightTokens.assign(tokenBuf.begin(row.rightTokens), tokenBuf.end(row.rightTokens));
     rasterRow.rightChangeSpans.assign(tokenBuf.begin(row.rightChangeSpans), tokenBuf.end(row.rightChangeSpans));
+    for (const auto& span : rasterRow.tokens) {
+      Q_ASSERT(span.start >= 0);
+      Q_ASSERT(span.start + span.length <= static_cast<int>(rasterRow.text.size()));
+    }
+    for (const auto& span : rasterRow.changeSpans) {
+      Q_ASSERT(span.start >= 0);
+      Q_ASSERT(span.start + span.length <= static_cast<int>(rasterRow.text.size()));
+    }
+    for (const auto& span : rasterRow.leftTokens) {
+      Q_ASSERT(span.start >= 0);
+      Q_ASSERT(span.start + span.length <= static_cast<int>(rasterRow.leftText.size()));
+    }
+    for (const auto& span : rasterRow.leftChangeSpans) {
+      Q_ASSERT(span.start >= 0);
+      Q_ASSERT(span.start + span.length <= static_cast<int>(rasterRow.leftText.size()));
+    }
+    for (const auto& span : rasterRow.rightTokens) {
+      Q_ASSERT(span.start >= 0);
+      Q_ASSERT(span.start + span.length <= static_cast<int>(rasterRow.rightText.size()));
+    }
+    for (const auto& span : rasterRow.rightChangeSpans) {
+      Q_ASSERT(span.start >= 0);
+      Q_ASSERT(span.start + span.length <= static_cast<int>(rasterRow.rightText.size()));
+    }
     snapshot->rows.insert(rowIndex, std::move(rasterRow));
   }
   return snapshot;
@@ -1459,7 +1519,7 @@ void DiffSurfaceItem::setLayoutMode(const QString& mode) {
   leftViewportX_ = 0;
   rightViewportX_ = 0;
   viewportJumpFallbackArmed_ = false;
-  invalidateRasterJobs();
+  invalidateRasterJobs(true);
   scheduleMetricsRecalc();
   emit layoutModeChanged();
 }
@@ -2477,6 +2537,7 @@ void DiffSurfaceItem::rebuildRows() {
     textBuffer_ = prepared->textBuffer;
     maxTextWidth_ = prepared->maxTextWidth;
     displayModel_.setSourceRows(prepared->sourceRows, prepared->tokenBuffer);
+    ++contentGeneration_;
   } else {
     if (rowsModel_ != nullptr) {
       rowsModel_->storePreparedRows(key, prepareRowsForDisplay(rowsModel_->rows(), measureTextWidth));
@@ -2489,6 +2550,7 @@ void DiffSurfaceItem::rebuildRows() {
     textBuffer_ = prepared->textBuffer;
     maxTextWidth_ = prepared->maxTextWidth;
     displayModel_.setSourceRows(prepared->sourceRows, prepared->tokenBuffer);
+    ++contentGeneration_;
   }
   updateFileHeader();
   const double rebuildMs = elapsedMs(rebuildStart);
@@ -2710,7 +2772,7 @@ PreparedRowsCacheKey DiffSurfaceItem::preparedRowsCacheKey() const {
 }
 
 quint64 DiffSurfaceItem::tileContentKey() const {
-  return qHashMulti(0u, compareGeneration_, filePath_, fileStatus_, additions_, deletions_);
+  return qHashMulti(0u, compareGeneration_, contentGeneration_, filePath_, fileStatus_, additions_, deletions_);
 }
 
 quint64 DiffSurfaceItem::tileGeometryKey(const QString& mode,

@@ -323,6 +323,7 @@ signals:
   DiffRowListModel* rowsModel_ = nullptr;
   QString layoutMode_ = "unified";
   int compareGeneration_ = 0;
+  quint64 contentGeneration_ = 0;
   QString filePath_;
   QString fileStatus_ = "M";
   int additions_ = 0;

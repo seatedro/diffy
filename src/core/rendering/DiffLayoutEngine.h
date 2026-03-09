@@ -121,6 +121,7 @@ class DiffLayoutEngine {
   void prewarm(const DiffLayoutConfig& config);
   void rebuild(const DiffLayoutConfig& config);
   const std::vector<DiffDisplayRow>& cachedRows(const DiffLayoutConfig& config);
+  const TokenBuffer& cachedTokenBuffer(const DiffLayoutConfig& config);
   int rowIndexAtY(const DiffLayoutConfig& config, double y);
   int stickyHunkRowIndexAtY(const DiffLayoutConfig& config, double y);
   int fileHeaderRowIndex(const DiffLayoutConfig& config);

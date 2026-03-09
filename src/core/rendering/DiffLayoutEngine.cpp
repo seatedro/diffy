@@ -74,23 +74,36 @@ void DiffLayoutEngine::setFileHeader(std::optional<DiffSourceRow> row) {
   invalidateLayoutCaches();
 }
 
-void DiffLayoutEngine::setSourceRows(std::vector<DiffSourceRow> rows) {
+void DiffLayoutEngine::setSourceRows(std::vector<DiffSourceRow> rows, TokenBuffer tokenBuffer) {
   sourceRows_ = std::move(rows);
+  sourceTokenBuffer_ = std::move(tokenBuffer);
   recomputeLineNumberDigits();
   clearTopologyCaches();
 }
 
 void DiffLayoutEngine::clearTopologyCaches() {
   unifiedTopologyRows_.clear();
+  unifiedTopologyTokenBuffer_.clear();
   splitTopologyRows_.clear();
+  splitTopologyTokenBuffer_.clear();
   displayRows_.clear();
+  displayTokenBuffer_.clear();
   rowOffsets_.clear();
   contentHeight_ = 0;
   invalidateLayoutCaches();
 }
 
-void DiffLayoutEngine::rebuildTopology(std::vector<DiffDisplayRow>& targetRows, DiffLayoutMode mode) const {
+void DiffLayoutEngine::rebuildTopology(std::vector<DiffDisplayRow>& targetRows,
+                                        TokenBuffer& targetTokenBuffer,
+                                        DiffLayoutMode mode) const {
   targetRows.clear();
+  targetTokenBuffer.clear();
+
+  auto copyTokenRange = [&](TokenRange srcRange) -> TokenRange {
+    if (srcRange.empty()) return {};
+    return targetTokenBuffer.append(sourceTokenBuffer_.begin(srcRange), srcRange.count);
+  };
+
   auto appendRow = [&](DiffDisplayRow row) {
     targetRows.push_back(std::move(row));
   };
@@ -113,8 +126,8 @@ void DiffLayoutEngine::rebuildTopology(std::vector<DiffDisplayRow>& targetRows, 
       row.kind = sourceRow.kind;
       row.oldLine = sourceRow.oldLine;
       row.newLine = sourceRow.newLine;
-      row.tokens = sourceRow.tokens;
-      row.changeSpans = sourceRow.changeSpans;
+      row.tokens = copyTokenRange(sourceRow.tokens);
+      row.changeSpans = copyTokenRange(sourceRow.changeSpans);
       row.textRange = sourceRow.textRange;
       appendRow(std::move(row));
     }
@@ -141,16 +154,16 @@ void DiffLayoutEngine::rebuildTopology(std::vector<DiffDisplayRow>& targetRows, 
         row.rightKind = DiffLineKind::Context;
         row.leftLine = sourceRow.oldLine;
         row.rightLine = sourceRow.newLine;
-        row.leftTokens = sourceRow.tokens;
-        row.rightTokens = sourceRow.tokens;
+        row.leftTokens = copyTokenRange(sourceRow.tokens);
+        row.rightTokens = copyTokenRange(sourceRow.tokens);
         row.leftTextRange = sourceRow.textRange;
         row.rightTextRange = sourceRow.textRange;
         appendRow(std::move(row));
         continue;
       }
 
-      std::vector<DiffSourceRow> deletions;
-      std::vector<DiffSourceRow> additions;
+      std::vector<size_t> deletionIndices;
+      std::vector<size_t> additionIndices;
 
       while (index < sourceRows_.size()) {
         const DiffSourceRow& blockRow = sourceRows_.at(index);
@@ -160,41 +173,41 @@ void DiffLayoutEngine::rebuildTopology(std::vector<DiffDisplayRow>& targetRows, 
         }
 
         if (blockRow.kind == DiffLineKind::Deletion) {
-          deletions.push_back(blockRow);
+          deletionIndices.push_back(index);
         } else if (blockRow.kind == DiffLineKind::Addition) {
-          additions.push_back(blockRow);
+          additionIndices.push_back(index);
         }
         ++index;
       }
 
-      const size_t rowCount = std::max(deletions.size(), additions.size());
+      const size_t rowCount = std::max(deletionIndices.size(), additionIndices.size());
       for (size_t rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
         DiffDisplayRow row;
         row.rowType = DiffRowType::Line;
         row.kind = DiffLineKind::Change;
 
-        if (rowIndex < deletions.size()) {
-          const DiffSourceRow& left = deletions.at(rowIndex);
+        if (rowIndex < deletionIndices.size()) {
+          const DiffSourceRow& left = sourceRows_.at(deletionIndices[rowIndex]);
           row.leftKind = DiffLineKind::Deletion;
           row.leftLine = left.oldLine;
-          row.leftTokens = left.tokens;
-          row.leftChangeSpans = left.changeSpans;
+          row.leftTokens = copyTokenRange(left.tokens);
+          row.leftChangeSpans = copyTokenRange(left.changeSpans);
           row.leftTextRange = left.textRange;
           row.oldLine = left.oldLine;
         }
 
-        if (rowIndex < additions.size()) {
-          const DiffSourceRow& right = additions.at(rowIndex);
+        if (rowIndex < additionIndices.size()) {
+          const DiffSourceRow& right = sourceRows_.at(additionIndices[rowIndex]);
           row.rightKind = DiffLineKind::Addition;
           row.rightLine = right.newLine;
-          row.rightTokens = right.tokens;
-          row.rightChangeSpans = right.changeSpans;
+          row.rightTokens = copyTokenRange(right.tokens);
+          row.rightChangeSpans = copyTokenRange(right.changeSpans);
           row.rightTextRange = right.textRange;
           row.newLine = right.newLine;
         }
 
-        const double leftTextWidth = rowIndex < deletions.size() ? deletions.at(rowIndex).textWidth : 0;
-        const double rightTextWidth = rowIndex < additions.size() ? additions.at(rowIndex).textWidth : 0;
+        const double leftTextWidth = rowIndex < deletionIndices.size() ? sourceRows_.at(deletionIndices[rowIndex]).textWidth : 0;
+        const double rightTextWidth = rowIndex < additionIndices.size() ? sourceRows_.at(additionIndices[rowIndex]).textWidth : 0;
         row.textWidth = std::max(leftTextWidth, rightTextWidth);
         appendRow(std::move(row));
       }
@@ -208,20 +221,24 @@ void DiffLayoutEngine::ensureLayoutCache(const DiffLayoutConfig& config) {
     return;
   }
 
-  const std::vector<DiffDisplayRow>* topologyRows = nullptr;
+  std::vector<DiffDisplayRow>* topologyRows = nullptr;
+  TokenBuffer* topologyTokenBuffer = nullptr;
   if (config.mode == DiffLayoutMode::Unified) {
     if (unifiedTopologyRows_.empty() && (!sourceRows_.empty() || fileHeaderRow_)) {
-      rebuildTopology(unifiedTopologyRows_, DiffLayoutMode::Unified);
+      rebuildTopology(unifiedTopologyRows_, unifiedTopologyTokenBuffer_, DiffLayoutMode::Unified);
     }
     topologyRows = &unifiedTopologyRows_;
+    topologyTokenBuffer = &unifiedTopologyTokenBuffer_;
   } else {
     if (splitTopologyRows_.empty() && (!sourceRows_.empty() || fileHeaderRow_)) {
-      rebuildTopology(splitTopologyRows_, DiffLayoutMode::Split);
+      rebuildTopology(splitTopologyRows_, splitTopologyTokenBuffer_, DiffLayoutMode::Split);
     }
     topologyRows = &splitTopologyRows_;
+    topologyTokenBuffer = &splitTopologyTokenBuffer_;
   }
 
   entry.rows = *topologyRows;
+  entry.tokenBuffer = *topologyTokenBuffer;
   entry.rowOffsets.clear();
   entry.rowOffsets.reserve(entry.rows.size());
 
@@ -301,12 +318,17 @@ void DiffLayoutEngine::rebuild(const DiffLayoutConfig& config) {
   ensureLayoutCache(config);
   const LayoutCacheEntry& entry = layoutCache(config.mode);
   displayRows_ = entry.rows;
+  displayTokenBuffer_ = entry.tokenBuffer;
   rowOffsets_ = entry.rowOffsets;
   contentHeight_ = entry.contentHeight;
 }
 
 const std::vector<DiffDisplayRow>& DiffLayoutEngine::rows() const {
   return displayRows_;
+}
+
+const TokenBuffer& DiffLayoutEngine::tokenBuffer() const {
+  return displayTokenBuffer_;
 }
 
 double DiffLayoutEngine::contentHeight() const {

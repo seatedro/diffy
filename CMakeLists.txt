@@ -92,7 +92,7 @@ add_library(diffy_core STATIC
   src/core/syntax/DiffSyntaxAnnotator.cpp
   src/core/syntax/LanguageRegistry.cpp
   src/core/syntax/Highlighter.cpp
-  src/core/text/TextRope.cpp
+  src/core/text/TextBuffer.cpp
 )
 
 target_include_directories(diffy_core PUBLIC

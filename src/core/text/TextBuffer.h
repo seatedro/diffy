@@ -2,7 +2,6 @@
 
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace diffy {
 
@@ -15,23 +14,19 @@ struct TextRange {
   }
 };
 
-class TextRope {
+class TextBuffer {
  public:
-  TextRope() = default;
+  TextBuffer() = default;
 
   void clear();
+  void reserve(size_t capacity);
   TextRange append(std::string_view text);
+  std::string_view view(const TextRange& range) const;
   std::string slice(const TextRange& range) const;
   size_t size() const;
 
  private:
-  struct Chunk {
-    size_t start = 0;
-    std::string text;
-  };
-
-  std::vector<Chunk> chunks_;
-  size_t size_ = 0;
+  std::string buffer_;
 };
 
 }  // namespace diffy

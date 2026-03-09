@@ -17,7 +17,7 @@ Item {
         anchors.fill: parent
         color: "#80000000"
         opacity: root.visible ? 1.0 : 0.0
-        Behavior on opacity { NumberAnimation { duration: 120 } }
+        Behavior on opacity { NumberAnimation { duration: 50 } }
     }
 
     MouseArea {

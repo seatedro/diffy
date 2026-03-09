@@ -92,6 +92,13 @@ Rectangle {
         scale: 1.0
         opacity: root.showing ? 1.0 : 0
 
+        Behavior on scale {
+            SpringAnimation { spring: 10; damping: 0.85 }
+        }
+        Behavior on opacity {
+            NumberAnimation { duration: 50; easing.type: Easing.OutCubic }
+        }
+
         Rectangle {
             anchors.fill: parent
             anchors.topMargin: 6
@@ -139,7 +146,7 @@ Rectangle {
                     Text {
                         anchors.fill: parent
                         visible: searchField.text.length === 0
-                        text: "Type to search…"
+                        text: "Type to searchâ€¦"
                         color: theme.textFaint
                         font.family: theme.sans
                         font.pixelSize: theme.fontSubtitle
@@ -254,7 +261,7 @@ Rectangle {
                     Item { Layout.fillWidth: true }
 
                     Text {
-                        text: "↑↓ navigate  ↵ select  esc close"
+                        text: "â†‘â†“ navigate  â†µ select  esc close"
                         color: theme.textFaint
                         font.family: theme.mono
                         font.pixelSize: theme.fontCaption

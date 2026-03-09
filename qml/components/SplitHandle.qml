@@ -23,7 +23,7 @@ Rectangle {
 
         Behavior on color {
             enabled: !(Window.window && Window.window.commandPaletteShowing)
-            ColorAnimation { duration: 120 }
+            ColorAnimation { duration: 45 }
         }
     }
 

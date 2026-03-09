@@ -20,11 +20,11 @@ Rectangle {
 
     Behavior on border.color {
         enabled: !(Window.window && Window.window.commandPaletteShowing)
-        ColorAnimation { duration: 90 }
+        ColorAnimation { duration: 35 }
     }
     Behavior on border.width {
         enabled: !(Window.window && Window.window.commandPaletteShowing)
-        NumberAnimation { duration: 90 }
+        NumberAnimation { duration: 35 }
     }
 
     TextInput {

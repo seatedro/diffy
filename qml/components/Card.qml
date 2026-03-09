@@ -30,13 +30,13 @@ Rectangle {
         y: root.hoverLift && root.hovering ? -1 : 0
         Behavior on y {
             enabled: !(Window.window && Window.window.commandPaletteShowing)
-            NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+            NumberAnimation { duration: 50; easing.type: Easing.OutCubic }
         }
     }
 
     Behavior on border.color {
         enabled: !(Window.window && Window.window.commandPaletteShowing)
-        ColorAnimation { duration: 90 }
+        ColorAnimation { duration: 35 }
     }
 
     MouseArea {
@@ -45,5 +45,15 @@ Rectangle {
         hoverEnabled: root.hoverLift
         acceptedButtons: Qt.NoButton
         propagateComposedEvents: true
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        anchors.margins: -2
+        radius: root.radius + 2
+        color: "transparent"
+        border.width: 2
+        border.color: theme.accent
+        visible: root.activeFocus
     }
 }

@@ -12,6 +12,7 @@ Item {
     property var model: []
     property int selectedIndex: -1
     property string footerText: ""
+    property bool allowCustomInput: true
 
     signal itemSelected(var item, int index)
 
@@ -46,14 +47,18 @@ Item {
         if (selectedIndex >= 0 && selectedIndex < model.length && !model[selectedIndex].isHeader) {
             itemSelected(model[selectedIndex], selectedIndex)
             hide()
+        } else if (allowCustomInput && searchText.length > 0) {
+            itemSelected({label: searchText, value: searchText, isCustom: true}, -1)
+            hide()
         }
     }
 
     readonly property real searchHeight: 32
     readonly property real sepHeight: 1
     readonly property real footerHeight: 20
+    readonly property real customRowHeight: (allowCustomInput && searchText.length > 0 && (selectedIndex < 0 || selectedIndex >= model.length)) ? 24 : 0
     property real clampedListHeight: 0
-    readonly property real panelHeight: searchHeight + sepHeight + clampedListHeight + footerHeight
+    readonly property real panelHeight: searchHeight + sepHeight + clampedListHeight + customRowHeight + footerHeight
 
     onModelChanged: recomputeListHeight()
 
@@ -268,9 +273,38 @@ Item {
             }
         }
 
+        Rectangle {
+            visible: root.customRowHeight > 0
+            x: 0; y: root.searchHeight + root.sepHeight + root.clampedListHeight
+            width: parent.width; height: root.customRowHeight
+            color: customRowMouse.containsMouse ? theme.panelStrong : "transparent"
+
+            Text {
+                anchors.left: parent.left
+                anchors.leftMargin: theme.sp3
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Use '" + root.searchText + "'"
+                color: theme.textFaint
+                font.family: theme.sans
+                font.pixelSize: theme.fontSmall
+                font.italic: true
+            }
+
+            MouseArea {
+                id: customRowMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                    root.itemSelected({label: root.searchText, value: root.searchText, isCustom: true}, -1)
+                    root.hide()
+                }
+            }
+        }
+
         // Footer
         Rectangle {
-            x: 0; y: root.searchHeight + root.sepHeight + root.clampedListHeight
+            x: 0; y: root.searchHeight + root.sepHeight + root.clampedListHeight + root.customRowHeight
             width: parent.width; height: root.footerHeight
             color: theme.panelStrong
 

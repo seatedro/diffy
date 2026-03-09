@@ -9,6 +9,8 @@ Rectangle {
     property string currentValue: ""
     signal valueChanged(string value)
 
+    activeFocusOnTab: true
+
     implicitWidth: row.implicitWidth + theme.sp1
     implicitHeight: 28
     radius: theme.radiusMd
@@ -36,7 +38,7 @@ Rectangle {
 
                 Behavior on color {
                     enabled: !(Window.window && Window.window.commandPaletteShowing)
-                    ColorAnimation { duration: 90 }
+                    ColorAnimation { duration: 35 }
                 }
 
                 Text {
@@ -58,5 +60,15 @@ Rectangle {
                 }
             }
         }
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        anchors.margins: -2
+        radius: root.radius + 2
+        color: "transparent"
+        border.width: 2
+        border.color: theme.accent
+        visible: root.activeFocus
     }
 }

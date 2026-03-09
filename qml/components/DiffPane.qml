@@ -303,7 +303,7 @@ Rectangle {
                     radius: 3
                     color: theme.textFaint
                     opacity: parent.active ? 0.6 : 0.3
-                    Behavior on opacity { NumberAnimation { duration: 120 } }
+                    Behavior on opacity { NumberAnimation { duration: 45 } }
                 }
                 background: Item {}
             }
@@ -316,7 +316,7 @@ Rectangle {
                     radius: 3
                     color: theme.textFaint
                     opacity: hScrollBar.active ? 0.6 : 0.3
-                    Behavior on opacity { NumberAnimation { duration: 120 } }
+                    Behavior on opacity { NumberAnimation { duration: 45 } }
                 }
                 background: Item {}
             }
@@ -345,10 +345,20 @@ Rectangle {
                 monoFontFamily: theme.mono
                 onScrollToYRequested: function(value) {
                     var maxScroll = Math.max(0, diffViewport.contentHeight - diffViewport.height)
-                    diffViewport.contentY = Math.max(0, Math.min(value, maxScroll))
+                    var target = Math.max(0, Math.min(value, maxScroll))
+                    scrollAnim.to = target
+                    scrollAnim.start()
                 }
                 onNextFileRequested: root.nextFileRequested()
                 onPreviousFileRequested: root.previousFileRequested()
+            }
+
+            NumberAnimation {
+                id: scrollAnim
+                target: diffViewport
+                property: "contentY"
+                duration: 80
+                easing.type: Easing.OutCubic
             }
         }
     }

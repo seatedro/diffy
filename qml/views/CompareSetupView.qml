@@ -113,7 +113,7 @@ Rectangle {
                 border.color: theme.borderSoft
                 Behavior on color {
                     enabled: !(Window.window && Window.window.commandPaletteShowing)
-                    ColorAnimation { duration: 100 }
+                    ColorAnimation { duration: 35 }
                 }
 
                 RowLayout {
@@ -128,6 +128,7 @@ Rectangle {
                         monospace: true
                         borderless: true
                         compact: true
+                        activeFocusOnTab: true
                         text: diffController.leftRefDisplay
                         placeholderText: "Base ref (e.g. main)"
                         onSubmitted: root.runCompare()
@@ -137,13 +138,6 @@ Rectangle {
                         svg: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>'
                         size: 14
                         color: theme.textFaint
-
-                        MouseArea {
-                            anchors.fill: parent
-                            anchors.margins: -4
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: window.openBranchPicker("left", leftRefCard)
-                        }
                     }
                 }
 
@@ -151,7 +145,11 @@ Rectangle {
                     id: leftSetupMouse
                     anchors.fill: parent
                     hoverEnabled: true
-                    acceptedButtons: Qt.NoButton
+                    cursorShape: Qt.PointingHandCursor
+                    propagateComposedEvents: true
+                    onClicked: function(mouse) {
+                        window.openBranchPicker("left", leftRefCard)
+                    }
                 }
             }
 
@@ -171,7 +169,7 @@ Rectangle {
                 border.color: theme.borderSoft
                 Behavior on color {
                     enabled: !(Window.window && Window.window.commandPaletteShowing)
-                    ColorAnimation { duration: 100 }
+                    ColorAnimation { duration: 35 }
                 }
 
                 RowLayout {
@@ -186,6 +184,7 @@ Rectangle {
                         monospace: true
                         borderless: true
                         compact: true
+                        activeFocusOnTab: true
                         text: diffController.rightRefDisplay
                         placeholderText: "Head ref (e.g. feature)"
                         onSubmitted: root.runCompare()
@@ -195,13 +194,6 @@ Rectangle {
                         svg: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>'
                         size: 14
                         color: theme.textFaint
-
-                        MouseArea {
-                            anchors.fill: parent
-                            anchors.margins: -4
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: window.openBranchPicker("right", rightRefCard)
-                        }
                     }
                 }
 
@@ -209,7 +201,11 @@ Rectangle {
                     id: rightSetupMouse
                     anchors.fill: parent
                     hoverEnabled: true
-                    acceptedButtons: Qt.NoButton
+                    cursorShape: Qt.PointingHandCursor
+                    propagateComposedEvents: true
+                    onClicked: function(mouse) {
+                        window.openBranchPicker("right", rightRefCard)
+                    }
                 }
             }
         }

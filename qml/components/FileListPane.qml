@@ -278,6 +278,10 @@ Rectangle {
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: root.fileSelected(index)
+                    onContainsMouseChanged: {
+                        if (containsMouse) window.showTooltip(parent, modelData.path, "right")
+                        else window.hideTooltip()
+                    }
                 }
             }
 

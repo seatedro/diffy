@@ -282,6 +282,8 @@ Rectangle {
             contentWidth: Math.max(width, surface.contentWidth)
             contentHeight: surface.contentHeight
             boundsBehavior: Flickable.StopAtBounds
+            onContentXChanged: window.hideTooltip()
+            onContentYChanged: window.hideTooltip()
 
             ScrollBar.vertical: ScrollBar {
                 policy: diffViewport.contentHeight > diffViewport.height ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff

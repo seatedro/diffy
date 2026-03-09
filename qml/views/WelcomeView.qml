@@ -38,6 +38,7 @@ Rectangle {
             text: "Open Repository"
             tone: "accent"
             active: true
+            toolTip: "Browse for a Git repository"
             onClicked: root.openRepositoryRequested()
         }
 
@@ -93,6 +94,10 @@ Rectangle {
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
                             onClicked: root.openRecentRequested(modelData)
+                            onContainsMouseChanged: {
+                                if (containsMouse) window.showTooltip(parent, modelData, "bottom")
+                                else window.hideTooltip()
+                            }
                         }
                     }
                 }

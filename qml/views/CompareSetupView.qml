@@ -23,6 +23,12 @@ Rectangle {
         return "A..B"
     }
 
+    function compareModeDescription(value) {
+        if (value === "three-dot") return "Three-dot range comparison"
+        if (value === "single-commit") return "Single commit diff"
+        return "Two-dot merge base comparison"
+    }
+
     function repoLabel() {
         if (diffController.repoPath.length === 0) return "No repository"
         var parts = diffController.repoPath.split("/")
@@ -72,12 +78,14 @@ Rectangle {
             ActionButton {
                 text: "Change"
                 compact: true
+                toolTip: "Change repository"
                 onClicked: root.browseRequested()
             }
 
             ActionButton {
                 text: "Back"
                 compact: true
+                toolTip: "Go back"
                 onClicked: diffController.goBack()
             }
         }
@@ -148,12 +156,17 @@ Rectangle {
                     anchors.fill: parent
                     hoverEnabled: true
                     acceptedButtons: Qt.NoButton
+                    onContainsMouseChanged: {
+                        if (containsMouse) window.showTooltip(leftRefCard, "Click to browse branches, or type a ref", "bottom")
+                        else window.hideTooltip()
+                    }
                 }
             }
 
             ActionButton {
                 text: compareModeLabel(diffController.compareMode)
                 compact: true
+                toolTip: compareModeDescription(diffController.compareMode)
                 onClicked: diffController.compareMode = nextCompareMode(diffController.compareMode)
             }
 
@@ -203,6 +216,10 @@ Rectangle {
                     anchors.fill: parent
                     hoverEnabled: true
                     acceptedButtons: Qt.NoButton
+                    onContainsMouseChanged: {
+                        if (containsMouse) window.showTooltip(rightRefCard, "Click to browse branches, or type a ref", "bottom")
+                        else window.hideTooltip()
+                    }
                 }
             }
         }
@@ -218,6 +235,7 @@ Rectangle {
                 text: diffController.comparing ? "Comparing…" : "Compare"
                 tone: "accent"
                 active: true
+                toolTip: "Run comparison"
                 onClicked: root.runCompare()
             }
         }

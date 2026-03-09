@@ -21,6 +21,17 @@ Window {
         return 2
     }
 
+    function showTooltip(target, text, position) {
+        globalTooltip.target = target
+        globalTooltip.text = text
+        globalTooltip.position = position || "bottom"
+        globalTooltip.show()
+    }
+
+    function hideTooltip() {
+        globalTooltip.hide()
+    }
+
     Connections {
         target: diffController
         function onCurrentViewChanged() {
@@ -52,6 +63,11 @@ Window {
         anchors.top: parent.top
         z: 100
         active: diffController.comparing || diffController.pullRequestLoading
+    }
+
+    Tooltip {
+        id: globalTooltip
+        anchors.fill: parent
     }
 
     WelcomeView {
@@ -167,6 +183,27 @@ Window {
             } else {
                 diffController.leftRef = value
             }
+        }
+    }
+
+    Connections {
+        target: commandPalette
+        function onShowingChanged() {
+            if (commandPalette.showing) window.hideTooltip()
+        }
+    }
+
+    Connections {
+        target: shortcutOverlay
+        function onShowingChanged() {
+            if (shortcutOverlay.showing) window.hideTooltip()
+        }
+    }
+
+    Connections {
+        target: refPickerDropdown
+        function onShowingChanged() {
+            if (refPickerDropdown.showing) window.hideTooltip()
         }
     }
 

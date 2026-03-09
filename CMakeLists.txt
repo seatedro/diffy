@@ -176,6 +176,7 @@ qt_add_qml_module(diffy
     qml/components/Skeleton.qml
     qml/components/SplitHandle.qml
     qml/components/Toast.qml
+    qml/components/Tooltip.qml
     qml/views/WelcomeView.qml
     qml/views/CompareSetupView.qml
     qml/views/DiffBrowsingView.qml

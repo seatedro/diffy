@@ -73,50 +73,17 @@ Rectangle {
         onClicked: root.clicked()
     }
 
-    Keys.onReturnPressed: root.clicked()
-    Keys.onSpacePressed: root.clicked()
-
-    // Hand-rolled tooltip
-    Rectangle {
-        id: tipBg
-        visible: root.toolTip.length > 0 && tipShown
-        x: (root.width - width) / 2
-        y: root.height + theme.sp1
-        width: tipLabel.implicitWidth + theme.sp3
-        height: tipLabel.implicitHeight + theme.sp1
-        radius: theme.radiusSm
-        color: theme.panelStrong
-        border.color: theme.borderSoft
-        z: 100
-
-        property bool tipShown: false
-
-        Text {
-            id: tipLabel
-            anchors.centerIn: parent
-            text: root.toolTip
-            color: theme.textBase
-            font.family: theme.sans
-            font.pixelSize: theme.fontSmall
-        }
-    }
-
-    Timer {
-        id: tipTimer
-        interval: 600
-        repeat: false
-        onTriggered: tipBg.tipShown = true
-    }
-
     Connections {
         target: mouseArea
         function onContainsMouseChanged() {
-            if (mouseArea.containsMouse) {
-                tipTimer.start()
+            if (mouseArea.containsMouse && root.toolTip.length > 0) {
+                window.showTooltip(root, root.toolTip, "bottom")
             } else {
-                tipTimer.stop()
-                tipBg.tipShown = false
+                window.hideTooltip()
             }
         }
     }
+
+    Keys.onReturnPressed: root.clicked()
+    Keys.onSpacePressed: root.clicked()
 }

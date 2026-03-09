@@ -38,6 +38,7 @@ Rectangle {
         onPressed: function(mouse) {
             startPos = root.position
             startMouse = root.horizontal ? mouse.y : mouse.x
+            window.hideTooltip()
         }
 
         onPositionChanged: function(mouse) {
@@ -45,6 +46,11 @@ Rectangle {
             var delta = (root.horizontal ? mouse.y : mouse.x) - startMouse
             var newPos = Math.max(root.minBefore, Math.min(root.maxBefore, startPos + delta))
             root.dragged(newPos)
+        }
+
+        onContainsMouseChanged: {
+            if (containsMouse && !pressed) window.showTooltip(root, "Drag to resize", "right")
+            else window.hideTooltip()
         }
     }
 }

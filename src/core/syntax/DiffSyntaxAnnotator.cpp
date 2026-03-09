@@ -36,6 +36,15 @@ void DiffSyntaxAnnotator::annotateFile(const LanguageRegistry& registry,
   std::vector<LineRef> oldLineRefs;
   std::vector<LineRef> newLineRefs;
 
+  size_t totalLines = 0;
+  for (const Hunk& hunk : file.hunks) {
+    totalLines += hunk.lines.size();
+  }
+  oldLineRefs.reserve(totalLines);
+  newLineRefs.reserve(totalLines);
+  oldContent.reserve(totalLines * 40);
+  newContent.reserve(totalLines * 40);
+
   for (size_t hunkIndex = 0; hunkIndex < file.hunks.size(); ++hunkIndex) {
     const Hunk& hunk = file.hunks[hunkIndex];
     for (size_t lineIndex = 0; lineIndex < hunk.lines.size(); ++lineIndex) {

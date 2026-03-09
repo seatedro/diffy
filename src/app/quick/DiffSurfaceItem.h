@@ -20,7 +20,7 @@
 #include "app/models/DiffRowListModel.h"
 #include "core/rendering/DiffLayoutEngine.h"
 #include "core/rendering/PreparedRows.h"
-#include "core/text/TextRope.h"
+#include "core/text/TextBuffer.h"
 
 class QPainter;
 class QSGNode;
@@ -171,6 +171,7 @@ class DiffSurfaceItem : public QQuickItem {
   double lastDisplayRowsRebuildTimeMs() const;
   double lastMetricsRecalcTimeMs() const;
   Q_INVOKABLE void resetPerfStats();
+  Q_INVOKABLE void dumpPerfReport() const;
 
 signals:
   void rowsModelChanged();
@@ -238,7 +239,7 @@ signals:
   const CachedWrappedLayout& wrappedLayoutForText(const QString& text, int pixelSize, qreal wrapWidth) const;
   int currentRowIndex() const;
   PreparedRowsCacheKey preparedRowsCacheKey() const;
-  std::shared_ptr<const DiffRasterSnapshot> buildRasterSnapshot(const QString& mode);
+  std::shared_ptr<const DiffRasterSnapshot> buildRasterSnapshot(const QString& mode, const QSet<int>& neededRows);
   qreal contentWidthForLayout(const QString& mode) const;
   std::vector<TileSpec> buildPrewarmTileSpecs(const QString& mode);
   QImage renderTileImageInline(const std::vector<DiffDisplayRow>& rows,
@@ -286,8 +287,10 @@ signals:
                          const QPointF& baseline,
                          const QRectF& clipRect,
                          const QString& text,
-                         const std::vector<DiffTokenSpan>& tokens,
-                         const std::vector<DiffTokenSpan>& changeSpans,
+                         const DiffTokenSpan* tokens,
+                         size_t tokenCount,
+                         const DiffTokenSpan* changeSpans,
+                         size_t changeSpanCount,
                          const std::vector<qreal>& prefixAdvances,
                          const QColor& textColor,
                          const QColor& tokenBackground,
@@ -296,8 +299,10 @@ signals:
                    const QPointF& baseline,
                    const QRectF& clipRect,
                    const QString& text,
-                   const std::vector<DiffTokenSpan>& tokens,
-                   const std::vector<DiffTokenSpan>& changeSpans,
+                   const DiffTokenSpan* tokens,
+                   size_t tokenCount,
+                   const DiffTokenSpan* changeSpans,
+                   size_t changeSpanCount,
                    const std::vector<qreal>& prefixAdvances,
                    const QColor& textColor,
                    const QColor& tokenBackground) const;
@@ -318,6 +323,7 @@ signals:
   DiffRowListModel* rowsModel_ = nullptr;
   QString layoutMode_ = "unified";
   int compareGeneration_ = 0;
+  quint64 contentGeneration_ = 0;
   QString filePath_;
   QString fileStatus_ = "M";
   int additions_ = 0;
@@ -325,7 +331,7 @@ signals:
   QVariantMap palette_;
   QString monoFontFamily_ = "JetBrains Mono";
 
-  TextRope textRope_;
+  TextBuffer textBuffer_;
   DiffLayoutEngine displayModel_;
 
   qreal contentHeight_ = 0;
@@ -388,6 +394,34 @@ signals:
   QSet<quint64> pendingRasterKeys_;
   mutable std::mutex readyTileImagesMutex_;
   mutable QHash<quint64, QImage> readyTileImages_;
+
+  struct PerfBucket {
+    double sum = 0;
+    double peak = 0;
+    int count = 0;
+    void record(double ms) {
+      sum += ms;
+      if (ms > peak) peak = ms;
+      ++count;
+    }
+    double avg() const { return count > 0 ? sum / count : 0; }
+  };
+
+  struct PerfSession {
+    PerfBucket paint;
+    PerfBucket raster;
+    PerfBucket upload;
+    PerfBucket rebuild;
+    PerfBucket displayRebuild;
+    PerfBucket metrics;
+    int totalFrames = 0;
+    int droppedFrames = 0;
+    int totalCacheHits = 0;
+    int totalCacheMisses = 0;
+    std::chrono::steady_clock::time_point startTime = std::chrono::steady_clock::now();
+  };
+
+  PerfSession perfSession_;
 };
 
 }  // namespace diffy

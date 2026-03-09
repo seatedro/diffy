@@ -5,6 +5,7 @@ import "../components"
 Rectangle {
     id: root
 
+    property alias surfaceItem: diffPane.surfaceItem
     property bool compactControls: width < 1100
     property bool stackPanels: width < 800
     property bool hideFilePane: width < 600

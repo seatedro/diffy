@@ -1,6 +1,7 @@
 #include <QtTest/QtTest>
 
 #include "core/rendering/DiffLayoutEngine.h"
+#include "core/syntax/SyntaxTypes.h"
 
 using namespace diffy;
 
@@ -43,7 +44,7 @@ class DiffLayoutEngineTest : public QObject {
         makeHunk(),
         makeLine(DiffLineKind::Context, 98, 98, 20.0),
         makeLine(DiffLineKind::Addition, -1, 1205, 120.0),
-    });
+    }, TokenBuffer{});
 
     DiffLayoutConfig config;
     config.mode = DiffLayoutMode::Unified;
@@ -89,7 +90,7 @@ class DiffLayoutEngineTest : public QObject {
         makeLine(DiffLineKind::Deletion, 11, -1, 15.0),
         makeLine(DiffLineKind::Addition, -1, 10, 90.0),
         makeLine(DiffLineKind::Context, 12, 11, 20.0),
-    });
+    }, TokenBuffer{});
 
     DiffLayoutConfig config;
     config.mode = DiffLayoutMode::Split;
@@ -135,7 +136,7 @@ class DiffLayoutEngineTest : public QObject {
         makeLine(DiffLineKind::Context, 1, 1, 12.0),
         makeHunk("@@ second @@"),
         makeLine(DiffLineKind::Addition, -1, 2, 18.0),
-    });
+    }, TokenBuffer{});
 
     DiffLayoutConfig config;
     config.mode = DiffLayoutMode::Unified;
@@ -163,7 +164,7 @@ class DiffLayoutEngineTest : public QObject {
         makeLine(DiffLineKind::Deletion, 10, -1, 90.0),
         makeLine(DiffLineKind::Addition, -1, 10, 110.0),
         makeLine(DiffLineKind::Context, 11, 11, 30.0),
-    });
+    }, TokenBuffer{});
 
     DiffLayoutConfig unified;
     unified.mode = DiffLayoutMode::Unified;
@@ -192,6 +193,139 @@ class DiffLayoutEngineTest : public QObject {
     QCOMPARE(model.rows().size(), static_cast<size_t>(4));
     QCOMPARE(static_cast<int>(model.rows().at(2).leftKind), static_cast<int>(DiffLineKind::Deletion));
     QCOMPARE(static_cast<int>(model.rows().at(2).rightKind), static_cast<int>(DiffLineKind::Addition));
+  }
+
+  void tokenRangesValidAcrossModes() {
+    DiffLayoutEngine model;
+    TokenBuffer srcTokens;
+    std::vector<DiffSourceRow> sourceRows;
+
+    {
+      DiffSourceRow hunk;
+      hunk.rowType = DiffRowType::Hunk;
+      hunk.header = "@@ -1,3 +1,3 @@";
+      sourceRows.push_back(std::move(hunk));
+    }
+    {
+      DiffSourceRow row;
+      row.rowType = DiffRowType::Line;
+      row.kind = DiffLineKind::Context;
+      row.oldLine = 1;
+      row.newLine = 1;
+      row.textRange = {0, 10};
+      DiffTokenSpan span{0, 5, SyntaxTokenKind::Keyword};
+      row.tokens = srcTokens.append(&span, 1);
+      sourceRows.push_back(std::move(row));
+    }
+    {
+      DiffSourceRow row;
+      row.rowType = DiffRowType::Line;
+      row.kind = DiffLineKind::Deletion;
+      row.oldLine = 2;
+      row.textRange = {10, 8};
+      DiffTokenSpan span{0, 4, SyntaxTokenKind::String};
+      row.tokens = srcTokens.append(&span, 1);
+      sourceRows.push_back(std::move(row));
+    }
+    {
+      DiffSourceRow row;
+      row.rowType = DiffRowType::Line;
+      row.kind = DiffLineKind::Addition;
+      row.newLine = 2;
+      row.textRange = {18, 12};
+      DiffTokenSpan span{0, 6, SyntaxTokenKind::Function};
+      row.tokens = srcTokens.append(&span, 1);
+      sourceRows.push_back(std::move(row));
+    }
+
+    model.setSourceRows(std::move(sourceRows), std::move(srcTokens));
+
+    DiffLayoutConfig unified;
+    unified.mode = DiffLayoutMode::Unified;
+    unified.rowHeight = 10.0;
+    unified.hunkHeight = 12.0;
+    unified.fileHeaderHeight = 14.0;
+
+    DiffLayoutConfig split = unified;
+    split.mode = DiffLayoutMode::Split;
+
+    model.rebuild(unified);
+
+    const auto& unifiedRows = model.rows();
+    const auto& unifiedTokenBuf = model.tokenBuffer();
+    for (const auto& row : unifiedRows) {
+      if (!row.tokens.empty()) {
+        QVERIFY(row.tokens.start + row.tokens.count <= static_cast<uint32_t>(unifiedTokenBuf.size()));
+      }
+      if (!row.changeSpans.empty()) {
+        QVERIFY(row.changeSpans.start + row.changeSpans.count <= static_cast<uint32_t>(unifiedTokenBuf.size()));
+      }
+    }
+
+    const auto& splitRows = model.cachedRows(split);
+    const auto& splitTokenBuf = model.cachedTokenBuffer(split);
+    for (const auto& row : splitRows) {
+      if (!row.leftTokens.empty()) {
+        QVERIFY(row.leftTokens.start + row.leftTokens.count <= static_cast<uint32_t>(splitTokenBuf.size()));
+      }
+      if (!row.rightTokens.empty()) {
+        QVERIFY(row.rightTokens.start + row.rightTokens.count <= static_cast<uint32_t>(splitTokenBuf.size()));
+      }
+    }
+
+    QCOMPARE(model.rows().size(), unifiedRows.size());
+    QCOMPARE(model.tokenBuffer().size(), unifiedTokenBuf.size());
+
+    QVERIFY(splitTokenBuf.size() > unifiedTokenBuf.size());
+  }
+
+  void splitTokenBufferDiffersFromUnified() {
+    DiffLayoutEngine model;
+    TokenBuffer srcTokens;
+    std::vector<DiffSourceRow> sourceRows;
+
+    {
+      DiffSourceRow hunk;
+      hunk.rowType = DiffRowType::Hunk;
+      hunk.header = "@@ -1,1 +1,1 @@";
+      sourceRows.push_back(std::move(hunk));
+    }
+    {
+      DiffSourceRow row;
+      row.rowType = DiffRowType::Line;
+      row.kind = DiffLineKind::Context;
+      row.oldLine = 1;
+      row.newLine = 1;
+      row.textRange = {0, 5};
+      DiffTokenSpan span{0, 3, SyntaxTokenKind::Keyword};
+      row.tokens = srcTokens.append(&span, 1);
+      sourceRows.push_back(std::move(row));
+    }
+
+    model.setSourceRows(std::move(sourceRows), std::move(srcTokens));
+
+    DiffLayoutConfig unified;
+    unified.mode = DiffLayoutMode::Unified;
+    unified.rowHeight = 10.0;
+    unified.hunkHeight = 12.0;
+    unified.fileHeaderHeight = 14.0;
+
+    DiffLayoutConfig split = unified;
+    split.mode = DiffLayoutMode::Split;
+
+    model.rebuild(unified);
+    model.prewarm(split);
+
+    const auto& splitBuf = model.cachedTokenBuffer(split);
+    const auto& unifiedBuf = model.tokenBuffer();
+    QCOMPARE(unifiedBuf.size(), static_cast<size_t>(1));
+    QCOMPARE(splitBuf.size(), static_cast<size_t>(2));
+
+    const auto& splitRows = model.cachedRows(split);
+    const auto& contextRow = splitRows.at(1);
+
+    QCOMPARE(contextRow.rightTokens.start, static_cast<uint32_t>(1));
+    QVERIFY(contextRow.rightTokens.start + contextRow.rightTokens.count > static_cast<uint32_t>(unifiedBuf.size()));
   }
 };
 

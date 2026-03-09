@@ -533,7 +533,6 @@ void DiffController::compare() {
     } else {
       selectedFileIndex_ = -1;
     }
-    highlightSelectedFile();
     rebuildSelectedFileRows();
     if (selectedFileIndex_ >= 0) {
       Q_ASSERT(selectedFileRowsModel_.count() == static_cast<int>(flatRowsForFile(selectedFileIndex_).size()));
@@ -544,7 +543,6 @@ void DiffController::compare() {
     emit selectedFileIndexChanged();
     emit selectedFileChanged();
     startBackgroundHighlighting();
-    QTimer::singleShot(0, this, [this]() { prefetchFileRows(); });
     resetPreparedRowsPrewarmOrder();
     schedulePreparedRowsPrewarm();
 
@@ -649,8 +647,9 @@ void DiffController::schedulePreparedRowsPrewarm() {
 
     int warmedCount = 0;
     const QFontMetricsF metrics(monoFont(kPreparedRowsPrewarmFontFamily, 12));
-    const TextWidthMeasure measureTextWidth = [&metrics](std::string_view text) {
-      return metrics.horizontalAdvance(QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())));
+    const double charWidth = metrics.horizontalAdvance(QLatin1Char('M'));
+    const TextWidthMeasure measureTextWidth = [charWidth](std::string_view text) {
+      return charWidth * static_cast<double>(text.size());
     };
     while (preparedRowsPrewarmIndex_ < static_cast<int>(preparedRowsPrewarmOrder_.size()) &&
            warmedCount < kPreparedRowsPrewarmBatchSize) {
@@ -684,28 +683,56 @@ void DiffController::startBackgroundHighlighting() {
     highlightWatcher_.reset();
   }
 
-  if (fileDiffs_.size() <= 1) {
+  if (fileDiffs_.empty()) {
     return;
   }
 
   const LanguageRegistry* langReg = &languageRegistry_;
   const DiffSyntaxAnnotator* syntaxAnnotator = &syntaxAnnotator_;
   std::vector<FileDiff>* diffs = &fileDiffs_;
-  int skipIndex = selectedFileIndex_;
+  int selectedIndex = selectedFileIndex_;
 
   highlightWatcher_ = std::make_unique<QFutureWatcher<void>>();
-  connect(highlightWatcher_.get(), &QFutureWatcher<void>::finished, this, [this]() {
-    highlightWatcher_.reset();
+  connect(highlightWatcher_.get(), &QFutureWatcher<void>::finished, this, [this, selectedIndex]() {
     resetFileRowCaches();
     rebuildSelectedFileRows();
-    resetPreparedRowsPrewarmOrder();
-    schedulePreparedRowsPrewarm();
+
+    if (fileDiffs_.size() <= 1) {
+      highlightWatcher_.reset();
+      resetPreparedRowsPrewarmOrder();
+      schedulePreparedRowsPrewarm();
+      prefetchFileRows();
+      return;
+    }
+
+    auto* diffs2 = &fileDiffs_;
+    auto* langReg2 = &languageRegistry_;
+    auto* annotator2 = &syntaxAnnotator_;
+
+    highlightWatcher_ = std::make_unique<QFutureWatcher<void>>();
+    connect(highlightWatcher_.get(), &QFutureWatcher<void>::finished, this, [this]() {
+      highlightWatcher_.reset();
+      resetFileRowCaches();
+      rebuildSelectedFileRows();
+      resetPreparedRowsPrewarmOrder();
+      schedulePreparedRowsPrewarm();
+      prefetchFileRows();
+    });
+
+    QFuture<void> remaining = QtConcurrent::run(
+        [diffs2, langReg2, annotator2, selectedIndex]() {
+          Highlighter highlighter;
+          annotator2->annotateFiles(*langReg2, highlighter, *diffs2, selectedIndex);
+        });
+    highlightWatcher_->setFuture(remaining);
   });
 
   QFuture<void> future = QtConcurrent::run(
-      [diffs, langReg, syntaxAnnotator, skipIndex]() {
-        Highlighter highlighter;
-        syntaxAnnotator->annotateFiles(*langReg, highlighter, *diffs, skipIndex);
+      [diffs, langReg, syntaxAnnotator, selectedIndex]() {
+        if (selectedIndex >= 0 && selectedIndex < static_cast<int>(diffs->size())) {
+          Highlighter highlighter;
+          syntaxAnnotator->annotateFile(*langReg, highlighter, diffs->at(static_cast<size_t>(selectedIndex)));
+        }
       });
 
   highlightWatcher_->setFuture(future);

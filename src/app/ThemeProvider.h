@@ -62,7 +62,9 @@ class ThemeProvider : public QObject {
   Q_PROPERTY(QString mono MEMBER mono_ CONSTANT)
 
   Q_PROPERTY(QString currentTheme READ currentTheme NOTIFY themeChanged)
+  Q_PROPERTY(QString currentMode READ currentMode NOTIFY themeChanged)
   Q_PROPERTY(QStringList availableThemes READ availableThemes CONSTANT)
+  Q_PROPERTY(QStringList availableModes READ availableModes CONSTANT)
 
   Q_PROPERTY(QColor appBg READ appBg NOTIFY themeChanged)
   Q_PROPERTY(QColor canvas READ canvas NOTIFY themeChanged)
@@ -134,8 +136,12 @@ class ThemeProvider : public QObject {
   explicit ThemeProvider(QObject* parent = nullptr);
 
   QString currentTheme() const;
+  QString currentMode() const;
   QStringList availableThemes() const;
-  Q_INVOKABLE void setTheme(const QString& name);
+  QStringList availableModes() const;
+  Q_INVOKABLE void setTheme(const QString& name, bool persist = true);
+  Q_INVOKABLE void setMode(const QString& mode, bool persist = true);
+  Q_INVOKABLE void toggleMode(bool persist = true);
 
   QColor appBg() const { return colors_.appBg; }
   QColor canvas() const { return colors_.canvas; }
@@ -187,7 +193,7 @@ class ThemeProvider : public QObject {
   void themeChanged();
 
  private:
-  void loadTheme(const QString& name);
+  void loadTheme(const QString& name, const QString& mode);
   static ThemeColors gruvboxDark();
   static ThemeColors gruvboxLight();
   static ThemeColors kanagawaDark();
@@ -198,6 +204,7 @@ class ThemeProvider : public QObject {
   static ThemeColors catppuccinLight();
 
   QString currentTheme_;
+  QString currentMode_;
   ThemeColors colors_;
   QSettings settings_;
 

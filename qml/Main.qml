@@ -136,6 +136,19 @@ Window {
     CommandPalette {
         id: commandPalette
         onActionTriggered: function(item) {
+            if (item.type === "action" && item.value === "submenu:root") {
+                window.openCommandPaletteRoot()
+                return
+            }
+            if (item.type === "action" && item.value === "submenu:theme") {
+                window.openThemePicker()
+                return
+            }
+            if (item.type === "action" && item.value === "submenu:appearance") {
+                window.openAppearancePicker()
+                return
+            }
+
             if (item.type === "file") {
                 diffController.selectFile(item.index)
             } else if (item.type === "branch") {
@@ -153,12 +166,42 @@ Window {
                 else if (item.value === "openRepo") window.openRepoPicker()
                 else if (item.value === "browseRepo") diffController.openRepositoryFromDialog()
                 else if (item.value === "shortcuts") shortcutOverlay.showing = true
-                else if (item.value && item.value.startsWith("theme:")) theme.setTheme(item.value.substring(6))
+                else if (item.value && item.value.startsWith("theme:")) {
+                    theme.setTheme(item.value.substring(6), true)
+                    window.themePreviewActive = false
+                } else if (item.value && item.value.startsWith("mode:")) {
+                    theme.setMode(item.value.substring(5), true)
+                    window.themePreviewActive = false
+                }
             }
+        }
+        onItemHighlighted: function(item) {
+            if (!window.themePreviewActive) return
+            if (!item || !item.value) {
+                theme.setTheme(window.previewTheme, false)
+                theme.setMode(window.previewMode, false)
+                return
+            }
+            if (window.commandPaletteLevel === "theme" && item.value.startsWith("theme:")) {
+                theme.setTheme(item.value.substring(6), false)
+            } else if (window.commandPaletteLevel === "appearance" && item.value.startsWith("mode:")) {
+                theme.setMode(item.value.substring(5), false)
+            } else {
+                theme.setTheme(window.previewTheme, false)
+                theme.setMode(window.previewMode, false)
+            }
+        }
+        onClosed: {
+            window.restoreThemePreview()
+            window.commandPaletteLevel = "root"
         }
     }
 
     property string branchPickTarget: ""
+    property string commandPaletteLevel: "root"
+    property bool themePreviewActive: false
+    property string previewTheme: ""
+    property string previewMode: ""
 
     RefPickerDropdown {
         id: refPickerDropdown
@@ -212,7 +255,60 @@ Window {
         }
     }
 
-    function openCommandPalette() {
+    function restoreThemePreview() {
+        if (!themePreviewActive) return
+        theme.setTheme(previewTheme, false)
+        theme.setMode(previewMode, false)
+        themePreviewActive = false
+    }
+
+    function startThemePreview() {
+        previewTheme = theme.currentTheme
+        previewMode = theme.currentMode
+        themePreviewActive = true
+    }
+
+    function openThemePicker() {
+        restoreThemePreview()
+        startThemePreview()
+        commandPaletteLevel = "theme"
+        var items = []
+        items.push({label: "← Back", detail: "", category: "Navigation", type: "action", value: "submenu:root", keepOpen: true})
+        var themes = theme.availableThemes
+        for (var t = 0; t < themes.length; ++t) {
+            items.push({
+                label: themes[t],
+                detail: theme.currentTheme === themes[t] ? "active" : "",
+                category: "Theme",
+                type: "action",
+                value: "theme:" + themes[t]
+            })
+        }
+        commandPalette.open(items)
+    }
+
+    function openAppearancePicker() {
+        restoreThemePreview()
+        startThemePreview()
+        commandPaletteLevel = "appearance"
+        var items = []
+        items.push({label: "← Back", detail: "", category: "Navigation", type: "action", value: "submenu:root", keepOpen: true})
+        var modes = theme.availableModes
+        for (var m = 0; m < modes.length; ++m) {
+            items.push({
+                label: modes[m],
+                detail: theme.currentMode === modes[m] ? "active" : "",
+                category: "Appearance",
+                type: "action",
+                value: "mode:" + modes[m]
+            })
+        }
+        commandPalette.open(items)
+    }
+
+    function openCommandPaletteRoot() {
+        restoreThemePreview()
+        commandPaletteLevel = "root"
         var items = []
 
         // Actions
@@ -220,16 +316,8 @@ Window {
         items.push({label: "Go Back", detail: "Alt+←", category: "Action", type: "action", value: "back"})
         items.push({label: "Open Repository", detail: "", category: "Action", type: "action", value: "openRepo"})
         items.push({label: "Keyboard Shortcuts", detail: "?", category: "Action", type: "action", value: "shortcuts"})
-        var themes = theme.availableThemes
-        for (var t = 0; t < themes.length; ++t) {
-            items.push({
-                label: "Theme: " + themes[t],
-                detail: theme.currentTheme === themes[t] ? "active" : "",
-                category: "Theme",
-                type: "action",
-                value: "theme:" + themes[t]
-            })
-        }
+        items.push({label: "Change theme", detail: theme.currentTheme, category: "Theme", type: "action", value: "submenu:theme", keepOpen: true})
+        items.push({label: "Appearance", detail: theme.currentMode, category: "Theme", type: "action", value: "submenu:appearance", keepOpen: true})
 
         // Changed files
         var files = diffController.files
@@ -256,6 +344,10 @@ Window {
         }
 
         commandPalette.open(items)
+    }
+
+    function openCommandPalette() {
+        openCommandPaletteRoot()
     }
 
     // Global toast
@@ -307,7 +399,7 @@ Window {
             var idx = themes.indexOf(theme.currentTheme)
             var next = (idx + 1) % themes.length
             theme.setTheme(themes[next])
-            globalToast.show("Theme: " + themes[next], "neutral", 1500)
+            globalToast.show("Theme: " + themes[next] + " (" + theme.currentMode + ")", "neutral", 1500)
         }
     }
 }

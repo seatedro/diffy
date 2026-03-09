@@ -37,15 +37,83 @@ SyntaxTokenKind captureNameToKind(std::string_view name) {
 
 }  // namespace
 
+struct CachedQuery {
+  TSQuery* query = nullptr;
+  std::vector<SyntaxTokenKind> captureKinds;
+
+  CachedQuery() = default;
+  CachedQuery(CachedQuery&& other) noexcept
+      : query(other.query), captureKinds(std::move(other.captureKinds)) {
+    other.query = nullptr;
+  }
+  CachedQuery& operator=(CachedQuery&& other) noexcept {
+    if (this != &other) {
+      if (query != nullptr) {
+        ts_query_delete(query);
+      }
+      query = other.query;
+      captureKinds = std::move(other.captureKinds);
+      other.query = nullptr;
+    }
+    return *this;
+  }
+  CachedQuery(const CachedQuery&) = delete;
+  CachedQuery& operator=(const CachedQuery&) = delete;
+
+  ~CachedQuery() {
+    if (query != nullptr) {
+      ts_query_delete(query);
+    }
+  }
+};
+
 struct Highlighter::Impl {
   TSParser* parser = nullptr;
+  TSQueryCursor* cursor = nullptr;
+  std::unordered_map<const TSLanguage*, CachedQuery> queryCache;
 
-  Impl() { parser = ts_parser_new(); }
+  Impl() {
+    parser = ts_parser_new();
+    cursor = ts_query_cursor_new();
+  }
 
   ~Impl() {
+    if (cursor != nullptr) {
+      ts_query_cursor_delete(cursor);
+    }
+    queryCache.clear();
     if (parser != nullptr) {
       ts_parser_delete(parser);
     }
+  }
+
+  CachedQuery* getOrCompileQuery(const GrammarInfo& grammar) {
+    auto it = queryCache.find(grammar.language);
+    if (it != queryCache.end()) {
+      return &it->second;
+    }
+
+    uint32_t errorOffset = 0;
+    TSQueryError errorType = TSQueryErrorNone;
+    TSQuery* query = ts_query_new(grammar.language, grammar.highlightsQuery.data(),
+                                   static_cast<uint32_t>(grammar.highlightsQuery.size()),
+                                   &errorOffset, &errorType);
+    if (query == nullptr) {
+      return nullptr;
+    }
+
+    CachedQuery cached;
+    cached.query = query;
+    const uint32_t captureCount = ts_query_capture_count(query);
+    cached.captureKinds.resize(captureCount, SyntaxTokenKind::None);
+    for (uint32_t i = 0; i < captureCount; ++i) {
+      uint32_t nameLen = 0;
+      const char* name = ts_query_capture_name_for_id(query, i, &nameLen);
+      cached.captureKinds[i] = captureNameToKind(std::string_view(name, nameLen));
+    }
+
+    auto [insertIt, _] = queryCache.emplace(grammar.language, std::move(cached));
+    return &insertIt->second;
   }
 };
 
@@ -60,6 +128,11 @@ std::vector<TokenSpan> Highlighter::highlight(const GrammarInfo& grammar, std::s
     return {};
   }
 
+  CachedQuery* cached = impl_->getOrCompileQuery(grammar);
+  if (cached == nullptr) {
+    return {};
+  }
+
   ts_parser_set_language(impl_->parser, grammar.language);
 
   TSTree* tree = ts_parser_parse_string(impl_->parser, nullptr, source.data(),
@@ -68,27 +141,8 @@ std::vector<TokenSpan> Highlighter::highlight(const GrammarInfo& grammar, std::s
     return {};
   }
 
-  uint32_t errorOffset = 0;
-  TSQueryError errorType = TSQueryErrorNone;
-  TSQuery* query = ts_query_new(grammar.language, grammar.highlightsQuery.data(),
-                                 static_cast<uint32_t>(grammar.highlightsQuery.size()),
-                                 &errorOffset, &errorType);
-  if (query == nullptr) {
-    ts_tree_delete(tree);
-    return {};
-  }
-
-  const uint32_t captureCount = ts_query_capture_count(query);
-  std::vector<SyntaxTokenKind> captureKinds(captureCount, SyntaxTokenKind::None);
-  for (uint32_t i = 0; i < captureCount; ++i) {
-    uint32_t nameLen = 0;
-    const char* name = ts_query_capture_name_for_id(query, i, &nameLen);
-    captureKinds[i] = captureNameToKind(std::string_view(name, nameLen));
-  }
-
-  TSQueryCursor* cursor = ts_query_cursor_new();
   TSNode rootNode = ts_tree_root_node(tree);
-  ts_query_cursor_exec(cursor, query, rootNode);
+  ts_query_cursor_exec(impl_->cursor, cached->query, rootNode);
 
   struct RawSpan {
     uint32_t startByte;
@@ -97,12 +151,13 @@ std::vector<TokenSpan> Highlighter::highlight(const GrammarInfo& grammar, std::s
     uint16_t patternIndex;
   };
   std::vector<RawSpan> rawSpans;
+  rawSpans.reserve(source.size() / 4);
 
   TSQueryMatch match;
   uint32_t captureIndex = 0;
-  while (ts_query_cursor_next_capture(cursor, &match, &captureIndex)) {
+  while (ts_query_cursor_next_capture(impl_->cursor, &match, &captureIndex)) {
     const TSQueryCapture& capture = match.captures[captureIndex];
-    SyntaxTokenKind kind = captureKinds[capture.index];
+    SyntaxTokenKind kind = cached->captureKinds[capture.index];
     if (kind == SyntaxTokenKind::None) {
       continue;
     }
@@ -114,8 +169,6 @@ std::vector<TokenSpan> Highlighter::highlight(const GrammarInfo& grammar, std::s
     }
   }
 
-  ts_query_cursor_delete(cursor);
-  ts_query_delete(query);
   ts_tree_delete(tree);
 
   std::sort(rawSpans.begin(), rawSpans.end(), [](const RawSpan& a, const RawSpan& b) {
@@ -124,6 +177,7 @@ std::vector<TokenSpan> Highlighter::highlight(const GrammarInfo& grammar, std::s
   });
 
   std::vector<TokenSpan> result;
+  result.reserve(rawSpans.size());
   uint32_t covered = 0;
   for (const auto& span : rawSpans) {
     if (span.startByte < covered) {

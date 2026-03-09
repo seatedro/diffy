@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "core/syntax/SyntaxTypes.h"
-#include "core/text/TextRope.h"
+#include "core/text/TextBuffer.h"
 
 namespace diffy {
 
@@ -34,6 +34,38 @@ struct DiffTokenSpan {
   SyntaxTokenKind syntaxKind = SyntaxTokenKind::None;
 };
 
+struct TokenRange {
+  uint32_t start = 0;
+  uint32_t count = 0;
+
+  bool empty() const { return count == 0; }
+};
+
+class TokenBuffer {
+ public:
+  void clear() { spans_.clear(); }
+
+  void reserve(size_t capacity) { spans_.reserve(capacity); }
+
+  TokenRange append(const DiffTokenSpan* data, size_t count) {
+    TokenRange range{static_cast<uint32_t>(spans_.size()), static_cast<uint32_t>(count)};
+    spans_.insert(spans_.end(), data, data + count);
+    return range;
+  }
+
+  TokenRange append(const std::vector<DiffTokenSpan>& tokens) {
+    return append(tokens.data(), tokens.size());
+  }
+
+  const DiffTokenSpan* data() const { return spans_.data(); }
+  const DiffTokenSpan* begin(const TokenRange& range) const { return spans_.data() + range.start; }
+  const DiffTokenSpan* end(const TokenRange& range) const { return spans_.data() + range.start + range.count; }
+  size_t size() const { return spans_.size(); }
+
+ private:
+  std::vector<DiffTokenSpan> spans_;
+};
+
 struct DiffSourceRow {
   DiffRowType rowType = DiffRowType::Line;
   std::string header;
@@ -42,8 +74,8 @@ struct DiffSourceRow {
   int oldLine = -1;
   int newLine = -1;
   double textWidth = 0;
-  std::vector<DiffTokenSpan> tokens;
-  std::vector<DiffTokenSpan> changeSpans;
+  TokenRange tokens;
+  TokenRange changeSpans;
   TextRange textRange;
 };
 
@@ -65,16 +97,16 @@ struct DiffDisplayRow {
   DiffLineKind kind = DiffLineKind::Context;
   int oldLine = -1;
   int newLine = -1;
-  std::vector<DiffTokenSpan> tokens;
-  std::vector<DiffTokenSpan> changeSpans;
+  TokenRange tokens;
+  TokenRange changeSpans;
   DiffLineKind leftKind = DiffLineKind::Spacer;
   DiffLineKind rightKind = DiffLineKind::Spacer;
   int leftLine = -1;
   int rightLine = -1;
-  std::vector<DiffTokenSpan> leftTokens;
-  std::vector<DiffTokenSpan> leftChangeSpans;
-  std::vector<DiffTokenSpan> rightTokens;
-  std::vector<DiffTokenSpan> rightChangeSpans;
+  TokenRange leftTokens;
+  TokenRange leftChangeSpans;
+  TokenRange rightTokens;
+  TokenRange rightChangeSpans;
   TextRange textRange;
   TextRange leftTextRange;
   TextRange rightTextRange;
@@ -85,15 +117,17 @@ struct DiffDisplayRow {
 class DiffLayoutEngine {
  public:
   void setFileHeader(std::optional<DiffSourceRow> row);
-  void setSourceRows(std::vector<DiffSourceRow> rows);
+  void setSourceRows(std::vector<DiffSourceRow> rows, TokenBuffer tokenBuffer);
   void prewarm(const DiffLayoutConfig& config);
   void rebuild(const DiffLayoutConfig& config);
   const std::vector<DiffDisplayRow>& cachedRows(const DiffLayoutConfig& config);
+  const TokenBuffer& cachedTokenBuffer(const DiffLayoutConfig& config);
   int rowIndexAtY(const DiffLayoutConfig& config, double y);
   int stickyHunkRowIndexAtY(const DiffLayoutConfig& config, double y);
   int fileHeaderRowIndex(const DiffLayoutConfig& config);
 
   const std::vector<DiffDisplayRow>& rows() const;
+  const TokenBuffer& tokenBuffer() const;
   double contentHeight() const;
   int lineNumberDigits() const;
 
@@ -108,13 +142,14 @@ class DiffLayoutEngine {
     bool valid = false;
     DiffLayoutConfig config;
     std::vector<DiffDisplayRow> rows;
+    TokenBuffer tokenBuffer;
     std::vector<double> rowOffsets;
     double contentHeight = 0;
   };
 
   void recomputeLineNumberDigits();
   void clearTopologyCaches();
-  void rebuildTopology(std::vector<DiffDisplayRow>& targetRows, DiffLayoutMode mode) const;
+  void rebuildTopology(std::vector<DiffDisplayRow>& targetRows, TokenBuffer& targetTokenBuffer, DiffLayoutMode mode) const;
   void invalidateLayoutCaches();
   LayoutCacheEntry& layoutCache(DiffLayoutMode mode);
   const LayoutCacheEntry& layoutCache(DiffLayoutMode mode) const;
@@ -123,11 +158,15 @@ class DiffLayoutEngine {
 
   std::optional<DiffSourceRow> fileHeaderRow_;
   std::vector<DiffSourceRow> sourceRows_;
+  TokenBuffer sourceTokenBuffer_;
   std::vector<DiffDisplayRow> unifiedTopologyRows_;
+  TokenBuffer unifiedTopologyTokenBuffer_;
   std::vector<DiffDisplayRow> splitTopologyRows_;
+  TokenBuffer splitTopologyTokenBuffer_;
   LayoutCacheEntry unifiedLayoutCache_;
   LayoutCacheEntry splitLayoutCache_;
   std::vector<DiffDisplayRow> displayRows_;
+  TokenBuffer displayTokenBuffer_;
   std::vector<double> rowOffsets_;
   double contentHeight_ = 0;
   int lineNumberDigits_ = 3;

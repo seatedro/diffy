@@ -133,6 +133,16 @@ Window {
         id: shortcutOverlay
     }
 
+    DebugOverlay {
+        id: debugOverlay
+        surface: diffView.visible ? diffView.surfaceItem : null
+    }
+
+    Shortcut {
+        sequence: "`"
+        onActivated: debugOverlay.showing = !debugOverlay.showing
+    }
+
     CommandPalette {
         id: commandPalette
         onActionTriggered: function(item) {

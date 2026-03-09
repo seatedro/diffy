@@ -41,9 +41,9 @@ Rectangle {
     border.color: borderColor()
 
     scale: mouseArea.pressed ? 0.97 : 1.0
-    Behavior on scale { NumberAnimation { duration: 80; easing.type: Easing.OutCubic } }
+    Behavior on scale { NumberAnimation { duration: 30; easing.type: Easing.OutCubic } }
 
-    Behavior on color { ColorAnimation { duration: 90 } }
+    Behavior on color { ColorAnimation { duration: 35 } }
 
     Text {
         id: label

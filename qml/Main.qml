@@ -10,7 +10,21 @@ Window {
     height: 940
     minimumWidth: 480
     minimumHeight: 400
-    title: "diffy"
+    title: {
+        var parts = ["diffy"]
+        if (diffController.repoPath.length > 0) {
+            var repoParts = diffController.repoPath.split("/")
+            parts.push(repoParts[repoParts.length - 1])
+        }
+        if (diffController.currentView === "diff" && diffController.leftRefDisplay.length > 0) {
+            parts.push(diffController.leftRefDisplay + ".." + diffController.rightRefDisplay)
+        }
+        if (diffController.selectedFile && diffController.selectedFile.path) {
+            var fileParts = diffController.selectedFile.path.split("/")
+            parts.push(fileParts[fileParts.length - 1])
+        }
+        return parts.join(" \u2014 ")
+    }
     color: theme.appBg
 
     property string previousView: "welcome"
@@ -73,8 +87,8 @@ Window {
             slideAnim.start()
         }
 
-        NumberAnimation on opacity { duration: 180; easing.type: Easing.InOutQuad }
-        NumberAnimation { id: slideAnim; target: welcomeView; property: "slideX"; duration: 220; easing.type: Easing.OutCubic }
+        NumberAnimation on opacity { duration: 70; easing.type: Easing.InOutQuad }
+        NumberAnimation { id: slideAnim; target: welcomeView; property: "slideX"; duration: 80; easing.type: Easing.OutCubic }
 
         onOpenRepositoryRequested: window.openRepoPicker()
         onOpenRecentRequested: function(path) { diffController.openRepository(path) }
@@ -99,8 +113,8 @@ Window {
             compSlideAnim.start()
         }
 
-        NumberAnimation on opacity { duration: 180; easing.type: Easing.InOutQuad }
-        NumberAnimation { id: compSlideAnim; target: compareView; property: "slideX"; duration: 220; easing.type: Easing.OutCubic }
+        NumberAnimation on opacity { duration: 70; easing.type: Easing.InOutQuad }
+        NumberAnimation { id: compSlideAnim; target: compareView; property: "slideX"; duration: 80; easing.type: Easing.OutCubic }
 
         onBrowseRequested: window.openRepoPicker()
         onPickBranchRequested: function(target) { window.openBranchPicker(target) }
@@ -125,8 +139,8 @@ Window {
             diffSlideAnim.start()
         }
 
-        NumberAnimation on opacity { duration: 180; easing.type: Easing.InOutQuad }
-        NumberAnimation { id: diffSlideAnim; target: diffView; property: "slideX"; duration: 220; easing.type: Easing.OutCubic }
+        NumberAnimation on opacity { duration: 70; easing.type: Easing.InOutQuad }
+        NumberAnimation { id: diffSlideAnim; target: diffView; property: "slideX"; duration: 80; easing.type: Easing.OutCubic }
     }
 
     ShortcutOverlay {
@@ -287,5 +301,33 @@ Window {
     Shortcut {
         sequence: "Ctrl+P"
         onActivated: window.openCommandPalette()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+\\"
+        onActivated: diffController.layoutMode = diffController.layoutMode === "unified" ? "split" : "unified"
+    }
+
+    Shortcut {
+        sequence: "Ctrl+Shift+W"
+        onActivated: diffController.wrapEnabled = !diffController.wrapEnabled
+    }
+
+    Shortcut {
+        sequence: "Ctrl+B"
+        onActivated: {
+            if (diffView.visible) diffView.toggleSidebar()
+        }
+    }
+
+    Shortcut {
+        sequence: "Ctrl+Shift+C"
+        onActivated: {
+            var path = diffController.selectedFile ? diffController.selectedFile.path : ""
+            if (path.length > 0) {
+                diffController.copyToClipboard(path)
+                globalToast.show("Copied: " + path, "success", 2000)
+            }
+        }
     }
 }

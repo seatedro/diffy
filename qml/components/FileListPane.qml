@@ -44,6 +44,28 @@ Rectangle {
         return total
     }
 
+    function filteredFiles() {
+        if (filterInput.text.length === 0) return files
+        var needle = filterInput.text.toLowerCase()
+        var result = []
+        for (var i = 0; i < files.length; ++i) {
+            if (files[i].path.toLowerCase().indexOf(needle) >= 0)
+                result.push(files[i])
+        }
+        return result
+    }
+
+    function originalIndex(filteredIdx) {
+        if (filterInput.text.length === 0) return filteredIdx
+        var filtered = filteredFiles()
+        if (filteredIdx < 0 || filteredIdx >= filtered.length) return -1
+        var item = filtered[filteredIdx]
+        for (var i = 0; i < files.length; ++i) {
+            if (files[i].path === item.path) return i
+        }
+        return -1
+    }
+
     color: "transparent"
     border.width: 0
 
@@ -112,6 +134,7 @@ Rectangle {
         }
 
         Rectangle {
+            id: headerDivider
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: sidebarHeader.bottom
@@ -119,12 +142,35 @@ Rectangle {
             color: theme.divider
         }
 
+        Rectangle {
+            id: filterBar
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: headerDivider.bottom
+            height: filterInput.activeFocus || filterInput.text.length > 0 ? 28 : 0
+            color: theme.panel
+            clip: true
+            visible: height > 0
+
+            Behavior on height { NumberAnimation { duration: 50 } }
+
+            InputField {
+                id: filterInput
+                anchors.fill: parent
+                anchors.margins: 2
+                compact: true
+                monospace: true
+                placeholderText: "Filter files\u2026"
+                borderless: false
+            }
+        }
+
         Column {
             visible: diffController.comparing
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.topMargin: 37
+            anchors.top: filterBar.visible ? filterBar.bottom : headerDivider.bottom
+            anchors.topMargin: 1
             z: 10
             spacing: 2
 
@@ -161,9 +207,12 @@ Rectangle {
 
         ListView {
             id: fileListView
-            anchors.fill: parent
-            anchors.topMargin: 37
-            model: root.files
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: filterBar.visible ? filterBar.bottom : headerDivider.bottom
+            anchors.topMargin: 1
+            anchors.bottom: parent.bottom
+            model: root.filteredFiles()
             currentIndex: root.selectedIndex
             clip: true
             spacing: 0
@@ -179,7 +228,7 @@ Rectangle {
                     radius: 2
                     color: theme.textFaint
                     opacity: parent.active ? 0.6 : 0.3
-                    Behavior on opacity { NumberAnimation { duration: 120 } }
+                    Behavior on opacity { NumberAnimation { duration: 45 } }
                 }
                 background: Item {}
             }
@@ -191,17 +240,24 @@ Rectangle {
                 width: ListView.view.width
                 height: 30
                 radius: 0
-                color: root.selectedIndex === index ? theme.selectionBg : (mouseArea.containsMouse ? theme.panelStrong : "transparent")
+                color: root.selectedIndex === root.originalIndex(index) ? theme.selectionBg : (mouseArea.containsMouse ? theme.panelStrong : "transparent")
                 border.width: 0
                 opacity: 0
 
-                Component.onCompleted: staggerAnim.start()
+                Component.onCompleted: staggerDelay.start()
+
+                Timer {
+                    id: staggerDelay
+                    interval: Math.min(index * 15, 200)
+                    repeat: false
+                    onTriggered: staggerAnim.start()
+                }
 
                 NumberAnimation on opacity {
                     id: staggerAnim
                     running: false
                     from: 0; to: 1
-                    duration: 150
+                    duration: 60
                     easing.type: Easing.OutCubic
                 }
 
@@ -209,7 +265,7 @@ Rectangle {
                     anchors.left: parent.left
                     anchors.top: parent.top
                     anchors.bottom: parent.bottom
-                    width: root.selectedIndex === index ? 3 : 0
+                    width: root.selectedIndex === root.originalIndex(index) ? 3 : 0
                     color: theme.accent
                 }
 
@@ -228,10 +284,10 @@ Rectangle {
                     anchors.verticalCenter: parent.verticalCenter
                     width: parent.width - statusBadge.width - counts.implicitWidth - theme.sp8 - theme.sp2
                     text: modelData.path
-                    color: root.selectedIndex === index ? theme.textStrong : theme.textBase
+                    color: root.selectedIndex === root.originalIndex(index) ? theme.textStrong : theme.textBase
                     font.family: theme.sans
                     font.pixelSize: theme.fontSmall + 1
-                    font.bold: root.selectedIndex === index
+                    font.bold: root.selectedIndex === root.originalIndex(index)
                     elide: Text.ElideLeft
                 }
 
@@ -277,7 +333,7 @@ Rectangle {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: root.fileSelected(index)
+                    onClicked: root.fileSelected(root.originalIndex(index))
                 }
             }
 
@@ -288,5 +344,10 @@ Rectangle {
                 subtitle: "Run compare to see files."
             }
         }
+    }
+
+    Shortcut {
+        sequence: "/"
+        onActivated: filterInput.forceActiveFocus()
     }
 }

@@ -7,7 +7,8 @@ Rectangle {
 
     property bool compactControls: width < 1100
     property bool stackPanels: width < 800
-    property bool hideFilePane: width < 600
+    property bool sidebarManuallyHidden: false
+    property bool hideFilePane: width < 600 || sidebarManuallyHidden
     property real filePaneWidth: Math.max(180, Math.min(260, width * 0.20))
 
     readonly property string iconArrowLeft: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>'
@@ -47,6 +48,10 @@ Rectangle {
 
     function runCompare() {
         diffController.compare()
+    }
+
+    function toggleSidebar() {
+        sidebarManuallyHidden = !sidebarManuallyHidden
     }
 
     function swapRefs() {
@@ -91,7 +96,7 @@ Rectangle {
                     svg: root.iconArrowLeft
                     size: 14
                     color: navBackMouse.containsMouse ? theme.textMuted : theme.textFaint
-                    Behavior on color { ColorAnimation { duration: 100 } }
+                    Behavior on color { ColorAnimation { duration: 35 } }
 
                     MouseArea {
                         id: navBackMouse
@@ -108,7 +113,7 @@ Rectangle {
                     color: repoMouse.containsMouse ? theme.textMuted : theme.textFaint
                     font.family: theme.sans
                     font.pixelSize: theme.fontSmall
-                    Behavior on color { ColorAnimation { duration: 100 } }
+                    Behavior on color { ColorAnimation { duration: 35 } }
 
                     MouseArea {
                         id: repoMouse
@@ -133,7 +138,7 @@ Rectangle {
                     color: refCrumbMouse.containsMouse ? theme.textMuted : theme.textFaint
                     font.family: theme.mono
                     font.pixelSize: theme.fontCaption + 1
-                    Behavior on color { ColorAnimation { duration: 100 } }
+                    Behavior on color { ColorAnimation { duration: 35 } }
 
                     MouseArea {
                         id: refCrumbMouse
@@ -162,6 +167,18 @@ Rectangle {
                     color: theme.textMuted
                     font.family: theme.mono
                     font.pixelSize: theme.fontCaption + 1
+                }
+
+                Badge {
+                    visible: diffController.selectedFile.status !== undefined
+                    text: diffController.selectedFile.status || ""
+                    variant: {
+                        var s = diffController.selectedFile.status
+                        if (s === "A") return "success"
+                        if (s === "D") return "danger"
+                        if (s === "R") return "accent"
+                        return "warning"
+                    }
                 }
 
                 Item { Layout.fillWidth: true }
@@ -233,7 +250,7 @@ Rectangle {
                     color: pickerOpen ? theme.panel : (leftCardMouse.containsMouse ? theme.panelStrong : theme.panel)
                     border.width: 1
                     border.color: pickerOpen ? theme.borderSoft : (leftCardMouse.containsMouse ? theme.borderSoft : "transparent")
-                    Behavior on color { ColorAnimation { duration: 100 } }
+                    Behavior on color { ColorAnimation { duration: 35 } }
 
                     MouseArea {
                         id: leftCardMouse
@@ -294,8 +311,8 @@ Rectangle {
                             radius: theme.radiusMd
                             color: modeMouse.containsMouse ? theme.panelTint : "transparent"
                             border.color: modeMouse.containsMouse ? theme.borderSoft : "transparent"
-                            Behavior on color { ColorAnimation { duration: 80 } }
-                            Behavior on border.color { ColorAnimation { duration: 80 } }
+                            Behavior on color { ColorAnimation { duration: 30 } }
+                            Behavior on border.color { ColorAnimation { duration: 30 } }
 
                             Text {
                                 id: modeRow
@@ -305,7 +322,7 @@ Rectangle {
                                 font.family: theme.mono
                                 font.pixelSize: theme.fontBody
                                 font.bold: true
-                                Behavior on color { ColorAnimation { duration: 80 } }
+                                Behavior on color { ColorAnimation { duration: 30 } }
                             }
 
                             MouseArea {
@@ -325,15 +342,15 @@ Rectangle {
                             radius: theme.radiusMd
                             color: swapMouse.containsMouse ? theme.panelTint : "transparent"
                             border.color: swapMouse.containsMouse ? theme.borderSoft : "transparent"
-                            Behavior on color { ColorAnimation { duration: 80 } }
-                            Behavior on border.color { ColorAnimation { duration: 80 } }
+                            Behavior on color { ColorAnimation { duration: 30 } }
+                            Behavior on border.color { ColorAnimation { duration: 30 } }
 
                             Icon {
                                 anchors.centerIn: parent
                                 svg: root.iconArrowRightLeft
                                 size: 16
                                 color: swapMouse.containsMouse ? theme.accent : theme.textFaint
-                                Behavior on color { ColorAnimation { duration: 100 } }
+                                Behavior on color { ColorAnimation { duration: 35 } }
                             }
 
                             MouseArea {
@@ -357,7 +374,7 @@ Rectangle {
                     color: pickerOpen ? theme.panel : (rightCardMouse.containsMouse ? theme.panelStrong : theme.panel)
                     border.width: 1
                     border.color: pickerOpen ? theme.borderSoft : (rightCardMouse.containsMouse ? theme.borderSoft : "transparent")
-                    Behavior on color { ColorAnimation { duration: 100 } }
+                    Behavior on color { ColorAnimation { duration: 35 } }
 
                     MouseArea {
                         id: rightCardMouse
@@ -465,6 +482,20 @@ Rectangle {
                 }
 
                 Item { Layout.fillWidth: true }
+
+                Text {
+                    visible: diffPane.surfaceItem && diffPane.surfaceItem.contentHeight > 0
+                    text: {
+                        var contentH = diffPane.surfaceItem ? diffPane.surfaceItem.contentHeight : 1
+                        var viewportY = diffPane.surfaceItem ? diffPane.surfaceItem.viewportY : 0
+                        var viewportH = diffPane.surfaceItem ? diffPane.surfaceItem.viewportHeight : 1
+                        var pct = Math.min(100, Math.round((viewportY + viewportH) / contentH * 100))
+                        return pct + "%"
+                    }
+                    color: theme.textFaint
+                    font.family: theme.mono
+                    font.pixelSize: theme.fontCaption
+                }
 
                 Text {
                     visible: diffController.files.length > 0

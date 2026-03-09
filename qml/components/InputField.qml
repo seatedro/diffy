@@ -17,8 +17,8 @@ Rectangle {
     border.width: borderless ? 0 : (input.activeFocus ? 1.5 : 1)
     border.color: borderless ? "transparent" : (root.error ? theme.dangerBorder : (input.activeFocus ? theme.accent : theme.borderSoft))
 
-    Behavior on border.color { ColorAnimation { duration: 90 } }
-    Behavior on border.width { NumberAnimation { duration: 90 } }
+    Behavior on border.color { ColorAnimation { duration: 35 } }
+    Behavior on border.width { NumberAnimation { duration: 35 } }
 
     TextInput {
         id: input

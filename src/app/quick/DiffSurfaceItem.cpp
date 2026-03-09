@@ -413,7 +413,7 @@ class SnapshotRenderer {
   }
 
   qreal unifiedGutterWidth() const {
-    return 12.0 + 14.0 + digitWidth() * (snapshot_.lineNumberDigits * 2 + 2) + 28.0;
+    return 4.0 + 12.0 + digitWidth() * (snapshot_.lineNumberDigits * 2 + 1) + 8.0;
   }
 
   SnapshotLineLayout lineLayoutForText(const QString& text, int pixelSize) const {
@@ -505,19 +505,19 @@ class SnapshotRenderer {
                         : row.row.kind == DiffLineKind::Deletion
                               ? snapshotPaletteColor(snapshot_, "dangerText", QColor("#d07277"))
                               : snapshotPaletteColor(snapshot_, "textMuted", QColor("#a9afbc")));
-    painter->drawText(QRectF(rowRect.left() + 6.0, rowRect.top(), 12.0, rowRect.height()), Qt::AlignVCenter,
+    painter->drawText(QRectF(rowRect.left() + 3.0, rowRect.top(), 10.0, rowRect.height()), Qt::AlignVCenter,
                       kindSymbol(row.row.kind));
 
     painter->setPen(snapshotPaletteColor(snapshot_, "textMuted", QColor("#d5c4a1")));
     const qreal numberWidth = digitWidth() * snapshot_.lineNumberDigits;
-    painter->drawText(QRectF(rowRect.left() + 22.0, rowRect.top(), numberWidth, rowRect.height()),
+    painter->drawText(QRectF(rowRect.left() + 14.0, rowRect.top(), numberWidth, rowRect.height()),
                       Qt::AlignRight | Qt::AlignVCenter,
                       row.row.oldLine > 0 ? QString::number(row.row.oldLine) : QString());
 
-    painter->fillRect(QRectF(rowRect.left() + 26.0 + numberWidth, rowRect.top() + 4.0, 1.0, rowRect.height() - 8.0),
+    painter->fillRect(QRectF(rowRect.left() + 16.0 + numberWidth, rowRect.top() + 4.0, 1.0, rowRect.height() - 8.0),
                       snapshotPaletteColor(snapshot_, "divider", QColor("#504945")));
 
-    painter->drawText(QRectF(rowRect.left() + 32.0 + numberWidth, rowRect.top(), numberWidth, rowRect.height()),
+    painter->drawText(QRectF(rowRect.left() + 19.0 + numberWidth, rowRect.top(), numberWidth, rowRect.height()),
                       Qt::AlignRight | Qt::AlignVCenter,
                       row.row.newLine > 0 ? QString::number(row.row.newLine) : QString());
 
@@ -527,7 +527,7 @@ class SnapshotRenderer {
     const qreal baselineY = snapshot_.wrapEnabled
                                 ? rowRect.top() + (snapshot_.rowHeight - textMetrics.height()) / 2.0 + textMetrics.ascent()
                                 : rowRect.top() + (rowRect.height() - textMetrics.height()) / 2.0 + textMetrics.ascent();
-    const QRectF textClip(rowRect.left() + gutterWidth + 8.0, rowRect.top(), rowRect.width() - gutterWidth - 12.0,
+    const QRectF textClip(rowRect.left() + gutterWidth + 4.0, rowRect.top(), rowRect.width() - gutterWidth - 6.0,
                           rowRect.height());
     const QColor tokenBg = row.row.kind == DiffLineKind::Addition
                                ? snapshotPaletteColor(snapshot_, "successBorder", QColor("#38482f"))
@@ -540,7 +540,7 @@ class SnapshotRenderer {
   }
 
   void drawSplitPaneFixedRow(QPainter* painter, const QRectF& rowRect, const DiffRasterRow& row, bool isLeftPane) const {
-    const qreal sideGutterWidth = 22.0 + digitWidth() * (snapshot_.lineNumberDigits + 1) + 12.0;
+    const qreal sideGutterWidth = 8.0 + digitWidth() * (snapshot_.lineNumberDigits + 1) + 6.0;
     const DiffLineKind lineKind = isLeftPane ? row.row.leftKind : row.row.rightKind;
     const int lineNumber = isLeftPane ? row.row.leftLine : row.row.rightLine;
     const bool spacer = lineKind == DiffLineKind::Spacer;
@@ -577,16 +577,16 @@ class SnapshotRenderer {
 
     painter->setFont(monoFont(snapshot_.monoFontFamily, 11));
     painter->setPen(snapshotPaletteColor(snapshot_, "textMuted", QColor("#d5c4a1")));
-    painter->drawText(QRectF(rowRect.left() + 6.0, rowRect.top(), 12.0, rowRect.height()), Qt::AlignVCenter,
+    painter->drawText(QRectF(rowRect.left() + 3.0, rowRect.top(), 10.0, rowRect.height()), Qt::AlignVCenter,
                       kindSymbol(lineKind));
     const qreal splitNumberWidth = digitWidth() * snapshot_.lineNumberDigits;
-    painter->drawText(QRectF(rowRect.left() + 20.0, rowRect.top(), splitNumberWidth, rowRect.height()),
+    painter->drawText(QRectF(rowRect.left() + 14.0, rowRect.top(), splitNumberWidth, rowRect.height()),
                       Qt::AlignRight | Qt::AlignVCenter, lineNumber > 0 ? QString::number(lineNumber) : QString());
 
     if (spacer) {
       QColor guide = snapshotPaletteColor(snapshot_, "divider", QColor("#504945"));
       guide.setAlpha(150);
-      painter->fillRect(QRectF(rowRect.left() + sideGutterWidth + 8.0, rowRect.top() + 3.0, 1.0,
+      painter->fillRect(QRectF(rowRect.left() + sideGutterWidth + 4.0, rowRect.top() + 3.0, 1.0,
                                std::max<qreal>(0.0, rowRect.height() - 6.0)),
                         guide);
     }
@@ -634,10 +634,10 @@ class SnapshotRenderer {
                     qreal rightViewportX) const {
     const QRectF leftRect(rowRect.left(), rowRect.top(), rowRect.width() / 2.0, rowRect.height());
     const QRectF rightRect(leftRect.right(), rowRect.top(), rowRect.width() - leftRect.width(), rowRect.height());
-    const qreal sideGutterWidth = 22.0 + digitWidth() * (snapshot_.lineNumberDigits + 1) + 12.0;
-    const qreal textInset = sideGutterWidth + 8.0;
-    const qreal leftTextWidth = std::max<qreal>(0.0, leftRect.width() - sideGutterWidth - 12.0);
-    const qreal rightTextWidth = std::max<qreal>(0.0, rightRect.width() - sideGutterWidth - 12.0);
+    const qreal sideGutterWidth = 8.0 + digitWidth() * (snapshot_.lineNumberDigits + 1) + 6.0;
+    const qreal textInset = sideGutterWidth + 4.0;
+    const qreal leftTextWidth = std::max<qreal>(0.0, leftRect.width() - sideGutterWidth - 6.0);
+    const qreal rightTextWidth = std::max<qreal>(0.0, rightRect.width() - sideGutterWidth - 6.0);
     drawSplitPaneFixedRow(painter, leftRect, row, true);
     drawSplitPaneFixedRow(painter, rightRect, row, false);
 
@@ -1007,11 +1007,11 @@ DiffLayoutConfig DiffSurfaceItem::buildLayoutConfig(const QString& mode) const {
       config.unifiedWrapWidth = charWidth * wrapColumn_;
       config.splitWrapWidth = charWidth * wrapColumn_;
     } else if (mode == "split") {
-      const qreal sideGutter = 22.0 + digitWidth() * (lineNumberDigits_ + 1) + 12.0;
-      config.splitWrapWidth = std::max(charWidth * 20.0, (width() - 1.0) / 2.0 - sideGutter - 8.0);
-      config.unifiedWrapWidth = std::max(charWidth * 20.0, width() - unifiedGutterWidth() - 24.0);
+      const qreal sideGutter = 8.0 + digitWidth() * (lineNumberDigits_ + 1) + 6.0;
+      config.splitWrapWidth = std::max(charWidth * 20.0, (width() - 1.0) / 2.0 - sideGutter - 4.0);
+      config.unifiedWrapWidth = std::max(charWidth * 20.0, width() - unifiedGutterWidth() - 12.0);
     } else {
-      config.unifiedWrapWidth = std::max(charWidth * 20.0, width() - unifiedGutterWidth() - 24.0);
+      config.unifiedWrapWidth = std::max(charWidth * 20.0, width() - unifiedGutterWidth() - 12.0);
       config.splitWrapWidth = std::max(charWidth * 20.0, (width() - 1.0) / 2.0);
     }
   }
@@ -1024,10 +1024,10 @@ qreal DiffSurfaceItem::contentWidthForLayout(const QString& mode) const {
     return width();
   }
   if (mode == "split") {
-    const qreal sideGutter = 22.0 + digitWidth() * (lineNumberDigits_ + 1) + 12.0;
-    return std::max(width(), maxTextWidth_ + sideGutter + 12.0);
+    const qreal sideGutter = 8.0 + digitWidth() * (lineNumberDigits_ + 1) + 6.0;
+    return std::max(width(), maxTextWidth_ + sideGutter + 6.0);
   }
-  return unifiedGutterWidth() + maxTextWidth_ + 24.0;
+  return unifiedGutterWidth() + maxTextWidth_ + 12.0;
 }
 
 QImage DiffSurfaceItem::renderTileImageInline(const std::vector<DiffDisplayRow>& rows,
@@ -1119,11 +1119,11 @@ std::vector<TileSpec> DiffSurfaceItem::buildPrewarmTileSpecs(const QString& mode
   const qreal unifiedRowWidth = std::max(visibleWidth, contentWidth);
   const qreal leftPaneWidth = visibleWidth / 2.0;
   const qreal rightPaneWidth = visibleWidth - leftPaneWidth;
-  const qreal sideGutterWidth = 22.0 + digitWidth() * (lineNumberDigits_ + 1) + 12.0;
-  const qreal splitTextInset = sideGutterWidth + 8.0;
-  const qreal leftTextViewportWidth = std::max<qreal>(0.0, leftPaneWidth - splitTextInset - 12.0);
-  const qreal rightTextViewportWidth = std::max<qreal>(0.0, rightPaneWidth - splitTextInset - 12.0);
-  const qreal splitTextLogicalWidth = std::max({maxTextWidth_ + 12.0, leftTextViewportWidth, rightTextViewportWidth});
+  const qreal sideGutterWidth = 8.0 + digitWidth() * (lineNumberDigits_ + 1) + 6.0;
+  const qreal splitTextInset = sideGutterWidth + 4.0;
+  const qreal leftTextViewportWidth = std::max<qreal>(0.0, leftPaneWidth - splitTextInset - 6.0);
+  const qreal rightTextViewportWidth = std::max<qreal>(0.0, rightPaneWidth - splitTextInset - 6.0);
+  const qreal splitTextLogicalWidth = std::max({maxTextWidth_ + 6.0, leftTextViewportWidth, rightTextViewportWidth});
   const quint64 currentTileContentKey = tileContentKey();
   const quint64 currentTileGeometryKey =
       tileGeometryKey(mode, contentWidth, visibleWidth, visibleHeight, unifiedRowWidth, splitTextLogicalWidth);
@@ -1292,13 +1292,13 @@ std::shared_ptr<const DiffRasterSnapshot> DiffSurfaceItem::buildRasterSnapshot(c
   snapshot->visibleWidth = width();
   snapshot->leftPaneWidth = width() / 2.0;
   snapshot->rightPaneWidth = width() - snapshot->leftPaneWidth;
-  const qreal sideGutterWidth = 22.0 + digitWidth() * (lineNumberDigits_ + 1) + 12.0;
-  const qreal splitTextInset = sideGutterWidth + 8.0;
-  const qreal leftTextViewportWidth = std::max<qreal>(0.0, snapshot->leftPaneWidth - splitTextInset - 12.0);
-  const qreal rightTextViewportWidth = std::max<qreal>(0.0, snapshot->rightPaneWidth - splitTextInset - 12.0);
+  const qreal sideGutterWidth = 8.0 + digitWidth() * (lineNumberDigits_ + 1) + 6.0;
+  const qreal splitTextInset = sideGutterWidth + 4.0;
+  const qreal leftTextViewportWidth = std::max<qreal>(0.0, snapshot->leftPaneWidth - splitTextInset - 6.0);
+  const qreal rightTextViewportWidth = std::max<qreal>(0.0, snapshot->rightPaneWidth - splitTextInset - 6.0);
   snapshot->unifiedRowWidth = std::max(width(), contentWidthForLayout(mode));
   snapshot->splitTextLogicalWidth =
-      std::max({maxTextWidth_ + 12.0, leftTextViewportWidth, rightTextViewportWidth});
+      std::max({maxTextWidth_ + 6.0, leftTextViewportWidth, rightTextViewportWidth});
   snapshot->leftViewportX = leftViewportX_;
   snapshot->rightViewportX = rightViewportX_;
   snapshot->devicePixelRatio = window() != nullptr ? window()->effectiveDevicePixelRatio() : 1.0;
@@ -1810,11 +1810,11 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
   const qreal unifiedRowWidth = std::max(visibleWidth, contentWidth_);
   const qreal leftPaneWidth = visibleWidth / 2.0;
   const qreal rightPaneWidth = visibleWidth - leftPaneWidth;
-  const qreal sideGutterWidth = 22.0 + digitWidth() * (lineNumberDigits_ + 1) + 12.0;
-  const qreal splitTextInset = sideGutterWidth + 8.0;
-  const qreal leftTextViewportWidth = std::max<qreal>(0.0, leftPaneWidth - splitTextInset - 12.0);
-  const qreal rightTextViewportWidth = std::max<qreal>(0.0, rightPaneWidth - splitTextInset - 12.0);
-  const qreal splitTextLogicalWidth = std::max({maxTextWidth_ + 12.0, leftTextViewportWidth, rightTextViewportWidth});
+  const qreal sideGutterWidth = 8.0 + digitWidth() * (lineNumberDigits_ + 1) + 6.0;
+  const qreal splitTextInset = sideGutterWidth + 4.0;
+  const qreal leftTextViewportWidth = std::max<qreal>(0.0, leftPaneWidth - splitTextInset - 6.0);
+  const qreal rightTextViewportWidth = std::max<qreal>(0.0, rightPaneWidth - splitTextInset - 6.0);
+  const qreal splitTextLogicalWidth = std::max({maxTextWidth_ + 6.0, leftTextViewportWidth, rightTextViewportWidth});
   const qreal devicePixelRatio = quickWindow->effectiveDevicePixelRatio();
   const quint64 currentTileContentKey = tileContentKey();
   const quint64 currentTileGeometryKey =
@@ -2434,10 +2434,10 @@ void DiffSurfaceItem::recalculateMetrics() {
   if (wrapEnabled_) {
     newContentWidth = width();
   } else if (layoutMode_ == "split") {
-    const qreal sideGutter = 22.0 + digitWidth() * (lineNumberDigits_ + 1) + 12.0;
-    newContentWidth = std::max(width(), maxTextWidth_ + sideGutter + 12.0);
+    const qreal sideGutter = 8.0 + digitWidth() * (lineNumberDigits_ + 1) + 6.0;
+    newContentWidth = std::max(width(), maxTextWidth_ + sideGutter + 6.0);
   } else {
-    newContentWidth = unifiedGutterWidth() + maxTextWidth_ + 24.0;
+    newContentWidth = unifiedGutterWidth() + maxTextWidth_ + 12.0;
   }
 
   if (!qFuzzyCompare(contentWidth_, newContentWidth)) {
@@ -2481,7 +2481,7 @@ qreal DiffSurfaceItem::digitWidth() const {
 }
 
 qreal DiffSurfaceItem::unifiedGutterWidth() const {
-  return 12.0 + 14.0 + digitWidth() * (lineNumberDigits_ * 2 + 2) + 28.0;
+  return 4.0 + 12.0 + digitWidth() * (lineNumberDigits_ * 2 + 1) + 8.0;
 }
 
 QString DiffSurfaceItem::textForRange(const TextRange& range) const {
@@ -2707,19 +2707,19 @@ void DiffSurfaceItem::drawUnifiedRow(QPainter* painter, const QRectF& rowRect, c
                                                      : row.kind == DiffLineKind::Deletion
                                                            ? paletteColor("dangerText", QColor("#d07277"))
                                                            : paletteColor("textMuted", QColor("#a9afbc")));
-  painter->drawText(QRectF(rowRect.left() + 6.0, rowRect.top(), 12.0, rowRect.height()), Qt::AlignVCenter,
+  painter->drawText(QRectF(rowRect.left() + 3.0, rowRect.top(), 10.0, rowRect.height()), Qt::AlignVCenter,
                     kindSymbol(row.kind));
 
   painter->setPen(paletteColor("textMuted", QColor("#d5c4a1")));
   const qreal numberWidth = digitWidth() * lineNumberDigits_;
-  painter->drawText(QRectF(rowRect.left() + 22.0, rowRect.top(), numberWidth, rowRect.height()),
+  painter->drawText(QRectF(rowRect.left() + 14.0, rowRect.top(), numberWidth, rowRect.height()),
                     Qt::AlignRight | Qt::AlignVCenter,
                     row.oldLine > 0 ? QString::number(row.oldLine) : QString());
 
-  painter->fillRect(QRectF(rowRect.left() + 26.0 + numberWidth, rowRect.top() + 4.0, 1.0, rowRect.height() - 8.0),
+  painter->fillRect(QRectF(rowRect.left() + 16.0 + numberWidth, rowRect.top() + 4.0, 1.0, rowRect.height() - 8.0),
                     paletteColor("divider", QColor("#504945")));
 
-  painter->drawText(QRectF(rowRect.left() + 32.0 + numberWidth, rowRect.top(), numberWidth, rowRect.height()),
+  painter->drawText(QRectF(rowRect.left() + 19.0 + numberWidth, rowRect.top(), numberWidth, rowRect.height()),
                     Qt::AlignRight | Qt::AlignVCenter,
                     row.newLine > 0 ? QString::number(row.newLine) : QString());
 
@@ -2729,8 +2729,8 @@ void DiffSurfaceItem::drawUnifiedRow(QPainter* painter, const QRectF& rowRect, c
   const qreal unifiedBaselineY = wrapEnabled_
       ? rowRect.top() + (rowHeight_ - textMetrics.height()) / 2.0 + textMetrics.ascent()
       : rowRect.top() + (rowRect.height() - textMetrics.height()) / 2.0 + textMetrics.ascent();
-  const QRectF textClip(rowRect.left() + gutterWidth + 8.0, rowRect.top(),
-                        rowRect.width() - gutterWidth - 12.0, rowRect.height());
+  const QRectF textClip(rowRect.left() + gutterWidth + 4.0, rowRect.top(),
+                        rowRect.width() - gutterWidth - 6.0, rowRect.height());
   const QColor tokenBg = row.kind == DiffLineKind::Addition ? paletteColor("successBorder", QColor("#38482f"))
                                                             : row.kind == DiffLineKind::Deletion
                                                                   ? paletteColor("dangerBorder", QColor("#4c2b2c"))
@@ -2746,7 +2746,7 @@ void DiffSurfaceItem::drawSplitPaneFixedRow(QPainter* painter,
                                             const DiffDisplayRow& row,
                                             bool isLeftPane,
                                             bool selected) const {
-  const qreal sideGutterWidth = 22.0 + digitWidth() * (lineNumberDigits_ + 1) + 12.0;
+  const qreal sideGutterWidth = 8.0 + digitWidth() * (lineNumberDigits_ + 1) + 6.0;
   const DiffLineKind lineKind = isLeftPane ? row.leftKind : row.rightKind;
   const int lineNumber = isLeftPane ? row.leftLine : row.rightLine;
   const bool spacer = lineKind == DiffLineKind::Spacer;
@@ -2787,10 +2787,10 @@ void DiffSurfaceItem::drawSplitPaneFixedRow(QPainter* painter,
 
   painter->setFont(monoFont(monoFontFamily_, 11));
   painter->setPen(paletteColor("textMuted", QColor("#d5c4a1")));
-  painter->drawText(QRectF(rowRect.left() + 6.0, rowRect.top(), 12.0, rowRect.height()), Qt::AlignVCenter,
+  painter->drawText(QRectF(rowRect.left() + 3.0, rowRect.top(), 10.0, rowRect.height()), Qt::AlignVCenter,
                     kindSymbol(lineKind));
   const qreal splitNumberWidth = digitWidth() * lineNumberDigits_;
-  painter->drawText(QRectF(rowRect.left() + 20.0, rowRect.top(), splitNumberWidth, rowRect.height()),
+  painter->drawText(QRectF(rowRect.left() + 14.0, rowRect.top(), splitNumberWidth, rowRect.height()),
                     Qt::AlignRight | Qt::AlignVCenter,
                     lineNumber > 0 ? QString::number(lineNumber) : QString());
 
@@ -2798,7 +2798,7 @@ void DiffSurfaceItem::drawSplitPaneFixedRow(QPainter* painter,
     QColor guide = paletteColor("divider", QColor("#504945"));
     guide.setAlpha(150);
     painter->fillRect(
-        QRectF(rowRect.left() + sideGutterWidth + 8.0, rowRect.top() + 3.0, 1.0, std::max<qreal>(0.0, rowRect.height() - 6.0)),
+        QRectF(rowRect.left() + sideGutterWidth + 4.0, rowRect.top() + 3.0, 1.0, std::max<qreal>(0.0, rowRect.height() - 6.0)),
         guide);
   }
 }
@@ -2850,10 +2850,10 @@ void DiffSurfaceItem::drawSplitRow(QPainter* painter,
                                    qreal rightViewportX) const {
   const QRectF leftRect(rowRect.left(), rowRect.top(), rowRect.width() / 2.0, rowRect.height());
   const QRectF rightRect(leftRect.right(), rowRect.top(), rowRect.width() - leftRect.width(), rowRect.height());
-  const qreal sideGutterWidth = 22.0 + digitWidth() * (lineNumberDigits_ + 1) + 12.0;
-  const qreal textInset = sideGutterWidth + 8.0;
-  const qreal leftTextWidth = std::max<qreal>(0.0, leftRect.width() - sideGutterWidth - 12.0);
-  const qreal rightTextWidth = std::max<qreal>(0.0, rightRect.width() - sideGutterWidth - 12.0);
+  const qreal sideGutterWidth = 8.0 + digitWidth() * (lineNumberDigits_ + 1) + 6.0;
+  const qreal textInset = sideGutterWidth + 4.0;
+  const qreal leftTextWidth = std::max<qreal>(0.0, leftRect.width() - sideGutterWidth - 6.0);
+  const qreal rightTextWidth = std::max<qreal>(0.0, rightRect.width() - sideGutterWidth - 6.0);
   drawSplitPaneFixedRow(painter, leftRect, row, true, selected);
   drawSplitPaneFixedRow(painter, rightRect, row, false, selected);
 

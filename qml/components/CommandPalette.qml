@@ -65,10 +65,10 @@ Rectangle {
         opacity: root.showing ? 1.0 : 0
 
         Behavior on scale {
-            SpringAnimation { spring: 3; damping: 0.7 }
+            SpringAnimation { spring: 10; damping: 0.85 }
         }
         Behavior on opacity {
-            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+            NumberAnimation { duration: 50; easing.type: Easing.OutCubic }
         }
 
         Rectangle {

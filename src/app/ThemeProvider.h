@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QColor>
+#include <QHash>
 #include <QObject>
 #include <QSettings>
 #include <QStringList>
@@ -193,6 +194,13 @@ class ThemeProvider : public QObject {
   void themeChanged();
 
  private:
+  struct ThemeVariants {
+    ThemeColors dark;
+    ThemeColors light;
+  };
+
+  void initializeThemes();
+  void registerTheme(const QString& name, const ThemeColors& dark, const ThemeColors& light);
   void loadTheme(const QString& name, const QString& mode);
   static ThemeColors gruvboxDark();
   static ThemeColors gruvboxLight();
@@ -207,6 +215,8 @@ class ThemeProvider : public QObject {
   QString currentMode_;
   ThemeColors colors_;
   QSettings settings_;
+  QHash<QString, ThemeVariants> themes_;
+  QStringList themeNames_;
 
   QString sans_ = "IBM Plex Sans";
   QString mono_ = "JetBrains Mono";

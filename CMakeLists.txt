@@ -118,6 +118,7 @@ target_compile_options(diffy_core PRIVATE ${LIBCURL_CFLAGS_OTHER} ${LIBGIT2_CFLA
 add_library(diffy_app STATIC
   src/app/DiffController.cpp
   src/app/ThemeProvider.cpp
+  src/app/ThemeProviderThemes.qrc
   src/app/QtDiffTypes.cpp
   src/app/models/DiffRowListModel.cpp
   src/app/models/RepositoryPickerModel.cpp

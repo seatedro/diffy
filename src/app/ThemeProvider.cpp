@@ -1,11 +1,43 @@
 #include "app/ThemeProvider.h"
 
 namespace diffy {
+namespace {
+
+const QStringList& themeNames() {
+  static const QStringList kThemeNames = {
+      "gruvbox-dark",
+      "gruvbox-light",
+      "kanagawa-dark",
+      "kanagawa-light",
+      "rose-pine-dark",
+      "rose-pine-light",
+      "catppuccin-dark",
+      "catppuccin-light",
+  };
+  return kThemeNames;
+}
+
+QString normalizeThemeName(const QString& name) {
+  if (name == "gruvbox") {
+    return QStringLiteral("gruvbox-dark");
+  }
+  if (name == "kanagawa") {
+    return QStringLiteral("kanagawa-dark");
+  }
+  if (name == "rose-pine") {
+    return QStringLiteral("rose-pine-dark");
+  }
+  if (name == "catppuccin") {
+    return QStringLiteral("catppuccin-dark");
+  }
+  return name;
+}
+
+}  // namespace
 
 ThemeProvider::ThemeProvider(QObject* parent) : QObject(parent) {
-  const QString storedTheme = settings_.value("theme", "gruvbox-dark").toString();
-  const QStringList themes = availableThemes();
-  currentTheme_ = themes.contains(storedTheme) ? storedTheme : QStringLiteral("gruvbox-dark");
+  const QString storedTheme = normalizeThemeName(settings_.value("theme", "gruvbox-dark").toString());
+  currentTheme_ = themeNames().contains(storedTheme) ? storedTheme : QStringLiteral("gruvbox-dark");
   loadTheme(currentTheme_);
 }
 
@@ -14,11 +46,15 @@ QString ThemeProvider::currentTheme() const {
 }
 
 QStringList ThemeProvider::availableThemes() const {
-  return {"gruvbox-dark", "gruvbox-light", "kanagawa", "rose-pine", "catppuccin"};
+  return themeNames();
 }
 
 void ThemeProvider::setTheme(const QString& name) {
-  const QString resolvedName = availableThemes().contains(name) ? name : QStringLiteral("gruvbox-dark");
+  QString resolvedName = normalizeThemeName(name);
+  if (!themeNames().contains(resolvedName)) {
+    resolvedName = QStringLiteral("gruvbox-dark");
+  }
+
   if (resolvedName == currentTheme_) {
     return;
   }
@@ -32,12 +68,18 @@ void ThemeProvider::setTheme(const QString& name) {
 void ThemeProvider::loadTheme(const QString& name) {
   if (name == "gruvbox-light") {
     colors_ = gruvboxLight();
-  } else if (name == "kanagawa") {
-    colors_ = kanagawa();
-  } else if (name == "rose-pine") {
-    colors_ = rosePine();
-  } else if (name == "catppuccin") {
-    colors_ = catppuccin();
+  } else if (name == "kanagawa-dark") {
+    colors_ = kanagawaDark();
+  } else if (name == "kanagawa-light") {
+    colors_ = kanagawaLight();
+  } else if (name == "rose-pine-dark") {
+    colors_ = rosePineDark();
+  } else if (name == "rose-pine-light") {
+    colors_ = rosePineLight();
+  } else if (name == "catppuccin-dark") {
+    colors_ = catppuccinDark();
+  } else if (name == "catppuccin-light") {
+    colors_ = catppuccinLight();
   } else {
     colors_ = gruvboxDark();
   }
@@ -73,7 +115,7 @@ ThemeColors ThemeProvider::gruvboxLight() {
   };
 }
 
-ThemeColors ThemeProvider::kanagawa() {
+ThemeColors ThemeProvider::kanagawaDark() {
   return {
       QColor("#1f1f28"), QColor("#2a2a37"), QColor("#363646"), QColor("#3a3a4a"), QColor("#54546D"), QColor("#2a2a37"),
       QColor("#54546D"), QColor("#727169"), QColor("#54546D"),
@@ -88,7 +130,22 @@ ThemeColors ThemeProvider::kanagawa() {
   };
 }
 
-ThemeColors ThemeProvider::rosePine() {
+ThemeColors ThemeProvider::kanagawaLight() {
+  return {
+      QColor("#f2ecbc"), QColor("#e8e0b8"), QColor("#ddd3af"), QColor("#d0c5a1"), QColor("#b9ad8d"), QColor("#e8e0b8"),
+      QColor("#d0c5a1"), QColor("#b9ad8d"), QColor("#d0c5a1"),
+      QColor("#1f1f28"), QColor("#2a2a37"), QColor("#545464"), QColor("#716e61"),
+      QColor("#4d699b"), QColor("#4d699b"), QColor("#d7deef"),
+      QColor("#e4ebd4"), QColor("#8a9b55"), QColor("#6f894e"),
+      QColor("#f3d9d7"), QColor("#c4746e"), QColor("#b35b79"),
+      QColor("#f2e5cd"), QColor("#dca561"), QColor("#c28a4b"),
+      QColor("#ddd3af"), QColor("#4d699b"),
+      QColor("#e8e0b8"), QColor("#e3dab2"), QColor("#dde8d0"), QColor("#cfe0bc"), QColor("#edd8d4"), QColor("#e2c6c0"),
+      QColor("#0a000000"), QColor("#15000000"), QColor("#22000000")
+  };
+}
+
+ThemeColors ThemeProvider::rosePineDark() {
   return {
       QColor("#191724"), QColor("#1f1d2e"), QColor("#26233a"), QColor("#2a283e"), QColor("#403d52"), QColor("#1f1d2e"),
       QColor("#403d52"), QColor("#524f67"), QColor("#403d52"),
@@ -103,7 +160,22 @@ ThemeColors ThemeProvider::rosePine() {
   };
 }
 
-ThemeColors ThemeProvider::catppuccin() {
+ThemeColors ThemeProvider::rosePineLight() {
+  return {
+      QColor("#faf4ed"), QColor("#fffaf3"), QColor("#f2e9e1"), QColor("#e8ded5"), QColor("#cecacd"), QColor("#fffaf3"),
+      QColor("#dfdad9"), QColor("#cecacd"), QColor("#dfdad9"),
+      QColor("#575279"), QColor("#575279"), QColor("#797593"), QColor("#9893a5"),
+      QColor("#907aa9"), QColor("#907aa9"), QColor("#ece3f6"),
+      QColor("#e5f0ef"), QColor("#8ab6bd"), QColor("#56949f"),
+      QColor("#f2dde4"), QColor("#d7829c"), QColor("#b4637a"),
+      QColor("#f7ead8"), QColor("#efb46a"), QColor("#ea9d34"),
+      QColor("#f2e9e1"), QColor("#907aa9"),
+      QColor("#fffaf3"), QColor("#f4ede8"), QColor("#e7efea"), QColor("#d7e3db"), QColor("#f2e1e5"), QColor("#ead0d8"),
+      QColor("#0a000000"), QColor("#15000000"), QColor("#22000000")
+  };
+}
+
+ThemeColors ThemeProvider::catppuccinDark() {
   return {
       QColor("#1e1e2e"), QColor("#24243e"), QColor("#313244"), QColor("#45475a"), QColor("#585b70"), QColor("#24243e"),
       QColor("#45475a"), QColor("#585b70"), QColor("#45475a"),
@@ -115,6 +187,21 @@ ThemeColors ThemeProvider::catppuccin() {
       QColor("#313244"), QColor("#89b4fa"),
       QColor("#24243e"), QColor("#1e1e30"), QColor("#263028"), QColor("#2e3a30"), QColor("#382028"), QColor("#402830"),
       QColor("#1a000000"), QColor("#33000000"), QColor("#4d000000")
+  };
+}
+
+ThemeColors ThemeProvider::catppuccinLight() {
+  return {
+      QColor("#eff1f5"), QColor("#e6e9ef"), QColor("#dce0e8"), QColor("#ccd0da"), QColor("#bcc0cc"), QColor("#e6e9ef"),
+      QColor("#ccd0da"), QColor("#bcc0cc"), QColor("#ccd0da"),
+      QColor("#4c4f69"), QColor("#5c5f77"), QColor("#6c6f85"), QColor("#8c8fa1"),
+      QColor("#1e66f5"), QColor("#1e66f5"), QColor("#dbe7fd"),
+      QColor("#e1efde"), QColor("#8fc485"), QColor("#40a02b"),
+      QColor("#f4dce1"), QColor("#e08aa1"), QColor("#d20f39"),
+      QColor("#f6ecd9"), QColor("#e6b36a"), QColor("#df8e1d"),
+      QColor("#dce0e8"), QColor("#1e66f5"),
+      QColor("#e6e9ef"), QColor("#dde0e6"), QColor("#e2efdf"), QColor("#d4e7d0"), QColor("#f3dde1"), QColor("#ebccd3"),
+      QColor("#0a000000"), QColor("#15000000"), QColor("#22000000")
   };
 }
 

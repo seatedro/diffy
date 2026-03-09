@@ -12,32 +12,6 @@ const QStringList& modeNames() {
   return kModeNames;
 }
 
-QString normalizeThemeName(const QString& name) {
-  if (name == "gruvbox-dark" || name == "gruvbox-light") {
-    return QStringLiteral("gruvbox");
-  }
-  if (name == "kanagawa-dark" || name == "kanagawa-light") {
-    return QStringLiteral("kanagawa");
-  }
-  if (name == "rose-pine-dark" || name == "rose-pine-light") {
-    return QStringLiteral("rose-pine");
-  }
-  if (name == "catppuccin-dark" || name == "catppuccin-light") {
-    return QStringLiteral("catppuccin");
-  }
-  return name;
-}
-
-QString inferModeFromThemeValue(const QString& themeValue) {
-  if (themeValue.endsWith("-light") || themeValue == "gruvbox-light") {
-    return QStringLiteral("light");
-  }
-  if (themeValue.endsWith("-dark") || themeValue == "gruvbox-dark") {
-    return QStringLiteral("dark");
-  }
-  return QString();
-}
-
 QString normalizeModeName(const QString& mode) {
   if (mode == "light") {
     return QStringLiteral("light");
@@ -101,7 +75,7 @@ ThemeProvider::ThemeProvider(QObject* parent) : QObject(parent) {
   const QString storedThemeRaw = settings_.value("theme", fallbackTheme).toString();
   const QString storedModeRaw = settings_.value("themeMode", "").toString();
 
-  QString resolvedTheme = normalizeThemeName(storedThemeRaw);
+  QString resolvedTheme = storedThemeRaw.trimmed();
   if (!themes_.contains(resolvedTheme)) {
     for (const QString& candidate : themeNames_) {
       if (candidate.compare(resolvedTheme, Qt::CaseInsensitive) == 0) {
@@ -115,9 +89,6 @@ ThemeProvider::ThemeProvider(QObject* parent) : QObject(parent) {
   }
 
   QString resolvedMode = normalizeModeName(storedModeRaw);
-  if (resolvedMode.isEmpty()) {
-    resolvedMode = inferModeFromThemeValue(storedThemeRaw);
-  }
   if (!modeNames().contains(resolvedMode)) {
     resolvedMode = QStringLiteral("dark");
   }
@@ -214,7 +185,7 @@ QStringList ThemeProvider::availableModes() const {
 }
 
 void ThemeProvider::setTheme(const QString& name, bool persist) {
-  QString resolvedTheme = normalizeThemeName(name);
+  QString resolvedTheme = name.trimmed();
 
   if (!themes_.contains(resolvedTheme)) {
     for (const QString& candidate : themeNames_) {

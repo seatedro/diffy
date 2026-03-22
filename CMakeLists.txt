@@ -255,6 +255,7 @@ qt_add_qml_module(diffy
     qml/components/ShortcutOverlay.qml
     qml/components/Skeleton.qml
     qml/components/SplitHandle.qml
+    qml/components/StyledScrollBar.qml
     qml/components/Toast.qml
     qml/views/WelcomeView.qml
     qml/views/CompareSetupView.qml

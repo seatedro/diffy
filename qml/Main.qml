@@ -10,7 +10,26 @@ Window {
     height: 940
     minimumWidth: 480
     minimumHeight: 400
-    title: "diffy"
+    title: {
+        var parts = ["diffy"]
+        if (diffController.repoPath.length > 0) {
+            var repoParts = diffController.repoPath.split("/")
+            parts.push(repoParts[repoParts.length - 1])
+        }
+        if (diffController.currentView === "diff" && diffController.leftRefDisplay.length > 0) {
+            var compareModeSeparator = ".."
+            if (diffController.compareMode === "three-dot")
+                compareModeSeparator = "..."
+            else if (diffController.compareMode === "single-commit")
+                compareModeSeparator = "@"
+            parts.push(diffController.leftRefDisplay + compareModeSeparator + diffController.rightRefDisplay)
+        }
+        if (diffController.selectedFile && diffController.selectedFile.path) {
+            var fileParts = diffController.selectedFile.path.split("/")
+            parts.push(fileParts[fileParts.length - 1])
+        }
+        return parts.join(" \u2014 ")
+    }
     color: theme.appBg
 
     property string previousView: "welcome"
@@ -74,8 +93,8 @@ Window {
             slideAnim.start()
         }
 
-        NumberAnimation on opacity { duration: 180; easing.type: Easing.InOutQuad }
-        NumberAnimation { id: slideAnim; target: welcomeView; property: "slideX"; duration: 220; easing.type: Easing.OutCubic }
+        NumberAnimation on opacity { duration: 70; easing.type: Easing.InOutQuad }
+        NumberAnimation { id: slideAnim; target: welcomeView; property: "slideX"; duration: 80; easing.type: Easing.OutCubic }
 
         onOpenRepositoryRequested: window.openRepoPicker()
         onOpenRecentRequested: function(path) { diffController.openRepository(path) }
@@ -100,8 +119,8 @@ Window {
             compSlideAnim.start()
         }
 
-        NumberAnimation on opacity { duration: 180; easing.type: Easing.InOutQuad }
-        NumberAnimation { id: compSlideAnim; target: compareView; property: "slideX"; duration: 220; easing.type: Easing.OutCubic }
+        NumberAnimation on opacity { duration: 70; easing.type: Easing.InOutQuad }
+        NumberAnimation { id: compSlideAnim; target: compareView; property: "slideX"; duration: 80; easing.type: Easing.OutCubic }
 
         onBrowseRequested: window.openRepoPicker()
         onPickBranchRequested: function(target) { window.openBranchPicker(target) }
@@ -126,8 +145,8 @@ Window {
             diffSlideAnim.start()
         }
 
-        NumberAnimation on opacity { duration: 180; easing.type: Easing.InOutQuad }
-        NumberAnimation { id: diffSlideAnim; target: diffView; property: "slideX"; duration: 220; easing.type: Easing.OutCubic }
+        NumberAnimation on opacity { duration: 70; easing.type: Easing.InOutQuad }
+        NumberAnimation { id: diffSlideAnim; target: diffView; property: "slideX"; duration: 80; easing.type: Easing.OutCubic }
     }
 
     ShortcutOverlay {
@@ -225,8 +244,12 @@ Window {
         }
     }
 
-    function openRefPicker(target, anchorElement) {
-        refPickerDropdown.open(target, anchorElement)
+    function openRefPicker(target, anchorElement, initialQuery, useExternalInput, passthroughElement) {
+        refPickerDropdown.open(target, anchorElement, initialQuery, useExternalInput, passthroughElement)
+    }
+
+    function syncBranchPickerQuery(target, query) {
+        refPickerDropdown.syncQuery(target, query)
     }
 
     function openRepoPicker() {
@@ -246,9 +269,9 @@ Window {
         commandPalette.open(items)
     }
 
-    function openBranchPicker(target, anchorElement) {
+    function openBranchPicker(target, anchorElement, initialQuery, useExternalInput, passthroughElement) {
         if (anchorElement) {
-            openRefPicker(target, anchorElement)
+            openRefPicker(target, anchorElement, initialQuery, useExternalInput, passthroughElement)
         } else {
             branchPickTarget = target
             var items = []
@@ -411,6 +434,34 @@ Window {
             var next = (idx + 1) % themes.length
             theme.setTheme(themes[next])
             globalToast.show("Theme: " + themes[next] + " (" + theme.currentMode + ")", "neutral", 1500)
+        }
+    }
+
+    Shortcut {
+        sequence: "Ctrl+\\"
+        onActivated: diffController.layoutMode = diffController.layoutMode === "unified" ? "split" : "unified"
+    }
+
+    Shortcut {
+        sequence: "Ctrl+Shift+W"
+        onActivated: diffController.wrapEnabled = !diffController.wrapEnabled
+    }
+
+    Shortcut {
+        sequence: "Ctrl+B"
+        onActivated: {
+            if (diffView.visible) diffView.toggleSidebar()
+        }
+    }
+
+    Shortcut {
+        sequence: "Ctrl+Shift+C"
+        onActivated: {
+            var path = diffController.selectedFile ? diffController.selectedFile.path : ""
+            if (path.length > 0) {
+                diffController.copyToClipboard(path)
+                globalToast.show("Copied: " + path, "success", 2000)
+            }
         }
     }
 }

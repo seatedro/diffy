@@ -44,12 +44,12 @@ Rectangle {
     scale: mouseArea.pressed ? 0.97 : 1.0
     Behavior on scale {
         enabled: !(Window.window && Window.window.commandPaletteShowing)
-        NumberAnimation { duration: 80; easing.type: Easing.OutCubic }
+        NumberAnimation { duration: 30; easing.type: Easing.OutCubic }
     }
 
     Behavior on color {
         enabled: !(Window.window && Window.window.commandPaletteShowing)
-        ColorAnimation { duration: 90 }
+        ColorAnimation { duration: 35 }
     }
 
     Text {

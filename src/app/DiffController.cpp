@@ -8,6 +8,8 @@
 #include <QFontMetricsF>
 #include <QGuiApplication>
 #include <QStandardPaths>
+#include <QClipboard>
+#include <QStandardPaths>
 #include <QtConcurrent>
 
 #include "app/QtDiffTypes.h"
@@ -1040,6 +1042,12 @@ QString DiffController::abbreviateRef(const QString& ref) const {
     return QString::fromStdString(branchName);
   }
   return ref.left(8);
+}
+
+void DiffController::copyToClipboard(const QString& text) {
+  if (auto* clipboard = QGuiApplication::clipboard()) {
+    clipboard->setText(text);
+  }
 }
 
 void DiffController::persistSettings() {

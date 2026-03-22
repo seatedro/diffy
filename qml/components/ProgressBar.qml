@@ -24,7 +24,7 @@ Rectangle {
             NumberAnimation {
                 from: -indicator.width
                 to: root.width
-                duration: 1200
+                duration: 800
                 easing.type: Easing.InOutQuad
             }
             PauseAnimation { duration: 200 }

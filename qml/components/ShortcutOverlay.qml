@@ -27,10 +27,10 @@ Rectangle {
         opacity: root.showing ? 1.0 : 0
 
         Behavior on scale {
-            SpringAnimation { spring: 3; damping: 0.7 }
+            SpringAnimation { spring: 10; damping: 0.85 }
         }
         Behavior on opacity {
-            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+            NumberAnimation { duration: 50; easing.type: Easing.OutCubic }
         }
 
         Rectangle {
@@ -73,9 +73,12 @@ Rectangle {
 
             ShortcutRow { key: "j / k"; desc: "Next / previous file" }
             ShortcutRow { key: "n / N"; desc: "Next / previous hunk" }
-            ShortcutRow { key: "Alt+←"; desc: "Go back" }
+            ShortcutRow { key: "Alt+â†"; desc: "Go back" }
             ShortcutRow { key: "Ctrl+K"; desc: "Command palette" }
             ShortcutRow { key: "Ctrl+Shift+T"; desc: "Cycle theme" }
+            ShortcutRow { key: "Ctrl+\\"; desc: "Toggle unified / split" }
+            ShortcutRow { key: "Ctrl+Shift+W"; desc: "Toggle word wrap" }
+            ShortcutRow { key: "Ctrl+B"; desc: "Toggle file sidebar" }
             ShortcutRow { key: "Escape"; desc: "Close overlay / picker" }
 
             // Scrolling
@@ -103,6 +106,7 @@ Rectangle {
             }
 
             ShortcutRow { key: "Ctrl+C"; desc: "Copy selected text" }
+            ShortcutRow { key: "Ctrl+Shift+C"; desc: "Copy file path" }
             ShortcutRow { key: "Ctrl+A"; desc: "Select all" }
 
             // Meta

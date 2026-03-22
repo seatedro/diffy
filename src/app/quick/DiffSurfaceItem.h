@@ -230,6 +230,11 @@ signals:
 
   bool rowSelected(int rowIndex) const;
   QColor paletteColor(const QString& key, const QColor& fallback) const;
+  QColor unifiedLineBackgroundColor(const DiffDisplayRow& row) const;
+  QColor splitPaneLineBackgroundColor(const DiffDisplayRow& row, bool isLeftPane) const;
+  QColor lineOverlayColor(const QColor& base, bool selected) const;
+  QColor unifiedLineOverlayColor(const DiffDisplayRow& row, bool selected) const;
+  QColor splitLineOverlayColor(const DiffDisplayRow& row, bool isLeftPane, bool selected) const;
   qreal digitWidth() const;
   qreal unifiedGutterWidth() const;
   QString selectedText() const;

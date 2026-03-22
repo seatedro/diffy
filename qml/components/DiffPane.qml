@@ -35,6 +35,7 @@ Rectangle {
             "textMuted": theme.textMuted,
             "textFaint": theme.textFaint,
             "selectionBg": theme.selectionBg,
+            "selectionBorder": theme.selectionBorder,
             "accentSoft": theme.accentSoft,
             "successText": theme.successText,
             "successBorder": theme.successBorder,

@@ -14,6 +14,7 @@ Window {
     color: theme.appBg
 
     property string previousView: "welcome"
+    property bool commandPaletteShowing: commandPalette.showing
 
     function viewIndex(name) {
         if (name === "welcome") return 0

@@ -49,10 +49,10 @@ Rectangle {
     transform: Translate { y: root.slideY }
 
     Behavior on opacity {
-        NumberAnimation { duration: 200; easing.type: Easing.OutCubic }
+        NumberAnimation { duration: 80; easing.type: Easing.OutCubic }
     }
     Behavior on slideY {
-        SpringAnimation { spring: 3; damping: 0.7 }
+        SpringAnimation { spring: 10; damping: 0.85 }
     }
 
     Text {

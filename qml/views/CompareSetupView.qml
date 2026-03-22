@@ -108,12 +108,16 @@ Rectangle {
                 Layout.fillWidth: true
                 implicitHeight: 30
                 radius: theme.radiusSm
-                color: leftSetupMouse.containsMouse ? theme.panelStrong : theme.panel
+                color: leftSetupHover.hovered ? theme.panelStrong : theme.panel
                 border.width: 1
                 border.color: theme.borderSoft
                 Behavior on color {
                     enabled: !(Window.window && Window.window.commandPaletteShowing)
-                    ColorAnimation { duration: 100 }
+                    ColorAnimation { duration: 35 }
+                }
+
+                HoverHandler {
+                    id: leftSetupHover
                 }
 
                 RowLayout {
@@ -128,8 +132,14 @@ Rectangle {
                         monospace: true
                         borderless: true
                         compact: true
+                        activeFocusOnTab: true
                         text: diffController.leftRefDisplay
                         placeholderText: "Base ref (e.g. main)"
+                        onEdited: window.syncBranchPickerQuery("left", text)
+                        onInputFocusChanged: function(focused) {
+                            if (focused)
+                                window.openBranchPicker("left", leftRefCard, text, true, leftRefCard)
+                        }
                         onSubmitted: root.runCompare()
                     }
 
@@ -140,18 +150,15 @@ Rectangle {
 
                         MouseArea {
                             anchors.fill: parent
-                            anchors.margins: -4
+                            anchors.margins: -6
+                            hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: window.openBranchPicker("left", leftRefCard)
+                            onClicked: {
+                                leftRefField.focusInput()
+                                window.openBranchPicker("left", leftRefCard, leftRefField.text, true, leftRefCard)
+                            }
                         }
                     }
-                }
-
-                MouseArea {
-                    id: leftSetupMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    acceptedButtons: Qt.NoButton
                 }
             }
 
@@ -166,12 +173,16 @@ Rectangle {
                 Layout.fillWidth: true
                 implicitHeight: 30
                 radius: theme.radiusSm
-                color: rightSetupMouse.containsMouse ? theme.panelStrong : theme.panel
+                color: rightSetupHover.hovered ? theme.panelStrong : theme.panel
                 border.width: 1
                 border.color: theme.borderSoft
                 Behavior on color {
                     enabled: !(Window.window && Window.window.commandPaletteShowing)
-                    ColorAnimation { duration: 100 }
+                    ColorAnimation { duration: 35 }
+                }
+
+                HoverHandler {
+                    id: rightSetupHover
                 }
 
                 RowLayout {
@@ -186,8 +197,14 @@ Rectangle {
                         monospace: true
                         borderless: true
                         compact: true
+                        activeFocusOnTab: true
                         text: diffController.rightRefDisplay
                         placeholderText: "Head ref (e.g. feature)"
+                        onEdited: window.syncBranchPickerQuery("right", text)
+                        onInputFocusChanged: function(focused) {
+                            if (focused)
+                                window.openBranchPicker("right", rightRefCard, text, true, rightRefCard)
+                        }
                         onSubmitted: root.runCompare()
                     }
 
@@ -198,18 +215,15 @@ Rectangle {
 
                         MouseArea {
                             anchors.fill: parent
-                            anchors.margins: -4
+                            anchors.margins: -6
+                            hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: window.openBranchPicker("right", rightRefCard)
+                            onClicked: {
+                                rightRefField.focusInput()
+                                window.openBranchPicker("right", rightRefCard, rightRefField.text, true, rightRefCard)
+                            }
                         }
                     }
-                }
-
-                MouseArea {
-                    id: rightSetupMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    acceptedButtons: Qt.NoButton
                 }
             }
         }

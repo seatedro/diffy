@@ -138,6 +138,7 @@ class DiffController : public QObject {
   Q_INVOKABLE QVariantList fuzzyFilter(const QString& query, const QVariantList& items, const QString& labelKey);
   Q_INVOKABLE void startOAuthLogin();
   Q_INVOKABLE void cancelOAuthLogin();
+  Q_INVOKABLE void copyToClipboard(const QString& text);
 
   bool oauthInProgress() const;
   QString oauthUserCode() const;

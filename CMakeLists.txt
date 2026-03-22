@@ -239,6 +239,7 @@ qt_add_qml_module(diffy
     qml/components/ActionButton.qml
     qml/components/Badge.qml
     qml/components/Card.qml
+    qml/components/ColorUtils.js
     qml/components/CommandPalette.qml
     qml/components/DebugOverlay.qml
     qml/components/DiffPane.qml

@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Window
 import "../components"
 
 Rectangle {
@@ -110,7 +111,10 @@ Rectangle {
                 color: leftSetupMouse.containsMouse ? theme.panelStrong : theme.panel
                 border.width: 1
                 border.color: theme.borderSoft
-                Behavior on color { ColorAnimation { duration: 100 } }
+                Behavior on color {
+                    enabled: !(Window.window && Window.window.commandPaletteShowing)
+                    ColorAnimation { duration: 100 }
+                }
 
                 RowLayout {
                     anchors.fill: parent
@@ -165,7 +169,10 @@ Rectangle {
                 color: rightSetupMouse.containsMouse ? theme.panelStrong : theme.panel
                 border.width: 1
                 border.color: theme.borderSoft
-                Behavior on color { ColorAnimation { duration: 100 } }
+                Behavior on color {
+                    enabled: !(Window.window && Window.window.commandPaletteShowing)
+                    ColorAnimation { duration: 100 }
+                }
 
                 RowLayout {
                     anchors.fill: parent

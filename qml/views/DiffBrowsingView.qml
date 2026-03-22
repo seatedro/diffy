@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Window
 import "../components"
 
 Rectangle {
@@ -92,7 +93,10 @@ Rectangle {
                     svg: root.iconArrowLeft
                     size: 14
                     color: navBackMouse.containsMouse ? theme.textMuted : theme.textFaint
-                    Behavior on color { ColorAnimation { duration: 100 } }
+                    Behavior on color {
+                        enabled: !(Window.window && Window.window.commandPaletteShowing)
+                        ColorAnimation { duration: 100 }
+                    }
 
                     MouseArea {
                         id: navBackMouse
@@ -109,7 +113,10 @@ Rectangle {
                     color: repoMouse.containsMouse ? theme.textMuted : theme.textFaint
                     font.family: theme.sans
                     font.pixelSize: theme.fontSmall
-                    Behavior on color { ColorAnimation { duration: 100 } }
+                    Behavior on color {
+                        enabled: !(Window.window && Window.window.commandPaletteShowing)
+                        ColorAnimation { duration: 100 }
+                    }
 
                     MouseArea {
                         id: repoMouse
@@ -134,7 +141,10 @@ Rectangle {
                     color: refCrumbMouse.containsMouse ? theme.textMuted : theme.textFaint
                     font.family: theme.mono
                     font.pixelSize: theme.fontCaption + 1
-                    Behavior on color { ColorAnimation { duration: 100 } }
+                    Behavior on color {
+                        enabled: !(Window.window && Window.window.commandPaletteShowing)
+                        ColorAnimation { duration: 100 }
+                    }
 
                     MouseArea {
                         id: refCrumbMouse
@@ -234,7 +244,10 @@ Rectangle {
                     color: pickerOpen ? theme.panel : (leftCardMouse.containsMouse ? theme.panelStrong : theme.panel)
                     border.width: 1
                     border.color: pickerOpen ? theme.borderSoft : (leftCardMouse.containsMouse ? theme.borderSoft : "transparent")
-                    Behavior on color { ColorAnimation { duration: 100 } }
+                    Behavior on color {
+                        enabled: !(Window.window && Window.window.commandPaletteShowing)
+                        ColorAnimation { duration: 100 }
+                    }
 
                     MouseArea {
                         id: leftCardMouse
@@ -295,8 +308,14 @@ Rectangle {
                             radius: theme.radiusMd
                             color: modeMouse.containsMouse ? theme.panelTint : "transparent"
                             border.color: modeMouse.containsMouse ? theme.borderSoft : "transparent"
-                            Behavior on color { ColorAnimation { duration: 80 } }
-                            Behavior on border.color { ColorAnimation { duration: 80 } }
+                            Behavior on color {
+                                enabled: !(Window.window && Window.window.commandPaletteShowing)
+                                ColorAnimation { duration: 80 }
+                            }
+                            Behavior on border.color {
+                                enabled: !(Window.window && Window.window.commandPaletteShowing)
+                                ColorAnimation { duration: 80 }
+                            }
 
                             Text {
                                 id: modeRow
@@ -306,7 +325,10 @@ Rectangle {
                                 font.family: theme.mono
                                 font.pixelSize: theme.fontBody
                                 font.bold: true
-                                Behavior on color { ColorAnimation { duration: 80 } }
+                                Behavior on color {
+                                    enabled: !(Window.window && Window.window.commandPaletteShowing)
+                                    ColorAnimation { duration: 80 }
+                                }
                             }
 
                             MouseArea {
@@ -326,15 +348,24 @@ Rectangle {
                             radius: theme.radiusMd
                             color: swapMouse.containsMouse ? theme.panelTint : "transparent"
                             border.color: swapMouse.containsMouse ? theme.borderSoft : "transparent"
-                            Behavior on color { ColorAnimation { duration: 80 } }
-                            Behavior on border.color { ColorAnimation { duration: 80 } }
+                            Behavior on color {
+                                enabled: !(Window.window && Window.window.commandPaletteShowing)
+                                ColorAnimation { duration: 80 }
+                            }
+                            Behavior on border.color {
+                                enabled: !(Window.window && Window.window.commandPaletteShowing)
+                                ColorAnimation { duration: 80 }
+                            }
 
                             Icon {
                                 anchors.centerIn: parent
                                 svg: root.iconArrowRightLeft
                                 size: 16
                                 color: swapMouse.containsMouse ? theme.accent : theme.textFaint
-                                Behavior on color { ColorAnimation { duration: 100 } }
+                                Behavior on color {
+                                    enabled: !(Window.window && Window.window.commandPaletteShowing)
+                                    ColorAnimation { duration: 100 }
+                                }
                             }
 
                             MouseArea {
@@ -358,7 +389,10 @@ Rectangle {
                     color: pickerOpen ? theme.panel : (rightCardMouse.containsMouse ? theme.panelStrong : theme.panel)
                     border.width: 1
                     border.color: pickerOpen ? theme.borderSoft : (rightCardMouse.containsMouse ? theme.borderSoft : "transparent")
-                    Behavior on color { ColorAnimation { duration: 100 } }
+                    Behavior on color {
+                        enabled: !(Window.window && Window.window.commandPaletteShowing)
+                        ColorAnimation { duration: 100 }
+                    }
 
                     MouseArea {
                         id: rightCardMouse

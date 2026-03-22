@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 project(diffy LANGUAGES C CXX)
 
+include(GNUInstallDirs)
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -12,13 +14,13 @@ enable_testing()
 option(DIFFY_ENABLE_QML_DEBUG "Enable QML debugging for live preview workflows" OFF)
 option(DIFFY_FAST_QML_DEV "Disable QML cache generation for faster local iteration" OFF)
 option(DIFFY_AUTO_VENDOR_GRAMMARS "Automatically materialize pinned tree-sitter grammar sources during configure" ON)
+option(DIFFY_REGENERATE_GHOSTTY_THEMES
+  "Regenerate Ghostty theme dataset during build even when the checked-in dataset exists"
+  OFF
+)
 
-find_package(PkgConfig REQUIRED)
+find_package(Git REQUIRED)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick Test Widgets Concurrent)
-
-pkg_check_modules(LIBCURL REQUIRED libcurl)
-pkg_check_modules(LIBGIT2 REQUIRED libgit2)
-pkg_check_modules(TREESITTER REQUIRED tree-sitter)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -35,6 +37,34 @@ FetchContent_Declare(
 )
 set(SPDLOG_FMT_EXTERNAL OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(spdlog simdjson)
+
+if(WIN32)
+  find_package(CURL REQUIRED)
+  find_package(libgit2 CONFIG REQUIRED)
+  find_package(unofficial-tree-sitter CONFIG REQUIRED)
+  set(DIFFY_LIBCURL_TARGET CURL::libcurl)
+  set(DIFFY_LIBGIT2_TARGET libgit2::libgit2package)
+  set(DIFFY_TREESITTER_TARGET unofficial::tree-sitter::tree-sitter)
+  set(DIFFY_EXTRA_INCLUDE_DIRS "")
+else()
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(LIBCURL REQUIRED IMPORTED_TARGET libcurl)
+  pkg_check_modules(LIBGIT2 REQUIRED IMPORTED_TARGET libgit2)
+  pkg_check_modules(TREESITTER REQUIRED IMPORTED_TARGET tree-sitter)
+  set(DIFFY_LIBCURL_TARGET PkgConfig::LIBCURL)
+  set(DIFFY_LIBGIT2_TARGET PkgConfig::LIBGIT2)
+  set(DIFFY_TREESITTER_TARGET PkgConfig::TREESITTER)
+  set(DIFFY_EXTRA_INCLUDE_DIRS "")
+endif()
+
+add_library(diffy_curl INTERFACE)
+target_link_libraries(diffy_curl INTERFACE ${DIFFY_LIBCURL_TARGET})
+
+add_library(diffy_libgit2 INTERFACE)
+target_link_libraries(diffy_libgit2 INTERFACE ${DIFFY_LIBGIT2_TARGET})
+
+add_library(diffy_tree_sitter INTERFACE)
+target_link_libraries(diffy_tree_sitter INTERFACE ${DIFFY_TREESITTER_TARGET})
 
 if(DIFFY_FAST_QML_DEV)
   set(QT_QML_NO_CACHEGEN TRUE)
@@ -63,7 +93,13 @@ if(DIFFY_MISSING_GRAMMARS)
   string(JOIN ", " DIFFY_MISSING_GRAMMARS_TEXT ${DIFFY_MISSING_GRAMMARS})
   message(STATUS "Materializing vendored tree-sitter grammars for: ${DIFFY_MISSING_GRAMMARS_TEXT}")
   execute_process(
-    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/vendor-grammars.sh"
+    COMMAND
+      ${CMAKE_COMMAND}
+      -DROOT_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+      -DLOCK_FILE=${CMAKE_CURRENT_SOURCE_DIR}/vendor/grammars.lock
+      -DVENDOR_DIR=${CMAKE_CURRENT_SOURCE_DIR}/vendor/grammars
+      -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/VendorGrammars.cmake
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMAND_ERROR_IS_FATAL ANY
   )
@@ -72,6 +108,47 @@ endif()
 qt_standard_project_setup()
 
 add_subdirectory(vendor/grammars)
+
+set(DIFFY_SOURCE_THEME_JSON_PATH "${CMAKE_CURRENT_SOURCE_DIR}/src/app/ghostty_themes.json")
+set(DIFFY_THEME_JSON_PATH "${DIFFY_SOURCE_THEME_JSON_PATH}")
+set(DIFFY_GENERATE_GHOSTTY_THEMES OFF)
+
+if(DIFFY_REGENERATE_GHOSTTY_THEMES)
+  set(DIFFY_GENERATE_GHOSTTY_THEMES ON)
+elseif(NOT EXISTS "${DIFFY_SOURCE_THEME_JSON_PATH}")
+  set(DIFFY_GENERATE_GHOSTTY_THEMES ON)
+  message(STATUS
+    "Missing checked-in Ghostty theme dataset at ${DIFFY_SOURCE_THEME_JSON_PATH}; "
+    "generating it into the build directory."
+  )
+endif()
+
+if(DIFFY_GENERATE_GHOSTTY_THEMES)
+  find_program(DIFFY_PYTHON3_EXECUTABLE NAMES python3 python)
+  if(NOT DIFFY_PYTHON3_EXECUTABLE)
+    message(FATAL_ERROR
+      "Generating the Ghostty theme dataset requires Python 3.\n"
+      "Install python3 or restore ${DIFFY_SOURCE_THEME_JSON_PATH}."
+    )
+  endif()
+  set(DIFFY_THEME_JSON_PATH "${CMAKE_CURRENT_BINARY_DIR}/generated/ghostty_themes.json")
+  add_custom_command(
+    OUTPUT "${DIFFY_THEME_JSON_PATH}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/generated"
+    COMMAND ${DIFFY_PYTHON3_EXECUTABLE}
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_ghostty_themes.py"
+            --output "${DIFFY_THEME_JSON_PATH}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_ghostty_themes.py"
+    VERBATIM
+  )
+  add_custom_target(diffy_ghostty_themes_data DEPENDS "${DIFFY_THEME_JSON_PATH}")
+endif()
+
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/app/ThemeProviderThemes.qrc.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/ThemeProviderThemes.qrc"
+  @ONLY
+)
 
 add_library(diffy_core STATIC
   src/core/compare/CompareService.cpp
@@ -97,32 +174,33 @@ add_library(diffy_core STATIC
 
 target_include_directories(diffy_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
-  ${LIBCURL_INCLUDE_DIRS}
-  ${LIBGIT2_INCLUDE_DIRS}
-  ${TREESITTER_INCLUDE_DIRS}
+  ${DIFFY_EXTRA_INCLUDE_DIRS}
 )
 
 target_link_libraries(diffy_core PUBLIC
   Qt6::Core
   Qt6::Gui
-  ${LIBCURL_LIBRARIES}
-  ${LIBGIT2_LIBRARIES}
-  ${TREESITTER_LIBRARIES}
+  diffy_curl
+  diffy_libgit2
+  diffy_tree_sitter
   diffy_grammars
   spdlog::spdlog
   simdjson::simdjson
 )
 
-target_compile_options(diffy_core PRIVATE ${LIBCURL_CFLAGS_OTHER} ${LIBGIT2_CFLAGS_OTHER} ${TREESITTER_CFLAGS_OTHER})
-
 add_library(diffy_app STATIC
   src/app/DiffController.cpp
   src/app/ThemeProvider.cpp
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/ThemeProviderThemes.qrc"
   src/app/QtDiffTypes.cpp
   src/app/models/DiffRowListModel.cpp
   src/app/models/RepositoryPickerModel.cpp
   src/app/quick/DiffSurfaceItem.cpp
 )
+
+if(DIFFY_GENERATE_GHOSTTY_THEMES)
+  add_dependencies(diffy_app diffy_ghostty_themes_data)
+endif()
 
 target_include_directories(diffy_app PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -136,7 +214,7 @@ target_link_libraries(diffy_app PUBLIC
   Qt6::Quick
   Qt6::Widgets
   Qt6::Concurrent
-  ${TREESITTER_LIBRARIES}
+  diffy_tree_sitter
 )
 
 qt_add_executable(diffy
@@ -161,6 +239,7 @@ qt_add_qml_module(diffy
     qml/components/ActionButton.qml
     qml/components/Badge.qml
     qml/components/Card.qml
+    qml/components/ColorUtils.js
     qml/components/CommandPalette.qml
     qml/components/DebugOverlay.qml
     qml/components/DiffPane.qml
@@ -181,5 +260,32 @@ qt_add_qml_module(diffy
     qml/views/CompareSetupView.qml
     qml/views/DiffBrowsingView.qml
 )
+
+if(WIN32 AND QT6_IS_SHARED_LIBS_BUILD)
+  install(TARGETS diffy RUNTIME DESTINATION ".")
+
+  qt_generate_deploy_qml_app_script(
+    TARGET diffy
+    OUTPUT_SCRIPT diffy_deploy_script
+    NO_UNSUPPORTED_PLATFORM_ERROR
+    DEPLOY_TOOL_OPTIONS --include-plugins qoffscreen,qminimal
+  )
+
+  install(CODE "set(QT_DEPLOY_BIN_DIR \".\")")
+  install(SCRIPT ${diffy_deploy_script})
+  install(CODE "file(MAKE_DIRECTORY \"$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/lib/fonts\")")
+
+  add_custom_command(TARGET diffy POST_BUILD
+    COMMAND ${CMAKE_COMMAND}
+      -D CMAKE_INSTALL_PREFIX=$<TARGET_FILE_DIR:diffy>
+      -D QT_DEPLOY_PREFIX=$<TARGET_FILE_DIR:diffy>
+      -D QT_DEPLOY_BIN_DIR=.
+      -P ${diffy_deploy_script}
+    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:diffy>/lib/fonts
+    VERBATIM
+  )
+else()
+  install(TARGETS diffy RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 
 add_subdirectory(tests)

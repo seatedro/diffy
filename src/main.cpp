@@ -51,6 +51,10 @@ QString envString(const char* name) {
   return QString::fromLocal8Bit(qgetenv(name));
 }
 
+QStringList splitEnvironmentPaths(const char* name) {
+  return envString(name).split(QDir::listSeparator(), Qt::SkipEmptyParts);
+}
+
 QString discoverQmlSourceRoot() {
   QDir dir(QCoreApplication::applicationDirPath());
   for (int depth = 0; depth < 6; ++depth) {
@@ -84,7 +88,7 @@ QUrl mainQmlUrl(QQmlApplicationEngine* engine) {
   return QUrl::fromLocalFile(QDir(qmlDir).filePath("Main.qml"));
 }
 
-void printAutomationState(QObject* root, const diffy::DiffController& controller) {
+void printAutomationState(QObject* root, const diffy::DiffController& controller, const diffy::ThemeProvider& themeProvider) {
   QObject* surface = root != nullptr ? root->findChild<QObject*>("diffSurface") : nullptr;
   const double surfaceHeight = surface != nullptr ? surface->property("contentHeight").toDouble() : -1.0;
   const double surfaceWidth = surface != nullptr ? surface->property("contentWidth").toDouble() : -1.0;
@@ -114,19 +118,24 @@ void printAutomationState(QObject* root, const diffy::DiffController& controller
   const QString errorText = controller.errorMessage().isEmpty() ? "none" : controller.errorMessage().simplified();
   const QString layout = controller.layoutMode().isEmpty() ? "none" : controller.layoutMode();
   const QString currentView = controller.currentView();
+  const QString themeName = themeProvider.currentTheme().isEmpty() ? QStringLiteral("none") : themeProvider.currentTheme();
+  const QString themeMode = themeProvider.currentMode().isEmpty() ? QStringLiteral("none") : themeProvider.currentMode();
+  const QString themeBg = themeProvider.appBg().isValid() ? themeProvider.appBg().name(QColor::HexArgb) : QStringLiteral("invalid");
+  const int themeCount = themeProvider.availableThemes().size();
   const QString selectedPath = controller.selectedFile().value("path").toString();
   const QByteArray encodedSelectedPath =
       QUrl::toPercentEncoding(selectedPath.isEmpty() ? QStringLiteral("none") : selectedPath, "/._-");
 
   std::fprintf(stdout,
-               "DIFFY_STATE current_view=%s files=%d rows=%d selected=%d layout=%s surface_height=%.1f surface_width=%.1f item_width=%.1f item_height=%.1f viewport_y=%.1f left_viewport_x=%.1f right_viewport_x=%.1f selected_path=%s display_rows=%d paint_count=%d tile_cache_hits=%d tile_cache_misses=%d texture_uploads=%d resident_tiles=%d pending_tile_jobs=%d last_paint_ms=%.3f last_raster_ms=%.3f last_upload_ms=%.3f last_rows_rebuild_ms=%.3f last_display_rows_rebuild_ms=%.3f last_metrics_ms=%.3f picker_visible=%d error=%s\n",
+               "DIFFY_STATE current_view=%s files=%d rows=%d selected=%d layout=%s surface_height=%.1f surface_width=%.1f item_width=%.1f item_height=%.1f viewport_y=%.1f left_viewport_x=%.1f right_viewport_x=%.1f selected_path=%s display_rows=%d paint_count=%d tile_cache_hits=%d tile_cache_misses=%d texture_uploads=%d resident_tiles=%d pending_tile_jobs=%d last_paint_ms=%.3f last_raster_ms=%.3f last_upload_ms=%.3f last_rows_rebuild_ms=%.3f last_display_rows_rebuild_ms=%.3f last_metrics_ms=%.3f picker_visible=%d error=%s theme=%s mode=%s theme_bg=%s theme_count=%d\n",
                qPrintable(currentView), static_cast<int>(controller.files().size()), controller.selectedFileRowCount(),
                controller.selectedFileIndex(), qPrintable(layout), surfaceHeight, surfaceWidth,
                surfaceItemWidth, surfaceItemHeight, viewportY, leftViewportX, rightViewportX,
                encodedSelectedPath.constData(), displayRowCount, paintCount, tileCacheHits, tileCacheMisses,
                textureUploads, residentTiles, pendingTileJobs, lastPaintTimeMs, lastRasterTimeMs,
                lastTextureUploadTimeMs, lastRowsRebuildTimeMs, lastDisplayRowsRebuildTimeMs, lastMetricsRecalcTimeMs,
-               pickerVisible, qPrintable(errorText));
+               pickerVisible, qPrintable(errorText), qPrintable(themeName), qPrintable(themeMode), qPrintable(themeBg),
+               themeCount);
   std::fflush(stdout);
 }
 
@@ -229,6 +238,12 @@ bool applyStartupAutomation(diffy::DiffController* controller, QString* error) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
+#ifdef Q_OS_WIN
+  if (qEnvironmentVariableIsEmpty("QT_QUICK_CONTROLS_STYLE")) {
+    qputenv("QT_QUICK_CONTROLS_STYLE", "Basic");
+  }
+#endif
+
   QApplication app(argc, argv);
   QApplication::setOrganizationName("diffy");
   QApplication::setApplicationName("diffy");
@@ -253,24 +268,36 @@ int main(int argc, char* argv[]) {
   engine.addImportPath(QLibraryInfo::path(QLibraryInfo::QmlImportsPath));
 
   const auto addQtPrefixPaths = [&](const QString& prefix) {
-    const QString qmlPath = QDir(prefix).filePath("lib/qt-6/qml");
-    const QString pluginPath = QDir(prefix).filePath("lib/qt-6/plugins");
-    if (QFileInfo::exists(qmlPath)) {
-      engine.addImportPath(qmlPath);
+    const QStringList qmlCandidates = {
+        QDir(prefix).filePath("qml"),
+        QDir(prefix).filePath("lib/qt6/qml"),
+        QDir(prefix).filePath("lib/qt-6/qml"),
+    };
+    for (const QString& qmlPath : qmlCandidates) {
+      if (QFileInfo::exists(qmlPath)) {
+        engine.addImportPath(qmlPath);
+        break;
+      }
     }
-    if (QFileInfo::exists(pluginPath)) {
-      app.addLibraryPath(pluginPath);
+
+    const QStringList pluginCandidates = {
+        QDir(prefix).filePath("plugins"),
+        QDir(prefix).filePath("lib/qt6/plugins"),
+        QDir(prefix).filePath("lib/qt-6/plugins"),
+    };
+    for (const QString& pluginPath : pluginCandidates) {
+      if (QFileInfo::exists(pluginPath)) {
+        app.addLibraryPath(pluginPath);
+        break;
+      }
     }
   };
 
-  const QString additionalPrefixes =
-      QString::fromLocal8Bit(qgetenv("QT_ADDITIONAL_PACKAGES_PREFIX_PATH"));
-  for (const QString& prefix : additionalPrefixes.split(':', Qt::SkipEmptyParts)) {
+  for (const QString& prefix : splitEnvironmentPaths("QT_ADDITIONAL_PACKAGES_PREFIX_PATH")) {
     addQtPrefixPaths(prefix);
   }
 
-  const QString extraQmlImports = QString::fromLocal8Bit(qgetenv("QML2_IMPORT_PATH"));
-  for (const QString& importPath : extraQmlImports.split(':', Qt::SkipEmptyParts)) {
+  for (const QString& importPath : splitEnvironmentPaths("QML2_IMPORT_PATH")) {
     if (QFileInfo::exists(importPath)) {
       engine.addImportPath(importPath);
     }
@@ -340,8 +367,8 @@ int main(int argc, char* argv[]) {
     const int totalPrints = std::max(1, countOk ? printStateCount : 1);
 
     for (int printIndex = 0; printIndex < totalPrints; ++printIndex) {
-      QTimer::singleShot(firstDelayMs + repeatDelayMs * printIndex, &app, [&controller, root]() {
-        printAutomationState(root, controller);
+      QTimer::singleShot(firstDelayMs + repeatDelayMs * printIndex, &app, [&controller, &themeProvider, root]() {
+        printAutomationState(root, controller, themeProvider);
       });
     }
   }

@@ -30,7 +30,7 @@ if(MISSING_GRAMMARS)
   string(JOIN ", " MISSING_GRAMMARS_TEXT ${MISSING_GRAMMARS})
   message(FATAL_ERROR
     "Missing vendored tree-sitter grammar sources for: ${MISSING_GRAMMARS_TEXT}\n"
-    "Configure from the repo root so top-level CMake can materialize them, or run ./scripts/vendor-grammars.sh manually."
+    "Configure from the repo root so top-level CMake can materialize them, or run cmake -DROOT_DIR=<repo> -DLOCK_FILE=<repo>/vendor/grammars.lock -DVENDOR_DIR=<repo>/vendor/grammars -DGIT_EXECUTABLE=<git> -P <repo>/cmake/VendorGrammars.cmake."
   )
 endif()
 
@@ -43,13 +43,16 @@ set_target_properties(diffy_grammars PROPERTIES
   LINKER_LANGUAGE C
 )
 
-target_include_directories(diffy_grammars PRIVATE
-  ${GRAMMAR_INCLUDE_DIRS}
-  ${TREESITTER_INCLUDE_DIRS}
-)
+target_include_directories(diffy_grammars PRIVATE ${GRAMMAR_INCLUDE_DIRS})
 
-target_compile_options(diffy_grammars PRIVATE
-  ${TREESITTER_CFLAGS_OTHER}
-  -Wno-unused-but-set-variable
-  -Wno-unused-parameter
-)
+if(MSVC)
+  target_compile_options(diffy_grammars PRIVATE
+    /wd4100
+    /wd4189
+  )
+else()
+  target_compile_options(diffy_grammars PRIVATE
+    -Wno-unused-but-set-variable
+    -Wno-unused-parameter
+  )
+endif()

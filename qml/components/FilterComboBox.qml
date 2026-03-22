@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "ColorUtils.js" as ColorUtils
 
 Item {
     id: root
@@ -185,6 +186,16 @@ Item {
                 required property int index
                 required property var modelData
 
+                readonly property color selectedTextColor: ColorUtils.bestContrastColor(theme.selectionBg, [
+                    theme.textStrong,
+                    theme.textBase,
+                    theme.panel,
+                    theme.canvas,
+                    "#101010",
+                    "#f8f8f8"
+                ])
+                readonly property color selectedMetaColor: ColorUtils.withAlpha(selectedTextColor, 0.82)
+
                 width: ListView.view.width
                 height: modelData.isHeader ? 20 : 26
 
@@ -221,7 +232,7 @@ Item {
                         Text {
                             Layout.fillWidth: true
                             text: modelData.label || ""
-                            color: root.selectedIndex === index ? theme.textStrong : theme.textBase
+                            color: root.selectedIndex === index ? selectedTextColor : theme.textBase
                             font.family: theme.mono
                             font.pixelSize: theme.fontSmall
                             font.bold: root.selectedIndex === index
@@ -237,7 +248,7 @@ Item {
                         Text {
                             visible: (modelData.detail || "").length > 0
                             text: modelData.detail || ""
-                            color: theme.textFaint
+                            color: root.selectedIndex === index ? selectedMetaColor : theme.textFaint
                             font.family: theme.sans
                             font.pixelSize: 8
                         }

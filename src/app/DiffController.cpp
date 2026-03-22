@@ -7,6 +7,7 @@
 #include <QFont>
 #include <QFontMetricsF>
 #include <QGuiApplication>
+#include <QStandardPaths>
 #include <QtConcurrent>
 
 #include "app/QtDiffTypes.h"
@@ -24,6 +25,29 @@ namespace {
 constexpr int kPreparedRowsPrewarmBatchSize = 2;
 const QString kPreparedRowsPrewarmFontFamily = QStringLiteral("JetBrains Mono");
 
+QString settingsFilePath() {
+  const auto envPath = [](const char* name) {
+    return QString::fromLocal8Bit(qgetenv(name)).trimmed();
+  };
+
+  QString baseDir = envPath("DIFFY_SETTINGS_DIR");
+  if (baseDir.isEmpty()) {
+    baseDir = envPath("XDG_CONFIG_HOME");
+  }
+  if (baseDir.isEmpty()) {
+    baseDir = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+  } else {
+    baseDir = QDir(baseDir).filePath("diffy");
+  }
+
+  if (baseDir.isEmpty()) {
+    baseDir = QDir::home().filePath(".config/diffy");
+  }
+
+  QDir().mkpath(baseDir);
+  return QDir(baseDir).filePath("diffy.ini");
+}
+
 QFont monoFont(const QString& family, qreal pixelSize) {
   QFont font(family);
   font.setStyleHint(QFont::Monospace);
@@ -34,7 +58,10 @@ QFont monoFont(const QString& family, qreal pixelSize) {
 }  // namespace
 
 DiffController::DiffController(QObject* parent)
-    : QObject(parent), settings_("diffy", "diffy"), selectedFileRowsModel_(this), repositoryPickerModel_(this) {
+    : QObject(parent),
+      settings_(settingsFilePath(), QSettings::IniFormat),
+      selectedFileRowsModel_(this),
+      repositoryPickerModel_(this) {
   repoPath_ = settings_.value("repoPath").toString();
   leftRef_ = settings_.value("leftRef").toString();
   rightRef_ = settings_.value("rightRef").toString();

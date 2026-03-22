@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Window
 
 Rectangle {
     id: root
@@ -27,10 +28,14 @@ Rectangle {
     // Hover lift
     transform: Translate {
         y: root.hoverLift && root.hovering ? -1 : 0
-        Behavior on y { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+        Behavior on y {
+            enabled: !(Window.window && Window.window.commandPaletteShowing)
+            NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+        }
     }
 
     Behavior on border.color {
+        enabled: !(Window.window && Window.window.commandPaletteShowing)
         ColorAnimation { duration: 90 }
     }
 

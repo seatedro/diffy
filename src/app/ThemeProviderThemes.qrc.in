@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="/themes">
+    <file alias="ghostty_themes.json">@DIFFY_THEME_JSON_PATH@</file>
+  </qresource>
+</RCC>

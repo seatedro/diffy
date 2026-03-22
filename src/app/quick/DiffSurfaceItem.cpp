@@ -76,6 +76,34 @@ double elapsedMs(PerfClock::time_point start) {
   return std::chrono::duration<double, std::milli>(PerfClock::now() - start).count();
 }
 
+QColor blendColor(const QColor& from, const QColor& to, qreal amount) {
+  const qreal t = qBound<qreal>(0.0, amount, 1.0);
+  return QColor::fromRgbF(from.redF() + (to.redF() - from.redF()) * t,
+                          from.greenF() + (to.greenF() - from.greenF()) * t,
+                          from.blueF() + (to.blueF() - from.blueF()) * t,
+                          from.alphaF() + (to.alphaF() - from.alphaF()) * t);
+}
+
+qreal linearizeChannel(qreal channel) {
+  if (channel <= 0.04045) {
+    return channel / 12.92;
+  }
+  return qPow((channel + 0.055) / 1.055, 2.4);
+}
+
+qreal relativeLuminance(const QColor& color) {
+  return 0.2126 * linearizeChannel(color.redF()) + 0.7152 * linearizeChannel(color.greenF()) +
+         0.0722 * linearizeChannel(color.blueF());
+}
+
+qreal contrastRatio(const QColor& first, const QColor& second) {
+  const qreal a = relativeLuminance(first);
+  const qreal b = relativeLuminance(second);
+  const qreal lighter = std::max(a, b);
+  const qreal darker = std::min(a, b);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
 bool setPerfValue(double& target, double value) {
   if (qAbs(target - value) <= 0.001) {
     return false;
@@ -248,29 +276,6 @@ void disposeTextures(QQuickWindow* quickWindow, QVector<QSGTexture*> textures, Q
     qDeleteAll(textures);
   }
 }
-
-QColor unifiedSelectionColor(const DiffDisplayRow& row) {
-  QColor selection("#45433d");
-  if (row.kind == DiffLineKind::Addition) {
-    selection = QColor("#3a4a2a");
-  } else if (row.kind == DiffLineKind::Deletion) {
-    selection = QColor("#4a3030");
-  }
-  selection.setAlpha(140);
-  return selection;
-}
-
-QColor splitSelectionColor(const DiffDisplayRow& row, bool isLeftPane) {
-  QColor selection("#45433d");
-  if (isLeftPane && row.leftKind == DiffLineKind::Deletion) {
-    selection = QColor("#4a3030");
-  } else if (!isLeftPane && row.rightKind == DiffLineKind::Addition) {
-    selection = QColor("#3a4a2a");
-  }
-  selection.setAlpha(140);
-  return selection;
-}
-
 QColor splitPaneBackgroundColor(const DiffDisplayRow& row, bool isLeftPane) {
   const DiffLineKind lineKind = isLeftPane ? row.leftKind : row.rightKind;
   if (lineKind == DiffLineKind::Spacer) {
@@ -2303,9 +2308,9 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
         const qreal leftPaneWidth = visibleWidth / 2.0;
         const qreal rightPaneWidth = visibleWidth - leftPaneWidth;
         queueRectNode(overlayCommands, overlayKey(1, rowIndex, 0), QRectF(0.0, y, leftPaneWidth, row.height),
-                      splitSelectionColor(row, true));
+                      splitLineOverlayColor(row, true, rowSelected(rowIndex)));
         queueRectNode(overlayCommands, overlayKey(1, rowIndex, 1), QRectF(leftPaneWidth, y, rightPaneWidth, row.height),
-                      splitSelectionColor(row, false));
+                      splitLineOverlayColor(row, false, rowSelected(rowIndex)));
       } else if (row.rowType == DiffRowType::Hunk) {
         QColor overlay;
         if (rowSelected(rowIndex)) {
@@ -2330,7 +2335,7 @@ QSGNode* DiffSurfaceItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*
                        y);
       if (row.rowType == DiffRowType::Line && (rowSelected(rowIndex) || hoveredRow_ == rowIndex)) {
         queueRectNode(overlayCommands, overlayKey(3, rowIndex, 0), QRectF(-viewportX_, y, unifiedRowWidth, row.height),
-                      unifiedSelectionColor(row));
+                      unifiedLineOverlayColor(row, rowSelected(rowIndex)));
       } else if (row.rowType == DiffRowType::Hunk) {
         QColor overlay;
         if (rowSelected(rowIndex)) {
@@ -2641,6 +2646,58 @@ QColor DiffSurfaceItem::paletteColor(const QString& key, const QColor& fallback)
   return color.isValid() ? color : fallback;
 }
 
+QColor DiffSurfaceItem::unifiedLineBackgroundColor(const DiffDisplayRow& row) const {
+  if (row.kind == DiffLineKind::Addition) {
+    return paletteColor("lineAdd", QColor("#1f2d24"));
+  }
+  if (row.kind == DiffLineKind::Deletion) {
+    return paletteColor("lineDel", QColor("#2d2024"));
+  }
+  return paletteColor("lineContext", QColor("#282c33"));
+}
+
+QColor DiffSurfaceItem::splitPaneLineBackgroundColor(const DiffDisplayRow& row, bool isLeftPane) const {
+  const DiffLineKind lineKind = isLeftPane ? row.leftKind : row.rightKind;
+  QColor background = splitPaneBackgroundColor(row, isLeftPane);
+  if (lineKind == DiffLineKind::Spacer) {
+    return paletteColor("lineContextAlt", background);
+  }
+  if (isLeftPane && lineKind == DiffLineKind::Deletion) {
+    return paletteColor("lineDelAccent", background);
+  }
+  if (!isLeftPane && lineKind == DiffLineKind::Addition) {
+    return paletteColor("lineAddAccent", background);
+  }
+  return paletteColor("lineContext", background);
+}
+
+QColor DiffSurfaceItem::lineOverlayColor(const QColor& base, bool selected) const {
+  const QColor emphasis = selected ? paletteColor("selectionBg", QColor("#3c3836"))
+                                   : paletteColor("panelTint", QColor("#504945"));
+  const QColor accent = selected ? paletteColor("selectionBorder", paletteColor("accentStrong", QColor("#83a598")))
+                                 : paletteColor("selectionBorder", paletteColor("accentSoft", QColor("#293b5b")));
+
+  QColor overlay = blendColor(base, emphasis, selected ? 0.7 : 0.52);
+  if (contrastRatio(overlay, base) < (selected ? 1.18 : 1.08)) {
+    overlay = blendColor(base, accent, selected ? 0.52 : 0.35);
+  }
+  if (contrastRatio(overlay, base) < (selected ? 1.12 : 1.05)) {
+    const QColor fallback = relativeLuminance(base) >= 0.45 ? QColor("#111111") : QColor("#f5f5f5");
+    overlay = blendColor(base, fallback, selected ? 0.18 : 0.12);
+  }
+
+  overlay.setAlpha(selected ? 156 : 104);
+  return overlay;
+}
+
+QColor DiffSurfaceItem::unifiedLineOverlayColor(const DiffDisplayRow& row, bool selected) const {
+  return lineOverlayColor(unifiedLineBackgroundColor(row), selected);
+}
+
+QColor DiffSurfaceItem::splitLineOverlayColor(const DiffDisplayRow& row, bool isLeftPane, bool selected) const {
+  return lineOverlayColor(splitPaneLineBackgroundColor(row, isLeftPane), selected);
+}
+
 qreal DiffSurfaceItem::digitWidth() const {
   const QFontMetricsF metrics(monoFont(monoFontFamily_, 11));
   return metrics.horizontalAdvance(QLatin1Char('9'));
@@ -2843,23 +2900,11 @@ void DiffSurfaceItem::drawHunkRow(QPainter* painter, const QRectF& rowRect, cons
 
 void DiffSurfaceItem::drawUnifiedRow(QPainter* painter, const QRectF& rowRect, const DiffDisplayRow& row,
                                      bool selected) const {
-  QColor background = paletteColor("lineContext", QColor("#282c33"));
-  if (row.kind == DiffLineKind::Addition) {
-    background = paletteColor("lineAdd", QColor("#1f2d24"));
-  } else if (row.kind == DiffLineKind::Deletion) {
-    background = paletteColor("lineDel", QColor("#2d2024"));
-  }
+  const QColor background = unifiedLineBackgroundColor(row);
 
   painter->fillRect(rowRect, background);
   if (selected) {
-    QColor selection("#45433d");
-    if (row.kind == DiffLineKind::Addition) {
-      selection = QColor("#3a4a2a");
-    } else if (row.kind == DiffLineKind::Deletion) {
-      selection = QColor("#4a3030");
-    }
-    selection.setAlpha(140);
-    painter->fillRect(rowRect, selection);
+    painter->fillRect(rowRect, unifiedLineOverlayColor(row, true));
   }
 
   const qreal gutterWidth = unifiedGutterWidth();
@@ -2926,20 +2971,11 @@ void DiffSurfaceItem::drawSplitPaneFixedRow(QPainter* painter,
   const int lineNumber = isLeftPane ? row.leftLine : row.rightLine;
   const bool spacer = lineKind == DiffLineKind::Spacer;
 
-  QColor background = splitPaneBackgroundColor(row, isLeftPane);
-  if (spacer) {
-    background = paletteColor("lineContextAlt", background);
-  } else if (isLeftPane && lineKind == DiffLineKind::Deletion) {
-    background = paletteColor("lineDelAccent", background);
-  } else if (!isLeftPane && lineKind == DiffLineKind::Addition) {
-    background = paletteColor("lineAddAccent", background);
-  } else {
-    background = paletteColor("lineContext", background);
-  }
+  const QColor background = splitPaneLineBackgroundColor(row, isLeftPane);
 
   painter->fillRect(rowRect, background);
   if (selected) {
-    painter->fillRect(rowRect, splitSelectionColor(row, isLeftPane));
+    painter->fillRect(rowRect, splitLineOverlayColor(row, isLeftPane, true));
   }
 
   painter->fillRect(QRectF(rowRect.left(), rowRect.top(), sideGutterWidth, rowRect.height()),

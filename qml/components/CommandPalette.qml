@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import "ColorUtils.js" as ColorUtils
 
 Rectangle {
     id: root
@@ -10,6 +11,8 @@ Rectangle {
     property int selectedIdx: 0
 
     signal actionTriggered(var item)
+    signal itemHighlighted(var item)
+    signal closed()
 
     function open(sourceItems) {
         items = sourceItems
@@ -17,11 +20,15 @@ Rectangle {
         filterItems()
         showing = true
         searchField.forceActiveFocus()
+        emitHighlighted()
     }
 
     function close() {
+        if (!showing) return
         showing = false
         searchField.text = ""
+        itemHighlighted(null)
+        closed()
     }
 
     function filterItems() {
@@ -32,12 +39,27 @@ Rectangle {
             filteredItems = diffController.fuzzyFilter(query, items, "label")
         }
         selectedIdx = 0
+        emitHighlighted()
+    }
+
+    function highlightedItem() {
+        if (selectedIdx >= 0 && selectedIdx < filteredItems.length) {
+            return filteredItems[selectedIdx]
+        }
+        return null
+    }
+
+    function emitHighlighted() {
+        itemHighlighted(highlightedItem())
     }
 
     function activateSelected() {
         if (selectedIdx >= 0 && selectedIdx < filteredItems.length) {
-            actionTriggered(filteredItems[selectedIdx])
-            close()
+            var item = filteredItems[selectedIdx]
+            actionTriggered(item)
+            if (!item.keepOpen) {
+                close()
+            }
         }
     }
 
@@ -45,6 +67,12 @@ Rectangle {
     anchors.fill: parent
     color: "#66000000"
     z: 250
+    onSelectedIdxChanged: {
+        emitHighlighted()
+        if (selectedIdx >= 0 && selectedIdx < filteredItems.length) {
+            resultsList.positionViewAtIndex(selectedIdx, ListView.Contain)
+        }
+    }
 
     MouseArea {
         anchors.fill: parent
@@ -61,15 +89,8 @@ Rectangle {
         color: theme.panel
         border.color: theme.borderSoft
         clip: true
-        scale: root.showing ? 1.0 : 0.95
+        scale: 1.0
         opacity: root.showing ? 1.0 : 0
-
-        Behavior on scale {
-            SpringAnimation { spring: 3; damping: 0.7 }
-        }
-        Behavior on opacity {
-            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
-        }
 
         Rectangle {
             anchors.fill: parent
@@ -143,10 +164,22 @@ Rectangle {
                 clip: true
                 currentIndex: root.selectedIdx
                 boundsBehavior: Flickable.StopAtBounds
+                highlightMoveDuration: 0
+                highlightResizeDuration: 0
 
                 delegate: Rectangle {
                     required property int index
                     required property var modelData
+
+                    readonly property color selectedTextColor: ColorUtils.bestContrastColor(theme.selectionBg, [
+                        theme.textStrong,
+                        theme.textBase,
+                        theme.panel,
+                        theme.canvas,
+                        "#101010",
+                        "#f8f8f8"
+                    ])
+                    readonly property color selectedMetaColor: ColorUtils.withAlpha(selectedTextColor, 0.82)
 
                     width: ListView.view.width
                     height: 36
@@ -161,7 +194,7 @@ Rectangle {
                         Text {
                             Layout.fillWidth: true
                             text: modelData.label
-                            color: root.selectedIdx === index ? theme.textStrong : theme.textBase
+                            color: root.selectedIdx === index ? selectedTextColor : theme.textBase
                             font.family: theme.sans
                             font.pixelSize: theme.fontBody
                             font.bold: root.selectedIdx === index
@@ -171,7 +204,7 @@ Rectangle {
                         Text {
                             visible: (modelData.detail || "").length > 0
                             text: modelData.detail || ""
-                            color: theme.textFaint
+                            color: root.selectedIdx === index ? selectedMetaColor : theme.textFaint
                             font.family: theme.mono
                             font.pixelSize: theme.fontSmall
                         }
@@ -179,7 +212,7 @@ Rectangle {
                         Text {
                             visible: (modelData.category || "").length > 0
                             text: modelData.category || ""
-                            color: theme.textFaint
+                            color: root.selectedIdx === index ? selectedMetaColor : theme.textFaint
                             font.family: theme.sans
                             font.pixelSize: theme.fontCaption
                         }
@@ -190,6 +223,7 @@ Rectangle {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
+                        onEntered: root.selectedIdx = index
                         onClicked: {
                             root.selectedIdx = index
                             root.activateSelected()

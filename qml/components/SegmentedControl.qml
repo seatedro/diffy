@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Window
 
 Rectangle {
     id: root
@@ -33,7 +34,10 @@ Rectangle {
                     ? theme.accent
                     : (segMouse.containsMouse ? theme.panelTint : "transparent")
 
-                Behavior on color { ColorAnimation { duration: 90 } }
+                Behavior on color {
+                    enabled: !(Window.window && Window.window.commandPaletteShowing)
+                    ColorAnimation { duration: 90 }
+                }
 
                 Text {
                     id: segLabel

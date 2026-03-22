@@ -17,7 +17,12 @@ Window {
             parts.push(repoParts[repoParts.length - 1])
         }
         if (diffController.currentView === "diff" && diffController.leftRefDisplay.length > 0) {
-            parts.push(diffController.leftRefDisplay + ".." + diffController.rightRefDisplay)
+            var compareModeSeparator = ".."
+            if (diffController.compareMode === "three-dot")
+                compareModeSeparator = "..."
+            else if (diffController.compareMode === "single-commit")
+                compareModeSeparator = "@"
+            parts.push(diffController.leftRefDisplay + compareModeSeparator + diffController.rightRefDisplay)
         }
         if (diffController.selectedFile && diffController.selectedFile.path) {
             var fileParts = diffController.selectedFile.path.split("/")
@@ -239,8 +244,12 @@ Window {
         }
     }
 
-    function openRefPicker(target, anchorElement) {
-        refPickerDropdown.open(target, anchorElement)
+    function openRefPicker(target, anchorElement, initialQuery, useExternalInput, passthroughElement) {
+        refPickerDropdown.open(target, anchorElement, initialQuery, useExternalInput, passthroughElement)
+    }
+
+    function syncBranchPickerQuery(target, query) {
+        refPickerDropdown.syncQuery(target, query)
     }
 
     function openRepoPicker() {
@@ -260,9 +269,9 @@ Window {
         commandPalette.open(items)
     }
 
-    function openBranchPicker(target, anchorElement) {
+    function openBranchPicker(target, anchorElement, initialQuery, useExternalInput, passthroughElement) {
         if (anchorElement) {
-            openRefPicker(target, anchorElement)
+            openRefPicker(target, anchorElement, initialQuery, useExternalInput, passthroughElement)
         } else {
             branchPickTarget = target
             var items = []

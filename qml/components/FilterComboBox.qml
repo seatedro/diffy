@@ -13,14 +13,19 @@ Item {
     property int selectedIndex: -1
     property string footerText: ""
     property bool allowCustomInput: true
+    property bool searchFieldVisible: true
+    property Item passthroughItem: null
 
     signal itemSelected(var item, int index)
 
-    function show(anchor) {
+    function show(anchor, initialText, focusSearchField) {
         anchorItem = anchor
         open = true
-        searchField.text = ""
-        searchField.forceActiveFocus()
+        searchField.text = initialText === undefined ? "" : initialText
+        if (focusSearchField === undefined)
+            focusSearchField = root.searchFieldVisible
+        if (focusSearchField && root.searchFieldVisible)
+            searchField.forceActiveFocus()
     }
 
     function hide() {
@@ -56,9 +61,11 @@ Item {
     readonly property real searchHeight: 32
     readonly property real sepHeight: 1
     readonly property real footerHeight: 20
+    readonly property real activeSearchHeight: root.searchFieldVisible ? root.searchHeight : 0
+    readonly property real activeSepHeight: root.searchFieldVisible ? root.sepHeight : 0
     readonly property real customRowHeight: (allowCustomInput && searchText.length > 0 && (selectedIndex < 0 || selectedIndex >= model.length)) ? 24 : 0
     property real clampedListHeight: 0
-    readonly property real panelHeight: searchHeight + sepHeight + clampedListHeight + customRowHeight + footerHeight
+    readonly property real panelHeight: activeSearchHeight + activeSepHeight + clampedListHeight + customRowHeight + footerHeight
 
     onModelChanged: recomputeListHeight()
 
@@ -70,6 +77,29 @@ Item {
     }
 
     property alias searchText: searchField.text
+    readonly property real passthroughLeft: {
+        if (!root.passthroughItem) return 0
+        var pt = root.passthroughItem.mapToItem(root, 0, 0)
+        return Math.max(0, Math.min(root.width, pt.x))
+    }
+    readonly property real passthroughTop: {
+        if (!root.passthroughItem) return 0
+        var pt = root.passthroughItem.mapToItem(root, 0, 0)
+        return Math.max(0, Math.min(root.height, pt.y))
+    }
+    readonly property real passthroughRight: {
+        if (!root.passthroughItem) return 0
+        var pt = root.passthroughItem.mapToItem(root, root.passthroughItem.width, 0)
+        return Math.max(0, Math.min(root.width, pt.x))
+    }
+    readonly property real passthroughBottom: {
+        if (!root.passthroughItem) return 0
+        var pt = root.passthroughItem.mapToItem(root, 0, root.passthroughItem.height)
+        return Math.max(0, Math.min(root.height, pt.y))
+    }
+    readonly property real passthroughWidth: Math.max(0, passthroughRight - passthroughLeft)
+    readonly property real passthroughHeight: Math.max(0, passthroughBottom - passthroughTop)
+    readonly property bool hasPassthroughItem: root.passthroughItem !== null && root.passthroughWidth > 0 && root.passthroughHeight > 0
 
     visible: open
     anchors.fill: parent
@@ -77,7 +107,49 @@ Item {
 
     // Dismiss backdrop
     MouseArea {
+        visible: root.open && !root.hasPassthroughItem
         anchors.fill: parent
+        enabled: visible
+        onClicked: root.hide()
+    }
+
+    MouseArea {
+        visible: root.open && root.hasPassthroughItem && height > 0
+        enabled: visible
+        x: 0
+        y: 0
+        width: root.width
+        height: root.passthroughTop
+        onClicked: root.hide()
+    }
+
+    MouseArea {
+        visible: root.open && root.hasPassthroughItem && width > 0 && height > 0
+        enabled: visible
+        x: 0
+        y: root.passthroughTop
+        width: root.passthroughLeft
+        height: root.passthroughHeight
+        onClicked: root.hide()
+    }
+
+    MouseArea {
+        visible: root.open && root.hasPassthroughItem && width > 0 && height > 0
+        enabled: visible
+        x: root.passthroughRight
+        y: root.passthroughTop
+        width: root.width - root.passthroughRight
+        height: root.passthroughHeight
+        onClicked: root.hide()
+    }
+
+    MouseArea {
+        visible: root.open && root.hasPassthroughItem && height > 0
+        enabled: visible
+        x: 0
+        y: root.passthroughBottom
+        width: root.width
+        height: root.height - root.passthroughBottom
         onClicked: root.hide()
     }
 
@@ -119,7 +191,8 @@ Item {
         Item {
             id: searchRow
             x: 0; y: 0
-            width: parent.width; height: root.searchHeight
+            width: parent.width; height: root.activeSearchHeight
+            visible: root.searchFieldVisible
 
             RowLayout {
                 anchors.fill: parent
@@ -161,15 +234,16 @@ Item {
 
         // Separator
         Rectangle {
-            x: 0; y: root.searchHeight
-            width: parent.width; height: root.sepHeight
+            x: 0; y: root.activeSearchHeight
+            width: parent.width; height: root.activeSepHeight
             color: theme.borderSoft
+            visible: root.activeSepHeight > 0
         }
 
         // List
         ListView {
             id: listView
-            x: 0; y: root.searchHeight + root.sepHeight
+            x: 0; y: root.activeSearchHeight + root.activeSepHeight
             width: parent.width
             height: root.clampedListHeight
             model: root.model
@@ -275,7 +349,7 @@ Item {
 
         Rectangle {
             visible: root.customRowHeight > 0
-            x: 0; y: root.searchHeight + root.sepHeight + root.clampedListHeight
+            x: 0; y: root.activeSearchHeight + root.activeSepHeight + root.clampedListHeight
             width: parent.width; height: root.customRowHeight
             color: customRowMouse.containsMouse ? theme.panelStrong : "transparent"
 
@@ -304,7 +378,7 @@ Item {
 
         // Footer
         Rectangle {
-            x: 0; y: root.searchHeight + root.sepHeight + root.clampedListHeight + root.customRowHeight
+            x: 0; y: root.activeSearchHeight + root.activeSepHeight + root.clampedListHeight + root.customRowHeight
             width: parent.width; height: root.footerHeight
             color: theme.panelStrong
 

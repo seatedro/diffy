@@ -108,12 +108,16 @@ Rectangle {
                 Layout.fillWidth: true
                 implicitHeight: 30
                 radius: theme.radiusSm
-                color: leftSetupMouse.containsMouse ? theme.panelStrong : theme.panel
+                color: leftSetupHover.hovered ? theme.panelStrong : theme.panel
                 border.width: 1
                 border.color: theme.borderSoft
                 Behavior on color {
                     enabled: !(Window.window && Window.window.commandPaletteShowing)
                     ColorAnimation { duration: 35 }
+                }
+
+                HoverHandler {
+                    id: leftSetupHover
                 }
 
                 RowLayout {
@@ -131,6 +135,11 @@ Rectangle {
                         activeFocusOnTab: true
                         text: diffController.leftRefDisplay
                         placeholderText: "Base ref (e.g. main)"
+                        onEdited: window.syncBranchPickerQuery("left", text)
+                        onInputFocusChanged: function(focused) {
+                            if (focused)
+                                window.openBranchPicker("left", leftRefCard, text, true, leftRefCard)
+                        }
                         onSubmitted: root.runCompare()
                     }
 
@@ -138,17 +147,17 @@ Rectangle {
                         svg: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>'
                         size: 14
                         color: theme.textFaint
-                    }
-                }
 
-                MouseArea {
-                    id: leftSetupMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    propagateComposedEvents: true
-                    onClicked: function(mouse) {
-                        window.openBranchPicker("left", leftRefCard)
+                        MouseArea {
+                            anchors.fill: parent
+                            anchors.margins: -6
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                leftRefField.focusInput()
+                                window.openBranchPicker("left", leftRefCard, leftRefField.text, true, leftRefCard)
+                            }
+                        }
                     }
                 }
             }
@@ -164,12 +173,16 @@ Rectangle {
                 Layout.fillWidth: true
                 implicitHeight: 30
                 radius: theme.radiusSm
-                color: rightSetupMouse.containsMouse ? theme.panelStrong : theme.panel
+                color: rightSetupHover.hovered ? theme.panelStrong : theme.panel
                 border.width: 1
                 border.color: theme.borderSoft
                 Behavior on color {
                     enabled: !(Window.window && Window.window.commandPaletteShowing)
                     ColorAnimation { duration: 35 }
+                }
+
+                HoverHandler {
+                    id: rightSetupHover
                 }
 
                 RowLayout {
@@ -187,6 +200,11 @@ Rectangle {
                         activeFocusOnTab: true
                         text: diffController.rightRefDisplay
                         placeholderText: "Head ref (e.g. feature)"
+                        onEdited: window.syncBranchPickerQuery("right", text)
+                        onInputFocusChanged: function(focused) {
+                            if (focused)
+                                window.openBranchPicker("right", rightRefCard, text, true, rightRefCard)
+                        }
                         onSubmitted: root.runCompare()
                     }
 
@@ -194,17 +212,17 @@ Rectangle {
                         svg: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>'
                         size: 14
                         color: theme.textFaint
-                    }
-                }
 
-                MouseArea {
-                    id: rightSetupMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    propagateComposedEvents: true
-                    onClicked: function(mouse) {
-                        window.openBranchPicker("right", rightRefCard)
+                        MouseArea {
+                            anchors.fill: parent
+                            anchors.margins: -6
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                rightRefField.focusInput()
+                                window.openBranchPicker("right", rightRefCard, rightRefField.text, true, rightRefCard)
+                            }
+                        }
                     }
                 }
             }

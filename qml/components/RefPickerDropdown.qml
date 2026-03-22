@@ -6,22 +6,49 @@ Item {
     property bool showing: false
     property string target: "left"
     property Item anchorItem: null
+    property bool externalInputMode: false
 
     signal refSelected(string target, string value)
 
-    function open(anchorTarget, anchorElement) {
+    function open(anchorTarget, anchorElement, initialQuery, useExternalInput, passthroughElement) {
         target = anchorTarget
         anchorItem = anchorElement
-        combo.model = buildModel("")
-        combo.selectedIndex = firstSelectable(combo.model)
-        combo.footerText = countBranches(combo.model) + " branches"
-        combo.show(anchorElement)
+        externalInputMode = useExternalInput === true
+        combo.searchFieldVisible = !externalInputMode
+        combo.passthroughItem = externalInputMode ? (passthroughElement || anchorElement) : null
+        combo.show(anchorElement, initialQuery === undefined ? "" : initialQuery, !externalInputMode)
+        refreshQuery(combo.searchText)
         showing = true
     }
 
     function close() {
         combo.hide()
+        combo.searchFieldVisible = true
+        combo.passthroughItem = null
+        externalInputMode = false
         showing = false
+    }
+
+    function refreshQuery(query) {
+        var mode = root.detectMode(query)
+        if (mode === "commit" && query.length >= 4) {
+            commitSearchTimer.restart()
+            return
+        }
+
+        commitSearchTimer.stop()
+        combo.model = root.buildModel(query)
+        combo.selectedIndex = root.firstSelectable(combo.model)
+        combo.footerText = root.countBranches(combo.model) + " branches"
+    }
+
+    function syncQuery(activeTarget, query) {
+        if (!showing || target !== activeTarget)
+            return
+
+        if (combo.searchText !== query)
+            combo.searchText = query
+        refreshQuery(query)
     }
 
     function detectMode(text) {
@@ -130,20 +157,12 @@ Item {
         placeholder: "Filter branches\u2026"
 
         onSearchTextChanged: {
-            var mode = root.detectMode(searchText)
-            if (mode === "commit" && searchText.length >= 4) {
-                commitSearchTimer.restart()
-            } else {
-                commitSearchTimer.stop()
-                combo.model = root.buildModel(searchText)
-                combo.selectedIndex = root.firstSelectable(combo.model)
-                combo.footerText = root.countBranches(combo.model) + " branches"
-            }
+            root.refreshQuery(searchText)
         }
 
         onItemSelected: function(item) {
             root.refSelected(root.target, item.value)
-            root.showing = false
+            root.close()
         }
 
         onOpenChanged: {

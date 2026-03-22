@@ -11,6 +11,12 @@ Rectangle {
     property bool error: false
     property bool borderless: false
     signal submitted(string value)
+    signal edited(string value)
+    signal inputFocusChanged(bool focused)
+
+    function focusInput() {
+        input.forceActiveFocus()
+    }
 
     implicitHeight: compact ? 26 : 30
     radius: borderless ? 0 : theme.radiusSm
@@ -41,6 +47,8 @@ Rectangle {
         selectByMouse: true
         selectedTextColor: "#ffffff"
         selectionColor: theme.accent
+        onTextChanged: root.edited(text)
+        onActiveFocusChanged: root.inputFocusChanged(activeFocus)
         onAccepted: root.submitted(text)
     }
 

@@ -328,7 +328,6 @@ Rectangle {
                 width: diffViewport.width
                 height: diffViewport.height
                 focus: true
-                activeFocusOnTab: true
                 rowsModel: root.rowsModel
                 layoutMode: root.layoutMode
                 compareGeneration: root.compareGeneration

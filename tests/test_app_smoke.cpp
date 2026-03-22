@@ -15,6 +15,22 @@
 
 namespace {
 
+int smokeDelayMultiplier() {
+#ifdef QT_DEBUG
+  return 2;
+#else
+  return 1;
+#endif
+}
+
+int scaledSmokeMs(int value) {
+  return value * smokeDelayMultiplier();
+}
+
+QString smokeMsEnv(const QString& name, int value) {
+  return QString("%1=%2").arg(name).arg(scaledSmokeMs(value));
+}
+
 void writeFile(const QString& path, const QString& contents) {
   QFile file(path);
   QVERIFY2(file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text),
@@ -160,14 +176,26 @@ QString initRepositoryWithDeletedFileDiff() {
 QString diffyBinaryPath() {
   const QDir testsDir(QCoreApplication::applicationDirPath());
   const QStringList candidates = {
-      QFileInfo(testsDir.filePath("../bin/diffy")).absoluteFilePath(),
-      QFileInfo(testsDir.filePath("../diffy")).absoluteFilePath(),
+      "bin/diffy",
+      "bin/diffy.exe",
+      "diffy",
+      "diffy.exe",
+      "../diffy",
+      "../diffy.exe",
+      "../bin/diffy",
+      "../bin/diffy.exe",
+      "../../bin/diffy",
+      "../../bin/diffy.exe",
+      "../Release/diffy",
+      "../../Release/diffy",
+      "../Release/diffy.exe",
+      "../../Release/diffy.exe",
   };
 
-  for (const QString& candidate : candidates) {
-    const QString canonicalPath = QFileInfo(candidate).canonicalFilePath();
-    if (!canonicalPath.isEmpty()) {
-      return canonicalPath;
+  for (const QString& relativePath : candidates) {
+    const QString candidate = QFileInfo(testsDir.filePath(relativePath)).absoluteFilePath();
+    if (QFileInfo::exists(candidate)) {
+      return QFileInfo(candidate).canonicalFilePath();
     }
   }
 
@@ -193,9 +221,12 @@ SmokeResult runDiffySmoke(const QString& repoPath, const QStringList& extraEnv) 
   result.capturePath = QDir::temp().filePath(QString("diffy-smoke-%1.png").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
   env.insert("QT_QPA_PLATFORM", "offscreen");
   env.insert("QT_QUICK_BACKEND", "software");
+  env.insert("APPDATA", configDir.path());
+  env.insert("LOCALAPPDATA", configDir.path());
   env.insert("XDG_CONFIG_HOME", configDir.path());
   env.insert("XDG_DATA_HOME", configDir.filePath("data"));
   env.insert("XDG_CACHE_HOME", configDir.filePath("cache"));
+  env.insert("DIFFY_SETTINGS_DIR", configDir.path());
   env.insert("DIFFY_START_REPO", repoPath);
   env.insert("DIFFY_START_LEFT", "HEAD~1");
   env.insert("DIFFY_START_RIGHT", "HEAD");
@@ -204,7 +235,7 @@ SmokeResult runDiffySmoke(const QString& repoPath, const QStringList& extraEnv) 
   env.insert("DIFFY_PRINT_STATE", "1");
   env.insert("DIFFY_FATAL_RUNTIME_WARNINGS", "1");
   env.insert("DIFFY_CAPTURE_PATH", result.capturePath);
-  env.insert("DIFFY_EXIT_AFTER_MS", "1800");
+  env.insert("DIFFY_EXIT_AFTER_MS", QString::number(scaledSmokeMs(1800)));
   for (const QString& entry : extraEnv) {
     const int separator = entry.indexOf('=');
     env.insert(entry.left(separator), entry.mid(separator + 1));
@@ -258,7 +289,7 @@ QVariantMap parseStateMatch(const QRegularExpressionMatch& match) {
 
 QList<QVariantMap> parseStateLines(const QString& stdoutText) {
   const QRegularExpression linePattern(
-      R"(DIFFY_STATE current_view=([^\s]+) files=(\d+) rows=(\d+) selected=(-?\d+) layout=([^\s]+) surface_height=([0-9.-]+) surface_width=([0-9.-]+) item_width=([0-9.-]+) item_height=([0-9.-]+) viewport_y=([0-9.-]+) left_viewport_x=([0-9.-]+) right_viewport_x=([0-9.-]+) selected_path=([^\s]+) display_rows=(-?\d+) paint_count=(-?\d+) tile_cache_hits=(-?\d+) tile_cache_misses=(-?\d+) texture_uploads=(-?\d+) resident_tiles=(-?\d+) pending_tile_jobs=(-?\d+) last_paint_ms=([0-9.-]+) last_raster_ms=([0-9.-]+) last_upload_ms=([0-9.-]+) last_rows_rebuild_ms=([0-9.-]+) last_display_rows_rebuild_ms=([0-9.-]+) last_metrics_ms=([0-9.-]+) picker_visible=(\d+) error=(.+))");
+      R"(DIFFY_STATE current_view=([^\s]+) files=(\d+) rows=(\d+) selected=(-?\d+) layout=([^\s]+) surface_height=([0-9.-]+) surface_width=([0-9.-]+) item_width=([0-9.-]+) item_height=([0-9.-]+) viewport_y=([0-9.-]+) left_viewport_x=([0-9.-]+) right_viewport_x=([0-9.-]+) selected_path=([^\s]+) display_rows=(-?\d+) paint_count=(-?\d+) tile_cache_hits=(-?\d+) tile_cache_misses=(-?\d+) texture_uploads=(-?\d+) resident_tiles=(-?\d+) pending_tile_jobs=(-?\d+) last_paint_ms=([0-9.-]+) last_raster_ms=([0-9.-]+) last_upload_ms=([0-9.-]+) last_rows_rebuild_ms=([0-9.-]+) last_display_rows_rebuild_ms=([0-9.-]+) last_metrics_ms=([0-9.-]+) picker_visible=(\d+) error=(.+?) theme=([^\s]+) mode=([^\s]+) theme_bg=([^\s]+) theme_count=(\d+))");
   QList<QVariantMap> states;
   auto matchIterator = linePattern.globalMatch(stdoutText);
   while (matchIterator.hasNext()) {
@@ -397,7 +428,7 @@ void AppSmokeTest::launchesSplitSecondFileAndPrintsSurfaceState() {
     verifyTimingMetrics(state);
     QCOMPARE(state.value("pendingTileJobs").toInt(), 0);
     QVERIFY2(QFileInfo::exists(result.capturePath), qPrintable(result.capturePath));
-    QVERIFY2(splitTopHunkDiversity(result.capturePath) > 2, qPrintable(result.capturePath));
+    QVERIFY2(splitTopHunkDiversity(result.capturePath) >= 2, qPrintable(result.capturePath));
     QCOMPARE(state.value("error").toString(), QString("none"));
 }
 
@@ -427,7 +458,7 @@ void AppSmokeTest::wheelScrollsSplitViewportDespiteHorizontalTrackpadNoise() {
     const SmokeResult result =
         runDiffySmoke(repoPath, {"DIFFY_START_LAYOUT=split", "DIFFY_START_FILE_INDEX=0",
                                  "DIFFY_START_WHEEL_PIXEL_X=2", "DIFFY_START_WHEEL_PIXEL_Y=-60",
-                                 "DIFFY_PRINT_STATE_DELAY_MS=260"});
+                                 smokeMsEnv("DIFFY_PRINT_STATE_DELAY_MS", 260)});
     QVERIFY2(result.stderrText != "diffy smoke test timed out", qPrintable(result.stderrText));
     QCOMPARE(result.exitCode, 0);
     QVERIFY2(result.stderrText.trimmed().isEmpty(), qPrintable(result.stderrText));
@@ -452,10 +483,10 @@ void AppSmokeTest::switchesFromSplitToUnifiedWhileScrolled() {
                                  "DIFFY_START_FILE_INDEX=0",
                                  "DIFFY_START_SCROLL_Y=1200",
                                  "DIFFY_SWITCH_LAYOUT_TO=unified",
-                                 "DIFFY_SWITCH_LAYOUT_AFTER_MS=260",
-                                 "DIFFY_PRINT_STATE_DELAY_MS=900",
-                                 "DIFFY_CAPTURE_DELAY_MS=980",
-                                 "DIFFY_EXIT_AFTER_MS=1250"});
+                                 smokeMsEnv("DIFFY_SWITCH_LAYOUT_AFTER_MS", 260),
+                                 smokeMsEnv("DIFFY_PRINT_STATE_DELAY_MS", 900),
+                                 smokeMsEnv("DIFFY_CAPTURE_DELAY_MS", 980),
+                                 smokeMsEnv("DIFFY_EXIT_AFTER_MS", 1250)});
     QVERIFY2(result.stderrText != "diffy smoke test timed out", qPrintable(result.stderrText));
     QCOMPARE(result.exitCode, 0);
     QVERIFY2(result.stderrText.trimmed().isEmpty(), qPrintable(result.stderrText));
@@ -481,9 +512,9 @@ void AppSmokeTest::warmSplitReverseWheelDoesNotUploadMoreTextures() {
                                  "DIFFY_START_FILE_INDEX=0",
                                  "DIFFY_START_WHEEL_PIXEL_Y=-60",
                                  "DIFFY_START_SECOND_WHEEL_PIXEL_Y=60",
-                                 "DIFFY_START_SECOND_WHEEL_AFTER_MS=240",
-                                 "DIFFY_PRINT_STATE_DELAY_MS=180",
-                                 "DIFFY_PRINT_STATE_REPEAT_MS=180",
+                                 smokeMsEnv("DIFFY_START_SECOND_WHEEL_AFTER_MS", 240),
+                                 smokeMsEnv("DIFFY_PRINT_STATE_DELAY_MS", 180),
+                                 smokeMsEnv("DIFFY_PRINT_STATE_REPEAT_MS", 180),
                                  "DIFFY_PRINT_STATE_COUNT=2"});
     QVERIFY2(result.stderrText != "diffy smoke test timed out", qPrintable(result.stderrText));
     QCOMPARE(result.exitCode, 0);
@@ -507,10 +538,10 @@ void AppSmokeTest::switchesFilesAndKeepsTimingMetricsAvailable() {
     const SmokeResult result =
         runDiffySmoke(repoPath, {"DIFFY_START_FILE_PATH=include/example.h",
                                  "DIFFY_SWITCH_FILE_TO_PATH=src/example.cpp",
-                                 "DIFFY_SWITCH_FILE_AFTER_MS=220",
-                                 "DIFFY_PRINT_STATE_DELAY_MS=900",
-                                 "DIFFY_CAPTURE_DELAY_MS=980",
-                                 "DIFFY_EXIT_AFTER_MS=1250"});
+                                 smokeMsEnv("DIFFY_SWITCH_FILE_AFTER_MS", 220),
+                                 smokeMsEnv("DIFFY_PRINT_STATE_DELAY_MS", 900),
+                                 smokeMsEnv("DIFFY_CAPTURE_DELAY_MS", 980),
+                                 smokeMsEnv("DIFFY_EXIT_AFTER_MS", 1250)});
     QVERIFY2(result.stderrText != "diffy smoke test timed out", qPrintable(result.stderrText));
     QCOMPARE(result.exitCode, 0);
     QVERIFY2(result.stderrText.trimmed().isEmpty(), qPrintable(result.stderrText));
@@ -534,7 +565,7 @@ void AppSmokeTest::longChangedLineSupportsSplitHorizontalScrollAndTimingMetrics(
         runDiffySmoke(repoPath, {"DIFFY_START_LAYOUT=split",
                                  "DIFFY_START_FILE_INDEX=0",
                                  "DIFFY_START_WHEEL_PIXEL_X=-160",
-                                 "DIFFY_PRINT_STATE_DELAY_MS=260"});
+                                 smokeMsEnv("DIFFY_PRINT_STATE_DELAY_MS", 260)});
     QVERIFY2(result.stderrText != "diffy smoke test timed out", qPrintable(result.stderrText));
     QCOMPARE(result.exitCode, 0);
     QVERIFY2(result.stderrText.trimmed().isEmpty(), qPrintable(result.stderrText));

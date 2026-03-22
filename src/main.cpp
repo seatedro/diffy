@@ -51,6 +51,10 @@ QString envString(const char* name) {
   return QString::fromLocal8Bit(qgetenv(name));
 }
 
+QStringList splitEnvironmentPaths(const char* name) {
+  return envString(name).split(QDir::listSeparator(), Qt::SkipEmptyParts);
+}
+
 QString discoverQmlSourceRoot() {
   QDir dir(QCoreApplication::applicationDirPath());
   for (int depth = 0; depth < 6; ++depth) {
@@ -234,6 +238,12 @@ bool applyStartupAutomation(diffy::DiffController* controller, QString* error) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
+#ifdef Q_OS_WIN
+  if (qEnvironmentVariableIsEmpty("QT_QUICK_CONTROLS_STYLE")) {
+    qputenv("QT_QUICK_CONTROLS_STYLE", "Basic");
+  }
+#endif
+
   QApplication app(argc, argv);
   QApplication::setOrganizationName("diffy");
   QApplication::setApplicationName("diffy");
@@ -258,24 +268,36 @@ int main(int argc, char* argv[]) {
   engine.addImportPath(QLibraryInfo::path(QLibraryInfo::QmlImportsPath));
 
   const auto addQtPrefixPaths = [&](const QString& prefix) {
-    const QString qmlPath = QDir(prefix).filePath("lib/qt-6/qml");
-    const QString pluginPath = QDir(prefix).filePath("lib/qt-6/plugins");
-    if (QFileInfo::exists(qmlPath)) {
-      engine.addImportPath(qmlPath);
+    const QStringList qmlCandidates = {
+        QDir(prefix).filePath("qml"),
+        QDir(prefix).filePath("lib/qt6/qml"),
+        QDir(prefix).filePath("lib/qt-6/qml"),
+    };
+    for (const QString& qmlPath : qmlCandidates) {
+      if (QFileInfo::exists(qmlPath)) {
+        engine.addImportPath(qmlPath);
+        break;
+      }
     }
-    if (QFileInfo::exists(pluginPath)) {
-      app.addLibraryPath(pluginPath);
+
+    const QStringList pluginCandidates = {
+        QDir(prefix).filePath("plugins"),
+        QDir(prefix).filePath("lib/qt6/plugins"),
+        QDir(prefix).filePath("lib/qt-6/plugins"),
+    };
+    for (const QString& pluginPath : pluginCandidates) {
+      if (QFileInfo::exists(pluginPath)) {
+        app.addLibraryPath(pluginPath);
+        break;
+      }
     }
   };
 
-  const QString additionalPrefixes =
-      QString::fromLocal8Bit(qgetenv("QT_ADDITIONAL_PACKAGES_PREFIX_PATH"));
-  for (const QString& prefix : additionalPrefixes.split(':', Qt::SkipEmptyParts)) {
+  for (const QString& prefix : splitEnvironmentPaths("QT_ADDITIONAL_PACKAGES_PREFIX_PATH")) {
     addQtPrefixPaths(prefix);
   }
 
-  const QString extraQmlImports = QString::fromLocal8Bit(qgetenv("QML2_IMPORT_PATH"));
-  for (const QString& importPath : extraQmlImports.split(':', Qt::SkipEmptyParts)) {
+  for (const QString& importPath : splitEnvironmentPaths("QML2_IMPORT_PATH")) {
     if (QFileInfo::exists(importPath)) {
       engine.addImportPath(importPath);
     }

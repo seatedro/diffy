@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import "ColorUtils.js" as ColorUtils
 
 Rectangle {
     id: root
@@ -188,6 +189,15 @@ Rectangle {
                 required property int index
                 required property var modelData
 
+                readonly property color selectedTextColor: ColorUtils.bestContrastColor(theme.selectionBg, [
+                    theme.textStrong,
+                    theme.textBase,
+                    theme.panel,
+                    theme.canvas,
+                    "#101010",
+                    "#f8f8f8"
+                ])
+
                 width: ListView.view.width
                 height: 30
                 radius: 0
@@ -228,7 +238,7 @@ Rectangle {
                     anchors.verticalCenter: parent.verticalCenter
                     width: parent.width - statusBadge.width - counts.implicitWidth - theme.sp8 - theme.sp2
                     text: modelData.path
-                    color: root.selectedIndex === index ? theme.textStrong : theme.textBase
+                    color: root.selectedIndex === index ? selectedTextColor : theme.textBase
                     font.family: theme.sans
                     font.pixelSize: theme.fontSmall + 1
                     font.bold: root.selectedIndex === index

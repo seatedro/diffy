@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import "ColorUtils.js" as ColorUtils
 
 Rectangle {
     id: root
@@ -170,6 +171,16 @@ Rectangle {
                     required property int index
                     required property var modelData
 
+                    readonly property color selectedTextColor: ColorUtils.bestContrastColor(theme.selectionBg, [
+                        theme.textStrong,
+                        theme.textBase,
+                        theme.panel,
+                        theme.canvas,
+                        "#101010",
+                        "#f8f8f8"
+                    ])
+                    readonly property color selectedMetaColor: ColorUtils.withAlpha(selectedTextColor, 0.82)
+
                     width: ListView.view.width
                     height: 36
                     color: root.selectedIdx === index ? theme.selectionBg : (itemMouse.containsMouse ? theme.panelStrong : "transparent")
@@ -183,7 +194,7 @@ Rectangle {
                         Text {
                             Layout.fillWidth: true
                             text: modelData.label
-                            color: root.selectedIdx === index ? theme.textStrong : theme.textBase
+                            color: root.selectedIdx === index ? selectedTextColor : theme.textBase
                             font.family: theme.sans
                             font.pixelSize: theme.fontBody
                             font.bold: root.selectedIdx === index
@@ -193,7 +204,7 @@ Rectangle {
                         Text {
                             visible: (modelData.detail || "").length > 0
                             text: modelData.detail || ""
-                            color: theme.textFaint
+                            color: root.selectedIdx === index ? selectedMetaColor : theme.textFaint
                             font.family: theme.mono
                             font.pixelSize: theme.fontSmall
                         }
@@ -201,7 +212,7 @@ Rectangle {
                         Text {
                             visible: (modelData.category || "").length > 0
                             text: modelData.category || ""
-                            color: theme.textFaint
+                            color: root.selectedIdx === index ? selectedMetaColor : theme.textFaint
                             font.family: theme.sans
                             font.pixelSize: theme.fontCaption
                         }

@@ -1,8 +1,17 @@
 #include "app/ThemeProvider.h"
 
 #include <QFile>
+#include <QtResource>
 
 #include <simdjson.h>
+
+void ensureThemeResourcesLoaded() {
+  static const bool kInitialized = []() {
+    Q_INIT_RESOURCE(ThemeProviderThemes);
+    return true;
+  }();
+  Q_UNUSED(kInitialized);
+}
 
 namespace diffy {
 namespace {
@@ -125,6 +134,7 @@ bool hasThemeNameInsensitive(const QStringList& names, const QString& candidate)
 }  // namespace
 
 ThemeProvider::ThemeProvider(QObject* parent) : QObject(parent) {
+  ensureThemeResourcesLoaded();
   initializeThemes();
 
   const QString fallbackTheme =

@@ -284,7 +284,11 @@ QVariantMap parseStateMatch(const QRegularExpressionMatch& match) {
                      {"lastDisplayRowsRebuildMs", match.captured(25).toDouble()},
                      {"lastMetricsMs", match.captured(26).toDouble()},
                      {"pickerVisible", match.captured(27).toInt()},
-                     {"error", match.captured(28).trimmed()}};
+                     {"error", match.captured(28).trimmed()},
+                     {"theme", match.captured(29)},
+                     {"mode", match.captured(30)},
+                     {"themeBg", match.captured(31)},
+                     {"themeCount", match.captured(32).toInt()}};
 }
 
 QList<QVariantMap> parseStateLines(const QString& stdoutText) {
@@ -398,6 +402,7 @@ void AppSmokeTest::launchesUnifiedAndPrintsSurfaceState() {
     QVERIFY2(QFileInfo::exists(result.capturePath), qPrintable(result.capturePath));
     QVERIFY(state.value("textureUploads").toInt() > 0);
     QVERIFY(state.value("residentTiles").toInt() > 0);
+    QVERIFY(state.value("themeCount").toInt() > 1);
     QCOMPARE(state.value("error").toString(), QString("none"));
 }
 

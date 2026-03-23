@@ -1,0 +1,1 @@
+parking_lot::lock_api::MappedMutexGuard<'_, parking_lot::RawMutex, HashMap<&'static str, CachedQuery>>

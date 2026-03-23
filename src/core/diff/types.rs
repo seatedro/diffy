@@ -35,6 +35,7 @@ pub struct Hunk {
 pub struct FileDiff {
     pub path: String,
     pub status: String,
+    pub is_binary: bool,
     pub additions: i32,
     pub deletions: i32,
     pub hunks: Vec<Hunk>,

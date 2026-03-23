@@ -1,13 +1,17 @@
 use crate::core::diff::types::{DiffDocument, DiffLine, FileDiff, Hunk, LineKind};
-use crate::core::text::buffer::TextRange;
+use crate::core::text::buffer::TextBuffer;
 
 pub fn parse(input: &str) -> DiffDocument {
+    let mut text_buffer = TextBuffer::default();
+    parse_into(input, &mut text_buffer)
+}
+
+pub fn parse_into(input: &str, text_buffer: &mut TextBuffer) -> DiffDocument {
     let mut document = DiffDocument::default();
     let mut current_file_index: Option<usize> = None;
     let mut current_hunk_index: Option<usize> = None;
     let mut old_line = 0_i32;
     let mut new_line = 0_i32;
-    let mut next_text_offset = 0_usize;
 
     for raw_line in input.lines() {
         let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
@@ -36,6 +40,10 @@ pub fn parse(input: &str) -> DiffDocument {
             file.status = "D".to_owned();
             continue;
         }
+        if line.starts_with("Binary files ") || line.starts_with("GIT binary patch") {
+            file.is_binary = true;
+            continue;
+        }
         if line.starts_with("rename from ") || line.starts_with("rename to ") {
             file.status = "R".to_owned();
             continue;
@@ -62,7 +70,7 @@ pub fn parse(input: &str) -> DiffDocument {
             continue;
         }
 
-        if line.starts_with("\\ No newline at end of file") {
+        if line.starts_with(r"\ No newline at end of file") {
             continue;
         }
 
@@ -103,12 +111,7 @@ pub fn parse(input: &str) -> DiffDocument {
             }
         };
 
-        let text_range = TextRange {
-            offset: next_text_offset,
-            len: text.len(),
-        };
-        next_text_offset += text.len();
-
+        let text_range = text_buffer.append(text);
         hunk.lines.push(DiffLine {
             kind,
             old_line_number: old_number,
@@ -170,22 +173,33 @@ fn parse_hunk_range(part: &str, prefix: char) -> Option<(i32, i32)> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse;
+    use super::{parse, parse_into};
     use crate::core::diff::types::LineKind;
+    use crate::core::text::TextBuffer;
 
     #[test]
     fn parses_single_file_patch() {
         let patch = concat!(
-            "diff --git a/src/a.cpp b/src/a.cpp\n",
-            "index 111..222 100644\n",
-            "--- a/src/a.cpp\n",
-            "+++ b/src/a.cpp\n",
-            "@@ -1,3 +1,4 @@\n",
-            " int a = 1;\n",
-            "-int b = 2;\n",
-            "+int b = 3;\n",
-            "+int c = 4;\n",
-            " return a + b;\n",
+            "diff --git a/src/a.cpp b/src/a.cpp
+",
+            "index 111..222 100644
+",
+            "--- a/src/a.cpp
+",
+            "+++ b/src/a.cpp
+",
+            "@@ -1,3 +1,4 @@
+",
+            " int a = 1;
+",
+            "-int b = 2;
+",
+            "+int b = 3;
+",
+            "+int c = 4;
+",
+            " return a + b;
+",
         );
 
         let document = parse(patch);
@@ -207,18 +221,20 @@ mod tests {
     }
 
     #[test]
-    fn parses_file_status_markers() {
+    fn parse_into_populates_text_buffer() {
         let patch = concat!(
-            "diff --git a/old.txt b/new.txt\n",
-            "rename from old.txt\n",
-            "rename to new.txt\n",
-            "@@ -1 +1 @@\n",
-            "-before\n",
-            "+after\n",
+            "diff --git a/a.py b/a.py
+",
+            "@@ -1 +1 @@
+",
+            "-print(\"old\")\n",
+            "+print(\"new\")\n",
         );
-
-        let document = parse(patch);
-        assert_eq!(document.files[0].status, "R");
-        assert_eq!(document.files[0].hunks[0].lines.len(), 2);
+        let mut text_buffer = TextBuffer::default();
+        let document = parse_into(patch, &mut text_buffer);
+        let removed = &document.files[0].hunks[0].lines[0];
+        let added = &document.files[0].hunks[0].lines[1];
+        assert_eq!(text_buffer.view(removed.text_range), "print(\"old\")");
+        assert_eq!(text_buffer.view(added.text_range), "print(\"new\")");
     }
 }

@@ -32,21 +32,20 @@ impl Default for CompareService {
 impl CompareService {
     pub fn compare(&self, spec: &CompareSpec, git: &GitService) -> Result<CompareOutput> {
         if spec.renderer == RendererKind::Builtin {
-            return self
-                .fallback
-                .compare(spec, git)?
-                .ok_or_else(|| DiffyError::General("built-in backend returned no result".to_owned()));
+            return self.fallback.compare(spec, git)?.ok_or_else(|| {
+                DiffyError::General("built-in backend returned no result".to_owned())
+            });
         }
 
         match self.primary.compare(spec, git)? {
             Some(output) => Ok(output),
             None => {
-                let mut fallback = self
-                    .fallback
-                    .compare(spec, git)?
-                    .ok_or_else(|| DiffyError::General("fallback backend returned no result".to_owned()))?;
+                let mut fallback = self.fallback.compare(spec, git)?.ok_or_else(|| {
+                    DiffyError::General("fallback backend returned no result".to_owned())
+                })?;
                 fallback.used_fallback = true;
-                fallback.fallback_message = "difftastic unavailable, fell back to built-in backend".to_owned();
+                fallback.fallback_message =
+                    "difftastic unavailable, fell back to built-in backend".to_owned();
                 Ok(fallback)
             }
         }

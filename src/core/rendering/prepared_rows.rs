@@ -38,12 +38,22 @@ pub fn prepare_rows(
         let (text_range, syntax_tokens, change_tokens, measured_width) = match flat.row_type {
             DiffRowType::FileHeader => {
                 let measured_width = measure_fn(&file.path);
-                (TextRange::default(), TokenRange::default(), TokenRange::default(), measured_width)
+                (
+                    TextRange::default(),
+                    TokenRange::default(),
+                    TokenRange::default(),
+                    measured_width,
+                )
             }
             DiffRowType::HunkSeparator => {
                 let header = hunk_for_flat(file, flat).map_or("", |hunk| hunk.header.as_str());
                 let measured_width = measure_fn(header);
-                (TextRange::default(), TokenRange::default(), TokenRange::default(), measured_width)
+                (
+                    TextRange::default(),
+                    TokenRange::default(),
+                    TokenRange::default(),
+                    measured_width,
+                )
             }
             DiffRowType::Modified => prepare_modified_row(file, flat, text_buffer, measure_fn),
             DiffRowType::Context | DiffRowType::Added | DiffRowType::Removed => {
@@ -56,7 +66,12 @@ pub fn prepare_rows(
                         measured_width,
                     )
                 } else {
-                    (TextRange::default(), TokenRange::default(), TokenRange::default(), 0.0)
+                    (
+                        TextRange::default(),
+                        TokenRange::default(),
+                        TokenRange::default(),
+                        0.0,
+                    )
                 }
             }
         };
@@ -95,7 +110,12 @@ fn prepare_modified_row(
             measured_width,
         )
     } else {
-        (TextRange::default(), TokenRange::default(), TokenRange::default(), measured_width)
+        (
+            TextRange::default(),
+            TokenRange::default(),
+            TokenRange::default(),
+            measured_width,
+        )
     }
 }
 
@@ -110,7 +130,10 @@ fn primary_line_for_flat<'a>(file: &'a FileDiff, flat: &FlatDiffRow) -> Option<&
     line_by_index(file, flat.hunk_index, line_index)
 }
 
-fn hunk_for_flat(file: &FileDiff, flat: &FlatDiffRow) -> Option<&crate::core::diff::types::Hunk> {
+fn hunk_for_flat<'a>(
+    file: &'a FileDiff,
+    flat: &FlatDiffRow,
+) -> Option<&'a crate::core::diff::types::Hunk> {
     index_i32(&file.hunks, flat.hunk_index)
 }
 
@@ -120,14 +143,16 @@ fn line_by_index(file: &FileDiff, hunk_index: i32, line_index: i32) -> Option<&D
 }
 
 fn index_i32<T>(slice: &[T], index: i32) -> Option<&T> {
-    usize::try_from(index).ok().and_then(|index| slice.get(index))
+    usize::try_from(index)
+        .ok()
+        .and_then(|index| slice.get(index))
 }
 
 #[cfg(test)]
 mod tests {
     use super::prepare_rows;
     use crate::core::diff::types::{DiffLine, FileDiff, Hunk, LineKind};
-    use crate::core::rendering::flat_rows::{flatten_file_diff, DiffRowType};
+    use crate::core::rendering::flat_rows::{DiffRowType, flatten_file_diff};
     use crate::core::text::buffer::TextBuffer;
     use crate::core::text::token::{DiffTokenSpan, SyntaxTokenKind, TokenBuffer};
 

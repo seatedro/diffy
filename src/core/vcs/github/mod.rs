@@ -3,5 +3,5 @@ pub mod device_flow;
 pub mod pull_request;
 
 pub use api::{GitHubApi, PullRequestInfo};
-pub use device_flow::{poll_for_token, start_device_flow, DeviceFlowState};
-pub use pull_request::{parse_pr_url, GitHubPullRequest};
+pub use device_flow::{DeviceFlowState, poll_for_token, start_device_flow};
+pub use pull_request::{GitHubPullRequest, parse_pr_url};

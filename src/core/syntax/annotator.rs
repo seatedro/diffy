@@ -30,7 +30,12 @@ impl DiffSyntaxAnnotator {
         }
     }
 
-    pub fn annotate(&self, file_diff: &mut FileDiff, text_buffer: &mut TextBuffer, token_buffer: &mut TokenBuffer) {
+    pub fn annotate(
+        &self,
+        file_diff: &mut FileDiff,
+        text_buffer: &mut TextBuffer,
+        token_buffer: &mut TokenBuffer,
+    ) {
         if file_diff.is_binary {
             return;
         }
@@ -43,22 +48,37 @@ impl DiffSyntaxAnnotator {
             return;
         };
 
-        let (old_content, new_content, old_refs, new_refs) = build_line_refs(&file_diff.hunks, text_buffer);
+        let (old_content, new_content, old_refs, new_refs) =
+            build_line_refs(&file_diff.hunks, text_buffer);
 
-        let old_tokens = self.highlighter.highlight(grammar, &old_content).unwrap_or_default();
-        let new_tokens = self.highlighter.highlight(grammar, &new_content).unwrap_or_default();
+        let old_tokens = self
+            .highlighter
+            .highlight(grammar, &old_content)
+            .unwrap_or_default();
+        let new_tokens = self
+            .highlighter
+            .highlight(grammar, &new_content)
+            .unwrap_or_default();
         distribute_tokens(&mut file_diff.hunks, token_buffer, &old_tokens, &old_refs);
         distribute_tokens(&mut file_diff.hunks, token_buffer, &new_tokens, &new_refs);
     }
 
-    pub fn annotate_files(&self, files: &mut [FileDiff], text_buffer: &mut TextBuffer, token_buffer: &mut TokenBuffer) {
+    pub fn annotate_files(
+        &self,
+        files: &mut [FileDiff],
+        text_buffer: &mut TextBuffer,
+        token_buffer: &mut TokenBuffer,
+    ) {
         for file in files {
             self.annotate(file, text_buffer, token_buffer);
         }
     }
 }
 
-fn build_line_refs(hunks: &[Hunk], text_buffer: &TextBuffer) -> (String, String, Vec<LineRef>, Vec<LineRef>) {
+fn build_line_refs(
+    hunks: &[Hunk],
+    text_buffer: &TextBuffer,
+) -> (String, String, Vec<LineRef>, Vec<LineRef>) {
     let mut old_content = String::new();
     let mut new_content = String::new();
     let mut old_refs = Vec::new();
@@ -95,13 +115,19 @@ fn build_line_refs(hunks: &[Hunk], text_buffer: &TextBuffer) -> (String, String,
     (old_content, new_content, old_refs, new_refs)
 }
 
-fn distribute_tokens(hunks: &mut [Hunk], token_buffer: &mut TokenBuffer, tokens: &[DiffTokenSpan], line_refs: &[LineRef]) {
+fn distribute_tokens(
+    hunks: &mut [Hunk],
+    token_buffer: &mut TokenBuffer,
+    tokens: &[DiffTokenSpan],
+    line_refs: &[LineRef],
+) {
     let mut token_index = 0usize;
     for reference in line_refs {
         let line_start = reference.content_offset;
         let line_end = line_start + reference.content_len;
         while token_index < tokens.len()
-            && (tokens[token_index].offset as usize + tokens[token_index].length as usize) <= line_start
+            && (tokens[token_index].offset as usize + tokens[token_index].length as usize)
+                <= line_start
         {
             token_index += 1;
         }
@@ -162,10 +188,16 @@ mod tests {
             .hunks
             .iter()
             .flat_map(|hunk| hunk.lines.iter())
-            .flat_map(|line| token_buffer.view(line.syntax_tokens).iter().map(|span| span.kind))
+            .flat_map(|line| {
+                token_buffer
+                    .view(line.syntax_tokens)
+                    .iter()
+                    .map(|span| span.kind)
+            })
             .collect::<Vec<_>>();
         assert!(
-            token_kinds.contains(&SyntaxTokenKind::Function) || token_kinds.contains(&SyntaxTokenKind::Keyword)
+            token_kinds.contains(&SyntaxTokenKind::Function)
+                || token_kinds.contains(&SyntaxTokenKind::Keyword)
         );
         assert!(token_kinds.contains(&SyntaxTokenKind::String));
     }

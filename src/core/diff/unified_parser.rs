@@ -167,7 +167,9 @@ fn parse_hunk_header(line: &str) -> Option<(i32, i32, i32, i32)> {
 
 fn parse_hunk_range(part: &str, prefix: char) -> Option<(i32, i32)> {
     let value = part.strip_prefix(prefix)?;
-    let (start, count) = value.split_once(',').map_or((value, "1"), |(start, count)| (start, count));
+    let (start, count) = value
+        .split_once(',')
+        .map_or((value, "1"), |(start, count)| (start, count));
     Some((start.parse().ok()?, count.parse().ok()?))
 }
 
@@ -212,7 +214,15 @@ mod tests {
         assert_eq!(file.hunks.len(), 1);
 
         let hunk = &file.hunks[0];
-        assert_eq!((hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count), (1, 3, 1, 4));
+        assert_eq!(
+            (
+                hunk.old_start,
+                hunk.old_count,
+                hunk.new_start,
+                hunk.new_count
+            ),
+            (1, 3, 1, 4)
+        );
         assert_eq!(hunk.lines.len(), 5);
         assert_eq!(hunk.lines[1].kind, LineKind::Removed);
         assert_eq!(hunk.lines[2].kind, LineKind::Added);

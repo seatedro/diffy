@@ -1,0 +1,175 @@
+{
+  "version": 1,
+  "skills": {
+    "coding-guidelines": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "0742312a0de5eb6bd84e093c1815b1db98126130b92713ea5fc2cf902338aa3b"
+    },
+    "domain-cli": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "88a6efe282b5105161c8ddb320f09ca0ffed19323fe403dfa7adb4aaa708b8dc"
+    },
+    "domain-cloud-native": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "10a6e60e8d2a1b977fc5d5935976c17b498335ee2f19255438e45fd15a8811bc"
+    },
+    "domain-embedded": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "3d32e5d2d602f775f4a3d6bc0222d56526ec0dbc882771c80430dffdc2be6dd2"
+    },
+    "domain-fintech": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "c2fbfc41eafd81d828dead9f6988e63a544697d6961e673e563d08d47b7a17f5"
+    },
+    "domain-iot": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "4a8aaf6e1bebbd1984faf04e6dc0cb3b309409628b090ce72b63c807e9b76e4e"
+    },
+    "domain-ml": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "e53c7de1916555fe903c40270208a88e2350f8e5c2f81c5115059ccf4278cca1"
+    },
+    "domain-web": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "dd853ce97875f139da437df6e09eaca8b326931a98f3eb8dc02669670c12161d"
+    },
+    "m01-ownership": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "69f57ede558e32e703e468ef5328f5bcc6610adff9d99b49984a5b3507d31b5b"
+    },
+    "m02-resource": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "b79e4a7702adb7c7622dfab7818dd81710352d448d285885946652e5dc73fd5b"
+    },
+    "m03-mutability": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "78eb8bc5e8b9bbeb5a59375b74b773c8fe824bb1644fa0fb77e99a1255a272ab"
+    },
+    "m04-zero-cost": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "8bc6733618b217b608fe5011f4c74b7ceb8c0765ba60702e30fa8fa4824584f2"
+    },
+    "m05-type-driven": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "06a52b0f35951cd01e21b2906917061f3994ece6b8c6b055dca65bbe14820283"
+    },
+    "m06-error-handling": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "e6639bd5913e63bd8315f7b36f5dd22a029cae2404135a75ac24c0627a93e4e5"
+    },
+    "m07-concurrency": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "6ff3b31bae02e84238a75845008150122071ba449b23edb9ea8a50e3635fffb7"
+    },
+    "m09-domain": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "ce0ed9b5b5c12775c6c04423c79c8a542638629237ad2447a3c6569accf1a15a"
+    },
+    "m10-performance": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "c0e093f630ec71079aa7a138af376821e3cc24dfb129f7162e82d854e26a1087"
+    },
+    "m11-ecosystem": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "7ac5dd7206c339379d0aafe304a473a2e54465374be269ffc97d9e615325fc69"
+    },
+    "m12-lifecycle": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "e360c0db5b5bf8e47d418e0a4a6ce33de7725b40eb126e6266f9fedfbccff291"
+    },
+    "m13-domain-error": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "fc90102a877b830f24735d649c5042ad74423e04ed64f1f1e44df776c7880932"
+    },
+    "m14-mental-model": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "6c53f050376c04a4abb5edce769a7052d93f605cc06299e657d9fce5b01edbab"
+    },
+    "m15-anti-pattern": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "d9f5d80bd2ab49f063a61d90a96100298788ea0e1e5bd5e917be3c7e124078a2"
+    },
+    "meta-cognition-parallel": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "6e3006df76c15c95d64b2b52a39735ec14c6eb398192b3129aebda6fa923fd2f"
+    },
+    "rust-call-graph": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "0999fbe783c81b87ba1dc1347758bd87b5880dca0d66c69be53bbac133a4c888"
+    },
+    "rust-code-navigator": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "c5c5b9521be30a3b5a3d6fa122bf9df809af3b28760e06fa317d6afab5bb3939"
+    },
+    "rust-daily": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "016d958078944cba2cbd3a7beff9c328abd22aebd9f3206c95fdaedac4d7103a"
+    },
+    "rust-deps-visualizer": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "b7cb6cbb693df52c43cae43149469ba44b05ad0747c5826c3d65f5e4b4ad3d74"
+    },
+    "rust-learner": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "12e6434334fc6f131f09f35cbb53871d0d4c753fd404c1337e9c48ad5a9a1dbf"
+    },
+    "rust-refactor-helper": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "614d54b2b16a57965412a3fff048c6d36e6f1535fcbb9ac2cf71e7a987e5a119"
+    },
+    "rust-router": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "ff5616fc8a0ef0d9434f1041e5128eb0f381d3484921ee8bfd009d64ad57045b"
+    },
+    "rust-skill-creator": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "0314bb7b61f6e7be24a498b7fb45969f78924e81c2f74723badb056724697119"
+    },
+    "rust-symbol-analyzer": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "1e6b2fd668a9a9574b89cf90797bcd825636163d0f3b5fc9e678fd71ce4869b9"
+    },
+    "rust-trait-explorer": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "2feac2b9bb17689a7227fcae62c8a20351bb5afb271a47d49c27ba87ba9e7e26"
+    },
+    "unsafe-checker": {
+      "source": "actionbook/rust-skills",
+      "sourceType": "github",
+      "computedHash": "b76d79853846ea40ad42092c61de26da4561299b176768599751d5bcc13cf5db"
+    }
+  }
+}

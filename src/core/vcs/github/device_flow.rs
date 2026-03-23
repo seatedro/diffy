@@ -18,9 +18,15 @@ pub fn start_device_flow(client_id: &str) -> Result<DeviceFlowState> {
         .map_err(|error| DiffyError::Http(error.to_string()))?;
 
     let state = DeviceFlowState {
-        device_code: form_value(&body, "device_code").unwrap_or_default().to_owned(),
-        user_code: form_value(&body, "user_code").unwrap_or_default().to_owned(),
-        verification_uri: decode_form_value(form_value(&body, "verification_uri").unwrap_or_default()),
+        device_code: form_value(&body, "device_code")
+            .unwrap_or_default()
+            .to_owned(),
+        user_code: form_value(&body, "user_code")
+            .unwrap_or_default()
+            .to_owned(),
+        verification_uri: decode_form_value(
+            form_value(&body, "verification_uri").unwrap_or_default(),
+        ),
         interval: form_value(&body, "interval")
             .and_then(|value| value.parse::<u32>().ok())
             .unwrap_or(5)
@@ -28,7 +34,9 @@ pub fn start_device_flow(client_id: &str) -> Result<DeviceFlowState> {
     };
 
     if state.device_code.is_empty() || state.user_code.is_empty() {
-        return Err(DiffyError::Parse("invalid GitHub device flow response".to_owned()));
+        return Err(DiffyError::Parse(
+            "invalid GitHub device flow response".to_owned(),
+        ));
     }
 
     Ok(state)
@@ -60,7 +68,9 @@ pub fn poll_for_token(client_id: &str, device_code: &str) -> Result<Option<Strin
         None => {
             let token = form_value(&body, "access_token").unwrap_or_default();
             if token.is_empty() {
-                Err(DiffyError::Parse("missing access token in device flow response".to_owned()))
+                Err(DiffyError::Parse(
+                    "missing access token in device flow response".to_owned(),
+                ))
             } else {
                 Ok(Some(token.to_owned()))
             }

@@ -33,7 +33,11 @@ impl Highlighter {
 
         let query = Query::new(&grammar.language, grammar.highlights_query)
             .map_err(|error| DiffyError::Syntax(error.to_string()))?;
-        let capture_kinds: Vec<_> = query.capture_names().iter().map(|name| capture_name_to_kind(name)).collect();
+        let capture_kinds: Vec<_> = query
+            .capture_names()
+            .iter()
+            .map(|name| capture_name_to_kind(name))
+            .collect();
 
         let root = tree.root_node();
         let mut cursor = QueryCursor::new();
@@ -42,7 +46,10 @@ impl Highlighter {
 
         while let Some((query_match, capture_index)) = captures.next() {
             let capture = query_match.captures[*capture_index];
-            let kind = capture_kinds.get(capture.index as usize).copied().unwrap_or_default();
+            let kind = capture_kinds
+                .get(capture.index as usize)
+                .copied()
+                .unwrap_or_default();
             if kind == SyntaxTokenKind::Normal {
                 continue;
             }

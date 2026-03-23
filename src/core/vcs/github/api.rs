@@ -31,14 +31,21 @@ impl GitHubApi {
     }
 
     pub fn with_token(token: impl Into<String>) -> Self {
-        Self { token: token.into() }
+        Self {
+            token: token.into(),
+        }
     }
 
     pub fn set_token(&mut self, token: impl Into<String>) {
         self.token = token.into();
     }
 
-    pub fn fetch_pull_request(&self, owner: &str, repo: &str, number: i32) -> Result<PullRequestInfo> {
+    pub fn fetch_pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i32,
+    ) -> Result<PullRequestInfo> {
         let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls/{number}");
         let mut request = ureq::get(&url)
             .header("Accept", "application/vnd.github.v3+json")
@@ -76,7 +83,9 @@ impl GitHubApi {
         };
 
         if result.base_branch.is_empty() || result.head_branch.is_empty() {
-            return Err(DiffyError::Parse("failed to parse GitHub pull request response".to_owned()));
+            return Err(DiffyError::Parse(
+                "failed to parse GitHub pull request response".to_owned(),
+            ));
         }
 
         Ok(result)
@@ -84,7 +93,11 @@ impl GitHubApi {
 }
 
 fn string_field(value: &Value, key: &str) -> String {
-    value.get(key).and_then(Value::as_str).unwrap_or_default().to_owned()
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
 }
 
 fn int_field(value: &Value, key: &str) -> i64 {

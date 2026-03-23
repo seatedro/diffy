@@ -112,7 +112,8 @@ impl DiffLayoutEngine {
     }
 
     pub fn last_visible_row(&self, viewport_y: f64, viewport_height: f64) -> usize {
-        self.row_at_y(viewport_y + viewport_height.max(0.0)).unwrap_or(0)
+        self.row_at_y(viewport_y + viewport_height.max(0.0))
+            .unwrap_or(0)
     }
 
     pub fn rebuild_alternate(&mut self, prepared: &[PreparedRow], config: &DiffLayoutConfig) {
@@ -129,7 +130,10 @@ impl DiffLayoutEngine {
     }
 }
 
-fn build_rows(prepared: &[PreparedRow], config: &DiffLayoutConfig) -> (Vec<DiffDisplayRow>, f64, f64) {
+fn build_rows(
+    prepared: &[PreparedRow],
+    config: &DiffLayoutConfig,
+) -> (Vec<DiffDisplayRow>, f64, f64) {
     let mut rows = if config.mode == "split" {
         build_split_rows(prepared)
     } else {
@@ -137,7 +141,7 @@ fn build_rows(prepared: &[PreparedRow], config: &DiffLayoutConfig) -> (Vec<DiffD
     };
 
     let mut y = 0.0;
-    let mut max_text_width = 0.0;
+    let mut max_text_width: f64 = 0.0;
     for row in &mut rows {
         row.y = y;
         if row.row_type == DiffRowType::FileHeader {
@@ -145,12 +149,27 @@ fn build_rows(prepared: &[PreparedRow], config: &DiffLayoutConfig) -> (Vec<DiffD
         } else if row.row_type == DiffRowType::HunkSeparator {
             row.height = config.hunk_height;
         } else if config.mode == "split" {
-            row.left_wrap_line_count = wrap_count(prepared, row.left_row_index, split_wrap_width(config), config.wrap_enabled);
-            row.right_wrap_line_count = wrap_count(prepared, row.right_row_index, split_wrap_width(config), config.wrap_enabled);
+            row.left_wrap_line_count = wrap_count(
+                prepared,
+                row.left_row_index,
+                split_wrap_width(config),
+                config.wrap_enabled,
+            );
+            row.right_wrap_line_count = wrap_count(
+                prepared,
+                row.right_row_index,
+                split_wrap_width(config),
+                config.wrap_enabled,
+            );
             row.wrap_line_count = row.left_wrap_line_count.max(row.right_wrap_line_count);
             row.height = config.row_height * f64::from(row.wrap_line_count.max(1));
         } else {
-            row.wrap_line_count = wrap_count(prepared, row.row_index, unified_wrap_width(config), config.wrap_enabled);
+            row.wrap_line_count = wrap_count(
+                prepared,
+                row.row_index,
+                unified_wrap_width(config),
+                config.wrap_enabled,
+            );
             row.left_wrap_line_count = row.wrap_line_count;
             row.right_wrap_line_count = row.wrap_line_count;
             row.height = config.row_height * f64::from(row.wrap_line_count.max(1));
@@ -261,7 +280,10 @@ fn build_split_rows(prepared: &[PreparedRow]) -> Vec<DiffDisplayRow> {
 }
 
 fn unified_wrap_width(config: &DiffLayoutConfig) -> f64 {
-    apply_wrap_column((config.available_width - config.gutter_width).max(0.0), config)
+    apply_wrap_column(
+        (config.available_width - config.gutter_width).max(0.0),
+        config,
+    )
 }
 
 fn split_wrap_width(config: &DiffLayoutConfig) -> f64 {
@@ -277,11 +299,19 @@ fn apply_wrap_column(width: f64, config: &DiffLayoutConfig) -> f64 {
     }
 }
 
-fn wrap_count(prepared: &[PreparedRow], row_index: i32, available_width: f64, wrap_enabled: bool) -> i32 {
+fn wrap_count(
+    prepared: &[PreparedRow],
+    row_index: i32,
+    available_width: f64,
+    wrap_enabled: bool,
+) -> i32 {
     if row_index < 0 {
         return 1;
     }
-    let Some(row) = usize::try_from(row_index).ok().and_then(|index| prepared.get(index)) else {
+    let Some(row) = usize::try_from(row_index)
+        .ok()
+        .and_then(|index| prepared.get(index))
+    else {
         return 1;
     };
     if wrap_enabled {
@@ -332,12 +362,23 @@ mod tests {
     use crate::core::rendering::prepared_rows::prepare_rows;
     use crate::core::text::buffer::TextBuffer;
 
-    fn prepare(file: &FileDiff, text_buffer: &TextBuffer) -> Vec<crate::core::rendering::prepared_rows::PreparedRow> {
+    fn prepare(
+        file: &FileDiff,
+        text_buffer: &TextBuffer,
+    ) -> Vec<crate::core::rendering::prepared_rows::PreparedRow> {
         let flat = flatten_file_diff(file, 0);
-        prepare_rows(&flat, std::slice::from_ref(file), text_buffer, &|text| text.len() as f64 * 10.0)
+        prepare_rows(&flat, std::slice::from_ref(file), text_buffer, &|text| {
+            text.len() as f64 * 10.0
+        })
     }
 
-    fn append_line(text_buffer: &mut TextBuffer, kind: LineKind, old: Option<i32>, new: Option<i32>, text: &str) -> DiffLine {
+    fn append_line(
+        text_buffer: &mut TextBuffer,
+        kind: LineKind,
+        old: Option<i32>,
+        new: Option<i32>,
+        text: &str,
+    ) -> DiffLine {
         DiffLine {
             kind,
             old_line_number: old,
@@ -394,10 +435,28 @@ mod tests {
             hunks: vec![Hunk {
                 header: "@@ -10,3 +10,2 @@".to_owned(),
                 lines: vec![
-                    append_line(&mut text_buffer, LineKind::Removed, Some(10), None, "old one"),
-                    append_line(&mut text_buffer, LineKind::Removed, Some(11), None, "old two"),
+                    append_line(
+                        &mut text_buffer,
+                        LineKind::Removed,
+                        Some(10),
+                        None,
+                        "old one",
+                    ),
+                    append_line(
+                        &mut text_buffer,
+                        LineKind::Removed,
+                        Some(11),
+                        None,
+                        "old two",
+                    ),
                     append_line(&mut text_buffer, LineKind::Added, None, Some(10), "new one"),
-                    append_line(&mut text_buffer, LineKind::Context, Some(12), Some(11), "ctx"),
+                    append_line(
+                        &mut text_buffer,
+                        LineKind::Context,
+                        Some(12),
+                        Some(11),
+                        "ctx",
+                    ),
                 ],
                 ..Hunk::default()
             }],
@@ -422,13 +481,22 @@ mod tests {
         assert_eq!(rows.len(), 5);
         assert_eq!(rows[2].left_row_index, 2);
         assert_eq!(rows[2].right_row_index, 2);
-        assert_eq!(rows[2].row_type, crate::core::rendering::flat_rows::DiffRowType::Modified);
+        assert_eq!(
+            rows[2].row_type,
+            crate::core::rendering::flat_rows::DiffRowType::Modified
+        );
         assert_eq!(rows[3].left_row_index, 3);
         assert_eq!(rows[3].right_row_index, -1);
-        assert_eq!(rows[3].row_type, crate::core::rendering::flat_rows::DiffRowType::Removed);
+        assert_eq!(
+            rows[3].row_type,
+            crate::core::rendering::flat_rows::DiffRowType::Removed
+        );
         assert_eq!(rows[4].left_row_index, 4);
         assert_eq!(rows[4].right_row_index, 4);
-        assert_eq!(rows[4].row_type, crate::core::rendering::flat_rows::DiffRowType::Context);
+        assert_eq!(
+            rows[4].row_type,
+            crate::core::rendering::flat_rows::DiffRowType::Context
+        );
     }
 
     #[test]
@@ -438,7 +506,13 @@ mod tests {
             path: "src/example.rs".to_owned(),
             hunks: vec![Hunk {
                 header: "@@ -1 +1 @@".to_owned(),
-                lines: vec![append_line(&mut text_buffer, LineKind::Context, Some(1), Some(1), "ctx")],
+                lines: vec![append_line(
+                    &mut text_buffer,
+                    LineKind::Context,
+                    Some(1),
+                    Some(1),
+                    "ctx",
+                )],
                 ..Hunk::default()
             }],
             ..FileDiff::default()
@@ -471,7 +545,13 @@ mod tests {
             path: "src/example.rs".to_owned(),
             hunks: vec![Hunk {
                 header: "@@ -1 +1 @@".to_owned(),
-                lines: vec![append_line(&mut text_buffer, LineKind::Added, None, Some(1), "abcdefghijkl")],
+                lines: vec![append_line(
+                    &mut text_buffer,
+                    LineKind::Added,
+                    None,
+                    Some(1),
+                    "abcdefghijkl",
+                )],
                 ..Hunk::default()
             }],
             ..FileDiff::default()

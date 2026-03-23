@@ -1,10 +1,13 @@
 use std::cmp::Ordering;
 
-use git2::{BranchType, Cred, DiffFormat, DiffOptions, FetchOptions, ObjectType, Oid, RemoteCallbacks, Repository};
+use git2::{
+    BranchType, Cred, DiffFormat, DiffOptions, FetchOptions, ObjectType, Oid, RemoteCallbacks,
+    Repository,
+};
 
 use crate::core::compare::spec::CompareMode;
 use crate::core::error::{DiffyError, Result};
-use crate::core::vcs::github::{parse_pr_url, GitHubApi};
+use crate::core::vcs::github::{GitHubApi, parse_pr_url};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchInfo {
@@ -137,7 +140,11 @@ impl GitService {
         walk.push(start_oid)?;
 
         walk.take(max_count)
-            .map(|entry| entry.map_err(Into::into).and_then(|oid| self.commit_info(repo, oid)))
+            .map(|entry| {
+                entry
+                    .map_err(Into::into)
+                    .and_then(|oid| self.commit_info(repo, oid))
+            })
             .collect()
     }
 
@@ -192,24 +199,39 @@ impl GitService {
         Ok(String::new())
     }
 
-    pub fn resolve_comparison(&self, left_ref: &str, right_ref: &str, mode: CompareMode) -> Result<(String, String)> {
+    pub fn resolve_comparison(
+        &self,
+        left_ref: &str,
+        right_ref: &str,
+        mode: CompareMode,
+    ) -> Result<(String, String)> {
         let repo = self.repo()?;
         match mode {
             CompareMode::SingleCommit => {
-                let commit_ref = if right_ref.is_empty() { left_ref } else { right_ref };
+                let commit_ref = if right_ref.is_empty() {
+                    left_ref
+                } else {
+                    right_ref
+                };
                 if commit_ref.is_empty() {
-                    return Err(DiffyError::Parse("single-commit mode requires a commit reference".to_owned()));
+                    return Err(DiffyError::Parse(
+                        "single-commit mode requires a commit reference".to_owned(),
+                    ));
                 }
                 let right_oid = self.resolve_commit_oid(commit_ref)?;
                 let commit = repo.find_commit(right_oid)?;
                 let parent = commit.parent(0).map_err(|_| {
-                    DiffyError::Parse("cannot diff the root commit in single-commit mode yet".to_owned())
+                    DiffyError::Parse(
+                        "cannot diff the root commit in single-commit mode yet".to_owned(),
+                    )
                 })?;
                 Ok((parent.id().to_string(), commit.id().to_string()))
             }
             CompareMode::TwoDot | CompareMode::ThreeDot => {
                 if left_ref.is_empty() || right_ref.is_empty() {
-                    return Err(DiffyError::Parse("comparison requires both left and right references".to_owned()));
+                    return Err(DiffyError::Parse(
+                        "comparison requires both left and right references".to_owned(),
+                    ));
                 }
                 let mut left_oid = self.resolve_commit_oid(left_ref)?;
                 let right_oid = self.resolve_commit_oid(right_ref)?;
@@ -226,7 +248,8 @@ impl GitService {
     }
 
     pub fn diff_three_refs(&self, left: &str, right: &str) -> Result<String> {
-        let (resolved_left, resolved_right) = self.resolve_comparison(left, right, CompareMode::ThreeDot)?;
+        let (resolved_left, resolved_right) =
+            self.resolve_comparison(left, right, CompareMode::ThreeDot)?;
         self.diff_between_refs(&resolved_left, &resolved_right)
     }
 
@@ -235,7 +258,13 @@ impl GitService {
         self.diff_between_refs(&left, &right)
     }
 
-    pub fn fetch_and_diff_pr(&self, repo_url: &str, pr_number: i32, base_ref: &str, head_ref: &str) -> Result<String> {
+    pub fn fetch_and_diff_pr(
+        &self,
+        repo_url: &str,
+        pr_number: i32,
+        base_ref: &str,
+        head_ref: &str,
+    ) -> Result<String> {
         let repo = self.repo()?;
         let base_target = format!("refs/diffy/pull/{pr_number}/base");
         let head_target = format!("refs/diffy/pull/{pr_number}/head");
@@ -263,7 +292,10 @@ impl GitService {
         self.diff_between_refs(&base_target, &head_target)
     }
 
-    pub fn resolve_pull_request_comparison(&self, pull_request_url: &str) -> Result<(String, String)> {
+    pub fn resolve_pull_request_comparison(
+        &self,
+        pull_request_url: &str,
+    ) -> Result<(String, String)> {
         let parsed = parse_pr_url(pull_request_url)
             .ok_or_else(|| DiffyError::Parse("not a valid GitHub pull request URL".to_owned()))?;
         let api = GitHubApi::with_token(self.github_token.clone());
@@ -298,7 +330,8 @@ impl GitService {
 
         let mut options = DiffOptions::new();
         options.context_lines(3);
-        let mut diff = repo.diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(&mut options))?;
+        let mut diff =
+            repo.diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(&mut options))?;
         diff.find_similar(None)?;
 
         let mut patch = String::new();

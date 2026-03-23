@@ -34,16 +34,26 @@ impl DiffBackend for DifftasticBackend {
         }
 
         let (left, right) = match spec.mode {
-            CompareMode::TwoDot => (git.resolve_ref(&spec.left_ref)?, git.resolve_ref(&spec.right_ref)?),
-            CompareMode::ThreeDot => git.resolve_comparison(&spec.left_ref, &spec.right_ref, CompareMode::ThreeDot)?,
-            CompareMode::SingleCommit => git.resolve_comparison(&spec.left_ref, &spec.right_ref, CompareMode::SingleCommit)?,
+            CompareMode::TwoDot => (
+                git.resolve_ref(&spec.left_ref)?,
+                git.resolve_ref(&spec.right_ref)?,
+            ),
+            CompareMode::ThreeDot => {
+                git.resolve_comparison(&spec.left_ref, &spec.right_ref, CompareMode::ThreeDot)?
+            }
+            CompareMode::SingleCommit => {
+                git.resolve_comparison(&spec.left_ref, &spec.right_ref, CompareMode::SingleCommit)?
+            }
         };
 
         let repo = Repository::open(git.repo_path())?;
         let changed_paths = collect_changed_paths(&repo, &left, &right)?;
         let temp_root = std::env::temp_dir().join(format!(
             "diffy-difftastic-{}",
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         fs::create_dir_all(&temp_root)?;
 
@@ -54,7 +64,11 @@ impl DiffBackend for DifftasticBackend {
         for (index, changed) in changed_paths.into_iter().enumerate() {
             if changed.is_binary {
                 output.files.push(FileDiff {
-                    path: changed.new_path.clone().or(changed.old_path.clone()).unwrap_or_default(),
+                    path: changed
+                        .new_path
+                        .clone()
+                        .or(changed.old_path.clone())
+                        .unwrap_or_default(),
                     status: changed.status,
                     is_binary: true,
                     ..FileDiff::default()
@@ -68,7 +82,12 @@ impl DiffBackend for DifftasticBackend {
             fs::write(&new_temp, &changed.new_content)?;
 
             let process = Command::new("difft")
-                .args(["--display", "json", old_temp.to_str().unwrap(), new_temp.to_str().unwrap()])
+                .args([
+                    "--display",
+                    "json",
+                    old_temp.to_str().unwrap(),
+                    new_temp.to_str().unwrap(),
+                ])
                 .env("DFT_UNSTABLE", "yes")
                 .output()?;
             if !process.status.success() {
@@ -80,7 +99,11 @@ impl DiffBackend for DifftasticBackend {
 
             let file = parse_difftastic_json(
                 &String::from_utf8_lossy(&process.stdout),
-                changed.new_path.as_deref().or(changed.old_path.as_deref()).unwrap_or_default(),
+                changed
+                    .new_path
+                    .as_deref()
+                    .or(changed.old_path.as_deref())
+                    .unwrap_or_default(),
                 &changed.status,
                 &mut text_buffer,
                 &mut token_buffer,
@@ -106,19 +129,30 @@ struct ChangedPath {
 }
 
 fn collect_changed_paths(repo: &Repository, left: &str, right: &str) -> Result<Vec<ChangedPath>> {
-    let left_tree = repo.revparse_single(left)?.peel(ObjectType::Commit)?.peel_to_tree()?;
-    let right_tree = repo.revparse_single(right)?.peel(ObjectType::Commit)?.peel_to_tree()?;
+    let left_tree = repo
+        .revparse_single(left)?
+        .peel(ObjectType::Commit)?
+        .peel_to_tree()?;
+    let right_tree = repo
+        .revparse_single(right)?
+        .peel(ObjectType::Commit)?
+        .peel_to_tree()?;
     let mut options = DiffOptions::new();
     options.context_lines(3);
-    let mut diff = repo.diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(&mut options))?;
+    let mut diff =
+        repo.diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(&mut options))?;
     diff.find_similar(None)?;
 
     let mut changed = Vec::new();
     for delta in diff.deltas() {
         let old_content = load_blob_content(repo, delta.old_file().id())?;
         let new_content = load_blob_content(repo, delta.new_file().id())?;
-        let old_binary = old_content.as_ref().is_some_and(|bytes| bytes.iter().take(1024).any(|b| *b == 0));
-        let new_binary = new_content.as_ref().is_some_and(|bytes| bytes.iter().take(1024).any(|b| *b == 0));
+        let old_binary = old_content
+            .as_ref()
+            .is_some_and(|bytes| bytes.iter().take(1024).any(|b| *b == 0));
+        let new_binary = new_content
+            .as_ref()
+            .is_some_and(|bytes| bytes.iter().take(1024).any(|b| *b == 0));
         changed.push(ChangedPath {
             status: match delta.status() {
                 Delta::Added => "A".to_owned(),
@@ -126,8 +160,14 @@ fn collect_changed_paths(repo: &Repository, left: &str, right: &str) -> Result<V
                 Delta::Renamed => "R".to_owned(),
                 _ => "M".to_owned(),
             },
-            old_path: delta.old_file().path().map(|p| p.to_string_lossy().into_owned()),
-            new_path: delta.new_file().path().map(|p| p.to_string_lossy().into_owned()),
+            old_path: delta
+                .old_file()
+                .path()
+                .map(|p| p.to_string_lossy().into_owned()),
+            new_path: delta
+                .new_file()
+                .path()
+                .map(|p| p.to_string_lossy().into_owned()),
             old_content: old_content.unwrap_or_default(),
             new_content: new_content.unwrap_or_default(),
             is_binary: old_binary || new_binary,
@@ -202,7 +242,11 @@ fn parse_difftastic_json(
     };
 
     let mut file = FileDiff {
-        path: if file_json.path.is_empty() { fallback_path.to_owned() } else { file_json.path },
+        path: if file_json.path.is_empty() {
+            fallback_path.to_owned()
+        } else {
+            file_json.path
+        },
         status: match file_json.status.as_str() {
             "created" => "A".to_owned(),
             "deleted" => "D".to_owned(),

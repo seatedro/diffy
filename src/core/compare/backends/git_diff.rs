@@ -27,7 +27,8 @@ impl DiffBackend for GitDiffBackend {
 
         let mut options = DiffOptions::new();
         options.context_lines(3);
-        let mut diff = repo.diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(&mut options))?;
+        let mut diff =
+            repo.diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(&mut options))?;
         diff.find_similar(None)?;
 
         let mut output = CompareOutput::default();
@@ -37,7 +38,11 @@ impl DiffBackend for GitDiffBackend {
         let deltas: Vec<_> = diff.deltas().collect();
         for (delta_idx, delta) in deltas.iter().enumerate() {
             let mut file = FileDiff {
-                path: delta.new_file().path().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+                path: delta
+                    .new_file()
+                    .path()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
                 status: match delta.status() {
                     Delta::Added => "A".to_owned(),
                     Delta::Deleted => "D".to_owned(),
@@ -74,18 +79,28 @@ impl DiffBackend for GitDiffBackend {
                             Ok(l) => l,
                             Err(_) => continue,
                         };
-                        let content = std::str::from_utf8(line.content()).unwrap_or_default().trim_end_matches('\n');
+                        let content = std::str::from_utf8(line.content())
+                            .unwrap_or_default()
+                            .trim_end_matches('\n');
                         let text_range = text_buffer.append(content);
 
                         let origin = line.origin();
                         let (kind, old_num, new_num, tokens) = if origin == '-' {
-                            let removed = vec![DiffTokenSpan { offset: 0, length: content.len() as u32, kind: SyntaxTokenKind::Normal }];
+                            let removed = vec![DiffTokenSpan {
+                                offset: 0,
+                                length: content.len() as u32,
+                                kind: SyntaxTokenKind::Normal,
+                            }];
                             let range = token_buffer.append(&removed);
                             let old = old_line;
                             old_line += 1;
                             (LineKind::Removed, Some(old), None, range)
                         } else if origin == '+' {
-                            let added = vec![DiffTokenSpan { offset: 0, length: content.len() as u32, kind: SyntaxTokenKind::Normal }];
+                            let added = vec![DiffTokenSpan {
+                                offset: 0,
+                                length: content.len() as u32,
+                                kind: SyntaxTokenKind::Normal,
+                            }];
                             let range = token_buffer.append(&added);
                             let new = new_line;
                             new_line += 1;
@@ -120,9 +135,17 @@ impl DiffBackend for GitDiffBackend {
                         current_hunk.header = format!(
                             "@@ -{},{} +{},{} @@",
                             current_hunk.old_start,
-                            current_hunk.lines.iter().filter(|l| l.kind != LineKind::Added).count(),
+                            current_hunk
+                                .lines
+                                .iter()
+                                .filter(|l| l.kind != LineKind::Added)
+                                .count(),
                             current_hunk.new_start,
-                            current_hunk.lines.iter().filter(|l| l.kind != LineKind::Removed).count()
+                            current_hunk
+                                .lines
+                                .iter()
+                                .filter(|l| l.kind != LineKind::Removed)
+                                .count()
                         );
                         file.hunks.push(current_hunk);
                     }

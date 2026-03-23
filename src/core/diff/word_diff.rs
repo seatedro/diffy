@@ -1,6 +1,9 @@
 use crate::core::text::token::{DiffTokenSpan, SyntaxTokenKind};
 
-pub fn compute_word_diff(old_text: &str, new_text: &str) -> (Vec<DiffTokenSpan>, Vec<DiffTokenSpan>) {
+pub fn compute_word_diff(
+    old_text: &str,
+    new_text: &str,
+) -> (Vec<DiffTokenSpan>, Vec<DiffTokenSpan>) {
     let old_tokens = tokenize(old_text);
     let new_tokens = tokenize(new_text);
     let old_len = old_tokens.len();

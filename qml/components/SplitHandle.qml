@@ -22,7 +22,7 @@ Rectangle {
         color: dragArea.containsMouse || dragArea.pressed ? theme.accent : theme.divider
 
         Behavior on color {
-            enabled: !(Window.window && Window.window.commandPaletteShowing)
+            enabled: !(root.Window.window && root.Window.window.commandPaletteShowing)
             ColorAnimation { duration: 45 }
         }
     }

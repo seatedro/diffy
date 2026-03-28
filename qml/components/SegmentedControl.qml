@@ -37,7 +37,7 @@ Rectangle {
                     : (segMouse.containsMouse ? theme.panelTint : "transparent")
 
                 Behavior on color {
-                    enabled: !(Window.window && Window.window.commandPaletteShowing)
+                    enabled: !(root.Window.window && root.Window.window.commandPaletteShowing)
                     ColorAnimation { duration: 35 }
                 }
 

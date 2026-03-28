@@ -59,7 +59,7 @@ impl PerfBucket {
 struct PerfSession {
     paint: PerfBucket,
     raster: PerfBucket,
-    upload: PerfBucket,
+    _upload: PerfBucket,
     rebuild: PerfBucket,
     display_rebuild: PerfBucket,
     metrics: PerfBucket,
@@ -75,7 +75,7 @@ impl Default for PerfSession {
         Self {
             paint: PerfBucket::default(),
             raster: PerfBucket::default(),
-            upload: PerfBucket::default(),
+            _upload: PerfBucket::default(),
             rebuild: PerfBucket::default(),
             display_rebuild: PerfBucket::default(),
             metrics: PerfBucket::default(),
@@ -90,9 +90,9 @@ impl Default for PerfSession {
 
 #[derive(Debug, Clone, Default)]
 struct TileEntry {
-    key: u64,
-    row_index: i32,
-    last_used_tick: u64,
+    _key: u64,
+    _row_index: i32,
+    _last_used_tick: u64,
 }
 
 #[derive(Debug, Default)]
@@ -963,9 +963,9 @@ impl DiffSurfaceItem {
                     guard.image_cache.insert(
                         key,
                         TileEntry {
-                            key,
-                            row_index: row,
-                            last_used_tick: generation,
+                            _key: key,
+                            _row_index: row,
+                            _last_used_tick: generation,
                         },
                     );
                 }

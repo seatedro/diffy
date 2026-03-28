@@ -262,15 +262,24 @@ fn parse_difftastic_json(
     }
 
     for chunk in file_json.chunks {
-        let mut hunk = Hunk {
-            header: "@@".to_owned(),
-            ..Hunk::default()
-        };
+        let mut hunk = Hunk { ..Hunk::default() };
+        let mut old_start = None;
+        let mut new_start = None;
+        let mut old_count = 0_i32;
+        let mut new_count = 0_i32;
         for line in chunk {
             let lhs = line.lhs.as_ref().map(|side| side_parts(side)).transpose()?;
             let rhs = line.rhs.as_ref().map(|side| side_parts(side)).transpose()?;
             if let (Some((lhs_text, _, lhs_line)), Some((rhs_text, _, rhs_line))) = (&lhs, &rhs) {
                 if lhs_text == rhs_text {
+                    if let Some(line_number) = lhs_line {
+                        old_start.get_or_insert(*line_number);
+                        old_count += 1;
+                    }
+                    if let Some(line_number) = rhs_line {
+                        new_start.get_or_insert(*line_number);
+                        new_count += 1;
+                    }
                     let range = text_buffer.append(lhs_text);
                     hunk.lines.push(DiffLine {
                         kind: LineKind::Context,
@@ -283,6 +292,10 @@ fn parse_difftastic_json(
                 }
             }
             if let Some((text, tokens, line_number)) = lhs {
+                if let Some(number) = line_number {
+                    old_start.get_or_insert(number);
+                    old_count += 1;
+                }
                 let text_range = text_buffer.append(&text);
                 let change_tokens = token_buffer.append(&tokens);
                 hunk.lines.push(DiffLine {
@@ -296,6 +309,10 @@ fn parse_difftastic_json(
                 file.deletions += 1;
             }
             if let Some((text, tokens, line_number)) = rhs {
+                if let Some(number) = line_number {
+                    new_start.get_or_insert(number);
+                    new_count += 1;
+                }
                 let text_range = text_buffer.append(&text);
                 let change_tokens = token_buffer.append(&tokens);
                 hunk.lines.push(DiffLine {
@@ -310,6 +327,22 @@ fn parse_difftastic_json(
             }
         }
         if !hunk.lines.is_empty() {
+            let computed_old_start = match old_start {
+                Some(start) => start,
+                None => new_start.map_or(0, |start| start.saturating_sub(1)),
+            };
+            let computed_new_start = match new_start {
+                Some(start) => start,
+                None => old_start.map_or(0, |start| start.saturating_sub(1)),
+            };
+            hunk.old_start = computed_old_start;
+            hunk.old_count = old_count;
+            hunk.new_start = computed_new_start;
+            hunk.new_count = new_count;
+            hunk.header = format!(
+                "@@ -{},{} +{},{} @@",
+                hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
+            );
             file.hunks.push(hunk);
         }
     }
@@ -338,4 +371,65 @@ fn side_parts(side: &SideJson) -> Result<(String, Vec<DiffTokenSpan>, Option<i32
         text = side.text.clone();
     }
     Ok((text, tokens, side.line_number.map(|line| line + 1)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_difftastic_json;
+    use crate::core::text::{TextBuffer, TokenBuffer};
+
+    #[test]
+    fn parse_difftastic_json_builds_real_hunk_headers_for_modified_chunks() {
+        let json = r#"{
+            "chunks":[[
+                {
+                    "lhs":{"line_number":0,"changes":[{"content":"old"}]},
+                    "rhs":{"line_number":0,"changes":[{"content":"new"}]}
+                }
+            ]],
+            "language":"Rust",
+            "path":"src/lib.rs",
+            "status":"changed"
+        }"#;
+        let mut text_buffer = TextBuffer::default();
+        let mut token_buffer = TokenBuffer::default();
+
+        let file =
+            parse_difftastic_json(json, "src/lib.rs", "M", &mut text_buffer, &mut token_buffer)
+                .unwrap();
+
+        assert_eq!(file.hunks.len(), 1);
+        assert_eq!(file.hunks[0].old_start, 1);
+        assert_eq!(file.hunks[0].old_count, 1);
+        assert_eq!(file.hunks[0].new_start, 1);
+        assert_eq!(file.hunks[0].new_count, 1);
+        assert_eq!(file.hunks[0].header, "@@ -1,1 +1,1 @@");
+    }
+
+    #[test]
+    fn parse_difftastic_json_handles_pure_insert_headers() {
+        let json = r#"{
+            "chunks":[[
+                {
+                    "rhs":{"line_number":0,"changes":[{"content":"inserted"}]}
+                }
+            ]],
+            "language":"Rust",
+            "path":"src/lib.rs",
+            "status":"changed"
+        }"#;
+        let mut text_buffer = TextBuffer::default();
+        let mut token_buffer = TokenBuffer::default();
+
+        let file =
+            parse_difftastic_json(json, "src/lib.rs", "M", &mut text_buffer, &mut token_buffer)
+                .unwrap();
+
+        assert_eq!(file.hunks.len(), 1);
+        assert_eq!(file.hunks[0].old_start, 0);
+        assert_eq!(file.hunks[0].old_count, 0);
+        assert_eq!(file.hunks[0].new_start, 1);
+        assert_eq!(file.hunks[0].new_count, 1);
+        assert_eq!(file.hunks[0].header, "@@ -0,0 +1,1 @@");
+    }
 }

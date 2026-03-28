@@ -1,28 +1,32 @@
 { pkgs, ... }:
 {
   packages = [
-    pkgs.cmake
-    pkgs.ninja
+    pkgs.cargo
+    pkgs.rustc
+    pkgs.rustfmt
+    pkgs.clippy
     pkgs.pkg-config
     pkgs.uv
     pkgs.git
-    pkgs.gcc
     pkgs.jq
     pkgs.gdb
     pkgs.lldb
     pkgs.rr
     pkgs.strace
     pkgs.watchexec
-    pkgs.curl
-    pkgs.libgit2
-    pkgs.tree-sitter
     pkgs.qt6.qtbase
     pkgs.qt6.qtdeclarative
   ];
 
   enterShell = ''
-    echo "devenv ready: cmake -S . -B build -G Ninja && cmake --build build"
-    echo "debug preset: cmake --preset Debug && cmake --build --preset Debug"
-    echo "debug ready: gdb ./build/Debug/diffy | lldb ./build/Debug/diffy | rr record ./build/Debug/diffy"
+    qt_declarative_prefix="${pkgs.qt6.qtdeclarative}"
+    export DIFFY_REPO_ROOT="$PWD"
+    export QMAKE="${pkgs.lib.getExe' pkgs.qt6.qtbase "qmake"}"
+    export QT_ADDITIONAL_PACKAGES_PREFIX_PATH="$qt_declarative_prefix''${QT_ADDITIONAL_PACKAGES_PREFIX_PATH:+:''${QT_ADDITIONAL_PACKAGES_PREFIX_PATH}}"
+    export CXXFLAGS="-F$qt_declarative_prefix/lib -I$qt_declarative_prefix/include''${CXXFLAGS:+ ''${CXXFLAGS}}"
+    export RUSTFLAGS="-L framework=$qt_declarative_prefix/lib''${RUSTFLAGS:+ ''${RUSTFLAGS}}"
+    echo "devenv ready: cargo build && cargo test"
+    echo "run: cargo run"
+    echo "debug ready: gdb ./target/debug/diffy | lldb ./target/debug/diffy | rr record ./target/debug/diffy"
   '';
 }

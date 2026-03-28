@@ -50,6 +50,16 @@ struct ThemeVariants {
     light: ThemeColors,
 }
 
+fn default_sans_family() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Arial"
+    } else if cfg!(target_os = "windows") {
+        "Segoe UI"
+    } else {
+        "DejaVu Sans"
+    }
+}
+
 impl Default for ThemeVariants {
     fn default() -> Self {
         let colors = built_in_dark_theme_colors();
@@ -271,7 +281,7 @@ impl Default for ThemeProvider {
 
         Self {
             base: Default::default(),
-            sans: QString::from("IBM Plex Sans"),
+            sans: QString::from(default_sans_family()),
             mono: QString::from("JetBrains Mono"),
             sp1: 4,
             sp2: 8,

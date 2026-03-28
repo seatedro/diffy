@@ -174,7 +174,7 @@ pub struct DiffController {
 
     settings: QSettings,
     git_service: GitService,
-    compare_service: CompareService,
+    _compare_service: CompareService,
     file_diffs_store: Vec<FileDiff>,
     text_buffer_store: TextBuffer,
     token_buffer_store: TokenBuffer,
@@ -283,7 +283,7 @@ impl Default for DiffController {
             copy_to_clipboard: Default::default(),
             settings,
             git_service: GitService::new(),
-            compare_service: CompareService::default(),
+            _compare_service: CompareService::default(),
             file_diffs_store: Vec::new(),
             text_buffer_store: TextBuffer::default(),
             token_buffer_store: TokenBuffer::default(),

@@ -47,15 +47,17 @@
 
             buildInputs = [
               qt.qtdeclarative
+              qt.qtsvg
             ];
 
             preBuild = ''
               export PATH="${qt.qtbase}/bin:$PATH"
               export QMAKE="${pkgs.lib.getExe' qt.qtbase "qmake"}"
               qt_declarative_prefix="${qt.qtdeclarative}"
+              qt_svg_prefix="${qt.qtsvg}"
               qt_declarative_include="$qt_declarative_prefix/include"
               qt_declarative_lib="$qt_declarative_prefix/lib"
-              export QT_ADDITIONAL_PACKAGES_PREFIX_PATH="$qt_declarative_prefix''${QT_ADDITIONAL_PACKAGES_PREFIX_PATH:+:''${QT_ADDITIONAL_PACKAGES_PREFIX_PATH}}"
+              export QT_ADDITIONAL_PACKAGES_PREFIX_PATH="$qt_declarative_prefix:$qt_svg_prefix''${QT_ADDITIONAL_PACKAGES_PREFIX_PATH:+:''${QT_ADDITIONAL_PACKAGES_PREFIX_PATH}}"
               export CXXFLAGS="-F$qt_declarative_lib -I$qt_declarative_include''${CXXFLAGS:+ ''${CXXFLAGS}}"
               export RUSTFLAGS="-L framework=$qt_declarative_lib''${RUSTFLAGS:+ ''${RUSTFLAGS}}"
             '';
@@ -97,12 +99,13 @@
 
             shellHook = ''
               qt_declarative_prefix="${qt.qtdeclarative}"
+              qt_svg_prefix="${qt.qtsvg}"
               qt_declarative_include="$qt_declarative_prefix/include"
               qt_declarative_lib="$qt_declarative_prefix/lib"
 
               export DIFFY_REPO_ROOT="$PWD"
               export QMAKE="${pkgs.lib.getExe' qt.qtbase "qmake"}"
-              export QT_ADDITIONAL_PACKAGES_PREFIX_PATH="$qt_declarative_prefix''${QT_ADDITIONAL_PACKAGES_PREFIX_PATH:+:''${QT_ADDITIONAL_PACKAGES_PREFIX_PATH}}"
+              export QT_ADDITIONAL_PACKAGES_PREFIX_PATH="$qt_declarative_prefix:$qt_svg_prefix''${QT_ADDITIONAL_PACKAGES_PREFIX_PATH:+:''${QT_ADDITIONAL_PACKAGES_PREFIX_PATH}}"
               export CXXFLAGS="-F$qt_declarative_lib -I$qt_declarative_include''${CXXFLAGS:+ ''${CXXFLAGS}}"
               export RUSTFLAGS="-L framework=$qt_declarative_lib''${RUSTFLAGS:+ ''${RUSTFLAGS}}"
               echo "Diffy dev shell ready"

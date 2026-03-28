@@ -99,7 +99,7 @@ Rectangle {
                     size: 14
                     color: navBackMouse.containsMouse ? theme.textMuted : theme.textFaint
                     Behavior on color {
-                        enabled: !(Window.window && Window.window.commandPaletteShowing)
+                        enabled: !(root.Window.window && root.Window.window.commandPaletteShowing)
                         ColorAnimation { duration: 35 }
                     }
 
@@ -119,7 +119,7 @@ Rectangle {
                     font.family: theme.sans
                     font.pixelSize: theme.fontSmall
                     Behavior on color {
-                        enabled: !(Window.window && Window.window.commandPaletteShowing)
+                        enabled: !(root.Window.window && root.Window.window.commandPaletteShowing)
                         ColorAnimation { duration: 35 }
                     }
 
@@ -147,7 +147,7 @@ Rectangle {
                     font.family: theme.mono
                     font.pixelSize: theme.fontCaption + 1
                     Behavior on color {
-                        enabled: !(Window.window && Window.window.commandPaletteShowing)
+                        enabled: !(root.Window.window && root.Window.window.commandPaletteShowing)
                         ColorAnimation { duration: 35 }
                     }
 
@@ -262,7 +262,7 @@ Rectangle {
                     border.width: 1
                     border.color: pickerOpen ? theme.borderSoft : (leftCardMouse.containsMouse ? theme.borderSoft : "transparent")
                     Behavior on color {
-                        enabled: !(Window.window && Window.window.commandPaletteShowing)
+                        enabled: !(root.Window.window && root.Window.window.commandPaletteShowing)
                         ColorAnimation { duration: 35 }
                     }
 
@@ -326,11 +326,11 @@ Rectangle {
                             color: modeMouse.containsMouse ? theme.panelTint : "transparent"
                             border.color: modeMouse.containsMouse ? theme.borderSoft : "transparent"
                             Behavior on color {
-                                enabled: !(Window.window && Window.window.commandPaletteShowing)
+                                enabled: !(root.Window.window && root.Window.window.commandPaletteShowing)
                                 ColorAnimation { duration: 30 }
                             }
                             Behavior on border.color {
-                                enabled: !(Window.window && Window.window.commandPaletteShowing)
+                                enabled: !(root.Window.window && root.Window.window.commandPaletteShowing)
                                 ColorAnimation { duration: 30 }
                             }
 
@@ -343,7 +343,7 @@ Rectangle {
                                 font.pixelSize: theme.fontBody
                                 font.bold: true
                                 Behavior on color {
-                                    enabled: !(Window.window && Window.window.commandPaletteShowing)
+                                    enabled: !(root.Window.window && root.Window.window.commandPaletteShowing)
                                     ColorAnimation { duration: 30 }
                                 }
                             }
@@ -366,11 +366,11 @@ Rectangle {
                             color: swapMouse.containsMouse ? theme.panelTint : "transparent"
                             border.color: swapMouse.containsMouse ? theme.borderSoft : "transparent"
                             Behavior on color {
-                                enabled: !(Window.window && Window.window.commandPaletteShowing)
+                                enabled: !(root.Window.window && root.Window.window.commandPaletteShowing)
                                 ColorAnimation { duration: 30 }
                             }
                             Behavior on border.color {
-                                enabled: !(Window.window && Window.window.commandPaletteShowing)
+                                enabled: !(root.Window.window && root.Window.window.commandPaletteShowing)
                                 ColorAnimation { duration: 30 }
                             }
 
@@ -380,7 +380,7 @@ Rectangle {
                                 size: 16
                                 color: swapMouse.containsMouse ? theme.accent : theme.textFaint
                                 Behavior on color {
-                                    enabled: !(Window.window && Window.window.commandPaletteShowing)
+                                    enabled: !(root.Window.window && root.Window.window.commandPaletteShowing)
                                     ColorAnimation { duration: 35 }
                                 }
                             }
@@ -407,7 +407,7 @@ Rectangle {
                     border.width: 1
                     border.color: pickerOpen ? theme.borderSoft : (rightCardMouse.containsMouse ? theme.borderSoft : "transparent")
                     Behavior on color {
-                        enabled: !(Window.window && Window.window.commandPaletteShowing)
+                        enabled: !(root.Window.window && root.Window.window.commandPaletteShowing)
                         ColorAnimation { duration: 35 }
                     }
 

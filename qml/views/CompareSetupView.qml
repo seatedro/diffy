@@ -112,7 +112,7 @@ Rectangle {
                 border.width: 1
                 border.color: theme.borderSoft
                 Behavior on color {
-                    enabled: !(Window.window && Window.window.commandPaletteShowing)
+                    enabled: !(root.Window.window && root.Window.window.commandPaletteShowing)
                     ColorAnimation { duration: 35 }
                 }
 
@@ -177,7 +177,7 @@ Rectangle {
                 border.width: 1
                 border.color: theme.borderSoft
                 Behavior on color {
-                    enabled: !(Window.window && Window.window.commandPaletteShowing)
+                    enabled: !(root.Window.window && root.Window.window.commandPaletteShowing)
                     ColorAnimation { duration: 35 }
                 }
 

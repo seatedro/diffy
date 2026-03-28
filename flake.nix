@@ -55,6 +55,7 @@
         let
           pkgs = pkgsFor system;
           isLinux = pkgs.stdenv.isLinux;
+          qt = pkgs.qt6;
         in
         {
           default = pkgs.mkShell {
@@ -76,7 +77,17 @@
             ];
 
             shellHook = ''
+              qt_declarative_prefix="${qt.qtdeclarative}"
+              qt_declarative_include="$qt_declarative_prefix/include"
+              qt_declarative_lib="$qt_declarative_prefix/lib"
+
               export DIFFY_REPO_ROOT="$PWD"
+              if command -v qmake >/dev/null 2>&1; then
+                export QMAKE="$(command -v qmake)"
+              fi
+              export QT_ADDITIONAL_PACKAGES_PREFIX_PATH="$qt_declarative_prefix''${QT_ADDITIONAL_PACKAGES_PREFIX_PATH:+:''${QT_ADDITIONAL_PACKAGES_PREFIX_PATH}}"
+              export CXXFLAGS="-F$qt_declarative_lib -I$qt_declarative_include''${CXXFLAGS:+ ''${CXXFLAGS}}"
+              export RUSTFLAGS="-L framework=$qt_declarative_lib''${RUSTFLAGS:+ ''${RUSTFLAGS}}"
               echo "Diffy dev shell ready"
               echo "Build: cmake -S . -B build -G Ninja && cmake --build build"
               echo "Debug preset: cmake --preset Debug && cmake --build --preset Debug"

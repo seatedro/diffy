@@ -172,6 +172,31 @@ pub struct DiffController {
     cancel_oauth_login: qt_method!(fn(&mut self)),
     copy_to_clipboard: qt_method!(fn(&self, text: QString)),
 
+    // QML call sites use camelCase method names; expose those alongside the
+    // snake_case Rust methods because qmetaobject methods do not support ALIAS.
+    goBack: qt_method!(fn(&mut self)),
+    openRepository: qt_method!(fn(&mut self, path: QString) -> bool),
+    openRepositoryPicker: qt_method!(fn(&mut self)),
+    openRepositoryFromDialog: qt_method!(fn(&mut self)),
+    closeRepositoryPicker: qt_method!(fn(&mut self)),
+    navigateRepositoryPickerUp: qt_method!(fn(&mut self)),
+    activateRepositoryPickerEntry: qt_method!(fn(&mut self, index: i32)),
+    openCurrentRepositoryFromPicker: qt_method!(fn(&mut self)),
+    selectFile: qt_method!(fn(&mut self, index: i32)),
+    loadBranches: qt_method!(fn(&mut self)),
+    loadTags: qt_method!(fn(&mut self)),
+    loadCommits: qt_method!(fn(&mut self, ref_name: QString)),
+    searchCommits: qt_method!(fn(&self, hex_prefix: QString) -> QVariantList),
+    recordRecentBranch: qt_method!(fn(&mut self, name: QString)),
+    recentBranchesForRepo: qt_method!(fn(&self) -> QVariantList),
+    openPullRequest: qt_method!(fn(&mut self, url: QString)),
+    fuzzyFilter: qt_method!(
+        fn(&self, query: QString, items: QVariantList, label_key: QString) -> QVariantList
+    ),
+    startOAuthLogin: qt_method!(fn(&mut self)),
+    cancelOAuthLogin: qt_method!(fn(&mut self)),
+    copyToClipboard: qt_method!(fn(&self, text: QString)),
+
     settings: QSettings,
     git_service: GitService,
     _compare_service: CompareService,
@@ -281,6 +306,26 @@ impl Default for DiffController {
             start_oauth_login: Default::default(),
             cancel_oauth_login: Default::default(),
             copy_to_clipboard: Default::default(),
+            goBack: Default::default(),
+            openRepository: Default::default(),
+            openRepositoryPicker: Default::default(),
+            openRepositoryFromDialog: Default::default(),
+            closeRepositoryPicker: Default::default(),
+            navigateRepositoryPickerUp: Default::default(),
+            activateRepositoryPickerEntry: Default::default(),
+            openCurrentRepositoryFromPicker: Default::default(),
+            selectFile: Default::default(),
+            loadBranches: Default::default(),
+            loadTags: Default::default(),
+            loadCommits: Default::default(),
+            searchCommits: Default::default(),
+            recordRecentBranch: Default::default(),
+            recentBranchesForRepo: Default::default(),
+            openPullRequest: Default::default(),
+            fuzzyFilter: Default::default(),
+            startOAuthLogin: Default::default(),
+            cancelOAuthLogin: Default::default(),
+            copyToClipboard: Default::default(),
             settings,
             git_service: GitService::new(),
             _compare_service: CompareService::default(),
@@ -300,6 +345,111 @@ impl Default for DiffController {
 }
 
 impl DiffController {
+    #[allow(non_snake_case)]
+    pub fn goBack(&mut self) {
+        self.go_back();
+    }
+
+    #[allow(non_snake_case)]
+    pub fn openRepository(&mut self, path: QString) -> bool {
+        self.open_repository(path)
+    }
+
+    #[allow(non_snake_case)]
+    pub fn openRepositoryPicker(&mut self) {
+        self.open_repository_picker();
+    }
+
+    #[allow(non_snake_case)]
+    pub fn openRepositoryFromDialog(&mut self) {
+        self.open_repository_from_dialog();
+    }
+
+    #[allow(non_snake_case)]
+    pub fn closeRepositoryPicker(&mut self) {
+        self.close_repository_picker();
+    }
+
+    #[allow(non_snake_case)]
+    pub fn navigateRepositoryPickerUp(&mut self) {
+        self.navigate_repository_picker_up();
+    }
+
+    #[allow(non_snake_case)]
+    pub fn activateRepositoryPickerEntry(&mut self, index: i32) {
+        self.activate_repository_picker_entry(index);
+    }
+
+    #[allow(non_snake_case)]
+    pub fn openCurrentRepositoryFromPicker(&mut self) {
+        self.open_current_repository_from_picker();
+    }
+
+    #[allow(non_snake_case)]
+    pub fn selectFile(&mut self, index: i32) {
+        self.select_file(index);
+    }
+
+    #[allow(non_snake_case)]
+    pub fn loadBranches(&mut self) {
+        self.load_branches();
+    }
+
+    #[allow(non_snake_case)]
+    pub fn loadTags(&mut self) {
+        self.load_tags();
+    }
+
+    #[allow(non_snake_case)]
+    pub fn loadCommits(&mut self, ref_name: QString) {
+        self.load_commits(ref_name);
+    }
+
+    #[allow(non_snake_case)]
+    pub fn searchCommits(&self, hex_prefix: QString) -> QVariantList {
+        self.search_commits(hex_prefix)
+    }
+
+    #[allow(non_snake_case)]
+    pub fn recordRecentBranch(&mut self, name: QString) {
+        self.record_recent_branch(name);
+    }
+
+    #[allow(non_snake_case)]
+    pub fn recentBranchesForRepo(&self) -> QVariantList {
+        self.recent_branches_for_repo()
+    }
+
+    #[allow(non_snake_case)]
+    pub fn openPullRequest(&mut self, url: QString) {
+        self.open_pull_request(url);
+    }
+
+    #[allow(non_snake_case)]
+    pub fn fuzzyFilter(
+        &self,
+        query: QString,
+        items: QVariantList,
+        label_key: QString,
+    ) -> QVariantList {
+        self.fuzzy_filter(query, items, label_key)
+    }
+
+    #[allow(non_snake_case)]
+    pub fn startOAuthLogin(&mut self) {
+        self.start_oauth_login();
+    }
+
+    #[allow(non_snake_case)]
+    pub fn cancelOAuthLogin(&mut self) {
+        self.cancel_oauth_login();
+    }
+
+    #[allow(non_snake_case)]
+    pub fn copyToClipboard(&self, text: QString) {
+        self.copy_to_clipboard(text);
+    }
+
     pub fn get_current_view(&self) -> QString {
         self.current_view.clone()
     }

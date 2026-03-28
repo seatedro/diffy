@@ -17,10 +17,10 @@ pub struct RepositoryPickerEntry {
 pub struct RepositoryPickerModel {
     base: qt_base_class!(trait QAbstractListModel),
 
-    current_path: qt_property!(QString; READ get_current_path NOTIFY current_path_changed),
+    current_path: qt_property!(QString; READ get_current_path NOTIFY current_path_changed ALIAS currentPath),
     current_path_changed: qt_signal!(),
 
-    current_path_is_repository: qt_property!(bool; READ get_current_path_is_repository NOTIFY current_path_is_repository_changed),
+    current_path_is_repository: qt_property!(bool; READ get_current_path_is_repository NOTIFY current_path_is_repository_changed ALIAS currentPathIsRepository),
     current_path_is_repository_changed: qt_signal!(),
 
     entries: Vec<RepositoryPickerEntry>,

@@ -227,6 +227,12 @@ Window {
         }
     }
 
+    RepositoryPickerOverlay {
+        id: repositoryPickerOverlay
+        anchors.fill: parent
+        z: 260
+    }
+
     property string branchPickTarget: ""
     property string commandPaletteLevel: "root"
     property bool themePreviewActive: false

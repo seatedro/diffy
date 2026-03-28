@@ -227,10 +227,53 @@ Window {
         }
     }
 
-    RepositoryPickerOverlay {
-        id: repositoryPickerOverlay
+    property var repoPickerEntries: []
+
+    function rebuildRepoPickerEntries() {
+        var m = diffController.repositoryPickerModel
+        var arr = []
+        var count = m.entryCount()
+        for (var i = 0; i < count; i++) {
+            arr.push({
+                display: m.entryName(i),
+                path: m.entryPathAt(i),
+                badgeText: m.entryIsGitRepo(i) ? "repo" : "",
+                originalIndex: i
+            })
+        }
+        repoPickerEntries = arr
+    }
+
+    Connections {
+        target: diffController.repositoryPickerModel
+        function onCurrentPathChanged() {
+            window.rebuildRepoPickerEntries()
+        }
+    }
+
+    PickerOverlay {
+        id: repoPickerOverlay
         anchors.fill: parent
         z: 260
+        showing: diffController.repositoryPickerVisible
+        title: "Open Repository"
+        displayRole: "display"
+        badgeRole: "badgeText"
+        model: window.repoPickerEntries
+        breadcrumb: diffController.repositoryPickerModel.currentPath
+        showUpButton: true
+        pinnedItem: diffController.repositoryPickerModel.currentPathIsRepository
+            ? { display: "Open this directory", badge: "repo" } : null
+
+        onShowingChanged: {
+            if (showing) window.rebuildRepoPickerEntries()
+        }
+        onNavigateUp: diffController.navigateRepositoryPickerUp()
+        onPinnedItemActivated: diffController.openCurrentRepositoryFromPicker()
+        onItemSelected: function(index, item) {
+            diffController.activateRepositoryPickerEntry(item.originalIndex)
+        }
+        onDismissed: diffController.closeRepositoryPicker()
     }
 
     property string branchPickTarget: ""

@@ -23,6 +23,11 @@ pub struct RepositoryPickerModel {
     current_path_is_repository: qt_property!(bool; READ get_current_path_is_repository NOTIFY current_path_is_repository_changed ALIAS currentPathIsRepository),
     current_path_is_repository_changed: qt_signal!(),
 
+    entry_count: qt_method!(fn(&self) -> i32),
+    entry_name: qt_method!(fn(&self, index: i32) -> QString),
+    entry_path_at: qt_method!(fn(&self, index: i32) -> QString),
+    entry_is_git_repo: qt_method!(fn(&self, index: i32) -> bool),
+
     entries: Vec<RepositoryPickerEntry>,
     current_path_value: QString,
     current_path_is_repository_value: bool,
@@ -78,6 +83,25 @@ impl RepositoryPickerModel {
             return false;
         }
         self.entries[index as usize].is_git_repo
+    }
+
+    pub fn entry_count(&self) -> i32 {
+        self.entries.len() as i32
+    }
+
+    pub fn entry_name(&self, index: i32) -> QString {
+        if index < 0 || index as usize >= self.entries.len() {
+            return QString::default();
+        }
+        self.entries[index as usize].name.clone()
+    }
+
+    pub fn entry_path_at(&self, index: i32) -> QString {
+        self.entry_path(index)
+    }
+
+    pub fn entry_is_git_repo(&self, index: i32) -> bool {
+        self.entry_is_repository(index)
     }
 
     fn reload(&mut self) {

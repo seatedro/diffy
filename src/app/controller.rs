@@ -52,99 +52,100 @@ struct PullRequestResult {
     error: String,
 }
 
+#[allow(non_snake_case)]
 #[derive(QObject)]
 pub struct DiffController {
     base: qt_base_class!(trait QObject),
 
-    current_view: qt_property!(QString; READ get_current_view NOTIFY current_view_changed),
-    current_view_changed: qt_signal!(),
+    current_view: qt_property!(QString; READ get_current_view NOTIFY currentViewChanged ALIAS currentView),
+    currentViewChanged: qt_signal!(),
 
-    recent_repositories: qt_property!(QVariantList; READ get_recent_repositories NOTIFY recent_repositories_changed),
+    recent_repositories: qt_property!(QVariantList; READ get_recent_repositories NOTIFY recent_repositories_changed ALIAS recentRepositories),
     recent_repositories_changed: qt_signal!(),
 
-    repo_path: qt_property!(QString; READ get_repo_path WRITE set_repo_path NOTIFY repo_path_changed),
+    repo_path: qt_property!(QString; READ get_repo_path WRITE set_repo_path NOTIFY repo_path_changed ALIAS repoPath),
     repo_path_changed: qt_signal!(),
 
-    refs: qt_property!(QVariantList; READ get_refs NOTIFY refs_changed),
+    refs: qt_property!(QVariantList; READ get_refs NOTIFY refs_changed ALIAS refs),
     refs_changed: qt_signal!(),
 
-    left_ref: qt_property!(QString; READ get_left_ref WRITE set_left_ref NOTIFY left_ref_changed),
-    left_ref_changed: qt_signal!(),
+    left_ref: qt_property!(QString; READ get_left_ref WRITE set_left_ref NOTIFY leftRefChanged ALIAS leftRef),
+    leftRefChanged: qt_signal!(),
 
-    right_ref: qt_property!(QString; READ get_right_ref WRITE set_right_ref NOTIFY right_ref_changed),
-    right_ref_changed: qt_signal!(),
+    right_ref: qt_property!(QString; READ get_right_ref WRITE set_right_ref NOTIFY rightRefChanged ALIAS rightRef),
+    rightRefChanged: qt_signal!(),
 
-    left_ref_display: qt_property!(QString; READ get_left_ref_display NOTIFY left_ref_changed),
-    right_ref_display: qt_property!(QString; READ get_right_ref_display NOTIFY right_ref_changed),
+    left_ref_display: qt_property!(QString; READ get_left_ref_display NOTIFY leftRefChanged ALIAS leftRefDisplay),
+    right_ref_display: qt_property!(QString; READ get_right_ref_display NOTIFY rightRefChanged ALIAS rightRefDisplay),
 
-    compare_mode: qt_property!(QString; READ get_compare_mode WRITE set_compare_mode NOTIFY compare_mode_changed),
+    compare_mode: qt_property!(QString; READ get_compare_mode WRITE set_compare_mode NOTIFY compare_mode_changed ALIAS compareMode),
     compare_mode_changed: qt_signal!(),
 
-    renderer: qt_property!(QString; READ get_renderer WRITE set_renderer NOTIFY renderer_changed),
+    renderer: qt_property!(QString; READ get_renderer WRITE set_renderer NOTIFY renderer_changed ALIAS renderer),
     renderer_changed: qt_signal!(),
 
-    layout_mode: qt_property!(QString; READ get_layout_mode WRITE set_layout_mode NOTIFY layout_mode_changed),
+    layout_mode: qt_property!(QString; READ get_layout_mode WRITE set_layout_mode NOTIFY layout_mode_changed ALIAS layoutMode),
     layout_mode_changed: qt_signal!(),
 
-    compare_generation: qt_property!(i32; READ get_compare_generation NOTIFY compare_generation_changed),
+    compare_generation: qt_property!(i32; READ get_compare_generation NOTIFY compare_generation_changed ALIAS compareGeneration),
     compare_generation_changed: qt_signal!(),
 
-    files: qt_property!(QVariantList; READ get_files NOTIFY files_changed),
+    files: qt_property!(QVariantList; READ get_files NOTIFY files_changed ALIAS files),
     files_changed: qt_signal!(),
 
-    selected_file_index: qt_property!(i32; READ get_selected_file_index WRITE set_selected_file_index NOTIFY selected_file_index_changed),
-    selected_file_index_changed: qt_signal!(),
+    selected_file_index: qt_property!(i32; READ get_selected_file_index WRITE set_selected_file_index NOTIFY selectedFileIndexChanged ALIAS selectedFileIndex),
+    selectedFileIndexChanged: qt_signal!(),
 
-    selected_file: qt_property!(QVariantMap; READ get_selected_file NOTIFY selected_file_changed),
+    selected_file: qt_property!(QVariantMap; READ get_selected_file NOTIFY selected_file_changed ALIAS selectedFile),
     selected_file_changed: qt_signal!(),
 
-    selected_file_rows_model: qt_property!(RefCell<SimpleListModel<DiffRowItem>>; CONST),
-    selected_file_row_count: qt_property!(i32; READ get_selected_file_row_count NOTIFY selected_file_rows_changed),
+    selected_file_rows_model: qt_property!(RefCell<SimpleListModel<DiffRowItem>>; CONST ALIAS selectedFileRowsModel),
+    selected_file_row_count: qt_property!(i32; READ get_selected_file_row_count NOTIFY selected_file_rows_changed ALIAS selectedFileRowCount),
     selected_file_rows_changed: qt_signal!(),
 
-    repository_picker_visible: qt_property!(bool; READ get_repository_picker_visible NOTIFY repository_picker_visible_changed),
+    repository_picker_visible: qt_property!(bool; READ get_repository_picker_visible NOTIFY repository_picker_visible_changed ALIAS repositoryPickerVisible),
     repository_picker_visible_changed: qt_signal!(),
 
-    repository_picker_model: qt_property!(RefCell<RepositoryPickerModel>; CONST),
+    repository_picker_model: qt_property!(RefCell<RepositoryPickerModel>; CONST ALIAS repositoryPickerModel),
 
-    branches: qt_property!(QVariantList; READ get_branches NOTIFY branches_changed),
+    branches: qt_property!(QVariantList; READ get_branches NOTIFY branches_changed ALIAS branches),
     branches_changed: qt_signal!(),
 
-    tags: qt_property!(QVariantList; READ get_tags NOTIFY tags_changed),
+    tags: qt_property!(QVariantList; READ get_tags NOTIFY tags_changed ALIAS tags),
     tags_changed: qt_signal!(),
 
-    commits: qt_property!(QVariantList; READ get_commits NOTIFY commits_changed),
+    commits: qt_property!(QVariantList; READ get_commits NOTIFY commits_changed ALIAS commits),
     commits_changed: qt_signal!(),
 
-    pull_request_info: qt_property!(QVariantMap; READ get_pull_request_info NOTIFY pull_request_info_changed),
+    pull_request_info: qt_property!(QVariantMap; READ get_pull_request_info NOTIFY pull_request_info_changed ALIAS pullRequestInfo),
     pull_request_info_changed: qt_signal!(),
 
-    comparing: qt_property!(bool; READ get_comparing NOTIFY comparing_changed),
+    comparing: qt_property!(bool; READ get_comparing NOTIFY comparing_changed ALIAS comparing),
     comparing_changed: qt_signal!(),
 
-    pull_request_loading: qt_property!(bool; READ get_pull_request_loading NOTIFY pull_request_loading_changed),
+    pull_request_loading: qt_property!(bool; READ get_pull_request_loading NOTIFY pull_request_loading_changed ALIAS pullRequestLoading),
     pull_request_loading_changed: qt_signal!(),
 
-    github_token: qt_property!(QString; READ get_github_token WRITE set_github_token NOTIFY github_token_changed),
+    github_token: qt_property!(QString; READ get_github_token WRITE set_github_token NOTIFY github_token_changed ALIAS githubToken),
     github_token_changed: qt_signal!(),
 
-    has_github_token: qt_property!(bool; READ get_has_github_token NOTIFY github_token_changed),
+    has_github_token: qt_property!(bool; READ get_has_github_token NOTIFY github_token_changed ALIAS hasGithubToken),
 
-    oauth_in_progress: qt_property!(bool; READ get_oauth_in_progress NOTIFY oauth_state_changed),
-    oauth_user_code: qt_property!(QString; READ get_oauth_user_code NOTIFY oauth_state_changed),
-    oauth_verification_uri: qt_property!(QString; READ get_oauth_verification_uri NOTIFY oauth_state_changed),
-    oauth_state_changed: qt_signal!(),
+    oauth_in_progress: qt_property!(bool; READ get_oauth_in_progress NOTIFY oauthStateChanged ALIAS oauthInProgress),
+    oauth_user_code: qt_property!(QString; READ get_oauth_user_code NOTIFY oauthStateChanged ALIAS oauthUserCode),
+    oauth_verification_uri: qt_property!(QString; READ get_oauth_verification_uri NOTIFY oauthStateChanged ALIAS oauthVerificationUri),
+    oauthStateChanged: qt_signal!(),
 
-    error_message: qt_property!(QString; READ get_error_message NOTIFY error_message_changed),
+    error_message: qt_property!(QString; READ get_error_message NOTIFY error_message_changed ALIAS errorMessage),
     error_message_changed: qt_signal!(),
 
-    wrap_enabled: qt_property!(bool; READ get_wrap_enabled WRITE set_wrap_enabled NOTIFY wrap_enabled_changed),
+    wrap_enabled: qt_property!(bool; READ get_wrap_enabled WRITE set_wrap_enabled NOTIFY wrap_enabled_changed ALIAS wrapEnabled),
     wrap_enabled_changed: qt_signal!(),
 
-    wrap_column: qt_property!(i32; READ get_wrap_column WRITE set_wrap_column NOTIFY wrap_column_changed),
+    wrap_column: qt_property!(i32; READ get_wrap_column WRITE set_wrap_column NOTIFY wrap_column_changed ALIAS wrapColumn),
     wrap_column_changed: qt_signal!(),
 
-    has_difftastic: qt_property!(bool; READ get_has_difftastic NOTIFY has_difftastic_changed),
+    has_difftastic: qt_property!(bool; READ get_has_difftastic NOTIFY has_difftastic_changed ALIAS hasDifftastic),
     has_difftastic_changed: qt_signal!(),
 
     go_back: qt_method!(fn(&mut self)),
@@ -196,7 +197,7 @@ impl Default for DiffController {
         let mut this = Self {
             base: Default::default(),
             current_view: QString::from("welcome"),
-            current_view_changed: Default::default(),
+            currentViewChanged: Default::default(),
             recent_repositories: recent
                 .iter()
                 .map(|s| QVariant::from(QString::from(s.as_str())))
@@ -207,9 +208,9 @@ impl Default for DiffController {
             refs: QVariantList::default(),
             refs_changed: Default::default(),
             left_ref: QString::from(settings.value_string("leftRef")),
-            left_ref_changed: Default::default(),
+            leftRefChanged: Default::default(),
             right_ref: QString::from(settings.value_string("rightRef")),
-            right_ref_changed: Default::default(),
+            rightRefChanged: Default::default(),
             left_ref_display: Default::default(),
             right_ref_display: Default::default(),
             compare_mode: QString::from(non_empty(settings.value_string("compareMode"), "two-dot")),
@@ -223,7 +224,7 @@ impl Default for DiffController {
             files: QVariantList::default(),
             files_changed: Default::default(),
             selected_file_index: -1,
-            selected_file_index_changed: Default::default(),
+            selectedFileIndexChanged: Default::default(),
             selected_file: QVariantMap::default(),
             selected_file_changed: Default::default(),
             selected_file_rows_model: RefCell::new(SimpleListModel::default()),
@@ -250,7 +251,7 @@ impl Default for DiffController {
             oauth_in_progress: false,
             oauth_user_code: QString::default(),
             oauth_verification_uri: QString::default(),
-            oauth_state_changed: Default::default(),
+            oauthStateChanged: Default::default(),
             error_message: QString::default(),
             error_message_changed: Default::default(),
             wrap_enabled: settings.value_bool("wrapEnabled"),
@@ -417,7 +418,7 @@ impl DiffController {
         if !looks_like_oid(&value.to_string()) {
             self.record_recent_branch(value);
         }
-        self.left_ref_changed();
+        self.leftRefChanged();
     }
     pub fn set_right_ref(&mut self, value: QString) {
         if self.right_ref == value {
@@ -427,7 +428,7 @@ impl DiffController {
         if !looks_like_oid(&value.to_string()) {
             self.record_recent_branch(value);
         }
-        self.right_ref_changed();
+        self.rightRefChanged();
     }
     pub fn set_compare_mode(&mut self, value: QString) {
         if self.compare_mode == value {
@@ -456,7 +457,7 @@ impl DiffController {
         }
         self.selected_file_index = index;
         self.rebuild_selected_file_rows();
-        self.selected_file_index_changed();
+        self.selectedFileIndexChanged();
         self.selected_file_changed();
     }
     pub fn set_github_token(&mut self, token: QString) {
@@ -534,19 +535,19 @@ impl DiffController {
             self.files_changed();
             self.selected_file_index = -1;
             self.rebuild_selected_file_rows();
-            self.selected_file_index_changed();
+            self.selectedFileIndexChanged();
             self.selected_file_changed();
         }
 
         if self.refs.len() > 0 {
             if changed || self.left_ref.to_string().is_empty() {
                 self.left_ref = self.refs[0].to_qstring();
-                self.left_ref_changed();
+                self.leftRefChanged();
             }
             if changed || self.right_ref.to_string().is_empty() {
                 let idx = if self.refs.len() > 1 { 1 } else { 0 };
                 self.right_ref = self.refs[idx].to_qstring();
-                self.right_ref_changed();
+                self.rightRefChanged();
             }
         }
 
@@ -669,7 +670,7 @@ impl DiffController {
                 } else {
                     0
                 };
-                this.selected_file_index_changed();
+                this.selectedFileIndexChanged();
                 this.selected_file_changed();
                 this.rebuild_selected_file_rows();
                 this.persist_settings();
@@ -806,11 +807,11 @@ impl DiffController {
                 }
                 if !result.left_ref.is_empty() {
                     this.left_ref = QString::from(result.left_ref.as_str());
-                    this.left_ref_changed();
+                    this.leftRefChanged();
                 }
                 if !result.right_ref.is_empty() {
                     this.right_ref = QString::from(result.right_ref.as_str());
-                    this.right_ref_changed();
+                    this.rightRefChanged();
                 }
                 if this.compare_mode.to_string() != "three-dot" {
                     this.compare_mode = QString::from("three-dot");
@@ -890,7 +891,7 @@ impl DiffController {
             Ok(state) => {
                 self.oauth_user_code = QString::from(state.user_code.as_str());
                 self.oauth_verification_uri = QString::from(state.verification_uri.as_str());
-                self.oauth_state_changed();
+                self.oauthStateChanged();
                 let generation = self.oauth_generation.fetch_add(1, Ordering::SeqCst) + 1;
                 let shared_generation = Arc::clone(&self.oauth_generation);
                 let qptr = QPointer::from(&*self);
@@ -899,7 +900,7 @@ impl DiffController {
                         let mut this = pinned.borrow_mut();
                         this.oauth_user_code = QString::default();
                         this.oauth_verification_uri = QString::default();
-                        this.oauth_state_changed();
+                        this.oauthStateChanged();
                         if payload.0 {
                             this.set_github_token(QString::from(payload.1.as_str()));
                         } else if !payload.1.is_empty() {
@@ -936,7 +937,7 @@ impl DiffController {
         self.oauth_generation.fetch_add(1, Ordering::SeqCst);
         self.oauth_user_code = QString::default();
         self.oauth_verification_uri = QString::default();
-        self.oauth_state_changed();
+        self.oauthStateChanged();
     }
 
     pub fn copy_to_clipboard(&self, _text: QString) {}
@@ -946,7 +947,7 @@ impl DiffController {
             return;
         }
         self.current_view = QString::from(value);
-        self.current_view_changed();
+        self.currentViewChanged();
     }
 
     fn rebuild_selected_file_rows(&mut self) {

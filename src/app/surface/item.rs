@@ -215,73 +215,74 @@ fn overlay_for_row(selected: bool, hovered: bool) -> QColor {
     }
 }
 
+#[allow(non_snake_case)]
 #[derive(QObject)]
 pub struct DiffSurfaceItem {
     base: qt_base_class!(trait QQuickItem),
 
-    rows_model: qt_property!(QVariant; WRITE set_rows_model NOTIFY rows_model_changed),
+    rows_model: qt_property!(QVariant; WRITE set_rows_model NOTIFY rows_model_changed ALIAS rowsModel),
     rows_model_changed: qt_signal!(),
 
-    layout_mode: qt_property!(QString; WRITE set_layout_mode NOTIFY layout_mode_changed),
+    layout_mode: qt_property!(QString; WRITE set_layout_mode NOTIFY layout_mode_changed ALIAS layoutMode),
     layout_mode_changed: qt_signal!(),
-    compare_generation: qt_property!(i32; WRITE set_compare_generation NOTIFY compare_generation_changed),
+    compare_generation: qt_property!(i32; WRITE set_compare_generation NOTIFY compare_generation_changed ALIAS compareGeneration),
     compare_generation_changed: qt_signal!(),
 
-    file_path: qt_property!(QString; WRITE set_file_path NOTIFY file_path_changed),
+    file_path: qt_property!(QString; WRITE set_file_path NOTIFY file_path_changed ALIAS filePath),
     file_path_changed: qt_signal!(),
-    file_status: qt_property!(QString; WRITE set_file_status NOTIFY file_status_changed),
+    file_status: qt_property!(QString; WRITE set_file_status NOTIFY file_status_changed ALIAS fileStatus),
     file_status_changed: qt_signal!(),
-    additions: qt_property!(i32; WRITE set_additions NOTIFY additions_changed),
+    additions: qt_property!(i32; WRITE set_additions NOTIFY additions_changed ALIAS additions),
     additions_changed: qt_signal!(),
-    deletions: qt_property!(i32; WRITE set_deletions NOTIFY deletions_changed),
+    deletions: qt_property!(i32; WRITE set_deletions NOTIFY deletions_changed ALIAS deletions),
     deletions_changed: qt_signal!(),
 
-    palette: qt_property!(QVariantMap; WRITE set_palette NOTIFY palette_changed),
+    palette: qt_property!(QVariantMap; WRITE set_palette NOTIFY palette_changed ALIAS palette),
     palette_changed: qt_signal!(),
-    mono_font_family: qt_property!(QString; WRITE set_mono_font_family NOTIFY mono_font_family_changed),
+    monoFontFamily: qt_property!(QString; WRITE set_mono_font_family NOTIFY mono_font_family_changed ALIAS monoFontFamily),
     mono_font_family_changed: qt_signal!(),
 
-    content_height: qt_property!(f64; READ get_content_height NOTIFY content_height_changed),
+    content_height: qt_property!(f64; READ get_content_height NOTIFY content_height_changed ALIAS contentHeight),
     content_height_changed: qt_signal!(),
-    content_width: qt_property!(f64; READ get_content_width NOTIFY content_width_changed),
+    content_width: qt_property!(f64; READ get_content_width NOTIFY content_width_changed ALIAS contentWidth),
     content_width_changed: qt_signal!(),
-    viewport_x: qt_property!(f64; WRITE set_viewport_x NOTIFY viewport_x_changed),
+    viewport_x: qt_property!(f64; WRITE set_viewport_x NOTIFY viewport_x_changed ALIAS viewportX),
     viewport_x_changed: qt_signal!(),
-    viewport_y: qt_property!(f64; WRITE set_viewport_y NOTIFY viewport_y_changed),
+    viewport_y: qt_property!(f64; WRITE set_viewport_y NOTIFY viewport_y_changed ALIAS viewportY),
     viewport_y_changed: qt_signal!(),
-    left_viewport_x: qt_property!(f64; WRITE set_left_viewport_x NOTIFY left_viewport_x_changed),
+    leftViewportX: qt_property!(f64; WRITE set_left_viewport_x NOTIFY left_viewport_x_changed ALIAS leftViewportX),
     left_viewport_x_changed: qt_signal!(),
-    right_viewport_x: qt_property!(f64; WRITE set_right_viewport_x NOTIFY right_viewport_x_changed),
+    rightViewportX: qt_property!(f64; WRITE set_right_viewport_x NOTIFY right_viewport_x_changed ALIAS rightViewportX),
     right_viewport_x_changed: qt_signal!(),
-    viewport_height: qt_property!(f64; WRITE set_viewport_height NOTIFY viewport_height_changed),
+    viewport_height: qt_property!(f64; WRITE set_viewport_height NOTIFY viewport_height_changed ALIAS viewportHeight),
     viewport_height_changed: qt_signal!(),
 
-    wrap_enabled: qt_property!(bool; WRITE set_wrap_enabled NOTIFY wrap_enabled_changed),
+    wrap_enabled: qt_property!(bool; WRITE set_wrap_enabled NOTIFY wrap_enabled_changed ALIAS wrapEnabled),
     wrap_enabled_changed: qt_signal!(),
-    wrap_column: qt_property!(i32; WRITE set_wrap_column NOTIFY wrap_column_changed),
+    wrap_column: qt_property!(i32; WRITE set_wrap_column NOTIFY wrap_column_changed ALIAS wrapColumn),
     wrap_column_changed: qt_signal!(),
 
-    paint_count: qt_property!(i32; READ get_paint_count NOTIFY paint_count_changed),
-    paint_count_changed: qt_signal!(),
-    display_row_count: qt_property!(i32; READ get_display_row_count NOTIFY display_row_count_changed),
+    paint_count: qt_property!(i32; READ get_paint_count NOTIFY paintCountChanged ALIAS paintCount),
+    paintCountChanged: qt_signal!(),
+    display_row_count: qt_property!(i32; READ get_display_row_count NOTIFY display_row_count_changed ALIAS displayRowCount),
     display_row_count_changed: qt_signal!(),
-    tile_cache_hits: qt_property!(i32; READ get_tile_cache_hits NOTIFY tile_stats_changed),
-    tile_cache_misses: qt_property!(i32; READ get_tile_cache_misses NOTIFY tile_stats_changed),
-    texture_upload_count: qt_property!(i32; READ get_texture_upload_count NOTIFY tile_stats_changed),
-    resident_tile_count: qt_property!(i32; READ get_resident_tile_count NOTIFY tile_stats_changed),
-    pending_tile_job_count: qt_property!(i32; READ get_pending_tile_job_count NOTIFY tile_stats_changed),
+    tileCacheHits: qt_property!(i32; READ get_tile_cache_hits NOTIFY tile_stats_changed ALIAS tileCacheHits),
+    tileCacheMisses: qt_property!(i32; READ get_tile_cache_misses NOTIFY tile_stats_changed ALIAS tileCacheMisses),
+    textureUploadCount: qt_property!(i32; READ get_texture_upload_count NOTIFY tile_stats_changed ALIAS textureUploadCount),
+    residentTileCount: qt_property!(i32; READ get_resident_tile_count NOTIFY tile_stats_changed ALIAS residentTileCount),
+    pendingTileJobCount: qt_property!(i32; READ get_pending_tile_job_count NOTIFY tile_stats_changed ALIAS pendingTileJobCount),
     tile_stats_changed: qt_signal!(),
-    last_paint_time_ms: qt_property!(f64; READ get_last_paint_time_ms NOTIFY perf_stats_changed),
-    last_raster_time_ms: qt_property!(f64; READ get_last_raster_time_ms NOTIFY perf_stats_changed),
-    last_texture_upload_time_ms: qt_property!(f64; READ get_last_texture_upload_time_ms NOTIFY perf_stats_changed),
-    last_rows_rebuild_time_ms: qt_property!(f64; READ get_last_rows_rebuild_time_ms NOTIFY perf_stats_changed),
-    last_display_rows_rebuild_time_ms: qt_property!(f64; READ get_last_display_rows_rebuild_time_ms NOTIFY perf_stats_changed),
-    last_metrics_recalc_time_ms: qt_property!(f64; READ get_last_metrics_recalc_time_ms NOTIFY perf_stats_changed),
-    perf_stats_changed: qt_signal!(),
+    lastPaintTimeMs: qt_property!(f64; READ get_last_paint_time_ms NOTIFY perfStatsChanged ALIAS lastPaintTimeMs),
+    lastRasterTimeMs: qt_property!(f64; READ get_last_raster_time_ms NOTIFY perfStatsChanged ALIAS lastRasterTimeMs),
+    lastTextureUploadTimeMs: qt_property!(f64; READ get_last_texture_upload_time_ms NOTIFY perfStatsChanged ALIAS lastTextureUploadTimeMs),
+    lastRowsRebuildTimeMs: qt_property!(f64; READ get_last_rows_rebuild_time_ms NOTIFY perfStatsChanged ALIAS lastRowsRebuildTimeMs),
+    lastDisplayRowsRebuildTimeMs: qt_property!(f64; READ get_last_display_rows_rebuild_time_ms NOTIFY perfStatsChanged ALIAS lastDisplayRowsRebuildTimeMs),
+    lastMetricsRecalcTimeMs: qt_property!(f64; READ get_last_metrics_recalc_time_ms NOTIFY perfStatsChanged ALIAS lastMetricsRecalcTimeMs),
+    perfStatsChanged: qt_signal!(),
 
-    scroll_to_y_requested: qt_signal!(value: f64),
-    next_file_requested: qt_signal!(),
-    previous_file_requested: qt_signal!(),
+    scrollToYRequested: qt_signal!(value: f64),
+    nextFileRequested: qt_signal!(),
+    previousFileRequested: qt_signal!(),
 
     reset_perf_stats: qt_method!(fn(&mut self)),
     dump_perf_report: qt_method!(fn(&self)),
@@ -326,7 +327,7 @@ impl Default for DiffSurfaceItem {
             deletions_changed: Default::default(),
             palette: QVariantMap::default(),
             palette_changed: Default::default(),
-            mono_font_family: QString::from("JetBrains Mono"),
+            monoFontFamily: QString::from("JetBrains Mono"),
             mono_font_family_changed: Default::default(),
             content_height: 0.0,
             content_height_changed: Default::default(),
@@ -336,9 +337,9 @@ impl Default for DiffSurfaceItem {
             viewport_x_changed: Default::default(),
             viewport_y: 0.0,
             viewport_y_changed: Default::default(),
-            left_viewport_x: 0.0,
+            leftViewportX: 0.0,
             left_viewport_x_changed: Default::default(),
-            right_viewport_x: 0.0,
+            rightViewportX: 0.0,
             right_viewport_x_changed: Default::default(),
             viewport_height: 0.0,
             viewport_height_changed: Default::default(),
@@ -347,25 +348,25 @@ impl Default for DiffSurfaceItem {
             wrap_column: 0,
             wrap_column_changed: Default::default(),
             paint_count: 0,
-            paint_count_changed: Default::default(),
+            paintCountChanged: Default::default(),
             display_row_count: 0,
             display_row_count_changed: Default::default(),
-            tile_cache_hits: 0,
-            tile_cache_misses: 0,
-            texture_upload_count: 0,
-            resident_tile_count: 0,
-            pending_tile_job_count: 0,
+            tileCacheHits: 0,
+            tileCacheMisses: 0,
+            textureUploadCount: 0,
+            residentTileCount: 0,
+            pendingTileJobCount: 0,
             tile_stats_changed: Default::default(),
-            last_paint_time_ms: 0.0,
-            last_raster_time_ms: 0.0,
-            last_texture_upload_time_ms: 0.0,
-            last_rows_rebuild_time_ms: 0.0,
-            last_display_rows_rebuild_time_ms: 0.0,
-            last_metrics_recalc_time_ms: 0.0,
-            perf_stats_changed: Default::default(),
-            scroll_to_y_requested: Default::default(),
-            next_file_requested: Default::default(),
-            previous_file_requested: Default::default(),
+            lastPaintTimeMs: 0.0,
+            lastRasterTimeMs: 0.0,
+            lastTextureUploadTimeMs: 0.0,
+            lastRowsRebuildTimeMs: 0.0,
+            lastDisplayRowsRebuildTimeMs: 0.0,
+            lastMetricsRecalcTimeMs: 0.0,
+            perfStatsChanged: Default::default(),
+            scrollToYRequested: Default::default(),
+            nextFileRequested: Default::default(),
+            previousFileRequested: Default::default(),
             reset_perf_stats: Default::default(),
             dump_perf_report: Default::default(),
             rows: Vec::new(),
@@ -461,47 +462,47 @@ impl DiffSurfaceItem {
     }
 
     pub fn get_tile_cache_hits(&self) -> i32 {
-        self.tile_cache_hits
+        self.tileCacheHits
     }
 
     pub fn get_tile_cache_misses(&self) -> i32 {
-        self.tile_cache_misses
+        self.tileCacheMisses
     }
 
     pub fn get_texture_upload_count(&self) -> i32 {
-        self.texture_upload_count
+        self.textureUploadCount
     }
 
     pub fn get_resident_tile_count(&self) -> i32 {
-        self.resident_tile_count
+        self.residentTileCount
     }
 
     pub fn get_pending_tile_job_count(&self) -> i32 {
-        self.pending_tile_job_count
+        self.pendingTileJobCount
     }
 
     pub fn get_last_paint_time_ms(&self) -> f64 {
-        self.last_paint_time_ms
+        self.lastPaintTimeMs
     }
 
     pub fn get_last_raster_time_ms(&self) -> f64 {
-        self.last_raster_time_ms
+        self.lastRasterTimeMs
     }
 
     pub fn get_last_texture_upload_time_ms(&self) -> f64 {
-        self.last_texture_upload_time_ms
+        self.lastTextureUploadTimeMs
     }
 
     pub fn get_last_rows_rebuild_time_ms(&self) -> f64 {
-        self.last_rows_rebuild_time_ms
+        self.lastRowsRebuildTimeMs
     }
 
     pub fn get_last_display_rows_rebuild_time_ms(&self) -> f64 {
-        self.last_display_rows_rebuild_time_ms
+        self.lastDisplayRowsRebuildTimeMs
     }
 
     pub fn get_last_metrics_recalc_time_ms(&self) -> f64 {
-        self.last_metrics_recalc_time_ms
+        self.lastMetricsRecalcTimeMs
     }
 
     pub fn set_rows_model(&mut self, model: QVariant) {
@@ -515,8 +516,8 @@ impl DiffSurfaceItem {
             return;
         }
         self.layout_mode = mode;
-        self.left_viewport_x = 0.0;
-        self.right_viewport_x = 0.0;
+        self.leftViewportX = 0.0;
+        self.rightViewportX = 0.0;
         self.recalculate_metrics();
         self.layout_mode_changed();
         self.update_item();
@@ -580,10 +581,10 @@ impl DiffSurfaceItem {
     }
 
     pub fn set_mono_font_family(&mut self, family: QString) {
-        if self.mono_font_family == family {
+        if self.monoFontFamily == family {
             return;
         }
-        self.mono_font_family = family;
+        self.monoFontFamily = family;
         self.rebuild_rows();
         self.mono_font_family_changed();
     }
@@ -614,10 +615,10 @@ impl DiffSurfaceItem {
         } else {
             value.max(0.0)
         };
-        if (self.left_viewport_x - next).abs() <= f64::EPSILON {
+        if (self.leftViewportX - next).abs() <= f64::EPSILON {
             return;
         }
-        self.left_viewport_x = next;
+        self.leftViewportX = next;
         self.left_viewport_x_changed();
         self.update_item();
     }
@@ -628,10 +629,10 @@ impl DiffSurfaceItem {
         } else {
             value.max(0.0)
         };
-        if (self.right_viewport_x - next).abs() <= f64::EPSILON {
+        if (self.rightViewportX - next).abs() <= f64::EPSILON {
             return;
         }
-        self.right_viewport_x = next;
+        self.rightViewportX = next;
         self.right_viewport_x_changed();
         self.update_item();
     }
@@ -652,8 +653,8 @@ impl DiffSurfaceItem {
         }
         self.wrap_enabled = value;
         if value {
-            self.left_viewport_x = 0.0;
-            self.right_viewport_x = 0.0;
+            self.leftViewportX = 0.0;
+            self.rightViewportX = 0.0;
         }
         self.wrap_enabled_changed();
         self.recalculate_metrics();
@@ -672,21 +673,21 @@ impl DiffSurfaceItem {
 
     pub fn reset_perf_stats(&mut self) {
         self.paint_count = 0;
-        self.tile_cache_hits = 0;
-        self.tile_cache_misses = 0;
-        self.texture_upload_count = 0;
-        self.resident_tile_count = 0;
-        self.pending_tile_job_count = 0;
-        self.last_paint_time_ms = 0.0;
-        self.last_raster_time_ms = 0.0;
-        self.last_texture_upload_time_ms = 0.0;
-        self.last_rows_rebuild_time_ms = 0.0;
-        self.last_display_rows_rebuild_time_ms = 0.0;
-        self.last_metrics_recalc_time_ms = 0.0;
+        self.tileCacheHits = 0;
+        self.tileCacheMisses = 0;
+        self.textureUploadCount = 0;
+        self.residentTileCount = 0;
+        self.pendingTileJobCount = 0;
+        self.lastPaintTimeMs = 0.0;
+        self.lastRasterTimeMs = 0.0;
+        self.lastTextureUploadTimeMs = 0.0;
+        self.lastRowsRebuildTimeMs = 0.0;
+        self.lastDisplayRowsRebuildTimeMs = 0.0;
+        self.lastMetricsRecalcTimeMs = 0.0;
         self.perf_session = PerfSession::default();
-        self.paint_count_changed();
+        self.paintCountChanged();
         self.tile_stats_changed();
-        self.perf_stats_changed();
+        self.perfStatsChanged();
     }
 
     pub fn dump_perf_report(&self) {
@@ -793,11 +794,9 @@ impl DiffSurfaceItem {
         self.display_row_count = i32::try_from(self.rows.len()).unwrap_or(i32::MAX);
         self.display_row_count_changed();
         self.content_generation = self.content_generation.saturating_add(1);
-        self.last_rows_rebuild_time_ms = elapsed_ms(start);
-        self.perf_session
-            .rebuild
-            .record(self.last_rows_rebuild_time_ms);
-        self.perf_stats_changed();
+        self.lastRowsRebuildTimeMs = elapsed_ms(start);
+        self.perf_session.rebuild.record(self.lastRowsRebuildTimeMs);
+        self.perfStatsChanged();
         self.recalculate_metrics();
     }
 
@@ -833,17 +832,17 @@ impl DiffSurfaceItem {
             self.bounding_width().max(self.max_text_width + 120.0)
         };
         self.refresh_visible_range();
-        self.last_display_rows_rebuild_time_ms = elapsed_ms(display_start);
-        self.last_metrics_recalc_time_ms = elapsed_ms(start);
+        self.lastDisplayRowsRebuildTimeMs = elapsed_ms(display_start);
+        self.lastMetricsRecalcTimeMs = elapsed_ms(start);
         self.perf_session
             .display_rebuild
-            .record(self.last_display_rows_rebuild_time_ms);
+            .record(self.lastDisplayRowsRebuildTimeMs);
         self.perf_session
             .metrics
-            .record(self.last_metrics_recalc_time_ms);
+            .record(self.lastMetricsRecalcTimeMs);
         self.content_height_changed();
         self.content_width_changed();
-        self.perf_stats_changed();
+        self.perfStatsChanged();
         self.queue_raster_pass();
         self.update_item();
     }
@@ -935,7 +934,7 @@ impl DiffSurfaceItem {
         let generation = self.content_generation;
         let visible_start = self.first_visible_row;
         let visible_end = self.last_visible_row;
-        self.pending_tile_job_count = (visible_end - visible_start + 1).max(0);
+        self.pendingTileJobCount = (visible_end - visible_start + 1).max(0);
         self.tile_stats_changed();
 
         let finish = qmetaobject::queued_callback({
@@ -943,8 +942,8 @@ impl DiffSurfaceItem {
             move |(pending, ready): (i32, i32)| {
                 if let Some(this) = qptr.as_pinned() {
                     let mut this = this.borrow_mut();
-                    this.pending_tile_job_count = pending;
-                    this.resident_tile_count = ready;
+                    this.pendingTileJobCount = pending;
+                    this.residentTileCount = ready;
                     this.tile_stats_changed();
                     this.update_item();
                 }
@@ -980,18 +979,18 @@ impl DiffSurfaceItem {
     }
 
     fn sync_perf_counters(&mut self, paint_ms: f64) {
-        self.last_paint_time_ms = paint_ms;
-        self.last_raster_time_ms = self.pending_tile_job_count as f64;
-        self.last_texture_upload_time_ms = 0.0;
+        self.lastPaintTimeMs = paint_ms;
+        self.lastRasterTimeMs = self.pendingTileJobCount as f64;
+        self.lastTextureUploadTimeMs = 0.0;
         self.perf_session.paint.record(paint_ms);
-        self.perf_session.raster.record(self.last_raster_time_ms);
+        self.perf_session.raster.record(self.lastRasterTimeMs);
         self.perf_session.total_frames += 1;
         if paint_ms > 8.33 {
             self.perf_session.dropped_frames += 1;
         }
-        self.perf_session.total_cache_hits = self.tile_cache_hits;
-        self.perf_session.total_cache_misses = self.tile_cache_misses;
-        self.perf_stats_changed();
+        self.perf_session.total_cache_hits = self.tileCacheHits;
+        self.perf_session.total_cache_misses = self.tileCacheMisses;
+        self.perfStatsChanged();
     }
 
     fn color_from_palette(&self, key: &str, fallback: &str) -> QColor {
@@ -1058,8 +1057,8 @@ impl QQuickItem for DiffSurfaceItem {
         state.image_cache.clear();
         state.pending_keys.clear();
         state.ready_keys.clear();
-        self.resident_tile_count = 0;
-        self.pending_tile_job_count = 0;
+        self.residentTileCount = 0;
+        self.pendingTileJobCount = 0;
         self.tile_stats_changed();
     }
 
@@ -1072,7 +1071,7 @@ impl QQuickItem for DiffSurfaceItem {
         let visible = self.visible_rows().to_vec();
 
         self.paint_count += 1;
-        self.paint_count_changed();
+        self.paintCountChanged();
 
         node.update_dynamic(
             visible.iter().enumerate(),
@@ -1115,9 +1114,9 @@ impl QQuickItem for DiffSurfaceItem {
 
         self.tile_use_tick = self.tile_use_tick.saturating_add(1);
         let state = self.tile_state.lock();
-        self.resident_tile_count = i32::try_from(state.image_cache.len()).unwrap_or(i32::MAX);
-        self.tile_cache_hits = self.resident_tile_count;
-        self.tile_cache_misses = 0;
+        self.residentTileCount = i32::try_from(state.image_cache.len()).unwrap_or(i32::MAX);
+        self.tileCacheHits = self.residentTileCount;
+        self.tileCacheMisses = 0;
         drop(state);
 
         let _ = divider;

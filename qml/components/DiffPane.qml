@@ -320,6 +320,22 @@ Rectangle {
                 background: Item {}
             }
 
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.NoButton
+                hoverEnabled: true
+                z: 1
+                onEntered: {
+                    surface.hoverY = mouseY
+                    surface.hoverActive = true
+                }
+                onPositionChanged: function(mouse) {
+                    surface.hoverY = mouse.y
+                    surface.hoverActive = true
+                }
+                onExited: surface.hoverActive = false
+            }
+
             DiffSurface {
                 id: surface
                 objectName: "diffSurface"

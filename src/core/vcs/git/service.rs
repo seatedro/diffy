@@ -10,6 +10,51 @@ use crate::core::error::{DiffyError, Result};
 use crate::core::vcs::github::{GitHubApi, parse_pr_url};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum RemoteCredentialKind {
+    UserPassPlaintext { username: String, password: String },
+    SshKey { username: String },
+    Username { username: String },
+    Default,
+}
+
+fn select_remote_credential(
+    remote_url: &str,
+    username: Option<&str>,
+    allowed: git2::CredentialType,
+    github_token: &str,
+) -> RemoteCredentialKind {
+    if remote_url.starts_with("http")
+        && !github_token.is_empty()
+        && allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT)
+    {
+        return RemoteCredentialKind::UserPassPlaintext {
+            username: username.unwrap_or("x-access-token").to_owned(),
+            password: github_token.to_owned(),
+        };
+    }
+
+    if allowed.contains(git2::CredentialType::SSH_KEY) {
+        return RemoteCredentialKind::SshKey {
+            username: username.unwrap_or("git").to_owned(),
+        };
+    }
+
+    if allowed.contains(git2::CredentialType::USERNAME) {
+        return RemoteCredentialKind::Username {
+            username: username
+                .unwrap_or(if remote_url.starts_with("http") {
+                    "x-access-token"
+                } else {
+                    "git"
+                })
+                .to_owned(),
+        };
+    }
+
+    RemoteCredentialKind::Default
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchInfo {
     pub name: String,
     pub is_remote: bool,
@@ -270,13 +315,15 @@ impl GitService {
         let head_target = format!("refs/diffy/pull/{pr_number}/head");
         let mut remote = repo.remote_anonymous(repo_url)?;
         let mut callbacks = RemoteCallbacks::new();
-        callbacks.credentials(|_url, username, allowed| {
-            if allowed.contains(git2::CredentialType::SSH_KEY) {
-                Cred::ssh_key_from_agent(username.unwrap_or("git"))
-            } else if allowed.contains(git2::CredentialType::USERNAME) {
-                Cred::username(username.unwrap_or("git"))
-            } else {
-                Cred::default()
+        let github_token = self.github_token.clone();
+        callbacks.credentials(move |url, username, allowed| {
+            match select_remote_credential(url, username, allowed, &github_token) {
+                RemoteCredentialKind::UserPassPlaintext { username, password } => {
+                    Cred::userpass_plaintext(&username, &password)
+                }
+                RemoteCredentialKind::SshKey { username } => Cred::ssh_key_from_agent(&username),
+                RemoteCredentialKind::Username { username } => Cred::username(&username),
+                RemoteCredentialKind::Default => Cred::default(),
             }
         });
         let mut fetch_options = FetchOptions::new();
@@ -362,5 +409,46 @@ impl GitService {
         self.repo
             .as_ref()
             .ok_or_else(|| DiffyError::General("repository is not open".to_owned()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use git2::CredentialType;
+
+    use super::{RemoteCredentialKind, select_remote_credential};
+
+    #[test]
+    fn prefers_https_token_for_github_remotes() {
+        let allowed = CredentialType::USER_PASS_PLAINTEXT | CredentialType::USERNAME;
+        let selected = select_remote_credential(
+            "https://github.com/owner/repo.git",
+            Some("git"),
+            allowed,
+            "secret",
+        );
+        assert_eq!(
+            selected,
+            RemoteCredentialKind::UserPassPlaintext {
+                username: "git".to_owned(),
+                password: "secret".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn falls_back_to_ssh_for_non_http_remotes() {
+        let selected = select_remote_credential(
+            "git@github.com:owner/repo.git",
+            Some("git"),
+            CredentialType::SSH_KEY,
+            "secret",
+        );
+        assert_eq!(
+            selected,
+            RemoteCredentialKind::SshKey {
+                username: "git".to_owned(),
+            }
+        );
     }
 }

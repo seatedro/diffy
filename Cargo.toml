@@ -3,18 +3,19 @@ name = "diffy"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-build = "build.rs"
 
 [features]
-default = ["qt"]
-qt = ["dep:qmetaobject", "dep:qttypes", "dep:cpp", "dep:cstr", "dep:cpp_build"]
+default = ["native"]
+native = ["dep:winit"]
 
 [dependencies]
+clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2"
 log = "0.4"
 env_logger = "0.11"
+dirs = "6.0"
 git2 = "0.20"
 ureq = { version = "3.3", features = ["json"] }
 tree-sitter = "0.25"
@@ -33,20 +34,8 @@ unicode-segmentation = "1.12"
 parking_lot = "0.12"
 rayon = "1.10"
 tempfile = "3.14"
-
-# Qt dependencies (optional, for Qt/QML integration)
-qmetaobject = { version = "0.2.10", default-features = false, features = ["log"], optional = true }
-qttypes = { version = "0.2.12", default-features = false, features = ["required", "qtquick"], optional = true }
-cpp = { version = "0.5.9", optional = true }
-cstr = { version = "0.2.12", optional = true }
-
-[build-dependencies]
-cpp_build = { version = "0.5.9", optional = true }
-cc = "1.2"
-
-[patch.crates-io]
-qmetaobject = { git = "https://github.com/AdrianEddy/qmetaobject-rs.git", rev = "ff1e23d" }
-qttypes = { git = "https://github.com/AdrianEddy/qmetaobject-rs.git", rev = "ff1e23d" }
+webbrowser = "1.0"
+winit = { version = "0.30", optional = true }
 
 [[bin]]
 name = "diffy"

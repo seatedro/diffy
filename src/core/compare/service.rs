@@ -6,7 +6,7 @@ use crate::core::syntax::DiffSyntaxAnnotator;
 use crate::core::text::{TextBuffer, TokenBuffer};
 use crate::core::vcs::git::GitService;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct CompareOutput {
     pub files: Vec<FileDiff>,
     pub raw_diff: String,

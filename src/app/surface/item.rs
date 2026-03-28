@@ -7,9 +7,11 @@ use qmetaobject::scenegraph::{ContainerNode, SGNode};
 use qmetaobject::{QMouseEvent, QMouseEventType, QQuickItem, QVariantMap};
 use qttypes::{ImageFormat, QColor, QImage, QRectF, QSize};
 
-use crate::app::surface::render_doc::{
-    DisplayRow, INVALID_U32, RenderDoc, RenderRowKind, clone_render_doc,
+use crate::app::surface::display_layout::{
+    DisplayLayoutConfig, DisplayLayoutMetrics, rebuild_display_rows,
 };
+use crate::app::surface::render_doc::{DisplayRow, RenderDoc, clone_render_doc};
+use crate::app::surface::strip_layout::{StripLayout, build_strip_layouts, visible_strip_range};
 use crate::app::theme::default_mono_family;
 
 const BODY_FONT_PX: i32 = 12;
@@ -640,21 +642,6 @@ struct StripSlot {
     texture_raw: *mut c_void,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct StripLayout {
-    strip_id: u32,
-    top_px: u32,
-    height_px: u32,
-    row_start: usize,
-    row_end: usize,
-}
-
-impl StripLayout {
-    fn bottom_px(&self) -> u32 {
-        self.top_px.saturating_add(self.height_px)
-    }
-}
-
 #[allow(non_snake_case)]
 #[derive(QObject)]
 pub struct DiffSurfaceItem {
@@ -946,28 +933,6 @@ impl DiffSurfaceItem {
         (self.split_side_width_px() - self.split_text_start_px() - SPLIT_TEXT_PADDING_PX).max(1.0)
     }
 
-    fn wrap_cols_for_width(&self, width_px: f64) -> u16 {
-        if !self.wrap_enabled {
-            return effective_wrap_cols(false, 0);
-        }
-        let mut cols = (width_px / self.char_width).floor() as u32;
-        if self.wrap_column > 0 {
-            cols = cols.min(self.wrap_column as u32);
-        }
-        effective_wrap_cols(true, cols.max(1) as u16)
-    }
-
-    fn compute_gutter_digits(doc: &RenderDoc) -> u32 {
-        doc.lines
-            .iter()
-            .flat_map(|line| [line.old_line_no, line.new_line_no])
-            .filter(|line_no| *line_no != INVALID_U32)
-            .max()
-            .map(|line_no| line_no.to_string().len() as u32)
-            .unwrap_or(3)
-            .max(3)
-    }
-
     fn rebuild_display_rows(&mut self) {
         let start = Instant::now();
         self.display_rows_store.clear();
@@ -987,63 +952,24 @@ impl DiffSurfaceItem {
             return;
         };
 
-        self.gutter_digits = Self::compute_gutter_digits(doc);
-        self.display_rows_store.reserve(doc.lines.len());
-
-        let unified_wrap_cols = self.wrap_cols_for_width(self.unified_text_width_px());
-        let split_wrap_cols = self.wrap_cols_for_width(self.split_text_width_px());
-        let mut y_px = 0_u32;
-        let mut max_cols = 0_u32;
-
-        for (line_index, line) in doc.lines.iter().enumerate() {
-            let kind = line.row_kind();
-            let (wrap_left, wrap_right, h_px) = match kind {
-                RenderRowKind::FileHeader => (1_u16, 1_u16, self.file_header_height_px),
-                RenderRowKind::HunkSeparator => (1_u16, 1_u16, self.hunk_height_px),
-                _ if self.layout_mode.to_string() == "split" => {
-                    let left_cols = split_wrap_cols.max(1);
-                    let right_cols = split_wrap_cols.max(1);
-                    let wrap_left = if line.left_text.is_valid() {
-                        wrap_count(line.left_cols, left_cols)
-                    } else {
-                        1
-                    };
-                    let wrap_right = if line.right_text.is_valid() {
-                        wrap_count(line.right_cols, right_cols)
-                    } else {
-                        1
-                    };
-                    (
-                        wrap_left,
-                        wrap_right,
-                        self.body_row_height_px
-                            .saturating_mul(wrap_left.max(wrap_right).max(1)),
-                    )
-                }
-                _ => {
-                    let wrap = wrap_count(line.primary_cols(), unified_wrap_cols.max(1));
-                    (
-                        wrap,
-                        wrap,
-                        self.body_row_height_px.saturating_mul(wrap.max(1)),
-                    )
-                }
-            };
-
-            max_cols = max_cols.max(line.left_cols.max(line.right_cols));
-            self.display_rows_store.push(DisplayRow {
-                line_index: line_index as u32,
-                y_px,
-                h_px,
-                wrap_left,
-                wrap_right,
-                kind: line.kind,
-                reserved0: 0,
-                reserved1: 0,
-                reserved2: 0,
-            });
-            y_px = y_px.saturating_add(u32::from(h_px));
-        }
+        let layout_summary = rebuild_display_rows(
+            doc,
+            DisplayLayoutConfig {
+                split_mode: self.layout_mode.to_string() == "split",
+                wrap_enabled: self.wrap_enabled,
+                wrap_column: self.wrap_column.max(0) as u32,
+                char_width_px: self.char_width,
+                unified_text_width_px: self.unified_text_width_px(),
+                split_text_width_px: self.split_text_width_px(),
+            },
+            DisplayLayoutMetrics {
+                body_row_height_px: self.body_row_height_px,
+                file_header_height_px: self.file_header_height_px,
+                hunk_height_px: self.hunk_height_px,
+            },
+            &mut self.display_rows_store,
+        );
+        self.gutter_digits = layout_summary.gutter_digits;
 
         build_strip_layouts(
             &self.display_rows_store,
@@ -1054,7 +980,7 @@ impl DiffSurfaceItem {
         self.display_row_count = i32::try_from(self.display_rows_store.len()).unwrap_or(i32::MAX);
         self.display_row_count_changed();
 
-        self.content_height = y_px as f64;
+        self.content_height = f64::from(layout_summary.content_height_px);
         self.content_height_changed();
 
         self.content_width = if self.layout_mode.to_string() == "split" || self.wrap_enabled {
@@ -1062,7 +988,7 @@ impl DiffSurfaceItem {
         } else {
             (self.unified_text_start_px()
                 + UNIFIED_TEXT_PADDING_PX
-                + f64::from(max_cols) * self.char_width)
+                + f64::from(layout_summary.max_cols) * self.char_width)
                 .max(self.bounding_width())
         };
         self.content_width_changed();
@@ -1093,21 +1019,13 @@ impl DiffSurfaceItem {
         if self.strip_layouts_store.is_empty() || self.content_height <= 0.0 {
             return (0, 0);
         }
-        let viewport_top = self.viewport_y.max(0.0).floor() as u32;
-        let viewport_bottom =
-            viewport_top.saturating_add(self.viewport_height.max(1.0).ceil() as u32);
-        let first_visible = self
-            .strip_layouts_store
-            .partition_point(|strip| strip.bottom_px() <= viewport_top);
-        let last_visible = self
-            .strip_layouts_store
-            .partition_point(|strip| strip.top_px < viewport_bottom);
-        let overscan = STRIP_OVERSCAN.max(0) as usize;
-        let start = first_visible.saturating_sub(overscan);
-        let end = last_visible
-            .saturating_add(overscan)
-            .min(self.strip_layouts_store.len());
-        (start, end.saturating_sub(start))
+        let visible = visible_strip_range(
+            &self.strip_layouts_store,
+            self.viewport_y.max(0.0).floor() as u32,
+            self.viewport_height.max(1.0).ceil() as u32,
+            STRIP_OVERSCAN.max(0) as usize,
+        );
+        (visible.start, visible.end.saturating_sub(visible.start))
     }
 
     fn device_pixel_ratio(&self) -> f64 {
@@ -1562,55 +1480,6 @@ fn elapsed_ms(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0
 }
 
-fn effective_wrap_cols(wrap_enabled: bool, wrap_cols: u16) -> u16 {
-    if wrap_enabled {
-        wrap_cols.max(1)
-    } else {
-        u16::MAX
-    }
-}
-
-fn wrap_count(cols: u32, wrap_cols: u16) -> u16 {
-    if cols == 0 {
-        return 1;
-    }
-    let wrap_cols = u32::from(wrap_cols.max(1));
-    ((cols + wrap_cols - 1) / wrap_cols).max(1) as u16
-}
-
-fn build_strip_layouts(rows: &[DisplayRow], target_height_px: u32, output: &mut Vec<StripLayout>) {
-    output.clear();
-    if rows.is_empty() {
-        return;
-    }
-
-    output.reserve(rows.len().saturating_div(16).max(1));
-
-    let mut row_start = 0usize;
-    while row_start < rows.len() {
-        let top_px = rows[row_start].y_px;
-        let mut row_end = row_start;
-        let mut bottom_px = top_px;
-
-        while row_end < rows.len() {
-            bottom_px = rows[row_end].bottom_px();
-            row_end += 1;
-            if row_end < rows.len() && bottom_px.saturating_sub(top_px) >= target_height_px {
-                break;
-            }
-        }
-
-        output.push(StripLayout {
-            strip_id: row_start as u32,
-            top_px,
-            height_px: bottom_px.saturating_sub(top_px),
-            row_start,
-            row_end,
-        });
-        row_start = row_end;
-    }
-}
-
 impl QQuickItem for DiffSurfaceItem {
     fn class_begin(&mut self) {
         self.set_flag(QQuickItemFlag::ItemHasContents);
@@ -1718,176 +1587,5 @@ impl QQuickItem for DiffSurfaceItem {
 
         self.sync_perf_counters(elapsed_ms(paint_start));
         node
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        DiffSurfaceItem, StripLayout, build_strip_layouts, effective_wrap_cols, wrap_count,
-    };
-    use crate::app::surface::render_doc::{
-        ByteRange, DisplayRow, INVALID_U32, RenderDoc, RenderLine, RenderRowKind,
-    };
-
-    #[test]
-    fn wrap_count_stays_one_when_disabled_or_empty() {
-        assert_eq!(wrap_count(0, 10), 1);
-        assert_eq!(wrap_count(5, 10), 1);
-        assert_eq!(wrap_count(11, 10), 2);
-    }
-
-    #[test]
-    fn no_wrap_mode_uses_effectively_infinite_wrap_width() {
-        assert_eq!(effective_wrap_cols(false, 1), u16::MAX);
-        assert_eq!(wrap_count(15, effective_wrap_cols(false, 1)), 1);
-        assert_eq!(effective_wrap_cols(true, 12), 12);
-    }
-
-    #[test]
-    fn strip_layouts_break_on_row_boundaries_instead_of_fixed_pixels() {
-        let rows = vec![
-            DisplayRow {
-                y_px: 0,
-                h_px: 32,
-                ..DisplayRow::default()
-            },
-            DisplayRow {
-                y_px: 32,
-                h_px: 24,
-                ..DisplayRow::default()
-            },
-            DisplayRow {
-                y_px: 56,
-                h_px: 22,
-                ..DisplayRow::default()
-            },
-            DisplayRow {
-                y_px: 78,
-                h_px: 22,
-                ..DisplayRow::default()
-            },
-            DisplayRow {
-                y_px: 100,
-                h_px: 22,
-                ..DisplayRow::default()
-            },
-            DisplayRow {
-                y_px: 122,
-                h_px: 22,
-                ..DisplayRow::default()
-            },
-            DisplayRow {
-                y_px: 144,
-                h_px: 22,
-                ..DisplayRow::default()
-            },
-            DisplayRow {
-                y_px: 166,
-                h_px: 22,
-                ..DisplayRow::default()
-            },
-            DisplayRow {
-                y_px: 188,
-                h_px: 22,
-                ..DisplayRow::default()
-            },
-            DisplayRow {
-                y_px: 210,
-                h_px: 22,
-                ..DisplayRow::default()
-            },
-            DisplayRow {
-                y_px: 232,
-                h_px: 22,
-                ..DisplayRow::default()
-            },
-            DisplayRow {
-                y_px: 254,
-                h_px: 22,
-                ..DisplayRow::default()
-            },
-            DisplayRow {
-                y_px: 276,
-                h_px: 22,
-                ..DisplayRow::default()
-            },
-            DisplayRow {
-                y_px: 298,
-                h_px: 22,
-                ..DisplayRow::default()
-            },
-            DisplayRow {
-                y_px: 320,
-                h_px: 22,
-                ..DisplayRow::default()
-            },
-            DisplayRow {
-                y_px: 342,
-                h_px: 22,
-                ..DisplayRow::default()
-            },
-            DisplayRow {
-                y_px: 364,
-                h_px: 22,
-                ..DisplayRow::default()
-            },
-            DisplayRow {
-                y_px: 386,
-                h_px: 22,
-                ..DisplayRow::default()
-            },
-        ];
-        let mut strips = Vec::new();
-
-        build_strip_layouts(&rows, 384, &mut strips);
-
-        assert_eq!(
-            strips,
-            vec![
-                StripLayout {
-                    strip_id: 0,
-                    top_px: 0,
-                    height_px: 386,
-                    row_start: 0,
-                    row_end: 17,
-                },
-                StripLayout {
-                    strip_id: 17,
-                    top_px: 386,
-                    height_px: 22,
-                    row_start: 17,
-                    row_end: 18,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn gutter_digits_track_largest_visible_line_number() {
-        let doc = RenderDoc {
-            text_bytes: Vec::new(),
-            style_runs: Vec::new(),
-            lines: vec![
-                RenderLine {
-                    kind: RenderRowKind::Context as u8,
-                    old_line_no: 99,
-                    new_line_no: 101,
-                    left_text: ByteRange::invalid(),
-                    right_text: ByteRange::invalid(),
-                    ..RenderLine::default()
-                },
-                RenderLine {
-                    kind: RenderRowKind::Added as u8,
-                    old_line_no: INVALID_U32,
-                    new_line_no: 1234,
-                    left_text: ByteRange::invalid(),
-                    right_text: ByteRange::invalid(),
-                    ..RenderLine::default()
-                },
-            ],
-        };
-
-        assert_eq!(DiffSurfaceItem::compute_gutter_digits(&doc), 4);
     }
 }

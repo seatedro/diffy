@@ -642,6 +642,16 @@ struct StripSlot {
     texture_raw: *mut c_void,
 }
 
+fn slot_needs_raster(slot: &StripSlot, strip: StripLayout, render_version: u64) -> bool {
+    slot.rendered_version != render_version
+        || slot.texture_raw.is_null()
+        || slot.strip_id != strip.strip_id
+        || slot.top_px != strip.top_px
+        || slot.logical_height_px != strip.height_px
+        || slot.row_start != strip.row_start
+        || slot.row_end != strip.row_end
+}
+
 #[allow(non_snake_case)]
 #[derive(QObject)]
 pub struct DiffSurfaceItem {
@@ -1318,6 +1328,9 @@ impl DiffSurfaceItem {
             let strip = self.strip_layouts_store[start_strip + offset];
             let slot_index = self.acquire_slot_index(strip.strip_id);
             let slot = &mut self.strip_slots[slot_index];
+            if slot_needs_raster(slot, strip, self.render_version) {
+                slot.rendered_version = 0;
+            }
             slot.strip_id = strip.strip_id;
             slot.top_px = strip.top_px;
             slot.logical_height_px = strip.height_px;
@@ -1331,9 +1344,8 @@ impl DiffSurfaceItem {
 
         for active_index in 0..self.active_slots.len() {
             let slot_index = self.active_slots[active_index];
-            if self.strip_slots[slot_index].rendered_version != self.render_version
-                || self.strip_slots[slot_index].texture_raw.is_null()
-            {
+            let strip = self.strip_layouts_store[start_strip + active_index];
+            if slot_needs_raster(&self.strip_slots[slot_index], strip, self.render_version) {
                 self.rasterize_slot(slot_index);
             }
         }
@@ -1587,5 +1599,58 @@ impl QQuickItem for DiffSurfaceItem {
 
         self.sync_perf_counters(elapsed_ms(paint_start));
         node
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{StripSlot, slot_needs_raster};
+    use crate::app::surface::strip_layout::StripLayout;
+    use std::ffi::c_void;
+
+    #[test]
+    fn reused_slot_with_new_strip_is_forced_to_rasterize() {
+        let slot = StripSlot {
+            strip_id: 0,
+            top_px: 0,
+            logical_height_px: 384,
+            row_start: 0,
+            row_end: 18,
+            rendered_version: 7,
+            texture_raw: 1usize as *mut c_void,
+            ..StripSlot::default()
+        };
+        let next_strip = StripLayout {
+            strip_id: 18,
+            top_px: 384,
+            height_px: 374,
+            row_start: 18,
+            row_end: 35,
+        };
+
+        assert!(slot_needs_raster(&slot, next_strip, 7));
+    }
+
+    #[test]
+    fn matching_slot_with_live_texture_skips_rasterize() {
+        let strip = StripLayout {
+            strip_id: 18,
+            top_px: 384,
+            height_px: 374,
+            row_start: 18,
+            row_end: 35,
+        };
+        let slot = StripSlot {
+            strip_id: strip.strip_id,
+            top_px: strip.top_px,
+            logical_height_px: strip.height_px,
+            row_start: strip.row_start,
+            row_end: strip.row_end,
+            rendered_version: 7,
+            texture_raw: 1usize as *mut c_void,
+            ..StripSlot::default()
+        };
+
+        assert!(!slot_needs_raster(&slot, strip, 7));
     }
 }

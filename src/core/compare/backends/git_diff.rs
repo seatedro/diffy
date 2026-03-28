@@ -17,11 +17,19 @@ impl DiffBackend for GitDiffBackend {
             Ok(r) => r,
             Err(_) => return Ok(None),
         };
-        let left = git.resolve_commit_oid(&spec.left_ref)?;
-        let right = git.resolve_commit_oid(&spec.right_ref)?;
+        let (left, right) = match spec.mode {
+            crate::core::compare::spec::CompareMode::TwoDot => (
+                git.resolve_ref(&spec.left_ref)?,
+                git.resolve_ref(&spec.right_ref)?,
+            ),
+            crate::core::compare::spec::CompareMode::ThreeDot
+            | crate::core::compare::spec::CompareMode::SingleCommit => {
+                git.resolve_comparison(&spec.left_ref, &spec.right_ref, spec.mode)?
+            }
+        };
 
-        let left_commit = repo.find_commit(left)?;
-        let right_commit = repo.find_commit(right)?;
+        let left_commit = repo.find_commit(git2::Oid::from_str(&left)?)?;
+        let right_commit = repo.find_commit(git2::Oid::from_str(&right)?)?;
         let left_tree = left_commit.tree()?;
         let right_tree = right_commit.tree()?;
 
@@ -158,5 +166,142 @@ impl DiffBackend for GitDiffBackend {
         output.text_buffer = text_buffer;
         output.token_buffer = token_buffer;
         Ok(Some(output))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+
+    use git2::{Oid, Repository, Signature};
+    use tempfile::TempDir;
+
+    use super::GitDiffBackend;
+    use crate::core::compare::backends::DiffBackend;
+    use crate::core::compare::spec::{CompareMode, CompareSpec, LayoutMode, RendererKind};
+    use crate::core::diff::LineKind;
+    use crate::core::vcs::git::GitService;
+
+    fn commit_file(repo: &Repository, relative_path: &str, content: &str, message: &str) -> String {
+        let workdir = repo.workdir().expect("repo workdir");
+        let full_path = workdir.join(relative_path);
+        if let Some(parent) = full_path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&full_path, content).unwrap();
+
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new(relative_path)).unwrap();
+        index.write().unwrap();
+
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let signature = Signature::now("Diffy", "diffy@example.com").unwrap();
+        let parents = repo
+            .head()
+            .ok()
+            .and_then(|head| head.target())
+            .map(|oid| repo.find_commit(oid).unwrap())
+            .into_iter()
+            .collect::<Vec<_>>();
+        let parent_refs = parents.iter().collect::<Vec<_>>();
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            message,
+            &tree,
+            &parent_refs,
+        )
+        .unwrap()
+        .to_string()
+    }
+
+    fn checkout_branch(repo: &Repository, branch: &str) {
+        let reference = format!("refs/heads/{branch}");
+        repo.set_head(&reference).unwrap();
+        let head = repo.revparse_single("HEAD").unwrap();
+        repo.checkout_tree(&head, None).unwrap();
+    }
+
+    fn compare(repo_dir: &TempDir, spec: CompareSpec) -> CompareOutput {
+        let mut git = GitService::new();
+        git.open(repo_dir.path().to_str().unwrap()).unwrap();
+        GitDiffBackend.compare(&spec, &git).unwrap().unwrap()
+    }
+
+    use crate::core::compare::service::CompareOutput;
+
+    #[test]
+    fn builtin_backend_uses_single_commit_resolution() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        let _first = commit_file(&repo, "src/example.rs", "before\n", "initial");
+        let second = commit_file(&repo, "src/example.rs", "after\n", "second");
+
+        let output = compare(
+            &repo_dir,
+            CompareSpec {
+                mode: CompareMode::SingleCommit,
+                left_ref: second,
+                right_ref: String::new(),
+                renderer: RendererKind::Builtin,
+                layout: LayoutMode::Unified,
+            },
+        );
+
+        let file = output.files.first().expect("single file diff");
+        assert_eq!(file.path, "src/example.rs");
+        let removed = file
+            .hunks
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .find(|line| line.kind == LineKind::Removed)
+            .expect("removed line");
+        assert_eq!(output.text_buffer.view(removed.text_range), "before");
+    }
+
+    #[test]
+    fn builtin_backend_uses_three_dot_merge_base() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        let base = commit_file(&repo, "src/example.rs", "start\n", "initial");
+        let base_commit = repo.find_commit(Oid::from_str(&base).unwrap()).unwrap();
+        repo.branch("feature", &base_commit, false).unwrap();
+
+        checkout_branch(&repo, "feature");
+        let feature = commit_file(&repo, "src/example.rs", "feature\n", "feature");
+
+        checkout_branch(&repo, "master");
+        let master = commit_file(&repo, "src/example.rs", "master\n", "master");
+
+        let output = compare(
+            &repo_dir,
+            CompareSpec {
+                mode: CompareMode::ThreeDot,
+                left_ref: master,
+                right_ref: feature,
+                renderer: RendererKind::Builtin,
+                layout: LayoutMode::Unified,
+            },
+        );
+
+        let file = output.files.first().expect("single file diff");
+        let removed = file
+            .hunks
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .find(|line| line.kind == LineKind::Removed)
+            .expect("removed line");
+        let added = file
+            .hunks
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .find(|line| line.kind == LineKind::Added)
+            .expect("added line");
+
+        assert_eq!(output.text_buffer.view(removed.text_range), "start");
+        assert_eq!(output.text_buffer.view(added.text_range), "feature");
     }
 }

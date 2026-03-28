@@ -25,11 +25,11 @@ Rectangle {
     border.color: borderless ? "transparent" : (root.error ? theme.dangerBorder : (input.activeFocus ? theme.accent : theme.borderSoft))
 
     Behavior on border.color {
-        enabled: !(Window.window && Window.window.commandPaletteShowing)
+        enabled: !(root.Window.window && root.Window.window.commandPaletteShowing)
         ColorAnimation { duration: 35 }
     }
     Behavior on border.width {
-        enabled: !(Window.window && Window.window.commandPaletteShowing)
+        enabled: !(root.Window.window && root.Window.window.commandPaletteShowing)
         NumberAnimation { duration: 35 }
     }
 

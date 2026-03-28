@@ -13,7 +13,8 @@ vendor/grammars/*/src/
 
 # Build output
 build/
-cmake-build-*/
+result
+target/
 .perf-runs/
 
 # Editor/system

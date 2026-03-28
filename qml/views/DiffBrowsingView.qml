@@ -619,9 +619,8 @@ Rectangle {
                 width: (root.stackPanels || root.hideFilePane) ? parent.width : parent.width - filePane.width - 5
                 height: root.stackPanels ? parent.height - filePane.height - 1 : parent.height
                 fileData: diffController.selectedFile
-                rowsModel: diffController.selectedFileRowsModel
+                renderKey: diffController.selectedFileRenderKey
                 layoutMode: diffController.layoutMode
-                compareGeneration: diffController.compareGeneration
                 leftRef: diffController.leftRef
                 rightRef: diffController.rightRef
                 renderer: diffController.renderer

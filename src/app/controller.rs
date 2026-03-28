@@ -8,15 +8,15 @@ use std::time::Duration;
 use qmetaobject::*;
 use qttypes::QSettings;
 
-use crate::app::models::{DiffRowItem, RepositoryPickerModel};
+use crate::app::models::RepositoryPickerModel;
 use crate::app::qt_types::{
     branch_infos_to_qvariant_list, commit_infos_to_qvariant_list, file_diff_to_qvariant_map,
     file_diffs_to_qvariant_list, pull_request_info_to_qvariant_map, tag_infos_to_qvariant_list,
 };
+use crate::app::surface::render_doc::{build_render_doc, clear_render_doc, publish_render_doc};
 use crate::core::compare::backends::DifftasticBackend;
 use crate::core::compare::{CompareMode, CompareService, CompareSpec, LayoutMode, RendererKind};
-use crate::core::diff::{DiffLine, FileDiff};
-use crate::core::rendering::{DiffRowType, FlatDiffRow, flatten_file_diff};
+use crate::core::diff::FileDiff;
 use crate::core::search::fuzzy::fuzzy_score;
 use crate::core::text::{TextBuffer, TokenBuffer};
 use crate::core::vcs::git::GitService;
@@ -99,9 +99,10 @@ pub struct DiffController {
     selected_file: qt_property!(QVariantMap; READ get_selected_file NOTIFY selected_file_changed ALIAS selectedFile),
     selected_file_changed: qt_signal!(),
 
-    selected_file_rows_model: qt_property!(RefCell<SimpleListModel<DiffRowItem>>; CONST ALIAS selectedFileRowsModel),
-    selected_file_row_count: qt_property!(i32; READ get_selected_file_row_count NOTIFY selected_file_rows_changed ALIAS selectedFileRowCount),
-    selected_file_rows_changed: qt_signal!(),
+    selected_file_render_key: qt_property!(i64; READ get_selected_file_render_key NOTIFY selected_file_render_state_changed ALIAS selectedFileRenderKey),
+    selected_file_render_ready: qt_property!(bool; READ get_selected_file_render_ready NOTIFY selected_file_render_state_changed ALIAS selectedFileRenderReady),
+    selected_file_render_line_count: qt_property!(i32; READ get_selected_file_render_line_count NOTIFY selected_file_render_state_changed ALIAS selectedFileRenderLineCount),
+    selected_file_render_state_changed: qt_signal!(),
 
     repository_picker_visible: qt_property!(bool; READ get_repository_picker_visible NOTIFY repository_picker_visible_changed ALIAS repositoryPickerVisible),
     repository_picker_visible_changed: qt_signal!(),
@@ -252,9 +253,10 @@ impl Default for DiffController {
             selectedFileIndexChanged: Default::default(),
             selected_file: QVariantMap::default(),
             selected_file_changed: Default::default(),
-            selected_file_rows_model: RefCell::new(SimpleListModel::default()),
-            selected_file_row_count: 0,
-            selected_file_rows_changed: Default::default(),
+            selected_file_render_key: clear_render_doc(),
+            selected_file_render_ready: false,
+            selected_file_render_line_count: 0,
+            selected_file_render_state_changed: Default::default(),
             repository_picker_visible: false,
             repository_picker_visible_changed: Default::default(),
             repository_picker_model: RefCell::new(RepositoryPickerModel::default()),
@@ -501,8 +503,14 @@ impl DiffController {
             file_diff_to_qvariant_map(&self.file_diffs_store[self.selected_file_index as usize])
         }
     }
-    pub fn get_selected_file_row_count(&self) -> i32 {
-        self.selected_file_rows_model.borrow().iter().count() as i32
+    pub fn get_selected_file_render_key(&self) -> i64 {
+        self.selected_file_render_key
+    }
+    pub fn get_selected_file_render_ready(&self) -> bool {
+        self.selected_file_render_ready
+    }
+    pub fn get_selected_file_render_line_count(&self) -> i32 {
+        self.selected_file_render_line_count
     }
     pub fn get_repository_picker_visible(&self) -> bool {
         self.repository_picker_visible
@@ -606,7 +614,7 @@ impl DiffController {
             return;
         }
         self.selected_file_index = index;
-        self.rebuild_selected_file_rows();
+        self.rebuild_selected_file_render_state();
         self.selectedFileIndexChanged();
         self.selected_file_changed();
     }
@@ -684,7 +692,7 @@ impl DiffController {
             self.files = QVariantList::default();
             self.files_changed();
             self.selected_file_index = -1;
-            self.rebuild_selected_file_rows();
+            self.rebuild_selected_file_render_state();
             self.selectedFileIndexChanged();
             self.selected_file_changed();
         }
@@ -822,7 +830,7 @@ impl DiffController {
                 };
                 this.selectedFileIndexChanged();
                 this.selected_file_changed();
-                this.rebuild_selected_file_rows();
+                this.rebuild_selected_file_render_state();
                 this.persist_settings();
                 this.set_current_view("diff");
             }
@@ -1100,68 +1108,29 @@ impl DiffController {
         self.currentViewChanged();
     }
 
-    fn rebuild_selected_file_rows(&mut self) {
-        let rows = if self.selected_file_index >= 0
-            && (self.selected_file_index as usize) < self.file_diffs_store.len()
+    fn rebuild_selected_file_render_state(&mut self) {
+        if self.selected_file_index < 0
+            || self.selected_file_index as usize >= self.file_diffs_store.len()
         {
-            let file = &self.file_diffs_store[self.selected_file_index as usize];
-            flatten_file_diff(file, self.selected_file_index as usize)
-                .into_iter()
-                .map(|row| self.flat_row_to_item(file, row))
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-        self.selected_file_rows_model.borrow_mut().reset_data(rows);
-        self.selected_file_rows_changed();
-    }
-
-    fn flat_row_to_item(&self, file: &FileDiff, row: FlatDiffRow) -> DiffRowItem {
-        match row.row_type {
-            DiffRowType::FileHeader => DiffRowItem {
-                row_type: QString::from("fileHeader"),
-                file_index: row.file_index,
-                hunk_index: row.hunk_index,
-                line_index: row.line_index,
-                old_line_number: -1,
-                new_line_number: -1,
-                text: QString::from(file.path.as_str()),
-            },
-            DiffRowType::HunkSeparator => DiffRowItem {
-                row_type: QString::from("hunk"),
-                file_index: row.file_index,
-                hunk_index: row.hunk_index,
-                line_index: row.line_index,
-                old_line_number: -1,
-                new_line_number: -1,
-                text: QString::from(
-                    file.hunks
-                        .get(row.hunk_index.max(0) as usize)
-                        .map(|hunk| hunk.header.as_str())
-                        .unwrap_or(""),
-                ),
-            },
-            _ => {
-                let (old_line_number, new_line_number, text) =
-                    row_text(file, &self.text_buffer_store, &row);
-                DiffRowItem {
-                    row_type: QString::from(match row.row_type {
-                        DiffRowType::Context => "context",
-                        DiffRowType::Added => "added",
-                        DiffRowType::Removed => "removed",
-                        DiffRowType::Modified => "modified",
-                        DiffRowType::FileHeader => "fileHeader",
-                        DiffRowType::HunkSeparator => "hunk",
-                    }),
-                    file_index: row.file_index,
-                    hunk_index: row.hunk_index,
-                    line_index: row.line_index,
-                    old_line_number,
-                    new_line_number,
-                    text: QString::from(text.as_str()),
-                }
-            }
+            self.selected_file_render_key = clear_render_doc();
+            self.selected_file_render_ready = false;
+            self.selected_file_render_line_count = 0;
+            self.selected_file_render_state_changed();
+            return;
         }
+
+        let file_index = self.selected_file_index as usize;
+        let file = &self.file_diffs_store[file_index];
+        let doc = build_render_doc(
+            file,
+            file_index,
+            &self.text_buffer_store,
+            &self.token_buffer_store,
+        );
+        self.selected_file_render_line_count = i32::try_from(doc.line_count()).unwrap_or(i32::MAX);
+        self.selected_file_render_ready = self.selected_file_render_line_count > 0;
+        self.selected_file_render_key = publish_render_doc(doc);
+        self.selected_file_render_state_changed();
     }
 
     fn add_recent_repository(&mut self, path: &str) {
@@ -1218,45 +1187,6 @@ impl DiffController {
             .set_string("layoutMode", &self.layout_mode.to_string());
         self.settings.sync();
     }
-}
-
-fn row_text(file: &FileDiff, buffer: &TextBuffer, row: &FlatDiffRow) -> (i32, i32, String) {
-    let Some(hunk) = file.hunks.get(row.hunk_index.max(0) as usize) else {
-        return (-1, -1, String::new());
-    };
-    let main_line = hunk.lines.get(row.line_index.max(0) as usize);
-    let old_line = hunk.lines.get(row.old_line_index.max(0) as usize);
-    let new_line = hunk.lines.get(row.new_line_index.max(0) as usize);
-    let old_num = old_line.and_then(|line| line.old_line_number).unwrap_or(-1);
-    let new_num = new_line
-        .and_then(|line| line.new_line_number)
-        .or_else(|| main_line.and_then(|line| line.new_line_number))
-        .unwrap_or(-1);
-    let text = match row.row_type {
-        DiffRowType::Modified => {
-            let left = old_line
-                .map(|line| line_text(line, buffer))
-                .unwrap_or_default();
-            let right = new_line
-                .map(|line| line_text(line, buffer))
-                .unwrap_or_default();
-            if left.is_empty() {
-                right
-            } else if right.is_empty() {
-                left
-            } else {
-                format!("{left} ⟶ {right}")
-            }
-        }
-        _ => main_line
-            .map(|line| line_text(line, buffer))
-            .unwrap_or_default(),
-    };
-    (old_num, new_num, text)
-}
-
-fn line_text(line: &DiffLine, buffer: &TextBuffer) -> String {
-    buffer.view(line.text_range).to_owned()
 }
 
 fn looks_like_oid(value: &str) -> bool {

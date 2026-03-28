@@ -913,13 +913,13 @@ impl DiffSurfaceItem {
 
     fn wrap_cols_for_width(&self, width_px: f64) -> u16 {
         if !self.wrap_enabled {
-            return 1;
+            return effective_wrap_cols(false, 0);
         }
         let mut cols = (width_px / self.char_width).floor() as u32;
         if self.wrap_column > 0 {
             cols = cols.min(self.wrap_column as u32);
         }
-        cols.max(1) as u16
+        effective_wrap_cols(true, cols.max(1) as u16)
     }
 
     fn compute_gutter_digits(doc: &RenderDoc) -> u32 {
@@ -1513,6 +1513,14 @@ fn elapsed_ms(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0
 }
 
+fn effective_wrap_cols(wrap_enabled: bool, wrap_cols: u16) -> u16 {
+    if wrap_enabled {
+        wrap_cols.max(1)
+    } else {
+        u16::MAX
+    }
+}
+
 fn wrap_count(cols: u32, wrap_cols: u16) -> u16 {
     if cols == 0 {
         return 1;
@@ -1634,7 +1642,7 @@ impl QQuickItem for DiffSurfaceItem {
 
 #[cfg(test)]
 mod tests {
-    use super::{DiffSurfaceItem, wrap_count};
+    use super::{DiffSurfaceItem, effective_wrap_cols, wrap_count};
     use crate::app::surface::render_doc::{
         ByteRange, INVALID_U32, RenderDoc, RenderLine, RenderRowKind,
     };
@@ -1644,6 +1652,13 @@ mod tests {
         assert_eq!(wrap_count(0, 10), 1);
         assert_eq!(wrap_count(5, 10), 1);
         assert_eq!(wrap_count(11, 10), 2);
+    }
+
+    #[test]
+    fn no_wrap_mode_uses_effectively_infinite_wrap_width() {
+        assert_eq!(effective_wrap_cols(false, 1), u16::MAX);
+        assert_eq!(wrap_count(15, effective_wrap_cols(false, 1)), 1);
+        assert_eq!(effective_wrap_cols(true, 12), 12);
     }
 
     #[test]

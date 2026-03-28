@@ -239,6 +239,9 @@ pub struct ThemeProvider {
     set_theme: qt_method!(fn(&mut self, name: QString, persist: bool)),
     set_mode: qt_method!(fn(&mut self, mode: QString, persist: bool)),
     toggle_mode: qt_method!(fn(&mut self, persist: bool)),
+    setTheme: qt_method!(fn(&mut self, name: QString, persist: bool)),
+    setMode: qt_method!(fn(&mut self, mode: QString, persist: bool)),
+    toggleMode: qt_method!(fn(&mut self, persist: bool)),
 
     settings: QSettings,
     themes: HashMap<String, ThemeVariants>,
@@ -354,6 +357,9 @@ impl Default for ThemeProvider {
             set_theme: Default::default(),
             set_mode: Default::default(),
             toggle_mode: Default::default(),
+            setTheme: Default::default(),
+            setMode: Default::default(),
+            toggleMode: Default::default(),
             settings,
             themes,
             theme_names,
@@ -365,6 +371,21 @@ impl Default for ThemeProvider {
 }
 
 impl ThemeProvider {
+    #[allow(non_snake_case)]
+    pub fn setTheme(&mut self, name: QString, persist: bool) {
+        self.set_theme(name, persist);
+    }
+
+    #[allow(non_snake_case)]
+    pub fn setMode(&mut self, mode: QString, persist: bool) {
+        self.set_mode(mode, persist);
+    }
+
+    #[allow(non_snake_case)]
+    pub fn toggleMode(&mut self, persist: bool) {
+        self.toggle_mode(persist);
+    }
+
     pub fn get_current_theme(&self) -> QString {
         QString::from(self.current_theme_value.as_str())
     }

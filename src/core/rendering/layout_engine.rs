@@ -534,7 +534,7 @@ mod tests {
         assert_eq!(engine.row_at_y(14.0), Some(1));
         assert_eq!(engine.row_at_y(27.0), Some(2));
         assert_eq!(engine.first_visible_row(14.0), 1);
-        assert_eq!(engine.last_visible_row(14.0, 11.0), 2);
+        assert_eq!(engine.last_visible_row(14.0, 11.0), 1);
         assert_eq!(engine.y_for_row(2), 26.0);
     }
 

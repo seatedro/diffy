@@ -2,11 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use cpp::cpp;
 use parking_lot::Mutex;
 use qmetaobject::prelude::*;
 use qmetaobject::scenegraph::{ContainerNode, RectangleNode, SGNode};
-use qmetaobject::{QMouseEvent, QMouseEventType, QQuickItem};
+use qmetaobject::{QMouseEvent, QMouseEventType, QQuickItem, QVariantMap};
 use rayon::ThreadPool;
 use rayon::ThreadPoolBuilder;
 
@@ -15,15 +14,15 @@ use crate::core::text::buffer::{TextBuffer, TextRange};
 use crate::core::text::token::TokenRange;
 
 cpp! {{
-    #include <QAbstractItemModel>
-    #include <QByteArray>
-    #include <QHash>
-    #include <QMetaObject>
-    #include <QModelIndex>
-    #include <QQuickItem>
-    #include <QQuickWindow>
-    #include <QSGNode>
-    #include <QVariant>
+    #include <QtCore/QAbstractItemModel>
+    #include <QtCore/QByteArray>
+    #include <QtCore/QHash>
+    #include <QtCore/QMetaObject>
+    #include <QtCore/QModelIndex>
+    #include <QtQuick/QQuickItem>
+    #include <QtQuick/QQuickWindow>
+    #include <QtQuick/QSGNode>
+    #include <QtCore/QVariant>
 }}
 
 #[repr(C)]
@@ -125,7 +124,8 @@ fn elapsed_ms(start: Instant) -> f64 {
 }
 
 fn qvariant_to_object_ptr(variant: &QVariant) -> *mut std::ffi::c_void {
-    cpp!(unsafe [variant as "QVariant* const"] -> *mut std::ffi::c_void as "QObject*" {
+    let variant = variant as *const QVariant;
+    cpp!(unsafe [variant as "const QVariant*"] -> *mut std::ffi::c_void as "QObject*" {
         return variant->value<QObject*>();
     })
 }
@@ -138,12 +138,13 @@ fn model_row_count(model: *mut std::ffi::c_void) -> i32 {
 }
 
 fn model_role(model: *mut std::ffi::c_void, name: &QByteArray) -> i32 {
-    cpp!(unsafe [model as "QObject*", name as "QByteArray"] -> i32 as "int" {
+    let name = name as *const QByteArray;
+    cpp!(unsafe [model as "QObject*", name as "const QByteArray*"] -> i32 as "int" {
         auto *itemModel = qobject_cast<QAbstractItemModel*>(model);
         if (!itemModel) return -1;
         const auto names = itemModel->roleNames();
         for (auto it = names.constBegin(); it != names.constEnd(); ++it) {
-            if (it.value() == name) return it.key();
+            if (it.value() == *name) return it.key();
         }
         return -1;
     })
@@ -158,11 +159,11 @@ fn model_data(model: *mut std::ffi::c_void, row: i32, role: i32) -> QVariant {
 }
 
 fn qvariant_to_i32(value: &QVariant) -> i32 {
-    value.to_int()
+    value.to_qstring().to_int(10).unwrap_or_default()
 }
 
 fn qvariant_to_string(value: &QVariant) -> String {
-    value.to_string().to_string()
+    value.to_qstring().to_string()
 }
 
 fn row_type_from_string(value: &str) -> DiffRowType {
@@ -939,9 +940,9 @@ impl DiffSurfaceItem {
 
         let finish = qmetaobject::queued_callback({
             let qptr = QPointer::from(&*self);
-            move |pending: i32, ready: i32| {
-                if let Some(mut this) = qptr.as_pinned() {
-                    let this = this.borrow_mut();
+            move |(pending, ready): (i32, i32)| {
+                if let Some(this) = qptr.as_pinned() {
+                    let mut this = this.borrow_mut();
                     this.pending_tile_job_count = pending;
                     this.resident_tile_count = ready;
                     this.tile_stats_changed();
@@ -974,7 +975,7 @@ impl DiffSurfaceItem {
             drop(guard);
             let pending = 0;
             let _ = elapsed_ms(start);
-            finish(pending, ready);
+            finish((pending, ready));
         });
     }
 
@@ -994,12 +995,18 @@ impl DiffSurfaceItem {
     }
 
     fn color_from_palette(&self, key: &str, fallback: &str) -> QColor {
-        self.palette
-            .get(&QString::from(key))
-            .map(QVariant::clone)
-            .and_then(|value| value.try_into::<QColor>().ok())
-            .filter(|color| color.is_valid())
-            .unwrap_or_else(|| QColor::from_name(fallback))
+        let color = QColor::from_name(
+            &self
+                .palette
+                .value(QString::from(key), QVariant::default())
+                .to_qstring()
+                .to_string(),
+        );
+        if color.is_valid() {
+            color
+        } else {
+            QColor::from_name(fallback)
+        }
     }
 }
 
@@ -1042,6 +1049,7 @@ impl QQuickItem for DiffSurfaceItem {
                 self.update_item();
                 true
             }
+            _ => false,
         }
     }
 

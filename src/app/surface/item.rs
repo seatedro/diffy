@@ -7,10 +7,10 @@ use qmetaobject::scenegraph::{ContainerNode, SGNode};
 use qmetaobject::{QMouseEvent, QMouseEventType, QQuickItem, QVariantMap};
 use qttypes::{ImageFormat, QColor, QImage, QRectF, QSize};
 
-use crate::app::surface::display_layout::{
-    DisplayLayoutConfig, DisplayLayoutMetrics, rebuild_display_rows,
+use crate::app::surface::display_layout::compute_gutter_digits;
+use crate::app::surface::render_doc::{
+    ByteRange, DisplayRow, RenderDoc, RenderRowKind, clone_render_doc,
 };
-use crate::app::surface::render_doc::{DisplayRow, RenderDoc, clone_render_doc};
 use crate::app::surface::strip_layout::{StripLayout, build_strip_layouts, visible_strip_range};
 use crate::app::theme::default_mono_family;
 
@@ -24,599 +24,259 @@ const UNIFIED_TEXT_PADDING_PX: f64 = 10.0;
 const SPLIT_TEXT_PADDING_PX: f64 = 8.0;
 const SPLIT_GAP_PX: f64 = 16.0;
 
-cpp! {{
-    #include <QtCore/QByteArray>
-    #include <QtCore/QString>
-    #include <QtGui/QColor>
-    #include <QtGui/QFont>
-    #include <QtGui/QFontMetricsF>
-    #include <QtGui/QImage>
-    #include <QtGui/QPainter>
-    #include <QtGui/QTextLayout>
-    #include <QtGui/QTextOption>
-    #include <QtQuick/QQuickItem>
-    #include <QtQuick/QQuickWindow>
-    #include <QtQuick/QSGNode>
-    #include <QtQuick/QSGSimpleTextureNode>
-    #include <QtQuick/QSGTexture>
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct SurfaceLayoutConfig {
+    split_mode: bool,
+    wrap_enabled: bool,
+    unified_text_width_px: f64,
+    split_text_width_px: f64,
+    body_row_height_px: u16,
+    file_header_height_px: u16,
+    hunk_height_px: u16,
+}
 
-    struct DiffFontMetrics {
-        double char_width;
-        double line_height;
-        double ascent;
-    };
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct SurfaceLayoutSummary {
+    gutter_digits: u32,
+    content_height_px: u32,
+    max_text_width_px: f64,
+}
 
-    struct DiffByteRange {
-        quint32 start;
-        quint32 len;
-    };
+fn number_width_px(gutter_digits: u32, char_width: f64) -> f64 {
+    f64::from(gutter_digits.max(1)) * char_width + 12.0
+}
 
-    struct DiffRunRange {
-        quint32 start;
-        quint32 len;
-    };
+fn unified_text_start_px(gutter_digits: u32, char_width: f64) -> f64 {
+    number_width_px(gutter_digits, char_width) * 2.0 + 16.0
+}
 
-    struct DiffStyleRun {
-        quint32 byte_start;
-        quint32 byte_len;
-        quint16 style_id;
-        quint16 flags;
-    };
+fn split_side_width_px(bounds_width: f64) -> f64 {
+    ((bounds_width - SPLIT_GAP_PX).max(32.0)) / 2.0
+}
 
-    struct DiffRenderLine {
-        quint8 kind;
-        quint8 flags;
-        quint16 reserved;
-        quint32 old_line_no;
-        quint32 new_line_no;
-        quint32 left_cols;
-        quint32 right_cols;
-        DiffByteRange left_text;
-        DiffByteRange right_text;
-        DiffRunRange left_runs;
-        DiffRunRange right_runs;
-    };
+fn split_text_start_px(gutter_digits: u32, char_width: f64) -> f64 {
+    number_width_px(gutter_digits, char_width) + 12.0
+}
 
-    struct DiffDisplayRow {
-        quint32 line_index;
-        quint32 y_px;
-        quint16 h_px;
-        quint16 wrap_left;
-        quint16 wrap_right;
-        quint8 kind;
-        quint8 reserved0;
-        quint8 reserved1;
-        quint8 reserved2;
-    };
+fn unified_text_width_px(bounds_width: f64, gutter_digits: u32, char_width: f64) -> f64 {
+    (bounds_width - unified_text_start_px(gutter_digits, char_width) - UNIFIED_TEXT_PADDING_PX)
+        .max(1.0)
+}
 
-    class DiffStripNode : public QSGSimpleTextureNode {
-    public:
-        DiffStripNode() {
-            setOwnsTexture(false);
-        }
-    };
+fn split_text_width_px(bounds_width: f64, gutter_digits: u32, char_width: f64) -> f64 {
+    (split_side_width_px(bounds_width)
+        - split_text_start_px(gutter_digits, char_width)
+        - SPLIT_TEXT_PADDING_PX)
+        .max(1.0)
+}
 
-    static QSGNode *diffyEnsureRoot(QSGNode *root) {
-        if (!root) {
-            root = new QSGNode();
-        }
-        return root;
+fn apply_wrap_column(width_px: f64, wrap_enabled: bool, wrap_column: u32, char_width: f64) -> f64 {
+    if wrap_enabled && wrap_column > 0 {
+        width_px.min(f64::from(wrap_column) * char_width.max(1.0))
+    } else {
+        width_px
     }
+}
 
-    static DiffStripNode *diffyEnsureChild(QSGNode *root, int index) {
-        int i = 0;
-        for (auto *child = root->firstChild(); child; child = child->nextSibling(), ++i) {
-            if (i == index) {
-                return static_cast<DiffStripNode *>(child);
-            }
-        }
+fn layout_config_for_doc(
+    doc: &RenderDoc,
+    bounds_width: f64,
+    char_width: f64,
+    split_mode: bool,
+    wrap_enabled: bool,
+    wrap_column: u32,
+    body_row_height_px: u16,
+    file_header_height_px: u16,
+    hunk_height_px: u16,
+) -> (SurfaceLayoutConfig, u32) {
+    let gutter_digits = compute_gutter_digits(doc);
+    (
+        SurfaceLayoutConfig {
+            split_mode,
+            wrap_enabled,
+            unified_text_width_px: apply_wrap_column(
+                unified_text_width_px(bounds_width, gutter_digits, char_width),
+                wrap_enabled,
+                wrap_column,
+                char_width,
+            ),
+            split_text_width_px: apply_wrap_column(
+                split_text_width_px(bounds_width, gutter_digits, char_width),
+                wrap_enabled,
+                wrap_column,
+                char_width,
+            ),
+            body_row_height_px,
+            file_header_height_px,
+            hunk_height_px,
+        },
+        gutter_digits,
+    )
+}
 
-        while (i <= index) {
-            auto *node = new DiffStripNode();
-            root->appendChildNode(node);
-            if (i == index) {
-                return node;
-            }
-            ++i;
-        }
-
-        return nullptr;
+fn body_wrap_units(range: ByteRange, wraps: u16) -> u32 {
+    if range.is_valid() {
+        u32::from(wraps.max(1))
+    } else {
+        0
     }
+}
 
-    static void diffyTrimChildren(QSGNode *root, int active_count) {
-        int i = 0;
-        auto *child = root->firstChild();
-        while (child) {
-            auto *next = child->nextSibling();
-            if (i >= active_count) {
-                root->removeChildNode(child);
-                delete child;
-            }
-            child = next;
-            ++i;
-        }
-    }
+fn build_surface_display_rows(
+    doc: &RenderDoc,
+    config: SurfaceLayoutConfig,
+    measure_width: &dyn Fn(ByteRange) -> f64,
+    measure_wrap: &dyn Fn(ByteRange, f64, bool) -> u16,
+    out: &mut Vec<DisplayRow>,
+) -> SurfaceLayoutSummary {
+    out.clear();
+    out.reserve(doc.lines.len());
 
-    static void diffySyncChild(QSGNode *root, int index, QRectF rect, QSGTexture *texture) {
-        auto *node = diffyEnsureChild(root, index);
-        if (!node) {
-            return;
-        }
-        node->setTexture(texture);
-        node->setRect(rect);
-    }
+    let gutter_digits = compute_gutter_digits(doc);
+    let mut y_px = 0_u32;
+    let mut max_text_width_px = 0.0_f64;
 
-    static void diffyDeleteTexture(QSGTexture *texture) {
-        delete texture;
-    }
-
-    static QSGTexture *diffyCreateTexture(QQuickItem *item, QImage *image) {
-        if (!item || !image) {
-            return nullptr;
-        }
-        auto *window = item->window();
-        if (!window) {
-            return nullptr;
-        }
-        auto *texture = window->createTextureFromImage(*image);
-        if (texture) {
-            texture->setFiltering(QSGTexture::Nearest);
-        }
-        return texture;
-    }
-
-    static double diffyEffectiveDevicePixelRatio(QQuickItem *item) {
-        if (!item) {
-            return 1.0;
-        }
-        auto *window = item->window();
-        if (!window) {
-            return 1.0;
-        }
-        return window->effectiveDevicePixelRatio();
-    }
-
-    static void diffySetImageDevicePixelRatio(QImage *image, double dpr) {
-        if (!image) {
-            return;
-        }
-        image->setDevicePixelRatio(dpr > 0.0 ? dpr : 1.0);
-    }
-
-    static DiffFontMetrics diffyMeasureFontMetrics(QString family, int pixel_size) {
-        QFont font(family);
-        font.setStyleHint(QFont::TypeWriter);
-        font.setFixedPitch(true);
-        font.setPixelSize(pixel_size);
-        QFontMetricsF metrics(font);
-        return DiffFontMetrics {
-            metrics.horizontalAdvance(QStringLiteral("M")),
-            metrics.height(),
-            metrics.ascent(),
+    for (line_index, line) in doc.lines.iter().enumerate() {
+        let kind = line.row_kind();
+        let left_width_px = if line.left_text.is_valid() {
+            measure_width(line.left_text)
+        } else {
+            0.0
         };
-    }
+        let right_width_px = if line.right_text.is_valid() {
+            measure_width(line.right_text)
+        } else {
+            0.0
+        };
+        max_text_width_px = max_text_width_px.max(left_width_px.max(right_width_px));
 
-    static QColor diffySyntaxColor(
-        quint16 style_id,
-        QColor text_base,
-        QColor text_muted,
-        QColor text_strong,
-        QColor accent,
-        QColor accent_strong,
-        QColor success_text,
-        QColor warning_text
-    ) {
-        switch (style_id) {
-        case 1: return accent_strong;  // Keyword
-        case 2: return success_text;   // String
-        case 3: return text_muted;     // Comment
-        case 4: return warning_text;   // Number
-        case 5: return accent;         // Type
-        case 6: return text_strong;    // Function
-        case 7: return accent_strong;  // Operator
-        case 8: return text_muted;     // Punctuation
-        case 9: return accent;         // Variable
-        case 10: return warning_text;  // Constant
-        case 11: return accent_strong; // Builtin
-        case 12: return accent;        // Attribute
-        case 13: return success_text;  // Tag
-        case 14: return accent;        // Property
-        case 15: return accent;        // Namespace
-        case 16: return warning_text;  // Label
-        case 17: return warning_text;  // Preprocessor
-        default: return text_base;
-        }
-    }
-
-    static QString diffySliceUtf8(const unsigned char *bytes, DiffByteRange range) {
-        if (!bytes || range.start == quint32(-1) || range.len == 0) {
-            return QString();
-        }
-        return QString::fromUtf8(
-            reinterpret_cast<const char *>(bytes + range.start),
-            int(range.len)
-        );
-    }
-
-    static QVector<QTextLayout::FormatRange> diffyBuildFormatRanges(
-        const unsigned char *bytes,
-        DiffByteRange text_range,
-        const DiffStyleRun *runs,
-        DiffRunRange run_range,
-        QColor text_base,
-        QColor text_muted,
-        QColor text_strong,
-        QColor accent,
-        QColor accent_strong,
-        QColor success_text,
-        QColor warning_text,
-        QColor change_bg
-    ) {
-        QVector<QTextLayout::FormatRange> formats;
-        if (!bytes || text_range.start == quint32(-1) || run_range.len == 0) {
-            return formats;
-        }
-        formats.reserve(int(run_range.len));
-
-        for (quint32 i = 0; i < run_range.len; ++i) {
-            const auto &run = runs[run_range.start + i];
-            QTextLayout::FormatRange format;
-            format.start = QString::fromUtf8(
-                reinterpret_cast<const char *>(bytes + text_range.start),
-                int(run.byte_start)
-            ).size();
-            format.length = QString::fromUtf8(
-                reinterpret_cast<const char *>(bytes + text_range.start + run.byte_start),
-                int(run.byte_len)
-            ).size();
-
-            QTextCharFormat char_format;
-            char_format.setForeground(diffySyntaxColor(
-                run.style_id,
-                text_base,
-                text_muted,
-                text_strong,
-                accent,
-                accent_strong,
-                success_text,
-                warning_text
-            ));
-            if ((run.flags & 0x1u) != 0) {
-                char_format.setBackground(change_bg);
-            }
-            format.format = char_format;
-            formats.push_back(format);
-        }
-
-        return formats;
-    }
-
-    static void diffyDrawStyledBlock(
-        QPainter &painter,
-        const unsigned char *bytes,
-        const DiffRenderLine &line,
-        bool left_side,
-        const DiffStyleRun *runs,
-        qreal x,
-        qreal y,
-        qreal width,
-        QString family,
-        int font_px,
-        QColor text_base,
-        QColor text_muted,
-        QColor text_strong,
-        QColor accent,
-        QColor accent_strong,
-        QColor success_text,
-        QColor warning_text,
-        QColor change_bg,
-        bool wrap_enabled
-    ) {
-        const auto text_range = left_side ? line.left_text : line.right_text;
-        const auto run_range = left_side ? line.left_runs : line.right_runs;
-        if (text_range.start == quint32(-1) || text_range.len == 0 || width <= 1.0) {
-            return;
-        }
-
-        QFont font(family);
-        font.setStyleHint(QFont::TypeWriter);
-        font.setFixedPitch(true);
-        font.setPixelSize(font_px);
-
-        QTextOption option;
-        option.setWrapMode(wrap_enabled ? QTextOption::WrapAnywhere : QTextOption::NoWrap);
-
-        QTextLayout layout(diffySliceUtf8(bytes, text_range), font);
-        layout.setTextOption(option);
-        layout.setFormats(diffyBuildFormatRanges(
-            bytes,
-            text_range,
-            runs,
-            run_range,
-            text_base,
-            text_muted,
-            text_strong,
-            accent,
-            accent_strong,
-            success_text,
-            warning_text,
-            change_bg
-        ));
-
-        layout.beginLayout();
-        qreal line_y = 0.0;
-        while (true) {
-            QTextLine text_line = layout.createLine();
-            if (!text_line.isValid()) {
-                break;
-            }
-            text_line.setLineWidth(width);
-            text_line.setPosition(QPointF(0.0, line_y));
-            line_y += text_line.height();
-        }
-        layout.endLayout();
-
-        painter.save();
-        painter.translate(x, y);
-        layout.draw(&painter, QPointF(0.0, 0.0));
-        painter.restore();
-    }
-
-    static QColor diffyUnifiedRowColor(
-        quint8 kind,
-        int row_index,
-        QColor panel_strong,
-        QColor panel_tint,
-        QColor line_context,
-        QColor line_context_alt,
-        QColor line_add,
-        QColor line_del
-    ) {
-        switch (kind) {
-        case 0: return panel_strong;
-        case 1: return panel_tint;
-        case 3: return line_add;
-        case 4: return line_del;
-        case 5: return line_context_alt;
-        default: return (row_index & 1) == 0 ? line_context : line_context_alt;
-        }
-    }
-
-    static void diffyRasterStrip(
-        QImage *image,
-        const DiffDisplayRow *rows,
-        quint32 row_count,
-        quint32 first_row_index,
-        const DiffRenderLine *lines,
-        const DiffStyleRun *runs,
-        const unsigned char *text_bytes,
-        bool split_mode,
-        bool wrap_enabled,
-        quint32 viewport_x,
-        quint32 viewport_y,
-        quint32 strip_top,
-        quint32 strip_height,
-        quint32 gutter_digits,
-        double char_width,
-        double line_height_px,
-        double body_font_px,
-        double unified_text_start_px,
-        double unified_text_width_px,
-        double split_side_width_px,
-        double split_text_start_px,
-        double split_text_width_px,
-        QString family,
-        QColor canvas,
-        QColor divider,
-        QColor panel_strong,
-        QColor panel_tint,
-        QColor text_base,
-        QColor text_muted,
-        QColor text_strong,
-        QColor accent,
-        QColor accent_strong,
-        QColor success_text,
-        QColor warning_text,
-        QColor selection_bg,
-        QColor line_context,
-        QColor line_context_alt,
-        QColor line_add,
-        QColor line_add_accent,
-        QColor line_del,
-        QColor line_del_accent,
-        int hovered_row,
-        int selection_start,
-        int selection_end
-    ) {
-        if (!image) {
-            return;
-        }
-
-        image->fill(canvas);
-
-        QPainter painter(image);
-        painter.setRenderHint(QPainter::TextAntialiasing, true);
-        painter.setRenderHint(QPainter::Antialiasing, false);
-
-        QFont font(family);
-        font.setStyleHint(QFont::TypeWriter);
-        font.setFixedPitch(true);
-        font.setPixelSize(int(body_font_px));
-        painter.setFont(font);
-
-        QFontMetricsF metrics(font);
-        const qreal number_width = qreal(gutter_digits) * char_width + 12.0;
-        const qreal split_gap = 16.0;
-
-        for (quint32 i = 0; i < row_count; ++i) {
-            const auto &row = rows[i];
-            const auto &line = lines[row.line_index];
-            const int global_row = int(first_row_index + i);
-            const bool selected =
-                selection_start >= 0 && selection_end >= selection_start &&
-                global_row >= selection_start && global_row <= selection_end;
-            const bool hovered = hovered_row == global_row;
-            const qreal top = qreal(row.y_px - strip_top);
-            const qreal height = qreal(row.h_px);
-
-            if (split_mode && line.kind >= 2) {
-                const qreal left_width = split_side_width_px;
-                const qreal right_x = split_side_width_px + split_gap;
-
-                QColor left_bg = canvas;
-                QColor right_bg = canvas;
-                switch (line.kind) {
-                case 2: left_bg = line_context; right_bg = line_context; break;
-                case 3: right_bg = line_add; break;
-                case 4: left_bg = line_del; break;
-                case 5: left_bg = line_del; right_bg = line_add; break;
-                default: break;
-                }
-                if (selected || hovered) {
-                    left_bg = selection_bg;
-                    right_bg = selection_bg;
-                }
-
-                painter.fillRect(QRectF(0.0, top, left_width, height), left_bg);
-                painter.fillRect(QRectF(right_x, top, left_width, height), right_bg);
-                painter.fillRect(QRectF(split_side_width_px, top, split_gap, height), canvas);
-                painter.setPen(divider);
-                painter.drawLine(
-                    QPointF(split_side_width_px + split_gap * 0.5, top),
-                    QPointF(split_side_width_px + split_gap * 0.5, top + height)
-                );
-
-                painter.setPen(text_muted);
-                if (line.old_line_no != quint32(-1)) {
-                    painter.drawText(
-                        QRectF(0.0, top, number_width, height),
-                        Qt::AlignRight | Qt::AlignVCenter,
-                        QString::number(int(line.old_line_no))
-                    );
-                }
-                if (line.new_line_no != quint32(-1)) {
-                    painter.drawText(
-                        QRectF(right_x, top, number_width, height),
-                        Qt::AlignRight | Qt::AlignVCenter,
-                        QString::number(int(line.new_line_no))
-                    );
-                }
-
-                diffyDrawStyledBlock(
-                    painter,
-                    text_bytes,
-                    line,
-                    true,
-                    runs,
-                    split_text_start_px,
-                    top + 2.0,
-                    split_text_width_px,
-                    family,
-                    int(body_font_px),
-                    text_base,
-                    text_muted,
-                    text_strong,
-                    accent,
-                    accent_strong,
-                    success_text,
-                    warning_text,
-                    line_del_accent,
-                    wrap_enabled
-                );
-
-                diffyDrawStyledBlock(
-                    painter,
-                    text_bytes,
-                    line,
-                    false,
-                    runs,
-                    right_x + split_text_start_px,
-                    top + 2.0,
-                    split_text_width_px,
-                    family,
-                    int(body_font_px),
-                    text_base,
-                    text_muted,
-                    text_strong,
-                    accent,
-                    accent_strong,
-                    success_text,
-                    warning_text,
-                    line_add_accent,
-                    wrap_enabled
-                );
-            } else {
-                painter.fillRect(
-                    QRectF(0.0, top, image->width(), height),
-                    selected || hovered
-                        ? selection_bg
-                        : diffyUnifiedRowColor(
-                              line.kind,
-                              global_row,
-                              panel_strong,
-                              panel_tint,
-                              line_context,
-                              line_context_alt,
-                              line_add,
-                              line_del
-                          )
-                );
-
-                if (line.kind == 0 || line.kind == 1) {
-                    painter.setPen(line.kind == 0 ? text_strong : text_muted);
-                    const auto text = diffySliceUtf8(text_bytes, line.left_text);
-                    painter.drawText(
-                        QPointF(10.0 - qreal(viewport_x), top + metrics.ascent() + 6.0),
-                        text
-                    );
+        let (wrap_left, wrap_right, h_px) = match kind {
+            RenderRowKind::FileHeader => (1_u16, 1_u16, config.file_header_height_px),
+            RenderRowKind::HunkSeparator => (1_u16, 1_u16, config.hunk_height_px),
+            _ if config.split_mode => {
+                let wrap_left = if line.left_text.is_valid() {
+                    measure_wrap(
+                        line.left_text,
+                        config.split_text_width_px,
+                        config.wrap_enabled,
+                    )
                 } else {
-                    painter.setPen(text_muted);
-                    if (line.old_line_no != quint32(-1)) {
-                        painter.drawText(
-                            QRectF(0.0, top, number_width, height),
-                            Qt::AlignRight | Qt::AlignVCenter,
-                            QString::number(int(line.old_line_no))
-                        );
-                    }
-                    if (line.new_line_no != quint32(-1)) {
-                        painter.drawText(
-                            QRectF(number_width, top, number_width, height),
-                            Qt::AlignRight | Qt::AlignVCenter,
-                            QString::number(int(line.new_line_no))
-                        );
-                    }
-
-                    const bool prefer_left = line.right_text.start == quint32(-1);
-                    diffyDrawStyledBlock(
-                        painter,
-                        text_bytes,
-                        line,
-                        prefer_left,
-                        runs,
-                        unified_text_start_px - qreal(viewport_x),
-                        top + 2.0,
-                        unified_text_width_px,
-                        family,
-                        int(body_font_px),
-                        text_base,
-                        text_muted,
-                        text_strong,
-                        accent,
-                        accent_strong,
-                        success_text,
-                        warning_text,
-                        prefer_left ? line_del_accent : line_add_accent,
-                        wrap_enabled
-                    );
-                }
+                    1
+                };
+                let wrap_right = if line.right_text.is_valid() {
+                    measure_wrap(
+                        line.right_text,
+                        config.split_text_width_px,
+                        config.wrap_enabled,
+                    )
+                } else {
+                    1
+                };
+                (
+                    wrap_left,
+                    wrap_right,
+                    config
+                        .body_row_height_px
+                        .saturating_mul(wrap_left.max(wrap_right).max(1)),
+                )
             }
-        }
+            RenderRowKind::Modified => {
+                let wrap_left = if line.left_text.is_valid() {
+                    measure_wrap(
+                        line.left_text,
+                        config.unified_text_width_px,
+                        config.wrap_enabled,
+                    )
+                } else {
+                    1
+                };
+                let wrap_right = if line.right_text.is_valid() {
+                    measure_wrap(
+                        line.right_text,
+                        config.unified_text_width_px,
+                        config.wrap_enabled,
+                    )
+                } else {
+                    1
+                };
+                let wrap_units = body_wrap_units(line.left_text, wrap_left)
+                    .saturating_add(body_wrap_units(line.right_text, wrap_right))
+                    .max(1);
+                (
+                    wrap_left,
+                    wrap_right,
+                    config
+                        .body_row_height_px
+                        .saturating_mul(u16::try_from(wrap_units).unwrap_or(u16::MAX).max(1)),
+                )
+            }
+            _ => {
+                let primary = if line.right_text.is_valid() {
+                    line.right_text
+                } else {
+                    line.left_text
+                };
+                let wrap = measure_wrap(primary, config.unified_text_width_px, config.wrap_enabled);
+                (
+                    wrap,
+                    wrap,
+                    config.body_row_height_px.saturating_mul(wrap.max(1)),
+                )
+            }
+        };
 
-        painter.end();
-        (void)viewport_y;
-        (void)strip_height;
-        (void)line_height_px;
+        out.push(DisplayRow {
+            line_index: line_index as u32,
+            y_px,
+            h_px,
+            wrap_left,
+            wrap_right,
+            kind: line.kind,
+            reserved0: 0,
+            reserved1: 0,
+            reserved2: 0,
+        });
+        y_px = y_px.saturating_add(u32::from(h_px));
     }
+
+    SurfaceLayoutSummary {
+        gutter_digits,
+        content_height_px: y_px,
+        max_text_width_px,
+    }
+}
+
+fn row_index_at_y_exact(rows: &[DisplayRow], content_height_px: u32, y: f64) -> i32 {
+    if rows.is_empty() || y < 0.0 {
+        return -1;
+    }
+    let y_px = y.floor() as u32;
+    if y_px >= content_height_px {
+        return -1;
+    }
+    let index = rows.partition_point(|row| row.bottom_px() <= y_px);
+    if index >= rows.len() {
+        -1
+    } else {
+        index as i32
+    }
+}
+
+fn row_index_at_y_clamped(rows: &[DisplayRow], y: f64) -> i32 {
+    if rows.is_empty() {
+        return -1;
+    }
+    let y_px = y.max(0.0).floor() as u32;
+    let index = rows.partition_point(|row| row.bottom_px() <= y_px);
+    if index >= rows.len() {
+        (rows.len() as i32).saturating_sub(1)
+    } else {
+        index as i32
+    }
+}
+
+cpp! {{
+    #include "app/surface/qt_raster_backend.hpp"
 }}
 
 #[repr(C)]
@@ -684,6 +344,9 @@ pub struct DiffSurfaceItem {
     viewport_height: qt_property!(f64; WRITE set_viewport_height NOTIFY viewport_height_changed ALIAS viewportHeight),
     viewport_height_changed: qt_signal!(),
 
+    hover_y: qt_property!(f64; WRITE set_hover_y ALIAS hoverY),
+    hover_active: qt_property!(bool; WRITE set_hover_active ALIAS hoverActive),
+
     wrap_enabled: qt_property!(bool; WRITE set_wrap_enabled NOTIFY wrap_enabled_changed ALIAS wrapEnabled),
     wrap_enabled_changed: qt_signal!(),
 
@@ -725,6 +388,8 @@ pub struct DiffSurfaceItem {
     gutter_digits: u32,
 
     hovered_row: i32,
+    hover_local_y: f64,
+    hover_active_value: bool,
     selection_anchor_row: i32,
     selection_cursor_row: i32,
     render_version: u64,
@@ -767,6 +432,8 @@ impl Default for DiffSurfaceItem {
             viewport_y_changed: Default::default(),
             viewport_height: 0.0,
             viewport_height_changed: Default::default(),
+            hover_y: 0.0,
+            hover_active: false,
             wrap_enabled: false,
             wrap_enabled_changed: Default::default(),
             wrap_column: 0,
@@ -800,6 +467,8 @@ impl Default for DiffSurfaceItem {
             hunk_height_px: 24,
             gutter_digits: 3,
             hovered_row: -1,
+            hover_local_y: 0.0,
+            hover_active_value: false,
             selection_anchor_row: -1,
             selection_cursor_row: -1,
             render_version: 1,
@@ -915,32 +584,82 @@ impl DiffSurfaceItem {
         }
     }
 
-    fn unified_number_width_px(&self) -> f64 {
-        f64::from(self.gutter_digits.max(1)) * self.char_width + 12.0
+    fn unified_text_start_px(&self) -> f64 {
+        unified_text_start_px(self.gutter_digits, self.char_width)
     }
 
-    fn unified_text_start_px(&self) -> f64 {
-        self.unified_number_width_px() * 2.0 + 16.0
+    fn unified_text_start_px_for(&self, gutter_digits: u32) -> f64 {
+        unified_text_start_px(gutter_digits, self.char_width)
     }
 
     fn split_side_width_px(&self) -> f64 {
-        ((self.bounding_width() - SPLIT_GAP_PX).max(32.0)) / 2.0
-    }
-
-    fn split_number_width_px(&self) -> f64 {
-        f64::from(self.gutter_digits.max(1)) * self.char_width + 12.0
+        split_side_width_px(self.bounding_width())
     }
 
     fn split_text_start_px(&self) -> f64 {
-        self.split_number_width_px() + 12.0
+        split_text_start_px(self.gutter_digits, self.char_width)
     }
 
     fn unified_text_width_px(&self) -> f64 {
-        (self.bounding_width() - self.unified_text_start_px() - UNIFIED_TEXT_PADDING_PX).max(1.0)
+        apply_wrap_column(
+            unified_text_width_px(self.bounding_width(), self.gutter_digits, self.char_width),
+            self.wrap_enabled,
+            self.wrap_column.max(0) as u32,
+            self.char_width,
+        )
     }
 
     fn split_text_width_px(&self) -> f64 {
-        (self.split_side_width_px() - self.split_text_start_px() - SPLIT_TEXT_PADDING_PX).max(1.0)
+        apply_wrap_column(
+            split_text_width_px(self.bounding_width(), self.gutter_digits, self.char_width),
+            self.wrap_enabled,
+            self.wrap_column.max(0) as u32,
+            self.char_width,
+        )
+    }
+
+    fn measure_text_width_for_family(doc: &RenderDoc, range: ByteRange, family: &QString) -> f64 {
+        if !range.is_valid() {
+            return 0.0;
+        }
+        let text = QString::from(doc.line_text(range));
+        let family = family.clone();
+        cpp!(unsafe [family as "QString", text as "QString"] -> f64 as "double" {
+            return diffyMeasureTextWidth(family, 12, text);
+        })
+    }
+
+    fn measure_wrap_count_for_family(
+        doc: &RenderDoc,
+        range: ByteRange,
+        width_px: f64,
+        wrap_enabled: bool,
+        family: &QString,
+    ) -> u16 {
+        if !range.is_valid() || !wrap_enabled {
+            return 1;
+        }
+        let text = QString::from(doc.line_text(range));
+        let family = family.clone();
+        cpp!(unsafe [family as "QString", text as "QString", width_px as "double", wrap_enabled as "bool"] -> u16 as "quint16" {
+            return diffyWrapLineCount(family, 12, text, width_px, wrap_enabled);
+        })
+    }
+
+    fn update_hovered_row_from_pointer(&mut self) {
+        let next = if self.hover_active_value {
+            row_index_at_y_exact(
+                &self.display_rows_store,
+                self.content_height.max(0.0).ceil() as u32,
+                self.hover_local_y + self.viewport_y,
+            )
+        } else {
+            -1
+        };
+        if self.hovered_row != next {
+            self.hovered_row = next;
+            self.invalidate_rendering();
+        }
     }
 
     fn rebuild_display_rows(&mut self) {
@@ -955,6 +674,8 @@ impl DiffSurfaceItem {
             self.content_height_changed();
             self.content_width = self.bounding_width();
             self.content_width_changed();
+            self.gutter_digits = 3;
+            self.hovered_row = -1;
             self.lastLayoutTimeMs = 0.0;
             self.last_layout_time_ms_value = 0.0;
             self.perfStatsChanged();
@@ -962,24 +683,29 @@ impl DiffSurfaceItem {
             return;
         };
 
-        let layout_summary = rebuild_display_rows(
+        let bounds_width = self.bounding_width();
+        let family = self.monoFontFamily.clone();
+        let (layout_config, gutter_digits) = layout_config_for_doc(
             doc,
-            DisplayLayoutConfig {
-                split_mode: self.layout_mode.to_string() == "split",
-                wrap_enabled: self.wrap_enabled,
-                wrap_column: self.wrap_column.max(0) as u32,
-                char_width_px: self.char_width,
-                unified_text_width_px: self.unified_text_width_px(),
-                split_text_width_px: self.split_text_width_px(),
-            },
-            DisplayLayoutMetrics {
-                body_row_height_px: self.body_row_height_px,
-                file_header_height_px: self.file_header_height_px,
-                hunk_height_px: self.hunk_height_px,
+            bounds_width,
+            self.char_width,
+            self.layout_mode.to_string() == "split",
+            self.wrap_enabled,
+            self.wrap_column.max(0) as u32,
+            self.body_row_height_px,
+            self.file_header_height_px,
+            self.hunk_height_px,
+        );
+        let layout_summary = build_surface_display_rows(
+            doc,
+            layout_config,
+            &|range| Self::measure_text_width_for_family(doc, range, &family),
+            &|range, width_px, wrap_enabled| {
+                Self::measure_wrap_count_for_family(doc, range, width_px, wrap_enabled, &family)
             },
             &mut self.display_rows_store,
         );
-        self.gutter_digits = layout_summary.gutter_digits;
+        self.gutter_digits = gutter_digits;
 
         build_strip_layouts(
             &self.display_rows_store,
@@ -994,14 +720,23 @@ impl DiffSurfaceItem {
         self.content_height_changed();
 
         self.content_width = if self.layout_mode.to_string() == "split" || self.wrap_enabled {
-            self.bounding_width()
+            bounds_width
         } else {
-            (self.unified_text_start_px()
+            (self.unified_text_start_px_for(gutter_digits)
                 + UNIFIED_TEXT_PADDING_PX
-                + f64::from(layout_summary.max_cols) * self.char_width)
-                .max(self.bounding_width())
+                + layout_summary.max_text_width_px)
+                .max(bounds_width)
         };
         self.content_width_changed();
+        self.hovered_row = if self.hover_active_value {
+            row_index_at_y_exact(
+                &self.display_rows_store,
+                layout_summary.content_height_px,
+                self.hover_local_y + self.viewport_y,
+            )
+        } else {
+            -1
+        };
 
         let layout_ms = elapsed_ms(start);
         self.lastLayoutTimeMs = layout_ms;
@@ -1011,18 +746,15 @@ impl DiffSurfaceItem {
     }
 
     fn row_index_at_y(&self, y: f64) -> i32 {
-        if self.display_rows_store.is_empty() {
-            return -1;
-        }
-        let y_px = y.max(0.0) as u32;
-        let index = self
-            .display_rows_store
-            .partition_point(|row| row.bottom_px() <= y_px);
-        if index >= self.display_rows_store.len() {
-            (self.display_rows_store.len() as i32).saturating_sub(1)
-        } else {
-            index as i32
-        }
+        row_index_at_y_exact(
+            &self.display_rows_store,
+            self.content_height.max(0.0).ceil() as u32,
+            y,
+        )
+    }
+
+    fn clamped_row_index_at_y(&self, y: f64) -> i32 {
+        row_index_at_y_clamped(&self.display_rows_store, y)
     }
 
     fn visible_strip_window(&self) -> (usize, usize) {
@@ -1136,7 +868,7 @@ impl DiffSurfaceItem {
         let strip_height = slot_logical_height_px;
         let gutter_digits = self.gutter_digits;
         let char_width = self.char_width;
-        let line_height_px = f64::from(self.line_height_px);
+        let body_row_height_px = f64::from(self.body_row_height_px);
         let body_font_px = BODY_FONT_PX as f64;
         let unified_text_start_px = self.unified_text_start_px();
         let unified_text_width_px = self.unified_text_width_px();
@@ -1213,7 +945,7 @@ impl DiffSurfaceItem {
             strip_height as "quint32",
             gutter_digits as "quint32",
             char_width as "double",
-            line_height_px as "double",
+            body_row_height_px as "double",
             body_font_px as "double",
             unified_text_start_px as "double",
             unified_text_width_px as "double",
@@ -1259,7 +991,7 @@ impl DiffSurfaceItem {
                 strip_height,
                 gutter_digits,
                 char_width,
-                line_height_px,
+                body_row_height_px,
                 body_font_px,
                 unified_text_start_px,
                 unified_text_width_px,
@@ -1457,6 +1189,18 @@ impl DiffSurfaceItem {
         }
         self.viewport_y = value.max(0.0);
         self.viewport_y_changed();
+        if self.hover_active_value {
+            let next = row_index_at_y_exact(
+                &self.display_rows_store,
+                self.content_height.max(0.0).ceil() as u32,
+                self.hover_local_y + self.viewport_y,
+            );
+            if next != self.hovered_row {
+                self.hovered_row = next;
+                self.invalidate_rendering();
+                return;
+            }
+        }
         self.update_item();
     }
 
@@ -1467,6 +1211,22 @@ impl DiffSurfaceItem {
         self.viewport_height = value.max(0.0);
         self.viewport_height_changed();
         self.update_item();
+    }
+
+    pub fn set_hover_y(&mut self, value: f64) {
+        if (self.hover_local_y - value).abs() < f64::EPSILON {
+            return;
+        }
+        self.hover_local_y = value;
+        self.update_hovered_row_from_pointer();
+    }
+
+    pub fn set_hover_active(&mut self, value: bool) {
+        if self.hover_active_value == value {
+            return;
+        }
+        self.hover_active_value = value;
+        self.update_hovered_row_from_pointer();
     }
 
     pub fn set_wrap_enabled(&mut self, value: bool) {
@@ -1512,7 +1272,9 @@ impl QQuickItem for DiffSurfaceItem {
     }
 
     fn mouse_event(&mut self, event: QMouseEvent) -> bool {
-        let row_index = self.row_index_at_y(event.position().y + self.viewport_y);
+        let absolute_y = event.position().y + self.viewport_y;
+        let row_index = self.row_index_at_y(absolute_y);
+        let clamped_row_index = self.clamped_row_index_at_y(absolute_y);
         match event.event_type() {
             QMouseEventType::MouseButtonPress => {
                 self.force_focus();
@@ -1523,15 +1285,27 @@ impl QQuickItem for DiffSurfaceItem {
                 true
             }
             QMouseEventType::MouseMove => {
-                self.hovered_row = row_index;
+                self.hovered_row = if row_index >= 0 {
+                    row_index
+                } else if self.selection_anchor_row >= 0 {
+                    clamped_row_index
+                } else {
+                    -1
+                };
                 if self.selection_anchor_row >= 0 {
-                    self.selection_cursor_row = row_index;
+                    self.selection_cursor_row = clamped_row_index;
                 }
                 self.invalidate_rendering();
                 true
             }
             QMouseEventType::MouseButtonRelease => {
-                self.selection_cursor_row = row_index;
+                if self.selection_anchor_row >= 0 {
+                    self.selection_cursor_row = if row_index >= 0 {
+                        row_index
+                    } else {
+                        clamped_row_index
+                    };
+                }
                 self.invalidate_rendering();
                 true
             }
@@ -1604,9 +1378,23 @@ impl QQuickItem for DiffSurfaceItem {
 
 #[cfg(test)]
 mod tests {
-    use super::{StripSlot, slot_needs_raster};
+    use super::{
+        ByteRange, RenderDoc, RenderRowKind, StripSlot, SurfaceLayoutConfig,
+        build_surface_display_rows, layout_config_for_doc, row_index_at_y_clamped,
+        row_index_at_y_exact, slot_needs_raster, unified_text_width_px,
+    };
+    use crate::app::surface::render_doc::{DisplayRow, RenderLine};
     use crate::app::surface::strip_layout::StripLayout;
     use std::ffi::c_void;
+
+    fn append_text(bytes: &mut Vec<u8>, text: &str) -> ByteRange {
+        let start = bytes.len() as u32;
+        bytes.extend_from_slice(text.as_bytes());
+        ByteRange {
+            start,
+            len: text.len() as u32,
+        }
+    }
 
     #[test]
     fn reused_slot_with_new_strip_is_forced_to_rasterize() {
@@ -1652,5 +1440,98 @@ mod tests {
         };
 
         assert!(!slot_needs_raster(&slot, strip, 7));
+    }
+
+    #[test]
+    fn unified_modified_rows_stack_both_sides_in_height() {
+        let mut text_bytes = Vec::new();
+        let left = append_text(&mut text_bytes, "abcdefghi");
+        let right = append_text(&mut text_bytes, "abcdefghijklm");
+        let doc = RenderDoc {
+            text_bytes,
+            style_runs: Vec::new(),
+            lines: vec![RenderLine {
+                kind: RenderRowKind::Modified as u8,
+                old_line_no: 12,
+                new_line_no: 12,
+                left_text: left,
+                right_text: right,
+                ..RenderLine::default()
+            }],
+        };
+        let config = SurfaceLayoutConfig {
+            split_mode: false,
+            wrap_enabled: true,
+            unified_text_width_px: 50.0,
+            split_text_width_px: 40.0,
+            body_row_height_px: 20,
+            file_header_height_px: 32,
+            hunk_height_px: 24,
+        };
+        let mut rows = Vec::new();
+
+        let summary = build_surface_display_rows(
+            &doc,
+            config,
+            &|range| doc.line_text(range).len() as f64 * 10.0,
+            &|range, width_px, wrap_enabled| {
+                if !wrap_enabled {
+                    return 1;
+                }
+                ((doc.line_text(range).len() as f64 * 10.0) / width_px).ceil() as u16
+            },
+            &mut rows,
+        );
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].wrap_left, 2);
+        assert_eq!(rows[0].wrap_right, 3);
+        assert_eq!(rows[0].h_px, 100);
+        assert_eq!(summary.content_height_px, 100);
+    }
+
+    #[test]
+    fn layout_config_uses_current_document_gutter_digits() {
+        let doc = RenderDoc {
+            text_bytes: Vec::new(),
+            style_runs: Vec::new(),
+            lines: vec![RenderLine {
+                kind: RenderRowKind::Context as u8,
+                old_line_no: 1234,
+                new_line_no: 1234,
+                ..RenderLine::default()
+            }],
+        };
+
+        let (config, gutter_digits) =
+            layout_config_for_doc(&doc, 300.0, 10.0, false, true, 0, 20, 32, 24);
+
+        assert_eq!(gutter_digits, 4);
+        assert_eq!(
+            config.unified_text_width_px,
+            unified_text_width_px(300.0, 4, 10.0)
+        );
+        assert!(config.unified_text_width_px < unified_text_width_px(300.0, 3, 10.0));
+    }
+
+    #[test]
+    fn exact_hit_testing_rejects_blank_space_below_content() {
+        let rows = vec![
+            DisplayRow {
+                y_px: 0,
+                h_px: 20,
+                ..DisplayRow::default()
+            },
+            DisplayRow {
+                y_px: 20,
+                h_px: 20,
+                ..DisplayRow::default()
+            },
+        ];
+
+        assert_eq!(row_index_at_y_exact(&rows, 40, 39.0), 1);
+        assert_eq!(row_index_at_y_exact(&rows, 40, 40.0), -1);
+        assert_eq!(row_index_at_y_exact(&rows, 40, 75.0), -1);
+        assert_eq!(row_index_at_y_clamped(&rows, 75.0), 1);
     }
 }

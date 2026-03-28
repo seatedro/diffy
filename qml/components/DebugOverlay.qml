@@ -24,15 +24,7 @@ Rectangle {
     property real fps: 0
     property real peakPaintMs: 0
     property real peakRasterMs: 0
-    property string worstOp: "-"
-    property real worstOpMs: 0
-
-    function updateWorst(name, ms) {
-        if (ms > root.worstOpMs) {
-            root.worstOpMs = ms
-            root.worstOp = name
-        }
-    }
+    property real peakLayoutMs: 0
 
     Timer {
         running: root.showing
@@ -43,8 +35,7 @@ Rectangle {
             root.frameCount = 0
             root.peakPaintMs = 0
             root.peakRasterMs = 0
-            root.worstOp = "-"
-            root.worstOpMs = 0
+            root.peakLayoutMs = 0
         }
     }
 
@@ -56,19 +47,14 @@ Rectangle {
             if (root.surface) {
                 var pt = root.surface.lastPaintTimeMs
                 var rt = root.surface.lastRasterTimeMs
-                var ut = root.surface.lastTextureUploadTimeMs
                 if (pt > root.peakPaintMs) root.peakPaintMs = pt
                 if (rt > root.peakRasterMs) root.peakRasterMs = rt
-                root.updateWorst("paint", pt)
-                root.updateWorst("raster", rt)
-                root.updateWorst("upload", ut)
             }
         }
         function onPerfStatsChanged() {
             if (root.surface) {
-                root.updateWorst("rebuild", root.surface.lastRowsRebuildTimeMs)
-                root.updateWorst("layout", root.surface.lastDisplayRowsRebuildTimeMs)
-                root.updateWorst("metrics", root.surface.lastMetricsRecalcTimeMs)
+                var lt = root.surface.lastLayoutTimeMs
+                if (lt > root.peakLayoutMs) root.peakLayoutMs = lt
             }
         }
     }
@@ -113,11 +99,11 @@ Rectangle {
         }
 
         Text {
-            property real uploadMs: root.surface ? root.surface.lastTextureUploadTimeMs : 0
-            text: "upload  " + uploadMs.toFixed(2) + " ms"
+            property real layoutMs: root.surface ? root.surface.lastLayoutTimeMs : 0
+            text: "layout  " + layoutMs.toFixed(2) + " ms"
             font.family: theme.mono
             font.pixelSize: 10
-            color: uploadMs > 4 ? "#ff6060" : "#cccccc"
+            color: layoutMs > 8 ? "#ff6060" : layoutMs > 4 ? "#ffcc44" : "#cccccc"
         }
 
         Rectangle { width: col.width; height: 1; color: "#20ffffff" }
@@ -137,43 +123,33 @@ Rectangle {
         }
 
         Text {
-            text: "worst op    " + root.worstOp + " " + root.worstOpMs.toFixed(2) + " ms"
+            text: "peak layout " + root.peakLayoutMs.toFixed(2) + " ms"
             font.family: theme.mono
             font.pixelSize: 10
-            color: root.worstOpMs > 16 ? "#ff6060" : root.worstOpMs > 8 ? "#ffcc44" : "#999999"
+            color: root.peakLayoutMs > 16 ? "#ff6060" : root.peakLayoutMs > 8 ? "#ffcc44" : "#999999"
         }
 
         Rectangle { width: col.width; height: 1; color: "#20ffffff" }
 
         Text {
-            property int hits: root.surface ? root.surface.tileCacheHits : 0
-            property int misses: root.surface ? root.surface.tileCacheMisses : 0
-            property real rate: (hits + misses) > 0 ? (100.0 * hits / (hits + misses)) : 0
-            text: "cache   " + rate.toFixed(0) + "% (" + hits + "/" + (hits + misses) + ")"
-            font.family: theme.mono
-            font.pixelSize: 10
-            color: rate < 80 ? "#ffcc44" : "#cccccc"
-        }
-
-        Text {
-            property int resident: root.surface ? root.surface.residentTileCount : 0
-            text: "tiles   " + resident
+            property int strips: root.surface ? root.surface.stripCount : 0
+            text: "strips  " + strips
             font.family: theme.mono
             font.pixelSize: 10
             color: "#cccccc"
         }
 
         Text {
-            property int pending: root.surface ? root.surface.pendingTileJobCount : 0
-            text: "pending " + pending
+            property int reuse: root.surface ? root.surface.stripReuseCount : 0
+            text: "reuse   " + reuse
             font.family: theme.mono
             font.pixelSize: 10
-            color: pending > 10 ? "#ffcc44" : "#cccccc"
+            color: "#cccccc"
         }
 
         Text {
-            property int uploads: root.surface ? root.surface.textureUploadCount : 0
-            text: "uploads " + uploads
+            property int rastered: root.surface ? root.surface.stripRerasterCount : 0
+            text: "rasterd " + rastered
             font.family: theme.mono
             font.pixelSize: 10
             color: "#cccccc"
@@ -187,30 +163,6 @@ Rectangle {
             font.family: theme.mono
             font.pixelSize: 10
             color: "#cccccc"
-        }
-
-        Text {
-            property int paints: root.surface ? root.surface.paintCount : 0
-            text: "frames  " + paints
-            font.family: theme.mono
-            font.pixelSize: 10
-            color: "#cccccc"
-        }
-
-        Text {
-            property real rebuildMs: root.surface ? root.surface.lastRowsRebuildTimeMs : 0
-            text: "rebuild " + rebuildMs.toFixed(2) + " ms"
-            font.family: theme.mono
-            font.pixelSize: 10
-            color: rebuildMs > 50 ? "#ff6060" : rebuildMs > 10 ? "#ffcc44" : "#cccccc"
-        }
-
-        Text {
-            property real metricsMs: root.surface ? root.surface.lastMetricsRecalcTimeMs : 0
-            text: "metrics " + metricsMs.toFixed(2) + " ms"
-            font.family: theme.mono
-            font.pixelSize: 10
-            color: metricsMs > 50 ? "#ff6060" : metricsMs > 10 ? "#ffcc44" : "#cccccc"
         }
     }
 }

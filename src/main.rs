@@ -271,7 +271,9 @@ fn assert_results_ready(controller: &DiffController) -> Result<(), String> {
     if controller.get_files().is_empty() {
         return Err(non_empty_error(controller.get_error_message().to_string()));
     }
-    if controller.get_selected_file_row_count() == 0 {
+    if !controller.get_selected_file_render_ready()
+        || controller.get_selected_file_render_line_count() == 0
+    {
         return Err(non_empty_error(controller.get_error_message().to_string()));
     }
     Ok(())

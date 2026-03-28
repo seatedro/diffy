@@ -88,11 +88,11 @@ mod tests {
 
     #[test]
     fn subsequence_matches() {
-        assert!(fuzzy_score("cmk", "CMakeLists.txt").unwrap() > 0);
+        assert!(fuzzy_score("car", "Cargo.toml").unwrap() > 0);
     }
 
     #[test]
     fn no_match_returns_none() {
-        assert_eq!(fuzzy_score("xyz", "CMakeLists.txt"), None);
+        assert_eq!(fuzzy_score("xyz", "Cargo.toml"), None);
     }
 }

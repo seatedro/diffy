@@ -1,8 +1,11 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::core::compare::{CompareMode, CompareOutput, CompareSpec, LayoutMode, RendererKind};
-use crate::core::diff::FileDiff;
+use crate::core::diff::{FileDiff, LineKind};
+use crate::core::search::fuzzy::fuzzy_score;
+use crate::core::text::TextBuffer;
 use crate::core::vcs::git::{BranchInfo, CommitInfo, TagInfo};
 use crate::core::vcs::github::{DeviceFlowState, PullRequestInfo};
 use crate::platform::persistence::{PersistedCompare, Settings};
@@ -28,6 +31,29 @@ pub enum AsyncStatus {
     Loading,
     Ready,
     Failed,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CompareField {
+    #[default]
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusTarget {
+    OpenRepositoryButton,
+    LeftRef,
+    RightRef,
+    StartCompare,
+    FileList,
+    Preview,
+    PullRequestUrl,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FocusState {
+    pub current: Option<FocusTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,11 +84,29 @@ impl Default for CompareState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CompareFormState {
+    pub validation_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepositoryState {
     pub status: AsyncStatus,
     pub branches: Vec<BranchInfo>,
     pub tags: Vec<TagInfo>,
     pub commits: Vec<CommitInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefSuggestion {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OverlayState {
+    pub active_field: Option<CompareField>,
+    pub ref_suggestions: Vec<RefSuggestion>,
+    pub selected_index: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +152,45 @@ impl WorkspaceState {
         self.used_fallback = false;
         self.fallback_message.clear();
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileListState {
+    pub scroll_offset: usize,
+    pub hovered_index: Option<usize>,
+    pub row_height: f32,
+}
+
+impl Default for FileListState {
+    fn default() -> Self {
+        Self {
+            scroll_offset: 0,
+            hovered_index: None,
+            row_height: 30.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PreviewLineKind {
+    Title,
+    Meta,
+    #[default]
+    Context,
+    Added,
+    Removed,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PreviewLine {
+    pub kind: PreviewLineKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PreviewState {
+    pub scroll_offset: usize,
+    pub lines: Vec<PreviewLine>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -166,8 +249,13 @@ pub struct DebugState {
 pub struct AppState {
     pub current_screen: Screen,
     pub compare: CompareState,
+    pub compare_form: CompareFormState,
     pub repository: RepositoryState,
     pub workspace: WorkspaceState,
+    pub file_list: FileListState,
+    pub preview: PreviewState,
+    pub overlay: OverlayState,
+    pub focus: FocusState,
     pub viewport: DiffViewportState,
     pub github: GitHubState,
     pub settings: Settings,
@@ -231,8 +319,19 @@ impl AppState {
                 resolved_left: None,
                 resolved_right: None,
             },
+            compare_form: CompareFormState::default(),
             repository: RepositoryState::default(),
             workspace: WorkspaceState::default(),
+            file_list: FileListState::default(),
+            preview: PreviewState::default(),
+            overlay: OverlayState::default(),
+            focus: FocusState {
+                current: if repo_path.is_some() {
+                    Some(FocusTarget::LeftRef)
+                } else {
+                    Some(FocusTarget::OpenRepositoryButton)
+                },
+            },
             viewport: DiffViewportState {
                 layout,
                 wrap_enabled: settings.viewport.wrap_enabled,
@@ -279,33 +378,19 @@ impl AppState {
     pub fn apply_action(&mut self, action: Action) -> Vec<Effect> {
         match action {
             Action::Bootstrap => Vec::new(),
-            Action::OpenRepository(path) => {
-                self.current_screen = Screen::Compare;
-                self.compare.repo_path = Some(path.clone());
-                self.compare.resolved_left = None;
-                self.compare.resolved_right = None;
-                self.repository.status = AsyncStatus::Loading;
-                self.workspace.clear_compare();
-                self.last_error = None;
-                self.github.pull_request.info = None;
-                self.sync_settings_snapshot();
-                vec![
-                    Effect::SaveSettings(self.settings.clone()),
-                    Effect::LoadRepository { path },
-                ]
-            }
+            Action::OpenRepositoryDialog => vec![Effect::OpenRepositoryDialog],
+            Action::OpenRepository(path) => self.open_repository(path),
             Action::SetLeftRef(value) => {
-                self.compare.left_ref = value;
-                self.compare.resolved_left = None;
+                self.update_compare_field(CompareField::Left, value);
                 self.persist_settings_effect()
             }
             Action::SetRightRef(value) => {
-                self.compare.right_ref = value;
-                self.compare.resolved_right = None;
+                self.update_compare_field(CompareField::Right, value);
                 self.persist_settings_effect()
             }
             Action::SetCompareMode(mode) => {
                 self.compare.mode = mode;
+                self.compare_form.validation_message = None;
                 self.persist_settings_effect()
             }
             Action::SetLayoutMode(layout) => {
@@ -316,6 +401,65 @@ impl AppState {
             Action::SetRenderer(renderer) => {
                 self.compare.renderer = renderer;
                 self.persist_settings_effect()
+            }
+            Action::SetFocus(target) => {
+                self.focus.current = target;
+                self.overlay.active_field = match target {
+                    Some(FocusTarget::LeftRef) => Some(CompareField::Left),
+                    Some(FocusTarget::RightRef) => Some(CompareField::Right),
+                    _ => None,
+                };
+                self.overlay.selected_index = 0;
+                self.refresh_ref_suggestions();
+                Vec::new()
+            }
+            Action::InsertText(value) => {
+                let field = match self.focus.current {
+                    Some(FocusTarget::LeftRef) => Some(CompareField::Left),
+                    Some(FocusTarget::RightRef) => Some(CompareField::Right),
+                    Some(FocusTarget::PullRequestUrl) => {
+                        self.github.pull_request.url_input.push_str(&value);
+                        return Vec::new();
+                    }
+                    _ => None,
+                };
+                if let Some(field) = field {
+                    let mut next = self.field_value(field).to_owned();
+                    next.push_str(&value);
+                    self.update_compare_field(field, next);
+                    return self.persist_settings_effect();
+                }
+                Vec::new()
+            }
+            Action::Backspace => {
+                let field = match self.focus.current {
+                    Some(FocusTarget::LeftRef) => Some(CompareField::Left),
+                    Some(FocusTarget::RightRef) => Some(CompareField::Right),
+                    Some(FocusTarget::PullRequestUrl) => {
+                        self.github.pull_request.url_input.pop();
+                        return Vec::new();
+                    }
+                    _ => None,
+                };
+                if let Some(field) = field {
+                    let mut next = self.field_value(field).to_owned();
+                    next.pop();
+                    self.update_compare_field(field, next);
+                    return self.persist_settings_effect();
+                }
+                Vec::new()
+            }
+            Action::SelectRefSuggestion(index) => {
+                if let Some(suggestion) = self.overlay.ref_suggestions.get(index).cloned()
+                    && let Some(field) = self.overlay.active_field
+                {
+                    self.update_compare_field(field, suggestion.value);
+                    self.overlay.active_field = None;
+                    self.overlay.selected_index = 0;
+                    self.refresh_ref_suggestions();
+                    return self.persist_settings_effect();
+                }
+                Vec::new()
             }
             Action::StartCompare => self.kickoff_compare(),
             Action::SelectFile(index) => {
@@ -333,6 +477,34 @@ impl AppState {
                 } else {
                     self.startup.preferred_file_path = Some(path);
                 }
+                Vec::new()
+            }
+            Action::SelectNextFile => {
+                self.shift_loaded_file(1);
+                Vec::new()
+            }
+            Action::SelectPreviousFile => {
+                self.shift_loaded_file(-1);
+                Vec::new()
+            }
+            Action::ScrollFileList(delta) => {
+                self.file_list.scroll_offset = apply_scroll_delta(
+                    self.file_list.scroll_offset,
+                    delta,
+                    self.workspace.files.len().saturating_sub(1),
+                );
+                Vec::new()
+            }
+            Action::ScrollPreview(delta) => {
+                self.preview.scroll_offset = apply_scroll_delta(
+                    self.preview.scroll_offset,
+                    delta,
+                    self.preview.lines.len().saturating_sub(1),
+                );
+                Vec::new()
+            }
+            Action::HoverFile(index) => {
+                self.file_list.hovered_index = index;
                 Vec::new()
             }
             Action::OpenPullRequest(url) => {
@@ -373,6 +545,9 @@ impl AppState {
 
     pub fn apply_event(&mut self, event: AppEvent) -> Vec<Effect> {
         match event {
+            AppEvent::RepositoryDialogClosed { path } => {
+                path.map_or_else(Vec::new, |path| self.open_repository(path))
+            }
             AppEvent::RepositoryLoaded(payload) => self.handle_repository_loaded(payload),
             AppEvent::RepositoryLoadFailed { path, message } => {
                 if self.compare.repo_path.as_ref() == Some(&path) {
@@ -389,6 +564,7 @@ impl AppState {
                 if generation == self.workspace.compare_generation {
                     self.workspace.status = AsyncStatus::Failed;
                     self.current_screen = Screen::Compare;
+                    self.compare_form.validation_message = Some(message.clone());
                     self.push_error(&message);
                 }
                 Vec::new()
@@ -402,8 +578,8 @@ impl AppState {
                 self.github.pull_request.status = AsyncStatus::Ready;
                 self.github.pull_request.url_input = url;
                 self.github.pull_request.info = Some(info);
-                self.compare.left_ref = left_ref;
-                self.compare.right_ref = right_ref;
+                self.update_compare_field(CompareField::Left, left_ref);
+                self.update_compare_field(CompareField::Right, right_ref);
                 self.compare.mode = CompareMode::ThreeDot;
                 self.kickoff_compare()
             }
@@ -476,6 +652,28 @@ impl AppState {
         }
     }
 
+    fn open_repository(&mut self, path: PathBuf) -> Vec<Effect> {
+        self.current_screen = Screen::Compare;
+        self.compare.repo_path = Some(path.clone());
+        self.compare.resolved_left = None;
+        self.compare.resolved_right = None;
+        self.compare_form.validation_message = None;
+        self.repository.status = AsyncStatus::Loading;
+        self.workspace.clear_compare();
+        self.file_list = FileListState::default();
+        self.preview = PreviewState::default();
+        self.last_error = None;
+        self.github.pull_request.info = None;
+        self.focus.current = Some(FocusTarget::LeftRef);
+        self.overlay.active_field = Some(CompareField::Left);
+        self.refresh_ref_suggestions();
+        self.sync_settings_snapshot();
+        vec![
+            Effect::SaveSettings(self.settings.clone()),
+            Effect::LoadRepository { path },
+        ]
+    }
+
     fn handle_repository_loaded(&mut self, payload: RepositoryLoaded) -> Vec<Effect> {
         if self.compare.repo_path.as_ref() != Some(&payload.path) {
             return Vec::new();
@@ -486,6 +684,7 @@ impl AppState {
         self.repository.tags = payload.tags;
         self.repository.commits = payload.commits;
         self.settings.remember_repo(&payload.path);
+        self.refresh_ref_suggestions();
 
         let mut effects = self.persist_settings_effect();
         if let Some(url) = self.startup.pending_pr_url.clone() {
@@ -510,6 +709,7 @@ impl AppState {
 
         self.workspace.status = AsyncStatus::Ready;
         self.current_screen = Screen::Diff;
+        self.compare_form.validation_message = None;
         self.compare.layout = payload.spec.layout;
         self.compare.renderer = payload.spec.renderer;
         self.compare.resolved_left = Some(payload.resolved_left);
@@ -519,6 +719,11 @@ impl AppState {
         self.workspace.fallback_message = payload.output.fallback_message.clone();
         self.workspace.files = build_file_entries(&payload.output.files);
         self.workspace.compare_output = Some(payload.output);
+        self.file_list.scroll_offset = 0;
+        self.preview.scroll_offset = 0;
+        self.focus.current = Some(FocusTarget::FileList);
+        self.overlay.active_field = None;
+        self.overlay.ref_suggestions.clear();
 
         let preferred_index = self
             .startup
@@ -546,6 +751,7 @@ impl AppState {
             self.workspace.selected_file_index = None;
             self.workspace.selected_file_path = None;
             self.workspace.active_file = None;
+            self.preview.lines.clear();
         }
 
         if self.workspace.used_fallback && !self.workspace.fallback_message.is_empty() {
@@ -556,6 +762,8 @@ impl AppState {
 
     fn kickoff_compare(&mut self) -> Vec<Effect> {
         let Some(repo_path) = self.compare.repo_path.clone() else {
+            self.compare_form.validation_message =
+                Some("Open a repository before starting a compare.".to_owned());
             self.push_error("Open a repository before starting a compare.");
             return Vec::new();
         };
@@ -565,12 +773,15 @@ impl AppState {
             &self.compare.left_ref,
             &self.compare.right_ref,
         ) {
+            self.compare_form.validation_message =
+                Some("Provide the required refs for the selected compare mode.".to_owned());
             self.push_error("Provide the required refs for the selected compare mode.");
             return Vec::new();
         }
 
         self.current_screen = Screen::Compare;
         self.workspace.status = AsyncStatus::Loading;
+        self.compare_form.validation_message = None;
         self.workspace.compare_generation = self.workspace.compare_generation.saturating_add(1);
         self.sync_settings_snapshot();
 
@@ -612,6 +823,126 @@ impl AppState {
         });
     }
 
+    fn update_compare_field(&mut self, field: CompareField, value: String) {
+        match field {
+            CompareField::Left => {
+                self.compare.left_ref = value;
+                self.compare.resolved_left = None;
+            }
+            CompareField::Right => {
+                self.compare.right_ref = value;
+                self.compare.resolved_right = None;
+            }
+        }
+        self.overlay.active_field = Some(field);
+        self.refresh_ref_suggestions();
+    }
+
+    fn field_value(&self, field: CompareField) -> &str {
+        match field {
+            CompareField::Left => &self.compare.left_ref,
+            CompareField::Right => &self.compare.right_ref,
+        }
+    }
+
+    fn refresh_ref_suggestions(&mut self) {
+        let Some(field) = self.overlay.active_field else {
+            self.overlay.ref_suggestions.clear();
+            self.overlay.selected_index = 0;
+            return;
+        };
+
+        let query = self.field_value(field).trim();
+        let mut seen = HashSet::new();
+        let mut candidates = Vec::new();
+        let mut ordinal = 0_usize;
+
+        let mut push_candidate = |search_text: String, label: String, value: String| {
+            if !seen.insert(value.clone()) {
+                return;
+            }
+            let score = if query.is_empty() {
+                0
+            } else if let Some(score) = fuzzy_score(query, &search_text) {
+                score
+            } else {
+                return;
+            };
+            candidates.push((score, ordinal, RefSuggestion { label, value }));
+            ordinal = ordinal.saturating_add(1);
+        };
+
+        for branch in &self.repository.branches {
+            let scope = if branch.is_remote {
+                "remote branch"
+            } else {
+                "branch"
+            };
+            let mut label = format!("{scope:>13}  {}", branch.name);
+            if branch.is_head {
+                label.push_str("  [HEAD]");
+            }
+            push_candidate(
+                format!("{scope} {}", branch.name),
+                label,
+                branch.name.clone(),
+            );
+        }
+
+        for tag in &self.repository.tags {
+            push_candidate(
+                format!("tag {}", tag.name),
+                format!("{:>13}  {}", "tag", tag.name),
+                tag.name.clone(),
+            );
+        }
+
+        for commit in &self.repository.commits {
+            push_candidate(
+                format!("commit {} {}", commit.short_oid, commit.summary),
+                format!("{:>13}  {}  {}", "commit", commit.short_oid, commit.summary),
+                commit.oid.clone(),
+            );
+        }
+
+        candidates.sort_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then(left.1.cmp(&right.1))
+                .then(left.2.label.cmp(&right.2.label))
+        });
+
+        self.overlay.ref_suggestions = candidates
+            .into_iter()
+            .map(|(_, _, suggestion)| suggestion)
+            .take(8)
+            .collect();
+        if self.overlay.ref_suggestions.is_empty() {
+            self.overlay.selected_index = 0;
+        } else {
+            self.overlay.selected_index = self
+                .overlay
+                .selected_index
+                .min(self.overlay.ref_suggestions.len() - 1);
+        }
+    }
+
+    fn shift_loaded_file(&mut self, delta: isize) {
+        if self.workspace.files.is_empty() {
+            return;
+        }
+        let current = self.workspace.selected_file_index.unwrap_or(0);
+        let next = if delta.is_negative() {
+            current.saturating_sub(delta.unsigned_abs())
+        } else {
+            current
+                .saturating_add(delta as usize)
+                .min(self.workspace.files.len().saturating_sub(1))
+        };
+        self.select_loaded_file(next);
+    }
+
     fn select_loaded_file(&mut self, index: usize) {
         let Some(output) = self.workspace.compare_output.as_ref() else {
             self.startup.preferred_file_index = Some(index);
@@ -630,6 +961,10 @@ impl AppState {
             file: file.clone(),
             render_doc: build_render_doc(file, index, &output.text_buffer, &output.token_buffer),
         });
+        self.preview.lines = build_preview_lines(file, &output.text_buffer);
+        self.preview.scroll_offset = 0;
+        self.file_list.hovered_index = Some(index);
+        self.file_list.scroll_offset = self.file_list.scroll_offset.min(index);
     }
 
     fn push_error(&mut self, message: &str) {
@@ -670,8 +1005,78 @@ fn compare_refs_are_valid(mode: CompareMode, left_ref: &str, right_ref: &str) ->
     }
 }
 
+fn apply_scroll_delta(current: usize, delta: i32, max: usize) -> usize {
+    let next = if delta.is_negative() {
+        current.saturating_sub(delta.unsigned_abs() as usize)
+    } else {
+        current.saturating_add(delta as usize)
+    };
+    next.min(max)
+}
+
 fn build_file_entries(files: &[FileDiff]) -> Vec<FileListEntry> {
     files.iter().map(FileListEntry::from).collect()
+}
+
+fn build_preview_lines(file: &FileDiff, text_buffer: &TextBuffer) -> Vec<PreviewLine> {
+    let mut lines = Vec::new();
+    lines.push(PreviewLine {
+        kind: PreviewLineKind::Title,
+        text: file.path.clone(),
+    });
+    lines.push(PreviewLine {
+        kind: PreviewLineKind::Meta,
+        text: format!(
+            "status: {}   +{}   -{}{}",
+            file.status,
+            file.additions,
+            file.deletions,
+            if file.is_binary { "   [binary]" } else { "" }
+        ),
+    });
+    lines.push(PreviewLine {
+        kind: PreviewLineKind::Meta,
+        text: String::new(),
+    });
+
+    if file.is_binary {
+        lines.push(PreviewLine {
+            kind: PreviewLineKind::Meta,
+            text: "Binary file. Native preview is intentionally minimal in this shell phase."
+                .to_owned(),
+        });
+        return lines;
+    }
+
+    for hunk in &file.hunks {
+        lines.push(PreviewLine {
+            kind: PreviewLineKind::Meta,
+            text: hunk.header.clone(),
+        });
+
+        for line in &hunk.lines {
+            let prefix = match line.kind {
+                LineKind::Context => ' ',
+                LineKind::Added => '+',
+                LineKind::Removed => '-',
+            };
+            lines.push(PreviewLine {
+                kind: match line.kind {
+                    LineKind::Context => PreviewLineKind::Context,
+                    LineKind::Added => PreviewLineKind::Added,
+                    LineKind::Removed => PreviewLineKind::Removed,
+                },
+                text: format!("{prefix}{}", text_buffer.view(line.text_range)),
+            });
+        }
+
+        lines.push(PreviewLine {
+            kind: PreviewLineKind::Meta,
+            text: String::new(),
+        });
+    }
+
+    lines
 }
 
 impl From<&FileDiff> for FileListEntry {
@@ -690,12 +1095,13 @@ impl From<&FileDiff> for FileListEntry {
 mod tests {
     use clap::Parser;
 
-    use super::{AppState, Screen};
+    use super::{AppState, FocusTarget, PreviewLineKind, Screen};
     use crate::core::compare::{CompareMode, CompareOutput, LayoutMode, RendererKind};
-    use crate::core::diff::FileDiff;
+    use crate::core::diff::{DiffLine, FileDiff, Hunk, LineKind};
     use crate::platform::persistence::{Settings, SettingsStore};
     use crate::platform::startup::{Args, StartupOptions};
     use crate::ui::actions::Action;
+    use crate::ui::events::AppEvent;
 
     #[test]
     fn bootstrap_queues_repo_load_for_startup_repo() {
@@ -756,6 +1162,7 @@ mod tests {
         let effects = state.apply_action(Action::StartCompare);
         assert!(effects.is_empty());
         assert!(state.last_error.is_some());
+        assert!(state.compare_form.validation_message.is_some());
     }
 
     #[test]
@@ -767,17 +1174,23 @@ mod tests {
             false,
         );
         let (mut state, _) = AppState::bootstrap(startup, Settings::default());
-        state.workspace.compare_output = Some(CompareOutput {
-            files: vec![FileDiff {
-                path: "src/main.rs".to_owned(),
-                ..FileDiff::default()
-            }],
-            ..CompareOutput::default()
-        });
-        let file = FileDiff {
+        let mut output = CompareOutput::default();
+        output.files = vec![FileDiff {
             path: "src/main.rs".to_owned(),
+            hunks: vec![Hunk {
+                header: "@@ -1 +1 @@".to_owned(),
+                lines: vec![DiffLine {
+                    kind: LineKind::Added,
+                    new_line_number: Some(1),
+                    text_range: output.text_buffer.append("hello"),
+                    ..DiffLine::default()
+                }],
+                ..Hunk::default()
+            }],
             ..FileDiff::default()
-        };
+        }];
+        let file = output.files[0].clone();
+        state.workspace.compare_output = Some(output);
         state.workspace.files = vec![(&file).into()];
 
         state.apply_action(Action::SelectFile(0));
@@ -785,6 +1198,30 @@ mod tests {
             state.workspace.selected_file_path.as_deref(),
             Some("src/main.rs")
         );
+        assert!(
+            state
+                .preview
+                .lines
+                .iter()
+                .any(|line| line.kind == PreviewLineKind::Added)
+        );
+    }
+
+    #[test]
+    fn repository_dialog_event_opens_repository() {
+        let startup = StartupOptions::from_parts(
+            Args::parse_from(["diffy"]),
+            None,
+            "client".to_owned(),
+            false,
+        );
+        let (mut state, _) = AppState::bootstrap(startup, Settings::default());
+        let effects = state.apply_event(AppEvent::RepositoryDialogClosed {
+            path: Some("C:\\repo".into()),
+        });
+        assert_eq!(state.current_screen, Screen::Compare);
+        assert_eq!(state.focus.current, Some(FocusTarget::LeftRef));
+        assert_eq!(effects.len(), 2);
     }
 
     #[test]

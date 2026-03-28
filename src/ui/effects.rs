@@ -12,6 +12,7 @@ pub struct CompareRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
+    OpenRepositoryDialog,
     LoadRepository {
         path: PathBuf,
     },

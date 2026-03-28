@@ -38,6 +38,15 @@ struct EffectRunner {
 impl EffectRunner {
     fn dispatch(&self, effect: Effect) {
         match effect {
+            Effect::OpenRepositoryDialog => {
+                let services = self.services.clone();
+                let sender = self.sender.clone();
+                thread::spawn(move || {
+                    let _ = sender.send(AppEvent::RepositoryDialogClosed {
+                        path: services.open_repository_dialog(),
+                    });
+                });
+            }
             Effect::LoadRepository { path } => {
                 let services = self.services.clone();
                 let sender = self.sender.clone();

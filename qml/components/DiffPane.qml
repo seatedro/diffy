@@ -7,9 +7,8 @@ Rectangle {
     id: root
 
     property var fileData: ({})
-    property var rowsModel: []
+    property var renderKey: 0
     property string layoutMode: "unified"
-    property int compareGeneration: 0
     property string leftRef: ""
     property string rightRef: ""
     property string renderer: "builtin"
@@ -329,13 +328,8 @@ Rectangle {
                 width: diffViewport.width
                 height: diffViewport.height
                 focus: true
-                rowsModel: root.rowsModel
+                renderKey: root.renderKey
                 layoutMode: root.layoutMode
-                compareGeneration: root.compareGeneration
-                filePath: root.hasData() ? fileData.path : ""
-                fileStatus: root.hasData() ? fileData.status : ""
-                additions: root.hasData() ? fileData.additions : 0
-                deletions: root.hasData() ? fileData.deletions : 0
                 viewportX: diffViewport.contentX
                 viewportY: diffViewport.contentY
                 viewportHeight: diffViewport.height

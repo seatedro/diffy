@@ -29,13 +29,13 @@ Rectangle {
     transform: Translate {
         y: root.hoverLift && root.hovering ? -1 : 0
         Behavior on y {
-            enabled: !(Window.window && Window.window.commandPaletteShowing)
+            enabled: !(root.Window.window && root.Window.window.commandPaletteShowing)
             NumberAnimation { duration: 50; easing.type: Easing.OutCubic }
         }
     }
 
     Behavior on border.color {
-        enabled: !(Window.window && Window.window.commandPaletteShowing)
+        enabled: !(root.Window.window && root.Window.window.commandPaletteShowing)
         ColorAnimation { duration: 35 }
     }
 

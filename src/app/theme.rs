@@ -60,6 +60,16 @@ fn default_sans_family() -> &'static str {
     }
 }
 
+pub(crate) fn default_mono_family() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Menlo"
+    } else if cfg!(target_os = "windows") {
+        "Consolas"
+    } else {
+        "DejaVu Sans Mono"
+    }
+}
+
 impl Default for ThemeVariants {
     fn default() -> Self {
         let colors = built_in_dark_theme_colors();
@@ -282,7 +292,7 @@ impl Default for ThemeProvider {
         Self {
             base: Default::default(),
             sans: QString::from(default_sans_family()),
-            mono: QString::from("JetBrains Mono"),
+            mono: QString::from(default_mono_family()),
             sp1: 4,
             sp2: 8,
             sp3: 12,

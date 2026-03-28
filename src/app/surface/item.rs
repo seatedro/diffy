@@ -9,6 +9,7 @@ use qmetaobject::{QMouseEvent, QMouseEventType, QQuickItem, QVariantMap};
 use rayon::ThreadPool;
 use rayon::ThreadPoolBuilder;
 
+use crate::app::theme::default_mono_family;
 use crate::core::rendering::{DiffRowType, FlatDiffRow, PreparedRow};
 use crate::core::text::buffer::{TextBuffer, TextRange};
 use crate::core::text::token::TokenRange;
@@ -327,7 +328,7 @@ impl Default for DiffSurfaceItem {
             deletions_changed: Default::default(),
             palette: QVariantMap::default(),
             palette_changed: Default::default(),
-            monoFontFamily: QString::from("JetBrains Mono"),
+            monoFontFamily: QString::from(default_mono_family()),
             mono_font_family_changed: Default::default(),
             content_height: 0.0,
             content_height_changed: Default::default(),
@@ -1073,31 +1074,10 @@ impl QQuickItem for DiffSurfaceItem {
         self.paint_count += 1;
         self.paintCountChanged();
 
-        node.update_dynamic(
-            visible.iter().enumerate(),
-            |(local_idx, row), mut rect| -> SGNode<RectangleNode> {
-                rect.create(self);
-                let actual_index =
-                    self.first_visible_row + i32::try_from(local_idx).unwrap_or_default();
-                let y = row.y - viewport_y;
-                rect.set_rect(QRectF {
-                    x: 0.0,
-                    y,
-                    width,
-                    height: row.height.max(1.0),
-                });
-                let hovered = actual_index == self.hovered_row;
-                let selected = self.row_selected(actual_index);
-                let overlay = overlay_for_row(selected, hovered);
-                rect.set_color(if overlay.is_valid() {
-                    overlay
-                } else {
-                    background_for_row(row)
-                });
-                rect
-            },
-        );
-
+        // qmetaobject container nodes require a stable child shape between updates.
+        // This surface varies row count and can switch between empty/non-empty states,
+        // so rebuild the node tree each frame instead of reusing an incompatible shape.
+        node.reset();
         if visible.is_empty() {
             node.update_static((|mut rect: SGNode<RectangleNode>| {
                 rect.create(self);
@@ -1110,6 +1090,31 @@ impl QQuickItem for DiffSurfaceItem {
                 rect.set_color(canvas);
                 rect
             },));
+        } else {
+            node.update_dynamic(
+                visible.iter().enumerate(),
+                |(local_idx, row), mut rect| -> SGNode<RectangleNode> {
+                    rect.create(self);
+                    let actual_index =
+                        self.first_visible_row + i32::try_from(local_idx).unwrap_or_default();
+                    let y = row.y - viewport_y;
+                    rect.set_rect(QRectF {
+                        x: 0.0,
+                        y,
+                        width,
+                        height: row.height.max(1.0),
+                    });
+                    let hovered = actual_index == self.hovered_row;
+                    let selected = self.row_selected(actual_index);
+                    let overlay = overlay_for_row(selected, hovered);
+                    rect.set_color(if overlay.is_valid() {
+                        overlay
+                    } else {
+                        background_for_row(row)
+                    });
+                    rect
+                },
+            );
         }
 
         self.tile_use_tick = self.tile_use_tick.saturating_add(1);

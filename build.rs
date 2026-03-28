@@ -1,7 +1,7 @@
 #[cfg(feature = "qt")]
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=src/lib.rs");
+    println!("cargo:rerun-if-changed=src");
 
     let qt_include_path =
         std::env::var("DEP_QT_INCLUDE_PATH").expect("DEP_QT_INCLUDE_PATH must be set");

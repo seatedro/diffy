@@ -163,6 +163,24 @@ cpp! {{
         return texture;
     }
 
+    static double diffyEffectiveDevicePixelRatio(QQuickItem *item) {
+        if (!item) {
+            return 1.0;
+        }
+        auto *window = item->window();
+        if (!window) {
+            return 1.0;
+        }
+        return window->effectiveDevicePixelRatio();
+    }
+
+    static void diffySetImageDevicePixelRatio(QImage *image, double dpr) {
+        if (!image) {
+            return;
+        }
+        image->setDevicePixelRatio(dpr > 0.0 ? dpr : 1.0);
+    }
+
     static DiffFontMetrics diffyMeasureFontMetrics(QString family, int pixel_size) {
         QFont font(family);
         font.setStyleHint(QFont::TypeWriter);
@@ -609,14 +627,32 @@ struct FontMetrics {
 
 #[derive(Default)]
 struct StripSlot {
-    logical_strip: i32,
-    width_px: i32,
-    height_px: i32,
+    strip_id: u32,
+    top_px: u32,
+    logical_height_px: u32,
+    image_width_px: i32,
+    image_height_px: i32,
+    image_dpr: f64,
     row_start: usize,
     row_end: usize,
     rendered_version: u64,
     image: QImage,
     texture_raw: *mut c_void,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct StripLayout {
+    strip_id: u32,
+    top_px: u32,
+    height_px: u32,
+    row_start: usize,
+    row_end: usize,
+}
+
+impl StripLayout {
+    fn bottom_px(&self) -> u32 {
+        self.top_px.saturating_add(self.height_px)
+    }
 }
 
 #[allow(non_snake_case)]
@@ -677,6 +713,7 @@ pub struct DiffSurfaceItem {
 
     doc: Option<Arc<RenderDoc>>,
     display_rows_store: Vec<DisplayRow>,
+    strip_layouts_store: Vec<StripLayout>,
     strip_slots: Vec<StripSlot>,
     active_slots: Vec<usize>,
     slot_marks: Vec<bool>,
@@ -694,7 +731,6 @@ pub struct DiffSurfaceItem {
     selection_anchor_row: i32,
     selection_cursor_row: i32,
     render_version: u64,
-    last_strip_start: i32,
 
     paint_count_value: i32,
     strip_count_value: i32,
@@ -754,6 +790,7 @@ impl Default for DiffSurfaceItem {
             previousFileRequested: Default::default(),
             doc: None,
             display_rows_store: Vec::new(),
+            strip_layouts_store: Vec::new(),
             strip_slots: Vec::new(),
             active_slots: Vec::new(),
             slot_marks: Vec::new(),
@@ -769,7 +806,6 @@ impl Default for DiffSurfaceItem {
             selection_anchor_row: -1,
             selection_cursor_row: -1,
             render_version: 1,
-            last_strip_start: i32::MIN,
             paint_count_value: 0,
             strip_count_value: 0,
             strip_reuse_count_value: 0,
@@ -868,7 +904,6 @@ impl DiffSurfaceItem {
 
     fn invalidate_rendering(&mut self) {
         self.render_version = self.render_version.saturating_add(1);
-        self.last_strip_start = i32::MIN;
         self.update_item();
     }
 
@@ -936,6 +971,7 @@ impl DiffSurfaceItem {
     fn rebuild_display_rows(&mut self) {
         let start = Instant::now();
         self.display_rows_store.clear();
+        self.strip_layouts_store.clear();
 
         let Some(doc) = self.doc.as_ref() else {
             self.display_row_count = 0;
@@ -1009,6 +1045,12 @@ impl DiffSurfaceItem {
             y_px = y_px.saturating_add(u32::from(h_px));
         }
 
+        build_strip_layouts(
+            &self.display_rows_store,
+            STRIP_HEIGHT_PX,
+            &mut self.strip_layouts_store,
+        );
+
         self.display_row_count = i32::try_from(self.display_rows_store.len()).unwrap_or(i32::MAX);
         self.display_row_count_changed();
 
@@ -1047,42 +1089,33 @@ impl DiffSurfaceItem {
         }
     }
 
-    fn visible_strip_window(&self) -> (i32, usize) {
-        if self.content_height <= 0.0 {
+    fn visible_strip_window(&self) -> (usize, usize) {
+        if self.strip_layouts_store.is_empty() || self.content_height <= 0.0 {
             return (0, 0);
         }
-        let first = (self.viewport_y.max(0.0) as u32 / STRIP_HEIGHT_PX) as i32 - STRIP_OVERSCAN;
-        let first = first.max(0);
-        let viewport_bottom = (self.viewport_y
-            + self
-                .viewport_height
-                .max(self.bounding_width() * 0.0)
-                .max(1.0)) as u32;
-        let last = ((viewport_bottom.saturating_add(STRIP_HEIGHT_PX - 1)) / STRIP_HEIGHT_PX) as i32
-            + STRIP_OVERSCAN;
-        (first, (last - first).max(0) as usize)
+        let viewport_top = self.viewport_y.max(0.0).floor() as u32;
+        let viewport_bottom =
+            viewport_top.saturating_add(self.viewport_height.max(1.0).ceil() as u32);
+        let first_visible = self
+            .strip_layouts_store
+            .partition_point(|strip| strip.bottom_px() <= viewport_top);
+        let last_visible = self
+            .strip_layouts_store
+            .partition_point(|strip| strip.top_px < viewport_bottom);
+        let overscan = STRIP_OVERSCAN.max(0) as usize;
+        let start = first_visible.saturating_sub(overscan);
+        let end = last_visible
+            .saturating_add(overscan)
+            .min(self.strip_layouts_store.len());
+        (start, end.saturating_sub(start))
     }
 
-    fn strip_bounds(&self, logical_strip: i32) -> Option<(u32, u32, usize, usize)> {
-        if self.display_rows_store.is_empty() {
-            return None;
-        }
-        let top = (logical_strip.max(0) as u32).saturating_mul(STRIP_HEIGHT_PX);
-        let bottom = (top.saturating_add(STRIP_HEIGHT_PX)).min(self.content_height as u32);
-        if bottom <= top {
-            return None;
-        }
-        let row_start = self
-            .display_rows_store
-            .partition_point(|row| row.bottom_px() <= top);
-        let row_end = self
-            .display_rows_store
-            .partition_point(|row| row.y_px < bottom);
-        if row_start >= row_end {
-            None
-        } else {
-            Some((top, bottom - top, row_start, row_end))
-        }
+    fn device_pixel_ratio(&self) -> f64 {
+        let item = self.cpp_item_ptr();
+        let dpr = cpp!(unsafe [item as "QQuickItem*"] -> f64 as "double" {
+            return diffyEffectiveDevicePixelRatio(item);
+        });
+        dpr.max(1.0)
     }
 
     fn release_slot_texture(slot: &mut StripSlot) {
@@ -1105,10 +1138,10 @@ impl DiffSurfaceItem {
         }
     }
 
-    fn acquire_slot_index(&mut self, logical_strip: i32) -> usize {
+    fn acquire_slot_index(&mut self, strip_id: u32) -> usize {
         for (idx, slot) in self.strip_slots.iter().enumerate() {
             if !self.slot_marks[idx]
-                && slot.logical_strip == logical_strip
+                && slot.strip_id == strip_id
                 && slot.rendered_version == self.render_version
             {
                 self.slot_marks[idx] = true;
@@ -1134,22 +1167,35 @@ impl DiffSurfaceItem {
         let Some(doc) = self.doc.as_ref() else {
             return;
         };
-        let (slot_row_start, slot_row_end, slot_logical_strip, slot_height_px, slot_width_px) = {
+        let (
+            slot_row_start,
+            slot_row_end,
+            slot_top_px,
+            slot_logical_height_px,
+            slot_image_width_px,
+            slot_image_height_px,
+            slot_image_dpr,
+        ) = {
             let slot = &self.strip_slots[slot_index];
             (
                 slot.row_start,
                 slot.row_end,
-                slot.logical_strip,
-                slot.height_px,
-                slot.width_px,
+                slot.top_px,
+                slot.logical_height_px,
+                slot.image_width_px,
+                slot.image_height_px,
+                slot.image_dpr,
             )
         };
         if slot_row_start >= slot_row_end {
             return;
         }
 
-        let width_px = self.bounding_width().ceil().max(1.0) as i32;
-        let height_px = slot_height_px.max(1);
+        let logical_width_px = self.bounding_width().ceil().max(1.0);
+        let logical_height_px = f64::from(slot_logical_height_px.max(1));
+        let dpr = self.device_pixel_ratio();
+        let image_width_px = (logical_width_px * dpr).round().max(1.0) as i32;
+        let image_height_px = (logical_height_px * dpr).round().max(1.0) as i32;
         let rows = &self.display_rows_store[slot_row_start..slot_row_end];
         let lines = doc.lines.as_slice();
         let runs = doc.style_runs.as_slice();
@@ -1158,8 +1204,8 @@ impl DiffSurfaceItem {
         let wrap_enabled = self.wrap_enabled;
         let viewport_x = self.viewport_x.max(0.0) as u32;
         let viewport_y = self.viewport_y.max(0.0) as u32;
-        let strip_top = (slot_logical_strip.max(0) as u32).saturating_mul(STRIP_HEIGHT_PX);
-        let strip_height = slot_height_px as u32;
+        let strip_top = slot_top_px;
+        let strip_height = slot_logical_height_px;
         let gutter_digits = self.gutter_digits;
         let char_width = self.char_width;
         let line_height_px = f64::from(self.line_height_px);
@@ -1200,17 +1246,25 @@ impl DiffSurfaceItem {
         let bytes_ptr = bytes.as_ptr();
 
         let slot = &mut self.strip_slots[slot_index];
-        if slot_width_px != width_px || slot.height_px != height_px {
+        if slot_image_width_px != image_width_px
+            || slot_image_height_px != image_height_px
+            || (slot_image_dpr - dpr).abs() > f64::EPSILON
+        {
             Self::release_slot_texture(slot);
             slot.image = QImage::new(
                 QSize {
-                    width: width_px as u32,
-                    height: height_px as u32,
+                    width: image_width_px as u32,
+                    height: image_height_px as u32,
                 },
                 ImageFormat::ARGB32_Premultiplied,
             );
-            slot.width_px = width_px;
-            slot.height_px = height_px;
+            let image_ptr = &mut slot.image;
+            cpp!(unsafe [image_ptr as "QImage*", dpr as "double"] {
+                diffySetImageDevicePixelRatio(image_ptr, dpr);
+            });
+            slot.image_width_px = image_width_px;
+            slot.image_height_px = image_height_px;
+            slot.image_dpr = dpr;
         }
         let image_ptr = &mut slot.image;
         let raster_start = Instant::now();
@@ -1343,20 +1397,17 @@ impl DiffSurfaceItem {
         }
 
         for offset in 0..strip_count {
-            let logical_strip = start_strip + offset as i32;
-            let Some((top, height, row_start, row_end)) = self.strip_bounds(logical_strip) else {
-                continue;
-            };
-            let slot_index = self.acquire_slot_index(logical_strip);
+            let strip = self.strip_layouts_store[start_strip + offset];
+            let slot_index = self.acquire_slot_index(strip.strip_id);
             let slot = &mut self.strip_slots[slot_index];
-            slot.logical_strip = logical_strip;
-            slot.height_px = i32::try_from(height).unwrap_or(i32::MAX);
-            slot.row_start = row_start;
-            slot.row_end = row_end;
-            if slot.row_start >= slot.row_end || slot.height_px <= 0 {
+            slot.strip_id = strip.strip_id;
+            slot.top_px = strip.top_px;
+            slot.logical_height_px = strip.height_px;
+            slot.row_start = strip.row_start;
+            slot.row_end = strip.row_end;
+            if slot.row_start >= slot.row_end || slot.logical_height_px == 0 {
                 continue;
             }
-            let _ = top;
             self.active_slots.push(slot_index);
         }
 
@@ -1368,8 +1419,6 @@ impl DiffSurfaceItem {
                 self.rasterize_slot(slot_index);
             }
         }
-
-        self.last_strip_start = start_strip;
     }
 
     fn sync_perf_counters(&mut self, paint_ms: f64) {
@@ -1529,6 +1578,39 @@ fn wrap_count(cols: u32, wrap_cols: u16) -> u16 {
     ((cols + wrap_cols - 1) / wrap_cols).max(1) as u16
 }
 
+fn build_strip_layouts(rows: &[DisplayRow], target_height_px: u32, output: &mut Vec<StripLayout>) {
+    output.clear();
+    if rows.is_empty() {
+        return;
+    }
+
+    output.reserve(rows.len().saturating_div(16).max(1));
+
+    let mut row_start = 0usize;
+    while row_start < rows.len() {
+        let top_px = rows[row_start].y_px;
+        let mut row_end = row_start;
+        let mut bottom_px = top_px;
+
+        while row_end < rows.len() {
+            bottom_px = rows[row_end].bottom_px();
+            row_end += 1;
+            if row_end < rows.len() && bottom_px.saturating_sub(top_px) >= target_height_px {
+                break;
+            }
+        }
+
+        output.push(StripLayout {
+            strip_id: row_start as u32,
+            top_px,
+            height_px: bottom_px.saturating_sub(top_px),
+            row_start,
+            row_end,
+        });
+        row_start = row_end;
+    }
+}
+
 impl QQuickItem for DiffSurfaceItem {
     fn class_begin(&mut self) {
         self.set_flag(QQuickItemFlag::ItemHasContents);
@@ -1604,10 +1686,9 @@ impl QQuickItem for DiffSurfaceItem {
             let slot = &self.strip_slots[slot_index];
             let rect = QRectF {
                 x: 0.0,
-                y: f64::from((slot.logical_strip.max(0) as u32).saturating_mul(STRIP_HEIGHT_PX))
-                    - self.viewport_y,
+                y: f64::from(slot.top_px) - self.viewport_y,
                 width: self.bounding_width(),
-                height: f64::from(slot.height_px.max(1)),
+                height: f64::from(slot.logical_height_px.max(1)),
             };
             let texture = slot.texture_raw;
             let child_index = child_index as i32;
@@ -1642,9 +1723,11 @@ impl QQuickItem for DiffSurfaceItem {
 
 #[cfg(test)]
 mod tests {
-    use super::{DiffSurfaceItem, effective_wrap_cols, wrap_count};
+    use super::{
+        DiffSurfaceItem, StripLayout, build_strip_layouts, effective_wrap_cols, wrap_count,
+    };
     use crate::app::surface::render_doc::{
-        ByteRange, INVALID_U32, RenderDoc, RenderLine, RenderRowKind,
+        ByteRange, DisplayRow, INVALID_U32, RenderDoc, RenderLine, RenderRowKind,
     };
 
     #[test]
@@ -1659,6 +1742,125 @@ mod tests {
         assert_eq!(effective_wrap_cols(false, 1), u16::MAX);
         assert_eq!(wrap_count(15, effective_wrap_cols(false, 1)), 1);
         assert_eq!(effective_wrap_cols(true, 12), 12);
+    }
+
+    #[test]
+    fn strip_layouts_break_on_row_boundaries_instead_of_fixed_pixels() {
+        let rows = vec![
+            DisplayRow {
+                y_px: 0,
+                h_px: 32,
+                ..DisplayRow::default()
+            },
+            DisplayRow {
+                y_px: 32,
+                h_px: 24,
+                ..DisplayRow::default()
+            },
+            DisplayRow {
+                y_px: 56,
+                h_px: 22,
+                ..DisplayRow::default()
+            },
+            DisplayRow {
+                y_px: 78,
+                h_px: 22,
+                ..DisplayRow::default()
+            },
+            DisplayRow {
+                y_px: 100,
+                h_px: 22,
+                ..DisplayRow::default()
+            },
+            DisplayRow {
+                y_px: 122,
+                h_px: 22,
+                ..DisplayRow::default()
+            },
+            DisplayRow {
+                y_px: 144,
+                h_px: 22,
+                ..DisplayRow::default()
+            },
+            DisplayRow {
+                y_px: 166,
+                h_px: 22,
+                ..DisplayRow::default()
+            },
+            DisplayRow {
+                y_px: 188,
+                h_px: 22,
+                ..DisplayRow::default()
+            },
+            DisplayRow {
+                y_px: 210,
+                h_px: 22,
+                ..DisplayRow::default()
+            },
+            DisplayRow {
+                y_px: 232,
+                h_px: 22,
+                ..DisplayRow::default()
+            },
+            DisplayRow {
+                y_px: 254,
+                h_px: 22,
+                ..DisplayRow::default()
+            },
+            DisplayRow {
+                y_px: 276,
+                h_px: 22,
+                ..DisplayRow::default()
+            },
+            DisplayRow {
+                y_px: 298,
+                h_px: 22,
+                ..DisplayRow::default()
+            },
+            DisplayRow {
+                y_px: 320,
+                h_px: 22,
+                ..DisplayRow::default()
+            },
+            DisplayRow {
+                y_px: 342,
+                h_px: 22,
+                ..DisplayRow::default()
+            },
+            DisplayRow {
+                y_px: 364,
+                h_px: 22,
+                ..DisplayRow::default()
+            },
+            DisplayRow {
+                y_px: 386,
+                h_px: 22,
+                ..DisplayRow::default()
+            },
+        ];
+        let mut strips = Vec::new();
+
+        build_strip_layouts(&rows, 384, &mut strips);
+
+        assert_eq!(
+            strips,
+            vec![
+                StripLayout {
+                    strip_id: 0,
+                    top_px: 0,
+                    height_px: 386,
+                    row_start: 0,
+                    row_end: 17,
+                },
+                StripLayout {
+                    strip_id: 17,
+                    top_px: 386,
+                    height_px: 22,
+                    row_start: 17,
+                    row_end: 18,
+                },
+            ]
+        );
     }
 
     #[test]

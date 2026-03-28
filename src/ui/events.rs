@@ -23,6 +23,9 @@ pub struct CompareFinished {
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
+    RepositoryDialogClosed {
+        path: Option<PathBuf>,
+    },
     RepositoryLoaded(RepositoryLoaded),
     RepositoryLoadFailed {
         path: PathBuf,

@@ -105,6 +105,10 @@ impl AppServices {
         self.settings_store.save(settings)
     }
 
+    pub fn open_repository_dialog(&self) -> Option<PathBuf> {
+        rfd::FileDialog::new().pick_folder()
+    }
+
     pub fn open_browser(&self, url: &str) -> Result<()> {
         webbrowser::open(url)
             .map(|_| ())

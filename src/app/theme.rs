@@ -144,6 +144,7 @@ struct ThemeColorDefinition {
     shadow_lg: String,
 }
 
+#[allow(non_snake_case)]
 #[derive(QObject)]
 pub struct ThemeProvider {
     base: qt_base_class!(trait QObject),
@@ -159,61 +160,61 @@ pub struct ThemeProvider {
     sp8: qt_property!(i32; CONST),
     sp12: qt_property!(i32; CONST),
 
-    font_caption: qt_property!(i32; CONST),
-    font_small: qt_property!(i32; CONST),
-    font_body: qt_property!(i32; CONST),
-    font_subtitle: qt_property!(i32; CONST),
-    font_title: qt_property!(i32; CONST),
-    font_heading: qt_property!(i32; CONST),
+    font_caption: qt_property!(i32; CONST ALIAS fontCaption),
+    font_small: qt_property!(i32; CONST ALIAS fontSmall),
+    font_body: qt_property!(i32; CONST ALIAS fontBody),
+    font_subtitle: qt_property!(i32; CONST ALIAS fontSubtitle),
+    font_title: qt_property!(i32; CONST ALIAS fontTitle),
+    font_heading: qt_property!(i32; CONST ALIAS fontHeading),
 
-    radius_sm: qt_property!(i32; CONST),
-    radius_md: qt_property!(i32; CONST),
-    radius_lg: qt_property!(i32; CONST),
-    radius_xl: qt_property!(i32; CONST),
+    radius_sm: qt_property!(i32; CONST ALIAS radiusSm),
+    radius_md: qt_property!(i32; CONST ALIAS radiusMd),
+    radius_lg: qt_property!(i32; CONST ALIAS radiusLg),
+    radius_xl: qt_property!(i32; CONST ALIAS radiusXl),
 
-    current_theme: qt_property!(QString; READ get_current_theme NOTIFY theme_changed),
-    current_mode: qt_property!(QString; READ get_current_mode NOTIFY theme_changed),
-    available_themes: qt_property!(QVariantList; READ get_available_themes NOTIFY theme_changed),
-    available_modes: qt_property!(QVariantList; READ get_available_modes NOTIFY theme_changed),
+    current_theme: qt_property!(QString; READ get_current_theme NOTIFY themeChanged ALIAS currentTheme),
+    current_mode: qt_property!(QString; READ get_current_mode NOTIFY themeChanged ALIAS currentMode),
+    available_themes: qt_property!(QVariantList; READ get_available_themes NOTIFY themeChanged ALIAS availableThemes),
+    available_modes: qt_property!(QVariantList; READ get_available_modes NOTIFY themeChanged ALIAS availableModes),
 
-    app_bg: qt_property!(QColor; READ get_app_bg NOTIFY theme_changed),
-    canvas: qt_property!(QColor; READ get_canvas NOTIFY theme_changed),
-    panel: qt_property!(QColor; READ get_panel NOTIFY theme_changed),
-    panel_strong: qt_property!(QColor; READ get_panel_strong NOTIFY theme_changed),
-    panel_tint: qt_property!(QColor; READ get_panel_tint NOTIFY theme_changed),
-    toolbar_bg: qt_property!(QColor; READ get_toolbar_bg NOTIFY theme_changed),
-    border_soft: qt_property!(QColor; READ get_border_soft NOTIFY theme_changed),
-    border_strong: qt_property!(QColor; READ get_border_strong NOTIFY theme_changed),
-    divider: qt_property!(QColor; READ get_divider NOTIFY theme_changed),
-    text_strong: qt_property!(QColor; READ get_text_strong NOTIFY theme_changed),
-    text_base: qt_property!(QColor; READ get_text_base NOTIFY theme_changed),
-    text_muted: qt_property!(QColor; READ get_text_muted NOTIFY theme_changed),
-    text_faint: qt_property!(QColor; READ get_text_faint NOTIFY theme_changed),
-    accent: qt_property!(QColor; READ get_accent NOTIFY theme_changed),
-    accent_strong: qt_property!(QColor; READ get_accent_strong NOTIFY theme_changed),
-    accent_soft: qt_property!(QColor; READ get_accent_soft NOTIFY theme_changed),
-    success_bg: qt_property!(QColor; READ get_success_bg NOTIFY theme_changed),
-    success_border: qt_property!(QColor; READ get_success_border NOTIFY theme_changed),
-    success_text: qt_property!(QColor; READ get_success_text NOTIFY theme_changed),
-    danger_bg: qt_property!(QColor; READ get_danger_bg NOTIFY theme_changed),
-    danger_border: qt_property!(QColor; READ get_danger_border NOTIFY theme_changed),
-    danger_text: qt_property!(QColor; READ get_danger_text NOTIFY theme_changed),
-    warning_bg: qt_property!(QColor; READ get_warning_bg NOTIFY theme_changed),
-    warning_border: qt_property!(QColor; READ get_warning_border NOTIFY theme_changed),
-    warning_text: qt_property!(QColor; READ get_warning_text NOTIFY theme_changed),
-    selection_bg: qt_property!(QColor; READ get_selection_bg NOTIFY theme_changed),
-    selection_border: qt_property!(QColor; READ get_selection_border NOTIFY theme_changed),
-    line_context: qt_property!(QColor; READ get_line_context NOTIFY theme_changed),
-    line_context_alt: qt_property!(QColor; READ get_line_context_alt NOTIFY theme_changed),
-    line_add: qt_property!(QColor; READ get_line_add NOTIFY theme_changed),
-    line_add_accent: qt_property!(QColor; READ get_line_add_accent NOTIFY theme_changed),
-    line_del: qt_property!(QColor; READ get_line_del NOTIFY theme_changed),
-    line_del_accent: qt_property!(QColor; READ get_line_del_accent NOTIFY theme_changed),
-    shadow_sm: qt_property!(QColor; READ get_shadow_sm NOTIFY theme_changed),
-    shadow_md: qt_property!(QColor; READ get_shadow_md NOTIFY theme_changed),
-    shadow_lg: qt_property!(QColor; READ get_shadow_lg NOTIFY theme_changed),
+    app_bg: qt_property!(QColor; READ get_app_bg NOTIFY themeChanged ALIAS appBg),
+    canvas: qt_property!(QColor; READ get_canvas NOTIFY themeChanged ALIAS canvas),
+    panel: qt_property!(QColor; READ get_panel NOTIFY themeChanged ALIAS panel),
+    panel_strong: qt_property!(QColor; READ get_panel_strong NOTIFY themeChanged ALIAS panelStrong),
+    panel_tint: qt_property!(QColor; READ get_panel_tint NOTIFY themeChanged ALIAS panelTint),
+    toolbar_bg: qt_property!(QColor; READ get_toolbar_bg NOTIFY themeChanged ALIAS toolbarBg),
+    border_soft: qt_property!(QColor; READ get_border_soft NOTIFY themeChanged ALIAS borderSoft),
+    border_strong: qt_property!(QColor; READ get_border_strong NOTIFY themeChanged ALIAS borderStrong),
+    divider: qt_property!(QColor; READ get_divider NOTIFY themeChanged ALIAS divider),
+    text_strong: qt_property!(QColor; READ get_text_strong NOTIFY themeChanged ALIAS textStrong),
+    text_base: qt_property!(QColor; READ get_text_base NOTIFY themeChanged ALIAS textBase),
+    text_muted: qt_property!(QColor; READ get_text_muted NOTIFY themeChanged ALIAS textMuted),
+    text_faint: qt_property!(QColor; READ get_text_faint NOTIFY themeChanged ALIAS textFaint),
+    accent: qt_property!(QColor; READ get_accent NOTIFY themeChanged ALIAS accent),
+    accent_strong: qt_property!(QColor; READ get_accent_strong NOTIFY themeChanged ALIAS accentStrong),
+    accent_soft: qt_property!(QColor; READ get_accent_soft NOTIFY themeChanged ALIAS accentSoft),
+    success_bg: qt_property!(QColor; READ get_success_bg NOTIFY themeChanged ALIAS successBg),
+    success_border: qt_property!(QColor; READ get_success_border NOTIFY themeChanged ALIAS successBorder),
+    success_text: qt_property!(QColor; READ get_success_text NOTIFY themeChanged ALIAS successText),
+    danger_bg: qt_property!(QColor; READ get_danger_bg NOTIFY themeChanged ALIAS dangerBg),
+    danger_border: qt_property!(QColor; READ get_danger_border NOTIFY themeChanged ALIAS dangerBorder),
+    danger_text: qt_property!(QColor; READ get_danger_text NOTIFY themeChanged ALIAS dangerText),
+    warning_bg: qt_property!(QColor; READ get_warning_bg NOTIFY themeChanged ALIAS warningBg),
+    warning_border: qt_property!(QColor; READ get_warning_border NOTIFY themeChanged ALIAS warningBorder),
+    warning_text: qt_property!(QColor; READ get_warning_text NOTIFY themeChanged ALIAS warningText),
+    selection_bg: qt_property!(QColor; READ get_selection_bg NOTIFY themeChanged ALIAS selectionBg),
+    selection_border: qt_property!(QColor; READ get_selection_border NOTIFY themeChanged ALIAS selectionBorder),
+    line_context: qt_property!(QColor; READ get_line_context NOTIFY themeChanged ALIAS lineContext),
+    line_context_alt: qt_property!(QColor; READ get_line_context_alt NOTIFY themeChanged ALIAS lineContextAlt),
+    line_add: qt_property!(QColor; READ get_line_add NOTIFY themeChanged ALIAS lineAdd),
+    line_add_accent: qt_property!(QColor; READ get_line_add_accent NOTIFY themeChanged ALIAS lineAddAccent),
+    line_del: qt_property!(QColor; READ get_line_del NOTIFY themeChanged ALIAS lineDel),
+    line_del_accent: qt_property!(QColor; READ get_line_del_accent NOTIFY themeChanged ALIAS lineDelAccent),
+    shadow_sm: qt_property!(QColor; READ get_shadow_sm NOTIFY themeChanged ALIAS shadowSm),
+    shadow_md: qt_property!(QColor; READ get_shadow_md NOTIFY themeChanged ALIAS shadowMd),
+    shadow_lg: qt_property!(QColor; READ get_shadow_lg NOTIFY themeChanged ALIAS shadowLg),
 
-    theme_changed: qt_signal!(),
+    themeChanged: qt_signal!(),
 
     set_theme: qt_method!(fn(&mut self, name: QString, persist: bool)),
     set_mode: qt_method!(fn(&mut self, mode: QString, persist: bool)),
@@ -329,7 +330,7 @@ impl Default for ThemeProvider {
             shadow_sm: Default::default(),
             shadow_md: Default::default(),
             shadow_lg: Default::default(),
-            theme_changed: Default::default(),
+            themeChanged: Default::default(),
             set_theme: Default::default(),
             set_mode: Default::default(),
             toggle_mode: Default::default(),
@@ -386,7 +387,7 @@ impl ThemeProvider {
         if persist {
             self.persist();
         }
-        self.theme_changed();
+        self.themeChanged();
     }
 
     pub fn set_mode(&mut self, mode: QString, persist: bool) {
@@ -408,7 +409,7 @@ impl ThemeProvider {
         if persist {
             self.persist();
         }
-        self.theme_changed();
+        self.themeChanged();
     }
 
     pub fn toggle_mode(&mut self, persist: bool) {

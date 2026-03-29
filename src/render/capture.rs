@@ -3,25 +3,56 @@
 //! Uses tiny-skia for 2D rendering and fontdue for text. Produces pixel-perfect
 //! layout/color output for visual debugging and design iteration.
 
-use crate::render::scene::{FontKind, Primitive, Rect, Scene};
+use crate::render::scene::{FontKind, FontWeight, Primitive, Rect, Scene};
 use crate::ui::theme::Color;
+
+struct CaptureFonts {
+    ui_regular: fontdue::Font,
+    ui_medium: fontdue::Font,
+    ui_semibold: fontdue::Font,
+    ui_bold: fontdue::Font,
+    mono_regular: fontdue::Font,
+    mono_medium: fontdue::Font,
+    mono_semibold: fontdue::Font,
+    mono_bold: fontdue::Font,
+}
+
+impl CaptureFonts {
+    fn new() -> Self {
+        Self {
+            ui_regular: load_vendored_font(crate::fonts::UI_REGULAR_OTF),
+            ui_medium: load_vendored_font(crate::fonts::UI_MEDIUM_OTF),
+            ui_semibold: load_vendored_font(crate::fonts::UI_SEMIBOLD_OTF),
+            ui_bold: load_vendored_font(crate::fonts::UI_BOLD_OTF),
+            mono_regular: load_vendored_font(crate::fonts::MONO_REGULAR_OTF),
+            mono_medium: load_vendored_font(crate::fonts::MONO_MEDIUM_OTF),
+            mono_semibold: load_vendored_font(crate::fonts::MONO_SEMIBOLD_OTF),
+            mono_bold: load_vendored_font(crate::fonts::MONO_BOLD_OTF),
+        }
+    }
+
+    fn for_style(&self, font_kind: FontKind, font_weight: FontWeight) -> &fontdue::Font {
+        match (font_kind, font_weight) {
+            (FontKind::Ui, FontWeight::Normal) => &self.ui_regular,
+            (FontKind::Ui, FontWeight::Medium) => &self.ui_medium,
+            (FontKind::Ui, FontWeight::Semibold) => &self.ui_semibold,
+            (FontKind::Ui, FontWeight::Bold) => &self.ui_bold,
+            (FontKind::Mono, FontWeight::Normal) => &self.mono_regular,
+            (FontKind::Mono, FontWeight::Medium) => &self.mono_medium,
+            (FontKind::Mono, FontWeight::Semibold) => &self.mono_semibold,
+            (FontKind::Mono, FontWeight::Bold) => &self.mono_bold,
+        }
+    }
+}
 
 /// Render a Scene to RGBA pixel data at the given dimensions.
 pub fn scene_to_rgba(scene: &Scene, width: u32, height: u32) -> Vec<u8> {
     let mut pixmap =
         tiny_skia::Pixmap::new(width, height).expect("failed to create pixmap");
+    let fonts = CaptureFonts::new();
 
     // Fill with black background.
     pixmap.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 255));
-
-    let clip_stack: Vec<()> = Vec::new(); // Clip masking simplified for capture.
-    // Try to load system fonts for text rendering.
-    let font = load_system_font("segoeui.ttf")
-        .or_else(|| load_system_font("arial.ttf"))
-        .or_else(|| load_system_font("DejaVuSans.ttf"));
-    let mono_font = load_system_font("consola.ttf")
-        .or_else(|| load_system_font("CascadiaMono.ttf"))
-        .or_else(|| load_system_font("DejaVuSansMono.ttf"));
 
     for prim in &scene.primitives {
         match prim {
@@ -70,58 +101,66 @@ pub fn scene_to_rgba(scene: &Scene, width: u32, height: u32) -> Vec<u8> {
                 );
             }
             Primitive::TextRun(t) => {
-                let f = match t.font_kind {
-                    FontKind::Mono => mono_font.as_ref(),
-                    FontKind::Ui => font.as_ref(),
+                // Detect text crushed into bounds too small for its content.
+                // This catches flex-shrink layout bugs that glyphon renders as
+                // garbled glyphs but fontdue silently truncates.
+                let char_w = if t.font_kind == FontKind::Mono {
+                    t.font_size * 0.6
+                } else {
+                    t.font_size * 0.55
                 };
-                if let Some(font) = f {
-                    draw_text(
+                let natural_width = t.text.len() as f32 * char_w;
+                let is_crushed =
+                    !t.text.is_empty() && t.rect.width > 0.0 && t.rect.width < natural_width * 0.5;
+
+                if is_crushed {
+                    // Paint a red underline to flag the layout bug visually.
+                    let indicator = Rect {
+                        x: t.rect.x,
+                        y: t.rect.y + t.rect.height - 2.0,
+                        width: t.rect.width.max(natural_width),
+                        height: 2.0,
+                    };
+                    fill_rect(
                         &mut pixmap,
-                        font,
-                        &t.text,
-                        t.rect,
-                        t.color,
-                        t.font_size,
+                        indicator,
+                        Color::rgba(255, 60, 60, 200),
+                        1.0,
                         None,
                     );
-                } else {
-                    // Fallback: colored rectangle for text bounds.
-                    let text_width = t.text.len() as f32 * t.font_size * 0.55;
-                    let text_rect = Rect {
-                        x: t.rect.x,
-                        y: t.rect.y + t.rect.height * 0.3,
-                        width: text_width.min(t.rect.width),
-                        height: t.rect.height * 0.5,
-                    };
-                    fill_rect(&mut pixmap, text_rect, t.color.with_alpha(100), 2.0, None);
                 }
+
+                draw_text(
+                    &mut pixmap,
+                    fonts.for_style(t.font_kind, t.font_weight),
+                    &t.text,
+                    t.rect,
+                    t.color,
+                    t.font_size,
+                    None,
+                );
             }
             Primitive::RichTextRun(t) => {
                 // Render rich text spans sequentially.
-                let f = match t.font_kind {
-                    FontKind::Mono => mono_font.as_ref(),
-                    FontKind::Ui => font.as_ref(),
-                };
-                if let Some(font_ref) = f {
-                    let mut x_offset = 0.0;
-                    for span in &t.spans {
-                        let span_rect = Rect {
-                            x: t.rect.x + x_offset,
-                            y: t.rect.y,
-                            width: t.rect.width - x_offset,
-                            height: t.rect.height,
-                        };
-                        draw_text(
-                            &mut pixmap,
-                            font_ref,
-                            &span.text,
-                            span_rect,
-                            span.color,
-                            t.font_size,
-                            None,
-                        );
-                        x_offset += span.text.len() as f32 * t.font_size * 0.55;
-                    }
+                let font = fonts.for_style(t.font_kind, t.font_weight);
+                let mut x_offset = 0.0;
+                for span in &t.spans {
+                    let span_rect = Rect {
+                        x: t.rect.x + x_offset,
+                        y: t.rect.y,
+                        width: t.rect.width - x_offset,
+                        height: t.rect.height,
+                    };
+                    draw_text(
+                        &mut pixmap,
+                        font,
+                        &span.text,
+                        span_rect,
+                        span.color,
+                        t.font_size,
+                        None,
+                    );
+                    x_offset += span.text.len() as f32 * t.font_size * 0.55;
                 }
             }
             Primitive::Image(img) => {
@@ -410,19 +449,7 @@ fn blit_rgba(
     }
 }
 
-fn load_system_font(name: &str) -> Option<fontdue::Font> {
-    let candidates = [
-        format!("C:\\Windows\\Fonts\\{name}"),
-        format!("/usr/share/fonts/truetype/dejavu/{name}"),
-        format!("/System/Library/Fonts/{name}"),
-    ];
-    for path in &candidates {
-        if let Ok(data) = std::fs::read(path) {
-            if let Ok(f) = fontdue::Font::from_bytes(data, fontdue::FontSettings::default()) {
-                return Some(f);
-            }
-        }
-    }
-    None
+fn load_vendored_font(bytes: &[u8]) -> fontdue::Font {
+    fontdue::Font::from_bytes(bytes.to_vec(), fontdue::FontSettings::default())
+        .expect("failed to load vendored capture font")
 }
-

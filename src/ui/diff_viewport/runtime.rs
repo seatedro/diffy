@@ -3,8 +3,8 @@ use std::ops::Range;
 use crate::core::compare::LayoutMode;
 use crate::core::text::SyntaxTokenKind;
 use crate::render::{
-    FontKind, FontWeight, Rect, RectPrimitive, RichTextPrimitive, RichTextSpan, Scene, TextMetrics,
-    TextPrimitive,
+    FontKind, FontWeight, Rect, RectPrimitive, RichTextPrimitive, RichTextSpan,
+    RoundedRectPrimitive, Scene, TextMetrics, TextPrimitive,
 };
 use crate::ui::theme::{Color, Theme};
 
@@ -98,6 +98,10 @@ impl Default for DiffViewportRuntime {
 }
 
 impl DiffViewportRuntime {
+    pub fn scrollbar_rect(&self) -> Rect {
+        self.layout.scrollbar_rect
+    }
+
     pub fn prepare(
         &mut self,
         state: &mut DiffViewportState,
@@ -641,19 +645,29 @@ impl DiffViewportRuntime {
         }
         let track = self.layout.scrollbar_rect;
         let ratio = state.viewport_height_px as f32 / state.content_height_px as f32;
-        let thumb_height = (track.height * ratio).max(24.0).min(track.height);
+        let thumb_height = (track.height * ratio).max(32.0).min(track.height);
         let scroll_range = state.max_scroll_top_px().max(1) as f32;
         let top_ratio = state.scroll_top_px as f32 / scroll_range;
         let thumb_y = track.y + (track.height - thumb_height) * top_ratio;
-        scene.rect(RectPrimitive {
-            rect: Rect {
-                x: track.x,
-                y: thumb_y,
-                width: track.width,
-                height: thumb_height,
+
+        // Track background
+        scene.rounded_rect(RoundedRectPrimitive::uniform(
+            track,
+            4.0,
+            Color::rgba(128, 128, 128, 10),
+        ));
+
+        // Thumb
+        scene.rounded_rect(RoundedRectPrimitive::uniform(
+            Rect {
+                x: track.x + 1.0,
+                y: thumb_y + 1.0,
+                width: track.width - 2.0,
+                height: thumb_height - 2.0,
             },
-            color: theme.colors.scrollbar_thumb,
-        });
+            3.0,
+            theme.colors.scrollbar_thumb,
+        ));
     }
 
     fn wrap_cols_unified(&self) -> u16 {

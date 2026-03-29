@@ -157,6 +157,13 @@ impl EffectRunner {
                     }
                 });
             }
+            Effect::SetClipboard(text) => {
+                thread::spawn(move || {
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        let _ = clipboard.set_text(text);
+                    }
+                });
+            }
         }
     }
 }

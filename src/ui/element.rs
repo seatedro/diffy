@@ -70,6 +70,17 @@ pub struct ScrollRegion {
     pub action_builder: ScrollActionBuilder,
 }
 
+/// A scrollbar track region — registered during paint for click-to-scroll and drag.
+#[derive(Debug, Clone)]
+pub struct ScrollbarTrack {
+    pub track_rect: Rect,
+    pub thumb_top: f32,
+    pub thumb_height: f32,
+    pub content_height: f32,
+    pub viewport_height: f32,
+    pub action_builder: ScrollActionBuilder,
+}
+
 /// How to convert a scroll delta (in lines) into an Action.
 #[derive(Debug, Clone)]
 pub enum ScrollActionBuilder {
@@ -105,6 +116,9 @@ pub struct ElementContext<'a> {
     pub focus: Option<crate::ui::state::FocusTarget>,
     pub signal_store: &'a mut SignalStore,
     pub clock_ms: u64,
+    pub debug_wireframe: bool,
+    pub text_input_hit_areas: Vec<TextInputHitArea>,
+    pub scrollbar_tracks: Vec<ScrollbarTrack>,
     hitboxes: Vec<Hitbox>,
     hovered_hitboxes: Vec<HitboxId>,
     next_hitbox_id: usize,
@@ -129,6 +143,9 @@ impl<'a> ElementContext<'a> {
             focus: None,
             signal_store,
             clock_ms: 0,
+            debug_wireframe: false,
+            text_input_hit_areas: Vec::new(),
+            scrollbar_tracks: Vec::new(),
             hitboxes: Vec::new(),
             hovered_hitboxes: Vec::new(),
             next_hitbox_id: 0,
@@ -1073,6 +1090,17 @@ impl Element for Div {
             }
         }
 
+        // Register parent hit BEFORE children so that children's hit regions
+        // (pushed later) are found first by the reverse search in handle_left_click.
+        // This gives correct z-order: child clicks take priority over parent clicks.
+        if let Some(action) = self.on_click.take() {
+            cx.hits.push(HitRegion {
+                rect: bounds,
+                action,
+                cursor: self.cursor,
+            });
+        }
+
         // Clip + scroll children
         if self.clips {
             scene.clip(bounds);
@@ -1088,33 +1116,86 @@ impl Element for Div {
             }
         }
 
-        if self.scroll_y > 0.0 && self.scroll_total_height > bounds.height {
+        if self.scroll_total_height > bounds.height {
             let track_h = bounds.height;
             let content_h = self.scroll_total_height;
-            let thumb_h = (track_h / content_h * track_h).max(20.0).min(track_h);
-            let thumb_y = (self.scroll_y / (content_h - track_h)) * (track_h - thumb_h);
-            let thumb_w = 4.0;
+            let max_scroll = content_h - track_h;
+            let thumb_h = (track_h / content_h * track_h).max(32.0).min(track_h);
+            let thumb_y = if max_scroll > 0.0 {
+                (self.scroll_y / max_scroll) * (track_h - thumb_h)
+            } else {
+                0.0
+            };
+            let thumb_w = 8.0;
+            let track_pad = 3.0;
+            let thumb_x = bounds.x + bounds.width - thumb_w - track_pad;
+
+            // Track background (subtle)
             scene.rounded_rect(RoundedRectPrimitive::uniform(
                 Rect {
-                    x: bounds.x + bounds.width - thumb_w - 2.0,
-                    y: bounds.y + thumb_y,
-                    width: thumb_w,
-                    height: thumb_h,
+                    x: thumb_x - 1.0,
+                    y: bounds.y,
+                    width: thumb_w + 2.0,
+                    height: track_h,
                 },
-                2.0,
+                5.0,
+                Color::rgba(128, 128, 128, 10),
+            ));
+
+            // Thumb
+            let thumb_inset = 1.0;
+            scene.rounded_rect(RoundedRectPrimitive::uniform(
+                Rect {
+                    x: thumb_x + thumb_inset,
+                    y: bounds.y + thumb_y + thumb_inset,
+                    width: thumb_w - thumb_inset * 2.0,
+                    height: thumb_h - thumb_inset * 2.0,
+                },
+                3.0,
                 cx.theme.colors.scrollbar_thumb,
             ));
+
+            // Register scrollbar track for click-to-scroll and drag.
+            if let Some(ref builder) = self.on_scroll {
+                let hit_w = thumb_w + 12.0; // wider hit area for easy grabbing
+                let track_rect = Rect {
+                    x: thumb_x - 6.0,
+                    y: bounds.y,
+                    width: hit_w,
+                    height: track_h,
+                };
+                cx.scrollbar_tracks.push(ScrollbarTrack {
+                    track_rect,
+                    thumb_top: bounds.y + thumb_y,
+                    thumb_height: thumb_h,
+                    content_height: content_h,
+                    viewport_height: track_h,
+                    action_builder: builder.clone(),
+                });
+            }
         }
 
         if self.clips {
             scene.pop_clip();
         }
 
-        if let Some(action) = self.on_click.take() {
-            cx.hits.push(HitRegion {
+        // Debug wireframe: 1px outline around every div
+        if cx.debug_wireframe {
+            // Cycle colors by depth using bounds position as a hash
+            let hash = ((bounds.x as u32).wrapping_mul(7) ^ (bounds.y as u32).wrapping_mul(13)) % 6;
+            let wire_color = match hash {
+                0 => Color::rgba(255, 80, 80, 120),   // red
+                1 => Color::rgba(80, 255, 80, 120),    // green
+                2 => Color::rgba(80, 80, 255, 120),    // blue
+                3 => Color::rgba(255, 255, 80, 120),   // yellow
+                4 => Color::rgba(255, 80, 255, 120),   // magenta
+                _ => Color::rgba(80, 255, 255, 120),   // cyan
+            };
+            scene.border(BorderPrimitive {
                 rect: bounds,
-                action,
-                cursor: self.cursor,
+                widths: [1.0; 4],
+                corner_radii: [r; 4],
+                color: wire_color,
             });
         }
 
@@ -1209,7 +1290,6 @@ pub struct TextElement {
     font_weight: FontWeight,
     align: TextAlign,
     truncate: bool,
-    mono_char_width: Option<f32>,
 }
 
 pub fn text(content: impl Into<String>) -> TextElement {
@@ -1222,7 +1302,6 @@ pub fn text(content: impl Into<String>) -> TextElement {
         font_weight: FontWeight::Normal,
         align: TextAlign::Left,
         truncate: false,
-        mono_char_width: None,
     }
 }
 
@@ -1304,7 +1383,7 @@ impl TextElement {
 }
 
 impl Element for TextElement {
-    type LayoutState = (f32, f32); // (resolved_font_size, line_height)
+    type LayoutState = (f32, f32, f32); // (resolved_font_size, line_height, natural_width)
     type PrepaintState = ();
 
     fn request_layout(
@@ -1315,14 +1394,18 @@ impl Element for TextElement {
         let font_size = self.resolve_font_size(cx.theme);
         let line_height = font_size * self.line_height_factor;
 
-        // Approximate text width. For UI text, a rough per-character width
-        // based on font size is sufficient for layout purposes.
-        let char_width = if self.font_kind == FontKind::Mono {
-            self.mono_char_width.unwrap_or(font_size * 0.6)
-        } else {
-            font_size * 0.55 // proportional approximation
-        };
-        let text_width = self.content.len() as f32 * char_width;
+        let text_width = measure_text_width(
+            cx.font_system,
+            &self.content,
+            font_size,
+            self.font_kind,
+            self.font_weight,
+        );
+
+        // Only allow shrinking when `.truncate()` is set; otherwise the text
+        // holds its natural width so it isn't crushed next to flex_shrink:0 siblings
+        // like SvgIcon.
+        let shrink = if self.truncate { 1.0 } else { 0.0 };
 
         let id = engine.request_layout(
             taffy::Style {
@@ -1330,12 +1413,12 @@ impl Element for TextElement {
                     width: taffy::Dimension::length(text_width),
                     height: taffy::Dimension::length(line_height),
                 },
-                flex_shrink: 1.0,
+                flex_shrink: shrink,
                 ..Default::default()
             },
             &[],
         );
-        (id, (font_size, line_height))
+        (id, (font_size, line_height, text_width))
     }
 
     fn prepaint(
@@ -1350,32 +1433,35 @@ impl Element for TextElement {
     fn paint(
         &mut self,
         bounds: Bounds,
-        state: &mut (f32, f32),
+        state: &mut (f32, f32, f32),
         _prepaint_state: &mut (),
         _engine: &LayoutEngine,
         scene: &mut Scene,
         cx: &mut ElementContext,
     ) {
-        let (font_size, _line_height) = *state;
+        let (font_size, _line_height, natural_width) = *state;
         let color = self.color.unwrap_or(cx.theme.colors.text);
 
-        let char_width = if self.font_kind == FontKind::Mono {
-            self.mono_char_width.unwrap_or(font_size * 0.6)
-        } else {
-            font_size * 0.55
-        };
-
         let mut content = std::mem::take(&mut self.content);
+        let mut text_width = natural_width;
 
         if self.truncate && bounds.width > 0.0 {
-            let max_chars = (bounds.width / char_width).floor() as usize;
-            if content.len() > max_chars && max_chars > 3 {
-                content.truncate(max_chars - 3);
-                content.push_str("\u{2026}");
-            }
+            let (truncated, truncated_width) = truncate_text_to_fit(
+                cx.font_system,
+                &content,
+                font_size,
+                self.font_kind,
+                self.font_weight,
+                bounds.width,
+            );
+            content = truncated;
+            text_width = truncated_width;
         }
 
-        let text_width = content.len() as f32 * char_width;
+        if matches!(self.align, TextAlign::Center | TextAlign::Right) && !self.truncate {
+            text_width = natural_width;
+        }
+
         let x_offset = match self.align {
             TextAlign::Left => 0.0,
             TextAlign::Center => ((bounds.width - text_width) * 0.5).max(0.0),
@@ -1387,12 +1473,46 @@ impl Element for TextElement {
                 x: bounds.x + x_offset,
                 ..bounds
             },
-            text: content,
+            text: content.clone(),
             color,
             font_size,
             font_kind: self.font_kind,
             font_weight: self.font_weight,
         });
+
+        // Debug wireframe: red rect around text + log measurement vs bounds
+        if cx.debug_wireframe {
+            let measured = measure_text_width(
+                cx.font_system,
+                &content,
+                font_size,
+                self.font_kind,
+                self.font_weight,
+            );
+            let crushed = bounds.width > 0.0 && bounds.width < measured * 0.9;
+            let wire_color = if crushed {
+                Color::rgba(255, 40, 40, 200) // red = text is crushed
+            } else {
+                Color::rgba(40, 200, 40, 120) // green = text fits
+            };
+            scene.border(BorderPrimitive {
+                rect: bounds,
+                widths: [1.0; 4],
+                corner_radii: [0.0; 4],
+                color: wire_color,
+            });
+            // Log short strings (likely button labels) to stderr
+            if content.len() < 30 {
+                eprintln!(
+                    "[wireframe] text={:20} measured={:6.1} bounds_w={:6.1} scale={:.2} {}",
+                    format!("{:?}", content),
+                    measured,
+                    bounds.width,
+                    cx.scale_factor,
+                    if crushed { "CRUSHED" } else { "ok" },
+                );
+            }
+        }
     }
 }
 
@@ -1416,7 +1536,7 @@ impl IntoAnyElement for String {
 }
 
 // ---------------------------------------------------------------------------
-// TextInput — visual text field (click-to-focus, not real IME)
+// TextInput — text field with cursor, selection, and editing support
 // ---------------------------------------------------------------------------
 
 pub struct TextInput {
@@ -1426,6 +1546,11 @@ pub struct TextInput {
     focused: bool,
     on_click: Option<Action>,
     base_style: ElementStyle,
+    // Cursor/selection state (only meaningful when focused)
+    cursor: usize,
+    anchor: usize,
+    cursor_moved_at_ms: u64,
+    focus_target: Option<crate::ui::state::FocusTarget>,
 }
 
 pub fn text_input(label: impl Into<String>, value: impl Into<String>) -> TextInput {
@@ -1436,6 +1561,10 @@ pub fn text_input(label: impl Into<String>, value: impl Into<String>) -> TextInp
         focused: false,
         on_click: None,
         base_style: ElementStyle::default(),
+        cursor: 0,
+        anchor: 0,
+        cursor_moved_at_ms: 0,
+        focus_target: None,
     }
 }
 
@@ -1454,12 +1583,45 @@ impl TextInput {
         self.on_click = Some(action);
         self
     }
+
+    pub fn cursor(mut self, offset: usize) -> Self {
+        self.cursor = offset;
+        self
+    }
+
+    pub fn anchor(mut self, offset: usize) -> Self {
+        self.anchor = offset;
+        self
+    }
+
+    pub fn cursor_moved_at(mut self, ms: u64) -> Self {
+        self.cursor_moved_at_ms = ms;
+        self
+    }
+
+    pub fn focus_target(mut self, target: crate::ui::state::FocusTarget) -> Self {
+        self.focus_target = Some(target);
+        self
+    }
 }
 
 impl Styled for TextInput {
     fn element_style_mut(&mut self) -> &mut ElementStyle {
         &mut self.base_style
     }
+}
+
+/// Describes a text input hit area for click-to-position cursor placement.
+#[derive(Debug, Clone)]
+pub struct TextInputHitArea {
+    pub bounds: Rect,
+    pub text_x: f32,
+    pub text_y: f32,
+    pub text_width: f32,
+    pub text_height: f32,
+    pub value: String,
+    pub font_size: f32,
+    pub focus_target: crate::ui::state::FocusTarget,
 }
 
 impl Element for TextInput {
@@ -1482,7 +1644,7 @@ impl Element for TextInput {
         _engine: &LayoutEngine,
         cx: &mut ElementContext,
     ) -> Option<HitboxId> {
-        if self.on_click.is_some() {
+        if self.on_click.is_some() || self.focus_target.is_some() {
             Some(cx.insert_hitbox(bounds, HitboxBehavior::Normal))
         } else {
             None
@@ -1515,17 +1677,18 @@ impl Element for TextInput {
         scene.rounded_rect(RoundedRectPrimitive::uniform(bounds, radius, fill));
         scene.border(BorderPrimitive::uniform(bounds, 1.0, radius, border));
 
-        let label_size = theme.metrics.ui_small_font_size;
+        let label_size = theme.metrics.ui_small_font_size - 1.0;
         let value_size = theme.metrics.ui_font_size;
-        let label_lh = label_size * 1.5;
+        let label_lh = label_size * 1.4;
         let value_lh = value_size * 1.5;
-        let pad = 12.0;
+        let pad = 14.0;
+        let top_pad = 8.0;
 
         // Label
         scene.text(TextPrimitive {
             rect: Rect {
                 x: bounds.x + pad,
-                y: bounds.y + 6.0,
+                y: bounds.y + top_pad,
                 width: bounds.width - pad * 2.0,
                 height: label_lh,
             },
@@ -1533,25 +1696,57 @@ impl Element for TextInput {
             color: theme.colors.text_muted,
             font_size: label_size,
             font_kind: FontKind::Ui,
-            font_weight: FontWeight::Normal,
+            font_weight: FontWeight::Medium,
         });
 
-        let display = if self.value.is_empty() {
+        let is_placeholder = self.value.is_empty();
+        let display = if is_placeholder {
             std::mem::take(&mut self.placeholder)
         } else {
-            std::mem::take(&mut self.value)
+            self.value.clone()
         };
-        let text_color = if display.is_empty() || (!self.placeholder.is_empty() && self.value.is_empty()) {
-            theme.colors.text_muted.with_alpha(180)
+        let text_color = if is_placeholder {
+            theme.colors.text_muted.with_alpha(140)
         } else {
             theme.colors.text
         };
 
+        let text_x = bounds.x + pad;
+        let text_y = bounds.y + top_pad + label_lh + 2.0;
+        let text_area_w = bounds.width - pad * 2.0;
+
+        // Selection highlight (render before text so it appears behind)
+        if self.focused && !is_placeholder {
+            let sel_start = self.cursor.min(self.anchor);
+            let sel_end = self.cursor.max(self.anchor);
+            if sel_start != sel_end && sel_end <= self.value.len() {
+                let x_start = measure_text_width(
+                    cx.font_system, &self.value[..sel_start],
+                    value_size, FontKind::Ui, FontWeight::Normal,
+                );
+                let x_end = measure_text_width(
+                    cx.font_system, &self.value[..sel_end],
+                    value_size, FontKind::Ui, FontWeight::Normal,
+                );
+                scene.rounded_rect(RoundedRectPrimitive::uniform(
+                    Rect {
+                        x: text_x + x_start,
+                        y: text_y,
+                        width: (x_end - x_start).min(text_area_w),
+                        height: value_lh,
+                    },
+                    2.0,
+                    theme.colors.accent.with_alpha(80),
+                ));
+            }
+        }
+
+        // Value text
         scene.text(TextPrimitive {
             rect: Rect {
-                x: bounds.x + pad,
-                y: bounds.y + 6.0 + label_lh,
-                width: bounds.width - pad * 2.0,
+                x: text_x,
+                y: text_y,
+                width: text_area_w,
                 height: value_lh,
             },
             text: display,
@@ -1561,11 +1756,54 @@ impl Element for TextInput {
             font_weight: FontWeight::Normal,
         });
 
+        // Cursor caret
+        if self.focused && !is_placeholder || (self.focused && self.value.is_empty()) {
+            let elapsed = cx.clock_ms.saturating_sub(self.cursor_moved_at_ms);
+            let cursor_visible = elapsed < 530 || (elapsed / 530) % 2 == 0;
+            if cursor_visible {
+                let cursor_x = if self.cursor > 0 && !self.value.is_empty() {
+                    let offset = self.cursor.min(self.value.len());
+                    measure_text_width(
+                        cx.font_system, &self.value[..offset],
+                        value_size, FontKind::Ui, FontWeight::Normal,
+                    )
+                } else {
+                    0.0
+                };
+                scene.rounded_rect(RoundedRectPrimitive::uniform(
+                    Rect {
+                        x: text_x + cursor_x,
+                        y: text_y + 1.0,
+                        width: 2.0,
+                        height: value_lh - 2.0,
+                    },
+                    1.0,
+                    theme.colors.text,
+                ));
+            }
+        }
+
+        // Register click hit region
         if let Some(action) = self.on_click.take() {
             cx.hits.push(HitRegion {
                 rect: bounds,
                 action,
                 cursor: CursorHint::Text,
+            });
+        }
+
+        // Register hit area for click-to-position (stored in cx for app.rs to use)
+        if let Some(target) = self.focus_target {
+            let value = std::mem::take(&mut self.value);
+            cx.text_input_hit_areas.push(TextInputHitArea {
+                bounds,
+                text_x,
+                text_y,
+                text_width: text_area_w,
+                text_height: value_lh,
+                value,
+                font_size: value_size,
+                focus_target: target,
             });
         }
     }
@@ -1749,6 +1987,115 @@ impl IntoAnyElement for SvgIcon {
 }
 
 // ---------------------------------------------------------------------------
+// Text measurement
+// ---------------------------------------------------------------------------
+
+/// Measure text width using glyphon's real shaping — the same engine that
+/// renders the text on the GPU.  This eliminates the mismatch between layout
+/// estimates and actual rendered glyph widths.
+fn measure_text_width(
+    font_system: &mut glyphon::FontSystem,
+    text: &str,
+    font_size: f32,
+    font_kind: FontKind,
+    font_weight: FontWeight,
+) -> f32 {
+    if text.is_empty() {
+        return 0.0;
+    }
+
+    let metrics = glyphon::Metrics::new(font_size, font_size * 1.2);
+    let mut buffer = glyphon::Buffer::new(font_system, metrics);
+
+    let family = match font_kind {
+        FontKind::Ui => glyphon::Family::SansSerif,
+        FontKind::Mono => glyphon::Family::Monospace,
+    };
+    let weight = match font_weight {
+        FontWeight::Normal => glyphon::Weight::NORMAL,
+        FontWeight::Medium => glyphon::Weight(500),
+        FontWeight::Semibold => glyphon::Weight(600),
+        FontWeight::Bold => glyphon::Weight::BOLD,
+    };
+    let attrs = glyphon::Attrs::new().family(family).weight(weight);
+
+    // Set an unbounded width so glyphon shapes onto a single line.
+    buffer.set_size(font_system, None, None);
+    buffer.set_text(font_system, text, &attrs, glyphon::Shaping::Advanced, None);
+    buffer.shape_until_scroll(font_system, false);
+
+    // Use the line advance width rather than the visible ink bounds.
+    // Bounding boxes like `glyph.x + glyph.w` can under-measure strings and
+    // make glyphon clip button labels into garbled fragments in the live GPU
+    // renderer.
+    let width = buffer
+        .layout_runs()
+        .fold(0.0f32, |width, run| width.max(run.line_w));
+
+    // Ceil to avoid sub-pixel truncation.
+    width.ceil()
+}
+
+fn truncate_text_to_fit(
+    font_system: &mut glyphon::FontSystem,
+    text: &str,
+    font_size: f32,
+    font_kind: FontKind,
+    font_weight: FontWeight,
+    max_width: f32,
+) -> (String, f32) {
+    const ELLIPSIS: &str = "\u{2026}";
+
+    if text.is_empty() || max_width <= 0.0 {
+        return (String::new(), 0.0);
+    }
+
+    let full_width = measure_text_width(font_system, text, font_size, font_kind, font_weight);
+    if full_width <= max_width {
+        return (text.to_owned(), full_width);
+    }
+
+    let ellipsis_width =
+        measure_text_width(font_system, ELLIPSIS, font_size, font_kind, font_weight);
+    if ellipsis_width > max_width {
+        return (String::new(), 0.0);
+    }
+
+    let mut boundaries = Vec::with_capacity(text.chars().count() + 1);
+    boundaries.push(0);
+    boundaries.extend(text.char_indices().skip(1).map(|(idx, _)| idx));
+    boundaries.push(text.len());
+
+    let char_count = boundaries.len() - 1;
+    let mut low = 0usize;
+    let mut high = char_count;
+    let mut best_width = ellipsis_width;
+
+    while low < high {
+        let mid = (low + high + 1) / 2;
+        let prefix = &text[..boundaries[mid]];
+        let mut candidate = String::with_capacity(prefix.len() + ELLIPSIS.len());
+        candidate.push_str(prefix);
+        candidate.push_str(ELLIPSIS);
+        let candidate_width =
+            measure_text_width(font_system, &candidate, font_size, font_kind, font_weight);
+        if candidate_width <= max_width {
+            low = mid;
+            best_width = candidate_width;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    let prefix = &text[..boundaries[low]];
+    let mut truncated = String::with_capacity(prefix.len() + ELLIPSIS.len());
+    truncated.push_str(prefix);
+    truncated.push_str(ELLIPSIS);
+    let truncated_width = if low == 0 { ellipsis_width } else { best_width };
+    (truncated, truncated_width)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1758,6 +2105,7 @@ mod tests {
     use crate::ui::theme::Theme;
 
     fn test_cx<'a>(font_system: &'a mut glyphon::FontSystem, store: &'a mut SignalStore) -> ElementContext<'a> {
+        crate::fonts::configure_font_system(font_system);
         let theme = Box::leak(Box::new(Theme::default_dark()));
         ElementContext::new(theme, 1.0, font_system, None, store)
     }
@@ -2037,6 +2385,170 @@ mod tests {
         assert_eq!(cx.hits.len(), 2);
         assert_eq!(cx.hits[0].action, Action::OpenCompareSheet);
         assert_eq!(cx.hits[1].action, Action::OpenPullRequestModal);
+    }
+
+    #[test]
+    fn measure_text_width_matches_layout_run_width() {
+        let mut font_system = glyphon::FontSystem::new();
+        let text = "Open Compare";
+        let font_size = 12.0;
+
+        let measured = measure_text_width(
+            &mut font_system,
+            text,
+            font_size,
+            FontKind::Ui,
+            FontWeight::Normal,
+        );
+
+        let metrics = glyphon::Metrics::new(font_size, font_size * 1.2);
+        let mut buffer = glyphon::Buffer::new(&mut font_system, metrics);
+        let attrs = glyphon::Attrs::new().family(glyphon::Family::SansSerif);
+        buffer.set_size(&mut font_system, None, None);
+        buffer.set_text(
+            &mut font_system,
+            text,
+            &attrs,
+            glyphon::Shaping::Advanced,
+            None,
+        );
+        buffer.shape_until_scroll(&mut font_system, false);
+
+        let line_width = buffer
+            .layout_runs()
+            .fold(0.0f32, |width, run| width.max(run.line_w))
+            .ceil();
+
+        assert!(
+            (measured - line_width).abs() < 1.0,
+            "measured width {measured} should track glyphon line width {line_width}",
+        );
+    }
+
+    #[test]
+    fn measure_text_width_accounts_for_font_weight() {
+        let mut font_system = glyphon::FontSystem::new();
+        crate::fonts::configure_font_system(&mut font_system);
+        let text = "Open Compare";
+        let font_size = 12.0;
+
+        let measured = measure_text_width(
+            &mut font_system,
+            text,
+            font_size,
+            FontKind::Ui,
+            FontWeight::Medium,
+        );
+
+        let metrics = glyphon::Metrics::new(font_size, font_size * 1.2);
+        let mut buffer = glyphon::Buffer::new(&mut font_system, metrics);
+        let attrs = glyphon::Attrs::new()
+            .family(glyphon::Family::SansSerif)
+            .weight(glyphon::Weight(500));
+        buffer.set_size(&mut font_system, None, None);
+        buffer.set_text(
+            &mut font_system,
+            text,
+            &attrs,
+            glyphon::Shaping::Advanced,
+            None,
+        );
+        buffer.shape_until_scroll(&mut font_system, false);
+
+        let line_width = buffer
+            .layout_runs()
+            .fold(0.0f32, |width, run| width.max(run.line_w))
+            .ceil();
+
+        assert!(
+            (measured - line_width).abs() < 1.0,
+            "measured width {measured} should track medium-weight glyphon line width {line_width}",
+        );
+    }
+
+    #[test]
+    fn truncate_text_to_fit_accounts_for_font_weight() {
+        let mut font_system = glyphon::FontSystem::new();
+        crate::fonts::configure_font_system(&mut font_system);
+        let text = "Open Compare With Repository";
+        let font_size = 12.0;
+        let max_width = measure_text_width(
+            &mut font_system,
+            "Open Compare",
+            font_size,
+            FontKind::Ui,
+            FontWeight::Medium,
+        );
+
+        let (truncated, truncated_width) = truncate_text_to_fit(
+            &mut font_system,
+            text,
+            font_size,
+            FontKind::Ui,
+            FontWeight::Medium,
+            max_width,
+        );
+
+        assert_ne!(truncated, text, "text should truncate when width is constrained");
+        assert!(
+            truncated.ends_with('\u{2026}'),
+            "truncated text should end with an ellipsis: {truncated:?}",
+        );
+        assert!(
+            truncated_width <= max_width + 1.0,
+            "truncated width {truncated_width} should fit max width {max_width}",
+        );
+    }
+
+    #[test]
+    fn truncated_text_primitive_fits_bounds_for_medium_weight() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
+        let mut scene = Scene::default();
+
+        let mut root = div()
+            .w(110.0)
+            .h(28.0)
+            .flex_row()
+            .child(
+                text("Open Compare With Repository")
+                    .text_sm()
+                    .medium()
+                    .truncate(),
+            )
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 110.0, 28.0);
+
+        let text = scene
+            .primitives
+            .iter()
+            .find_map(|primitive| match primitive {
+                crate::render::Primitive::TextRun(text) => Some(text.clone()),
+                _ => None,
+            })
+            .expect("expected a text primitive");
+
+        assert!(
+            text.text.ends_with('\u{2026}'),
+            "rendered text should be truncated: {:?}",
+            text.text,
+        );
+
+        let measured = measure_text_width(
+            cx.font_system,
+            &text.text,
+            text.font_size,
+            text.font_kind,
+            text.font_weight,
+        );
+        assert!(
+            measured <= text.rect.width + 1.0,
+            "measured width {measured} should fit rendered bounds {} for {:?}",
+            text.rect.width,
+            text.text,
+        );
     }
 
     #[test]

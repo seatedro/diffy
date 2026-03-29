@@ -10,7 +10,7 @@ pub mod signals;
 pub mod style;
 pub mod effects;
 pub mod events;
-pub(crate) mod shell;
+pub mod shell;
 pub mod state;
 pub mod theme;
 

@@ -499,14 +499,13 @@ impl Renderer {
 
         let texture_pool = TexturePool::new(surface_format);
 
-        let mut font_system = FontSystem::new();
+        let font_system = crate::fonts::new_font_system();
         let swash_cache = SwashCache::new();
         let glyph_cache = Cache::new(&device);
         let viewport = Viewport::new(&device, &glyph_cache);
         let mut atlas = TextAtlas::new(&device, &queue, &glyph_cache, surface_format);
         let text_renderer =
             TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None);
-        font_system.db_mut().set_monospace_family("Consolas");
 
         Ok(Self {
             device,
@@ -551,6 +550,10 @@ impl Renderer {
             0,
             bytemuck::bytes_of(&ViewportUniform::new(width, height)),
         );
+    }
+
+    pub fn font_system(&mut self) -> &mut FontSystem {
+        &mut self.font_system
     }
 
     pub fn font_system_mut(&mut self) -> &mut FontSystem {

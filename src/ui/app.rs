@@ -56,11 +56,31 @@ struct NativeApp {
     launch_at: Instant,
     dumps_dirty: bool,
     modifiers: ModifiersState,
+    capture_pending: Option<std::path::PathBuf>,
+    /// When dragging in a text input, tracks which field is being drag-selected.
+    mouse_drag_target: Option<FocusTarget>,
+    /// When dragging a scrollbar thumb, tracks the drag state.
+    scrollbar_drag: Option<ScrollbarDrag>,
+}
+
+/// State for an active scrollbar thumb drag.
+struct ScrollbarDrag {
+    /// The scroll action builder for the scrollbar being dragged.
+    action_builder: crate::ui::element::ScrollActionBuilder,
+    /// Y offset of the mouse within the track at drag start.
+    track_top: f32,
+    track_height: f32,
+    thumb_height: f32,
+    content_height: f32,
+    viewport_height: f32,
+    /// Mouse Y offset from the top of the thumb at drag start.
+    grab_offset: f32,
 }
 
 impl NativeApp {
     fn new(state: AppState, runtime: AppRuntime) -> Self {
         let theme = Theme::for_mode(state.settings.theme_mode);
+        let capture_pending = std::env::var("DIFFY_CAPTURE_PATH").ok().map(std::path::PathBuf::from);
         Self {
             state,
             theme,
@@ -74,6 +94,9 @@ impl NativeApp {
             launch_at: Instant::now(),
             dumps_dirty: true,
             modifiers: ModifiersState::default(),
+            capture_pending,
+            mouse_drag_target: None,
+            scrollbar_drag: None,
         }
     }
 
@@ -166,7 +189,7 @@ impl NativeApp {
         let font_system = if let Some(renderer) = self.renderer.as_mut() {
             renderer.font_system_mut()
         } else {
-            fallback_font_system = glyphon::FontSystem::new();
+            fallback_font_system = crate::fonts::new_font_system();
             &mut fallback_font_system
         };
 
@@ -182,6 +205,7 @@ impl NativeApp {
         )
         .with_focus(self.state.focus.current)
         .with_clock(self.state.clock_ms);
+        cx.debug_wireframe = std::env::var("DIFFY_DEBUG_WIREFRAME").is_ok();
 
         build_ui_frame(
             &mut self.state,
@@ -203,6 +227,58 @@ impl NativeApp {
     }
 
     fn handle_left_click(&mut self, x: f32, y: f32) {
+        // Check scrollbar tracks for click/drag
+        if let Some(track) = self
+            .ui_frame
+            .scrollbar_tracks
+            .iter()
+            .rev()
+            .find(|t| t.track_rect.contains(x, y))
+        {
+            let on_thumb = y >= track.thumb_top && y <= track.thumb_top + track.thumb_height;
+            let grab_offset = if on_thumb {
+                y - track.thumb_top
+            } else {
+                track.thumb_height / 2.0
+            };
+            self.scrollbar_drag = Some(ScrollbarDrag {
+                action_builder: track.action_builder.clone(),
+                track_top: track.track_rect.y,
+                track_height: track.track_rect.height,
+                thumb_height: track.thumb_height,
+                content_height: track.content_height,
+                viewport_height: track.viewport_height,
+                grab_offset,
+            });
+            // If clicked outside the thumb, jump to that position
+            if !on_thumb {
+                self.handle_scrollbar_drag_move(y);
+            }
+            return;
+        }
+
+        // Check text input hit areas for click-to-position
+        if let Some(hit_area) = self
+            .ui_frame
+            .text_input_hit_areas
+            .iter()
+            .rev()
+            .find(|ha| ha.bounds.contains(x, y))
+        {
+            let target = hit_area.focus_target;
+            let byte_offset = hit_test_text_offset(
+                self.renderer.as_mut().map(|r| r.font_system()),
+                &hit_area.value,
+                hit_area.font_size,
+                x - hit_area.text_x,
+            );
+            // Focus the field and set cursor position
+            self.dispatch_action(Action::SetFocus(Some(target)));
+            self.dispatch_action(Action::SetTextCursor(byte_offset));
+            self.mouse_drag_target = Some(target);
+            return;
+        }
+
         if let Some(hit) = self
             .ui_frame
             .hits
@@ -235,6 +311,29 @@ impl NativeApp {
 
     fn handle_cursor_moved(&mut self, x: f32, y: f32) {
         self.mouse_position = Some((x, y));
+
+        // Scrollbar thumb drag
+        if self.scrollbar_drag.is_some() {
+            self.handle_scrollbar_drag_move(y);
+        }
+
+        // Drag-to-select in text inputs
+        if let Some(drag_target) = self.mouse_drag_target {
+            if let Some(hit_area) = self
+                .ui_frame
+                .text_input_hit_areas
+                .iter()
+                .find(|ha| ha.focus_target == drag_target)
+            {
+                let byte_offset = hit_test_text_offset(
+                    self.renderer.as_mut().map(|r| r.font_system()),
+                    &hit_area.value,
+                    hit_area.font_size,
+                    x - hit_area.text_x,
+                );
+                self.dispatch_action(Action::ExtendTextSelection(byte_offset));
+            }
+        }
 
         let hovered_hit = self
             .ui_frame
@@ -396,12 +495,73 @@ impl NativeApp {
         }
     }
 
+    fn handle_scrollbar_drag_move(&mut self, mouse_y: f32) {
+        let Some(ref drag) = self.scrollbar_drag else {
+            return;
+        };
+        let track_top = drag.track_top;
+        let track_h = drag.track_height;
+        let thumb_h = drag.thumb_height;
+        let grab_offset = drag.grab_offset;
+        let content_h = drag.content_height;
+        let viewport_h = drag.viewport_height;
+        let builder = drag.action_builder.clone();
+
+        // Compute new thumb position
+        let thumb_top = (mouse_y - track_top - grab_offset).clamp(0.0, track_h - thumb_h);
+        let max_scroll = content_h - viewport_h;
+        let scroll_range = track_h - thumb_h;
+        let fraction = if scroll_range > 0.0 {
+            thumb_top / scroll_range
+        } else {
+            0.0
+        };
+
+        let target_px = (fraction * max_scroll) as u32;
+
+        // Dispatch scroll action based on the builder type
+        match builder {
+            crate::ui::element::ScrollActionBuilder::FileList => {
+                self.dispatch_action(Action::ScrollFileListToPx(target_px));
+            }
+            crate::ui::element::ScrollActionBuilder::ViewportLines => {
+                self.dispatch_action(Action::ScrollViewportTo(target_px));
+            }
+            crate::ui::element::ScrollActionBuilder::Custom(_) => {}
+        }
+    }
+
+    fn is_text_focused(&self) -> bool {
+        self.state.is_text_focused()
+    }
+
     fn handle_key(&mut self, key: &Key) {
+        let ctrl = self.modifiers.control_key() || self.modifiers.super_key();
+        let shift = self.modifiers.shift_key();
+
+        // Global shortcuts
         if let Key::Character(text) = key {
             let lower = text.to_ascii_lowercase();
-            if (self.modifiers.control_key() || self.modifiers.super_key()) && lower == "p" {
+            if ctrl && lower == "p" {
                 self.dispatch_action(Action::OpenCommandPalette);
                 return;
+            }
+            // Clipboard shortcuts (when text is focused)
+            if ctrl && self.is_text_focused() {
+                match lower.as_str() {
+                    "a" => { self.dispatch_action(Action::SelectAll); return; }
+                    "c" => { self.dispatch_action(Action::Copy); return; }
+                    "x" => { self.dispatch_action(Action::Cut); return; }
+                    "v" => {
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            if let Ok(text) = clipboard.get_text() {
+                                self.dispatch_action(Action::Paste(text));
+                            }
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -413,6 +573,33 @@ impl NativeApp {
             }
             Key::Named(NamedKey::Tab) => self.cycle_focus(),
             Key::Named(NamedKey::Enter) => self.activate_current_focus(),
+
+            // Arrow keys: text cursor when text-focused, else overlay/viewport nav
+            Key::Named(NamedKey::ArrowLeft) if self.is_text_focused() => {
+                let action = match (ctrl, shift) {
+                    (true, true) => Action::SelectWordLeft,
+                    (true, false) => Action::CursorWordLeft,
+                    (false, true) => Action::SelectLeft,
+                    (false, false) => Action::CursorLeft,
+                };
+                self.dispatch_action(action);
+            }
+            Key::Named(NamedKey::ArrowRight) if self.is_text_focused() => {
+                let action = match (ctrl, shift) {
+                    (true, true) => Action::SelectWordRight,
+                    (true, false) => Action::CursorWordRight,
+                    (false, true) => Action::SelectRight,
+                    (false, false) => Action::CursorRight,
+                };
+                self.dispatch_action(action);
+            }
+            Key::Named(NamedKey::Home) if self.is_text_focused() => {
+                self.dispatch_action(if shift { Action::SelectHome } else { Action::CursorHome });
+            }
+            Key::Named(NamedKey::End) if self.is_text_focused() => {
+                self.dispatch_action(if shift { Action::SelectEnd } else { Action::CursorEnd });
+            }
+
             Key::Named(NamedKey::ArrowDown) => {
                 if self.state.overlays.top().is_some() {
                     self.dispatch_action(Action::MoveOverlaySelection(1));
@@ -454,10 +641,9 @@ impl NativeApp {
                 ));
             }
             Key::Named(NamedKey::Backspace) => self.dispatch_action(Action::Backspace),
+            Key::Named(NamedKey::Delete) => self.dispatch_action(Action::DeleteForward),
             Key::Character(text) => {
-                if !(self.modifiers.control_key() || self.modifiers.super_key())
-                    && !text.chars().all(char::is_control)
-                {
+                if !ctrl && !text.chars().all(char::is_control) {
                     self.dispatch_action(Action::InsertText(text.to_string()));
                 }
             }
@@ -553,6 +739,15 @@ impl ApplicationHandler for NativeApp {
                         }
                     }
                 }
+                // Capture scene to PNG if DIFFY_CAPTURE_PATH is set.
+                #[cfg(feature = "capture")]
+                if let Some(path) = self.capture_pending.take() {
+                    let size = self.window.as_ref().map(|w| w.inner_size());
+                    let (w, h) = size.map(|s| (s.width, s.height)).unwrap_or((1320, 840));
+                    crate::render::capture::scene_to_png(&self.ui_frame.scene, w, h, &path);
+                    eprintln!("captured: {}", path.display());
+                }
+
                 self.dumps_dirty = true;
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -570,8 +765,19 @@ impl ApplicationHandler for NativeApp {
                     self.handle_left_click(x, y);
                 }
             }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.mouse_drag_target = None;
+                self.scrollbar_drag = None;
+            }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 self.handle_key(&event.logical_key);
+            }
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                self.dispatch_action(Action::InsertText(text));
             }
             _ => {}
         }
@@ -596,9 +802,14 @@ impl ApplicationHandler for NativeApp {
         }
 
         let animating = self.state.animation.has_active();
+        let cursor_blinking = self.is_text_focused();
         let should_poll = self.state.startup.exit_after.is_some();
         if animating {
             let next = std::time::Instant::now() + std::time::Duration::from_millis(16);
+            event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+        } else if cursor_blinking {
+            // Redraw at ~2fps for cursor blink
+            let next = std::time::Instant::now() + std::time::Duration::from_millis(530);
             event_loop.set_control_flow(ControlFlow::WaitUntil(next));
         } else if should_poll {
             event_loop.set_control_flow(ControlFlow::Poll);
@@ -610,6 +821,64 @@ impl ApplicationHandler for NativeApp {
             window.request_redraw();
         }
     }
+}
+
+/// Map a click x-coordinate (relative to text start) to a byte offset in the string.
+fn hit_test_text_offset(
+    font_system: Option<&mut glyphon::FontSystem>,
+    text: &str,
+    font_size: f32,
+    click_x: f32,
+) -> usize {
+    if text.is_empty() || click_x <= 0.0 {
+        return 0;
+    }
+    let Some(font_system) = font_system else {
+        return text.len();
+    };
+
+    // Shape the text into a glyphon buffer and walk glyphs to find the offset
+    let metrics = glyphon::Metrics::new(font_size, font_size * 1.2);
+    let mut buffer = glyphon::Buffer::new(font_system, metrics);
+    let attrs = glyphon::Attrs::new().family(glyphon::Family::SansSerif);
+    buffer.set_size(font_system, None, None);
+    buffer.set_text(font_system, text, &attrs, glyphon::Shaping::Advanced, None);
+    buffer.shape_until_scroll(font_system, false);
+
+    // Walk glyphs to find the click position
+    let mut best_offset = text.len();
+    let mut best_dist = f32::MAX;
+
+    for run in buffer.layout_runs() {
+        // Check position 0 (before first glyph)
+        let dist = click_x.abs();
+        if dist < best_dist {
+            best_dist = dist;
+            best_offset = 0;
+        }
+        for glyph in run.glyphs.iter() {
+            // Check left edge of glyph
+            let left_dist = (click_x - glyph.x).abs();
+            if left_dist < best_dist {
+                best_dist = left_dist;
+                best_offset = glyph.start;
+            }
+            // Check right edge of glyph
+            let right_dist = (click_x - (glyph.x + glyph.w)).abs();
+            if right_dist < best_dist {
+                best_dist = right_dist;
+                best_offset = glyph.end;
+            }
+        }
+        // Check end of run
+        let dist = (click_x - run.line_w).abs();
+        if dist < best_dist {
+            best_dist = dist;
+            best_offset = text.len();
+        }
+    }
+
+    best_offset
 }
 
 fn init_logging(log_debug: bool) {

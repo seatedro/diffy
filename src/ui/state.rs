@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use unicode_segmentation::UnicodeSegmentation;
+
 use crate::core::compare::{CompareMode, CompareOutput, CompareSpec, LayoutMode, RendererKind};
 use crate::core::diff::FileDiff;
 use crate::core::search::fuzzy::fuzzy_score;
@@ -66,6 +68,17 @@ pub enum FocusTarget {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FocusState {
     pub current: Option<FocusTarget>,
+}
+
+/// Cursor/selection state for the currently focused text field.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TextEditState {
+    /// Byte offset of the caret.
+    pub cursor: usize,
+    /// Byte offset of the selection anchor.  Equal to `cursor` when nothing is selected.
+    pub anchor: usize,
+    /// Timestamp (clock_ms) when the cursor last moved — used to reset blink phase.
+    pub cursor_moved_at_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,18 +168,53 @@ impl WorkspaceState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FileListState {
-    pub scroll_offset: usize,
+    /// Pixel scroll offset (how many pixels the list is scrolled down).
+    pub scroll_offset_px: f32,
     pub hovered_index: Option<usize>,
     pub row_height: f32,
+    pub gap: f32,
+    /// Height of the visible list area (set by shell during layout).
+    pub viewport_height: f32,
 }
 
 impl Default for FileListState {
     fn default() -> Self {
         Self {
-            scroll_offset: 0,
+            scroll_offset_px: 0.0,
             hovered_index: None,
             row_height: 36.0,
+            gap: 4.0, // Sp::XS
+            viewport_height: 0.0,
         }
+    }
+}
+
+impl FileListState {
+    pub fn row_stride(&self) -> f32 {
+        self.row_height + self.gap
+    }
+
+    pub fn total_content_height(&self, file_count: usize) -> f32 {
+        if file_count == 0 {
+            return 0.0;
+        }
+        file_count as f32 * self.row_stride() - self.gap
+    }
+
+    pub fn max_scroll_px(&self, file_count: usize) -> f32 {
+        (self.total_content_height(file_count) - self.viewport_height).max(0.0)
+    }
+
+    pub fn clamp_scroll(&mut self, file_count: usize) {
+        let max = self.max_scroll_px(file_count);
+        self.scroll_offset_px = self.scroll_offset_px.clamp(0.0, max);
+    }
+
+    /// Scroll by a number of rows (positive = down).
+    pub fn scroll_rows(&mut self, delta: i32, file_count: usize) {
+        let px_delta = delta as f32 * self.row_stride();
+        self.scroll_offset_px += px_delta;
+        self.clamp_scroll(file_count);
     }
 }
 
@@ -349,6 +397,7 @@ pub struct AppState {
     pub file_list: FileListState,
     pub overlays: OverlayStackState,
     pub focus: FocusState,
+    pub text_edit: TextEditState,
     pub viewport: DiffViewportState,
     pub github: GitHubState,
     pub settings: Settings,
@@ -359,6 +408,31 @@ pub struct AppState {
     pub debug: DebugState,
     pub clock_ms: u64,
     pub next_toast_id: u64,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            workspace_mode: WorkspaceMode::default(),
+            compare: CompareState::default(),
+            repository: RepositoryState::default(),
+            workspace: WorkspaceState::default(),
+            file_list: FileListState::default(),
+            overlays: OverlayStackState::default(),
+            focus: FocusState::default(),
+            text_edit: TextEditState::default(),
+            viewport: DiffViewportState::default(),
+            github: GitHubState::default(),
+            settings: Settings::default(),
+            startup: StartupState::default(),
+            last_error: None,
+            toasts: Vec::new(),
+            animation: crate::ui::animation::AnimationState::default(),
+            debug: DebugState::default(),
+            clock_ms: 0,
+            next_toast_id: 1,
+        }
+    }
 }
 
 impl AppState {
@@ -425,6 +499,7 @@ impl AppState {
                     Some(FocusTarget::WorkspacePrimaryButton)
                 },
             },
+            text_edit: TextEditState::default(),
             viewport: DiffViewportState {
                 layout,
                 wrap_enabled: settings.viewport.wrap_enabled,
@@ -543,6 +618,31 @@ impl AppState {
             }
             Action::InsertText(value) => self.insert_text(value),
             Action::Backspace => self.backspace(),
+            Action::DeleteForward => self.delete_forward(),
+            Action::CursorLeft => { self.cursor_left(false); Vec::new() }
+            Action::CursorRight => { self.cursor_right(false); Vec::new() }
+            Action::CursorWordLeft => { self.cursor_word_left(false); Vec::new() }
+            Action::CursorWordRight => { self.cursor_word_right(false); Vec::new() }
+            Action::CursorHome => { self.cursor_home(false); Vec::new() }
+            Action::CursorEnd => { self.cursor_end(false); Vec::new() }
+            Action::SelectLeft => { self.cursor_left(true); Vec::new() }
+            Action::SelectRight => { self.cursor_right(true); Vec::new() }
+            Action::SelectWordLeft => { self.cursor_word_left(true); Vec::new() }
+            Action::SelectWordRight => { self.cursor_word_right(true); Vec::new() }
+            Action::SelectHome => { self.cursor_home(true); Vec::new() }
+            Action::SelectEnd => { self.cursor_end(true); Vec::new() }
+            Action::SelectAll => { self.select_all(); Vec::new() }
+            Action::Copy => self.copy_selection(),
+            Action::Cut => self.cut_selection(),
+            Action::Paste(value) => self.paste(value),
+            Action::SetTextCursor(offset) => {
+                self.move_cursor(offset, false);
+                Vec::new()
+            }
+            Action::ExtendTextSelection(offset) => {
+                self.move_cursor(offset, true);
+                Vec::new()
+            }
             Action::MoveOverlaySelection(delta) => {
                 self.move_overlay_selection(delta);
                 Vec::new()
@@ -579,11 +679,12 @@ impl AppState {
                 Vec::new()
             }
             Action::ScrollFileList(delta) => {
-                self.file_list.scroll_offset = apply_scroll_delta(
-                    self.file_list.scroll_offset,
-                    delta,
-                    self.workspace.files.len().saturating_sub(1),
-                );
+                self.file_list.scroll_rows(delta, self.workspace.files.len());
+                Vec::new()
+            }
+            Action::ScrollFileListToPx(px) => {
+                self.file_list.scroll_offset_px = px as f32;
+                self.file_list.clamp_scroll(self.workspace.files.len());
                 Vec::new()
             }
             Action::ScrollViewportLines(delta) => {
@@ -673,6 +774,7 @@ impl AppState {
                 };
                 self.persist_settings_effect()
             }
+            Action::Noop => Vec::new(),
         }
     }
 
@@ -869,7 +971,7 @@ impl AppState {
         self.workspace.fallback_message = payload.output.fallback_message.clone();
         self.workspace.files = build_file_entries(&payload.output.files);
         self.workspace.compare_output = Some(payload.output);
-        self.file_list.scroll_offset = 0;
+        self.file_list.scroll_offset_px = 0.0;
         self.set_focus(Some(FocusTarget::FileList));
         self.viewport.clear_document();
         self.overlays.clear();
@@ -980,102 +1082,314 @@ impl AppState {
     }
 
     fn set_focus(&mut self, target: Option<FocusTarget>) {
+        if target != self.focus.current {
+            // Reset cursor to end of the new field
+            let len = target
+                .and_then(|t| self.text_for_focus(t).map(|s| s.len()))
+                .unwrap_or(0);
+            self.text_edit = TextEditState {
+                cursor: len,
+                anchor: len,
+                cursor_moved_at_ms: self.clock_ms,
+            };
+        }
         self.focus.current = target;
         self.viewport.focused = target == Some(FocusTarget::DiffViewport);
     }
 
-    fn insert_text(&mut self, value: String) -> Vec<Effect> {
-        match self.focus.current {
-            Some(FocusTarget::CompareLeftRef) => {
-                let mut next = self.compare.left_ref.clone();
-                next.push_str(&value);
-                self.update_compare_field(CompareField::Left, next);
-                self.persist_settings_effect()
-            }
-            Some(FocusTarget::CompareRightRef) => {
-                let mut next = self.compare.right_ref.clone();
-                next.push_str(&value);
-                self.update_compare_field(CompareField::Right, next);
-                self.persist_settings_effect()
-            }
-            Some(FocusTarget::PickerInput) => {
-                match self.overlays.picker.kind {
-                    PickerKind::Repository => {
-                        self.overlays.picker.query.push_str(&value);
-                        self.rebuild_repo_picker();
-                    }
-                    PickerKind::LeftRef => {
-                        let mut next = self.compare.left_ref.clone();
-                        next.push_str(&value);
-                        self.update_compare_field(CompareField::Left, next);
-                    }
-                    PickerKind::RightRef => {
-                        let mut next = self.compare.right_ref.clone();
-                        next.push_str(&value);
-                        self.update_compare_field(CompareField::Right, next);
-                    }
-                }
-                Vec::new()
-            }
-            Some(FocusTarget::CommandPaletteInput) => {
-                self.overlays.command_palette.query.push_str(&value);
-                self.rebuild_command_palette();
-                Vec::new()
-            }
-            Some(FocusTarget::PullRequestInput) => {
-                self.github.pull_request.url_input.push_str(&value);
-                Vec::new()
-            }
-            _ => Vec::new(),
+    /// Returns a reference to the text string for the given focus target, if it's a text field.
+    fn text_for_focus(&self, target: FocusTarget) -> Option<&str> {
+        match target {
+            FocusTarget::CompareLeftRef => Some(&self.compare.left_ref),
+            FocusTarget::CompareRightRef => Some(&self.compare.right_ref),
+            FocusTarget::PickerInput => match self.overlays.picker.kind {
+                PickerKind::Repository => Some(&self.overlays.picker.query),
+                PickerKind::LeftRef => Some(&self.compare.left_ref),
+                PickerKind::RightRef => Some(&self.compare.right_ref),
+            },
+            FocusTarget::CommandPaletteInput => Some(&self.overlays.command_palette.query),
+            FocusTarget::PullRequestInput => Some(&self.github.pull_request.url_input),
+            _ => None,
         }
     }
 
-    fn backspace(&mut self) -> Vec<Effect> {
+    /// Returns the currently focused text string, if any.
+    fn focused_text(&self) -> Option<&str> {
+        self.focus.current.and_then(|t| self.text_for_focus(t))
+    }
+
+    /// Returns a mutable reference to the currently focused text string.
+    fn focused_text_mut(&mut self) -> Option<&mut String> {
         match self.focus.current {
-            Some(FocusTarget::CompareLeftRef) => {
-                self.compare.left_ref.pop();
-                self.update_compare_field(CompareField::Left, self.compare.left_ref.clone());
-                self.persist_settings_effect()
-            }
-            Some(FocusTarget::CompareRightRef) => {
-                self.compare.right_ref.pop();
-                self.update_compare_field(CompareField::Right, self.compare.right_ref.clone());
-                self.persist_settings_effect()
-            }
-            Some(FocusTarget::PickerInput) => {
-                match self.overlays.picker.kind {
-                    PickerKind::Repository => {
-                        self.overlays.picker.query.pop();
-                        self.rebuild_repo_picker();
-                    }
-                    PickerKind::LeftRef => {
-                        self.compare.left_ref.pop();
-                        self.update_compare_field(
-                            CompareField::Left,
-                            self.compare.left_ref.clone(),
-                        );
-                    }
-                    PickerKind::RightRef => {
-                        self.compare.right_ref.pop();
-                        self.update_compare_field(
-                            CompareField::Right,
-                            self.compare.right_ref.clone(),
-                        );
-                    }
-                }
-                Vec::new()
-            }
+            Some(FocusTarget::CompareLeftRef) => Some(&mut self.compare.left_ref),
+            Some(FocusTarget::CompareRightRef) => Some(&mut self.compare.right_ref),
+            Some(FocusTarget::PickerInput) => match self.overlays.picker.kind {
+                PickerKind::Repository => Some(&mut self.overlays.picker.query),
+                PickerKind::LeftRef => Some(&mut self.compare.left_ref),
+                PickerKind::RightRef => Some(&mut self.compare.right_ref),
+            },
             Some(FocusTarget::CommandPaletteInput) => {
-                self.overlays.command_palette.query.pop();
-                self.rebuild_command_palette();
-                Vec::new()
+                Some(&mut self.overlays.command_palette.query)
             }
             Some(FocusTarget::PullRequestInput) => {
-                self.github.pull_request.url_input.pop();
-                Vec::new()
+                Some(&mut self.github.pull_request.url_input)
             }
-            _ => Vec::new(),
+            _ => None,
         }
+    }
+
+    /// Returns true if the current focus target is a text editing field.
+    pub fn is_text_focused(&self) -> bool {
+        self.focused_text().is_some()
+    }
+
+    /// Clamp cursor and anchor to be within string bounds and on grapheme boundaries.
+    fn clamp_edit_state(&mut self) {
+        let len = self.focused_text().map_or(0, |s| s.len());
+        let cursor = self.text_edit.cursor.min(len);
+        let anchor = self.text_edit.anchor.min(len);
+        // Snap to grapheme boundaries — compute both before writing back
+        let (snapped_c, snapped_a) = self.focused_text().map_or(
+            (cursor, anchor),
+            |text| (snap_to_grapheme(text, cursor), snap_to_grapheme(text, anchor)),
+        );
+        self.text_edit.cursor = snapped_c;
+        self.text_edit.anchor = snapped_a;
+    }
+
+    fn touch_cursor(&mut self) {
+        self.text_edit.cursor_moved_at_ms = self.clock_ms;
+    }
+
+    /// Returns the selected range (min..max) or None if cursor == anchor.
+    fn selection_range(&self) -> Option<(usize, usize)> {
+        let (c, a) = (self.text_edit.cursor, self.text_edit.anchor);
+        if c == a { None } else { Some((c.min(a), c.max(a))) }
+    }
+
+    /// Delete the current selection and collapse cursor. Returns true if something was deleted.
+    fn delete_selection(&mut self) -> bool {
+        if let Some((start, end)) = self.selection_range() {
+            if let Some(text) = self.focused_text_mut() {
+                text.drain(start..end);
+            }
+            self.text_edit.cursor = start;
+            self.text_edit.anchor = start;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Called after text mutation to sync compare fields and rebuild pickers.
+    fn after_text_mutation(&mut self) {
+        match self.focus.current {
+            Some(FocusTarget::CompareLeftRef) => {
+                self.compare.resolved_left = None;
+            }
+            Some(FocusTarget::CompareRightRef) => {
+                self.compare.resolved_right = None;
+            }
+            Some(FocusTarget::PickerInput) => match self.overlays.picker.kind {
+                PickerKind::Repository => self.rebuild_repo_picker(),
+                PickerKind::LeftRef => {
+                    self.compare.resolved_left = None;
+                }
+                PickerKind::RightRef => {
+                    self.compare.resolved_right = None;
+                }
+            },
+            Some(FocusTarget::CommandPaletteInput) => self.rebuild_command_palette(),
+            _ => {}
+        }
+    }
+
+    /// Should we persist settings after editing the current field?
+    fn needs_persist(&self) -> bool {
+        matches!(
+            self.focus.current,
+            Some(FocusTarget::CompareLeftRef | FocusTarget::CompareRightRef)
+        ) || matches!(
+            self.focus.current,
+            Some(FocusTarget::PickerInput)
+                if matches!(self.overlays.picker.kind, PickerKind::LeftRef | PickerKind::RightRef)
+        )
+    }
+
+    fn text_edit_effects(&mut self) -> Vec<Effect> {
+        self.after_text_mutation();
+        if self.needs_persist() {
+            self.persist_settings_effect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn insert_text(&mut self, value: String) -> Vec<Effect> {
+        if self.focused_text().is_none() {
+            return Vec::new();
+        }
+        self.delete_selection();
+        let cursor = self.text_edit.cursor;
+        if let Some(text) = self.focused_text_mut() {
+            text.insert_str(cursor, &value);
+        }
+        self.text_edit.cursor += value.len();
+        self.text_edit.anchor = self.text_edit.cursor;
+        self.touch_cursor();
+        self.text_edit_effects()
+    }
+
+    fn backspace(&mut self) -> Vec<Effect> {
+        if self.focused_text().is_none() {
+            return Vec::new();
+        }
+        if self.delete_selection() {
+            self.touch_cursor();
+            return self.text_edit_effects();
+        }
+        let cursor = self.text_edit.cursor;
+        if cursor == 0 {
+            return Vec::new();
+        }
+        let prev = self
+            .focused_text()
+            .map(|t| prev_grapheme_boundary(t, cursor))
+            .unwrap_or(0);
+        if let Some(text) = self.focused_text_mut() {
+            text.drain(prev..cursor);
+        }
+        self.text_edit.cursor = prev;
+        self.text_edit.anchor = prev;
+        self.touch_cursor();
+        self.text_edit_effects()
+    }
+
+    fn delete_forward(&mut self) -> Vec<Effect> {
+        if self.focused_text().is_none() {
+            return Vec::new();
+        }
+        if self.delete_selection() {
+            self.touch_cursor();
+            return self.text_edit_effects();
+        }
+        let cursor = self.text_edit.cursor;
+        let len = self.focused_text().map_or(0, |s| s.len());
+        if cursor >= len {
+            return Vec::new();
+        }
+        let next = self
+            .focused_text()
+            .map(|t| next_grapheme_boundary(t, cursor))
+            .unwrap_or(cursor);
+        if let Some(text) = self.focused_text_mut() {
+            text.drain(cursor..next);
+        }
+        self.touch_cursor();
+        self.text_edit_effects()
+    }
+
+    fn move_cursor(&mut self, offset: usize, extend_selection: bool) {
+        self.text_edit.cursor = offset;
+        if !extend_selection {
+            self.text_edit.anchor = offset;
+        }
+        self.touch_cursor();
+    }
+
+    fn cursor_left(&mut self, extend: bool) {
+        if !extend && self.selection_range().is_some() {
+            let start = self.text_edit.cursor.min(self.text_edit.anchor);
+            self.move_cursor(start, false);
+            return;
+        }
+        let cursor = self.text_edit.cursor;
+        if cursor == 0 { return; }
+        let prev = self.focused_text()
+            .map(|t| prev_grapheme_boundary(t, cursor))
+            .unwrap_or(0);
+        self.move_cursor(prev, extend);
+    }
+
+    fn cursor_right(&mut self, extend: bool) {
+        if !extend && self.selection_range().is_some() {
+            let end = self.text_edit.cursor.max(self.text_edit.anchor);
+            self.move_cursor(end, false);
+            return;
+        }
+        let cursor = self.text_edit.cursor;
+        let len = self.focused_text().map_or(0, |s| s.len());
+        if cursor >= len { return; }
+        let next = self.focused_text()
+            .map(|t| next_grapheme_boundary(t, cursor))
+            .unwrap_or(cursor);
+        self.move_cursor(next, extend);
+    }
+
+    fn cursor_word_left(&mut self, extend: bool) {
+        if !extend && self.selection_range().is_some() {
+            let start = self.text_edit.cursor.min(self.text_edit.anchor);
+            self.move_cursor(start, false);
+            return;
+        }
+        let cursor = self.text_edit.cursor;
+        let pos = self.focused_text()
+            .map(|t| prev_word_boundary(t, cursor))
+            .unwrap_or(0);
+        self.move_cursor(pos, extend);
+    }
+
+    fn cursor_word_right(&mut self, extend: bool) {
+        if !extend && self.selection_range().is_some() {
+            let end = self.text_edit.cursor.max(self.text_edit.anchor);
+            self.move_cursor(end, false);
+            return;
+        }
+        let cursor = self.text_edit.cursor;
+        let len = self.focused_text().map_or(0, |s| s.len());
+        let pos = self.focused_text()
+            .map(|t| next_word_boundary(t, cursor))
+            .unwrap_or(len);
+        self.move_cursor(pos, extend);
+    }
+
+    fn cursor_home(&mut self, extend: bool) {
+        self.move_cursor(0, extend);
+    }
+
+    fn cursor_end(&mut self, extend: bool) {
+        let len = self.focused_text().map_or(0, |s| s.len());
+        self.move_cursor(len, extend);
+    }
+
+    fn select_all(&mut self) {
+        let len = self.focused_text().map_or(0, |s| s.len());
+        self.text_edit.anchor = 0;
+        self.text_edit.cursor = len;
+        self.touch_cursor();
+    }
+
+    fn copy_selection(&self) -> Vec<Effect> {
+        if let Some((start, end)) = self.selection_range() {
+            if let Some(text) = self.focused_text() {
+                let selected = text[start..end].to_string();
+                return vec![Effect::SetClipboard(selected)];
+            }
+        }
+        Vec::new()
+    }
+
+    fn cut_selection(&mut self) -> Vec<Effect> {
+        let mut effects = self.copy_selection();
+        if self.delete_selection() {
+            self.touch_cursor();
+            effects.extend(self.text_edit_effects());
+        }
+        effects
+    }
+
+    fn paste(&mut self, value: String) -> Vec<Effect> {
+        self.insert_text(value)
     }
 
     fn update_compare_field(&mut self, field: CompareField, value: String) {
@@ -1658,7 +1972,15 @@ impl AppState {
         });
         self.viewport.clear_document();
         self.file_list.hovered_index = Some(index);
-        self.file_list.scroll_offset = self.file_list.scroll_offset.min(index);
+        // Scroll to keep the selected file visible
+        let row_top = index as f32 * self.file_list.row_stride();
+        let row_bottom = row_top + self.file_list.row_height;
+        if row_top < self.file_list.scroll_offset_px {
+            self.file_list.scroll_offset_px = row_top;
+        } else if row_bottom > self.file_list.scroll_offset_px + self.file_list.viewport_height {
+            self.file_list.scroll_offset_px = row_bottom - self.file_list.viewport_height;
+        }
+        self.file_list.clamp_scroll(self.workspace.files.len());
     }
 
     fn scroll_viewport_lines(&mut self, delta_lines: i32) {
@@ -1778,6 +2100,84 @@ impl From<&FileDiff> for FileListEntry {
             is_binary: value.is_binary,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Grapheme / word boundary helpers
+// ---------------------------------------------------------------------------
+
+/// Snap a byte offset to the nearest grapheme cluster boundary (rounding down).
+fn snap_to_grapheme(text: &str, offset: usize) -> usize {
+    if offset == 0 || offset >= text.len() {
+        return offset.min(text.len());
+    }
+    // Find the last grapheme boundary at or before `offset`.
+    let mut last = 0;
+    for (idx, _) in text.grapheme_indices(true) {
+        if idx > offset {
+            break;
+        }
+        last = idx;
+    }
+    last
+}
+
+fn prev_grapheme_boundary(text: &str, offset: usize) -> usize {
+    if offset == 0 {
+        return 0;
+    }
+    let mut prev = 0;
+    for (idx, _) in text.grapheme_indices(true) {
+        if idx >= offset {
+            break;
+        }
+        prev = idx;
+    }
+    prev
+}
+
+fn next_grapheme_boundary(text: &str, offset: usize) -> usize {
+    for (idx, grapheme) in text.grapheme_indices(true) {
+        if idx >= offset {
+            return idx + grapheme.len();
+        }
+    }
+    text.len()
+}
+
+fn prev_word_boundary(text: &str, offset: usize) -> usize {
+    if offset == 0 {
+        return 0;
+    }
+    let bytes = text.as_bytes();
+    let mut pos = offset;
+    // Skip whitespace/punctuation backwards
+    while pos > 0 && !bytes[pos - 1].is_ascii_alphanumeric() {
+        pos -= 1;
+    }
+    // Skip word chars backwards
+    while pos > 0 && bytes[pos - 1].is_ascii_alphanumeric() {
+        pos -= 1;
+    }
+    pos
+}
+
+fn next_word_boundary(text: &str, offset: usize) -> usize {
+    let len = text.len();
+    if offset >= len {
+        return len;
+    }
+    let bytes = text.as_bytes();
+    let mut pos = offset;
+    // Skip word chars forward
+    while pos < len && bytes[pos].is_ascii_alphanumeric() {
+        pos += 1;
+    }
+    // Skip whitespace/punctuation forward
+    while pos < len && !bytes[pos].is_ascii_alphanumeric() {
+        pos += 1;
+    }
+    pos
 }
 
 #[cfg(test)]

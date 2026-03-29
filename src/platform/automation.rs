@@ -7,13 +7,16 @@ use serde::Serialize;
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 use crate::core::error::Result;
 use crate::platform::persistence::Settings;
-use crate::ui::state::{AppState, AsyncStatus, Screen, ToastKind};
+use crate::ui::state::{AppState, AsyncStatus, ToastKind, workspace_mode_name};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StateDump {
-    pub current_screen: &'static str,
+    pub workspace_mode: &'static str,
     pub repository_status: &'static str,
     pub compare_status: &'static str,
+    pub active_overlay: Option<&'static str>,
+    pub overlay_query: Option<String>,
+    pub overlay_selection_label: Option<String>,
     pub compare: CompareDump,
     pub selected_file_index: Option<usize>,
     pub selected_file_path: Option<String>,
@@ -40,6 +43,7 @@ pub struct CompareDump {
     pub file_count: usize,
     pub used_fallback: bool,
     pub fallback_message: String,
+    pub validation_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -116,10 +120,14 @@ pub struct ToastDump {
 
 impl From<&AppState> for StateDump {
     fn from(state: &AppState) -> Self {
+        let (overlay_query, overlay_selection_label) = overlay_dump_fields(state);
         Self {
-            current_screen: screen_name(state.current_screen),
+            workspace_mode: workspace_mode_name(state.workspace_mode),
             repository_status: async_status_name(state.repository.status),
             compare_status: async_status_name(state.workspace.status),
+            active_overlay: state.active_overlay_name(),
+            overlay_query,
+            overlay_selection_label,
             compare: CompareDump {
                 repo_path: state
                     .compare
@@ -137,6 +145,7 @@ impl From<&AppState> for StateDump {
                 file_count: state.workspace.files.len(),
                 used_fallback: state.workspace.used_fallback,
                 fallback_message: state.workspace.fallback_message.clone(),
+                validation_message: state.overlays.compare_sheet.validation_message.clone(),
             },
             selected_file_index: state.workspace.selected_file_index,
             selected_file_path: state.workspace.selected_file_path.clone(),
@@ -177,13 +186,13 @@ impl From<&AppState> for StateDump {
                     .auth
                     .device_flow
                     .as_ref()
-                    .map(|state| state.user_code.clone()),
+                    .map(|flow| flow.user_code.clone()),
                 verification_uri: state
                     .github
                     .auth
                     .device_flow
                     .as_ref()
-                    .map(|state| state.verification_uri.clone()),
+                    .map(|flow| flow.verification_uri.clone()),
             },
             last_error: state.last_error.clone(),
             toasts: state
@@ -276,11 +285,28 @@ where
     Ok(())
 }
 
-fn screen_name(screen: Screen) -> &'static str {
-    match screen {
-        Screen::Welcome => "welcome",
-        Screen::Compare => "compare",
-        Screen::Diff => "diff",
+fn overlay_dump_fields(state: &AppState) -> (Option<String>, Option<String>) {
+    match state.active_overlay_name() {
+        Some("repo-picker") | Some("left-ref-picker") | Some("right-ref-picker") => (
+            Some(state.overlays.picker.query.clone()),
+            state
+                .overlays
+                .picker
+                .entries
+                .get(state.overlays.picker.selected_index)
+                .map(|entry| entry.label.clone()),
+        ),
+        Some("command-palette") => (
+            Some(state.overlays.command_palette.query.clone()),
+            state
+                .overlays
+                .command_palette
+                .entries
+                .get(state.overlays.command_palette.selected_index)
+                .map(|entry| entry.label.clone()),
+        ),
+        Some("pull-request-modal") => (Some(state.github.pull_request.url_input.clone()), None),
+        _ => (None, None),
     }
 }
 
@@ -320,7 +346,7 @@ mod tests {
         let (state, _) = AppState::bootstrap(startup, Settings::default());
 
         let dump = StateDump::from(&state);
-        assert_eq!(dump.current_screen, "welcome");
+        assert_eq!(dump.workspace_mode, "empty");
         assert_eq!(
             dump.compare.layout,
             crate::core::compare::LayoutMode::Unified

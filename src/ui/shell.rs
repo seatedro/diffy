@@ -2,13 +2,15 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
-use crate::render::{Rect, RectPrimitive, Scene, TextMetrics};
+use crate::render::{Rect, Scene, TextMetrics};
 use crate::ui::actions::Action;
-use crate::ui::design::{Sp, TextStyle};
+use crate::ui::design::Sp;
 use crate::ui::diff_viewport::runtime::{DiffViewportRuntime, ViewportDocument};
 use crate::ui::element::*;
+use crate::ui::icons::lucide;
 use crate::ui::state::{
-    AppState, AsyncStatus, CompareField, FocusTarget, OverlaySurface, PickerItem, WorkspaceMode,
+    AppState, AsyncStatus, CompareField, FocusTarget, OverlaySurface, PickerItem, ToastKind,
+    WorkspaceMode,
 };
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme};
@@ -30,6 +32,8 @@ pub struct UiFrame {
     pub scene: Scene,
     pub hits: Vec<HitRegion>,
     pub scroll_regions: Vec<ScrollRegion>,
+    pub text_input_hit_areas: Vec<TextInputHitArea>,
+    pub scrollbar_tracks: Vec<ScrollbarTrack>,
     pub file_list_rect: Option<Rect>,
     pub viewport_rect: Option<Rect>,
 }
@@ -50,6 +54,16 @@ pub fn build_ui_frame(
     let viewport_bounds: Rc<Cell<Option<Rect>>> = Rc::new(Cell::new(None));
     let file_list_bounds: Rc<Cell<Option<Rect>>> = Rc::new(Cell::new(None));
 
+    // Estimate the file list viewport height for scroll clamping.
+    // Layout: title_bar + [sidebar | main] + status_bar.  Within sidebar: header (~40px) + list.
+    let sidebar_list_height = (height
+        - theme.metrics.title_bar_height
+        - theme.metrics.status_bar_height
+        - 40.0)
+        .max(0.0);
+    state.file_list.viewport_height = sidebar_list_height;
+    state.file_list.clamp_scroll(state.workspace.files.len());
+
     let mut root = div()
         .w(width)
         .h(height)
@@ -64,51 +78,6 @@ pub fn build_ui_frame(
                 .child(main_surface(state, theme, text_metrics, viewport_bounds.clone())),
         )
         .child(status_bar(state, theme));
-
-    // --- Toasts (z-indexed above main content) ---
-    let toast_width = 360.0_f32.min((width - 32.0).max(220.0));
-    let toast_height = 52.0;
-    if !state.toasts.is_empty() {
-        let toasts_state = state
-            .toasts
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (i, t.message.clone(), t.kind))
-            .collect::<Vec<_>>();
-
-        root = root.child(
-            canvas({
-                let theme_colors = ToastColors {
-                    surface: theme.colors.elevated_surface,
-                    text: theme.colors.text,
-                    text_muted: theme.colors.text_muted,
-                    error_surface: theme.colors.status_error,
-                    border: theme.colors.border,
-                    radius: theme.metrics.panel_radius,
-                    font_size: theme.metrics.ui_font_size,
-                };
-                move |_bounds, scene, cx| {
-                    for (offset, &(index, ref message, kind)) in
-                        toasts_state.iter().rev().enumerate()
-                    {
-                        let rect = Rect {
-                            x: width - toast_width - Sp::XL,
-                            y: height
-                                - 30.0 // status bar height
-                                - Sp::XXL
-                                - toast_height
-                                - offset as f32 * (toast_height + Sp::LG),
-                            width: toast_width,
-                            height: toast_height,
-                        };
-                        paint_toast(scene, cx, rect, message, kind, index, &theme_colors);
-                    }
-                }
-            })
-            .w(0.0)
-            .h(0.0),
-        );
-    }
 
     // --- Overlay (z-indexed above everything) ---
     if let Some(top) = state.overlays.stack.last().cloned() {
@@ -128,6 +97,7 @@ pub fn build_ui_frame(
     // --- Render element tree ---
     let mut scene = Scene::default();
     render_element(&mut root, &mut scene, cx, width, height);
+    let mut scrollbar_tracks = std::mem::take(&mut cx.scrollbar_tracks);
 
     // --- Viewport content (painted after element tree, clipped to bounds) ---
     if state.workspace_mode == WorkspaceMode::Ready {
@@ -153,6 +123,59 @@ pub fn build_ui_frame(
             scene.clip(vp_bounds);
             viewport_runtime.paint(&mut scene, theme, &state.viewport, document);
             scene.pop_clip();
+
+            // Register viewport scrollbar for drag support
+            if state.viewport.content_height_px > state.viewport.viewport_height_px
+                && state.viewport.viewport_height_px > 0
+            {
+                let sb = viewport_runtime.scrollbar_rect();
+                let ratio = state.viewport.viewport_height_px as f32
+                    / state.viewport.content_height_px as f32;
+                let thumb_h = (sb.height * ratio).max(32.0).min(sb.height);
+                let scroll_range = state.viewport.max_scroll_top_px().max(1) as f32;
+                let top_ratio = state.viewport.scroll_top_px as f32 / scroll_range;
+                let thumb_y = sb.y + (sb.height - thumb_h) * top_ratio;
+                scrollbar_tracks.push(ScrollbarTrack {
+                    track_rect: Rect {
+                        x: sb.x - 6.0,
+                        y: sb.y,
+                        width: sb.width + 12.0,
+                        height: sb.height,
+                    },
+                    thumb_top: thumb_y,
+                    thumb_height: thumb_h,
+                    content_height: state.viewport.content_height_px as f32,
+                    viewport_height: state.viewport.viewport_height_px as f32,
+                    action_builder: ScrollActionBuilder::ViewportLines,
+                });
+            }
+        }
+    }
+
+    // --- Toasts (painted last so they appear above viewport content) ---
+    if !state.toasts.is_empty() {
+        let toast_width = 360.0_f32.min((width - 32.0).max(220.0));
+        let toast_height = 52.0;
+        let tc = ToastColors {
+            surface: theme.colors.elevated_surface,
+            text: theme.colors.text,
+            text_muted: theme.colors.text_muted,
+            error_accent: theme.colors.status_error,
+            info_accent: theme.colors.status_info,
+            border: theme.colors.border,
+            icon_color: theme.colors.text_muted,
+            font_size: theme.metrics.ui_font_size,
+        };
+        for (offset, (index, toast)) in state.toasts.iter().enumerate().rev().enumerate() {
+            let (message, kind) = (&toast.message, toast.kind);
+            let rect = Rect {
+                x: width - toast_width - Sp::XL,
+                y: height - 28.0 - Sp::LG - toast_height
+                    - offset as f32 * (toast_height + Sp::SM),
+                width: toast_width,
+                height: toast_height,
+            };
+            paint_toast(&mut scene, cx, rect, message, kind, index, &tc);
         }
     }
 
@@ -160,6 +183,8 @@ pub fn build_ui_frame(
         scene,
         hits: std::mem::take(&mut cx.hits),
         scroll_regions: std::mem::take(&mut cx.scroll_regions),
+        text_input_hit_areas: std::mem::take(&mut cx.text_input_hit_areas),
+        scrollbar_tracks,
         file_list_rect: file_list_bounds.get(),
         viewport_rect: viewport_bounds.get(),
     }
@@ -170,6 +195,8 @@ pub fn build_ui_frame(
 // ---------------------------------------------------------------------------
 
 fn title_bar(state: &AppState, theme: &Theme) -> Div {
+    let tc = &theme.colors;
+
     let repo_label = state
         .compare
         .repo_path
@@ -178,58 +205,121 @@ fn title_bar(state: &AppState, theme: &Theme) -> Div {
         .and_then(|name| name.to_str())
         .unwrap_or("diffy");
 
-    let tc = &theme.colors;
-
-    let mut bar = div()
+    // Left cluster: app icon + name
+    let left = div()
         .flex_row()
+        .flex_shrink_0()
         .items_center()
-        .h_12()
-        .w_full()
-        .px_5()
-        .bg(tc.title_bar_background)
-        .rounded_lg()
-        .border_b(tc.border_variant)
-        .child(text(repo_label).text_lg().color(tc.text_strong));
+        .gap(Sp::SM)
+        .child(svg_icon(lucide::GIT_COMPARE, 18.0).color(tc.accent))
+        .child(text(repo_label).semibold().color(tc.text_strong));
 
-    if state.workspace_mode == WorkspaceMode::Ready {
+    // Center: summary when ready
+    let center = if state.workspace_mode == WorkspaceMode::Ready {
         let summary = format!(
             "{} files  \u{00b7}  {} \u{2192} {}",
             state.workspace.files.len(),
-            state.compare.resolved_left.as_deref().unwrap_or("?"),
-            state.compare.resolved_right.as_deref().unwrap_or("?")
+            display_ref(
+                state
+                    .compare
+                    .resolved_left
+                    .as_deref()
+                    .unwrap_or(&state.compare.left_ref)
+            ),
+            display_ref(
+                state
+                    .compare
+                    .resolved_right
+                    .as_deref()
+                    .unwrap_or(&state.compare.right_ref)
+            ),
         );
-        bar = bar.child(div().px_4().child(
-            text(summary).text_sm().color(tc.text_muted),
-        ));
-    }
-
-    bar = bar.child(spacer());
-
-    bar = bar.child(
+        div().child(text(summary).text_sm().color(tc.text_muted))
+    } else if state.workspace_mode == WorkspaceMode::Loading {
+        div().child(
+            text("Comparing\u{2026}")
+                .text_sm()
+                .color(tc.text_muted),
+        )
+    } else {
         div()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .child(ghost_btn("Compare", Action::OpenCompareSheet,
-                state.overlays.top() == Some(OverlaySurface::CompareSheet), theme))
-            .child(ghost_btn("PR", Action::OpenPullRequestModal,
-                state.overlays.top() == Some(OverlaySurface::PullRequestModal), theme))
-            .child(div().w(8.0).h(20.0).border_b(tc.border_variant)) // separator
-            .child(segmented_control(
-                &[
-                    ("Split", Action::SetLayoutMode(LayoutMode::Split), state.compare.layout == LayoutMode::Split),
-                    ("Unified", Action::SetLayoutMode(LayoutMode::Unified), state.compare.layout == LayoutMode::Unified),
-                ],
-                theme,
-            ))
-            .child(ghost_btn("Wrap", Action::ToggleWrap, state.viewport.wrap_enabled, theme))
-            .child(ghost_btn(
-                if theme.mode == crate::ui::theme::ThemeMode::Dark { "\u{263e}" } else { "\u{2600}" },
-                Action::ToggleThemeMode, false, theme,
-            )),
-    );
+    };
 
-    bar
+    // Right cluster: toolbar buttons
+    let compare_active = state.overlays.top() == Some(OverlaySurface::CompareSheet);
+    let pr_active = state.overlays.top() == Some(OverlaySurface::PullRequestModal);
+
+    let right = div()
+        .flex_row()
+        .items_center()
+        .gap_1()
+        .child(icon_ghost_btn(
+            lucide::GIT_COMPARE,
+            "Compare",
+            Action::OpenCompareSheet,
+            compare_active,
+            theme,
+        ))
+        .child(icon_ghost_btn(
+            lucide::GIT_PULL_REQUEST,
+            "PR",
+            Action::OpenPullRequestModal,
+            pr_active,
+            theme,
+        ))
+        .child(toolbar_separator(tc))
+        .child(segmented_control(
+            &[
+                (
+                    "Split",
+                    Action::SetLayoutMode(LayoutMode::Split),
+                    state.compare.layout == LayoutMode::Split,
+                ),
+                (
+                    "Unified",
+                    Action::SetLayoutMode(LayoutMode::Unified),
+                    state.compare.layout == LayoutMode::Unified,
+                ),
+            ],
+            theme,
+        ))
+        .child(icon_ghost_btn(
+            lucide::WRAP_TEXT,
+            "Wrap",
+            Action::ToggleWrap,
+            state.viewport.wrap_enabled,
+            theme,
+        ))
+        .child(
+            div()
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .hover_bg(tc.ghost_element_hover)
+                .on_click(Action::ToggleThemeMode)
+                .cursor(CursorHint::Pointer)
+                .child(svg_icon(
+                    if theme.mode == crate::ui::theme::ThemeMode::Dark {
+                        lucide::MOON
+                    } else {
+                        lucide::SUN
+                    },
+                    15.0,
+                ).color(tc.text_muted)),
+        );
+
+    div()
+        .flex_row()
+        .items_center()
+        .h(theme.metrics.title_bar_height)
+        .w_full()
+        .px(Sp::XL)
+        .bg(tc.title_bar_background)
+        .border_b(tc.border_variant)
+        .child(left)
+        .child(div().px_4().child(center))
+        .child(spacer())
+        .child(right)
 }
 
 // ---------------------------------------------------------------------------
@@ -239,11 +329,39 @@ fn title_bar(state: &AppState, theme: &Theme) -> Div {
 fn sidebar(state: &AppState, theme: &Theme, _bounds_cell: Rc<Cell<Option<Rect>>>) -> Div {
     let tc = &theme.colors;
     let file_count = state.workspace.files.len();
-    let header_text = if file_count > 0 {
-        format!("Files  \u{00b7}  {file_count}")
-    } else {
-        "Files".to_owned()
-    };
+
+    // Header with count badge
+    let header = div()
+        .px_4()
+        .py_3()
+        .flex_row()
+        .items_center()
+        .child(
+            text("FILES")
+                .text_xs()
+                .semibold()
+                .color(tc.text_muted),
+        )
+        .optional_child(if file_count > 0 {
+            Some(
+                div()
+                    .px(Sp::SM)
+                    .child(
+                        div()
+                            .px(6.0)
+                            .py(2.0)
+                            .rounded_sm()
+                            .bg(Color::rgba(255, 255, 255, 10))
+                            .child(
+                                text(file_count.to_string())
+                                    .text_xs()
+                                    .color(tc.text_muted),
+                            ),
+                    ),
+            )
+        } else {
+            None
+        });
 
     let mut sidebar = div()
         .flex_col()
@@ -251,58 +369,108 @@ fn sidebar(state: &AppState, theme: &Theme, _bounds_cell: Rc<Cell<Option<Rect>>>
         .flex_shrink_0()
         .h_full()
         .bg(tc.sidebar_background)
-        .rounded_lg()
-        .border_b(tc.border_variant)
-        .child(
-            div().px_4().py_3().child(
-                text(header_text).text_xs().color(tc.text_muted),
-            ),
-        );
+        .border_r(tc.border_variant)
+        .child(header);
 
     if state.workspace.files.is_empty() {
-        let msg = if state.compare.repo_path.is_some() {
-            "Run a compare to see changes."
+        let (icon, msg) = if state.compare.repo_path.is_some() {
+            (lucide::GIT_COMPARE, "Run a compare to see changes.")
         } else {
-            "Open a repository to start."
+            (lucide::FOLDER_OPEN, "Open a repository to start.")
         };
-        sidebar = sidebar.child(div().px_4().child(text(msg).text_sm().color(tc.text_muted)));
+        sidebar = sidebar.child(
+            div()
+                .flex_1()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .flex_col()
+                        .items_center()
+                        .gap_2()
+                        .child(svg_icon(icon, 20.0).color(tc.text_muted))
+                        .child(text(msg).text_sm().color(tc.text_muted)),
+                ),
+        );
     } else {
+        let file_count = state.workspace.files.len();
         let row_height = state.file_list.row_height;
-        let scroll_offset = state.file_list.scroll_offset as f32 * row_height;
+        let total_height = state.file_list.total_content_height(file_count);
+        let scroll_px = state.file_list.scroll_offset_px;
 
         let mut list = div()
             .flex_1()
             .flex_col()
             .px(6.0)
-            .gap_1()
+            .gap(Sp::XS)
             .clip()
-            .scroll_y(scroll_offset)
+            .scroll_y(scroll_px)
+            .scroll_total(total_height)
             .on_scroll(ScrollActionBuilder::FileList);
 
         for (index, file) in state.workspace.files.iter().enumerate() {
             let selected = state.workspace.selected_file_index == Some(index);
-            let detail = format!("+{} \u{2212}{}", file.additions, file.deletions);
+            let icon_color = if selected {
+                tc.text_accent
+            } else {
+                tc.text_muted
+            };
+            let text_color = if selected {
+                tc.text_strong
+            } else {
+                tc.text
+            };
 
-            list = list.child(
+            let mut row = div()
+                .w_full()
+                .h(row_height)
+                .flex_row()
+                .items_center()
+                .px(Sp::SM)
+                .gap_2()
+                .on_click(Action::SelectFile(index))
+                .cursor(CursorHint::Pointer);
+
+            // Selected: left accent border + selected bg
+            if selected {
+                row = row.bg(tc.sidebar_row_selected).border_l(tc.accent);
+            } else {
+                row = row.hover_bg(tc.sidebar_row_hover);
+            }
+
+            // File icon
+            row = row.child(svg_icon(lucide::FILE_CODE, 15.0).color(icon_color));
+
+            // File path (truncated)
+            row = row.child(
                 div()
-                    .w_full()
-                    .h(row_height)
-                    .flex_row()
-                    .items_center()
-                    .px_3()
-                    .rounded_md()
-                    .when(selected, |d| d.bg(tc.sidebar_row_selected))
-                    .when(!selected, |d| d.hover_bg(tc.sidebar_row_hover))
-                    .on_click(Action::SelectFile(index))
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex_col()
-                            .gap(2.0)
-                            .child(text(&file.path).text_sm().color(tc.text))
-                            .child(text(detail).text_xs().color(tc.text_muted)),
-                    ),
+                    .flex_1()
+                    .flex_col()
+                    .gap(1.0)
+                    .child(text(&file.path).text_sm().color(text_color).truncate()),
             );
+
+            // +/- stats with semantic colors
+            if file.additions > 0 || file.deletions > 0 {
+                row = row.child(
+                    div()
+                        .flex_row()
+                        .gap(Sp::XS)
+                        .flex_shrink_0()
+                        .child(
+                            text(format!("+{}", file.additions))
+                                .text_xs()
+                                .color(tc.line_add_text),
+                        )
+                        .child(
+                            text(format!("\u{2212}{}", file.deletions))
+                                .text_xs()
+                                .color(tc.line_del_text),
+                        ),
+                );
+            }
+
+            list = list.child(row);
         }
 
         sidebar = sidebar.child(list);
@@ -326,9 +494,7 @@ fn main_surface(
         .flex_1()
         .flex_col()
         .h_full()
-        .bg(tc.editor_surface)
-        .rounded_lg()
-        .border_b(tc.border_variant);
+        .bg(tc.editor_surface);
 
     let has_overlay = state.active_overlay_name().is_some();
     match state.workspace_mode {
@@ -338,6 +504,8 @@ fn main_surface(
                 .selected_file_path
                 .as_deref()
                 .unwrap_or("No file selected");
+
+            // File header bar
             main = main.child(
                 div()
                     .h(36.0)
@@ -345,9 +513,17 @@ fn main_surface(
                     .flex_row()
                     .items_center()
                     .border_b(tc.border_variant)
-                    .child(text(file_label).text_sm().color(tc.text_muted)),
+                    .child(svg_icon(lucide::FILE_CODE, 14.0).color(tc.text_muted))
+                    .child(div().w(Sp::SM))
+                    .child(
+                        text(file_label)
+                            .text_sm()
+                            .color(tc.text_muted)
+                            .truncate(),
+                    ),
             );
 
+            // Viewport canvas
             let vb = viewport_bounds.clone();
             main = main.child(
                 canvas(move |bounds, _scene, _cx| {
@@ -380,12 +556,18 @@ fn loading_card(state: &AppState, theme: &Theme) -> Div {
                 .p_6()
                 .flex_col()
                 .gap_3()
+                .items_center()
                 .bg(tc.elevated_surface)
                 .rounded_xl()
                 .border_b(tc.border)
                 .shadow(16.0, 6.0, Color::rgba(0, 0, 0, 80))
                 .shadow(4.0, 2.0, Color::rgba(0, 0, 0, 40))
-                .child(text("Comparing repository\u{2026}").text_lg().color(tc.text_strong))
+                .child(svg_icon(lucide::LOADER, 24.0).color(tc.text_muted))
+                .child(
+                    text("Comparing repository\u{2026}")
+                        .semibold()
+                        .color(tc.text_strong),
+                )
                 .child(
                     text(format!(
                         "{} \u{2022} {} \u{2192} {}",
@@ -401,60 +583,102 @@ fn loading_card(state: &AppState, theme: &Theme) -> Div {
 
 fn empty_state(state: &AppState, theme: &Theme) -> Div {
     let tc = &theme.colors;
-    let title = if state.compare.repo_path.is_some() {
-        "Open compare setup"
+    let has_repo = state.compare.repo_path.is_some();
+
+    let (title, subtitle) = if has_repo {
+        (
+            "Ready to compare",
+            "Use the compare sheet, PR modal, or command palette to build a diff.",
+        )
     } else {
-        "Start a new compare"
+        (
+            "Start a new compare",
+            "Choose a repository, select refs, then open the native diff workspace.",
+        )
     };
-    let subtitle = if state.compare.repo_path.is_some() {
-        "Use the compare sheet, PR modal, or command palette to build a diff."
+
+    let hero_icon = if has_repo {
+        lucide::GIT_COMPARE
     } else {
-        "Choose a repository, select refs, then open the native diff workspace."
+        lucide::GIT_BRANCH
     };
+
+    let mut card = div()
+        .w(520.0)
+        .p(Sp::XXL)
+        .flex_col()
+        .gap(Sp::LG)
+        .bg(tc.elevated_surface)
+        .rounded_xl()
+        .border_b(tc.border)
+        .shadow(20.0, 8.0, Color::rgba(0, 0, 0, 80))
+        .shadow(4.0, 2.0, Color::rgba(0, 0, 0, 40))
+        // Hero icon
+        .child(svg_icon(hero_icon, 32.0).color(tc.accent))
+        // Heading
+        .child(text(title).text_lg().semibold().color(tc.text_strong))
+        // Subtitle
+        .child(text(subtitle).text_sm().color(tc.text_muted))
+        // Action buttons
+        .child(
+            div()
+                .flex_row()
+                .gap_3()
+                .pt(Sp::XS)
+                .child(filled_icon_button(
+                    lucide::PLAY,
+                    "Open Compare",
+                    Action::OpenCompareSheet,
+                    theme,
+                ))
+                .child(subtle_icon_button(
+                    lucide::FOLDER_OPEN,
+                    "Open Folder",
+                    Action::OpenRepositoryDialog,
+                    theme,
+                )),
+        );
+
+    // Recent repositories section
+    if !state.settings.recent_repos.is_empty() {
+        let mut recent_section = div()
+            .pt(Sp::SM)
+            .flex_col()
+            .gap(Sp::XS)
+            .child(
+                text("Recent repositories")
+                    .text_xs()
+                    .semibold()
+                    .color(tc.text_muted),
+            );
+
+        for repo in state.settings.recent_repos.iter().take(5) {
+            let label = repo.display().to_string();
+            recent_section = recent_section.child(
+                div()
+                    .w_full()
+                    .py(Sp::XS)
+                    .px_2()
+                    .rounded_sm()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .hover_bg(tc.ghost_element_hover)
+                    .on_click(Action::OpenRepository(repo.clone()))
+                    .cursor(CursorHint::Pointer)
+                    .child(svg_icon(lucide::FOLDER, 13.0).color(tc.text_muted))
+                    .child(text(label).text_sm().color(tc.text).truncate()),
+            );
+        }
+
+        card = card.child(recent_section);
+    }
 
     div()
         .flex_1()
         .items_center()
         .justify_center()
-        .child(
-            div()
-                .w(520.0)
-                .p_8()
-                .flex_col()
-                .gap_4()
-                .bg(tc.elevated_surface)
-                .rounded_xl()
-                .border_b(tc.border)
-                .shadow(20.0, 8.0, Color::rgba(0, 0, 0, 80))
-                .shadow(4.0, 2.0, Color::rgba(0, 0, 0, 40))
-                .child(text(title).text_lg().color(tc.text_strong))
-                .child(text(subtitle).text_sm().color(tc.text_muted))
-                .child(
-                    div()
-                        .flex_row()
-                        .gap_3()
-                        .pt(4.0)
-                        .child(filled_button("Open Compare", Action::OpenCompareSheet, theme))
-                        .child(subtle_button("Folder Dialog", Action::OpenRepositoryDialog, theme)),
-                )
-                .child(div().pt(8.0).flex_col().gap_1()
-                    .child(text("Recent repositories").text_xs().color(tc.text_muted))
-                    .children_from(
-                        state.settings.recent_repos.iter().take(4).map(|repo| {
-                            div()
-                                .w_full()
-                                .py_1()
-                                .px_2()
-                                .rounded_sm()
-                                .hover_bg(tc.ghost_element_hover)
-                                .on_click(Action::OpenRepository(repo.clone()))
-                                .cursor(CursorHint::Pointer)
-                                .child(text(repo.display().to_string()).text_sm().color(tc.text))
-                                .into_any()
-                        }),
-                    ),
-                ),
-        )
+        .child(card)
 }
 
 // ---------------------------------------------------------------------------
@@ -463,7 +687,13 @@ fn empty_state(state: &AppState, theme: &Theme) -> Div {
 
 fn status_bar(state: &AppState, theme: &Theme) -> Div {
     let tc = &theme.colors;
-    let status_text = async_status_label(state.repository.status);
+    let (status_icon, status_color, status_text) = match state.repository.status {
+        AsyncStatus::Ready => (lucide::CHECK, tc.line_add_text, "ready"),
+        AsyncStatus::Loading => (lucide::LOADER, tc.text_muted, "loading"),
+        AsyncStatus::Failed => (lucide::ALERT_CIRCLE, tc.status_error, "error"),
+        AsyncStatus::Idle => (lucide::INFO, tc.text_muted, "idle"),
+    };
+
     let right_text = format!(
         "{}  \u{00b7}  {}",
         compare_mode_label(state.compare.mode),
@@ -477,14 +707,114 @@ fn status_bar(state: &AppState, theme: &Theme) -> Div {
         .w_full()
         .px_4()
         .bg(tc.status_bar_background)
-        .rounded_lg()
+        .border_t(tc.border_variant)
+        .child(svg_icon(status_icon, 12.0).color(status_color))
+        .child(div().w(6.0))
         .child(text(status_text).text_xs().color(tc.text_muted))
         .child(spacer())
         .child(text(right_text).text_xs().color(tc.text_muted))
 }
 
 // ---------------------------------------------------------------------------
-// Overlays — modals with backdrop
+// Toasts
+// ---------------------------------------------------------------------------
+
+struct ToastColors {
+    surface: Color,
+    text: Color,
+    text_muted: Color,
+    error_accent: Color,
+    info_accent: Color,
+    border: Color,
+    icon_color: Color,
+    font_size: f32,
+}
+
+fn paint_toast(
+    scene: &mut Scene,
+    cx: &mut ElementContext,
+    rect: Rect,
+    message: &str,
+    kind: ToastKind,
+    index: usize,
+    colors: &ToastColors,
+) {
+    use crate::render::{
+        BorderPrimitive, FontKind, RoundedRectPrimitive, ShadowPrimitive, TextPrimitive,
+    };
+
+    let radius = 12.0;
+
+    // Shadow
+    scene.shadow(ShadowPrimitive {
+        rect,
+        blur_radius: 16.0,
+        corner_radius: radius,
+        offset: [0.0, 4.0],
+        color: Color::rgba(0, 0, 0, 60),
+    });
+    scene.shadow(ShadowPrimitive {
+        rect,
+        blur_radius: 4.0,
+        corner_radius: radius,
+        offset: [0.0, 2.0],
+        color: Color::rgba(0, 0, 0, 30),
+    });
+
+    // Background
+    scene.rounded_rect(RoundedRectPrimitive::uniform(rect, radius, colors.surface));
+
+    // Left accent stripe based on kind
+    let accent = match kind {
+        ToastKind::Info => colors.info_accent,
+        ToastKind::Error => colors.error_accent,
+    };
+    let stripe = Rect {
+        x: rect.x,
+        y: rect.y,
+        width: 3.0,
+        height: rect.height,
+    };
+    scene.rounded_rect(RoundedRectPrimitive::uniform(stripe, radius, accent));
+
+    // Border
+    scene.border(BorderPrimitive::uniform(rect, 1.0, radius, colors.border));
+
+    // Message text
+    scene.text(TextPrimitive {
+        rect: rect.pad(Sp::XL, 0.0, Sp::XL, 0.0),
+        text: message.to_string(),
+        color: colors.text,
+        font_size: colors.font_size,
+        font_kind: FontKind::Ui,
+        font_weight: crate::render::FontWeight::Normal,
+    });
+
+    // Dismiss X text
+    scene.text(TextPrimitive {
+        rect: Rect {
+            x: rect.x + rect.width - 32.0,
+            y: rect.y,
+            width: 20.0,
+            height: rect.height,
+        },
+        text: "\u{00d7}".to_string(),
+        color: colors.text_muted,
+        font_size: colors.font_size,
+        font_kind: FontKind::Ui,
+        font_weight: crate::render::FontWeight::Normal,
+    });
+
+    // Hit region for dismiss
+    cx.hits.push(HitRegion {
+        rect,
+        action: Action::DismissToast(index),
+        cursor: CursorHint::Pointer,
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Overlays
 // ---------------------------------------------------------------------------
 
 fn modal_backdrop(theme: &Theme, width: f32, height: f32) -> Div {
@@ -492,42 +822,67 @@ fn modal_backdrop(theme: &Theme, width: f32, height: f32) -> Div {
         .w(width)
         .h(height)
         .z_index(100)
-        .bg(Color::rgba(0, 0, 0, 140))
+        .bg(theme.colors.overlay_scrim)
         .on_click(Action::CloseOverlay)
         .items_center()
         .justify_center()
 }
 
 fn modal_panel(width: f32, theme: &Theme) -> Div {
+    let tc = &theme.colors;
     div()
         .w(width)
         .flex_col()
         .p(Sp::XXL)
         .gap(Sp::LG)
-        .bg(theme.colors.elevated_surface)
-        .rounded(theme.metrics.modal_radius)
+        .bg(tc.elevated_surface)
+        .rounded_xl()
+        .border_b(tc.border)
         .shadow(24.0, 8.0, Color::rgba(0, 0, 0, 100))
+        .shadow(8.0, 4.0, Color::rgba(0, 0, 0, 50))
+        .shadow(2.0, 1.0, Color::rgba(0, 0, 0, 30))
+        // Consume clicks so they don't propagate to the backdrop's CloseOverlay.
+        .on_click(Action::Noop)
+}
+
+fn modal_header(title: &str, subtitle: &str, icon: &'static str, theme: &Theme) -> Div {
+    let tc = &theme.colors;
+    div()
+        .flex_col()
+        .gap(Sp::SM)
+        .child(
+            div()
+                .flex_row()
+                .flex_shrink_0()
+                .items_center()
+                .gap(Sp::SM)
+                .child(svg_icon(icon, 18.0).color(tc.accent))
+                .child(text(title).text_lg().semibold().color(tc.text_strong)),
+        )
+        .child(text(subtitle).text_sm().color(tc.text_muted))
 }
 
 fn compare_sheet(state: &AppState, theme: &Theme, width: f32, height: f32) -> Div {
+    let tc = &theme.colors;
     modal_backdrop(theme, width, height).child(
-        modal_panel(760.0, theme)
-            .h(380.0)
-            .child(text("Compare Setup").text_lg())
-            .child(
-                text("Pick a repository, refs, compare mode, and renderer.")
-                    .text_sm()
-                    .color(theme.colors.text_muted),
-            )
+        modal_panel(560.0, theme)
+            .gap(Sp::XL)
+            .child(modal_header(
+                "Compare Setup",
+                "Pick a repository, refs, compare mode, and renderer.",
+                lucide::GIT_COMPARE,
+                theme,
+            ))
             // Repo picker button
             .child(
-                subtle_button(
+                subtle_icon_button(
+                    lucide::FOLDER,
                     &state
                         .compare
                         .repo_path
                         .as_ref()
                         .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| "Choose repository".into()),
+                        .unwrap_or_else(|| "Choose repository\u{2026}".into()),
                     Action::OpenRepoPicker,
                     theme,
                 )
@@ -537,14 +892,18 @@ fn compare_sheet(state: &AppState, theme: &Theme, width: f32, height: f32) -> Di
             .child(
                 div()
                     .flex_row()
-                    .gap(Sp::LG)
+                    .gap(Sp::MD)
                     .child(
                         text_input("Left ref", &state.compare.left_ref)
                             .placeholder("main")
                             .focused(state.focus.current == Some(FocusTarget::CompareLeftRef))
                             .on_click(Action::SetFocus(Some(FocusTarget::CompareLeftRef)))
+                            .cursor(state.text_edit.cursor)
+                            .anchor(state.text_edit.anchor)
+                            .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
+                            .focus_target(FocusTarget::CompareLeftRef)
                             .w_full()
-                            .h(56.0)
+                            .h(64.0)
                             .flex_1(),
                     )
                     .child(
@@ -552,45 +911,115 @@ fn compare_sheet(state: &AppState, theme: &Theme, width: f32, height: f32) -> Di
                             .placeholder("feature")
                             .focused(state.focus.current == Some(FocusTarget::CompareRightRef))
                             .on_click(Action::SetFocus(Some(FocusTarget::CompareRightRef)))
+                            .cursor(state.text_edit.cursor)
+                            .anchor(state.text_edit.anchor)
+                            .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
+                            .focus_target(FocusTarget::CompareRightRef)
                             .w_full()
-                            .h(56.0)
+                            .h(64.0)
                             .flex_1(),
                     ),
             )
-            // Compare mode
-            .child(segmented_control(
-                &[
-                    ("Single", Action::SetCompareMode(CompareMode::SingleCommit), state.compare.mode == CompareMode::SingleCommit),
-                    ("Two Dot", Action::SetCompareMode(CompareMode::TwoDot), state.compare.mode == CompareMode::TwoDot),
-                    ("Three Dot", Action::SetCompareMode(CompareMode::ThreeDot), state.compare.mode == CompareMode::ThreeDot),
-                ],
-                theme,
-            ))
-            // Layout + renderer controls
+            // Compare mode + layout/renderer controls
             .child(
                 div()
-                    .flex_row()
-                    .gap(Sp::XL)
-                    .child(segmented_control(
-                        &[
-                            ("Unified", Action::SetLayoutMode(LayoutMode::Unified), state.compare.layout == LayoutMode::Unified),
-                            ("Split", Action::SetLayoutMode(LayoutMode::Split), state.compare.layout == LayoutMode::Split),
-                        ],
-                        theme,
-                    ))
-                    .child(segmented_control(
-                        &[
-                            ("Built-in", Action::SetRenderer(RendererKind::Builtin), state.compare.renderer == RendererKind::Builtin),
-                            ("Difftastic", Action::SetRenderer(RendererKind::Difftastic), state.compare.renderer == RendererKind::Difftastic),
-                        ],
-                        theme,
-                    )),
+                    .flex_col()
+                    .gap(Sp::MD)
+                    .child(
+                        div()
+                            .flex_row()
+                            .items_center()
+                            .gap(Sp::MD)
+                            .child(text("Mode").text_sm().medium().color(tc.text_muted))
+                            .child(segmented_control(
+                                &[
+                                    (
+                                        "Single",
+                                        Action::SetCompareMode(CompareMode::SingleCommit),
+                                        state.compare.mode == CompareMode::SingleCommit,
+                                    ),
+                                    (
+                                        "Two Dot",
+                                        Action::SetCompareMode(CompareMode::TwoDot),
+                                        state.compare.mode == CompareMode::TwoDot,
+                                    ),
+                                    (
+                                        "Three Dot",
+                                        Action::SetCompareMode(CompareMode::ThreeDot),
+                                        state.compare.mode == CompareMode::ThreeDot,
+                                    ),
+                                ],
+                                theme,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .flex_row()
+                            .gap(Sp::XL)
+                            .child(
+                                div()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(Sp::MD)
+                                    .child(text("Layout").text_sm().medium().color(tc.text_muted))
+                                    .child(segmented_control(
+                                        &[
+                                            (
+                                                "Unified",
+                                                Action::SetLayoutMode(LayoutMode::Unified),
+                                                state.compare.layout == LayoutMode::Unified,
+                                            ),
+                                            (
+                                                "Split",
+                                                Action::SetLayoutMode(LayoutMode::Split),
+                                                state.compare.layout == LayoutMode::Split,
+                                            ),
+                                        ],
+                                        theme,
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(Sp::MD)
+                                    .child(text("Engine").text_sm().medium().color(tc.text_muted))
+                                    .child(segmented_control(
+                                        &[
+                                            (
+                                                "Built-in",
+                                                Action::SetRenderer(RendererKind::Builtin),
+                                                state.compare.renderer == RendererKind::Builtin,
+                                            ),
+                                            (
+                                                "Difftastic",
+                                                Action::SetRenderer(RendererKind::Difftastic),
+                                                state.compare.renderer == RendererKind::Difftastic,
+                                            ),
+                                        ],
+                                        theme,
+                                    )),
+                            ),
+                    ),
             )
             // Validation message
             .optional_child(
-                state.overlays.compare_sheet.validation_message.as_deref().map(|msg| {
-                    text(msg).text_sm().color(theme.colors.status_error)
-                }),
+                state
+                    .overlays
+                    .compare_sheet
+                    .validation_message
+                    .as_deref()
+                    .map(|msg| {
+                        div()
+                            .flex_row()
+                            .flex_shrink_0()
+                            .items_center()
+                            .gap(Sp::SM)
+                            .child(
+                                svg_icon(lucide::ALERT_CIRCLE, 14.0).color(tc.status_error),
+                            )
+                            .child(text(msg).text_sm().color(tc.status_error))
+                    }),
             )
             .child(spacer())
             // Footer
@@ -598,7 +1027,8 @@ fn compare_sheet(state: &AppState, theme: &Theme, width: f32, height: f32) -> Di
                 div()
                     .flex_row()
                     .justify_end()
-                    .child(filled_button(
+                    .child(filled_icon_button(
+                        lucide::PLAY,
                         if state.workspace.status == AsyncStatus::Loading {
                             "Comparing\u{2026}"
                         } else {
@@ -615,19 +1045,35 @@ fn repo_picker(state: &AppState, theme: &Theme, width: f32, height: f32) -> Div 
     modal_backdrop(theme, width, height).child(
         modal_panel(680.0, theme)
             .h(420.0)
-            .child(text("Repository Picker").text_lg())
+            .child(modal_header(
+                "Repository Picker",
+                "Search or type a path to a git repository.",
+                lucide::FOLDER_OPEN,
+                theme,
+            ))
             .child(
                 text_input("Search or type a path", &state.overlays.picker.query)
                     .placeholder("C:\\work\\repo")
                     .focused(state.focus.current == Some(FocusTarget::PickerInput))
                     .on_click(Action::SetFocus(Some(FocusTarget::PickerInput)))
+                    .cursor(state.text_edit.cursor)
+                    .anchor(state.text_edit.anchor)
+                    .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
+                    .focus_target(FocusTarget::PickerInput)
                     .w_full()
-                    .h(40.0),
+                    .h(44.0),
             )
-            .child(picker_list(&state.overlays.picker.entries, state.overlays.picker.selected_index, theme))
-            .child(
-                subtle_button("Folder Dialog", Action::OpenRepositoryDialog, theme),
-            ),
+            .child(picker_list(
+                &state.overlays.picker.entries,
+                state.overlays.picker.selected_index,
+                theme,
+            ))
+            .child(subtle_icon_button(
+                lucide::FOLDER_OPEN,
+                "Browse Folders",
+                Action::OpenRepositoryDialog,
+                theme,
+            )),
     )
 }
 
@@ -638,9 +1084,9 @@ fn ref_picker(
     width: f32,
     height: f32,
 ) -> Div {
-    let title = match field {
-        CompareField::Left => "Pick Left Ref",
-        CompareField::Right => "Pick Right Ref",
+    let (title, icon) = match field {
+        CompareField::Left => ("Pick Left Ref", lucide::GIT_BRANCH),
+        CompareField::Right => ("Pick Right Ref", lucide::GIT_BRANCH),
     };
     let current_value = match field {
         CompareField::Left => &state.compare.left_ref,
@@ -650,26 +1096,38 @@ fn ref_picker(
     modal_backdrop(theme, width, height).child(
         modal_panel(480.0, theme)
             .h(380.0)
-            .child(text(title).text_lg())
+            .child(modal_header(
+                title,
+                "Search branches, tags, or commits.",
+                icon,
+                theme,
+            ))
             .child(
                 text_input("Filter refs", current_value)
                     .placeholder("Search branches, tags, commits")
                     .focused(state.focus.current == Some(FocusTarget::PickerInput))
                     .on_click(Action::SetFocus(Some(FocusTarget::PickerInput)))
+                    .cursor(state.text_edit.cursor)
+                    .anchor(state.text_edit.anchor)
+                    .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
+                    .focus_target(FocusTarget::PickerInput)
                     .w_full()
-                    .h(40.0),
+                    .h(44.0),
             )
-            .child(picker_list(&state.overlays.picker.entries, state.overlays.picker.selected_index, theme)),
+            .child(picker_list(
+                &state.overlays.picker.entries,
+                state.overlays.picker.selected_index,
+                theme,
+            )),
     )
 }
 
 fn command_palette(state: &AppState, theme: &Theme, width: f32, height: f32) -> Div {
-    // Command palette is positioned at top, not centered
     div()
         .w(width)
         .h(height)
         .z_index(100)
-        .bg(Color::rgba(0, 0, 0, 140))
+        .bg(theme.colors.overlay_scrim)
         .on_click(Action::CloseOverlay)
         .items_center()
         .child(
@@ -680,15 +1138,41 @@ fn command_palette(state: &AppState, theme: &Theme, width: f32, height: f32) -> 
                 .p(Sp::XL)
                 .gap(Sp::LG)
                 .bg(theme.colors.elevated_surface)
-                .rounded(theme.metrics.modal_radius)
+                .rounded_xl()
+                .border_b(theme.colors.border)
                 .shadow(24.0, 8.0, Color::rgba(0, 0, 0, 100))
+                .shadow(8.0, 4.0, Color::rgba(0, 0, 0, 50))
                 .child(
-                    text_input("Command palette", &state.overlays.command_palette.query)
-                        .placeholder("Type a command, file, repo, or ref")
-                        .focused(state.focus.current == Some(FocusTarget::CommandPaletteInput))
-                        .on_click(Action::SetFocus(Some(FocusTarget::CommandPaletteInput)))
-                        .w_full()
-                        .h(42.0),
+                    div()
+                        .flex_row()
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap(Sp::SM)
+                        .child(svg_icon(lucide::COMMAND, 16.0).color(theme.colors.accent))
+                        .child(
+                            text("Command Palette")
+                                .semibold()
+                                .color(theme.colors.text_strong),
+                        ),
+                )
+                .child(
+                    text_input(
+                        "Command palette",
+                        &state.overlays.command_palette.query,
+                    )
+                    .placeholder("Type a command, file, repo, or ref")
+                    .focused(
+                        state.focus.current == Some(FocusTarget::CommandPaletteInput),
+                    )
+                    .on_click(Action::SetFocus(Some(
+                        FocusTarget::CommandPaletteInput,
+                    )))
+                    .cursor(state.text_edit.cursor)
+                    .anchor(state.text_edit.anchor)
+                    .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
+                    .focus_target(FocusTarget::CommandPaletteInput)
+                    .w_full()
+                    .h(44.0),
                 )
                 .child(picker_list(
                     &state.overlays.command_palette.entries,
@@ -699,16 +1183,27 @@ fn command_palette(state: &AppState, theme: &Theme, width: f32, height: f32) -> 
 }
 
 fn pull_request_modal(state: &AppState, theme: &Theme, width: f32, height: f32) -> Div {
+    let tc = &theme.colors;
+
     let mut panel = modal_panel(640.0, theme)
-        .h(320.0)
-        .child(text("GitHub Pull Request").text_lg())
+        .h(340.0)
+        .child(modal_header(
+            "GitHub Pull Request",
+            "Paste a PR URL to load its base and head refs for diffing.",
+            lucide::GIT_PULL_REQUEST,
+            theme,
+        ))
         .child(
             text_input("Pull request URL", &state.github.pull_request.url_input)
                 .placeholder("https://github.com/owner/repo/pull/42")
                 .focused(state.focus.current == Some(FocusTarget::PullRequestInput))
                 .on_click(Action::SetFocus(Some(FocusTarget::PullRequestInput)))
+                .cursor(state.text_edit.cursor)
+                .anchor(state.text_edit.anchor)
+                .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
+                .focus_target(FocusTarget::PullRequestInput)
                 .w_full()
-                .h(40.0),
+                .h(44.0),
         );
 
     if let Some(info) = state.github.pull_request.info.as_ref() {
@@ -716,11 +1211,26 @@ fn pull_request_modal(state: &AppState, theme: &Theme, width: f32, height: f32) 
             div()
                 .flex_col()
                 .gap(Sp::SM)
-                .child(text(format!("#{} {}", info.number, info.title)))
+                .p(Sp::MD)
+                .rounded_md()
+                .bg(tc.surface)
+                .child(
+                    div()
+                        .flex_row()
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap(Sp::SM)
+                        .child(svg_icon(lucide::GIT_PULL_REQUEST, 14.0).color(tc.accent))
+                        .child(
+                            text(format!("#{} {}", info.number, info.title))
+                                .medium()
+                                .color(tc.text_strong),
+                        ),
+                )
                 .child(
                     text("Use this compare to apply the PR base/head refs and start diffing.")
                         .text_sm()
-                        .color(theme.colors.text_muted),
+                        .color(tc.text_muted),
                 ),
         );
     }
@@ -729,7 +1239,8 @@ fn pull_request_modal(state: &AppState, theme: &Theme, width: f32, height: f32) 
         div()
             .flex_row()
             .gap(Sp::LG)
-            .child(filled_button(
+            .child(filled_icon_button(
+                lucide::PLAY,
                 if state.github.pull_request.status == AsyncStatus::Loading {
                     "Loading\u{2026}"
                 } else {
@@ -739,7 +1250,12 @@ fn pull_request_modal(state: &AppState, theme: &Theme, width: f32, height: f32) 
                 theme,
             ))
             .optional_child(state.github.pull_request.info.as_ref().map(|_| {
-                subtle_button("Use Compare", Action::UsePullRequestCompare, theme)
+                subtle_icon_button(
+                    lucide::GIT_COMPARE,
+                    "Use Compare",
+                    Action::UsePullRequestCompare,
+                    theme,
+                )
             })),
     );
 
@@ -747,38 +1263,90 @@ fn pull_request_modal(state: &AppState, theme: &Theme, width: f32, height: f32) 
 }
 
 fn auth_modal(state: &AppState, theme: &Theme, width: f32, height: f32) -> Div {
-    let status = if state.github.auth.token_present {
-        "Token stored"
+    let tc = &theme.colors;
+    let (status_icon, status_text) = if state.github.auth.token_present {
+        (lucide::CHECK, "Token stored")
     } else if state.github.auth.device_flow.is_some() {
-        "Waiting for authorization"
+        (lucide::LOADER, "Waiting for authorization")
     } else {
-        "Not authenticated"
+        (lucide::SHIELD, "Not authenticated")
     };
 
-    let (action_label, action) = if state.github.auth.device_flow.is_some() {
-        ("Open Browser", Action::OpenDeviceFlowBrowser)
+    let (action_icon, action_label, action) = if state.github.auth.device_flow.is_some() {
+        (
+            lucide::EXTERNAL_LINK,
+            "Open Browser",
+            Action::OpenDeviceFlowBrowser,
+        )
     } else {
-        ("Start Device Flow", Action::StartGitHubDeviceFlow)
+        (
+            lucide::KEY,
+            "Start Device Flow",
+            Action::StartGitHubDeviceFlow,
+        )
     };
 
     let mut panel = modal_panel(580.0, theme)
-        .h(300.0)
-        .child(text("GitHub Device Flow").text_lg())
-        .child(text(status).color(theme.colors.text_muted));
+        .h(320.0)
+        .child(modal_header(
+            "GitHub Device Flow",
+            "Authenticate with GitHub to access private repositories and PRs.",
+            lucide::SHIELD,
+            theme,
+        ))
+        .child(
+            div()
+                .flex_row()
+                .flex_shrink_0()
+                .items_center()
+                .gap(Sp::SM)
+                .child(svg_icon(status_icon, 14.0).color(tc.text_muted))
+                .child(text(status_text).text_sm().color(tc.text_muted)),
+        );
 
     if let Some(flow) = state.github.auth.device_flow.as_ref() {
         panel = panel.child(
             div()
                 .flex_col()
                 .gap(Sp::MD)
-                .child(text(format!("User code: {}", flow.user_code)).mono())
-                .child(text(&flow.verification_uri).text_sm().color(theme.colors.text_accent)),
+                .p(Sp::MD)
+                .rounded_md()
+                .bg(tc.surface)
+                .child(
+                    div()
+                        .flex_row()
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap(Sp::SM)
+                        .child(svg_icon(lucide::COPY, 14.0).color(tc.text_muted))
+                        .child(
+                            text(format!("User code: {}", flow.user_code))
+                                .mono()
+                                .medium()
+                                .color(tc.text_strong),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_row()
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap(Sp::SM)
+                        .child(
+                            svg_icon(lucide::EXTERNAL_LINK, 14.0).color(tc.text_accent),
+                        )
+                        .child(
+                            text(&flow.verification_uri)
+                                .text_sm()
+                                .color(tc.text_accent),
+                        ),
+                ),
         );
     }
 
     panel = panel
         .child(spacer())
-        .child(filled_button(action_label, action, theme));
+        .child(filled_icon_button(action_icon, action_label, action, theme));
 
     modal_backdrop(theme, width, height).child(panel)
 }
@@ -787,76 +1355,118 @@ fn auth_modal(state: &AppState, theme: &Theme, width: f32, height: f32) -> Div {
 // Shared components
 // ---------------------------------------------------------------------------
 
-fn filled_button(label: &str, action: Action, theme: &Theme) -> Div {
+fn filled_icon_button(
+    icon: &'static str,
+    label: &str,
+    action: Action,
+    theme: &Theme,
+) -> Div {
     div()
-        .px_4()
-        .py_2()
+        .flex_row()
+        .flex_shrink_0()
+        .items_center()
+        .gap(Sp::SM)
+        .px(Sp::LG)
+        .py(Sp::SM)
         .rounded_md()
         .bg(theme.colors.accent)
+        .hover_bg(theme.colors.accent.with_alpha(230))
         .on_click(action)
-        .child(text(label).text_sm().color(theme.colors.text_strong))
+        .cursor(CursorHint::Pointer)
+        .child(svg_icon(icon, 15.0).color(theme.colors.text_strong))
+        .child(text(label).medium().color(theme.colors.text_strong))
 }
 
-fn subtle_button(label: &str, action: Action, theme: &Theme) -> Div {
+fn subtle_icon_button(
+    icon: &'static str,
+    label: &str,
+    action: Action,
+    theme: &Theme,
+) -> Div {
+    let tc = &theme.colors;
     div()
-        .px_4()
-        .py_2()
+        .flex_row()
+        .flex_shrink_0()
+        .items_center()
+        .gap(Sp::SM)
+        .px(Sp::MD)
+        .py(Sp::SM)
         .rounded_md()
-        .bg(theme.colors.element_background)
-        .hover_bg(theme.colors.element_hover)
+        .bg(tc.element_background)
+        .hover_bg(tc.element_hover)
         .on_click(action)
-        .child(text(label).text_sm().color(theme.colors.text))
+        .cursor(CursorHint::Pointer)
+        .child(svg_icon(icon, 15.0).color(tc.text_muted))
+        .child(text(label).text_sm().medium().color(tc.text))
 }
 
-fn ghost_btn(label: &str, action: Action, active: bool, theme: &Theme) -> Div {
+fn icon_ghost_btn(
+    icon: &'static str,
+    label: &str,
+    action: Action,
+    active: bool,
+    theme: &Theme,
+) -> Div {
+    let tc = &theme.colors;
+    let icon_color = if active { tc.text } else { tc.text_muted };
+    let text_color = if active { tc.text } else { tc.text_muted };
+
     div()
+        .flex_row()
+        .flex_shrink_0()
+        .items_center()
+        .gap(6.0)
         .px_3()
         .py_1()
         .rounded_md()
-        .when(active, |d| d.bg(theme.colors.element_background))
-        .when(!active, |d| d.hover_bg(theme.colors.ghost_element_hover))
+        .when(active, |d| d.bg(tc.element_background))
+        .when(!active, |d| d.hover_bg(tc.ghost_element_hover))
         .on_click(action)
-        .child(text(label).text_sm().color(
-            if active { theme.colors.text } else { theme.colors.text_muted },
-        ))
+        .cursor(CursorHint::Pointer)
+        .child(svg_icon(icon, 14.0).color(icon_color))
+        .child(text(label).text_sm().medium().color(text_color))
+}
+
+fn toolbar_separator(tc: &crate::ui::theme::ThemeColors) -> Div {
+    div().w(1.0).h(20.0).bg(tc.border_variant)
 }
 
 fn segmented_control(items: &[(&str, Action, bool)], theme: &Theme) -> Div {
     let tc = &theme.colors;
     let mut row = div()
         .flex_row()
+        .flex_shrink_0()
         .rounded_md()
-        .bg(Color::rgba(0, 0, 0, 40))
-        .p(2.0)
-        .gap(1.0);
+        .bg(tc.element_background)
+        .p(3.0)
+        .gap(2.0);
 
     for &(label, ref action, selected) in items {
         row = row.child(
             div()
-                .px_3()
-                .py_1()
-                .rounded_sm()
-                .when(selected, |d| d.bg(tc.element_background))
+                .flex_shrink_0()
+                .px(Sp::MD)
+                .py(5.0)
+                .rounded(6.0)
+                .when(selected, |d| d.bg(tc.surface).shadow(2.0, 1.0, Color::rgba(0, 0, 0, 40)))
+                .when(!selected, |d| d.hover_bg(tc.ghost_element_hover))
                 .on_click(action.clone())
-                .child(text(label).text_xs().color(
-                    if selected { tc.text } else { tc.text_muted },
-                )),
+                .cursor(CursorHint::Pointer)
+                .child(
+                    text(label)
+                        .text_sm()
+                        .medium()
+                        .color(if selected { tc.text } else { tc.text_muted }),
+                ),
         );
     }
 
     row
 }
 
-fn picker_list<T: PickerItem>(
-    entries: &[T],
-    selected_index: usize,
-    theme: &Theme,
-) -> Div {
-    let mut list = div()
-        .flex_1()
-        .flex_col()
-        .clip()
-        .overflow_y_scroll();
+fn picker_list<T: PickerItem>(entries: &[T], selected_index: usize, theme: &Theme) -> Div {
+    let tc = &theme.colors;
+    let mut list = div().flex_1().flex_col().clip().overflow_y_scroll();
 
     for (i, entry) in entries.iter().enumerate() {
         let selected = i == selected_index;
@@ -868,16 +1478,21 @@ fn picker_list<T: PickerItem>(
                 .items_center()
                 .px(Sp::MD)
                 .rounded(5.0)
-                .when(selected, |d| d.bg(theme.colors.sidebar_row_selected))
-                .when(!selected, |d| d.hover_bg(theme.colors.ghost_element_hover))
+                .when(selected, |d| d.bg(tc.sidebar_row_selected))
+                .when(!selected, |d| d.hover_bg(tc.ghost_element_hover))
                 .on_click(Action::SelectOverlayEntry(i))
+                .cursor(CursorHint::Pointer)
                 .child(
                     div()
                         .flex_1()
                         .flex_col()
-                        .child(text(entry.label()).text_sm().color(theme.colors.text))
+                        .child(
+                            text(entry.label())
+                                .text_sm()
+                                .color(if selected { tc.text_strong } else { tc.text }),
+                        )
                         .optional_child(entry.detail().map(|d| {
-                            text(d).text_xs().color(theme.colors.text_muted)
+                            text(d).text_xs().color(tc.text_muted)
                         })),
                 ),
         );
@@ -887,74 +1502,8 @@ fn picker_list<T: PickerItem>(
 }
 
 // ---------------------------------------------------------------------------
-// Toast painting (via canvas, for absolute positioning)
-// ---------------------------------------------------------------------------
-
-struct ToastColors {
-    surface: Color,
-    text: Color,
-    text_muted: Color,
-    error_surface: Color,
-    border: Color,
-    radius: f32,
-    font_size: f32,
-}
-
-fn paint_toast(
-    scene: &mut Scene,
-    cx: &mut ElementContext,
-    rect: Rect,
-    message: &str,
-    kind: crate::ui::state::ToastKind,
-    index: usize,
-    colors: &ToastColors,
-) {
-    use crate::render::{
-        BorderPrimitive, FontKind, RoundedRectPrimitive, ShadowPrimitive, TextPrimitive,
-    };
-
-    let fill = match kind {
-        crate::ui::state::ToastKind::Info => colors.surface,
-        crate::ui::state::ToastKind::Error => colors.error_surface,
-    };
-
-    scene.shadow(ShadowPrimitive {
-        rect,
-        blur_radius: 16.0,
-        corner_radius: colors.radius,
-        offset: [0.0, 4.0],
-        color: Color::rgba(0, 0, 0, 60),
-    });
-    scene.rounded_rect(RoundedRectPrimitive::uniform(rect, colors.radius, fill));
-    scene.border(BorderPrimitive::uniform(rect, 1.0, colors.radius, colors.border));
-    scene.text(TextPrimitive {
-        rect: rect.pad(Sp::LG, 0.0, 40.0, 0.0),
-        text: message.to_string(),
-        color: colors.text,
-        font_size: colors.font_size,
-        font_kind: FontKind::Ui,
-        font_weight: crate::render::FontWeight::Normal,
-    });
-
-    cx.hits.push(HitRegion {
-        rect,
-        action: Action::DismissToast(index),
-        cursor: CursorHint::Pointer,
-    });
-}
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn async_status_label(status: AsyncStatus) -> &'static str {
-    match status {
-        AsyncStatus::Idle => "idle",
-        AsyncStatus::Loading => "loading",
-        AsyncStatus::Ready => "ready",
-        AsyncStatus::Failed => "failed",
-    }
-}
 
 fn compare_mode_label(mode: CompareMode) -> &'static str {
     match mode {
@@ -972,5 +1521,9 @@ fn renderer_label(renderer: RendererKind) -> &'static str {
 }
 
 fn display_ref(value: &str) -> &str {
-    if value.is_empty() { "?" } else { value }
+    if value.is_empty() {
+        "?"
+    } else {
+        value
+    }
 }

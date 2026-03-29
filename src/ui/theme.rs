@@ -185,10 +185,10 @@ fn default_metrics() -> ThemeMetrics {
         spacing_sm: 6.0,
         spacing_md: 12.0,
         spacing_lg: 16.0,
-        ui_font_size: 13.0,
-        ui_small_font_size: 12.0,
-        heading_font_size: 15.0,
-        mono_font_size: 13.0,
+        ui_font_size: 16.0,
+        ui_small_font_size: 14.0,
+        heading_font_size: 20.0,
+        mono_font_size: 15.0,
     }
 }
 
@@ -255,7 +255,7 @@ fn dark_colors(n: &Scale, b: &Scale, r: &Scale, g: &Scale, y: &Scale) -> ThemeCo
         overlay_scrim: Color::rgba(0, 0, 0, 180),
 
         // Scrollbar
-        scrollbar_thumb: Color::rgba(255, 255, 255, 30),
+        scrollbar_thumb: Color::rgba(255, 255, 255, 100),
 
         // Status indicators
         status_info:    b[8],

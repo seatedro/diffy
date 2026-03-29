@@ -37,4 +37,5 @@ pub enum Effect {
     OpenBrowser {
         url: String,
     },
+    SetClipboard(String),
 }

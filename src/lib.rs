@@ -2,6 +2,7 @@
 
 pub mod app_runtime;
 pub mod core;
+pub mod fonts;
 pub mod platform;
 pub mod render;
 pub mod ui;

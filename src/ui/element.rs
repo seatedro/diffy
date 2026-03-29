@@ -53,6 +53,7 @@ pub struct Hitbox {
     pub id: HitboxId,
     pub bounds: Bounds,
     pub behavior: HitboxBehavior,
+    pub z_index: i32,
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +109,7 @@ pub struct ElementContext<'a> {
     hitboxes: Vec<Hitbox>,
     hovered_hitboxes: Vec<HitboxId>,
     next_hitbox_id: usize,
+    z_index_stack: Vec<i32>,
 }
 
 impl<'a> ElementContext<'a> {
@@ -130,12 +132,18 @@ impl<'a> ElementContext<'a> {
             hitboxes: Vec::new(),
             hovered_hitboxes: Vec::new(),
             next_hitbox_id: 0,
+            z_index_stack: vec![0],
         }
     }
 
-    /// Read a signal's value (clones it out).
+    /// Read a signal's value (clones it out). Tracked by the current observer scope.
     pub fn read<T: 'static + Clone>(&self, signal: Signal<T>) -> T {
         self.signal_store.read(signal)
+    }
+
+    /// Read a signal's value without registering a dependency.
+    pub fn read_untracked<T: 'static + Clone>(&self, signal: Signal<T>) -> T {
+        self.signal_store.read_untracked(signal)
     }
 
     /// Access a signal's value by reference without cloning.
@@ -163,6 +171,20 @@ impl<'a> ElementContext<'a> {
         self.focus == Some(target)
     }
 
+    pub fn current_z_index(&self) -> i32 {
+        *self.z_index_stack.last().unwrap_or(&0)
+    }
+
+    pub fn push_z_index(&mut self, z: i32) {
+        self.z_index_stack.push(z);
+    }
+
+    pub fn pop_z_index(&mut self) {
+        if self.z_index_stack.len() > 1 {
+            self.z_index_stack.pop();
+        }
+    }
+
     /// Register a hitbox during prepaint. Returns an ID for later hover queries.
     pub fn insert_hitbox(&mut self, bounds: Bounds, behavior: HitboxBehavior) -> HitboxId {
         let id = HitboxId(self.next_hitbox_id);
@@ -171,6 +193,7 @@ impl<'a> ElementContext<'a> {
             id,
             bounds,
             behavior,
+            z_index: self.current_z_index(),
         });
         id
     }
@@ -191,22 +214,22 @@ impl<'a> ElementContext<'a> {
         };
 
         // Collect which hitboxes the mouse is inside.
-        let mut candidates: Vec<(HitboxId, Bounds, HitboxBehavior)> = Vec::new();
+        let mut candidates: Vec<(HitboxId, Bounds, HitboxBehavior, i32)> = Vec::new();
         for hb in &self.hitboxes {
             if hb.bounds.contains(mouse.0, mouse.1) {
-                candidates.push((hb.id, hb.bounds, hb.behavior));
+                candidates.push((hb.id, hb.bounds, hb.behavior, hb.z_index));
             }
         }
 
-        // Walk back-to-front (last = topmost). If we encounter a BlockMouse,
-        // remove any earlier candidate whose bounds overlap with the blocker.
+        // Reverse so last-registered (topmost within same paint order) comes first,
+        // then stable-sort by z_index descending. Result: highest z first, and
+        // within same z, last-registered first.
+        candidates.reverse();
+        candidates.sort_by(|a, b| b.3.cmp(&a.3));
+
         let mut blocked_regions: Vec<Bounds> = Vec::new();
 
-        // Process from topmost to bottommost.
-        for i in (0..candidates.len()).rev() {
-            let (id, bounds, behavior) = candidates[i];
-
-            // Check if this candidate is blocked by any blocker above it.
+        for &(id, bounds, behavior, _z) in &candidates {
             let is_blocked = blocked_regions.iter().any(|blocker| {
                 blocker.intersection(bounds).is_some()
             });
@@ -885,13 +908,17 @@ impl Element for Div {
         engine: &LayoutEngine,
         cx: &mut ElementContext,
     ) -> DivPrepaintState {
+        let z = self.base_style.z_index;
+        if z != 0 {
+            cx.push_z_index(z);
+        }
+
         let hitbox_id = if self.on_click.is_some() || self.hover_style.is_some() {
             Some(cx.insert_hitbox(bounds, HitboxBehavior::Normal))
         } else {
             None
         };
 
-        // Register scroll region if on_scroll is set.
         if let Some(ref builder) = self.on_scroll {
             cx.scroll_regions.push(ScrollRegion {
                 bounds,
@@ -907,6 +934,10 @@ impl Element for Div {
             for child in &mut self.children {
                 child.prepaint(engine, cx);
             }
+        }
+
+        if z != 0 {
+            cx.pop_z_index();
         }
 
         DivPrepaintState { hitbox_id }
@@ -926,9 +957,12 @@ impl Element for Div {
             .map_or(false, |id| cx.is_hovered(id));
         let style = self.resolve_style(hovered);
         let r = style.corner_radius;
+        let z = style.z_index;
 
-        // Blur backdrop (must come before shadows/bg so the renderer
-        // captures everything drawn prior to this element).
+        if z != 0 {
+            scene.push_z_index(z);
+        }
+
         if let Some(radius) = self.blur_radius {
             scene.blur_region(BlurRegionPrimitive {
                 rect: bounds,
@@ -1012,6 +1046,10 @@ impl Element for Div {
                 action,
                 cursor: self.cursor,
             });
+        }
+
+        if z != 0 {
+            scene.pop_z_index();
         }
     }
 }
@@ -2420,5 +2458,75 @@ mod tests {
         assert!((s.offset[0]).abs() < 0.01, "glow x offset should be 0");
         assert!((s.offset[1]).abs() < 0.01, "glow y offset should be 0");
         assert!((s.blur_radius - 10.0).abs() < 0.1, "blur radius should be 10");
+    }
+
+    #[test]
+    fn z_index_emits_push_pop_primitives() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
+        let mut scene = Scene::default();
+
+        let red = Color::rgba(255, 0, 0, 255);
+
+        let mut root = div()
+            .w(200.0).h(100.0)
+            .z_index(10)
+            .bg(red)
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 200.0, 100.0);
+
+        let has_push = scene.primitives.iter().any(|p| matches!(p, crate::render::Primitive::ZIndexPush(10)));
+        let has_pop = scene.primitives.iter().any(|p| matches!(p, crate::render::Primitive::ZIndexPop));
+        assert!(has_push, "z_index(10) should emit ZIndexPush(10)");
+        assert!(has_pop, "z_index(10) should emit ZIndexPop");
+    }
+
+    #[test]
+    fn z_index_zero_emits_no_push_pop() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
+        let mut scene = Scene::default();
+
+        let mut root = div()
+            .w(200.0).h(100.0)
+            .bg(Color::rgba(255, 0, 0, 255))
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 200.0, 100.0);
+
+        let has_push = scene.primitives.iter().any(|p| matches!(p, crate::render::Primitive::ZIndexPush(_)));
+        assert!(!has_push, "z_index 0 should not emit ZIndexPush");
+    }
+
+    #[test]
+    fn z_index_hitbox_priority() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut store = SignalStore::new();
+        let theme = Box::leak(Box::new(Theme::default_dark()));
+        let mut cx = ElementContext::new(theme, 1.0, &mut font_system, Some((50.0, 50.0)), &mut store);
+
+        // Register a z=0 hitbox covering (0,0)-(100,100).
+        cx.push_z_index(0);
+        let low_id = cx.insert_hitbox(
+            Bounds { x: 0.0, y: 0.0, width: 100.0, height: 100.0 },
+            HitboxBehavior::Normal,
+        );
+        cx.pop_z_index();
+
+        // Register a z=10 BlockMouse hitbox covering (0,0)-(100,100).
+        cx.push_z_index(10);
+        let high_id = cx.insert_hitbox(
+            Bounds { x: 0.0, y: 0.0, width: 100.0, height: 100.0 },
+            HitboxBehavior::BlockMouse,
+        );
+        cx.pop_z_index();
+
+        cx.run_hit_test();
+
+        assert!(cx.is_hovered(high_id), "z=10 should be hovered");
+        assert!(!cx.is_hovered(low_id), "z=0 should be blocked by z=10");
     }
 }

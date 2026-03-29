@@ -125,6 +125,14 @@ impl Scene {
         self.push(Primitive::ClipEnd);
     }
 
+    pub fn push_z_index(&mut self, z: i32) {
+        self.push(Primitive::ZIndexPush(z));
+    }
+
+    pub fn pop_z_index(&mut self) {
+        self.push(Primitive::ZIndexPop);
+    }
+
     pub fn len(&self) -> usize {
         self.primitives.len()
     }
@@ -146,6 +154,10 @@ pub enum Primitive {
     BlurRegion(BlurRegionPrimitive),
     ClipStart(ClipPrimitive),
     ClipEnd,
+    /// Push a z-index context. Primitives inside render on top of lower z-indices.
+    ZIndexPush(i32),
+    /// Pop the current z-index context.
+    ZIndexPop,
     LayerBoundary,
 }
 

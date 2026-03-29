@@ -7,6 +7,7 @@ rust-version = "1.92"
 [features]
 default = ["native"]
 native = ["dep:winit"]
+capture = ["dep:tiny-skia", "dep:png", "dep:fontdue"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -46,6 +47,18 @@ winit = { version = "0.30", optional = true }
 [[bin]]
 name = "diffy"
 path = "src/main.rs"
+
+[dependencies.tiny-skia]
+version = "0.11"
+optional = true
+
+[dependencies.png]
+version = "0.17"
+optional = true
+
+[dependencies.fontdue]
+version = "0.9"
+optional = true
 
 [profile.release]
 lto = true

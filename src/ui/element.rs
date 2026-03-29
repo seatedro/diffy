@@ -653,7 +653,7 @@ pub fn render_element(
 // ---------------------------------------------------------------------------
 
 use crate::render::{
-    BorderPrimitive, RoundedRectPrimitive, ShadowPrimitive,
+    BorderPrimitive, FontWeight, RoundedRectPrimitive, ShadowPrimitive,
 };
 use crate::ui::style::{ElementStyle, StyleOverride, Styled, apply_override};
 use crate::ui::theme::Color;
@@ -1018,7 +1018,14 @@ impl Element for Div {
 
         // Border
         if let Some(border) = style.border_color {
-            scene.border(BorderPrimitive::uniform(bounds, style.border_width, r, border));
+            if style.border_widths != [0.0; 4] {
+                scene.border(BorderPrimitive {
+                    rect: bounds,
+                    widths: style.border_widths,
+                    corner_radii: [r; 4],
+                    color: border,
+                });
+            }
         }
 
         // Clip + scroll children
@@ -1128,18 +1135,18 @@ pub struct TextElement {
     line_height_factor: f32,
     color: Option<Color>,
     font_kind: FontKind,
-    /// If set, use this fixed width per character (monospace fast path).
+    font_weight: FontWeight,
     mono_char_width: Option<f32>,
 }
 
-/// Create a text element. Inherits font size from the theme by default.
 pub fn text(content: impl Into<String>) -> TextElement {
     TextElement {
         content: content.into(),
-        font_size: 0.0, // 0 = use theme default
+        font_size: 0.0,
         line_height_factor: 1.5,
         color: None,
         font_kind: FontKind::Ui,
+        font_weight: FontWeight::Normal,
         mono_char_width: None,
     }
 }
@@ -1177,6 +1184,21 @@ impl TextElement {
 
     pub fn line_height(mut self, factor: f32) -> Self {
         self.line_height_factor = factor;
+        self
+    }
+
+    pub fn bold(mut self) -> Self {
+        self.font_weight = FontWeight::Bold;
+        self
+    }
+
+    pub fn semibold(mut self) -> Self {
+        self.font_weight = FontWeight::Semibold;
+        self
+    }
+
+    pub fn medium(mut self) -> Self {
+        self.font_weight = FontWeight::Medium;
         self
     }
 
@@ -1253,6 +1275,7 @@ impl Element for TextElement {
             color,
             font_size,
             font_kind: self.font_kind,
+            font_weight: self.font_weight,
         });
     }
 }
@@ -1394,9 +1417,9 @@ impl Element for TextInput {
             color: theme.colors.text_muted,
             font_size: label_size,
             font_kind: FontKind::Ui,
+            font_weight: FontWeight::Normal,
         });
 
-        // Value or placeholder
         let display = if self.value.is_empty() {
             std::mem::take(&mut self.placeholder)
         } else {
@@ -1419,6 +1442,7 @@ impl Element for TextInput {
             color: text_color,
             font_size: value_size,
             font_kind: FontKind::Ui,
+            font_weight: FontWeight::Normal,
         });
 
         if let Some(action) = self.on_click.take() {

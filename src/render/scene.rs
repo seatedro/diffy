@@ -75,6 +75,15 @@ pub enum FontKind {
     Mono,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FontWeight {
+    #[default]
+    Normal,
+    Medium,
+    Semibold,
+    Bold,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Scene {
     pub primitives: Vec<Primitive>,
@@ -223,6 +232,7 @@ pub struct TextPrimitive {
     pub color: Color,
     pub font_size: f32,
     pub font_kind: FontKind,
+    pub font_weight: FontWeight,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -238,6 +248,7 @@ pub struct RichTextPrimitive {
     pub default_color: Color,
     pub font_size: f32,
     pub font_kind: FontKind,
+    pub font_weight: FontWeight,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]

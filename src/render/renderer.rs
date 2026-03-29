@@ -1885,7 +1885,7 @@ fn prepare_plain_text(
         Some((primitive.rect.width * scale_factor as f32).max(1.0)),
         Some((primitive.rect.height * scale_factor as f32).max(1.0)),
     );
-    let attrs = attrs_for_font(primitive.font_kind, primitive.color);
+    let attrs = attrs_for_font(primitive.font_kind, primitive.font_weight, primitive.color);
     buffer.set_text(
         font_system,
         &primitive.text,
@@ -1916,14 +1916,14 @@ fn prepare_rich_text(
         Some((primitive.rect.width * scale_factor as f32).max(1.0)),
         Some((primitive.rect.height * scale_factor as f32).max(1.0)),
     );
-    let default_attrs = attrs_for_font(primitive.font_kind, primitive.default_color);
+    let default_attrs = attrs_for_font(primitive.font_kind, primitive.font_weight, primitive.default_color);
     let spans = primitive
         .spans
         .iter()
         .map(|span| {
             (
                 span.text.as_str(),
-                attrs_for_font(primitive.font_kind, span.color),
+                attrs_for_font(primitive.font_kind, primitive.font_weight, span.color),
             )
         })
         .collect::<Vec<_>>();
@@ -1948,12 +1948,25 @@ fn prepare_rich_text(
     }
 }
 
-fn attrs_for_font(font_kind: FontKind, color: Color) -> Attrs<'static> {
+fn attrs_for_font(
+    font_kind: FontKind,
+    font_weight: crate::render::scene::FontWeight,
+    color: Color,
+) -> Attrs<'static> {
     let family = match font_kind {
         FontKind::Ui => Family::SansSerif,
         FontKind::Mono => Family::Monospace,
     };
-    Attrs::new().family(family).color(glyphon_text_color(color))
+    let weight = match font_weight {
+        crate::render::scene::FontWeight::Normal => glyphon::Weight::NORMAL,
+        crate::render::scene::FontWeight::Medium => glyphon::Weight(500),
+        crate::render::scene::FontWeight::Semibold => glyphon::Weight(600),
+        crate::render::scene::FontWeight::Bold => glyphon::Weight::BOLD,
+    };
+    Attrs::new()
+        .family(family)
+        .weight(weight)
+        .color(glyphon_text_color(color))
 }
 
 fn glyphon_color(color: Color) -> GlyphonColor {

@@ -23,7 +23,7 @@ pub struct ElementStyle {
     pub layout: taffy::Style,
     pub background: Option<Color>,
     pub border_color: Option<Color>,
-    pub border_width: f32,
+    pub border_widths: [f32; 4],
     pub corner_radius: f32,
     pub opacity: f32,
     pub z_index: i32,
@@ -39,7 +39,7 @@ impl Default for ElementStyle {
             },
             background: None,
             border_color: None,
-            border_width: 0.0,
+            border_widths: [0.0; 4],
             corner_radius: 0.0,
             opacity: 1.0,
             z_index: 0,
@@ -56,7 +56,6 @@ impl Default for ElementStyle {
 pub struct StyleOverride {
     pub background: Option<Color>,
     pub border_color: Option<Color>,
-    pub border_width: Option<f32>,
     pub corner_radius: Option<f32>,
     pub opacity: Option<f32>,
 }
@@ -69,11 +68,6 @@ impl StyleOverride {
 
     pub fn border_color(mut self, color: Color) -> Self {
         self.border_color = Some(color);
-        self
-    }
-
-    pub fn border_width(mut self, w: f32) -> Self {
-        self.border_width = Some(w);
         self
     }
 
@@ -94,9 +88,6 @@ pub fn apply_override(base: &mut ElementStyle, ov: &StyleOverride) {
     }
     if let Some(bc) = ov.border_color {
         base.border_color = Some(bc);
-    }
-    if let Some(bw) = ov.border_width {
-        base.border_width = bw;
     }
     if let Some(cr) = ov.corner_radius {
         base.corner_radius = cr;
@@ -310,10 +301,38 @@ pub trait Styled: Sized {
         self
     }
 
+    fn border(mut self, color: Color) -> Self {
+        let s = self.element_style_mut();
+        s.border_color = Some(color);
+        s.border_widths = [1.0; 4];
+        self
+    }
+
+    fn border_t(mut self, color: Color) -> Self {
+        let s = self.element_style_mut();
+        s.border_color = Some(color);
+        s.border_widths[0] = 1.0;
+        self
+    }
+
+    fn border_r(mut self, color: Color) -> Self {
+        let s = self.element_style_mut();
+        s.border_color = Some(color);
+        s.border_widths[1] = 1.0;
+        self
+    }
+
     fn border_b(mut self, color: Color) -> Self {
         let s = self.element_style_mut();
         s.border_color = Some(color);
-        s.border_width = 1.0;
+        s.border_widths[2] = 1.0;
+        self
+    }
+
+    fn border_l(mut self, color: Color) -> Self {
+        let s = self.element_style_mut();
+        s.border_color = Some(color);
+        s.border_widths[3] = 1.0;
         self
     }
 

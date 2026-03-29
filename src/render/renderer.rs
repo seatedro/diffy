@@ -10,10 +10,31 @@ use wgpu::util::DeviceExt;
 use winit::{dpi::PhysicalSize, window::Window};
 
 use crate::render::scene::{
-    BorderPrimitive, ClipPrimitive, FontKind, Primitive, Rect, RoundedRectPrimitive, Scene,
-    ShadowPrimitive, TextPrimitive,
+    BorderPrimitive, ClipPrimitive, FontKind, Primitive, Rect, RichTextPrimitive,
+    RoundedRectPrimitive, Scene, ShadowPrimitive, TextPrimitive,
 };
 use crate::ui::theme::Color;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextMetrics {
+    pub ui_font_size_px: f32,
+    pub ui_line_height_px: f32,
+    pub mono_font_size_px: f32,
+    pub mono_line_height_px: f32,
+    pub mono_char_width_px: f32,
+}
+
+impl Default for TextMetrics {
+    fn default() -> Self {
+        Self {
+            ui_font_size_px: 14.0,
+            ui_line_height_px: 18.0,
+            mono_font_size_px: 13.0,
+            mono_line_height_px: 20.0,
+            mono_char_width_px: 8.0,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FrameStats {
@@ -218,6 +239,17 @@ impl Renderer {
         );
     }
 
+    pub fn text_metrics(&self) -> TextMetrics {
+        let scale = self.scale_factor as f32;
+        TextMetrics {
+            ui_font_size_px: 14.0 * scale,
+            ui_line_height_px: 18.0 * scale,
+            mono_font_size_px: 13.0 * scale,
+            mono_line_height_px: 20.0 * scale,
+            mono_char_width_px: 8.0 * scale,
+        }
+    }
+
     pub fn render(&mut self, scene: &Scene) -> Result<FrameStats, RenderError> {
         if self.surface_config.width == 0 || self.surface_config.height == 0 {
             return Ok(FrameStats::default());
@@ -269,51 +301,43 @@ impl Renderer {
                 usage: wgpu::BufferUsages::VERTEX,
             });
 
-        let mut text_buffers = Vec::with_capacity(flattened.texts.len());
+        let mut prepared_texts = Vec::with_capacity(
+            flattened
+                .texts
+                .len()
+                .saturating_add(flattened.rich_texts.len()),
+        );
         for text in &flattened.texts {
-            let metrics = Metrics::new(text.primitive.font_size, text.primitive.font_size * 1.35);
-            let mut buffer = Buffer::new(&mut self.font_system, metrics);
-            buffer.set_size(
+            prepared_texts.push(prepare_plain_text(
                 &mut self.font_system,
-                Some((text.primitive.rect.width * self.scale_factor as f32).max(1.0)),
-                Some((text.primitive.rect.height * self.scale_factor as f32).max(1.0)),
-            );
-            let attrs = match text.primitive.font_kind {
-                FontKind::Ui => Attrs::new().family(Family::SansSerif),
-                FontKind::Mono => Attrs::new().family(Family::Monospace),
-            };
-            buffer.set_text(
+                &text.primitive,
+                text.clip,
+                self.scale_factor,
+            ));
+        }
+        for text in &flattened.rich_texts {
+            prepared_texts.push(prepare_rich_text(
                 &mut self.font_system,
-                &text.primitive.text,
-                &attrs,
-                Shaping::Advanced,
-                None,
-            );
-            buffer.shape_until_scroll(&mut self.font_system, false);
-            text_buffers.push(buffer);
+                &text.primitive,
+                text.clip,
+                self.scale_factor,
+            ));
         }
 
-        let text_areas = flattened
-            .texts
+        let text_areas = prepared_texts
             .iter()
-            .zip(text_buffers.iter())
-            .map(|(text, buffer)| TextArea {
-                buffer,
-                left: text.primitive.rect.x,
-                top: text.primitive.rect.y,
+            .map(|prepared| TextArea {
+                buffer: &prepared.buffer,
+                left: prepared.left,
+                top: prepared.top,
                 scale: 1.0,
                 bounds: TextBounds {
-                    left: text.clip.x.round() as i32,
-                    top: text.clip.y.round() as i32,
-                    right: text.clip.right().round() as i32,
-                    bottom: text.clip.bottom().round() as i32,
+                    left: prepared.clip.x.round() as i32,
+                    top: prepared.clip.y.round() as i32,
+                    right: prepared.clip.right().round() as i32,
+                    bottom: prepared.clip.bottom().round() as i32,
                 },
-                default_color: GlyphonColor::rgba(
-                    text.primitive.color.r,
-                    text.primitive.color.g,
-                    text.primitive.color.b,
-                    text.primitive.color.a,
-                ),
+                default_color: prepared.default_color,
                 custom_glyphs: &[],
             })
             .collect::<Vec<_>>();
@@ -431,6 +455,7 @@ impl ViewportUniform {
 struct FlattenedScene {
     rects: Vec<ClippedRect>,
     texts: Vec<ClippedText>,
+    rich_texts: Vec<ClippedRichText>,
 }
 
 #[derive(Debug, Clone)]
@@ -447,9 +472,24 @@ struct ClippedText {
 }
 
 #[derive(Debug, Clone)]
+struct ClippedRichText {
+    primitive: RichTextPrimitive,
+    clip: Rect,
+}
+
+#[derive(Debug, Clone)]
 struct RectDrawCommand {
     vertex_range: std::ops::Range<u32>,
     clip: Rect,
+}
+
+#[derive(Debug)]
+struct PreparedTextBuffer {
+    buffer: Buffer,
+    left: f32,
+    top: f32,
+    clip: Rect,
+    default_color: GlyphonColor,
 }
 
 fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
@@ -457,6 +497,7 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
     let mut flattened = FlattenedScene {
         rects: Vec::new(),
         texts: Vec::new(),
+        rich_texts: Vec::new(),
     };
 
     for primitive in &scene.primitives {
@@ -470,6 +511,16 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                     && let Some(intersection) = text.rect.intersection(clip)
                 {
                     flattened.texts.push(ClippedText {
+                        primitive: text.clone(),
+                        clip: intersection,
+                    });
+                }
+            }
+            Primitive::RichTextRun(text) => {
+                if let Some(clip) = clips.last().copied()
+                    && let Some(intersection) = text.rect.intersection(clip)
+                {
+                    flattened.rich_texts.push(ClippedRichText {
                         primitive: text.clone(),
                         clip: intersection,
                     });
@@ -493,6 +544,98 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
     }
 
     flattened
+}
+
+fn prepare_plain_text(
+    font_system: &mut FontSystem,
+    primitive: &TextPrimitive,
+    clip: Rect,
+    scale_factor: f64,
+) -> PreparedTextBuffer {
+    let metrics = Metrics::new(primitive.font_size, primitive.font_size * 1.35);
+    let mut buffer = Buffer::new(font_system, metrics);
+    buffer.set_size(
+        font_system,
+        Some((primitive.rect.width * scale_factor as f32).max(1.0)),
+        Some((primitive.rect.height * scale_factor as f32).max(1.0)),
+    );
+    let attrs = attrs_for_font(primitive.font_kind, primitive.color);
+    buffer.set_text(
+        font_system,
+        &primitive.text,
+        &attrs,
+        Shaping::Advanced,
+        None,
+    );
+    buffer.shape_until_scroll(font_system, false);
+    PreparedTextBuffer {
+        buffer,
+        left: primitive.rect.x,
+        top: primitive.rect.y,
+        clip,
+        default_color: glyphon_color(primitive.color),
+    }
+}
+
+fn prepare_rich_text(
+    font_system: &mut FontSystem,
+    primitive: &RichTextPrimitive,
+    clip: Rect,
+    scale_factor: f64,
+) -> PreparedTextBuffer {
+    let metrics = Metrics::new(primitive.font_size, primitive.font_size * 1.35);
+    let mut buffer = Buffer::new(font_system, metrics);
+    buffer.set_size(
+        font_system,
+        Some((primitive.rect.width * scale_factor as f32).max(1.0)),
+        Some((primitive.rect.height * scale_factor as f32).max(1.0)),
+    );
+    let default_attrs = attrs_for_font(primitive.font_kind, primitive.default_color);
+    let spans = primitive
+        .spans
+        .iter()
+        .map(|span| {
+            (
+                span.text.as_str(),
+                attrs_for_font(primitive.font_kind, span.color),
+            )
+        })
+        .collect::<Vec<_>>();
+    if spans.is_empty() {
+        buffer.set_text(font_system, "", &default_attrs, Shaping::Advanced, None);
+    } else {
+        buffer.set_rich_text(
+            font_system,
+            spans.iter().map(|(text, attrs)| (*text, attrs.clone())),
+            &default_attrs,
+            Shaping::Advanced,
+            None,
+        );
+    }
+    buffer.shape_until_scroll(font_system, false);
+    PreparedTextBuffer {
+        buffer,
+        left: primitive.rect.x,
+        top: primitive.rect.y,
+        clip,
+        default_color: glyphon_color(primitive.default_color),
+    }
+}
+
+fn attrs_for_font(font_kind: FontKind, color: Color) -> Attrs<'static> {
+    let family = match font_kind {
+        FontKind::Ui => Family::SansSerif,
+        FontKind::Mono => Family::Monospace,
+    };
+    Attrs::new().family(family).color(glyphon_text_color(color))
+}
+
+fn glyphon_color(color: Color) -> GlyphonColor {
+    GlyphonColor::rgba(color.r, color.g, color.b, color.a)
+}
+
+fn glyphon_text_color(color: Color) -> glyphon::Color {
+    glyphon::Color::rgba(color.r, color.g, color.b, color.a)
 }
 
 fn push_rect(rect: Rect, color: Color, clips: &[Rect], out: &mut Vec<ClippedRect>) {

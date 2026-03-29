@@ -103,6 +103,25 @@ pub fn rebuild_display_rows(
                         .saturating_mul(wrap_left.max(wrap_right).max(1)),
                 )
             }
+            RenderRowKind::Modified => {
+                let wrap_left = if line.left_text.is_valid() {
+                    wrap_count(line.left_cols, unified_wrap_cols.max(1))
+                } else {
+                    1
+                };
+                let wrap_right = if line.right_text.is_valid() {
+                    wrap_count(line.right_cols, unified_wrap_cols.max(1))
+                } else {
+                    1
+                };
+                (
+                    wrap_left,
+                    wrap_right,
+                    metrics
+                        .body_row_height_px
+                        .saturating_mul(wrap_left.max(1).saturating_add(wrap_right.max(1))),
+                )
+            }
             _ => {
                 let wrap = wrap_count(line.primary_cols(), unified_wrap_cols.max(1));
                 (
@@ -285,6 +304,45 @@ mod tests {
         assert_eq!(rows[0].wrap_left, 2);
         assert_eq!(rows[0].wrap_right, 8);
         assert_eq!(rows[0].h_px, 160);
+    }
+
+    #[test]
+    fn unified_modified_rows_stack_removed_and_added_wrap_heights() {
+        let doc = RenderDoc {
+            text_bytes: Vec::new(),
+            style_runs: Vec::new(),
+            lines: vec![RenderLine {
+                kind: RenderRowKind::Modified as u8,
+                left_cols: 20,
+                right_cols: 30,
+                left_text: valid_range(),
+                right_text: valid_range(),
+                ..RenderLine::default()
+            }],
+        };
+        let mut rows = Vec::new();
+
+        rebuild_display_rows(
+            &doc,
+            DisplayLayoutConfig {
+                split_mode: false,
+                wrap_enabled: true,
+                wrap_column: 0,
+                char_width_px: 1.0,
+                unified_text_width_px: 10.0,
+                split_text_width_px: 10.0,
+            },
+            DisplayLayoutMetrics {
+                body_row_height_px: 20,
+                file_header_height_px: 32,
+                hunk_height_px: 24,
+            },
+            &mut rows,
+        );
+
+        assert_eq!(rows[0].wrap_left, 2);
+        assert_eq!(rows[0].wrap_right, 3);
+        assert_eq!(rows[0].h_px, 100);
     }
 
     #[test]

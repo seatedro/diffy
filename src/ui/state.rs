@@ -3,9 +3,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::core::compare::{CompareMode, CompareOutput, CompareSpec, LayoutMode, RendererKind};
-use crate::core::diff::{FileDiff, LineKind};
+use crate::core::diff::FileDiff;
 use crate::core::search::fuzzy::fuzzy_score;
-use crate::core::text::TextBuffer;
 use crate::core::vcs::git::{BranchInfo, CommitInfo, TagInfo};
 use crate::core::vcs::github::{DeviceFlowState, PullRequestInfo};
 use crate::platform::persistence::{PersistedCompare, Settings};
@@ -47,7 +46,7 @@ pub enum FocusTarget {
     RightRef,
     StartCompare,
     FileList,
-    Preview,
+    DiffViewport,
     PullRequestUrl,
 }
 
@@ -171,28 +170,6 @@ impl Default for FileListState {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum PreviewLineKind {
-    Title,
-    Meta,
-    #[default]
-    Context,
-    Added,
-    Removed,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PreviewLine {
-    pub kind: PreviewLineKind,
-    pub text: String,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PreviewState {
-    pub scroll_offset: usize,
-    pub lines: Vec<PreviewLine>,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PullRequestState {
     pub status: AsyncStatus,
@@ -253,7 +230,6 @@ pub struct AppState {
     pub repository: RepositoryState,
     pub workspace: WorkspaceState,
     pub file_list: FileListState,
-    pub preview: PreviewState,
     pub overlay: OverlayState,
     pub focus: FocusState,
     pub viewport: DiffViewportState,
@@ -323,7 +299,6 @@ impl AppState {
             repository: RepositoryState::default(),
             workspace: WorkspaceState::default(),
             file_list: FileListState::default(),
-            preview: PreviewState::default(),
             overlay: OverlayState::default(),
             focus: FocusState {
                 current: if repo_path.is_some() {
@@ -404,6 +379,7 @@ impl AppState {
             }
             Action::SetFocus(target) => {
                 self.focus.current = target;
+                self.viewport.focused = target == Some(FocusTarget::DiffViewport);
                 self.overlay.active_field = match target {
                     Some(FocusTarget::LeftRef) => Some(CompareField::Left),
                     Some(FocusTarget::RightRef) => Some(CompareField::Right),
@@ -495,12 +471,26 @@ impl AppState {
                 );
                 Vec::new()
             }
-            Action::ScrollPreview(delta) => {
-                self.preview.scroll_offset = apply_scroll_delta(
-                    self.preview.scroll_offset,
-                    delta,
-                    self.preview.lines.len().saturating_sub(1),
-                );
+            Action::ScrollViewportLines(delta) => {
+                self.scroll_viewport_lines(delta);
+                Vec::new()
+            }
+            Action::ScrollViewportPages(delta) => {
+                self.scroll_viewport_pages(delta);
+                Vec::new()
+            }
+            Action::ScrollViewportTo(scroll_top_px) => {
+                self.viewport.scroll_top_px = scroll_top_px;
+                self.viewport.clamp_scroll();
+                Vec::new()
+            }
+            Action::HoverViewportRow(row) => {
+                self.viewport.hovered_row = row;
+                Vec::new()
+            }
+            Action::FocusViewport => {
+                self.focus.current = Some(FocusTarget::DiffViewport);
+                self.viewport.focused = true;
                 Vec::new()
             }
             Action::HoverFile(index) => {
@@ -661,7 +651,8 @@ impl AppState {
         self.repository.status = AsyncStatus::Loading;
         self.workspace.clear_compare();
         self.file_list = FileListState::default();
-        self.preview = PreviewState::default();
+        self.viewport.clear_document();
+        self.viewport.focused = false;
         self.last_error = None;
         self.github.pull_request.info = None;
         self.focus.current = Some(FocusTarget::LeftRef);
@@ -720,8 +711,9 @@ impl AppState {
         self.workspace.files = build_file_entries(&payload.output.files);
         self.workspace.compare_output = Some(payload.output);
         self.file_list.scroll_offset = 0;
-        self.preview.scroll_offset = 0;
         self.focus.current = Some(FocusTarget::FileList);
+        self.viewport.focused = false;
+        self.viewport.clear_document();
         self.overlay.active_field = None;
         self.overlay.ref_suggestions.clear();
 
@@ -751,7 +743,7 @@ impl AppState {
             self.workspace.selected_file_index = None;
             self.workspace.selected_file_path = None;
             self.workspace.active_file = None;
-            self.preview.lines.clear();
+            self.viewport.clear_document();
         }
 
         if self.workspace.used_fallback && !self.workspace.fallback_message.is_empty() {
@@ -961,10 +953,31 @@ impl AppState {
             file: file.clone(),
             render_doc: build_render_doc(file, index, &output.text_buffer, &output.token_buffer),
         });
-        self.preview.lines = build_preview_lines(file, &output.text_buffer);
-        self.preview.scroll_offset = 0;
+        self.viewport.clear_document();
         self.file_list.hovered_index = Some(index);
         self.file_list.scroll_offset = self.file_list.scroll_offset.min(index);
+    }
+
+    fn scroll_viewport_lines(&mut self, delta_lines: i32) {
+        let step_px = 20_i32;
+        let delta_px = delta_lines.saturating_mul(step_px);
+        self.viewport.scroll_top_px = apply_scroll_delta_px(
+            self.viewport.scroll_top_px,
+            delta_px,
+            self.viewport.max_scroll_top_px(),
+        );
+    }
+
+    fn scroll_viewport_pages(&mut self, delta_pages: i32) {
+        let page_px = ((self.viewport.viewport_height_px as f32) * 0.85)
+            .round()
+            .max(1.0) as i32;
+        let delta_px = delta_pages.saturating_mul(page_px);
+        self.viewport.scroll_top_px = apply_scroll_delta_px(
+            self.viewport.scroll_top_px,
+            delta_px,
+            self.viewport.max_scroll_top_px(),
+        );
     }
 
     fn push_error(&mut self, message: &str) {
@@ -1014,69 +1027,17 @@ fn apply_scroll_delta(current: usize, delta: i32, max: usize) -> usize {
     next.min(max)
 }
 
-fn build_file_entries(files: &[FileDiff]) -> Vec<FileListEntry> {
-    files.iter().map(FileListEntry::from).collect()
+fn apply_scroll_delta_px(current: u32, delta: i32, max: u32) -> u32 {
+    let next = if delta.is_negative() {
+        current.saturating_sub(delta.unsigned_abs())
+    } else {
+        current.saturating_add(delta as u32)
+    };
+    next.min(max)
 }
 
-fn build_preview_lines(file: &FileDiff, text_buffer: &TextBuffer) -> Vec<PreviewLine> {
-    let mut lines = Vec::new();
-    lines.push(PreviewLine {
-        kind: PreviewLineKind::Title,
-        text: file.path.clone(),
-    });
-    lines.push(PreviewLine {
-        kind: PreviewLineKind::Meta,
-        text: format!(
-            "status: {}   +{}   -{}{}",
-            file.status,
-            file.additions,
-            file.deletions,
-            if file.is_binary { "   [binary]" } else { "" }
-        ),
-    });
-    lines.push(PreviewLine {
-        kind: PreviewLineKind::Meta,
-        text: String::new(),
-    });
-
-    if file.is_binary {
-        lines.push(PreviewLine {
-            kind: PreviewLineKind::Meta,
-            text: "Binary file. Native preview is intentionally minimal in this shell phase."
-                .to_owned(),
-        });
-        return lines;
-    }
-
-    for hunk in &file.hunks {
-        lines.push(PreviewLine {
-            kind: PreviewLineKind::Meta,
-            text: hunk.header.clone(),
-        });
-
-        for line in &hunk.lines {
-            let prefix = match line.kind {
-                LineKind::Context => ' ',
-                LineKind::Added => '+',
-                LineKind::Removed => '-',
-            };
-            lines.push(PreviewLine {
-                kind: match line.kind {
-                    LineKind::Context => PreviewLineKind::Context,
-                    LineKind::Added => PreviewLineKind::Added,
-                    LineKind::Removed => PreviewLineKind::Removed,
-                },
-                text: format!("{prefix}{}", text_buffer.view(line.text_range)),
-            });
-        }
-
-        lines.push(PreviewLine {
-            kind: PreviewLineKind::Meta,
-            text: String::new(),
-        });
-    }
-
-    lines
+fn build_file_entries(files: &[FileDiff]) -> Vec<FileListEntry> {
+    files.iter().map(FileListEntry::from).collect()
 }
 
 impl From<&FileDiff> for FileListEntry {
@@ -1095,7 +1056,7 @@ impl From<&FileDiff> for FileListEntry {
 mod tests {
     use clap::Parser;
 
-    use super::{AppState, FocusTarget, PreviewLineKind, Screen};
+    use super::{AppState, FocusTarget, Screen};
     use crate::core::compare::{CompareMode, CompareOutput, LayoutMode, RendererKind};
     use crate::core::diff::{DiffLine, FileDiff, Hunk, LineKind};
     use crate::platform::persistence::{Settings, SettingsStore};
@@ -1198,13 +1159,8 @@ mod tests {
             state.workspace.selected_file_path.as_deref(),
             Some("src/main.rs")
         );
-        assert!(
-            state
-                .preview
-                .lines
-                .iter()
-                .any(|line| line.kind == PreviewLineKind::Added)
-        );
+        assert!(state.workspace.active_file.is_some());
+        assert_eq!(state.viewport.scroll_top_px, 0);
     }
 
     #[test]

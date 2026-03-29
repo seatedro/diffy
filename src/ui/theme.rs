@@ -35,6 +35,15 @@ pub struct ThemeColors {
     pub selection_bg: Color,
     pub line_add: Color,
     pub line_del: Color,
+    pub line_modified: Color,
+    pub gutter_bg: Color,
+    pub gutter_text: Color,
+    pub file_header_bg: Color,
+    pub hunk_header_bg: Color,
+    pub line_add_text: Color,
+    pub line_del_text: Color,
+    pub hover_overlay: Color,
+    pub scrollbar_thumb: Color,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +72,15 @@ impl Theme {
                 selection_bg: hex("#2f3b4f"),
                 line_add: hex("#24342a"),
                 line_del: hex("#382728"),
+                line_modified: hex("#2b303d"),
+                gutter_bg: hex("#1a1d23"),
+                gutter_text: hex("#7f8893"),
+                file_header_bg: hex("#262b34"),
+                hunk_header_bg: hex("#242f3c"),
+                line_add_text: hex("#a7e3b1"),
+                line_del_text: hex("#f0b2b4"),
+                hover_overlay: hex("#ffffff12"),
+                scrollbar_thumb: hex("#4d5866"),
             },
         }
     }

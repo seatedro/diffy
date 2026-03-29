@@ -1,7 +1,5 @@
-# Local reference repos (large/untracked)
-.docs/refs/
-.docs/refs.partial.*/
-.docs/zed/
+# Local docs/plans (not shipped)
+.docs/
 CLAUDE.md
 git_diff_output.txt
 

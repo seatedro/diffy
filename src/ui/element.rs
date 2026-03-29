@@ -743,6 +743,7 @@ pub struct Div {
     on_scroll: Option<ScrollActionBuilder>,
     cursor: CursorHint,
     scroll_y: f32,
+    scroll_total_height: f32,
     clips: bool,
 }
 
@@ -758,6 +759,7 @@ pub fn div() -> Div {
         on_scroll: None,
         cursor: CursorHint::Default,
         scroll_y: 0.0,
+        scroll_total_height: 0.0,
         clips: false,
     }
 }
@@ -840,6 +842,11 @@ impl Div {
     pub fn scroll_y(mut self, offset: f32) -> Self {
         self.scroll_y = offset;
         self.clips = true;
+        self
+    }
+
+    pub fn scroll_total(mut self, total_height: f32) -> Self {
+        self.scroll_total_height = total_height;
         self
     }
 
@@ -1048,6 +1055,24 @@ impl Element for Div {
             for child in &mut self.children {
                 child.paint(engine, scene, cx);
             }
+        }
+
+        if self.scroll_y > 0.0 && self.scroll_total_height > bounds.height {
+            let track_h = bounds.height;
+            let content_h = self.scroll_total_height;
+            let thumb_h = (track_h / content_h * track_h).max(20.0).min(track_h);
+            let thumb_y = (self.scroll_y / (content_h - track_h)) * (track_h - thumb_h);
+            let thumb_w = 4.0;
+            scene.rounded_rect(RoundedRectPrimitive::uniform(
+                Rect {
+                    x: bounds.x + bounds.width - thumb_w - 2.0,
+                    y: bounds.y + thumb_y,
+                    width: thumb_w,
+                    height: thumb_h,
+                },
+                2.0,
+                cx.theme.colors.scrollbar_thumb,
+            ));
         }
 
         if self.clips {
@@ -1674,12 +1699,14 @@ impl Element for SvgIcon {
     ) {
         let color = self.color.unwrap_or(cx.theme.colors.icon);
         let px_size = self.size.ceil() as u32;
+        let key = crate::ui::icons::cache_key(self.svg, px_size, color);
         let (rgba, w, h) = crate::ui::icons::rasterize_svg(self.svg, px_size, color);
         scene.image(crate::render::ImagePrimitive {
             rect: bounds,
             width: w,
             height: h,
             rgba,
+            cache_key: key,
         });
     }
 }

@@ -11,7 +11,7 @@ struct CachedIcon {
     height: u32,
 }
 
-fn cache_key(svg: &str, size: u32, color: Color) -> u64 {
+pub fn cache_key(svg: &str, size: u32, color: Color) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     svg.len().hash(&mut h);

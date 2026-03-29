@@ -173,6 +173,7 @@ pub struct Renderer {
     texture_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     texture_pool: TexturePool,
+    image_cache: std::collections::HashMap<u64, (wgpu::Texture, wgpu::TextureView, wgpu::BindGroup)>,
     viewport_buffer: wgpu::Buffer,
     viewport_bind_group: wgpu::BindGroup,
     font_system: FontSystem,
@@ -522,6 +523,7 @@ impl Renderer {
             texture_bind_group_layout,
             sampler,
             texture_pool,
+            image_cache: std::collections::HashMap::new(),
             viewport_buffer,
             viewport_bind_group,
             font_system,
@@ -716,6 +718,51 @@ impl Renderer {
 
         let single_z = flattened.z_layers.len() <= 1;
 
+        for zl in &flattened.z_layers {
+            for img in &zl.images {
+                let key = img.primitive.cache_key;
+                if key != 0 && !self.image_cache.contains_key(&key) {
+                    if !img.primitive.rgba.is_empty() && img.primitive.width > 0 && img.primitive.height > 0 {
+                        let texture = self.device.create_texture_with_data(
+                            &self.queue,
+                            &wgpu::TextureDescriptor {
+                                label: Some("diffy_cached_image"),
+                                size: wgpu::Extent3d {
+                                    width: img.primitive.width,
+                                    height: img.primitive.height,
+                                    depth_or_array_layers: 1,
+                                },
+                                mip_level_count: 1,
+                                sample_count: 1,
+                                dimension: wgpu::TextureDimension::D2,
+                                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                                view_formats: &[],
+                            },
+                            wgpu::util::TextureDataOrder::LayerMajor,
+                            &img.primitive.rgba,
+                        );
+                        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("diffy_cached_image_bind"),
+                            layout: &self.texture_bind_group_layout,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::TextureView(&view),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                                },
+                            ],
+                        });
+                        self.image_cache.insert(key, (texture, view, bind_group));
+                    }
+                }
+            }
+        }
+
         if single_z && flattened.blur_regions.is_empty() {
             // ---- Fast path: single z-layer, no blur ----
             let zl = &flattened.z_layers[0];
@@ -769,8 +816,7 @@ impl Renderer {
                 &self.queue,
                 &self.blit_pipeline,
                 &self.viewport_bind_group,
-                &self.texture_bind_group_layout,
-                &self.sampler,
+                &self.image_cache,
                 self.surface_config.width,
                 self.surface_config.height,
             );
@@ -841,8 +887,7 @@ impl Renderer {
                         &self.queue,
                         &self.blit_pipeline,
                         &self.viewport_bind_group,
-                        &self.texture_bind_group_layout,
-                        &self.sampler,
+                        &self.image_cache,
                         sw, sh,
                     );
 
@@ -1194,11 +1239,10 @@ fn draw_images<'pass>(
     pass: &mut wgpu::RenderPass<'pass>,
     images: &[ClippedImage],
     device: &'pass wgpu::Device,
-    queue: &wgpu::Queue,
+    _queue: &wgpu::Queue,
     blit_pipeline: &'pass wgpu::RenderPipeline,
     viewport_bind_group: &'pass wgpu::BindGroup,
-    texture_bind_group_layout: &'pass wgpu::BindGroupLayout,
-    sampler: &'pass wgpu::Sampler,
+    image_cache: &'pass std::collections::HashMap<u64, (wgpu::Texture, wgpu::TextureView, wgpu::BindGroup)>,
     viewport_w: u32,
     viewport_h: u32,
 ) {
@@ -1207,41 +1251,10 @@ fn draw_images<'pass>(
             continue;
         }
 
-        let texture = device.create_texture_with_data(
-            queue,
-            &wgpu::TextureDescriptor {
-                label: Some("diffy_image"),
-                size: wgpu::Extent3d {
-                    width: img.primitive.width,
-                    height: img.primitive.height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            },
-            wgpu::util::TextureDataOrder::LayerMajor,
-            &img.primitive.rgba,
-        );
-
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("diffy_image_bind"),
-            layout: texture_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-            ],
-        });
+        let bind_group = match image_cache.get(&img.primitive.cache_key) {
+            Some((_, _, bg)) => bg,
+            None => continue,
+        };
 
         let r = img.primitive.rect;
         let blit_inst = BlitInstance {
@@ -1257,7 +1270,7 @@ fn draw_images<'pass>(
 
         pass.set_pipeline(blit_pipeline);
         pass.set_bind_group(0, viewport_bind_group, &[]);
-        pass.set_bind_group(1, &bind_group, &[]);
+        pass.set_bind_group(1, bind_group, &[]);
         pass.set_vertex_buffer(0, buf.slice(..));
         pass.set_scissor_rect(0, 0, viewport_w, viewport_h);
         pass.draw(0..4, 0..1);

@@ -274,6 +274,7 @@ pub struct ImagePrimitive {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    pub cache_key: u64,
 }
 
 // ---------------------------------------------------------------------------

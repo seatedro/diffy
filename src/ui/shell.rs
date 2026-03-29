@@ -5,7 +5,8 @@ use crate::render::{Rect, RectPrimitive, TextMetrics};
 use crate::ui::actions::Action;
 use crate::ui::animation::AnimationKey;
 use crate::ui::components::{
-    Button, Label, ListItem, Modal, PickerList, SegmentedControl, Surface, TextInput, Toast,
+    Button, ButtonStyle, Label, ListItem, Modal, PickerList, SegmentedControl, Surface, TextInput,
+    Toast,
 };
 use crate::ui::design::{Sp, TextStyle};
 use crate::ui::diff_viewport::runtime::{DiffViewportRuntime, ViewportDocument};
@@ -242,16 +243,9 @@ fn draw_title_bar(frame: &mut UiFrame, state: &AppState, theme: &Theme, rect: Re
         .fill(theme.colors.title_bar_background)
         .paint(frame, rect, theme);
 
-    let content = rect.pad(Sp::XL, Sp::SM, Sp::XL, Sp::SM);
-    let [title_row, path_row] = vstack(
-        Rect {
-            width: content.width * 0.35,
-            ..content
-        },
-        Sp::XXS,
-        [Fx(20.0), Fx(16.0)],
-    );
+    let content = rect.pad(Sp::XL, 0.0, Sp::XL, 0.0);
 
+    // Left: repo name only — vertically centered, clean
     let repo_label = state
         .compare
         .repo_path
@@ -259,90 +253,85 @@ fn draw_title_bar(frame: &mut UiFrame, state: &AppState, theme: &Theme, rect: Re
         .and_then(|path| path.file_name())
         .and_then(|name| name.to_str())
         .unwrap_or("diffy");
-    let repo_path = state
-        .compare
-        .repo_path
-        .as_ref()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "No repository selected".to_owned());
-
+    let label_h = theme.metrics.heading_font_size * 1.35;
     Label::new(repo_label)
         .style(TextStyle::Heading)
-        .paint(frame, title_row, theme);
-    Label::new(&repo_path)
-        .style(TextStyle::BodySmall)
-        .paint(frame, path_row, theme);
+        .paint(
+            frame,
+            Rect {
+                x: content.x,
+                y: content.y + (content.height - label_h) * 0.5,
+                width: content.width * 0.25,
+                height: label_h,
+            },
+            theme,
+        );
 
-    let summary = if state.workspace_mode == WorkspaceMode::Ready {
-        format!(
-            "{} files \u{2022} {} -> {}",
+    // Center: compare summary — subtle, secondary
+    if state.workspace_mode == WorkspaceMode::Ready {
+        let summary = format!(
+            "{} files  \u{00b7}  {} \u{2192} {}",
             state.workspace.files.len(),
             state.compare.resolved_left.as_deref().unwrap_or("?"),
             state.compare.resolved_right.as_deref().unwrap_or("?")
-        )
-    } else {
-        "Workspace shell".to_owned()
-    };
-    Label::new(&summary).style(TextStyle::BodySmall).paint(
-        frame,
-        Rect {
-            x: content.x + content.width * 0.35,
-            y: content.y + (content.height - 16.0) * 0.5,
-            width: content.width * 0.25,
-            height: 16.0,
-        },
-        theme,
-    );
+        );
+        let summary_h = theme.metrics.ui_small_font_size * 1.35;
+        Label::new(&summary)
+            .style(TextStyle::BodySmall)
+            .paint(
+                frame,
+                Rect {
+                    x: content.x + content.width * 0.25,
+                    y: content.y + (content.height - summary_h) * 0.5,
+                    width: content.width * 0.3,
+                    height: summary_h,
+                },
+                theme,
+            );
+    }
 
-    // Toolbar buttons — right-to-left placement, vertically centered
-    let btn_h = 28.0;
+    // Right: toolbar — fewer buttons, more space between them
+    let btn_h = 30.0;
     let btn_y = rect.y + (rect.height - btn_h) * 0.5;
-    let mut x = rect.right() - Sp::XL - 80.0;
+    let gap = Sp::SM;
+    let mut x = rect.right() - Sp::XL;
 
+    // Primary actions only in the title bar
+    x -= 76.0;
+    Button::new("Compare", Action::OpenCompareSheet)
+        .style(ButtonStyle::Subtle)
+        .selected(state.overlays.top() == Some(OverlaySurface::CompareSheet))
+        .paint(frame, Rect { x, y: btn_y, width: 76.0, height: btn_h }, theme);
+
+    x -= 52.0 + gap;
+    Button::new("PR", Action::OpenPullRequestModal)
+        .selected(state.overlays.top() == Some(OverlaySurface::PullRequestModal))
+        .paint(frame, Rect { x, y: btn_y, width: 52.0, height: btn_h }, theme);
+
+    // Separator gap before view controls
+    x -= Sp::LG;
+
+    // Layout toggle as segmented control
+    let seg_w = 130.0;
+    x -= seg_w;
+    SegmentedControl::new([
+        ("Split", Action::SetLayoutMode(LayoutMode::Split), state.compare.layout == LayoutMode::Split),
+        ("Unified", Action::SetLayoutMode(LayoutMode::Unified), state.compare.layout == LayoutMode::Unified),
+    ])
+    .paint(frame, Rect { x, y: btn_y, width: seg_w, height: btn_h }, theme);
+
+    x -= 56.0 + gap;
+    Button::new("Wrap", Action::ToggleWrap)
+        .selected(state.viewport.wrap_enabled)
+        .paint(frame, Rect { x, y: btn_y, width: 56.0, height: btn_h }, theme);
+
+    x -= 50.0 + gap;
     Button::new(
-        if theme.mode == crate::ui::theme::ThemeMode::Dark {
-            "Light"
-        } else {
-            "Dark"
-        },
+        if theme.mode == crate::ui::theme::ThemeMode::Dark { "\u{263e}" } else { "\u{2600}" },
         Action::ToggleThemeMode,
     )
     .focused(state.focus.current == Some(FocusTarget::ThemeToggle))
-    .paint(frame, Rect { x, y: btn_y, width: 80.0, height: btn_h }, theme);
-
-    x -= 74.0;
-    Button::new("Wrap", Action::ToggleWrap)
-        .selected(state.viewport.wrap_enabled)
-        .paint(frame, Rect { x, y: btn_y, width: 64.0, height: btn_h }, theme);
-
-    x -= 74.0;
-    Button::new("Split", Action::SetLayoutMode(LayoutMode::Split))
-        .selected(state.compare.layout == LayoutMode::Split)
-        .paint(frame, Rect { x, y: btn_y, width: 64.0, height: btn_h }, theme);
-
-    x -= 82.0;
-    Button::new("Unified", Action::SetLayoutMode(LayoutMode::Unified))
-        .selected(state.compare.layout == LayoutMode::Unified)
-        .paint(frame, Rect { x, y: btn_y, width: 72.0, height: btn_h }, theme);
-
-    x -= 80.0;
-    Button::new("Palette", Action::OpenCommandPalette)
-        .paint(frame, Rect { x, y: btn_y, width: 70.0, height: btn_h }, theme);
-
-    x -= 70.0;
-    Button::new("PR", Action::OpenPullRequestModal)
-        .selected(state.overlays.top() == Some(OverlaySurface::PullRequestModal))
-        .paint(frame, Rect { x, y: btn_y, width: 60.0, height: btn_h }, theme);
-
-    x -= 82.0;
-    Button::new("GitHub", Action::OpenGitHubAuthModal)
-        .selected(state.github.auth.token_present)
-        .paint(frame, Rect { x, y: btn_y, width: 72.0, height: btn_h }, theme);
-
-    x -= 86.0;
-    Button::new("Compare", Action::OpenCompareSheet)
-        .selected(state.overlays.top() == Some(OverlaySurface::CompareSheet))
-        .paint(frame, Rect { x, y: btn_y, width: 76.0, height: btn_h }, theme);
+    .paint(frame, Rect { x, y: btn_y, width: 32.0, height: btn_h }, theme);
 }
 
 // ---------------------------------------------------------------------------
@@ -355,24 +344,31 @@ fn draw_sidebar(frame: &mut UiFrame, state: &AppState, theme: &Theme, rect: Rect
         .fill(theme.colors.sidebar_background)
         .paint(frame, rect, theme);
 
-    let content = rect.pad(Sp::XL, Sp::LG, Sp::XL, Sp::MD);
-    let [header_row, list_area] = vstack(content, Sp::LG, [Fx(20.0), Fl(1.0)]);
+    let content = rect.pad(Sp::MD, Sp::LG, Sp::MD, Sp::SM);
+    let [header_row, list_area] = vstack(content, Sp::MD, [Fx(22.0), Fl(1.0)]);
 
-    Label::new(&format!("Changed Files ({})", state.workspace.files.len()))
-        .style(TextStyle::Body)
+    let file_count = state.workspace.files.len();
+    let header_text = if file_count > 0 {
+        format!("Files  \u{00b7}  {file_count}")
+    } else {
+        "Files".to_owned()
+    };
+    Label::new(&header_text)
+        .style(TextStyle::BodySmall)
+        .color(theme.colors.text_muted)
         .paint(frame, header_row, theme);
 
     if state.workspace.files.is_empty() {
         Label::new(if state.compare.repo_path.is_some() {
-            "Run a compare to populate the file list."
+            "Run a compare to see changes."
         } else {
-            "Open a repository to get started."
+            "Open a repository to start."
         })
         .style(TextStyle::BodySmall)
         .paint(
             frame,
             Rect {
-                y: header_row.bottom() + Sp::LG,
+                y: header_row.bottom() + Sp::MD,
                 height: 16.0,
                 ..header_row
             },
@@ -393,7 +389,7 @@ fn draw_sidebar(frame: &mut UiFrame, state: &AppState, theme: &Theme, rect: Rect
             x: list_area.x,
             y: list_area.y + (index - start) as f32 * state.file_list.row_height,
             width: list_area.width,
-            height: state.file_list.row_height - 4.0,
+            height: state.file_list.row_height - 2.0,
         };
         let hover_progress = state
             .animation
@@ -401,8 +397,7 @@ fn draw_sidebar(frame: &mut UiFrame, state: &AppState, theme: &Theme, rect: Rect
             .unwrap_or(0.0);
         ListItem::new(&file.path)
             .detail(format!(
-                "{} \u{2022} +{} -{}",
-                file.status, file.additions, file.deletions
+                "+{} \u{2212}{}", file.additions, file.deletions
             ))
             .selected(state.workspace.selected_file_index == Some(index))
             .hover_progress(hover_progress)
@@ -500,10 +495,11 @@ fn draw_empty_state(frame: &mut UiFrame, state: &AppState, theme: &Theme, rect: 
     let [primary_btn, dialog_btn] =
         hstack(buttons_row, Sp::LG, [Fx(138.0), Fx(160.0)]);
     Button::new("Open Compare", Action::OpenCompareSheet)
-        .selected(true)
+        .style(ButtonStyle::Filled)
         .focused(state.focus.current == Some(FocusTarget::WorkspacePrimaryButton))
         .paint(frame, primary_btn, theme);
     Button::new("Folder Dialog", Action::OpenRepositoryDialog)
+        .style(ButtonStyle::Subtle)
         .paint(frame, dialog_btn, theme);
 
     Label::new("Recent repositories")
@@ -542,21 +538,11 @@ fn draw_viewport_surface(
     text_metrics: TextMetrics,
     rect: Rect,
 ) {
-    let content = rect.pad(Sp::LG, Sp::LG, Sp::LG, Sp::LG);
-    let [toolbar, viewport_bounds] = vstack(content, Sp::LG, [Fx(42.0), Fl(1.0)]);
+    let content = rect.pad(0.0, Sp::SM, 0.0, 0.0);
+    let [toolbar, viewport_bounds] = vstack(content, Sp::SM, [Fx(32.0), Fl(1.0)]);
 
-    Surface::panel().paint(frame, toolbar, theme);
-
-    let tb_content = toolbar.pad(14.0, Sp::SM, 14.0, Sp::SM);
-    let [file_label, meta_label] = vstack(
-        Rect {
-            width: tb_content.width * 0.55,
-            ..tb_content
-        },
-        Sp::XXS,
-        [Fx(18.0), Fx(14.0)],
-    );
-
+    let tb_content = toolbar.pad(Sp::LG, 0.0, Sp::LG, 0.0);
+    let label_h = theme.metrics.ui_font_size * 1.35;
     Label::new(
         state
             .workspace
@@ -564,21 +550,16 @@ fn draw_viewport_surface(
             .as_deref()
             .unwrap_or("No file selected"),
     )
-    .style(TextStyle::Body)
-    .paint(frame, file_label, theme);
-
-    Label::new(&format!(
-        "{} \u{2022} {} \u{2022} {}",
-        renderer_label(state.compare.renderer),
-        layout_label(state.compare.layout),
-        if state.viewport.wrap_enabled {
-            "Wrap On"
-        } else {
-            "Wrap Off"
-        }
-    ))
     .style(TextStyle::BodySmall)
-    .paint(frame, meta_label, theme);
+    .paint(
+        frame,
+        Rect {
+            y: tb_content.y + (tb_content.height - label_h) * 0.5,
+            height: label_h,
+            ..tb_content
+        },
+        theme,
+    );
 
     let document = match state.workspace.active_file.as_ref() {
         Some(active_file) if active_file.file.is_binary => ViewportDocument::Binary {
@@ -607,27 +588,41 @@ fn draw_status_bar(frame: &mut UiFrame, state: &AppState, theme: &Theme, rect: R
         .paint(frame, rect, theme);
 
     let content = rect.pad(Sp::LG, 0.0, Sp::LG, 0.0);
-    Label::new(&format!(
-        "{}  \u{2022}  {}  \u{2022}  {}  \u{2022}  {}",
-        async_status_label(state.repository.status),
+    let label_h = theme.metrics.ui_small_font_size * 1.35;
+
+    // Left: status
+    let status_text = async_status_label(state.repository.status);
+    Label::new(status_text)
+        .style(TextStyle::Caption)
+        .paint(
+            frame,
+            Rect {
+                y: content.y + (content.height - label_h) * 0.5,
+                height: label_h,
+                ..content
+            },
+            theme,
+        );
+
+    // Right: mode
+    let right_text = format!(
+        "{}  \u{00b7}  {}",
         compare_mode_label(state.compare.mode),
         renderer_label(state.compare.renderer),
-        if state.viewport.wrap_enabled {
-            "wrap on"
-        } else {
-            "wrap off"
-        }
-    ))
-    .style(TextStyle::BodySmall)
-    .paint(
-        frame,
-        Rect {
-            y: content.y + (content.height - 14.0) * 0.5,
-            height: 14.0,
-            ..content
-        },
-        theme,
     );
+    let right_w = right_text.len() as f32 * 6.5;
+    Label::new(&right_text)
+        .style(TextStyle::Caption)
+        .paint(
+            frame,
+            Rect {
+                x: content.right() - right_w,
+                y: content.y + (content.height - label_h) * 0.5,
+                width: right_w,
+                height: label_h,
+            },
+            theme,
+        );
 }
 
 // ---------------------------------------------------------------------------
@@ -698,7 +693,7 @@ fn draw_compare_sheet(
             .unwrap_or_else(|| "Choose repository".to_owned()),
         Action::OpenRepoPicker,
     )
-    .selected(true)
+    .style(ButtonStyle::Subtle)
     .focused(state.focus.current == Some(FocusTarget::CompareRepoButton))
     .paint(frame, repo_row, theme);
 
@@ -718,18 +713,18 @@ fn draw_compare_sheet(
 
     // Pick buttons overlaid on the fields
     let pick_btn = Rect { width: 62.0, height: 26.0, ..Rect::default() };
-    Button::new("Pick", Action::OpenRefPicker(CompareField::Left)).paint(
-        frame,
-        Rect {
+    Button::new("Pick", Action::OpenRefPicker(CompareField::Left))
+        .style(ButtonStyle::Subtle)
+        .paint(frame, Rect {
             x: left_field.right() - pick_btn.width - Sp::MD,
             y: left_field.y + (left_field.height - pick_btn.height) * 0.5,
             ..pick_btn
         },
         theme,
     );
-    Button::new("Pick", Action::OpenRefPicker(CompareField::Right)).paint(
-        frame,
-        Rect {
+    Button::new("Pick", Action::OpenRefPicker(CompareField::Right))
+        .style(ButtonStyle::Subtle)
+        .paint(frame, Rect {
             x: right_field.right() - pick_btn.width - Sp::MD,
             y: right_field.y + (right_field.height - pick_btn.height) * 0.5,
             ..pick_btn
@@ -772,7 +767,7 @@ fn draw_compare_sheet(
         if state.workspace.status == AsyncStatus::Loading { "Comparing\u{2026}" } else { "Start Compare" },
         Action::StartCompare,
     )
-    .selected(true)
+    .style(ButtonStyle::Filled)
     .focused(state.focus.current == Some(FocusTarget::CompareStartButton))
     .paint(frame, start_btn, theme);
 }
@@ -811,6 +806,7 @@ fn draw_repo_picker(
         .paint(frame, list_area, theme);
 
     Button::new("Folder Dialog", Action::OpenRepositoryDialog)
+        .style(ButtonStyle::Subtle)
         .paint(frame, Rect { width: 160.0, ..footer_row }, theme);
 }
 
@@ -941,12 +937,13 @@ fn draw_pull_request_modal(
         if state.github.pull_request.status == AsyncStatus::Loading { "Loading\u{2026}" } else { "Load PR" },
         Action::SubmitPullRequest,
     )
-    .selected(true)
+    .style(ButtonStyle::Filled)
     .focused(state.focus.current == Some(FocusTarget::PullRequestConfirm))
     .paint(frame, load_btn, theme);
 
     if state.github.pull_request.info.is_some() {
         Button::new("Use Compare", Action::UsePullRequestCompare)
+            .style(ButtonStyle::Subtle)
             .paint(frame, use_btn, theme);
     }
 }
@@ -1002,7 +999,7 @@ fn draw_auth_modal(
         if state.github.auth.device_flow.is_some() { "Open Browser" } else { "Start Device Flow" },
         if state.github.auth.device_flow.is_some() { Action::OpenDeviceFlowBrowser } else { Action::StartGitHubDeviceFlow },
     )
-    .selected(true)
+    .style(ButtonStyle::Filled)
     .focused(state.focus.current == Some(FocusTarget::AuthPrimaryAction))
     .paint(frame, Rect { width: 160.0, ..action_row }, theme);
 }
@@ -1041,13 +1038,6 @@ fn renderer_label(renderer: RendererKind) -> &'static str {
     match renderer {
         RendererKind::Builtin => "built-in",
         RendererKind::Difftastic => "difftastic",
-    }
-}
-
-fn layout_label(layout: LayoutMode) -> &'static str {
-    match layout {
-        LayoutMode::Unified => "unified",
-        LayoutMode::Split => "split",
     }
 }
 

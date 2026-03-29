@@ -50,17 +50,9 @@ impl<'a> TextInput<'a> {
             theme.colors.border
         };
 
-        frame.scene.rounded_rect(RoundedRectPrimitive {
-            rect,
-            radius: theme.metrics.control_radius,
-            color: fill,
-        });
-        frame.scene.border(BorderPrimitive {
-            rect,
-            width: 1.0,
-            radius: theme.metrics.control_radius,
-            color: border,
-        });
+        let radius = theme.metrics.control_radius;
+        frame.scene.rounded_rect(RoundedRectPrimitive::uniform(rect, radius, fill));
+        frame.scene.border(BorderPrimitive::uniform(rect, 1.0, radius, border));
 
         let label_size = theme.metrics.ui_small_font_size;
         let value_size = theme.metrics.ui_font_size;

@@ -1,3 +1,4 @@
+use crate::ui::palette::{self, Scale};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,153 +139,217 @@ impl Theme {
     }
 
     pub fn default_dark() -> Self {
+        let n = palette::dark_scale(palette::NEUTRAL_HUE, palette::NEUTRAL_CHROMA);
+        let blue = palette::dark_scale(palette::BLUE_HUE, palette::BLUE_CHROMA);
+        let red = palette::dark_scale(palette::RED_HUE, palette::RED_CHROMA);
+        let green = palette::dark_scale(palette::GREEN_HUE, palette::GREEN_CHROMA);
+        let yellow = palette::dark_scale(palette::YELLOW_HUE, palette::YELLOW_CHROMA);
+
         Self {
             mode: ThemeMode::Dark,
             sans_family: default_sans_family(),
             mono_family: default_mono_family(),
-            colors: ThemeColors {
-                app_bg: hex("#171a20"),
-                canvas: hex("#1b1f26"),
-                panel: hex("#20242c"),
-                panel_strong: hex("#262b34"),
-                border_soft: hex("#37404c"),
-                text_strong: hex("#f2f5f8"),
-                accent: hex("#5da9f6"),
-                selection_bg: hex("#30435d"),
-                background: hex("#171a20"),
-                surface: hex("#20242c"),
-                editor_surface: hex("#1b1f26"),
-                elevated_surface: hex("#262b34"),
-                modal_surface: hex("#2a303a"),
-                overlay_scrim: hex("#05070b99"),
-                border: hex("#37404c"),
-                border_variant: hex("#2d343e"),
-                focus_border: hex("#5da9f6"),
-                text: hex("#f2f5f8"),
-                text_muted: hex("#a9b3bf"),
-                text_accent: hex("#8bc3ff"),
-                icon: hex("#bac4cf"),
-                element_background: hex("#2a3039"),
-                element_hover: hex("#313846"),
-                element_active: hex("#384254"),
-                element_selected: hex("#3d5f8a"),
-                ghost_element_hover: hex("#ffffff10"),
-                ghost_element_active: hex("#ffffff18"),
-                ghost_element_selected: hex("#2f3b4f"),
-                title_bar_background: hex("#1b2028"),
-                status_bar_background: hex("#1b2028"),
-                sidebar_background: hex("#1d2129"),
-                sidebar_row_hover: hex("#252b35"),
-                sidebar_row_selected: hex("#30435d"),
-                empty_state_background: hex("#20252e"),
-                empty_state_border: hex("#39414d"),
-                scrollbar_thumb: hex("#4d5866"),
-                status_info: hex("#61afef"),
-                status_warning: hex("#e5c07b"),
-                status_error: hex("#e06c75"),
-                line_add: hex("#24342a"),
-                line_del: hex("#382728"),
-                line_modified: hex("#2b303d"),
-                gutter_bg: hex("#1a1d23"),
-                gutter_text: hex("#7f8893"),
-                file_header_bg: hex("#262b34"),
-                hunk_header_bg: hex("#242f3c"),
-                line_add_text: hex("#a7e3b1"),
-                line_del_text: hex("#f0b2b4"),
-                hover_overlay: hex("#ffffff12"),
-            },
-            metrics: ThemeMetrics {
-                title_bar_height: 40.0,
-                status_bar_height: 28.0,
-                sidebar_width: 320.0,
-                panel_radius: 10.0,
-                control_radius: 8.0,
-                modal_radius: 14.0,
-                spacing_xs: 6.0,
-                spacing_sm: 10.0,
-                spacing_md: 16.0,
-                spacing_lg: 24.0,
-                ui_font_size: 14.0,
-                ui_small_font_size: 12.0,
-                heading_font_size: 17.0,
-                mono_font_size: 13.0,
-            },
+            colors: dark_colors(&n, &blue, &red, &green, &yellow),
+            metrics: default_metrics(),
         }
     }
 
     pub fn default_light() -> Self {
+        let n = palette::light_scale(palette::NEUTRAL_HUE, palette::NEUTRAL_CHROMA);
+        let blue = palette::light_scale(palette::BLUE_HUE, palette::BLUE_CHROMA);
+        let red = palette::light_scale(palette::RED_HUE, palette::RED_CHROMA);
+        let green = palette::light_scale(palette::GREEN_HUE, palette::GREEN_CHROMA);
+        let yellow = palette::light_scale(palette::YELLOW_HUE, palette::YELLOW_CHROMA);
+
         Self {
             mode: ThemeMode::Light,
             sans_family: default_sans_family(),
             mono_family: default_mono_family(),
-            colors: ThemeColors {
-                app_bg: hex("#f3f5f8"),
-                canvas: hex("#fbfcfd"),
-                panel: hex("#ffffff"),
-                panel_strong: hex("#f2f5f8"),
-                border_soft: hex("#c9d2dc"),
-                text_strong: hex("#18212b"),
-                accent: hex("#2d6dd2"),
-                selection_bg: hex("#dce8f8"),
-                background: hex("#f3f5f8"),
-                surface: hex("#ffffff"),
-                editor_surface: hex("#fbfcfd"),
-                elevated_surface: hex("#ffffff"),
-                modal_surface: hex("#ffffff"),
-                overlay_scrim: hex("#0b152033"),
-                border: hex("#c9d2dc"),
-                border_variant: hex("#dde3ea"),
-                focus_border: hex("#2d6dd2"),
-                text: hex("#18212b"),
-                text_muted: hex("#617183"),
-                text_accent: hex("#1f5fba"),
-                icon: hex("#5e6d7e"),
-                element_background: hex("#f2f5f8"),
-                element_hover: hex("#e6edf5"),
-                element_active: hex("#dce6f2"),
-                element_selected: hex("#d2e3fb"),
-                ghost_element_hover: hex("#0000000a"),
-                ghost_element_active: hex("#00000012"),
-                ghost_element_selected: hex("#dbe8f8"),
-                title_bar_background: hex("#eef2f6"),
-                status_bar_background: hex("#eef2f6"),
-                sidebar_background: hex("#f7f9fb"),
-                sidebar_row_hover: hex("#edf2f7"),
-                sidebar_row_selected: hex("#dce8f8"),
-                empty_state_background: hex("#ffffff"),
-                empty_state_border: hex("#d4dde7"),
-                scrollbar_thumb: hex("#b1bcc9"),
-                status_info: hex("#2d6dd2"),
-                status_warning: hex("#b27700"),
-                status_error: hex("#c14953"),
-                line_add: hex("#e9f7ec"),
-                line_del: hex("#fdecec"),
-                line_modified: hex("#eef2fb"),
-                gutter_bg: hex("#eef2f6"),
-                gutter_text: hex("#7a8797"),
-                file_header_bg: hex("#f2f5f8"),
-                hunk_header_bg: hex("#eaf0f8"),
-                line_add_text: hex("#1e7a34"),
-                line_del_text: hex("#b3404b"),
-                hover_overlay: hex("#0000000c"),
-            },
-            metrics: ThemeMetrics {
-                title_bar_height: 40.0,
-                status_bar_height: 28.0,
-                sidebar_width: 320.0,
-                panel_radius: 10.0,
-                control_radius: 8.0,
-                modal_radius: 14.0,
-                spacing_xs: 6.0,
-                spacing_sm: 10.0,
-                spacing_md: 16.0,
-                spacing_lg: 24.0,
-                ui_font_size: 14.0,
-                ui_small_font_size: 12.0,
-                heading_font_size: 17.0,
-                mono_font_size: 13.0,
-            },
+            colors: light_colors(&n, &blue, &red, &green, &yellow),
+            metrics: default_metrics(),
         }
+    }
+}
+
+fn default_metrics() -> ThemeMetrics {
+    ThemeMetrics {
+        title_bar_height: 52.0,
+        status_bar_height: 30.0,
+        sidebar_width: 260.0,
+        panel_radius: 10.0,
+        control_radius: 7.0,
+        modal_radius: 14.0,
+        spacing_xs: 8.0,
+        spacing_sm: 12.0,
+        spacing_md: 20.0,
+        spacing_lg: 28.0,
+        ui_font_size: 13.0,
+        ui_small_font_size: 11.0,
+        heading_font_size: 16.0,
+        mono_font_size: 13.0,
+    }
+}
+
+/// Build dark-mode theme colors from perceptual scales.
+///
+/// Mapping convention — `n` is the 12-step neutral, `b` blue accent,
+/// `r` red, `g` green, `y` yellow. Indices are 0-based (step 1 = [0]).
+fn dark_colors(n: &Scale, b: &Scale, r: &Scale, g: &Scale, y: &Scale) -> ThemeColors {
+    ThemeColors {
+        // Backgrounds (steps 1-4)
+        app_bg:             n[0],
+        canvas:             n[1],
+        panel:              n[2],
+        panel_strong:       n[3],
+        background:         n[0],
+        surface:            n[2],
+        editor_surface:     n[1],
+        elevated_surface:   n[3],
+        modal_surface:      Color::rgba(
+                                n[3].r.saturating_add(6),
+                                n[3].g.saturating_add(6),
+                                n[3].b.saturating_add(6),
+                                255,
+                            ),
+        title_bar_background: n[1],
+        status_bar_background: n[1],
+        sidebar_background: Color::rgba(
+                                n[1].r.saturating_add(3),
+                                n[1].g.saturating_add(3),
+                                n[1].b.saturating_add(3),
+                                255,
+                            ),
+        empty_state_background: n[2],
+        gutter_bg:          n[0],
+        file_header_bg:     n[3],
+        hunk_header_bg:     b[3],
+
+        // Interactive elements (steps 4-7)
+        element_background: n[4],
+        element_hover:      n[5],
+        element_active:     n[6],
+        element_selected:   b[6],
+
+        // Ghost elements (semi-transparent overlays)
+        ghost_element_hover:    Color::rgba(255, 255, 255, 26),  // ~10%
+        ghost_element_active:   Color::rgba(255, 255, 255, 46),  // ~18%
+        ghost_element_selected: b[4],
+        hover_overlay:          Color::rgba(255, 255, 255, 20),  // ~8%
+
+        sidebar_row_hover:    n[4],
+        sidebar_row_selected: b[5],
+
+        // Borders (steps 5-7)
+        border_soft:    n[5],
+        border:         n[5],
+        border_variant: n[4],
+        focus_border:   b[8],
+        empty_state_border: n[5],
+
+        // Text (steps 10-12)
+        text_strong: n[11],
+        text:        n[10],
+        text_muted:  n[9],
+        text_accent: b[9],
+        icon:        n[9],
+        gutter_text: n[8],
+
+        // Accent
+        accent:       b[8],
+        selection_bg: b[5],
+
+        // Overlay
+        overlay_scrim: Color::rgba(0, 0, 0, 170),
+
+        // Scrollbar
+        scrollbar_thumb: n[7],
+
+        // Status indicators (step 9 from each scale)
+        status_info:    b[8],
+        status_warning: y[8],
+        status_error:   r[8],
+
+        // Diff colors — tinted backgrounds from each scale
+        line_add:      g[2],
+        line_del:      r[2],
+        line_modified: b[2],
+        line_add_text: g[8],
+        line_del_text: r[8],
+    }
+}
+
+/// Build light-mode theme colors from perceptual scales.
+fn light_colors(n: &Scale, b: &Scale, r: &Scale, g: &Scale, y: &Scale) -> ThemeColors {
+    ThemeColors {
+        // Backgrounds (steps 1-4 — lightest first)
+        app_bg:             n[0],
+        canvas:             n[1],
+        panel:              n[2],
+        panel_strong:       n[3],
+        background:         n[0],
+        surface:            n[2],
+        editor_surface:     n[1],
+        elevated_surface:   n[2],
+        modal_surface:      n[2],
+        title_bar_background: n[3],
+        status_bar_background: n[3],
+        sidebar_background: n[1],
+        empty_state_background: n[2],
+        gutter_bg:          n[3],
+        file_header_bg:     n[3],
+        hunk_header_bg:     b[2],
+
+        // Interactive elements
+        element_background: n[3],
+        element_hover:      n[4],
+        element_active:     n[5],
+        element_selected:   b[4],
+
+        // Ghost elements (semi-transparent dark overlays)
+        ghost_element_hover:    Color::rgba(0, 0, 0, 15),  // ~6%
+        ghost_element_active:   Color::rgba(0, 0, 0, 31),  // ~12%
+        ghost_element_selected: b[3],
+        hover_overlay:          Color::rgba(0, 0, 0, 20),  // ~8%
+
+        sidebar_row_hover:    n[4],
+        sidebar_row_selected: b[3],
+
+        // Borders
+        border_soft:    n[6],
+        border:         n[6],
+        border_variant: n[5],
+        focus_border:   b[8],
+        empty_state_border: n[6],
+
+        // Text (steps 10-12 — darkest)
+        text_strong: n[11],
+        text:        n[11],
+        text_muted:  n[9],
+        text_accent: b[9],
+        icon:        n[9],
+        gutter_text: n[8],
+
+        // Accent
+        accent:       b[8],
+        selection_bg: b[3],
+
+        // Overlay
+        overlay_scrim: Color::rgba(11, 21, 32, 51),
+
+        // Scrollbar
+        scrollbar_thumb: n[7],
+
+        // Status
+        status_info:    b[8],
+        status_warning: y[8],
+        status_error:   r[8],
+
+        // Diff
+        line_add:      g[2],
+        line_del:      r[2],
+        line_modified: b[2],
+        line_add_text: g[9],
+        line_del_text: r[9],
     }
 }
 
@@ -308,43 +373,46 @@ fn default_mono_family() -> &'static str {
     }
 }
 
-fn hex(value: &str) -> Color {
-    let hex = value.strip_prefix('#').unwrap_or(value);
-    match hex.len() {
-        6 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or_default();
-            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or_default();
-            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or_default();
-            Color::rgba(r, g, b, 255)
-        }
-        8 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or_default();
-            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or_default();
-            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or_default();
-            let a = u8::from_str_radix(&hex[6..8], 16).unwrap_or_default();
-            Color::rgba(r, g, b, a)
-        }
-        _ => Color::default(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Color, Theme, ThemeMode};
+    use super::{Theme, ThemeMode};
 
     #[test]
-    fn default_dark_theme_uses_expected_accent() {
+    fn dark_focus_border_is_blue_accent() {
         let theme = Theme::default_dark();
-        assert_eq!(
-            theme.colors.focus_border,
-            Color::rgba(0x5d, 0xa9, 0xf6, 0xff)
-        );
+        // focus_border comes from blue scale step 9 — should be a vivid blue.
+        let c = theme.colors.focus_border;
+        assert!(c.b > c.r && c.b > c.g, "focus_border should be distinctly blue");
+        assert!(c.a == 255);
     }
 
     #[test]
     fn mode_factory_returns_light_theme() {
         let theme = Theme::for_mode(ThemeMode::Light);
         assert_eq!(theme.mode, ThemeMode::Light);
-        assert_eq!(theme.colors.background, Color::rgba(0xf3, 0xf5, 0xf8, 0xff));
+        // Light background should be very bright.
+        let bg = theme.colors.background;
+        assert!(bg.r > 230 && bg.g > 230 && bg.b > 230);
+    }
+
+    #[test]
+    fn dark_neutral_steps_are_distinguishable() {
+        let theme = Theme::default_dark();
+        // Each surface tier should be brighter than the one below.
+        let tiers = [
+            theme.colors.background,
+            theme.colors.editor_surface,
+            theme.colors.surface,
+            theme.colors.elevated_surface,
+        ];
+        for i in 1..tiers.len() {
+            let prev = tiers[i - 1].r as u16 + tiers[i - 1].g as u16 + tiers[i - 1].b as u16;
+            let curr = tiers[i].r as u16 + tiers[i].g as u16 + tiers[i].b as u16;
+            assert!(
+                curr >= prev,
+                "surface tier {} should be >= tier {} ({} vs {})",
+                i, i - 1, curr, prev,
+            );
+        }
     }
 }

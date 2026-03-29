@@ -14,13 +14,13 @@ impl Sp {
     pub const NONE: f32 = 0.0;
     pub const XXS: f32 = 2.0;
     pub const XS: f32 = 4.0;
-    pub const SM: f32 = 6.0;
-    pub const MD: f32 = 8.0;
-    pub const LG: f32 = 12.0;
-    pub const XL: f32 = 16.0;
-    pub const XXL: f32 = 24.0;
-    pub const XXXL: f32 = 32.0;
-    pub const XXXXL: f32 = 48.0;
+    pub const SM: f32 = 8.0;
+    pub const MD: f32 = 12.0;
+    pub const LG: f32 = 16.0;
+    pub const XL: f32 = 20.0;
+    pub const XXL: f32 = 28.0;
+    pub const XXXL: f32 = 40.0;
+    pub const XXXXL: f32 = 56.0;
 }
 
 // ---------------------------------------------------------------------------
@@ -111,47 +111,86 @@ impl Elevation {
         match self {
             Self::Surface => {}
             Self::Raised => {
+                // Contact shadow (tight, close)
+                frame.scene.shadow(ShadowPrimitive {
+                    rect,
+                    blur_radius: 3.0,
+                    corner_radius: radius,
+                    offset: [0.0, 2.0],
+                    color: Color::rgba(0, 0, 0, 30),
+                });
+                // Ambient shadow (soft spread)
                 frame.scene.shadow(ShadowPrimitive {
                     rect,
                     blur_radius: 18.0,
                     corner_radius: radius,
-                    color: Color::rgba(0, 0, 0, 70),
-                });
-            }
-            Self::Popover => {
-                frame.scene.shadow(ShadowPrimitive {
-                    rect,
-                    blur_radius: 12.0,
-                    corner_radius: radius,
+                    offset: [0.0, 4.0],
                     color: Color::rgba(0, 0, 0, 50),
                 });
             }
+            Self::Popover => {
+                // Contact
+                frame.scene.shadow(ShadowPrimitive {
+                    rect,
+                    blur_radius: 3.0,
+                    corner_radius: radius,
+                    offset: [0.0, 2.0],
+                    color: Color::rgba(0, 0, 0, 25),
+                });
+                // Mid-range
+                frame.scene.shadow(ShadowPrimitive {
+                    rect,
+                    blur_radius: 8.0,
+                    corner_radius: radius,
+                    offset: [0.0, 4.0],
+                    color: Color::rgba(0, 0, 0, 35),
+                });
+                // Ambient
+                frame.scene.shadow(ShadowPrimitive {
+                    rect,
+                    blur_radius: 16.0,
+                    corner_radius: radius,
+                    offset: [0.0, 6.0],
+                    color: Color::rgba(0, 0, 0, 25),
+                });
+            }
             Self::Modal => {
+                // Contact
+                frame.scene.shadow(ShadowPrimitive {
+                    rect,
+                    blur_radius: 3.0,
+                    corner_radius: radius,
+                    offset: [0.0, 2.0],
+                    color: Color::rgba(0, 0, 0, 30),
+                });
+                // Mid-range
+                frame.scene.shadow(ShadowPrimitive {
+                    rect,
+                    blur_radius: 8.0,
+                    corner_radius: radius,
+                    offset: [0.0, 4.0],
+                    color: Color::rgba(0, 0, 0, 20),
+                });
+                // Far ambient
                 frame.scene.shadow(ShadowPrimitive {
                     rect,
                     blur_radius: 24.0,
                     corner_radius: radius,
-                    color: Color::rgba(0, 0, 0, 80),
+                    offset: [0.0, 8.0],
+                    color: Color::rgba(0, 0, 0, 50),
                 });
+                // Accent contour
                 frame.scene.shadow(ShadowPrimitive {
                     rect,
-                    blur_radius: 6.0,
+                    blur_radius: 1.0,
                     corner_radius: radius,
-                    color: Color::rgba(0, 0, 0, 40),
+                    offset: [0.0, 1.0],
+                    color: Color::rgba(0, 0, 0, 15),
                 });
             }
         }
-        frame.scene.rounded_rect(RoundedRectPrimitive {
-            rect,
-            radius,
-            color: fill,
-        });
-        frame.scene.border(BorderPrimitive {
-            rect,
-            width: 1.0,
-            radius,
-            color: border,
-        });
+        frame.scene.rounded_rect(RoundedRectPrimitive::uniform(rect, radius, fill));
+        frame.scene.border(BorderPrimitive::uniform(rect, 1.0, radius, border));
     }
 
     pub fn paint_default(self, frame: &mut UiFrame, rect: Rect, theme: &Theme) {

@@ -300,4 +300,10 @@ pub trait Styled: Sized {
         });
         self
     }
+
+    /// Outer glow — a colored halo around the element (e.g. focus indicator).
+    /// Implemented as a zero-offset shadow with the given color and radius.
+    fn glow(self, color: Color, radius: f32) -> Self {
+        self.shadow(radius, 0.0, color)
+    }
 }

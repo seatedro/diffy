@@ -631,6 +631,27 @@ pub enum BackgroundEffect {
         color_a: Color,
         color_b: Color,
     },
+    /// Radial gradient — `color_a` at center, `color_b` at edge.
+    RadialGradient {
+        color_a: Color,
+        color_b: Color,
+    },
+    /// Animated diagonal shimmer sweep (loading skeleton).
+    /// `speed` controls animation speed (try 1.0–3.0).
+    Shimmer {
+        base: Color,
+        highlight: Color,
+        speed: f32,
+    },
+    /// Edge darkening/tinting. `intensity` controls falloff (try 0.3–0.8).
+    Vignette {
+        color: Color,
+        intensity: f32,
+    },
+    /// Flat semi-transparent color overlay.
+    ColorTint {
+        color: Color,
+    },
 }
 
 /// Convenience: create a noise gradient background effect.
@@ -641,6 +662,26 @@ pub fn noise_gradient(scale: f32, color_a: Color, color_b: Color) -> BackgroundE
 /// Convenience: create a linear gradient background effect.
 pub fn linear_gradient(angle: f32, color_a: Color, color_b: Color) -> BackgroundEffect {
     BackgroundEffect::LinearGradient { angle, color_a, color_b }
+}
+
+/// Convenience: create a radial gradient (center → edge).
+pub fn radial_gradient(center: Color, edge: Color) -> BackgroundEffect {
+    BackgroundEffect::RadialGradient { color_a: center, color_b: edge }
+}
+
+/// Convenience: create an animated shimmer (loading skeleton effect).
+pub fn shimmer(base: Color, highlight: Color, speed: f32) -> BackgroundEffect {
+    BackgroundEffect::Shimmer { base, highlight, speed }
+}
+
+/// Convenience: create a vignette (edge darkening).
+pub fn vignette(color: Color, intensity: f32) -> BackgroundEffect {
+    BackgroundEffect::Vignette { color, intensity }
+}
+
+/// Convenience: create a flat color tint overlay.
+pub fn color_tint(color: Color) -> BackgroundEffect {
+    BackgroundEffect::ColorTint { color }
 }
 
 /// A flexbox container. The core building block.
@@ -890,6 +931,18 @@ impl Element for Div {
                 }
                 BackgroundEffect::LinearGradient { angle, color_a, color_b } => {
                     (EffectType::LinearGradient, [angle, 0.0], color_a, color_b)
+                }
+                BackgroundEffect::RadialGradient { color_a, color_b } => {
+                    (EffectType::RadialGradient, [0.0, 0.0], color_a, color_b)
+                }
+                BackgroundEffect::Shimmer { base, highlight, speed } => {
+                    (EffectType::Shimmer, [speed, 0.0], base, highlight)
+                }
+                BackgroundEffect::Vignette { color, intensity } => {
+                    (EffectType::Vignette, [intensity, 0.0], color, Color::TRANSPARENT)
+                }
+                BackgroundEffect::ColorTint { color } => {
+                    (EffectType::ColorTint, [0.0, 0.0], color, Color::TRANSPARENT)
                 }
             };
             scene.effect_quad(EffectQuadPrimitive {
@@ -2188,5 +2241,127 @@ mod tests {
         } else {
             panic!("expected BlurRegion");
         }
+    }
+
+    #[test]
+    fn radial_gradient_emits_correct_effect_type() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        let mut scene = Scene::default();
+
+        let a = Color::rgba(255, 255, 255, 255);
+        let b = Color::rgba(0, 0, 0, 255);
+
+        let mut root = div()
+            .w(200.0).h(200.0)
+            .bg_effect(radial_gradient(a, b))
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 200.0, 200.0);
+
+        if let crate::render::Primitive::EffectQuad(eq) = &scene.primitives[0] {
+            assert_eq!(eq.effect_type, crate::render::EffectType::RadialGradient);
+        } else {
+            panic!("expected EffectQuad");
+        }
+    }
+
+    #[test]
+    fn shimmer_emits_correct_effect_type() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        let mut scene = Scene::default();
+
+        let base = Color::rgba(40, 40, 40, 255);
+        let highlight = Color::rgba(60, 60, 60, 255);
+
+        let mut root = div()
+            .w(300.0).h(20.0)
+            .bg_effect(shimmer(base, highlight, 2.0))
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 300.0, 20.0);
+
+        if let crate::render::Primitive::EffectQuad(eq) = &scene.primitives[0] {
+            assert_eq!(eq.effect_type, crate::render::EffectType::Shimmer);
+            assert!((eq.params[0] - 2.0).abs() < 0.01, "speed should be 2.0");
+        } else {
+            panic!("expected EffectQuad");
+        }
+    }
+
+    #[test]
+    fn vignette_emits_correct_effect_type() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        let mut scene = Scene::default();
+
+        let dark = Color::rgba(0, 0, 0, 128);
+
+        let mut root = div()
+            .w(800.0).h(600.0)
+            .bg_effect(vignette(dark, 0.5))
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 800.0, 600.0);
+
+        if let crate::render::Primitive::EffectQuad(eq) = &scene.primitives[0] {
+            assert_eq!(eq.effect_type, crate::render::EffectType::Vignette);
+            assert!((eq.params[0] - 0.5).abs() < 0.01, "intensity should be 0.5");
+        } else {
+            panic!("expected EffectQuad");
+        }
+    }
+
+    #[test]
+    fn color_tint_emits_correct_effect_type() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        let mut scene = Scene::default();
+
+        let tint = Color::rgba(0, 100, 255, 80);
+
+        let mut root = div()
+            .w(400.0).h(300.0)
+            .bg_effect(color_tint(tint))
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 400.0, 300.0);
+
+        if let crate::render::Primitive::EffectQuad(eq) = &scene.primitives[0] {
+            assert_eq!(eq.effect_type, crate::render::EffectType::ColorTint);
+            assert_eq!(eq.color_a, tint);
+        } else {
+            panic!("expected EffectQuad");
+        }
+    }
+
+    #[test]
+    fn glow_adds_shadow_with_zero_offset() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        let mut scene = Scene::default();
+
+        let accent = Color::rgba(0, 128, 255, 200);
+
+        let mut root = div()
+            .w(100.0).h(40.0)
+            .rounded(8.0)
+            .bg(Color::rgba(30, 30, 30, 255))
+            .glow(accent, 10.0)
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 100.0, 40.0);
+
+        // Glow should produce a ShadowPrimitive with offset [0, 0].
+        let shadow = scene.primitives.iter().find_map(|p| {
+            if let crate::render::Primitive::Shadow(s) = p { Some(s) } else { None }
+        });
+        assert!(shadow.is_some(), "glow should produce a shadow");
+        let s = shadow.unwrap();
+        assert_eq!(s.color, accent);
+        assert!((s.offset[0]).abs() < 0.01, "glow x offset should be 0");
+        assert!((s.offset[1]).abs() < 0.01, "glow y offset should be 0");
+        assert!((s.blur_radius - 10.0).abs() < 0.1, "blur radius should be 10");
     }
 }

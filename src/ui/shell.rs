@@ -50,22 +50,19 @@ pub fn build_ui_frame(
     let viewport_bounds: Rc<Cell<Option<Rect>>> = Rc::new(Cell::new(None));
     let file_list_bounds: Rc<Cell<Option<Rect>>> = Rc::new(Cell::new(None));
 
-    let gap = theme.metrics.spacing_sm;
-
-    // --- Main content tree ---
     let mut root = div()
         .w(width)
         .h(height)
         .flex_col()
         .bg(theme.colors.background)
-        .p(gap)
-        .gap(gap)
+        .p(4.0)
+        .gap(4.0)
         .child(title_bar(state, theme))
         .child(
             div()
                 .flex_row()
                 .flex_1()
-                .gap(gap)
+                .gap(4.0)
                 .child(sidebar(state, theme, file_list_bounds.clone()))
                 .child(main_surface(state, theme, text_metrics, viewport_bounds.clone())),
         )
@@ -184,17 +181,19 @@ fn title_bar(state: &AppState, theme: &Theme) -> Div {
         .and_then(|name| name.to_str())
         .unwrap_or("diffy");
 
+    let tc = &theme.colors;
+
     let mut bar = div()
         .flex_row()
         .items_center()
-        .h(theme.metrics.title_bar_height)
+        .h_12()
         .w_full()
-        .px(Sp::XL)
-        .bg(theme.colors.title_bar_background)
-        .rounded(theme.metrics.panel_radius)
-        .child(text(repo_label).text_lg().color(theme.colors.text_strong));
+        .px_5()
+        .bg(tc.title_bar_background)
+        .rounded_lg()
+        .border_b(tc.border_variant)
+        .child(text(repo_label).text_lg().color(tc.text_strong));
 
-    // Center: compare summary
     if state.workspace_mode == WorkspaceMode::Ready {
         let summary = format!(
             "{} files  \u{00b7}  {} \u{2192} {}",
@@ -202,47 +201,23 @@ fn title_bar(state: &AppState, theme: &Theme) -> Div {
             state.compare.resolved_left.as_deref().unwrap_or("?"),
             state.compare.resolved_right.as_deref().unwrap_or("?")
         );
-        bar = bar.child(
-            text(summary)
-                .text_sm()
-                .color(theme.colors.text_muted),
-        );
+        bar = bar.child(div().px_4().child(
+            text(summary).text_sm().color(tc.text_muted),
+        ));
     }
 
     bar = bar.child(spacer());
-
-    // Right: toolbar buttons
-    let btn_style = |label: &str, action: Action, selected: bool| -> Div {
-        div()
-            .px(14.0)
-            .py(6.0)
-            .rounded(7.0)
-            .items_center()
-            .justify_center()
-            .when(selected, |d| d.bg(theme.colors.element_background))
-            .when(!selected, |d| d.hover_bg(theme.colors.ghost_element_hover))
-            .on_click(action)
-            .child(text(label).text_sm().color(
-                if selected { theme.colors.text } else { theme.colors.text_muted },
-            ))
-    };
 
     bar = bar.child(
         div()
             .flex_row()
             .items_center()
-            .gap(Sp::SM)
-            .child(btn_style(
-                "Compare",
-                Action::OpenCompareSheet,
-                state.overlays.top() == Some(OverlaySurface::CompareSheet),
-            ))
-            .child(btn_style(
-                "PR",
-                Action::OpenPullRequestModal,
-                state.overlays.top() == Some(OverlaySurface::PullRequestModal),
-            ))
-            .child(div().w(Sp::SM)) // separator
+            .gap_2()
+            .child(ghost_btn("Compare", Action::OpenCompareSheet,
+                state.overlays.top() == Some(OverlaySurface::CompareSheet), theme))
+            .child(ghost_btn("PR", Action::OpenPullRequestModal,
+                state.overlays.top() == Some(OverlaySurface::PullRequestModal), theme))
+            .child(div().w(8.0).h(20.0).border_b(tc.border_variant)) // separator
             .child(segmented_control(
                 &[
                     ("Split", Action::SetLayoutMode(LayoutMode::Split), state.compare.layout == LayoutMode::Split),
@@ -250,11 +225,10 @@ fn title_bar(state: &AppState, theme: &Theme) -> Div {
                 ],
                 theme,
             ))
-            .child(btn_style("Wrap", Action::ToggleWrap, state.viewport.wrap_enabled))
-            .child(btn_style(
+            .child(ghost_btn("Wrap", Action::ToggleWrap, state.viewport.wrap_enabled, theme))
+            .child(ghost_btn(
                 if theme.mode == crate::ui::theme::ThemeMode::Dark { "\u{263e}" } else { "\u{2600}" },
-                Action::ToggleThemeMode,
-                false,
+                Action::ToggleThemeMode, false, theme,
             )),
     );
 
@@ -265,7 +239,8 @@ fn title_bar(state: &AppState, theme: &Theme) -> Div {
 // Sidebar
 // ---------------------------------------------------------------------------
 
-fn sidebar(state: &AppState, theme: &Theme, bounds_cell: Rc<Cell<Option<Rect>>>) -> Div {
+fn sidebar(state: &AppState, theme: &Theme, _bounds_cell: Rc<Cell<Option<Rect>>>) -> Div {
+    let tc = &theme.colors;
     let file_count = state.workspace.files.len();
     let header_text = if file_count > 0 {
         format!("Files  \u{00b7}  {file_count}")
@@ -278,11 +253,14 @@ fn sidebar(state: &AppState, theme: &Theme, bounds_cell: Rc<Cell<Option<Rect>>>)
         .w(theme.metrics.sidebar_width)
         .flex_shrink_0()
         .h_full()
-        .bg(theme.colors.sidebar_background)
-        .rounded(theme.metrics.panel_radius)
-        .p(Sp::MD)
-        .gap(Sp::MD)
-        .child(text(header_text).text_sm().color(theme.colors.text_muted));
+        .bg(tc.sidebar_background)
+        .rounded_lg()
+        .border_b(tc.border_variant)
+        .child(
+            div().px_4().py_3().child(
+                text(header_text).text_xs().color(tc.text_muted),
+            ),
+        );
 
     if state.workspace.files.is_empty() {
         let msg = if state.compare.repo_path.is_some() {
@@ -290,7 +268,7 @@ fn sidebar(state: &AppState, theme: &Theme, bounds_cell: Rc<Cell<Option<Rect>>>)
         } else {
             "Open a repository to start."
         };
-        sidebar = sidebar.child(text(msg).text_sm().color(theme.colors.text_muted));
+        sidebar = sidebar.child(div().px_4().child(text(msg).text_sm().color(tc.text_muted)));
     } else {
         let row_height = state.file_list.row_height;
         let scroll_offset = state.file_list.scroll_offset as f32 * row_height;
@@ -298,6 +276,8 @@ fn sidebar(state: &AppState, theme: &Theme, bounds_cell: Rc<Cell<Option<Rect>>>)
         let mut list = div()
             .flex_1()
             .flex_col()
+            .px(6.0)
+            .gap_1()
             .clip()
             .scroll_y(scroll_offset)
             .on_scroll(ScrollActionBuilder::FileList);
@@ -309,46 +289,27 @@ fn sidebar(state: &AppState, theme: &Theme, bounds_cell: Rc<Cell<Option<Rect>>>)
             list = list.child(
                 div()
                     .w_full()
-                    .h(row_height - 2.0)
+                    .h(row_height)
                     .flex_row()
                     .items_center()
-                    .px(Sp::SM)
-                    .rounded(7.0)
-                    .when(selected, |d| d.bg(theme.colors.sidebar_row_selected))
-                    .when(!selected, |d| d.hover_bg(theme.colors.sidebar_row_hover))
+                    .px_3()
+                    .rounded_md()
+                    .when(selected, |d| d.bg(tc.sidebar_row_selected))
+                    .when(!selected, |d| d.hover_bg(tc.sidebar_row_hover))
                     .on_click(Action::SelectFile(index))
                     .child(
                         div()
                             .flex_1()
                             .flex_col()
-                            .child(text(&file.path).text_sm().color(theme.colors.text))
-                            .child(
-                                text(detail)
-                                    .text_xs()
-                                    .color(theme.colors.text_muted),
-                            ),
+                            .gap(2.0)
+                            .child(text(&file.path).text_sm().color(tc.text))
+                            .child(text(detail).text_xs().color(tc.text_muted)),
                     ),
             );
         }
 
         sidebar = sidebar.child(list);
     }
-
-    // Record sidebar bounds via canvas
-    sidebar = sidebar.child(
-        canvas(move |bounds, _scene, _cx| {
-            // Walk up to get the sidebar's outer bounds from this child's parent.
-            // Actually, the bounds here are this canvas's bounds (0x0).
-            // Use a different approach: record in prepaint.
-        })
-        .w(0.0)
-        .h(0.0),
-    );
-
-    // Better approach: wrap in a canvas that records bounds
-    // Actually, let's use the simpler approach and compute it from layout
-    // The file_list_rect is used for scroll hit testing in app.rs.
-    // We'll set it from the sidebar's known width/position.
 
     sidebar
 }
@@ -360,20 +321,21 @@ fn sidebar(state: &AppState, theme: &Theme, bounds_cell: Rc<Cell<Option<Rect>>>)
 fn main_surface(
     state: &AppState,
     theme: &Theme,
-    text_metrics: TextMetrics,
+    _text_metrics: TextMetrics,
     viewport_bounds: Rc<Cell<Option<Rect>>>,
 ) -> Div {
+    let tc = &theme.colors;
     let mut main = div()
         .flex_1()
         .flex_col()
         .h_full()
-        .bg(theme.colors.editor_surface)
-        .rounded(theme.metrics.panel_radius);
+        .bg(tc.editor_surface)
+        .rounded_lg()
+        .border_b(tc.border_variant);
 
     let has_overlay = state.active_overlay_name().is_some();
     match state.workspace_mode {
         WorkspaceMode::Ready => {
-            // Toolbar
             let file_label = state
                 .workspace
                 .selected_file_path
@@ -381,14 +343,14 @@ fn main_surface(
                 .unwrap_or("No file selected");
             main = main.child(
                 div()
-                    .h(32.0)
-                    .px(Sp::LG)
+                    .h(36.0)
+                    .px_4()
                     .flex_row()
                     .items_center()
-                    .child(text(file_label).text_sm().color(theme.colors.text_muted)),
+                    .border_b(tc.border_variant)
+                    .child(text(file_label).text_sm().color(tc.text_muted)),
             );
 
-            // Viewport placeholder — captures bounds, painted after element tree
             let vb = viewport_bounds.clone();
             main = main.child(
                 canvas(move |bounds, _scene, _cx| {
@@ -410,34 +372,38 @@ fn main_surface(
 }
 
 fn loading_card(state: &AppState, theme: &Theme) -> Div {
+    let tc = &theme.colors;
     div()
         .flex_1()
         .items_center()
         .justify_center()
         .child(
             div()
-                .w(420.0)
-                .p(Sp::XL)
+                .w(440.0)
+                .p_6()
                 .flex_col()
-                .gap(Sp::MD)
-                .bg(theme.colors.elevated_surface)
-                .rounded(theme.metrics.panel_radius)
-                .shadow(12.0, 4.0, Color::rgba(0, 0, 0, 60))
-                .child(text("Comparing repository\u{2026}").text_lg())
+                .gap_3()
+                .bg(tc.elevated_surface)
+                .rounded_xl()
+                .border_b(tc.border)
+                .shadow(16.0, 6.0, Color::rgba(0, 0, 0, 80))
+                .shadow(4.0, 2.0, Color::rgba(0, 0, 0, 40))
+                .child(text("Comparing repository\u{2026}").text_lg().color(tc.text_strong))
                 .child(
                     text(format!(
-                        "{} \u{2022} {} -> {}",
+                        "{} \u{2022} {} \u{2192} {}",
                         compare_mode_label(state.compare.mode),
                         display_ref(&state.compare.left_ref),
                         display_ref(&state.compare.right_ref)
                     ))
                     .text_sm()
-                    .color(theme.colors.text_muted),
+                    .color(tc.text_muted),
                 ),
         )
 }
 
 fn empty_state(state: &AppState, theme: &Theme) -> Div {
+    let tc = &theme.colors;
     let title = if state.compare.repo_path.is_some() {
         "Open compare setup"
     } else {
@@ -449,54 +415,49 @@ fn empty_state(state: &AppState, theme: &Theme) -> Div {
         "Choose a repository, select refs, then open the native diff workspace."
     };
 
-    let mut card = div()
+    div()
         .flex_1()
         .items_center()
         .justify_center()
         .child(
             div()
-                .w(540.0)
-                .p(Sp::XXL)
+                .w(520.0)
+                .p_8()
                 .flex_col()
-                .gap(Sp::MD)
-                .bg(theme.colors.empty_state_background)
-                .border_b(theme.colors.empty_state_border)
-                .rounded(theme.metrics.panel_radius)
-                .child(text(title).text_lg())
-                .child(text(subtitle).text_sm().color(theme.colors.text_muted))
+                .gap_4()
+                .bg(tc.elevated_surface)
+                .rounded_xl()
+                .border_b(tc.border)
+                .shadow(20.0, 8.0, Color::rgba(0, 0, 0, 80))
+                .shadow(4.0, 2.0, Color::rgba(0, 0, 0, 40))
+                .child(text(title).text_lg().color(tc.text_strong))
+                .child(text(subtitle).text_sm().color(tc.text_muted))
                 .child(
                     div()
                         .flex_row()
-                        .gap(Sp::LG)
+                        .gap_3()
+                        .pt(4.0)
                         .child(filled_button("Open Compare", Action::OpenCompareSheet, theme))
                         .child(subtle_button("Folder Dialog", Action::OpenRepositoryDialog, theme)),
                 )
-                .child(text("Recent repositories").text_sm().color(theme.colors.text_muted))
-                .children_from(
-                    state
-                        .settings
-                        .recent_repos
-                        .iter()
-                        .take(4)
-                        .map(|repo| {
+                .child(div().pt(8.0).flex_col().gap_1()
+                    .child(text("Recent repositories").text_xs().color(tc.text_muted))
+                    .children_from(
+                        state.settings.recent_repos.iter().take(4).map(|repo| {
                             div()
                                 .w_full()
-                                .py(4.0)
-                                .hover_bg(theme.colors.ghost_element_hover)
-                                .rounded(4.0)
+                                .py_1()
+                                .px_2()
+                                .rounded_sm()
+                                .hover_bg(tc.ghost_element_hover)
                                 .on_click(Action::OpenRepository(repo.clone()))
                                 .cursor(CursorHint::Pointer)
-                                .child(
-                                    text(repo.display().to_string())
-                                        .text_sm()
-                                        .color(theme.colors.text),
-                                )
+                                .child(text(repo.display().to_string()).text_sm().color(tc.text))
                                 .into_any()
                         }),
+                    ),
                 ),
-        );
-
-    card
+        )
 }
 
 // ---------------------------------------------------------------------------
@@ -504,6 +465,7 @@ fn empty_state(state: &AppState, theme: &Theme) -> Div {
 // ---------------------------------------------------------------------------
 
 fn status_bar(state: &AppState, theme: &Theme) -> Div {
+    let tc = &theme.colors;
     let status_text = async_status_label(state.repository.status);
     let right_text = format!(
         "{}  \u{00b7}  {}",
@@ -516,12 +478,12 @@ fn status_bar(state: &AppState, theme: &Theme) -> Div {
         .items_center()
         .h(theme.metrics.status_bar_height)
         .w_full()
-        .px(Sp::LG)
-        .bg(theme.colors.status_bar_background)
-        .rounded(theme.metrics.panel_radius)
-        .child(text(status_text).text_xs().color(theme.colors.text_muted))
+        .px_4()
+        .bg(tc.status_bar_background)
+        .rounded_lg()
+        .child(text(status_text).text_xs().color(tc.text_muted))
         .child(spacer())
-        .child(text(right_text).text_xs().color(theme.colors.text_muted))
+        .child(text(right_text).text_xs().color(tc.text_muted))
 }
 
 // ---------------------------------------------------------------------------
@@ -830,9 +792,9 @@ fn auth_modal(state: &AppState, theme: &Theme, width: f32, height: f32) -> Div {
 
 fn filled_button(label: &str, action: Action, theme: &Theme) -> Div {
     div()
-        .px(16.0)
-        .py(8.0)
-        .rounded(7.0)
+        .px_4()
+        .py_2()
+        .rounded_md()
         .bg(theme.colors.accent)
         .on_click(action)
         .child(text(label).text_sm().color(theme.colors.text_strong))
@@ -840,33 +802,47 @@ fn filled_button(label: &str, action: Action, theme: &Theme) -> Div {
 
 fn subtle_button(label: &str, action: Action, theme: &Theme) -> Div {
     div()
-        .px(16.0)
-        .py(8.0)
-        .rounded(7.0)
+        .px_4()
+        .py_2()
+        .rounded_md()
         .bg(theme.colors.element_background)
         .hover_bg(theme.colors.element_hover)
         .on_click(action)
         .child(text(label).text_sm().color(theme.colors.text))
 }
 
+fn ghost_btn(label: &str, action: Action, active: bool, theme: &Theme) -> Div {
+    div()
+        .px_3()
+        .py_1()
+        .rounded_md()
+        .when(active, |d| d.bg(theme.colors.element_background))
+        .when(!active, |d| d.hover_bg(theme.colors.ghost_element_hover))
+        .on_click(action)
+        .child(text(label).text_sm().color(
+            if active { theme.colors.text } else { theme.colors.text_muted },
+        ))
+}
+
 fn segmented_control(items: &[(&str, Action, bool)], theme: &Theme) -> Div {
+    let tc = &theme.colors;
     let mut row = div()
         .flex_row()
-        .rounded(7.0)
-        .bg(theme.colors.element_background)
+        .rounded_md()
+        .bg(Color::rgba(0, 0, 0, 40))
         .p(2.0)
-        .gap(2.0);
+        .gap(1.0);
 
     for &(label, ref action, selected) in items {
         row = row.child(
             div()
-                .px(12.0)
-                .py(4.0)
-                .rounded(5.0)
-                .when(selected, |d| d.bg(theme.colors.accent))
+                .px_3()
+                .py_1()
+                .rounded_sm()
+                .when(selected, |d| d.bg(tc.element_background))
                 .on_click(action.clone())
                 .child(text(label).text_xs().color(
-                    if selected { theme.colors.text_strong } else { theme.colors.text_muted },
+                    if selected { tc.text } else { tc.text_muted },
                 )),
         );
     }

@@ -175,19 +175,19 @@ impl Theme {
 
 fn default_metrics() -> ThemeMetrics {
     ThemeMetrics {
-        title_bar_height: 52.0,
-        status_bar_height: 30.0,
-        sidebar_width: 260.0,
-        panel_radius: 10.0,
-        control_radius: 7.0,
-        modal_radius: 14.0,
-        spacing_xs: 8.0,
-        spacing_sm: 12.0,
-        spacing_md: 20.0,
-        spacing_lg: 28.0,
+        title_bar_height: 48.0,
+        status_bar_height: 28.0,
+        sidebar_width: 280.0,
+        panel_radius: 12.0,
+        control_radius: 8.0,
+        modal_radius: 16.0,
+        spacing_xs: 4.0,
+        spacing_sm: 6.0,
+        spacing_md: 12.0,
+        spacing_lg: 16.0,
         ui_font_size: 13.0,
-        ui_small_font_size: 11.0,
-        heading_font_size: 16.0,
+        ui_small_font_size: 12.0,
+        heading_font_size: 15.0,
         mono_font_size: 13.0,
     }
 }
@@ -198,7 +198,8 @@ fn default_metrics() -> ThemeMetrics {
 /// `r` red, `g` green, `y` yellow. Indices are 0-based (step 1 = [0]).
 fn dark_colors(n: &Scale, b: &Scale, r: &Scale, g: &Scale, y: &Scale) -> ThemeColors {
     ThemeColors {
-        // Backgrounds (steps 1-4)
+        // Backgrounds — clear visual hierarchy between layers.
+        // n[0] is the deepest black, n[3] is noticeably lighter.
         app_bg:             n[0],
         canvas:             n[1],
         panel:              n[2],
@@ -207,71 +208,61 @@ fn dark_colors(n: &Scale, b: &Scale, r: &Scale, g: &Scale, y: &Scale) -> ThemeCo
         surface:            n[2],
         editor_surface:     n[1],
         elevated_surface:   n[3],
-        modal_surface:      Color::rgba(
-                                n[3].r.saturating_add(6),
-                                n[3].g.saturating_add(6),
-                                n[3].b.saturating_add(6),
-                                255,
-                            ),
-        title_bar_background: n[1],
+        modal_surface:      n[4],
+        title_bar_background: n[2],     // slightly lifted from bg
         status_bar_background: n[1],
-        sidebar_background: Color::rgba(
-                                n[1].r.saturating_add(3),
-                                n[1].g.saturating_add(3),
-                                n[1].b.saturating_add(3),
-                                255,
-                            ),
+        sidebar_background: n[1],
         empty_state_background: n[2],
         gutter_bg:          n[0],
         file_header_bg:     n[3],
         hunk_header_bg:     b[3],
 
-        // Interactive elements (steps 4-7)
-        element_background: n[4],
-        element_hover:      n[5],
-        element_active:     n[6],
-        element_selected:   b[6],
+        // Interactive elements — clear affordance
+        element_background: n[3],
+        element_hover:      n[4],
+        element_active:     n[5],
+        element_selected:   b[5],
 
         // Ghost elements (semi-transparent overlays)
-        ghost_element_hover:    Color::rgba(255, 255, 255, 26),  // ~10%
-        ghost_element_active:   Color::rgba(255, 255, 255, 46),  // ~18%
+        ghost_element_hover:    Color::rgba(255, 255, 255, 20),
+        ghost_element_active:   Color::rgba(255, 255, 255, 36),
         ghost_element_selected: b[4],
-        hover_overlay:          Color::rgba(255, 255, 255, 20),  // ~8%
+        hover_overlay:          Color::rgba(255, 255, 255, 14),
 
-        sidebar_row_hover:    n[4],
-        sidebar_row_selected: b[5],
+        sidebar_row_hover:    Color::rgba(255, 255, 255, 14),
+        sidebar_row_selected: b[4],
 
-        // Borders (steps 5-7)
-        border_soft:    n[5],
-        border:         n[5],
-        border_variant: n[4],
+        // Borders — subtle but visible separation
+        border_soft:    n[3],
+        border:         n[4],
+        border_variant: n[3],
         focus_border:   b[8],
-        empty_state_border: n[5],
+        empty_state_border: n[4],
 
-        // Text (steps 10-12)
-        text_strong: n[11],
+        // Text — readable hierarchy
+        text_strong: Color::rgba(240, 240, 245, 255),
         text:        n[10],
-        text_muted:  n[9],
+        text_muted:  n[8],
         text_accent: b[9],
         icon:        n[9],
-        gutter_text: n[8],
+        gutter_text: n[7],
 
-        // Accent
+        // Accent — vibrant blue
         accent:       b[8],
-        selection_bg: b[5],
+        selection_bg: b[4],
 
         // Overlay
-        overlay_scrim: Color::rgba(0, 0, 0, 170),
+        overlay_scrim: Color::rgba(0, 0, 0, 180),
 
         // Scrollbar
-        scrollbar_thumb: n[7],
+        scrollbar_thumb: Color::rgba(255, 255, 255, 30),
 
-        // Status indicators (step 9 from each scale)
+        // Status indicators
         status_info:    b[8],
         status_warning: y[8],
         status_error:   r[8],
 
-        // Diff colors — tinted backgrounds from each scale
+        // Diff colors
         line_add:      g[2],
         line_del:      r[2],
         line_modified: b[2],

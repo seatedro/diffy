@@ -161,6 +161,41 @@ pub trait Styled: Sized {
         self
     }
 
+    // -- Tailwind-style spacing shortcuts (4px base grid) --
+
+    fn p_1(self) -> Self { self.p(4.0) }
+    fn p_2(self) -> Self { self.p(8.0) }
+    fn p_3(self) -> Self { self.p(12.0) }
+    fn p_4(self) -> Self { self.p(16.0) }
+    fn p_5(self) -> Self { self.p(20.0) }
+    fn p_6(self) -> Self { self.p(24.0) }
+    fn p_8(self) -> Self { self.p(32.0) }
+
+    fn px_2(self) -> Self { self.px(8.0) }
+    fn px_3(self) -> Self { self.px(12.0) }
+    fn px_4(self) -> Self { self.px(16.0) }
+    fn px_5(self) -> Self { self.px(20.0) }
+    fn px_6(self) -> Self { self.px(24.0) }
+
+    fn py_1(self) -> Self { self.py(4.0) }
+    fn py_2(self) -> Self { self.py(8.0) }
+    fn py_3(self) -> Self { self.py(12.0) }
+
+    fn gap_1(self) -> Self { self.gap(4.0) }
+    fn gap_2(self) -> Self { self.gap(8.0) }
+    fn gap_3(self) -> Self { self.gap(12.0) }
+    fn gap_4(self) -> Self { self.gap(16.0) }
+
+    fn rounded_sm(self) -> Self { self.rounded(6.0) }
+    fn rounded_md(self) -> Self { self.rounded(8.0) }
+    fn rounded_lg(self) -> Self { self.rounded(12.0) }
+    fn rounded_xl(self) -> Self { self.rounded(16.0) }
+
+    fn h_10(self) -> Self { self.h(40.0) }
+    fn h_12(self) -> Self { self.h(48.0) }
+
+    // -- Raw value methods --
+
     fn p(mut self, v: f32) -> Self {
         let l = taffy::LengthPercentage::length(v);
         self.element_style_mut().layout.padding = taffy::Rect {

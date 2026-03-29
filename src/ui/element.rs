@@ -562,51 +562,36 @@ pub fn render_element(
 use crate::render::{
     BorderPrimitive, RoundedRectPrimitive, ShadowPrimitive,
 };
+use crate::ui::style::{ElementStyle, StyleOverride, Styled, apply_override};
 use crate::ui::theme::Color;
 
 /// A flexbox container. The core building block.
 pub struct Div {
-    style: taffy::Style,
+    base_style: ElementStyle,
+    hover_style: Option<StyleOverride>,
     children: Vec<AnyElement>,
-    background: Option<Color>,
-    hover_background: Option<Color>,
-    border_color: Option<Color>,
-    border_width: f32,
-    corner_radius: f32,
-    shadows: Vec<ShadowSpec>,
     on_click: Option<Action>,
     cursor: CursorHint,
-    /// Vertical scroll offset in pixels (positive = scrolled down).
     scroll_y: f32,
-    /// Whether this div clips children to its bounds.
     clips: bool,
-}
-
-struct ShadowSpec {
-    blur_radius: f32,
-    offset: [f32; 2],
-    corner_radius: f32,
-    color: Color,
 }
 
 /// Create a new div element.
 pub fn div() -> Div {
     Div {
-        style: taffy::Style {
-            display: taffy::Display::Flex,
-            ..Default::default()
-        },
+        base_style: ElementStyle::default(),
+        hover_style: None,
         children: Vec::new(),
-        background: None,
-        hover_background: None,
-        border_color: None,
-        border_width: 0.0,
-        corner_radius: 0.0,
-        shadows: Vec::new(),
         on_click: None,
         cursor: CursorHint::Default,
         scroll_y: 0.0,
         clips: false,
+    }
+}
+
+impl Styled for Div {
+    fn element_style_mut(&mut self) -> &mut ElementStyle {
+        &mut self.base_style
     }
 }
 
@@ -623,7 +608,6 @@ impl Div {
         self
     }
 
-    /// Add a child only if the option is Some.
     pub fn optional_child(mut self, child: Option<impl IntoAnyElement>) -> Self {
         if let Some(c) = child {
             self.children.push(c.into_any());
@@ -631,7 +615,6 @@ impl Div {
         self
     }
 
-    /// Map an iterator into children.
     pub fn children_from<I, E>(mut self, iter: I) -> Self
     where
         I: IntoIterator<Item = E>,
@@ -640,174 +623,6 @@ impl Div {
         for item in iter {
             self.children.push(item.into_any());
         }
-        self
-    }
-
-    // -- Layout --
-
-    pub fn flex_row(mut self) -> Self {
-        self.style.flex_direction = taffy::FlexDirection::Row;
-        self
-    }
-
-    pub fn flex_col(mut self) -> Self {
-        self.style.flex_direction = taffy::FlexDirection::Column;
-        self
-    }
-
-    pub fn flex_1(mut self) -> Self {
-        self.style.flex_grow = 1.0;
-        self.style.flex_shrink = 1.0;
-        self.style.flex_basis = taffy::Dimension::percent(0.0);
-        self
-    }
-
-    pub fn flex_grow(mut self) -> Self {
-        self.style.flex_grow = 1.0;
-        self
-    }
-
-    pub fn flex_shrink_0(mut self) -> Self {
-        self.style.flex_shrink = 0.0;
-        self
-    }
-
-    pub fn gap(mut self, v: f32) -> Self {
-        self.style.gap = taffy::Size {
-            width: taffy::LengthPercentage::length(v),
-            height: taffy::LengthPercentage::length(v),
-        };
-        self
-    }
-
-    pub fn gap_x(mut self, v: f32) -> Self {
-        self.style.gap.width = taffy::LengthPercentage::length(v);
-        self
-    }
-
-    pub fn gap_y(mut self, v: f32) -> Self {
-        self.style.gap.height = taffy::LengthPercentage::length(v);
-        self
-    }
-
-    pub fn p(mut self, v: f32) -> Self {
-        let l = taffy::LengthPercentage::length(v);
-        self.style.padding = taffy::Rect { left: l, right: l, top: l, bottom: l };
-        self
-    }
-
-    pub fn px(mut self, v: f32) -> Self {
-        let l = taffy::LengthPercentage::length(v);
-        self.style.padding.left = l;
-        self.style.padding.right = l;
-        self
-    }
-
-    pub fn py(mut self, v: f32) -> Self {
-        let l = taffy::LengthPercentage::length(v);
-        self.style.padding.top = l;
-        self.style.padding.bottom = l;
-        self
-    }
-
-    pub fn w(mut self, v: f32) -> Self {
-        self.style.size.width = taffy::Dimension::length(v);
-        self
-    }
-
-    pub fn h(mut self, v: f32) -> Self {
-        self.style.size.height = taffy::Dimension::length(v);
-        self
-    }
-
-    pub fn w_full(mut self) -> Self {
-        self.style.size.width = taffy::Dimension::percent(1.0);
-        self
-    }
-
-    pub fn h_full(mut self) -> Self {
-        self.style.size.height = taffy::Dimension::percent(1.0);
-        self
-    }
-
-    pub fn min_w(mut self, v: f32) -> Self {
-        self.style.min_size.width = taffy::Dimension::length(v);
-        self
-    }
-
-    pub fn min_h(mut self, v: f32) -> Self {
-        self.style.min_size.height = taffy::Dimension::length(v);
-        self
-    }
-
-    pub fn items_center(mut self) -> Self {
-        self.style.align_items = Some(taffy::AlignItems::Center);
-        self
-    }
-
-    pub fn items_start(mut self) -> Self {
-        self.style.align_items = Some(taffy::AlignItems::FlexStart);
-        self
-    }
-
-    pub fn items_end(mut self) -> Self {
-        self.style.align_items = Some(taffy::AlignItems::FlexEnd);
-        self
-    }
-
-    pub fn justify_center(mut self) -> Self {
-        self.style.justify_content = Some(taffy::JustifyContent::Center);
-        self
-    }
-
-    pub fn justify_between(mut self) -> Self {
-        self.style.justify_content = Some(taffy::JustifyContent::SpaceBetween);
-        self
-    }
-
-    pub fn justify_end(mut self) -> Self {
-        self.style.justify_content = Some(taffy::JustifyContent::FlexEnd);
-        self
-    }
-
-    pub fn overflow_hidden(mut self) -> Self {
-        self.style.overflow = taffy::Point {
-            x: taffy::Overflow::Hidden,
-            y: taffy::Overflow::Hidden,
-        };
-        self
-    }
-
-    pub fn overflow_y_scroll(mut self) -> Self {
-        self.style.overflow.y = taffy::Overflow::Scroll;
-        self
-    }
-
-    // -- Visual --
-
-    pub fn bg(mut self, color: Color) -> Self {
-        self.background = Some(color);
-        self
-    }
-
-    pub fn border_b(mut self, color: Color) -> Self {
-        self.border_color = Some(color);
-        self.border_width = 1.0;
-        self
-    }
-
-    pub fn rounded(mut self, r: f32) -> Self {
-        self.corner_radius = r;
-        self
-    }
-
-    pub fn shadow(mut self, blur: f32, offset_y: f32, color: Color) -> Self {
-        self.shadows.push(ShadowSpec {
-            blur_radius: blur,
-            offset: [0.0, offset_y],
-            corner_radius: self.corner_radius,
-            color,
-        });
         self
     }
 
@@ -824,25 +639,45 @@ impl Div {
         self
     }
 
-    /// Background color shown when the mouse hovers over this element.
-    pub fn hover_bg(mut self, color: Color) -> Self {
-        self.hover_background = Some(color);
+    /// Full style override on hover.
+    pub fn hover(mut self, f: impl FnOnce(StyleOverride) -> StyleOverride) -> Self {
+        self.hover_style = Some(f(StyleOverride::default()));
         self
+    }
+
+    /// Convenience: set only the hover background.
+    pub fn hover_bg(self, color: Color) -> Self {
+        self.hover(|s| s.bg(color))
+    }
+
+    /// Conditionally apply style/config changes.
+    pub fn when(self, condition: bool, f: impl FnOnce(Self) -> Self) -> Self {
+        if condition { f(self) } else { self }
     }
 
     // -- Scroll / clip --
 
-    /// Set the vertical scroll offset (from persistent state).
     pub fn scroll_y(mut self, offset: f32) -> Self {
         self.scroll_y = offset;
         self.clips = true;
         self
     }
 
-    /// Clip children to this div's bounds (no scrolling).
     pub fn clip(mut self) -> Self {
         self.clips = true;
         self
+    }
+
+    // -- Internal: resolve style with overrides --
+
+    fn resolve_style(&self, hovered: bool) -> ElementStyle {
+        let mut resolved = self.base_style.clone();
+        if hovered {
+            if let Some(ref ov) = self.hover_style {
+                apply_override(&mut resolved, ov);
+            }
+        }
+        resolved
     }
 }
 
@@ -867,7 +702,7 @@ impl Element for Div {
             .map(|child| child.request_layout(engine, cx))
             .collect();
 
-        let id = engine.request_layout(self.style.clone(), &child_ids);
+        let id = engine.request_layout(self.base_style.layout.clone(), &child_ids);
         (id, child_ids)
     }
 
@@ -878,14 +713,12 @@ impl Element for Div {
         engine: &LayoutEngine,
         cx: &mut ElementContext,
     ) -> DivPrepaintState {
-        // Register a hitbox if this div is clickable.
-        let hitbox_id = if self.on_click.is_some() {
+        let hitbox_id = if self.on_click.is_some() || self.hover_style.is_some() {
             Some(cx.insert_hitbox(bounds, HitboxBehavior::Normal))
         } else {
             None
         };
 
-        // Prepaint children (with scroll offset if applicable).
         if self.scroll_y != 0.0 {
             for child in &mut self.children {
                 child.prepaint_with_offset(engine, cx, 0.0, -self.scroll_y);
@@ -908,13 +741,14 @@ impl Element for Div {
         scene: &mut Scene,
         cx: &mut ElementContext,
     ) {
-        let r = self.corner_radius;
         let hovered = prepaint_state
             .hitbox_id
             .map_or(false, |id| cx.is_hovered(id));
+        let style = self.resolve_style(hovered);
+        let r = style.corner_radius;
 
         // Shadows
-        for s in &self.shadows {
+        for s in &style.shadows {
             scene.shadow(ShadowPrimitive {
                 rect: bounds,
                 blur_radius: s.blur_radius,
@@ -924,19 +758,14 @@ impl Element for Div {
             });
         }
 
-        // Background (hover overrides normal)
-        let bg = if hovered {
-            self.hover_background.or(self.background)
-        } else {
-            self.background
-        };
-        if let Some(bg) = bg {
+        // Background
+        if let Some(bg) = style.background {
             scene.rounded_rect(RoundedRectPrimitive::uniform(bounds, r, bg));
         }
 
         // Border
-        if let Some(border) = self.border_color {
-            scene.border(BorderPrimitive::uniform(bounds, self.border_width, r, border));
+        if let Some(border) = style.border_color {
+            scene.border(BorderPrimitive::uniform(bounds, style.border_width, r, border));
         }
 
         // Clip + scroll children
@@ -958,7 +787,6 @@ impl Element for Div {
             scene.pop_clip();
         }
 
-        // Register hit region (after children so it's topmost)
         if let Some(action) = self.on_click.take() {
             cx.hits.push(HitRegion {
                 rect: bounds,
@@ -1766,6 +1594,92 @@ mod tests {
 
         if let crate::render::Primitive::RoundedRect(rr) = &scene.primitives[0] {
             assert_eq!(rr.color, blue, "button bg should be blue");
+        }
+    }
+
+    #[test]
+    fn hover_style_override_changes_border() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = ElementContext::new(
+            Box::leak(Box::new(Theme::default_dark())),
+            1.0,
+            &mut font_system,
+            Some((100.0, 25.0)), // inside
+        );
+        let mut scene = Scene::default();
+
+        let red = Color::rgba(255, 0, 0, 255);
+        let blue = Color::rgba(0, 0, 255, 255);
+        let green = Color::rgba(0, 255, 0, 255);
+
+        let mut root = div()
+            .w(200.0)
+            .h(50.0)
+            .bg(red)
+            .border_b(blue)
+            .hover(|s| s.bg(green).border_color(green))
+            .on_click(Action::Bootstrap)
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 200.0, 50.0);
+
+        // Should use green bg and green border (hover override)
+        let bg = scene.primitives.iter().find_map(|p| {
+            if let crate::render::Primitive::RoundedRect(rr) = p { Some(rr) } else { None }
+        }).unwrap();
+        assert_eq!(bg.color, green, "hover should override bg to green");
+
+        let border = scene.primitives.iter().find_map(|p| {
+            if let crate::render::Primitive::Border(b) = p { Some(b) } else { None }
+        }).unwrap();
+        assert_eq!(border.color, green, "hover should override border to green");
+    }
+
+    #[test]
+    fn when_conditional_applies() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        let mut scene = Scene::default();
+
+        let red = Color::rgba(255, 0, 0, 255);
+        let blue = Color::rgba(0, 0, 255, 255);
+
+        // .when(true, ...) should apply
+        let mut root = div()
+            .w(100.0)
+            .h(50.0)
+            .bg(red)
+            .when(true, |d| d.bg(blue))
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 100.0, 50.0);
+
+        if let crate::render::Primitive::RoundedRect(rr) = &scene.primitives[0] {
+            assert_eq!(rr.color, blue, "when(true) should apply bg override");
+        }
+    }
+
+    #[test]
+    fn when_conditional_skips() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        let mut scene = Scene::default();
+
+        let red = Color::rgba(255, 0, 0, 255);
+        let blue = Color::rgba(0, 0, 255, 255);
+
+        // .when(false, ...) should NOT apply
+        let mut root = div()
+            .w(100.0)
+            .h(50.0)
+            .bg(red)
+            .when(false, |d| d.bg(blue))
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 100.0, 50.0);
+
+        if let crate::render::Primitive::RoundedRect(rr) = &scene.primitives[0] {
+            assert_eq!(rr.color, red, "when(false) should keep original bg");
         }
     }
 }

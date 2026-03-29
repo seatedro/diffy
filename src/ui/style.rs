@@ -369,4 +369,50 @@ pub trait Styled: Sized {
         self.element_style_mut().z_index = z;
         self
     }
+
+    fn absolute(mut self) -> Self {
+        self.element_style_mut().layout.position = taffy::Position::Absolute;
+        self
+    }
+
+    fn top(mut self, v: f32) -> Self {
+        self.element_style_mut().layout.inset.top = taffy::LengthPercentageAuto::length(v);
+        self
+    }
+
+    fn bottom(mut self, v: f32) -> Self {
+        self.element_style_mut().layout.inset.bottom = taffy::LengthPercentageAuto::length(v);
+        self
+    }
+
+    fn left(mut self, v: f32) -> Self {
+        self.element_style_mut().layout.inset.left = taffy::LengthPercentageAuto::length(v);
+        self
+    }
+
+    fn right(mut self, v: f32) -> Self {
+        self.element_style_mut().layout.inset.right = taffy::LengthPercentageAuto::length(v);
+        self
+    }
+
+    fn inset(mut self, v: f32) -> Self {
+        let l = taffy::LengthPercentageAuto::length(v);
+        self.element_style_mut().layout.inset = taffy::Rect { left: l, right: l, top: l, bottom: l };
+        self
+    }
+
+    fn max_w(mut self, v: f32) -> Self {
+        self.element_style_mut().layout.max_size.width = taffy::Dimension::length(v);
+        self
+    }
+
+    fn max_h(mut self, v: f32) -> Self {
+        self.element_style_mut().layout.max_size.height = taffy::Dimension::length(v);
+        self
+    }
+
+    fn flex_wrap(mut self) -> Self {
+        self.element_style_mut().layout.flex_wrap = taffy::FlexWrap::Wrap;
+        self
+    }
 }

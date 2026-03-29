@@ -109,6 +109,10 @@ impl Scene {
         self.push(Primitive::RichTextRun(text));
     }
 
+    pub fn blur_region(&mut self, blur: BlurRegionPrimitive) {
+        self.push(Primitive::BlurRegion(blur));
+    }
+
     pub fn effect_quad(&mut self, effect: EffectQuadPrimitive) {
         self.push(Primitive::EffectQuad(effect));
     }
@@ -136,6 +140,10 @@ pub enum Primitive {
     RichTextRun(RichTextPrimitive),
     Icon(IconPrimitive),
     EffectQuad(EffectQuadPrimitive),
+    /// Start a frosted-glass blur region. Content rendered before this
+    /// primitive (within the given bounds) will be blurred and composited
+    /// as a backdrop before children are painted on top.
+    BlurRegion(BlurRegionPrimitive),
     ClipStart(ClipPrimitive),
     ClipEnd,
     LayerBoundary,
@@ -235,6 +243,13 @@ pub struct ClipPrimitive {
 // ---------------------------------------------------------------------------
 // EffectQuad — procedural background (GPU-computed per-pixel)
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct BlurRegionPrimitive {
+    pub rect: Rect,
+    pub blur_radius: f32,
+    pub corner_radius: f32,
+}
 
 /// Effect type for procedural background quads.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

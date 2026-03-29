@@ -7,7 +7,7 @@
 //! 2. **prepaint** — register hitboxes, resolve interaction state.
 //! 3. **paint** — emit scene primitives using resolved hover/hit state.
 
-use crate::render::scene::{EffectQuadPrimitive, EffectType, Rect};
+use crate::render::scene::{BlurRegionPrimitive, EffectQuadPrimitive, EffectType, Rect};
 use crate::render::Scene;
 use crate::ui::actions::Action;
 use crate::ui::shell::CursorHint;
@@ -648,6 +648,7 @@ pub struct Div {
     base_style: ElementStyle,
     hover_style: Option<StyleOverride>,
     bg_effect: Option<BackgroundEffect>,
+    blur_radius: Option<f32>,
     children: Vec<AnyElement>,
     on_click: Option<Action>,
     on_scroll: Option<ScrollActionBuilder>,
@@ -662,6 +663,7 @@ pub fn div() -> Div {
         base_style: ElementStyle::default(),
         hover_style: None,
         bg_effect: None,
+        blur_radius: None,
         children: Vec::new(),
         on_click: None,
         on_scroll: None,
@@ -764,6 +766,14 @@ impl Div {
         self
     }
 
+    /// Apply a frosted-glass Gaussian blur backdrop to this div.
+    /// Everything rendered behind this div will be blurred within its bounds.
+    /// Typical radius: 8–20 pixels.
+    pub fn blur(mut self, radius: f32) -> Self {
+        self.blur_radius = Some(radius);
+        self
+    }
+
     // -- Internal: resolve style with overrides --
 
     fn resolve_style(&self, hovered: bool) -> ElementStyle {
@@ -850,6 +860,16 @@ impl Element for Div {
             .map_or(false, |id| cx.is_hovered(id));
         let style = self.resolve_style(hovered);
         let r = style.corner_radius;
+
+        // Blur backdrop (must come before shadows/bg so the renderer
+        // captures everything drawn prior to this element).
+        if let Some(radius) = self.blur_radius {
+            scene.blur_region(BlurRegionPrimitive {
+                rect: bounds,
+                blur_radius: radius,
+                corner_radius: r,
+            });
+        }
 
         // Shadows
         for s in &style.shadows {
@@ -2125,5 +2145,48 @@ mod tests {
 
         assert_eq!(effect_count, 1, "effect should be emitted");
         assert_eq!(rr_count, 0, "solid bg should not be emitted when effect is set");
+    }
+
+    #[test]
+    fn blur_emits_blur_region_primitive() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        let mut scene = Scene::default();
+
+        let red = Color::rgba(255, 0, 0, 255);
+
+        let mut root = div()
+            .w(400.0)
+            .h(300.0)
+            .blur(12.0)
+            .bg(red)
+            .rounded(14.0)
+            .child(text("Frosted glass"))
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 400.0, 300.0);
+
+        // Should have a BlurRegion primitive before the background.
+        let blur_count = scene.primitives.iter().filter(|p| {
+            matches!(p, crate::render::Primitive::BlurRegion(_))
+        }).count();
+        assert_eq!(blur_count, 1, "should emit one blur region");
+
+        // The BlurRegion should come before the RoundedRect (background).
+        let blur_idx = scene.primitives.iter().position(|p| {
+            matches!(p, crate::render::Primitive::BlurRegion(_))
+        }).unwrap();
+        let bg_idx = scene.primitives.iter().position(|p| {
+            matches!(p, crate::render::Primitive::RoundedRect(_))
+        }).unwrap();
+        assert!(blur_idx < bg_idx, "blur should precede background");
+
+        if let crate::render::Primitive::BlurRegion(br) = &scene.primitives[blur_idx] {
+            assert!((br.blur_radius - 12.0).abs() < 0.1);
+            assert!((br.corner_radius - 14.0).abs() < 0.1);
+            assert!((br.rect.width - 400.0).abs() < 1.0);
+        } else {
+            panic!("expected BlurRegion");
+        }
     }
 }

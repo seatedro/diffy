@@ -102,10 +102,9 @@ pub struct ElementContext<'a> {
     pub mouse_position: Option<(f32, f32)>,
     pub hits: Vec<HitRegion>,
     pub scroll_regions: Vec<ScrollRegion>,
-    /// The current focus target (from persistent app state).
     pub focus: Option<crate::ui::state::FocusTarget>,
-    /// Reactive signal store — persists across frames.
     pub signal_store: &'a mut SignalStore,
+    pub clock_ms: u64,
     hitboxes: Vec<Hitbox>,
     hovered_hitboxes: Vec<HitboxId>,
     next_hitbox_id: usize,
@@ -129,6 +128,7 @@ impl<'a> ElementContext<'a> {
             scroll_regions: Vec::new(),
             focus: None,
             signal_store,
+            clock_ms: 0,
             hitboxes: Vec::new(),
             hovered_hitboxes: Vec::new(),
             next_hitbox_id: 0,
@@ -163,6 +163,11 @@ impl<'a> ElementContext<'a> {
 
     pub fn with_focus(mut self, focus: Option<crate::ui::state::FocusTarget>) -> Self {
         self.focus = focus;
+        self
+    }
+
+    pub fn with_clock(mut self, clock_ms: u64) -> Self {
+        self.clock_ms = clock_ms;
         self
     }
 
@@ -745,6 +750,7 @@ pub struct Div {
     scroll_y: f32,
     scroll_total_height: f32,
     clips: bool,
+    focus_target: Option<crate::ui::state::FocusTarget>,
 }
 
 /// Create a new div element.
@@ -761,6 +767,7 @@ pub fn div() -> Div {
         scroll_y: 0.0,
         scroll_total_height: 0.0,
         clips: false,
+        focus_target: None,
     }
 }
 
@@ -849,6 +856,12 @@ impl Div {
         self.scroll_total_height = total_height;
         self
     }
+
+    pub fn focus_ring(mut self, target: crate::ui::state::FocusTarget) -> Self {
+        self.focus_target = Some(target);
+        self
+    }
+
 
     pub fn clip(mut self) -> Self {
         self.clips = true;
@@ -1038,6 +1051,24 @@ impl Element for Div {
                     widths: style.border_widths,
                     corner_radii: [r; 4],
                     color: border,
+                });
+            }
+        }
+
+        if let Some(target) = self.focus_target {
+            if cx.is_focused(target) {
+                let ring_inset = -2.0;
+                let ring_bounds = Rect {
+                    x: bounds.x + ring_inset,
+                    y: bounds.y + ring_inset,
+                    width: bounds.width - ring_inset * 2.0,
+                    height: bounds.height - ring_inset * 2.0,
+                };
+                scene.border(BorderPrimitive {
+                    rect: ring_bounds,
+                    widths: [2.0; 4],
+                    corner_radii: [(r + 2.0); 4],
+                    color: cx.theme.colors.focus_border,
                 });
             }
         }

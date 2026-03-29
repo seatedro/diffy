@@ -180,7 +180,8 @@ impl NativeApp {
             self.mouse_position,
             &mut self.signal_store,
         )
-        .with_focus(self.state.focus.current);
+        .with_focus(self.state.focus.current)
+        .with_clock(self.state.clock_ms);
 
         build_ui_frame(
             &mut self.state,

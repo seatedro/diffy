@@ -589,6 +589,149 @@ impl Element for Spacer {
 }
 
 // ---------------------------------------------------------------------------
+// TextElement — text with intrinsic sizing
+// ---------------------------------------------------------------------------
+
+use crate::render::{FontKind, TextPrimitive};
+
+pub struct TextElement {
+    content: String,
+    font_size: f32,
+    line_height_factor: f32,
+    color: Option<Color>,
+    font_kind: FontKind,
+    /// If set, use this fixed width per character (monospace fast path).
+    mono_char_width: Option<f32>,
+}
+
+/// Create a text element. Inherits font size from the theme by default.
+pub fn text(content: impl Into<String>) -> TextElement {
+    TextElement {
+        content: content.into(),
+        font_size: 0.0, // 0 = use theme default
+        line_height_factor: 1.5,
+        color: None,
+        font_kind: FontKind::Ui,
+        mono_char_width: None,
+    }
+}
+
+impl TextElement {
+    pub fn size(mut self, size: f32) -> Self {
+        self.font_size = size;
+        self
+    }
+
+    pub fn text_sm(mut self) -> Self {
+        self.font_size = -1.0; // sentinel: use ui_small_font_size
+        self
+    }
+
+    pub fn text_xs(mut self) -> Self {
+        self.font_size = -2.0; // sentinel: use caption size
+        self
+    }
+
+    pub fn text_lg(mut self) -> Self {
+        self.font_size = -3.0; // sentinel: use heading_font_size
+        self
+    }
+
+    pub fn color(mut self, color: Color) -> Self {
+        self.color = Some(color);
+        self
+    }
+
+    pub fn mono(mut self) -> Self {
+        self.font_kind = FontKind::Mono;
+        self
+    }
+
+    pub fn line_height(mut self, factor: f32) -> Self {
+        self.line_height_factor = factor;
+        self
+    }
+
+    fn resolve_font_size(&self, theme: &Theme) -> f32 {
+        match self.font_size.to_bits() {
+            x if self.font_size > 0.0 => self.font_size,
+            _ if self.font_size == -1.0 => theme.metrics.ui_small_font_size,
+            _ if self.font_size == -2.0 => theme.metrics.ui_small_font_size - 1.0,
+            _ if self.font_size == -3.0 => theme.metrics.heading_font_size,
+            _ => theme.metrics.ui_font_size, // 0 or anything else
+        }
+    }
+}
+
+impl Element for TextElement {
+    type LayoutState = (f32, f32); // (resolved_font_size, line_height)
+
+    fn request_layout(
+        &mut self,
+        engine: &mut LayoutEngine,
+        cx: &mut ElementContext,
+    ) -> (LayoutId, Self::LayoutState) {
+        let font_size = self.resolve_font_size(cx.theme);
+        let line_height = font_size * self.line_height_factor;
+
+        // Approximate text width. For UI text, a rough per-character width
+        // based on font size is sufficient for layout purposes.
+        let char_width = if self.font_kind == FontKind::Mono {
+            self.mono_char_width.unwrap_or(font_size * 0.6)
+        } else {
+            font_size * 0.55 // proportional approximation
+        };
+        let text_width = self.content.len() as f32 * char_width;
+
+        let id = engine.request_layout(
+            taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::length(text_width),
+                    height: taffy::Dimension::length(line_height),
+                },
+                flex_shrink: 1.0,
+                ..Default::default()
+            },
+            &[],
+        );
+        (id, (font_size, line_height))
+    }
+
+    fn paint(
+        &mut self,
+        bounds: Bounds,
+        state: &mut (f32, f32),
+        _engine: &LayoutEngine,
+        scene: &mut Scene,
+        cx: &mut ElementContext,
+    ) {
+        let (font_size, _line_height) = *state;
+        let color = self.color.unwrap_or(cx.theme.colors.text);
+
+        scene.text(TextPrimitive {
+            rect: bounds,
+            text: std::mem::take(&mut self.content),
+            color,
+            font_size,
+            font_kind: self.font_kind,
+        });
+    }
+}
+
+/// Allow `"string literal"` as a child element directly.
+impl IntoAnyElement for &str {
+    fn into_any(self) -> AnyElement {
+        AnyElement::new(text(self))
+    }
+}
+
+impl IntoAnyElement for String {
+    fn into_any(self) -> AnyElement {
+        AnyElement::new(text(self))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -676,5 +819,65 @@ mod tests {
         assert!((inner_bounds.y - padding).abs() < 1.0,
             "inner y={} should be near padding={}", inner_bounds.y, padding);
         assert!((inner_bounds.width - inner_w).abs() < 1.0);
+    }
+
+    #[test]
+    fn text_element_emits_text_primitive() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        let mut scene = Scene::default();
+
+        let mut root = div()
+            .w(400.0)
+            .h(50.0)
+            .child(text("Hello world").size(14.0).color(Color::rgba(255, 255, 255, 255)))
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 400.0, 50.0);
+
+        // Should have exactly one text primitive.
+        let text_count = scene.primitives.iter().filter(|p| {
+            matches!(p, crate::render::Primitive::TextRun(_))
+        }).count();
+        assert_eq!(text_count, 1);
+    }
+
+    #[test]
+    fn string_as_child_works() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        let mut scene = Scene::default();
+
+        let mut root = div()
+            .w(300.0)
+            .h(40.0)
+            .child("bare string child")
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 300.0, 40.0);
+
+        let text_count = scene.primitives.iter().filter(|p| {
+            matches!(p, crate::render::Primitive::TextRun(_))
+        }).count();
+        assert_eq!(text_count, 1);
+    }
+
+    #[test]
+    fn text_element_has_intrinsic_width() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+
+        let mut engine = LayoutEngine::new();
+        let mut txt = text("ABCDE").size(10.0);
+        let (id, _) = txt.request_layout(&mut engine, &mut cx);
+        engine.compute_layout(id, 999.0, 999.0);
+
+        let bounds = engine.layout_bounds(id);
+        // 5 chars * 10.0 * 0.55 = 27.5
+        assert!(bounds.width > 20.0 && bounds.width < 40.0,
+            "text width {} should be roughly 27.5", bounds.width);
+        // line height = 10.0 * 1.5 = 15.0
+        assert!((bounds.height - 15.0).abs() < 1.0,
+            "text height {} should be ~15.0", bounds.height);
     }
 }

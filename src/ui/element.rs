@@ -7,7 +7,7 @@
 //! 2. **prepaint** — register hitboxes, resolve interaction state.
 //! 3. **paint** — emit scene primitives using resolved hover/hit state.
 
-use crate::render::scene::Rect;
+use crate::render::scene::{EffectQuadPrimitive, EffectType, Rect};
 use crate::render::Scene;
 use crate::ui::actions::Action;
 use crate::ui::shell::CursorHint;
@@ -610,10 +610,44 @@ use crate::render::{
 use crate::ui::style::{ElementStyle, StyleOverride, Styled, apply_override};
 use crate::ui::theme::Color;
 
+// ---------------------------------------------------------------------------
+// BackgroundEffect — procedural GPU-computed backgrounds
+// ---------------------------------------------------------------------------
+
+/// A procedural background effect rendered by the GPU effect shader.
+#[derive(Debug, Clone, Copy)]
+pub enum BackgroundEffect {
+    /// Simplex noise blended between two colors. `scale` controls noise
+    /// frequency (try 0.01–0.05 for subtle, 0.1+ for coarse).
+    NoiseGradient {
+        scale: f32,
+        color_a: Color,
+        color_b: Color,
+    },
+    /// Linear gradient between two colors at the given angle (radians).
+    /// 0 = left→right, π/2 = top→bottom.
+    LinearGradient {
+        angle: f32,
+        color_a: Color,
+        color_b: Color,
+    },
+}
+
+/// Convenience: create a noise gradient background effect.
+pub fn noise_gradient(scale: f32, color_a: Color, color_b: Color) -> BackgroundEffect {
+    BackgroundEffect::NoiseGradient { scale, color_a, color_b }
+}
+
+/// Convenience: create a linear gradient background effect.
+pub fn linear_gradient(angle: f32, color_a: Color, color_b: Color) -> BackgroundEffect {
+    BackgroundEffect::LinearGradient { angle, color_a, color_b }
+}
+
 /// A flexbox container. The core building block.
 pub struct Div {
     base_style: ElementStyle,
     hover_style: Option<StyleOverride>,
+    bg_effect: Option<BackgroundEffect>,
     children: Vec<AnyElement>,
     on_click: Option<Action>,
     on_scroll: Option<ScrollActionBuilder>,
@@ -627,6 +661,7 @@ pub fn div() -> Div {
     Div {
         base_style: ElementStyle::default(),
         hover_style: None,
+        bg_effect: None,
         children: Vec::new(),
         on_click: None,
         on_scroll: None,
@@ -719,6 +754,13 @@ impl Div {
 
     pub fn clip(mut self) -> Self {
         self.clips = true;
+        self
+    }
+
+    /// Set a procedural GPU background effect (noise gradient, linear gradient).
+    /// This replaces the solid `bg()` color for the background pass.
+    pub fn bg_effect(mut self, effect: BackgroundEffect) -> Self {
+        self.bg_effect = Some(effect);
         self
     }
 
@@ -820,8 +862,25 @@ impl Element for Div {
             });
         }
 
-        // Background
-        if let Some(bg) = style.background {
+        // Background — effect quad takes priority over solid color.
+        if let Some(effect) = self.bg_effect {
+            let (effect_type, params, color_a, color_b) = match effect {
+                BackgroundEffect::NoiseGradient { scale, color_a, color_b } => {
+                    (EffectType::NoiseGradient, [scale, 0.0], color_a, color_b)
+                }
+                BackgroundEffect::LinearGradient { angle, color_a, color_b } => {
+                    (EffectType::LinearGradient, [angle, 0.0], color_a, color_b)
+                }
+            };
+            scene.effect_quad(EffectQuadPrimitive {
+                rect: bounds,
+                effect_type,
+                color_a,
+                color_b,
+                params,
+                corner_radius: r,
+            });
+        } else if let Some(bg) = style.background {
             scene.rounded_rect(RoundedRectPrimitive::uniform(bounds, r, bg));
         }
 
@@ -1965,5 +2024,106 @@ mod tests {
         if let crate::render::Primitive::RoundedRect(rr) = &scene.primitives[0] {
             assert_eq!(rr.color, red, "when(false) should keep original bg");
         }
+    }
+
+    #[test]
+    fn bg_effect_noise_gradient_emits_effect_quad() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        let mut scene = Scene::default();
+
+        let a = Color::rgba(255, 0, 0, 255);
+        let b = Color::rgba(0, 0, 255, 255);
+
+        let mut root = div()
+            .w(300.0)
+            .h(200.0)
+            .rounded(10.0)
+            .bg_effect(noise_gradient(0.02, a, b))
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 300.0, 200.0);
+
+        let effect_count = scene.primitives.iter().filter(|p| {
+            matches!(p, crate::render::Primitive::EffectQuad(_))
+        }).count();
+        assert_eq!(effect_count, 1, "should emit one effect quad");
+
+        // Should NOT emit a RoundedRect bg (effect replaces it).
+        let rr_count = scene.primitives.iter().filter(|p| {
+            matches!(p, crate::render::Primitive::RoundedRect(_))
+        }).count();
+        assert_eq!(rr_count, 0, "effect should replace solid bg");
+
+        if let crate::render::Primitive::EffectQuad(eq) = &scene.primitives[0] {
+            assert_eq!(eq.effect_type, crate::render::EffectType::NoiseGradient);
+            assert_eq!(eq.color_a, a);
+            assert_eq!(eq.color_b, b);
+            assert!((eq.params[0] - 0.02).abs() < 0.001);
+            assert!((eq.corner_radius - 10.0).abs() < 0.1);
+        } else {
+            panic!("expected EffectQuad primitive");
+        }
+    }
+
+    #[test]
+    fn bg_effect_linear_gradient_emits_effect_quad() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        let mut scene = Scene::default();
+
+        let a = Color::rgba(0, 255, 0, 255);
+        let b = Color::rgba(255, 255, 0, 255);
+        let angle = std::f32::consts::FRAC_PI_2;
+
+        let mut root = div()
+            .w(200.0)
+            .h(100.0)
+            .bg_effect(linear_gradient(angle, a, b))
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 200.0, 100.0);
+
+        let effect_count = scene.primitives.iter().filter(|p| {
+            matches!(p, crate::render::Primitive::EffectQuad(_))
+        }).count();
+        assert_eq!(effect_count, 1);
+
+        if let crate::render::Primitive::EffectQuad(eq) = &scene.primitives[0] {
+            assert_eq!(eq.effect_type, crate::render::EffectType::LinearGradient);
+            assert!((eq.params[0] - angle).abs() < 0.001);
+        } else {
+            panic!("expected EffectQuad primitive");
+        }
+    }
+
+    #[test]
+    fn bg_effect_replaces_solid_bg() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        let mut scene = Scene::default();
+
+        let red = Color::rgba(255, 0, 0, 255);
+        let blue = Color::rgba(0, 0, 255, 255);
+
+        // Setting both bg() and bg_effect() — effect should win.
+        let mut root = div()
+            .w(100.0)
+            .h(100.0)
+            .bg(red)
+            .bg_effect(linear_gradient(0.0, red, blue))
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 100.0, 100.0);
+
+        let effect_count = scene.primitives.iter().filter(|p| {
+            matches!(p, crate::render::Primitive::EffectQuad(_))
+        }).count();
+        let rr_count = scene.primitives.iter().filter(|p| {
+            matches!(p, crate::render::Primitive::RoundedRect(_))
+        }).count();
+
+        assert_eq!(effect_count, 1, "effect should be emitted");
+        assert_eq!(rr_count, 0, "solid bg should not be emitted when effect is set");
     }
 }

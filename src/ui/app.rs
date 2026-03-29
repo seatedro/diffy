@@ -496,7 +496,8 @@ impl ApplicationHandler for NativeApp {
                 let frame = self.build_frame();
                 self.ui_frame = frame;
                 if let Some(renderer) = self.renderer.as_mut() {
-                    match renderer.render(&self.ui_frame.scene) {
+                    let time_seconds = self.launch_at.elapsed().as_secs_f32();
+                    match renderer.render(&self.ui_frame.scene, time_seconds) {
                         Ok(frame) => {
                             self.state.debug.last_scene_primitive_count = frame.primitive_count;
                             self.state.debug.last_frame_time_us = frame_started_at

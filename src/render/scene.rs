@@ -109,6 +109,10 @@ impl Scene {
         self.push(Primitive::RichTextRun(text));
     }
 
+    pub fn effect_quad(&mut self, effect: EffectQuadPrimitive) {
+        self.push(Primitive::EffectQuad(effect));
+    }
+
     pub fn clip(&mut self, rect: Rect) {
         self.push(Primitive::ClipStart(ClipPrimitive { rect }));
     }
@@ -131,6 +135,7 @@ pub enum Primitive {
     TextRun(TextPrimitive),
     RichTextRun(RichTextPrimitive),
     Icon(IconPrimitive),
+    EffectQuad(EffectQuadPrimitive),
     ClipStart(ClipPrimitive),
     ClipEnd,
     LayerBoundary,
@@ -225,4 +230,32 @@ pub struct IconPrimitive {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ClipPrimitive {
     pub rect: Rect,
+}
+
+// ---------------------------------------------------------------------------
+// EffectQuad — procedural background (GPU-computed per-pixel)
+// ---------------------------------------------------------------------------
+
+/// Effect type for procedural background quads.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(u32)]
+pub enum EffectType {
+    /// Simplex noise blended between two colors.
+    #[default]
+    NoiseGradient = 0,
+    /// Linear gradient with configurable angle.
+    LinearGradient = 1,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct EffectQuadPrimitive {
+    pub rect: Rect,
+    pub effect_type: EffectType,
+    pub color_a: Color,
+    pub color_b: Color,
+    /// Effect-specific parameters: [param1, param2].
+    /// - NoiseGradient: [scale, 0.0]
+    /// - LinearGradient: [angle_radians, 0.0]
+    pub params: [f32; 2],
+    pub corner_radius: f32,
 }

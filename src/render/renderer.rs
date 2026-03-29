@@ -67,6 +67,7 @@ pub struct Renderer {
     scale_factor: f64,
     quad_pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
+    effect_quad_pipeline: wgpu::RenderPipeline,
     viewport_buffer: wgpu::Buffer,
     viewport_bind_group: wgpu::BindGroup,
     font_system: FontSystem,
@@ -238,6 +239,47 @@ impl Renderer {
             cache: None,
         });
 
+        let effect_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("diffy_effect_shader"),
+            source: wgpu::ShaderSource::Wgsl(EFFECT_SHADER.into()),
+        });
+        let effect_quad_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("diffy_effect_quad_pipeline_layout"),
+                bind_group_layouts: &[&viewport_bind_group_layout],
+                immediate_size: 0,
+            });
+        let effect_quad_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("diffy_effect_quad_pipeline"),
+                layout: Some(&effect_quad_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &effect_shader,
+                    entry_point: Some("vs_effect"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[EffectQuadInstance::layout()],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &effect_shader,
+                    entry_point: Some("fs_effect"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: surface_format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    strip_index_format: None,
+                    ..wgpu::PrimitiveState::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+
         let mut font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
         let glyph_cache = Cache::new(&device);
@@ -256,6 +298,7 @@ impl Renderer {
             scale_factor,
             quad_pipeline,
             shadow_pipeline,
+            effect_quad_pipeline,
             viewport_buffer,
             viewport_bind_group,
             font_system,
@@ -296,7 +339,7 @@ impl Renderer {
         }
     }
 
-    pub fn render(&mut self, scene: &Scene) -> Result<FrameStats, RenderError> {
+    pub fn render(&mut self, scene: &Scene, time_seconds: f32) -> Result<FrameStats, RenderError> {
         if self.surface_config.width == 0 || self.surface_config.height == 0 {
             return Ok(FrameStats::default());
         }
@@ -307,6 +350,18 @@ impl Renderer {
             width: self.surface_config.width as f32,
             height: self.surface_config.height as f32,
         };
+
+        // Update time in the viewport uniform buffer.
+        let viewport_uniform = ViewportUniform {
+            resolution: [self.surface_config.width as f32, self.surface_config.height as f32],
+            time: time_seconds,
+            _padding: 0.0,
+        };
+        self.queue.write_buffer(
+            &self.viewport_buffer,
+            0,
+            bytemuck::bytes_of(&viewport_uniform),
+        );
 
         let flattened = flatten_scene(scene, viewport_rect);
 
@@ -343,6 +398,8 @@ impl Renderer {
             shadow_commands: Vec<QuadDrawCommand>,
             quad_buffer: wgpu::Buffer,
             quad_commands: Vec<QuadDrawCommand>,
+            effect_buffer: Option<wgpu::Buffer>,
+            effect_commands: Vec<QuadDrawCommand>,
         }
         let layer_buffers: Vec<LayerBuffers> = flattened
             .layers
@@ -368,11 +425,25 @@ impl Renderer {
                         usage: wgpu::BufferUsages::VERTEX,
                     },
                 );
+                let (ei, ec) = build_effect_quad_instances(&layer.effect_quads);
+                let eb = if !ei.is_empty() {
+                    Some(self.device.create_buffer_init(
+                        &wgpu::util::BufferInitDescriptor {
+                            label: Some("diffy_effect_quad_instances"),
+                            contents: bytemuck::cast_slice(&ei),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        },
+                    ))
+                } else {
+                    None
+                };
                 LayerBuffers {
                     shadow_buffer: sb,
                     shadow_commands: sc,
                     quad_buffer: qb,
                     quad_commands: qc,
+                    effect_buffer: eb,
+                    effect_commands: ec,
                 }
             })
             .collect();
@@ -446,15 +517,34 @@ impl Renderer {
                 multiview_mask: None,
             });
 
-            // Draw each layer in order: shadows first, then quads. This
-            // preserves correct depth — a modal's shadow renders on top of
-            // the workspace quads, not behind them.
+            // Draw each layer in order: shadows → effect quads → quads.
+            // This preserves correct depth — a modal's shadow renders on top of
+            // the workspace quads, not behind them. Effect quads (procedural
+            // backgrounds) render before regular quads so borders draw on top.
             for lb in &layer_buffers {
                 if let Some(ref shadow_buf) = lb.shadow_buffer {
                     pass.set_pipeline(&self.shadow_pipeline);
                     pass.set_bind_group(0, &self.viewport_bind_group, &[]);
                     pass.set_vertex_buffer(0, shadow_buf.slice(..));
                     for command in &lb.shadow_commands {
+                        if command.clip.width <= 0.0 || command.clip.height <= 0.0 {
+                            continue;
+                        }
+                        pass.set_scissor_rect(
+                            command.clip.x.max(0.0).round() as u32,
+                            command.clip.y.max(0.0).round() as u32,
+                            command.clip.width.max(1.0).round() as u32,
+                            command.clip.height.max(1.0).round() as u32,
+                        );
+                        pass.draw(0..4, command.instance_range.clone());
+                    }
+                }
+
+                if let Some(ref effect_buf) = lb.effect_buffer {
+                    pass.set_pipeline(&self.effect_quad_pipeline);
+                    pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+                    pass.set_vertex_buffer(0, effect_buf.slice(..));
+                    for command in &lb.effect_commands {
                         if command.clip.width <= 0.0 || command.clip.height <= 0.0 {
                             continue;
                         }
@@ -600,16 +690,62 @@ impl ShadowInstance {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct EffectQuadInstance {
+    /// Element bounds: [x, y, width, height].
+    bounds: [f32; 4],
+    /// First color (linear RGBA, premultiplied).
+    color_a: [f32; 4],
+    /// Second color (linear RGBA, premultiplied).
+    color_b: [f32; 4],
+    /// [effect_type, param1, param2, corner_radius].
+    params: [f32; 4],
+}
+
+impl EffectQuadInstance {
+    fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 16,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 32,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 48,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct ViewportUniform {
     resolution: [f32; 2],
-    _padding: [f32; 2],
+    time: f32,
+    _padding: f32,
 }
 
 impl ViewportUniform {
     fn new(width: u32, height: u32) -> Self {
         Self {
             resolution: [width as f32, height as f32],
-            _padding: [0.0; 2],
+            time: 0.0,
+            _padding: 0.0,
         }
     }
 }
@@ -627,6 +763,7 @@ impl ViewportUniform {
 struct DrawLayer {
     shadows: Vec<ClippedShadow>,
     quads: Vec<ClippedQuad>,
+    effect_quads: Vec<ClippedEffectQuad>,
 }
 
 #[derive(Debug, Clone)]
@@ -645,6 +782,12 @@ struct ClippedShadow {
 #[derive(Debug, Clone, Copy)]
 struct ClippedQuad {
     instance: QuadInstance,
+    clip: Rect,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ClippedEffectQuad {
+    instance: EffectQuadInstance,
     clip: Rect,
 }
 
@@ -780,6 +923,33 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                     });
                 }
             }
+            Primitive::EffectQuad(effect) => {
+                if let Some(clip) = clips.last().copied() {
+                    if effect.rect.intersection(clip).is_some() {
+                        let color_a = color_to_linear(effect.color_a);
+                        let color_b = color_to_linear(effect.color_b);
+                        layers.last_mut().unwrap().effect_quads.push(ClippedEffectQuad {
+                            instance: EffectQuadInstance {
+                                bounds: [
+                                    effect.rect.x,
+                                    effect.rect.y,
+                                    effect.rect.width,
+                                    effect.rect.height,
+                                ],
+                                color_a,
+                                color_b,
+                                params: [
+                                    effect.effect_type as u32 as f32,
+                                    effect.params[0],
+                                    effect.params[1],
+                                    effect.corner_radius,
+                                ],
+                            },
+                            clip,
+                        });
+                    }
+                }
+            }
             Primitive::Icon(_) => {}
             Primitive::ClipStart(ClipPrimitive { rect }) => {
                 let next = clips
@@ -870,6 +1040,33 @@ fn build_shadow_instances(
 
         while i < shadows.len() && rects_equal(shadows[i].clip, clip) {
             instances.push(shadows[i].instance);
+            i += 1;
+        }
+
+        commands.push(QuadDrawCommand {
+            instance_range: start..i as u32,
+            clip,
+        });
+    }
+
+    (instances, commands)
+}
+
+fn build_effect_quad_instances(
+    effects: &[ClippedEffectQuad],
+) -> (Vec<EffectQuadInstance>, Vec<QuadDrawCommand>) {
+    let mut instances = Vec::with_capacity(effects.len());
+    let mut commands = Vec::with_capacity(effects.len());
+
+    let mut i = 0;
+    while i < effects.len() {
+        let start = i as u32;
+        let clip = effects[i].clip;
+        instances.push(effects[i].instance);
+        i += 1;
+
+        while i < effects.len() && rects_equal(effects[i].clip, clip) {
+            instances.push(effects[i].instance);
             i += 1;
         }
 
@@ -1011,7 +1208,8 @@ fn srgb_to_linear(channel: u8) -> f32 {
 const SHADOW_SHADER: &str = r#"
 struct ViewportUniform {
     resolution: vec2<f32>,
-    _padding: vec2<f32>,
+    time: f32,
+    _padding: f32,
 };
 
 @group(0) @binding(0)
@@ -1123,7 +1321,8 @@ fn fs_shadow(input: VertexOutput) -> @location(0) vec4<f32> {
 const QUAD_SHADER: &str = r#"
 struct ViewportUniform {
     resolution: vec2<f32>,
-    _padding: vec2<f32>,
+    time: f32,
+    _padding: f32,
 };
 
 @group(0) @binding(0)
@@ -1223,6 +1422,182 @@ fn fs_quad(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let final_alpha = color.a * outer_alpha;
+    return vec4<f32>(color.rgb * final_alpha, final_alpha);
+}
+"#;
+
+// ---------------------------------------------------------------------------
+// Procedural effect shader — noise gradient + linear gradient
+// ---------------------------------------------------------------------------
+
+const EFFECT_SHADER: &str = r#"
+struct ViewportUniform {
+    resolution: vec2<f32>,
+    time: f32,
+    _padding: f32,
+};
+
+@group(0) @binding(0)
+var<uniform> viewport: ViewportUniform;
+
+struct VertexInput {
+    @builtin(vertex_index) vertex_id: u32,
+    @location(0) bounds: vec4<f32>,
+    @location(1) color_a: vec4<f32>,
+    @location(2) color_b: vec4<f32>,
+    @location(3) params: vec4<f32>,   // [effect_type, param1, param2, corner_radius]
+};
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) @interpolate(flat) bounds: vec4<f32>,
+    @location(1) @interpolate(flat) color_a: vec4<f32>,
+    @location(2) @interpolate(flat) color_b: vec4<f32>,
+    @location(3) @interpolate(flat) params: vec4<f32>,
+};
+
+@vertex
+fn vs_effect(input: VertexInput) -> VertexOutput {
+    let unit = vec2<f32>(
+        f32(input.vertex_id & 1u),
+        f32((input.vertex_id >> 1u) & 1u)
+    );
+    let pixel_pos = input.bounds.xy + unit * input.bounds.zw;
+    let ndc = pixel_pos / viewport.resolution * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
+
+    var out: VertexOutput;
+    out.position = vec4<f32>(ndc, 0.0, 1.0);
+    out.bounds = input.bounds;
+    out.color_a = input.color_a;
+    out.color_b = input.color_b;
+    out.params = input.params;
+    return out;
+}
+
+// ---- Simplex noise (2D) ----
+
+fn mod289_v3(x: vec3<f32>) -> vec3<f32> {
+    return x - floor(x * (1.0 / 289.0)) * 289.0;
+}
+
+fn mod289_v2(x: vec2<f32>) -> vec2<f32> {
+    return x - floor(x * (1.0 / 289.0)) * 289.0;
+}
+
+fn permute(x: vec3<f32>) -> vec3<f32> {
+    return mod289_v3(((x * 34.0) + vec3<f32>(10.0)) * x);
+}
+
+fn simplex_noise(v: vec2<f32>) -> f32 {
+    let C = vec4<f32>(
+        0.211324865405187,   // (3.0 - sqrt(3.0)) / 6.0
+        0.366025403784439,   // 0.5 * (sqrt(3.0) - 1.0)
+        -0.577350269189626,  // -1.0 + 2.0 * C.x
+        0.024390243902439    // 1.0 / 41.0
+    );
+
+    // First corner.
+    var i = floor(v + dot(v, C.yy));
+    let x0 = v - i + dot(i, C.xx);
+
+    // Other corners.
+    let i1 = select(vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), x0.x > x0.y);
+    var x12 = x0.xyxy + C.xxzz;
+    x12 = vec4<f32>(x12.xy - i1, x12.zw);
+
+    // Permutations.
+    i = mod289_v2(i);
+    let p = permute(permute(
+        i.y + vec3<f32>(0.0, i1.y, 1.0))
+      + i.x + vec3<f32>(0.0, i1.x, 1.0));
+
+    var m = max(vec3<f32>(0.5) - vec3<f32>(
+        dot(x0, x0),
+        dot(x12.xy, x12.xy),
+        dot(x12.zw, x12.zw)
+    ), vec3<f32>(0.0));
+    m = m * m;
+    m = m * m;
+
+    // Gradients.
+    let x_ = 2.0 * fract(p * C.www) - vec3<f32>(1.0);
+    let h = abs(x_) - vec3<f32>(0.5);
+    let ox = floor(x_ + vec3<f32>(0.5));
+    let a0 = x_ - ox;
+
+    // Approximate normalisation.
+    m = m * (vec3<f32>(1.79284291400159) - vec3<f32>(0.85373472095314) * (a0 * a0 + h * h));
+
+    // Compute final noise value at P.
+    let g = vec3<f32>(
+        a0.x * x0.x + h.x * x0.y,
+        a0.y * x12.x + h.y * x12.y,
+        a0.z * x12.z + h.z * x12.w
+    );
+
+    return 130.0 * dot(m, g);
+}
+
+// ---- Rounded-rect SDF for masking ----
+
+fn effect_sdf(p: vec2<f32>, half_size: vec2<f32>, radius: f32) -> f32 {
+    let q = abs(p) - half_size + vec2<f32>(radius);
+    return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - radius;
+}
+
+// ---- Fragment shader ----
+
+@fragment
+fn fs_effect(input: VertexOutput) -> @location(0) vec4<f32> {
+    let half_size = input.bounds.zw * 0.5;
+    let center = input.bounds.xy + half_size;
+    let p = input.position.xy - center;
+    let corner_radius = input.params.w;
+
+    // Rounded-rect mask.
+    let sdf = effect_sdf(p, half_size, corner_radius);
+    let mask = saturate(0.5 - sdf);
+    if (mask <= 0.0) {
+        discard;
+    }
+
+    // Normalised UV within the element bounds.
+    let uv = (input.position.xy - input.bounds.xy) / input.bounds.zw;
+
+    let effect_type = u32(input.params.x);
+    var color: vec4<f32>;
+
+    switch (effect_type) {
+        // Type 0: Noise gradient — simplex noise blended between two colors.
+        case 0u: {
+            let scale = input.params.y;
+            let noise_coord = input.position.xy * scale + vec2<f32>(viewport.time * 3.0);
+            let n = simplex_noise(noise_coord) * 0.5 + 0.5;
+            // Layer a second octave for richer texture.
+            let n2 = simplex_noise(noise_coord * 2.0 + vec2<f32>(17.3, 31.7)) * 0.5 + 0.5;
+            let combined = n * 0.7 + n2 * 0.3;
+            // Blend from color_a (top) to color_b (bottom) modulated by noise.
+            let gradient = uv.y;
+            let t = saturate(gradient + (combined - 0.5) * 0.4);
+            color = mix(input.color_a, input.color_b, t);
+        }
+        // Type 1: Linear gradient with angle.
+        case 1u: {
+            let angle = input.params.y;
+            let dir = vec2<f32>(cos(angle), sin(angle));
+            let t = saturate(dot(uv - vec2<f32>(0.5), dir) + 0.5);
+            color = mix(input.color_a, input.color_b, t);
+        }
+        // Fallback: solid color_a.
+        default: {
+            color = input.color_a;
+        }
+    }
+
+    let final_alpha = color.a * mask;
+    if (final_alpha < 0.001) {
+        discard;
+    }
     return vec4<f32>(color.rgb * final_alpha, final_alpha);
 }
 "#;

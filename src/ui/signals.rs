@@ -4,6 +4,7 @@
 //! Values live in a slot arena and are accessed via `cx.read()` / `cx.write()`.
 
 use std::any::Any;
+use std::cell::RefCell;
 use std::marker::PhantomData;
 
 // ---------------------------------------------------------------------------
@@ -52,6 +53,51 @@ impl<T> std::fmt::Debug for Signal<T> {
 }
 
 // ---------------------------------------------------------------------------
+// Dependency tracking — thread-local observer
+// ---------------------------------------------------------------------------
+
+struct TrackingScope {
+    dependencies: Vec<SignalId>,
+}
+
+thread_local! {
+    static OBSERVER: RefCell<Option<TrackingScope>> = RefCell::new(None);
+}
+
+fn track_read(id: SignalId) {
+    OBSERVER.with(|obs| {
+        if let Some(scope) = obs.borrow_mut().as_mut() {
+            if !scope.dependencies.contains(&id) {
+                scope.dependencies.push(id);
+            }
+        }
+    });
+}
+
+/// Run `f` with dependency tracking enabled. Returns the result plus the list
+/// of signal IDs that were read during `f`.
+pub fn with_tracking<R>(f: impl FnOnce() -> R) -> (R, Vec<SignalId>) {
+    let prev = OBSERVER.with(|obs| obs.borrow_mut().take());
+
+    OBSERVER.with(|obs| {
+        *obs.borrow_mut() = Some(TrackingScope {
+            dependencies: Vec::new(),
+        });
+    });
+
+    let result = f();
+
+    let scope = OBSERVER.with(|obs| obs.borrow_mut().take())
+        .expect("tracking scope disappeared during with_tracking");
+
+    OBSERVER.with(|obs| {
+        *obs.borrow_mut() = prev;
+    });
+
+    (result, scope.dependencies)
+}
+
+// ---------------------------------------------------------------------------
 // Slot — one entry in the arena
 // ---------------------------------------------------------------------------
 
@@ -70,6 +116,8 @@ struct Slot {
 pub struct SignalStore {
     slots: Vec<Slot>,
     free_list: Vec<u32>,
+    subscribers: Vec<Vec<usize>>,
+    dirty: Vec<bool>,
 }
 
 impl SignalStore {
@@ -77,6 +125,8 @@ impl SignalStore {
         Self {
             slots: Vec::new(),
             free_list: Vec::new(),
+            subscribers: Vec::new(),
+            dirty: Vec::new(),
         }
     }
 
@@ -87,7 +137,8 @@ impl SignalStore {
         let (index, generation) = if let Some(index) = self.free_list.pop() {
             let slot = &mut self.slots[index as usize];
             slot.value = Some(boxed);
-            // generation was already incremented when freed
+            self.subscribers[index as usize].clear();
+            self.dirty[index as usize] = false;
             (index, slot.generation)
         } else {
             let index = self.slots.len() as u32;
@@ -95,6 +146,8 @@ impl SignalStore {
                 value: Some(boxed),
                 generation: 0,
             });
+            self.subscribers.push(Vec::new());
+            self.dirty.push(false);
             (index, 0)
         };
 
@@ -104,17 +157,29 @@ impl SignalStore {
         }
     }
 
-    /// Read a signal's value by cloning it out.
+    /// Read a signal's value by cloning it out. Registers the read with the
+    /// current tracking scope, if one exists.
     ///
     /// Panics if the signal handle is stale (freed and reallocated).
     pub fn read<T: 'static + Clone>(&self, signal: Signal<T>) -> T {
         self.with(signal, Clone::clone)
     }
 
-    /// Access a signal's value by reference via a closure.
+    /// Read a signal's value without registering a dependency.
+    pub fn read_untracked<T: 'static + Clone>(&self, signal: Signal<T>) -> T {
+        self.with_untracked(signal, Clone::clone)
+    }
+
+    /// Access a signal's value by reference via a closure. Registers the read
+    /// with the current tracking scope, if one exists.
     ///
     /// This avoids cloning when you only need to inspect the value.
     pub fn with<T: 'static, R>(&self, signal: Signal<T>, f: impl FnOnce(&T) -> R) -> R {
+        track_read(signal.id);
+        self.with_untracked(signal, f)
+    }
+
+    fn with_untracked<T: 'static, R>(&self, signal: Signal<T>, f: impl FnOnce(&T) -> R) -> R {
         let slot = &self.slots[signal.id.index as usize];
         assert_eq!(
             slot.generation, signal.id.generation,
@@ -137,6 +202,7 @@ impl SignalStore {
             "stale signal handle (generation mismatch)"
         );
         slot.value = Some(Box::new(value));
+        self.dirty[signal.id.index as usize] = true;
     }
 
     /// Mutate a signal's value in place.
@@ -153,6 +219,7 @@ impl SignalStore {
             .downcast_mut::<T>()
             .expect("signal type mismatch");
         f(value);
+        self.dirty[signal.id.index as usize] = true;
     }
 
     /// Dispose a signal, freeing its slot for reuse.
@@ -163,6 +230,18 @@ impl SignalStore {
             slot.generation = slot.generation.wrapping_add(1);
             self.free_list.push(signal.id.index);
         }
+    }
+
+    pub fn mark_dirty(&mut self, signal_id: SignalId) {
+        self.dirty[signal_id.index as usize] = true;
+    }
+
+    pub fn is_dirty(&self, signal_id: SignalId) -> bool {
+        self.dirty[signal_id.index as usize]
+    }
+
+    pub fn clear_dirty(&mut self) {
+        self.dirty.iter_mut().for_each(|d| *d = false);
     }
 
     /// Number of live signals.
@@ -300,5 +379,116 @@ mod tests {
         let entry = store.read(sig);
         assert!(entry.selected);
         assert_eq!(entry.path, "src/main.rs");
+    }
+
+    #[test]
+    fn with_tracking_captures_reads() {
+        let mut store = SignalStore::new();
+        let a = store.create(1i32);
+        let b = store.create(2i32);
+        let c = store.create(3i32);
+
+        let (sum, deps) = with_tracking(|| {
+            store.read(a) + store.read(b)
+        });
+
+        assert_eq!(sum, 3);
+        assert_eq!(deps.len(), 2);
+        assert!(deps.contains(&a.id));
+        assert!(deps.contains(&b.id));
+        assert!(!deps.contains(&c.id));
+    }
+
+    #[test]
+    fn nested_tracking_scopes_independent() {
+        let mut store = SignalStore::new();
+        let a = store.create(10i32);
+        let b = store.create(20i32);
+
+        let (_, outer_deps) = with_tracking(|| {
+            store.read(a);
+
+            let (_, inner_deps) = with_tracking(|| {
+                store.read(b);
+            });
+
+            assert_eq!(inner_deps.len(), 1);
+            assert!(inner_deps.contains(&b.id));
+        });
+
+        assert_eq!(outer_deps.len(), 1);
+        assert!(outer_deps.contains(&a.id));
+        assert!(!outer_deps.contains(&b.id));
+    }
+
+    #[test]
+    fn read_untracked_not_captured() {
+        let mut store = SignalStore::new();
+        let a = store.create(1i32);
+        let b = store.create(2i32);
+
+        let (_, deps) = with_tracking(|| {
+            store.read(a);
+            store.read_untracked(b);
+        });
+
+        assert_eq!(deps.len(), 1);
+        assert!(deps.contains(&a.id));
+        assert!(!deps.contains(&b.id));
+    }
+
+    #[test]
+    fn write_marks_dirty() {
+        let mut store = SignalStore::new();
+        let a = store.create(1i32);
+        let b = store.create(2i32);
+
+        assert!(!store.is_dirty(a.id));
+        assert!(!store.is_dirty(b.id));
+
+        store.write(a, 10);
+        assert!(store.is_dirty(a.id));
+        assert!(!store.is_dirty(b.id));
+    }
+
+    #[test]
+    fn update_marks_dirty() {
+        let mut store = SignalStore::new();
+        let a = store.create(1i32);
+
+        assert!(!store.is_dirty(a.id));
+        store.update(a, |v| *v += 1);
+        assert!(store.is_dirty(a.id));
+    }
+
+    #[test]
+    fn clear_dirty_resets_all() {
+        let mut store = SignalStore::new();
+        let a = store.create(1i32);
+        let b = store.create(2i32);
+
+        store.write(a, 10);
+        store.write(b, 20);
+        assert!(store.is_dirty(a.id));
+        assert!(store.is_dirty(b.id));
+
+        store.clear_dirty();
+        assert!(!store.is_dirty(a.id));
+        assert!(!store.is_dirty(b.id));
+    }
+
+    #[test]
+    fn duplicate_reads_deduped() {
+        let mut store = SignalStore::new();
+        let a = store.create(1i32);
+
+        let (_, deps) = with_tracking(|| {
+            store.read(a);
+            store.read(a);
+            store.read(a);
+        });
+
+        assert_eq!(deps.len(), 1);
+        assert!(deps.contains(&a.id));
     }
 }

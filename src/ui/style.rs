@@ -26,6 +26,7 @@ pub struct ElementStyle {
     pub border_width: f32,
     pub corner_radius: f32,
     pub opacity: f32,
+    pub z_index: i32,
     pub shadows: Vec<ShadowStyle>,
 }
 
@@ -41,6 +42,7 @@ impl Default for ElementStyle {
             border_width: 0.0,
             corner_radius: 0.0,
             opacity: 1.0,
+            z_index: 0,
             shadows: Vec::new(),
         }
     }
@@ -305,5 +307,12 @@ pub trait Styled: Sized {
     /// Implemented as a zero-offset shadow with the given color and radius.
     fn glow(self, color: Color, radius: f32) -> Self {
         self.shadow(radius, 0.0, color)
+    }
+
+    /// Set the z-index for rendering order. Higher values render on top.
+    /// Default is 0. Modals typically use 100+, toasts 200+.
+    fn z_index(mut self, z: i32) -> Self {
+        self.element_style_mut().z_index = z;
+        self
     }
 }

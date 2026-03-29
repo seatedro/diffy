@@ -651,107 +651,83 @@ impl Renderer {
                 label: Some("diffy_frame_encoder"),
             });
 
-        // Build GPU buffers for each draw layer.
-        let layer_buffers: Vec<LayerBuffers> = flattened
-            .layers
+        // Build GPU buffers for each z-layer's draw layers.
+        struct ZLayerBuffers {
+            layer_buffers: Vec<LayerBuffers>,
+        }
+
+        let z_layer_buffers: Vec<ZLayerBuffers> = flattened
+            .z_layers
             .iter()
-            .map(|layer| {
-                let (si, sc) = build_shadow_instances(&layer.shadows);
-                let sb = if !si.is_empty() {
-                    Some(self.device.create_buffer_init(
+            .map(|zl| {
+                let layer_buffers = zl.draw_layers.iter().map(|layer| {
+                    let (si, sc) = build_shadow_instances(&layer.shadows);
+                    let sb = if !si.is_empty() {
+                        Some(self.device.create_buffer_init(
+                            &wgpu::util::BufferInitDescriptor {
+                                label: Some("diffy_shadow_instances"),
+                                contents: bytemuck::cast_slice(&si),
+                                usage: wgpu::BufferUsages::VERTEX,
+                            },
+                        ))
+                    } else {
+                        None
+                    };
+                    let (qi, qc) = build_quad_instances(&layer.quads);
+                    let qb = self.device.create_buffer_init(
                         &wgpu::util::BufferInitDescriptor {
-                            label: Some("diffy_shadow_instances"),
-                            contents: bytemuck::cast_slice(&si),
+                            label: Some("diffy_quad_instances"),
+                            contents: bytemuck::cast_slice(&qi),
                             usage: wgpu::BufferUsages::VERTEX,
                         },
-                    ))
-                } else {
-                    None
-                };
-                let (qi, qc) = build_quad_instances(&layer.quads);
-                let qb = self.device.create_buffer_init(
-                    &wgpu::util::BufferInitDescriptor {
-                        label: Some("diffy_quad_instances"),
-                        contents: bytemuck::cast_slice(&qi),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    },
-                );
-                let (ei, ec) = build_effect_quad_instances(&layer.effect_quads);
-                let eb = if !ei.is_empty() {
-                    Some(self.device.create_buffer_init(
-                        &wgpu::util::BufferInitDescriptor {
-                            label: Some("diffy_effect_quad_instances"),
-                            contents: bytemuck::cast_slice(&ei),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        },
-                    ))
-                } else {
-                    None
-                };
-                LayerBuffers {
-                    shadow_buffer: sb,
-                    shadow_commands: sc,
-                    quad_buffer: qb,
-                    quad_commands: qc,
-                    effect_buffer: eb,
-                    effect_commands: ec,
-                }
+                    );
+                    let (ei, ec) = build_effect_quad_instances(&layer.effect_quads);
+                    let eb = if !ei.is_empty() {
+                        Some(self.device.create_buffer_init(
+                            &wgpu::util::BufferInitDescriptor {
+                                label: Some("diffy_effect_quad_instances"),
+                                contents: bytemuck::cast_slice(&ei),
+                                usage: wgpu::BufferUsages::VERTEX,
+                            },
+                        ))
+                    } else {
+                        None
+                    };
+                    LayerBuffers {
+                        shadow_buffer: sb,
+                        shadow_commands: sc,
+                        quad_buffer: qb,
+                        quad_commands: qc,
+                        effect_buffer: eb,
+                        effect_commands: ec,
+                    }
+                }).collect();
+                ZLayerBuffers { layer_buffers }
             })
             .collect();
 
-        let mut prepared_texts = Vec::with_capacity(
-            flattened
-                .texts
-                .len()
-                .saturating_add(flattened.rich_texts.len()),
-        );
-        for text in &flattened.texts {
-            prepared_texts.push(prepare_plain_text(
+        let single_z = flattened.z_layers.len() <= 1;
+
+        if single_z && flattened.blur_regions.is_empty() {
+            // ---- Fast path: single z-layer, no blur ----
+            let zl = &flattened.z_layers[0];
+            let zlb = &z_layer_buffers[0];
+
+            let prepared_texts = prepare_all_text(
+                &mut self.font_system, &zl.texts, &zl.rich_texts, self.scale_factor,
+            );
+            let text_areas = build_text_areas(&prepared_texts);
+
+            self.text_renderer.prepare(
+                &self.device,
+                &self.queue,
                 &mut self.font_system,
-                &text.primitive,
-                text.clip,
-                self.scale_factor,
-            ));
-        }
-        for text in &flattened.rich_texts {
-            prepared_texts.push(prepare_rich_text(
-                &mut self.font_system,
-                &text.primitive,
-                text.clip,
-                self.scale_factor,
-            ));
-        }
+                &mut self.atlas,
+                &self.viewport,
+                text_areas,
+                &mut self.swash_cache,
+            )?;
 
-        let text_areas = prepared_texts
-            .iter()
-            .map(|prepared| TextArea {
-                buffer: &prepared.buffer,
-                left: prepared.left,
-                top: prepared.top,
-                scale: 1.0,
-                bounds: TextBounds {
-                    left: prepared.clip.x.round() as i32,
-                    top: prepared.clip.y.round() as i32,
-                    right: prepared.clip.right().round() as i32,
-                    bottom: prepared.clip.bottom().round() as i32,
-                },
-                default_color: prepared.default_color,
-                custom_glyphs: &[],
-            })
-            .collect::<Vec<_>>();
-
-        self.text_renderer.prepare(
-            &self.device,
-            &self.queue,
-            &mut self.font_system,
-            &mut self.atlas,
-            &self.viewport,
-            text_areas,
-            &mut self.swash_cache,
-        )?;
-
-        if flattened.blur_regions.is_empty() {
-            // ---- Fast path: no blur, render directly to surface ----
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("diffy_frame_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -771,7 +747,7 @@ impl Renderer {
 
             draw_layers(
                 &mut pass,
-                &layer_buffers,
+                &zlb.layer_buffers,
                 &self.shadow_pipeline,
                 &self.effect_quad_pipeline,
                 &self.quad_pipeline,
@@ -781,18 +757,85 @@ impl Renderer {
             pass.set_scissor_rect(0, 0, self.surface_config.width, self.surface_config.height);
             self.text_renderer
                 .render(&self.atlas, &self.viewport, &mut pass)?;
+        } else if flattened.blur_regions.is_empty() {
+            // ---- Multi z-layer path: separate text render per z-layer ----
+            let sw = self.surface_config.width;
+            let sh = self.surface_config.height;
+            let mut first = true;
+
+            for (zl, zlb) in flattened.z_layers.iter().zip(z_layer_buffers.iter()) {
+                let prepared_texts = prepare_all_text(
+                    &mut self.font_system, &zl.texts, &zl.rich_texts, self.scale_factor,
+                );
+                let text_areas = build_text_areas(&prepared_texts);
+
+                self.text_renderer.prepare(
+                    &self.device,
+                    &self.queue,
+                    &mut self.font_system,
+                    &mut self.atlas,
+                    &self.viewport,
+                    text_areas,
+                    &mut self.swash_cache,
+                )?;
+
+                {
+                    let load = if first {
+                        first = false;
+                        wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                    } else {
+                        wgpu::LoadOp::Load
+                    };
+
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("diffy_z_layer_pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+
+                    draw_layers(
+                        &mut pass,
+                        &zlb.layer_buffers,
+                        &self.shadow_pipeline,
+                        &self.effect_quad_pipeline,
+                        &self.quad_pipeline,
+                        &self.viewport_bind_group,
+                    );
+
+                    pass.set_scissor_rect(0, 0, sw, sh);
+                    self.text_renderer
+                        .render(&self.atlas, &self.viewport, &mut pass)?;
+                }
+            }
         } else {
             // ---- Blur path: render via offscreen intermediates ----
+            // Flatten all z-layers into a single draw layer list for the blur.
+            let all_layer_bufs: Vec<LayerBuffers> = z_layer_buffers
+                .into_iter()
+                .flat_map(|z| z.layer_buffers.into_iter())
+                .collect();
+            let all_texts: Vec<ClippedText> = flattened.z_layers.iter().flat_map(|z| z.texts.iter().cloned()).collect();
+            let all_rich: Vec<ClippedRichText> = flattened.z_layers.iter().flat_map(|z| z.rich_texts.iter().cloned()).collect();
+
             let blur = flattened.blur_regions[0];
             let sw = self.surface_config.width;
             let sh = self.surface_config.height;
 
-            // Acquire offscreen textures (all viewport-sized).
             let scene_target = self.texture_pool.acquire(&self.device, sw, sh);
             let h_target = self.texture_pool.acquire(&self.device, sw, sh);
             let v_target = self.texture_pool.acquire(&self.device, sw, sh);
 
-            // Pre-create bind groups for texture sampling.
             let scene_bind = create_texture_bind_group(
                 &self.device,
                 &self.texture_bind_group_layout,
@@ -839,10 +882,10 @@ impl Renderer {
                     multiview_mask: None,
                 });
 
-                let end = blur.layer_break.min(layer_buffers.len());
+                let end = blur.layer_break.min(all_layer_bufs.len());
                 draw_layers(
                     &mut pass,
-                    &layer_buffers[..end],
+                    &all_layer_bufs[..end],
                     &self.shadow_pipeline,
                     &self.effect_quad_pipeline,
                     &self.quad_pipeline,
@@ -989,11 +1032,11 @@ impl Renderer {
                 pass.draw(0..4, 0..1);
 
                 // Render remaining layers (modal content, etc.) on top.
-                let start = blur.layer_break.min(layer_buffers.len());
+                let start = blur.layer_break.min(all_layer_bufs.len());
                 pass.set_scissor_rect(0, 0, sw, sh);
                 draw_layers(
                     &mut pass,
-                    &layer_buffers[start..],
+                    &all_layer_bufs[start..],
                     &self.shadow_pipeline,
                     &self.effect_quad_pipeline,
                     &self.quad_pipeline,
@@ -1001,6 +1044,19 @@ impl Renderer {
                 );
 
                 // Text.
+                let prepared_texts = prepare_all_text(
+                    &mut self.font_system, &all_texts, &all_rich, self.scale_factor,
+                );
+                let text_areas = build_text_areas(&prepared_texts);
+                self.text_renderer.prepare(
+                    &self.device,
+                    &self.queue,
+                    &mut self.font_system,
+                    &mut self.atlas,
+                    &self.viewport,
+                    text_areas,
+                    &mut self.swash_cache,
+                )?;
                 pass.set_scissor_rect(0, 0, sw, sh);
                 self.text_renderer
                     .render(&self.atlas, &self.viewport, &mut pass)?;
@@ -1381,12 +1437,20 @@ struct FlattenedBlurRegion {
     layer_break: usize,
 }
 
-#[derive(Debug, Clone)]
-struct FlattenedScene {
-    layers: Vec<DrawLayer>,
-    blur_regions: Vec<FlattenedBlurRegion>,
+/// A z-layer groups all draw layers and text for one z-index value.
+/// Rendered in z-index order: lower z-indices first, higher on top.
+#[derive(Debug, Clone, Default)]
+struct ZLayer {
+    z_index: i32,
+    draw_layers: Vec<DrawLayer>,
     texts: Vec<ClippedText>,
     rich_texts: Vec<ClippedRichText>,
+}
+
+#[derive(Debug, Clone)]
+struct FlattenedScene {
+    z_layers: Vec<ZLayer>,
+    blur_regions: Vec<FlattenedBlurRegion>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1434,18 +1498,46 @@ struct PreparedTextBuffer {
 }
 
 fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
+    use std::collections::BTreeMap;
+
     let mut clips = vec![viewport];
-    let mut layers: Vec<DrawLayer> = vec![DrawLayer::default()];
+    let mut z_index_stack = vec![0i32];
+    let mut z_map: BTreeMap<i32, ZLayer> = BTreeMap::new();
+
+    // Ensure z=0 always exists.
+    z_map.insert(0, ZLayer { z_index: 0, ..Default::default() });
+
     let mut flattened = FlattenedScene {
-        layers: Vec::new(),
+        z_layers: Vec::new(),
         blur_regions: Vec::new(),
-        texts: Vec::new(),
-        rich_texts: Vec::new(),
     };
+
+    // Helper: get (or create) the current z-layer's draw layers.
+    macro_rules! current_z {
+        () => {{
+            let z = *z_index_stack.last().unwrap();
+            z_map.entry(z).or_insert_with(|| ZLayer {
+                z_index: z,
+                draw_layers: vec![DrawLayer::default()],
+                ..Default::default()
+            })
+        }};
+    }
+
+    // Ensure the current z-layer has at least one draw layer.
+    macro_rules! ensure_draw_layer {
+        ($zl:expr) => {
+            if $zl.draw_layers.is_empty() {
+                $zl.draw_layers.push(DrawLayer::default());
+            }
+        };
+    }
 
     for primitive in &scene.primitives {
         match primitive {
             Primitive::Rect(rect) => {
+                let zl = current_z!();
+                ensure_draw_layer!(zl);
                 push_quad(
                     rect.rect,
                     color_to_linear(rect.color),
@@ -1453,10 +1545,12 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                     [0.0; 4],
                     [0.0; 4],
                     &clips,
-                    &mut layers.last_mut().unwrap().quads,
+                    &mut zl.draw_layers.last_mut().unwrap().quads,
                 );
             }
             Primitive::RoundedRect(rect) => {
+                let zl = current_z!();
+                ensure_draw_layer!(zl);
                 push_quad(
                     rect.rect,
                     color_to_linear(rect.color),
@@ -1464,10 +1558,12 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                     rect.corner_radii,
                     [0.0; 4],
                     &clips,
-                    &mut layers.last_mut().unwrap().quads,
+                    &mut zl.draw_layers.last_mut().unwrap().quads,
                 );
             }
             Primitive::Border(border) => {
+                let zl = current_z!();
+                ensure_draw_layer!(zl);
                 push_quad(
                     border.rect,
                     [0.0; 4],
@@ -1475,14 +1571,14 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                     border.corner_radii,
                     border.widths,
                     &clips,
-                    &mut layers.last_mut().unwrap().quads,
+                    &mut zl.draw_layers.last_mut().unwrap().quads,
                 );
             }
             Primitive::Shadow(shadow) => {
-                // If the current layer already has quads, start a new layer so
-                // this shadow renders on top of those quads (not behind them).
-                if !layers.last().unwrap().quads.is_empty() {
-                    layers.push(DrawLayer::default());
+                let zl = current_z!();
+                ensure_draw_layer!(zl);
+                if !zl.draw_layers.last().unwrap().quads.is_empty() {
+                    zl.draw_layers.push(DrawLayer::default());
                 }
 
                 let sigma = (shadow.blur_radius * 0.5).max(0.5);
@@ -1498,7 +1594,7 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                 if let Some(clip) = clips.last().copied() {
                     if expanded.intersection(clip).is_some() {
                         let color = color_to_linear(shadow.color);
-                        layers.last_mut().unwrap().shadows.push(ClippedShadow {
+                        zl.draw_layers.last_mut().unwrap().shadows.push(ClippedShadow {
                             instance: ShadowInstance {
                                 draw_bounds: [
                                     expanded.x,
@@ -1524,7 +1620,8 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                 if let Some(clip) = clips.last().copied()
                     && let Some(intersection) = text.rect.intersection(clip)
                 {
-                    flattened.texts.push(ClippedText {
+                    let zl = current_z!();
+                    zl.texts.push(ClippedText {
                         primitive: text.clone(),
                         clip: intersection,
                     });
@@ -1534,7 +1631,8 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                 if let Some(clip) = clips.last().copied()
                     && let Some(intersection) = text.rect.intersection(clip)
                 {
-                    flattened.rich_texts.push(ClippedRichText {
+                    let zl = current_z!();
+                    zl.rich_texts.push(ClippedRichText {
                         primitive: text.clone(),
                         clip: intersection,
                     });
@@ -1543,14 +1641,14 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
             Primitive::BlurRegion(blur) => {
                 if let Some(clip) = clips.last().copied() {
                     if blur.rect.intersection(clip).is_some() {
-                        // Start a new layer so the blur applies to everything
-                        // rendered so far — the blur_region marks a "break".
-                        layers.push(DrawLayer::default());
+                        let zl = current_z!();
+                        ensure_draw_layer!(zl);
+                        zl.draw_layers.push(DrawLayer::default());
                         flattened.blur_regions.push(FlattenedBlurRegion {
                             rect: blur.rect,
                             blur_radius: blur.blur_radius,
                             corner_radius: blur.corner_radius,
-                            layer_break: layers.len() - 1,
+                            layer_break: zl.draw_layers.len() - 1,
                         });
                     }
                 }
@@ -1560,7 +1658,9 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                     if effect.rect.intersection(clip).is_some() {
                         let color_a = color_to_linear(effect.color_a);
                         let color_b = color_to_linear(effect.color_b);
-                        layers.last_mut().unwrap().effect_quads.push(ClippedEffectQuad {
+                        let zl = current_z!();
+                        ensure_draw_layer!(zl);
+                        zl.draw_layers.last_mut().unwrap().effect_quads.push(ClippedEffectQuad {
                             instance: EffectQuadInstance {
                                 bounds: [
                                     effect.rect.x,
@@ -1595,11 +1695,20 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                     clips.pop();
                 }
             }
+            Primitive::ZIndexPush(z) => {
+                z_index_stack.push(*z);
+            }
+            Primitive::ZIndexPop => {
+                if z_index_stack.len() > 1 {
+                    z_index_stack.pop();
+                }
+            }
             Primitive::LayerBoundary => {}
         }
     }
 
-    flattened.layers = layers;
+    // Collect z-layers sorted by z-index (BTreeMap is already sorted).
+    flattened.z_layers = z_map.into_values().collect();
     flattened
 }
 
@@ -1716,8 +1825,44 @@ fn rects_equal(a: Rect, b: Rect) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Text preparation (unchanged)
+// Text preparation
 // ---------------------------------------------------------------------------
+
+fn prepare_all_text(
+    font_system: &mut FontSystem,
+    texts: &[ClippedText],
+    rich_texts: &[ClippedRichText],
+    scale_factor: f64,
+) -> Vec<PreparedTextBuffer> {
+    let mut prepared = Vec::with_capacity(texts.len() + rich_texts.len());
+    for text in texts {
+        prepared.push(prepare_plain_text(font_system, &text.primitive, text.clip, scale_factor));
+    }
+    for text in rich_texts {
+        prepared.push(prepare_rich_text(font_system, &text.primitive, text.clip, scale_factor));
+    }
+    prepared
+}
+
+fn build_text_areas(prepared: &[PreparedTextBuffer]) -> Vec<TextArea<'_>> {
+    prepared
+        .iter()
+        .map(|p| TextArea {
+            buffer: &p.buffer,
+            left: p.left,
+            top: p.top,
+            scale: 1.0,
+            bounds: TextBounds {
+                left: p.clip.x.round() as i32,
+                top: p.clip.y.round() as i32,
+                right: p.clip.right().round() as i32,
+                bottom: p.clip.bottom().round() as i32,
+            },
+            default_color: p.default_color,
+            custom_glyphs: &[],
+        })
+        .collect()
+}
 
 fn prepare_plain_text(
     font_system: &mut FontSystem,

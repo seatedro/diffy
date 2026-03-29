@@ -16,10 +16,11 @@ use crate::platform::persistence::SettingsStore;
 use crate::platform::startup::StartupOptions;
 use crate::render::{
     BorderPrimitive, FontKind, Rect, RectPrimitive, Renderer, RoundedRectPrimitive, Scene,
-    ShadowPrimitive, TextPrimitive,
+    ShadowPrimitive, TextMetrics, TextPrimitive,
 };
 use crate::ui::actions::Action;
-use crate::ui::state::{AppState, FocusTarget, PreviewLineKind, Screen, ToastKind};
+use crate::ui::diff_viewport::runtime::{DiffViewportRuntime, ViewportDocument};
+use crate::ui::state::{AppState, FocusTarget, Screen, ToastKind};
 use crate::ui::theme::{Color, Theme};
 
 #[derive(Debug, Clone)]
@@ -34,7 +35,7 @@ struct UiFrame {
     scene: Scene,
     hits: Vec<HitRegion>,
     file_list_rect: Option<Rect>,
-    preview_rect: Option<Rect>,
+    viewport_rect: Option<Rect>,
 }
 
 pub fn run() -> Result<(), Box<dyn Error>> {
@@ -67,6 +68,7 @@ struct NativeApp {
     renderer: Option<Renderer>,
     window: Option<Arc<Window>>,
     ui_frame: UiFrame,
+    viewport_runtime: DiffViewportRuntime,
     mouse_position: Option<(f32, f32)>,
     launch_at: Instant,
     dumps_dirty: bool,
@@ -81,6 +83,7 @@ impl NativeApp {
             renderer: None,
             window: None,
             ui_frame: UiFrame::default(),
+            viewport_runtime: DiffViewportRuntime::default(),
             mouse_position: None,
             launch_at: Instant::now(),
             dumps_dirty: true,
@@ -124,6 +127,12 @@ impl NativeApp {
             return;
         }
 
+        if self.state.startup.hidden_window {
+            let frame = self.build_frame();
+            self.state.debug.last_scene_primitive_count = frame.scene.len();
+            self.ui_frame = frame;
+        }
+
         if let Some(path) = self.state.startup.dump_state_json.as_deref()
             && let Err(error) = write_json(path, &StateDump::from(&self.state))
         {
@@ -143,15 +152,22 @@ impl NativeApp {
         self.dumps_dirty = false;
     }
 
-    fn build_frame(&self) -> UiFrame {
+    fn build_frame(&mut self) -> UiFrame {
         let size = self
             .window
             .as_ref()
             .map(|window| window.inner_size())
             .unwrap_or_else(|| winit::dpi::PhysicalSize::new(1280, 800));
+        let text_metrics = self
+            .renderer
+            .as_ref()
+            .map(Renderer::text_metrics)
+            .unwrap_or_default();
         build_ui_frame(
-            &self.state,
+            &mut self.state,
             &self.theme,
+            &mut self.viewport_runtime,
+            text_metrics,
             size.width.max(1) as f32,
             size.height.max(1) as f32,
         )
@@ -177,6 +193,21 @@ impl NativeApp {
                 self.dispatch_action(Action::SetFocus(Some(FocusTarget::FileList)));
             }
             self.dispatch_action(hit.action);
+            return;
+        }
+
+        if self
+            .ui_frame
+            .viewport_rect
+            .is_some_and(|rect| rect.contains(x, y))
+        {
+            self.dispatch_action(Action::FocusViewport);
+            let hovered = self
+                .viewport_runtime
+                .hit_test_row(&self.state.viewport, x, y);
+            if hovered != self.state.viewport.hovered_row {
+                self.dispatch_action(Action::HoverViewportRow(hovered));
+            }
         }
     }
 
@@ -191,6 +222,13 @@ impl NativeApp {
             .and_then(|hit| hit.hover_file_index);
         if hovered != self.state.file_list.hovered_index {
             self.dispatch_action(Action::HoverFile(hovered));
+        }
+
+        let hovered_row = self
+            .viewport_runtime
+            .hit_test_row(&self.state.viewport, x, y);
+        if hovered_row != self.state.viewport.hovered_row {
+            self.dispatch_action(Action::HoverViewportRow(hovered_row));
         }
     }
 
@@ -225,10 +263,10 @@ impl NativeApp {
             self.dispatch_action(Action::ScrollFileList(lines));
         } else if self
             .ui_frame
-            .preview_rect
+            .viewport_rect
             .is_some_and(|rect| rect.contains(x, y))
         {
-            self.dispatch_action(Action::ScrollPreview(lines));
+            self.dispatch_action(Action::ScrollViewportLines(lines));
         }
     }
 
@@ -251,7 +289,7 @@ impl NativeApp {
                 _ => Some(FocusTarget::LeftRef),
             },
             Screen::Diff => match self.state.focus.current {
-                Some(FocusTarget::FileList) => Some(FocusTarget::Preview),
+                Some(FocusTarget::FileList) => Some(FocusTarget::DiffViewport),
                 _ => Some(FocusTarget::FileList),
             },
         };
@@ -282,6 +320,9 @@ impl NativeApp {
                 Screen::Compare if !self.state.overlay.ref_suggestions.is_empty() => {
                     self.move_overlay_selection(1);
                 }
+                Screen::Diff if self.state.focus.current == Some(FocusTarget::DiffViewport) => {
+                    self.dispatch_action(Action::ScrollViewportLines(1));
+                }
                 Screen::Diff => self.dispatch_action(Action::SelectNextFile),
                 _ => {}
             },
@@ -289,9 +330,34 @@ impl NativeApp {
                 Screen::Compare if !self.state.overlay.ref_suggestions.is_empty() => {
                     self.move_overlay_selection(-1);
                 }
+                Screen::Diff if self.state.focus.current == Some(FocusTarget::DiffViewport) => {
+                    self.dispatch_action(Action::ScrollViewportLines(-1));
+                }
                 Screen::Diff => self.dispatch_action(Action::SelectPreviousFile),
                 _ => {}
             },
+            Key::Named(NamedKey::PageDown) if self.state.current_screen == Screen::Diff => {
+                if self.state.focus.current == Some(FocusTarget::DiffViewport) {
+                    self.dispatch_action(Action::ScrollViewportPages(1));
+                } else {
+                    self.dispatch_action(Action::ScrollFileList(10));
+                }
+            }
+            Key::Named(NamedKey::PageUp) if self.state.current_screen == Screen::Diff => {
+                if self.state.focus.current == Some(FocusTarget::DiffViewport) {
+                    self.dispatch_action(Action::ScrollViewportPages(-1));
+                } else {
+                    self.dispatch_action(Action::ScrollFileList(-10));
+                }
+            }
+            Key::Named(NamedKey::Home) if self.state.current_screen == Screen::Diff => {
+                self.dispatch_action(Action::ScrollViewportTo(0));
+            }
+            Key::Named(NamedKey::End) if self.state.current_screen == Screen::Diff => {
+                self.dispatch_action(Action::ScrollViewportTo(
+                    self.state.viewport.max_scroll_top_px(),
+                ));
+            }
             Key::Named(NamedKey::Tab) => self.cycle_focus(),
             Key::Named(NamedKey::Enter) => self.activate_current_focus(),
             Key::Named(NamedKey::Escape) => {
@@ -443,7 +509,14 @@ fn init_logging(log_debug: bool) {
     let _ = builder.is_test(false).try_init();
 }
 
-fn build_ui_frame(state: &AppState, theme: &Theme, width: f32, height: f32) -> UiFrame {
+fn build_ui_frame(
+    state: &mut AppState,
+    theme: &Theme,
+    viewport_runtime: &mut DiffViewportRuntime,
+    text_metrics: TextMetrics,
+    width: f32,
+    height: f32,
+) -> UiFrame {
     let mut frame = UiFrame::default();
     frame.scene.rect(RectPrimitive {
         rect: Rect {
@@ -458,7 +531,15 @@ fn build_ui_frame(state: &AppState, theme: &Theme, width: f32, height: f32) -> U
     match state.current_screen {
         Screen::Welcome => build_welcome_frame(&mut frame, state, theme, width, height),
         Screen::Compare => build_compare_frame(&mut frame, state, theme, width, height),
-        Screen::Diff => build_diff_frame(&mut frame, state, theme, width, height),
+        Screen::Diff => build_diff_frame(
+            &mut frame,
+            state,
+            theme,
+            viewport_runtime,
+            text_metrics,
+            width,
+            height,
+        ),
     }
 
     draw_toasts(&mut frame, state, theme, width, height);
@@ -902,10 +983,17 @@ fn build_compare_frame(
     }
 }
 
-fn build_diff_frame(frame: &mut UiFrame, state: &AppState, theme: &Theme, width: f32, height: f32) {
-    let (toolbar, sidebar, preview) = layout_diff(width, height);
+fn build_diff_frame(
+    frame: &mut UiFrame,
+    state: &mut AppState,
+    theme: &Theme,
+    viewport_runtime: &mut DiffViewportRuntime,
+    text_metrics: TextMetrics,
+    width: f32,
+    height: f32,
+) {
+    let (toolbar, sidebar, viewport_panel) = layout_diff(width, height);
     frame.file_list_rect = Some(sidebar);
-    frame.preview_rect = Some(preview);
 
     draw_surface(
         frame,
@@ -921,7 +1009,7 @@ fn build_diff_frame(frame: &mut UiFrame, state: &AppState, theme: &Theme, width:
     );
     draw_surface(
         frame,
-        preview,
+        viewport_panel,
         theme.colors.canvas,
         theme.colors.border_soft,
     );
@@ -964,6 +1052,36 @@ fn build_diff_frame(frame: &mut UiFrame, state: &AppState, theme: &Theme, width:
         width: 124.0,
         height: 38.0,
     };
+    let split_button = Rect {
+        x: wrap_button.x - 100.0,
+        y: wrap_button.y,
+        width: 88.0,
+        height: 38.0,
+    };
+    let unified_button = Rect {
+        x: split_button.x - 100.0,
+        y: wrap_button.y,
+        width: 88.0,
+        height: 38.0,
+    };
+    draw_button(
+        frame,
+        unified_button,
+        "Unified",
+        Action::SetLayoutMode(LayoutMode::Unified),
+        theme,
+        state.compare.layout == LayoutMode::Unified,
+        false,
+    );
+    draw_button(
+        frame,
+        split_button,
+        "Split",
+        Action::SetLayoutMode(LayoutMode::Split),
+        theme,
+        state.compare.layout == LayoutMode::Split,
+        false,
+    );
     draw_button(
         frame,
         wrap_button,
@@ -979,7 +1097,22 @@ fn build_diff_frame(frame: &mut UiFrame, state: &AppState, theme: &Theme, width:
     );
 
     draw_file_list(frame, state, theme, sidebar);
-    draw_preview(frame, state, theme, preview);
+    let viewport_bounds = pad_rect(viewport_panel, 10.0, 10.0, 10.0, 10.0);
+    let document = match state.workspace.active_file.as_ref() {
+        Some(active_file) if active_file.file.is_binary => ViewportDocument::Binary {
+            path: &active_file.path,
+        },
+        Some(active_file) => ViewportDocument::Text {
+            compare_generation: state.workspace.compare_generation,
+            file_index: active_file.index,
+            path: &active_file.path,
+            doc: &active_file.render_doc,
+        },
+        None => ViewportDocument::Empty,
+    };
+    viewport_runtime.prepare(&mut state.viewport, document, viewport_bounds, text_metrics);
+    frame.viewport_rect = Some(viewport_runtime.body_bounds());
+    viewport_runtime.paint(&mut frame.scene, theme, &state.viewport, document);
 }
 
 fn draw_segmented_compare_mode(frame: &mut UiFrame, rect: Rect, state: &AppState, theme: &Theme) {
@@ -1188,84 +1321,6 @@ fn draw_file_list(frame: &mut UiFrame, state: &AppState, theme: &Theme, sidebar:
             action: Action::SelectFile(index),
             hover_file_index: Some(index),
         });
-    }
-    frame.scene.pop_clip();
-}
-
-fn draw_preview(frame: &mut UiFrame, state: &AppState, theme: &Theme, preview: Rect) {
-    let title = Rect {
-        x: preview.x + 16.0,
-        y: preview.y + 14.0,
-        width: preview.width - 32.0,
-        height: 22.0,
-    };
-    draw_text(
-        &mut frame.scene,
-        title,
-        state
-            .workspace
-            .selected_file_path
-            .as_deref()
-            .unwrap_or("No file selected"),
-        theme.colors.text_strong,
-        16.0,
-        FontKind::Ui,
-    );
-
-    let body = Rect {
-        x: preview.x + 16.0,
-        y: preview.y + 48.0,
-        width: preview.width - 32.0,
-        height: preview.height - 64.0,
-    };
-    frame.scene.clip(body);
-    let line_height = 18.0;
-    let visible = (body.height / line_height).ceil().max(1.0) as usize;
-    let max_start = state.preview.lines.len().saturating_sub(visible);
-    let start = state.preview.scroll_offset.min(max_start);
-    let end = (start + visible + 1).min(state.preview.lines.len());
-    for index in start..end {
-        let line = &state.preview.lines[index];
-        let y = body.y + (index - start) as f32 * line_height;
-        let row = Rect {
-            x: body.x,
-            y,
-            width: body.width,
-            height: line_height,
-        };
-        let color = match line.kind {
-            PreviewLineKind::Title => theme.colors.text_strong,
-            PreviewLineKind::Meta => theme.colors.text_muted,
-            PreviewLineKind::Context => theme.colors.text_strong,
-            PreviewLineKind::Added => Color::rgba(0xa7, 0xe3, 0xb1, 0xff),
-            PreviewLineKind::Removed => Color::rgba(0xf0, 0xb2, 0xb4, 0xff),
-        };
-        if matches!(line.kind, PreviewLineKind::Added | PreviewLineKind::Removed) {
-            frame.scene.rect(RectPrimitive {
-                rect: row,
-                color: if line.kind == PreviewLineKind::Added {
-                    theme.colors.line_add
-                } else {
-                    theme.colors.line_del
-                },
-            });
-        }
-        draw_text(
-            &mut frame.scene,
-            row,
-            &line.text,
-            color,
-            if matches!(line.kind, PreviewLineKind::Title) {
-                15.0
-            } else {
-                13.0
-            },
-            if matches!(line.kind, PreviewLineKind::Title | PreviewLineKind::Meta) {
-                FontKind::Ui
-            } else {
-                FontKind::Mono
-            },
-        );
     }
     frame.scene.pop_clip();
 }

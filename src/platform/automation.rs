@@ -47,8 +47,14 @@ pub struct ViewportDump {
     pub layout: LayoutMode,
     pub wrap_enabled: bool,
     pub wrap_column: u32,
+    pub scroll_top_px: u32,
+    pub content_height_px: u32,
+    pub viewport_width_px: u32,
+    pub viewport_height_px: u32,
     pub hovered_row: Option<usize>,
-    pub selected_rows: Option<(usize, usize)>,
+    pub visible_row_start: Option<usize>,
+    pub visible_row_end: Option<usize>,
+    pub focused: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -138,8 +144,14 @@ impl From<&AppState> for StateDump {
                 layout: state.viewport.layout,
                 wrap_enabled: state.viewport.wrap_enabled,
                 wrap_column: state.viewport.wrap_column,
+                scroll_top_px: state.viewport.scroll_top_px,
+                content_height_px: state.viewport.content_height_px,
+                viewport_width_px: state.viewport.viewport_width_px,
+                viewport_height_px: state.viewport.viewport_height_px,
                 hovered_row: state.viewport.hovered_row,
-                selected_rows: state.viewport.selected_rows,
+                visible_row_start: state.viewport.visible_row_start,
+                visible_row_end: state.viewport.visible_row_end,
+                focused: state.viewport.focused,
             },
             pull_request: PullRequestDump {
                 status: async_status_name(state.github.pull_request.status),

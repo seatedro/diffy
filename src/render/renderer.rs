@@ -66,6 +66,7 @@ pub struct Renderer {
     size: PhysicalSize<u32>,
     scale_factor: f64,
     quad_pipeline: wgpu::RenderPipeline,
+    shadow_pipeline: wgpu::RenderPipeline,
     viewport_buffer: wgpu::Buffer,
     viewport_bind_group: wgpu::BindGroup,
     font_system: FontSystem,
@@ -139,7 +140,7 @@ impl Renderer {
                 label: Some("diffy_viewport_bind_group_layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -197,6 +198,46 @@ impl Renderer {
             cache: None,
         });
 
+        let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("diffy_shadow_shader"),
+            source: wgpu::ShaderSource::Wgsl(SHADOW_SHADER.into()),
+        });
+        let shadow_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("diffy_shadow_pipeline_layout"),
+                bind_group_layouts: &[&viewport_bind_group_layout],
+                immediate_size: 0,
+            });
+        let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("diffy_shadow_pipeline"),
+            layout: Some(&shadow_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shadow_shader,
+                entry_point: Some("vs_shadow"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[ShadowInstance::layout()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shadow_shader,
+                entry_point: Some("fs_shadow"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                strip_index_format: None,
+                ..wgpu::PrimitiveState::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let mut font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
         let glyph_cache = Cache::new(&device);
@@ -214,6 +255,7 @@ impl Renderer {
             size,
             scale_factor,
             quad_pipeline,
+            shadow_pipeline,
             viewport_buffer,
             viewport_bind_group,
             font_system,
@@ -295,14 +337,45 @@ impl Renderer {
                 label: Some("diffy_frame_encoder"),
             });
 
-        let (quad_instances, draw_commands) = build_quad_instances(&flattened.quads);
-        let quad_buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("diffy_quad_instances"),
-                contents: bytemuck::cast_slice(&quad_instances),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
+        // Build GPU buffers for each draw layer.
+        struct LayerBuffers {
+            shadow_buffer: Option<wgpu::Buffer>,
+            shadow_commands: Vec<QuadDrawCommand>,
+            quad_buffer: wgpu::Buffer,
+            quad_commands: Vec<QuadDrawCommand>,
+        }
+        let layer_buffers: Vec<LayerBuffers> = flattened
+            .layers
+            .iter()
+            .map(|layer| {
+                let (si, sc) = build_shadow_instances(&layer.shadows);
+                let sb = if !si.is_empty() {
+                    Some(self.device.create_buffer_init(
+                        &wgpu::util::BufferInitDescriptor {
+                            label: Some("diffy_shadow_instances"),
+                            contents: bytemuck::cast_slice(&si),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        },
+                    ))
+                } else {
+                    None
+                };
+                let (qi, qc) = build_quad_instances(&layer.quads);
+                let qb = self.device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("diffy_quad_instances"),
+                        contents: bytemuck::cast_slice(&qi),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    },
+                );
+                LayerBuffers {
+                    shadow_buffer: sb,
+                    shadow_commands: sc,
+                    quad_buffer: qb,
+                    quad_commands: qc,
+                }
+            })
+            .collect();
 
         let mut prepared_texts = Vec::with_capacity(
             flattened
@@ -373,21 +446,44 @@ impl Renderer {
                 multiview_mask: None,
             });
 
-            if !draw_commands.is_empty() {
-                pass.set_pipeline(&self.quad_pipeline);
-                pass.set_bind_group(0, &self.viewport_bind_group, &[]);
-                pass.set_vertex_buffer(0, quad_buffer.slice(..));
-                for command in &draw_commands {
-                    if command.clip.width <= 0.0 || command.clip.height <= 0.0 {
-                        continue;
+            // Draw each layer in order: shadows first, then quads. This
+            // preserves correct depth — a modal's shadow renders on top of
+            // the workspace quads, not behind them.
+            for lb in &layer_buffers {
+                if let Some(ref shadow_buf) = lb.shadow_buffer {
+                    pass.set_pipeline(&self.shadow_pipeline);
+                    pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+                    pass.set_vertex_buffer(0, shadow_buf.slice(..));
+                    for command in &lb.shadow_commands {
+                        if command.clip.width <= 0.0 || command.clip.height <= 0.0 {
+                            continue;
+                        }
+                        pass.set_scissor_rect(
+                            command.clip.x.max(0.0).round() as u32,
+                            command.clip.y.max(0.0).round() as u32,
+                            command.clip.width.max(1.0).round() as u32,
+                            command.clip.height.max(1.0).round() as u32,
+                        );
+                        pass.draw(0..4, command.instance_range.clone());
                     }
-                    pass.set_scissor_rect(
-                        command.clip.x.max(0.0).round() as u32,
-                        command.clip.y.max(0.0).round() as u32,
-                        command.clip.width.max(1.0).round() as u32,
-                        command.clip.height.max(1.0).round() as u32,
-                    );
-                    pass.draw(0..4, command.instance_range.clone());
+                }
+
+                if !lb.quad_commands.is_empty() {
+                    pass.set_pipeline(&self.quad_pipeline);
+                    pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+                    pass.set_vertex_buffer(0, lb.quad_buffer.slice(..));
+                    for command in &lb.quad_commands {
+                        if command.clip.width <= 0.0 || command.clip.height <= 0.0 {
+                            continue;
+                        }
+                        pass.set_scissor_rect(
+                            command.clip.x.max(0.0).round() as u32,
+                            command.clip.y.max(0.0).round() as u32,
+                            command.clip.width.max(1.0).round() as u32,
+                            command.clip.height.max(1.0).round() as u32,
+                        );
+                        pass.draw(0..4, command.instance_range.clone());
+                    }
                 }
             }
 
@@ -460,6 +556,50 @@ impl QuadInstance {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct ShadowInstance {
+    /// Expanded quad bounds (x, y, w, h) — covers the full blur extent.
+    draw_bounds: [f32; 4],
+    /// Original shadow-casting rect (x, y, w, h) before expansion.
+    shadow_bounds: [f32; 4],
+    /// Shadow color (linear RGBA, premultiplied).
+    color: [f32; 4],
+    /// [blur_sigma, corner_radius, 0, 0]
+    params: [f32; 4],
+}
+
+impl ShadowInstance {
+    fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 16,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 32,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 48,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct ViewportUniform {
     resolution: [f32; 2],
     _padding: [f32; 2],
@@ -478,11 +618,28 @@ impl ViewportUniform {
 // Scene flattening
 // ---------------------------------------------------------------------------
 
+/// A draw layer groups shadows that must render before their corresponding
+/// quads. Layers are rendered in order: for each layer we draw all its shadows,
+/// then all its quads. A new layer starts when a shadow primitive appears after
+/// quads have already been added to the current layer, ensuring correct
+/// depth ordering for elevated surfaces like modals.
+#[derive(Debug, Clone, Default)]
+struct DrawLayer {
+    shadows: Vec<ClippedShadow>,
+    quads: Vec<ClippedQuad>,
+}
+
 #[derive(Debug, Clone)]
 struct FlattenedScene {
-    quads: Vec<ClippedQuad>,
+    layers: Vec<DrawLayer>,
     texts: Vec<ClippedText>,
     rich_texts: Vec<ClippedRichText>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ClippedShadow {
+    instance: ShadowInstance,
+    clip: Rect,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -519,8 +676,9 @@ struct PreparedTextBuffer {
 
 fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
     let mut clips = vec![viewport];
+    let mut layers: Vec<DrawLayer> = vec![DrawLayer::default()];
     let mut flattened = FlattenedScene {
-        quads: Vec::new(),
+        layers: Vec::new(),
         texts: Vec::new(),
         rich_texts: Vec::new(),
     };
@@ -535,7 +693,7 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                     [0.0; 4],
                     [0.0; 4],
                     &clips,
-                    &mut flattened.quads,
+                    &mut layers.last_mut().unwrap().quads,
                 );
             }
             Primitive::RoundedRect(rect) => {
@@ -543,42 +701,64 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                     rect.rect,
                     color_to_linear(rect.color),
                     [0.0; 4],
-                    [rect.radius; 4],
+                    rect.corner_radii,
                     [0.0; 4],
                     &clips,
-                    &mut flattened.quads,
+                    &mut layers.last_mut().unwrap().quads,
                 );
             }
             Primitive::Border(border) => {
-                let r = border.radius;
-                let w = border.width;
                 push_quad(
                     border.rect,
                     [0.0; 4],
                     color_to_linear(border.color),
-                    [r, r, r, r],
-                    [w, w, w, w],
+                    border.corner_radii,
+                    border.widths,
                     &clips,
-                    &mut flattened.quads,
+                    &mut layers.last_mut().unwrap().quads,
                 );
             }
             Primitive::Shadow(shadow) => {
-                let expansion = shadow.blur_radius.max(1.0);
+                // If the current layer already has quads, start a new layer so
+                // this shadow renders on top of those quads (not behind them).
+                if !layers.last().unwrap().quads.is_empty() {
+                    layers.push(DrawLayer::default());
+                }
+
+                let sigma = (shadow.blur_radius * 0.5).max(0.5);
+                let expansion = sigma * 3.0;
+                let offset_x = shadow.offset[0];
+                let offset_y = shadow.offset[1];
                 let expanded = Rect {
-                    x: shadow.rect.x - expansion,
-                    y: shadow.rect.y - expansion,
+                    x: shadow.rect.x + offset_x - expansion,
+                    y: shadow.rect.y + offset_y - expansion,
                     width: shadow.rect.width + expansion * 2.0,
                     height: shadow.rect.height + expansion * 2.0,
                 };
-                push_quad(
-                    expanded,
-                    color_to_linear(shadow.color),
-                    [0.0; 4],
-                    [shadow.corner_radius + expansion; 4],
-                    [0.0; 4],
-                    &clips,
-                    &mut flattened.quads,
-                );
+                if let Some(clip) = clips.last().copied() {
+                    if expanded.intersection(clip).is_some() {
+                        let color = color_to_linear(shadow.color);
+                        layers.last_mut().unwrap().shadows.push(ClippedShadow {
+                            instance: ShadowInstance {
+                                draw_bounds: [
+                                    expanded.x,
+                                    expanded.y,
+                                    expanded.width,
+                                    expanded.height,
+                                ],
+                                shadow_bounds: [
+                                    shadow.rect.x + offset_x,
+                                    shadow.rect.y + offset_y,
+                                    shadow.rect.width,
+                                    shadow.rect.height,
+                                ],
+                                color,
+                                params: [sigma, shadow.corner_radius, 0.0, 0.0],
+                            },
+                            clip,
+                        });
+                    }
+                }
             }
             Primitive::TextRun(text) => {
                 if let Some(clip) = clips.last().copied()
@@ -617,6 +797,7 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
         }
     }
 
+    flattened.layers = layers;
     flattened
 }
 
@@ -662,6 +843,33 @@ fn build_quad_instances(quads: &[ClippedQuad]) -> (Vec<QuadInstance>, Vec<QuadDr
 
         while i < quads.len() && rects_equal(quads[i].clip, clip) {
             instances.push(quads[i].instance);
+            i += 1;
+        }
+
+        commands.push(QuadDrawCommand {
+            instance_range: start..i as u32,
+            clip,
+        });
+    }
+
+    (instances, commands)
+}
+
+fn build_shadow_instances(
+    shadows: &[ClippedShadow],
+) -> (Vec<ShadowInstance>, Vec<QuadDrawCommand>) {
+    let mut instances = Vec::with_capacity(shadows.len());
+    let mut commands = Vec::with_capacity(shadows.len());
+
+    let mut i = 0;
+    while i < shadows.len() {
+        let start = i as u32;
+        let clip = shadows[i].clip;
+        instances.push(shadows[i].instance);
+        i += 1;
+
+        while i < shadows.len() && rects_equal(shadows[i].clip, clip) {
+            instances.push(shadows[i].instance);
             i += 1;
         }
 
@@ -795,6 +1003,118 @@ fn srgb_to_linear(channel: u8) -> f32 {
         ((value + 0.055) / 1.055).powf(2.4)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Gaussian shadow shader
+// ---------------------------------------------------------------------------
+
+const SHADOW_SHADER: &str = r#"
+struct ViewportUniform {
+    resolution: vec2<f32>,
+    _padding: vec2<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> viewport: ViewportUniform;
+
+struct VertexInput {
+    @builtin(vertex_index) vertex_id: u32,
+    @location(0) draw_bounds: vec4<f32>,
+    @location(1) shadow_bounds: vec4<f32>,
+    @location(2) color: vec4<f32>,
+    @location(3) params: vec4<f32>,
+};
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) @interpolate(flat) shadow_bounds: vec4<f32>,
+    @location(1) @interpolate(flat) color: vec4<f32>,
+    @location(2) @interpolate(flat) params: vec4<f32>,
+};
+
+@vertex
+fn vs_shadow(input: VertexInput) -> VertexOutput {
+    let unit = vec2<f32>(
+        f32(input.vertex_id & 1u),
+        f32((input.vertex_id >> 1u) & 1u)
+    );
+    let pixel_pos = input.draw_bounds.xy + unit * input.draw_bounds.zw;
+    let ndc = pixel_pos / viewport.resolution * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
+
+    var out: VertexOutput;
+    out.position = vec4<f32>(ndc, 0.0, 1.0);
+    out.shadow_bounds = input.shadow_bounds;
+    out.color = input.color;
+    out.params = input.params;
+    return out;
+}
+
+// Attempt to approximate erf using a polynomial fit.
+// Abramowitz & Stegun 7.1.26 — max error < 1.5e-7, which is more than
+// enough for visual blur.
+fn erf_approx(x: f32) -> f32 {
+    let sign = select(-1.0, 1.0, x >= 0.0);
+    let a = abs(x);
+    let t = 1.0 / (1.0 + 0.3275911 * a);
+    let t2 = t * t;
+    let t3 = t2 * t;
+    let t4 = t3 * t;
+    let t5 = t4 * t;
+    let poly = 0.254829592 * t - 0.284496736 * t2 + 1.421413741 * t3
+             - 1.453152027 * t4 + 1.061405429 * t5;
+    return sign * (1.0 - poly * exp(-a * a));
+}
+
+// Integral of 1D Gaussian from -inf to x with given sigma.
+fn gauss_integral(x: f32, sigma: f32) -> f32 {
+    return 0.5 + 0.5 * erf_approx(x / (sigma * 1.4142135));
+}
+
+// Rounded-rect SDF (distance from point p to the rounded rect centered at
+// origin with given half_size and corner_radius).
+fn rounded_rect_sdf(p: vec2<f32>, half_size: vec2<f32>, radius: f32) -> f32 {
+    let q = abs(p) - half_size + vec2<f32>(radius);
+    return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - radius;
+}
+
+@fragment
+fn fs_shadow(input: VertexOutput) -> @location(0) vec4<f32> {
+    let sigma = input.params.x;
+    let corner_radius = input.params.y;
+    let half_size = input.shadow_bounds.zw * 0.5;
+    let center = input.shadow_bounds.xy + half_size;
+    let p = input.position.xy - center;
+
+    // For the blurred shadow, we compute the convolution of the rounded-rect
+    // indicator function with a 2D Gaussian. For a box (no rounding), this
+    // factors into the product of two 1D Gaussian integrals. For rounded
+    // corners we use a hybrid: compute the box integral and multiply by a
+    // smooth SDF-based corner correction.
+
+    // Separable box blur integral.
+    let ax = gauss_integral(p.x + half_size.x, sigma)
+           - gauss_integral(p.x - half_size.x, sigma);
+    let ay = gauss_integral(p.y + half_size.y, sigma)
+           - gauss_integral(p.y - half_size.y, sigma);
+    var alpha = ax * ay;
+
+    // Corner correction: fade out the corners that the box integral
+    // over-estimates. We sample the SDF and use the sigma to smooth it.
+    if (corner_radius > 0.0) {
+        let sdf = rounded_rect_sdf(p, half_size, corner_radius);
+        // Outside the rounded rect, attenuate based on how far outside.
+        // The smoothstep range is proportional to sigma for a soft edge.
+        let corner_fade = 1.0 - smoothstep(-sigma * 0.5, sigma * 1.5, sdf);
+        alpha = alpha * corner_fade;
+    }
+
+    let final_alpha = input.color.a * alpha;
+    if (final_alpha < 0.001) {
+        discard;
+    }
+    return vec4<f32>(input.color.rgb * final_alpha, final_alpha);
+}
+"#;
 
 // ---------------------------------------------------------------------------
 // SDF quad shader

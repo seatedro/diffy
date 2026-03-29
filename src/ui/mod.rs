@@ -5,6 +5,7 @@ pub mod components;
 pub mod design;
 pub mod diff_viewport;
 pub mod layout;
+pub mod palette;
 pub mod effects;
 pub mod events;
 pub(crate) mod shell;

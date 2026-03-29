@@ -56,28 +56,30 @@ impl<'a> ListItem<'a> {
 
     pub fn paint(self, frame: &mut UiFrame, rect: Rect, theme: &Theme) {
         if self.selected {
-            frame.scene.rounded_rect(RoundedRectPrimitive {
+            frame.scene.rounded_rect(RoundedRectPrimitive::uniform(
                 rect,
-                radius: theme.metrics.control_radius,
-                color: theme.colors.sidebar_row_selected,
-            });
+                theme.metrics.control_radius,
+                theme.colors.sidebar_row_selected,
+            ));
         } else if self.hover_progress > 0.001 {
             let transparent = Color::rgba(0, 0, 0, 0);
             let hover_color = theme.colors.sidebar_row_hover;
-            frame.scene.rounded_rect(RoundedRectPrimitive {
+            frame.scene.rounded_rect(RoundedRectPrimitive::uniform(
                 rect,
-                radius: theme.metrics.control_radius,
-                color: transparent.lerp(hover_color, self.hover_progress),
-            });
+                theme.metrics.control_radius,
+                transparent.lerp(hover_color, self.hover_progress),
+            ));
         }
 
-        let title_lh = theme.metrics.ui_font_size * 1.35;
-        let detail_lh = theme.metrics.ui_small_font_size * 1.35;
+        let title_lh = theme.metrics.ui_font_size * 1.5;
+        let detail_lh = theme.metrics.ui_small_font_size * 1.5;
+        let pad_x = Sp::MD;
+        let pad_y = Sp::XS;
         frame.scene.text(TextPrimitive {
             rect: Rect {
-                x: rect.x + Sp::LG,
-                y: rect.y + Sp::XS,
-                width: rect.width - Sp::XXL,
+                x: rect.x + pad_x,
+                y: rect.y + pad_y,
+                width: rect.width - pad_x * 2.0,
                 height: title_lh,
             },
             text: self.title.to_owned(),
@@ -89,9 +91,9 @@ impl<'a> ListItem<'a> {
         if let Some(detail) = &self.detail {
             frame.scene.text(TextPrimitive {
                 rect: Rect {
-                    x: rect.x + Sp::LG,
-                    y: rect.y + Sp::XS + title_lh,
-                    width: rect.width - Sp::XXL,
+                    x: rect.x + pad_x,
+                    y: rect.y + pad_y + title_lh,
+                    width: rect.width - pad_x * 2.0,
                     height: detail_lh,
                 },
                 text: detail.clone(),

@@ -61,11 +61,11 @@ impl<'a, T: PickerItem> PickerList<'a, T> {
             };
 
             if index == self.selected_index {
-                frame.scene.rounded_rect(RoundedRectPrimitive {
-                    rect: row,
-                    radius: theme.metrics.control_radius,
-                    color: theme.colors.ghost_element_selected,
-                });
+                frame.scene.rounded_rect(RoundedRectPrimitive::uniform(
+                    row,
+                    theme.metrics.control_radius,
+                    theme.colors.ghost_element_selected,
+                ));
             }
 
             let title_lh = theme.metrics.ui_font_size * 1.35;

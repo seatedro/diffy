@@ -145,16 +145,40 @@ pub struct RectPrimitive {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct RoundedRectPrimitive {
     pub rect: Rect,
-    pub radius: f32,
+    /// Corner radii: [top-left, top-right, bottom-right, bottom-left].
+    pub corner_radii: [f32; 4],
     pub color: Color,
+}
+
+impl RoundedRectPrimitive {
+    pub fn uniform(rect: Rect, radius: f32, color: Color) -> Self {
+        Self {
+            rect,
+            corner_radii: [radius; 4],
+            color,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct BorderPrimitive {
     pub rect: Rect,
-    pub width: f32,
-    pub radius: f32,
+    /// Border widths: [top, right, bottom, left].
+    pub widths: [f32; 4],
+    /// Corner radii: [top-left, top-right, bottom-right, bottom-left].
+    pub corner_radii: [f32; 4],
     pub color: Color,
+}
+
+impl BorderPrimitive {
+    pub fn uniform(rect: Rect, width: f32, radius: f32, color: Color) -> Self {
+        Self {
+            rect,
+            widths: [width; 4],
+            corner_radii: [radius; 4],
+            color,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -162,6 +186,8 @@ pub struct ShadowPrimitive {
     pub rect: Rect,
     pub blur_radius: f32,
     pub corner_radius: f32,
+    /// Offset applied to shadow position: [x, y].
+    pub offset: [f32; 2],
     pub color: Color,
 }
 

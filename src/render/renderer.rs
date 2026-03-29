@@ -762,6 +762,19 @@ impl Renderer {
                 &self.viewport_bind_group,
             );
 
+            draw_images(
+                &mut pass,
+                &zl.images,
+                &self.device,
+                &self.queue,
+                &self.blit_pipeline,
+                &self.viewport_bind_group,
+                &self.texture_bind_group_layout,
+                &self.sampler,
+                self.surface_config.width,
+                self.surface_config.height,
+            );
+
             pass.set_scissor_rect(0, 0, self.surface_config.width, self.surface_config.height);
             self.text_renderer
                 .render(&self.atlas, &self.viewport, &mut pass)?;
@@ -819,6 +832,18 @@ impl Renderer {
                         &self.effect_quad_pipeline,
                         &self.quad_pipeline,
                         &self.viewport_bind_group,
+                    );
+
+                    draw_images(
+                        &mut pass,
+                        &zl.images,
+                        &self.device,
+                        &self.queue,
+                        &self.blit_pipeline,
+                        &self.viewport_bind_group,
+                        &self.texture_bind_group_layout,
+                        &self.sampler,
+                        sw, sh,
                     );
 
                     pass.set_scissor_rect(0, 0, sw, sh);
@@ -1165,6 +1190,80 @@ fn draw_layers<'pass>(
     }
 }
 
+fn draw_images<'pass>(
+    pass: &mut wgpu::RenderPass<'pass>,
+    images: &[ClippedImage],
+    device: &'pass wgpu::Device,
+    queue: &wgpu::Queue,
+    blit_pipeline: &'pass wgpu::RenderPipeline,
+    viewport_bind_group: &'pass wgpu::BindGroup,
+    texture_bind_group_layout: &'pass wgpu::BindGroupLayout,
+    sampler: &'pass wgpu::Sampler,
+    viewport_w: u32,
+    viewport_h: u32,
+) {
+    for img in images {
+        if img.primitive.rgba.is_empty() || img.primitive.width == 0 || img.primitive.height == 0 {
+            continue;
+        }
+
+        let texture = device.create_texture_with_data(
+            queue,
+            &wgpu::TextureDescriptor {
+                label: Some("diffy_image"),
+                size: wgpu::Extent3d {
+                    width: img.primitive.width,
+                    height: img.primitive.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &img.primitive.rgba,
+        );
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("diffy_image_bind"),
+            layout: texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        });
+
+        let r = img.primitive.rect;
+        let blit_inst = BlitInstance {
+            bounds: [r.x, r.y, r.width, r.height],
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
+            tint: [1.0, 1.0, 1.0, 1.0],
+        };
+        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("diffy_image_blit"),
+            contents: bytemuck::cast_slice(&[blit_inst]),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        pass.set_pipeline(blit_pipeline);
+        pass.set_bind_group(0, viewport_bind_group, &[]);
+        pass.set_bind_group(1, &bind_group, &[]);
+        pass.set_vertex_buffer(0, buf.slice(..));
+        pass.set_scissor_rect(0, 0, viewport_w, viewport_h);
+        pass.draw(0..4, 0..1);
+    }
+}
+
 fn create_texture_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -1453,6 +1552,7 @@ struct ZLayer {
     draw_layers: Vec<DrawLayer>,
     texts: Vec<ClippedText>,
     rich_texts: Vec<ClippedRichText>,
+    images: Vec<ClippedImage>,
 }
 
 #[derive(Debug, Clone)]
@@ -1476,6 +1576,12 @@ struct ClippedQuad {
 #[derive(Debug, Clone, Copy)]
 struct ClippedEffectQuad {
     instance: EffectQuadInstance,
+    clip: Rect,
+}
+
+#[derive(Debug, Clone)]
+struct ClippedImage {
+    primitive: crate::render::scene::ImagePrimitive,
     clip: Rect,
 }
 
@@ -1690,10 +1796,18 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                     }
                 }
             }
-            Primitive::Icon(_) | Primitive::Image(_) => {
-                // TODO: GPU image rendering via textured quads.
-                // For now, images render in software capture only.
+            Primitive::Image(img) => {
+                if let Some(clip) = clips.last().copied() {
+                    if img.rect.intersection(clip).is_some() {
+                        let zl = current_z!();
+                        zl.images.push(ClippedImage {
+                            primitive: img.clone(),
+                            clip,
+                        });
+                    }
+                }
             }
+            Primitive::Icon(_) => {}
             Primitive::ClipStart(ClipPrimitive { rect }) => {
                 let next = clips
                     .last()

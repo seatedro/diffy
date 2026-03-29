@@ -55,14 +55,11 @@ pub fn build_ui_frame(
         .h(height)
         .flex_col()
         .bg(theme.colors.background)
-        .p(4.0)
-        .gap(4.0)
         .child(title_bar(state, theme))
         .child(
             div()
                 .flex_row()
                 .flex_1()
-                .gap(4.0)
                 .child(sidebar(state, theme, file_list_bounds.clone()))
                 .child(main_surface(state, theme, text_metrics, viewport_bounds.clone())),
         )
@@ -936,6 +933,7 @@ fn paint_toast(
         color: colors.text,
         font_size: colors.font_size,
         font_kind: FontKind::Ui,
+        font_weight: crate::render::FontWeight::Normal,
     });
 
     cx.hits.push(HitRegion {

@@ -1,7 +1,11 @@
 //! Core element model for declarative UI layout.
 //!
 //! Elements describe what they want (size, flex, padding) and a layout engine
-//! (Taffy) resolves concrete pixel coordinates. The renderer then paints.
+//! (Taffy) resolves concrete pixel coordinates. The lifecycle is:
+//!
+//! 1. **request_layout** — declare Taffy style and children.
+//! 2. **prepaint** — register hitboxes, resolve interaction state.
+//! 3. **paint** — emit scene primitives using resolved hover/hit state.
 
 use crate::render::scene::Rect;
 use crate::render::Scene;
@@ -29,7 +33,29 @@ pub struct HitRegion {
 }
 
 // ---------------------------------------------------------------------------
-// ElementContext — shared state available during layout and paint
+// HitboxId / Hitbox — hitbox system for prepaint-phase interaction
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HitboxId(usize);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HitboxBehavior {
+    /// Normal hitbox — participates in hover detection.
+    Normal,
+    /// Blocks mouse events from reaching hitboxes painted earlier (behind it).
+    BlockMouse,
+}
+
+#[derive(Debug, Clone)]
+pub struct Hitbox {
+    pub id: HitboxId,
+    pub bounds: Bounds,
+    pub behavior: HitboxBehavior,
+}
+
+// ---------------------------------------------------------------------------
+// ElementContext — shared state available during layout, prepaint, and paint
 // ---------------------------------------------------------------------------
 
 pub struct ElementContext<'a> {
@@ -40,13 +66,89 @@ pub struct ElementContext<'a> {
     pub mouse_position: Option<(f32, f32)>,
     /// Hit regions accumulated during paint, topmost last.
     pub hits: Vec<HitRegion>,
+    /// Hitboxes registered during prepaint.
+    hitboxes: Vec<Hitbox>,
+    /// The set of hitbox IDs that are considered hovered after hit-testing.
+    hovered_hitboxes: Vec<HitboxId>,
+    /// Counter for generating unique hitbox IDs.
+    next_hitbox_id: usize,
 }
 
-impl ElementContext<'_> {
-    /// Returns true if the given bounds contain the current mouse position.
-    pub fn is_hovered(&self, bounds: &Bounds) -> bool {
-        self.mouse_position
-            .is_some_and(|(x, y)| bounds.contains(x, y))
+impl<'a> ElementContext<'a> {
+    pub fn new(
+        theme: &'a Theme,
+        scale_factor: f32,
+        font_system: &'a mut glyphon::FontSystem,
+        mouse_position: Option<(f32, f32)>,
+    ) -> Self {
+        Self {
+            theme,
+            scale_factor,
+            font_system,
+            mouse_position,
+            hits: Vec::new(),
+            hitboxes: Vec::new(),
+            hovered_hitboxes: Vec::new(),
+            next_hitbox_id: 0,
+        }
+    }
+
+    /// Register a hitbox during prepaint. Returns an ID for later hover queries.
+    pub fn insert_hitbox(&mut self, bounds: Bounds, behavior: HitboxBehavior) -> HitboxId {
+        let id = HitboxId(self.next_hitbox_id);
+        self.next_hitbox_id += 1;
+        self.hitboxes.push(Hitbox {
+            id,
+            bounds,
+            behavior,
+        });
+        id
+    }
+
+    /// Returns true if the given hitbox is hovered (determined after `run_hit_test`).
+    pub fn is_hovered(&self, id: HitboxId) -> bool {
+        self.hovered_hitboxes.contains(&id)
+    }
+
+    /// Run hit-testing: walk hitboxes back-to-front (last registered = topmost).
+    /// If a `BlockMouse` hitbox contains the mouse, all hitboxes behind it that
+    /// overlap with the blocking hitbox are excluded from hover.
+    pub fn run_hit_test(&mut self) {
+        self.hovered_hitboxes.clear();
+        let mouse = match self.mouse_position {
+            Some(pos) => pos,
+            None => return,
+        };
+
+        // Collect which hitboxes the mouse is inside.
+        let mut candidates: Vec<(HitboxId, Bounds, HitboxBehavior)> = Vec::new();
+        for hb in &self.hitboxes {
+            if hb.bounds.contains(mouse.0, mouse.1) {
+                candidates.push((hb.id, hb.bounds, hb.behavior));
+            }
+        }
+
+        // Walk back-to-front (last = topmost). If we encounter a BlockMouse,
+        // remove any earlier candidate whose bounds overlap with the blocker.
+        let mut blocked_regions: Vec<Bounds> = Vec::new();
+
+        // Process from topmost to bottommost.
+        for i in (0..candidates.len()).rev() {
+            let (id, bounds, behavior) = candidates[i];
+
+            // Check if this candidate is blocked by any blocker above it.
+            let is_blocked = blocked_regions.iter().any(|blocker| {
+                blocker.intersection(bounds).is_some()
+            });
+
+            if !is_blocked {
+                self.hovered_hitboxes.push(id);
+            }
+
+            if behavior == HitboxBehavior::BlockMouse {
+                blocked_regions.push(bounds);
+            }
+        }
     }
 }
 
@@ -58,9 +160,12 @@ impl ElementContext<'_> {
 ///
 /// 1. **request_layout** — declare your Taffy style and children. Returns a
 ///    `LayoutId` and arbitrary per-element state.
-/// 2. **paint** — given your resolved bounds, emit scene primitives.
+/// 2. **prepaint** — given resolved bounds, register hitboxes and resolve
+///    interaction state. Returns arbitrary prepaint state.
+/// 3. **paint** — emit scene primitives using resolved bounds and prepaint state.
 pub trait Element: 'static {
     type LayoutState: 'static;
+    type PrepaintState: 'static;
 
     fn request_layout(
         &mut self,
@@ -68,10 +173,19 @@ pub trait Element: 'static {
         cx: &mut ElementContext,
     ) -> (LayoutId, Self::LayoutState);
 
+    fn prepaint(
+        &mut self,
+        bounds: Bounds,
+        layout_state: &mut Self::LayoutState,
+        engine: &LayoutEngine,
+        cx: &mut ElementContext,
+    ) -> Self::PrepaintState;
+
     fn paint(
         &mut self,
         bounds: Bounds,
-        state: &mut Self::LayoutState,
+        layout_state: &mut Self::LayoutState,
+        prepaint_state: &mut Self::PrepaintState,
         engine: &LayoutEngine,
         scene: &mut Scene,
         cx: &mut ElementContext,
@@ -92,6 +206,7 @@ impl AnyElement {
             inner: Box::new(ElementHolder {
                 element,
                 layout_state: None,
+                prepaint_state: None,
                 layout_id: None,
             }),
         }
@@ -103,6 +218,24 @@ impl AnyElement {
         cx: &mut ElementContext,
     ) -> LayoutId {
         self.inner.request_layout(engine, cx)
+    }
+
+    pub fn prepaint(
+        &mut self,
+        engine: &LayoutEngine,
+        cx: &mut ElementContext,
+    ) {
+        self.inner.prepaint(engine, cx, 0.0, 0.0);
+    }
+
+    pub fn prepaint_with_offset(
+        &mut self,
+        engine: &LayoutEngine,
+        cx: &mut ElementContext,
+        offset_x: f32,
+        offset_y: f32,
+    ) {
+        self.inner.prepaint(engine, cx, offset_x, offset_y);
     }
 
     pub fn paint(
@@ -128,6 +261,13 @@ impl AnyElement {
 
 trait AnyElementImpl {
     fn request_layout(&mut self, engine: &mut LayoutEngine, cx: &mut ElementContext) -> LayoutId;
+    fn prepaint(
+        &mut self,
+        engine: &LayoutEngine,
+        cx: &mut ElementContext,
+        offset_x: f32,
+        offset_y: f32,
+    );
     fn paint(
         &mut self,
         engine: &LayoutEngine,
@@ -141,6 +281,7 @@ trait AnyElementImpl {
 struct ElementHolder<E: Element> {
     element: E,
     layout_state: Option<E::LayoutState>,
+    prepaint_state: Option<E::PrepaintState>,
     layout_id: Option<LayoutId>,
 }
 
@@ -150,6 +291,22 @@ impl<E: Element> AnyElementImpl for ElementHolder<E> {
         self.layout_id = Some(id);
         self.layout_state = Some(state);
         id
+    }
+
+    fn prepaint(
+        &mut self,
+        engine: &LayoutEngine,
+        cx: &mut ElementContext,
+        offset_x: f32,
+        offset_y: f32,
+    ) {
+        let id = self.layout_id.expect("prepaint called before request_layout");
+        let mut bounds = engine.layout_bounds(id);
+        bounds.x += offset_x;
+        bounds.y += offset_y;
+        let layout_state = self.layout_state.as_mut().expect("prepaint called before request_layout");
+        let prepaint_state = self.element.prepaint(bounds, layout_state, engine, cx);
+        self.prepaint_state = Some(prepaint_state);
     }
 
     fn paint(
@@ -164,8 +321,9 @@ impl<E: Element> AnyElementImpl for ElementHolder<E> {
         let mut bounds = engine.layout_bounds(id);
         bounds.x += offset_x;
         bounds.y += offset_y;
-        let state = self.layout_state.as_mut().expect("paint called before request_layout");
-        self.element.paint(bounds, state, engine, scene, cx);
+        let layout_state = self.layout_state.as_mut().expect("paint called before request_layout");
+        let prepaint_state = self.prepaint_state.as_mut().expect("paint called before prepaint");
+        self.element.paint(bounds, layout_state, prepaint_state, engine, scene, cx);
     }
 }
 
@@ -177,16 +335,85 @@ pub trait IntoAnyElement {
     fn into_any(self) -> AnyElement;
 }
 
-impl<E: Element> IntoAnyElement for E {
-    fn into_any(self) -> AnyElement {
-        AnyElement::new(self)
-    }
-}
-
 impl IntoAnyElement for AnyElement {
     fn into_any(self) -> AnyElement {
         self
     }
+}
+
+// ---------------------------------------------------------------------------
+// RenderOnce — component-level trait
+// ---------------------------------------------------------------------------
+
+/// Components implement `RenderOnce` to produce a tree of elements.
+/// The component is consumed (moved) when rendered.
+pub trait RenderOnce: 'static + Sized {
+    fn render(self, cx: &ElementContext) -> AnyElement;
+}
+
+/// Adapter that wraps a `RenderOnce` component into an `Element`.
+struct ComponentElement<C: RenderOnce> {
+    component: Option<C>,
+    rendered: Option<AnyElement>,
+}
+
+impl<C: RenderOnce> Element for ComponentElement<C> {
+    type LayoutState = ();
+    type PrepaintState = ();
+
+    fn request_layout(
+        &mut self,
+        engine: &mut LayoutEngine,
+        cx: &mut ElementContext,
+    ) -> (LayoutId, ()) {
+        let component = self.component.take().expect("ComponentElement rendered twice");
+        let mut any = component.render(cx);
+        let id = any.request_layout(engine, cx);
+        self.rendered = Some(any);
+        (id, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _bounds: Bounds,
+        _layout_state: &mut (),
+        engine: &LayoutEngine,
+        cx: &mut ElementContext,
+    ) -> () {
+        if let Some(ref mut rendered) = self.rendered {
+            rendered.prepaint(engine, cx);
+        }
+    }
+
+    fn paint(
+        &mut self,
+        _bounds: Bounds,
+        _layout_state: &mut (),
+        _prepaint_state: &mut (),
+        engine: &LayoutEngine,
+        scene: &mut Scene,
+        cx: &mut ElementContext,
+    ) {
+        if let Some(ref mut rendered) = self.rendered {
+            rendered.paint(engine, scene, cx);
+        }
+    }
+}
+
+/// Blanket impl: any `RenderOnce` can be converted into an `AnyElement`.
+impl<C: RenderOnce> IntoAnyElement for C {
+    fn into_any(self) -> AnyElement {
+        AnyElement::new(ComponentElement {
+            component: Some(self),
+            rendered: None,
+        })
+    }
+}
+
+/// Helper to wrap any `Element` implementor into an `AnyElement`.
+/// Use this for types that implement `Element` directly (not `RenderOnce`).
+fn element_into_any<E: Element>(element: E) -> AnyElement {
+    AnyElement::new(element)
 }
 
 // ---------------------------------------------------------------------------
@@ -311,7 +538,7 @@ impl LayoutEngine {
 // render_element — top-level entry point
 // ---------------------------------------------------------------------------
 
-/// Lay out and paint an element tree into the given scene.
+/// Lay out, prepaint, hit-test, and paint an element tree into the given scene.
 /// Returns the hit regions accumulated during paint.
 pub fn render_element(
     root: &mut AnyElement,
@@ -323,6 +550,8 @@ pub fn render_element(
     let mut engine = LayoutEngine::new();
     let root_id = root.request_layout(&mut engine, cx);
     engine.compute_layout(root_id, width, height);
+    root.prepaint(&engine, cx);
+    cx.run_hit_test();
     root.paint(&engine, scene, cx);
 }
 
@@ -617,8 +846,14 @@ impl Div {
     }
 }
 
+/// Div's prepaint state: an optional hitbox ID (registered when on_click is set).
+pub struct DivPrepaintState {
+    hitbox_id: Option<HitboxId>,
+}
+
 impl Element for Div {
     type LayoutState = Vec<LayoutId>;
+    type PrepaintState = DivPrepaintState;
 
     fn request_layout(
         &mut self,
@@ -636,16 +871,47 @@ impl Element for Div {
         (id, child_ids)
     }
 
+    fn prepaint(
+        &mut self,
+        bounds: Bounds,
+        _layout_state: &mut Self::LayoutState,
+        engine: &LayoutEngine,
+        cx: &mut ElementContext,
+    ) -> DivPrepaintState {
+        // Register a hitbox if this div is clickable.
+        let hitbox_id = if self.on_click.is_some() {
+            Some(cx.insert_hitbox(bounds, HitboxBehavior::Normal))
+        } else {
+            None
+        };
+
+        // Prepaint children (with scroll offset if applicable).
+        if self.scroll_y != 0.0 {
+            for child in &mut self.children {
+                child.prepaint_with_offset(engine, cx, 0.0, -self.scroll_y);
+            }
+        } else {
+            for child in &mut self.children {
+                child.prepaint(engine, cx);
+            }
+        }
+
+        DivPrepaintState { hitbox_id }
+    }
+
     fn paint(
         &mut self,
         bounds: Bounds,
-        _state: &mut Self::LayoutState,
+        _layout_state: &mut Self::LayoutState,
+        prepaint_state: &mut DivPrepaintState,
         engine: &LayoutEngine,
         scene: &mut Scene,
         cx: &mut ElementContext,
     ) {
         let r = self.corner_radius;
-        let hovered = self.on_click.is_some() && cx.is_hovered(&bounds);
+        let hovered = prepaint_state
+            .hitbox_id
+            .map_or(false, |id| cx.is_hovered(id));
 
         // Shadows
         for s in &self.shadows {
@@ -679,10 +945,6 @@ impl Element for Div {
         }
 
         if self.scroll_y != 0.0 {
-            // Apply scroll offset: shift all child painting up by scroll_y.
-            // We do this by temporarily adjusting the engine's reported bounds.
-            // Since children already have absolute coords from Taffy, we offset
-            // the scene's coordinate space.
             for child in &mut self.children {
                 child.paint_with_offset(engine, scene, cx, 0.0, -self.scroll_y);
             }
@@ -707,6 +969,12 @@ impl Element for Div {
     }
 }
 
+impl IntoAnyElement for Div {
+    fn into_any(self) -> AnyElement {
+        element_into_any(self)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Spacer — flexible empty space
 // ---------------------------------------------------------------------------
@@ -719,6 +987,7 @@ pub fn spacer() -> Spacer {
 
 impl Element for Spacer {
     type LayoutState = ();
+    type PrepaintState = ();
 
     fn request_layout(
         &mut self,
@@ -735,14 +1004,30 @@ impl Element for Spacer {
         (id, ())
     }
 
+    fn prepaint(
+        &mut self,
+        _bounds: Bounds,
+        _layout_state: &mut (),
+        _engine: &LayoutEngine,
+        _cx: &mut ElementContext,
+    ) -> () {
+    }
+
     fn paint(
         &mut self,
         _bounds: Bounds,
-        _state: &mut (),
+        _layout_state: &mut (),
+        _prepaint_state: &mut (),
         _engine: &LayoutEngine,
         _scene: &mut Scene,
         _cx: &mut ElementContext,
     ) {
+    }
+}
+
+impl IntoAnyElement for Spacer {
+    fn into_any(self) -> AnyElement {
+        element_into_any(self)
     }
 }
 
@@ -823,6 +1108,7 @@ impl TextElement {
 
 impl Element for TextElement {
     type LayoutState = (f32, f32); // (resolved_font_size, line_height)
+    type PrepaintState = ();
 
     fn request_layout(
         &mut self,
@@ -855,10 +1141,20 @@ impl Element for TextElement {
         (id, (font_size, line_height))
     }
 
+    fn prepaint(
+        &mut self,
+        _bounds: Bounds,
+        _layout_state: &mut Self::LayoutState,
+        _engine: &LayoutEngine,
+        _cx: &mut ElementContext,
+    ) -> () {
+    }
+
     fn paint(
         &mut self,
         bounds: Bounds,
         state: &mut (f32, f32),
+        _prepaint_state: &mut (),
         _engine: &LayoutEngine,
         scene: &mut Scene,
         cx: &mut ElementContext,
@@ -876,16 +1172,103 @@ impl Element for TextElement {
     }
 }
 
+impl IntoAnyElement for TextElement {
+    fn into_any(self) -> AnyElement {
+        element_into_any(self)
+    }
+}
+
 /// Allow `"string literal"` as a child element directly.
 impl IntoAnyElement for &str {
     fn into_any(self) -> AnyElement {
-        AnyElement::new(text(self))
+        element_into_any(text(self))
     }
 }
 
 impl IntoAnyElement for String {
     fn into_any(self) -> AnyElement {
-        AnyElement::new(text(self))
+        element_into_any(text(self))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Canvas — custom painting element
+// ---------------------------------------------------------------------------
+
+/// A leaf element that delegates painting to a caller-provided closure.
+/// Participates in layout via its Taffy style.
+pub struct Canvas {
+    style: taffy::Style,
+    paint_fn: Option<Box<dyn FnOnce(Bounds, &mut Scene, &mut ElementContext)>>,
+}
+
+/// Create a canvas element that calls `paint` with its resolved bounds.
+pub fn canvas(paint: impl FnOnce(Bounds, &mut Scene, &mut ElementContext) + 'static) -> Canvas {
+    Canvas {
+        style: taffy::Style::default(),
+        paint_fn: Some(Box::new(paint)),
+    }
+}
+
+impl Canvas {
+    pub fn w(mut self, v: f32) -> Self {
+        self.style.size.width = taffy::Dimension::length(v);
+        self
+    }
+
+    pub fn h(mut self, v: f32) -> Self {
+        self.style.size.height = taffy::Dimension::length(v);
+        self
+    }
+
+    pub fn flex_1(mut self) -> Self {
+        self.style.flex_grow = 1.0;
+        self.style.flex_shrink = 1.0;
+        self.style.flex_basis = taffy::Dimension::percent(0.0);
+        self
+    }
+}
+
+impl Element for Canvas {
+    type LayoutState = ();
+    type PrepaintState = ();
+
+    fn request_layout(
+        &mut self,
+        engine: &mut LayoutEngine,
+        _cx: &mut ElementContext,
+    ) -> (LayoutId, ()) {
+        let id = engine.request_layout(self.style.clone(), &[]);
+        (id, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _bounds: Bounds,
+        _layout_state: &mut (),
+        _engine: &LayoutEngine,
+        _cx: &mut ElementContext,
+    ) -> () {
+    }
+
+    fn paint(
+        &mut self,
+        bounds: Bounds,
+        _layout_state: &mut (),
+        _prepaint_state: &mut (),
+        _engine: &LayoutEngine,
+        scene: &mut Scene,
+        cx: &mut ElementContext,
+    ) {
+        if let Some(f) = self.paint_fn.take() {
+            f(bounds, scene, cx);
+        }
+    }
+}
+
+impl IntoAnyElement for Canvas {
+    fn into_any(self) -> AnyElement {
+        element_into_any(self)
     }
 }
 
@@ -900,13 +1283,7 @@ mod tests {
 
     fn test_cx(font_system: &mut glyphon::FontSystem) -> ElementContext<'_> {
         let theme = Box::leak(Box::new(Theme::default_dark()));
-        ElementContext {
-            theme,
-            scale_factor: 1.0,
-            font_system,
-            mouse_position: None,
-            hits: Vec::new(),
-        }
+        ElementContext::new(theme, 1.0, font_system, None)
     }
 
     #[test]
@@ -1266,5 +1643,129 @@ mod tests {
         }).expect("should have child bg");
         assert!((bg.rect.y - (-20.0)).abs() < 1.0,
             "child y={} should be ~-20 (scrolled)", bg.rect.y);
+    }
+
+    // -- New tests --
+
+    #[test]
+    fn canvas_element_emits_custom_primitives() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        let mut scene = Scene::default();
+
+        let green = Color::rgba(0, 255, 0, 255);
+
+        let mut root = div()
+            .w(400.0)
+            .h(300.0)
+            .child(
+                canvas(move |bounds, scene, _cx| {
+                    // Draw a custom rect using the resolved bounds.
+                    scene.rounded_rect(RoundedRectPrimitive::uniform(bounds, 0.0, green));
+                })
+                .w(100.0)
+                .h(50.0)
+            )
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 400.0, 300.0);
+
+        // The canvas closure should have emitted exactly one rounded rect.
+        let rr_count = scene.primitives.iter().filter(|p| {
+            matches!(p, crate::render::Primitive::RoundedRect(_))
+        }).count();
+        assert_eq!(rr_count, 1, "canvas should emit one rounded rect");
+
+        if let crate::render::Primitive::RoundedRect(rr) = &scene.primitives[0] {
+            assert_eq!(rr.color, green, "canvas rect should be green");
+            assert!((rr.rect.width - 100.0).abs() < 1.0, "canvas width should be ~100");
+            assert!((rr.rect.height - 50.0).abs() < 1.0, "canvas height should be ~50");
+        } else {
+            panic!("expected RoundedRect primitive from canvas");
+        }
+    }
+
+    #[test]
+    fn hitbox_blocking_modal_prevents_hover_behind() {
+        // Scenario: a background div and a modal div that blocks mouse events.
+        // The mouse is at a position inside both. The background div should NOT
+        // be hovered because the modal's BlockMouse hitbox blocks it.
+        let mut font_system = glyphon::FontSystem::new();
+        let theme = Box::leak(Box::new(Theme::default_dark()));
+        let mut cx = ElementContext::new(theme, 1.0, &mut font_system, Some((100.0, 100.0)));
+
+        // Register a "background" hitbox at (0,0)-(200,200).
+        let bg_id = cx.insert_hitbox(
+            Bounds { x: 0.0, y: 0.0, width: 200.0, height: 200.0 },
+            HitboxBehavior::Normal,
+        );
+
+        // Register a "modal" hitbox at (50,50)-(150,150) that blocks mouse.
+        let modal_id = cx.insert_hitbox(
+            Bounds { x: 50.0, y: 50.0, width: 100.0, height: 100.0 },
+            HitboxBehavior::BlockMouse,
+        );
+
+        cx.run_hit_test();
+
+        // The modal should be hovered (mouse at 100,100 is inside it).
+        assert!(cx.is_hovered(modal_id), "modal should be hovered");
+        // The background should NOT be hovered because the modal blocks it.
+        assert!(!cx.is_hovered(bg_id), "background should be blocked by modal");
+    }
+
+    #[test]
+    fn render_once_component_renders_correctly() {
+        // Define a simple component that produces a div with text.
+        struct MyButton {
+            label: String,
+            color: Color,
+        }
+
+        impl RenderOnce for MyButton {
+            fn render(self, _cx: &ElementContext) -> AnyElement {
+                div()
+                    .w(120.0)
+                    .h(40.0)
+                    .bg(self.color)
+                    .child(text(self.label).size(14.0))
+                    .into_any()
+            }
+        }
+
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        let mut scene = Scene::default();
+
+        let blue = Color::rgba(0, 0, 255, 255);
+
+        let button = MyButton {
+            label: "Click me".into(),
+            color: blue,
+        };
+
+        // Use the RenderOnce component as a child via IntoAnyElement.
+        let mut root = div()
+            .w(400.0)
+            .h(200.0)
+            .child(button.into_any())
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 400.0, 200.0);
+
+        // Should have the button's background rect and text.
+        let rr_count = scene.primitives.iter().filter(|p| {
+            matches!(p, crate::render::Primitive::RoundedRect(_))
+        }).count();
+        assert_eq!(rr_count, 1, "button should emit one background rect");
+
+        let text_count = scene.primitives.iter().filter(|p| {
+            matches!(p, crate::render::Primitive::TextRun(_))
+        }).count();
+        assert_eq!(text_count, 1, "button should emit one text primitive");
+
+        if let crate::render::Primitive::RoundedRect(rr) = &scene.primitives[0] {
+            assert_eq!(rr.color, blue, "button bg should be blue");
+        }
     }
 }

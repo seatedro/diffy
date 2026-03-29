@@ -11,6 +11,7 @@ use crate::render::scene::{BlurRegionPrimitive, EffectQuadPrimitive, EffectType,
 use crate::render::Scene;
 use crate::ui::actions::Action;
 use crate::ui::shell::CursorHint;
+use crate::ui::signals::{Signal, SignalStore};
 use crate::ui::theme::Theme;
 
 pub use taffy::NodeId as LayoutId;
@@ -102,6 +103,8 @@ pub struct ElementContext<'a> {
     pub scroll_regions: Vec<ScrollRegion>,
     /// The current focus target (from persistent app state).
     pub focus: Option<crate::ui::state::FocusTarget>,
+    /// Reactive signal store — persists across frames.
+    pub signal_store: &'a mut SignalStore,
     hitboxes: Vec<Hitbox>,
     hovered_hitboxes: Vec<HitboxId>,
     next_hitbox_id: usize,
@@ -113,6 +116,7 @@ impl<'a> ElementContext<'a> {
         scale_factor: f32,
         font_system: &'a mut glyphon::FontSystem,
         mouse_position: Option<(f32, f32)>,
+        signal_store: &'a mut SignalStore,
     ) -> Self {
         Self {
             theme,
@@ -122,10 +126,31 @@ impl<'a> ElementContext<'a> {
             hits: Vec::new(),
             scroll_regions: Vec::new(),
             focus: None,
+            signal_store,
             hitboxes: Vec::new(),
             hovered_hitboxes: Vec::new(),
             next_hitbox_id: 0,
         }
+    }
+
+    /// Read a signal's value (clones it out).
+    pub fn read<T: 'static + Clone>(&self, signal: Signal<T>) -> T {
+        self.signal_store.read(signal)
+    }
+
+    /// Access a signal's value by reference without cloning.
+    pub fn with_signal<T: 'static, R>(&self, signal: Signal<T>, f: impl FnOnce(&T) -> R) -> R {
+        self.signal_store.with(signal, f)
+    }
+
+    /// Replace a signal's value.
+    pub fn write<T: 'static>(&mut self, signal: Signal<T>, value: T) {
+        self.signal_store.write(signal, value);
+    }
+
+    /// Mutate a signal's value in place.
+    pub fn update<T: 'static>(&mut self, signal: Signal<T>, f: impl FnOnce(&mut T)) {
+        self.signal_store.update(signal, f);
     }
 
     pub fn with_focus(mut self, focus: Option<crate::ui::state::FocusTarget>) -> Self {
@@ -1464,15 +1489,16 @@ mod tests {
     use super::*;
     use crate::ui::theme::Theme;
 
-    fn test_cx(font_system: &mut glyphon::FontSystem) -> ElementContext<'_> {
+    fn test_cx<'a>(font_system: &'a mut glyphon::FontSystem, store: &'a mut SignalStore) -> ElementContext<'a> {
         let theme = Box::leak(Box::new(Theme::default_dark()));
-        ElementContext::new(theme, 1.0, font_system, None)
+        ElementContext::new(theme, 1.0, font_system, None, store)
     }
 
     #[test]
     fn div_with_fixed_children_lays_out() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let mut root = div()
@@ -1494,7 +1520,8 @@ mod tests {
     #[test]
     fn div_with_background_emits_rounded_rect() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let mut root = div()
@@ -1512,7 +1539,8 @@ mod tests {
     #[test]
     fn nested_divs_resolve_absolute_positions() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
 
         let mut engine = LayoutEngine::new();
         let inner_w = 50.0;
@@ -1543,7 +1571,8 @@ mod tests {
     #[test]
     fn text_element_emits_text_primitive() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let mut root = div()
@@ -1564,7 +1593,8 @@ mod tests {
     #[test]
     fn string_as_child_works() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let mut root = div()
@@ -1584,7 +1614,8 @@ mod tests {
     #[test]
     fn text_element_has_intrinsic_width() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
 
         let mut engine = LayoutEngine::new();
         let mut txt = text("ABCDE").size(10.0);
@@ -1603,7 +1634,8 @@ mod tests {
     #[test]
     fn on_click_registers_hit_region() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let mut root = div()
@@ -1623,7 +1655,8 @@ mod tests {
     #[test]
     fn hover_bg_applies_when_mouse_inside() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         cx.mouse_position = Some((100.0, 25.0)); // inside the 200x50 div
 
         let mut scene = Scene::default();
@@ -1653,7 +1686,8 @@ mod tests {
     #[test]
     fn hover_bg_does_not_apply_when_mouse_outside() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         cx.mouse_position = Some((999.0, 999.0)); // outside
 
         let mut scene = Scene::default();
@@ -1678,7 +1712,8 @@ mod tests {
     #[test]
     fn realistic_title_bar_layout() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let theme = cx.theme;
@@ -1739,7 +1774,8 @@ mod tests {
     #[test]
     fn realistic_file_list_with_scroll() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let theme = cx.theme;
@@ -1794,7 +1830,8 @@ mod tests {
     #[test]
     fn scroll_y_clips_and_offsets_children() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let red = Color::rgba(255, 0, 0, 255);
@@ -1833,7 +1870,8 @@ mod tests {
     #[test]
     fn canvas_element_emits_custom_primitives() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let green = Color::rgba(0, 255, 0, 255);
@@ -1874,8 +1912,9 @@ mod tests {
         // The mouse is at a position inside both. The background div should NOT
         // be hovered because the modal's BlockMouse hitbox blocks it.
         let mut font_system = glyphon::FontSystem::new();
+        let mut store = SignalStore::new();
         let theme = Box::leak(Box::new(Theme::default_dark()));
-        let mut cx = ElementContext::new(theme, 1.0, &mut font_system, Some((100.0, 100.0)));
+        let mut cx = ElementContext::new(theme, 1.0, &mut font_system, Some((100.0, 100.0)), &mut store);
 
         // Register a "background" hitbox at (0,0)-(200,200).
         let bg_id = cx.insert_hitbox(
@@ -1917,7 +1956,8 @@ mod tests {
         }
 
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let blue = Color::rgba(0, 0, 255, 255);
@@ -1955,11 +1995,13 @@ mod tests {
     #[test]
     fn hover_style_override_changes_border() {
         let mut font_system = glyphon::FontSystem::new();
+        let mut store = SignalStore::new();
         let mut cx = ElementContext::new(
             Box::leak(Box::new(Theme::default_dark())),
             1.0,
             &mut font_system,
             Some((100.0, 25.0)), // inside
+            &mut store,
         );
         let mut scene = Scene::default();
 
@@ -1993,7 +2035,8 @@ mod tests {
     #[test]
     fn when_conditional_applies() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let red = Color::rgba(255, 0, 0, 255);
@@ -2017,7 +2060,8 @@ mod tests {
     #[test]
     fn on_scroll_registers_scroll_region() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let mut root = div()
@@ -2038,11 +2082,13 @@ mod tests {
     #[test]
     fn focus_tracking_query() {
         let mut font_system = glyphon::FontSystem::new();
+        let mut store = SignalStore::new();
         let cx = ElementContext::new(
             Box::leak(Box::new(Theme::default_dark())),
             1.0,
             &mut font_system,
             None,
+            &mut store,
         )
         .with_focus(Some(crate::ui::state::FocusTarget::FileList));
 
@@ -2053,7 +2099,8 @@ mod tests {
     #[test]
     fn text_input_renders_label_and_value() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let mut root = text_input("Branch", "main")
@@ -2078,7 +2125,8 @@ mod tests {
     #[test]
     fn when_conditional_skips() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let red = Color::rgba(255, 0, 0, 255);
@@ -2102,7 +2150,8 @@ mod tests {
     #[test]
     fn bg_effect_noise_gradient_emits_effect_quad() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let a = Color::rgba(255, 0, 0, 255);
@@ -2142,7 +2191,8 @@ mod tests {
     #[test]
     fn bg_effect_linear_gradient_emits_effect_quad() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let a = Color::rgba(0, 255, 0, 255);
@@ -2173,7 +2223,8 @@ mod tests {
     #[test]
     fn bg_effect_replaces_solid_bg() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let red = Color::rgba(255, 0, 0, 255);
@@ -2203,7 +2254,8 @@ mod tests {
     #[test]
     fn blur_emits_blur_region_primitive() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let red = Color::rgba(255, 0, 0, 255);
@@ -2246,7 +2298,8 @@ mod tests {
     #[test]
     fn radial_gradient_emits_correct_effect_type() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let a = Color::rgba(255, 255, 255, 255);
@@ -2269,7 +2322,8 @@ mod tests {
     #[test]
     fn shimmer_emits_correct_effect_type() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let base = Color::rgba(40, 40, 40, 255);
@@ -2293,7 +2347,8 @@ mod tests {
     #[test]
     fn vignette_emits_correct_effect_type() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let dark = Color::rgba(0, 0, 0, 128);
@@ -2316,7 +2371,8 @@ mod tests {
     #[test]
     fn color_tint_emits_correct_effect_type() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let tint = Color::rgba(0, 100, 255, 80);
@@ -2339,7 +2395,8 @@ mod tests {
     #[test]
     fn glow_adds_shadow_with_zero_offset() {
         let mut font_system = glyphon::FontSystem::new();
-        let mut cx = test_cx(&mut font_system);
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
         let accent = Color::rgba(0, 128, 255, 200);

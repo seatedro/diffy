@@ -7,6 +7,7 @@ pub mod diff_viewport;
 pub mod element;
 pub mod layout;
 pub mod palette;
+pub mod signals;
 pub mod style;
 pub mod effects;
 pub mod events;

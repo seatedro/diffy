@@ -4,6 +4,7 @@ pub mod app;
 pub mod components;
 pub mod design;
 pub mod diff_viewport;
+pub mod element;
 pub mod layout;
 pub mod palette;
 pub mod effects;

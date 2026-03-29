@@ -169,6 +169,7 @@ pub struct Renderer {
     shadow_pipeline: wgpu::RenderPipeline,
     effect_quad_pipeline: wgpu::RenderPipeline,
     blit_pipeline: wgpu::RenderPipeline,
+    blur_pipeline: wgpu::RenderPipeline,
     texture_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     texture_pool: TexturePool,
@@ -455,6 +456,46 @@ impl Renderer {
             cache: None,
         });
 
+        let blur_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("diffy_blur_shader"),
+            source: wgpu::ShaderSource::Wgsl(BLUR_SHADER.into()),
+        });
+        let blur_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("diffy_blur_pipeline_layout"),
+                bind_group_layouts: &[&viewport_bind_group_layout, &texture_bind_group_layout],
+                immediate_size: 0,
+            });
+        let blur_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("diffy_blur_pipeline"),
+            layout: Some(&blur_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &blur_shader,
+                entry_point: Some("vs_blur"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[BlurInstance::layout()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &blur_shader,
+                entry_point: Some("fs_blur"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: None, // blur fully overwrites
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                strip_index_format: None,
+                ..wgpu::PrimitiveState::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let texture_pool = TexturePool::new(surface_format);
 
         let mut font_system = FontSystem::new();
@@ -477,6 +518,7 @@ impl Renderer {
             shadow_pipeline,
             effect_quad_pipeline,
             blit_pipeline,
+            blur_pipeline,
             texture_bind_group_layout,
             sampler,
             texture_pool,
@@ -610,14 +652,6 @@ impl Renderer {
             });
 
         // Build GPU buffers for each draw layer.
-        struct LayerBuffers {
-            shadow_buffer: Option<wgpu::Buffer>,
-            shadow_commands: Vec<QuadDrawCommand>,
-            quad_buffer: wgpu::Buffer,
-            quad_commands: Vec<QuadDrawCommand>,
-            effect_buffer: Option<wgpu::Buffer>,
-            effect_commands: Vec<QuadDrawCommand>,
-        }
         let layer_buffers: Vec<LayerBuffers> = flattened
             .layers
             .iter()
@@ -716,7 +750,8 @@ impl Renderer {
             &mut self.swash_cache,
         )?;
 
-        {
+        if flattened.blur_regions.is_empty() {
+            // ---- Fast path: no blur, render directly to surface ----
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("diffy_frame_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -734,69 +769,246 @@ impl Renderer {
                 multiview_mask: None,
             });
 
-            // Draw each layer in order: shadows → effect quads → quads.
-            // This preserves correct depth — a modal's shadow renders on top of
-            // the workspace quads, not behind them. Effect quads (procedural
-            // backgrounds) render before regular quads so borders draw on top.
-            for lb in &layer_buffers {
-                if let Some(ref shadow_buf) = lb.shadow_buffer {
-                    pass.set_pipeline(&self.shadow_pipeline);
-                    pass.set_bind_group(0, &self.viewport_bind_group, &[]);
-                    pass.set_vertex_buffer(0, shadow_buf.slice(..));
-                    for command in &lb.shadow_commands {
-                        if command.clip.width <= 0.0 || command.clip.height <= 0.0 {
-                            continue;
-                        }
-                        pass.set_scissor_rect(
-                            command.clip.x.max(0.0).round() as u32,
-                            command.clip.y.max(0.0).round() as u32,
-                            command.clip.width.max(1.0).round() as u32,
-                            command.clip.height.max(1.0).round() as u32,
-                        );
-                        pass.draw(0..4, command.instance_range.clone());
-                    }
-                }
-
-                if let Some(ref effect_buf) = lb.effect_buffer {
-                    pass.set_pipeline(&self.effect_quad_pipeline);
-                    pass.set_bind_group(0, &self.viewport_bind_group, &[]);
-                    pass.set_vertex_buffer(0, effect_buf.slice(..));
-                    for command in &lb.effect_commands {
-                        if command.clip.width <= 0.0 || command.clip.height <= 0.0 {
-                            continue;
-                        }
-                        pass.set_scissor_rect(
-                            command.clip.x.max(0.0).round() as u32,
-                            command.clip.y.max(0.0).round() as u32,
-                            command.clip.width.max(1.0).round() as u32,
-                            command.clip.height.max(1.0).round() as u32,
-                        );
-                        pass.draw(0..4, command.instance_range.clone());
-                    }
-                }
-
-                if !lb.quad_commands.is_empty() {
-                    pass.set_pipeline(&self.quad_pipeline);
-                    pass.set_bind_group(0, &self.viewport_bind_group, &[]);
-                    pass.set_vertex_buffer(0, lb.quad_buffer.slice(..));
-                    for command in &lb.quad_commands {
-                        if command.clip.width <= 0.0 || command.clip.height <= 0.0 {
-                            continue;
-                        }
-                        pass.set_scissor_rect(
-                            command.clip.x.max(0.0).round() as u32,
-                            command.clip.y.max(0.0).round() as u32,
-                            command.clip.width.max(1.0).round() as u32,
-                            command.clip.height.max(1.0).round() as u32,
-                        );
-                        pass.draw(0..4, command.instance_range.clone());
-                    }
-                }
-            }
+            draw_layers(
+                &mut pass,
+                &layer_buffers,
+                &self.shadow_pipeline,
+                &self.effect_quad_pipeline,
+                &self.quad_pipeline,
+                &self.viewport_bind_group,
+            );
 
             pass.set_scissor_rect(0, 0, self.surface_config.width, self.surface_config.height);
             self.text_renderer
                 .render(&self.atlas, &self.viewport, &mut pass)?;
+        } else {
+            // ---- Blur path: render via offscreen intermediates ----
+            let blur = flattened.blur_regions[0];
+            let sw = self.surface_config.width;
+            let sh = self.surface_config.height;
+
+            // Acquire offscreen textures (all viewport-sized).
+            let scene_target = self.texture_pool.acquire(&self.device, sw, sh);
+            let h_target = self.texture_pool.acquire(&self.device, sw, sh);
+            let v_target = self.texture_pool.acquire(&self.device, sw, sh);
+
+            // Pre-create bind groups for texture sampling.
+            let scene_bind = create_texture_bind_group(
+                &self.device,
+                &self.texture_bind_group_layout,
+                self.texture_pool.view(&scene_target),
+                &self.sampler,
+            );
+            let h_bind = create_texture_bind_group(
+                &self.device,
+                &self.texture_bind_group_layout,
+                self.texture_pool.view(&h_target),
+                &self.sampler,
+            );
+            let v_bind = create_texture_bind_group(
+                &self.device,
+                &self.texture_bind_group_layout,
+                self.texture_pool.view(&v_target),
+                &self.sampler,
+            );
+
+            let sigma = (blur.blur_radius * 0.5).max(0.5);
+            let br = blur.rect;
+            let uv_min_x = br.x / sw as f32;
+            let uv_min_y = br.y / sh as f32;
+            let uv_max_x = br.right() / sw as f32;
+            let uv_max_y = br.bottom() / sh as f32;
+
+            // Step 1: Render pre-blur layers → scene_tex.
+            {
+                let scene_view = self.texture_pool.view(&scene_target);
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("diffy_blur_scene_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: scene_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+
+                let end = blur.layer_break.min(layer_buffers.len());
+                draw_layers(
+                    &mut pass,
+                    &layer_buffers[..end],
+                    &self.shadow_pipeline,
+                    &self.effect_quad_pipeline,
+                    &self.quad_pipeline,
+                    &self.viewport_bind_group,
+                );
+            }
+
+            // Step 2: Horizontal blur → h_target.
+            {
+                let h_view = self.texture_pool.view(&h_target);
+                let blur_inst = BlurInstance {
+                    bounds: [br.x, br.y, br.width, br.height],
+                    uv_rect: [uv_min_x, uv_min_y, uv_max_x, uv_max_y],
+                    blur_params: [1.0, 0.0, sigma, 0.0],
+                };
+                let buf = self.device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("diffy_blur_h_instance"),
+                        contents: bytemuck::cast_slice(&[blur_inst]),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    },
+                );
+
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("diffy_blur_h_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: h_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+
+                pass.set_pipeline(&self.blur_pipeline);
+                pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+                pass.set_bind_group(1, &scene_bind, &[]);
+                pass.set_vertex_buffer(0, buf.slice(..));
+                pass.draw(0..4, 0..1);
+            }
+
+            // Step 3: Vertical blur → v_target.
+            {
+                let v_view = self.texture_pool.view(&v_target);
+                let blur_inst = BlurInstance {
+                    bounds: [br.x, br.y, br.width, br.height],
+                    uv_rect: [uv_min_x, uv_min_y, uv_max_x, uv_max_y],
+                    blur_params: [0.0, 1.0, sigma, 0.0],
+                };
+                let buf = self.device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("diffy_blur_v_instance"),
+                        contents: bytemuck::cast_slice(&[blur_inst]),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    },
+                );
+
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("diffy_blur_v_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: v_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+
+                pass.set_pipeline(&self.blur_pipeline);
+                pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+                pass.set_bind_group(1, &h_bind, &[]);
+                pass.set_vertex_buffer(0, buf.slice(..));
+                pass.draw(0..4, 0..1);
+            }
+
+            // Step 4: Composite to surface.
+            {
+                // Full-screen blit of scene_tex.
+                let scene_blit = BlitInstance {
+                    bounds: [0.0, 0.0, sw as f32, sh as f32],
+                    uv_rect: [0.0, 0.0, 1.0, 1.0],
+                    tint: [1.0, 1.0, 1.0, 1.0],
+                };
+                let scene_blit_buf = self.device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("diffy_scene_blit"),
+                        contents: bytemuck::cast_slice(&[scene_blit]),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    },
+                );
+                // Blur region blit.
+                let blur_blit = BlitInstance {
+                    bounds: [br.x, br.y, br.width, br.height],
+                    uv_rect: [uv_min_x, uv_min_y, uv_max_x, uv_max_y],
+                    tint: [1.0, 1.0, 1.0, 1.0],
+                };
+                let blur_blit_buf = self.device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("diffy_blur_blit"),
+                        contents: bytemuck::cast_slice(&[blur_blit]),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    },
+                );
+
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("diffy_composite_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+
+                // Blit scene background.
+                pass.set_pipeline(&self.blit_pipeline);
+                pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+                pass.set_bind_group(1, &scene_bind, &[]);
+                pass.set_vertex_buffer(0, scene_blit_buf.slice(..));
+                pass.draw(0..4, 0..1);
+
+                // Blit blurred region on top.
+                pass.set_bind_group(1, &v_bind, &[]);
+                pass.set_vertex_buffer(0, blur_blit_buf.slice(..));
+                pass.draw(0..4, 0..1);
+
+                // Render remaining layers (modal content, etc.) on top.
+                let start = blur.layer_break.min(layer_buffers.len());
+                pass.set_scissor_rect(0, 0, sw, sh);
+                draw_layers(
+                    &mut pass,
+                    &layer_buffers[start..],
+                    &self.shadow_pipeline,
+                    &self.effect_quad_pipeline,
+                    &self.quad_pipeline,
+                    &self.viewport_bind_group,
+                );
+
+                // Text.
+                pass.set_scissor_rect(0, 0, sw, sh);
+                self.text_renderer
+                    .render(&self.atlas, &self.viewport, &mut pass)?;
+            }
+
+            self.texture_pool.release(scene_target);
+            self.texture_pool.release(h_target);
+            self.texture_pool.release(v_target);
         }
 
         self.queue.submit(Some(encoder.finish()));
@@ -809,6 +1021,106 @@ impl Renderer {
             viewport_height: self.surface_config.height,
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+struct LayerBuffers {
+    shadow_buffer: Option<wgpu::Buffer>,
+    shadow_commands: Vec<QuadDrawCommand>,
+    quad_buffer: wgpu::Buffer,
+    quad_commands: Vec<QuadDrawCommand>,
+    effect_buffer: Option<wgpu::Buffer>,
+    effect_commands: Vec<QuadDrawCommand>,
+}
+
+fn draw_layers<'pass>(
+    pass: &mut wgpu::RenderPass<'pass>,
+    layers: &'pass [LayerBuffers],
+    shadow_pipeline: &'pass wgpu::RenderPipeline,
+    effect_quad_pipeline: &'pass wgpu::RenderPipeline,
+    quad_pipeline: &'pass wgpu::RenderPipeline,
+    viewport_bind_group: &'pass wgpu::BindGroup,
+) {
+    for lb in layers {
+        if let Some(ref shadow_buf) = lb.shadow_buffer {
+            pass.set_pipeline(shadow_pipeline);
+            pass.set_bind_group(0, viewport_bind_group, &[]);
+            pass.set_vertex_buffer(0, shadow_buf.slice(..));
+            for command in &lb.shadow_commands {
+                if command.clip.width <= 0.0 || command.clip.height <= 0.0 {
+                    continue;
+                }
+                pass.set_scissor_rect(
+                    command.clip.x.max(0.0).round() as u32,
+                    command.clip.y.max(0.0).round() as u32,
+                    command.clip.width.max(1.0).round() as u32,
+                    command.clip.height.max(1.0).round() as u32,
+                );
+                pass.draw(0..4, command.instance_range.clone());
+            }
+        }
+
+        if let Some(ref effect_buf) = lb.effect_buffer {
+            pass.set_pipeline(effect_quad_pipeline);
+            pass.set_bind_group(0, viewport_bind_group, &[]);
+            pass.set_vertex_buffer(0, effect_buf.slice(..));
+            for command in &lb.effect_commands {
+                if command.clip.width <= 0.0 || command.clip.height <= 0.0 {
+                    continue;
+                }
+                pass.set_scissor_rect(
+                    command.clip.x.max(0.0).round() as u32,
+                    command.clip.y.max(0.0).round() as u32,
+                    command.clip.width.max(1.0).round() as u32,
+                    command.clip.height.max(1.0).round() as u32,
+                );
+                pass.draw(0..4, command.instance_range.clone());
+            }
+        }
+
+        if !lb.quad_commands.is_empty() {
+            pass.set_pipeline(quad_pipeline);
+            pass.set_bind_group(0, viewport_bind_group, &[]);
+            pass.set_vertex_buffer(0, lb.quad_buffer.slice(..));
+            for command in &lb.quad_commands {
+                if command.clip.width <= 0.0 || command.clip.height <= 0.0 {
+                    continue;
+                }
+                pass.set_scissor_rect(
+                    command.clip.x.max(0.0).round() as u32,
+                    command.clip.y.max(0.0).round() as u32,
+                    command.clip.width.max(1.0).round() as u32,
+                    command.clip.height.max(1.0).round() as u32,
+                );
+                pass.draw(0..4, command.instance_range.clone());
+            }
+        }
+    }
+}
+
+fn create_texture_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    view: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("diffy_texture_bind_group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -988,6 +1300,44 @@ impl BlitInstance {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct BlurInstance {
+    /// Destination bounds in the target texture: [x, y, width, height].
+    bounds: [f32; 4],
+    /// Source UV rect: [u_min, v_min, u_max, v_max].
+    uv_rect: [f32; 4],
+    /// [direction_x, direction_y, blur_sigma, 0.0]
+    /// direction = (1,0) for horizontal, (0,1) for vertical.
+    blur_params: [f32; 4],
+}
+
+impl BlurInstance {
+    fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 16,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 32,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct ViewportUniform {
     resolution: [f32; 2],
     time: f32,
@@ -1020,9 +1370,21 @@ struct DrawLayer {
     effect_quads: Vec<ClippedEffectQuad>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FlattenedBlurRegion {
+    /// Screen-space bounds of the blur region.
+    rect: Rect,
+    blur_radius: f32,
+    corner_radius: f32,
+    /// Index into the layers vec: this blur applies after all layers
+    /// up to (but not including) this index have been rendered.
+    layer_break: usize,
+}
+
 #[derive(Debug, Clone)]
 struct FlattenedScene {
     layers: Vec<DrawLayer>,
+    blur_regions: Vec<FlattenedBlurRegion>,
     texts: Vec<ClippedText>,
     rich_texts: Vec<ClippedRichText>,
 }
@@ -1076,6 +1438,7 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
     let mut layers: Vec<DrawLayer> = vec![DrawLayer::default()];
     let mut flattened = FlattenedScene {
         layers: Vec::new(),
+        blur_regions: Vec::new(),
         texts: Vec::new(),
         rich_texts: Vec::new(),
     };
@@ -1175,6 +1538,21 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                         primitive: text.clone(),
                         clip: intersection,
                     });
+                }
+            }
+            Primitive::BlurRegion(blur) => {
+                if let Some(clip) = clips.last().copied() {
+                    if blur.rect.intersection(clip).is_some() {
+                        // Start a new layer so the blur applies to everything
+                        // rendered so far — the blur_region marks a "break".
+                        layers.push(DrawLayer::default());
+                        flattened.blur_regions.push(FlattenedBlurRegion {
+                            rect: blur.rect,
+                            blur_radius: blur.blur_radius,
+                            corner_radius: blur.corner_radius,
+                            layer_break: layers.len() - 1,
+                        });
+                    }
                 }
             }
             Primitive::EffectQuad(effect) => {
@@ -1911,5 +2289,96 @@ fn vs_blit(input: VertexInput) -> VertexOutput {
 fn fs_blit(input: VertexOutput) -> @location(0) vec4<f32> {
     let tex_color = textureSample(t_source, s_source, input.uv);
     return tex_color * input.tint;
+}
+"#;
+
+// ---------------------------------------------------------------------------
+// Separable Gaussian blur shader — 13-tap kernel
+// ---------------------------------------------------------------------------
+
+const BLUR_SHADER: &str = r#"
+struct ViewportUniform {
+    resolution: vec2<f32>,
+    time: f32,
+    _padding: f32,
+};
+
+@group(0) @binding(0)
+var<uniform> viewport: ViewportUniform;
+
+@group(1) @binding(0)
+var t_source: texture_2d<f32>;
+@group(1) @binding(1)
+var s_source: sampler;
+
+struct VertexInput {
+    @builtin(vertex_index) vertex_id: u32,
+    @location(0) bounds: vec4<f32>,       // [x, y, w, h] in pixel coords
+    @location(1) uv_rect: vec4<f32>,      // [u_min, v_min, u_max, v_max]
+    @location(2) blur_params: vec4<f32>,  // [dir_x, dir_y, sigma, 0]
+};
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) @interpolate(flat) blur_params: vec4<f32>,
+};
+
+@vertex
+fn vs_blur(input: VertexInput) -> VertexOutput {
+    let unit = vec2<f32>(
+        f32(input.vertex_id & 1u),
+        f32((input.vertex_id >> 1u) & 1u)
+    );
+    let pixel_pos = input.bounds.xy + unit * input.bounds.zw;
+    let ndc = pixel_pos / viewport.resolution * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
+
+    let uv = mix(input.uv_rect.xy, input.uv_rect.zw, unit);
+
+    var out: VertexOutput;
+    out.position = vec4<f32>(ndc, 0.0, 1.0);
+    out.uv = uv;
+    out.blur_params = input.blur_params;
+    return out;
+}
+
+@fragment
+fn fs_blur(input: VertexOutput) -> @location(0) vec4<f32> {
+    let sigma = input.blur_params.z;
+    let dir = vec2<f32>(input.blur_params.x, input.blur_params.y);
+    let tex_size = vec2<f32>(textureDimensions(t_source));
+    // Step size in UV space, scaled up for large blur radii.
+    let step_scale = max(1.0, sigma / 6.0);
+    let texel = dir / tex_size * step_scale;
+
+    // 13-tap Gaussian kernel (offsets -6..+6).
+    var color = vec4<f32>(0.0);
+    var total_weight = 0.0;
+
+    let w0 = exp(0.0);
+    let w1 = exp(-1.0 / (2.0 * sigma * sigma));
+    let w2 = exp(-4.0 / (2.0 * sigma * sigma));
+    let w3 = exp(-9.0 / (2.0 * sigma * sigma));
+    let w4 = exp(-16.0 / (2.0 * sigma * sigma));
+    let w5 = exp(-25.0 / (2.0 * sigma * sigma));
+    let w6 = exp(-36.0 / (2.0 * sigma * sigma));
+
+    color += textureSample(t_source, s_source, input.uv + texel * -6.0) * w6;
+    color += textureSample(t_source, s_source, input.uv + texel * -5.0) * w5;
+    color += textureSample(t_source, s_source, input.uv + texel * -4.0) * w4;
+    color += textureSample(t_source, s_source, input.uv + texel * -3.0) * w3;
+    color += textureSample(t_source, s_source, input.uv + texel * -2.0) * w2;
+    color += textureSample(t_source, s_source, input.uv + texel * -1.0) * w1;
+    color += textureSample(t_source, s_source, input.uv)                * w0;
+    color += textureSample(t_source, s_source, input.uv + texel *  1.0) * w1;
+    color += textureSample(t_source, s_source, input.uv + texel *  2.0) * w2;
+    color += textureSample(t_source, s_source, input.uv + texel *  3.0) * w3;
+    color += textureSample(t_source, s_source, input.uv + texel *  4.0) * w4;
+    color += textureSample(t_source, s_source, input.uv + texel *  5.0) * w5;
+    color += textureSample(t_source, s_source, input.uv + texel *  6.0) * w6;
+
+    total_weight = w6 + w5 + w4 + w3 + w2 + w1 + w0 + w1 + w2 + w3 + w4 + w5 + w6;
+
+    return color / total_weight;
 }
 "#;

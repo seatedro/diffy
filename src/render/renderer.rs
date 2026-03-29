@@ -58,6 +58,106 @@ pub enum RenderError {
     SurfaceAcquire,
 }
 
+// ---------------------------------------------------------------------------
+// TexturePool — reusable offscreen render targets
+// ---------------------------------------------------------------------------
+
+struct PooledTexture {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    width: u32,
+    height: u32,
+    in_use: bool,
+}
+
+struct TexturePool {
+    textures: Vec<PooledTexture>,
+    format: wgpu::TextureFormat,
+}
+
+/// Handle to an offscreen render target allocated from the pool.
+pub struct OffscreenTarget {
+    pool_index: usize,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl TexturePool {
+    fn new(format: wgpu::TextureFormat) -> Self {
+        Self {
+            textures: Vec::new(),
+            format,
+        }
+    }
+
+    /// Acquire a texture of at least the given dimensions.
+    /// Returns a pool index. The caller must call `release()` when done.
+    fn acquire(&mut self, device: &wgpu::Device, width: u32, height: u32) -> OffscreenTarget {
+        let w = width.max(1);
+        let h = height.max(1);
+
+        // Look for an existing unused texture that's big enough.
+        for (i, entry) in self.textures.iter_mut().enumerate() {
+            if !entry.in_use && entry.width >= w && entry.height >= h {
+                entry.in_use = true;
+                return OffscreenTarget {
+                    pool_index: i,
+                    width: entry.width,
+                    height: entry.height,
+                };
+            }
+        }
+
+        // Allocate a new texture.
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("diffy_offscreen"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let index = self.textures.len();
+        self.textures.push(PooledTexture {
+            texture,
+            view,
+            width: w,
+            height: h,
+            in_use: true,
+        });
+        OffscreenTarget {
+            pool_index: index,
+            width: w,
+            height: h,
+        }
+    }
+
+    fn view(&self, target: &OffscreenTarget) -> &wgpu::TextureView {
+        &self.textures[target.pool_index].view
+    }
+
+    fn release(&mut self, target: OffscreenTarget) {
+        self.textures[target.pool_index].in_use = false;
+    }
+
+    /// Release all textures that haven't been used since the last trim.
+    /// Call once per frame after rendering.
+    fn trim(&mut self) {
+        self.textures.retain(|t| t.in_use);
+        for t in &mut self.textures {
+            t.in_use = false;
+        }
+    }
+}
+
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -68,6 +168,10 @@ pub struct Renderer {
     quad_pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
     effect_quad_pipeline: wgpu::RenderPipeline,
+    blit_pipeline: wgpu::RenderPipeline,
+    texture_bind_group_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    texture_pool: TexturePool,
     viewport_buffer: wgpu::Buffer,
     viewport_bind_group: wgpu::BindGroup,
     font_system: FontSystem,
@@ -280,6 +384,79 @@ impl Renderer {
                 cache: None,
             });
 
+        // --- Blit pipeline (composites offscreen textures back to screen) ---
+
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("diffy_texture_bind_group_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("diffy_blit_sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("diffy_blit_shader"),
+            source: wgpu::ShaderSource::Wgsl(BLIT_SHADER.into()),
+        });
+        let blit_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("diffy_blit_pipeline_layout"),
+                bind_group_layouts: &[&viewport_bind_group_layout, &texture_bind_group_layout],
+                immediate_size: 0,
+            });
+        let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("diffy_blit_pipeline"),
+            layout: Some(&blit_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &blit_shader,
+                entry_point: Some("vs_blit"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[BlitInstance::layout()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &blit_shader,
+                entry_point: Some("fs_blit"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                strip_index_format: None,
+                ..wgpu::PrimitiveState::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let texture_pool = TexturePool::new(surface_format);
+
         let mut font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
         let glyph_cache = Cache::new(&device);
@@ -299,6 +476,10 @@ impl Renderer {
             quad_pipeline,
             shadow_pipeline,
             effect_quad_pipeline,
+            blit_pipeline,
+            texture_bind_group_layout,
+            sampler,
+            texture_pool,
             viewport_buffer,
             viewport_bind_group,
             font_system,
@@ -337,6 +518,42 @@ impl Renderer {
             mono_line_height_px: 20.0 * scale,
             mono_char_width_px: 8.0 * scale,
         }
+    }
+
+    // -- Offscreen render target management --
+
+    /// Acquire an offscreen texture from the pool. The returned target can be
+    /// used as a render attachment and later sampled via `create_texture_bind_group`.
+    pub fn acquire_offscreen(&mut self, width: u32, height: u32) -> OffscreenTarget {
+        self.texture_pool.acquire(&self.device, width, height)
+    }
+
+    /// Get the texture view for an offscreen target (for use as a render attachment).
+    pub fn offscreen_view(&self, target: &OffscreenTarget) -> &wgpu::TextureView {
+        self.texture_pool.view(target)
+    }
+
+    /// Create a bind group for sampling an offscreen target in a shader.
+    pub fn create_texture_bind_group(&self, target: &OffscreenTarget) -> wgpu::BindGroup {
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("diffy_offscreen_bind_group"),
+            layout: &self.texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(self.texture_pool.view(target)),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        })
+    }
+
+    /// Return an offscreen target to the pool for reuse.
+    pub fn release_offscreen(&mut self, target: OffscreenTarget) {
+        self.texture_pool.release(target);
     }
 
     pub fn render(&mut self, scene: &Scene, time_seconds: f32) -> Result<FrameStats, RenderError> {
@@ -725,6 +942,43 @@ impl EffectQuadInstance {
                 wgpu::VertexAttribute {
                     offset: 48,
                     shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct BlitInstance {
+    /// Screen-space destination bounds: [x, y, width, height].
+    bounds: [f32; 4],
+    /// Source texture UV rect: [u_min, v_min, u_max, v_max].
+    uv_rect: [f32; 4],
+    /// Tint/opacity multiplier (usually [1, 1, 1, alpha]).
+    tint: [f32; 4],
+}
+
+impl BlitInstance {
+    fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 16,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 32,
+                    shader_location: 2,
                     format: wgpu::VertexFormat::Float32x4,
                 },
             ],
@@ -1599,5 +1853,63 @@ fn fs_effect(input: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
     return vec4<f32>(color.rgb * final_alpha, final_alpha);
+}
+"#;
+
+// ---------------------------------------------------------------------------
+// Blit shader — composite an offscreen texture to screen
+// ---------------------------------------------------------------------------
+
+const BLIT_SHADER: &str = r#"
+struct ViewportUniform {
+    resolution: vec2<f32>,
+    time: f32,
+    _padding: f32,
+};
+
+@group(0) @binding(0)
+var<uniform> viewport: ViewportUniform;
+
+@group(1) @binding(0)
+var t_source: texture_2d<f32>;
+@group(1) @binding(1)
+var s_source: sampler;
+
+struct VertexInput {
+    @builtin(vertex_index) vertex_id: u32,
+    @location(0) bounds: vec4<f32>,    // screen-space destination [x, y, w, h]
+    @location(1) uv_rect: vec4<f32>,   // source UV [u_min, v_min, u_max, v_max]
+    @location(2) tint: vec4<f32>,      // tint/opacity
+};
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) @interpolate(flat) tint: vec4<f32>,
+};
+
+@vertex
+fn vs_blit(input: VertexInput) -> VertexOutput {
+    let unit = vec2<f32>(
+        f32(input.vertex_id & 1u),
+        f32((input.vertex_id >> 1u) & 1u)
+    );
+    let pixel_pos = input.bounds.xy + unit * input.bounds.zw;
+    let ndc = pixel_pos / viewport.resolution * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
+
+    // Interpolate UV from uv_rect min→max.
+    let uv = mix(input.uv_rect.xy, input.uv_rect.zw, unit);
+
+    var out: VertexOutput;
+    out.position = vec4<f32>(ndc, 0.0, 1.0);
+    out.uv = uv;
+    out.tint = input.tint;
+    return out;
+}
+
+@fragment
+fn fs_blit(input: VertexOutput) -> @location(0) vec4<f32> {
+    let tex_color = textureSample(t_source, s_source, input.uv);
+    return tex_color * input.tint;
 }
 "#;

@@ -551,6 +551,14 @@ impl Renderer {
         );
     }
 
+    pub fn font_system_mut(&mut self) -> &mut FontSystem {
+        &mut self.font_system
+    }
+
+    pub fn scale_factor(&self) -> f64 {
+        self.scale_factor
+    }
+
     pub fn text_metrics(&self) -> TextMetrics {
         let scale = self.scale_factor as f32;
         TextMetrics {

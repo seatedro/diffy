@@ -52,6 +52,7 @@ struct NativeApp {
     ui_frame: UiFrame,
     viewport_runtime: DiffViewportRuntime,
     mouse_position: Option<(f32, f32)>,
+    signal_store: crate::ui::signals::SignalStore,
     launch_at: Instant,
     dumps_dirty: bool,
     modifiers: ModifiersState,
@@ -67,6 +68,7 @@ impl NativeApp {
             renderer: None,
             window: None,
             ui_frame: UiFrame::default(),
+            signal_store: crate::ui::signals::SignalStore::new(),
             viewport_runtime: DiffViewportRuntime::default(),
             mouse_position: None,
             launch_at: Instant::now(),
@@ -153,13 +155,41 @@ impl NativeApp {
             .as_ref()
             .map(Renderer::text_metrics)
             .unwrap_or_default();
+        let scale_factor = self
+            .renderer
+            .as_ref()
+            .map(|r| r.scale_factor() as f32)
+            .unwrap_or(1.0);
+
+        // Create a temporary font system for element layout if renderer isn't ready.
+        let mut fallback_font_system;
+        let font_system = if let Some(renderer) = self.renderer.as_mut() {
+            renderer.font_system_mut()
+        } else {
+            fallback_font_system = glyphon::FontSystem::new();
+            &mut fallback_font_system
+        };
+
+        let width = size.width.max(1) as f32;
+        let height = size.height.max(1) as f32;
+
+        let mut cx = crate::ui::element::ElementContext::new(
+            &self.theme,
+            scale_factor,
+            font_system,
+            self.mouse_position,
+            &mut self.signal_store,
+        )
+        .with_focus(self.state.focus.current);
+
         build_ui_frame(
             &mut self.state,
             &self.theme,
             &mut self.viewport_runtime,
             text_metrics,
-            size.width.max(1) as f32,
-            size.height.max(1) as f32,
+            width,
+            height,
+            &mut cx,
         )
     }
 
@@ -180,7 +210,7 @@ impl NativeApp {
             .find(|hit| hit.rect.contains(x, y))
             .cloned()
         {
-            if hit.hover_file_index.is_some() {
+            if matches!(hit.action, Action::SelectFile(_)) {
                 self.dispatch_action(Action::SetFocus(Some(FocusTarget::FileList)));
             }
             self.dispatch_action(hit.action);
@@ -211,8 +241,14 @@ impl NativeApp {
             .iter()
             .rev()
             .find(|hit| hit.rect.contains(x, y));
-        let hovered_file = hovered_hit.and_then(|hit| hit.hover_file_index);
-        let hovered_toast = hovered_hit.and_then(|hit| hit.hover_toast_index);
+        let hovered_file = hovered_hit.and_then(|hit| match &hit.action {
+            Action::SelectFile(i) => Some(*i),
+            _ => None,
+        });
+        let hovered_toast = hovered_hit.and_then(|hit| match &hit.action {
+            Action::DismissToast(i) => Some(*i),
+            _ => None,
+        });
         let cursor_hint = hovered_hit
             .map(|hit| hit.cursor)
             .unwrap_or(CursorHint::Default);
@@ -265,13 +301,17 @@ impl NativeApp {
             return;
         }
 
+        // Check scroll regions registered by the element system.
+        for region in self.ui_frame.scroll_regions.iter().rev() {
+            if region.bounds.contains(x, y) {
+                let action = region.action_builder.build(lines);
+                self.dispatch_action(action);
+                return;
+            }
+        }
+
+        // Fallback: viewport scroll.
         if self
-            .ui_frame
-            .file_list_rect
-            .is_some_and(|rect| rect.contains(x, y))
-        {
-            self.dispatch_action(Action::ScrollFileList(lines));
-        } else if self
             .ui_frame
             .viewport_rect
             .is_some_and(|rect| rect.contains(x, y))

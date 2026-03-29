@@ -7,6 +7,7 @@ pub mod diff_viewport;
 pub mod element;
 pub mod layout;
 pub mod palette;
+pub mod style;
 pub mod effects;
 pub mod events;
 pub(crate) mod shell;

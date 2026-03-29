@@ -260,6 +260,14 @@ pub enum EffectType {
     NoiseGradient = 0,
     /// Linear gradient with configurable angle.
     LinearGradient = 1,
+    /// Radial gradient — color_a at center, color_b at edge.
+    RadialGradient = 2,
+    /// Animated shimmer — diagonal highlight sweep.
+    Shimmer = 3,
+    /// Vignette — edge darkening/coloring.
+    Vignette = 4,
+    /// Color tint — flat semi-transparent color overlay.
+    ColorTint = 5,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]

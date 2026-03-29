@@ -2220,6 +2220,37 @@ fn fs_effect(input: VertexOutput) -> @location(0) vec4<f32> {
             let t = saturate(dot(uv - vec2<f32>(0.5), dir) + 0.5);
             color = mix(input.color_a, input.color_b, t);
         }
+        // Type 2: Radial gradient — color_a at center, color_b at edge.
+        case 2u: {
+            let center = vec2<f32>(0.5, 0.5);
+            let d = length((uv - center) * 2.0);
+            let t = saturate(d);
+            color = mix(input.color_a, input.color_b, t);
+        }
+        // Type 3: Animated shimmer — diagonal highlight sweep.
+        case 3u: {
+            let speed = input.params.y;
+            // Diagonal position: combine x and y into a single sweep axis.
+            let diag = (uv.x + uv.y) * 0.5;
+            // Animate the highlight band across the diagonal.
+            let phase = fract(viewport.time * speed * 0.3);
+            let band_center = phase * 1.6 - 0.3; // sweep from left to right with overshoot
+            let band = 1.0 - smoothstep(0.0, 0.15, abs(diag - band_center));
+            color = mix(input.color_a, input.color_b, band);
+        }
+        // Type 4: Vignette — darken/tint edges.
+        case 4u: {
+            let intensity = input.params.y;
+            let center = vec2<f32>(0.5, 0.5);
+            let d = length((uv - center) * 2.0);
+            let vignette_factor = smoothstep(0.2, 1.2, d) * intensity;
+            // Start from transparent, blend toward color_a at edges.
+            color = vec4<f32>(input.color_a.rgb, input.color_a.a * vignette_factor);
+        }
+        // Type 5: Color tint — flat semi-transparent overlay.
+        case 5u: {
+            color = input.color_a;
+        }
         // Fallback: solid color_a.
         default: {
             color = input.color_a;

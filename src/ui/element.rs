@@ -111,13 +111,31 @@ impl AnyElement {
         scene: &mut Scene,
         cx: &mut ElementContext,
     ) {
-        self.inner.paint(engine, scene, cx);
+        self.inner.paint(engine, scene, cx, 0.0, 0.0);
+    }
+
+    pub fn paint_with_offset(
+        &mut self,
+        engine: &LayoutEngine,
+        scene: &mut Scene,
+        cx: &mut ElementContext,
+        offset_x: f32,
+        offset_y: f32,
+    ) {
+        self.inner.paint(engine, scene, cx, offset_x, offset_y);
     }
 }
 
 trait AnyElementImpl {
     fn request_layout(&mut self, engine: &mut LayoutEngine, cx: &mut ElementContext) -> LayoutId;
-    fn paint(&mut self, engine: &LayoutEngine, scene: &mut Scene, cx: &mut ElementContext);
+    fn paint(
+        &mut self,
+        engine: &LayoutEngine,
+        scene: &mut Scene,
+        cx: &mut ElementContext,
+        offset_x: f32,
+        offset_y: f32,
+    );
 }
 
 struct ElementHolder<E: Element> {
@@ -134,9 +152,18 @@ impl<E: Element> AnyElementImpl for ElementHolder<E> {
         id
     }
 
-    fn paint(&mut self, engine: &LayoutEngine, scene: &mut Scene, cx: &mut ElementContext) {
+    fn paint(
+        &mut self,
+        engine: &LayoutEngine,
+        scene: &mut Scene,
+        cx: &mut ElementContext,
+        offset_x: f32,
+        offset_y: f32,
+    ) {
         let id = self.layout_id.expect("paint called before request_layout");
-        let bounds = engine.layout_bounds(id);
+        let mut bounds = engine.layout_bounds(id);
+        bounds.x += offset_x;
+        bounds.y += offset_y;
         let state = self.layout_state.as_mut().expect("paint called before request_layout");
         self.element.paint(bounds, state, engine, scene, cx);
     }
@@ -153,6 +180,12 @@ pub trait IntoAnyElement {
 impl<E: Element> IntoAnyElement for E {
     fn into_any(self) -> AnyElement {
         AnyElement::new(self)
+    }
+}
+
+impl IntoAnyElement for AnyElement {
+    fn into_any(self) -> AnyElement {
+        self
     }
 }
 
@@ -314,6 +347,10 @@ pub struct Div {
     shadows: Vec<ShadowSpec>,
     on_click: Option<Action>,
     cursor: CursorHint,
+    /// Vertical scroll offset in pixels (positive = scrolled down).
+    scroll_y: f32,
+    /// Whether this div clips children to its bounds.
+    clips: bool,
 }
 
 struct ShadowSpec {
@@ -339,6 +376,8 @@ pub fn div() -> Div {
         shadows: Vec::new(),
         on_click: None,
         cursor: CursorHint::Default,
+        scroll_y: 0.0,
+        clips: false,
     }
 }
 
@@ -352,6 +391,26 @@ impl Div {
 
     pub fn children(mut self, children: impl IntoIterator<Item = AnyElement>) -> Self {
         self.children.extend(children);
+        self
+    }
+
+    /// Add a child only if the option is Some.
+    pub fn optional_child(mut self, child: Option<impl IntoAnyElement>) -> Self {
+        if let Some(c) = child {
+            self.children.push(c.into_any());
+        }
+        self
+    }
+
+    /// Map an iterator into children.
+    pub fn children_from<I, E>(mut self, iter: I) -> Self
+    where
+        I: IntoIterator<Item = E>,
+        E: IntoAnyElement,
+    {
+        for item in iter {
+            self.children.push(item.into_any());
+        }
         self
     }
 
@@ -541,6 +600,21 @@ impl Div {
         self.hover_background = Some(color);
         self
     }
+
+    // -- Scroll / clip --
+
+    /// Set the vertical scroll offset (from persistent state).
+    pub fn scroll_y(mut self, offset: f32) -> Self {
+        self.scroll_y = offset;
+        self.clips = true;
+        self
+    }
+
+    /// Clip children to this div's bounds (no scrolling).
+    pub fn clip(mut self) -> Self {
+        self.clips = true;
+        self
+    }
 }
 
 impl Element for Div {
@@ -599,9 +673,27 @@ impl Element for Div {
             scene.border(BorderPrimitive::uniform(bounds, self.border_width, r, border));
         }
 
-        // Paint children
-        for child in &mut self.children {
-            child.paint(engine, scene, cx);
+        // Clip + scroll children
+        if self.clips {
+            scene.clip(bounds);
+        }
+
+        if self.scroll_y != 0.0 {
+            // Apply scroll offset: shift all child painting up by scroll_y.
+            // We do this by temporarily adjusting the engine's reported bounds.
+            // Since children already have absolute coords from Taffy, we offset
+            // the scene's coordinate space.
+            for child in &mut self.children {
+                child.paint_with_offset(engine, scene, cx, 0.0, -self.scroll_y);
+            }
+        } else {
+            for child in &mut self.children {
+                child.paint(engine, scene, cx);
+            }
+        }
+
+        if self.clips {
+            scene.pop_clip();
         }
 
         // Register hit region (after children so it's topmost)
@@ -1021,5 +1113,158 @@ mod tests {
         if let crate::render::Primitive::RoundedRect(rr) = &scene.primitives[0] {
             assert_eq!(rr.color, red, "should use normal bg when not hovered");
         }
+    }
+
+    #[test]
+    fn realistic_title_bar_layout() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        let mut scene = Scene::default();
+
+        let theme = cx.theme;
+        let mut root = div()
+            .flex_row()
+            .items_center()
+            .w(1200.0)
+            .h(52.0)
+            .px(20.0)
+            .bg(theme.colors.title_bar_background)
+            .child(
+                text("diffy").text_lg().color(theme.colors.text_strong)
+            )
+            .child(spacer())
+            .child(
+                div().flex_row().gap(8.0)
+                    .child(
+                        div()
+                            .px(14.0)
+                            .py(6.0)
+                            .rounded(7.0)
+                            .bg(theme.colors.element_background)
+                            .hover_bg(theme.colors.element_hover)
+                            .on_click(Action::OpenCompareSheet)
+                            .child(text("Compare").text_sm().color(theme.colors.text))
+                    )
+                    .child(
+                        div()
+                            .px(14.0)
+                            .py(6.0)
+                            .rounded(7.0)
+                            .hover_bg(theme.colors.ghost_element_hover)
+                            .on_click(Action::OpenPullRequestModal)
+                            .child(text("PR").text_sm().color(theme.colors.text_muted))
+                    )
+            )
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 1200.0, 52.0);
+
+        // Should have: title bar bg + "Compare" button bg + 3 text primitives
+        let rect_count = scene.primitives.iter().filter(|p| {
+            matches!(p, crate::render::Primitive::RoundedRect(_))
+        }).count();
+        assert!(rect_count >= 2, "should have title bar bg + button bg, got {}", rect_count);
+
+        let text_count = scene.primitives.iter().filter(|p| {
+            matches!(p, crate::render::Primitive::TextRun(_))
+        }).count();
+        assert_eq!(text_count, 3, "should have 3 text labels");
+
+        // Should have 2 hit regions (Compare + PR buttons)
+        assert_eq!(cx.hits.len(), 2);
+        assert_eq!(cx.hits[0].action, Action::OpenCompareSheet);
+        assert_eq!(cx.hits[1].action, Action::OpenPullRequestModal);
+    }
+
+    #[test]
+    fn realistic_file_list_with_scroll() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        let mut scene = Scene::default();
+
+        let theme = cx.theme;
+        let files = vec!["src/main.rs", "src/lib.rs", "Cargo.toml", "README.md"];
+
+        let mut root = div()
+            .flex_col()
+            .w(260.0)
+            .h(400.0)
+            .bg(theme.colors.sidebar_background)
+            .child(
+                div().px(12.0).py(12.0).child(
+                    text(format!("Files  ·  {}", files.len()))
+                        .text_sm()
+                        .color(theme.colors.text_muted)
+                )
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .flex_col()
+                    .scroll_y(0.0)
+                    .children_from(files.iter().enumerate().map(|(i, path)| {
+                        div()
+                            .w_full()
+                            .h(36.0)
+                            .px(12.0)
+                            .items_center()
+                            .flex_row()
+                            .rounded(7.0)
+                            .hover_bg(theme.colors.sidebar_row_hover)
+                            .on_click(Action::SelectFile(i))
+                            .child(text(*path).text_sm().color(theme.colors.text))
+                            .into_any()
+                    }))
+            )
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 260.0, 400.0);
+
+        // 4 file items should generate 4 hit regions
+        assert_eq!(cx.hits.len(), 4);
+        assert_eq!(cx.hits[2].action, Action::SelectFile(2));
+
+        // Should have text for header + 4 files = 5 text primitives
+        let text_count = scene.primitives.iter().filter(|p| {
+            matches!(p, crate::render::Primitive::TextRun(_))
+        }).count();
+        assert_eq!(text_count, 5);
+    }
+
+    #[test]
+    fn scroll_y_clips_and_offsets_children() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        let mut scene = Scene::default();
+
+        let red = Color::rgba(255, 0, 0, 255);
+
+        // Container 100px tall, child 50px tall, scrolled down 20px.
+        // Child should paint at y = -20 (shifted up), and be clipped.
+        let mut root = div()
+            .w(200.0)
+            .h(100.0)
+            .scroll_y(20.0)
+            .child(div().w(200.0).h(50.0).bg(red))
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 200.0, 100.0);
+
+        // Should have: ClipStart, RoundedRect (child bg), ClipEnd
+        let clip_count = scene.primitives.iter().filter(|p| {
+            matches!(p, crate::render::Primitive::ClipStart(_))
+        }).count();
+        assert_eq!(clip_count, 1, "scroll container should clip");
+
+        // The child's bg rect should be offset by -20 in y
+        let bg = scene.primitives.iter().find_map(|p| {
+            if let crate::render::Primitive::RoundedRect(rr) = p {
+                Some(rr)
+            } else {
+                None
+            }
+        }).expect("should have child bg");
+        assert!((bg.rect.y - (-20.0)).abs() < 1.0,
+            "child y={} should be ~-20 (scrolled)", bg.rect.y);
     }
 }

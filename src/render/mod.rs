@@ -1,5 +1,7 @@
 pub mod renderer;
 pub mod scene;
+#[cfg(feature = "capture")]
+pub mod capture;
 
 pub use renderer::{FrameStats, OffscreenTarget, RenderError, Renderer, TextMetrics};
 pub use scene::{

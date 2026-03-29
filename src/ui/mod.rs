@@ -5,6 +5,7 @@ pub mod app;
 pub mod design;
 pub mod diff_viewport;
 pub mod element;
+pub mod icons;
 // pub mod layout; // replaced by element system
 pub mod palette;
 pub mod signals;

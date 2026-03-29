@@ -1839,6 +1839,95 @@ impl IntoAnyElement for IconElement {
 }
 
 // ---------------------------------------------------------------------------
+// SvgIcon — renders an SVG string as a rasterized image
+// ---------------------------------------------------------------------------
+
+pub struct SvgIcon {
+    svg: &'static str,
+    size: f32,
+    color: Option<Color>,
+}
+
+pub fn svg_icon(svg: &'static str, size: f32) -> SvgIcon {
+    SvgIcon {
+        svg,
+        size,
+        color: None,
+    }
+}
+
+impl SvgIcon {
+    pub fn color(mut self, c: Color) -> Self {
+        self.color = Some(c);
+        self
+    }
+
+    pub fn size(mut self, s: f32) -> Self {
+        self.size = s;
+        self
+    }
+}
+
+impl Element for SvgIcon {
+    type LayoutState = ();
+    type PrepaintState = ();
+
+    fn request_layout(
+        &mut self,
+        engine: &mut LayoutEngine,
+        _cx: &mut ElementContext,
+    ) -> (LayoutId, ()) {
+        let id = engine.request_layout(
+            taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::length(self.size),
+                    height: taffy::Dimension::length(self.size),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+            &[],
+        );
+        (id, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _bounds: Bounds,
+        _layout_state: &mut (),
+        _engine: &LayoutEngine,
+        _cx: &mut ElementContext,
+    ) -> () {
+    }
+
+    fn paint(
+        &mut self,
+        bounds: Bounds,
+        _layout_state: &mut (),
+        _prepaint_state: &mut (),
+        _engine: &LayoutEngine,
+        scene: &mut Scene,
+        cx: &mut ElementContext,
+    ) {
+        let color = self.color.unwrap_or(cx.theme.colors.icon);
+        let px_size = self.size.ceil() as u32;
+        let (rgba, w, h) = crate::ui::icons::rasterize_svg(self.svg, px_size, color);
+        scene.image(crate::render::ImagePrimitive {
+            rect: bounds,
+            width: w,
+            height: h,
+            rgba,
+        });
+    }
+}
+
+impl IntoAnyElement for SvgIcon {
+    fn into_any(self) -> AnyElement {
+        element_into_any(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

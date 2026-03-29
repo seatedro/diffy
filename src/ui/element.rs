@@ -5,6 +5,8 @@
 
 use crate::render::scene::Rect;
 use crate::render::Scene;
+use crate::ui::actions::Action;
+use crate::ui::shell::CursorHint;
 use crate::ui::theme::Theme;
 
 pub use taffy::NodeId as LayoutId;
@@ -16,6 +18,17 @@ pub use taffy::NodeId as LayoutId;
 pub type Bounds = Rect;
 
 // ---------------------------------------------------------------------------
+// HitRegion — clickable area registered during paint
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct HitRegion {
+    pub rect: Rect,
+    pub action: Action,
+    pub cursor: CursorHint,
+}
+
+// ---------------------------------------------------------------------------
 // ElementContext — shared state available during layout and paint
 // ---------------------------------------------------------------------------
 
@@ -23,6 +36,18 @@ pub struct ElementContext<'a> {
     pub theme: &'a Theme,
     pub scale_factor: f32,
     pub font_system: &'a mut glyphon::FontSystem,
+    /// Current mouse position (if known). Used for hover detection.
+    pub mouse_position: Option<(f32, f32)>,
+    /// Hit regions accumulated during paint, topmost last.
+    pub hits: Vec<HitRegion>,
+}
+
+impl ElementContext<'_> {
+    /// Returns true if the given bounds contain the current mouse position.
+    pub fn is_hovered(&self, bounds: &Bounds) -> bool {
+        self.mouse_position
+            .is_some_and(|(x, y)| bounds.contains(x, y))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +279,7 @@ impl LayoutEngine {
 // ---------------------------------------------------------------------------
 
 /// Lay out and paint an element tree into the given scene.
+/// Returns the hit regions accumulated during paint.
 pub fn render_element(
     root: &mut AnyElement,
     scene: &mut Scene,
@@ -281,10 +307,13 @@ pub struct Div {
     style: taffy::Style,
     children: Vec<AnyElement>,
     background: Option<Color>,
+    hover_background: Option<Color>,
     border_color: Option<Color>,
     border_width: f32,
     corner_radius: f32,
     shadows: Vec<ShadowSpec>,
+    on_click: Option<Action>,
+    cursor: CursorHint,
 }
 
 struct ShadowSpec {
@@ -303,10 +332,13 @@ pub fn div() -> Div {
         },
         children: Vec::new(),
         background: None,
+        hover_background: None,
         border_color: None,
         border_width: 0.0,
         corner_radius: 0.0,
         shadows: Vec::new(),
+        on_click: None,
+        cursor: CursorHint::Default,
     }
 }
 
@@ -490,6 +522,25 @@ impl Div {
         });
         self
     }
+
+    // -- Interaction --
+
+    pub fn on_click(mut self, action: Action) -> Self {
+        self.on_click = Some(action);
+        self.cursor = CursorHint::Pointer;
+        self
+    }
+
+    pub fn cursor(mut self, cursor: CursorHint) -> Self {
+        self.cursor = cursor;
+        self
+    }
+
+    /// Background color shown when the mouse hovers over this element.
+    pub fn hover_bg(mut self, color: Color) -> Self {
+        self.hover_background = Some(color);
+        self
+    }
 }
 
 impl Element for Div {
@@ -520,6 +571,7 @@ impl Element for Div {
         cx: &mut ElementContext,
     ) {
         let r = self.corner_radius;
+        let hovered = self.on_click.is_some() && cx.is_hovered(&bounds);
 
         // Shadows
         for s in &self.shadows {
@@ -532,8 +584,13 @@ impl Element for Div {
             });
         }
 
-        // Background
-        if let Some(bg) = self.background {
+        // Background (hover overrides normal)
+        let bg = if hovered {
+            self.hover_background.or(self.background)
+        } else {
+            self.background
+        };
+        if let Some(bg) = bg {
             scene.rounded_rect(RoundedRectPrimitive::uniform(bounds, r, bg));
         }
 
@@ -545,6 +602,15 @@ impl Element for Div {
         // Paint children
         for child in &mut self.children {
             child.paint(engine, scene, cx);
+        }
+
+        // Register hit region (after children so it's topmost)
+        if let Some(action) = self.on_click.take() {
+            cx.hits.push(HitRegion {
+                rect: bounds,
+                action,
+                cursor: self.cursor,
+            });
         }
     }
 }
@@ -741,12 +807,13 @@ mod tests {
     use crate::ui::theme::Theme;
 
     fn test_cx(font_system: &mut glyphon::FontSystem) -> ElementContext<'_> {
-        // We leak the theme for test convenience — it's a test.
         let theme = Box::leak(Box::new(Theme::default_dark()));
         ElementContext {
             theme,
             scale_factor: 1.0,
             font_system,
+            mouse_position: None,
+            hits: Vec::new(),
         }
     }
 
@@ -879,5 +946,80 @@ mod tests {
         // line height = 10.0 * 1.5 = 15.0
         assert!((bounds.height - 15.0).abs() < 1.0,
             "text height {} should be ~15.0", bounds.height);
+    }
+
+    #[test]
+    fn on_click_registers_hit_region() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        let mut scene = Scene::default();
+
+        let mut root = div()
+            .w(200.0)
+            .h(50.0)
+            .on_click(Action::OpenCompareSheet)
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 200.0, 50.0);
+
+        assert_eq!(cx.hits.len(), 1);
+        assert_eq!(cx.hits[0].action, Action::OpenCompareSheet);
+        assert_eq!(cx.hits[0].cursor, CursorHint::Pointer);
+        assert!(cx.hits[0].rect.width > 0.0);
+    }
+
+    #[test]
+    fn hover_bg_applies_when_mouse_inside() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        cx.mouse_position = Some((100.0, 25.0)); // inside the 200x50 div
+
+        let mut scene = Scene::default();
+        let red = Color::rgba(255, 0, 0, 255);
+        let blue = Color::rgba(0, 0, 255, 255);
+
+        let mut root = div()
+            .w(200.0)
+            .h(50.0)
+            .bg(red)
+            .hover_bg(blue)
+            .on_click(Action::Bootstrap)
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 200.0, 50.0);
+
+        // Should have painted blue (hover) not red (default)
+        let bg_prim = scene.primitives.iter().find(|p| {
+            matches!(p, crate::render::Primitive::RoundedRect(_))
+        });
+        assert!(bg_prim.is_some());
+        if let crate::render::Primitive::RoundedRect(rr) = bg_prim.unwrap() {
+            assert_eq!(rr.color, blue, "hover bg should be blue");
+        }
+    }
+
+    #[test]
+    fn hover_bg_does_not_apply_when_mouse_outside() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        cx.mouse_position = Some((999.0, 999.0)); // outside
+
+        let mut scene = Scene::default();
+        let red = Color::rgba(255, 0, 0, 255);
+        let blue = Color::rgba(0, 0, 255, 255);
+
+        let mut root = div()
+            .w(200.0)
+            .h(50.0)
+            .bg(red)
+            .hover_bg(blue)
+            .on_click(Action::Bootstrap)
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 200.0, 50.0);
+
+        if let crate::render::Primitive::RoundedRect(rr) = &scene.primitives[0] {
+            assert_eq!(rr.color, red, "should use normal bg when not hovered");
+        }
     }
 }

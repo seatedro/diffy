@@ -172,6 +172,32 @@ fn to_skia_color(c: Color) -> tiny_skia::Color {
     tiny_skia::Color::from_rgba8(c.r, c.g, c.b, c.a)
 }
 
+fn rounded_rect_path(rect: Rect, radius: f32) -> Option<tiny_skia::Path> {
+    let r = radius.min(rect.width * 0.5).min(rect.height * 0.5);
+    let x = rect.x;
+    let y = rect.y;
+    let w = rect.width;
+    let h = rect.height;
+
+    let mut pb = tiny_skia::PathBuilder::new();
+    // Top-left corner
+    pb.move_to(x + r, y);
+    // Top edge → top-right corner
+    pb.line_to(x + w - r, y);
+    pb.quad_to(x + w, y, x + w, y + r);
+    // Right edge → bottom-right corner
+    pb.line_to(x + w, y + h - r);
+    pb.quad_to(x + w, y + h, x + w - r, y + h);
+    // Bottom edge → bottom-left corner
+    pb.line_to(x + r, y + h);
+    pb.quad_to(x, y + h, x, y + h - r);
+    // Left edge → top-left corner
+    pb.line_to(x, y + r);
+    pb.quad_to(x, y, x + r, y);
+    pb.close();
+    pb.finish()
+}
+
 fn fill_rect(
     pixmap: &mut tiny_skia::Pixmap,
     rect: Rect,
@@ -191,17 +217,7 @@ fn fill_rect(
     };
 
     if radius > 0.5 {
-        let r = radius.min(rect.width * 0.5).min(rect.height * 0.5);
-        let path = {
-            let mut pb = tiny_skia::PathBuilder::new();
-            let skia_rect = tiny_skia::Rect::from_xywh(rect.x, rect.y, rect.width, rect.height);
-            if let Some(skia_rect) = skia_rect {
-                // Approximate rounded rect with a regular rect + round corners
-                pb.push_rect(skia_rect);
-            }
-            pb.finish()
-        };
-        if let Some(path) = path {
+        if let Some(path) = rounded_rect_path(rect, radius) {
             pixmap.fill_path(
                 &path,
                 &paint,
@@ -244,7 +260,9 @@ fn stroke_rect(
         height: (rect.height - width).max(0.0),
     };
 
-    let path = {
+    let path = if radius > 0.5 {
+        rounded_rect_path(r, radius)
+    } else {
         let mut pb = tiny_skia::PathBuilder::new();
         if let Some(skia_rect) = tiny_skia::Rect::from_xywh(r.x, r.y, r.width, r.height) {
             pb.push_rect(skia_rect);

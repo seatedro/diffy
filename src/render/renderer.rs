@@ -10,8 +10,7 @@ use wgpu::util::DeviceExt;
 use winit::{dpi::PhysicalSize, window::Window};
 
 use crate::render::scene::{
-    BorderPrimitive, ClipPrimitive, FontKind, Primitive, Rect, RichTextPrimitive,
-    RoundedRectPrimitive, Scene, ShadowPrimitive, TextPrimitive,
+    ClipPrimitive, FontKind, Primitive, Rect, RichTextPrimitive, Scene, TextPrimitive,
 };
 use crate::ui::theme::Color;
 
@@ -49,7 +48,7 @@ pub enum RenderError {
     NoAdapter,
     #[error("failed to create surface: {0}")]
     CreateSurface(#[from] wgpu::CreateSurfaceError),
-    #[error("failed to request device: {0}")]
+    #[error("device request failed: {0}")]
     RequestDevice(#[from] wgpu::RequestDeviceError),
     #[error("failed to prepare text: {0}")]
     PrepareText(#[from] glyphon::PrepareError),
@@ -66,7 +65,7 @@ pub struct Renderer {
     surface_config: wgpu::SurfaceConfiguration,
     size: PhysicalSize<u32>,
     scale_factor: f64,
-    rect_pipeline: wgpu::RenderPipeline,
+    quad_pipeline: wgpu::RenderPipeline,
     viewport_buffer: wgpu::Buffer,
     viewport_bind_group: wgpu::BindGroup,
     font_system: FontSystem,
@@ -159,34 +158,39 @@ impl Renderer {
         });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("diffy_rect_shader"),
-            source: wgpu::ShaderSource::Wgsl(RECT_SHADER.into()),
+            label: Some("diffy_quad_shader"),
+            source: wgpu::ShaderSource::Wgsl(QUAD_SHADER.into()),
         });
-        let rect_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("diffy_rect_pipeline_layout"),
-            bind_group_layouts: &[&viewport_bind_group_layout],
-            immediate_size: 0,
-        });
-        let rect_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("diffy_rect_pipeline"),
-            layout: Some(&rect_pipeline_layout),
+        let quad_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("diffy_quad_pipeline_layout"),
+                bind_group_layouts: &[&viewport_bind_group_layout],
+                immediate_size: 0,
+            });
+        let quad_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("diffy_quad_pipeline"),
+            layout: Some(&quad_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: Some("vs_main"),
+                entry_point: Some("vs_quad"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[RectVertex::layout()],
+                buffers: &[QuadInstance::layout()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: Some("fs_main"),
+                entry_point: Some("fs_quad"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: surface_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            primitive: wgpu::PrimitiveState::default(),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                strip_index_format: None,
+                ..wgpu::PrimitiveState::default()
+            },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
@@ -209,7 +213,7 @@ impl Renderer {
             surface_config,
             size,
             scale_factor,
-            rect_pipeline,
+            quad_pipeline,
             viewport_buffer,
             viewport_bind_group,
             font_system,
@@ -255,15 +259,14 @@ impl Renderer {
             return Ok(FrameStats::default());
         }
 
-        let flattened = flatten_scene(
-            scene,
-            Rect {
-                x: 0.0,
-                y: 0.0,
-                width: self.surface_config.width as f32,
-                height: self.surface_config.height as f32,
-            },
-        );
+        let viewport_rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: self.surface_config.width as f32,
+            height: self.surface_config.height as f32,
+        };
+
+        let flattened = flatten_scene(scene, viewport_rect);
 
         let frame = match self.surface.get_current_texture() {
             Ok(frame) => frame,
@@ -292,12 +295,12 @@ impl Renderer {
                 label: Some("diffy_frame_encoder"),
             });
 
-        let (rect_vertices, draw_commands) = build_rect_vertices(&flattened.rects);
-        let rect_buffer = self
+        let (quad_instances, draw_commands) = build_quad_instances(&flattened.quads);
+        let quad_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("diffy_rect_vertices"),
-                contents: bytemuck::cast_slice(&rect_vertices),
+                label: Some("diffy_quad_instances"),
+                contents: bytemuck::cast_slice(&quad_instances),
                 usage: wgpu::BufferUsages::VERTEX,
             });
 
@@ -371,9 +374,9 @@ impl Renderer {
             });
 
             if !draw_commands.is_empty() {
-                pass.set_pipeline(&self.rect_pipeline);
+                pass.set_pipeline(&self.quad_pipeline);
                 pass.set_bind_group(0, &self.viewport_bind_group, &[]);
-                pass.set_vertex_buffer(0, rect_buffer.slice(..));
+                pass.set_vertex_buffer(0, quad_buffer.slice(..));
                 for command in &draw_commands {
                     if command.clip.width <= 0.0 || command.clip.height <= 0.0 {
                         continue;
@@ -384,12 +387,10 @@ impl Renderer {
                         command.clip.width.max(1.0).round() as u32,
                         command.clip.height.max(1.0).round() as u32,
                     );
-                    pass.draw(command.vertex_range.clone(), 0..1);
+                    pass.draw(0..4, command.instance_range.clone());
                 }
             }
 
-            // Reset the scissor after rectangle emission so glyphon text is not
-            // accidentally clipped to the final border or shadow slice.
             pass.set_scissor_rect(0, 0, self.surface_config.width, self.surface_config.height);
             self.text_renderer
                 .render(&self.atlas, &self.viewport, &mut pass)?;
@@ -407,27 +408,49 @@ impl Renderer {
     }
 }
 
+// ---------------------------------------------------------------------------
+// GPU types
+// ---------------------------------------------------------------------------
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
-struct RectVertex {
-    position: [f32; 2],
-    color: [f32; 4],
+struct QuadInstance {
+    bounds: [f32; 4],
+    background: [f32; 4],
+    border_color: [f32; 4],
+    corner_radii: [f32; 4],
+    border_widths: [f32; 4],
 }
 
-impl RectVertex {
-    fn layout<'a>() -> wgpu::VertexBufferLayout<'a> {
+impl QuadInstance {
+    fn layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Self>() as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
+            step_mode: wgpu::VertexStepMode::Instance,
             attributes: &[
                 wgpu::VertexAttribute {
                     offset: 0,
                     shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x2,
+                    format: wgpu::VertexFormat::Float32x4,
                 },
                 wgpu::VertexAttribute {
-                    offset: 8,
+                    offset: 16,
                     shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 32,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 48,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 64,
+                    shader_location: 4,
                     format: wgpu::VertexFormat::Float32x4,
                 },
             ],
@@ -451,17 +474,20 @@ impl ViewportUniform {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Scene flattening
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone)]
 struct FlattenedScene {
-    rects: Vec<ClippedRect>,
+    quads: Vec<ClippedQuad>,
     texts: Vec<ClippedText>,
     rich_texts: Vec<ClippedRichText>,
 }
 
-#[derive(Debug, Clone)]
-struct ClippedRect {
-    rect: Rect,
-    color: Color,
+#[derive(Debug, Clone, Copy)]
+struct ClippedQuad {
+    instance: QuadInstance,
     clip: Rect,
 }
 
@@ -477,9 +503,8 @@ struct ClippedRichText {
     clip: Rect,
 }
 
-#[derive(Debug, Clone)]
-struct RectDrawCommand {
-    vertex_range: std::ops::Range<u32>,
+struct QuadDrawCommand {
+    instance_range: std::ops::Range<u32>,
     clip: Rect,
 }
 
@@ -495,17 +520,66 @@ struct PreparedTextBuffer {
 fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
     let mut clips = vec![viewport];
     let mut flattened = FlattenedScene {
-        rects: Vec::new(),
+        quads: Vec::new(),
         texts: Vec::new(),
         rich_texts: Vec::new(),
     };
 
     for primitive in &scene.primitives {
         match primitive {
-            Primitive::Rect(rect) => push_rect(rect.rect, rect.color, &clips, &mut flattened.rects),
-            Primitive::RoundedRect(rect) => push_rounded_rect(rect, &clips, &mut flattened.rects),
-            Primitive::Border(border) => push_border(border, &clips, &mut flattened.rects),
-            Primitive::Shadow(shadow) => push_shadow(shadow, &clips, &mut flattened.rects),
+            Primitive::Rect(rect) => {
+                push_quad(
+                    rect.rect,
+                    color_to_linear(rect.color),
+                    [0.0; 4],
+                    [0.0; 4],
+                    [0.0; 4],
+                    &clips,
+                    &mut flattened.quads,
+                );
+            }
+            Primitive::RoundedRect(rect) => {
+                push_quad(
+                    rect.rect,
+                    color_to_linear(rect.color),
+                    [0.0; 4],
+                    [rect.radius; 4],
+                    [0.0; 4],
+                    &clips,
+                    &mut flattened.quads,
+                );
+            }
+            Primitive::Border(border) => {
+                let r = border.radius;
+                let w = border.width;
+                push_quad(
+                    border.rect,
+                    [0.0; 4],
+                    color_to_linear(border.color),
+                    [r, r, r, r],
+                    [w, w, w, w],
+                    &clips,
+                    &mut flattened.quads,
+                );
+            }
+            Primitive::Shadow(shadow) => {
+                let expansion = shadow.blur_radius.max(1.0);
+                let expanded = Rect {
+                    x: shadow.rect.x - expansion,
+                    y: shadow.rect.y - expansion,
+                    width: shadow.rect.width + expansion * 2.0,
+                    height: shadow.rect.height + expansion * 2.0,
+                };
+                push_quad(
+                    expanded,
+                    color_to_linear(shadow.color),
+                    [0.0; 4],
+                    [shadow.corner_radius + expansion; 4],
+                    [0.0; 4],
+                    &clips,
+                    &mut flattened.quads,
+                );
+            }
             Primitive::TextRun(text) => {
                 if let Some(clip) = clips.last().copied()
                     && let Some(intersection) = text.rect.intersection(clip)
@@ -545,6 +619,68 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
 
     flattened
 }
+
+fn push_quad(
+    rect: Rect,
+    background: [f32; 4],
+    border_color: [f32; 4],
+    corner_radii: [f32; 4],
+    border_widths: [f32; 4],
+    clips: &[Rect],
+    out: &mut Vec<ClippedQuad>,
+) {
+    if let Some(clip) = clips.last().copied() {
+        if rect.intersection(clip).is_some() {
+            out.push(ClippedQuad {
+                instance: QuadInstance {
+                    bounds: [rect.x, rect.y, rect.width, rect.height],
+                    background,
+                    border_color,
+                    corner_radii,
+                    border_widths,
+                },
+                clip,
+            });
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Quad instance batching
+// ---------------------------------------------------------------------------
+
+fn build_quad_instances(quads: &[ClippedQuad]) -> (Vec<QuadInstance>, Vec<QuadDrawCommand>) {
+    let mut instances = Vec::with_capacity(quads.len());
+    let mut commands = Vec::with_capacity(quads.len());
+
+    let mut i = 0;
+    while i < quads.len() {
+        let start = i as u32;
+        let clip = quads[i].clip;
+        instances.push(quads[i].instance);
+        i += 1;
+
+        while i < quads.len() && rects_equal(quads[i].clip, clip) {
+            instances.push(quads[i].instance);
+            i += 1;
+        }
+
+        commands.push(QuadDrawCommand {
+            instance_range: start..i as u32,
+            clip,
+        });
+    }
+
+    (instances, commands)
+}
+
+fn rects_equal(a: Rect, b: Rect) -> bool {
+    a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height
+}
+
+// ---------------------------------------------------------------------------
+// Text preparation (unchanged)
+// ---------------------------------------------------------------------------
 
 fn prepare_plain_text(
     font_system: &mut FontSystem,
@@ -638,106 +774,9 @@ fn glyphon_text_color(color: Color) -> glyphon::Color {
     glyphon::Color::rgba(color.r, color.g, color.b, color.a)
 }
 
-fn push_rect(rect: Rect, color: Color, clips: &[Rect], out: &mut Vec<ClippedRect>) {
-    if let Some(clip) = clips.last().copied()
-        && let Some(intersection) = rect.intersection(clip)
-    {
-        out.push(ClippedRect {
-            rect: intersection,
-            color,
-            clip: intersection,
-        });
-    }
-}
-
-fn push_rounded_rect(rect: &RoundedRectPrimitive, clips: &[Rect], out: &mut Vec<ClippedRect>) {
-    push_rect(rect.rect, rect.color, clips, out);
-}
-
-fn push_border(border: &BorderPrimitive, clips: &[Rect], out: &mut Vec<ClippedRect>) {
-    let top = Rect {
-        x: border.rect.x,
-        y: border.rect.y,
-        width: border.rect.width,
-        height: border.width,
-    };
-    let bottom = Rect {
-        x: border.rect.x,
-        y: border.rect.bottom() - border.width,
-        width: border.rect.width,
-        height: border.width,
-    };
-    let left = Rect {
-        x: border.rect.x,
-        y: border.rect.y,
-        width: border.width,
-        height: border.rect.height,
-    };
-    let right = Rect {
-        x: border.rect.right() - border.width,
-        y: border.rect.y,
-        width: border.width,
-        height: border.rect.height,
-    };
-    for rect in [top, bottom, left, right] {
-        push_rect(rect, border.color, clips, out);
-    }
-}
-
-fn push_shadow(shadow: &ShadowPrimitive, clips: &[Rect], out: &mut Vec<ClippedRect>) {
-    let expansion = shadow.blur_radius.max(1.0);
-    let rect = Rect {
-        x: shadow.rect.x - expansion,
-        y: shadow.rect.y - expansion,
-        width: shadow.rect.width + expansion * 2.0,
-        height: shadow.rect.height + expansion * 2.0,
-    };
-    push_rect(rect, shadow.color, clips, out);
-}
-
-fn build_rect_vertices(rects: &[ClippedRect]) -> (Vec<RectVertex>, Vec<RectDrawCommand>) {
-    let mut vertices = Vec::with_capacity(rects.len() * 6);
-    let mut commands = Vec::with_capacity(rects.len());
-    for rect in rects {
-        let start = vertices.len() as u32;
-        let color = color_to_linear(rect.color);
-        let x0 = rect.rect.x;
-        let y0 = rect.rect.y;
-        let x1 = rect.rect.right();
-        let y1 = rect.rect.bottom();
-        vertices.extend_from_slice(&[
-            RectVertex {
-                position: [x0, y0],
-                color,
-            },
-            RectVertex {
-                position: [x1, y0],
-                color,
-            },
-            RectVertex {
-                position: [x1, y1],
-                color,
-            },
-            RectVertex {
-                position: [x0, y0],
-                color,
-            },
-            RectVertex {
-                position: [x1, y1],
-                color,
-            },
-            RectVertex {
-                position: [x0, y1],
-                color,
-            },
-        ]);
-        commands.push(RectDrawCommand {
-            vertex_range: start..start + 6,
-            clip: rect.clip,
-        });
-    }
-    (vertices, commands)
-}
+// ---------------------------------------------------------------------------
+// Color conversion
+// ---------------------------------------------------------------------------
 
 fn color_to_linear(color: Color) -> [f32; 4] {
     [
@@ -757,7 +796,11 @@ fn srgb_to_linear(channel: u8) -> f32 {
     }
 }
 
-const RECT_SHADER: &str = r#"
+// ---------------------------------------------------------------------------
+// SDF quad shader
+// ---------------------------------------------------------------------------
+
+const QUAD_SHADER: &str = r#"
 struct ViewportUniform {
     resolution: vec2<f32>,
     _padding: vec2<f32>,
@@ -767,27 +810,99 @@ struct ViewportUniform {
 var<uniform> viewport: ViewportUniform;
 
 struct VertexInput {
-    @location(0) position: vec2<f32>,
-    @location(1) color: vec4<f32>,
+    @builtin(vertex_index) vertex_id: u32,
+    @location(0) bounds: vec4<f32>,
+    @location(1) background: vec4<f32>,
+    @location(2) border_color: vec4<f32>,
+    @location(3) corner_radii: vec4<f32>,
+    @location(4) border_widths: vec4<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) color: vec4<f32>,
+    @location(0) @interpolate(flat) bounds: vec4<f32>,
+    @location(1) @interpolate(flat) background: vec4<f32>,
+    @location(2) @interpolate(flat) border_color: vec4<f32>,
+    @location(3) @interpolate(flat) corner_radii: vec4<f32>,
+    @location(4) @interpolate(flat) border_widths: vec4<f32>,
 };
 
 @vertex
-fn vs_main(input: VertexInput) -> VertexOutput {
-    let ndc_x = (input.position.x / viewport.resolution.x) * 2.0 - 1.0;
-    let ndc_y = 1.0 - (input.position.y / viewport.resolution.y) * 2.0;
+fn vs_quad(input: VertexInput) -> VertexOutput {
+    let unit = vec2<f32>(
+        f32(input.vertex_id & 1u),
+        f32((input.vertex_id >> 1u) & 1u)
+    );
+    let pixel_pos = input.bounds.xy + unit * input.bounds.zw;
+    let ndc = pixel_pos / viewport.resolution * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
+
     var out: VertexOutput;
-    out.position = vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
-    out.color = input.color;
+    out.position = vec4<f32>(ndc, 0.0, 1.0);
+    out.bounds = input.bounds;
+    out.background = input.background;
+    out.border_color = input.border_color;
+    out.corner_radii = input.corner_radii;
+    out.border_widths = input.border_widths;
     return out;
 }
 
+fn pick_corner_radius(p: vec2<f32>, radii: vec4<f32>) -> f32 {
+    // radii: tl, tr, br, bl
+    if (p.x < 0.0) {
+        return select(radii.w, radii.x, p.y < 0.0);
+    } else {
+        return select(radii.z, radii.y, p.y < 0.0);
+    }
+}
+
+fn quad_sdf(p: vec2<f32>, half_size: vec2<f32>, radius: f32) -> f32 {
+    let d = abs(p) - half_size + vec2<f32>(radius);
+    return length(max(d, vec2<f32>(0.0))) + min(max(d.x, d.y), 0.0) - radius;
+}
+
+fn over(below: vec4<f32>, above: vec4<f32>) -> vec4<f32> {
+    let a = above.a + below.a * (1.0 - above.a);
+    if (a <= 0.0) {
+        return vec4<f32>(0.0);
+    }
+    let c = (above.rgb * above.a + below.rgb * below.a * (1.0 - above.a)) / a;
+    return vec4<f32>(c, a);
+}
+
 @fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    return input.color;
+fn fs_quad(input: VertexOutput) -> @location(0) vec4<f32> {
+    let half_size = input.bounds.zw * 0.5;
+    let center = input.bounds.xy + half_size;
+    let p = input.position.xy - center;
+
+    let corner_radius = pick_corner_radius(p, input.corner_radii);
+    let outer_sdf = quad_sdf(p, half_size, corner_radius);
+
+    let aa = 0.5;
+    let outer_alpha = saturate(aa - outer_sdf);
+    if (outer_alpha <= 0.0) {
+        discard;
+    }
+
+    let max_border = max(
+        max(input.border_widths.x, input.border_widths.y),
+        max(input.border_widths.z, input.border_widths.w)
+    );
+
+    var color: vec4<f32>;
+    if (max_border > 0.0) {
+        let bw = max_border;
+        let inner_half = half_size - vec2<f32>(bw);
+        let inner_radius = max(0.0, corner_radius - bw);
+        let inner_sdf = quad_sdf(p, inner_half, inner_radius);
+        let fill_blend = saturate(aa - inner_sdf);
+        let blended = over(input.background, input.border_color);
+        color = mix(blended, input.background, fill_blend);
+    } else {
+        color = input.background;
+    }
+
+    let final_alpha = color.a * outer_alpha;
+    return vec4<f32>(color.rgb * final_alpha, final_alpha);
 }
 "#;

@@ -30,6 +30,24 @@ impl Rect {
         }
     }
 
+    pub fn pad(self, left: f32, top: f32, right: f32, bottom: f32) -> Self {
+        Self {
+            x: self.x + left,
+            y: self.y + top,
+            width: (self.width - left - right).max(0.0),
+            height: (self.height - top - bottom).max(0.0),
+        }
+    }
+
+    pub fn center(self, child_w: f32, child_h: f32) -> Self {
+        Self {
+            x: self.x + ((self.width - child_w).max(0.0) * 0.5),
+            y: self.y + ((self.height - child_h).max(0.0) * 0.5),
+            width: child_w.min(self.width - 24.0),
+            height: child_h.min(self.height - 24.0),
+        }
+    }
+
     pub fn intersection(self, other: Self) -> Option<Self> {
         let left = self.x.max(other.x);
         let top = self.y.max(other.y);
@@ -135,6 +153,7 @@ pub struct RoundedRectPrimitive {
 pub struct BorderPrimitive {
     pub rect: Rect,
     pub width: f32,
+    pub radius: f32,
     pub color: Color,
 }
 
@@ -142,6 +161,7 @@ pub struct BorderPrimitive {
 pub struct ShadowPrimitive {
     pub rect: Rect,
     pub blur_radius: f32,
+    pub corner_radius: f32,
     pub color: Color,
 }
 

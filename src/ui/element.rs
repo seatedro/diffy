@@ -955,9 +955,16 @@ impl Element for Div {
         let hovered = prepaint_state
             .hitbox_id
             .map_or(false, |id| cx.is_hovered(id));
-        let style = self.resolve_style(hovered);
+        let mut style = self.resolve_style(hovered);
         let r = style.corner_radius;
         let z = style.z_index;
+        let opacity = style.opacity;
+
+        if opacity < 1.0 {
+            if let Some(ref mut bg) = style.background {
+                bg.a = (bg.a as f32 * opacity) as u8;
+            }
+        }
 
         if z != 0 {
             scene.push_z_index(z);
@@ -1129,6 +1136,14 @@ impl IntoAnyElement for Spacer {
 
 use crate::render::{FontKind, TextPrimitive};
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TextAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
 pub struct TextElement {
     content: String,
     font_size: f32,
@@ -1136,6 +1151,8 @@ pub struct TextElement {
     color: Option<Color>,
     font_kind: FontKind,
     font_weight: FontWeight,
+    align: TextAlign,
+    truncate: bool,
     mono_char_width: Option<f32>,
 }
 
@@ -1147,6 +1164,8 @@ pub fn text(content: impl Into<String>) -> TextElement {
         color: None,
         font_kind: FontKind::Ui,
         font_weight: FontWeight::Normal,
+        align: TextAlign::Left,
+        truncate: false,
         mono_char_width: None,
     }
 }
@@ -1199,6 +1218,21 @@ impl TextElement {
 
     pub fn medium(mut self) -> Self {
         self.font_weight = FontWeight::Medium;
+        self
+    }
+
+    pub fn text_center(mut self) -> Self {
+        self.align = TextAlign::Center;
+        self
+    }
+
+    pub fn text_right(mut self) -> Self {
+        self.align = TextAlign::Right;
+        self
+    }
+
+    pub fn truncate(mut self) -> Self {
+        self.truncate = true;
         self
     }
 
@@ -1269,9 +1303,35 @@ impl Element for TextElement {
         let (font_size, _line_height) = *state;
         let color = self.color.unwrap_or(cx.theme.colors.text);
 
+        let char_width = if self.font_kind == FontKind::Mono {
+            self.mono_char_width.unwrap_or(font_size * 0.6)
+        } else {
+            font_size * 0.55
+        };
+
+        let mut content = std::mem::take(&mut self.content);
+
+        if self.truncate && bounds.width > 0.0 {
+            let max_chars = (bounds.width / char_width).floor() as usize;
+            if content.len() > max_chars && max_chars > 3 {
+                content.truncate(max_chars - 3);
+                content.push_str("\u{2026}");
+            }
+        }
+
+        let text_width = content.len() as f32 * char_width;
+        let x_offset = match self.align {
+            TextAlign::Left => 0.0,
+            TextAlign::Center => ((bounds.width - text_width) * 0.5).max(0.0),
+            TextAlign::Right => (bounds.width - text_width).max(0.0),
+        };
+
         scene.text(TextPrimitive {
-            rect: bounds,
-            text: std::mem::take(&mut self.content),
+            rect: Rect {
+                x: bounds.x + x_offset,
+                ..bounds
+            },
+            text: content,
             color,
             font_size,
             font_kind: self.font_kind,
@@ -1537,6 +1597,242 @@ impl Element for Canvas {
 }
 
 impl IntoAnyElement for Canvas {
+    fn into_any(self) -> AnyElement {
+        element_into_any(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Icon — vector icon element
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IconName {
+    File,
+    Folder,
+    ChevronRight,
+    ChevronDown,
+    Plus,
+    X,
+    Search,
+    Check,
+    GitBranch,
+    GitPullRequest,
+    Settings,
+    Sun,
+    Moon,
+    ArrowRight,
+    Diff,
+}
+
+pub struct IconElement {
+    name: IconName,
+    size: f32,
+    color: Option<Color>,
+}
+
+pub fn icon(name: IconName) -> IconElement {
+    IconElement {
+        name,
+        size: 16.0,
+        color: None,
+    }
+}
+
+impl IconElement {
+    pub fn size(mut self, s: f32) -> Self {
+        self.size = s;
+        self
+    }
+
+    pub fn color(mut self, c: Color) -> Self {
+        self.color = Some(c);
+        self
+    }
+}
+
+impl Element for IconElement {
+    type LayoutState = ();
+    type PrepaintState = ();
+
+    fn request_layout(
+        &mut self,
+        engine: &mut LayoutEngine,
+        _cx: &mut ElementContext,
+    ) -> (LayoutId, ()) {
+        let id = engine.request_layout(
+            taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::length(self.size),
+                    height: taffy::Dimension::length(self.size),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+            &[],
+        );
+        (id, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _bounds: Bounds,
+        _layout_state: &mut (),
+        _engine: &LayoutEngine,
+        _cx: &mut ElementContext,
+    ) -> () {
+    }
+
+    fn paint(
+        &mut self,
+        bounds: Bounds,
+        _layout_state: &mut (),
+        _prepaint_state: &mut (),
+        _engine: &LayoutEngine,
+        scene: &mut Scene,
+        cx: &mut ElementContext,
+    ) {
+        let color = self.color.unwrap_or(cx.theme.colors.icon);
+        let s = self.size;
+        let x = bounds.x;
+        let y = bounds.y;
+        let stroke = (s * 0.1).max(1.5);
+
+        match self.name {
+            IconName::File => {
+                let w = s * 0.6;
+                let h = s * 0.75;
+                let ox = x + (s - w) * 0.5;
+                let oy = y + (s - h) * 0.5;
+                let fold = s * 0.2;
+                scene.border(BorderPrimitive::uniform(
+                    Rect { x: ox, y: oy, width: w, height: h },
+                    stroke, 2.0, color,
+                ));
+                scene.rect(crate::render::RectPrimitive {
+                    rect: Rect { x: ox + w - fold, y: oy, width: fold, height: fold },
+                    color: color.with_alpha(60),
+                });
+            }
+            IconName::Folder => {
+                let w = s * 0.75;
+                let h = s * 0.55;
+                let ox = x + (s - w) * 0.5;
+                let oy = y + (s - h) * 0.5;
+                let tab_w = w * 0.35;
+                let tab_h = h * 0.15;
+                scene.rounded_rect(RoundedRectPrimitive::uniform(
+                    Rect { x: ox, y: oy + tab_h, width: w, height: h - tab_h },
+                    2.0, color.with_alpha(80),
+                ));
+                scene.rounded_rect(RoundedRectPrimitive::uniform(
+                    Rect { x: ox, y: oy, width: tab_w, height: tab_h + 2.0 },
+                    2.0, color.with_alpha(80),
+                ));
+            }
+            IconName::ChevronRight => {
+                let cx_i = x + s * 0.45;
+                let cy = y + s * 0.5;
+                let arm = s * 0.2;
+                scene.rect(crate::render::RectPrimitive {
+                    rect: Rect { x: cx_i, y: cy - arm, width: stroke, height: arm },
+                    color,
+                });
+                scene.rect(crate::render::RectPrimitive {
+                    rect: Rect { x: cx_i, y: cy, width: stroke, height: arm },
+                    color,
+                });
+            }
+            IconName::ChevronDown => {
+                let cx_i = x + s * 0.5;
+                let cy = y + s * 0.45;
+                let arm = s * 0.2;
+                scene.rect(crate::render::RectPrimitive {
+                    rect: Rect { x: cx_i - arm, y: cy, width: arm, height: stroke },
+                    color,
+                });
+                scene.rect(crate::render::RectPrimitive {
+                    rect: Rect { x: cx_i, y: cy, width: arm, height: stroke },
+                    color,
+                });
+            }
+            IconName::Plus => {
+                let cx_i = x + s * 0.5 - stroke * 0.5;
+                let cy = y + s * 0.5 - stroke * 0.5;
+                let arm = s * 0.3;
+                scene.rect(crate::render::RectPrimitive {
+                    rect: Rect { x: cx_i, y: y + s * 0.5 - arm, width: stroke, height: arm * 2.0 },
+                    color,
+                });
+                scene.rect(crate::render::RectPrimitive {
+                    rect: Rect { x: x + s * 0.5 - arm, y: cy, width: arm * 2.0, height: stroke },
+                    color,
+                });
+            }
+            IconName::X => {
+                let m = s * 0.25;
+                let len = s - m * 2.0;
+                scene.rect(crate::render::RectPrimitive {
+                    rect: Rect { x: x + m, y: y + s * 0.5 - stroke * 0.5, width: len, height: stroke },
+                    color,
+                });
+            }
+            IconName::Search => {
+                let r = s * 0.28;
+                let cx_i = x + s * 0.42;
+                let cy = y + s * 0.42;
+                scene.border(BorderPrimitive::uniform(
+                    Rect { x: cx_i - r, y: cy - r, width: r * 2.0, height: r * 2.0 },
+                    stroke, r, color,
+                ));
+                let handle_len = s * 0.22;
+                scene.rect(crate::render::RectPrimitive {
+                    rect: Rect { x: cx_i + r * 0.6, y: cy + r * 0.6, width: handle_len, height: stroke },
+                    color,
+                });
+            }
+            IconName::Check => {
+                let m = s * 0.2;
+                scene.rect(crate::render::RectPrimitive {
+                    rect: Rect { x: x + m, y: y + s * 0.55, width: s * 0.25, height: stroke },
+                    color,
+                });
+                scene.rect(crate::render::RectPrimitive {
+                    rect: Rect { x: x + m + s * 0.2, y: y + s * 0.3, width: s * 0.4, height: stroke },
+                    color,
+                });
+            }
+            IconName::GitBranch => {
+                let cx_i = x + s * 0.5;
+                let dot_r = stroke * 1.2;
+                scene.rect(crate::render::RectPrimitive {
+                    rect: Rect { x: cx_i - stroke * 0.5, y: y + s * 0.2, width: stroke, height: s * 0.6 },
+                    color,
+                });
+                scene.rounded_rect(RoundedRectPrimitive::uniform(
+                    Rect { x: cx_i - dot_r, y: y + s * 0.15 - dot_r, width: dot_r * 2.0, height: dot_r * 2.0 },
+                    dot_r, color,
+                ));
+                scene.rounded_rect(RoundedRectPrimitive::uniform(
+                    Rect { x: cx_i - dot_r, y: y + s * 0.85 - dot_r, width: dot_r * 2.0, height: dot_r * 2.0 },
+                    dot_r, color,
+                ));
+                scene.rounded_rect(RoundedRectPrimitive::uniform(
+                    Rect { x: cx_i + s * 0.15 - dot_r, y: y + s * 0.35 - dot_r, width: dot_r * 2.0, height: dot_r * 2.0 },
+                    dot_r, color,
+                ));
+            }
+            _ => {
+                scene.rounded_rect(RoundedRectPrimitive::uniform(
+                    Rect { x: x + 2.0, y: y + 2.0, width: s - 4.0, height: s - 4.0 },
+                    3.0, color.with_alpha(40),
+                ));
+            }
+        }
+    }
+}
+
+impl IntoAnyElement for IconElement {
     fn into_any(self) -> AnyElement {
         element_into_any(self)
     }

@@ -1690,7 +1690,10 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                     }
                 }
             }
-            Primitive::Icon(_) => {}
+            Primitive::Icon(_) | Primitive::Image(_) => {
+                // TODO: GPU image rendering via textured quads.
+                // For now, images render in software capture only.
+            }
             Primitive::ClipStart(ClipPrimitive { rect }) => {
                 let next = clips
                     .last()

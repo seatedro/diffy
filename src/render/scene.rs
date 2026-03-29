@@ -118,6 +118,10 @@ impl Scene {
         self.push(Primitive::RichTextRun(text));
     }
 
+    pub fn image(&mut self, image: ImagePrimitive) {
+        self.push(Primitive::Image(image));
+    }
+
     pub fn blur_region(&mut self, blur: BlurRegionPrimitive) {
         self.push(Primitive::BlurRegion(blur));
     }
@@ -156,6 +160,7 @@ pub enum Primitive {
     TextRun(TextPrimitive),
     RichTextRun(RichTextPrimitive),
     Icon(IconPrimitive),
+    Image(ImagePrimitive),
     EffectQuad(EffectQuadPrimitive),
     /// Start a frosted-glass blur region. Content rendered before this
     /// primitive (within the given bounds) will be blurred and composited
@@ -261,6 +266,14 @@ pub struct IconPrimitive {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ClipPrimitive {
     pub rect: Rect,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImagePrimitive {
+    pub rect: Rect,
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
 }
 
 // ---------------------------------------------------------------------------

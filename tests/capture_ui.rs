@@ -1,6 +1,7 @@
 use diffy::render::capture::scene_to_png;
 use diffy::render::Scene;
 use diffy::ui::element::*;
+use diffy::ui::icons::lucide;
 use diffy::ui::signals::SignalStore;
 use diffy::ui::style::Styled;
 use diffy::ui::theme::{Color, Theme};
@@ -23,141 +24,116 @@ fn render_to_png(name: &str, width: u32, height: u32, build: impl FnOnce(&Theme)
 }
 
 #[test]
-fn capture_empty_state() {
-    render_to_png("empty_state", 1320, 840, |t| {
+fn capture_app() {
+    render_to_png("app", 1320, 840, |t| {
         let tc = &t.colors;
-        div()
-            .w(1320.0).h(840.0)
-            .flex_col()
-            .bg(tc.background)
-            .p(4.0).gap(4.0)
-            .child(
-                div().flex_row().items_center().h_12().w_full().px_5()
-                    .bg(tc.title_bar_background).rounded_lg().border_b(tc.border_variant)
-                    .child(text("diffy").text_lg().color(tc.text_strong))
-                    .child(spacer())
-                    .child(div().flex_row().gap_2()
-                        .child(div().px_3().py_1().rounded_md().bg(tc.element_background)
-                            .child(text("Compare").text_sm().color(tc.text)))
-                        .child(div().px_3().py_1().rounded_md()
-                            .child(text("PR").text_sm().color(tc.text_muted)))
-                        .child(div().w(8.0).h(20.0).border_b(tc.border_variant))
-                        .child(div().flex_row().rounded_md().bg(Color::rgba(0,0,0,40)).p(2.0).gap(1.0)
-                            .child(div().px_3().py_1().rounded_sm().bg(tc.element_background)
-                                .child(text("Split").text_xs().color(tc.text)))
-                            .child(div().px_3().py_1().rounded_sm()
-                                .child(text("Unified").text_xs().color(tc.text_muted))))
-                    ),
-            )
-            .child(
-                div().flex_row().flex_1().gap(4.0)
-                    .child(
-                        div().w(280.0).flex_shrink_0().h_full().flex_col()
-                            .bg(tc.sidebar_background).rounded_lg().border_b(tc.border_variant)
-                            .child(div().px_4().py_3().child(text("Files").text_xs().color(tc.text_muted)))
-                            .child(div().px_4().child(text("Open a repository to start.").text_sm().color(tc.text_muted)))
-                    )
-                    .child(
-                        div().flex_1().h_full().flex_col()
-                            .bg(tc.editor_surface).rounded_lg().border_b(tc.border_variant)
-                            .items_center().justify_center()
-                            .child(
-                                div().w(520.0).p_8().flex_col().gap_4()
-                                    .bg(tc.elevated_surface).rounded_xl().border_b(tc.border)
-                                    .shadow(20.0, 8.0, Color::rgba(0,0,0,80))
-                                    .shadow(4.0, 2.0, Color::rgba(0,0,0,40))
-                                    .child(text("Start a new compare").text_lg().color(tc.text_strong))
-                                    .child(text("Choose a repository, select refs, then open the native diff workspace.").text_sm().color(tc.text_muted))
-                                    .child(div().flex_row().gap_3().pt(4.0)
-                                        .child(div().px_4().py_2().rounded_md().bg(tc.accent)
-                                            .child(text("Open Compare").text_sm().color(tc.text_strong)))
-                                        .child(div().px_4().py_2().rounded_md().bg(tc.element_background)
-                                            .child(text("Folder Dialog").text_sm().color(tc.text))))
-                                    .child(div().pt(8.0).flex_col().gap_1()
-                                        .child(text("Recent repositories").text_xs().color(tc.text_muted)))
-                            )
-                    )
-            )
-            .child(
-                div().flex_row().items_center().h(28.0).w_full().px_4()
-                    .bg(tc.status_bar_background).rounded_lg()
-                    .child(text("idle").text_xs().color(tc.text_muted))
-                    .child(spacer())
-                    .child(text("single-commit  \u{00b7}  built-in").text_xs().color(tc.text_muted))
-            )
-            .into_any()
-    });
-}
-
-#[test]
-fn capture_with_files() {
-    render_to_png("with_files", 1320, 840, |t| {
-        let tc = &t.colors;
+        let border = tc.border_variant;
         let files = [
-            ("src/main.rs", "+42 \u{2212}8"),
-            ("src/lib.rs", "+156 \u{2212}23"),
-            ("src/render/renderer.rs", "+384 \u{2212}12"),
-            ("src/ui/element.rs", "+221 \u{2212}0"),
-            ("src/ui/shell.rs", "+861 \u{2212}842"),
-            ("Cargo.toml", "+3 \u{2212}0"),
-            ("README.md", "+12 \u{2212}4"),
+            ("src/main.rs", 42u32, 8u32),
+            ("src/lib.rs", 156, 23),
+            ("src/render/renderer.rs", 384, 12),
+            ("src/ui/element.rs", 221, 0),
+            ("src/ui/shell.rs", 861, 842),
+            ("Cargo.toml", 3, 0),
+            ("README.md", 12, 4),
         ];
 
         div()
             .w(1320.0).h(840.0)
             .flex_col()
             .bg(tc.background)
-            .p(4.0).gap(4.0)
+            // Title bar
             .child(
                 div().flex_row().items_center().h_12().w_full().px_5()
-                    .bg(tc.title_bar_background).rounded_lg().border_b(tc.border_variant)
-                    .child(text("diffy").text_lg().color(tc.text_strong))
-                    .child(div().px_4().child(text("7 files  \u{00b7}  abc1234 \u{2192} def5678").text_sm().color(tc.text_muted)))
+                    .bg(tc.title_bar_background).border_b(border)
+                    .child(svg_icon(lucide::GIT_COMPARE, 18.0).color(tc.accent))
+                    .child(div().w(10.0))
+                    .child(text("diffy").semibold().color(tc.text_strong))
+                    .child(div().px_4().child(
+                        text("7 files  \u{00b7}  abc1234 \u{2192} def5678").text_sm().color(tc.text_muted)
+                    ))
                     .child(spacer())
-                    .child(div().flex_row().gap_2()
-                        .child(div().flex_row().rounded_md().bg(Color::rgba(0,0,0,40)).p(2.0).gap(1.0)
+                    .child(div().flex_row().items_center().gap_1()
+                        .child(div().flex_row().items_center().gap(6.0).px_3().py_1().rounded_md()
+                            .bg(tc.element_background)
+                            .child(svg_icon(lucide::GIT_COMPARE, 14.0).color(tc.text))
+                            .child(text("Compare").text_sm().medium().color(tc.text)))
+                        .child(div().flex_row().items_center().gap(6.0).px_3().py_1().rounded_md()
+                            .child(svg_icon(lucide::GIT_PULL_REQUEST, 14.0).color(tc.text_muted))
+                            .child(text("PR").text_sm().color(tc.text_muted)))
+                        .child(div().w(1.0).h(20.0).bg(border))
+                        .child(div().flex_row().rounded_md().bg(Color::rgba(255, 255, 255, 10)).p(2.0).gap(1.0)
                             .child(div().px_3().py_1().rounded_sm().bg(tc.element_background)
-                                .child(text("Split").text_xs().color(tc.text)))
+                                .child(text("Split").text_xs().medium().color(tc.text)))
                             .child(div().px_3().py_1().rounded_sm()
                                 .child(text("Unified").text_xs().color(tc.text_muted))))
+                        .child(div().flex_row().items_center().gap(6.0).px_3().py_1().rounded_md()
+                            .child(svg_icon(lucide::WRAP_TEXT, 14.0).color(tc.text_muted))
+                            .child(text("Wrap").text_sm().color(tc.text_muted)))
+                        .child(div().px_2().py_1().rounded_md()
+                            .child(svg_icon(lucide::MOON, 15.0).color(tc.text_muted)))
                     )
             )
+            // Body
             .child(
-                div().flex_row().flex_1().gap(4.0)
+                div().flex_row().flex_1()
+                    // Sidebar
                     .child(
                         div().w(280.0).flex_shrink_0().h_full().flex_col()
-                            .bg(tc.sidebar_background).rounded_lg().border_b(tc.border_variant)
-                            .child(div().px_4().py_3()
-                                .child(text("Files  \u{00b7}  7").text_xs().color(tc.text_muted)))
+                            .bg(tc.sidebar_background).border_r(border)
+                            .child(div().px_4().py_3().flex_row().items_center()
+                                .child(text("Files").text_xs().semibold().color(tc.text_muted))
+                                .child(div().px_2().child(
+                                    div().px(6.0).py(2.0).rounded_sm()
+                                        .bg(Color::rgba(255, 255, 255, 10))
+                                        .child(text("7").text_xs().color(tc.text_muted))
+                                ))
+                            )
                             .child(
-                                div().flex_1().flex_col().px(6.0).gap_1().clip()
-                                    .children_from(files.iter().enumerate().map(|(i, (path, stats))| {
+                                div().flex_1().flex_col().gap(1.0).clip()
+                                    .children_from(files.iter().enumerate().map(|(i, (path, add, del))| {
                                         let selected = i == 2;
                                         div()
                                             .w_full().h(36.0)
-                                            .flex_row().items_center().px_3().rounded_md()
-                                            .when(selected, |d| d.bg(tc.sidebar_row_selected))
-                                            .child(div().flex_1().flex_col().gap(2.0)
-                                                .child(text(*path).text_sm().color(tc.text))
-                                                .child(text(*stats).text_xs().color(tc.text_muted)))
+                                            .flex_row().items_center().px(10.0).gap_2()
+                                            .when(selected, |d| d
+                                                .bg(tc.sidebar_row_selected)
+                                                .border_l(tc.accent))
+                                            .child(svg_icon(lucide::FILE_CODE, 15.0).color(
+                                                if selected { tc.text_accent } else { tc.text_muted }
+                                            ))
+                                            .child(div().flex_1().flex_col().gap(1.0)
+                                                .child(text(*path).text_sm()
+                                                    .color(if selected { tc.text_strong } else { tc.text })
+                                                    .truncate())
+                                            )
+                                            .child(
+                                                div().flex_row().gap(4.0).flex_shrink_0()
+                                                    .child(text(format!("+{add}")).text_xs().color(tc.line_add_text))
+                                                    .child(text(format!("\u{2212}{del}")).text_xs().color(tc.line_del_text))
+                                            )
                                             .into_any()
                                     }))
                             )
                     )
+                    // Main
                     .child(
-                        div().flex_1().h_full().flex_col()
-                            .bg(tc.editor_surface).rounded_lg().border_b(tc.border_variant)
+                        div().flex_1().h_full().flex_col().bg(tc.editor_surface)
                             .child(
-                                div().h(36.0).px_4().flex_row().items_center()
-                                    .border_b(tc.border_variant)
+                                div().h(36.0).px_4().flex_row().items_center().border_b(border)
+                                    .child(svg_icon(lucide::FILE_CODE, 14.0).color(tc.text_muted))
+                                    .child(div().w(8.0))
                                     .child(text("src/render/renderer.rs").text_sm().color(tc.text_muted))
                             )
                             .child(div().flex_1())
                     )
             )
+            // Status bar
             .child(
                 div().flex_row().items_center().h(28.0).w_full().px_4()
-                    .bg(tc.status_bar_background).rounded_lg()
+                    .bg(tc.status_bar_background).border_t(border)
+                    .child(svg_icon(lucide::CHECK, 12.0).color(tc.line_add_text))
+                    .child(div().w(6.0))
                     .child(text("ready").text_xs().color(tc.text_muted))
                     .child(spacer())
                     .child(text("two-dot  \u{00b7}  built-in").text_xs().color(tc.text_muted))

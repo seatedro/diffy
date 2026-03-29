@@ -124,6 +124,18 @@ pub fn scene_to_rgba(scene: &Scene, width: u32, height: u32) -> Vec<u8> {
                     }
                 }
             }
+            Primitive::Image(img) => {
+                let pw = pixmap.width();
+                let ph = pixmap.height();
+                blit_rgba(
+                    pixmap.data_mut(),
+                    pw, ph,
+                    &img.rgba,
+                    img.width,
+                    img.height,
+                    img.rect,
+                );
+            }
             Primitive::EffectQuad(e) => {
                 // Approximate: gradient from color_a to color_b.
                 fill_rect(
@@ -350,6 +362,51 @@ fn draw_text(
         }
 
         x += metrics.advance_width;
+    }
+}
+
+fn blit_rgba(
+    dst: &mut [u8],
+    dst_w: u32,
+    dst_h: u32,
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+    rect: Rect,
+) {
+    if src.is_empty() || src_w == 0 || src_h == 0 {
+        return;
+    }
+    let scale_x = src_w as f32 / rect.width;
+    let scale_y = src_h as f32 / rect.height;
+
+    let x0 = rect.x.max(0.0) as u32;
+    let y0 = rect.y.max(0.0) as u32;
+    let x1 = (rect.x + rect.width).min(dst_w as f32) as u32;
+    let y1 = (rect.y + rect.height).min(dst_h as f32) as u32;
+
+    for dy in y0..y1 {
+        for dx in x0..x1 {
+            let sx = ((dx as f32 - rect.x) * scale_x) as u32;
+            let sy = ((dy as f32 - rect.y) * scale_y) as u32;
+            if sx >= src_w || sy >= src_h {
+                continue;
+            }
+            let si = (sy * src_w + sx) as usize * 4;
+            let di = (dy * dst_w + dx) as usize * 4;
+            if si + 3 >= src.len() || di + 3 >= dst.len() {
+                continue;
+            }
+            let sa = src[si + 3] as f32 / 255.0;
+            if sa < 0.004 {
+                continue;
+            }
+            let inv = 1.0 - sa;
+            dst[di] = (src[si] as f32 * sa + dst[di] as f32 * inv) as u8;
+            dst[di + 1] = (src[si + 1] as f32 * sa + dst[di + 1] as f32 * inv) as u8;
+            dst[di + 2] = (src[si + 2] as f32 * sa + dst[di + 2] as f32 * inv) as u8;
+            dst[di + 3] = (src[si + 3]).max(dst[di + 3]);
+        }
     }
 }
 

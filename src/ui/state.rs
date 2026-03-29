@@ -178,11 +178,21 @@ pub enum PickerKind {
     RightRef,
 }
 
+pub trait PickerItem {
+    fn label(&self) -> &str;
+    fn detail(&self) -> Option<&str>;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickerEntry {
     pub label: String,
     pub detail: String,
     pub value: String,
+}
+
+impl PickerItem for PickerEntry {
+    fn label(&self) -> &str { &self.label }
+    fn detail(&self) -> Option<&str> { Some(&self.detail) }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -219,6 +229,11 @@ pub struct PaletteEntry {
     pub label: String,
     pub detail: String,
     pub kind: PaletteEntryKind,
+}
+
+impl PickerItem for PaletteEntry {
+    fn label(&self) -> &str { &self.label }
+    fn detail(&self) -> Option<&str> { Some(&self.detail) }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

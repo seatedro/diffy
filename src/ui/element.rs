@@ -58,19 +58,52 @@ pub struct Hitbox {
 // ElementContext — shared state available during layout, prepaint, and paint
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// ScrollRegion — registered during prepaint for scroll wheel dispatch
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct ScrollRegion {
+    pub bounds: Bounds,
+    pub action_builder: ScrollActionBuilder,
+}
+
+/// How to convert a scroll delta (in lines) into an Action.
+#[derive(Debug, Clone)]
+pub enum ScrollActionBuilder {
+    /// Emit `Action::ScrollFileList(delta)`.
+    FileList,
+    /// Emit `Action::ScrollViewportLines(delta)`.
+    ViewportLines,
+    /// Use a custom action constructor.
+    Custom(fn(i32) -> Action),
+}
+
+impl ScrollActionBuilder {
+    pub fn build(&self, delta: i32) -> Action {
+        match self {
+            Self::FileList => Action::ScrollFileList(delta),
+            Self::ViewportLines => Action::ScrollViewportLines(delta),
+            Self::Custom(f) => f(delta),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ElementContext
+// ---------------------------------------------------------------------------
+
 pub struct ElementContext<'a> {
     pub theme: &'a Theme,
     pub scale_factor: f32,
     pub font_system: &'a mut glyphon::FontSystem,
-    /// Current mouse position (if known). Used for hover detection.
     pub mouse_position: Option<(f32, f32)>,
-    /// Hit regions accumulated during paint, topmost last.
     pub hits: Vec<HitRegion>,
-    /// Hitboxes registered during prepaint.
+    pub scroll_regions: Vec<ScrollRegion>,
+    /// The current focus target (from persistent app state).
+    pub focus: Option<crate::ui::state::FocusTarget>,
     hitboxes: Vec<Hitbox>,
-    /// The set of hitbox IDs that are considered hovered after hit-testing.
     hovered_hitboxes: Vec<HitboxId>,
-    /// Counter for generating unique hitbox IDs.
     next_hitbox_id: usize,
 }
 
@@ -87,10 +120,22 @@ impl<'a> ElementContext<'a> {
             font_system,
             mouse_position,
             hits: Vec::new(),
+            scroll_regions: Vec::new(),
+            focus: None,
             hitboxes: Vec::new(),
             hovered_hitboxes: Vec::new(),
             next_hitbox_id: 0,
         }
+    }
+
+    pub fn with_focus(mut self, focus: Option<crate::ui::state::FocusTarget>) -> Self {
+        self.focus = focus;
+        self
+    }
+
+    /// Check if a given focus target is the current focus.
+    pub fn is_focused(&self, target: crate::ui::state::FocusTarget) -> bool {
+        self.focus == Some(target)
     }
 
     /// Register a hitbox during prepaint. Returns an ID for later hover queries.
@@ -571,6 +616,7 @@ pub struct Div {
     hover_style: Option<StyleOverride>,
     children: Vec<AnyElement>,
     on_click: Option<Action>,
+    on_scroll: Option<ScrollActionBuilder>,
     cursor: CursorHint,
     scroll_y: f32,
     clips: bool,
@@ -583,6 +629,7 @@ pub fn div() -> Div {
         hover_style: None,
         children: Vec::new(),
         on_click: None,
+        on_scroll: None,
         cursor: CursorHint::Default,
         scroll_y: 0.0,
         clips: false,
@@ -636,6 +683,13 @@ impl Div {
 
     pub fn cursor(mut self, cursor: CursorHint) -> Self {
         self.cursor = cursor;
+        self
+    }
+
+    /// Register a scroll action for this div. Scroll wheel events inside
+    /// this div's bounds will dispatch through the action builder.
+    pub fn on_scroll(mut self, builder: ScrollActionBuilder) -> Self {
+        self.on_scroll = Some(builder);
         self
     }
 
@@ -718,6 +772,14 @@ impl Element for Div {
         } else {
             None
         };
+
+        // Register scroll region if on_scroll is set.
+        if let Some(ref builder) = self.on_scroll {
+            cx.scroll_regions.push(ScrollRegion {
+                bounds,
+                action_builder: builder.clone(),
+            });
+        }
 
         if self.scroll_y != 0.0 {
             for child in &mut self.children {
@@ -1016,6 +1078,167 @@ impl IntoAnyElement for &str {
 impl IntoAnyElement for String {
     fn into_any(self) -> AnyElement {
         element_into_any(text(self))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TextInput — visual text field (click-to-focus, not real IME)
+// ---------------------------------------------------------------------------
+
+pub struct TextInput {
+    label: String,
+    value: String,
+    placeholder: String,
+    focused: bool,
+    on_click: Option<Action>,
+    base_style: ElementStyle,
+}
+
+pub fn text_input(label: impl Into<String>, value: impl Into<String>) -> TextInput {
+    TextInput {
+        label: label.into(),
+        value: value.into(),
+        placeholder: String::new(),
+        focused: false,
+        on_click: None,
+        base_style: ElementStyle::default(),
+    }
+}
+
+impl TextInput {
+    pub fn placeholder(mut self, p: impl Into<String>) -> Self {
+        self.placeholder = p.into();
+        self
+    }
+
+    pub fn focused(mut self, f: bool) -> Self {
+        self.focused = f;
+        self
+    }
+
+    pub fn on_click(mut self, action: Action) -> Self {
+        self.on_click = Some(action);
+        self
+    }
+}
+
+impl Styled for TextInput {
+    fn element_style_mut(&mut self) -> &mut ElementStyle {
+        &mut self.base_style
+    }
+}
+
+impl Element for TextInput {
+    type LayoutState = ();
+    type PrepaintState = Option<HitboxId>;
+
+    fn request_layout(
+        &mut self,
+        engine: &mut LayoutEngine,
+        _cx: &mut ElementContext,
+    ) -> (LayoutId, ()) {
+        let id = engine.request_layout(self.base_style.layout.clone(), &[]);
+        (id, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        bounds: Bounds,
+        _layout_state: &mut (),
+        _engine: &LayoutEngine,
+        cx: &mut ElementContext,
+    ) -> Option<HitboxId> {
+        if self.on_click.is_some() {
+            Some(cx.insert_hitbox(bounds, HitboxBehavior::Normal))
+        } else {
+            None
+        }
+    }
+
+    fn paint(
+        &mut self,
+        bounds: Bounds,
+        _layout_state: &mut (),
+        _prepaint_state: &mut Option<HitboxId>,
+        _engine: &LayoutEngine,
+        scene: &mut Scene,
+        cx: &mut ElementContext,
+    ) {
+        let theme = cx.theme;
+        let radius = theme.metrics.control_radius;
+
+        let fill = if self.focused {
+            theme.colors.surface
+        } else {
+            theme.colors.element_background
+        };
+        let border = if self.focused {
+            theme.colors.focus_border
+        } else {
+            theme.colors.border
+        };
+
+        scene.rounded_rect(RoundedRectPrimitive::uniform(bounds, radius, fill));
+        scene.border(BorderPrimitive::uniform(bounds, 1.0, radius, border));
+
+        let label_size = theme.metrics.ui_small_font_size;
+        let value_size = theme.metrics.ui_font_size;
+        let label_lh = label_size * 1.5;
+        let value_lh = value_size * 1.5;
+        let pad = 12.0;
+
+        // Label
+        scene.text(TextPrimitive {
+            rect: Rect {
+                x: bounds.x + pad,
+                y: bounds.y + 6.0,
+                width: bounds.width - pad * 2.0,
+                height: label_lh,
+            },
+            text: std::mem::take(&mut self.label),
+            color: theme.colors.text_muted,
+            font_size: label_size,
+            font_kind: FontKind::Ui,
+        });
+
+        // Value or placeholder
+        let display = if self.value.is_empty() {
+            std::mem::take(&mut self.placeholder)
+        } else {
+            std::mem::take(&mut self.value)
+        };
+        let text_color = if display.is_empty() || (!self.placeholder.is_empty() && self.value.is_empty()) {
+            theme.colors.text_muted.with_alpha(180)
+        } else {
+            theme.colors.text
+        };
+
+        scene.text(TextPrimitive {
+            rect: Rect {
+                x: bounds.x + pad,
+                y: bounds.y + 6.0 + label_lh,
+                width: bounds.width - pad * 2.0,
+                height: value_lh,
+            },
+            text: display,
+            color: text_color,
+            font_size: value_size,
+            font_kind: FontKind::Ui,
+        });
+
+        if let Some(action) = self.on_click.take() {
+            cx.hits.push(HitRegion {
+                rect: bounds,
+                action,
+                cursor: CursorHint::Text,
+            });
+        }
+    }
+}
+
+impl IntoAnyElement for TextInput {
+    fn into_any(self) -> AnyElement {
+        element_into_any(self)
     }
 }
 
@@ -1657,6 +1880,67 @@ mod tests {
         if let crate::render::Primitive::RoundedRect(rr) = &scene.primitives[0] {
             assert_eq!(rr.color, blue, "when(true) should apply bg override");
         }
+    }
+
+    #[test]
+    fn on_scroll_registers_scroll_region() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        let mut scene = Scene::default();
+
+        let mut root = div()
+            .w(260.0)
+            .h(400.0)
+            .scroll_y(0.0)
+            .on_scroll(ScrollActionBuilder::FileList)
+            .child(div().w_full().h(1000.0))
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 260.0, 400.0);
+
+        assert_eq!(cx.scroll_regions.len(), 1);
+        let action = cx.scroll_regions[0].action_builder.build(3);
+        assert_eq!(action, Action::ScrollFileList(3));
+    }
+
+    #[test]
+    fn focus_tracking_query() {
+        let mut font_system = glyphon::FontSystem::new();
+        let cx = ElementContext::new(
+            Box::leak(Box::new(Theme::default_dark())),
+            1.0,
+            &mut font_system,
+            None,
+        )
+        .with_focus(Some(crate::ui::state::FocusTarget::FileList));
+
+        assert!(cx.is_focused(crate::ui::state::FocusTarget::FileList));
+        assert!(!cx.is_focused(crate::ui::state::FocusTarget::DiffViewport));
+    }
+
+    #[test]
+    fn text_input_renders_label_and_value() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut cx = test_cx(&mut font_system);
+        let mut scene = Scene::default();
+
+        let mut root = text_input("Branch", "main")
+            .w(200.0)
+            .h(56.0)
+            .on_click(Action::OpenRefPicker(crate::ui::state::CompareField::Left))
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 200.0, 56.0);
+
+        // Should have: bg rect + border + 2 text primitives (label + value)
+        let text_count = scene.primitives.iter().filter(|p| {
+            matches!(p, crate::render::Primitive::TextRun(_))
+        }).count();
+        assert_eq!(text_count, 2, "should have label + value text");
+
+        // Should have a hit region
+        assert_eq!(cx.hits.len(), 1);
+        assert_eq!(cx.hits[0].cursor, CursorHint::Text);
     }
 
     #[test]

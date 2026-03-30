@@ -10,9 +10,10 @@ use crate::ui::design::Sp;
 use crate::ui::editor::element::{EditorElement, EditorDocument};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
+use crate::ui::components;
 use crate::ui::state::{
     AppState, AsyncStatus, CompareField, FocusTarget, OverlaySurface, PickerItem,
-    SidebarWidthCache, ToastKind, WorkspaceMode,
+    SidebarMode, SidebarWidthCache, ToastKind, WorkspaceMode,
 };
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme};
@@ -87,6 +88,7 @@ pub fn build_ui_frame(
                     theme,
                     sidebar_width,
                     file_list_bounds.clone(),
+                    cx,
                 ))
                 .child(sidebar_resizer(theme, sidebar_resize_bounds.clone()))
                 .child(main_surface(
@@ -465,12 +467,19 @@ fn preferred_sidebar_width(
                     0.0
                 };
 
+                let status_badge_width = if !file.status.is_empty() {
+                    row_gap + (theme.metrics.ui_small_font_size + 4.0).round()
+                } else {
+                    0.0
+                };
+
                 list_side_padding
                     + row_side_padding
                     + file_icon_width
                     + row_gap
                     + path_width
                     + stats_width
+                    + status_badge_width
                     + scrollbar_gutter
             })
             .fold(0.0_f32, f32::max);
@@ -558,34 +567,137 @@ fn sidebar(
     theme: &Theme,
     sidebar_width: f32,
     _bounds_cell: Rc<Cell<Option<Rect>>>,
+    cx: &ElementContext,
 ) -> Div {
     let tc = &theme.colors;
-    let file_count = state.workspace.files.len();
+    let all_files = &state.workspace.files;
+    let file_count = all_files.len();
     let scale = ui_scale(theme);
+    let filter = &state.file_list.filter;
+    let has_filter = !filter.is_empty();
+    let is_tree = state.file_list.mode == SidebarMode::TreeView;
 
-    // Header with count badge
+    let filtered_indices: Vec<usize> = if has_filter {
+        let lower = filter.to_lowercase();
+        all_files
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.path.to_lowercase().contains(&lower))
+            .map(|(i, _)| i)
+            .collect()
+    } else {
+        (0..file_count).collect()
+    };
+    let visible_count = filtered_indices.len();
+
+    let total_adds: i32 = all_files.iter().map(|f| f.additions).sum();
+    let total_dels: i32 = all_files.iter().map(|f| f.deletions).sum();
+
     let header = div()
-        .px(16.0 * scale)
-        .py(12.0 * scale)
-        .flex_row()
-        .items_center()
-        .child(text("FILES").text_xs().semibold().color(tc.text_muted))
+        .px(12.0 * scale)
+        .pt(12.0 * scale)
+        .pb(8.0 * scale)
+        .flex_col()
+        .gap(Sp::SM * scale)
+        .child(
+            div()
+                .flex_row()
+                .items_center()
+                .gap(Sp::SM * scale)
+                .child(text("FILES").text_xs().semibold().color(tc.text_muted))
+                .optional_child(if file_count > 0 {
+                    Some(
+                        div()
+                            .px(6.0 * scale)
+                            .py(2.0 * scale)
+                            .rounded_sm()
+                            .bg(Color::rgba(255, 255, 255, 10))
+                            .child(
+                                text(file_count.to_string())
+                                    .text_xs()
+                                    .color(tc.text_muted),
+                            ),
+                    )
+                } else {
+                    None
+                })
+                .child(spacer())
+                .optional_child(if file_count > 0 {
+                    let mode_icon = if is_tree {
+                        lucide::ROWS
+                    } else {
+                        lucide::FOLDER
+                    };
+                    Some(
+                        div()
+                            .flex_shrink_0()
+                            .items_center()
+                            .justify_center()
+                            .w(22.0 * scale)
+                            .h(22.0 * scale)
+                            .rounded(4.0)
+                            .hover_bg(tc.ghost_element_hover)
+                            .on_click(Action::ToggleSidebarMode)
+                            .child(
+                                svg_icon(mode_icon, 13.0 * scale).color(tc.text_muted),
+                            ),
+                    )
+                } else {
+                    None
+                }),
+        )
         .optional_child(if file_count > 0 {
             Some(
-                div().px(Sp::SM * scale).child(
-                    div()
-                        .px(6.0 * scale)
-                        .py(2.0 * scale)
-                        .rounded_sm()
-                        .bg(Color::rgba(255, 255, 255, 10))
-                        .child(text(file_count.to_string()).text_xs().color(tc.text_muted)),
-                ),
+                div()
+                    .flex_row()
+                    .items_center()
+                    .gap(Sp::XS * scale)
+                    .child(components::stat_summary(
+                        file_count,
+                        total_adds.unsigned_abs(),
+                        total_dels.unsigned_abs(),
+                    ).compact()),
             )
         } else {
             None
         });
 
-    let mut sidebar = div()
+    let search_bar = if file_count > 0 {
+        let search_focused = cx.is_focused(FocusTarget::SidebarSearch);
+        let input = text_input("", &state.file_list.filter)
+            .placeholder("Filter files\u{2026}")
+            .focused(search_focused)
+            .focus_target(FocusTarget::SidebarSearch)
+            .cursor(state.text_edit.cursor)
+            .anchor(state.text_edit.anchor)
+            .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
+            .on_click(Action::SetFocus(Some(FocusTarget::SidebarSearch)))
+            .bare()
+            .w_full()
+            .h(28.0 * scale);
+        let hint = if !search_focused && !has_filter {
+            Some("/")
+        } else {
+            None
+        };
+        Some(
+            div()
+                .w_full()
+                .px(10.0 * scale)
+                .pb(8.0 * scale)
+                .child(components::search_field(
+                    input,
+                    has_filter,
+                    Some(Action::ClearSidebarFilter),
+                    hint,
+                    theme,
+                )),
+        )
+    } else {
+        None
+    };
+
+    let mut sidebar_div = div()
         .flex_col()
         .w(sidebar_width)
         .flex_shrink_0()
@@ -593,15 +705,16 @@ fn sidebar(
         .min_h(0.0)
         .bg(tc.sidebar_background)
         .border_r(tc.border_variant)
-        .child(header);
+        .child(header)
+        .optional_child(search_bar);
 
-    if state.workspace.files.is_empty() {
+    if all_files.is_empty() {
         let (icon, msg) = if state.compare.repo_path.is_some() {
             (lucide::GIT_COMPARE, "Run a compare to see changes.")
         } else {
             (lucide::FOLDER_OPEN, "Open a repository to start.")
         };
-        sidebar = sidebar.child(
+        sidebar_div = sidebar_div.child(
             div().flex_1().items_center().justify_center().child(
                 div()
                     .flex_col()
@@ -611,10 +724,61 @@ fn sidebar(
                     .child(text(msg).text_sm().color(tc.text_muted)),
             ),
         );
-    } else {
-        let file_count = state.workspace.files.len();
+    } else if visible_count == 0 && has_filter {
+        sidebar_div = sidebar_div.child(
+            div().flex_1().items_center().justify_center().child(
+                div()
+                    .flex_col()
+                    .items_center()
+                    .gap_2()
+                    .child(svg_icon(lucide::SEARCH, 20.0).color(tc.text_muted))
+                    .child(
+                        text("No files match filter.")
+                            .text_sm()
+                            .color(tc.text_muted),
+                    ),
+            ),
+        );
+    } else if is_tree && !has_filter {
+        let entries: Vec<components::FileTreeEntry> = filtered_indices
+            .iter()
+            .map(|&i| {
+                let f = &all_files[i];
+                components::FileTreeEntry {
+                    path: f.path.clone(),
+                    status: f.status.clone(),
+                    additions: f.additions,
+                    deletions: f.deletions,
+                }
+            })
+            .collect();
+
+        let tree = components::file_tree(entries)
+            .expanded(state.file_list.expanded_folders.clone())
+            .selected(state.workspace.selected_file_index)
+            .on_select_file(Action::SelectFile)
+            .on_toggle_folder(Action::ToggleFolder);
+
+        let row_count = visible_count + state.file_list.expanded_folders.len();
         let row_height = state.file_list.row_height;
-        let total_height = state.file_list.total_content_height(file_count);
+        let total_height =
+            row_count as f32 * (row_height + state.file_list.gap);
+        let scroll_px = state.file_list.scroll_offset_px;
+
+        sidebar_div = sidebar_div.child(
+            div()
+                .flex_1()
+                .min_h(0.0)
+                .flex_col()
+                .clip()
+                .scroll_y(scroll_px)
+                .scroll_total(total_height)
+                .on_scroll(ScrollActionBuilder::FileList)
+                .child(tree),
+        );
+    } else {
+        let row_height = state.file_list.row_height;
+        let total_height = state.file_list.total_content_height(visible_count);
         let scroll_px = state.file_list.scroll_offset_px;
 
         let mut list = div()
@@ -628,8 +792,10 @@ fn sidebar(
             .scroll_total(total_height)
             .on_scroll(ScrollActionBuilder::FileList);
 
-        for (index, file) in state.workspace.files.iter().enumerate() {
+        for &index in &filtered_indices {
+            let file = &all_files[index];
             let selected = state.workspace.selected_file_index == Some(index);
+            let viewed = state.file_list.viewed_files.contains(&index);
             let icon_color = if selected {
                 tc.text_accent
             } else {
@@ -647,26 +813,21 @@ fn sidebar(
                 .on_click(Action::SelectFile(index))
                 .cursor(CursorHint::Pointer);
 
-            // Selected: left accent border + selected bg
             if selected {
                 row = row.bg(tc.sidebar_row_selected).border_l(tc.accent);
             } else {
                 row = row.hover_bg(tc.sidebar_row_hover);
             }
 
-            // File icon
-            row = row.child(svg_icon(lucide::FILE_CODE, 15.0 * scale).color(icon_color));
+            row = row.child(components::file_icon(&file.path, 15.0 * scale).selected(selected));
 
-            // File path (truncated)
             row = row.child(
                 div()
                     .flex_1()
-                    .flex_col()
-                    .gap(1.0)
+                    .overflow_hidden()
                     .child(text(&file.path).text_sm().color(text_color).truncate()),
             );
 
-            // +/- stats with semantic colors
             if file.additions > 0 || file.deletions > 0 {
                 row = row.child(
                     div()
@@ -686,13 +847,24 @@ fn sidebar(
                 );
             }
 
+            if !file.status.is_empty() {
+                row = row.child(components::status_badge(&file.status));
+            }
+
+            if viewed {
+                row = row.child(
+                    svg_icon(lucide::CHECK, 12.0 * scale)
+                        .color(tc.line_add_text),
+                );
+            }
+
             list = list.child(row);
         }
 
-        sidebar = sidebar.child(list);
+        sidebar_div = sidebar_div.child(list);
     }
 
-    sidebar
+    sidebar_div
 }
 
 // ---------------------------------------------------------------------------
@@ -730,7 +902,7 @@ fn main_surface(
                     .flex_row()
                     .items_center()
                     .border_b(tc.border_variant)
-                    .child(svg_icon(lucide::FILE_CODE, 14.0).color(tc.text_muted))
+                    .child(components::file_icon(file_label, 14.0))
                     .child(div().w(Sp::SM))
                     .child(text(file_label).text_sm().color(tc.text_muted).truncate()),
             );

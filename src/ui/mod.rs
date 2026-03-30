@@ -3,6 +3,7 @@ pub mod animation;
 pub mod app;
 pub mod components;
 pub mod design;
+pub mod devicons;
 pub mod editor;
 pub mod effects;
 pub mod element;

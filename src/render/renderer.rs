@@ -120,8 +120,7 @@ impl TexturePool {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: self.format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -173,7 +172,8 @@ pub struct Renderer {
     texture_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     texture_pool: TexturePool,
-    image_cache: std::collections::HashMap<u64, (wgpu::Texture, wgpu::TextureView, wgpu::BindGroup)>,
+    image_cache:
+        std::collections::HashMap<u64, (wgpu::Texture, wgpu::TextureView, wgpu::BindGroup)>,
     viewport_buffer: wgpu::Buffer,
     viewport_bind_group: wgpu::BindGroup,
     font_system: FontSystem,
@@ -269,12 +269,11 @@ impl Renderer {
             label: Some("diffy_quad_shader"),
             source: wgpu::ShaderSource::Wgsl(QUAD_SHADER.into()),
         });
-        let quad_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("diffy_quad_pipeline_layout"),
-                bind_group_layouts: &[&viewport_bind_group_layout],
-                immediate_size: 0,
-            });
+        let quad_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("diffy_quad_pipeline_layout"),
+            bind_group_layouts: &[&viewport_bind_group_layout],
+            immediate_size: 0,
+        });
         let quad_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("diffy_quad_pipeline"),
             layout: Some(&quad_pipeline_layout),
@@ -355,36 +354,35 @@ impl Renderer {
                 bind_group_layouts: &[&viewport_bind_group_layout],
                 immediate_size: 0,
             });
-        let effect_quad_pipeline =
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("diffy_effect_quad_pipeline"),
-                layout: Some(&effect_quad_pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &effect_shader,
-                    entry_point: Some("vs_effect"),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    buffers: &[EffectQuadInstance::layout()],
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &effect_shader,
-                    entry_point: Some("fs_effect"),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: surface_format,
-                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleStrip,
-                    strip_index_format: None,
-                    ..wgpu::PrimitiveState::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            });
+        let effect_quad_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("diffy_effect_quad_pipeline"),
+            layout: Some(&effect_quad_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &effect_shader,
+                entry_point: Some("vs_effect"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[EffectQuadInstance::layout()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &effect_shader,
+                entry_point: Some("fs_effect"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                strip_index_format: None,
+                ..wgpu::PrimitiveState::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
 
         // --- Blit pipeline (composites offscreen textures back to screen) ---
 
@@ -421,12 +419,11 @@ impl Renderer {
             label: Some("diffy_blit_shader"),
             source: wgpu::ShaderSource::Wgsl(BLIT_SHADER.into()),
         });
-        let blit_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("diffy_blit_pipeline_layout"),
-                bind_group_layouts: &[&viewport_bind_group_layout, &texture_bind_group_layout],
-                immediate_size: 0,
-            });
+        let blit_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("diffy_blit_pipeline_layout"),
+            bind_group_layouts: &[&viewport_bind_group_layout, &texture_bind_group_layout],
+            immediate_size: 0,
+        });
         let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("diffy_blit_pipeline"),
             layout: Some(&blit_pipeline_layout),
@@ -461,12 +458,11 @@ impl Renderer {
             label: Some("diffy_blur_shader"),
             source: wgpu::ShaderSource::Wgsl(BLUR_SHADER.into()),
         });
-        let blur_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("diffy_blur_pipeline_layout"),
-                bind_group_layouts: &[&viewport_bind_group_layout, &texture_bind_group_layout],
-                immediate_size: 0,
-            });
+        let blur_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("diffy_blur_pipeline_layout"),
+            bind_group_layouts: &[&viewport_bind_group_layout, &texture_bind_group_layout],
+            immediate_size: 0,
+        });
         let blur_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("diffy_blur_pipeline"),
             layout: Some(&blur_pipeline_layout),
@@ -625,7 +621,10 @@ impl Renderer {
 
         // Update time in the viewport uniform buffer.
         let viewport_uniform = ViewportUniform {
-            resolution: [self.surface_config.width as f32, self.surface_config.height as f32],
+            resolution: [
+                self.surface_config.width as f32,
+                self.surface_config.height as f32,
+            ],
             time: time_seconds,
             _padding: 0.0,
         };
@@ -673,48 +672,52 @@ impl Renderer {
             .z_layers
             .iter()
             .map(|zl| {
-                let layer_buffers = zl.draw_layers.iter().map(|layer| {
-                    let (si, sc) = build_shadow_instances(&layer.shadows);
-                    let sb = if !si.is_empty() {
-                        Some(self.device.create_buffer_init(
-                            &wgpu::util::BufferInitDescriptor {
-                                label: Some("diffy_shadow_instances"),
-                                contents: bytemuck::cast_slice(&si),
-                                usage: wgpu::BufferUsages::VERTEX,
-                            },
-                        ))
-                    } else {
-                        None
-                    };
-                    let (qi, qc) = build_quad_instances(&layer.quads);
-                    let qb = self.device.create_buffer_init(
-                        &wgpu::util::BufferInitDescriptor {
-                            label: Some("diffy_quad_instances"),
-                            contents: bytemuck::cast_slice(&qi),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        },
-                    );
-                    let (ei, ec) = build_effect_quad_instances(&layer.effect_quads);
-                    let eb = if !ei.is_empty() {
-                        Some(self.device.create_buffer_init(
-                            &wgpu::util::BufferInitDescriptor {
-                                label: Some("diffy_effect_quad_instances"),
-                                contents: bytemuck::cast_slice(&ei),
-                                usage: wgpu::BufferUsages::VERTEX,
-                            },
-                        ))
-                    } else {
-                        None
-                    };
-                    LayerBuffers {
-                        shadow_buffer: sb,
-                        shadow_commands: sc,
-                        quad_buffer: qb,
-                        quad_commands: qc,
-                        effect_buffer: eb,
-                        effect_commands: ec,
-                    }
-                }).collect();
+                let layer_buffers = zl
+                    .draw_layers
+                    .iter()
+                    .map(|layer| {
+                        let (si, sc) = build_shadow_instances(&layer.shadows);
+                        let sb = if !si.is_empty() {
+                            Some(self.device.create_buffer_init(
+                                &wgpu::util::BufferInitDescriptor {
+                                    label: Some("diffy_shadow_instances"),
+                                    contents: bytemuck::cast_slice(&si),
+                                    usage: wgpu::BufferUsages::VERTEX,
+                                },
+                            ))
+                        } else {
+                            None
+                        };
+                        let (qi, qc) = build_quad_instances(&layer.quads);
+                        let qb =
+                            self.device
+                                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                    label: Some("diffy_quad_instances"),
+                                    contents: bytemuck::cast_slice(&qi),
+                                    usage: wgpu::BufferUsages::VERTEX,
+                                });
+                        let (ei, ec) = build_effect_quad_instances(&layer.effect_quads);
+                        let eb = if !ei.is_empty() {
+                            Some(self.device.create_buffer_init(
+                                &wgpu::util::BufferInitDescriptor {
+                                    label: Some("diffy_effect_quad_instances"),
+                                    contents: bytemuck::cast_slice(&ei),
+                                    usage: wgpu::BufferUsages::VERTEX,
+                                },
+                            ))
+                        } else {
+                            None
+                        };
+                        LayerBuffers {
+                            shadow_buffer: sb,
+                            shadow_commands: sc,
+                            quad_buffer: qb,
+                            quad_commands: qc,
+                            effect_buffer: eb,
+                            effect_commands: ec,
+                        }
+                    })
+                    .collect();
                 ZLayerBuffers { layer_buffers }
             })
             .collect();
@@ -725,7 +728,10 @@ impl Renderer {
             for img in &zl.images {
                 let key = img.primitive.cache_key;
                 if key != 0 && !self.image_cache.contains_key(&key) {
-                    if !img.primitive.rgba.is_empty() && img.primitive.width > 0 && img.primitive.height > 0 {
+                    if !img.primitive.rgba.is_empty()
+                        && img.primitive.width > 0
+                        && img.primitive.height > 0
+                    {
                         let texture = self.device.create_texture_with_data(
                             &self.queue,
                             &wgpu::TextureDescriptor {
@@ -746,20 +752,21 @@ impl Renderer {
                             &img.primitive.rgba,
                         );
                         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: Some("diffy_cached_image_bind"),
-                            layout: &self.texture_bind_group_layout,
-                            entries: &[
-                                wgpu::BindGroupEntry {
-                                    binding: 0,
-                                    resource: wgpu::BindingResource::TextureView(&view),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 1,
-                                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                                },
-                            ],
-                        });
+                        let bind_group =
+                            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("diffy_cached_image_bind"),
+                                layout: &self.texture_bind_group_layout,
+                                entries: &[
+                                    wgpu::BindGroupEntry {
+                                        binding: 0,
+                                        resource: wgpu::BindingResource::TextureView(&view),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 1,
+                                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                                    },
+                                ],
+                            });
                         self.image_cache.insert(key, (texture, view, bind_group));
                     }
                 }
@@ -772,7 +779,10 @@ impl Renderer {
             let zlb = &z_layer_buffers[0];
 
             let prepared_texts = prepare_all_text(
-                &mut self.font_system, &zl.texts, &zl.rich_texts, self.scale_factor,
+                &mut self.font_system,
+                &zl.texts,
+                &zl.rich_texts,
+                self.scale_factor,
             );
             let text_areas = build_text_areas(&prepared_texts);
 
@@ -835,7 +845,10 @@ impl Renderer {
 
             for (zl, zlb) in flattened.z_layers.iter().zip(z_layer_buffers.iter()) {
                 let prepared_texts = prepare_all_text(
-                    &mut self.font_system, &zl.texts, &zl.rich_texts, self.scale_factor,
+                    &mut self.font_system,
+                    &zl.texts,
+                    &zl.rich_texts,
+                    self.scale_factor,
                 );
                 let text_areas = build_text_areas(&prepared_texts);
 
@@ -891,7 +904,8 @@ impl Renderer {
                         &self.blit_pipeline,
                         &self.viewport_bind_group,
                         &self.image_cache,
-                        sw, sh,
+                        sw,
+                        sh,
                     );
 
                     pass.set_scissor_rect(0, 0, sw, sh);
@@ -906,8 +920,16 @@ impl Renderer {
                 .into_iter()
                 .flat_map(|z| z.layer_buffers.into_iter())
                 .collect();
-            let all_texts: Vec<ClippedText> = flattened.z_layers.iter().flat_map(|z| z.texts.iter().cloned()).collect();
-            let all_rich: Vec<ClippedRichText> = flattened.z_layers.iter().flat_map(|z| z.rich_texts.iter().cloned()).collect();
+            let all_texts: Vec<ClippedText> = flattened
+                .z_layers
+                .iter()
+                .flat_map(|z| z.texts.iter().cloned())
+                .collect();
+            let all_rich: Vec<ClippedRichText> = flattened
+                .z_layers
+                .iter()
+                .flat_map(|z| z.rich_texts.iter().cloned())
+                .collect();
 
             let blur = flattened.blur_regions[0];
             let sw = self.surface_config.width;
@@ -982,13 +1004,13 @@ impl Renderer {
                     uv_rect: [uv_min_x, uv_min_y, uv_max_x, uv_max_y],
                     blur_params: [1.0, 0.0, sigma, 0.0],
                 };
-                let buf = self.device.create_buffer_init(
-                    &wgpu::util::BufferInitDescriptor {
+                let buf = self
+                    .device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                         label: Some("diffy_blur_h_instance"),
                         contents: bytemuck::cast_slice(&[blur_inst]),
                         usage: wgpu::BufferUsages::VERTEX,
-                    },
-                );
+                    });
 
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("diffy_blur_h_pass"),
@@ -1022,13 +1044,13 @@ impl Renderer {
                     uv_rect: [uv_min_x, uv_min_y, uv_max_x, uv_max_y],
                     blur_params: [0.0, 1.0, sigma, 0.0],
                 };
-                let buf = self.device.create_buffer_init(
-                    &wgpu::util::BufferInitDescriptor {
+                let buf = self
+                    .device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                         label: Some("diffy_blur_v_instance"),
                         contents: bytemuck::cast_slice(&[blur_inst]),
                         usage: wgpu::BufferUsages::VERTEX,
-                    },
-                );
+                    });
 
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("diffy_blur_v_pass"),
@@ -1062,26 +1084,26 @@ impl Renderer {
                     uv_rect: [0.0, 0.0, 1.0, 1.0],
                     tint: [1.0, 1.0, 1.0, 1.0],
                 };
-                let scene_blit_buf = self.device.create_buffer_init(
-                    &wgpu::util::BufferInitDescriptor {
-                        label: Some("diffy_scene_blit"),
-                        contents: bytemuck::cast_slice(&[scene_blit]),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    },
-                );
+                let scene_blit_buf =
+                    self.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("diffy_scene_blit"),
+                            contents: bytemuck::cast_slice(&[scene_blit]),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
                 // Blur region blit.
                 let blur_blit = BlitInstance {
                     bounds: [br.x, br.y, br.width, br.height],
                     uv_rect: [uv_min_x, uv_min_y, uv_max_x, uv_max_y],
                     tint: [1.0, 1.0, 1.0, 1.0],
                 };
-                let blur_blit_buf = self.device.create_buffer_init(
-                    &wgpu::util::BufferInitDescriptor {
-                        label: Some("diffy_blur_blit"),
-                        contents: bytemuck::cast_slice(&[blur_blit]),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    },
-                );
+                let blur_blit_buf =
+                    self.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("diffy_blur_blit"),
+                            contents: bytemuck::cast_slice(&[blur_blit]),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
 
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("diffy_composite_pass"),
@@ -1126,7 +1148,10 @@ impl Renderer {
 
                 // Text.
                 let prepared_texts = prepare_all_text(
-                    &mut self.font_system, &all_texts, &all_rich, self.scale_factor,
+                    &mut self.font_system,
+                    &all_texts,
+                    &all_rich,
+                    self.scale_factor,
                 );
                 let text_areas = build_text_areas(&prepared_texts);
                 self.text_renderer.prepare(
@@ -1245,7 +1270,10 @@ fn draw_images<'pass>(
     _queue: &wgpu::Queue,
     blit_pipeline: &'pass wgpu::RenderPipeline,
     viewport_bind_group: &'pass wgpu::BindGroup,
-    image_cache: &'pass std::collections::HashMap<u64, (wgpu::Texture, wgpu::TextureView, wgpu::BindGroup)>,
+    image_cache: &'pass std::collections::HashMap<
+        u64,
+        (wgpu::Texture, wgpu::TextureView, wgpu::BindGroup),
+    >,
     viewport_w: u32,
     viewport_h: u32,
 ) {
@@ -1635,7 +1663,13 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
     let mut z_map: BTreeMap<i32, ZLayer> = BTreeMap::new();
 
     // Ensure z=0 always exists.
-    z_map.insert(0, ZLayer { z_index: 0, ..Default::default() });
+    z_map.insert(
+        0,
+        ZLayer {
+            z_index: 0,
+            ..Default::default()
+        },
+    );
 
     let mut flattened = FlattenedScene {
         z_layers: Vec::new(),
@@ -1724,25 +1758,29 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                 if let Some(clip) = clips.last().copied() {
                     if expanded.intersection(clip).is_some() {
                         let color = color_to_linear(shadow.color);
-                        zl.draw_layers.last_mut().unwrap().shadows.push(ClippedShadow {
-                            instance: ShadowInstance {
-                                draw_bounds: [
-                                    expanded.x,
-                                    expanded.y,
-                                    expanded.width,
-                                    expanded.height,
-                                ],
-                                shadow_bounds: [
-                                    shadow.rect.x + offset_x,
-                                    shadow.rect.y + offset_y,
-                                    shadow.rect.width,
-                                    shadow.rect.height,
-                                ],
-                                color,
-                                params: [sigma, shadow.corner_radius, 0.0, 0.0],
-                            },
-                            clip,
-                        });
+                        zl.draw_layers
+                            .last_mut()
+                            .unwrap()
+                            .shadows
+                            .push(ClippedShadow {
+                                instance: ShadowInstance {
+                                    draw_bounds: [
+                                        expanded.x,
+                                        expanded.y,
+                                        expanded.width,
+                                        expanded.height,
+                                    ],
+                                    shadow_bounds: [
+                                        shadow.rect.x + offset_x,
+                                        shadow.rect.y + offset_y,
+                                        shadow.rect.width,
+                                        shadow.rect.height,
+                                    ],
+                                    color,
+                                    params: [sigma, shadow.corner_radius, 0.0, 0.0],
+                                },
+                                clip,
+                            });
                     }
                 }
             }
@@ -1790,25 +1828,29 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                         let color_b = color_to_linear(effect.color_b);
                         let zl = current_z!();
                         ensure_draw_layer!(zl);
-                        zl.draw_layers.last_mut().unwrap().effect_quads.push(ClippedEffectQuad {
-                            instance: EffectQuadInstance {
-                                bounds: [
-                                    effect.rect.x,
-                                    effect.rect.y,
-                                    effect.rect.width,
-                                    effect.rect.height,
-                                ],
-                                color_a,
-                                color_b,
-                                params: [
-                                    effect.effect_type as u32 as f32,
-                                    effect.params[0],
-                                    effect.params[1],
-                                    effect.corner_radius,
-                                ],
-                            },
-                            clip,
-                        });
+                        zl.draw_layers
+                            .last_mut()
+                            .unwrap()
+                            .effect_quads
+                            .push(ClippedEffectQuad {
+                                instance: EffectQuadInstance {
+                                    bounds: [
+                                        effect.rect.x,
+                                        effect.rect.y,
+                                        effect.rect.width,
+                                        effect.rect.height,
+                                    ],
+                                    color_a,
+                                    color_b,
+                                    params: [
+                                        effect.effect_type as u32 as f32,
+                                        effect.params[0],
+                                        effect.params[1],
+                                        effect.corner_radius,
+                                    ],
+                                },
+                                clip,
+                            });
                     }
                 }
             }
@@ -1977,10 +2019,20 @@ fn prepare_all_text(
 ) -> Vec<PreparedTextBuffer> {
     let mut prepared = Vec::with_capacity(texts.len() + rich_texts.len());
     for text in texts {
-        prepared.push(prepare_plain_text(font_system, &text.primitive, text.clip, scale_factor));
+        prepared.push(prepare_plain_text(
+            font_system,
+            &text.primitive,
+            text.clip,
+            scale_factor,
+        ));
     }
     for text in rich_texts {
-        prepared.push(prepare_rich_text(font_system, &text.primitive, text.clip, scale_factor));
+        prepared.push(prepare_rich_text(
+            font_system,
+            &text.primitive,
+            text.clip,
+            scale_factor,
+        ));
     }
     prepared
 }
@@ -2049,7 +2101,11 @@ fn prepare_rich_text(
         Some((primitive.rect.width * scale_factor as f32).max(1.0)),
         Some((primitive.rect.height * scale_factor as f32).max(1.0)),
     );
-    let default_attrs = attrs_for_font(primitive.font_kind, primitive.font_weight, primitive.default_color);
+    let default_attrs = attrs_for_font(
+        primitive.font_kind,
+        primitive.font_weight,
+        primitive.default_color,
+    );
     let spans = primitive
         .spans
         .iter()

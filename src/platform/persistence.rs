@@ -51,9 +51,12 @@ impl Default for PersistedViewport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     pub theme_mode: ThemeMode,
     pub theme_name: String,
+    pub ui_scale_pct: u16,
+    pub sidebar_width_px: Option<u32>,
     pub recent_repos: Vec<PathBuf>,
     pub last_compare: Option<PersistedCompare>,
     pub viewport: PersistedViewport,
@@ -65,6 +68,8 @@ impl Default for Settings {
         Self {
             theme_mode: ThemeMode::Dark,
             theme_name: "diffy-default".to_owned(),
+            ui_scale_pct: 100,
+            sidebar_width_px: None,
             recent_repos: Vec::new(),
             last_compare: None,
             viewport: PersistedViewport::default(),

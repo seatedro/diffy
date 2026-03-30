@@ -1,6 +1,4 @@
-use crate::render::{
-    BorderPrimitive, FontKind, Rect, RoundedRectPrimitive, ShadowPrimitive,
-};
+use crate::render::{BorderPrimitive, FontKind, Rect, RoundedRectPrimitive, ShadowPrimitive};
 use crate::ui::shell::UiFrame;
 use crate::ui::theme::{Color, Theme};
 
@@ -189,12 +187,22 @@ impl Elevation {
                 });
             }
         }
-        frame.scene.rounded_rect(RoundedRectPrimitive::uniform(rect, radius, fill));
-        frame.scene.border(BorderPrimitive::uniform(rect, 1.0, radius, border));
+        frame
+            .scene
+            .rounded_rect(RoundedRectPrimitive::uniform(rect, radius, fill));
+        frame
+            .scene
+            .border(BorderPrimitive::uniform(rect, 1.0, radius, border));
     }
 
     pub fn paint_default(self, frame: &mut UiFrame, rect: Rect, theme: &Theme) {
-        self.paint(frame, rect, self.default_fill(theme), self.default_border(theme), theme);
+        self.paint(
+            frame,
+            rect,
+            self.default_fill(theme),
+            self.default_border(theme),
+            theme,
+        );
     }
 }
 

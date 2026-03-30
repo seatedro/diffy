@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use diffy::core::vcs::github::{DeviceFlowState, PullRequestInfo};
 #[cfg(feature = "capture")]
 use diffy::render::capture::{scene_to_png, scene_to_rgba};
-use diffy::render::{Primitive, TextMetrics};
+use diffy::render::{Primitive, Rect, TextMetrics};
 use diffy::ui::diff_viewport::runtime::DiffViewportRuntime;
 use diffy::ui::element::{ElementContext, ScrollActionBuilder};
 use diffy::ui::shell::{UiFrame, build_ui_frame};
@@ -19,7 +19,11 @@ pub const TEST_WIDTH: u32 = 1320;
 pub const TEST_HEIGHT: u32 = 840;
 
 pub fn render_frame(state: &mut AppState) -> UiFrame {
-    let theme = Theme::default_dark();
+    render_frame_in(state, TEST_WIDTH as f32, TEST_HEIGHT as f32)
+}
+
+pub fn render_frame_in(state: &mut AppState, width: f32, height: f32) -> UiFrame {
+    let theme = Theme::default_dark().with_ui_scale(state.ui_scale_factor());
     let mut font_system = diffy::fonts::new_font_system();
     let mut store = SignalStore::new();
     let mut cx = ElementContext::new(&theme, 1.0, &mut font_system, None, &mut store);
@@ -30,8 +34,8 @@ pub fn render_frame(state: &mut AppState) -> UiFrame {
         &theme,
         &mut viewport_runtime,
         TextMetrics::default(),
-        TEST_WIDTH as f32,
-        TEST_HEIGHT as f32,
+        width,
+        height,
         &mut cx,
     )
 }
@@ -145,8 +149,7 @@ pub fn pull_request_modal_state() -> AppState {
         focus_return: Some(FocusTarget::TitleBar),
     });
     state.focus.current = Some(FocusTarget::PullRequestInput);
-    state.github.pull_request.url_input =
-        "https://github.com/owner/repo/pull/42".to_owned();
+    state.github.pull_request.url_input = "https://github.com/owner/repo/pull/42".to_owned();
     state.github.pull_request.info = Some(PullRequestInfo {
         title: "Improve scroll plumbing".to_owned(),
         state: "open".to_owned(),
@@ -204,11 +207,55 @@ pub fn toasts_state() -> AppState {
 }
 
 pub fn scene_contains_text(frame: &UiFrame, needle: &str) -> bool {
-    frame.scene.primitives.iter().any(|primitive| match primitive {
-        Primitive::TextRun(text) => text.text.contains(needle),
-        Primitive::RichTextRun(text) => text.spans.iter().any(|span| span.text.contains(needle)),
-        _ => false,
-    })
+    frame
+        .scene
+        .primitives
+        .iter()
+        .any(|primitive| match primitive {
+            Primitive::TextRun(text) => text.text.contains(needle),
+            Primitive::RichTextRun(text) => {
+                text.spans.iter().any(|span| span.text.contains(needle))
+            }
+            _ => false,
+        })
+}
+
+pub fn scene_text_rect(frame: &UiFrame, needle: &str) -> Option<Rect> {
+    frame
+        .scene
+        .primitives
+        .iter()
+        .find_map(|primitive| match primitive {
+            Primitive::TextRun(text) if text.text.contains(needle) => Some(text.rect),
+            Primitive::RichTextRun(text)
+                if text.spans.iter().any(|span| span.text.contains(needle)) =>
+            {
+                Some(text.rect)
+            }
+            _ => None,
+        })
+}
+
+pub fn largest_rounded_rect(frame: &UiFrame) -> Option<Rect> {
+    frame
+        .scene
+        .primitives
+        .iter()
+        .fold(None, |largest, primitive| {
+            let Some(rect) = (match primitive {
+                Primitive::RoundedRect(rounded) => Some(rounded.rect),
+                _ => None,
+            }) else {
+                return largest;
+            };
+
+            match largest {
+                Some(current) if current.width * current.height >= rect.width * rect.height => {
+                    Some(current)
+                }
+                _ => Some(rect),
+            }
+        })
 }
 
 pub fn has_hit(frame: &UiFrame, predicate: impl Fn(&diffy::ui::actions::Action) -> bool) -> bool {
@@ -219,7 +266,11 @@ pub fn count_hits(
     frame: &UiFrame,
     predicate: impl Fn(&diffy::ui::actions::Action) -> bool,
 ) -> usize {
-    frame.hits.iter().filter(|hit| predicate(&hit.action)).count()
+    frame
+        .hits
+        .iter()
+        .filter(|hit| predicate(&hit.action))
+        .count()
 }
 
 pub fn has_text_input_for(frame: &UiFrame, target: FocusTarget) -> bool {

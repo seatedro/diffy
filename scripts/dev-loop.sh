@@ -12,9 +12,10 @@ if [[ -f "${env_file}" ]]; then
   set +a
 fi
 
-: "${DIFFY_DEV_REPO:=${HOME}/exa/monorepo-master}"
-: "${DIFFY_DEV_LEFT:=master}"
-: "${DIFFY_DEV_RIGHT:=rohit/apollo-servecontents-cutover}"
+: "${DIFFY_DEV_REPO:=${repo_root}}"
+: "${DIFFY_DEV_LEFT:=HEAD~1}"
+: "${DIFFY_DEV_RIGHT:=HEAD}"
+: "${DIFFY_DEV_COMPARE_MODE:=}"
 : "${DIFFY_DEV_LAYOUT:=split}"
 : "${DIFFY_DEV_RENDERER:=}"
 : "${DIFFY_DEV_FILE_INDEX:=0}"
@@ -34,6 +35,27 @@ log_step() {
 
 command_exists() {
   command -v "$1" >/dev/null 2>&1
+}
+
+apply_startup_env() {
+  export DIFFY_START_REPO="${DIFFY_DEV_REPO}"
+  export DIFFY_START_LEFT="${DIFFY_DEV_LEFT}"
+  export DIFFY_START_RIGHT="${DIFFY_DEV_RIGHT}"
+  export DIFFY_START_COMPARE=1
+  export DIFFY_START_LAYOUT="${DIFFY_DEV_LAYOUT}"
+  export DIFFY_START_FILE_INDEX="${DIFFY_DEV_FILE_INDEX}"
+
+  if [[ -n "${DIFFY_DEV_COMPARE_MODE}" ]]; then
+    export DIFFY_START_COMPARE_MODE="${DIFFY_DEV_COMPARE_MODE}"
+  else
+    unset DIFFY_START_COMPARE_MODE
+  fi
+
+  if [[ -n "${DIFFY_DEV_RENDERER}" ]]; then
+    export DIFFY_START_RENDERER="${DIFFY_DEV_RENDERER}"
+  else
+    unset DIFFY_START_RENDERER
+  fi
 }
 
 if [[ "${DIFFY_DEV_RELEASE}" == "1" ]]; then
@@ -65,17 +87,21 @@ run_smoke() {
   log_step "running smoke"
   (
     cd "${repo_root}"
-    export DIFFY_START_REPO="${DIFFY_DEV_REPO}"
-    export DIFFY_START_LEFT="${DIFFY_DEV_LEFT}"
-    export DIFFY_START_RIGHT="${DIFFY_DEV_RIGHT}"
-    export DIFFY_START_COMPARE=1
+    apply_startup_env
     export DIFFY_REQUIRE_RESULTS=1
-    export DIFFY_START_LAYOUT="${DIFFY_DEV_LAYOUT}"
-    export DIFFY_START_FILE_INDEX="${DIFFY_DEV_FILE_INDEX}"
     export DIFFY_EXIT_AFTER_MS="${DIFFY_DEV_EXIT_AFTER_MS}"
-    if [[ -n "${DIFFY_DEV_RENDERER}" ]]; then
-      export DIFFY_START_RENDERER="${DIFFY_DEV_RENDERER}"
-    fi
+    "${diffy_exe}"
+  )
+}
+
+run_open() {
+  build_project
+  log_step "launching diffy"
+  (
+    cd "${repo_root}"
+    apply_startup_env
+    unset DIFFY_REQUIRE_RESULTS
+    unset DIFFY_EXIT_AFTER_MS
     "${diffy_exe}"
   )
 }
@@ -86,17 +112,38 @@ run_once() {
   run_smoke
 }
 
+stat_mtime() {
+  if stat --version >/dev/null 2>&1; then
+    stat -c '%Y %n' "$1"
+  else
+    stat -f '%m %N' "$1"
+  fi
+}
+
+sha256_stream() {
+  if command_exists sha256sum; then
+    sha256sum | awk '{print $1}'
+  else
+    shasum -a 256 | awk '{print $1}'
+  fi
+}
+
 watch_fingerprint() {
-  (
-    find "${repo_root}/src" "${repo_root}/scripts" -type f
-    printf '%s\n' \
-      "${repo_root}/Cargo.toml" \
-      "${repo_root}/Cargo.lock" \
-      "${repo_root}/README.md" \
-      "${repo_root}/flake.nix" \
-      "${repo_root}/devenv.nix" \
-      "${repo_root}/.gitignore"
-  ) | sort | xargs -r stat -c '%Y %n' | sha256sum | awk '{print $1}'
+  while IFS= read -r path; do
+    [[ -e "${path}" ]] || continue
+    stat_mtime "${path}"
+  done < <(
+    {
+      find "${repo_root}/src" "${repo_root}/scripts" -type f
+      printf '%s\n' \
+        "${repo_root}/Cargo.toml" \
+        "${repo_root}/Cargo.lock" \
+        "${repo_root}/README.md" \
+        "${repo_root}/flake.nix" \
+        "${repo_root}/devenv.nix" \
+        "${repo_root}/.gitignore"
+    } | sort
+  ) | sha256_stream
 }
 
 watch_with_polling() {
@@ -128,6 +175,22 @@ watch_with_watchexec() {
     -- "${script_dir}/dev-loop.sh" once
 }
 
+watch_open_with_watchexec() {
+  log_step "watching and relaunching diffy with watchexec"
+  exec watchexec \
+    --restart \
+    --watch "${repo_root}/src" \
+    --watch "${repo_root}/scripts" \
+    --watch "${repo_root}/Cargo.toml" \
+    --watch "${repo_root}/Cargo.lock" \
+    --watch "${repo_root}/README.md" \
+    --watch "${repo_root}/flake.nix" \
+    --watch "${repo_root}/devenv.nix" \
+    --watch "${repo_root}/.gitignore" \
+    --exts rs,toml,md,sh,nix \
+    -- "${script_dir}/dev-loop.sh" open
+}
+
 run_watch() {
   if command_exists watchexec; then
     watch_with_watchexec
@@ -136,18 +199,31 @@ run_watch() {
   fi
 }
 
+run_watch_open() {
+  if command_exists watchexec; then
+    watch_open_with_watchexec
+  else
+    log_step "watch-open requires watchexec for automatic restart"
+    exit 1
+  fi
+}
+
 usage() {
   cat <<EOF
-Usage: scripts/dev-loop.sh [once|watch]
+Usage: scripts/dev-loop.sh [once|watch|open|watch-open]
 
 Commands:
   once   Build, test, and run the offscreen smoke scenario once.
   watch  Re-run the once workflow whenever Rust/tooling files change.
+  open   Build and launch diffy directly into the configured compare.
+  watch-open
+         Rebuild and relaunch the visible app whenever files change.
 
 Environment overrides:
   DIFFY_DEV_REPO
   DIFFY_DEV_LEFT
   DIFFY_DEV_RIGHT
+  DIFFY_DEV_COMPARE_MODE
   DIFFY_DEV_LAYOUT
   DIFFY_DEV_RENDERER
   DIFFY_DEV_FILE_INDEX
@@ -155,6 +231,7 @@ Environment overrides:
   DIFFY_DEV_SKIP_TESTS
   DIFFY_DEV_SKIP_SMOKE
   DIFFY_DEV_RELEASE
+  DIFFY_DEV_ENV_FILE
 EOF
 }
 
@@ -166,6 +243,12 @@ main() {
       ;;
     watch)
       run_watch
+      ;;
+    open)
+      run_open
+      ;;
+    watch-open)
+      run_watch_open
       ;;
     -h|--help|help)
       usage

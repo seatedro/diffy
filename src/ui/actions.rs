@@ -78,6 +78,9 @@ pub enum Action {
     HoverToast(Option<usize>),
     ToggleWrap,
     SetWrapColumn(u32),
+    SetSidebarWidthPx(u32),
+    IncreaseUiScale,
+    DecreaseUiScale,
     ToggleThemeMode,
     /// No-op action — used to consume clicks without side effects (e.g. modal panel).
     Noop,

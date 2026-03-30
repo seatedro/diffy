@@ -61,6 +61,8 @@ struct NativeApp {
     mouse_drag_target: Option<FocusTarget>,
     /// When dragging a scrollbar thumb, tracks the drag state.
     scrollbar_drag: Option<ScrollbarDrag>,
+    /// When dragging the sidebar splitter, tracks the drag baseline.
+    sidebar_resize_drag: Option<SidebarResizeDrag>,
     file_list_scroll_remainder_px: f32,
     overlay_scroll_remainder_px: f32,
     viewport_scroll_remainder_px: f32,
@@ -80,10 +82,18 @@ struct ScrollbarDrag {
     grab_offset: f32,
 }
 
+struct SidebarResizeDrag {
+    origin_x: f32,
+    starting_width: f32,
+}
+
 impl NativeApp {
     fn new(state: AppState, runtime: AppRuntime) -> Self {
-        let theme = Theme::for_mode(state.settings.theme_mode);
-        let capture_pending = std::env::var("DIFFY_CAPTURE_PATH").ok().map(std::path::PathBuf::from);
+        let theme =
+            Theme::for_mode(state.settings.theme_mode).with_ui_scale(state.ui_scale_factor());
+        let capture_pending = std::env::var("DIFFY_CAPTURE_PATH")
+            .ok()
+            .map(std::path::PathBuf::from);
         Self {
             state,
             theme,
@@ -100,6 +110,7 @@ impl NativeApp {
             capture_pending,
             mouse_drag_target: None,
             scrollbar_drag: None,
+            sidebar_resize_drag: None,
             file_list_scroll_remainder_px: 0.0,
             overlay_scroll_remainder_px: 0.0,
             viewport_scroll_remainder_px: 0.0,
@@ -107,7 +118,8 @@ impl NativeApp {
     }
 
     fn sync_theme(&mut self) {
-        self.theme = Theme::for_mode(self.state.settings.theme_mode);
+        self.theme = Theme::for_mode(self.state.settings.theme_mode)
+            .with_ui_scale(self.state.ui_scale_factor());
     }
 
     fn window_attributes(&self) -> WindowAttributes {
@@ -201,6 +213,7 @@ impl NativeApp {
 
         let width = size.width.max(1) as f32;
         let height = size.height.max(1) as f32;
+        let ui_scale = self.state.ui_scale_factor();
 
         let mut cx = crate::ui::element::ElementContext::new(
             &self.theme,
@@ -217,7 +230,7 @@ impl NativeApp {
             &mut self.state,
             &self.theme,
             &mut self.viewport_runtime,
-            text_metrics,
+            scale_text_metrics(text_metrics, ui_scale),
             width,
             height,
             &mut cx,
@@ -233,6 +246,23 @@ impl NativeApp {
     }
 
     fn handle_left_click(&mut self, x: f32, y: f32) {
+        if self
+            .ui_frame
+            .sidebar_resize_handle_rect
+            .is_some_and(|rect| rect.contains(x, y))
+        {
+            let starting_width = self
+                .ui_frame
+                .file_list_rect
+                .map(|rect| rect.width)
+                .unwrap_or(self.theme.metrics.sidebar_width);
+            self.sidebar_resize_drag = Some(SidebarResizeDrag {
+                origin_x: x,
+                starting_width,
+            });
+            return;
+        }
+
         // Check scrollbar tracks for click/drag
         if let Some(track) = self
             .ui_frame
@@ -318,6 +348,10 @@ impl NativeApp {
     fn handle_cursor_moved(&mut self, x: f32, y: f32) {
         self.mouse_position = Some((x, y));
 
+        if self.sidebar_resize_drag.is_some() {
+            self.handle_sidebar_resize_drag_move(x);
+        }
+
         // Scrollbar thumb drag
         if self.scrollbar_drag.is_some() {
             self.handle_scrollbar_drag_move(y);
@@ -358,6 +392,15 @@ impl NativeApp {
         let cursor_hint = hovered_hit
             .map(|hit| hit.cursor)
             .unwrap_or(CursorHint::Default);
+        let resize_hovered = self
+            .ui_frame
+            .sidebar_resize_handle_rect
+            .is_some_and(|rect| rect.contains(x, y));
+        let cursor_hint = if self.sidebar_resize_drag.is_some() || resize_hovered {
+            CursorHint::ResizeCol
+        } else {
+            cursor_hint
+        };
 
         if hovered_file != self.state.file_list.hovered_index {
             self.dispatch_action(Action::HoverFile(hovered_file));
@@ -370,7 +413,8 @@ impl NativeApp {
         let hovered_row = if self.input_is_blocked_by_overlay(x, y) {
             None
         } else {
-            self.viewport_runtime.hit_test_row(&self.state.viewport, x, y)
+            self.viewport_runtime
+                .hit_test_row(&self.state.viewport, x, y)
         };
         if hovered_row != self.state.viewport.hovered_row {
             self.dispatch_action(Action::HoverViewportRow(hovered_row));
@@ -381,6 +425,7 @@ impl NativeApp {
                 CursorHint::Default => winit::window::CursorIcon::Default,
                 CursorHint::Pointer => winit::window::CursorIcon::Pointer,
                 CursorHint::Text => winit::window::CursorIcon::Text,
+                CursorHint::ResizeCol => winit::window::CursorIcon::EwResize,
             };
             window.set_cursor(icon);
         }
@@ -543,6 +588,17 @@ impl NativeApp {
         }
     }
 
+    fn handle_sidebar_resize_drag_move(&mut self, mouse_x: f32) {
+        let Some(ref drag) = self.sidebar_resize_drag else {
+            return;
+        };
+
+        let target_width = (drag.starting_width + (mouse_x - drag.origin_x))
+            .round()
+            .max(0.0) as u32;
+        self.dispatch_action(Action::SetSidebarWidthPx(target_width));
+    }
+
     fn is_text_focused(&self) -> bool {
         self.state.is_text_focused()
     }
@@ -575,9 +631,27 @@ impl NativeApp {
             ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::FileList) => {
                 self.state.file_list.row_stride().max(1.0)
             }
-            ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::Custom(_)) => 36.0,
+            ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::Custom(_)) => {
+                self.active_overlay_row_height_px()
+            }
             ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::ViewportLines)
             | ScrollTarget::ViewportFallback => self.viewport_runtime.scroll_line_height_px(),
+        }
+    }
+
+    fn active_overlay_row_height_px(&self) -> f32 {
+        match self.state.overlays.top() {
+            Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_)) => {
+                self.state.overlays.picker.list.row_height_px.max(1) as f32
+            }
+            Some(OverlaySurface::CommandPalette) => self
+                .state
+                .overlays
+                .command_palette
+                .list
+                .row_height_px
+                .max(1) as f32,
+            _ => 36.0,
         }
     }
 
@@ -598,16 +672,38 @@ impl NativeApp {
         // Global shortcuts
         if let Key::Character(text) = key {
             let lower = text.to_ascii_lowercase();
-            if ctrl && lower == "p" {
-                self.dispatch_action(Action::OpenCommandPalette);
-                return;
+            if ctrl {
+                match lower.as_str() {
+                    "p" => {
+                        self.dispatch_action(Action::OpenCommandPalette);
+                        return;
+                    }
+                    "=" | "+" => {
+                        self.dispatch_action(Action::IncreaseUiScale);
+                        return;
+                    }
+                    "-" | "_" => {
+                        self.dispatch_action(Action::DecreaseUiScale);
+                        return;
+                    }
+                    _ => {}
+                }
             }
             // Clipboard shortcuts (when text is focused)
             if ctrl && self.is_text_focused() {
                 match lower.as_str() {
-                    "a" => { self.dispatch_action(Action::SelectAll); return; }
-                    "c" => { self.dispatch_action(Action::Copy); return; }
-                    "x" => { self.dispatch_action(Action::Cut); return; }
+                    "a" => {
+                        self.dispatch_action(Action::SelectAll);
+                        return;
+                    }
+                    "c" => {
+                        self.dispatch_action(Action::Copy);
+                        return;
+                    }
+                    "x" => {
+                        self.dispatch_action(Action::Cut);
+                        return;
+                    }
                     "v" => {
                         if let Ok(mut clipboard) = arboard::Clipboard::new() {
                             if let Ok(text) = clipboard.get_text() {
@@ -650,10 +746,18 @@ impl NativeApp {
                 self.dispatch_action(action);
             }
             Key::Named(NamedKey::Home) if self.is_text_focused() => {
-                self.dispatch_action(if shift { Action::SelectHome } else { Action::CursorHome });
+                self.dispatch_action(if shift {
+                    Action::SelectHome
+                } else {
+                    Action::CursorHome
+                });
             }
             Key::Named(NamedKey::End) if self.is_text_focused() => {
-                self.dispatch_action(if shift { Action::SelectEnd } else { Action::CursorEnd });
+                self.dispatch_action(if shift {
+                    Action::SelectEnd
+                } else {
+                    Action::CursorEnd
+                });
             }
 
             Key::Named(NamedKey::ArrowDown) => {
@@ -826,6 +930,13 @@ impl ApplicationHandler for NativeApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                if self.sidebar_resize_drag.take().is_some() {
+                    self.runtime
+                        .dispatch_all(vec![crate::ui::effects::Effect::SaveSettings(
+                            self.state.settings.clone(),
+                        )]);
+                    self.dumps_dirty = true;
+                }
                 self.mouse_drag_target = None;
                 self.scrollbar_drag = None;
             }
@@ -889,6 +1000,20 @@ fn scroll_delta_to_px(delta: MouseScrollDelta, line_step_px: f32) -> f32 {
     match delta {
         MouseScrollDelta::LineDelta(_, y) => -y * line_step_px,
         MouseScrollDelta::PixelDelta(position) => -(position.y as f32),
+    }
+}
+
+fn scale_text_metrics(
+    metrics: crate::render::TextMetrics,
+    scale: f32,
+) -> crate::render::TextMetrics {
+    let scale = scale.clamp(0.7, 1.8);
+    crate::render::TextMetrics {
+        ui_font_size_px: metrics.ui_font_size_px * scale,
+        ui_line_height_px: metrics.ui_line_height_px * scale,
+        mono_font_size_px: metrics.mono_font_size_px * scale,
+        mono_line_height_px: metrics.mono_line_height_px * scale,
+        mono_char_width_px: metrics.mono_char_width_px * scale,
     }
 }
 
@@ -961,13 +1086,16 @@ fn hit_test_text_offset(
 mod tests {
     use tempfile::TempDir;
     use winit::dpi::PhysicalPosition;
-    use winit::event::MouseScrollDelta;
+    use winit::event::{MouseScrollDelta, TouchPhase};
+    use winit::keyboard::{Key, ModifiersState};
 
     use super::{NativeApp, ScrollTarget, quantize_scroll_delta_px, scroll_delta_to_px};
     use crate::app_runtime::{AppRuntime, AppServices};
     use crate::platform::persistence::SettingsStore;
     use crate::ui::actions::Action;
-    use crate::ui::state::{AppState, FileListEntry, FocusTarget, OverlayEntry, OverlaySurface, WorkspaceMode};
+    use crate::ui::state::{
+        AppState, FileListEntry, FocusTarget, OverlayEntry, OverlaySurface, WorkspaceMode,
+    };
 
     fn test_app(state: AppState) -> NativeApp {
         let dir = TempDir::new().unwrap();
@@ -1027,15 +1155,59 @@ mod tests {
             .ui_frame
             .scroll_regions
             .iter()
-            .find(|region| matches!(region.action_builder, crate::ui::element::ScrollActionBuilder::FileList))
+            .find(|region| {
+                matches!(
+                    region.action_builder,
+                    crate::ui::element::ScrollActionBuilder::FileList
+                )
+            })
             .unwrap();
         let x = region.bounds.x + 10.0;
         let y = region.bounds.y + 10.0;
 
         assert!(matches!(
             app.scroll_target_at(x, y),
-            Some(ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::FileList))
+            Some(ScrollTarget::Region(
+                crate::ui::element::ScrollActionBuilder::FileList
+            ))
         ));
+    }
+
+    #[test]
+    fn file_list_wheel_scroll_moves_sidebar_contents() {
+        let mut state = AppState::default();
+        state.workspace_mode = WorkspaceMode::Ready;
+        state.workspace.files = (0..32)
+            .map(|index| FileListEntry {
+                path: format!("src/file_{index}.rs"),
+                status: "M".to_owned(),
+                additions: 1,
+                deletions: 0,
+                is_binary: false,
+            })
+            .collect();
+        state.workspace.selected_file_index = Some(0);
+        state.workspace.selected_file_path = Some("src/file_0.rs".to_owned());
+
+        let mut app = test_app(state);
+        app.ui_frame = app.build_frame();
+
+        let region = app
+            .ui_frame
+            .scroll_regions
+            .iter()
+            .find(|region| {
+                matches!(
+                    region.action_builder,
+                    crate::ui::element::ScrollActionBuilder::FileList
+                )
+            })
+            .unwrap();
+        app.mouse_position = Some((region.bounds.x + 10.0, region.bounds.y + 10.0));
+
+        app.handle_scroll(MouseScrollDelta::LineDelta(0.0, -3.0), TouchPhase::Moved);
+
+        assert!(app.state.file_list.scroll_offset_px > 0.0);
     }
 
     #[test]
@@ -1070,6 +1242,18 @@ mod tests {
 
         assert!(app.input_is_blocked_by_overlay(x, y));
         assert!(app.scroll_target_at(x, y).is_none());
+    }
+
+    #[test]
+    fn command_shortcuts_adjust_ui_scale() {
+        let mut app = test_app(AppState::default());
+        app.modifiers = ModifiersState::SUPER;
+
+        app.handle_key(&Key::Character("=".into()));
+        assert_eq!(app.state.settings.ui_scale_pct, 110);
+
+        app.handle_key(&Key::Character("-".into()));
+        assert_eq!(app.state.settings.ui_scale_pct, 100);
     }
 }
 

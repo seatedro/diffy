@@ -179,13 +179,20 @@ pub fn build_ui_frame(
         }
     }
 
+    let hits = std::mem::take(&mut cx.hits);
+    let scroll_regions = std::mem::take(&mut cx.scroll_regions);
+    let text_input_hit_areas = std::mem::take(&mut cx.text_input_hit_areas);
+    let file_list_rect = scroll_regions.iter().find_map(|region| {
+        matches!(region.action_builder, ScrollActionBuilder::FileList).then_some(region.bounds)
+    });
+
     UiFrame {
         scene,
-        hits: std::mem::take(&mut cx.hits),
-        scroll_regions: std::mem::take(&mut cx.scroll_regions),
-        text_input_hit_areas: std::mem::take(&mut cx.text_input_hit_areas),
+        hits,
+        scroll_regions,
+        text_input_hit_areas,
         scrollbar_tracks,
-        file_list_rect: file_list_bounds.get(),
+        file_list_rect: file_list_rect.or_else(|| file_list_bounds.get()),
         viewport_rect: viewport_bounds.get(),
     }
 }
@@ -1066,6 +1073,7 @@ fn repo_picker(state: &AppState, theme: &Theme, width: f32, height: f32) -> Div 
             .child(picker_list(
                 &state.overlays.picker.entries,
                 state.overlays.picker.selected_index,
+                state.overlays.picker.list.scroll_top_px,
                 theme,
             ))
             .child(subtle_icon_button(
@@ -1117,6 +1125,7 @@ fn ref_picker(
             .child(picker_list(
                 &state.overlays.picker.entries,
                 state.overlays.picker.selected_index,
+                state.overlays.picker.list.scroll_top_px,
                 theme,
             )),
     )
@@ -1177,6 +1186,7 @@ fn command_palette(state: &AppState, theme: &Theme, width: f32, height: f32) -> 
                 .child(picker_list(
                     &state.overlays.command_palette.entries,
                     state.overlays.command_palette.selected_index,
+                    state.overlays.command_palette.list.scroll_top_px,
                     theme,
                 )),
         )
@@ -1464,9 +1474,20 @@ fn segmented_control(items: &[(&str, Action, bool)], theme: &Theme) -> Div {
     row
 }
 
-fn picker_list<T: PickerItem>(entries: &[T], selected_index: usize, theme: &Theme) -> Div {
+fn picker_list<T: PickerItem>(
+    entries: &[T],
+    selected_index: usize,
+    scroll_top_px: u32,
+    theme: &Theme,
+) -> Div {
     let tc = &theme.colors;
-    let mut list = div().flex_1().flex_col().clip().overflow_y_scroll();
+    let mut list = div()
+        .flex_1()
+        .flex_col()
+        .clip()
+        .scroll_y(scroll_top_px as f32)
+        .scroll_total(entries.len() as f32 * 36.0)
+        .on_scroll(ScrollActionBuilder::Custom(Action::ScrollActiveOverlayListPx));
 
     for (i, entry) in entries.iter().enumerate() {
         let selected = i == selected_index;

@@ -56,9 +56,15 @@ pub enum Action {
     SelectNextFile,
     SelectPreviousFile,
     ScrollFileList(i32),
+    /// Scroll the file list by a pixel delta.
+    ScrollFileListPx(i32),
     /// Set file list scroll to an absolute pixel position.
     ScrollFileListToPx(u32),
+    /// Scroll the active overlay list (picker / command palette) by a pixel delta.
+    ScrollActiveOverlayListPx(i32),
     ScrollViewportLines(i32),
+    /// Scroll the viewport by a pixel delta.
+    ScrollViewportPx(i32),
     ScrollViewportPages(i32),
     ScrollViewportTo(u32),
     HoverViewportRow(Option<usize>),

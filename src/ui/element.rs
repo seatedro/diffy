@@ -866,6 +866,9 @@ impl Div {
     pub fn scroll_y(mut self, offset: f32) -> Self {
         self.scroll_y = offset;
         self.clips = true;
+        // Tell taffy the element is a scroll container so it constrains to
+        // the available space instead of expanding to fit all children.
+        self.base_style.layout.overflow.y = taffy::Overflow::Hidden;
         self
     }
 

@@ -20,6 +20,8 @@ use crate::ui::theme::ThemeMode;
 
 const MAX_VISIBLE_TOASTS: usize = 8;
 const TOAST_LIFETIME_MS: u64 = 10_000;
+const PICKER_LIST_VIEWPORT_HEIGHT_PX: u32 = 204;
+const COMMAND_PALETTE_LIST_VIEWPORT_HEIGHT_PX: u32 = 288;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum WorkspaceMode {
@@ -216,6 +218,67 @@ impl FileListState {
         self.scroll_offset_px += px_delta;
         self.clamp_scroll(file_count);
     }
+
+    /// Scroll by a raw pixel delta (positive = down).
+    pub fn scroll_px(&mut self, delta_px: f32, file_count: usize) {
+        self.scroll_offset_px += delta_px;
+        self.clamp_scroll(file_count);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverlayListState {
+    pub scroll_top_px: u32,
+    pub viewport_height_px: u32,
+    pub row_height_px: u32,
+}
+
+impl Default for OverlayListState {
+    fn default() -> Self {
+        Self {
+            scroll_top_px: 0,
+            viewport_height_px: 0,
+            row_height_px: 36,
+        }
+    }
+}
+
+impl OverlayListState {
+    pub fn total_content_height_px(&self, entry_count: usize) -> u32 {
+        self.row_height_px.saturating_mul(entry_count as u32)
+    }
+
+    pub fn max_scroll_top_px(&self, entry_count: usize) -> u32 {
+        self.total_content_height_px(entry_count)
+            .saturating_sub(self.viewport_height_px)
+    }
+
+    pub fn clamp_scroll(&mut self, entry_count: usize) {
+        self.scroll_top_px = self.scroll_top_px.min(self.max_scroll_top_px(entry_count));
+    }
+
+    pub fn scroll_px(&mut self, delta_px: i32, entry_count: usize) {
+        self.scroll_top_px = apply_scroll_delta_px(
+            self.scroll_top_px,
+            delta_px,
+            self.max_scroll_top_px(entry_count),
+        );
+    }
+
+    pub fn reveal_index(&mut self, index: usize, entry_count: usize) {
+        let row_height_px = self.row_height_px.max(1);
+        let item_top = row_height_px.saturating_mul(index as u32);
+        let item_bottom = item_top.saturating_add(row_height_px);
+        let viewport_bottom = self.scroll_top_px.saturating_add(self.viewport_height_px);
+
+        if item_top < self.scroll_top_px {
+            self.scroll_top_px = item_top;
+        } else if item_bottom > viewport_bottom {
+            self.scroll_top_px = item_bottom.saturating_sub(self.viewport_height_px);
+        }
+
+        self.clamp_scroll(entry_count);
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -249,6 +312,7 @@ pub struct PickerState {
     pub query: String,
     pub entries: Vec<PickerEntry>,
     pub selected_index: usize,
+    pub list: OverlayListState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,6 +353,7 @@ pub struct CommandPaletteState {
     pub query: String,
     pub entries: Vec<PaletteEntry>,
     pub selected_index: usize,
+    pub list: OverlayListState,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -682,13 +747,26 @@ impl AppState {
                 self.file_list.scroll_rows(delta, self.workspace.files.len());
                 Vec::new()
             }
+            Action::ScrollFileListPx(delta_px) => {
+                self.file_list
+                    .scroll_px(delta_px as f32, self.workspace.files.len());
+                Vec::new()
+            }
             Action::ScrollFileListToPx(px) => {
                 self.file_list.scroll_offset_px = px as f32;
                 self.file_list.clamp_scroll(self.workspace.files.len());
                 Vec::new()
             }
+            Action::ScrollActiveOverlayListPx(delta_px) => {
+                self.scroll_active_overlay_list_px(delta_px);
+                Vec::new()
+            }
             Action::ScrollViewportLines(delta) => {
                 self.scroll_viewport_lines(delta);
+                Vec::new()
+            }
+            Action::ScrollViewportPx(delta_px) => {
+                self.scroll_viewport_px(delta_px);
                 Vec::new()
             }
             Action::ScrollViewportPages(delta) => {
@@ -1453,6 +1531,7 @@ impl AppState {
 
     fn open_repo_picker(&mut self) {
         self.overlays.picker.kind = PickerKind::Repository;
+        self.overlays.picker.list.viewport_height_px = PICKER_LIST_VIEWPORT_HEIGHT_PX;
         self.overlays.picker.query = self
             .compare
             .repo_path
@@ -1468,6 +1547,7 @@ impl AppState {
             CompareField::Left => PickerKind::LeftRef,
             CompareField::Right => PickerKind::RightRef,
         };
+        self.overlays.picker.list.viewport_height_px = PICKER_LIST_VIEWPORT_HEIGHT_PX;
         self.rebuild_ref_picker(field);
         self.push_overlay(
             OverlaySurface::RefPicker(field),
@@ -1476,6 +1556,8 @@ impl AppState {
     }
 
     fn open_command_palette(&mut self) {
+        self.overlays.command_palette.list.viewport_height_px =
+            COMMAND_PALETTE_LIST_VIEWPORT_HEIGHT_PX;
         self.rebuild_command_palette();
         self.push_overlay(
             OverlaySurface::CommandPalette,
@@ -1518,6 +1600,10 @@ impl AppState {
                 self.overlays.picker.selected_index =
                     (self.overlays.picker.selected_index as i32 + delta).clamp(0, max.max(0))
                         as usize;
+                self.overlays.picker.list.reveal_index(
+                    self.overlays.picker.selected_index,
+                    self.overlays.picker.entries.len(),
+                );
             }
             Some(OverlaySurface::CommandPalette) => {
                 let max = self
@@ -1529,6 +1615,10 @@ impl AppState {
                 self.overlays.command_palette.selected_index =
                     (self.overlays.command_palette.selected_index as i32 + delta)
                         .clamp(0, max.max(0)) as usize;
+                self.overlays.command_palette.list.reveal_index(
+                    self.overlays.command_palette.selected_index,
+                    self.overlays.command_palette.entries.len(),
+                );
             }
             _ => {}
         }
@@ -1539,6 +1629,10 @@ impl AppState {
             Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_)) => {
                 self.overlays.picker.selected_index =
                     index.min(self.overlays.picker.entries.len().saturating_sub(1));
+                self.overlays.picker.list.reveal_index(
+                    self.overlays.picker.selected_index,
+                    self.overlays.picker.entries.len(),
+                );
             }
             Some(OverlaySurface::CommandPalette) => {
                 self.overlays.command_palette.selected_index = index.min(
@@ -1547,6 +1641,10 @@ impl AppState {
                         .entries
                         .len()
                         .saturating_sub(1),
+                );
+                self.overlays.command_palette.list.reveal_index(
+                    self.overlays.command_palette.selected_index,
+                    self.overlays.command_palette.entries.len(),
                 );
             }
             _ => {}
@@ -1721,6 +1819,10 @@ impl AppState {
             .picker
             .selected_index
             .min(self.overlays.picker.entries.len().saturating_sub(1));
+        self.overlays
+            .picker
+            .list
+            .clamp_scroll(self.overlays.picker.entries.len());
     }
 
     fn rebuild_ref_picker(&mut self, field: CompareField) {
@@ -1810,6 +1912,10 @@ impl AppState {
             .picker
             .selected_index
             .min(self.overlays.picker.entries.len().saturating_sub(1));
+        self.overlays
+            .picker
+            .list
+            .clamp_scroll(self.overlays.picker.entries.len());
     }
 
     fn rebuild_command_palette(&mut self) {
@@ -1935,6 +2041,10 @@ impl AppState {
                     .len()
                     .saturating_sub(1),
             );
+        self.overlays
+            .command_palette
+            .list
+            .clamp_scroll(self.overlays.command_palette.entries.len());
     }
 
     fn shift_loaded_file(&mut self, delta: isize) {
@@ -1986,6 +2096,28 @@ impl AppState {
     fn scroll_viewport_lines(&mut self, delta_lines: i32) {
         let step_px = 20_i32;
         let delta_px = delta_lines.saturating_mul(step_px);
+        self.scroll_viewport_px(delta_px);
+    }
+
+    fn scroll_active_overlay_list_px(&mut self, delta_px: i32) {
+        match self.overlays.top() {
+            Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_)) => {
+                self.overlays
+                    .picker
+                    .list
+                    .scroll_px(delta_px, self.overlays.picker.entries.len());
+            }
+            Some(OverlaySurface::CommandPalette) => {
+                self.overlays
+                    .command_palette
+                    .list
+                    .scroll_px(delta_px, self.overlays.command_palette.entries.len());
+            }
+            _ => {}
+        }
+    }
+
+    fn scroll_viewport_px(&mut self, delta_px: i32) {
         self.viewport.scroll_top_px = apply_scroll_delta_px(
             self.viewport.scroll_top_px,
             delta_px,
@@ -2184,7 +2316,7 @@ fn next_word_boundary(text: &str, offset: usize) -> usize {
 mod tests {
     use clap::Parser;
 
-    use super::{AppState, FocusTarget, OverlaySurface, WorkspaceMode};
+    use super::{AppState, FileListEntry, FocusTarget, OverlaySurface, WorkspaceMode};
     use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
     use crate::platform::persistence::Settings;
     use crate::platform::startup::{Args, StartupOptions};
@@ -2252,5 +2384,98 @@ mod tests {
         assert_eq!(state.overlays.top(), Some(OverlaySurface::CommandPalette));
         state.apply_action(Action::CloseOverlay);
         assert_eq!(state.focus.current, Some(FocusTarget::TitleBar));
+    }
+
+    #[test]
+    fn pixel_scroll_actions_clamp_file_list_and_viewport() {
+        let mut state = AppState::default();
+
+        state.workspace.files = vec![
+            FileListEntry {
+                path: "a.rs".into(),
+                status: "M".into(),
+                additions: 0,
+                deletions: 0,
+                is_binary: false,
+            },
+            FileListEntry {
+                path: "b.rs".into(),
+                status: "M".into(),
+                additions: 0,
+                deletions: 0,
+                is_binary: false,
+            },
+            FileListEntry {
+                path: "c.rs".into(),
+                status: "M".into(),
+                additions: 0,
+                deletions: 0,
+                is_binary: false,
+            },
+            FileListEntry {
+                path: "d.rs".into(),
+                status: "M".into(),
+                additions: 0,
+                deletions: 0,
+                is_binary: false,
+            },
+            FileListEntry {
+                path: "e.rs".into(),
+                status: "M".into(),
+                additions: 0,
+                deletions: 0,
+                is_binary: false,
+            },
+        ];
+        state.file_list.row_height = 36.0;
+        state.file_list.gap = 4.0;
+        state.file_list.viewport_height = 80.0;
+
+        state.apply_action(Action::ScrollFileListPx(50));
+        assert_eq!(state.file_list.scroll_offset_px, 50.0);
+
+        state.apply_action(Action::ScrollFileListPx(500));
+        assert_eq!(state.file_list.scroll_offset_px, 116.0);
+
+        state.apply_action(Action::ScrollFileListPx(-500));
+        assert_eq!(state.file_list.scroll_offset_px, 0.0);
+
+        state.viewport.content_height_px = 600;
+        state.viewport.viewport_height_px = 200;
+
+        state.apply_action(Action::ScrollViewportPx(75));
+        assert_eq!(state.viewport.scroll_top_px, 75);
+
+        state.apply_action(Action::ScrollViewportPx(500));
+        assert_eq!(state.viewport.scroll_top_px, 400);
+
+        state.apply_action(Action::ScrollViewportPx(-500));
+        assert_eq!(state.viewport.scroll_top_px, 0);
+    }
+
+    #[test]
+    fn overlay_list_pixel_scroll_action_clamps_active_overlay() {
+        let mut state = AppState::default();
+        state.overlays.stack.push(super::OverlayEntry {
+            surface: OverlaySurface::RepoPicker,
+            focus_return: None,
+        });
+        state.overlays.picker.entries = (0..12)
+            .map(|index| super::PickerEntry {
+                label: format!("repo-{index}"),
+                detail: format!("C:\\repo-{index}"),
+                value: format!("C:\\repo-{index}"),
+            })
+            .collect();
+        state.overlays.picker.list.viewport_height_px = 120;
+
+        state.apply_action(Action::ScrollActiveOverlayListPx(50));
+        assert_eq!(state.overlays.picker.list.scroll_top_px, 50);
+
+        state.apply_action(Action::ScrollActiveOverlayListPx(1_000));
+        assert_eq!(state.overlays.picker.list.scroll_top_px, 312);
+
+        state.apply_action(Action::ScrollActiveOverlayListPx(-1_000));
+        assert_eq!(state.overlays.picker.list.scroll_top_px, 0);
     }
 }

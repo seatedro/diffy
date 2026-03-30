@@ -102,6 +102,11 @@ impl DiffViewportRuntime {
         self.layout.scrollbar_rect
     }
 
+    pub fn scroll_line_height_px(&self) -> f32 {
+        let line_height = self.metrics.body_row_height_px as f32;
+        if line_height > 0.0 { line_height } else { 20.0 }
+    }
+
     pub fn prepare(
         &mut self,
         state: &mut DiffViewportState,

@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -61,6 +61,9 @@ struct NativeApp {
     mouse_drag_target: Option<FocusTarget>,
     /// When dragging a scrollbar thumb, tracks the drag state.
     scrollbar_drag: Option<ScrollbarDrag>,
+    file_list_scroll_remainder_px: f32,
+    overlay_scroll_remainder_px: f32,
+    viewport_scroll_remainder_px: f32,
 }
 
 /// State for an active scrollbar thumb drag.
@@ -97,6 +100,9 @@ impl NativeApp {
             capture_pending,
             mouse_drag_target: None,
             scrollbar_drag: None,
+            file_list_scroll_remainder_px: 0.0,
+            overlay_scroll_remainder_px: 0.0,
+            viewport_scroll_remainder_px: 0.0,
         }
     }
 
@@ -361,9 +367,11 @@ impl NativeApp {
             self.dispatch_action(Action::HoverToast(hovered_toast));
         }
 
-        let hovered_row = self
-            .viewport_runtime
-            .hit_test_row(&self.state.viewport, x, y);
+        let hovered_row = if self.input_is_blocked_by_overlay(x, y) {
+            None
+        } else {
+            self.viewport_runtime.hit_test_row(&self.state.viewport, x, y)
+        };
         if hovered_row != self.state.viewport.hovered_row {
             self.dispatch_action(Action::HoverViewportRow(hovered_row));
         }
@@ -378,45 +386,49 @@ impl NativeApp {
         }
     }
 
-    fn handle_scroll(&mut self, delta: MouseScrollDelta) {
+    fn handle_scroll(&mut self, delta: MouseScrollDelta, phase: TouchPhase) {
         let Some((x, y)) = self.mouse_position else {
             return;
         };
-        let lines = match delta {
-            MouseScrollDelta::LineDelta(_, y) => {
-                if y < 0.0 {
-                    3
-                } else if y > 0.0 {
-                    -3
-                } else {
-                    0
-                }
+
+        if matches!(phase, TouchPhase::Started | TouchPhase::Cancelled) {
+            self.reset_scroll_remainders();
+        }
+
+        let Some(target) = self.scroll_target_at(x, y) else {
+            return;
+        };
+        let line_step_px = self.scroll_target_line_step_px(&target);
+        let delta_px = scroll_delta_to_px(delta, line_step_px);
+        let rounded_delta_px = match &target {
+            ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::FileList) => {
+                quantize_scroll_delta_px(&mut self.file_list_scroll_remainder_px, delta_px)
             }
-            MouseScrollDelta::PixelDelta(position) => {
-                let amount = (position.y / 36.0).round() as i32;
-                if amount == 0 { 0 } else { amount }
+            ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::Custom(_)) => {
+                quantize_scroll_delta_px(&mut self.overlay_scroll_remainder_px, delta_px)
+            }
+            ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::ViewportLines)
+            | ScrollTarget::ViewportFallback => {
+                quantize_scroll_delta_px(&mut self.viewport_scroll_remainder_px, delta_px)
             }
         };
-        if lines == 0 {
-            return;
-        }
-
-        // Check scroll regions registered by the element system.
-        for region in self.ui_frame.scroll_regions.iter().rev() {
-            if region.bounds.contains(x, y) {
-                let action = region.action_builder.build(lines);
-                self.dispatch_action(action);
-                return;
+        if rounded_delta_px != 0 {
+            match target {
+                ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::FileList) => {
+                    self.dispatch_action(Action::ScrollFileListPx(rounded_delta_px));
+                }
+                ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::Custom(build)) => {
+                    self.dispatch_action(build(rounded_delta_px));
+                }
+                ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::ViewportLines)
+                | ScrollTarget::ViewportFallback => {
+                    self.dispatch_action(Action::ScrollViewportPx(rounded_delta_px));
+                }
             }
         }
 
-        // Fallback: viewport scroll.
-        if self
-            .ui_frame
-            .viewport_rect
-            .is_some_and(|rect| rect.contains(x, y))
-        {
-            self.dispatch_action(Action::ScrollViewportLines(lines));
+        if matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+            self.reset_scroll_remainders();
         }
     }
 
@@ -533,6 +545,50 @@ impl NativeApp {
 
     fn is_text_focused(&self) -> bool {
         self.state.is_text_focused()
+    }
+
+    fn reset_scroll_remainders(&mut self) {
+        self.file_list_scroll_remainder_px = 0.0;
+        self.overlay_scroll_remainder_px = 0.0;
+        self.viewport_scroll_remainder_px = 0.0;
+    }
+
+    fn scroll_target_at(&self, x: f32, y: f32) -> Option<ScrollTarget> {
+        for region in self.ui_frame.scroll_regions.iter().rev() {
+            if region.bounds.contains(x, y) {
+                return Some(ScrollTarget::Region(region.action_builder.clone()));
+            }
+        }
+
+        if self.input_is_blocked_by_overlay(x, y) {
+            return None;
+        }
+
+        self.ui_frame
+            .viewport_rect
+            .filter(|rect| rect.contains(x, y))
+            .map(|_| ScrollTarget::ViewportFallback)
+    }
+
+    fn scroll_target_line_step_px(&self, target: &ScrollTarget) -> f32 {
+        match target {
+            ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::FileList) => {
+                self.state.file_list.row_stride().max(1.0)
+            }
+            ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::Custom(_)) => 36.0,
+            ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::ViewportLines)
+            | ScrollTarget::ViewportFallback => self.viewport_runtime.scroll_line_height_px(),
+        }
+    }
+
+    fn input_is_blocked_by_overlay(&self, x: f32, y: f32) -> bool {
+        self.state.overlays.top().is_some()
+            && self
+                .ui_frame
+                .hits
+                .iter()
+                .rev()
+                .any(|hit| hit.rect.contains(x, y))
     }
 
     fn handle_key(&mut self, key: &Key) {
@@ -753,8 +809,8 @@ impl ApplicationHandler for NativeApp {
             WindowEvent::CursorMoved { position, .. } => {
                 self.handle_cursor_moved(position.x as f32, position.y as f32);
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                self.handle_scroll(delta);
+            WindowEvent::MouseWheel { delta, phase, .. } => {
+                self.handle_scroll(delta, phase);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -823,6 +879,26 @@ impl ApplicationHandler for NativeApp {
     }
 }
 
+#[derive(Debug, Clone)]
+enum ScrollTarget {
+    Region(crate::ui::element::ScrollActionBuilder),
+    ViewportFallback,
+}
+
+fn scroll_delta_to_px(delta: MouseScrollDelta, line_step_px: f32) -> f32 {
+    match delta {
+        MouseScrollDelta::LineDelta(_, y) => -y * line_step_px,
+        MouseScrollDelta::PixelDelta(position) => -(position.y as f32),
+    }
+}
+
+fn quantize_scroll_delta_px(remainder_px: &mut f32, delta_px: f32) -> i32 {
+    *remainder_px += delta_px;
+    let whole_px = remainder_px.trunc() as i32;
+    *remainder_px -= whole_px as f32;
+    whole_px
+}
+
 /// Map a click x-coordinate (relative to text start) to a byte offset in the string.
 fn hit_test_text_offset(
     font_system: Option<&mut glyphon::FontSystem>,
@@ -879,6 +955,122 @@ fn hit_test_text_offset(
     }
 
     best_offset
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+    use winit::dpi::PhysicalPosition;
+    use winit::event::MouseScrollDelta;
+
+    use super::{NativeApp, ScrollTarget, quantize_scroll_delta_px, scroll_delta_to_px};
+    use crate::app_runtime::{AppRuntime, AppServices};
+    use crate::platform::persistence::SettingsStore;
+    use crate::ui::actions::Action;
+    use crate::ui::state::{AppState, FileListEntry, FocusTarget, OverlayEntry, OverlaySurface, WorkspaceMode};
+
+    fn test_app(state: AppState) -> NativeApp {
+        let dir = TempDir::new().unwrap();
+        let runtime = AppRuntime::new(AppServices::new(SettingsStore::new_in(dir.path())));
+        NativeApp::new(state, runtime)
+    }
+
+    #[test]
+    fn scroll_delta_to_px_preserves_magnitude_and_direction() {
+        let line_delta = scroll_delta_to_px(MouseScrollDelta::LineDelta(0.0, 1.5), 20.0);
+        assert_eq!(line_delta, -30.0);
+
+        let pixel_delta = scroll_delta_to_px(
+            MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -12.5)),
+            20.0,
+        );
+        assert_eq!(pixel_delta, 12.5);
+    }
+
+    #[test]
+    fn quantize_scroll_delta_px_accumulates_fractional_motion() {
+        let mut remainder = 0.0;
+
+        assert_eq!(quantize_scroll_delta_px(&mut remainder, 0.4), 0);
+        assert!((remainder - 0.4).abs() < f32::EPSILON);
+
+        assert_eq!(quantize_scroll_delta_px(&mut remainder, 0.8), 1);
+        assert!((remainder - 0.2).abs() < f32::EPSILON);
+
+        assert_eq!(quantize_scroll_delta_px(&mut remainder, -0.6), 0);
+        assert!((remainder - (-0.4)).abs() < f32::EPSILON);
+
+        assert_eq!(quantize_scroll_delta_px(&mut remainder, -0.8), -1);
+        assert!((remainder - (-0.2)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn file_list_scroll_region_wins_over_viewport_fallback() {
+        let mut state = AppState::default();
+        state.workspace_mode = WorkspaceMode::Ready;
+        state.workspace.files = (0..12)
+            .map(|index| FileListEntry {
+                path: format!("src/file_{index}.rs"),
+                status: "M".to_owned(),
+                additions: 1,
+                deletions: 0,
+                is_binary: false,
+            })
+            .collect();
+        state.workspace.selected_file_index = Some(0);
+        state.workspace.selected_file_path = Some("src/file_0.rs".to_owned());
+
+        let mut app = test_app(state);
+        app.ui_frame = app.build_frame();
+
+        let region = app
+            .ui_frame
+            .scroll_regions
+            .iter()
+            .find(|region| matches!(region.action_builder, crate::ui::element::ScrollActionBuilder::FileList))
+            .unwrap();
+        let x = region.bounds.x + 10.0;
+        let y = region.bounds.y + 10.0;
+
+        assert!(matches!(
+            app.scroll_target_at(x, y),
+            Some(ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::FileList))
+        ));
+    }
+
+    #[test]
+    fn overlay_blocks_viewport_scroll_fallback() {
+        let mut state = AppState::default();
+        state.workspace_mode = WorkspaceMode::Ready;
+        state.workspace.files = vec![FileListEntry {
+            path: "src/file_0.rs".to_owned(),
+            status: "M".to_owned(),
+            additions: 1,
+            deletions: 0,
+            is_binary: false,
+        }];
+        state.workspace.selected_file_index = Some(0);
+        state.workspace.selected_file_path = Some("src/file_0.rs".to_owned());
+        state.overlays.stack.push(OverlayEntry {
+            surface: OverlaySurface::CompareSheet,
+            focus_return: Some(FocusTarget::TitleBar),
+        });
+
+        let mut app = test_app(state);
+        app.ui_frame = app.build_frame();
+        let overlay_hit = app
+            .ui_frame
+            .hits
+            .iter()
+            .rev()
+            .find(|hit| matches!(hit.action, Action::CloseOverlay | Action::Noop))
+            .expect("overlay hit");
+        let x = overlay_hit.rect.x + overlay_hit.rect.width * 0.5;
+        let y = overlay_hit.rect.y + overlay_hit.rect.height * 0.5;
+
+        assert!(app.input_is_blocked_by_overlay(x, y));
+        assert!(app.scroll_target_at(x, y).is_none());
+    }
 }
 
 fn init_logging(log_debug: bool) {

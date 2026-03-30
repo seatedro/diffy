@@ -15,7 +15,7 @@ use crate::platform::persistence::SettingsStore;
 use crate::platform::startup::StartupOptions;
 use crate::render::Renderer;
 use crate::ui::actions::Action;
-use crate::ui::diff_viewport::runtime::DiffViewportRuntime;
+use crate::ui::editor::element::EditorElement;
 use crate::ui::shell::{CursorHint, UiFrame, build_ui_frame};
 use crate::ui::state::{AppState, FocusTarget, OverlaySurface, WorkspaceMode};
 use crate::ui::theme::Theme;
@@ -50,7 +50,7 @@ struct NativeApp {
     renderer: Option<Renderer>,
     window: Option<Arc<Window>>,
     ui_frame: UiFrame,
-    viewport_runtime: DiffViewportRuntime,
+    editor: EditorElement,
     mouse_position: Option<(f32, f32)>,
     signal_store: crate::ui::signals::SignalStore,
     launch_at: Instant,
@@ -103,7 +103,7 @@ impl NativeApp {
             window: None,
             ui_frame: UiFrame::default(),
             signal_store: crate::ui::signals::SignalStore::new(),
-            viewport_runtime: DiffViewportRuntime::default(),
+            editor: EditorElement::default(),
             mouse_position: None,
             launch_at: Instant::now(),
             dumps_dirty: true,
@@ -125,8 +125,13 @@ impl NativeApp {
     }
 
     fn sync_theme(&mut self) {
+        let dpi = self
+            .renderer
+            .as_ref()
+            .map(|r| r.scale_factor() as f32)
+            .unwrap_or(1.0);
         self.theme = Theme::for_mode(self.state.settings.theme_mode)
-            .with_ui_scale(self.state.ui_scale_factor());
+            .with_ui_scale(self.state.ui_scale_factor() * dpi);
     }
 
     fn window_attributes(&self) -> WindowAttributes {
@@ -236,7 +241,7 @@ impl NativeApp {
         build_ui_frame(
             &mut self.state,
             &self.theme,
-            &mut self.viewport_runtime,
+            &mut self.editor,
             scale_text_metrics(text_metrics, ui_scale),
             width,
             height,
@@ -344,9 +349,9 @@ impl NativeApp {
         {
             self.dispatch_action(Action::FocusViewport);
             let hovered = self
-                .viewport_runtime
-                .hit_test_row(&self.state.viewport, x, y);
-            if hovered != self.state.viewport.hovered_row {
+                .editor
+                .hit_test_row(&self.state.editor, x, y);
+            if hovered != self.state.editor.hovered_row {
                 self.dispatch_action(Action::HoverViewportRow(hovered));
             }
         }
@@ -420,10 +425,10 @@ impl NativeApp {
         let hovered_row = if self.input_is_blocked_by_overlay(x, y) {
             None
         } else {
-            self.viewport_runtime
-                .hit_test_row(&self.state.viewport, x, y)
+            self.editor
+                .hit_test_row(&self.state.editor, x, y)
         };
-        if hovered_row != self.state.viewport.hovered_row {
+        if hovered_row != self.state.editor.hovered_row {
             self.dispatch_action(Action::HoverViewportRow(hovered_row));
         }
 
@@ -509,8 +514,8 @@ impl NativeApp {
             Some(OverlaySurface::GitHubAuthModal) => Some(FocusTarget::AuthPrimaryAction),
             None => match self.state.focus.current {
                 Some(FocusTarget::TitleBar) => Some(FocusTarget::FileList),
-                Some(FocusTarget::FileList) => Some(FocusTarget::DiffViewport),
-                Some(FocusTarget::DiffViewport) => Some(FocusTarget::ThemeToggle),
+                Some(FocusTarget::FileList) => Some(FocusTarget::Editor),
+                Some(FocusTarget::Editor) => Some(FocusTarget::ThemeToggle),
                 Some(FocusTarget::ThemeToggle) => Some(FocusTarget::TitleBar),
                 Some(FocusTarget::WorkspacePrimaryButton) => Some(FocusTarget::TitleBar),
                 _ => Some(if self.state.workspace_mode == WorkspaceMode::Ready {
@@ -642,7 +647,7 @@ impl NativeApp {
                 self.active_overlay_row_height_px()
             }
             ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::ViewportLines)
-            | ScrollTarget::ViewportFallback => self.viewport_runtime.scroll_line_height_px(),
+            | ScrollTarget::ViewportFallback => self.editor.scroll_line_height_px(),
         }
     }
 
@@ -770,7 +775,7 @@ impl NativeApp {
             Key::Named(NamedKey::ArrowDown) => {
                 if self.state.overlays.top().is_some() {
                     self.dispatch_action(Action::MoveOverlaySelection(1));
-                } else if self.state.focus.current == Some(FocusTarget::DiffViewport) {
+                } else if self.state.focus.current == Some(FocusTarget::Editor) {
                     self.dispatch_action(Action::ScrollViewportLines(1));
                 } else if self.state.workspace_mode == WorkspaceMode::Ready {
                     self.dispatch_action(Action::SelectNextFile);
@@ -779,21 +784,21 @@ impl NativeApp {
             Key::Named(NamedKey::ArrowUp) => {
                 if self.state.overlays.top().is_some() {
                     self.dispatch_action(Action::MoveOverlaySelection(-1));
-                } else if self.state.focus.current == Some(FocusTarget::DiffViewport) {
+                } else if self.state.focus.current == Some(FocusTarget::Editor) {
                     self.dispatch_action(Action::ScrollViewportLines(-1));
                 } else if self.state.workspace_mode == WorkspaceMode::Ready {
                     self.dispatch_action(Action::SelectPreviousFile);
                 }
             }
             Key::Named(NamedKey::PageDown) if self.state.workspace_mode == WorkspaceMode::Ready => {
-                if self.state.focus.current == Some(FocusTarget::DiffViewport) {
+                if self.state.focus.current == Some(FocusTarget::Editor) {
                     self.dispatch_action(Action::ScrollViewportPages(1));
                 } else {
                     self.dispatch_action(Action::ScrollFileList(10));
                 }
             }
             Key::Named(NamedKey::PageUp) if self.state.workspace_mode == WorkspaceMode::Ready => {
-                if self.state.focus.current == Some(FocusTarget::DiffViewport) {
+                if self.state.focus.current == Some(FocusTarget::Editor) {
                     self.dispatch_action(Action::ScrollViewportPages(-1));
                 } else {
                     self.dispatch_action(Action::ScrollFileList(-10));
@@ -804,7 +809,7 @@ impl NativeApp {
             }
             Key::Named(NamedKey::End) if self.state.workspace_mode == WorkspaceMode::Ready => {
                 self.dispatch_action(Action::ScrollViewportTo(
-                    self.state.viewport.max_scroll_top_px(),
+                    self.state.editor.max_scroll_top_px(),
                 ));
             }
             Key::Named(NamedKey::Backspace) => self.dispatch_action(Action::Backspace),
@@ -849,6 +854,7 @@ impl ApplicationHandler for NativeApp {
                         return;
                     }
                 }
+                self.sync_theme();
                 self.refresh_window_title();
                 self.write_dumps_if_needed();
             }

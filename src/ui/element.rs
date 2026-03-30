@@ -3054,7 +3054,7 @@ mod tests {
         .with_focus(Some(crate::ui::state::FocusTarget::FileList));
 
         assert!(cx.is_focused(crate::ui::state::FocusTarget::FileList));
-        assert!(!cx.is_focused(crate::ui::state::FocusTarget::DiffViewport));
+        assert!(!cx.is_focused(crate::ui::state::FocusTarget::Editor));
     }
 
     #[test]

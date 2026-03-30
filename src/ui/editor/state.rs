@@ -1,7 +1,7 @@
 use crate::core::compare::LayoutMode;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiffViewportState {
+pub struct EditorState {
     pub layout: LayoutMode,
     pub wrap_enabled: bool,
     pub wrap_column: u32,
@@ -15,7 +15,7 @@ pub struct DiffViewportState {
     pub focused: bool,
 }
 
-impl Default for DiffViewportState {
+impl Default for EditorState {
     fn default() -> Self {
         Self {
             layout: LayoutMode::Unified,
@@ -33,7 +33,7 @@ impl Default for DiffViewportState {
     }
 }
 
-impl DiffViewportState {
+impl EditorState {
     pub fn clear_document(&mut self) {
         self.scroll_top_px = 0;
         self.content_height_px = 0;

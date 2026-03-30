@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::ui::diff_viewport::render_doc::DisplayRow;
+use super::render_doc::DisplayRow;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StripLayout {
@@ -75,7 +75,7 @@ pub fn visible_strip_range(
 #[cfg(test)]
 mod tests {
     use super::{StripLayout, build_strip_layouts, visible_strip_range};
-    use crate::ui::diff_viewport::render_doc::DisplayRow;
+    use crate::ui::editor::render_doc::DisplayRow;
 
     #[test]
     fn strip_layouts_break_on_row_boundaries_instead_of_fixed_pixels() {

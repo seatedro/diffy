@@ -1,4 +1,4 @@
-use crate::ui::diff_viewport::render_doc::{DisplayRow, INVALID_U32, RenderDoc, RenderRowKind};
+use super::render_doc::{DisplayRow, INVALID_U32, RenderDoc, RenderRowKind};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DisplayLayoutConfig {
@@ -176,7 +176,7 @@ mod tests {
         DisplayLayoutConfig, DisplayLayoutMetrics, compute_gutter_digits, effective_wrap_cols,
         rebuild_display_rows, wrap_count,
     };
-    use crate::ui::diff_viewport::render_doc::{
+    use crate::ui::editor::render_doc::{
         ByteRange, INVALID_U32, RenderDoc, RenderLine, RenderRowKind,
     };
 

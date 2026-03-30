@@ -123,7 +123,7 @@ pub struct ThemeMetrics {
 
 impl ThemeMetrics {
     pub fn scaled(self, scale: f32) -> Self {
-        let scale = scale.clamp(0.7, 1.8);
+        let scale = scale.clamp(0.5, 4.0);
         Self {
             title_bar_height: self.title_bar_height * scale,
             status_bar_height: self.status_bar_height * scale,

@@ -13,8 +13,8 @@ use crate::core::vcs::github::{DeviceFlowState, PullRequestInfo};
 use crate::platform::persistence::{PersistedCompare, Settings};
 use crate::platform::startup::StartupOptions;
 use crate::ui::actions::Action;
-use crate::ui::diff_viewport::render_doc::{RenderDoc, build_render_doc};
-use crate::ui::diff_viewport::state::DiffViewportState;
+use crate::ui::editor::render_doc::{RenderDoc, build_render_doc};
+use crate::ui::editor::state::EditorState;
 use crate::ui::effects::{CompareRequest, Effect};
 use crate::ui::events::{AppEvent, CompareFinished, RepositoryLoaded};
 use crate::ui::theme::ThemeMode;
@@ -59,7 +59,7 @@ pub enum FocusTarget {
     TitleBar,
     ThemeToggle,
     FileList,
-    DiffViewport,
+    Editor,
     CompareRepoButton,
     CompareLeftRef,
     CompareRightRef,
@@ -486,7 +486,7 @@ pub struct AppState {
     pub overlays: OverlayStackState,
     pub focus: FocusState,
     pub text_edit: TextEditState,
-    pub viewport: DiffViewportState,
+    pub editor: EditorState,
     pub github: GitHubState,
     pub settings: Settings,
     pub startup: StartupState,
@@ -509,7 +509,7 @@ impl Default for AppState {
             overlays: OverlayStackState::default(),
             focus: FocusState::default(),
             text_edit: TextEditState::default(),
-            viewport: DiffViewportState::default(),
+            editor: EditorState::default(),
             github: GitHubState::default(),
             settings: Settings::default(),
             startup: StartupState::default(),
@@ -588,11 +588,11 @@ impl AppState {
                 },
             },
             text_edit: TextEditState::default(),
-            viewport: DiffViewportState {
+            editor: EditorState {
                 layout,
                 wrap_enabled: settings.viewport.wrap_enabled,
                 wrap_column: settings.viewport.wrap_column,
-                ..DiffViewportState::default()
+                ..EditorState::default()
             },
             github: GitHubState {
                 client_id: startup.github_client_id.clone(),
@@ -692,7 +692,7 @@ impl AppState {
             }
             Action::SetLayoutMode(layout) => {
                 self.compare.layout = layout;
-                self.viewport.layout = layout;
+                self.editor.layout = layout;
                 self.rebuild_command_palette();
                 self.persist_settings_effect()
             }
@@ -837,16 +837,16 @@ impl AppState {
                 Vec::new()
             }
             Action::ScrollViewportTo(scroll_top_px) => {
-                self.viewport.scroll_top_px = scroll_top_px;
-                self.viewport.clamp_scroll();
+                self.editor.scroll_top_px = scroll_top_px;
+                self.editor.clamp_scroll();
                 Vec::new()
             }
             Action::HoverViewportRow(row) => {
-                self.viewport.hovered_row = row;
+                self.editor.hovered_row = row;
                 Vec::new()
             }
             Action::FocusViewport => {
-                self.set_focus(Some(FocusTarget::DiffViewport));
+                self.set_focus(Some(FocusTarget::Editor));
                 Vec::new()
             }
             Action::HoverFile(index) => {
@@ -901,11 +901,11 @@ impl AppState {
                 Vec::new()
             }
             Action::ToggleWrap => {
-                self.viewport.wrap_enabled = !self.viewport.wrap_enabled;
+                self.editor.wrap_enabled = !self.editor.wrap_enabled;
                 self.persist_settings_effect()
             }
             Action::SetWrapColumn(column) => {
-                self.viewport.wrap_column = column;
+                self.editor.wrap_column = column;
                 self.persist_settings_effect()
             }
             Action::SetSidebarWidthPx(width) => {
@@ -1084,8 +1084,8 @@ impl AppState {
         self.repository.status = AsyncStatus::Loading;
         self.workspace.clear_compare();
         self.file_list = FileListState::default();
-        self.viewport.clear_document();
-        self.viewport.focused = false;
+        self.editor.clear_document();
+        self.editor.focused = false;
         self.last_error = None;
         self.github.pull_request.info = None;
         self.github.pull_request.candidate_left_ref = None;
@@ -1149,7 +1149,7 @@ impl AppState {
         self.workspace.sidebar_auto_width = None;
         self.file_list.scroll_offset_px = 0.0;
         self.set_focus(Some(FocusTarget::FileList));
-        self.viewport.clear_document();
+        self.editor.clear_document();
         self.overlays.clear();
 
         let preferred_index = self
@@ -1178,7 +1178,7 @@ impl AppState {
             self.workspace.selected_file_index = None;
             self.workspace.selected_file_path = None;
             self.workspace.active_file = None;
-            self.viewport.clear_document();
+            self.editor.clear_document();
         }
 
         if self.workspace.used_fallback && !self.workspace.fallback_message.is_empty() {
@@ -1245,8 +1245,8 @@ impl AppState {
             .settings
             .sidebar_width_px
             .map(|width| self.clamp_sidebar_width_px(width));
-        self.settings.viewport.wrap_enabled = self.viewport.wrap_enabled;
-        self.settings.viewport.wrap_column = self.viewport.wrap_column;
+        self.settings.viewport.wrap_enabled = self.editor.wrap_enabled;
+        self.settings.viewport.wrap_column = self.editor.wrap_column;
         self.settings.viewport.layout = self.compare.layout;
         self.settings.theme_name = match self.settings.theme_mode {
             ThemeMode::Dark => "diffy-zed-dark".to_owned(),
@@ -1300,7 +1300,7 @@ impl AppState {
             };
         }
         self.focus.current = target;
-        self.viewport.focused = target == Some(FocusTarget::DiffViewport);
+        self.editor.focused = target == Some(FocusTarget::Editor);
     }
 
     /// Returns a reference to the text string for the given focus target, if it's a text field.
@@ -1888,7 +1888,7 @@ impl AppState {
                     Vec::new()
                 }
                 PaletteCommand::FocusViewport => {
-                    self.set_focus(Some(FocusTarget::DiffViewport));
+                    self.set_focus(Some(FocusTarget::Editor));
                     Vec::new()
                 }
                 PaletteCommand::ToggleWrap => self.apply_action(Action::ToggleWrap),
@@ -2231,7 +2231,7 @@ impl AppState {
             file: file.clone(),
             render_doc: build_render_doc(&file, index, &output.text_buffer, &output.token_buffer),
         });
-        self.viewport.clear_document();
+        self.editor.clear_document();
         self.file_list.hovered_index = Some(index);
         if reveal {
             let row_top = index as f32 * self.file_list.row_stride();
@@ -2271,22 +2271,22 @@ impl AppState {
     }
 
     fn scroll_viewport_px(&mut self, delta_px: i32) {
-        self.viewport.scroll_top_px = apply_scroll_delta_px(
-            self.viewport.scroll_top_px,
+        self.editor.scroll_top_px = apply_scroll_delta_px(
+            self.editor.scroll_top_px,
             delta_px,
-            self.viewport.max_scroll_top_px(),
+            self.editor.max_scroll_top_px(),
         );
     }
 
     fn scroll_viewport_pages(&mut self, delta_pages: i32) {
-        let page_px = ((self.viewport.viewport_height_px as f32) * 0.85)
+        let page_px = ((self.editor.viewport_height_px as f32) * 0.85)
             .round()
             .max(1.0) as i32;
         let delta_px = delta_pages.saturating_mul(page_px);
-        self.viewport.scroll_top_px = apply_scroll_delta_px(
-            self.viewport.scroll_top_px,
+        self.editor.scroll_top_px = apply_scroll_delta_px(
+            self.editor.scroll_top_px,
             delta_px,
-            self.viewport.max_scroll_top_px(),
+            self.editor.max_scroll_top_px(),
         );
     }
 
@@ -2617,17 +2617,17 @@ mod tests {
         state.apply_action(Action::ScrollFileListPx(-500));
         assert_eq!(state.file_list.scroll_offset_px, 0.0);
 
-        state.viewport.content_height_px = 600;
-        state.viewport.viewport_height_px = 200;
+        state.editor.content_height_px = 600;
+        state.editor.viewport_height_px = 200;
 
         state.apply_action(Action::ScrollViewportPx(75));
-        assert_eq!(state.viewport.scroll_top_px, 75);
+        assert_eq!(state.editor.scroll_top_px, 75);
 
         state.apply_action(Action::ScrollViewportPx(500));
-        assert_eq!(state.viewport.scroll_top_px, 400);
+        assert_eq!(state.editor.scroll_top_px, 400);
 
         state.apply_action(Action::ScrollViewportPx(-500));
-        assert_eq!(state.viewport.scroll_top_px, 0);
+        assert_eq!(state.editor.scroll_top_px, 0);
     }
 
     #[test]

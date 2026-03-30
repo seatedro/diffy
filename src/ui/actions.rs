@@ -82,6 +82,7 @@ pub enum Action {
     IncreaseUiScale,
     DecreaseUiScale,
     ToggleThemeMode,
-    /// No-op action — used to consume clicks without side effects (e.g. modal panel).
+    ToggleFolder(String),
+    ToggleFileViewed(usize),
     Noop,
 }

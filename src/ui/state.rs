@@ -921,6 +921,8 @@ impl AppState {
                 };
                 self.persist_settings_effect()
             }
+            Action::ToggleFolder(_) => Vec::new(),
+            Action::ToggleFileViewed(_) => Vec::new(),
             Action::Noop => Vec::new(),
         }
     }

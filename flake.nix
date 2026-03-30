@@ -1,5 +1,5 @@
 {
-  description = "Diffy - Rust + Qt diff viewer";
+  description = "Diffy - Rust native diff viewer";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -23,7 +23,7 @@
       packages = forAllSystems (system:
         let
           pkgs = pkgsFor system;
-          qt = pkgs.qt6;
+          isLinux = pkgs.stdenv.isLinux;
         in
         {
           default = pkgs.rustPlatform.buildRustPackage {
@@ -32,39 +32,22 @@
             src = self;
             cargoLock = {
               lockFile = ./Cargo.lock;
-              outputHashes = {
-                "qmetaobject-0.2.10" = "sha256-nFg/FrbBRSTaWZRBXevoJ02OfFCKdiEE1qAytGG0V5A=";
-                "qttypes-0.2.12" = "sha256-nFg/FrbBRSTaWZRBXevoJ02OfFCKdiEE1qAytGG0V5A=";
-              };
             };
 
             nativeBuildInputs = [
               pkgs.pkg-config
               pkgs.git
-              qt.wrapQtAppsHook
-              qt.qtbase
             ];
 
-            buildInputs = [
-              qt.qtdeclarative
-              qt.qtsvg
+            buildInputs = pkgs.lib.optionals isLinux [
+              pkgs.libxkbcommon
+              pkgs.wayland
+              pkgs.libGL
+              pkgs.xorg.libX11
+              pkgs.xorg.libXi
+              pkgs.xorg.libXcursor
+              pkgs.xorg.libXrandr
             ];
-
-            preBuild = ''
-              export PATH="${qt.qtbase}/bin:$PATH"
-              export QMAKE="${pkgs.lib.getExe' qt.qtbase "qmake"}"
-              qt_declarative_prefix="${qt.qtdeclarative}"
-              qt_svg_prefix="${qt.qtsvg}"
-              qt_declarative_include="$qt_declarative_prefix/include"
-              qt_declarative_lib="$qt_declarative_prefix/lib"
-              export QT_ADDITIONAL_PACKAGES_PREFIX_PATH="$qt_declarative_prefix:$qt_svg_prefix''${QT_ADDITIONAL_PACKAGES_PREFIX_PATH:+:''${QT_ADDITIONAL_PACKAGES_PREFIX_PATH}}"
-              export CXXFLAGS="-F$qt_declarative_lib -I$qt_declarative_include''${CXXFLAGS:+ ''${CXXFLAGS}}"
-              export RUSTFLAGS="-L framework=$qt_declarative_lib''${RUSTFLAGS:+ ''${RUSTFLAGS}}"
-            '';
-
-            postInstall = ''
-              cp -r qml "$out/qml"
-            '';
           };
         });
 
@@ -72,7 +55,6 @@
         let
           pkgs = pkgsFor system;
           isLinux = pkgs.stdenv.isLinux;
-          qt = pkgs.qt6;
         in
         {
           default = pkgs.mkShell {
@@ -98,16 +80,6 @@
             ];
 
             shellHook = ''
-              qt_declarative_prefix="${qt.qtdeclarative}"
-              qt_svg_prefix="${qt.qtsvg}"
-              qt_declarative_include="$qt_declarative_prefix/include"
-              qt_declarative_lib="$qt_declarative_prefix/lib"
-
-              export DIFFY_REPO_ROOT="$PWD"
-              export QMAKE="${pkgs.lib.getExe' qt.qtbase "qmake"}"
-              export QT_ADDITIONAL_PACKAGES_PREFIX_PATH="$qt_declarative_prefix:$qt_svg_prefix''${QT_ADDITIONAL_PACKAGES_PREFIX_PATH:+:''${QT_ADDITIONAL_PACKAGES_PREFIX_PATH}}"
-              export CXXFLAGS="-F$qt_declarative_lib -I$qt_declarative_include''${CXXFLAGS:+ ''${CXXFLAGS}}"
-              export RUSTFLAGS="-L framework=$qt_declarative_lib''${RUSTFLAGS:+ ''${RUSTFLAGS}}"
               echo "Diffy dev shell ready"
               echo "Build: cargo build"
               echo "Test: cargo test"

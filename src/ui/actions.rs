@@ -1,0 +1,84 @@
+use std::path::PathBuf;
+
+use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
+use crate::ui::state::{CompareField, FocusTarget};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
+    Bootstrap,
+    OpenRepositoryDialog,
+    OpenRepository(PathBuf),
+    OpenCompareSheet,
+    OpenRepoPicker,
+    OpenRefPicker(CompareField),
+    OpenCommandPalette,
+    OpenPullRequestModal,
+    OpenGitHubAuthModal,
+    CloseOverlay,
+    SetLeftRef(String),
+    SetRightRef(String),
+    SetCompareMode(CompareMode),
+    SetLayoutMode(LayoutMode),
+    SetRenderer(RendererKind),
+    SetFocus(Option<FocusTarget>),
+    InsertText(String),
+    Backspace,
+    DeleteForward,
+    // Cursor movement
+    CursorLeft,
+    CursorRight,
+    CursorWordLeft,
+    CursorWordRight,
+    CursorHome,
+    CursorEnd,
+    // Selection
+    SelectLeft,
+    SelectRight,
+    SelectWordLeft,
+    SelectWordRight,
+    SelectHome,
+    SelectEnd,
+    SelectAll,
+    // Clipboard
+    Copy,
+    Cut,
+    Paste(String),
+    /// Set cursor and anchor to a specific byte offset (from click-to-position).
+    SetTextCursor(usize),
+    /// Set cursor to a specific byte offset while keeping anchor (drag selection).
+    ExtendTextSelection(usize),
+    MoveOverlaySelection(i32),
+    ConfirmOverlaySelection,
+    SelectOverlayEntry(usize),
+    StartCompare,
+    SelectFile(usize),
+    SelectFilePath(String),
+    SelectNextFile,
+    SelectPreviousFile,
+    ScrollFileList(i32),
+    /// Scroll the file list by a pixel delta.
+    ScrollFileListPx(i32),
+    /// Set file list scroll to an absolute pixel position.
+    ScrollFileListToPx(u32),
+    /// Scroll the active overlay list (picker / command palette) by a pixel delta.
+    ScrollActiveOverlayListPx(i32),
+    ScrollViewportLines(i32),
+    /// Scroll the viewport by a pixel delta.
+    ScrollViewportPx(i32),
+    ScrollViewportPages(i32),
+    ScrollViewportTo(u32),
+    HoverViewportRow(Option<usize>),
+    FocusViewport,
+    HoverFile(Option<usize>),
+    SubmitPullRequest,
+    UsePullRequestCompare,
+    StartGitHubDeviceFlow,
+    OpenDeviceFlowBrowser,
+    DismissToast(usize),
+    HoverToast(Option<usize>),
+    ToggleWrap,
+    SetWrapColumn(u32),
+    ToggleThemeMode,
+    /// No-op action — used to consume clicks without side effects (e.g. modal panel).
+    Noop,
+}

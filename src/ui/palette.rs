@@ -86,8 +86,7 @@ pub fn dark_scale(hue: f32, peak_chroma: f32) -> Scale {
 
     // Chroma curve: low for backgrounds, peaks at step 9, moderate for text.
     const C_FACTOR: [f32; 12] = [
-        0.25, 0.30, 0.35, 0.38, 0.40, 0.42, 0.45, 0.50,
-        1.00, // peak
+        0.25, 0.30, 0.35, 0.38, 0.40, 0.42, 0.45, 0.50, 1.00, // peak
         0.55, 0.30, 0.12,
     ];
 
@@ -117,9 +116,7 @@ pub fn light_scale(hue: f32, peak_chroma: f32) -> Scale {
     ];
 
     const C_FACTOR: [f32; 12] = [
-        0.10, 0.12, 0.15, 0.18, 0.22, 0.28, 0.35, 0.45,
-        1.00,
-        0.60, 0.40, 0.20,
+        0.10, 0.12, 0.15, 0.18, 0.22, 0.28, 0.35, 0.45, 1.00, 0.60, 0.40, 0.20,
     ];
 
     let mut scale = [Color::default(); 12];
@@ -132,9 +129,7 @@ pub fn light_scale(hue: f32, peak_chroma: f32) -> Scale {
 /// Generate an alpha scale from a base color, with alpha ranging from subtle
 /// to opaque across 12 steps.
 pub fn alpha_scale(base: Color) -> AlphaScale {
-    const ALPHA: [u8; 12] = [
-        5, 10, 15, 22, 30, 40, 55, 75, 100, 140, 190, 240,
-    ];
+    const ALPHA: [u8; 12] = [5, 10, 15, 22, 30, 40, 55, 75, 100, 140, 190, 240];
     let mut scale = [Color::default(); 12];
     for i in 0..12 {
         scale[i] = Color::rgba(base.r, base.g, base.b, ALPHA[i]);

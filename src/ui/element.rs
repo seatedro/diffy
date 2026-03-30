@@ -7,8 +7,8 @@
 //! 2. **prepaint** — register hitboxes, resolve interaction state.
 //! 3. **paint** — emit scene primitives using resolved hover/hit state.
 
-use crate::render::scene::{BlurRegionPrimitive, EffectQuadPrimitive, EffectType, Rect};
 use crate::render::Scene;
+use crate::render::scene::{BlurRegionPrimitive, EffectQuadPrimitive, EffectType, Rect};
 use crate::ui::actions::Action;
 use crate::ui::shell::CursorHint;
 use crate::ui::signals::{Signal, SignalStore};
@@ -123,6 +123,7 @@ pub struct ElementContext<'a> {
     hovered_hitboxes: Vec<HitboxId>,
     next_hitbox_id: usize,
     z_index_stack: Vec<i32>,
+    element_offset_stack: Vec<(f32, f32)>,
 }
 
 impl<'a> ElementContext<'a> {
@@ -150,6 +151,7 @@ impl<'a> ElementContext<'a> {
             hovered_hitboxes: Vec::new(),
             next_hitbox_id: 0,
             z_index_stack: vec![0],
+            element_offset_stack: vec![(0.0, 0.0)],
         }
     }
 
@@ -207,6 +209,22 @@ impl<'a> ElementContext<'a> {
         }
     }
 
+    pub fn current_element_offset(&self) -> (f32, f32) {
+        *self.element_offset_stack.last().unwrap_or(&(0.0, 0.0))
+    }
+
+    pub fn push_element_offset(&mut self, offset_x: f32, offset_y: f32) {
+        let (base_x, base_y) = self.current_element_offset();
+        self.element_offset_stack
+            .push((base_x + offset_x, base_y + offset_y));
+    }
+
+    pub fn pop_element_offset(&mut self) {
+        if self.element_offset_stack.len() > 1 {
+            self.element_offset_stack.pop();
+        }
+    }
+
     /// Register a hitbox during prepaint. Returns an ID for later hover queries.
     pub fn insert_hitbox(&mut self, bounds: Bounds, behavior: HitboxBehavior) -> HitboxId {
         let id = HitboxId(self.next_hitbox_id);
@@ -252,9 +270,9 @@ impl<'a> ElementContext<'a> {
         let mut blocked_regions: Vec<Bounds> = Vec::new();
 
         for &(id, bounds, behavior, _z) in &candidates {
-            let is_blocked = blocked_regions.iter().any(|blocker| {
-                blocker.intersection(bounds).is_some()
-            });
+            let is_blocked = blocked_regions
+                .iter()
+                .any(|blocker| blocker.intersection(bounds).is_some());
 
             if !is_blocked {
                 self.hovered_hitboxes.push(id);
@@ -335,11 +353,7 @@ impl AnyElement {
         self.inner.request_layout(engine, cx)
     }
 
-    pub fn prepaint(
-        &mut self,
-        engine: &LayoutEngine,
-        cx: &mut ElementContext,
-    ) {
+    pub fn prepaint(&mut self, engine: &LayoutEngine, cx: &mut ElementContext) {
         self.inner.prepaint(engine, cx, 0.0, 0.0);
     }
 
@@ -353,12 +367,7 @@ impl AnyElement {
         self.inner.prepaint(engine, cx, offset_x, offset_y);
     }
 
-    pub fn paint(
-        &mut self,
-        engine: &LayoutEngine,
-        scene: &mut Scene,
-        cx: &mut ElementContext,
-    ) {
+    pub fn paint(&mut self, engine: &LayoutEngine, scene: &mut Scene, cx: &mut ElementContext) {
         self.inner.paint(engine, scene, cx, 0.0, 0.0);
     }
 
@@ -415,13 +424,23 @@ impl<E: Element> AnyElementImpl for ElementHolder<E> {
         offset_x: f32,
         offset_y: f32,
     ) {
-        let id = self.layout_id.expect("prepaint called before request_layout");
+        let id = self
+            .layout_id
+            .expect("prepaint called before request_layout");
         let mut bounds = engine.layout_bounds(id);
-        bounds.x += offset_x;
-        bounds.y += offset_y;
-        let layout_state = self.layout_state.as_mut().expect("prepaint called before request_layout");
+        let (base_offset_x, base_offset_y) = cx.current_element_offset();
+        let total_offset_x = base_offset_x + offset_x;
+        let total_offset_y = base_offset_y + offset_y;
+        bounds.x += total_offset_x;
+        bounds.y += total_offset_y;
+        let layout_state = self
+            .layout_state
+            .as_mut()
+            .expect("prepaint called before request_layout");
+        cx.push_element_offset(offset_x, offset_y);
         let prepaint_state = self.element.prepaint(bounds, layout_state, engine, cx);
         self.prepaint_state = Some(prepaint_state);
+        cx.pop_element_offset();
     }
 
     fn paint(
@@ -434,11 +453,23 @@ impl<E: Element> AnyElementImpl for ElementHolder<E> {
     ) {
         let id = self.layout_id.expect("paint called before request_layout");
         let mut bounds = engine.layout_bounds(id);
-        bounds.x += offset_x;
-        bounds.y += offset_y;
-        let layout_state = self.layout_state.as_mut().expect("paint called before request_layout");
-        let prepaint_state = self.prepaint_state.as_mut().expect("paint called before prepaint");
-        self.element.paint(bounds, layout_state, prepaint_state, engine, scene, cx);
+        let (base_offset_x, base_offset_y) = cx.current_element_offset();
+        let total_offset_x = base_offset_x + offset_x;
+        let total_offset_y = base_offset_y + offset_y;
+        bounds.x += total_offset_x;
+        bounds.y += total_offset_y;
+        let layout_state = self
+            .layout_state
+            .as_mut()
+            .expect("paint called before request_layout");
+        let prepaint_state = self
+            .prepaint_state
+            .as_mut()
+            .expect("paint called before prepaint");
+        cx.push_element_offset(offset_x, offset_y);
+        self.element
+            .paint(bounds, layout_state, prepaint_state, engine, scene, cx);
+        cx.pop_element_offset();
     }
 }
 
@@ -481,7 +512,10 @@ impl<C: RenderOnce> Element for ComponentElement<C> {
         engine: &mut LayoutEngine,
         cx: &mut ElementContext,
     ) -> (LayoutId, ()) {
-        let component = self.component.take().expect("ComponentElement rendered twice");
+        let component = self
+            .component
+            .take()
+            .expect("ComponentElement rendered twice");
         let mut any = component.render(cx);
         let id = any.request_layout(engine, cx);
         self.rendered = Some(any);
@@ -536,10 +570,7 @@ fn element_into_any<E: Element>(element: E) -> AnyElement {
 // ---------------------------------------------------------------------------
 
 type MeasureFn = Box<
-    dyn Fn(
-        taffy::Size<Option<f32>>,
-        taffy::Size<taffy::AvailableSpace>,
-    ) -> taffy::Size<f32>
+    dyn Fn(taffy::Size<Option<f32>>, taffy::Size<taffy::AvailableSpace>) -> taffy::Size<f32>
         + Send
         + Sync,
 >;
@@ -567,11 +598,7 @@ impl LayoutEngine {
     }
 
     /// Create a layout node with the given style and children.
-    pub fn request_layout(
-        &mut self,
-        style: taffy::Style,
-        children: &[LayoutId],
-    ) -> LayoutId {
+    pub fn request_layout(&mut self, style: taffy::Style, children: &[LayoutId]) -> LayoutId {
         if children.is_empty() {
             self.tree
                 .new_leaf_with_context(style, NodeMeasure::None)
@@ -587,10 +614,13 @@ impl LayoutEngine {
     pub fn request_measured_layout(
         &mut self,
         style: taffy::Style,
-        measure: impl Fn(taffy::Size<Option<f32>>, taffy::Size<taffy::AvailableSpace>) -> taffy::Size<f32>
-            + Send
-            + Sync
-            + 'static,
+        measure: impl Fn(
+            taffy::Size<Option<f32>>,
+            taffy::Size<taffy::AvailableSpace>,
+        ) -> taffy::Size<f32>
+        + Send
+        + Sync
+        + 'static,
     ) -> LayoutId {
         self.tree
             .new_leaf_with_context(style, NodeMeasure::Measure(Box::new(measure)))
@@ -674,9 +704,7 @@ pub fn render_element(
 // Div — the fundamental container element
 // ---------------------------------------------------------------------------
 
-use crate::render::{
-    BorderPrimitive, FontWeight, RoundedRectPrimitive, ShadowPrimitive,
-};
+use crate::render::{BorderPrimitive, FontWeight, RoundedRectPrimitive, ShadowPrimitive};
 use crate::ui::style::{ElementStyle, StyleOverride, Styled, apply_override};
 use crate::ui::theme::Color;
 
@@ -702,10 +730,7 @@ pub enum BackgroundEffect {
         color_b: Color,
     },
     /// Radial gradient — `color_a` at center, `color_b` at edge.
-    RadialGradient {
-        color_a: Color,
-        color_b: Color,
-    },
+    RadialGradient { color_a: Color, color_b: Color },
     /// Animated diagonal shimmer sweep (loading skeleton).
     /// `speed` controls animation speed (try 1.0–3.0).
     Shimmer {
@@ -714,34 +739,44 @@ pub enum BackgroundEffect {
         speed: f32,
     },
     /// Edge darkening/tinting. `intensity` controls falloff (try 0.3–0.8).
-    Vignette {
-        color: Color,
-        intensity: f32,
-    },
+    Vignette { color: Color, intensity: f32 },
     /// Flat semi-transparent color overlay.
-    ColorTint {
-        color: Color,
-    },
+    ColorTint { color: Color },
 }
 
 /// Convenience: create a noise gradient background effect.
 pub fn noise_gradient(scale: f32, color_a: Color, color_b: Color) -> BackgroundEffect {
-    BackgroundEffect::NoiseGradient { scale, color_a, color_b }
+    BackgroundEffect::NoiseGradient {
+        scale,
+        color_a,
+        color_b,
+    }
 }
 
 /// Convenience: create a linear gradient background effect.
 pub fn linear_gradient(angle: f32, color_a: Color, color_b: Color) -> BackgroundEffect {
-    BackgroundEffect::LinearGradient { angle, color_a, color_b }
+    BackgroundEffect::LinearGradient {
+        angle,
+        color_a,
+        color_b,
+    }
 }
 
 /// Convenience: create a radial gradient (center → edge).
 pub fn radial_gradient(center: Color, edge: Color) -> BackgroundEffect {
-    BackgroundEffect::RadialGradient { color_a: center, color_b: edge }
+    BackgroundEffect::RadialGradient {
+        color_a: center,
+        color_b: edge,
+    }
 }
 
 /// Convenience: create an animated shimmer (loading skeleton effect).
 pub fn shimmer(base: Color, highlight: Color, speed: f32) -> BackgroundEffect {
-    BackgroundEffect::Shimmer { base, highlight, speed }
+    BackgroundEffect::Shimmer {
+        base,
+        highlight,
+        speed,
+    }
 }
 
 /// Convenience: create a vignette (edge darkening).
@@ -881,7 +916,6 @@ impl Div {
         self.focus_target = Some(target);
         self
     }
-
 
     pub fn clip(mut self) -> Self {
         self.clips = true;
@@ -1032,21 +1066,30 @@ impl Element for Div {
         // Background — effect quad takes priority over solid color.
         if let Some(effect) = self.bg_effect {
             let (effect_type, params, color_a, color_b) = match effect {
-                BackgroundEffect::NoiseGradient { scale, color_a, color_b } => {
-                    (EffectType::NoiseGradient, [scale, 0.0], color_a, color_b)
-                }
-                BackgroundEffect::LinearGradient { angle, color_a, color_b } => {
-                    (EffectType::LinearGradient, [angle, 0.0], color_a, color_b)
-                }
+                BackgroundEffect::NoiseGradient {
+                    scale,
+                    color_a,
+                    color_b,
+                } => (EffectType::NoiseGradient, [scale, 0.0], color_a, color_b),
+                BackgroundEffect::LinearGradient {
+                    angle,
+                    color_a,
+                    color_b,
+                } => (EffectType::LinearGradient, [angle, 0.0], color_a, color_b),
                 BackgroundEffect::RadialGradient { color_a, color_b } => {
                     (EffectType::RadialGradient, [0.0, 0.0], color_a, color_b)
                 }
-                BackgroundEffect::Shimmer { base, highlight, speed } => {
-                    (EffectType::Shimmer, [speed, 0.0], base, highlight)
-                }
-                BackgroundEffect::Vignette { color, intensity } => {
-                    (EffectType::Vignette, [intensity, 0.0], color, Color::TRANSPARENT)
-                }
+                BackgroundEffect::Shimmer {
+                    base,
+                    highlight,
+                    speed,
+                } => (EffectType::Shimmer, [speed, 0.0], base, highlight),
+                BackgroundEffect::Vignette { color, intensity } => (
+                    EffectType::Vignette,
+                    [intensity, 0.0],
+                    color,
+                    Color::TRANSPARENT,
+                ),
                 BackgroundEffect::ColorTint { color } => {
                     (EffectType::ColorTint, [0.0, 0.0], color, Color::TRANSPARENT)
                 }
@@ -1187,12 +1230,12 @@ impl Element for Div {
             // Cycle colors by depth using bounds position as a hash
             let hash = ((bounds.x as u32).wrapping_mul(7) ^ (bounds.y as u32).wrapping_mul(13)) % 6;
             let wire_color = match hash {
-                0 => Color::rgba(255, 80, 80, 120),   // red
-                1 => Color::rgba(80, 255, 80, 120),    // green
-                2 => Color::rgba(80, 80, 255, 120),    // blue
-                3 => Color::rgba(255, 255, 80, 120),   // yellow
-                4 => Color::rgba(255, 80, 255, 120),   // magenta
-                _ => Color::rgba(80, 255, 255, 120),   // cyan
+                0 => Color::rgba(255, 80, 80, 120),  // red
+                1 => Color::rgba(80, 255, 80, 120),  // green
+                2 => Color::rgba(80, 80, 255, 120),  // blue
+                3 => Color::rgba(255, 255, 80, 120), // yellow
+                4 => Color::rgba(255, 80, 255, 120), // magenta
+                _ => Color::rgba(80, 255, 255, 120), // cyan
             };
             scene.border(BorderPrimitive {
                 rect: bounds,
@@ -1724,12 +1767,18 @@ impl Element for TextInput {
             let sel_end = self.cursor.max(self.anchor);
             if sel_start != sel_end && sel_end <= self.value.len() {
                 let x_start = measure_text_width(
-                    cx.font_system, &self.value[..sel_start],
-                    value_size, FontKind::Ui, FontWeight::Normal,
+                    cx.font_system,
+                    &self.value[..sel_start],
+                    value_size,
+                    FontKind::Ui,
+                    FontWeight::Normal,
                 );
                 let x_end = measure_text_width(
-                    cx.font_system, &self.value[..sel_end],
-                    value_size, FontKind::Ui, FontWeight::Normal,
+                    cx.font_system,
+                    &self.value[..sel_end],
+                    value_size,
+                    FontKind::Ui,
+                    FontWeight::Normal,
                 );
                 scene.rounded_rect(RoundedRectPrimitive::uniform(
                     Rect {
@@ -1767,8 +1816,11 @@ impl Element for TextInput {
                 let cursor_x = if self.cursor > 0 && !self.value.is_empty() {
                     let offset = self.cursor.min(self.value.len());
                     measure_text_width(
-                        cx.font_system, &self.value[..offset],
-                        value_size, FontKind::Ui, FontWeight::Normal,
+                        cx.font_system,
+                        &self.value[..offset],
+                        value_size,
+                        FontKind::Ui,
+                        FontWeight::Normal,
                     )
                 } else {
                     0.0
@@ -1996,7 +2048,7 @@ impl IntoAnyElement for SvgIcon {
 /// Measure text width using glyphon's real shaping — the same engine that
 /// renders the text on the GPU.  This eliminates the mismatch between layout
 /// estimates and actual rendered glyph widths.
-fn measure_text_width(
+pub(crate) fn measure_text_width(
     font_system: &mut glyphon::FontSystem,
     text: &str,
     font_size: f32,
@@ -2107,7 +2159,10 @@ mod tests {
     use super::*;
     use crate::ui::theme::Theme;
 
-    fn test_cx<'a>(font_system: &'a mut glyphon::FontSystem, store: &'a mut SignalStore) -> ElementContext<'a> {
+    fn test_cx<'a>(
+        font_system: &'a mut glyphon::FontSystem,
+        store: &'a mut SignalStore,
+    ) -> ElementContext<'a> {
         crate::fonts::configure_font_system(font_system);
         let theme = Box::leak(Box::new(Theme::default_dark()));
         ElementContext::new(theme, 1.0, font_system, None, store)
@@ -2180,10 +2235,18 @@ mod tests {
         let inner_id = *engine.tree.children(root_id).unwrap().first().unwrap();
         let inner_bounds = engine.layout_bounds(inner_id);
 
-        assert!((inner_bounds.x - padding).abs() < 1.0,
-            "inner x={} should be near padding={}", inner_bounds.x, padding);
-        assert!((inner_bounds.y - padding).abs() < 1.0,
-            "inner y={} should be near padding={}", inner_bounds.y, padding);
+        assert!(
+            (inner_bounds.x - padding).abs() < 1.0,
+            "inner x={} should be near padding={}",
+            inner_bounds.x,
+            padding
+        );
+        assert!(
+            (inner_bounds.y - padding).abs() < 1.0,
+            "inner y={} should be near padding={}",
+            inner_bounds.y,
+            padding
+        );
         assert!((inner_bounds.width - inner_w).abs() < 1.0);
     }
 
@@ -2197,15 +2260,21 @@ mod tests {
         let mut root = div()
             .w(400.0)
             .h(50.0)
-            .child(text("Hello world").size(14.0).color(Color::rgba(255, 255, 255, 255)))
+            .child(
+                text("Hello world")
+                    .size(14.0)
+                    .color(Color::rgba(255, 255, 255, 255)),
+            )
             .into_any();
 
         render_element(&mut root, &mut scene, &mut cx, 400.0, 50.0);
 
         // Should have exactly one text primitive.
-        let text_count = scene.primitives.iter().filter(|p| {
-            matches!(p, crate::render::Primitive::TextRun(_))
-        }).count();
+        let text_count = scene
+            .primitives
+            .iter()
+            .filter(|p| matches!(p, crate::render::Primitive::TextRun(_)))
+            .count();
         assert_eq!(text_count, 1);
     }
 
@@ -2216,17 +2285,15 @@ mod tests {
         let mut cx = test_cx(&mut font_system, &mut store);
         let mut scene = Scene::default();
 
-        let mut root = div()
-            .w(300.0)
-            .h(40.0)
-            .child("bare string child")
-            .into_any();
+        let mut root = div().w(300.0).h(40.0).child("bare string child").into_any();
 
         render_element(&mut root, &mut scene, &mut cx, 300.0, 40.0);
 
-        let text_count = scene.primitives.iter().filter(|p| {
-            matches!(p, crate::render::Primitive::TextRun(_))
-        }).count();
+        let text_count = scene
+            .primitives
+            .iter()
+            .filter(|p| matches!(p, crate::render::Primitive::TextRun(_)))
+            .count();
         assert_eq!(text_count, 1);
     }
 
@@ -2243,11 +2310,17 @@ mod tests {
 
         let bounds = engine.layout_bounds(id);
         // 5 chars * 10.0 * 0.55 = 27.5
-        assert!(bounds.width > 20.0 && bounds.width < 40.0,
-            "text width {} should be roughly 27.5", bounds.width);
+        assert!(
+            bounds.width > 20.0 && bounds.width < 40.0,
+            "text width {} should be roughly 27.5",
+            bounds.width
+        );
         // line height = 10.0 * 1.5 = 15.0
-        assert!((bounds.height - 15.0).abs() < 1.0,
-            "text height {} should be ~15.0", bounds.height);
+        assert!(
+            (bounds.height - 15.0).abs() < 1.0,
+            "text height {} should be ~15.0",
+            bounds.height
+        );
     }
 
     #[test]
@@ -2293,9 +2366,10 @@ mod tests {
         render_element(&mut root, &mut scene, &mut cx, 200.0, 50.0);
 
         // Should have painted blue (hover) not red (default)
-        let bg_prim = scene.primitives.iter().find(|p| {
-            matches!(p, crate::render::Primitive::RoundedRect(_))
-        });
+        let bg_prim = scene
+            .primitives
+            .iter()
+            .find(|p| matches!(p, crate::render::Primitive::RoundedRect(_)));
         assert!(bg_prim.is_some());
         if let crate::render::Primitive::RoundedRect(rr) = bg_prim.unwrap() {
             assert_eq!(rr.color, blue, "hover bg should be blue");
@@ -2343,12 +2417,12 @@ mod tests {
             .h(52.0)
             .px(20.0)
             .bg(theme.colors.title_bar_background)
-            .child(
-                text("diffy").text_lg().color(theme.colors.text_strong)
-            )
+            .child(text("diffy").text_lg().color(theme.colors.text_strong))
             .child(spacer())
             .child(
-                div().flex_row().gap(8.0)
+                div()
+                    .flex_row()
+                    .gap(8.0)
                     .child(
                         div()
                             .px(14.0)
@@ -2357,7 +2431,7 @@ mod tests {
                             .bg(theme.colors.element_background)
                             .hover_bg(theme.colors.element_hover)
                             .on_click(Action::OpenCompareSheet)
-                            .child(text("Compare").text_sm().color(theme.colors.text))
+                            .child(text("Compare").text_sm().color(theme.colors.text)),
                     )
                     .child(
                         div()
@@ -2366,22 +2440,30 @@ mod tests {
                             .rounded(7.0)
                             .hover_bg(theme.colors.ghost_element_hover)
                             .on_click(Action::OpenPullRequestModal)
-                            .child(text("PR").text_sm().color(theme.colors.text_muted))
-                    )
+                            .child(text("PR").text_sm().color(theme.colors.text_muted)),
+                    ),
             )
             .into_any();
 
         render_element(&mut root, &mut scene, &mut cx, 1200.0, 52.0);
 
         // Should have: title bar bg + "Compare" button bg + 3 text primitives
-        let rect_count = scene.primitives.iter().filter(|p| {
-            matches!(p, crate::render::Primitive::RoundedRect(_))
-        }).count();
-        assert!(rect_count >= 2, "should have title bar bg + button bg, got {}", rect_count);
+        let rect_count = scene
+            .primitives
+            .iter()
+            .filter(|p| matches!(p, crate::render::Primitive::RoundedRect(_)))
+            .count();
+        assert!(
+            rect_count >= 2,
+            "should have title bar bg + button bg, got {}",
+            rect_count
+        );
 
-        let text_count = scene.primitives.iter().filter(|p| {
-            matches!(p, crate::render::Primitive::TextRun(_))
-        }).count();
+        let text_count = scene
+            .primitives
+            .iter()
+            .filter(|p| matches!(p, crate::render::Primitive::TextRun(_)))
+            .count();
         assert_eq!(text_count, 3, "should have 3 text labels");
 
         // Should have 2 hit regions (Compare + PR buttons)
@@ -2492,7 +2574,10 @@ mod tests {
             max_width,
         );
 
-        assert_ne!(truncated, text, "text should truncate when width is constrained");
+        assert_ne!(
+            truncated, text,
+            "text should truncate when width is constrained"
+        );
         assert!(
             truncated.ends_with('\u{2026}'),
             "truncated text should end with an ellipsis: {truncated:?}",
@@ -2573,28 +2658,24 @@ mod tests {
                 div().px(12.0).py(12.0).child(
                     text(format!("Files  ·  {}", files.len()))
                         .text_sm()
-                        .color(theme.colors.text_muted)
-                )
+                        .color(theme.colors.text_muted),
+                ),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .flex_col()
-                    .scroll_y(0.0)
-                    .children_from(files.iter().enumerate().map(|(i, path)| {
-                        div()
-                            .w_full()
-                            .h(36.0)
-                            .px(12.0)
-                            .items_center()
-                            .flex_row()
-                            .rounded(7.0)
-                            .hover_bg(theme.colors.sidebar_row_hover)
-                            .on_click(Action::SelectFile(i))
-                            .child(text(*path).text_sm().color(theme.colors.text))
-                            .into_any()
-                    }))
-            )
+            .child(div().flex_1().flex_col().scroll_y(0.0).children_from(
+                files.iter().enumerate().map(|(i, path)| {
+                    div()
+                        .w_full()
+                        .h(36.0)
+                        .px(12.0)
+                        .items_center()
+                        .flex_row()
+                        .rounded(7.0)
+                        .hover_bg(theme.colors.sidebar_row_hover)
+                        .on_click(Action::SelectFile(i))
+                        .child(text(*path).text_sm().color(theme.colors.text))
+                        .into_any()
+                }),
+            ))
             .into_any();
 
         render_element(&mut root, &mut scene, &mut cx, 260.0, 400.0);
@@ -2604,10 +2685,55 @@ mod tests {
         assert_eq!(cx.hits[2].action, Action::SelectFile(2));
 
         // Should have text for header + 4 files = 5 text primitives
-        let text_count = scene.primitives.iter().filter(|p| {
-            matches!(p, crate::render::Primitive::TextRun(_))
-        }).count();
+        let text_count = scene
+            .primitives
+            .iter()
+            .filter(|p| matches!(p, crate::render::Primitive::TextRun(_)))
+            .count();
         assert_eq!(text_count, 5);
+    }
+
+    #[test]
+    fn scroll_y_offsets_nested_descendant_text() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
+
+        let build_scene = |scroll_y: f32, cx: &mut ElementContext<'_>| {
+            let mut scene = Scene::default();
+            let mut root = div()
+                .w(220.0)
+                .h(80.0)
+                .scroll_y(scroll_y)
+                .child(
+                    div().w_full().h(36.0).child(
+                        div()
+                            .px(12.0)
+                            .py(8.0)
+                            .child(text("nested file row").text_sm()),
+                    ),
+                )
+                .into_any();
+
+            render_element(&mut root, &mut scene, cx, 220.0, 80.0);
+
+            scene
+                .primitives
+                .iter()
+                .find_map(|primitive| match primitive {
+                    crate::render::Primitive::TextRun(text) => Some(text.rect.y),
+                    _ => None,
+                })
+                .expect("expected nested text primitive")
+        };
+
+        let unscrolled_y = build_scene(0.0, &mut cx);
+        let scrolled_y = build_scene(20.0, &mut cx);
+
+        assert!(
+            (scrolled_y - (unscrolled_y - 20.0)).abs() < 1.0,
+            "nested text did not move with scroll: unscrolled_y={unscrolled_y}, scrolled_y={scrolled_y}"
+        );
     }
 
     #[test]
@@ -2631,21 +2757,30 @@ mod tests {
         render_element(&mut root, &mut scene, &mut cx, 200.0, 100.0);
 
         // Should have: ClipStart, RoundedRect (child bg), ClipEnd
-        let clip_count = scene.primitives.iter().filter(|p| {
-            matches!(p, crate::render::Primitive::ClipStart(_))
-        }).count();
+        let clip_count = scene
+            .primitives
+            .iter()
+            .filter(|p| matches!(p, crate::render::Primitive::ClipStart(_)))
+            .count();
         assert_eq!(clip_count, 1, "scroll container should clip");
 
         // The child's bg rect should be offset by -20 in y
-        let bg = scene.primitives.iter().find_map(|p| {
-            if let crate::render::Primitive::RoundedRect(rr) = p {
-                Some(rr)
-            } else {
-                None
-            }
-        }).expect("should have child bg");
-        assert!((bg.rect.y - (-20.0)).abs() < 1.0,
-            "child y={} should be ~-20 (scrolled)", bg.rect.y);
+        let bg = scene
+            .primitives
+            .iter()
+            .find_map(|p| {
+                if let crate::render::Primitive::RoundedRect(rr) = p {
+                    Some(rr)
+                } else {
+                    None
+                }
+            })
+            .expect("should have child bg");
+        assert!(
+            (bg.rect.y - (-20.0)).abs() < 1.0,
+            "child y={} should be ~-20 (scrolled)",
+            bg.rect.y
+        );
     }
 
     // -- New tests --
@@ -2668,22 +2803,30 @@ mod tests {
                     scene.rounded_rect(RoundedRectPrimitive::uniform(bounds, 0.0, green));
                 })
                 .w(100.0)
-                .h(50.0)
+                .h(50.0),
             )
             .into_any();
 
         render_element(&mut root, &mut scene, &mut cx, 400.0, 300.0);
 
         // The canvas closure should have emitted exactly one rounded rect.
-        let rr_count = scene.primitives.iter().filter(|p| {
-            matches!(p, crate::render::Primitive::RoundedRect(_))
-        }).count();
+        let rr_count = scene
+            .primitives
+            .iter()
+            .filter(|p| matches!(p, crate::render::Primitive::RoundedRect(_)))
+            .count();
         assert_eq!(rr_count, 1, "canvas should emit one rounded rect");
 
         if let crate::render::Primitive::RoundedRect(rr) = &scene.primitives[0] {
             assert_eq!(rr.color, green, "canvas rect should be green");
-            assert!((rr.rect.width - 100.0).abs() < 1.0, "canvas width should be ~100");
-            assert!((rr.rect.height - 50.0).abs() < 1.0, "canvas height should be ~50");
+            assert!(
+                (rr.rect.width - 100.0).abs() < 1.0,
+                "canvas width should be ~100"
+            );
+            assert!(
+                (rr.rect.height - 50.0).abs() < 1.0,
+                "canvas height should be ~50"
+            );
         } else {
             panic!("expected RoundedRect primitive from canvas");
         }
@@ -2697,17 +2840,33 @@ mod tests {
         let mut font_system = glyphon::FontSystem::new();
         let mut store = SignalStore::new();
         let theme = Box::leak(Box::new(Theme::default_dark()));
-        let mut cx = ElementContext::new(theme, 1.0, &mut font_system, Some((100.0, 100.0)), &mut store);
+        let mut cx = ElementContext::new(
+            theme,
+            1.0,
+            &mut font_system,
+            Some((100.0, 100.0)),
+            &mut store,
+        );
 
         // Register a "background" hitbox at (0,0)-(200,200).
         let bg_id = cx.insert_hitbox(
-            Bounds { x: 0.0, y: 0.0, width: 200.0, height: 200.0 },
+            Bounds {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 200.0,
+            },
             HitboxBehavior::Normal,
         );
 
         // Register a "modal" hitbox at (50,50)-(150,150) that blocks mouse.
         let modal_id = cx.insert_hitbox(
-            Bounds { x: 50.0, y: 50.0, width: 100.0, height: 100.0 },
+            Bounds {
+                x: 50.0,
+                y: 50.0,
+                width: 100.0,
+                height: 100.0,
+            },
             HitboxBehavior::BlockMouse,
         );
 
@@ -2716,7 +2875,10 @@ mod tests {
         // The modal should be hovered (mouse at 100,100 is inside it).
         assert!(cx.is_hovered(modal_id), "modal should be hovered");
         // The background should NOT be hovered because the modal blocks it.
-        assert!(!cx.is_hovered(bg_id), "background should be blocked by modal");
+        assert!(
+            !cx.is_hovered(bg_id),
+            "background should be blocked by modal"
+        );
     }
 
     #[test]
@@ -2751,23 +2913,23 @@ mod tests {
         };
 
         // Use the RenderOnce component as a child via IntoAnyElement.
-        let mut root = div()
-            .w(400.0)
-            .h(200.0)
-            .child(button.into_any())
-            .into_any();
+        let mut root = div().w(400.0).h(200.0).child(button.into_any()).into_any();
 
         render_element(&mut root, &mut scene, &mut cx, 400.0, 200.0);
 
         // Should have the button's background rect and text.
-        let rr_count = scene.primitives.iter().filter(|p| {
-            matches!(p, crate::render::Primitive::RoundedRect(_))
-        }).count();
+        let rr_count = scene
+            .primitives
+            .iter()
+            .filter(|p| matches!(p, crate::render::Primitive::RoundedRect(_)))
+            .count();
         assert_eq!(rr_count, 1, "button should emit one background rect");
 
-        let text_count = scene.primitives.iter().filter(|p| {
-            matches!(p, crate::render::Primitive::TextRun(_))
-        }).count();
+        let text_count = scene
+            .primitives
+            .iter()
+            .filter(|p| matches!(p, crate::render::Primitive::TextRun(_)))
+            .count();
         assert_eq!(text_count, 1, "button should emit one text primitive");
 
         if let crate::render::Primitive::RoundedRect(rr) = &scene.primitives[0] {
@@ -2804,14 +2966,30 @@ mod tests {
         render_element(&mut root, &mut scene, &mut cx, 200.0, 50.0);
 
         // Should use green bg and green border (hover override)
-        let bg = scene.primitives.iter().find_map(|p| {
-            if let crate::render::Primitive::RoundedRect(rr) = p { Some(rr) } else { None }
-        }).unwrap();
+        let bg = scene
+            .primitives
+            .iter()
+            .find_map(|p| {
+                if let crate::render::Primitive::RoundedRect(rr) = p {
+                    Some(rr)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
         assert_eq!(bg.color, green, "hover should override bg to green");
 
-        let border = scene.primitives.iter().find_map(|p| {
-            if let crate::render::Primitive::Border(b) = p { Some(b) } else { None }
-        }).unwrap();
+        let border = scene
+            .primitives
+            .iter()
+            .find_map(|p| {
+                if let crate::render::Primitive::Border(b) = p {
+                    Some(b)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
         assert_eq!(border.color, green, "hover should override border to green");
     }
 
@@ -2895,9 +3073,11 @@ mod tests {
         render_element(&mut root, &mut scene, &mut cx, 200.0, 56.0);
 
         // Should have: bg rect + border + 2 text primitives (label + value)
-        let text_count = scene.primitives.iter().filter(|p| {
-            matches!(p, crate::render::Primitive::TextRun(_))
-        }).count();
+        let text_count = scene
+            .primitives
+            .iter()
+            .filter(|p| matches!(p, crate::render::Primitive::TextRun(_)))
+            .count();
         assert_eq!(text_count, 2, "should have label + value text");
 
         // Should have a hit region
@@ -2949,15 +3129,19 @@ mod tests {
 
         render_element(&mut root, &mut scene, &mut cx, 300.0, 200.0);
 
-        let effect_count = scene.primitives.iter().filter(|p| {
-            matches!(p, crate::render::Primitive::EffectQuad(_))
-        }).count();
+        let effect_count = scene
+            .primitives
+            .iter()
+            .filter(|p| matches!(p, crate::render::Primitive::EffectQuad(_)))
+            .count();
         assert_eq!(effect_count, 1, "should emit one effect quad");
 
         // Should NOT emit a RoundedRect bg (effect replaces it).
-        let rr_count = scene.primitives.iter().filter(|p| {
-            matches!(p, crate::render::Primitive::RoundedRect(_))
-        }).count();
+        let rr_count = scene
+            .primitives
+            .iter()
+            .filter(|p| matches!(p, crate::render::Primitive::RoundedRect(_)))
+            .count();
         assert_eq!(rr_count, 0, "effect should replace solid bg");
 
         if let crate::render::Primitive::EffectQuad(eq) = &scene.primitives[0] {
@@ -2990,9 +3174,11 @@ mod tests {
 
         render_element(&mut root, &mut scene, &mut cx, 200.0, 100.0);
 
-        let effect_count = scene.primitives.iter().filter(|p| {
-            matches!(p, crate::render::Primitive::EffectQuad(_))
-        }).count();
+        let effect_count = scene
+            .primitives
+            .iter()
+            .filter(|p| matches!(p, crate::render::Primitive::EffectQuad(_)))
+            .count();
         assert_eq!(effect_count, 1);
 
         if let crate::render::Primitive::EffectQuad(eq) = &scene.primitives[0] {
@@ -3023,15 +3209,22 @@ mod tests {
 
         render_element(&mut root, &mut scene, &mut cx, 100.0, 100.0);
 
-        let effect_count = scene.primitives.iter().filter(|p| {
-            matches!(p, crate::render::Primitive::EffectQuad(_))
-        }).count();
-        let rr_count = scene.primitives.iter().filter(|p| {
-            matches!(p, crate::render::Primitive::RoundedRect(_))
-        }).count();
+        let effect_count = scene
+            .primitives
+            .iter()
+            .filter(|p| matches!(p, crate::render::Primitive::EffectQuad(_)))
+            .count();
+        let rr_count = scene
+            .primitives
+            .iter()
+            .filter(|p| matches!(p, crate::render::Primitive::RoundedRect(_)))
+            .count();
 
         assert_eq!(effect_count, 1, "effect should be emitted");
-        assert_eq!(rr_count, 0, "solid bg should not be emitted when effect is set");
+        assert_eq!(
+            rr_count, 0,
+            "solid bg should not be emitted when effect is set"
+        );
     }
 
     #[test]
@@ -3055,18 +3248,24 @@ mod tests {
         render_element(&mut root, &mut scene, &mut cx, 400.0, 300.0);
 
         // Should have a BlurRegion primitive before the background.
-        let blur_count = scene.primitives.iter().filter(|p| {
-            matches!(p, crate::render::Primitive::BlurRegion(_))
-        }).count();
+        let blur_count = scene
+            .primitives
+            .iter()
+            .filter(|p| matches!(p, crate::render::Primitive::BlurRegion(_)))
+            .count();
         assert_eq!(blur_count, 1, "should emit one blur region");
 
         // The BlurRegion should come before the RoundedRect (background).
-        let blur_idx = scene.primitives.iter().position(|p| {
-            matches!(p, crate::render::Primitive::BlurRegion(_))
-        }).unwrap();
-        let bg_idx = scene.primitives.iter().position(|p| {
-            matches!(p, crate::render::Primitive::RoundedRect(_))
-        }).unwrap();
+        let blur_idx = scene
+            .primitives
+            .iter()
+            .position(|p| matches!(p, crate::render::Primitive::BlurRegion(_)))
+            .unwrap();
+        let bg_idx = scene
+            .primitives
+            .iter()
+            .position(|p| matches!(p, crate::render::Primitive::RoundedRect(_)))
+            .unwrap();
         assert!(blur_idx < bg_idx, "blur should precede background");
 
         if let crate::render::Primitive::BlurRegion(br) = &scene.primitives[blur_idx] {
@@ -3089,7 +3288,8 @@ mod tests {
         let b = Color::rgba(0, 0, 0, 255);
 
         let mut root = div()
-            .w(200.0).h(200.0)
+            .w(200.0)
+            .h(200.0)
             .bg_effect(radial_gradient(a, b))
             .into_any();
 
@@ -3113,7 +3313,8 @@ mod tests {
         let highlight = Color::rgba(60, 60, 60, 255);
 
         let mut root = div()
-            .w(300.0).h(20.0)
+            .w(300.0)
+            .h(20.0)
             .bg_effect(shimmer(base, highlight, 2.0))
             .into_any();
 
@@ -3137,7 +3338,8 @@ mod tests {
         let dark = Color::rgba(0, 0, 0, 128);
 
         let mut root = div()
-            .w(800.0).h(600.0)
+            .w(800.0)
+            .h(600.0)
             .bg_effect(vignette(dark, 0.5))
             .into_any();
 
@@ -3161,7 +3363,8 @@ mod tests {
         let tint = Color::rgba(0, 100, 255, 80);
 
         let mut root = div()
-            .w(400.0).h(300.0)
+            .w(400.0)
+            .h(300.0)
             .bg_effect(color_tint(tint))
             .into_any();
 
@@ -3185,7 +3388,8 @@ mod tests {
         let accent = Color::rgba(0, 128, 255, 200);
 
         let mut root = div()
-            .w(100.0).h(40.0)
+            .w(100.0)
+            .h(40.0)
             .rounded(8.0)
             .bg(Color::rgba(30, 30, 30, 255))
             .glow(accent, 10.0)
@@ -3195,14 +3399,21 @@ mod tests {
 
         // Glow should produce a ShadowPrimitive with offset [0, 0].
         let shadow = scene.primitives.iter().find_map(|p| {
-            if let crate::render::Primitive::Shadow(s) = p { Some(s) } else { None }
+            if let crate::render::Primitive::Shadow(s) = p {
+                Some(s)
+            } else {
+                None
+            }
         });
         assert!(shadow.is_some(), "glow should produce a shadow");
         let s = shadow.unwrap();
         assert_eq!(s.color, accent);
         assert!((s.offset[0]).abs() < 0.01, "glow x offset should be 0");
         assert!((s.offset[1]).abs() < 0.01, "glow y offset should be 0");
-        assert!((s.blur_radius - 10.0).abs() < 0.1, "blur radius should be 10");
+        assert!(
+            (s.blur_radius - 10.0).abs() < 0.1,
+            "blur radius should be 10"
+        );
     }
 
     #[test]
@@ -3214,16 +3425,18 @@ mod tests {
 
         let red = Color::rgba(255, 0, 0, 255);
 
-        let mut root = div()
-            .w(200.0).h(100.0)
-            .z_index(10)
-            .bg(red)
-            .into_any();
+        let mut root = div().w(200.0).h(100.0).z_index(10).bg(red).into_any();
 
         render_element(&mut root, &mut scene, &mut cx, 200.0, 100.0);
 
-        let has_push = scene.primitives.iter().any(|p| matches!(p, crate::render::Primitive::ZIndexPush(10)));
-        let has_pop = scene.primitives.iter().any(|p| matches!(p, crate::render::Primitive::ZIndexPop));
+        let has_push = scene
+            .primitives
+            .iter()
+            .any(|p| matches!(p, crate::render::Primitive::ZIndexPush(10)));
+        let has_pop = scene
+            .primitives
+            .iter()
+            .any(|p| matches!(p, crate::render::Primitive::ZIndexPop));
         assert!(has_push, "z_index(10) should emit ZIndexPush(10)");
         assert!(has_pop, "z_index(10) should emit ZIndexPop");
     }
@@ -3236,13 +3449,17 @@ mod tests {
         let mut scene = Scene::default();
 
         let mut root = div()
-            .w(200.0).h(100.0)
+            .w(200.0)
+            .h(100.0)
             .bg(Color::rgba(255, 0, 0, 255))
             .into_any();
 
         render_element(&mut root, &mut scene, &mut cx, 200.0, 100.0);
 
-        let has_push = scene.primitives.iter().any(|p| matches!(p, crate::render::Primitive::ZIndexPush(_)));
+        let has_push = scene
+            .primitives
+            .iter()
+            .any(|p| matches!(p, crate::render::Primitive::ZIndexPush(_)));
         assert!(!has_push, "z_index 0 should not emit ZIndexPush");
     }
 
@@ -3251,12 +3468,18 @@ mod tests {
         let mut font_system = glyphon::FontSystem::new();
         let mut store = SignalStore::new();
         let theme = Box::leak(Box::new(Theme::default_dark()));
-        let mut cx = ElementContext::new(theme, 1.0, &mut font_system, Some((50.0, 50.0)), &mut store);
+        let mut cx =
+            ElementContext::new(theme, 1.0, &mut font_system, Some((50.0, 50.0)), &mut store);
 
         // Register a z=0 hitbox covering (0,0)-(100,100).
         cx.push_z_index(0);
         let low_id = cx.insert_hitbox(
-            Bounds { x: 0.0, y: 0.0, width: 100.0, height: 100.0 },
+            Bounds {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+            },
             HitboxBehavior::Normal,
         );
         cx.pop_z_index();
@@ -3264,7 +3487,12 @@ mod tests {
         // Register a z=10 BlockMouse hitbox covering (0,0)-(100,100).
         cx.push_z_index(10);
         let high_id = cx.insert_hitbox(
-            Bounds { x: 0.0, y: 0.0, width: 100.0, height: 100.0 },
+            Bounds {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+            },
             HitboxBehavior::BlockMouse,
         );
         cx.pop_z_index();

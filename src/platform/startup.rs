@@ -62,10 +62,79 @@ pub struct StartupOptions {
     pub log_debug: bool,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct StartupEnvDefaults {
+    repo: Option<PathBuf>,
+    left: Option<String>,
+    right: Option<String>,
+    compare_mode: Option<CompareMode>,
+    layout: Option<LayoutMode>,
+    renderer: Option<RendererKind>,
+    file_index: Option<usize>,
+    file_path: Option<String>,
+    open_pr: Option<String>,
+    exit_after_ms: Option<u64>,
+}
+
+impl StartupEnvDefaults {
+    fn load<F>(get_env: F) -> Self
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        Self {
+            repo: get_env("DIFFY_START_REPO").map(PathBuf::from),
+            left: get_env("DIFFY_START_LEFT"),
+            right: get_env("DIFFY_START_RIGHT"),
+            compare_mode: parse_env_with(&get_env, "DIFFY_START_COMPARE_MODE", parse_compare_mode),
+            layout: parse_env_with(&get_env, "DIFFY_START_LAYOUT", parse_layout_mode),
+            renderer: parse_env_with(&get_env, "DIFFY_START_RENDERER", parse_renderer_kind),
+            file_index: parse_env_with(&get_env, "DIFFY_START_FILE_INDEX", parse_file_index),
+            file_path: get_env("DIFFY_START_FILE_PATH"),
+            open_pr: get_env("DIFFY_START_OPEN_PR"),
+            exit_after_ms: parse_env_with(&get_env, "DIFFY_EXIT_AFTER_MS", parse_exit_after_ms),
+        }
+    }
+
+    fn apply(self, mut args: Args) -> Args {
+        if args.repo.is_none() {
+            args.repo = self.repo;
+        }
+        if args.left.is_none() {
+            args.left = self.left;
+        }
+        if args.right.is_none() {
+            args.right = self.right;
+        }
+        if args.compare_mode.is_none() {
+            args.compare_mode = self.compare_mode;
+        }
+        if args.layout.is_none() {
+            args.layout = self.layout;
+        }
+        if args.renderer.is_none() {
+            args.renderer = self.renderer;
+        }
+        if args.file_index.is_none() {
+            args.file_index = self.file_index;
+        }
+        if args.file_path.is_none() {
+            args.file_path = self.file_path;
+        }
+        if args.open_pr.is_none() {
+            args.open_pr = self.open_pr;
+        }
+        if args.exit_after_ms.is_none() {
+            args.exit_after_ms = self.exit_after_ms;
+        }
+        args
+    }
+}
+
 impl StartupOptions {
     pub fn load() -> Self {
+        let env_defaults = StartupEnvDefaults::load(env_var);
         Self::from_parts(
-            Args::parse(),
+            env_defaults.apply(Args::parse()),
             env_var("GITHUB_TOKEN"),
             env_var("DIFFY_GITHUB_CLIENT_ID")
                 .filter(|value| !value.is_empty())
@@ -122,6 +191,33 @@ fn parse_renderer_kind(value: &str) -> Result<RendererKind, String> {
     value.parse().map_err(str::to_owned)
 }
 
+fn parse_file_index(value: &str) -> Result<usize, String> {
+    value
+        .parse::<usize>()
+        .map_err(|_| "invalid file index".to_owned())
+}
+
+fn parse_exit_after_ms(value: &str) -> Result<u64, String> {
+    value
+        .parse::<u64>()
+        .map_err(|_| "invalid exit duration".to_owned())
+}
+
+fn parse_env_with<T, FEnv, FParse>(get_env: &FEnv, name: &str, parser: FParse) -> Option<T>
+where
+    FEnv: Fn(&str) -> Option<String>,
+    FParse: Fn(&str) -> Result<T, String>,
+{
+    let value = get_env(name)?;
+    match parser(&value) {
+        Ok(parsed) => Some(parsed),
+        Err(error) => {
+            eprintln!("Ignoring {name}: {error}");
+            None
+        }
+    }
+}
+
 fn env_var(name: &str) -> Option<String> {
     env::var(name)
         .ok()
@@ -140,11 +236,12 @@ fn env_flag(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::path::PathBuf;
 
     use clap::Parser;
 
-    use super::{Args, StartupOptions};
+    use super::{Args, StartupEnvDefaults, StartupOptions};
     use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 
     #[test]
@@ -202,5 +299,94 @@ mod tests {
         assert_eq!(options.github_token.as_deref(), Some("token"));
         assert_eq!(options.github_client_id, "client");
         assert!(options.log_debug);
+    }
+
+    #[test]
+    fn startup_env_defaults_fill_missing_args() {
+        let env = HashMap::from([
+            ("DIFFY_START_REPO", "C:\\work\\demo"),
+            ("DIFFY_START_LEFT", "main"),
+            ("DIFFY_START_RIGHT", "feature"),
+            ("DIFFY_START_COMPARE_MODE", "three-dot"),
+            ("DIFFY_START_LAYOUT", "split"),
+            ("DIFFY_START_RENDERER", "difftastic"),
+            ("DIFFY_START_FILE_INDEX", "3"),
+            ("DIFFY_START_FILE_PATH", "src/main.rs"),
+            (
+                "DIFFY_START_OPEN_PR",
+                "https://github.com/owner/repo/pull/42",
+            ),
+            ("DIFFY_EXIT_AFTER_MS", "25"),
+        ]);
+        let args = StartupEnvDefaults::load(|name| env.get(name).map(|value| (*value).to_owned()))
+            .apply(Args::parse_from(["diffy"]));
+
+        assert_eq!(args.repo, Some(PathBuf::from("C:\\work\\demo")));
+        assert_eq!(args.left.as_deref(), Some("main"));
+        assert_eq!(args.right.as_deref(), Some("feature"));
+        assert_eq!(args.compare_mode, Some(CompareMode::ThreeDot));
+        assert_eq!(args.layout, Some(LayoutMode::Split));
+        assert_eq!(args.renderer, Some(RendererKind::Difftastic));
+        assert_eq!(args.file_index, Some(3));
+        assert_eq!(args.file_path.as_deref(), Some("src/main.rs"));
+        assert_eq!(
+            args.open_pr.as_deref(),
+            Some("https://github.com/owner/repo/pull/42")
+        );
+        assert_eq!(args.exit_after_ms, Some(25));
+    }
+
+    #[test]
+    fn startup_env_defaults_do_not_override_cli_args() {
+        let env = HashMap::from([
+            ("DIFFY_START_REPO", "C:\\work\\env"),
+            ("DIFFY_START_LEFT", "env-left"),
+            ("DIFFY_START_RIGHT", "env-right"),
+            ("DIFFY_START_COMPARE_MODE", "three-dot"),
+            ("DIFFY_START_LAYOUT", "split"),
+            ("DIFFY_START_RENDERER", "difftastic"),
+            ("DIFFY_START_FILE_INDEX", "7"),
+            ("DIFFY_START_FILE_PATH", "env.rs"),
+            ("DIFFY_START_OPEN_PR", "https://github.com/owner/repo/pull/7"),
+            ("DIFFY_EXIT_AFTER_MS", "99"),
+        ]);
+        let args = StartupEnvDefaults::load(|name| env.get(name).map(|value| (*value).to_owned()))
+            .apply(Args::parse_from([
+                "diffy",
+                "--repo",
+                "C:\\work\\cli",
+                "--left",
+                "cli-left",
+                "--right",
+                "cli-right",
+                "--compare-mode",
+                "two-dot",
+                "--layout",
+                "unified",
+                "--renderer",
+                "builtin",
+                "--file-index",
+                "2",
+                "--file-path",
+                "cli.rs",
+                "--open-pr",
+                "https://github.com/owner/repo/pull/2",
+                "--exit-after-ms",
+                "10",
+            ]));
+
+        assert_eq!(args.repo, Some(PathBuf::from("C:\\work\\cli")));
+        assert_eq!(args.left.as_deref(), Some("cli-left"));
+        assert_eq!(args.right.as_deref(), Some("cli-right"));
+        assert_eq!(args.compare_mode, Some(CompareMode::TwoDot));
+        assert_eq!(args.layout, Some(LayoutMode::Unified));
+        assert_eq!(args.renderer, Some(RendererKind::Builtin));
+        assert_eq!(args.file_index, Some(2));
+        assert_eq!(args.file_path.as_deref(), Some("cli.rs"));
+        assert_eq!(
+            args.open_pr.as_deref(),
+            Some("https://github.com/owner/repo/pull/2")
+        );
+        assert_eq!(args.exit_after_ms, Some(10));
     }
 }

@@ -361,7 +361,7 @@ impl DiffViewportRuntime {
                         color: theme.colors.text_strong,
                         font_size: 15.0,
                         font_kind: FontKind::Ui,
-            font_weight: FontWeight::Normal,
+                        font_weight: FontWeight::Normal,
                     });
                 }
                 RenderRowKind::HunkSeparator => {
@@ -376,7 +376,7 @@ impl DiffViewportRuntime {
                         color: theme.colors.text_muted,
                         font_size: 13.0,
                         font_kind: FontKind::Mono,
-            font_weight: FontWeight::Normal,
+                        font_weight: FontWeight::Normal,
                     });
                 }
                 _ if self.layout.split_mode => {
@@ -458,7 +458,7 @@ impl DiffViewportRuntime {
                     default_color: tone_for_left_side(line.row_kind()).default_text(theme),
                     font_size: 13.0,
                     font_kind: FontKind::Mono,
-            font_weight: FontWeight::Normal,
+                    font_weight: FontWeight::Normal,
                 });
             }
         }
@@ -485,7 +485,7 @@ impl DiffViewportRuntime {
                     default_color: tone_for_right_side(line.row_kind()).default_text(theme),
                     font_size: 13.0,
                     font_kind: FontKind::Mono,
-            font_weight: FontWeight::Normal,
+                    font_weight: FontWeight::Normal,
                 });
             }
         }
@@ -527,7 +527,7 @@ impl DiffViewportRuntime {
                     color: theme.colors.gutter_text,
                     font_size: 12.0,
                     font_kind: FontKind::Mono,
-            font_weight: FontWeight::Normal,
+                    font_weight: FontWeight::Normal,
                 });
                 if let Some(spans) = build_wrapped_rich_text(
                     doc,
@@ -544,7 +544,7 @@ impl DiffViewportRuntime {
                         default_color: theme.colors.line_del_text,
                         font_size: 13.0,
                         font_kind: FontKind::Mono,
-            font_weight: FontWeight::Normal,
+                        font_weight: FontWeight::Normal,
                     });
                 }
             }
@@ -575,7 +575,7 @@ impl DiffViewportRuntime {
                     color: theme.colors.gutter_text,
                     font_size: 12.0,
                     font_kind: FontKind::Mono,
-            font_weight: FontWeight::Normal,
+                    font_weight: FontWeight::Normal,
                 });
                 if let Some(spans) = build_wrapped_rich_text(
                     doc,
@@ -592,7 +592,7 @@ impl DiffViewportRuntime {
                         default_color: theme.colors.line_add_text,
                         font_size: 13.0,
                         font_kind: FontKind::Mono,
-            font_weight: FontWeight::Normal,
+                        font_weight: FontWeight::Normal,
                     });
                 }
             }
@@ -638,7 +638,7 @@ impl DiffViewportRuntime {
                     default_color: tone.default_text(theme),
                     font_size: 13.0,
                     font_kind: FontKind::Mono,
-            font_weight: FontWeight::Normal,
+                    font_weight: FontWeight::Normal,
                 });
             }
         }

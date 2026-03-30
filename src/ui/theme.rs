@@ -10,7 +10,12 @@ pub struct Color {
 }
 
 impl Color {
-    pub const TRANSPARENT: Self = Self { r: 0, g: 0, b: 0, a: 0 };
+    pub const TRANSPARENT: Self = Self {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 0,
+    };
 
     pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self { r, g, b, a }
@@ -116,6 +121,28 @@ pub struct ThemeMetrics {
     pub mono_font_size: f32,
 }
 
+impl ThemeMetrics {
+    pub fn scaled(self, scale: f32) -> Self {
+        let scale = scale.clamp(0.7, 1.8);
+        Self {
+            title_bar_height: self.title_bar_height * scale,
+            status_bar_height: self.status_bar_height * scale,
+            sidebar_width: self.sidebar_width * scale,
+            panel_radius: self.panel_radius * scale,
+            control_radius: self.control_radius * scale,
+            modal_radius: self.modal_radius * scale,
+            spacing_xs: self.spacing_xs * scale,
+            spacing_sm: self.spacing_sm * scale,
+            spacing_md: self.spacing_md * scale,
+            spacing_lg: self.spacing_lg * scale,
+            ui_font_size: self.ui_font_size * scale,
+            ui_small_font_size: self.ui_small_font_size * scale,
+            heading_font_size: self.heading_font_size * scale,
+            mono_font_size: self.mono_font_size * scale,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Theme {
     pub mode: ThemeMode,
@@ -131,6 +158,11 @@ impl Theme {
             ThemeMode::Dark => Self::default_dark(),
             ThemeMode::Light => Self::default_light(),
         }
+    }
+
+    pub fn with_ui_scale(mut self, scale: f32) -> Self {
+        self.metrics = self.metrics.scaled(scale);
+        self
     }
 
     pub fn toggle_mode(&mut self) {
@@ -200,55 +232,55 @@ fn dark_colors(n: &Scale, b: &Scale, r: &Scale, g: &Scale, y: &Scale) -> ThemeCo
     ThemeColors {
         // Backgrounds — clear visual hierarchy between layers.
         // n[0] is the deepest black, n[3] is noticeably lighter.
-        app_bg:             n[0],
-        canvas:             n[1],
-        panel:              n[2],
-        panel_strong:       n[3],
-        background:         n[0],
-        surface:            n[2],
-        editor_surface:     n[1],
-        elevated_surface:   n[3],
-        modal_surface:      n[4],
-        title_bar_background: n[2],     // slightly lifted from bg
+        app_bg: n[0],
+        canvas: n[1],
+        panel: n[2],
+        panel_strong: n[3],
+        background: n[0],
+        surface: n[2],
+        editor_surface: n[1],
+        elevated_surface: n[3],
+        modal_surface: n[4],
+        title_bar_background: n[2], // slightly lifted from bg
         status_bar_background: n[1],
         sidebar_background: n[1],
         empty_state_background: n[2],
-        gutter_bg:          n[0],
-        file_header_bg:     n[3],
-        hunk_header_bg:     b[3],
+        gutter_bg: n[0],
+        file_header_bg: n[3],
+        hunk_header_bg: b[3],
 
         // Interactive elements — clear affordance
         element_background: n[3],
-        element_hover:      n[4],
-        element_active:     n[5],
-        element_selected:   b[5],
+        element_hover: n[4],
+        element_active: n[5],
+        element_selected: b[5],
 
         // Ghost elements (semi-transparent overlays)
-        ghost_element_hover:    Color::rgba(255, 255, 255, 20),
-        ghost_element_active:   Color::rgba(255, 255, 255, 36),
+        ghost_element_hover: Color::rgba(255, 255, 255, 20),
+        ghost_element_active: Color::rgba(255, 255, 255, 36),
         ghost_element_selected: b[4],
-        hover_overlay:          Color::rgba(255, 255, 255, 14),
+        hover_overlay: Color::rgba(255, 255, 255, 14),
 
-        sidebar_row_hover:    Color::rgba(255, 255, 255, 14),
+        sidebar_row_hover: Color::rgba(255, 255, 255, 14),
         sidebar_row_selected: b[4],
 
         // Borders — subtle but visible separation
-        border_soft:    n[3],
-        border:         n[4],
+        border_soft: n[3],
+        border: n[4],
         border_variant: n[3],
-        focus_border:   b[8],
+        focus_border: b[8],
         empty_state_border: n[4],
 
         // Text — readable hierarchy
         text_strong: Color::rgba(240, 240, 245, 255),
-        text:        n[10],
-        text_muted:  n[8],
+        text: n[10],
+        text_muted: n[8],
         text_accent: b[9],
-        icon:        n[9],
+        icon: n[9],
         gutter_text: n[7],
 
         // Accent — vibrant blue
-        accent:       b[8],
+        accent: b[8],
         selection_bg: b[4],
 
         // Overlay
@@ -258,13 +290,13 @@ fn dark_colors(n: &Scale, b: &Scale, r: &Scale, g: &Scale, y: &Scale) -> ThemeCo
         scrollbar_thumb: Color::rgba(255, 255, 255, 100),
 
         // Status indicators
-        status_info:    b[8],
+        status_info: b[8],
         status_warning: y[8],
-        status_error:   r[8],
+        status_error: r[8],
 
         // Diff colors
-        line_add:      g[2],
-        line_del:      r[2],
+        line_add: g[2],
+        line_del: r[2],
         line_modified: b[2],
         line_add_text: g[8],
         line_del_text: r[8],
@@ -275,55 +307,55 @@ fn dark_colors(n: &Scale, b: &Scale, r: &Scale, g: &Scale, y: &Scale) -> ThemeCo
 fn light_colors(n: &Scale, b: &Scale, r: &Scale, g: &Scale, y: &Scale) -> ThemeColors {
     ThemeColors {
         // Backgrounds (steps 1-4 — lightest first)
-        app_bg:             n[0],
-        canvas:             n[1],
-        panel:              n[2],
-        panel_strong:       n[3],
-        background:         n[0],
-        surface:            n[2],
-        editor_surface:     n[1],
-        elevated_surface:   n[2],
-        modal_surface:      n[2],
+        app_bg: n[0],
+        canvas: n[1],
+        panel: n[2],
+        panel_strong: n[3],
+        background: n[0],
+        surface: n[2],
+        editor_surface: n[1],
+        elevated_surface: n[2],
+        modal_surface: n[2],
         title_bar_background: n[3],
         status_bar_background: n[3],
         sidebar_background: n[1],
         empty_state_background: n[2],
-        gutter_bg:          n[3],
-        file_header_bg:     n[3],
-        hunk_header_bg:     b[2],
+        gutter_bg: n[3],
+        file_header_bg: n[3],
+        hunk_header_bg: b[2],
 
         // Interactive elements
         element_background: n[3],
-        element_hover:      n[4],
-        element_active:     n[5],
-        element_selected:   b[4],
+        element_hover: n[4],
+        element_active: n[5],
+        element_selected: b[4],
 
         // Ghost elements (semi-transparent dark overlays)
-        ghost_element_hover:    Color::rgba(0, 0, 0, 15),  // ~6%
-        ghost_element_active:   Color::rgba(0, 0, 0, 31),  // ~12%
+        ghost_element_hover: Color::rgba(0, 0, 0, 15), // ~6%
+        ghost_element_active: Color::rgba(0, 0, 0, 31), // ~12%
         ghost_element_selected: b[3],
-        hover_overlay:          Color::rgba(0, 0, 0, 20),  // ~8%
+        hover_overlay: Color::rgba(0, 0, 0, 20), // ~8%
 
-        sidebar_row_hover:    n[4],
+        sidebar_row_hover: n[4],
         sidebar_row_selected: b[3],
 
         // Borders
-        border_soft:    n[6],
-        border:         n[6],
+        border_soft: n[6],
+        border: n[6],
         border_variant: n[5],
-        focus_border:   b[8],
+        focus_border: b[8],
         empty_state_border: n[6],
 
         // Text (steps 10-12 — darkest)
         text_strong: n[11],
-        text:        n[11],
-        text_muted:  n[9],
+        text: n[11],
+        text_muted: n[9],
         text_accent: b[9],
-        icon:        n[9],
+        icon: n[9],
         gutter_text: n[8],
 
         // Accent
-        accent:       b[8],
+        accent: b[8],
         selection_bg: b[3],
 
         // Overlay
@@ -333,13 +365,13 @@ fn light_colors(n: &Scale, b: &Scale, r: &Scale, g: &Scale, y: &Scale) -> ThemeC
         scrollbar_thumb: n[7],
 
         // Status
-        status_info:    b[8],
+        status_info: b[8],
         status_warning: y[8],
-        status_error:   r[8],
+        status_error: r[8],
 
         // Diff
-        line_add:      g[2],
-        line_del:      r[2],
+        line_add: g[2],
+        line_del: r[2],
         line_modified: b[2],
         line_add_text: g[9],
         line_del_text: r[9],
@@ -375,7 +407,10 @@ mod tests {
         let theme = Theme::default_dark();
         // focus_border comes from blue scale step 9 — should be a vivid blue.
         let c = theme.colors.focus_border;
-        assert!(c.b > c.r && c.b > c.g, "focus_border should be distinctly blue");
+        assert!(
+            c.b > c.r && c.b > c.g,
+            "focus_border should be distinctly blue"
+        );
         assert!(c.a == 255);
     }
 
@@ -404,7 +439,10 @@ mod tests {
             assert!(
                 curr >= prev,
                 "surface tier {} should be >= tier {} ({} vs {})",
-                i, i - 1, curr, prev,
+                i,
+                i - 1,
+                curr,
+                prev,
             );
         }
     }

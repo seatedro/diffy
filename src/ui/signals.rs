@@ -87,7 +87,8 @@ pub fn with_tracking<R>(f: impl FnOnce() -> R) -> (R, Vec<SignalId>) {
 
     let result = f();
 
-    let scope = OBSERVER.with(|obs| obs.borrow_mut().take())
+    let scope = OBSERVER
+        .with(|obs| obs.borrow_mut().take())
         .expect("tracking scope disappeared during with_tracking");
 
     OBSERVER.with(|obs| {
@@ -505,9 +506,7 @@ mod tests {
         let b = store.create(2i32);
         let c = store.create(3i32);
 
-        let (sum, deps) = with_tracking(|| {
-            store.read(a) + store.read(b)
-        });
+        let (sum, deps) = with_tracking(|| store.read(a) + store.read(b));
 
         assert_eq!(sum, 3);
         assert_eq!(deps.len(), 2);
@@ -645,9 +644,7 @@ mod tests {
         let b = store.create(200i32);
 
         // Memo reads a or b depending on flag.
-        let val = store.create_memo(move |s| {
-            if s.read(flag) { s.read(a) } else { s.read(b) }
-        });
+        let val = store.create_memo(move |s| if s.read(flag) { s.read(a) } else { s.read(b) });
 
         assert_eq!(store.read(val), 100);
 

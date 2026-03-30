@@ -22,6 +22,10 @@ const MAX_VISIBLE_TOASTS: usize = 8;
 const TOAST_LIFETIME_MS: u64 = 10_000;
 const PICKER_LIST_VIEWPORT_HEIGHT_PX: u32 = 204;
 const COMMAND_PALETTE_LIST_VIEWPORT_HEIGHT_PX: u32 = 288;
+const DEFAULT_UI_SCALE_PCT: u16 = 100;
+const MIN_UI_SCALE_PCT: u16 = 70;
+const MAX_UI_SCALE_PCT: u16 = 180;
+const UI_SCALE_STEP_PCT: u16 = 10;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum WorkspaceMode {
@@ -302,8 +306,12 @@ pub struct PickerEntry {
 }
 
 impl PickerItem for PickerEntry {
-    fn label(&self) -> &str { &self.label }
-    fn detail(&self) -> Option<&str> { Some(&self.detail) }
+    fn label(&self) -> &str {
+        &self.label
+    }
+    fn detail(&self) -> Option<&str> {
+        Some(&self.detail)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -344,8 +352,12 @@ pub struct PaletteEntry {
 }
 
 impl PickerItem for PaletteEntry {
-    fn label(&self) -> &str { &self.label }
-    fn detail(&self) -> Option<&str> { Some(&self.detail) }
+    fn label(&self) -> &str {
+        &self.label
+    }
+    fn detail(&self) -> Option<&str> {
+        Some(&self.detail)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -684,19 +696,58 @@ impl AppState {
             Action::InsertText(value) => self.insert_text(value),
             Action::Backspace => self.backspace(),
             Action::DeleteForward => self.delete_forward(),
-            Action::CursorLeft => { self.cursor_left(false); Vec::new() }
-            Action::CursorRight => { self.cursor_right(false); Vec::new() }
-            Action::CursorWordLeft => { self.cursor_word_left(false); Vec::new() }
-            Action::CursorWordRight => { self.cursor_word_right(false); Vec::new() }
-            Action::CursorHome => { self.cursor_home(false); Vec::new() }
-            Action::CursorEnd => { self.cursor_end(false); Vec::new() }
-            Action::SelectLeft => { self.cursor_left(true); Vec::new() }
-            Action::SelectRight => { self.cursor_right(true); Vec::new() }
-            Action::SelectWordLeft => { self.cursor_word_left(true); Vec::new() }
-            Action::SelectWordRight => { self.cursor_word_right(true); Vec::new() }
-            Action::SelectHome => { self.cursor_home(true); Vec::new() }
-            Action::SelectEnd => { self.cursor_end(true); Vec::new() }
-            Action::SelectAll => { self.select_all(); Vec::new() }
+            Action::CursorLeft => {
+                self.cursor_left(false);
+                Vec::new()
+            }
+            Action::CursorRight => {
+                self.cursor_right(false);
+                Vec::new()
+            }
+            Action::CursorWordLeft => {
+                self.cursor_word_left(false);
+                Vec::new()
+            }
+            Action::CursorWordRight => {
+                self.cursor_word_right(false);
+                Vec::new()
+            }
+            Action::CursorHome => {
+                self.cursor_home(false);
+                Vec::new()
+            }
+            Action::CursorEnd => {
+                self.cursor_end(false);
+                Vec::new()
+            }
+            Action::SelectLeft => {
+                self.cursor_left(true);
+                Vec::new()
+            }
+            Action::SelectRight => {
+                self.cursor_right(true);
+                Vec::new()
+            }
+            Action::SelectWordLeft => {
+                self.cursor_word_left(true);
+                Vec::new()
+            }
+            Action::SelectWordRight => {
+                self.cursor_word_right(true);
+                Vec::new()
+            }
+            Action::SelectHome => {
+                self.cursor_home(true);
+                Vec::new()
+            }
+            Action::SelectEnd => {
+                self.cursor_end(true);
+                Vec::new()
+            }
+            Action::SelectAll => {
+                self.select_all();
+                Vec::new()
+            }
             Action::Copy => self.copy_selection(),
             Action::Cut => self.cut_selection(),
             Action::Paste(value) => self.paste(value),
@@ -719,7 +770,7 @@ impl AppState {
             }
             Action::StartCompare => self.kickoff_compare(),
             Action::SelectFile(index) => {
-                self.select_loaded_file(index);
+                self.select_loaded_file(index, false);
                 Vec::new()
             }
             Action::SelectFilePath(path) => {
@@ -729,7 +780,7 @@ impl AppState {
                     .iter()
                     .position(|file| file.path == path)
                 {
-                    self.select_loaded_file(index);
+                    self.select_loaded_file(index, true);
                 } else {
                     self.startup.preferred_file_path = Some(path);
                 }
@@ -744,7 +795,8 @@ impl AppState {
                 Vec::new()
             }
             Action::ScrollFileList(delta) => {
-                self.file_list.scroll_rows(delta, self.workspace.files.len());
+                self.file_list
+                    .scroll_rows(delta, self.workspace.files.len());
                 Vec::new()
             }
             Action::ScrollFileListPx(delta_px) => {
@@ -845,6 +897,12 @@ impl AppState {
                 self.viewport.wrap_column = column;
                 self.persist_settings_effect()
             }
+            Action::SetSidebarWidthPx(width) => {
+                self.settings.sidebar_width_px = Some(self.clamp_sidebar_width_px(width));
+                Vec::new()
+            }
+            Action::IncreaseUiScale => self.adjust_ui_scale(UI_SCALE_STEP_PCT as i16),
+            Action::DecreaseUiScale => self.adjust_ui_scale(-(UI_SCALE_STEP_PCT as i16)),
             Action::ToggleThemeMode => {
                 self.settings.theme_mode = match self.settings.theme_mode {
                     ThemeMode::Dark => ThemeMode::Light,
@@ -1075,7 +1133,7 @@ impl AppState {
             .or(preferred_index.filter(|index| *index < self.workspace.files.len()))
             .or_else(|| (!self.workspace.files.is_empty()).then_some(0))
         {
-            self.select_loaded_file(index);
+            self.select_loaded_file(index, true);
         } else {
             self.workspace.selected_file_index = None;
             self.workspace.selected_file_path = None;
@@ -1142,6 +1200,11 @@ impl AppState {
     }
 
     fn sync_settings_snapshot(&mut self) {
+        self.settings.ui_scale_pct = self.clamp_ui_scale_pct(self.settings.ui_scale_pct);
+        self.settings.sidebar_width_px = self
+            .settings
+            .sidebar_width_px
+            .map(|width| self.clamp_sidebar_width_px(width));
         self.settings.viewport.wrap_enabled = self.viewport.wrap_enabled;
         self.settings.viewport.wrap_column = self.viewport.wrap_column;
         self.settings.viewport.layout = self.compare.layout;
@@ -1157,6 +1220,31 @@ impl AppState {
             layout: self.compare.layout,
             renderer: self.compare.renderer,
         });
+    }
+
+    pub fn ui_scale_factor(&self) -> f32 {
+        self.clamp_ui_scale_pct(self.settings.ui_scale_pct) as f32 / DEFAULT_UI_SCALE_PCT as f32
+    }
+
+    fn clamp_ui_scale_pct(&self, scale_pct: u16) -> u16 {
+        scale_pct.clamp(MIN_UI_SCALE_PCT, MAX_UI_SCALE_PCT)
+    }
+
+    fn adjust_ui_scale(&mut self, delta_pct: i16) -> Vec<Effect> {
+        let current = i32::from(self.clamp_ui_scale_pct(self.settings.ui_scale_pct));
+        let updated = (current + i32::from(delta_pct))
+            .clamp(i32::from(MIN_UI_SCALE_PCT), i32::from(MAX_UI_SCALE_PCT))
+            as u16;
+        if updated == self.settings.ui_scale_pct {
+            return Vec::new();
+        }
+        self.settings.ui_scale_pct = updated;
+        self.persist_settings_effect()
+    }
+
+    fn clamp_sidebar_width_px(&self, width: u32) -> u32 {
+        let min_width = (280.0 * self.ui_scale_factor() * 0.64).round() as u32;
+        width.max(min_width.max(120))
     }
 
     fn set_focus(&mut self, target: Option<FocusTarget>) {
@@ -1209,9 +1297,7 @@ impl AppState {
             Some(FocusTarget::CommandPaletteInput) => {
                 Some(&mut self.overlays.command_palette.query)
             }
-            Some(FocusTarget::PullRequestInput) => {
-                Some(&mut self.github.pull_request.url_input)
-            }
+            Some(FocusTarget::PullRequestInput) => Some(&mut self.github.pull_request.url_input),
             _ => None,
         }
     }
@@ -1227,10 +1313,12 @@ impl AppState {
         let cursor = self.text_edit.cursor.min(len);
         let anchor = self.text_edit.anchor.min(len);
         // Snap to grapheme boundaries — compute both before writing back
-        let (snapped_c, snapped_a) = self.focused_text().map_or(
-            (cursor, anchor),
-            |text| (snap_to_grapheme(text, cursor), snap_to_grapheme(text, anchor)),
-        );
+        let (snapped_c, snapped_a) = self.focused_text().map_or((cursor, anchor), |text| {
+            (
+                snap_to_grapheme(text, cursor),
+                snap_to_grapheme(text, anchor),
+            )
+        });
         self.text_edit.cursor = snapped_c;
         self.text_edit.anchor = snapped_a;
     }
@@ -1242,7 +1330,11 @@ impl AppState {
     /// Returns the selected range (min..max) or None if cursor == anchor.
     fn selection_range(&self) -> Option<(usize, usize)> {
         let (c, a) = (self.text_edit.cursor, self.text_edit.anchor);
-        if c == a { None } else { Some((c.min(a), c.max(a))) }
+        if c == a {
+            None
+        } else {
+            Some((c.min(a), c.max(a)))
+        }
     }
 
     /// Delete the current selection and collapse cursor. Returns true if something was deleted.
@@ -1382,8 +1474,11 @@ impl AppState {
             return;
         }
         let cursor = self.text_edit.cursor;
-        if cursor == 0 { return; }
-        let prev = self.focused_text()
+        if cursor == 0 {
+            return;
+        }
+        let prev = self
+            .focused_text()
             .map(|t| prev_grapheme_boundary(t, cursor))
             .unwrap_or(0);
         self.move_cursor(prev, extend);
@@ -1397,8 +1492,11 @@ impl AppState {
         }
         let cursor = self.text_edit.cursor;
         let len = self.focused_text().map_or(0, |s| s.len());
-        if cursor >= len { return; }
-        let next = self.focused_text()
+        if cursor >= len {
+            return;
+        }
+        let next = self
+            .focused_text()
             .map(|t| next_grapheme_boundary(t, cursor))
             .unwrap_or(cursor);
         self.move_cursor(next, extend);
@@ -1411,7 +1509,8 @@ impl AppState {
             return;
         }
         let cursor = self.text_edit.cursor;
-        let pos = self.focused_text()
+        let pos = self
+            .focused_text()
             .map(|t| prev_word_boundary(t, cursor))
             .unwrap_or(0);
         self.move_cursor(pos, extend);
@@ -1425,7 +1524,8 @@ impl AppState {
         }
         let cursor = self.text_edit.cursor;
         let len = self.focused_text().map_or(0, |s| s.len());
-        let pos = self.focused_text()
+        let pos = self
+            .focused_text()
             .map(|t| next_word_boundary(t, cursor))
             .unwrap_or(len);
         self.move_cursor(pos, extend);
@@ -1758,7 +1858,7 @@ impl AppState {
                 }
             },
             PaletteEntryKind::File(index) => {
-                self.select_loaded_file(index);
+                self.select_loaded_file(index, true);
                 Vec::new()
             }
             PaletteEntryKind::Repo(path) => self.open_repository(path),
@@ -2059,10 +2159,10 @@ impl AppState {
                 .saturating_add(delta as usize)
                 .min(self.workspace.files.len().saturating_sub(1))
         };
-        self.select_loaded_file(next);
+        self.select_loaded_file(next, true);
     }
 
-    fn select_loaded_file(&mut self, index: usize) {
+    fn select_loaded_file(&mut self, index: usize, reveal: bool) {
         let Some(output) = self.workspace.compare_output.as_ref() else {
             self.startup.preferred_file_index = Some(index);
             return;
@@ -2082,15 +2182,17 @@ impl AppState {
         });
         self.viewport.clear_document();
         self.file_list.hovered_index = Some(index);
-        // Scroll to keep the selected file visible
-        let row_top = index as f32 * self.file_list.row_stride();
-        let row_bottom = row_top + self.file_list.row_height;
-        if row_top < self.file_list.scroll_offset_px {
-            self.file_list.scroll_offset_px = row_top;
-        } else if row_bottom > self.file_list.scroll_offset_px + self.file_list.viewport_height {
-            self.file_list.scroll_offset_px = row_bottom - self.file_list.viewport_height;
+        if reveal {
+            let row_top = index as f32 * self.file_list.row_stride();
+            let row_bottom = row_top + self.file_list.row_height;
+            if row_top < self.file_list.scroll_offset_px {
+                self.file_list.scroll_offset_px = row_top;
+            } else if row_bottom > self.file_list.scroll_offset_px + self.file_list.viewport_height
+            {
+                self.file_list.scroll_offset_px = row_bottom - self.file_list.viewport_height;
+            }
+            self.file_list.clamp_scroll(self.workspace.files.len());
         }
-        self.file_list.clamp_scroll(self.workspace.files.len());
     }
 
     fn scroll_viewport_lines(&mut self, delta_lines: i32) {
@@ -2317,10 +2419,34 @@ mod tests {
     use clap::Parser;
 
     use super::{AppState, FileListEntry, FocusTarget, OverlaySurface, WorkspaceMode};
-    use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
+    use crate::core::compare::{CompareMode, CompareOutput, LayoutMode, RendererKind};
+    use crate::core::diff::FileDiff;
     use crate::platform::persistence::Settings;
     use crate::platform::startup::{Args, StartupOptions};
     use crate::ui::actions::Action;
+
+    fn loaded_state_with_files(paths: &[&str]) -> AppState {
+        let mut state = AppState::default();
+        let files: Vec<FileDiff> = paths
+            .iter()
+            .map(|path| FileDiff {
+                path: (*path).to_owned(),
+                status: "M".to_owned(),
+                ..FileDiff::default()
+            })
+            .collect();
+
+        state.workspace.compare_output = Some(CompareOutput {
+            files: files.clone(),
+            ..CompareOutput::default()
+        });
+        state.workspace.files = files.iter().map(FileListEntry::from).collect();
+        state.workspace_mode = WorkspaceMode::Ready;
+        state.file_list.row_height = 36.0;
+        state.file_list.gap = 4.0;
+        state.file_list.viewport_height = 80.0;
+        state
+    }
 
     #[test]
     fn bootstrap_with_no_repo_starts_empty_workspace() {
@@ -2454,6 +2580,30 @@ mod tests {
     }
 
     #[test]
+    fn clicking_a_visible_file_does_not_force_sidebar_reveal() {
+        let mut state = loaded_state_with_files(&["a.rs", "b.rs", "c.rs"]);
+        state.file_list.scroll_offset_px = 10.0;
+
+        state.apply_action(Action::SelectFile(0));
+
+        assert_eq!(state.workspace.selected_file_index, Some(0));
+        assert_eq!(state.file_list.scroll_offset_px, 10.0);
+    }
+
+    #[test]
+    fn keyboard_file_navigation_still_reveals_selection() {
+        let mut state = loaded_state_with_files(&["a.rs", "b.rs", "c.rs", "d.rs"]);
+        state.workspace.selected_file_index = Some(0);
+        state.workspace.selected_file_path = Some("a.rs".into());
+        state.file_list.scroll_offset_px = 50.0;
+
+        state.apply_action(Action::SelectNextFile);
+
+        assert_eq!(state.workspace.selected_file_index, Some(1));
+        assert_eq!(state.file_list.scroll_offset_px, 40.0);
+    }
+
+    #[test]
     fn overlay_list_pixel_scroll_action_clamps_active_overlay() {
         let mut state = AppState::default();
         state.overlays.stack.push(super::OverlayEntry {
@@ -2477,5 +2627,35 @@ mod tests {
 
         state.apply_action(Action::ScrollActiveOverlayListPx(-1_000));
         assert_eq!(state.overlays.picker.list.scroll_top_px, 0);
+    }
+
+    #[test]
+    fn sidebar_width_action_clamps_and_stores_manual_preference() {
+        let mut state = AppState::default();
+
+        state.apply_action(Action::SetSidebarWidthPx(40));
+        assert_eq!(state.settings.sidebar_width_px, Some(179));
+
+        state.apply_action(Action::SetSidebarWidthPx(420));
+        assert_eq!(state.settings.sidebar_width_px, Some(420));
+    }
+
+    #[test]
+    fn ui_scale_actions_step_and_persist_within_bounds() {
+        let mut state = AppState::default();
+
+        let effects = state.apply_action(Action::IncreaseUiScale);
+        assert_eq!(state.settings.ui_scale_pct, 110);
+        assert_eq!(effects.len(), 1);
+
+        for _ in 0..20 {
+            state.apply_action(Action::IncreaseUiScale);
+        }
+        assert_eq!(state.settings.ui_scale_pct, 180);
+
+        for _ in 0..20 {
+            state.apply_action(Action::DecreaseUiScale);
+        }
+        assert_eq!(state.settings.ui_scale_pct, 70);
     }
 }

@@ -39,10 +39,7 @@ pub fn rasterize_svg(svg: &str, size: u32, color: Color) -> (Vec<u8>, u32, u32) 
         .replace("stroke=\"#000\"", &format!("stroke=\"{color_hex}\""))
         .replace("fill=\"#000\"", &format!("fill=\"{color_hex}\""));
 
-    let tree = resvg::usvg::Tree::from_str(
-        &colored_svg,
-        &resvg::usvg::Options::default(),
-    );
+    let tree = resvg::usvg::Tree::from_str(&colored_svg, &resvg::usvg::Options::default());
     let tree = match tree {
         Ok(t) => t,
         Err(_) => {
@@ -61,11 +58,14 @@ pub fn rasterize_svg(svg: &str, size: u32, color: Color) -> (Vec<u8>, u32, u32) 
     resvg::render(&tree, transform, &mut pixmap.as_mut());
 
     let rgba = pixmap.data().to_vec();
-    cache.insert(key, CachedIcon {
-        rgba: rgba.clone(),
-        width: w,
-        height: h,
-    });
+    cache.insert(
+        key,
+        CachedIcon {
+            rgba: rgba.clone(),
+            width: w,
+            height: h,
+        },
+    );
 
     (rgba, w, h)
 }

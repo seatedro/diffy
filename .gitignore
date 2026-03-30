@@ -10,6 +10,8 @@ git_diff_output.txt
 .envrc
 .diffy-dev.env
 AGENTS.md
+.agents/
+.claude/
 vendor/grammars/*/src/
 
 # Build output

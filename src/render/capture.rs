@@ -47,8 +47,7 @@ impl CaptureFonts {
 
 /// Render a Scene to RGBA pixel data at the given dimensions.
 pub fn scene_to_rgba(scene: &Scene, width: u32, height: u32) -> Vec<u8> {
-    let mut pixmap =
-        tiny_skia::Pixmap::new(width, height).expect("failed to create pixmap");
+    let mut pixmap = tiny_skia::Pixmap::new(width, height).expect("failed to create pixmap");
     let fonts = CaptureFonts::new();
 
     // Fill with black background.
@@ -60,13 +59,7 @@ pub fn scene_to_rgba(scene: &Scene, width: u32, height: u32) -> Vec<u8> {
                 fill_rect(&mut pixmap, r.rect, r.color, 0.0, None);
             }
             Primitive::RoundedRect(r) => {
-                fill_rect(
-                    &mut pixmap,
-                    r.rect,
-                    r.color,
-                    r.corner_radii[0],
-                    None,
-                );
+                fill_rect(&mut pixmap, r.rect, r.color, r.corner_radii[0], None);
             }
             Primitive::Border(b) => {
                 stroke_rect(
@@ -168,7 +161,8 @@ pub fn scene_to_rgba(scene: &Scene, width: u32, height: u32) -> Vec<u8> {
                 let ph = pixmap.height();
                 blit_rgba(
                     pixmap.data_mut(),
-                    pw, ph,
+                    pw,
+                    ph,
                     &img.rgba,
                     img.width,
                     img.height,
@@ -177,13 +171,7 @@ pub fn scene_to_rgba(scene: &Scene, width: u32, height: u32) -> Vec<u8> {
             }
             Primitive::EffectQuad(e) => {
                 // Approximate: gradient from color_a to color_b.
-                fill_rect(
-                    &mut pixmap,
-                    e.rect,
-                    e.color_a,
-                    e.corner_radius,
-                    None,
-                );
+                fill_rect(&mut pixmap, e.rect, e.color_a, e.corner_radius, None);
             }
             Primitive::BlurRegion(_) => {
                 // Can't software-blur; skip.
@@ -212,7 +200,9 @@ pub fn scene_to_png(scene: &Scene, width: u32, height: u32, path: &std::path::Pa
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().expect("failed to write PNG header");
-    writer.write_image_data(&rgba).expect("failed to write PNG data");
+    writer
+        .write_image_data(&rgba)
+        .expect("failed to write PNG data");
 }
 
 // ---------------------------------------------------------------------------
@@ -375,11 +365,9 @@ fn draw_text(
                 }
                 let px = (glyph_x + gx as f32) as i32;
                 let py = (glyph_y + gy as f32) as i32;
-                if px < 0 || py < 0 || px >= pixmap.width() as i32 || py >= pixmap.height() as i32
-                {
+                if px < 0 || py < 0 || px >= pixmap.width() as i32 || py >= pixmap.height() as i32 {
                     continue;
                 }
-
 
                 let alpha = (coverage as u16 * color.a as u16 / 255) as u8;
                 if alpha == 0 {

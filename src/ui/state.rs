@@ -7,6 +7,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::core::compare::{CompareMode, CompareOutput, CompareSpec, LayoutMode, RendererKind};
 use crate::core::diff::FileDiff;
 use crate::core::search::fuzzy::fuzzy_score;
+use crate::core::syntax::DiffSyntaxAnnotator;
 use crate::core::vcs::git::{BranchInfo, CommitInfo, TagInfo};
 use crate::core::vcs::github::{DeviceFlowState, PullRequestInfo};
 use crate::platform::persistence::{PersistedCompare, Settings};
@@ -20,6 +21,7 @@ use crate::ui::theme::ThemeMode;
 
 const MAX_VISIBLE_TOASTS: usize = 8;
 const TOAST_LIFETIME_MS: u64 = 10_000;
+const CURSOR_BLINK_INTERVAL_MS: u64 = 530;
 const PICKER_LIST_VIEWPORT_HEIGHT_PX: u32 = 204;
 const COMMAND_PALETTE_LIST_VIEWPORT_HEIGHT_PX: u32 = 288;
 const DEFAULT_UI_SCALE_PCT: u16 = 100;
@@ -144,6 +146,13 @@ pub struct ActiveFile {
     pub render_doc: RenderDoc,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SidebarWidthCache {
+    pub compare_generation: u64,
+    pub ui_scale_pct: u16,
+    pub intrinsic_width_px: f32,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct WorkspaceState {
     pub status: AsyncStatus,
@@ -156,6 +165,7 @@ pub struct WorkspaceState {
     pub raw_diff_len: usize,
     pub used_fallback: bool,
     pub fallback_message: String,
+    pub sidebar_auto_width: Option<SidebarWidthCache>,
 }
 
 impl WorkspaceState {
@@ -169,6 +179,7 @@ impl WorkspaceState {
         self.raw_diff_len = 0;
         self.used_fallback = false;
         self.fallback_message.clear();
+        self.sidebar_auto_width = None;
     }
 }
 
@@ -1032,6 +1043,34 @@ impl AppState {
         });
     }
 
+    pub fn cursor_blink_epoch(&self) -> Option<u64> {
+        self.is_text_focused().then(|| {
+            self.clock_ms
+                .saturating_sub(self.text_edit.cursor_moved_at_ms)
+                / CURSOR_BLINK_INTERVAL_MS
+        })
+    }
+
+    pub fn next_cursor_blink_at_ms(&self) -> Option<u64> {
+        self.is_text_focused().then(|| {
+            let elapsed = self
+                .clock_ms
+                .saturating_sub(self.text_edit.cursor_moved_at_ms);
+            let next_epoch = elapsed / CURSOR_BLINK_INTERVAL_MS + 1;
+            self.text_edit
+                .cursor_moved_at_ms
+                .saturating_add(next_epoch.saturating_mul(CURSOR_BLINK_INTERVAL_MS))
+        })
+    }
+
+    pub fn next_toast_expiry_at_ms(&self) -> Option<u64> {
+        self.toasts
+            .iter()
+            .filter(|toast| !toast.hovered)
+            .map(|toast| toast.created_at_ms.saturating_add(TOAST_LIFETIME_MS))
+            .min()
+    }
+
     pub fn active_overlay_name(&self) -> Option<&'static str> {
         self.overlays.active_name()
     }
@@ -1107,6 +1146,7 @@ impl AppState {
         self.workspace.fallback_message = payload.output.fallback_message.clone();
         self.workspace.files = build_file_entries(&payload.output.files);
         self.workspace.compare_output = Some(payload.output);
+        self.workspace.sidebar_auto_width = None;
         self.file_list.scroll_offset_px = 0.0;
         self.set_focus(Some(FocusTarget::FileList));
         self.viewport.clear_document();
@@ -2163,14 +2203,25 @@ impl AppState {
     }
 
     fn select_loaded_file(&mut self, index: usize, reveal: bool) {
-        let Some(output) = self.workspace.compare_output.as_ref() else {
+        let Some(output) = self.workspace.compare_output.as_mut() else {
             self.startup.preferred_file_index = Some(index);
             return;
         };
-        let Some(file) = output.files.get(index) else {
+        let Some(file) = output.files.get_mut(index) else {
             self.push_error("Selected file index is out of range.");
             return;
         };
+
+        if !file.syntax_annotated {
+            DiffSyntaxAnnotator::new().annotate(
+                file,
+                &mut output.text_buffer,
+                &mut output.token_buffer,
+            );
+            file.syntax_annotated = true;
+        }
+
+        let file = file.clone();
 
         self.workspace.selected_file_index = Some(index);
         self.workspace.selected_file_path = Some(file.path.clone());
@@ -2178,7 +2229,7 @@ impl AppState {
             index,
             path: file.path.clone(),
             file: file.clone(),
-            render_doc: build_render_doc(file, index, &output.text_buffer, &output.token_buffer),
+            render_doc: build_render_doc(&file, index, &output.text_buffer, &output.token_buffer),
         });
         self.viewport.clear_document();
         self.file_list.hovered_index = Some(index);
@@ -2420,7 +2471,7 @@ mod tests {
 
     use super::{AppState, FileListEntry, FocusTarget, OverlaySurface, WorkspaceMode};
     use crate::core::compare::{CompareMode, CompareOutput, LayoutMode, RendererKind};
-    use crate::core::diff::FileDiff;
+    use crate::core::diff::{DiffLine, FileDiff, Hunk, LineKind};
     use crate::platform::persistence::Settings;
     use crate::platform::startup::{Args, StartupOptions};
     use crate::ui::actions::Action;
@@ -2601,6 +2652,65 @@ mod tests {
 
         assert_eq!(state.workspace.selected_file_index, Some(1));
         assert_eq!(state.file_list.scroll_offset_px, 40.0);
+    }
+
+    #[test]
+    fn selecting_a_file_lazily_annotates_syntax_once() {
+        let mut state = AppState::default();
+        let mut output = CompareOutput::default();
+        let text_range = output.text_buffer.append("fn answer() -> i32 { 42 }");
+        output.files = vec![FileDiff {
+            path: "src/lib.rs".to_owned(),
+            status: "M".to_owned(),
+            hunks: vec![Hunk {
+                header: "@@ -1 +1 @@".to_owned(),
+                lines: vec![DiffLine {
+                    kind: LineKind::Context,
+                    old_line_number: Some(1),
+                    new_line_number: Some(1),
+                    text_range,
+                    ..DiffLine::default()
+                }],
+                ..Hunk::default()
+            }],
+            ..FileDiff::default()
+        }];
+        state.workspace.compare_output = Some(output);
+        state.workspace.files = vec![FileListEntry {
+            path: "src/lib.rs".to_owned(),
+            status: "M".to_owned(),
+            additions: 0,
+            deletions: 0,
+            is_binary: false,
+        }];
+        state.workspace_mode = WorkspaceMode::Ready;
+
+        state.apply_action(Action::SelectFile(0));
+
+        let output = state
+            .workspace
+            .compare_output
+            .as_ref()
+            .expect("compare output");
+        assert!(output.files[0].syntax_annotated);
+        assert!(
+            !output
+                .token_buffer
+                .view(output.files[0].hunks[0].lines[0].syntax_tokens)
+                .is_empty()
+        );
+
+        let previous_tokens = output.files[0].hunks[0].lines[0].syntax_tokens;
+        state.apply_action(Action::SelectFile(0));
+        let output = state
+            .workspace
+            .compare_output
+            .as_ref()
+            .expect("compare output");
+        assert_eq!(
+            output.files[0].hunks[0].lines[0].syntax_tokens,
+            previous_tokens
+        );
     }
 
     #[test]

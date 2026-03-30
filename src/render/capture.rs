@@ -126,7 +126,7 @@ pub fn scene_to_rgba(scene: &Scene, width: u32, height: u32) -> Vec<u8> {
                 draw_text(
                     &mut pixmap,
                     fonts.for_style(t.font_kind, t.font_weight),
-                    &t.text,
+                    t.text.as_ref(),
                     t.rect,
                     t.color,
                     t.font_size,
@@ -147,7 +147,7 @@ pub fn scene_to_rgba(scene: &Scene, width: u32, height: u32) -> Vec<u8> {
                     draw_text(
                         &mut pixmap,
                         font,
-                        &span.text,
+                        span.text.as_ref(),
                         span_rect,
                         span.color,
                         t.font_size,

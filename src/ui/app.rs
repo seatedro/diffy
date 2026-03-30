@@ -66,6 +66,7 @@ struct NativeApp {
     file_list_scroll_remainder_px: f32,
     overlay_scroll_remainder_px: f32,
     viewport_scroll_remainder_px: f32,
+    needs_redraw: bool,
 }
 
 /// State for an active scrollbar thumb drag.
@@ -114,7 +115,13 @@ impl NativeApp {
             file_list_scroll_remainder_px: 0.0,
             overlay_scroll_remainder_px: 0.0,
             viewport_scroll_remainder_px: 0.0,
+            needs_redraw: true,
         }
+    }
+
+    fn mark_dirty(&mut self) {
+        self.dumps_dirty = true;
+        self.needs_redraw = true;
     }
 
     fn sync_theme(&mut self) {
@@ -152,7 +159,7 @@ impl NativeApp {
         }
         self.sync_theme();
         self.refresh_window_title();
-        self.dumps_dirty = true;
+        self.mark_dirty();
     }
 
     fn write_dumps_if_needed(&mut self) {
@@ -242,7 +249,7 @@ impl NativeApp {
         self.runtime.dispatch_all(effects);
         self.sync_theme();
         self.refresh_window_title();
-        self.dumps_dirty = true;
+        self.mark_dirty();
     }
 
     fn handle_left_click(&mut self, x: f32, y: f32) {
@@ -873,7 +880,7 @@ impl ApplicationHandler for NativeApp {
                 {
                     renderer.resize(size.width, size.height, window.scale_factor());
                 }
-                self.dumps_dirty = true;
+                self.mark_dirty();
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
@@ -909,12 +916,15 @@ impl ApplicationHandler for NativeApp {
                 }
 
                 self.dumps_dirty = true;
+                self.needs_redraw = false;
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.handle_cursor_moved(position.x as f32, position.y as f32);
+                self.mark_dirty();
             }
             WindowEvent::MouseWheel { delta, phase, .. } => {
                 self.handle_scroll(delta, phase);
+                self.mark_dirty();
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -924,6 +934,7 @@ impl ApplicationHandler for NativeApp {
                 if let Some((x, y)) = self.mouse_position {
                     self.handle_left_click(x, y);
                 }
+                self.mark_dirty();
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -935,13 +946,15 @@ impl ApplicationHandler for NativeApp {
                         .dispatch_all(vec![crate::ui::effects::Effect::SaveSettings(
                             self.state.settings.clone(),
                         )]);
-                    self.dumps_dirty = true;
+                    self.mark_dirty();
                 }
                 self.mouse_drag_target = None;
                 self.scrollbar_drag = None;
+                self.mark_dirty();
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 self.handle_key(&event.logical_key);
+                self.mark_dirty();
             }
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
                 self.dispatch_action(Action::InsertText(text));
@@ -951,6 +964,8 @@ impl ApplicationHandler for NativeApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let prior_toast_count = self.state.toasts.len();
+        let prior_cursor_blink_epoch = self.state.cursor_blink_epoch();
         self.state.update_time(
             self.launch_at
                 .elapsed()
@@ -969,22 +984,41 @@ impl ApplicationHandler for NativeApp {
         }
 
         let animating = self.state.animation.has_active();
-        let cursor_blinking = self.is_text_focused();
+        let cursor_blink_changed = self.state.cursor_blink_epoch() != prior_cursor_blink_epoch;
+        let toasts_changed = self.state.toasts.len() != prior_toast_count;
         let should_poll = self.state.startup.exit_after.is_some();
-        if animating {
-            let next = std::time::Instant::now() + std::time::Duration::from_millis(16);
-            event_loop.set_control_flow(ControlFlow::WaitUntil(next));
-        } else if cursor_blinking {
-            // Redraw at ~2fps for cursor blink
-            let next = std::time::Instant::now() + std::time::Duration::from_millis(530);
-            event_loop.set_control_flow(ControlFlow::WaitUntil(next));
-        } else if should_poll {
+        let next_wake = if animating {
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(16))
+        } else {
+            let next_cursor_blink = self
+                .state
+                .next_cursor_blink_at_ms()
+                .map(|ms| self.launch_at + std::time::Duration::from_millis(ms));
+            let next_toast_expiry = self
+                .state
+                .next_toast_expiry_at_ms()
+                .map(|ms| self.launch_at + std::time::Duration::from_millis(ms));
+            match (next_cursor_blink, next_toast_expiry) {
+                (Some(left), Some(right)) => Some(left.min(right)),
+                (Some(next), None) | (None, Some(next)) => Some(next),
+                (None, None) => None,
+            }
+        };
+
+        if should_poll {
             event_loop.set_control_flow(ControlFlow::Poll);
+        } else if let Some(next) = next_wake {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(next));
         } else {
             event_loop.set_control_flow(ControlFlow::Wait);
         }
 
-        if let Some(window) = self.window.as_ref() {
+        if let Some(window) = self.window.as_ref()
+            && (self.needs_redraw
+                || animating
+                || cursor_blink_changed
+                || toasts_changed)
+        {
             window.request_redraw();
         }
     }

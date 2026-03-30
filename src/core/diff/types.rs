@@ -39,6 +39,8 @@ pub struct FileDiff {
     pub additions: i32,
     pub deletions: i32,
     pub hunks: Vec<Hunk>,
+    #[serde(skip)]
+    pub syntax_annotated: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]

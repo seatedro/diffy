@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{collections::HashMap, ops::Range, sync::Arc};
 
 use crate::core::compare::LayoutMode;
 use crate::core::text::SyntaxTokenKind;
@@ -70,6 +70,43 @@ struct ViewportLayoutKey {
     doc_line_count: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ViewportThemeKey {
+    text_strong: Color,
+    text_muted: Color,
+    accent: Color,
+    line_add_text: Color,
+    line_del_text: Color,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct WrappedTextCacheKey {
+    text_start: u32,
+    text_len: u32,
+    runs_start: u32,
+    runs_len: u32,
+    segment_index: u16,
+    wrap_cols: u16,
+    tone: RowTone,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct GutterTextCacheKey {
+    old_line_no: u32,
+    new_line_no: u32,
+    digits: u32,
+    kind: GutterTextKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum GutterTextKind {
+    SplitLeft,
+    SplitRight,
+    Unified,
+    UnifiedOldOnly,
+    UnifiedNewOnly,
+}
+
 #[derive(Debug, Clone)]
 pub struct DiffViewportRuntime {
     layout_key: Option<ViewportLayoutKey>,
@@ -80,6 +117,9 @@ pub struct DiffViewportRuntime {
     rows: Vec<DisplayRow>,
     strips: Vec<StripLayout>,
     paint_row_range: Range<usize>,
+    theme_cache_key: Option<ViewportThemeKey>,
+    wrapped_text_cache: HashMap<WrappedTextCacheKey, Arc<[RichTextSpan]>>,
+    gutter_text_cache: HashMap<GutterTextCacheKey, Arc<str>>,
 }
 
 impl Default for DiffViewportRuntime {
@@ -93,6 +133,9 @@ impl Default for DiffViewportRuntime {
             rows: Vec::new(),
             strips: Vec::new(),
             paint_row_range: 0..0,
+            theme_cache_key: None,
+            wrapped_text_cache: HashMap::new(),
+            gutter_text_cache: HashMap::new(),
         }
     }
 }
@@ -144,6 +187,7 @@ impl DiffViewportRuntime {
 
                 if self.layout_key != Some(key) {
                     self.rebuild_rows(doc, state, text_metrics);
+                    self.clear_document_caches();
                     self.layout_key = Some(key);
                 }
 
@@ -156,6 +200,7 @@ impl DiffViewportRuntime {
                 self.rows.clear();
                 self.strips.clear();
                 self.paint_row_range = 0..0;
+                self.clear_document_caches();
                 state.clear_document();
             }
         }
@@ -238,7 +283,7 @@ impl DiffViewportRuntime {
     }
 
     pub fn paint(
-        &self,
+        &mut self,
         scene: &mut Scene,
         theme: &Theme,
         state: &DiffViewportState,
@@ -281,7 +326,7 @@ impl DiffViewportRuntime {
                 width: inset.width,
                 height: 28.0,
             },
-            text: title.to_owned(),
+            text: title.into(),
             color: theme.colors.text_strong,
             font_size: 18.0,
             font_kind: FontKind::Ui,
@@ -294,7 +339,7 @@ impl DiffViewportRuntime {
                 width: inset.width,
                 height: 22.0,
             },
-            text: message.to_owned(),
+            text: message.into(),
             color: theme.colors.text_muted,
             font_size: 13.0,
             font_kind: FontKind::Ui,
@@ -303,13 +348,14 @@ impl DiffViewportRuntime {
     }
 
     fn paint_rows(
-        &self,
+        &mut self,
         scene: &mut Scene,
         theme: &Theme,
         state: &DiffViewportState,
         path: &str,
         doc: &RenderDoc,
     ) {
+        self.sync_theme_cache(theme);
         scene.clip(self.layout.content_bounds);
         if self.layout.split_mode {
             scene.rect(RectPrimitive {
@@ -328,10 +374,10 @@ impl DiffViewportRuntime {
         }
 
         for row_index in self.paint_row_range.clone() {
-            let Some(display_row) = self.rows.get(row_index) else {
+            let Some(display_row) = self.rows.get(row_index).copied() else {
                 continue;
             };
-            let Some(line) = doc.lines.get(display_row.line_index as usize) else {
+            let Some(line) = doc.lines.get(display_row.line_index as usize).copied() else {
                 continue;
             };
             let row_rect = Rect {
@@ -354,10 +400,10 @@ impl DiffViewportRuntime {
                         rect: Rect {
                             x: self.text_origin_x(),
                             y: row_rect.y + 6.0,
-                            width: self.text_width(),
-                            height: row_rect.height - 8.0,
-                        },
-                        text: path.to_owned(),
+                        width: self.text_width(),
+                        height: row_rect.height - 8.0,
+                    },
+                        text: path.into(),
                         color: theme.colors.text_strong,
                         font_size: 15.0,
                         font_kind: FontKind::Ui,
@@ -372,7 +418,7 @@ impl DiffViewportRuntime {
                             width: self.text_width(),
                             height: row_rect.height - 6.0,
                         },
-                        text: doc.line_text(line.left_text).to_owned(),
+                        text: doc.line_text(line.left_text).into(),
                         color: theme.colors.text_muted,
                         font_size: 13.0,
                         font_kind: FontKind::Mono,
@@ -380,10 +426,10 @@ impl DiffViewportRuntime {
                     });
                 }
                 _ if self.layout.split_mode => {
-                    self.paint_split_body_row(scene, theme, row_rect, line, display_row, doc);
+                    self.paint_split_body_row(scene, theme, row_rect, &line, &display_row, doc);
                 }
                 _ => {
-                    self.paint_unified_body_row(scene, theme, row_rect, line, display_row, doc);
+                    self.paint_unified_body_row(scene, theme, row_rect, &line, &display_row, doc);
                 }
             }
 
@@ -400,7 +446,7 @@ impl DiffViewportRuntime {
     }
 
     fn paint_split_body_row(
-        &self,
+        &mut self,
         scene: &mut Scene,
         theme: &Theme,
         row_rect: Rect,
@@ -416,7 +462,12 @@ impl DiffViewportRuntime {
                 width: self.layout.left_gutter_rect.width - GUTTER_PADDING_PX * 2.0,
                 height: row_height,
             },
-            text: format_line_number(line.old_line_no, self.summary.gutter_digits),
+            text: self.cached_gutter_text(GutterTextCacheKey {
+                old_line_no: line.old_line_no,
+                new_line_no: INVALID_U32,
+                digits: self.summary.gutter_digits,
+                kind: GutterTextKind::SplitLeft,
+            }),
             color: theme.colors.gutter_text,
             font_size: 12.0,
             font_kind: FontKind::Mono,
@@ -429,7 +480,12 @@ impl DiffViewportRuntime {
                 width: self.layout.right_gutter_rect.width - GUTTER_PADDING_PX * 2.0,
                 height: row_height,
             },
-            text: format_line_number(line.new_line_no, self.summary.gutter_digits),
+            text: self.cached_gutter_text(GutterTextCacheKey {
+                old_line_no: INVALID_U32,
+                new_line_no: line.new_line_no,
+                digits: self.summary.gutter_digits,
+                kind: GutterTextKind::SplitRight,
+            }),
             color: theme.colors.gutter_text,
             font_size: 12.0,
             font_kind: FontKind::Mono,
@@ -443,7 +499,7 @@ impl DiffViewportRuntime {
                 width: self.layout.left_text_rect.width,
                 height: row_height,
             };
-            if let Some(spans) = build_wrapped_rich_text(
+            if let Some(spans) = self.cached_wrapped_rich_text(
                 doc,
                 line.left_text,
                 line.left_runs,
@@ -470,7 +526,7 @@ impl DiffViewportRuntime {
                 width: self.layout.right_text_rect.width,
                 height: row_height,
             };
-            if let Some(spans) = build_wrapped_rich_text(
+            if let Some(spans) = self.cached_wrapped_rich_text(
                 doc,
                 line.right_text,
                 line.right_runs,
@@ -492,7 +548,7 @@ impl DiffViewportRuntime {
     }
 
     fn paint_unified_body_row(
-        &self,
+        &mut self,
         scene: &mut Scene,
         theme: &Theme,
         row_rect: Rect,
@@ -519,17 +575,18 @@ impl DiffViewportRuntime {
                         width: self.layout.unified_gutter_rect.width - GUTTER_PADDING_PX * 2.0,
                         height: row_height,
                     },
-                    text: format!(
-                        "{} {}",
-                        format_line_number(line.old_line_no, self.summary.gutter_digits),
-                        " ".repeat(self.summary.gutter_digits as usize)
-                    ),
+                    text: self.cached_gutter_text(GutterTextCacheKey {
+                        old_line_no: line.old_line_no,
+                        new_line_no: INVALID_U32,
+                        digits: self.summary.gutter_digits,
+                        kind: GutterTextKind::UnifiedOldOnly,
+                    }),
                     color: theme.colors.gutter_text,
                     font_size: 12.0,
                     font_kind: FontKind::Mono,
                     font_weight: FontWeight::Normal,
                 });
-                if let Some(spans) = build_wrapped_rich_text(
+                if let Some(spans) = self.cached_wrapped_rich_text(
                     doc,
                     line.left_text,
                     line.left_runs,
@@ -567,17 +624,18 @@ impl DiffViewportRuntime {
                         width: self.layout.unified_gutter_rect.width - GUTTER_PADDING_PX * 2.0,
                         height: row_height,
                     },
-                    text: format!(
-                        "{} {}",
-                        " ".repeat(self.summary.gutter_digits as usize),
-                        format_line_number(line.new_line_no, self.summary.gutter_digits)
-                    ),
+                    text: self.cached_gutter_text(GutterTextCacheKey {
+                        old_line_no: INVALID_U32,
+                        new_line_no: line.new_line_no,
+                        digits: self.summary.gutter_digits,
+                        kind: GutterTextKind::UnifiedNewOnly,
+                    }),
                     color: theme.colors.gutter_text,
                     font_size: 12.0,
                     font_kind: FontKind::Mono,
                     font_weight: FontWeight::Normal,
                 });
-                if let Some(spans) = build_wrapped_rich_text(
+                if let Some(spans) = self.cached_wrapped_rich_text(
                     doc,
                     line.right_text,
                     line.right_runs,
@@ -606,11 +664,12 @@ impl DiffViewportRuntime {
                 width: self.layout.unified_gutter_rect.width - GUTTER_PADDING_PX * 2.0,
                 height: row_height,
             },
-            text: format!(
-                "{} {}",
-                format_line_number(line.old_line_no, self.summary.gutter_digits),
-                format_line_number(line.new_line_no, self.summary.gutter_digits)
-            ),
+            text: self.cached_gutter_text(GutterTextCacheKey {
+                old_line_no: line.old_line_no,
+                new_line_no: line.new_line_no,
+                digits: self.summary.gutter_digits,
+                kind: GutterTextKind::Unified,
+            }),
             color: theme.colors.gutter_text,
             font_size: 12.0,
             font_kind: FontKind::Mono,
@@ -618,7 +677,7 @@ impl DiffViewportRuntime {
         });
 
         if let Some((text_range, runs, tone)) = unified_body_side(line) {
-            if let Some(spans) = build_wrapped_rich_text(
+            if let Some(spans) = self.cached_wrapped_rich_text(
                 doc,
                 text_range,
                 runs,
@@ -642,6 +701,94 @@ impl DiffViewportRuntime {
                 });
             }
         }
+    }
+
+    fn clear_document_caches(&mut self) {
+        self.wrapped_text_cache.clear();
+        self.gutter_text_cache.clear();
+    }
+
+    fn sync_theme_cache(&mut self, theme: &Theme) {
+        let key = ViewportThemeKey {
+            text_strong: theme.colors.text_strong,
+            text_muted: theme.colors.text_muted,
+            accent: theme.colors.accent,
+            line_add_text: theme.colors.line_add_text,
+            line_del_text: theme.colors.line_del_text,
+        };
+        if self.theme_cache_key != Some(key) {
+            self.wrapped_text_cache.clear();
+            self.theme_cache_key = Some(key);
+        }
+    }
+
+    fn cached_wrapped_rich_text(
+        &mut self,
+        doc: &RenderDoc,
+        text_range: ByteRange,
+        runs: RunRange,
+        segment_index: u16,
+        wrap_cols: u16,
+        tone: RowTone,
+        theme: &Theme,
+    ) -> Option<Arc<[RichTextSpan]>> {
+        if !text_range.is_valid() {
+            return None;
+        }
+        let key = WrappedTextCacheKey {
+            text_start: text_range.start,
+            text_len: text_range.len,
+            runs_start: runs.start,
+            runs_len: runs.len,
+            segment_index,
+            wrap_cols,
+            tone,
+        };
+        if let Some(cached) = self.wrapped_text_cache.get(&key) {
+            return Some(cached.clone());
+        }
+
+        let spans = build_wrapped_rich_text(
+            doc,
+            text_range,
+            runs,
+            segment_index,
+            wrap_cols,
+            tone,
+            theme,
+        )?;
+        self.wrapped_text_cache.insert(key, spans.clone());
+        Some(spans)
+    }
+
+    fn cached_gutter_text(&mut self, key: GutterTextCacheKey) -> Arc<str> {
+        if let Some(cached) = self.gutter_text_cache.get(&key) {
+            return cached.clone();
+        }
+
+        let spaces = " ".repeat(key.digits as usize);
+        let text: Arc<str> = match key.kind {
+            GutterTextKind::SplitLeft => format_line_number_string(key.old_line_no, key.digits),
+            GutterTextKind::SplitRight => format_line_number_string(key.new_line_no, key.digits),
+            GutterTextKind::Unified => format!(
+                "{} {}",
+                format_line_number_string(key.old_line_no, key.digits),
+                format_line_number_string(key.new_line_no, key.digits)
+            ),
+            GutterTextKind::UnifiedOldOnly => format!(
+                "{} {}",
+                format_line_number_string(key.old_line_no, key.digits),
+                spaces
+            ),
+            GutterTextKind::UnifiedNewOnly => format!(
+                "{} {}",
+                spaces,
+                format_line_number_string(key.new_line_no, key.digits)
+            ),
+        }
+        .into();
+        self.gutter_text_cache.insert(key, text.clone());
+        text
     }
 
     fn paint_scrollbar(&self, scene: &mut Scene, theme: &Theme, state: &DiffViewportState) {
@@ -710,7 +857,7 @@ impl DiffViewportRuntime {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum RowTone {
     Neutral,
     Added,
@@ -834,7 +981,7 @@ fn paint_row_background(scene: &mut Scene, theme: &Theme, row_rect: Rect, kind: 
     });
 }
 
-fn format_line_number(line_no: u32, digits: u32) -> String {
+fn format_line_number_string(line_no: u32, digits: u32) -> String {
     if line_no == INVALID_U32 {
         " ".repeat(digits as usize)
     } else {
@@ -891,23 +1038,25 @@ fn build_wrapped_rich_text(
     wrap_cols: u16,
     tone: RowTone,
     theme: &Theme,
-) -> Option<Vec<RichTextSpan>> {
+) -> Option<Arc<[RichTextSpan]>> {
     if !text_range.is_valid() {
         return None;
     }
     let full_text = doc.line_text(text_range);
-    if full_text.is_empty() {
-        return Some(Vec::new());
-    }
-    let (start, end) = wrapped_byte_slice(full_text, wrap_cols, segment_index)?;
-    Some(build_segment_spans(
-        full_text,
-        start,
-        end,
-        doc.line_runs(runs),
-        tone,
-        theme,
-    ))
+    let spans: Arc<[RichTextSpan]> = if full_text.is_empty() {
+        Arc::from(Vec::new())
+    } else {
+        let (start, end) = wrapped_byte_slice(full_text, wrap_cols, segment_index)?;
+        Arc::from(build_segment_spans(
+            full_text,
+            start,
+            end,
+            doc.line_runs(runs),
+            tone,
+            theme,
+        ))
+    };
+    Some(spans)
 }
 
 fn wrapped_byte_slice(text: &str, wrap_cols: u16, segment_index: u16) -> Option<(usize, usize)> {
@@ -957,13 +1106,13 @@ fn build_segment_spans(
 
         if cursor < start {
             spans.push(RichTextSpan {
-                text: full_text[cursor..start].to_owned(),
+                text: full_text[cursor..start].into(),
                 color: tone.default_text(theme),
             });
         }
 
         spans.push(RichTextSpan {
-            text: full_text[start..end].to_owned(),
+            text: full_text[start..end].into(),
             color: style_run_color(*run, tone, theme),
         });
         cursor = end;
@@ -971,14 +1120,14 @@ fn build_segment_spans(
 
     if cursor < segment_end {
         spans.push(RichTextSpan {
-            text: full_text[cursor..segment_end].to_owned(),
+            text: full_text[cursor..segment_end].into(),
             color: tone.default_text(theme),
         });
     }
 
     if spans.is_empty() {
         spans.push(RichTextSpan {
-            text: full_text[segment_start..segment_end].to_owned(),
+            text: full_text[segment_start..segment_end].into(),
             color: tone.default_text(theme),
         });
     }
@@ -1096,7 +1245,7 @@ mod tests {
         assert_eq!(
             spans
                 .iter()
-                .map(|span| span.text.as_str())
+                .map(|span| span.text.as_ref())
                 .collect::<String>(),
             "keyword value"
         );

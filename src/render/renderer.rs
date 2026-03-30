@@ -1,4 +1,8 @@
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    hash::{DefaultHasher, Hash, Hasher},
+    sync::Arc,
+};
 
 use bytemuck::{Pod, Zeroable};
 use glyphon::{
@@ -73,6 +77,70 @@ struct PooledTexture {
 struct TexturePool {
     textures: Vec<PooledTexture>,
     format: wgpu::TextureFormat,
+}
+
+#[derive(Debug)]
+struct ReusableBuffer {
+    buffer: wgpu::Buffer,
+    capacity_bytes: usize,
+}
+
+#[derive(Debug, Default)]
+struct TransientBufferPool {
+    buffers: Vec<ReusableBuffer>,
+    next_buffer: usize,
+}
+
+impl TransientBufferPool {
+    fn begin_frame(&mut self) {
+        self.next_buffer = 0;
+    }
+
+    fn upload<T: Pod>(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        label: &'static str,
+        data: &[T],
+    ) -> Option<wgpu::Buffer> {
+        if data.is_empty() {
+            return None;
+        }
+
+        let bytes = bytemuck::cast_slice(data);
+        let required_bytes = bytes.len().max(std::mem::size_of::<T>());
+        let capacity_bytes = required_bytes.next_power_of_two().max(256);
+        let buffer = if let Some(entry) = self.buffers.get_mut(self.next_buffer) {
+            if entry.capacity_bytes < required_bytes {
+                entry.buffer = create_transient_buffer(device, label, capacity_bytes as u64);
+                entry.capacity_bytes = capacity_bytes;
+            }
+            entry.buffer.clone()
+        } else {
+            let buffer = create_transient_buffer(device, label, capacity_bytes as u64);
+            self.buffers.push(ReusableBuffer {
+                buffer: buffer.clone(),
+                capacity_bytes,
+            });
+            buffer
+        };
+        self.next_buffer += 1;
+        queue.write_buffer(&buffer, 0, bytes);
+        Some(buffer)
+    }
+}
+
+fn create_transient_buffer(
+    device: &wgpu::Device,
+    label: &'static str,
+    size: u64,
+) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
 }
 
 /// Handle to an offscreen render target allocated from the pool.
@@ -172,8 +240,8 @@ pub struct Renderer {
     texture_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     texture_pool: TexturePool,
-    image_cache:
-        std::collections::HashMap<u64, (wgpu::Texture, wgpu::TextureView, wgpu::BindGroup)>,
+    instance_buffer_pool: TransientBufferPool,
+    image_cache: HashMap<u64, (wgpu::Texture, wgpu::TextureView, wgpu::BindGroup)>,
     viewport_buffer: wgpu::Buffer,
     viewport_bind_group: wgpu::BindGroup,
     font_system: FontSystem,
@@ -181,6 +249,8 @@ pub struct Renderer {
     viewport: Viewport,
     atlas: TextAtlas,
     text_renderer: TextRenderer,
+    text_cache: HashMap<u64, CachedTextBuffer>,
+    text_cache_frame: u64,
 }
 
 impl Renderer {
@@ -518,7 +588,8 @@ impl Renderer {
             texture_bind_group_layout,
             sampler,
             texture_pool,
-            image_cache: std::collections::HashMap::new(),
+            instance_buffer_pool: TransientBufferPool::default(),
+            image_cache: HashMap::new(),
             viewport_buffer,
             viewport_bind_group,
             font_system,
@@ -526,6 +597,8 @@ impl Renderer {
             viewport,
             atlas,
             text_renderer,
+            text_cache: HashMap::new(),
+            text_cache_frame: 0,
         })
     }
 
@@ -663,11 +736,16 @@ impl Renderer {
                 label: Some("diffy_frame_encoder"),
             });
 
+        self.instance_buffer_pool.begin_frame();
+
         // Build GPU buffers for each z-layer's draw layers.
         struct ZLayerBuffers {
             layer_buffers: Vec<LayerBuffers>,
         }
 
+        let device = &self.device;
+        let queue = &self.queue;
+        let buffer_pool = &mut self.instance_buffer_pool;
         let z_layer_buffers: Vec<ZLayerBuffers> = flattened
             .z_layers
             .iter()
@@ -677,37 +755,13 @@ impl Renderer {
                     .iter()
                     .map(|layer| {
                         let (si, sc) = build_shadow_instances(&layer.shadows);
-                        let sb = if !si.is_empty() {
-                            Some(self.device.create_buffer_init(
-                                &wgpu::util::BufferInitDescriptor {
-                                    label: Some("diffy_shadow_instances"),
-                                    contents: bytemuck::cast_slice(&si),
-                                    usage: wgpu::BufferUsages::VERTEX,
-                                },
-                            ))
-                        } else {
-                            None
-                        };
+                        let sb =
+                            buffer_pool.upload(device, queue, "diffy_shadow_instances", &si);
                         let (qi, qc) = build_quad_instances(&layer.quads);
-                        let qb =
-                            self.device
-                                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                    label: Some("diffy_quad_instances"),
-                                    contents: bytemuck::cast_slice(&qi),
-                                    usage: wgpu::BufferUsages::VERTEX,
-                                });
+                        let qb = buffer_pool.upload(device, queue, "diffy_quad_instances", &qi);
                         let (ei, ec) = build_effect_quad_instances(&layer.effect_quads);
-                        let eb = if !ei.is_empty() {
-                            Some(self.device.create_buffer_init(
-                                &wgpu::util::BufferInitDescriptor {
-                                    label: Some("diffy_effect_quad_instances"),
-                                    contents: bytemuck::cast_slice(&ei),
-                                    usage: wgpu::BufferUsages::VERTEX,
-                                },
-                            ))
-                        } else {
-                            None
-                        };
+                        let eb =
+                            buffer_pool.upload(device, queue, "diffy_effect_quad_instances", &ei);
                         LayerBuffers {
                             shadow_buffer: sb,
                             shadow_commands: sc,
@@ -778,13 +832,14 @@ impl Renderer {
             let zl = &flattened.z_layers[0];
             let zlb = &z_layer_buffers[0];
 
-            let prepared_texts = prepare_all_text(
+            let text_areas = prepare_text_areas(
                 &mut self.font_system,
+                &mut self.text_cache,
+                &mut self.text_cache_frame,
                 &zl.texts,
                 &zl.rich_texts,
                 self.scale_factor,
             );
-            let text_areas = build_text_areas(&prepared_texts);
 
             self.text_renderer.prepare(
                 &self.device,
@@ -825,6 +880,7 @@ impl Renderer {
             draw_images(
                 &mut pass,
                 &zl.images,
+                &mut self.instance_buffer_pool,
                 &self.device,
                 &self.queue,
                 &self.blit_pipeline,
@@ -844,13 +900,14 @@ impl Renderer {
             let mut first = true;
 
             for (zl, zlb) in flattened.z_layers.iter().zip(z_layer_buffers.iter()) {
-                let prepared_texts = prepare_all_text(
+                let text_areas = prepare_text_areas(
                     &mut self.font_system,
+                    &mut self.text_cache,
+                    &mut self.text_cache_frame,
                     &zl.texts,
                     &zl.rich_texts,
                     self.scale_factor,
                 );
-                let text_areas = build_text_areas(&prepared_texts);
 
                 self.text_renderer.prepare(
                     &self.device,
@@ -899,6 +956,7 @@ impl Renderer {
                     draw_images(
                         &mut pass,
                         &zl.images,
+                        &mut self.instance_buffer_pool,
                         &self.device,
                         &self.queue,
                         &self.blit_pipeline,
@@ -1005,12 +1063,14 @@ impl Renderer {
                     blur_params: [1.0, 0.0, sigma, 0.0],
                 };
                 let buf = self
-                    .device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("diffy_blur_h_instance"),
-                        contents: bytemuck::cast_slice(&[blur_inst]),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    });
+                    .instance_buffer_pool
+                    .upload(
+                        &self.device,
+                        &self.queue,
+                        "diffy_blur_h_instance",
+                        &[blur_inst],
+                    )
+                    .expect("single blur instance upload");
 
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("diffy_blur_h_pass"),
@@ -1045,12 +1105,14 @@ impl Renderer {
                     blur_params: [0.0, 1.0, sigma, 0.0],
                 };
                 let buf = self
-                    .device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("diffy_blur_v_instance"),
-                        contents: bytemuck::cast_slice(&[blur_inst]),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    });
+                    .instance_buffer_pool
+                    .upload(
+                        &self.device,
+                        &self.queue,
+                        "diffy_blur_v_instance",
+                        &[blur_inst],
+                    )
+                    .expect("single blur instance upload");
 
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("diffy_blur_v_pass"),
@@ -1078,32 +1140,45 @@ impl Renderer {
 
             // Step 4: Composite to surface.
             {
+                let text_areas = prepare_text_areas(
+                    &mut self.font_system,
+                    &mut self.text_cache,
+                    &mut self.text_cache_frame,
+                    &all_texts,
+                    &all_rich,
+                    self.scale_factor,
+                );
+
                 // Full-screen blit of scene_tex.
                 let scene_blit = BlitInstance {
                     bounds: [0.0, 0.0, sw as f32, sh as f32],
                     uv_rect: [0.0, 0.0, 1.0, 1.0],
                     tint: [1.0, 1.0, 1.0, 1.0],
                 };
-                let scene_blit_buf =
-                    self.device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("diffy_scene_blit"),
-                            contents: bytemuck::cast_slice(&[scene_blit]),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        });
+                let scene_blit_buf = self
+                    .instance_buffer_pool
+                    .upload(
+                        &self.device,
+                        &self.queue,
+                        "diffy_scene_blit",
+                        &[scene_blit],
+                    )
+                    .expect("single blit upload");
                 // Blur region blit.
                 let blur_blit = BlitInstance {
                     bounds: [br.x, br.y, br.width, br.height],
                     uv_rect: [uv_min_x, uv_min_y, uv_max_x, uv_max_y],
                     tint: [1.0, 1.0, 1.0, 1.0],
                 };
-                let blur_blit_buf =
-                    self.device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("diffy_blur_blit"),
-                            contents: bytemuck::cast_slice(&[blur_blit]),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        });
+                let blur_blit_buf = self
+                    .instance_buffer_pool
+                    .upload(
+                        &self.device,
+                        &self.queue,
+                        "diffy_blur_blit",
+                        &[blur_blit],
+                    )
+                    .expect("single blit upload");
 
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("diffy_composite_pass"),
@@ -1146,14 +1221,6 @@ impl Renderer {
                     &self.viewport_bind_group,
                 );
 
-                // Text.
-                let prepared_texts = prepare_all_text(
-                    &mut self.font_system,
-                    &all_texts,
-                    &all_rich,
-                    self.scale_factor,
-                );
-                let text_areas = build_text_areas(&prepared_texts);
                 self.text_renderer.prepare(
                     &self.device,
                     &self.queue,
@@ -1192,7 +1259,7 @@ impl Renderer {
 struct LayerBuffers {
     shadow_buffer: Option<wgpu::Buffer>,
     shadow_commands: Vec<QuadDrawCommand>,
-    quad_buffer: wgpu::Buffer,
+    quad_buffer: Option<wgpu::Buffer>,
     quad_commands: Vec<QuadDrawCommand>,
     effect_buffer: Option<wgpu::Buffer>,
     effect_commands: Vec<QuadDrawCommand>,
@@ -1243,10 +1310,10 @@ fn draw_layers<'pass>(
             }
         }
 
-        if !lb.quad_commands.is_empty() {
+        if let Some(ref quad_buf) = lb.quad_buffer {
             pass.set_pipeline(quad_pipeline);
             pass.set_bind_group(0, viewport_bind_group, &[]);
-            pass.set_vertex_buffer(0, lb.quad_buffer.slice(..));
+            pass.set_vertex_buffer(0, quad_buf.slice(..));
             for command in &lb.quad_commands {
                 if command.clip.width <= 0.0 || command.clip.height <= 0.0 {
                     continue;
@@ -1266,14 +1333,12 @@ fn draw_layers<'pass>(
 fn draw_images<'pass>(
     pass: &mut wgpu::RenderPass<'pass>,
     images: &[ClippedImage],
+    buffer_pool: &mut TransientBufferPool,
     device: &'pass wgpu::Device,
-    _queue: &wgpu::Queue,
+    queue: &wgpu::Queue,
     blit_pipeline: &'pass wgpu::RenderPipeline,
     viewport_bind_group: &'pass wgpu::BindGroup,
-    image_cache: &'pass std::collections::HashMap<
-        u64,
-        (wgpu::Texture, wgpu::TextureView, wgpu::BindGroup),
-    >,
+    image_cache: &'pass HashMap<u64, (wgpu::Texture, wgpu::TextureView, wgpu::BindGroup)>,
     viewport_w: u32,
     viewport_h: u32,
 ) {
@@ -1293,11 +1358,9 @@ fn draw_images<'pass>(
             uv_rect: [0.0, 0.0, 1.0, 1.0],
             tint: [1.0, 1.0, 1.0, 1.0],
         };
-        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("diffy_image_blit"),
-            contents: bytemuck::cast_slice(&[blit_inst]),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+        let Some(buf) = buffer_pool.upload(device, queue, "diffy_image_blit", &[blit_inst]) else {
+            continue;
+        };
 
         pass.set_pipeline(blit_pipeline);
         pass.set_bind_group(0, viewport_bind_group, &[]);
@@ -1647,12 +1710,13 @@ struct QuadDrawCommand {
 }
 
 #[derive(Debug)]
-struct PreparedTextBuffer {
+struct CachedTextBuffer {
     buffer: Buffer,
     left: f32,
     top: f32,
     clip: Rect,
     default_color: GlyphonColor,
+    last_used_frame: u64,
 }
 
 fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
@@ -2011,58 +2075,87 @@ fn rects_equal(a: Rect, b: Rect) -> bool {
 // Text preparation
 // ---------------------------------------------------------------------------
 
-fn prepare_all_text(
+fn prepare_text_areas<'a>(
     font_system: &mut FontSystem,
+    text_cache: &'a mut HashMap<u64, CachedTextBuffer>,
+    text_cache_frame: &mut u64,
     texts: &[ClippedText],
     rich_texts: &[ClippedRichText],
     scale_factor: f64,
-) -> Vec<PreparedTextBuffer> {
-    let mut prepared = Vec::with_capacity(texts.len() + rich_texts.len());
-    for text in texts {
-        prepared.push(prepare_plain_text(
-            font_system,
-            &text.primitive,
-            text.clip,
-            scale_factor,
-        ));
-    }
-    for text in rich_texts {
-        prepared.push(prepare_rich_text(
-            font_system,
-            &text.primitive,
-            text.clip,
-            scale_factor,
-        ));
-    }
-    prepared
+) -> Vec<TextArea<'a>> {
+        *text_cache_frame = text_cache_frame.wrapping_add(1);
+        let frame = *text_cache_frame;
+        let mut keys = Vec::with_capacity(texts.len() + rich_texts.len());
+
+        for text in texts {
+            let key = plain_text_cache_key(&text.primitive, text.clip, scale_factor);
+            if !text_cache.contains_key(&key) {
+                let prepared = build_plain_text_buffer(
+                    font_system,
+                    &text.primitive,
+                    text.clip,
+                    scale_factor,
+                    frame,
+                );
+                text_cache.insert(key, prepared);
+            }
+            if let Some(entry) = text_cache.get_mut(&key) {
+                entry.last_used_frame = frame;
+            }
+            keys.push(key);
+        }
+
+        for text in rich_texts {
+            let key = rich_text_cache_key(&text.primitive, text.clip, scale_factor);
+            if !text_cache.contains_key(&key) {
+                let prepared = build_rich_text_buffer(
+                    font_system,
+                    &text.primitive,
+                    text.clip,
+                    scale_factor,
+                    frame,
+                );
+                text_cache.insert(key, prepared);
+            }
+            if let Some(entry) = text_cache.get_mut(&key) {
+                entry.last_used_frame = frame;
+            }
+            keys.push(key);
+        }
+
+        if frame % 240 == 0 {
+            trim_text_cache(text_cache, frame);
+        }
+
+        keys.iter()
+            .filter_map(|key| text_cache.get(key).map(text_area_from_cache))
+            .collect()
 }
 
-fn build_text_areas(prepared: &[PreparedTextBuffer]) -> Vec<TextArea<'_>> {
-    prepared
-        .iter()
-        .map(|p| TextArea {
-            buffer: &p.buffer,
-            left: p.left,
-            top: p.top,
-            scale: 1.0,
-            bounds: TextBounds {
-                left: p.clip.x.round() as i32,
-                top: p.clip.y.round() as i32,
-                right: p.clip.right().round() as i32,
-                bottom: p.clip.bottom().round() as i32,
-            },
-            default_color: p.default_color,
-            custom_glyphs: &[],
-        })
-        .collect()
+fn text_area_from_cache(prepared: &CachedTextBuffer) -> TextArea<'_> {
+    TextArea {
+        buffer: &prepared.buffer,
+        left: prepared.left,
+        top: prepared.top,
+        scale: 1.0,
+        bounds: TextBounds {
+            left: prepared.clip.x.round() as i32,
+            top: prepared.clip.y.round() as i32,
+            right: prepared.clip.right().round() as i32,
+            bottom: prepared.clip.bottom().round() as i32,
+        },
+        default_color: prepared.default_color,
+        custom_glyphs: &[],
+    }
 }
 
-fn prepare_plain_text(
+fn build_plain_text_buffer(
     font_system: &mut FontSystem,
     primitive: &TextPrimitive,
     clip: Rect,
     scale_factor: f64,
-) -> PreparedTextBuffer {
+    last_used_frame: u64,
+) -> CachedTextBuffer {
     let metrics = Metrics::new(primitive.font_size, primitive.font_size * 1.35);
     let mut buffer = Buffer::new(font_system, metrics);
     buffer.set_size(
@@ -2073,27 +2166,29 @@ fn prepare_plain_text(
     let attrs = attrs_for_font(primitive.font_kind, primitive.font_weight, primitive.color);
     buffer.set_text(
         font_system,
-        &primitive.text,
+        primitive.text.as_ref(),
         &attrs,
         Shaping::Advanced,
         None,
     );
     buffer.shape_until_scroll(font_system, false);
-    PreparedTextBuffer {
+    CachedTextBuffer {
         buffer,
         left: primitive.rect.x,
         top: primitive.rect.y,
         clip,
         default_color: glyphon_color(primitive.color),
+        last_used_frame,
     }
 }
 
-fn prepare_rich_text(
+fn build_rich_text_buffer(
     font_system: &mut FontSystem,
     primitive: &RichTextPrimitive,
     clip: Rect,
     scale_factor: f64,
-) -> PreparedTextBuffer {
+    last_used_frame: u64,
+) -> CachedTextBuffer {
     let metrics = Metrics::new(primitive.font_size, primitive.font_size * 1.35);
     let mut buffer = Buffer::new(font_system, metrics);
     buffer.set_size(
@@ -2111,7 +2206,7 @@ fn prepare_rich_text(
         .iter()
         .map(|span| {
             (
-                span.text.as_str(),
+                span.text.as_ref(),
                 attrs_for_font(primitive.font_kind, primitive.font_weight, span.color),
             )
         })
@@ -2128,12 +2223,80 @@ fn prepare_rich_text(
         );
     }
     buffer.shape_until_scroll(font_system, false);
-    PreparedTextBuffer {
+    CachedTextBuffer {
         buffer,
         left: primitive.rect.x,
         top: primitive.rect.y,
         clip,
         default_color: glyphon_color(primitive.default_color),
+        last_used_frame,
+    }
+}
+
+fn trim_text_cache(cache: &mut HashMap<u64, CachedTextBuffer>, frame: u64) {
+    const KEEP_UNUSED_FRAMES: u64 = 240;
+    cache.retain(|_, entry| frame.saturating_sub(entry.last_used_frame) <= KEEP_UNUSED_FRAMES);
+}
+
+fn plain_text_cache_key(primitive: &TextPrimitive, clip: Rect, scale_factor: f64) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hasher.write_u8(0);
+    hash_rect(&mut hasher, primitive.rect);
+    hash_rect(&mut hasher, clip);
+    hasher.write_u32(primitive.font_size.to_bits());
+    hasher.write_u64(scale_factor.to_bits());
+    hasher.write_u8(font_kind_tag(primitive.font_kind));
+    hasher.write_u8(font_weight_tag(primitive.font_weight));
+    hash_color(&mut hasher, primitive.color);
+    primitive.text.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn rich_text_cache_key(primitive: &RichTextPrimitive, clip: Rect, scale_factor: f64) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hasher.write_u8(1);
+    hash_rect(&mut hasher, primitive.rect);
+    hash_rect(&mut hasher, clip);
+    hasher.write_u32(primitive.font_size.to_bits());
+    hasher.write_u64(scale_factor.to_bits());
+    hasher.write_u8(font_kind_tag(primitive.font_kind));
+    hasher.write_u8(font_weight_tag(primitive.font_weight));
+    hash_color(&mut hasher, primitive.default_color);
+    hasher.write_usize(primitive.spans.len());
+    for span in primitive.spans.iter() {
+        span.text.hash(&mut hasher);
+        hash_color(&mut hasher, span.color);
+    }
+    hasher.finish()
+}
+
+fn hash_rect(hasher: &mut DefaultHasher, rect: Rect) {
+    hasher.write_u32(rect.x.to_bits());
+    hasher.write_u32(rect.y.to_bits());
+    hasher.write_u32(rect.width.to_bits());
+    hasher.write_u32(rect.height.to_bits());
+}
+
+fn hash_color(hasher: &mut DefaultHasher, color: Color) {
+    hasher.write_u8(color.r);
+    hasher.write_u8(color.g);
+    hasher.write_u8(color.b);
+    hasher.write_u8(color.a);
+}
+
+fn font_kind_tag(kind: FontKind) -> u8 {
+    match kind {
+        FontKind::Ui => 0,
+        FontKind::Mono => 1,
+    }
+}
+
+fn font_weight_tag(weight: crate::render::scene::FontWeight) -> u8 {
+    match weight {
+        crate::render::scene::FontWeight::Normal => 0,
+        crate::render::scene::FontWeight::Medium => 1,
+        crate::render::scene::FontWeight::Semibold => 2,
+        crate::render::scene::FontWeight::Bold => 3,
     }
 }
 

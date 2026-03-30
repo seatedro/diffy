@@ -733,6 +733,9 @@ impl NativeApp {
             Key::Named(NamedKey::Escape) => {
                 if self.state.overlays.top().is_some() {
                     self.dispatch_action(Action::CloseOverlay);
+                } else if self.state.focus.current == Some(FocusTarget::SidebarSearch) {
+                    self.dispatch_action(Action::ClearSidebarFilter);
+                    self.dispatch_action(Action::SetFocus(None));
                 }
             }
             Key::Named(NamedKey::Tab) => self.cycle_focus(),
@@ -816,7 +819,15 @@ impl NativeApp {
             Key::Named(NamedKey::Delete) => self.dispatch_action(Action::DeleteForward),
             Key::Character(text) => {
                 if !ctrl && !text.chars().all(char::is_control) {
-                    self.dispatch_action(Action::InsertText(text.to_string()));
+                    if text.as_str() == "/"
+                        && !self.is_text_focused()
+                        && self.state.overlays.top().is_none()
+                        && self.state.workspace_mode == WorkspaceMode::Ready
+                    {
+                        self.dispatch_action(Action::SetFocus(Some(FocusTarget::SidebarSearch)));
+                    } else {
+                        self.dispatch_action(Action::InsertText(text.to_string()));
+                    }
                 }
             }
             _ => {}

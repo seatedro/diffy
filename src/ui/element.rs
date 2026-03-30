@@ -1592,11 +1592,11 @@ pub struct TextInput {
     focused: bool,
     on_click: Option<Action>,
     base_style: ElementStyle,
-    // Cursor/selection state (only meaningful when focused)
     cursor: usize,
     anchor: usize,
     cursor_moved_at_ms: u64,
     focus_target: Option<crate::ui::state::FocusTarget>,
+    bare: bool,
 }
 
 pub fn text_input(label: impl Into<String>, value: impl Into<String>) -> TextInput {
@@ -1611,6 +1611,7 @@ pub fn text_input(label: impl Into<String>, value: impl Into<String>) -> TextInp
         anchor: 0,
         cursor_moved_at_ms: 0,
         focus_target: None,
+        bare: false,
     }
 }
 
@@ -1647,6 +1648,11 @@ impl TextInput {
 
     pub fn focus_target(mut self, target: crate::ui::state::FocusTarget) -> Self {
         self.focus_target = Some(target);
+        self
+    }
+
+    pub fn bare(mut self) -> Self {
+        self.bare = true;
         self
     }
 }
@@ -1708,42 +1714,58 @@ impl Element for TextInput {
     ) {
         let theme = cx.theme;
         let radius = theme.metrics.control_radius;
-
-        let fill = if self.focused {
-            theme.colors.surface
+        let value_size = if self.bare {
+            theme.metrics.ui_small_font_size
         } else {
-            theme.colors.element_background
+            theme.metrics.ui_font_size
         };
-        let border = if self.focused {
-            theme.colors.focus_border
-        } else {
-            theme.colors.border
-        };
-
-        scene.rounded_rect(RoundedRectPrimitive::uniform(bounds, radius, fill));
-        scene.border(BorderPrimitive::uniform(bounds, 1.0, radius, border));
-
-        let label_size = theme.metrics.ui_small_font_size - 1.0;
-        let value_size = theme.metrics.ui_font_size;
-        let label_lh = label_size * 1.4;
         let value_lh = value_size * 1.5;
-        let pad = 14.0;
-        let top_pad = 8.0;
 
-        // Label
-        scene.text(TextPrimitive {
-            rect: Rect {
-                x: bounds.x + pad,
-                y: bounds.y + top_pad,
-                width: bounds.width - pad * 2.0,
-                height: label_lh,
-            },
-            text: std::mem::take(&mut self.label).into(),
-            color: theme.colors.text_muted,
-            font_size: label_size,
-            font_kind: FontKind::Ui,
-            font_weight: FontWeight::Medium,
-        });
+        let (text_x, text_y, text_area_w);
+
+        if self.bare {
+            let pad = 0.0;
+            text_x = bounds.x + pad;
+            text_y = bounds.y + ((bounds.height - value_lh) * 0.5).max(0.0);
+            text_area_w = (bounds.width - pad * 2.0).max(0.0);
+        } else {
+            let fill = if self.focused {
+                theme.colors.surface
+            } else {
+                theme.colors.element_background
+            };
+            let border = if self.focused {
+                theme.colors.focus_border
+            } else {
+                theme.colors.border
+            };
+
+            scene.rounded_rect(RoundedRectPrimitive::uniform(bounds, radius, fill));
+            scene.border(BorderPrimitive::uniform(bounds, 1.0, radius, border));
+
+            let label_size = theme.metrics.ui_small_font_size - 1.0;
+            let label_lh = label_size * 1.4;
+            let pad = 14.0;
+            let top_pad = 8.0;
+
+            scene.text(TextPrimitive {
+                rect: Rect {
+                    x: bounds.x + pad,
+                    y: bounds.y + top_pad,
+                    width: bounds.width - pad * 2.0,
+                    height: label_lh,
+                },
+                text: std::mem::take(&mut self.label).into(),
+                color: theme.colors.text_muted,
+                font_size: label_size,
+                font_kind: FontKind::Ui,
+                font_weight: FontWeight::Medium,
+            });
+
+            text_x = bounds.x + pad;
+            text_y = bounds.y + top_pad + label_lh + 2.0;
+            text_area_w = bounds.width - pad * 2.0;
+        }
 
         let is_placeholder = self.value.is_empty();
         let display = if is_placeholder {
@@ -1756,10 +1778,6 @@ impl Element for TextInput {
         } else {
             theme.colors.text
         };
-
-        let text_x = bounds.x + pad;
-        let text_y = bounds.y + top_pad + label_lh + 2.0;
-        let text_area_w = bounds.width - pad * 2.0;
 
         // Selection highlight (render before text so it appears behind)
         if self.focused && !is_placeholder {

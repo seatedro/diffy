@@ -84,5 +84,10 @@ pub enum Action {
     ToggleThemeMode,
     ToggleFolder(String),
     ToggleFileViewed(usize),
+    SetSidebarFilter(String),
+    ClearSidebarFilter,
+    ToggleSidebarMode,
+    ExpandAllFolders,
+    CollapseAllFolders,
     Noop,
 }

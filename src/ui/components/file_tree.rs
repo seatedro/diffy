@@ -263,7 +263,7 @@ impl RenderOnce for FileTree {
                     }
 
                     row_div = row_div
-                        .child(svg_icon(lucide::FILE_CODE, icon_size).color(icon_color))
+                        .child(super::file_icon::file_icon(&name, icon_size).selected(is_selected))
                         .child(
                             div()
                                 .flex_1()

@@ -71,6 +71,7 @@ pub enum FocusTarget {
     PullRequestInput,
     PullRequestConfirm,
     AuthPrimaryAction,
+    SidebarSearch,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -183,15 +184,24 @@ impl WorkspaceState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SidebarMode {
+    #[default]
+    FlatList,
+    TreeView,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FileListState {
-    /// Pixel scroll offset (how many pixels the list is scrolled down).
     pub scroll_offset_px: f32,
     pub hovered_index: Option<usize>,
     pub row_height: f32,
     pub gap: f32,
-    /// Height of the visible list area (set by shell during layout).
     pub viewport_height: f32,
+    pub filter: String,
+    pub mode: SidebarMode,
+    pub expanded_folders: HashSet<String>,
+    pub viewed_files: HashSet<usize>,
 }
 
 impl Default for FileListState {
@@ -200,8 +210,12 @@ impl Default for FileListState {
             scroll_offset_px: 0.0,
             hovered_index: None,
             row_height: 36.0,
-            gap: 4.0, // Sp::XS
+            gap: 4.0,
             viewport_height: 0.0,
+            filter: String::new(),
+            mode: SidebarMode::FlatList,
+            expanded_folders: HashSet::new(),
+            viewed_files: HashSet::new(),
         }
     }
 }
@@ -921,8 +935,54 @@ impl AppState {
                 };
                 self.persist_settings_effect()
             }
-            Action::ToggleFolder(_) => Vec::new(),
-            Action::ToggleFileViewed(_) => Vec::new(),
+            Action::ToggleFolder(path) => {
+                if self.file_list.expanded_folders.contains(&path) {
+                    self.file_list.expanded_folders.remove(&path);
+                } else {
+                    self.file_list.expanded_folders.insert(path);
+                }
+                Vec::new()
+            }
+            Action::ToggleFileViewed(index) => {
+                if self.file_list.viewed_files.contains(&index) {
+                    self.file_list.viewed_files.remove(&index);
+                } else {
+                    self.file_list.viewed_files.insert(index);
+                }
+                Vec::new()
+            }
+            Action::SetSidebarFilter(query) => {
+                self.file_list.filter = query;
+                self.file_list.scroll_offset_px = 0.0;
+                Vec::new()
+            }
+            Action::ClearSidebarFilter => {
+                self.file_list.filter.clear();
+                self.file_list.scroll_offset_px = 0.0;
+                Vec::new()
+            }
+            Action::ToggleSidebarMode => {
+                self.file_list.mode = match self.file_list.mode {
+                    crate::ui::state::SidebarMode::FlatList => crate::ui::state::SidebarMode::TreeView,
+                    crate::ui::state::SidebarMode::TreeView => crate::ui::state::SidebarMode::FlatList,
+                };
+                self.file_list.scroll_offset_px = 0.0;
+                Vec::new()
+            }
+            Action::ExpandAllFolders => {
+                for file in &self.workspace.files {
+                    let parts: Vec<&str> = file.path.split('/').collect();
+                    for depth in 0..parts.len().saturating_sub(1) {
+                        let folder_path = parts[..=depth].join("/");
+                        self.file_list.expanded_folders.insert(folder_path);
+                    }
+                }
+                Vec::new()
+            }
+            Action::CollapseAllFolders => {
+                self.file_list.expanded_folders.clear();
+                Vec::new()
+            }
             Action::Noop => Vec::new(),
         }
     }
@@ -1317,16 +1377,15 @@ impl AppState {
             },
             FocusTarget::CommandPaletteInput => Some(&self.overlays.command_palette.query),
             FocusTarget::PullRequestInput => Some(&self.github.pull_request.url_input),
+            FocusTarget::SidebarSearch => Some(&self.file_list.filter),
             _ => None,
         }
     }
 
-    /// Returns the currently focused text string, if any.
     fn focused_text(&self) -> Option<&str> {
         self.focus.current.and_then(|t| self.text_for_focus(t))
     }
 
-    /// Returns a mutable reference to the currently focused text string.
     fn focused_text_mut(&mut self) -> Option<&mut String> {
         match self.focus.current {
             Some(FocusTarget::CompareLeftRef) => Some(&mut self.compare.left_ref),
@@ -1340,6 +1399,7 @@ impl AppState {
                 Some(&mut self.overlays.command_palette.query)
             }
             Some(FocusTarget::PullRequestInput) => Some(&mut self.github.pull_request.url_input),
+            Some(FocusTarget::SidebarSearch) => Some(&mut self.file_list.filter),
             _ => None,
         }
     }

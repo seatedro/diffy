@@ -65,9 +65,6 @@ run_smoke() {
   log_step "running smoke"
   (
     cd "${repo_root}"
-    export DIFFY_REPO_ROOT="${repo_root}"
-    export QT_QPA_PLATFORM=offscreen
-    export QT_QUICK_BACKEND=software
     export DIFFY_START_REPO="${DIFFY_DEV_REPO}"
     export DIFFY_START_LEFT="${DIFFY_DEV_LEFT}"
     export DIFFY_START_RIGHT="${DIFFY_DEV_RIGHT}"
@@ -91,7 +88,7 @@ run_once() {
 
 watch_fingerprint() {
   (
-    find "${repo_root}/src" "${repo_root}/qml" "${repo_root}/scripts" -type f
+    find "${repo_root}/src" "${repo_root}/scripts" -type f
     printf '%s\n' \
       "${repo_root}/Cargo.toml" \
       "${repo_root}/Cargo.lock" \
@@ -120,7 +117,6 @@ watch_with_watchexec() {
   log_step "watching with watchexec"
   exec watchexec \
     --watch "${repo_root}/src" \
-    --watch "${repo_root}/qml" \
     --watch "${repo_root}/scripts" \
     --watch "${repo_root}/Cargo.toml" \
     --watch "${repo_root}/Cargo.lock" \
@@ -128,7 +124,7 @@ watch_with_watchexec() {
     --watch "${repo_root}/flake.nix" \
     --watch "${repo_root}/devenv.nix" \
     --watch "${repo_root}/.gitignore" \
-    --exts rs,qml,toml,md,sh,nix \
+    --exts rs,toml,md,sh,nix \
     -- "${script_dir}/dev-loop.sh" once
 }
 
@@ -146,7 +142,7 @@ Usage: scripts/dev-loop.sh [once|watch]
 
 Commands:
   once   Build, test, and run the offscreen smoke scenario once.
-  watch  Re-run the once workflow whenever Rust/QML/tooling files change.
+  watch  Re-run the once workflow whenever Rust/tooling files change.
 
 Environment overrides:
   DIFFY_DEV_REPO

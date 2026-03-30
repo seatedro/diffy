@@ -1,6 +1,8 @@
+use serde::Serialize;
+
 use crate::core::error::{DiffyError, Result};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeviceFlowState {
     pub device_code: String,
     pub user_code: String,

@@ -4,6 +4,7 @@ use git2::{
     BranchType, Cred, DiffFormat, DiffOptions, FetchOptions, ObjectType, Oid, RemoteCallbacks,
     Repository,
 };
+use serde::Serialize;
 
 use crate::core::compare::spec::CompareMode;
 use crate::core::error::{DiffyError, Result};
@@ -54,20 +55,20 @@ fn select_remote_credential(
     RemoteCredentialKind::Default
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BranchInfo {
     pub name: String,
     pub is_remote: bool,
     pub is_head: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TagInfo {
     pub name: String,
     pub target_oid: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CommitInfo {
     pub oid: String,
     pub short_oid: String,

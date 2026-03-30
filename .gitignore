@@ -1,6 +1,7 @@
-# Local reference repos (large/untracked)
-.docs/refs/
-.docs/refs.partial.*/
+# Local docs/plans (not shipped)
+.docs/
+CLAUDE.md
+git_diff_output.txt
 
 # devenv generated artifacts
 .devenv/

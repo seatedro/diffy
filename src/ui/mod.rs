@@ -1,6 +1,7 @@
 pub mod actions;
 pub mod animation;
 pub mod app;
+pub mod components;
 pub mod design;
 pub mod editor;
 pub mod effects;

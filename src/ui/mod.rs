@@ -2,7 +2,7 @@ pub mod actions;
 pub mod animation;
 pub mod app;
 pub mod design;
-pub mod diff_viewport;
+pub mod editor;
 pub mod effects;
 pub mod element;
 pub mod events;

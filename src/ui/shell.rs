@@ -7,7 +7,7 @@ use crate::render::{
 };
 use crate::ui::actions::Action;
 use crate::ui::design::Sp;
-use crate::ui::diff_viewport::runtime::{DiffViewportRuntime, ViewportDocument};
+use crate::ui::editor::element::{EditorElement, EditorDocument};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::state::{
@@ -49,7 +49,7 @@ pub struct UiFrame {
 pub fn build_ui_frame(
     state: &mut AppState,
     theme: &Theme,
-    viewport_runtime: &mut DiffViewportRuntime,
+    editor: &mut EditorElement,
     text_metrics: TextMetrics,
     width: f32,
     height: f32,
@@ -58,12 +58,10 @@ pub fn build_ui_frame(
     let viewport_bounds: Rc<Cell<Option<Rect>>> = Rc::new(Cell::new(None));
     let file_list_bounds: Rc<Cell<Option<Rect>>> = Rc::new(Cell::new(None));
     let sidebar_resize_bounds: Rc<Cell<Option<Rect>>> = Rc::new(Cell::new(None));
-    let ui_scale = state.ui_scale_factor();
+    let ui_scale = ui_scale(theme);
 
-    // Estimate the file list viewport height for scroll clamping.
-    // Layout: title_bar + [sidebar | main] + status_bar.  Within sidebar: header (~40px) + list.
     let sidebar_list_height =
-        (height - theme.metrics.title_bar_height - theme.metrics.status_bar_height - 40.0).max(0.0);
+        (height - theme.metrics.title_bar_height - theme.metrics.status_bar_height - 40.0 * ui_scale).max(0.0);
     state.file_list.row_height = 36.0 * ui_scale;
     state.file_list.gap = 4.0 * ui_scale;
     let overlay_row_height = (36.0 * ui_scale).round().max(24.0) as u32;
@@ -124,44 +122,44 @@ pub fn build_ui_frame(
     if state.workspace_mode == WorkspaceMode::Ready {
         if let Some(vp_bounds) = viewport_bounds.get() {
             let document = match state.workspace.active_file.as_ref() {
-                Some(active_file) if active_file.file.is_binary => ViewportDocument::Binary {
+                Some(active_file) if active_file.file.is_binary => EditorDocument::Binary {
                     path: &active_file.path,
                 },
-                Some(active_file) => ViewportDocument::Text {
+                Some(active_file) => EditorDocument::Text {
                     compare_generation: state.workspace.compare_generation,
                     file_index: active_file.index,
                     path: &active_file.path,
                     doc: &active_file.render_doc,
                 },
-                None => ViewportDocument::Empty,
+                None => EditorDocument::Empty,
             };
-            viewport_runtime.prepare(&mut state.viewport, document, vp_bounds, text_metrics);
+            editor.prepare(&mut state.editor, document, vp_bounds, text_metrics);
             scene.clip(vp_bounds);
-            viewport_runtime.paint(&mut scene, theme, &state.viewport, document);
+            editor.paint(&mut scene, theme, &state.editor, document);
             scene.pop_clip();
 
             // Register viewport scrollbar for drag support
-            if state.viewport.content_height_px > state.viewport.viewport_height_px
-                && state.viewport.viewport_height_px > 0
+            if state.editor.content_height_px > state.editor.viewport_height_px
+                && state.editor.viewport_height_px > 0
             {
-                let sb = viewport_runtime.scrollbar_rect();
-                let ratio = state.viewport.viewport_height_px as f32
-                    / state.viewport.content_height_px as f32;
-                let thumb_h = (sb.height * ratio).max(32.0).min(sb.height);
-                let scroll_range = state.viewport.max_scroll_top_px().max(1) as f32;
-                let top_ratio = state.viewport.scroll_top_px as f32 / scroll_range;
+                let sb = editor.scrollbar_rect();
+                let ratio = state.editor.viewport_height_px as f32
+                    / state.editor.content_height_px as f32;
+                let thumb_h = (sb.height * ratio).max(32.0 * ui_scale).min(sb.height);
+                let scroll_range = state.editor.max_scroll_top_px().max(1) as f32;
+                let top_ratio = state.editor.scroll_top_px as f32 / scroll_range;
                 let thumb_y = sb.y + (sb.height - thumb_h) * top_ratio;
                 scrollbar_tracks.push(ScrollbarTrack {
                     track_rect: Rect {
-                        x: sb.x - 6.0,
+                        x: sb.x - 6.0 * ui_scale,
                         y: sb.y,
-                        width: sb.width + 12.0,
+                        width: sb.width + 12.0 * ui_scale,
                         height: sb.height,
                     },
                     thumb_top: thumb_y,
                     thumb_height: thumb_h,
-                    content_height: state.viewport.content_height_px as f32,
-                    viewport_height: state.viewport.viewport_height_px as f32,
+                    content_height: state.editor.content_height_px as f32,
+                    viewport_height: state.editor.viewport_height_px as f32,
                     action_builder: ScrollActionBuilder::ViewportLines,
                 });
             }
@@ -170,8 +168,8 @@ pub fn build_ui_frame(
 
     // --- Toasts (painted last so they appear above viewport content) ---
     if !state.toasts.is_empty() {
-        let toast_width = 360.0_f32.min((width - 32.0).max(220.0));
-        let toast_height = 52.0;
+        let toast_width = (360.0 * ui_scale).min((width - 32.0 * ui_scale).max(220.0 * ui_scale));
+        let toast_height = 52.0 * ui_scale;
         let tc = ToastColors {
             surface: theme.colors.elevated_surface,
             text: theme.colors.text,
@@ -186,7 +184,7 @@ pub fn build_ui_frame(
             let (message, kind) = (&toast.message, toast.kind);
             let rect = Rect {
                 x: width - toast_width - Sp::XL,
-                y: height - 28.0 - Sp::LG - toast_height - offset as f32 * (toast_height + Sp::SM),
+                y: height - theme.metrics.status_bar_height - Sp::LG - toast_height - offset as f32 * (toast_height + Sp::SM),
                 width: toast_width,
                 height: toast_height,
             };
@@ -315,7 +313,7 @@ fn title_bar(state: &AppState, theme: &Theme) -> Div {
             lucide::WRAP_TEXT,
             "Wrap",
             Action::ToggleWrap,
-            state.viewport.wrap_enabled,
+            state.editor.wrap_enabled,
             theme,
         ))
         .child(

@@ -4,7 +4,7 @@ use diffy::core::vcs::github::{DeviceFlowState, PullRequestInfo};
 #[cfg(feature = "capture")]
 use diffy::render::capture::{scene_to_png, scene_to_rgba};
 use diffy::render::{Primitive, Rect, TextMetrics};
-use diffy::ui::diff_viewport::runtime::DiffViewportRuntime;
+use diffy::ui::editor::element::EditorElement;
 use diffy::ui::element::{ElementContext, ScrollActionBuilder};
 use diffy::ui::shell::{UiFrame, build_ui_frame};
 use diffy::ui::signals::SignalStore;
@@ -27,12 +27,12 @@ pub fn render_frame_in(state: &mut AppState, width: f32, height: f32) -> UiFrame
     let mut font_system = diffy::fonts::new_font_system();
     let mut store = SignalStore::new();
     let mut cx = ElementContext::new(&theme, 1.0, &mut font_system, None, &mut store);
-    let mut viewport_runtime = DiffViewportRuntime::default();
+    let mut editor = EditorElement::default();
 
     build_ui_frame(
         state,
         &theme,
-        &mut viewport_runtime,
+        &mut editor,
         TextMetrics::default(),
         width,
         height,

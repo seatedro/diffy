@@ -2,7 +2,6 @@ use crate::core::compare::backends::{DiffBackend, DifftasticBackend, GitDiffBack
 use crate::core::compare::spec::{CompareSpec, RendererKind};
 use crate::core::diff::FileDiff;
 use crate::core::error::{DiffyError, Result};
-use crate::core::syntax::DiffSyntaxAnnotator;
 use crate::core::text::{TextBuffer, TokenBuffer};
 use crate::core::vcs::git::GitService;
 
@@ -33,18 +32,13 @@ impl Default for CompareService {
 impl CompareService {
     pub fn compare(&self, spec: &CompareSpec, git: &GitService) -> Result<CompareOutput> {
         if spec.renderer == RendererKind::Builtin {
-            let mut output = self.fallback.compare(spec, git)?.ok_or_else(|| {
+            return self.fallback.compare(spec, git)?.ok_or_else(|| {
                 DiffyError::General("built-in backend returned no result".to_owned())
-            })?;
-            annotate_output(&mut output);
-            return Ok(output);
+            });
         }
 
         match self.primary.compare(spec, git)? {
-            Some(mut output) => {
-                annotate_output(&mut output);
-                Ok(output)
-            }
+            Some(output) => Ok(output),
             None => {
                 let mut fallback = self.fallback.compare(spec, git)?.ok_or_else(|| {
                     DiffyError::General("fallback backend returned no result".to_owned())
@@ -52,22 +46,10 @@ impl CompareService {
                 fallback.used_fallback = true;
                 fallback.fallback_message =
                     "difftastic unavailable, fell back to built-in backend".to_owned();
-                annotate_output(&mut fallback);
                 Ok(fallback)
             }
         }
     }
-}
-
-fn annotate_output(output: &mut CompareOutput) {
-    if output.files.is_empty() {
-        return;
-    }
-    DiffSyntaxAnnotator::new().annotate_files(
-        &mut output.files,
-        &mut output.text_buffer,
-        &mut output.token_buffer,
-    );
 }
 
 #[cfg(test)]
@@ -80,7 +62,6 @@ mod tests {
 
     use super::CompareService;
     use crate::core::compare::spec::{CompareMode, CompareSpec, LayoutMode, RendererKind};
-    use crate::core::text::SyntaxTokenKind;
     use crate::core::vcs::git::GitService;
 
     fn commit_file(repo: &Repository, relative_path: &str, content: &str, message: &str) -> String {
@@ -119,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn compare_service_annotates_syntax_tokens_for_rendering() {
+    fn compare_service_defers_syntax_annotation_until_file_selection() {
         let repo_dir = TempDir::new().unwrap();
         let repo = Repository::init(repo_dir.path()).unwrap();
         let _first = commit_file(
@@ -151,14 +132,13 @@ mod tests {
             )
             .unwrap();
 
-        let has_non_normal_syntax = output
+        let has_syntax_tokens = output
             .files
             .iter()
             .flat_map(|file| file.hunks.iter())
             .flat_map(|hunk| hunk.lines.iter())
-            .flat_map(|line| output.token_buffer.view(line.syntax_tokens).iter())
-            .any(|token| token.kind != SyntaxTokenKind::Normal);
+            .any(|line| !output.token_buffer.view(line.syntax_tokens).is_empty());
 
-        assert!(has_non_normal_syntax);
+        assert!(!has_syntax_tokens);
     }
 }

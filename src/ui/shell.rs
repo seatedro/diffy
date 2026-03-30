@@ -11,8 +11,8 @@ use crate::ui::diff_viewport::runtime::{DiffViewportRuntime, ViewportDocument};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::state::{
-    AppState, AsyncStatus, CompareField, FocusTarget, OverlaySurface, PickerItem, ToastKind,
-    WorkspaceMode,
+    AppState, AsyncStatus, CompareField, FocusTarget, OverlaySurface, PickerItem,
+    SidebarWidthCache, ToastKind, WorkspaceMode,
 };
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme};
@@ -363,7 +363,7 @@ fn ui_scale(theme: &Theme) -> f32 {
 }
 
 fn preferred_sidebar_width(
-    state: &AppState,
+    state: &mut AppState,
     theme: &Theme,
     cx: &mut ElementContext,
     available_width: f32,
@@ -404,73 +404,89 @@ fn preferred_sidebar_width(
         return (preferred_width as f32).clamp(manual_min_width, max_width);
     }
 
-    let header_label_width = measure_text_width(
-        cx.font_system,
-        "FILES",
-        theme.metrics.ui_small_font_size - 1.0,
-        crate::render::FontKind::Ui,
-        crate::render::FontWeight::Semibold,
-    );
-    let header_badge_width = if state.workspace.files.is_empty() {
-        0.0
+    let cached_intrinsic_width = state.workspace.sidebar_auto_width.and_then(|cache| {
+        (cache.compare_generation == state.workspace.compare_generation
+            && cache.ui_scale_pct == state.settings.ui_scale_pct)
+            .then_some(cache.intrinsic_width_px)
+    });
+
+    let intrinsic_width = if let Some(width) = cached_intrinsic_width {
+        width
     } else {
-        let count_width = measure_text_width(
+        let header_label_width = measure_text_width(
             cx.font_system,
-            &state.workspace.files.len().to_string(),
+            "FILES",
             theme.metrics.ui_small_font_size - 1.0,
             crate::render::FontKind::Ui,
-            crate::render::FontWeight::Normal,
+            crate::render::FontWeight::Semibold,
         );
-        header_badge_outer_padding + header_badge_inner_padding + count_width
-    };
-    let header_width = header_side_padding + header_label_width + header_badge_width;
-
-    let widest_row = state
-        .workspace
-        .files
-        .iter()
-        .map(|file| {
-            let path_width = measure_text_width(
+        let header_badge_width = if state.workspace.files.is_empty() {
+            0.0
+        } else {
+            let count_width = measure_text_width(
                 cx.font_system,
-                &file.path,
-                theme.metrics.ui_small_font_size,
+                &state.workspace.files.len().to_string(),
+                theme.metrics.ui_small_font_size - 1.0,
                 crate::render::FontKind::Ui,
                 crate::render::FontWeight::Normal,
             );
+            header_badge_outer_padding + header_badge_inner_padding + count_width
+        };
+        let header_width = header_side_padding + header_label_width + header_badge_width;
 
-            let stats_width = if file.additions > 0 || file.deletions > 0 {
-                let additions_width = measure_text_width(
+        let widest_row = state
+            .workspace
+            .files
+            .iter()
+            .map(|file| {
+                let path_width = measure_text_width(
                     cx.font_system,
-                    &format!("+{}", file.additions),
-                    theme.metrics.ui_small_font_size - 1.0,
+                    &file.path,
+                    theme.metrics.ui_small_font_size,
                     crate::render::FontKind::Ui,
                     crate::render::FontWeight::Normal,
                 );
-                let deletions_width = measure_text_width(
-                    cx.font_system,
-                    &format!("\u{2212}{}", file.deletions),
-                    theme.metrics.ui_small_font_size - 1.0,
-                    crate::render::FontKind::Ui,
-                    crate::render::FontWeight::Normal,
-                );
-                row_gap + additions_width + stats_gap + deletions_width
-            } else {
-                0.0
-            };
 
-            list_side_padding
-                + row_side_padding
-                + file_icon_width
-                + row_gap
-                + path_width
-                + stats_width
-                + scrollbar_gutter
-        })
-        .fold(0.0_f32, f32::max);
+                let stats_width = if file.additions > 0 || file.deletions > 0 {
+                    let additions_width = measure_text_width(
+                        cx.font_system,
+                        &format!("+{}", file.additions),
+                        theme.metrics.ui_small_font_size - 1.0,
+                        crate::render::FontKind::Ui,
+                        crate::render::FontWeight::Normal,
+                    );
+                    let deletions_width = measure_text_width(
+                        cx.font_system,
+                        &format!("\u{2212}{}", file.deletions),
+                        theme.metrics.ui_small_font_size - 1.0,
+                        crate::render::FontKind::Ui,
+                        crate::render::FontWeight::Normal,
+                    );
+                    row_gap + additions_width + stats_gap + deletions_width
+                } else {
+                    0.0
+                };
 
-    widest_row
-        .max(header_width)
-        .clamp(auto_min_width, max_width)
+                list_side_padding
+                    + row_side_padding
+                    + file_icon_width
+                    + row_gap
+                    + path_width
+                    + stats_width
+                    + scrollbar_gutter
+            })
+            .fold(0.0_f32, f32::max);
+
+        let intrinsic_width = widest_row.max(header_width);
+        state.workspace.sidebar_auto_width = Some(SidebarWidthCache {
+            compare_generation: state.workspace.compare_generation,
+            ui_scale_pct: state.settings.ui_scale_pct,
+            intrinsic_width_px: intrinsic_width,
+        });
+        intrinsic_width
+    };
+
+    intrinsic_width.clamp(auto_min_width, max_width)
 }
 
 fn sidebar_resizer(theme: &Theme, bounds_cell: Rc<Cell<Option<Rect>>>) -> Canvas {
@@ -997,7 +1013,7 @@ fn paint_toast(
     // Message text
     scene.text(TextPrimitive {
         rect: rect.pad(Sp::XL, 0.0, Sp::XL, 0.0),
-        text: message.to_string(),
+        text: message.into(),
         color: colors.text,
         font_size: colors.font_size,
         font_kind: FontKind::Ui,
@@ -1012,7 +1028,7 @@ fn paint_toast(
             width: 20.0,
             height: rect.height,
         },
-        text: "\u{00d7}".to_string(),
+        text: "\u{00d7}".into(),
         color: colors.text_muted,
         font_size: colors.font_size,
         font_kind: FontKind::Ui,

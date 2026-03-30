@@ -62,6 +62,10 @@ optional = true
 version = "0.9"
 optional = true
 
+[profile.dev]
+opt-level = 1
+debug = 1
+
 [profile.release]
 lto = true
 codegen-units = 1

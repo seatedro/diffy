@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::ui::theme::Color;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -233,7 +235,7 @@ pub struct ShadowPrimitive {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TextPrimitive {
     pub rect: Rect,
-    pub text: String,
+    pub text: Arc<str>,
     pub color: Color,
     pub font_size: f32,
     pub font_kind: FontKind,
@@ -242,14 +244,14 @@ pub struct TextPrimitive {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RichTextSpan {
-    pub text: String,
+    pub text: Arc<str>,
     pub color: Color,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RichTextPrimitive {
     pub rect: Rect,
-    pub spans: Vec<RichTextSpan>,
+    pub spans: Arc<[RichTextSpan]>,
     pub default_color: Color,
     pub font_size: f32,
     pub font_kind: FontKind,

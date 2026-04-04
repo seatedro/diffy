@@ -1,3 +1,4 @@
+use crate::ui::design::{Sp, Sz};
 use crate::ui::element::{div, text, AnyElement, ElementContext, IntoAnyElement, RenderOnce};
 use crate::ui::style::Styled;
 use crate::ui::theme::Color;
@@ -15,7 +16,7 @@ pub fn progress_bar(value: f32) -> ProgressBar {
         value: value.clamp(0.0, 1.0),
         color: None,
         track_color: None,
-        height: 6.0,
+        height: Sz::PROGRESS_H,
         show_label: false,
     }
 }
@@ -72,7 +73,7 @@ impl RenderOnce for ProgressBar {
             div()
                 .flex_row()
                 .items_center()
-                .gap(8.0)
+                .gap(Sp::SM)
                 .w_full()
                 .child(div().flex_1().child(track))
                 .child(text(format!("{pct}%")).text_xs().color(tc.text_muted))
@@ -93,7 +94,7 @@ pub fn diff_stat_bar(additions: u32, deletions: u32) -> DiffStatBar {
     DiffStatBar {
         additions,
         deletions,
-        width: 60.0,
+        width: Sz::DIFFSTAT_W,
     }
 }
 
@@ -110,7 +111,7 @@ impl RenderOnce for DiffStatBar {
         let total = (self.additions + self.deletions).max(1) as f32;
         let add_ratio = self.additions as f32 / total;
         let del_ratio = self.deletions as f32 / total;
-        let h = 8.0;
+        let h = Sz::DIFFSTAT_H;
 
         let mut add_bar = div().h_full().bg(tc.line_add_text);
         add_bar.element_style_mut().layout.flex_grow = add_ratio.max(0.001);
@@ -122,7 +123,7 @@ impl RenderOnce for DiffStatBar {
             .flex_row()
             .w(self.width)
             .h(h)
-            .gap(1.0)
+            .gap(Sz::SEPARATOR_W)
             .overflow_hidden()
             .rounded(h / 2.0)
             .bg(tc.element_background);

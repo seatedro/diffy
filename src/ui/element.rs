@@ -7,6 +7,7 @@
 //! 2. **prepaint** — register hitboxes, resolve interaction state.
 //! 3. **paint** — emit scene primitives using resolved hover/hit state.
 
+use crate::ui::design::{Alpha, Sz};
 use crate::render::Scene;
 use crate::render::scene::{BlurRegionPrimitive, EffectQuadPrimitive, EffectType, Rect};
 use crate::ui::actions::Action;
@@ -1756,13 +1757,11 @@ impl Element for TextInput {
             scene.rounded_rect(RoundedRectPrimitive::uniform(bounds, radius, fill));
             scene.border(BorderPrimitive::uniform(bounds, 1.0, radius, border));
 
-            const INPUT_SIDE_PAD: f32 = 14.0;
-            const INPUT_TOP_PAD: f32 = 8.0;
-            let scale = (theme.metrics.ui_font_size / 16.0).max(0.7);
+            let scale = theme.metrics.ui_scale();
             let label_size = theme.metrics.ui_small_font_size - 1.0;
             let label_lh = label_size * 1.4;
-            let pad = (INPUT_SIDE_PAD * scale).round();
-            let top_pad = (INPUT_TOP_PAD * scale).round();
+            let pad = (Sz::INPUT_SIDE_PAD * scale).round();
+            let top_pad = (Sz::INPUT_TOP_PAD * scale).round();
 
             scene.text(TextPrimitive {
                 rect: Rect {
@@ -1790,7 +1789,7 @@ impl Element for TextInput {
             self.value.clone()
         };
         let text_color = if is_placeholder {
-            theme.colors.text_muted.with_alpha(140)
+            theme.colors.text_muted.with_alpha(Alpha::PLACEHOLDER)
         } else {
             theme.colors.text
         };
@@ -1822,7 +1821,7 @@ impl Element for TextInput {
                         height: value_lh,
                     },
                     2.0,
-                    theme.colors.accent.with_alpha(80),
+                    theme.colors.accent.with_alpha(Alpha::SOFT),
                 ));
             }
         }
@@ -1863,8 +1862,8 @@ impl Element for TextInput {
                     Rect {
                         x: text_x + cursor_x,
                         y: text_y + 1.0,
-                        width: 2.0,
-                        height: value_lh - 2.0,
+                        width: Sz::CURSOR_WIDTH,
+                        height: value_lh - Sz::CURSOR_WIDTH,
                     },
                     1.0,
                     theme.colors.text,
@@ -2023,7 +2022,7 @@ impl Element for SvgIcon {
         engine: &mut LayoutEngine,
         cx: &mut ElementContext,
     ) -> (LayoutId, ()) {
-        let scale = (cx.theme.metrics.ui_font_size / 16.0).max(0.7);
+        let scale = cx.theme.metrics.ui_scale();
         let effective = self.size * scale;
         let id = engine.request_layout(
             taffy::Style {
@@ -2058,7 +2057,7 @@ impl Element for SvgIcon {
         cx: &mut ElementContext,
     ) {
         let color = self.color.unwrap_or(cx.theme.colors.icon);
-        let scale = (cx.theme.metrics.ui_font_size / 16.0).max(0.7);
+        let scale = cx.theme.metrics.ui_scale();
         let px_size = (self.size * scale).ceil() as u32;
         let key = crate::ui::icons::cache_key(self.svg, px_size, color);
         let (rgba, w, h) = crate::ui::icons::rasterize_svg(self.svg, px_size, color);

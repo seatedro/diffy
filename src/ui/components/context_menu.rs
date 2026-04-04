@@ -1,7 +1,8 @@
 use crate::ui::actions::Action;
+use crate::ui::design::{Shadow, Sp, Sz};
 use crate::ui::element::{div, svg_icon, text, Div};
 use crate::ui::style::Styled;
-use crate::ui::theme::{Color, Theme};
+use crate::ui::theme::Theme;
 
 pub enum ContextMenuEntry {
     Item {
@@ -63,6 +64,7 @@ impl ContextMenuEntry {
 pub fn context_menu_layer(entries: Vec<ContextMenuEntry>, x: f32, y: f32, theme: &Theme) -> Div {
     let tc = &theme.colors;
     let m = &theme.metrics;
+    let scale = m.ui_scale();
 
     let mut menu = div()
         .absolute()
@@ -70,14 +72,12 @@ pub fn context_menu_layer(entries: Vec<ContextMenuEntry>, x: f32, y: f32, theme:
         .top(y)
         .z_index(250)
         .flex_col()
-        .min_w(180.0)
+        .min_w(Sz::CONTEXT_MENU_MIN_W * scale)
         .py(m.spacing_xs)
         .bg(tc.elevated_surface)
         .border(tc.border)
         .rounded(m.panel_radius)
-        .shadow(16.0, 8.0, Color::rgba(0, 0, 0, 50))
-        .shadow(4.0, 2.0, Color::rgba(0, 0, 0, 30))
-        .shadow(1.0, 0.0, Color::rgba(0, 0, 0, 15));
+        .shadow_preset(Shadow::CONTEXT_MENU);
 
     for entry in entries {
         match entry {
@@ -110,7 +110,7 @@ pub fn context_menu_layer(entries: Vec<ContextMenuEntry>, x: f32, y: f32, theme:
                     .items_center()
                     .gap(m.spacing_sm)
                     .px(m.spacing_md)
-                    .py(m.spacing_xs + 2.0);
+                    .py(m.spacing_xs + Sp::XXS * scale);
 
                 if !disabled {
                     row = row.on_click(action).hover_bg(tc.ghost_element_hover);
@@ -139,7 +139,7 @@ pub fn context_menu_layer(entries: Vec<ContextMenuEntry>, x: f32, y: f32, theme:
                     div()
                         .py(m.spacing_xs)
                         .px(m.spacing_sm)
-                        .child(div().w_full().h(1.0).bg(tc.border_variant)),
+                        .child(div().w_full().h(Sz::SEPARATOR_W).bg(tc.border_variant)),
                 );
             }
         }

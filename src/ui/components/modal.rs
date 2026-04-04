@@ -1,8 +1,7 @@
 use crate::ui::actions::Action;
-use crate::ui::design::{Ico, Sp, Sz};
+use crate::ui::design::{Ico, Shadow, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::style::Styled;
-use crate::ui::theme::Color;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ModalAlign {
@@ -84,7 +83,7 @@ impl Modal {
 impl RenderOnce for Modal {
     fn render(self, cx: &ElementContext) -> AnyElement {
         let tc = &cx.theme.colors;
-        let scale = (cx.theme.metrics.ui_font_size / 16.0).max(0.7);
+        let scale = cx.theme.metrics.ui_scale();
 
         let panel_width = self.max_width.min(self.window_width - (Sz::MODAL_MARGIN * scale).round());
         let padding = (self.padding * scale).round();
@@ -116,9 +115,7 @@ impl RenderOnce for Modal {
             .bg(tc.elevated_surface)
             .rounded_xl()
             .border_b(tc.border)
-            .shadow(24.0, 8.0, Color::rgba(0, 0, 0, 100))
-            .shadow(8.0, 4.0, Color::rgba(0, 0, 0, 50))
-            .shadow(2.0, 1.0, Color::rgba(0, 0, 0, 30))
+            .shadow_preset(Shadow::MODAL)
             .on_click(Action::Noop)
             .child(header);
 

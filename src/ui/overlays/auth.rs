@@ -9,7 +9,7 @@ use crate::ui::style::Styled;
 
 pub fn auth_modal(state: &AppState, theme: &crate::ui::theme::Theme, width: f32, height: f32) -> AnyElement {
     let tc = &theme.colors;
-    let scale = (theme.metrics.ui_font_size / 16.0).max(0.7);
+    let scale = theme.metrics.ui_scale();
 
     let (status_icon, status_text) = if state.github.auth.token_present {
         (lucide::CHECK, "Token stored")

@@ -1,4 +1,5 @@
 use crate::ui::actions::Action;
+use crate::ui::design::{Alpha, Ico, Rad, Sp};
 use crate::ui::element::{div, svg_icon, text, Div, IntoAnyElement};
 use crate::ui::icons::lucide;
 use crate::ui::style::Styled;
@@ -15,14 +16,14 @@ pub fn search_field(
     let m = &theme.metrics;
     let icon_size = m.ui_small_font_size;
 
-    let search_icon_size = (icon_size - 1.0).max(12.0);
+    let search_icon_size = (icon_size - 1.0).max(Ico::XS);
 
     let mut container = div()
         .w_full()
         .flex_row()
         .items_center()
         .gap(m.spacing_sm)
-        .px(m.spacing_sm + 2.0)
+        .px(m.spacing_sm + Sp::XXS)
         .py(m.spacing_xs)
         .bg(tc.element_background)
         .rounded(m.control_radius)
@@ -32,7 +33,7 @@ pub fn search_field(
 
     if has_value {
         if let Some(clear_action) = on_clear {
-            let clear_size = icon_size + 4.0;
+            let clear_size = icon_size + Sp::XS;
             container = container.child(
                 div()
                     .flex_shrink_0()
@@ -43,11 +44,11 @@ pub fn search_field(
                     .rounded(clear_size / 2.0)
                     .hover_bg(tc.ghost_element_hover)
                     .on_click(clear_action)
-                    .child(svg_icon(lucide::X, icon_size - 2.0).color(tc.text_muted)),
+                    .child(svg_icon(lucide::X, icon_size - Sp::XXS).color(tc.text_muted)),
             );
         }
     } else if let Some(hint) = shortcut_hint {
-        let kbd_h = m.ui_small_font_size + 2.0;
+        let kbd_h = m.ui_small_font_size + Sp::XXS;
         container = container.child(
             div()
                 .flex_shrink_0()
@@ -55,10 +56,10 @@ pub fn search_field(
                 .justify_center()
                 .h(kbd_h)
                 .min_w(kbd_h)
-                .px(4.0)
+                .px(Sp::XS)
                 .border(tc.border_variant)
-                .rounded(4.0)
-                .shadow(1.0, 1.0, tc.border_soft.with_alpha(40))
+                .rounded(Rad::SM)
+                .shadow(1.0, 1.0, tc.border_soft.with_alpha(Alpha::FAINT))
                 .child(
                     text(hint)
                         .text_xs()

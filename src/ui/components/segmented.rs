@@ -1,9 +1,8 @@
 use crate::ui::actions::Action;
-use crate::ui::design::{Rad, Sp};
+use crate::ui::design::{Rad, Shadow, Sp};
 use crate::ui::element::*;
 use crate::ui::shell::CursorHint;
 use crate::ui::style::Styled;
-use crate::ui::theme::Color;
 
 pub struct SegmentedItem {
     pub label: String,
@@ -34,7 +33,7 @@ impl SegmentedControl {
 impl RenderOnce for SegmentedControl {
     fn render(self, cx: &ElementContext) -> AnyElement {
         let tc = &cx.theme.colors;
-        let scale = (cx.theme.metrics.ui_font_size / 16.0).max(0.7);
+        let scale = cx.theme.metrics.ui_scale();
 
         let mut row = div()
             .flex_row()
@@ -53,7 +52,7 @@ impl RenderOnce for SegmentedControl {
                     .rounded((Rad::LG * scale).round())
                     .when(item.selected, |d| {
                         d.bg(tc.surface)
-                            .shadow(2.0, 1.0, Color::rgba(0, 0, 0, 40))
+                            .shadow_preset(Shadow::SUBTLE)
                     })
                     .when(!item.selected, |d| d.hover_bg(tc.ghost_element_hover))
                     .on_click(item.action)

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use crate::ui::actions::Action;
+use crate::ui::design::Sp;
 use crate::ui::element::{div, svg_icon, text, AnyElement, ElementContext, IntoAnyElement, RenderOnce};
 use crate::ui::icons::lucide;
 use crate::ui::style::Styled;
@@ -210,7 +211,7 @@ impl RenderOnce for FileTree {
                     }
 
                     row_div = row_div
-                        .child(svg_icon(chevron, icon_size - 2.0).color(tc.text_muted))
+                        .child(svg_icon(chevron, icon_size - Sp::XXS).color(tc.text_muted))
                         .child(svg_icon(folder_icon, icon_size).color(tc.text_muted))
                         .child(text(name).text_sm().color(tc.text).medium());
 

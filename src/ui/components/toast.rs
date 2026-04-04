@@ -1,11 +1,10 @@
 use crate::ui::actions::Action;
-use crate::ui::design::{Ico, Rad, Sp, Sz};
+use crate::ui::design::{Ico, Rad, Shadow, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
 use crate::ui::state::ToastKind;
 use crate::ui::style::Styled;
-use crate::ui::theme::Color;
 
 pub struct Toast {
     message: String,
@@ -26,7 +25,7 @@ impl Toast {
 impl RenderOnce for Toast {
     fn render(self, cx: &ElementContext) -> AnyElement {
         let tc = &cx.theme.colors;
-        let scale = (cx.theme.metrics.ui_font_size / 16.0).max(0.7);
+        let scale = cx.theme.metrics.ui_scale();
 
         let accent = match self.kind {
             ToastKind::Info => tc.status_info,
@@ -46,15 +45,14 @@ impl RenderOnce for Toast {
             .bg(tc.elevated_surface)
             .rounded_lg()
             .border(tc.border)
-            .shadow(16.0, 4.0, Color::rgba(0, 0, 0, 60))
-            .shadow(4.0, 2.0, Color::rgba(0, 0, 0, 30))
+            .shadow_preset(Shadow::TOAST)
             .on_click(Action::DismissToast(self.index))
             .cursor(CursorHint::Pointer)
             .child(
                 div()
                     .w((Sz::TOAST_STRIPE_W * scale).round())
                     .h_full()
-                    .rounded((Rad::XL * scale).round())
+                    .rounded((Rad::XXL * scale).round())
                     .bg(accent),
             )
             .child(

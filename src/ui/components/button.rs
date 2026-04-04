@@ -1,5 +1,5 @@
 use crate::ui::actions::Action;
-use crate::ui::design::{Ico, Sp};
+use crate::ui::design::{Alpha, Ico, Sp};
 use crate::ui::element::*;
 use crate::ui::shell::CursorHint;
 use crate::ui::style::Styled;
@@ -77,7 +77,7 @@ impl RenderOnce for Button {
     fn render(self, cx: &ElementContext) -> AnyElement {
         let theme = cx.theme;
         let tc = &theme.colors;
-        let scale = (theme.metrics.ui_font_size / 16.0).max(0.7);
+        let scale = theme.metrics.ui_scale();
 
         let (icon_size, px, py) = match self.size {
             ButtonSize::Default => (Ico::BUTTON_DEFAULT, (Sp::LG * scale).round(), (Sp::SM * scale).round()),
@@ -87,7 +87,7 @@ impl RenderOnce for Button {
         let (bg, hover_bg, icon_color, text_color) = match self.style {
             ButtonStyle::Filled => (
                 tc.accent,
-                tc.accent.with_alpha(230),
+                tc.accent.with_alpha(Alpha::HOVER),
                 tc.text_strong,
                 tc.text_strong,
             ),
@@ -115,8 +115,8 @@ impl RenderOnce for Button {
                 }
             }
             ButtonStyle::Danger => (
-                tc.status_error.with_alpha(30),
-                tc.status_error.with_alpha(50),
+                tc.status_error.with_alpha(Alpha::TINT),
+                tc.status_error.with_alpha(Alpha::DIM),
                 tc.status_error,
                 tc.status_error,
             ),

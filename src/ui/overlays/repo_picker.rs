@@ -9,7 +9,7 @@ use crate::ui::state::{AppState, FocusTarget};
 use crate::ui::style::Styled;
 
 pub fn repo_picker(state: &AppState, theme: &crate::ui::theme::Theme, width: f32, height: f32) -> AnyElement {
-    let scale = (theme.metrics.ui_font_size / 16.0).max(0.7);
+    let scale = theme.metrics.ui_scale();
 
     Modal::new(
         "Repository Picker",

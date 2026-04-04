@@ -46,6 +46,18 @@ impl Sz {
     pub const CARD_SM: f32 = 440.0;
     pub const CARD_MD: f32 = 520.0;
     pub const CARD_AUTH: f32 = 580.0;
+    pub const PROGRESS_H: f32 = 6.0;
+    pub const DIFFSTAT_H: f32 = 8.0;
+    pub const DIFFSTAT_W: f32 = 60.0;
+    pub const TAB_INDICATOR_H: f32 = 2.0;
+    pub const TAB_BADGE_PY: f32 = 1.0;
+    pub const CONTEXT_MENU_MIN_W: f32 = 180.0;
+    pub const ICON_MIN: f32 = 10.0;
+    pub const CHECKBOX_RAD_MIN: f32 = 3.0;
+    pub const INPUT_SIDE_PAD: f32 = 14.0;
+    pub const INPUT_TOP_PAD: f32 = 8.0;
+    pub const CURSOR_WIDTH: f32 = 2.0;
+    pub const MAIN_SURFACE_MIN_W: f32 = 320.0;
 }
 
 pub struct Ico;
@@ -63,13 +75,81 @@ impl Ico {
     pub const BUTTON_DEFAULT: f32 = 15.0;
 }
 
+pub struct Alpha;
+
+impl Alpha {
+    pub const HOVER: u8 = 230;
+    pub const HOVER_ALT: u8 = 220;
+    pub const STRONG: u8 = 180;
+    pub const PLACEHOLDER: u8 = 140;
+    pub const MEDIUM: u8 = 120;
+    pub const MUTED: u8 = 100;
+    pub const SOFT: u8 = 80;
+    pub const DIM: u8 = 50;
+    pub const FAINT: u8 = 40;
+    pub const TINT: u8 = 30;
+    pub const WHISPER: u8 = 25;
+}
+
+pub struct ShadowLayer {
+    pub blur: f32,
+    pub offset_y: f32,
+    pub alpha: u8,
+}
+
+pub struct Shadow;
+
+impl Shadow {
+    pub const SUBTLE: &[ShadowLayer] = &[
+        ShadowLayer { blur: 2.0, offset_y: 1.0, alpha: 30 },
+    ];
+    pub const DROPDOWN: &[ShadowLayer] = &[
+        ShadowLayer { blur: 8.0, offset_y: 4.0, alpha: 40 },
+        ShadowLayer { blur: 2.0, offset_y: 1.0, alpha: 20 },
+    ];
+    pub const TOOLTIP: &[ShadowLayer] = &[
+        ShadowLayer { blur: 8.0, offset_y: 4.0, alpha: 60 },
+        ShadowLayer { blur: 2.0, offset_y: 1.0, alpha: 30 },
+    ];
+    pub const POPOVER: &[ShadowLayer] = &[
+        ShadowLayer { blur: 16.0, offset_y: 8.0, alpha: 40 },
+        ShadowLayer { blur: 4.0, offset_y: 2.0, alpha: 30 },
+        ShadowLayer { blur: 1.0, offset_y: 0.0, alpha: 15 },
+    ];
+    pub const CONTEXT_MENU: &[ShadowLayer] = &[
+        ShadowLayer { blur: 16.0, offset_y: 8.0, alpha: 50 },
+        ShadowLayer { blur: 4.0, offset_y: 2.0, alpha: 30 },
+        ShadowLayer { blur: 1.0, offset_y: 0.0, alpha: 15 },
+    ];
+    pub const TOAST: &[ShadowLayer] = &[
+        ShadowLayer { blur: 16.0, offset_y: 4.0, alpha: 60 },
+        ShadowLayer { blur: 4.0, offset_y: 2.0, alpha: 30 },
+    ];
+    pub const MODAL: &[ShadowLayer] = &[
+        ShadowLayer { blur: 24.0, offset_y: 8.0, alpha: 100 },
+        ShadowLayer { blur: 8.0, offset_y: 4.0, alpha: 50 },
+        ShadowLayer { blur: 2.0, offset_y: 1.0, alpha: 30 },
+    ];
+    pub const FLOAT: &[ShadowLayer] = &[
+        ShadowLayer { blur: 20.0, offset_y: 8.0, alpha: 80 },
+        ShadowLayer { blur: 4.0, offset_y: 2.0, alpha: 40 },
+    ];
+    pub const PANEL: &[ShadowLayer] = &[
+        ShadowLayer { blur: 16.0, offset_y: 6.0, alpha: 80 },
+        ShadowLayer { blur: 4.0, offset_y: 2.0, alpha: 40 },
+    ];
+}
+
 pub struct Rad;
 
 impl Rad {
     pub const SM: f32 = 4.0;
     pub const MD: f32 = 5.0;
     pub const LG: f32 = 6.0;
-    pub const XL: f32 = 12.0;
+    pub const XL: f32 = 8.0;
+    pub const XXL: f32 = 12.0;
+    pub const XXXL: f32 = 16.0;
+    pub const PILL: f32 = 10.0;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,5 +1,6 @@
 //! Style system — shared layout + visual properties for elements.
 
+use crate::ui::design::{Rad, ShadowLayer, Sp};
 use crate::ui::theme::Color;
 
 // ---------------------------------------------------------------------------
@@ -155,84 +156,84 @@ pub trait Styled: Sized {
     // -- Tailwind-style spacing shortcuts (4px base grid) --
 
     fn p_1(self) -> Self {
-        self.p(4.0)
+        self.p(Sp::XS)
     }
     fn p_2(self) -> Self {
-        self.p(8.0)
+        self.p(Sp::SM)
     }
     fn p_3(self) -> Self {
-        self.p(12.0)
+        self.p(Sp::MD)
     }
     fn p_4(self) -> Self {
-        self.p(16.0)
+        self.p(Sp::LG)
     }
     fn p_5(self) -> Self {
-        self.p(20.0)
+        self.p(Sp::XL)
     }
     fn p_6(self) -> Self {
-        self.p(24.0)
+        self.p(Sp::XXL - Sp::XS)
     }
     fn p_8(self) -> Self {
-        self.p(32.0)
+        self.p(Sp::XXL + Sp::XS)
     }
 
     fn px_2(self) -> Self {
-        self.px(8.0)
+        self.px(Sp::SM)
     }
     fn px_3(self) -> Self {
-        self.px(12.0)
+        self.px(Sp::MD)
     }
     fn px_4(self) -> Self {
-        self.px(16.0)
+        self.px(Sp::LG)
     }
     fn px_5(self) -> Self {
-        self.px(20.0)
+        self.px(Sp::XL)
     }
     fn px_6(self) -> Self {
-        self.px(24.0)
+        self.px(Sp::XXL - Sp::XS)
     }
 
     fn py_1(self) -> Self {
-        self.py(4.0)
+        self.py(Sp::XS)
     }
     fn py_2(self) -> Self {
-        self.py(8.0)
+        self.py(Sp::SM)
     }
     fn py_3(self) -> Self {
-        self.py(12.0)
+        self.py(Sp::MD)
     }
 
     fn gap_1(self) -> Self {
-        self.gap(4.0)
+        self.gap(Sp::XS)
     }
     fn gap_2(self) -> Self {
-        self.gap(8.0)
+        self.gap(Sp::SM)
     }
     fn gap_3(self) -> Self {
-        self.gap(12.0)
+        self.gap(Sp::MD)
     }
     fn gap_4(self) -> Self {
-        self.gap(16.0)
+        self.gap(Sp::LG)
     }
 
     fn rounded_sm(self) -> Self {
-        self.rounded(6.0)
+        self.rounded(Rad::LG)
     }
     fn rounded_md(self) -> Self {
-        self.rounded(8.0)
+        self.rounded(Rad::XL)
     }
     fn rounded_lg(self) -> Self {
-        self.rounded(12.0)
+        self.rounded(Rad::XXL)
     }
     fn rounded_xl(self) -> Self {
-        self.rounded(16.0)
+        self.rounded(Rad::XXXL)
     }
 
     fn h_10(self) -> Self {
-        self.h(40.0)
+        self.h(Sp::XXXL)
     }
     fn h_12(self) -> Self {
-        self.h(48.0)
+        self.h(Sp::XXXL + Sp::SM)
     }
 
     // -- Raw value methods --
@@ -412,6 +413,13 @@ pub trait Styled: Sized {
 
     /// Outer glow — a colored halo around the element (e.g. focus indicator).
     /// Implemented as a zero-offset shadow with the given color and radius.
+    fn shadow_preset(mut self, layers: &[ShadowLayer]) -> Self {
+        for layer in layers {
+            self = self.shadow(layer.blur, layer.offset_y, Color::rgba(0, 0, 0, layer.alpha));
+        }
+        self
+    }
+
     fn glow(self, color: Color, radius: f32) -> Self {
         self.shadow(radius, 0.0, color)
     }

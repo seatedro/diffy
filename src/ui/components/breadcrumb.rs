@@ -1,4 +1,5 @@
 use crate::ui::actions::Action;
+use crate::ui::design::Sp;
 use crate::ui::element::{div, svg_icon, text, AnyElement, ElementContext, IntoAnyElement, RenderOnce};
 use crate::ui::icons::lucide;
 use crate::ui::style::Styled;
@@ -26,7 +27,8 @@ impl RenderOnce for Breadcrumb {
     fn render(self, cx: &ElementContext) -> AnyElement {
         let tc = &cx.theme.colors;
         let m = &cx.theme.metrics;
-        let icon_size = (m.ui_small_font_size - 2.0).max(8.0);
+        let scale = m.ui_scale();
+        let icon_size = (m.ui_small_font_size - Sp::XXS * scale).max(Sp::SM * scale);
         let last = self.segments.len().saturating_sub(1);
 
         let mut row = div().flex_row().items_center().gap(m.spacing_xs);
@@ -50,8 +52,8 @@ impl RenderOnce for Breadcrumb {
 
             let mut seg = div()
                 .px(m.spacing_xs)
-                .py(2.0)
-                .rounded(m.control_radius - 4.0)
+                .py(Sp::XXS * scale)
+                .rounded(m.control_radius - Sp::XS * scale)
                 .child(label);
 
             if !is_last {

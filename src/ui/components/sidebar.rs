@@ -16,7 +16,7 @@ pub struct FileListItem<'a> {
 impl<'a> FileListItem<'a> {
     fn build(&self, theme: &Theme) -> Div {
         let tc = &theme.colors;
-        let scale = (theme.metrics.ui_font_size / 16.0).max(0.7);
+        let scale = theme.metrics.ui_scale();
         let icon_color = if self.selected { tc.text_accent } else { tc.text_muted };
         let text_color = if self.selected { tc.text_strong } else { tc.text };
 
@@ -41,7 +41,7 @@ impl<'a> FileListItem<'a> {
             div()
                 .flex_1()
                 .flex_col()
-                .gap(1.0)
+                .gap(Sz::SEPARATOR_W)
                 .child(text(&self.entry.path).text_sm().color(text_color).truncate()),
         );
 
@@ -92,7 +92,7 @@ impl<'a> Sidebar<'a> {
         }
 
         let tc = &theme.colors;
-        let scale = (theme.metrics.ui_font_size / 16.0).max(0.7);
+        let scale = theme.metrics.ui_scale();
         let sidebar_width = theme.metrics.sidebar_width * self.width_factor;
         let state = self.state;
         let file_count = state.workspace.files.len();

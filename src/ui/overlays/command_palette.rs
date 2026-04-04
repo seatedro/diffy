@@ -1,14 +1,14 @@
 use crate::ui::actions::Action;
 use crate::ui::components::picker::picker_list_flat;
-use crate::ui::design::{Sp, Sz};
+use crate::ui::design::{Shadow, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::state::{AppState, FocusTarget};
 use crate::ui::style::Styled;
-use crate::ui::theme::{Color, Theme};
+use crate::ui::theme::Theme;
 
 pub fn command_palette(state: &AppState, theme: &Theme, width: f32, height: f32) -> AnyElement {
     let tc = &theme.colors;
-    let scale = (theme.metrics.ui_font_size / 16.0).max(0.7);
+    let scale = theme.metrics.ui_scale();
     let panel_width = (Sz::MODAL_MD * scale).min(width - (Sz::MODAL_MARGIN * scale).round());
 
     let panel = div()
@@ -18,9 +18,7 @@ pub fn command_palette(state: &AppState, theme: &Theme, width: f32, height: f32)
         .bg(tc.elevated_surface)
         .rounded_lg()
         .border(tc.border)
-        .shadow(Sp::XXL, Sp::SM, Color::rgba(0, 0, 0, 80))
-        .shadow(Sp::SM, Sp::XS, Color::rgba(0, 0, 0, 40))
-        .shadow(Sp::XXS, Sp::XXS, Color::rgba(0, 0, 0, 20))
+        .shadow_preset(Shadow::MODAL)
         .on_click(Action::Noop)
         .child(
             div()

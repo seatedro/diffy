@@ -9,7 +9,7 @@ use crate::ui::style::Styled;
 
 pub fn pull_request_modal(state: &AppState, theme: &crate::ui::theme::Theme, width: f32, height: f32) -> AnyElement {
     let tc = &theme.colors;
-    let scale = (theme.metrics.ui_font_size / 16.0).max(0.7);
+    let scale = theme.metrics.ui_scale();
 
     let mut modal = Modal::new(
         "GitHub Pull Request",

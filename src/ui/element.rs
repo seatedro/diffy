@@ -116,6 +116,7 @@ pub struct ElementContext<'a> {
     pub focus: Option<crate::ui::state::FocusTarget>,
     pub signal_store: &'a mut SignalStore,
     pub clock_ms: u64,
+    pub ui_signals: Option<crate::ui::ui_signals::UiSignals>,
     pub debug_wireframe: bool,
     pub text_input_hit_areas: Vec<TextInputHitArea>,
     pub scrollbar_tracks: Vec<ScrollbarTrack>,
@@ -144,6 +145,7 @@ impl<'a> ElementContext<'a> {
             focus: None,
             signal_store,
             clock_ms: 0,
+            ui_signals: None,
             debug_wireframe: false,
             text_input_hit_areas: Vec::new(),
             scrollbar_tracks: Vec::new(),
@@ -190,7 +192,11 @@ impl<'a> ElementContext<'a> {
         self
     }
 
-    /// Check if a given focus target is the current focus.
+    pub fn with_ui_signals(mut self, signals: crate::ui::ui_signals::UiSignals) -> Self {
+        self.ui_signals = Some(signals);
+        self
+    }
+
     pub fn is_focused(&self, target: crate::ui::state::FocusTarget) -> bool {
         self.focus == Some(target)
     }
@@ -1743,10 +1749,13 @@ impl Element for TextInput {
             scene.rounded_rect(RoundedRectPrimitive::uniform(bounds, radius, fill));
             scene.border(BorderPrimitive::uniform(bounds, 1.0, radius, border));
 
+            const INPUT_SIDE_PAD: f32 = 14.0;
+            const INPUT_TOP_PAD: f32 = 8.0;
+            let scale = (theme.metrics.ui_font_size / 16.0).max(0.7);
             let label_size = theme.metrics.ui_small_font_size - 1.0;
             let label_lh = label_size * 1.4;
-            let pad = 14.0;
-            let top_pad = 8.0;
+            let pad = (INPUT_SIDE_PAD * scale).round();
+            let top_pad = (INPUT_TOP_PAD * scale).round();
 
             scene.text(TextPrimitive {
                 rect: Rect {
@@ -2005,13 +2014,15 @@ impl Element for SvgIcon {
     fn request_layout(
         &mut self,
         engine: &mut LayoutEngine,
-        _cx: &mut ElementContext,
+        cx: &mut ElementContext,
     ) -> (LayoutId, ()) {
+        let scale = (cx.theme.metrics.ui_font_size / 16.0).max(0.7);
+        let effective = self.size * scale;
         let id = engine.request_layout(
             taffy::Style {
                 size: taffy::Size {
-                    width: taffy::Dimension::length(self.size),
-                    height: taffy::Dimension::length(self.size),
+                    width: taffy::Dimension::length(effective),
+                    height: taffy::Dimension::length(effective),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
@@ -2040,7 +2051,8 @@ impl Element for SvgIcon {
         cx: &mut ElementContext,
     ) {
         let color = self.color.unwrap_or(cx.theme.colors.icon);
-        let px_size = self.size.ceil() as u32;
+        let scale = (cx.theme.metrics.ui_font_size / 16.0).max(0.7);
+        let px_size = (self.size * scale).ceil() as u32;
         let key = crate::ui::icons::cache_key(self.svg, px_size, color);
         let (rgba, w, h) = crate::ui::icons::rasterize_svg(self.svg, px_size, color);
         scene.image(crate::render::ImagePrimitive {

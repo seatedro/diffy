@@ -6,14 +6,17 @@ use crate::render::{
     Rect, RectPrimitive, RoundedRectPrimitive, Scene, ShadowPrimitive, TextMetrics,
 };
 use crate::ui::actions::Action;
-use crate::ui::design::Sp;
-use crate::ui::editor::element::{EditorElement, EditorDocument};
+use crate::ui::components::{
+    self, Button, ButtonStyle, SegmentedControl, SegmentedItem, ToastStack,
+};
+use crate::ui::design::{Ico, Rad, Sp, Sz};
+use crate::ui::editor::element::{EditorDocument, EditorElement};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
-use crate::ui::components;
+use crate::ui::overlays;
 use crate::ui::state::{
-    AppState, AsyncStatus, CompareField, FocusTarget, OverlaySurface, PickerItem,
-    SidebarMode, SidebarWidthCache, ToastKind, WorkspaceMode,
+    AppState, AsyncStatus, FocusTarget, OverlaySurface,
+    SidebarMode, SidebarWidthCache, WorkspaceMode,
 };
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme};
@@ -62,35 +65,41 @@ pub fn build_ui_frame(
     let ui_scale = ui_scale(theme);
 
     let sidebar_list_height =
-        (height - theme.metrics.title_bar_height - theme.metrics.status_bar_height - 40.0 * ui_scale).max(0.0);
-    state.file_list.row_height = 36.0 * ui_scale;
-    state.file_list.gap = 4.0 * ui_scale;
-    let overlay_row_height = (36.0 * ui_scale).round().max(24.0) as u32;
+        (height - theme.metrics.title_bar_height - theme.metrics.status_bar_height - Sz::SIDEBAR_LIST_OFFSET * ui_scale).max(0.0);
+    state.file_list.row_height = (Sz::ROW * ui_scale).round();
+    state.file_list.gap = (Sp::XS * ui_scale).round();
+    let overlay_row_height = (Sz::ROW * ui_scale).round().max(24.0) as u32;
     state.overlays.picker.list.row_height_px = overlay_row_height;
     state.overlays.command_palette.list.row_height_px = overlay_row_height;
     state.file_list.viewport_height = sidebar_list_height;
     state.file_list.clamp_scroll(state.workspace.files.len());
-    let sidebar_width = preferred_sidebar_width(state, theme, cx, width);
+    let sidebar_width_factor = cx
+        .ui_signals
+        .map(|s| cx.read(s.sidebar_width_factor))
+        .unwrap_or(1.0);
+    let sidebar_width = preferred_sidebar_width(state, theme, cx, width) * sidebar_width_factor;
 
     let mut root = div()
         .w(width)
         .h(height)
         .flex_col()
         .bg(theme.colors.background)
-        .child(title_bar(state, theme))
+        .child(title_bar(state, theme, sidebar_width_factor))
         .child(
             div()
                 .flex_row()
                 .flex_1()
                 .min_h(0.0)
-                .child(sidebar(
-                    state,
-                    theme,
-                    sidebar_width,
-                    file_list_bounds.clone(),
-                    cx,
-                ))
-                .child(sidebar_resizer(theme, sidebar_resize_bounds.clone()))
+                .when(sidebar_width_factor > 0.001, |d| {
+                    d.child(sidebar(
+                        state,
+                        theme,
+                        sidebar_width,
+                        file_list_bounds.clone(),
+                        cx,
+                    ))
+                    .child(sidebar_resizer(theme, sidebar_resize_bounds.clone()))
+                })
                 .child(main_surface(
                     state,
                     theme,
@@ -100,15 +109,14 @@ pub fn build_ui_frame(
         )
         .child(status_bar(state, theme));
 
-    // --- Overlay (z-indexed above everything) ---
     if let Some(top) = state.overlays.stack.last().cloned() {
         let overlay = match top.surface {
-            OverlaySurface::CompareSheet => compare_sheet(state, theme, width, height),
-            OverlaySurface::RepoPicker => repo_picker(state, theme, width, height),
-            OverlaySurface::RefPicker(field) => ref_picker(state, theme, field, width, height),
-            OverlaySurface::CommandPalette => command_palette(state, theme, width, height),
-            OverlaySurface::PullRequestModal => pull_request_modal(state, theme, width, height),
-            OverlaySurface::GitHubAuthModal => auth_modal(state, theme, width, height),
+            OverlaySurface::CompareSheet => overlays::compare_sheet(state, theme, width, height),
+            OverlaySurface::RepoPicker => overlays::repo_picker(state, theme, width, height),
+            OverlaySurface::RefPicker(field) => overlays::ref_picker(state, theme, field, width, height),
+            OverlaySurface::CommandPalette => overlays::command_palette(state, theme, width, height),
+            OverlaySurface::PullRequestModal => overlays::pull_request_modal(state, theme, width, height),
+            OverlaySurface::GitHubAuthModal => overlays::auth_modal(state, theme, width, height),
         };
         root = root.child(overlay);
     }
@@ -147,15 +155,15 @@ pub fn build_ui_frame(
                 let sb = editor.scrollbar_rect();
                 let ratio = state.editor.viewport_height_px as f32
                     / state.editor.content_height_px as f32;
-                let thumb_h = (sb.height * ratio).max(32.0 * ui_scale).min(sb.height);
+                let thumb_h = (sb.height * ratio).max(Sp::XXL * ui_scale).min(sb.height);
                 let scroll_range = state.editor.max_scroll_top_px().max(1) as f32;
                 let top_ratio = state.editor.scroll_top_px as f32 / scroll_range;
                 let thumb_y = sb.y + (sb.height - thumb_h) * top_ratio;
                 scrollbar_tracks.push(ScrollbarTrack {
                     track_rect: Rect {
-                        x: sb.x - 6.0 * ui_scale,
+                        x: sb.x - Rad::LG * ui_scale,
                         y: sb.y,
-                        width: sb.width + 12.0 * ui_scale,
+                        width: sb.width + Sp::MD * ui_scale,
                         height: sb.height,
                     },
                     thumb_top: thumb_y,
@@ -168,30 +176,9 @@ pub fn build_ui_frame(
         }
     }
 
-    // --- Toasts (painted last so they appear above viewport content) ---
     if !state.toasts.is_empty() {
-        let toast_width = (360.0 * ui_scale).min((width - 32.0 * ui_scale).max(220.0 * ui_scale));
-        let toast_height = 52.0 * ui_scale;
-        let tc = ToastColors {
-            surface: theme.colors.elevated_surface,
-            text: theme.colors.text,
-            text_muted: theme.colors.text_muted,
-            error_accent: theme.colors.status_error,
-            info_accent: theme.colors.status_info,
-            border: theme.colors.border,
-            icon_color: theme.colors.text_muted,
-            font_size: theme.metrics.ui_font_size,
-        };
-        for (offset, (index, toast)) in state.toasts.iter().enumerate().rev().enumerate() {
-            let (message, kind) = (&toast.message, toast.kind);
-            let rect = Rect {
-                x: width - toast_width - Sp::XL,
-                y: height - theme.metrics.status_bar_height - Sp::LG - toast_height - offset as f32 * (toast_height + Sp::SM),
-                width: toast_width,
-                height: toast_height,
-            };
-            paint_toast(&mut scene, cx, rect, message, kind, index, &tc);
-        }
+        let mut toast_root = ToastStack::new(&state.toasts, width, height).build().into_any();
+        render_element(&mut toast_root, &mut scene, cx, width, height);
     }
 
     let hits = std::mem::take(&mut cx.hits);
@@ -217,7 +204,7 @@ pub fn build_ui_frame(
 // Title bar
 // ---------------------------------------------------------------------------
 
-fn title_bar(state: &AppState, theme: &Theme) -> Div {
+fn title_bar(state: &AppState, theme: &Theme, sidebar_visible: f32) -> Div {
     let tc = &theme.colors;
 
     let repo_label = state
@@ -228,23 +215,26 @@ fn title_bar(state: &AppState, theme: &Theme) -> Div {
         .and_then(|name| name.to_str())
         .unwrap_or("diffy");
 
-    // Left cluster: app icon + name
     let left = div()
         .flex_row()
         .flex_shrink_0()
         .min_w(0.0)
         .items_center()
         .gap(Sp::SM)
-        .child(svg_icon(lucide::GIT_COMPARE, 18.0).color(tc.accent))
+        .child(
+            Button::new(Action::ToggleSidebar)
+                .icon(lucide::PANEL_LEFT)
+                .active(sidebar_visible > 0.5),
+        )
+        .child(svg_icon(lucide::GIT_COMPARE, Ico::LG).color(tc.accent))
         .child(
             div()
                 .min_w(0.0)
                 .child(text(repo_label).semibold().color(tc.text_strong).truncate()),
         );
 
-    // Center: summary when ready
     let center_text = if state.workspace_mode == WorkspaceMode::Ready {
-        let summary = format!(
+        format!(
             "{} files  \u{00b7}  {} \u{2192} {}",
             state.workspace.files.len(),
             display_ref(
@@ -261,8 +251,7 @@ fn title_bar(state: &AppState, theme: &Theme) -> Div {
                     .as_deref()
                     .unwrap_or(&state.compare.right_ref)
             ),
-        );
-        summary
+        )
     } else if state.workspace_mode == WorkspaceMode::Loading {
         "Comparing\u{2026}".to_owned()
     } else {
@@ -273,7 +262,6 @@ fn title_bar(state: &AppState, theme: &Theme) -> Div {
             .then_some(text(center_text).text_sm().color(tc.text_muted).truncate()),
     );
 
-    // Right cluster: toolbar buttons
     let compare_active = state.overlays.top() == Some(OverlaySurface::CompareSheet);
     let pr_active = state.overlays.top() == Some(OverlaySurface::PullRequestModal);
 
@@ -281,63 +269,44 @@ fn title_bar(state: &AppState, theme: &Theme) -> Div {
         .flex_row()
         .items_center()
         .gap_1()
-        .child(icon_ghost_btn(
-            lucide::GIT_COMPARE,
-            "Compare",
-            Action::OpenCompareSheet,
-            compare_active,
-            theme,
-        ))
-        .child(icon_ghost_btn(
-            lucide::GIT_PULL_REQUEST,
-            "PR",
-            Action::OpenPullRequestModal,
-            pr_active,
-            theme,
-        ))
-        .child(toolbar_separator(tc))
-        .child(segmented_control(
-            &[
-                (
-                    "Split",
-                    Action::SetLayoutMode(LayoutMode::Split),
-                    state.compare.layout == LayoutMode::Split,
-                ),
-                (
-                    "Unified",
-                    Action::SetLayoutMode(LayoutMode::Unified),
-                    state.compare.layout == LayoutMode::Unified,
-                ),
-            ],
-            theme,
-        ))
-        .child(icon_ghost_btn(
-            lucide::WRAP_TEXT,
-            "Wrap",
-            Action::ToggleWrap,
-            state.editor.wrap_enabled,
-            theme,
-        ))
         .child(
-            div()
-                .px_2()
-                .py_1()
-                .rounded_md()
-                .hover_bg(tc.ghost_element_hover)
-                .on_click(Action::ToggleThemeMode)
-                .cursor(CursorHint::Pointer)
-                .child(
-                    svg_icon(
-                        if theme.mode == crate::ui::theme::ThemeMode::Dark {
-                            lucide::MOON
-                        } else {
-                            lucide::SUN
-                        },
-                        15.0,
-                    )
-                    .color(tc.text_muted),
-                ),
-        );
+            Button::new(Action::OpenCompareSheet)
+                .icon(lucide::GIT_COMPARE)
+                .label("Compare")
+                .active(compare_active),
+        )
+        .child(
+            Button::new(Action::OpenPullRequestModal)
+                .icon(lucide::GIT_PULL_REQUEST)
+                .label("PR")
+                .active(pr_active),
+        )
+        .child(toolbar_separator(tc))
+        .child(SegmentedControl::new(vec![
+            SegmentedItem::new(
+                "Split",
+                Action::SetLayoutMode(LayoutMode::Split),
+                state.compare.layout == LayoutMode::Split,
+            ),
+            SegmentedItem::new(
+                "Unified",
+                Action::SetLayoutMode(LayoutMode::Unified),
+                state.compare.layout == LayoutMode::Unified,
+            ),
+        ]))
+        .child(
+            Button::new(Action::ToggleWrap)
+                .icon(lucide::WRAP_TEXT)
+                .label("Wrap")
+                .active(state.editor.wrap_enabled),
+        )
+        .child(Button::new(Action::ToggleThemeMode).icon(
+            if theme.mode == crate::ui::theme::ThemeMode::Dark {
+                lucide::MOON
+            } else {
+                lucide::SUN
+            },
+        ));
 
     div()
         .flex_row()
@@ -370,17 +339,17 @@ fn preferred_sidebar_width(
 ) -> f32 {
     const MAIN_SURFACE_MIN_WIDTH: f32 = 320.0;
     let ui_scale = ui_scale(theme);
-    let list_side_padding = 12.0 * ui_scale;
+    let list_side_padding = Sp::MD * ui_scale;
     let row_side_padding = Sp::SM * 2.0 * ui_scale;
     let row_gap = Sp::SM * ui_scale;
     let stats_gap = Sp::XS * ui_scale;
-    let header_side_padding = 32.0 * ui_scale;
+    let header_side_padding = Sp::XXL + Sp::XS;
     let header_badge_outer_padding = Sp::SM * 2.0 * ui_scale;
-    let header_badge_inner_padding = 12.0 * ui_scale;
-    let scrollbar_gutter = 18.0 * ui_scale;
+    let header_badge_inner_padding = Sp::MD * ui_scale;
+    let scrollbar_gutter = Ico::LG * ui_scale;
     let auto_min_width = theme.metrics.sidebar_width;
     let manual_min_width = (theme.metrics.sidebar_width * 0.64).round();
-    let file_icon_width = 15.0 * ui_scale;
+    let file_icon_width = Ico::MD * ui_scale;
     let hard_max = available_width.max(0.0);
     let max_width = if hard_max >= auto_min_width {
         (available_width - MAIN_SURFACE_MIN_WIDTH)
@@ -499,10 +468,10 @@ fn preferred_sidebar_width(
 fn sidebar_resizer(theme: &Theme, bounds_cell: Rc<Cell<Option<Rect>>>) -> Canvas {
     let tc = theme.colors;
     let scale = ui_scale(theme);
-    let handle_width = (18.0 * scale).round().max(14.0);
-    let track_width = (1.0 * scale).max(1.0);
-    let thumb_width = (6.0 * scale).round().max(5.0);
-    let thumb_height = (56.0 * scale).round().max(40.0);
+    let handle_width = (Ico::LG * scale).round().max(Ico::SM);
+    let track_width = (Sz::SEPARATOR_W * scale).max(1.0);
+    let thumb_width = (Rad::LG * scale).round().max(Rad::MD);
+    let thumb_height = (Sp::XXXXL * scale).round().max(Sz::SIDEBAR_LIST_OFFSET);
 
     canvas(move |bounds, scene, cx| {
         bounds_cell.set(Some(bounds));
@@ -530,9 +499,9 @@ fn sidebar_resizer(theme: &Theme, bounds_cell: Rc<Cell<Option<Rect>>>) -> Canvas
         scene.rect(RectPrimitive {
             rect: Rect {
                 x: center_x - track_width * 0.5,
-                y: bounds.y + 18.0 * scale,
+                y: bounds.y + handle_width,
                 width: track_width,
-                height: (bounds.height - 36.0 * scale).max(0.0),
+                height: (bounds.height - handle_width * 2.0).max(0.0),
             },
             color: line_color,
         });
@@ -543,7 +512,7 @@ fn sidebar_resizer(theme: &Theme, bounds_cell: Rc<Cell<Option<Rect>>>) -> Canvas
                 width: thumb_width,
                 height: thumb_height,
             },
-            blur_radius: 18.0 * scale,
+            blur_radius: handle_width,
             corner_radius: thumb_width,
             offset: [0.0, 0.0],
             color: glow,
@@ -594,9 +563,9 @@ fn sidebar(
     let total_dels: i32 = all_files.iter().map(|f| f.deletions).sum();
 
     let header = div()
-        .px(12.0 * scale)
-        .pt(12.0 * scale)
-        .pb(8.0 * scale)
+        .px((Sp::MD * scale).round())
+        .pt((Sp::MD * scale).round())
+        .pb((Sp::SM * scale).round())
         .flex_col()
         .gap(Sp::SM * scale)
         .child(
@@ -608,8 +577,8 @@ fn sidebar(
                 .optional_child(if file_count > 0 {
                     Some(
                         div()
-                            .px(6.0 * scale)
-                            .py(2.0 * scale)
+                            .px((Rad::LG * scale).round())
+                            .py((Sp::XXS * scale).round())
                             .rounded_sm()
                             .bg(Color::rgba(255, 255, 255, 10))
                             .child(
@@ -633,13 +602,13 @@ fn sidebar(
                             .flex_shrink_0()
                             .items_center()
                             .justify_center()
-                            .w(22.0 * scale)
-                            .h(22.0 * scale)
-                            .rounded(4.0)
+                            .w((Sz::MODE_TOGGLE * scale).round())
+                            .h((Sz::MODE_TOGGLE * scale).round())
+                            .rounded((Rad::SM * scale).round())
                             .hover_bg(tc.ghost_element_hover)
                             .on_click(Action::ToggleSidebarMode)
                             .child(
-                                svg_icon(mode_icon, 13.0 * scale).color(tc.text_muted),
+                                svg_icon(mode_icon, Ico::SIDEBAR_MODE).color(tc.text_muted),
                             ),
                     )
                 } else {
@@ -674,7 +643,7 @@ fn sidebar(
             .on_click(Action::SetFocus(Some(FocusTarget::SidebarSearch)))
             .bare()
             .w_full()
-            .h(28.0 * scale);
+            .h((Sz::SEARCH_INPUT * scale).round());
         let hint = if !search_focused && !has_filter {
             Some("/")
         } else {
@@ -683,8 +652,8 @@ fn sidebar(
         Some(
             div()
                 .w_full()
-                .px(10.0 * scale)
-                .pb(8.0 * scale)
+                .px((Sp::SM + Sp::XXS) * scale)
+                .pb((Sp::SM * scale).round())
                 .child(components::search_field(
                     input,
                     has_filter,
@@ -720,7 +689,7 @@ fn sidebar(
                     .flex_col()
                     .items_center()
                     .gap_2()
-                    .child(svg_icon(icon, 20.0).color(tc.text_muted))
+                    .child(svg_icon(icon, Ico::XL).color(tc.text_muted))
                     .child(text(msg).text_sm().color(tc.text_muted)),
             ),
         );
@@ -731,7 +700,7 @@ fn sidebar(
                     .flex_col()
                     .items_center()
                     .gap_2()
-                    .child(svg_icon(lucide::SEARCH, 20.0).color(tc.text_muted))
+                    .child(svg_icon(lucide::SEARCH, Ico::XL).color(tc.text_muted))
                     .child(
                         text("No files match filter.")
                             .text_sm()
@@ -785,8 +754,8 @@ fn sidebar(
             .flex_1()
             .min_h(0.0)
             .flex_col()
-            .px(6.0 * scale)
-            .gap(Sp::XS * scale)
+            .px((Rad::LG * scale).round())
+            .gap((Sp::XS * scale).round())
             .clip()
             .scroll_y(scroll_px)
             .scroll_total(total_height)
@@ -819,7 +788,7 @@ fn sidebar(
                 row = row.hover_bg(tc.sidebar_row_hover);
             }
 
-            row = row.child(components::file_icon(&file.path, 15.0 * scale).selected(selected));
+            row = row.child(components::file_icon(&file.path, Ico::MD * scale).selected(selected));
 
             row = row.child(
                 div()
@@ -853,8 +822,7 @@ fn sidebar(
 
             if viewed {
                 row = row.child(
-                    svg_icon(lucide::CHECK, 12.0 * scale)
-                        .color(tc.line_add_text),
+                    svg_icon(lucide::CHECK, Ico::XS).color(tc.line_add_text),
                 );
             }
 
@@ -897,12 +865,12 @@ fn main_surface(
             // File header bar
             main = main.child(
                 div()
-                    .h(36.0)
+                    .h(Sz::ROW)
                     .px_4()
                     .flex_row()
                     .items_center()
                     .border_b(tc.border_variant)
-                    .child(components::file_icon(file_label, 14.0))
+                    .child(components::file_icon(file_label, Ico::SM))
                     .child(div().w(Sp::SM))
                     .child(text(file_label).text_sm().color(tc.text_muted).truncate()),
             );
@@ -939,7 +907,7 @@ fn loading_card(state: &AppState, theme: &Theme) -> Div {
         .child(
             div()
                 .w_full()
-                .max_w(440.0 * scale)
+                .max_w(Sz::CARD_SM * scale)
                 .p(Sp::XL * scale)
                 .flex_col()
                 .gap(Sp::MD * scale)
@@ -949,7 +917,7 @@ fn loading_card(state: &AppState, theme: &Theme) -> Div {
                 .border_b(tc.border)
                 .shadow(16.0, 6.0, Color::rgba(0, 0, 0, 80))
                 .shadow(4.0, 2.0, Color::rgba(0, 0, 0, 40))
-                .child(svg_icon(lucide::LOADER, 24.0 * scale).color(tc.text_muted))
+                .child(svg_icon(lucide::LOADER, Ico::XXL).color(tc.text_muted))
                 .child(
                     div().w_full().min_w(0.0).child(
                         text("Comparing repository\u{2026}")
@@ -1001,7 +969,7 @@ fn empty_state(state: &AppState, theme: &Theme) -> Div {
 
     let mut card = div()
         .w_full()
-        .max_w(520.0 * scale)
+        .max_w(Sz::CARD_MD * scale)
         .p(Sp::XXL * scale)
         .flex_col()
         .gap(Sp::LG * scale)
@@ -1011,7 +979,7 @@ fn empty_state(state: &AppState, theme: &Theme) -> Div {
         .shadow(20.0, 8.0, Color::rgba(0, 0, 0, 80))
         .shadow(4.0, 2.0, Color::rgba(0, 0, 0, 40))
         // Hero icon
-        .child(svg_icon(hero_icon, 32.0 * scale).color(tc.accent))
+        .child(svg_icon(hero_icon, Ico::HERO).color(tc.accent))
         // Heading
         .child(text(title).text_lg().semibold().color(tc.text_strong))
         // Subtitle
@@ -1028,18 +996,18 @@ fn empty_state(state: &AppState, theme: &Theme) -> Div {
                 .flex_wrap()
                 .gap(Sp::MD * scale)
                 .pt(Sp::XS * scale)
-                .child(filled_icon_button(
-                    lucide::PLAY,
-                    "Open Compare",
-                    Action::OpenCompareSheet,
-                    theme,
-                ))
-                .child(subtle_icon_button(
-                    lucide::FOLDER_OPEN,
-                    "Open Folder",
-                    Action::OpenRepositoryDialog,
-                    theme,
-                )),
+                .child(
+                    Button::new(Action::OpenCompareSheet)
+                        .icon(lucide::PLAY)
+                        .label("Open Compare")
+                        .style(ButtonStyle::Filled),
+                )
+                .child(
+                    Button::new(Action::OpenRepositoryDialog)
+                        .icon(lucide::FOLDER_OPEN)
+                        .label("Open Folder")
+                        .style(ButtonStyle::Subtle),
+                ),
         );
 
     // Recent repositories section
@@ -1108,854 +1076,16 @@ fn status_bar(state: &AppState, theme: &Theme) -> Div {
         .px_4()
         .bg(tc.status_bar_background)
         .border_t(tc.border_variant)
-        .child(svg_icon(status_icon, 12.0).color(status_color))
-        .child(div().w(6.0))
+        .child(svg_icon(status_icon, Ico::XS).color(status_color))
+        .child(div().w(Rad::LG))
         .child(text(status_text).text_xs().color(tc.text_muted))
         .child(spacer())
         .child(text(right_text).text_xs().color(tc.text_muted))
 }
 
-// ---------------------------------------------------------------------------
-// Toasts
-// ---------------------------------------------------------------------------
-
-struct ToastColors {
-    surface: Color,
-    text: Color,
-    text_muted: Color,
-    error_accent: Color,
-    info_accent: Color,
-    border: Color,
-    icon_color: Color,
-    font_size: f32,
-}
-
-fn paint_toast(
-    scene: &mut Scene,
-    cx: &mut ElementContext,
-    rect: Rect,
-    message: &str,
-    kind: ToastKind,
-    index: usize,
-    colors: &ToastColors,
-) {
-    use crate::render::{
-        BorderPrimitive, FontKind, RoundedRectPrimitive, ShadowPrimitive, TextPrimitive,
-    };
-
-    let radius = 12.0;
-
-    // Shadow
-    scene.shadow(ShadowPrimitive {
-        rect,
-        blur_radius: 16.0,
-        corner_radius: radius,
-        offset: [0.0, 4.0],
-        color: Color::rgba(0, 0, 0, 60),
-    });
-    scene.shadow(ShadowPrimitive {
-        rect,
-        blur_radius: 4.0,
-        corner_radius: radius,
-        offset: [0.0, 2.0],
-        color: Color::rgba(0, 0, 0, 30),
-    });
-
-    // Background
-    scene.rounded_rect(RoundedRectPrimitive::uniform(rect, radius, colors.surface));
-
-    // Left accent stripe based on kind
-    let accent = match kind {
-        ToastKind::Info => colors.info_accent,
-        ToastKind::Error => colors.error_accent,
-    };
-    let stripe = Rect {
-        x: rect.x,
-        y: rect.y,
-        width: 3.0,
-        height: rect.height,
-    };
-    scene.rounded_rect(RoundedRectPrimitive::uniform(stripe, radius, accent));
-
-    // Border
-    scene.border(BorderPrimitive::uniform(rect, 1.0, radius, colors.border));
-
-    // Message text
-    scene.text(TextPrimitive {
-        rect: rect.pad(Sp::XL, 0.0, Sp::XL, 0.0),
-        text: message.into(),
-        color: colors.text,
-        font_size: colors.font_size,
-        font_kind: FontKind::Ui,
-        font_weight: crate::render::FontWeight::Normal,
-    });
-
-    // Dismiss X text
-    scene.text(TextPrimitive {
-        rect: Rect {
-            x: rect.x + rect.width - 32.0,
-            y: rect.y,
-            width: 20.0,
-            height: rect.height,
-        },
-        text: "\u{00d7}".into(),
-        color: colors.text_muted,
-        font_size: colors.font_size,
-        font_kind: FontKind::Ui,
-        font_weight: crate::render::FontWeight::Normal,
-    });
-
-    // Hit region for dismiss
-    cx.hits.push(HitRegion {
-        rect,
-        action: Action::DismissToast(index),
-        cursor: CursorHint::Pointer,
-    });
-}
-
-// ---------------------------------------------------------------------------
-// Overlays
-// ---------------------------------------------------------------------------
-
-fn modal_backdrop(theme: &Theme, width: f32, height: f32) -> Div {
-    div()
-        .w(width)
-        .h(height)
-        .z_index(100)
-        .p(theme.metrics.spacing_lg * 1.5)
-        .bg(theme.colors.overlay_scrim)
-        .on_click(Action::CloseOverlay)
-        .items_center()
-        .justify_center()
-}
-
-fn modal_panel(width: f32, theme: &Theme) -> Div {
-    let tc = &theme.colors;
-    let scale = ui_scale(theme);
-    div()
-        .w_full()
-        .max_w(width * scale)
-        .min_w(0.0)
-        .min_h(0.0)
-        .flex_col()
-        .p(Sp::XXL * scale)
-        .gap(Sp::LG * scale)
-        .bg(tc.elevated_surface)
-        .rounded_xl()
-        .border_b(tc.border)
-        .shadow(24.0, 8.0, Color::rgba(0, 0, 0, 100))
-        .shadow(8.0, 4.0, Color::rgba(0, 0, 0, 50))
-        .shadow(2.0, 1.0, Color::rgba(0, 0, 0, 30))
-        // Consume clicks so they don't propagate to the backdrop's CloseOverlay.
-        .on_click(Action::Noop)
-}
-
-fn modal_header(title: &str, subtitle: &str, icon: &'static str, theme: &Theme) -> Div {
-    let tc = &theme.colors;
-    let scale = ui_scale(theme);
-    div()
-        .flex_col()
-        .gap(Sp::SM * scale)
-        .child(
-            div()
-                .flex_row()
-                .flex_shrink_0()
-                .items_center()
-                .gap(Sp::SM * scale)
-                .child(svg_icon(icon, 18.0 * scale).color(tc.accent))
-                .child(text(title).text_lg().semibold().color(tc.text_strong)),
-        )
-        .child(
-            div()
-                .w_full()
-                .min_w(0.0)
-                .child(text(subtitle).text_sm().color(tc.text_muted).truncate()),
-        )
-}
-
-fn compare_sheet(state: &AppState, theme: &Theme, width: f32, height: f32) -> Div {
-    let tc = &theme.colors;
-    let scale = ui_scale(theme);
-    modal_backdrop(theme, width, height).child(
-        modal_panel(560.0, theme)
-            .gap(Sp::XL * scale)
-            .child(modal_header(
-                "Compare Setup",
-                "Pick a repository, refs, compare mode, and renderer.",
-                lucide::GIT_COMPARE,
-                theme,
-            ))
-            // Repo picker button
-            .child(
-                subtle_icon_button(
-                    lucide::FOLDER,
-                    &state
-                        .compare
-                        .repo_path
-                        .as_ref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| "Choose repository\u{2026}".into()),
-                    Action::OpenRepoPicker,
-                    theme,
-                )
-                .w_full(),
-            )
-            // Ref fields
-            .child(
-                div()
-                    .flex_row()
-                    .flex_wrap()
-                    .gap(Sp::MD * scale)
-                    .child(
-                        text_input("Left ref", &state.compare.left_ref)
-                            .placeholder("main")
-                            .focused(state.focus.current == Some(FocusTarget::CompareLeftRef))
-                            .on_click(Action::SetFocus(Some(FocusTarget::CompareLeftRef)))
-                            .cursor(state.text_edit.cursor)
-                            .anchor(state.text_edit.anchor)
-                            .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
-                            .focus_target(FocusTarget::CompareLeftRef)
-                            .w_full()
-                            .h(64.0 * scale)
-                            .min_w(180.0 * scale)
-                            .flex_1(),
-                    )
-                    .child(
-                        text_input("Right ref", &state.compare.right_ref)
-                            .placeholder("feature")
-                            .focused(state.focus.current == Some(FocusTarget::CompareRightRef))
-                            .on_click(Action::SetFocus(Some(FocusTarget::CompareRightRef)))
-                            .cursor(state.text_edit.cursor)
-                            .anchor(state.text_edit.anchor)
-                            .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
-                            .focus_target(FocusTarget::CompareRightRef)
-                            .w_full()
-                            .h(64.0 * scale)
-                            .min_w(180.0 * scale)
-                            .flex_1(),
-                    ),
-            )
-            // Compare mode + layout/renderer controls
-            .child(
-                div()
-                    .flex_col()
-                    .gap(Sp::LG * scale)
-                    .child(
-                        div()
-                            .flex_col()
-                            .gap(Sp::SM * scale)
-                            .child(text("Mode").text_sm().medium().color(tc.text_muted))
-                            .child(
-                                segmented_control(
-                                    &[
-                                        (
-                                            "Single",
-                                            Action::SetCompareMode(CompareMode::SingleCommit),
-                                            state.compare.mode == CompareMode::SingleCommit,
-                                        ),
-                                        (
-                                            "Two Dot",
-                                            Action::SetCompareMode(CompareMode::TwoDot),
-                                            state.compare.mode == CompareMode::TwoDot,
-                                        ),
-                                        (
-                                            "Three Dot",
-                                            Action::SetCompareMode(CompareMode::ThreeDot),
-                                            state.compare.mode == CompareMode::ThreeDot,
-                                        ),
-                                    ],
-                                    theme,
-                                )
-                                .w_full(),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_row()
-                            .flex_wrap()
-                            .gap(Sp::LG * scale)
-                            .child(
-                                div()
-                                    .flex_col()
-                                    .flex_1()
-                                    .min_w(180.0 * scale)
-                                    .gap(Sp::SM * scale)
-                                    .child(text("Layout").text_sm().medium().color(tc.text_muted))
-                                    .child(
-                                        segmented_control(
-                                            &[
-                                                (
-                                                    "Unified",
-                                                    Action::SetLayoutMode(LayoutMode::Unified),
-                                                    state.compare.layout == LayoutMode::Unified,
-                                                ),
-                                                (
-                                                    "Split",
-                                                    Action::SetLayoutMode(LayoutMode::Split),
-                                                    state.compare.layout == LayoutMode::Split,
-                                                ),
-                                            ],
-                                            theme,
-                                        )
-                                        .w_full(),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex_col()
-                                    .flex_1()
-                                    .min_w(180.0 * scale)
-                                    .gap(Sp::SM * scale)
-                                    .child(text("Engine").text_sm().medium().color(tc.text_muted))
-                                    .child(
-                                        segmented_control(
-                                            &[
-                                                (
-                                                    "Built-in",
-                                                    Action::SetRenderer(RendererKind::Builtin),
-                                                    state.compare.renderer == RendererKind::Builtin,
-                                                ),
-                                                (
-                                                    "Difftastic",
-                                                    Action::SetRenderer(RendererKind::Difftastic),
-                                                    state.compare.renderer
-                                                        == RendererKind::Difftastic,
-                                                ),
-                                            ],
-                                            theme,
-                                        )
-                                        .w_full(),
-                                    ),
-                            ),
-                    ),
-            )
-            // Validation message
-            .optional_child(
-                state
-                    .overlays
-                    .compare_sheet
-                    .validation_message
-                    .as_deref()
-                    .map(|msg| {
-                        div()
-                            .w_full()
-                            .flex_row()
-                            .flex_shrink_0()
-                            .items_center()
-                            .gap(Sp::SM * scale)
-                            .child(svg_icon(lucide::ALERT_CIRCLE, 14.0).color(tc.status_error))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(0.0)
-                                    .child(text(msg).text_sm().color(tc.status_error).truncate()),
-                            )
-                    }),
-            )
-            .child(spacer())
-            // Footer
-            .child(
-                div()
-                    .flex_row()
-                    .flex_wrap()
-                    .justify_end()
-                    .child(filled_icon_button(
-                        lucide::PLAY,
-                        if state.workspace.status == AsyncStatus::Loading {
-                            "Comparing\u{2026}"
-                        } else {
-                            "Start Compare"
-                        },
-                        Action::StartCompare,
-                        theme,
-                    )),
-            ),
-    )
-}
-
-fn repo_picker(state: &AppState, theme: &Theme, width: f32, height: f32) -> Div {
-    let scale = ui_scale(theme);
-    let max_panel_height = (height - theme.metrics.spacing_lg * 3.0).max(240.0);
-    modal_backdrop(theme, width, height).child(
-        modal_panel(680.0, theme)
-            .h((420.0 * scale).min(max_panel_height))
-            .max_h(max_panel_height)
-            .child(modal_header(
-                "Repository Picker",
-                "Search or type a path to a git repository.",
-                lucide::FOLDER_OPEN,
-                theme,
-            ))
-            .child(
-                text_input("Search or type a path", &state.overlays.picker.query)
-                    .placeholder("C:\\work\\repo")
-                    .focused(state.focus.current == Some(FocusTarget::PickerInput))
-                    .on_click(Action::SetFocus(Some(FocusTarget::PickerInput)))
-                    .cursor(state.text_edit.cursor)
-                    .anchor(state.text_edit.anchor)
-                    .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
-                    .focus_target(FocusTarget::PickerInput)
-                    .w_full()
-                    .h(44.0 * scale),
-            )
-            .child(picker_list(
-                &state.overlays.picker.entries,
-                state.overlays.picker.selected_index,
-                state.overlays.picker.list.scroll_top_px,
-                theme,
-            ))
-            .child(subtle_icon_button(
-                lucide::FOLDER_OPEN,
-                "Browse Folders",
-                Action::OpenRepositoryDialog,
-                theme,
-            )),
-    )
-}
-
-fn ref_picker(
-    state: &AppState,
-    theme: &Theme,
-    field: CompareField,
-    width: f32,
-    height: f32,
-) -> Div {
-    let (title, icon) = match field {
-        CompareField::Left => ("Pick Left Ref", lucide::GIT_BRANCH),
-        CompareField::Right => ("Pick Right Ref", lucide::GIT_BRANCH),
-    };
-    let current_value = match field {
-        CompareField::Left => &state.compare.left_ref,
-        CompareField::Right => &state.compare.right_ref,
-    };
-    let scale = ui_scale(theme);
-    let max_panel_height = (height - theme.metrics.spacing_lg * 3.0).max(240.0);
-
-    modal_backdrop(theme, width, height).child(
-        modal_panel(480.0, theme)
-            .h((380.0 * scale).min(max_panel_height))
-            .max_h(max_panel_height)
-            .child(modal_header(
-                title,
-                "Search branches, tags, or commits.",
-                icon,
-                theme,
-            ))
-            .child(
-                text_input("Filter refs", current_value)
-                    .placeholder("Search branches, tags, commits")
-                    .focused(state.focus.current == Some(FocusTarget::PickerInput))
-                    .on_click(Action::SetFocus(Some(FocusTarget::PickerInput)))
-                    .cursor(state.text_edit.cursor)
-                    .anchor(state.text_edit.anchor)
-                    .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
-                    .focus_target(FocusTarget::PickerInput)
-                    .w_full()
-                    .h(44.0 * scale),
-            )
-            .child(picker_list(
-                &state.overlays.picker.entries,
-                state.overlays.picker.selected_index,
-                state.overlays.picker.list.scroll_top_px,
-                theme,
-            )),
-    )
-}
-
-fn command_palette(state: &AppState, theme: &Theme, width: f32, height: f32) -> Div {
-    let scale = ui_scale(theme);
-    let max_panel_height = (height - theme.metrics.spacing_lg * 3.0).max(240.0);
-    modal_backdrop(theme, width, height).child(
-        modal_panel(720.0, theme)
-            .h((420.0 * scale).min(max_panel_height))
-            .max_h(max_panel_height)
-            .child(modal_header(
-                "Command Palette",
-                "Type a command, file, repository, or ref.",
-                lucide::COMMAND,
-                theme,
-            ))
-            .child(
-                text_input("Command palette", &state.overlays.command_palette.query)
-                    .placeholder("Type a command, file, repo, or ref")
-                    .focused(state.focus.current == Some(FocusTarget::CommandPaletteInput))
-                    .on_click(Action::SetFocus(Some(FocusTarget::CommandPaletteInput)))
-                    .cursor(state.text_edit.cursor)
-                    .anchor(state.text_edit.anchor)
-                    .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
-                    .focus_target(FocusTarget::CommandPaletteInput)
-                    .w_full()
-                    .h(44.0 * scale),
-            )
-            .child(picker_list(
-                &state.overlays.command_palette.entries,
-                state.overlays.command_palette.selected_index,
-                state.overlays.command_palette.list.scroll_top_px,
-                theme,
-            )),
-    )
-}
-
-fn pull_request_modal(state: &AppState, theme: &Theme, width: f32, height: f32) -> Div {
-    let tc = &theme.colors;
-    let scale = ui_scale(theme);
-    let max_panel_height = (height - theme.metrics.spacing_lg * 3.0).max(240.0);
-
-    let mut panel = modal_panel(640.0, theme)
-        .h((340.0 * scale).min(max_panel_height))
-        .max_h(max_panel_height)
-        .child(modal_header(
-            "GitHub Pull Request",
-            "Paste a PR URL to load its base and head refs for diffing.",
-            lucide::GIT_PULL_REQUEST,
-            theme,
-        ))
-        .child(
-            text_input("Pull request URL", &state.github.pull_request.url_input)
-                .placeholder("https://github.com/owner/repo/pull/42")
-                .focused(state.focus.current == Some(FocusTarget::PullRequestInput))
-                .on_click(Action::SetFocus(Some(FocusTarget::PullRequestInput)))
-                .cursor(state.text_edit.cursor)
-                .anchor(state.text_edit.anchor)
-                .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
-                .focus_target(FocusTarget::PullRequestInput)
-                .w_full()
-                .h(44.0 * scale),
-        );
-
-    if let Some(info) = state.github.pull_request.info.as_ref() {
-        panel = panel.child(
-            div()
-                .flex_col()
-                .gap(Sp::SM)
-                .p(Sp::MD)
-                .rounded_md()
-                .bg(tc.surface)
-                .child(
-                    div()
-                        .flex_row()
-                        .flex_shrink_0()
-                        .items_center()
-                        .gap(Sp::SM)
-                        .child(svg_icon(lucide::GIT_PULL_REQUEST, 14.0).color(tc.accent))
-                        .child(
-                            div().flex_1().min_w(0.0).child(
-                                text(format!("#{} {}", info.number, info.title))
-                                    .medium()
-                                    .color(tc.text_strong)
-                                    .truncate(),
-                            ),
-                        ),
-                )
-                .child(
-                    div().w_full().min_w(0.0).child(
-                        text("Use this compare to apply the PR base/head refs and start diffing.")
-                            .text_sm()
-                            .color(tc.text_muted)
-                            .truncate(),
-                    ),
-                ),
-        );
-    }
-
-    panel = panel.child(spacer()).child(
-        div()
-            .flex_row()
-            .gap(Sp::LG)
-            .child(filled_icon_button(
-                lucide::PLAY,
-                if state.github.pull_request.status == AsyncStatus::Loading {
-                    "Loading\u{2026}"
-                } else {
-                    "Load PR"
-                },
-                Action::SubmitPullRequest,
-                theme,
-            ))
-            .optional_child(state.github.pull_request.info.as_ref().map(|_| {
-                subtle_icon_button(
-                    lucide::GIT_COMPARE,
-                    "Use Compare",
-                    Action::UsePullRequestCompare,
-                    theme,
-                )
-            })),
-    );
-
-    modal_backdrop(theme, width, height).child(panel)
-}
-
-fn auth_modal(state: &AppState, theme: &Theme, width: f32, height: f32) -> Div {
-    let tc = &theme.colors;
-    let scale = ui_scale(theme);
-    let max_panel_height = (height - theme.metrics.spacing_lg * 3.0).max(240.0);
-    let (status_icon, status_text) = if state.github.auth.token_present {
-        (lucide::CHECK, "Token stored")
-    } else if state.github.auth.device_flow.is_some() {
-        (lucide::LOADER, "Waiting for authorization")
-    } else {
-        (lucide::SHIELD, "Not authenticated")
-    };
-
-    let (action_icon, action_label, action) = if state.github.auth.device_flow.is_some() {
-        (
-            lucide::EXTERNAL_LINK,
-            "Open Browser",
-            Action::OpenDeviceFlowBrowser,
-        )
-    } else {
-        (
-            lucide::KEY,
-            "Start Device Flow",
-            Action::StartGitHubDeviceFlow,
-        )
-    };
-
-    let mut panel = modal_panel(580.0, theme)
-        .h((320.0 * scale).min(max_panel_height))
-        .max_h(max_panel_height)
-        .child(modal_header(
-            "GitHub Device Flow",
-            "Authenticate with GitHub to access private repositories and PRs.",
-            lucide::SHIELD,
-            theme,
-        ))
-        .child(
-            div()
-                .flex_row()
-                .flex_shrink_0()
-                .items_center()
-                .gap(Sp::SM)
-                .child(svg_icon(status_icon, 14.0).color(tc.text_muted))
-                .child(text(status_text).text_sm().color(tc.text_muted)),
-        );
-
-    if let Some(flow) = state.github.auth.device_flow.as_ref() {
-        panel = panel.child(
-            div()
-                .flex_col()
-                .gap(Sp::MD)
-                .p(Sp::MD)
-                .rounded_md()
-                .bg(tc.surface)
-                .child(
-                    div()
-                        .flex_row()
-                        .flex_shrink_0()
-                        .items_center()
-                        .gap(Sp::SM)
-                        .child(svg_icon(lucide::COPY, 14.0).color(tc.text_muted))
-                        .child(
-                            text(format!("User code: {}", flow.user_code))
-                                .mono()
-                                .medium()
-                                .color(tc.text_strong),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex_row()
-                        .flex_shrink_0()
-                        .items_center()
-                        .gap(Sp::SM)
-                        .child(svg_icon(lucide::EXTERNAL_LINK, 14.0).color(tc.text_accent))
-                        .child(
-                            div().flex_1().min_w(0.0).child(
-                                text(&flow.verification_uri)
-                                    .text_sm()
-                                    .color(tc.text_accent)
-                                    .truncate(),
-                            ),
-                        ),
-                ),
-        );
-    }
-
-    panel =
-        panel
-            .child(spacer())
-            .child(filled_icon_button(action_icon, action_label, action, theme));
-
-    modal_backdrop(theme, width, height).child(panel)
-}
-
-// ---------------------------------------------------------------------------
-// Shared components
-// ---------------------------------------------------------------------------
-
-fn filled_icon_button(icon: &'static str, label: &str, action: Action, theme: &Theme) -> Div {
-    let scale = ui_scale(theme);
-    div()
-        .flex_row()
-        .min_w(0.0)
-        .items_center()
-        .gap(Sp::SM * scale)
-        .px(Sp::LG * scale)
-        .py(Sp::SM * scale)
-        .rounded_md()
-        .bg(theme.colors.accent)
-        .hover_bg(theme.colors.accent.with_alpha(230))
-        .on_click(action)
-        .cursor(CursorHint::Pointer)
-        .child(svg_icon(icon, 15.0 * scale).color(theme.colors.text_strong))
-        .child(
-            div().flex_1().min_w(0.0).child(
-                text(label)
-                    .medium()
-                    .color(theme.colors.text_strong)
-                    .truncate(),
-            ),
-        )
-}
-
-fn subtle_icon_button(icon: &'static str, label: &str, action: Action, theme: &Theme) -> Div {
-    let tc = &theme.colors;
-    let scale = ui_scale(theme);
-    div()
-        .flex_row()
-        .min_w(0.0)
-        .items_center()
-        .gap(Sp::SM * scale)
-        .px(Sp::MD * scale)
-        .py(Sp::SM * scale)
-        .rounded_md()
-        .bg(tc.element_background)
-        .hover_bg(tc.element_hover)
-        .on_click(action)
-        .cursor(CursorHint::Pointer)
-        .child(svg_icon(icon, 15.0 * scale).color(tc.text_muted))
-        .child(
-            div()
-                .flex_1()
-                .min_w(0.0)
-                .child(text(label).text_sm().medium().color(tc.text).truncate()),
-        )
-}
-
-fn icon_ghost_btn(
-    icon: &'static str,
-    label: &str,
-    action: Action,
-    active: bool,
-    theme: &Theme,
-) -> Div {
-    let tc = &theme.colors;
-    let icon_color = if active { tc.text } else { tc.text_muted };
-    let text_color = if active { tc.text } else { tc.text_muted };
-
-    div()
-        .flex_row()
-        .flex_shrink_0()
-        .items_center()
-        .gap(6.0)
-        .px_3()
-        .py_1()
-        .rounded_md()
-        .when(active, |d| d.bg(tc.element_background))
-        .when(!active, |d| d.hover_bg(tc.ghost_element_hover))
-        .on_click(action)
-        .cursor(CursorHint::Pointer)
-        .child(svg_icon(icon, 14.0).color(icon_color))
-        .child(text(label).text_sm().medium().color(text_color))
-}
-
 fn toolbar_separator(tc: &crate::ui::theme::ThemeColors) -> Div {
-    div().w(1.0).h(20.0).bg(tc.border_variant)
+    div().w(Sz::SEPARATOR_W).h(Sz::SEPARATOR_H).bg(tc.border_variant)
 }
-
-fn segmented_control(items: &[(&str, Action, bool)], theme: &Theme) -> Div {
-    let tc = &theme.colors;
-    let scale = ui_scale(theme);
-    let mut row = div()
-        .flex_row()
-        .flex_wrap()
-        .min_w(0.0)
-        .rounded_md()
-        .bg(tc.element_background)
-        .p(3.0 * scale)
-        .gap(2.0 * scale);
-
-    for &(label, ref action, selected) in items {
-        row = row.child(
-            div()
-                .min_w(0.0)
-                .px(Sp::MD * scale)
-                .py(5.0 * scale)
-                .rounded(6.0 * scale)
-                .when(selected, |d| {
-                    d.bg(tc.surface).shadow(2.0, 1.0, Color::rgba(0, 0, 0, 40))
-                })
-                .when(!selected, |d| d.hover_bg(tc.ghost_element_hover))
-                .on_click(action.clone())
-                .cursor(CursorHint::Pointer)
-                .child(text(label).text_sm().medium().color(if selected {
-                    tc.text
-                } else {
-                    tc.text_muted
-                })),
-        );
-    }
-
-    row
-}
-
-fn picker_list<T: PickerItem>(
-    entries: &[T],
-    selected_index: usize,
-    scroll_top_px: u32,
-    theme: &Theme,
-) -> Div {
-    let tc = &theme.colors;
-    let scale = ui_scale(theme);
-    let row_height = 36.0 * scale;
-    let mut list = div()
-        .flex_1()
-        .flex_col()
-        .clip()
-        .scroll_y(scroll_top_px as f32)
-        .scroll_total(entries.len() as f32 * row_height)
-        .on_scroll(ScrollActionBuilder::Custom(
-            Action::ScrollActiveOverlayListPx,
-        ));
-
-    for (i, entry) in entries.iter().enumerate() {
-        let selected = i == selected_index;
-        list = list.child(
-            div()
-                .w_full()
-                .h(row_height)
-                .flex_row()
-                .items_center()
-                .px(Sp::MD * scale)
-                .rounded(5.0 * scale)
-                .when(selected, |d| d.bg(tc.sidebar_row_selected))
-                .when(!selected, |d| d.hover_bg(tc.ghost_element_hover))
-                .on_click(Action::SelectOverlayEntry(i))
-                .cursor(CursorHint::Pointer)
-                .child(
-                    div()
-                        .flex_1()
-                        .flex_col()
-                        .child(text(entry.label()).text_sm().color(if selected {
-                            tc.text_strong
-                        } else {
-                            tc.text
-                        }))
-                        .optional_child(
-                            entry
-                                .detail()
-                                .map(|d| text(d).text_xs().color(tc.text_muted)),
-                        ),
-                ),
-        );
-    }
-
-    list
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 fn compare_mode_label(mode: CompareMode) -> &'static str {
     match mode {

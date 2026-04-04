@@ -1,7 +1,7 @@
 use crate::ui::actions::Action;
 use crate::ui::components::button::{Button, ButtonStyle};
 use crate::ui::components::modal::Modal;
-use crate::ui::components::picker::picker_list;
+use crate::ui::components::picker::picker_list_no_scrollbar;
 use crate::ui::design::Sz;
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
@@ -19,7 +19,7 @@ pub fn repo_picker(state: &AppState, theme: &crate::ui::theme::Theme, width: f32
         width,
         height,
     )
-    .height(420.0)
+    .height(Sz::REPO_PICKER_HEIGHT)
     .body_child(
         text_input("Search or type a path", &state.overlays.picker.query)
             .placeholder("C:\\work\\repo")
@@ -30,9 +30,9 @@ pub fn repo_picker(state: &AppState, theme: &crate::ui::theme::Theme, width: f32
             .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
             .focus_target(FocusTarget::PickerInput)
             .w_full()
-            .h(Sz::INPUT * scale),
+            .h(Sz::INPUT_LABELED * scale),
     )
-    .body_child(picker_list(
+    .body_child(picker_list_no_scrollbar(
         &state.overlays.picker.entries,
         state.overlays.picker.selected_index,
         state.overlays.picker.list.scroll_top_px,

@@ -6,7 +6,7 @@ use crate::core::compare::spec::CompareSpec;
 use crate::core::diff::{DiffLine, FileDiff, Hunk, LineKind};
 use crate::core::error::Result;
 use crate::core::text::{DiffTokenSpan, SyntaxTokenKind, TextBuffer, TokenBuffer};
-use crate::core::vcs::git::GitService;
+use crate::core::vcs::git::{GitService, WORKDIR_REF};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GitDiffBackend;
@@ -18,10 +18,16 @@ impl DiffBackend for GitDiffBackend {
             Err(_) => return Ok(None),
         };
         let (left, right) = match spec.mode {
-            crate::core::compare::spec::CompareMode::TwoDot => (
-                git.resolve_ref(&spec.left_ref)?,
-                git.resolve_ref(&spec.right_ref)?,
-            ),
+            crate::core::compare::spec::CompareMode::TwoDot => {
+                if spec.right_ref == WORKDIR_REF {
+                    (git.resolve_ref(&spec.left_ref)?, WORKDIR_REF.to_owned())
+                } else {
+                    (
+                        git.resolve_ref(&spec.left_ref)?,
+                        git.resolve_ref(&spec.right_ref)?,
+                    )
+                }
+            }
             crate::core::compare::spec::CompareMode::ThreeDot
             | crate::core::compare::spec::CompareMode::SingleCommit => {
                 git.resolve_comparison(&spec.left_ref, &spec.right_ref, spec.mode)?
@@ -29,14 +35,18 @@ impl DiffBackend for GitDiffBackend {
         };
 
         let left_commit = repo.find_commit(git2::Oid::from_str(&left)?)?;
-        let right_commit = repo.find_commit(git2::Oid::from_str(&right)?)?;
         let left_tree = left_commit.tree()?;
-        let right_tree = right_commit.tree()?;
 
         let mut options = DiffOptions::new();
         options.context_lines(3);
-        let mut diff =
-            repo.diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(&mut options))?;
+        let is_workdir = right == WORKDIR_REF;
+        let mut diff = if is_workdir {
+            repo.diff_tree_to_workdir_with_index(Some(&left_tree), Some(&mut options))?
+        } else {
+            let right_commit = repo.find_commit(git2::Oid::from_str(&right)?)?;
+            let right_tree = right_commit.tree()?;
+            repo.diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(&mut options))?
+        };
         diff.find_similar(None)?;
 
         let mut output = CompareOutput::default();

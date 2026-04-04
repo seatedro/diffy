@@ -123,7 +123,8 @@ impl RenderOnce for Modal {
             .child(header);
 
         if let Some(h) = self.height {
-            panel = panel.h((h * scale).round());
+            let max_h = self.window_height - (Sz::MODAL_MARGIN * scale).round() * 2.0;
+            panel = panel.h((h * scale).round().min(max_h));
         }
 
         for child in self.body {

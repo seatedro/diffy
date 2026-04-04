@@ -12,7 +12,16 @@ pub fn picker_list<T: PickerItem>(
     scroll_top_px: u32,
     theme: &Theme,
 ) -> Div {
-    picker_list_inner(entries, selected_index, scroll_top_px, theme, true)
+    picker_list_inner(entries, selected_index, scroll_top_px, theme, true, false)
+}
+
+pub fn picker_list_no_scrollbar<T: PickerItem>(
+    entries: &[T],
+    selected_index: usize,
+    scroll_top_px: u32,
+    theme: &Theme,
+) -> Div {
+    picker_list_inner(entries, selected_index, scroll_top_px, theme, true, true)
 }
 
 pub fn picker_list_flat<T: PickerItem>(
@@ -20,7 +29,7 @@ pub fn picker_list_flat<T: PickerItem>(
     selected_index: usize,
     theme: &Theme,
 ) -> Div {
-    picker_list_inner(entries, selected_index, 0, theme, false)
+    picker_list_inner(entries, selected_index, 0, theme, false, false)
 }
 
 fn picker_list_inner<T: PickerItem>(
@@ -29,6 +38,7 @@ fn picker_list_inner<T: PickerItem>(
     scroll_top_px: u32,
     theme: &Theme,
     scrollable: bool,
+    no_scrollbar: bool,
 ) -> Div {
     let tc = &theme.colors;
     let scale = (theme.metrics.ui_font_size / 16.0).max(0.7);
@@ -36,6 +46,7 @@ fn picker_list_inner<T: PickerItem>(
 
     let mut list = div()
         .flex_1()
+        .min_h(0.0)
         .flex_col()
         .clip();
 
@@ -44,6 +55,9 @@ fn picker_list_inner<T: PickerItem>(
             .scroll_y(scroll_top_px as f32)
             .scroll_total(entries.len() as f32 * row_h)
             .on_scroll(ScrollActionBuilder::Custom(Action::ScrollActiveOverlayListPx));
+        if no_scrollbar {
+            list = list.hide_scrollbar();
+        }
     }
 
     for (i, entry) in entries.iter().enumerate() {

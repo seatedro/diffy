@@ -33,6 +33,10 @@ impl DiffBackend for DifftasticBackend {
             return Ok(None);
         }
 
+        if spec.right_ref == crate::core::vcs::git::WORKDIR_REF {
+            return Ok(None);
+        }
+
         let (left, right) = match spec.mode {
             CompareMode::TwoDot => (
                 git.resolve_ref(&spec.left_ref)?,

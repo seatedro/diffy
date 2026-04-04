@@ -19,7 +19,7 @@ pub fn pull_request_modal(state: &AppState, theme: &crate::ui::theme::Theme, wid
         width,
         height,
     )
-    .height(340.0)
+    .height(Sz::PR_MODAL_HEIGHT)
     .body_child(
         text_input("Pull request URL", &state.github.pull_request.url_input)
             .placeholder("https://github.com/owner/repo/pull/42")
@@ -30,7 +30,7 @@ pub fn pull_request_modal(state: &AppState, theme: &crate::ui::theme::Theme, wid
             .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
             .focus_target(FocusTarget::PullRequestInput)
             .w_full()
-            .h(Sz::INPUT * scale),
+            .h(Sz::INPUT_LABELED * scale),
     );
 
     if let Some(info) = state.github.pull_request.info.as_ref() {

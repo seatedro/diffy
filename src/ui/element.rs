@@ -807,6 +807,7 @@ pub struct Div {
     cursor: CursorHint,
     scroll_y: f32,
     scroll_total_height: f32,
+    hide_scrollbar: bool,
     clips: bool,
     focus_target: Option<crate::ui::state::FocusTarget>,
 }
@@ -824,6 +825,7 @@ pub fn div() -> Div {
         cursor: CursorHint::Default,
         scroll_y: 0.0,
         scroll_total_height: 0.0,
+        hide_scrollbar: false,
         clips: false,
         focus_target: None,
     }
@@ -915,6 +917,11 @@ impl Div {
 
     pub fn scroll_total(mut self, total_height: f32) -> Self {
         self.scroll_total_height = total_height;
+        self
+    }
+
+    pub fn hide_scrollbar(mut self) -> Self {
+        self.hide_scrollbar = true;
         self
     }
 
@@ -1168,7 +1175,7 @@ impl Element for Div {
             }
         }
 
-        if self.scroll_total_height > bounds.height {
+        if self.scroll_total_height > bounds.height && !self.hide_scrollbar {
             let track_h = bounds.height;
             let content_h = self.scroll_total_height;
             let max_scroll = content_h - track_h;

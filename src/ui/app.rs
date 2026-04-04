@@ -57,6 +57,7 @@ struct NativeApp {
     launch_at: Instant,
     dumps_dirty: bool,
     modifiers: ModifiersState,
+    #[cfg(feature = "capture")]
     capture_pending: Option<std::path::PathBuf>,
     /// When dragging in a text input, tracks which field is being drag-selected.
     mouse_drag_target: Option<FocusTarget>,
@@ -93,6 +94,7 @@ impl NativeApp {
     fn new(state: AppState, runtime: AppRuntime) -> Self {
         let theme =
             Theme::for_mode(state.settings.theme_mode).with_ui_scale(state.ui_scale_factor());
+        #[cfg(feature = "capture")]
         let capture_pending = std::env::var("DIFFY_CAPTURE_PATH")
             .ok()
             .map(std::path::PathBuf::from);
@@ -112,6 +114,7 @@ impl NativeApp {
             launch_at: Instant::now(),
             dumps_dirty: true,
             modifiers: ModifiersState::default(),
+            #[cfg(feature = "capture")]
             capture_pending,
             mouse_drag_target: None,
             scrollbar_drag: None,

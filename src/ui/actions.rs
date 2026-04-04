@@ -87,6 +87,7 @@ pub enum Action {
     SetSidebarFilter(String),
     ClearSidebarFilter,
     ToggleSidebarMode,
+    ToggleSidebar,
     ExpandAllFolders,
     CollapseAllFolders,
     Noop,

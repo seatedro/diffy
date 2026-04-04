@@ -14,7 +14,7 @@ pub fn ref_picker(
     width: f32,
     height: f32,
 ) -> AnyElement {
-    let scale = (theme.metrics.ui_font_size / 16.0).max(0.7);
+    let scale = theme.metrics.ui_scale();
     let (title, icon) = match field {
         CompareField::Left => ("Pick Left Ref", lucide::GIT_BRANCH),
         CompareField::Right => ("Pick Right Ref", lucide::GIT_BRANCH),

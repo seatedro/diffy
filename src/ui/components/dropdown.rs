@@ -1,4 +1,5 @@
 use crate::ui::actions::Action;
+use crate::ui::design::{Shadow, Sp};
 use crate::ui::element::{
     div, svg_icon, text, AnyElement, ElementContext, IntoAnyElement, RenderOnce,
 };
@@ -80,6 +81,7 @@ impl RenderOnce for Dropdown {
     fn render(self, cx: &ElementContext) -> AnyElement {
         let tc = &cx.theme.colors;
         let m = &cx.theme.metrics;
+        let scale = m.ui_scale();
         let icon_size = m.ui_small_font_size;
         let chevron = if self.open {
             lucide::CHEVRON_UP
@@ -92,7 +94,7 @@ impl RenderOnce for Dropdown {
             .items_center()
             .gap(m.spacing_sm)
             .px(m.spacing_md)
-            .py(m.spacing_xs + 2.0)
+            .py(m.spacing_xs + Sp::XXS * scale)
             .bg(tc.element_background)
             .border(tc.border_variant)
             .rounded(m.control_radius)
@@ -102,7 +104,7 @@ impl RenderOnce for Dropdown {
                     .flex_1()
                     .child(text(self.label).text_sm().color(tc.text)),
             )
-            .child(svg_icon(chevron, icon_size - 2.0).color(tc.text_muted));
+            .child(svg_icon(chevron, icon_size - Sp::XXS * scale).color(tc.text_muted));
 
         if let Some(w) = self.width {
             trigger = trigger.w(w);
@@ -123,8 +125,7 @@ impl RenderOnce for Dropdown {
                 .bg(tc.elevated_surface)
                 .border(tc.border)
                 .rounded(m.control_radius)
-                .shadow(8.0, 4.0, Color::rgba(0, 0, 0, 40))
-                .shadow(2.0, 1.0, Color::rgba(0, 0, 0, 20));
+                .shadow_preset(Shadow::DROPDOWN);
 
             for item in self.items {
                 let selected = item.selected;
@@ -144,7 +145,7 @@ impl RenderOnce for Dropdown {
                     .items_center()
                     .gap(m.spacing_sm)
                     .px(m.spacing_md)
-                    .py(m.spacing_xs + 2.0)
+                    .py(m.spacing_xs + Sp::XXS * scale)
                     .bg(row_bg)
                     .hover_bg(tc.ghost_element_hover)
                     .on_click(item.action);

@@ -1,3 +1,4 @@
+use crate::ui::design::{Alpha, Rad, Sp, Sz};
 use crate::ui::element::{div, svg_icon, text, AnyElement, ElementContext, IntoAnyElement, RenderOnce};
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, ThemeColors};
@@ -61,11 +62,11 @@ impl Badge {
 fn variant_colors(variant: BadgeVariant, tc: &ThemeColors) -> (Color, Color) {
     match variant {
         BadgeVariant::Default => (tc.element_background, tc.text_muted),
-        BadgeVariant::Info => (tc.status_info.with_alpha(25), tc.status_info),
+        BadgeVariant::Info => (tc.status_info.with_alpha(Alpha::WHISPER), tc.status_info),
         BadgeVariant::Success => (tc.line_add, tc.line_add_text),
         BadgeVariant::Warning => (tc.line_modified, tc.status_warning),
         BadgeVariant::Error => (tc.line_del, tc.line_del_text),
-        BadgeVariant::Accent => (tc.accent.with_alpha(25), tc.accent),
+        BadgeVariant::Accent => (tc.accent.with_alpha(Alpha::WHISPER), tc.accent),
     }
 }
 
@@ -73,8 +74,9 @@ impl RenderOnce for Badge {
     fn render(self, cx: &ElementContext) -> AnyElement {
         let tc = &cx.theme.colors;
         let m = &cx.theme.metrics;
+        let scale = m.ui_scale();
         let (bg, fg) = variant_colors(self.variant, tc);
-        let icon_size = (m.ui_small_font_size - 2.0).max(10.0);
+        let icon_size = (m.ui_small_font_size - Sp::XXS * scale).max(Sz::ICON_MIN * scale);
 
         let mut row = div()
             .flex_row()
@@ -82,9 +84,9 @@ impl RenderOnce for Badge {
             .items_center()
             .gap(m.spacing_xs)
             .px(m.spacing_sm)
-            .py(2.0)
+            .py(Sp::XXS * scale)
             .bg(bg)
-            .rounded(10.0);
+            .rounded(Rad::PILL * scale);
 
         if let Some(svg) = self.icon {
             row = row.child(svg_icon(svg, icon_size).color(fg));
@@ -110,8 +112,8 @@ fn status_appearance(status: &str, tc: &ThemeColors) -> (Color, Color, String) {
         "a" | "added" => (tc.line_add, tc.line_add_text, "A".into()),
         "d" | "deleted" => (tc.line_del, tc.line_del_text, "D".into()),
         "m" | "modified" | "changed" => (tc.line_modified, tc.status_warning, "M".into()),
-        "r" | "renamed" => (tc.status_info.with_alpha(30), tc.status_info, "R".into()),
-        "c" | "copied" => (tc.status_info.with_alpha(30), tc.status_info, "C".into()),
+        "r" | "renamed" => (tc.status_info.with_alpha(Alpha::TINT), tc.status_info, "R".into()),
+        "c" | "copied" => (tc.status_info.with_alpha(Alpha::TINT), tc.status_info, "C".into()),
         "u" | "untracked" => (tc.element_background, tc.text_muted, "U".into()),
         other => {
             let label = other
@@ -128,8 +130,9 @@ impl RenderOnce for StatusBadge {
     fn render(self, cx: &ElementContext) -> AnyElement {
         let tc = &cx.theme.colors;
         let m = &cx.theme.metrics;
+        let scale = m.ui_scale();
         let (bg, fg, label) = status_appearance(&self.status, tc);
-        let size = (m.ui_small_font_size + 4.0).round();
+        let size = (m.ui_small_font_size + Sp::XS * scale).round();
 
         div()
             .flex_shrink_0()
@@ -138,7 +141,7 @@ impl RenderOnce for StatusBadge {
             .w(size)
             .h(size)
             .bg(bg)
-            .rounded(4.0)
+            .rounded(Rad::SM * scale)
             .child(text(label).text_xs().color(fg).bold().text_center())
             .into_any()
     }

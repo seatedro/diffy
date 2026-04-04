@@ -1,6 +1,7 @@
+use crate::ui::design::{Shadow, Sp};
 use crate::ui::element::{div, text, Div};
 use crate::ui::style::Styled;
-use crate::ui::theme::{Color, Theme};
+use crate::ui::theme::Theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TooltipSide {
@@ -15,10 +16,10 @@ pub fn tooltip_layer(content: &str, x: f32, y: f32, side: TooltipSide, theme: &T
     let m = &theme.metrics;
 
     let (offset_x, offset_y) = match side {
-        TooltipSide::Top => (0.0, -(m.spacing_sm + 4.0)),
-        TooltipSide::Bottom => (0.0, m.spacing_sm + 4.0),
-        TooltipSide::Left => (-(m.spacing_sm + 4.0), 0.0),
-        TooltipSide::Right => (m.spacing_sm + 4.0, 0.0),
+        TooltipSide::Top => (0.0, -(m.spacing_sm + Sp::XS)),
+        TooltipSide::Bottom => (0.0, m.spacing_sm + Sp::XS),
+        TooltipSide::Left => (-(m.spacing_sm + Sp::XS), 0.0),
+        TooltipSide::Right => (m.spacing_sm + Sp::XS, 0.0),
     };
 
     div()
@@ -30,9 +31,8 @@ pub fn tooltip_layer(content: &str, x: f32, y: f32, side: TooltipSide, theme: &T
         .py(m.spacing_xs)
         .bg(tc.elevated_surface)
         .border(tc.border)
-        .rounded(m.control_radius - 2.0)
-        .shadow(8.0, 4.0, Color::rgba(0, 0, 0, 60))
-        .shadow(2.0, 1.0, Color::rgba(0, 0, 0, 30))
+        .rounded(m.control_radius - Sp::XXS)
+        .shadow_preset(Shadow::TOOLTIP)
         .child(text(content).text_xs().color(tc.text))
 }
 

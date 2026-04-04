@@ -1,4 +1,5 @@
 use crate::ui::actions::Action;
+use crate::ui::design::{Rad, Shadow, Sp, Sz};
 use crate::ui::element::{div, text, AnyElement, ElementContext, IntoAnyElement, RenderOnce};
 use crate::ui::style::Styled;
 use crate::ui::theme::Color;
@@ -95,14 +96,14 @@ impl RenderOnce for TabBar {
                 content = content.child(
                     div()
                         .px(m.spacing_xs)
-                        .py(1.0)
+                        .py(Sz::TAB_BADGE_PY)
                         .bg(tc.element_background)
-                        .rounded(8.0)
+                        .rounded(Rad::XL)
                         .child(text(count_text).text_xs().color(tc.text_muted)),
                 );
             }
 
-            let indicator = div().w_full().h(2.0).bg(indicator_color);
+            let indicator = div().w_full().h(Sz::TAB_INDICATOR_H).bg(indicator_color);
 
             let tab = div()
                 .flex_col()
@@ -136,8 +137,8 @@ impl RenderOnce for SegmentedTabs {
         let mut bar = div()
             .flex_row()
             .items_center()
-            .gap(2.0)
-            .p(2.0)
+            .gap(Sp::XXS)
+            .p(Sp::XXS)
             .bg(tc.element_background)
             .rounded(m.control_radius);
 
@@ -152,14 +153,14 @@ impl RenderOnce for SegmentedTabs {
                 .flex_1()
                 .px(m.spacing_md)
                 .py(m.spacing_xs)
-                .rounded(m.control_radius - 2.0)
+                .rounded(m.control_radius - Sp::XXS)
                 .on_click(item.action)
                 .child(text(item.label).text_sm().color(fg).medium());
 
             if active {
                 tab = tab
                     .bg(tc.surface)
-                    .shadow(2.0, 1.0, Color::rgba(0, 0, 0, 20));
+                    .shadow_preset(Shadow::SUBTLE);
             } else {
                 tab = tab.hover_bg(tc.ghost_element_hover);
             }

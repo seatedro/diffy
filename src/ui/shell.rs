@@ -9,7 +9,7 @@ use crate::ui::actions::Action;
 use crate::ui::components::{
     self, Button, ButtonStyle, SegmentedControl, SegmentedItem, ToastStack,
 };
-use crate::ui::design::{Ico, Rad, Sp, Sz};
+use crate::ui::design::{Alpha, Ico, Rad, Shadow, Sp, Sz};
 use crate::ui::editor::element::{EditorDocument, EditorElement};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
@@ -390,7 +390,7 @@ fn ref_selector_button(
 // ---------------------------------------------------------------------------
 
 fn ui_scale(theme: &Theme) -> f32 {
-    (theme.metrics.ui_font_size / 16.0).max(0.7)
+    theme.metrics.ui_scale()
 }
 
 fn preferred_sidebar_width(
@@ -399,7 +399,6 @@ fn preferred_sidebar_width(
     cx: &mut ElementContext,
     available_width: f32,
 ) -> f32 {
-    const MAIN_SURFACE_MIN_WIDTH: f32 = 320.0;
     let ui_scale = ui_scale(theme);
     let list_side_padding = Sp::MD * ui_scale;
     let row_side_padding = Sp::SM * 2.0 * ui_scale;
@@ -414,7 +413,7 @@ fn preferred_sidebar_width(
     let file_icon_width = Ico::MD * ui_scale;
     let hard_max = available_width.max(0.0);
     let max_width = if hard_max >= auto_min_width {
-        (available_width - MAIN_SURFACE_MIN_WIDTH)
+        (available_width - Sz::MAIN_SURFACE_MIN_W)
             .max(auto_min_width)
             .min(hard_max)
     } else {
@@ -499,7 +498,7 @@ fn preferred_sidebar_width(
                 };
 
                 let status_badge_width = if !file.status.is_empty() {
-                    row_gap + (theme.metrics.ui_small_font_size + 4.0).round()
+                    row_gap + (theme.metrics.ui_small_font_size + Sp::XS).round()
                 } else {
                     0.0
                 };
@@ -543,19 +542,19 @@ fn sidebar_resizer(theme: &Theme, bounds_cell: Rc<Cell<Option<Rect>>>) -> Canvas
         let center_x = bounds.x + bounds.width * 0.5;
         let center_y = bounds.y + bounds.height * 0.5;
         let line_color = if hovered {
-            tc.accent.with_alpha(100)
+            tc.accent.with_alpha(Alpha::MUTED)
         } else {
-            tc.border_variant.with_alpha(120)
+            tc.border_variant.with_alpha(Alpha::MEDIUM)
         };
         let glow = if hovered {
-            tc.accent.with_alpha(80)
+            tc.accent.with_alpha(Alpha::SOFT)
         } else {
-            tc.accent.with_alpha(28)
+            tc.accent.with_alpha(Alpha::WHISPER)
         };
         let thumb_color = if hovered {
             Color::rgba(255, 255, 255, 210)
         } else {
-            tc.scrollbar_thumb.with_alpha(180)
+            tc.scrollbar_thumb.with_alpha(Alpha::STRONG)
         };
 
         scene.rect(RectPrimitive {
@@ -1015,7 +1014,7 @@ fn repo_ready_hint(theme: &Theme) -> Div {
                 .flex_col()
                 .items_center()
                 .gap(Sp::SM)
-                .child(svg_icon(lucide::GIT_COMPARE, Ico::XXL).color(tc.text_muted.with_alpha(80)))
+                .child(svg_icon(lucide::GIT_COMPARE, Ico::XXL).color(tc.text_muted.with_alpha(Alpha::SOFT)))
                 .child(text("Select refs to compare").text_sm().color(tc.text_muted)),
         )
 }
@@ -1039,8 +1038,7 @@ fn loading_card(state: &AppState, theme: &Theme) -> Div {
                 .bg(tc.elevated_surface)
                 .rounded_xl()
                 .border_b(tc.border)
-                .shadow(16.0, 6.0, Color::rgba(0, 0, 0, 80))
-                .shadow(4.0, 2.0, Color::rgba(0, 0, 0, 40))
+                .shadow_preset(Shadow::PANEL)
                 .child(svg_icon(lucide::LOADER, Ico::XXL).color(tc.text_muted))
                 .child(
                     div().w_full().min_w(0.0).child(
@@ -1082,8 +1080,7 @@ fn empty_state(state: &AppState, theme: &Theme) -> Div {
         .bg(tc.elevated_surface)
         .rounded_xl()
         .border_b(tc.border)
-        .shadow(20.0, 8.0, Color::rgba(0, 0, 0, 80))
-        .shadow(4.0, 2.0, Color::rgba(0, 0, 0, 40))
+        .shadow_preset(Shadow::FLOAT)
         .child(
             div()
                 .flex_row()

@@ -1,6 +1,7 @@
+use crate::ui::design::{Shadow, Sp, Sz};
 use crate::ui::element::{div, Div};
 use crate::ui::style::Styled;
-use crate::ui::theme::{Color, Theme};
+use crate::ui::theme::Theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PopoverSide {
@@ -38,9 +39,7 @@ pub fn popover_panel(
         .bg(tc.elevated_surface)
         .border(tc.border)
         .rounded(m.panel_radius)
-        .shadow(16.0, 8.0, Color::rgba(0, 0, 0, 40))
-        .shadow(4.0, 2.0, Color::rgba(0, 0, 0, 30))
-        .shadow(1.0, 0.0, Color::rgba(0, 0, 0, 15))
+        .shadow_preset(Shadow::POPOVER)
 }
 
 pub fn popover_section() -> Div {
@@ -51,6 +50,6 @@ pub fn popover_divider(theme: &Theme) -> Div {
     let tc = &theme.colors;
     div()
         .w_full()
-        .py(4.0)
-        .child(div().w_full().h(1.0).bg(tc.border_variant))
+        .py(Sp::XS)
+        .child(div().w_full().h(Sz::SEPARATOR_W).bg(tc.border_variant))
 }

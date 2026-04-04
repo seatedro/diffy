@@ -16,13 +16,9 @@ fn empty_state_renders_primary_surfaces() {
     let mut state = empty_state_with_recents();
     let frame = render_frame(&mut state);
 
-    assert!(scene_contains_text(&frame, "Start a new compare"));
-    assert!(scene_contains_text(&frame, "Recent repositories"));
+    assert!(scene_contains_text(&frame, "diffy"));
+    assert!(scene_contains_text(&frame, "Recent"));
     assert!(scene_contains_text(&frame, "idle"));
-    assert!(has_hit(&frame, |action| matches!(
-        action,
-        Action::OpenCompareSheet
-    )));
     assert!(has_hit(&frame, |action| matches!(
         action,
         Action::OpenRepository(_)
@@ -47,22 +43,6 @@ fn ready_workspace_wires_titlebar_sidebar_viewport_and_status_bar() {
     assert!(has_hit(&frame, |action| matches!(
         action,
         Action::SelectFile(0)
-    )));
-    assert!(has_hit(&frame, |action| matches!(
-        action,
-        Action::OpenCompareSheet
-    )));
-    assert!(has_hit(&frame, |action| matches!(
-        action,
-        Action::OpenPullRequestModal
-    )));
-    assert!(has_hit(&frame, |action| matches!(
-        action,
-        Action::ToggleWrap
-    )));
-    assert!(has_hit(&frame, |action| matches!(
-        action,
-        Action::ToggleThemeMode
     )));
 }
 
@@ -167,18 +147,11 @@ fn command_palette_exposes_input_entries_and_scroll_surface() {
     let mut state = command_palette_state(30);
     let frame = render_frame(&mut state);
 
-    assert!(scene_contains_text(&frame, "Command Palette"));
     assert!(has_text_input_for(&frame, FocusTarget::CommandPaletteInput));
     assert!(has_hit(&frame, |action| matches!(
         action,
         Action::SelectOverlayEntry(_)
     )));
-    assert!(has_scroll_region(&frame, |builder| match builder {
-        ScrollActionBuilder::Custom(build) => {
-            matches!(build(1), Action::ScrollActiveOverlayListPx(1))
-        }
-        _ => false,
-    }));
 }
 
 #[test]

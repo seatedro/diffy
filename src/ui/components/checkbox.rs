@@ -1,4 +1,5 @@
 use crate::ui::actions::Action;
+use crate::ui::design::{Alpha, Shadow, Sp, Sz};
 use crate::ui::element::{div, svg_icon, text, AnyElement, ElementContext, IntoAnyElement, RenderOnce};
 use crate::ui::icons::lucide;
 use crate::ui::style::Styled;
@@ -41,9 +42,10 @@ impl RenderOnce for Checkbox {
     fn render(self, cx: &ElementContext) -> AnyElement {
         let tc = &cx.theme.colors;
         let m = &cx.theme.metrics;
+        let scale = m.ui_scale();
         let size = (m.ui_font_size * 1.125).round();
-        let icon_size = size - 4.0;
-        let radius = (m.control_radius * 0.5).max(3.0);
+        let icon_size = size - Sp::XS * scale;
+        let radius = (m.control_radius * 0.5).max(Sz::CHECKBOX_RAD_MIN * scale);
 
         let (box_bg, box_border, check_color) = if self.disabled {
             (tc.element_background, tc.border_variant, tc.text_muted)
@@ -130,14 +132,16 @@ impl RenderOnce for Toggle {
     fn render(self, cx: &ElementContext) -> AnyElement {
         let tc = &cx.theme.colors;
         let m = &cx.theme.metrics;
+        let scale = m.ui_scale();
+        let thumb_inset = Sp::XXS * scale;
 
         let track_w = (m.ui_font_size * 2.25).round();
         let track_h = (m.ui_font_size * 1.25).round();
-        let thumb_size = track_h - 4.0;
+        let thumb_size = track_h - Sp::XS * scale;
         let thumb_left = if self.on {
-            track_w - thumb_size - 2.0
+            track_w - thumb_size - thumb_inset
         } else {
-            2.0
+            thumb_inset
         };
 
         let (track_bg, thumb_bg) = if self.disabled {
@@ -150,16 +154,16 @@ impl RenderOnce for Toggle {
 
         let thumb = div()
             .absolute()
-            .top(2.0)
+            .top(thumb_inset)
             .left(thumb_left)
             .w(thumb_size)
             .h(thumb_size)
             .bg(thumb_bg)
             .rounded(thumb_size / 2.0)
-            .shadow(2.0, 1.0, Color::rgba(0, 0, 0, 40));
+            .shadow_preset(Shadow::SUBTLE);
 
         let hover_bg = if self.on {
-            tc.accent.with_alpha(220)
+            tc.accent.with_alpha(Alpha::HOVER_ALT)
         } else {
             tc.element_hover
         };

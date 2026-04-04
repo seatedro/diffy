@@ -10,7 +10,7 @@ use crate::ui::state::{AppState, AsyncStatus, FocusTarget};
 use crate::ui::style::Styled;
 
 fn ui_scale(theme: &crate::ui::theme::Theme) -> f32 {
-    (theme.metrics.ui_font_size / 16.0).max(0.7)
+    theme.metrics.ui_scale()
 }
 
 pub fn compare_sheet(state: &AppState, theme: &crate::ui::theme::Theme, width: f32, height: f32) -> AnyElement {

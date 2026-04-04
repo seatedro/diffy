@@ -122,6 +122,10 @@ pub struct ThemeMetrics {
 }
 
 impl ThemeMetrics {
+    pub fn ui_scale(&self) -> f32 {
+        (self.ui_font_size / 16.0).max(0.7)
+    }
+
     pub fn scaled(self, scale: f32) -> Self {
         let scale = scale.clamp(0.5, 4.0);
         Self {

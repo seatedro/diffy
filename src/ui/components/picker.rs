@@ -41,7 +41,7 @@ fn picker_list_inner<T: PickerItem>(
     no_scrollbar: bool,
 ) -> Div {
     let tc = &theme.colors;
-    let scale = (theme.metrics.ui_font_size / 16.0).max(0.7);
+    let scale = theme.metrics.ui_scale();
     let row_h = (Sz::ROW * scale).round();
 
     let mut list = div()

@@ -29,7 +29,7 @@ impl Toolbar {
 impl RenderOnce for Toolbar {
     fn render(self, cx: &ElementContext) -> AnyElement {
         let tc = &cx.theme.colors;
-        let scale = (cx.theme.metrics.ui_font_size / 16.0).max(0.7);
+        let scale = cx.theme.metrics.ui_scale();
 
         let mut left = div().flex_row().items_center().gap_1();
         for child in self.left {

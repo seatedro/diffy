@@ -2,10 +2,6 @@ use crate::render::{BorderPrimitive, FontKind, Rect, RoundedRectPrimitive, Shado
 use crate::ui::shell::UiFrame;
 use crate::ui::theme::{Color, Theme};
 
-// ---------------------------------------------------------------------------
-// Spacing scale
-// ---------------------------------------------------------------------------
-
 pub struct Sp;
 
 impl Sp {
@@ -21,9 +17,56 @@ impl Sp {
     pub const XXXXL: f32 = 56.0;
 }
 
-// ---------------------------------------------------------------------------
-// Typography
-// ---------------------------------------------------------------------------
+pub struct Sz;
+
+impl Sz {
+    pub const ROW: f32 = 36.0;
+    pub const INPUT: f32 = 44.0;
+    pub const INPUT_LABELED: f32 = 64.0;
+    pub const SEARCH_INPUT: f32 = 28.0;
+    pub const TOAST: f32 = 52.0;
+    pub const SEPARATOR_W: f32 = 1.0;
+    pub const SEPARATOR_H: f32 = 20.0;
+    pub const MODE_TOGGLE: f32 = 22.0;
+    pub const TOAST_MAX_W: f32 = 360.0;
+    pub const TOAST_MIN_W: f32 = 220.0;
+    pub const TOAST_STRIPE_W: f32 = 3.0;
+    pub const TOAST_MARGIN: f32 = 32.0;
+    pub const MODAL_MARGIN: f32 = 48.0;
+    pub const MODAL_TOP_OFFSET: f32 = 80.0;
+    pub const MODAL_SM: f32 = 480.0;
+    pub const MODAL_MD: f32 = 560.0;
+    pub const MODAL_LG: f32 = 640.0;
+    pub const MODAL_XL: f32 = 680.0;
+    pub const SIDEBAR_LIST_OFFSET: f32 = 40.0;
+    pub const CARD_SM: f32 = 440.0;
+    pub const CARD_MD: f32 = 520.0;
+    pub const CARD_AUTH: f32 = 580.0;
+}
+
+pub struct Ico;
+
+impl Ico {
+    pub const XS: f32 = 12.0;
+    pub const SM: f32 = 14.0;
+    pub const MD: f32 = 15.0;
+    pub const LG: f32 = 18.0;
+    pub const XL: f32 = 20.0;
+    pub const XXL: f32 = 24.0;
+    pub const HERO: f32 = 32.0;
+    pub const SIDEBAR_MODE: f32 = 13.0;
+    pub const BUTTON_COMPACT: f32 = 14.0;
+    pub const BUTTON_DEFAULT: f32 = 15.0;
+}
+
+pub struct Rad;
+
+impl Rad {
+    pub const SM: f32 = 4.0;
+    pub const MD: f32 = 5.0;
+    pub const LG: f32 = 6.0;
+    pub const XL: f32 = 12.0;
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextStyle {
@@ -65,10 +108,6 @@ impl TextStyle {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Elevation
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Elevation {
     Surface,
@@ -109,7 +148,6 @@ impl Elevation {
         match self {
             Self::Surface => {}
             Self::Raised => {
-                // Contact shadow (tight, close)
                 frame.scene.shadow(ShadowPrimitive {
                     rect,
                     blur_radius: 3.0,
@@ -117,7 +155,6 @@ impl Elevation {
                     offset: [0.0, 2.0],
                     color: Color::rgba(0, 0, 0, 30),
                 });
-                // Ambient shadow (soft spread)
                 frame.scene.shadow(ShadowPrimitive {
                     rect,
                     blur_radius: 18.0,
@@ -127,7 +164,6 @@ impl Elevation {
                 });
             }
             Self::Popover => {
-                // Contact
                 frame.scene.shadow(ShadowPrimitive {
                     rect,
                     blur_radius: 3.0,
@@ -135,7 +171,6 @@ impl Elevation {
                     offset: [0.0, 2.0],
                     color: Color::rgba(0, 0, 0, 25),
                 });
-                // Mid-range
                 frame.scene.shadow(ShadowPrimitive {
                     rect,
                     blur_radius: 8.0,
@@ -143,7 +178,6 @@ impl Elevation {
                     offset: [0.0, 4.0],
                     color: Color::rgba(0, 0, 0, 35),
                 });
-                // Ambient
                 frame.scene.shadow(ShadowPrimitive {
                     rect,
                     blur_radius: 16.0,
@@ -153,7 +187,6 @@ impl Elevation {
                 });
             }
             Self::Modal => {
-                // Contact
                 frame.scene.shadow(ShadowPrimitive {
                     rect,
                     blur_radius: 3.0,
@@ -161,7 +194,6 @@ impl Elevation {
                     offset: [0.0, 2.0],
                     color: Color::rgba(0, 0, 0, 30),
                 });
-                // Mid-range
                 frame.scene.shadow(ShadowPrimitive {
                     rect,
                     blur_radius: 8.0,
@@ -169,7 +201,6 @@ impl Elevation {
                     offset: [0.0, 4.0],
                     color: Color::rgba(0, 0, 0, 20),
                 });
-                // Far ambient
                 frame.scene.shadow(ShadowPrimitive {
                     rect,
                     blur_radius: 24.0,
@@ -177,7 +208,6 @@ impl Elevation {
                     offset: [0.0, 8.0],
                     color: Color::rgba(0, 0, 0, 50),
                 });
-                // Accent contour
                 frame.scene.shadow(ShadowPrimitive {
                     rect,
                     blur_radius: 1.0,
@@ -205,10 +235,6 @@ impl Elevation {
         );
     }
 }
-
-// ---------------------------------------------------------------------------
-// Interaction state colors
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InteractionState {

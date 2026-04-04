@@ -23,7 +23,7 @@ const MAX_VISIBLE_TOASTS: usize = 8;
 const TOAST_LIFETIME_MS: u64 = 10_000;
 const CURSOR_BLINK_INTERVAL_MS: u64 = 530;
 const PICKER_LIST_VIEWPORT_HEIGHT_PX: u32 = 204;
-const COMMAND_PALETTE_LIST_VIEWPORT_HEIGHT_PX: u32 = 288;
+const COMMAND_PALETTE_LIST_VIEWPORT_HEIGHT_PX: u32 = 432;
 const DEFAULT_UI_SCALE_PCT: u16 = 100;
 const MIN_UI_SCALE_PCT: u16 = 70;
 const MAX_UI_SCALE_PCT: u16 = 180;
@@ -507,6 +507,7 @@ pub struct AppState {
     pub last_error: Option<String>,
     pub toasts: Vec<Toast>,
     pub animation: crate::ui::animation::AnimationState,
+    pub sidebar_visible: bool,
     pub debug: DebugState,
     pub clock_ms: u64,
     pub next_toast_id: u64,
@@ -530,6 +531,7 @@ impl Default for AppState {
             last_error: None,
             toasts: Vec::new(),
             animation: crate::ui::animation::AnimationState::default(),
+            sidebar_visible: true,
             debug: DebugState::default(),
             clock_ms: 0,
             next_toast_id: 1,
@@ -634,6 +636,7 @@ impl AppState {
             last_error: None,
             toasts: Vec::new(),
             animation: crate::ui::animation::AnimationState::default(),
+            sidebar_visible: true,
             debug: DebugState::default(),
             clock_ms: 0,
             next_toast_id: 1,
@@ -959,6 +962,10 @@ impl AppState {
             Action::ClearSidebarFilter => {
                 self.file_list.filter.clear();
                 self.file_list.scroll_offset_px = 0.0;
+                Vec::new()
+            }
+            Action::ToggleSidebar => {
+                self.sidebar_visible = !self.sidebar_visible;
                 Vec::new()
             }
             Action::ToggleSidebarMode => {
@@ -1758,8 +1765,6 @@ impl AppState {
     }
 
     fn open_command_palette(&mut self) {
-        self.overlays.command_palette.list.viewport_height_px =
-            COMMAND_PALETTE_LIST_VIEWPORT_HEIGHT_PX;
         self.rebuild_command_palette();
         self.push_overlay(
             OverlaySurface::CommandPalette,
@@ -2212,6 +2217,7 @@ impl AppState {
             let repo_name = repo
                 .file_name()
                 .and_then(|name| name.to_str())
+                .filter(|n| *n != ".")
                 .map(str::to_owned)
                 .unwrap_or_else(|| repo.display().to_string());
             push_entry(
@@ -2243,6 +2249,10 @@ impl AppState {
                     .len()
                     .saturating_sub(1),
             );
+        let row_h = self.overlays.command_palette.list.row_height_px;
+        let content_h = row_h.saturating_mul(self.overlays.command_palette.entries.len() as u32);
+        self.overlays.command_palette.list.viewport_height_px =
+            content_h.min(COMMAND_PALETTE_LIST_VIEWPORT_HEIGHT_PX);
         self.overlays
             .command_palette
             .list

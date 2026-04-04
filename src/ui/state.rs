@@ -707,6 +707,15 @@ impl AppState {
                 self.overlays.compare_sheet.validation_message = None;
                 self.persist_settings_effect()
             }
+            Action::CycleCompareMode => {
+                self.compare.mode = match self.compare.mode {
+                    CompareMode::SingleCommit => CompareMode::TwoDot,
+                    CompareMode::TwoDot => CompareMode::ThreeDot,
+                    CompareMode::ThreeDot => CompareMode::SingleCommit,
+                };
+                self.overlays.compare_sheet.validation_message = None;
+                self.persist_settings_effect()
+            }
             Action::SetLayoutMode(layout) => {
                 self.compare.layout = layout;
                 self.editor.layout = layout;
@@ -1191,9 +1200,19 @@ impl AppState {
         } else if self.startup.auto_compare_pending {
             self.startup.auto_compare_pending = false;
             effects.extend(self.kickoff_compare());
+        } else if let Some(persisted) = self.settings.last_compare.as_ref().filter(|c| {
+            c.repo_path.as_ref() == Some(&payload.path)
+                && compare_refs_are_valid(c.mode, &c.left_ref, &c.right_ref)
+        }) {
+            self.compare.left_ref = persisted.left_ref.clone();
+            self.compare.right_ref = persisted.right_ref.clone();
+            self.compare.mode = persisted.mode;
+            effects.extend(self.kickoff_compare());
         } else {
-            self.workspace_mode = WorkspaceMode::Empty;
-            self.open_compare_sheet();
+            self.compare.left_ref = "HEAD".to_owned();
+            self.compare.right_ref = crate::core::vcs::git::service::WORKDIR_REF.to_owned();
+            self.compare.mode = CompareMode::TwoDot;
+            effects.extend(self.kickoff_compare());
         }
         effects
     }
@@ -1414,22 +1433,6 @@ impl AppState {
     /// Returns true if the current focus target is a text editing field.
     pub fn is_text_focused(&self) -> bool {
         self.focused_text().is_some()
-    }
-
-    /// Clamp cursor and anchor to be within string bounds and on grapheme boundaries.
-    fn clamp_edit_state(&mut self) {
-        let len = self.focused_text().map_or(0, |s| s.len());
-        let cursor = self.text_edit.cursor.min(len);
-        let anchor = self.text_edit.anchor.min(len);
-        // Snap to grapheme boundaries — compute both before writing back
-        let (snapped_c, snapped_a) = self.focused_text().map_or((cursor, anchor), |text| {
-            (
-                snap_to_grapheme(text, cursor),
-                snap_to_grapheme(text, anchor),
-            )
-        });
-        self.text_edit.cursor = snapped_c;
-        self.text_edit.anchor = snapped_a;
     }
 
     fn touch_cursor(&mut self) {
@@ -1752,10 +1755,13 @@ impl AppState {
     }
 
     fn open_ref_picker(&mut self, field: CompareField) {
+        self.update_compare_field(field, String::new());
         self.overlays.picker.kind = match field {
             CompareField::Left => PickerKind::LeftRef,
             CompareField::Right => PickerKind::RightRef,
         };
+        self.overlays.picker.selected_index = 0;
+        self.overlays.picker.list.scroll_top_px = 0;
         self.overlays.picker.list.viewport_height_px = PICKER_LIST_VIEWPORT_HEIGHT_PX;
         self.rebuild_ref_picker(field);
         self.push_overlay(
@@ -1912,7 +1918,18 @@ impl AppState {
         };
         self.update_compare_field(field, entry.value);
         self.pop_overlay();
-        self.persist_settings_effect()
+        let mut effects = self.persist_settings_effect();
+        if self.compare.repo_path.is_some()
+            && self.workspace.status != AsyncStatus::Loading
+            && compare_refs_are_valid(
+                self.compare.mode,
+                &self.compare.left_ref,
+                &self.compare.right_ref,
+            )
+        {
+            effects.extend(self.kickoff_compare());
+        }
+        effects
     }
 
     fn confirm_command_palette(&mut self) -> Vec<Effect> {
@@ -2149,8 +2166,8 @@ impl AppState {
 
         for (label, detail, command) in [
             (
-                "Open Compare".to_owned(),
-                "Show compare setup".to_owned(),
+                "Compare Settings".to_owned(),
+                "Configure compare mode, engine, and layout".to_owned(),
                 PaletteCommand::OpenCompareSheet,
             ),
             (
@@ -2405,15 +2422,6 @@ fn compare_refs_are_valid(mode: CompareMode, left_ref: &str, right_ref: &str) ->
     }
 }
 
-fn apply_scroll_delta(current: usize, delta: i32, max: usize) -> usize {
-    let next = if delta.is_negative() {
-        current.saturating_sub(delta.unsigned_abs() as usize)
-    } else {
-        current.saturating_add(delta as usize)
-    };
-    next.min(max)
-}
-
 fn apply_scroll_delta_px(current: u32, delta: i32, max: u32) -> u32 {
     let next = if delta.is_negative() {
         current.saturating_sub(delta.unsigned_abs())
@@ -2464,21 +2472,6 @@ impl From<&FileDiff> for FileListEntry {
 // ---------------------------------------------------------------------------
 
 /// Snap a byte offset to the nearest grapheme cluster boundary (rounding down).
-fn snap_to_grapheme(text: &str, offset: usize) -> usize {
-    if offset == 0 || offset >= text.len() {
-        return offset.min(text.len());
-    }
-    // Find the last grapheme boundary at or before `offset`.
-    let mut last = 0;
-    for (idx, _) in text.grapheme_indices(true) {
-        if idx > offset {
-            break;
-        }
-        last = idx;
-    }
-    last
-}
-
 fn prev_grapheme_boundary(text: &str, offset: usize) -> usize {
     if offset == 0 {
         return 0;

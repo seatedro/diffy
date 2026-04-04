@@ -67,7 +67,6 @@ pub enum RenderError {
 // ---------------------------------------------------------------------------
 
 struct PooledTexture {
-    texture: wgpu::Texture,
     view: wgpu::TextureView,
     width: u32,
     height: u32,
@@ -193,8 +192,8 @@ impl TexturePool {
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let index = self.textures.len();
+        let _ = texture;
         self.textures.push(PooledTexture {
-            texture,
             view,
             width: w,
             height: h,
@@ -215,14 +214,6 @@ impl TexturePool {
         self.textures[target.pool_index].in_use = false;
     }
 
-    /// Release all textures that haven't been used since the last trim.
-    /// Call once per frame after rendering.
-    fn trim(&mut self) {
-        self.textures.retain(|t| t.in_use);
-        for t in &mut self.textures {
-            t.in_use = false;
-        }
-    }
 }
 
 pub struct Renderer {
@@ -1655,7 +1646,6 @@ struct FlattenedBlurRegion {
     /// Screen-space bounds of the blur region.
     rect: Rect,
     blur_radius: f32,
-    corner_radius: f32,
     /// Index into the layers vec: this blur applies after all layers
     /// up to (but not including) this index have been rendered.
     layer_break: usize,
@@ -1665,7 +1655,6 @@ struct FlattenedBlurRegion {
 /// Rendered in z-index order: lower z-indices first, higher on top.
 #[derive(Debug, Clone, Default)]
 struct ZLayer {
-    z_index: i32,
     draw_layers: Vec<DrawLayer>,
     texts: Vec<ClippedText>,
     rich_texts: Vec<ClippedRichText>,
@@ -1699,7 +1688,6 @@ struct ClippedEffectQuad {
 #[derive(Debug, Clone)]
 struct ClippedImage {
     primitive: crate::render::scene::ImagePrimitive,
-    clip: Rect,
 }
 
 #[derive(Debug, Clone)]
@@ -1737,13 +1725,7 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
     let mut z_map: BTreeMap<i32, ZLayer> = BTreeMap::new();
 
     // Ensure z=0 always exists.
-    z_map.insert(
-        0,
-        ZLayer {
-            z_index: 0,
-            ..Default::default()
-        },
-    );
+    z_map.insert(0, ZLayer::default());
 
     let mut flattened = FlattenedScene {
         z_layers: Vec::new(),
@@ -1755,7 +1737,6 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
         () => {{
             let z = *z_index_stack.last().unwrap();
             z_map.entry(z).or_insert_with(|| ZLayer {
-                z_index: z,
                 draw_layers: vec![DrawLayer::default()],
                 ..Default::default()
             })
@@ -1889,7 +1870,6 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                         flattened.blur_regions.push(FlattenedBlurRegion {
                             rect: blur.rect,
                             blur_radius: blur.blur_radius,
-                            corner_radius: blur.corner_radius,
                             layer_break: zl.draw_layers.len() - 1,
                         });
                     }
@@ -1934,7 +1914,6 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                         let zl = current_z!();
                         zl.images.push(ClippedImage {
                             primitive: img.clone(),
-                            clip,
                         });
                     }
                 }

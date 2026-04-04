@@ -1,5 +1,5 @@
 use crate::ui::devicons::devicon;
-use crate::ui::element::{svg_icon, AnyElement, ElementContext, IntoAnyElement, RenderOnce, SvgIcon};
+use crate::ui::element::{svg_icon, AnyElement, ElementContext, IntoAnyElement, RenderOnce};
 use crate::ui::icons::lucide;
 use crate::ui::theme::Color;
 
@@ -10,7 +10,7 @@ struct LangDef {
 }
 
 #[derive(Clone, Copy)]
-enum LangHue {
+pub enum LangHue {
     Orange,
     Blue,
     Yellow,
@@ -22,7 +22,7 @@ enum LangHue {
     Muted,
 }
 
-fn lang_color(hue: LangHue, theme_accent: Color, theme_muted: Color) -> Color {
+fn lang_color(hue: LangHue, theme_muted: Color) -> Color {
     match hue {
         LangHue::Orange => Color::rgba(227, 134, 53, 255),
         LangHue::Blue => Color::rgba(66, 135, 245, 255),
@@ -132,7 +132,7 @@ impl RenderOnce for FileIcon {
         let color = if self.selected {
             tc.accent
         } else {
-            lang_color(hue, tc.accent, tc.text_muted)
+            lang_color(hue, tc.text_muted)
         };
 
         svg_icon(icon_svg, self.size).color(color).into_any()

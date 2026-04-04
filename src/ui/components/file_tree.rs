@@ -230,11 +230,6 @@ impl RenderOnce for FileTree {
                     } else {
                         tc.text
                     };
-                    let icon_color = if is_selected {
-                        tc.accent
-                    } else {
-                        tc.text_muted
-                    };
                     let bg = if is_selected {
                         tc.sidebar_row_selected
                     } else {

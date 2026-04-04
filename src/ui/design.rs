@@ -38,6 +38,10 @@ impl Sz {
     pub const MODAL_MD: f32 = 560.0;
     pub const MODAL_LG: f32 = 640.0;
     pub const MODAL_XL: f32 = 680.0;
+    pub const REF_SELECTOR_MIN_W: f32 = 100.0;
+    pub const PICKER_HEIGHT: f32 = 380.0;
+    pub const REPO_PICKER_HEIGHT: f32 = 420.0;
+    pub const PR_MODAL_HEIGHT: f32 = 340.0;
     pub const SIDEBAR_LIST_OFFSET: f32 = 40.0;
     pub const CARD_SM: f32 = 440.0;
     pub const CARD_MD: f32 = 520.0;

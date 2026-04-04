@@ -77,6 +77,8 @@ pub struct CommitInfo {
     pub timestamp: i64,
 }
 
+pub const WORKDIR_REF: &str = "@workdir";
+
 #[derive(Default)]
 pub struct GitService {
     repo: Option<Repository>,
@@ -279,6 +281,10 @@ impl GitService {
                         "comparison requires both left and right references".to_owned(),
                     ));
                 }
+                if right_ref == WORKDIR_REF {
+                    let left_oid = self.resolve_commit_oid(left_ref)?;
+                    return Ok((left_oid.to_string(), WORKDIR_REF.to_owned()));
+                }
                 let mut left_oid = self.resolve_commit_oid(left_ref)?;
                 let right_oid = self.resolve_commit_oid(right_ref)?;
                 if mode == CompareMode::ThreeDot {
@@ -372,15 +378,24 @@ impl GitService {
     fn diff_between_refs(&self, left: &str, right: &str) -> Result<String> {
         let repo = self.repo()?;
         let left_commit = repo.find_commit(self.resolve_commit_oid(left)?)?;
-        let right_commit = repo.find_commit(self.resolve_commit_oid(right)?)?;
         let left_tree = left_commit.tree()?;
-        let right_tree = right_commit.tree()?;
 
         let mut options = DiffOptions::new();
         options.context_lines(3);
-        let mut diff =
-            repo.diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(&mut options))?;
-        diff.find_similar(None)?;
+
+        let diff = if right == WORKDIR_REF {
+            let mut diff =
+                repo.diff_tree_to_workdir_with_index(Some(&left_tree), Some(&mut options))?;
+            diff.find_similar(None)?;
+            diff
+        } else {
+            let right_commit = repo.find_commit(self.resolve_commit_oid(right)?)?;
+            let right_tree = right_commit.tree()?;
+            let mut diff =
+                repo.diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(&mut options))?;
+            diff.find_similar(None)?;
+            diff
+        };
 
         let mut patch = String::new();
         diff.print(DiffFormat::Patch, |_delta, _hunk, line| {

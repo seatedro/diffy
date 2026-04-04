@@ -1,6 +1,6 @@
 use crate::ui::actions::Action;
 use crate::ui::components::modal::Modal;
-use crate::ui::components::picker::picker_list;
+use crate::ui::components::picker::picker_list_no_scrollbar;
 use crate::ui::design::Sz;
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
@@ -25,7 +25,7 @@ pub fn ref_picker(
     };
 
     Modal::new(title, "Search branches, tags, or commits.", icon, Sz::MODAL_SM * scale, width, height)
-        .height(380.0)
+        .height(Sz::PICKER_HEIGHT)
         .body_child(
             text_input("Filter refs", current_value)
                 .placeholder("Search branches, tags, commits")
@@ -36,9 +36,9 @@ pub fn ref_picker(
                 .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
                 .focus_target(FocusTarget::PickerInput)
                 .w_full()
-                .h(Sz::INPUT * scale),
+                .h(Sz::INPUT_LABELED * scale),
         )
-        .body_child(picker_list(
+        .body_child(picker_list_no_scrollbar(
             &state.overlays.picker.entries,
             state.overlays.picker.selected_index,
             state.overlays.picker.list.scroll_top_px,

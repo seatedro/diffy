@@ -895,6 +895,9 @@ impl Renderer {
                 .render(&self.atlas, &self.viewport, &mut pass)?;
         } else if flattened.blur_regions.is_empty() {
             // ---- Multi z-layer path: separate text render per z-layer ----
+            // Each z-layer gets its own encoder+submit so that
+            // text_renderer.prepare() for layer N cannot destroy the vertex
+            // buffer that layer N-1's render pass still references.
             let sw = self.surface_config.width;
             let sh = self.surface_config.height;
             let mut first = true;
@@ -970,6 +973,13 @@ impl Renderer {
                     self.text_renderer
                         .render(&self.atlas, &self.viewport, &mut pass)?;
                 }
+
+                self.queue.submit(Some(encoder.finish()));
+                encoder = self
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("diffy_frame_encoder"),
+                    });
             }
         } else {
             // ---- Blur path: render via offscreen intermediates ----

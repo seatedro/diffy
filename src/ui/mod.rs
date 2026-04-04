@@ -9,11 +9,13 @@ pub mod effects;
 pub mod element;
 pub mod events;
 pub mod icons;
+pub mod overlays;
 pub mod palette;
 pub mod shell;
 pub mod signals;
 pub mod state;
 pub mod style;
 pub mod theme;
+pub mod ui_signals;
 
 pub use app::run;

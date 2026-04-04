@@ -53,6 +53,7 @@ struct NativeApp {
     editor: EditorElement,
     mouse_position: Option<(f32, f32)>,
     signal_store: crate::ui::signals::SignalStore,
+    ui_signals: crate::ui::ui_signals::UiSignals,
     launch_at: Instant,
     dumps_dirty: bool,
     modifiers: ModifiersState,
@@ -95,6 +96,8 @@ impl NativeApp {
         let capture_pending = std::env::var("DIFFY_CAPTURE_PATH")
             .ok()
             .map(std::path::PathBuf::from);
+        let mut signal_store = crate::ui::signals::SignalStore::new();
+        let ui_signals = crate::ui::ui_signals::UiSignals::new(&mut signal_store);
         Self {
             state,
             theme,
@@ -102,7 +105,8 @@ impl NativeApp {
             renderer: None,
             window: None,
             ui_frame: UiFrame::default(),
-            signal_store: crate::ui::signals::SignalStore::new(),
+            signal_store,
+            ui_signals,
             editor: EditorElement::default(),
             mouse_position: None,
             launch_at: Instant::now(),
@@ -227,6 +231,14 @@ impl NativeApp {
         let height = size.height.max(1) as f32;
         let ui_scale = self.state.ui_scale_factor();
 
+        self.ui_signals.sync_from_state(
+            &mut self.signal_store,
+            self.state.file_list.scroll_offset_px,
+            self.state.editor.scroll_top_px as f32,
+            self.state.sidebar_visible,
+        );
+        self.signal_store.update_memos();
+
         let mut cx = crate::ui::element::ElementContext::new(
             &self.theme,
             scale_factor,
@@ -235,7 +247,8 @@ impl NativeApp {
             &mut self.signal_store,
         )
         .with_focus(self.state.focus.current)
-        .with_clock(self.state.clock_ms);
+        .with_clock(self.state.clock_ms)
+        .with_ui_signals(self.ui_signals);
         cx.debug_wireframe = std::env::var("DIFFY_DEBUG_WIREFRAME").is_ok();
 
         build_ui_frame(

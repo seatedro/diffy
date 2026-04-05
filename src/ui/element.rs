@@ -11,6 +11,7 @@ use crate::ui::design::{Alpha, Sz};
 use crate::render::Scene;
 use crate::render::scene::{BlurRegionPrimitive, EffectQuadPrimitive, EffectType, Rect};
 use crate::ui::actions::Action;
+use crate::ui::effects::Effect;
 use crate::ui::shell::CursorHint;
 use crate::ui::signals::{Signal, SignalStore};
 use crate::ui::theme::Theme;
@@ -32,6 +33,149 @@ pub struct HitRegion {
     pub rect: Rect,
     pub action: Action,
     pub cursor: CursorHint,
+    pub on_click: Option<ClickHandler>,
+}
+
+impl HitRegion {
+    pub fn from_action(rect: Rect, action: Action, cursor: CursorHint) -> Self {
+        Self {
+            rect,
+            action,
+            cursor,
+            on_click: None,
+        }
+    }
+
+    pub fn with_click_handler(rect: Rect, cursor: CursorHint, handler: ClickHandler) -> Self {
+        Self {
+            rect,
+            action: Action::Noop,
+            cursor,
+            on_click: Some(handler),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ClickHandler / ClickResult / DragHandler — composable event dispatch
+// ---------------------------------------------------------------------------
+
+pub struct ClickHandler(Box<dyn FnOnce(ClickEvent) -> ClickResult>);
+
+impl ClickHandler {
+    pub fn new(f: impl FnOnce(ClickEvent) -> ClickResult + 'static) -> Self {
+        Self(Box::new(f))
+    }
+
+    pub fn invoke(self, event: ClickEvent) -> ClickResult {
+        (self.0)(event)
+    }
+}
+
+impl Clone for ClickHandler {
+    fn clone(&self) -> Self {
+        unreachable!("ClickHandler is FnOnce and should never be cloned")
+    }
+}
+
+impl std::fmt::Debug for ClickHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ClickHandler(..)")
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ClickEvent {
+    pub x: f32,
+    pub y: f32,
+}
+
+pub enum ClickResult {
+    Handled,
+    Actions(Vec<Action>),
+    CaptureDrag(Box<dyn DragHandler>),
+}
+
+pub trait DragHandler {
+    fn on_move(&mut self, x: f32, y: f32) -> Vec<Action>;
+    fn on_release(&mut self, state: &crate::ui::state::AppState) -> DragReleaseResult;
+    fn cursor(&self) -> CursorHint {
+        CursorHint::Default
+    }
+}
+
+pub struct DragReleaseResult {
+    pub actions: Vec<Action>,
+    pub effects: Vec<Effect>,
+}
+
+impl DragReleaseResult {
+    pub fn empty() -> Self {
+        Self {
+            actions: Vec::new(),
+            effects: Vec::new(),
+        }
+    }
+}
+
+pub struct ScrollbarDragHandler {
+    action_builder: ScrollActionBuilder,
+    track_top: f32,
+    track_height: f32,
+    thumb_height: f32,
+    content_height: f32,
+    viewport_height: f32,
+    grab_offset: f32,
+}
+
+impl ScrollbarDragHandler {
+    pub fn new(track: &ScrollbarTrack, click_y: f32) -> Self {
+        let on_thumb =
+            click_y >= track.thumb_top && click_y <= track.thumb_top + track.thumb_height;
+        let grab_offset = if on_thumb {
+            click_y - track.thumb_top
+        } else {
+            track.thumb_height / 2.0
+        };
+        Self {
+            action_builder: track.action_builder.clone(),
+            track_top: track.track_rect.y,
+            track_height: track.track_rect.height,
+            thumb_height: track.thumb_height,
+            content_height: track.content_height,
+            viewport_height: track.viewport_height,
+            grab_offset,
+        }
+    }
+
+    fn compute_scroll_action(&self, mouse_y: f32) -> Option<Action> {
+        let thumb_top = (mouse_y - self.track_top - self.grab_offset)
+            .clamp(0.0, self.track_height - self.thumb_height);
+        let max_scroll = self.content_height - self.viewport_height;
+        let scroll_range = self.track_height - self.thumb_height;
+        let fraction = if scroll_range > 0.0 {
+            thumb_top / scroll_range
+        } else {
+            0.0
+        };
+        let target_px = (fraction * max_scroll) as u32;
+
+        match &self.action_builder {
+            ScrollActionBuilder::FileList => Some(Action::ScrollFileListToPx(target_px)),
+            ScrollActionBuilder::ViewportLines => Some(Action::ScrollViewportTo(target_px)),
+            ScrollActionBuilder::Custom(_) => None,
+        }
+    }
+}
+
+impl DragHandler for ScrollbarDragHandler {
+    fn on_move(&mut self, _x: f32, y: f32) -> Vec<Action> {
+        self.compute_scroll_action(y).into_iter().collect()
+    }
+
+    fn on_release(&mut self, _state: &crate::ui::state::AppState) -> DragReleaseResult {
+        DragReleaseResult::empty()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +374,16 @@ impl<'a> ElementContext<'a> {
         if self.element_offset_stack.len() > 1 {
             self.element_offset_stack.pop();
         }
+    }
+
+    pub fn push_click_handler(
+        &mut self,
+        bounds: Bounds,
+        cursor: CursorHint,
+        handler: ClickHandler,
+    ) {
+        self.hits
+            .push(HitRegion::with_click_handler(bounds, cursor, handler));
     }
 
     /// Register a hitbox during prepaint. Returns an ID for later hover queries.
@@ -804,6 +958,7 @@ pub struct Div {
     blur_radius: Option<f32>,
     children: Vec<AnyElement>,
     on_click: Option<Action>,
+    on_click_handler: Option<ClickHandler>,
     on_scroll: Option<ScrollActionBuilder>,
     cursor: CursorHint,
     scroll_y: f32,
@@ -813,7 +968,6 @@ pub struct Div {
     focus_target: Option<crate::ui::state::FocusTarget>,
 }
 
-/// Create a new div element.
 pub fn div() -> Div {
     Div {
         base_style: ElementStyle::default(),
@@ -822,6 +976,7 @@ pub fn div() -> Div {
         blur_radius: None,
         children: Vec::new(),
         on_click: None,
+        on_click_handler: None,
         on_scroll: None,
         cursor: CursorHint::Default,
         scroll_y: 0.0,
@@ -873,6 +1028,12 @@ impl Div {
 
     pub fn on_click(mut self, action: Action) -> Self {
         self.on_click = Some(action);
+        self.cursor = CursorHint::Pointer;
+        self
+    }
+
+    pub fn on_click_handler(mut self, handler: ClickHandler) -> Self {
+        self.on_click_handler = Some(handler);
         self.cursor = CursorHint::Pointer;
         self
     }
@@ -1001,7 +1162,10 @@ impl Element for Div {
             cx.push_z_index(z);
         }
 
-        let hitbox_id = if self.on_click.is_some() || self.hover_style.is_some() {
+        let hitbox_id = if self.on_click.is_some()
+            || self.on_click_handler.is_some()
+            || self.hover_style.is_some()
+        {
             Some(cx.insert_hitbox(bounds, HitboxBehavior::Normal))
         } else {
             None
@@ -1153,12 +1317,10 @@ impl Element for Div {
         // Register parent hit BEFORE children so that children's hit regions
         // (pushed later) are found first by the reverse search in handle_left_click.
         // This gives correct z-order: child clicks take priority over parent clicks.
-        if let Some(action) = self.on_click.take() {
-            cx.hits.push(HitRegion {
-                rect: bounds,
-                action,
-                cursor: self.cursor,
-            });
+        if let Some(handler) = self.on_click_handler.take() {
+            cx.push_click_handler(bounds, self.cursor, handler);
+        } else if let Some(action) = self.on_click.take() {
+            cx.hits.push(HitRegion::from_action(bounds, action, self.cursor));
         }
 
         // Clip + scroll children
@@ -1871,13 +2033,8 @@ impl Element for TextInput {
             }
         }
 
-        // Register click hit region
         if let Some(action) = self.on_click.take() {
-            cx.hits.push(HitRegion {
-                rect: bounds,
-                action,
-                cursor: CursorHint::Text,
-            });
+            cx.hits.push(HitRegion::from_action(bounds, action, CursorHint::Text));
         }
 
         // Register hit area for click-to-position (stored in cx for app.rs to use)

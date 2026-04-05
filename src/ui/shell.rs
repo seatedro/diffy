@@ -83,7 +83,7 @@ pub fn build_ui_frame(
                         file_list_bounds.clone(),
                         cx,
                     ))
-                    .child(sidebar_mod::sidebar_resizer(theme, sidebar_resize_bounds.clone()))
+                    .child(sidebar_mod::sidebar_resizer(theme, sidebar_resize_bounds.clone(), sidebar_width))
                 })
                 .child(toolbar_mod::main_surface(
                     state,

@@ -5,12 +5,50 @@ use crate::render::{Rect, RectPrimitive, RoundedRectPrimitive, ShadowPrimitive};
 use crate::ui::actions::Action;
 use crate::ui::components;
 use crate::ui::design::{Alpha, Ico, Rad, Sp, Sz};
+use crate::ui::effects::Effect;
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
 use crate::ui::state::{AppState, FocusTarget, SidebarMode, SidebarWidthCache};
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme};
+
+pub(crate) struct SidebarResizeDrag {
+    origin_x: f32,
+    starting_width: f32,
+}
+
+impl SidebarResizeDrag {
+    pub fn new(origin_x: f32, starting_width: f32) -> Self {
+        Self {
+            origin_x,
+            starting_width,
+        }
+    }
+}
+
+impl DragHandler for SidebarResizeDrag {
+    fn on_move(&mut self, x: f32, _y: f32) -> Vec<Action> {
+        let target_width = (self.starting_width + (x - self.origin_x))
+            .round()
+            .max(0.0) as u32;
+        vec![Action::SetSidebarWidthPx(target_width)]
+    }
+
+    fn on_release(
+        &mut self,
+        state: &crate::ui::state::AppState,
+    ) -> DragReleaseResult {
+        DragReleaseResult {
+            actions: Vec::new(),
+            effects: vec![Effect::SaveSettings(state.settings.clone())],
+        }
+    }
+
+    fn cursor(&self) -> CursorHint {
+        CursorHint::ResizeCol
+    }
+}
 
 pub(crate) fn preferred_sidebar_width(
     state: &mut AppState,
@@ -145,7 +183,11 @@ pub(crate) fn preferred_sidebar_width(
     intrinsic_width.clamp(auto_min_width, max_width)
 }
 
-pub(crate) fn sidebar_resizer(theme: &Theme, bounds_cell: Rc<Cell<Option<Rect>>>) -> Canvas {
+pub(crate) fn sidebar_resizer(
+    theme: &Theme,
+    bounds_cell: Rc<Cell<Option<Rect>>>,
+    starting_width: f32,
+) -> Canvas {
     let tc = theme.colors;
     let scale = theme.metrics.ui_scale();
     let handle_width = (Ico::LG * scale).round().max(Ico::SM);
@@ -175,6 +217,15 @@ pub(crate) fn sidebar_resizer(theme: &Theme, bounds_cell: Rc<Cell<Option<Rect>>>
         } else {
             tc.scrollbar_thumb.with_alpha(Alpha::STRONG)
         };
+
+        let sw = starting_width;
+        cx.push_click_handler(
+            bounds,
+            CursorHint::ResizeCol,
+            ClickHandler::new(move |event| {
+                ClickResult::CaptureDrag(Box::new(SidebarResizeDrag::new(event.x, sw)))
+            }),
+        );
 
         scene.rect(RectPrimitive {
             rect: Rect {

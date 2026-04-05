@@ -16,6 +16,7 @@ use crate::platform::startup::StartupOptions;
 use crate::render::Renderer;
 use crate::ui::actions::Action;
 use crate::ui::editor::element::EditorElement;
+use crate::ui::element::{ClickEvent, ClickResult, DragHandler};
 use crate::ui::shell::{CursorHint, UiFrame, build_ui_frame};
 use crate::ui::state::{AppState, FocusTarget, OverlaySurface, WorkspaceMode};
 use crate::ui::theme::Theme;
@@ -61,33 +62,12 @@ struct NativeApp {
     capture_pending: Option<std::path::PathBuf>,
     /// When dragging in a text input, tracks which field is being drag-selected.
     mouse_drag_target: Option<FocusTarget>,
-    /// When dragging a scrollbar thumb, tracks the drag state.
-    scrollbar_drag: Option<ScrollbarDrag>,
-    /// When dragging the sidebar splitter, tracks the drag baseline.
-    sidebar_resize_drag: Option<SidebarResizeDrag>,
+    /// Generalized pointer capture — active drag handler from a ClickHandler.
+    pointer_capture: Option<Box<dyn DragHandler>>,
     file_list_scroll_remainder_px: f32,
     overlay_scroll_remainder_px: f32,
     viewport_scroll_remainder_px: f32,
     needs_redraw: bool,
-}
-
-/// State for an active scrollbar thumb drag.
-struct ScrollbarDrag {
-    /// The scroll action builder for the scrollbar being dragged.
-    action_builder: crate::ui::element::ScrollActionBuilder,
-    /// Y offset of the mouse within the track at drag start.
-    track_top: f32,
-    track_height: f32,
-    thumb_height: f32,
-    content_height: f32,
-    viewport_height: f32,
-    /// Mouse Y offset from the top of the thumb at drag start.
-    grab_offset: f32,
-}
-
-struct SidebarResizeDrag {
-    origin_x: f32,
-    starting_width: f32,
 }
 
 impl NativeApp {
@@ -117,8 +97,7 @@ impl NativeApp {
             #[cfg(feature = "capture")]
             capture_pending,
             mouse_drag_target: None,
-            scrollbar_drag: None,
-            sidebar_resize_drag: None,
+            pointer_capture: None,
             file_list_scroll_remainder_px: 0.0,
             overlay_scroll_remainder_px: 0.0,
             viewport_scroll_remainder_px: 0.0,
@@ -274,24 +253,6 @@ impl NativeApp {
     }
 
     fn handle_left_click(&mut self, x: f32, y: f32) {
-        if self
-            .ui_frame
-            .sidebar_resize_handle_rect
-            .is_some_and(|rect| rect.contains(x, y))
-        {
-            let starting_width = self
-                .ui_frame
-                .file_list_rect
-                .map(|rect| rect.width)
-                .unwrap_or(self.theme.metrics.sidebar_width);
-            self.sidebar_resize_drag = Some(SidebarResizeDrag {
-                origin_x: x,
-                starting_width,
-            });
-            return;
-        }
-
-        // Check scrollbar tracks for click/drag
         if let Some(track) = self
             .ui_frame
             .scrollbar_tracks
@@ -300,24 +261,15 @@ impl NativeApp {
             .find(|t| t.track_rect.contains(x, y))
         {
             let on_thumb = y >= track.thumb_top && y <= track.thumb_top + track.thumb_height;
-            let grab_offset = if on_thumb {
-                y - track.thumb_top
-            } else {
-                track.thumb_height / 2.0
-            };
-            self.scrollbar_drag = Some(ScrollbarDrag {
-                action_builder: track.action_builder.clone(),
-                track_top: track.track_rect.y,
-                track_height: track.track_rect.height,
-                thumb_height: track.thumb_height,
-                content_height: track.content_height,
-                viewport_height: track.viewport_height,
-                grab_offset,
-            });
-            // If clicked outside the thumb, jump to that position
+            let mut handler =
+                crate::ui::element::ScrollbarDragHandler::new(track, y);
             if !on_thumb {
-                self.handle_scrollbar_drag_move(y);
+                let actions = handler.on_move(x, y);
+                for action in actions {
+                    self.dispatch_action(action);
+                }
             }
+            self.pointer_capture = Some(Box::new(handler));
             return;
         }
 
@@ -343,18 +295,34 @@ impl NativeApp {
             return;
         }
 
-        if let Some(hit) = self
+        if let Some(idx) = self
             .ui_frame
             .hits
             .iter()
+            .enumerate()
             .rev()
-            .find(|hit| hit.rect.contains(x, y))
-            .cloned()
+            .find_map(|(i, hit)| hit.rect.contains(x, y).then_some(i))
         {
-            if matches!(hit.action, Action::SelectFile(_)) {
-                self.dispatch_action(Action::SetFocus(Some(FocusTarget::FileList)));
+            let hit = &mut self.ui_frame.hits[idx];
+            if let Some(handler) = hit.on_click.take() {
+                match handler.invoke(ClickEvent { x, y }) {
+                    ClickResult::Handled => {}
+                    ClickResult::Actions(actions) => {
+                        for action in actions {
+                            self.dispatch_action(action);
+                        }
+                    }
+                    ClickResult::CaptureDrag(drag) => {
+                        self.pointer_capture = Some(drag);
+                    }
+                }
+            } else {
+                let action = hit.action.clone();
+                if matches!(action, Action::SelectFile(_)) {
+                    self.dispatch_action(Action::SetFocus(Some(FocusTarget::FileList)));
+                }
+                self.dispatch_action(action);
             }
-            self.dispatch_action(hit.action);
             return;
         }
 
@@ -376,16 +344,13 @@ impl NativeApp {
     fn handle_cursor_moved(&mut self, x: f32, y: f32) {
         self.mouse_position = Some((x, y));
 
-        if self.sidebar_resize_drag.is_some() {
-            self.handle_sidebar_resize_drag_move(x);
+        if let Some(ref mut capture) = self.pointer_capture {
+            let actions = capture.on_move(x, y);
+            for action in actions {
+                self.dispatch_action(action);
+            }
         }
 
-        // Scrollbar thumb drag
-        if self.scrollbar_drag.is_some() {
-            self.handle_scrollbar_drag_move(y);
-        }
-
-        // Drag-to-select in text inputs
         if let Some(drag_target) = self.mouse_drag_target {
             if let Some(hit_area) = self
                 .ui_frame
@@ -420,12 +385,8 @@ impl NativeApp {
         let cursor_hint = hovered_hit
             .map(|hit| hit.cursor)
             .unwrap_or(CursorHint::Default);
-        let resize_hovered = self
-            .ui_frame
-            .sidebar_resize_handle_rect
-            .is_some_and(|rect| rect.contains(x, y));
-        let cursor_hint = if self.sidebar_resize_drag.is_some() || resize_hovered {
-            CursorHint::ResizeCol
+        let cursor_hint = if let Some(ref capture) = self.pointer_capture {
+            capture.cursor()
         } else {
             cursor_hint
         };
@@ -578,53 +539,6 @@ impl NativeApp {
                 _ => {}
             },
         }
-    }
-
-    fn handle_scrollbar_drag_move(&mut self, mouse_y: f32) {
-        let Some(ref drag) = self.scrollbar_drag else {
-            return;
-        };
-        let track_top = drag.track_top;
-        let track_h = drag.track_height;
-        let thumb_h = drag.thumb_height;
-        let grab_offset = drag.grab_offset;
-        let content_h = drag.content_height;
-        let viewport_h = drag.viewport_height;
-        let builder = drag.action_builder.clone();
-
-        // Compute new thumb position
-        let thumb_top = (mouse_y - track_top - grab_offset).clamp(0.0, track_h - thumb_h);
-        let max_scroll = content_h - viewport_h;
-        let scroll_range = track_h - thumb_h;
-        let fraction = if scroll_range > 0.0 {
-            thumb_top / scroll_range
-        } else {
-            0.0
-        };
-
-        let target_px = (fraction * max_scroll) as u32;
-
-        // Dispatch scroll action based on the builder type
-        match builder {
-            crate::ui::element::ScrollActionBuilder::FileList => {
-                self.dispatch_action(Action::ScrollFileListToPx(target_px));
-            }
-            crate::ui::element::ScrollActionBuilder::ViewportLines => {
-                self.dispatch_action(Action::ScrollViewportTo(target_px));
-            }
-            crate::ui::element::ScrollActionBuilder::Custom(_) => {}
-        }
-    }
-
-    fn handle_sidebar_resize_drag_move(&mut self, mouse_x: f32) {
-        let Some(ref drag) = self.sidebar_resize_drag else {
-            return;
-        };
-
-        let target_width = (drag.starting_width + (mouse_x - drag.origin_x))
-            .round()
-            .max(0.0) as u32;
-        self.dispatch_action(Action::SetSidebarWidthPx(target_width));
     }
 
     fn is_text_focused(&self) -> bool {
@@ -974,15 +888,15 @@ impl ApplicationHandler for NativeApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.sidebar_resize_drag.take().is_some() {
-                    self.runtime
-                        .dispatch_all(vec![crate::ui::effects::Effect::SaveSettings(
-                            self.state.settings.clone(),
-                        )]);
+                if let Some(mut capture) = self.pointer_capture.take() {
+                    let result = capture.on_release(&self.state);
+                    for action in result.actions {
+                        self.dispatch_action(action);
+                    }
+                    self.runtime.dispatch_all(result.effects);
                     self.mark_dirty();
                 }
                 self.mouse_drag_target = None;
-                self.scrollbar_drag = None;
                 self.mark_dirty();
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {

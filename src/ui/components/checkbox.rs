@@ -2,7 +2,9 @@ use halogen::view;
 
 use crate::ui::actions::Action;
 use crate::ui::design::{Alpha, Shadow, Sp, Sz};
-use crate::ui::element::{div, svg_icon, text, AnyElement, ElementContext, IntoAnyElement, RenderOnce};
+use crate::ui::element::{
+    AnyElement, ElementContext, IntoAnyElement, RenderOnce, div, svg_icon, text,
+};
 use crate::ui::icons::lucide;
 use crate::ui::style::Styled;
 use crate::ui::theme::Color;
@@ -85,7 +87,11 @@ impl RenderOnce for Checkbox {
         row = row.child(check_box);
 
         if let Some(label_text) = self.label {
-            let c = if self.disabled { tc.text_muted } else { tc.text };
+            let c = if self.disabled {
+                tc.text_muted
+            } else {
+                tc.text
+            };
             row = row.child(view! {
                 <text class="text-sm" color={c}>{label_text}</text>
             });
@@ -188,7 +194,11 @@ impl RenderOnce for Toggle {
         row = row.child(track);
 
         if let Some(label_text) = self.label {
-            let c = if self.disabled { tc.text_muted } else { tc.text };
+            let c = if self.disabled {
+                tc.text_muted
+            } else {
+                tc.text
+            };
             row = row.child(view! {
                 <text class="text-sm" color={c}>{label_text}</text>
             });

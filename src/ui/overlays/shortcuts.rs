@@ -21,44 +21,98 @@ const GROUPS: &[ShortcutGroup] = &[
     ShortcutGroup {
         title: "Navigation",
         entries: &[
-            ShortcutEntry { key: "] / [", description: "Next / previous hunk" },
-            ShortcutEntry { key: "n / N", description: "Next / previous file" },
-            ShortcutEntry { key: "Tab", description: "Toggle sidebar / editor focus" },
-            ShortcutEntry { key: "/", description: "Focus sidebar search" },
+            ShortcutEntry {
+                key: "] / [",
+                description: "Next / previous hunk",
+            },
+            ShortcutEntry {
+                key: "n / N",
+                description: "Next / previous file",
+            },
+            ShortcutEntry {
+                key: "Tab",
+                description: "Toggle sidebar / editor focus",
+            },
+            ShortcutEntry {
+                key: "/",
+                description: "Focus sidebar search",
+            },
         ],
     },
     ShortcutGroup {
         title: "Scrolling",
         entries: &[
-            ShortcutEntry { key: "j / k", description: "Scroll down / up one line" },
-            ShortcutEntry { key: "d / u", description: "Scroll down / up half page" },
-            ShortcutEntry { key: "Space / Shift+Space", description: "Page down / up" },
-            ShortcutEntry { key: "g g / G", description: "Go to top / bottom" },
+            ShortcutEntry {
+                key: "j / k",
+                description: "Scroll down / up one line",
+            },
+            ShortcutEntry {
+                key: "d / u",
+                description: "Scroll down / up half page",
+            },
+            ShortcutEntry {
+                key: "Space / Shift+Space",
+                description: "Page down / up",
+            },
+            ShortcutEntry {
+                key: "g g / G",
+                description: "Go to top / bottom",
+            },
         ],
     },
     ShortcutGroup {
         title: "View",
         entries: &[
-            ShortcutEntry { key: "1 / 2", description: "Unified / split diff view" },
-            ShortcutEntry { key: "w", description: "Toggle line wrapping" },
-            ShortcutEntry { key: "Cmd+B", description: "Toggle sidebar" },
+            ShortcutEntry {
+                key: "1 / 2",
+                description: "Unified / split diff view",
+            },
+            ShortcutEntry {
+                key: "w",
+                description: "Toggle line wrapping",
+            },
+            ShortcutEntry {
+                key: "Cmd+B",
+                description: "Toggle sidebar",
+            },
         ],
     },
     ShortcutGroup {
         title: "Search",
         entries: &[
-            ShortcutEntry { key: "Cmd+F", description: "Open search" },
-            ShortcutEntry { key: "Enter / Shift+Enter", description: "Next / previous match" },
-            ShortcutEntry { key: "Escape", description: "Close search" },
+            ShortcutEntry {
+                key: "Cmd+F",
+                description: "Open search",
+            },
+            ShortcutEntry {
+                key: "Enter / Shift+Enter",
+                description: "Next / previous match",
+            },
+            ShortcutEntry {
+                key: "Escape",
+                description: "Close search",
+            },
         ],
     },
     ShortcutGroup {
         title: "General",
         entries: &[
-            ShortcutEntry { key: "Cmd+P", description: "Command palette" },
-            ShortcutEntry { key: "Cmd+= / Cmd+-", description: "Zoom in / out" },
-            ShortcutEntry { key: "?", description: "Show this help" },
-            ShortcutEntry { key: "Escape", description: "Close overlay" },
+            ShortcutEntry {
+                key: "Cmd+P",
+                description: "Command palette",
+            },
+            ShortcutEntry {
+                key: "Cmd+= / Cmd+-",
+                description: "Zoom in / out",
+            },
+            ShortcutEntry {
+                key: "?",
+                description: "Show this help",
+            },
+            ShortcutEntry {
+                key: "Escape",
+                description: "Close overlay",
+            },
         ],
     },
 ];

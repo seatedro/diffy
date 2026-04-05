@@ -347,7 +347,10 @@ mod tests {
             ("DIFFY_START_RENDERER", "difftastic"),
             ("DIFFY_START_FILE_INDEX", "7"),
             ("DIFFY_START_FILE_PATH", "env.rs"),
-            ("DIFFY_START_OPEN_PR", "https://github.com/owner/repo/pull/7"),
+            (
+                "DIFFY_START_OPEN_PR",
+                "https://github.com/owner/repo/pull/7",
+            ),
             ("DIFFY_EXIT_AFTER_MS", "99"),
         ]);
         let args = StartupEnvDefaults::load(|name| env.get(name).map(|value| (*value).to_owned()))

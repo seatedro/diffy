@@ -4,7 +4,9 @@ use halogen::view;
 
 use crate::ui::actions::Action;
 use crate::ui::design::Sp;
-use crate::ui::element::{div, svg_icon, text, AnyElement, ElementContext, IntoAnyElement, RenderOnce};
+use crate::ui::element::{
+    AnyElement, ElementContext, IntoAnyElement, RenderOnce, div, svg_icon, text,
+};
 use crate::ui::icons::lucide;
 use crate::ui::style::Styled;
 use crate::ui::theme::Color;
@@ -69,12 +71,29 @@ impl TreeNode {
         }
     }
 
-    fn insert(&mut self, parts: &[&str], original_index: usize, file_name: &str, status: &str, adds: i32, dels: i32) {
+    fn insert(
+        &mut self,
+        parts: &[&str],
+        original_index: usize,
+        file_name: &str,
+        status: &str,
+        adds: i32,
+        dels: i32,
+    ) {
         if parts.is_empty() {
-            self.files.push((original_index, file_name.to_string(), status.to_string(), adds, dels));
+            self.files.push((
+                original_index,
+                file_name.to_string(),
+                status.to_string(),
+                adds,
+                dels,
+            ));
         } else {
             let dir = parts[0];
-            let child = self.children_dirs.entry(dir.to_string()).or_insert_with(TreeNode::new);
+            let child = self
+                .children_dirs
+                .entry(dir.to_string())
+                .or_insert_with(TreeNode::new);
             child.insert(&parts[1..], original_index, file_name, status, adds, dels);
         }
     }
@@ -161,9 +180,22 @@ impl RenderOnce for FileTree {
             if parts.len() > 1 {
                 let dir_parts = &parts[..parts.len() - 1];
                 let file_name = parts[parts.len() - 1];
-                root.insert(dir_parts, i, file_name, &entry.status, entry.additions, entry.deletions);
+                root.insert(
+                    dir_parts,
+                    i,
+                    file_name,
+                    &entry.status,
+                    entry.additions,
+                    entry.deletions,
+                );
             } else {
-                root.files.push((i, entry.path.clone(), entry.status.clone(), entry.additions, entry.deletions));
+                root.files.push((
+                    i,
+                    entry.path.clone(),
+                    entry.status.clone(),
+                    entry.additions,
+                    entry.deletions,
+                ));
             }
         }
 
@@ -201,11 +233,8 @@ impl RenderOnce for FileTree {
                         .hover_bg(tc.sidebar_row_hover);
 
                     if depth > 0 {
-                        row_div = row_div.child(
-                            div()
-                                .w(indent_unit * depth as f32)
-                                .flex_shrink_0(),
-                        );
+                        row_div =
+                            row_div.child(div().w(indent_unit * depth as f32).flex_shrink_0());
                     }
 
                     if let Some(f) = on_toggle_folder {
@@ -228,11 +257,7 @@ impl RenderOnce for FileTree {
                     deletions,
                     selected: is_selected,
                 } => {
-                    let fg = if is_selected {
-                        tc.text_strong
-                    } else {
-                        tc.text
-                    };
+                    let fg = if is_selected { tc.text_strong } else { tc.text };
                     let bg = if is_selected {
                         tc.sidebar_row_selected
                     } else {
@@ -255,9 +280,7 @@ impl RenderOnce for FileTree {
 
                     let indent_w = indent_unit * depth as f32 + icon_size;
                     if indent_w > 0.1 {
-                        row_div = row_div.child(
-                            div().w(indent_w).flex_shrink_0(),
-                        );
+                        row_div = row_div.child(div().w(indent_w).flex_shrink_0());
                     }
 
                     row_div = row_div

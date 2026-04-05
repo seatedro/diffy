@@ -9,7 +9,12 @@ use crate::ui::icons::lucide;
 use crate::ui::state::{AppState, AsyncStatus, FocusTarget};
 use crate::ui::style::Styled;
 
-pub fn pull_request_modal(state: &AppState, theme: &crate::ui::theme::Theme, width: f32, height: f32) -> AnyElement {
+pub fn pull_request_modal(
+    state: &AppState,
+    theme: &crate::ui::theme::Theme,
+    width: f32,
+    height: f32,
+) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
 
@@ -50,11 +55,13 @@ pub fn pull_request_modal(state: &AppState, theme: &crate::ui::theme::Theme, wid
     modal = modal.footer_child(
         Button::new(Action::SubmitPullRequest)
             .icon(lucide::PLAY)
-            .label(if state.github.pull_request.status == AsyncStatus::Loading {
-                "Loading\u{2026}"
-            } else {
-                "Load PR"
-            })
+            .label(
+                if state.github.pull_request.status == AsyncStatus::Loading {
+                    "Loading\u{2026}"
+                } else {
+                    "Load PR"
+                },
+            )
             .style(ButtonStyle::Filled),
     );
 

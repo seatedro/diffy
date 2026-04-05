@@ -1,9 +1,9 @@
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
-use syn::parse::{Parse, ParseStream};
 use syn::ext::IdentExt;
-use syn::{braced, Expr, ExprIf, ExprMatch, Ident, LitStr, Pat, Result, Token};
+use syn::parse::{Parse, ParseStream};
+use syn::{Expr, ExprIf, ExprMatch, Ident, LitStr, Pat, Result, Token, braced};
 
 #[proc_macro]
 pub fn view(input: TokenStream) -> TokenStream {
@@ -272,7 +272,11 @@ fn parse_closing_tag(input: ParseStream, open_tag: &Tag) -> Result<()> {
         Tag::Icon => "icon",
         Tag::Spacer => "spacer",
         Tag::Component(p) => {
-            let last = p.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
+            let last = p
+                .segments
+                .last()
+                .map(|s| s.ident.to_string())
+                .unwrap_or_default();
             if close_ident != last.as_str() {
                 return Err(syn::Error::new(
                     close_ident.span(),
@@ -341,9 +345,7 @@ enum ChildMode {
 }
 
 const SPATIAL_ATTRS: &[&str] = &[
-    "gap", "gap_x", "gap_y",
-    "p", "px", "py", "pt", "pb", "pl", "pr",
-    "rounded",
+    "gap", "gap_x", "gap_y", "p", "px", "py", "pt", "pb", "pl", "pr", "rounded",
 ];
 
 impl EmitCtx {
@@ -485,7 +487,9 @@ impl EmitCtx {
             }
         }
 
-        let svg = svg_expr.map(|e| quote! { #e }).unwrap_or_else(|| quote! { "" });
+        let svg = svg_expr
+            .map(|e| quote! { #e })
+            .unwrap_or_else(|| quote! { "" });
         let size = size_expr
             .map(|e| quote! { #e })
             .unwrap_or_else(|| quote! { 16.0 });
@@ -599,9 +603,7 @@ impl EmitCtx {
                 let calls = self.class_to_calls(lit);
                 quote! { #chain #(#calls)* }
             }
-            Attr::IfAttr(name, if_expr) => {
-                self.emit_if_attr(chain, name, if_expr)
-            }
+            Attr::IfAttr(name, if_expr) => self.emit_if_attr(chain, name, if_expr),
         }
     }
 
@@ -647,9 +649,7 @@ impl EmitCtx {
                 let calls = self.class_to_calls(lit);
                 quote! { #chain #(#calls)* }
             }
-            Attr::IfAttr(name, if_expr) => {
-                self.emit_if_attr(chain, name, if_expr)
-            }
+            Attr::IfAttr(name, if_expr) => self.emit_if_attr(chain, name, if_expr),
         }
     }
 
@@ -674,5 +674,8 @@ fn unwrap_block_expr(expr: &Expr) -> TokenStream2 {
 
 fn is_constructor_arg(name: &Ident) -> bool {
     let s = name.to_string();
-    matches!(s.as_str(), "action" | "label" | "title" | "value" | "status")
+    matches!(
+        s.as_str(),
+        "action" | "label" | "title" | "value" | "status"
+    )
 }

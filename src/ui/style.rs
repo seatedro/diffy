@@ -415,7 +415,11 @@ pub trait Styled: Sized {
     /// Implemented as a zero-offset shadow with the given color and radius.
     fn shadow_preset(mut self, layers: &[ShadowLayer]) -> Self {
         for layer in layers {
-            self = self.shadow(layer.blur, layer.offset_y, Color::rgba(0, 0, 0, layer.alpha));
+            self = self.shadow(
+                layer.blur,
+                layer.offset_y,
+                Color::rgba(0, 0, 0, layer.alpha),
+            );
         }
         self
     }
@@ -597,31 +601,69 @@ pub trait Styled: Sized {
         self
     }
 
-    fn gap_0(self) -> Self { self.gap(Sp::NONE) }
-    fn gap_5(self) -> Self { self.gap(Sp::XL) }
-    fn gap_6(self) -> Self { self.gap(Sp::XXL - Sp::XS) }
-    fn gap_8(self) -> Self { self.gap(Sp::XXL + Sp::XS) }
+    fn gap_0(self) -> Self {
+        self.gap(Sp::NONE)
+    }
+    fn gap_5(self) -> Self {
+        self.gap(Sp::XL)
+    }
+    fn gap_6(self) -> Self {
+        self.gap(Sp::XXL - Sp::XS)
+    }
+    fn gap_8(self) -> Self {
+        self.gap(Sp::XXL + Sp::XS)
+    }
 
-    fn p_0(self) -> Self { self.p(Sp::NONE) }
+    fn p_0(self) -> Self {
+        self.p(Sp::NONE)
+    }
 
-    fn px_0(self) -> Self { self.px(Sp::NONE) }
-    fn px_1(self) -> Self { self.px(Sp::XS) }
+    fn px_0(self) -> Self {
+        self.px(Sp::NONE)
+    }
+    fn px_1(self) -> Self {
+        self.px(Sp::XS)
+    }
 
-    fn py_0(self) -> Self { self.py(Sp::NONE) }
-    fn py_4(self) -> Self { self.py(Sp::LG) }
-    fn py_5(self) -> Self { self.py(Sp::XL) }
+    fn py_0(self) -> Self {
+        self.py(Sp::NONE)
+    }
+    fn py_4(self) -> Self {
+        self.py(Sp::LG)
+    }
+    fn py_5(self) -> Self {
+        self.py(Sp::XL)
+    }
 
-    fn pt_1(self) -> Self { self.pt(Sp::XS) }
-    fn pt_2(self) -> Self { self.pt(Sp::SM) }
-    fn pt_3(self) -> Self { self.pt(Sp::MD) }
-    fn pt_4(self) -> Self { self.pt(Sp::LG) }
+    fn pt_1(self) -> Self {
+        self.pt(Sp::XS)
+    }
+    fn pt_2(self) -> Self {
+        self.pt(Sp::SM)
+    }
+    fn pt_3(self) -> Self {
+        self.pt(Sp::MD)
+    }
+    fn pt_4(self) -> Self {
+        self.pt(Sp::LG)
+    }
 
-    fn pb_1(self) -> Self { self.pb(Sp::XS) }
-    fn pb_2(self) -> Self { self.pb(Sp::SM) }
-    fn pb_3(self) -> Self { self.pb(Sp::MD) }
-    fn pb_4(self) -> Self { self.pb(Sp::LG) }
+    fn pb_1(self) -> Self {
+        self.pb(Sp::XS)
+    }
+    fn pb_2(self) -> Self {
+        self.pb(Sp::SM)
+    }
+    fn pb_3(self) -> Self {
+        self.pb(Sp::MD)
+    }
+    fn pb_4(self) -> Self {
+        self.pb(Sp::LG)
+    }
 
-    fn rounded_none(self) -> Self { self.rounded(0.0) }
+    fn rounded_none(self) -> Self {
+        self.rounded(0.0)
+    }
     fn rounded_full(mut self) -> Self {
         self.element_style_mut().corner_radius = 9999.0;
         self

@@ -15,7 +15,12 @@ fn ui_scale(theme: &crate::ui::theme::Theme) -> f32 {
     theme.metrics.ui_scale()
 }
 
-pub fn compare_sheet(state: &AppState, theme: &crate::ui::theme::Theme, width: f32, height: f32) -> AnyElement {
+pub fn compare_sheet(
+    state: &AppState,
+    theme: &crate::ui::theme::Theme,
+    width: f32,
+    height: f32,
+) -> AnyElement {
     let tc = &theme.colors;
     let scale = ui_scale(theme);
 
@@ -39,7 +44,7 @@ pub fn compare_sheet(state: &AppState, theme: &crate::ui::theme::Theme, width: f
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "Choose repository\u{2026}".into()),
             )
-            .style(ButtonStyle::Subtle)
+            .style(ButtonStyle::Subtle),
     )
     .body_child(
         div()
@@ -83,9 +88,21 @@ pub fn compare_sheet(state: &AppState, theme: &crate::ui::theme::Theme, width: f
                     .gap((Sp::MD * scale).round())
                     .child(text("Mode").text_sm().medium().color(tc.text_muted))
                     .child(SegmentedControl::new(vec![
-                        SegmentedItem::new("Single", Action::SetCompareMode(CompareMode::SingleCommit), state.compare.mode == CompareMode::SingleCommit),
-                        SegmentedItem::new("Two Dot", Action::SetCompareMode(CompareMode::TwoDot), state.compare.mode == CompareMode::TwoDot),
-                        SegmentedItem::new("Three Dot", Action::SetCompareMode(CompareMode::ThreeDot), state.compare.mode == CompareMode::ThreeDot),
+                        SegmentedItem::new(
+                            "Single",
+                            Action::SetCompareMode(CompareMode::SingleCommit),
+                            state.compare.mode == CompareMode::SingleCommit,
+                        ),
+                        SegmentedItem::new(
+                            "Two Dot",
+                            Action::SetCompareMode(CompareMode::TwoDot),
+                            state.compare.mode == CompareMode::TwoDot,
+                        ),
+                        SegmentedItem::new(
+                            "Three Dot",
+                            Action::SetCompareMode(CompareMode::ThreeDot),
+                            state.compare.mode == CompareMode::ThreeDot,
+                        ),
                     ])),
             )
             .child(
@@ -100,8 +117,16 @@ pub fn compare_sheet(state: &AppState, theme: &crate::ui::theme::Theme, width: f
                             .gap((Sp::MD * scale).round())
                             .child(text("Layout").text_sm().medium().color(tc.text_muted))
                             .child(SegmentedControl::new(vec![
-                                SegmentedItem::new("Unified", Action::SetLayoutMode(LayoutMode::Unified), state.compare.layout == LayoutMode::Unified),
-                                SegmentedItem::new("Split", Action::SetLayoutMode(LayoutMode::Split), state.compare.layout == LayoutMode::Split),
+                                SegmentedItem::new(
+                                    "Unified",
+                                    Action::SetLayoutMode(LayoutMode::Unified),
+                                    state.compare.layout == LayoutMode::Unified,
+                                ),
+                                SegmentedItem::new(
+                                    "Split",
+                                    Action::SetLayoutMode(LayoutMode::Split),
+                                    state.compare.layout == LayoutMode::Split,
+                                ),
                             ])),
                     )
                     .child(
@@ -111,8 +136,16 @@ pub fn compare_sheet(state: &AppState, theme: &crate::ui::theme::Theme, width: f
                             .gap((Sp::MD * scale).round())
                             .child(text("Engine").text_sm().medium().color(tc.text_muted))
                             .child(SegmentedControl::new(vec![
-                                SegmentedItem::new("Built-in", Action::SetRenderer(RendererKind::Builtin), state.compare.renderer == RendererKind::Builtin),
-                                SegmentedItem::new("Difftastic", Action::SetRenderer(RendererKind::Difftastic), state.compare.renderer == RendererKind::Difftastic),
+                                SegmentedItem::new(
+                                    "Built-in",
+                                    Action::SetRenderer(RendererKind::Builtin),
+                                    state.compare.renderer == RendererKind::Builtin,
+                                ),
+                                SegmentedItem::new(
+                                    "Difftastic",
+                                    Action::SetRenderer(RendererKind::Difftastic),
+                                    state.compare.renderer == RendererKind::Difftastic,
+                                ),
                             ])),
                     ),
             ),

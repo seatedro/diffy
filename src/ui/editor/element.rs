@@ -184,10 +184,7 @@ impl Default for EditorElement {
 
 impl EditorElement {
     pub fn scrollbar_rect(&self) -> Rect {
-        self.layout
-            .scrollbar
-            .map(|sb| sb.track)
-            .unwrap_or_default()
+        self.layout.scrollbar.map(|sb| sb.track).unwrap_or_default()
     }
 
     pub fn scroll_line_height_px(&self) -> f32 {
@@ -261,8 +258,7 @@ impl EditorElement {
 
         self.layout.scroll_top_px = state.scroll_top_px as f32;
         self.layout.highlighted_row = state.hovered_row;
-        self.layout.scrollbar =
-            compute_scrollbar_layout(&self.layout, state);
+        self.layout.scrollbar = compute_scrollbar_layout(&self.layout, state);
 
         self.layout
     }
@@ -284,12 +280,7 @@ impl EditorElement {
         })
     }
 
-    fn rebuild_rows(
-        &mut self,
-        doc: &RenderDoc,
-        state: &EditorState,
-        text_metrics: TextMetrics,
-    ) {
+    fn rebuild_rows(&mut self, doc: &RenderDoc, state: &EditorState, text_metrics: TextMetrics) {
         let s = editor_scale(text_metrics);
         self.metrics = DisplayLayoutMetrics {
             body_row_height_px: text_metrics.mono_line_height_px.round().max(1.0) as u16,
@@ -388,12 +379,20 @@ impl EditorElement {
 
         match document {
             EditorDocument::Empty => {
-                self.paint_placeholder(scene, theme, "No file selected",
-                    "Choose a file from the list to render the native viewport.");
+                self.paint_placeholder(
+                    scene,
+                    theme,
+                    "No file selected",
+                    "Choose a file from the list to render the native viewport.",
+                );
             }
             EditorDocument::Binary { path } => {
-                self.paint_placeholder(scene, theme, path,
-                    "Binary file. The native viewport only renders text diffs in this phase.");
+                self.paint_placeholder(
+                    scene,
+                    theme,
+                    path,
+                    "Binary file. The native viewport only renders text diffs in this phase.",
+                );
             }
             EditorDocument::Text { path, doc, .. } => {
                 self.sync_theme_cache(theme);
@@ -418,7 +417,12 @@ impl EditorElement {
         let s = editor_scale(self.text_metrics);
         let inset = self.layout.content_bounds.inset(scaled(24.0, s));
         scene.text(TextPrimitive {
-            rect: Rect { x: inset.x, y: inset.y + inset.height * 0.35, width: inset.width, height: fs + 10.0 },
+            rect: Rect {
+                x: inset.x,
+                y: inset.y + inset.height * 0.35,
+                width: inset.width,
+                height: fs + 10.0,
+            },
             text: title.into(),
             color: theme.colors.text_strong,
             font_size: fs + 4.0,
@@ -426,7 +430,12 @@ impl EditorElement {
             font_weight: FontWeight::Normal,
         });
         scene.text(TextPrimitive {
-            rect: Rect { x: inset.x, y: inset.y + inset.height * 0.35 + fs + 16.0, width: inset.width, height: fs + 4.0 },
+            rect: Rect {
+                x: inset.x,
+                y: inset.y + inset.height * 0.35 + fs + 16.0,
+                width: inset.width,
+                height: fs + 4.0,
+            },
             text: message.into(),
             color: theme.colors.text_muted,
             font_size: fs,
@@ -453,10 +462,19 @@ impl EditorElement {
 
     fn paint_gutter_backgrounds(&self, scene: &mut Scene, theme: &Theme) {
         if self.layout.split_mode {
-            scene.rect(RectPrimitive { rect: self.layout.left_gutter_rect, color: theme.colors.gutter_bg });
-            scene.rect(RectPrimitive { rect: self.layout.right_gutter_rect, color: theme.colors.gutter_bg });
+            scene.rect(RectPrimitive {
+                rect: self.layout.left_gutter_rect,
+                color: theme.colors.gutter_bg,
+            });
+            scene.rect(RectPrimitive {
+                rect: self.layout.right_gutter_rect,
+                color: theme.colors.gutter_bg,
+            });
         } else {
-            scene.rect(RectPrimitive { rect: self.layout.unified_gutter_rect, color: theme.colors.gutter_bg });
+            scene.rect(RectPrimitive {
+                rect: self.layout.unified_gutter_rect,
+                color: theme.colors.gutter_bg,
+            });
         }
     }
 
@@ -464,10 +482,16 @@ impl EditorElement {
 
     fn paint_row_backgrounds(&self, scene: &mut Scene, theme: &Theme, doc: &RenderDoc) {
         for row_index in self.layout.visible_row_range.iter() {
-            let Some(display_row) = self.rows.get(row_index).copied() else { continue };
-            let Some(line) = doc.lines.get(display_row.line_index as usize) else { continue };
+            let Some(display_row) = self.rows.get(row_index).copied() else {
+                continue;
+            };
+            let Some(line) = doc.lines.get(display_row.line_index as usize) else {
+                continue;
+            };
             let rr = self.row_rect_for(&display_row);
-            if !self.row_in_viewport(&rr) { continue; }
+            if !self.row_in_viewport(&rr) {
+                continue;
+            }
             paint_row_background(scene, theme, rr, line.row_kind());
         }
     }
@@ -475,29 +499,58 @@ impl EditorElement {
     // -- Phase 3: Line highlights (hover) --
 
     fn paint_line_highlights(&self, scene: &mut Scene, theme: &Theme) {
-        let Some(hovered) = self.layout.highlighted_row else { return };
-        let Some(display_row) = self.rows.get(hovered).copied() else { return };
+        let Some(hovered) = self.layout.highlighted_row else {
+            return;
+        };
+        let Some(display_row) = self.rows.get(hovered).copied() else {
+            return;
+        };
         let rr = self.row_rect_for(&display_row);
-        if !self.row_in_viewport(&rr) { return; }
+        if !self.row_in_viewport(&rr) {
+            return;
+        }
 
         let text_highlight = if self.layout.split_mode {
-            Rect { x: self.layout.left_text_rect.x, y: rr.y,
-                width: self.layout.content_bounds.right() - self.layout.left_text_rect.x, height: rr.height }
+            Rect {
+                x: self.layout.left_text_rect.x,
+                y: rr.y,
+                width: self.layout.content_bounds.right() - self.layout.left_text_rect.x,
+                height: rr.height,
+            }
         } else {
-            Rect { x: self.layout.unified_text_rect.x, y: rr.y,
-                width: self.layout.unified_text_rect.width, height: rr.height }
+            Rect {
+                x: self.layout.unified_text_rect.x,
+                y: rr.y,
+                width: self.layout.unified_text_rect.width,
+                height: rr.height,
+            }
         };
-        scene.rect(RectPrimitive { rect: text_highlight, color: theme.colors.hover_overlay });
+        scene.rect(RectPrimitive {
+            rect: text_highlight,
+            color: theme.colors.hover_overlay,
+        });
 
         let gutter_highlight = if self.layout.split_mode {
-            Rect { x: self.layout.left_gutter_rect.x, y: rr.y,
-                width: self.layout.left_gutter_rect.width + self.layout.right_gutter_rect.width + self.layout.column_gap,
-                height: rr.height }
+            Rect {
+                x: self.layout.left_gutter_rect.x,
+                y: rr.y,
+                width: self.layout.left_gutter_rect.width
+                    + self.layout.right_gutter_rect.width
+                    + self.layout.column_gap,
+                height: rr.height,
+            }
         } else {
-            Rect { x: self.layout.unified_gutter_rect.x, y: rr.y,
-                width: self.layout.unified_gutter_rect.width, height: rr.height }
+            Rect {
+                x: self.layout.unified_gutter_rect.x,
+                y: rr.y,
+                width: self.layout.unified_gutter_rect.width,
+                height: rr.height,
+            }
         };
-        scene.rect(RectPrimitive { rect: gutter_highlight, color: theme.colors.hover_overlay });
+        scene.rect(RectPrimitive {
+            rect: gutter_highlight,
+            color: theme.colors.hover_overlay,
+        });
     }
 
     fn paint_search_highlights(
@@ -521,8 +574,16 @@ impl EditorElement {
         if vis.is_empty() {
             return;
         }
-        let vis_min_line = self.rows.get(vis.start).map(|r| r.line_index).unwrap_or(u32::MAX);
-        let vis_max_line = self.rows.get(vis.end.saturating_sub(1)).map(|r| r.line_index).unwrap_or(0);
+        let vis_min_line = self
+            .rows
+            .get(vis.start)
+            .map(|r| r.line_index)
+            .unwrap_or(u32::MAX);
+        let vis_max_line = self
+            .rows
+            .get(vis.end.saturating_sub(1))
+            .map(|r| r.line_index)
+            .unwrap_or(0);
 
         for (match_idx, m) in state.search.matches.iter().enumerate() {
             let line_idx = m.line_index as usize;
@@ -532,11 +593,15 @@ impl EditorElement {
             }
 
             for row_index in vis.iter() {
-                let Some(display_row) = self.rows.get(row_index).copied() else { continue };
+                let Some(display_row) = self.rows.get(row_index).copied() else {
+                    continue;
+                };
                 if display_row.line_index as usize != line_idx {
                     continue;
                 }
-                let Some(line) = doc.lines.get(line_idx) else { continue };
+                let Some(line) = doc.lines.get(line_idx) else {
+                    continue;
+                };
                 let rr = self.row_rect_for(&display_row);
                 if !self.row_in_viewport(&rr) {
                     continue;
@@ -562,11 +627,20 @@ impl EditorElement {
 
                 let (text_rect_x, text_rect_w) = if self.layout.split_mode {
                     match m.side {
-                        MatchSide::Left => (self.layout.left_text_rect.x, self.layout.left_text_rect.width),
-                        MatchSide::Right => (self.layout.right_text_rect.x, self.layout.right_text_rect.width),
+                        MatchSide::Left => (
+                            self.layout.left_text_rect.x,
+                            self.layout.left_text_rect.width,
+                        ),
+                        MatchSide::Right => (
+                            self.layout.right_text_rect.x,
+                            self.layout.right_text_rect.width,
+                        ),
                     }
                 } else {
-                    (self.layout.unified_text_rect.x, self.layout.unified_text_rect.width)
+                    (
+                        self.layout.unified_text_rect.x,
+                        self.layout.unified_text_rect.width,
+                    )
                 };
 
                 let y_offset = if !self.layout.split_mode
@@ -591,7 +665,12 @@ impl EditorElement {
                 };
 
                 scene.rect(RectPrimitive {
-                    rect: Rect { x, y: rr.y + y_offset, width: w, height: line_height },
+                    rect: Rect {
+                        x,
+                        y: rr.y + y_offset,
+                        width: w,
+                        height: line_height,
+                    },
                     color,
                 });
             }
@@ -604,16 +683,31 @@ impl EditorElement {
         let cb = self.layout.content_bounds;
         if self.layout.split_mode {
             scene.rect(RectPrimitive {
-                rect: Rect { x: self.layout.left_gutter_rect.right() - 1.0, y: cb.y, width: 1.0, height: cb.height },
+                rect: Rect {
+                    x: self.layout.left_gutter_rect.right() - 1.0,
+                    y: cb.y,
+                    width: 1.0,
+                    height: cb.height,
+                },
                 color: theme.colors.border_soft,
             });
             scene.rect(RectPrimitive {
-                rect: Rect { x: self.layout.right_gutter_rect.right() - 1.0, y: cb.y, width: 1.0, height: cb.height },
+                rect: Rect {
+                    x: self.layout.right_gutter_rect.right() - 1.0,
+                    y: cb.y,
+                    width: 1.0,
+                    height: cb.height,
+                },
                 color: theme.colors.border_soft,
             });
         } else {
             scene.rect(RectPrimitive {
-                rect: Rect { x: self.layout.unified_gutter_rect.right() - 1.0, y: cb.y, width: 1.0, height: cb.height },
+                rect: Rect {
+                    x: self.layout.unified_gutter_rect.right() - 1.0,
+                    y: cb.y,
+                    width: 1.0,
+                    height: cb.height,
+                },
                 color: theme.colors.border_soft,
             });
         }
@@ -626,58 +720,121 @@ impl EditorElement {
         let line_height = self.layout.line_height;
 
         for row_index in self.layout.visible_row_range.iter() {
-            let Some(display_row) = self.rows.get(row_index).copied() else { continue };
-            let Some(line) = doc.lines.get(display_row.line_index as usize).copied() else { continue };
+            let Some(display_row) = self.rows.get(row_index).copied() else {
+                continue;
+            };
+            let Some(line) = doc.lines.get(display_row.line_index as usize).copied() else {
+                continue;
+            };
             let rr = self.row_rect_for(&display_row);
-            if !self.row_in_viewport(&rr) { continue; }
+            if !self.row_in_viewport(&rr) {
+                continue;
+            }
 
             match line.row_kind() {
                 RenderRowKind::FileHeader | RenderRowKind::HunkSeparator => {}
                 _ if self.layout.split_mode => {
                     scene.text(TextPrimitive {
-                        rect: Rect { x: self.layout.left_gutter_rect.x + self.layout.gutter_padding, y: rr.y,
-                            width: self.layout.left_gutter_rect.width - self.layout.gutter_padding * 2.0, height: line_height },
+                        rect: Rect {
+                            x: self.layout.left_gutter_rect.x + self.layout.gutter_padding,
+                            y: rr.y,
+                            width: self.layout.left_gutter_rect.width
+                                - self.layout.gutter_padding * 2.0,
+                            height: line_height,
+                        },
                         text: self.cached_gutter_text(GutterTextCacheKey {
-                            old_line_no: line.old_line_no, new_line_no: INVALID_U32,
-                            digits: self.summary.gutter_digits, kind: GutterTextKind::SplitLeft }),
-                        color: theme.colors.gutter_text, font_size, font_kind: FontKind::Mono, font_weight: FontWeight::Normal,
+                            old_line_no: line.old_line_no,
+                            new_line_no: INVALID_U32,
+                            digits: self.summary.gutter_digits,
+                            kind: GutterTextKind::SplitLeft,
+                        }),
+                        color: theme.colors.gutter_text,
+                        font_size,
+                        font_kind: FontKind::Mono,
+                        font_weight: FontWeight::Normal,
                     });
                     scene.text(TextPrimitive {
-                        rect: Rect { x: self.layout.right_gutter_rect.x + self.layout.gutter_padding, y: rr.y,
-                            width: self.layout.right_gutter_rect.width - self.layout.gutter_padding * 2.0, height: line_height },
+                        rect: Rect {
+                            x: self.layout.right_gutter_rect.x + self.layout.gutter_padding,
+                            y: rr.y,
+                            width: self.layout.right_gutter_rect.width
+                                - self.layout.gutter_padding * 2.0,
+                            height: line_height,
+                        },
                         text: self.cached_gutter_text(GutterTextCacheKey {
-                            old_line_no: INVALID_U32, new_line_no: line.new_line_no,
-                            digits: self.summary.gutter_digits, kind: GutterTextKind::SplitRight }),
-                        color: theme.colors.gutter_text, font_size, font_kind: FontKind::Mono, font_weight: FontWeight::Normal,
+                            old_line_no: INVALID_U32,
+                            new_line_no: line.new_line_no,
+                            digits: self.summary.gutter_digits,
+                            kind: GutterTextKind::SplitRight,
+                        }),
+                        color: theme.colors.gutter_text,
+                        font_size,
+                        font_kind: FontKind::Mono,
+                        font_weight: FontWeight::Normal,
                     });
                 }
-                RenderRowKind::Modified if line.left_text.is_valid() && line.right_text.is_valid() => {
+                RenderRowKind::Modified
+                    if line.left_text.is_valid() && line.right_text.is_valid() =>
+                {
                     scene.text(TextPrimitive {
-                        rect: Rect { x: self.layout.unified_gutter_rect.x + self.layout.gutter_padding, y: rr.y,
-                            width: self.layout.unified_gutter_rect.width - self.layout.gutter_padding * 2.0, height: line_height },
+                        rect: Rect {
+                            x: self.layout.unified_gutter_rect.x + self.layout.gutter_padding,
+                            y: rr.y,
+                            width: self.layout.unified_gutter_rect.width
+                                - self.layout.gutter_padding * 2.0,
+                            height: line_height,
+                        },
                         text: self.cached_gutter_text(GutterTextCacheKey {
-                            old_line_no: line.old_line_no, new_line_no: INVALID_U32,
-                            digits: self.summary.gutter_digits, kind: GutterTextKind::UnifiedOldOnly }),
-                        color: theme.colors.gutter_text, font_size, font_kind: FontKind::Mono, font_weight: FontWeight::Normal,
+                            old_line_no: line.old_line_no,
+                            new_line_no: INVALID_U32,
+                            digits: self.summary.gutter_digits,
+                            kind: GutterTextKind::UnifiedOldOnly,
+                        }),
+                        color: theme.colors.gutter_text,
+                        font_size,
+                        font_kind: FontKind::Mono,
+                        font_weight: FontWeight::Normal,
                     });
                     let added_y = rr.y + display_row.wrap_left.max(1) as f32 * line_height;
                     scene.text(TextPrimitive {
-                        rect: Rect { x: self.layout.unified_gutter_rect.x + self.layout.gutter_padding, y: added_y,
-                            width: self.layout.unified_gutter_rect.width - self.layout.gutter_padding * 2.0, height: line_height },
+                        rect: Rect {
+                            x: self.layout.unified_gutter_rect.x + self.layout.gutter_padding,
+                            y: added_y,
+                            width: self.layout.unified_gutter_rect.width
+                                - self.layout.gutter_padding * 2.0,
+                            height: line_height,
+                        },
                         text: self.cached_gutter_text(GutterTextCacheKey {
-                            old_line_no: INVALID_U32, new_line_no: line.new_line_no,
-                            digits: self.summary.gutter_digits, kind: GutterTextKind::UnifiedNewOnly }),
-                        color: theme.colors.gutter_text, font_size, font_kind: FontKind::Mono, font_weight: FontWeight::Normal,
+                            old_line_no: INVALID_U32,
+                            new_line_no: line.new_line_no,
+                            digits: self.summary.gutter_digits,
+                            kind: GutterTextKind::UnifiedNewOnly,
+                        }),
+                        color: theme.colors.gutter_text,
+                        font_size,
+                        font_kind: FontKind::Mono,
+                        font_weight: FontWeight::Normal,
                     });
                 }
                 _ => {
                     scene.text(TextPrimitive {
-                        rect: Rect { x: self.layout.unified_gutter_rect.x + self.layout.gutter_padding, y: rr.y,
-                            width: self.layout.unified_gutter_rect.width - self.layout.gutter_padding * 2.0, height: line_height },
+                        rect: Rect {
+                            x: self.layout.unified_gutter_rect.x + self.layout.gutter_padding,
+                            y: rr.y,
+                            width: self.layout.unified_gutter_rect.width
+                                - self.layout.gutter_padding * 2.0,
+                            height: line_height,
+                        },
                         text: self.cached_gutter_text(GutterTextCacheKey {
-                            old_line_no: line.old_line_no, new_line_no: line.new_line_no,
-                            digits: self.summary.gutter_digits, kind: GutterTextKind::Unified }),
-                        color: theme.colors.gutter_text, font_size, font_kind: FontKind::Mono, font_weight: FontWeight::Normal,
+                            old_line_no: line.old_line_no,
+                            new_line_no: line.new_line_no,
+                            digits: self.summary.gutter_digits,
+                            kind: GutterTextKind::Unified,
+                        }),
+                        color: theme.colors.gutter_text,
+                        font_size,
+                        font_kind: FontKind::Mono,
+                        font_weight: FontWeight::Normal,
                     });
                 }
             }
@@ -691,15 +848,26 @@ impl EditorElement {
         let line_height = self.layout.line_height;
 
         for row_index in self.layout.visible_row_range.iter() {
-            let Some(display_row) = self.rows.get(row_index).copied() else { continue };
-            let Some(line) = doc.lines.get(display_row.line_index as usize).copied() else { continue };
+            let Some(display_row) = self.rows.get(row_index).copied() else {
+                continue;
+            };
+            let Some(line) = doc.lines.get(display_row.line_index as usize).copied() else {
+                continue;
+            };
             let rr = self.row_rect_for(&display_row);
-            if !self.row_in_viewport(&rr) { continue; }
+            if !self.row_in_viewport(&rr) {
+                continue;
+            }
 
             match line.row_kind() {
                 RenderRowKind::FileHeader => {
                     scene.text(TextPrimitive {
-                        rect: Rect { x: self.text_origin_x(), y: rr.y, width: self.text_width(), height: rr.height },
+                        rect: Rect {
+                            x: self.text_origin_x(),
+                            y: rr.y,
+                            width: self.text_width(),
+                            height: rr.height,
+                        },
                         text: path.into(),
                         color: theme.colors.text_strong,
                         font_size: font_size + 1.0,
@@ -709,7 +877,12 @@ impl EditorElement {
                 }
                 RenderRowKind::HunkSeparator => {
                     scene.text(TextPrimitive {
-                        rect: Rect { x: self.text_origin_x(), y: rr.y, width: self.text_width(), height: rr.height },
+                        rect: Rect {
+                            x: self.text_origin_x(),
+                            y: rr.y,
+                            width: self.text_width(),
+                            height: rr.height,
+                        },
                         text: doc.line_text(line.left_text).into(),
                         color: theme.colors.text_muted,
                         font_size,
@@ -718,19 +891,54 @@ impl EditorElement {
                     });
                 }
                 _ if self.layout.split_mode => {
-                    self.paint_split_body_spans(scene, theme, rr, &line, &display_row, doc, font_size, line_height);
+                    self.paint_split_body_spans(
+                        scene,
+                        theme,
+                        rr,
+                        &line,
+                        &display_row,
+                        doc,
+                        font_size,
+                        line_height,
+                    );
                 }
-                RenderRowKind::Modified if line.left_text.is_valid() && line.right_text.is_valid() => {
-                    self.paint_unified_modified_spans(scene, theme, rr, &line, &display_row, doc, font_size, line_height);
+                RenderRowKind::Modified
+                    if line.left_text.is_valid() && line.right_text.is_valid() =>
+                {
+                    self.paint_unified_modified_spans(
+                        scene,
+                        theme,
+                        rr,
+                        &line,
+                        &display_row,
+                        doc,
+                        font_size,
+                        line_height,
+                    );
                 }
                 _ => {
                     if let Some((text_range, runs, tone)) = unified_body_side(&line) {
-                        if let Some(spans) = self.cached_wrapped_rich_text(doc, text_range, runs, 0, self.wrap_cols_unified(), tone, theme) {
+                        if let Some(spans) = self.cached_wrapped_rich_text(
+                            doc,
+                            text_range,
+                            runs,
+                            0,
+                            self.wrap_cols_unified(),
+                            tone,
+                            theme,
+                        ) {
                             scene.rich_text(RichTextPrimitive {
-                                rect: Rect { x: self.layout.unified_text_rect.x, y: rr.y,
-                                    width: self.layout.unified_text_rect.width, height: line_height },
-                                spans, default_color: tone.default_text(theme), font_size,
-                                font_kind: FontKind::Mono, font_weight: FontWeight::Normal,
+                                rect: Rect {
+                                    x: self.layout.unified_text_rect.x,
+                                    y: rr.y,
+                                    width: self.layout.unified_text_rect.width,
+                                    height: line_height,
+                                },
+                                spans,
+                                default_color: tone.default_text(theme),
+                                font_size,
+                                font_kind: FontKind::Mono,
+                                font_weight: FontWeight::Normal,
                             });
                         }
                     }
@@ -742,9 +950,19 @@ impl EditorElement {
     // -- Phase 7: Scrollbar --
 
     fn paint_scrollbar(&self, scene: &mut Scene, theme: &Theme) {
-        let Some(sb) = self.layout.scrollbar else { return };
-        scene.rounded_rect(RoundedRectPrimitive::uniform(sb.track, 4.0, Color::rgba(128, 128, 128, 10)));
-        scene.rounded_rect(RoundedRectPrimitive::uniform(sb.thumb, 3.0, theme.colors.scrollbar_thumb));
+        let Some(sb) = self.layout.scrollbar else {
+            return;
+        };
+        scene.rounded_rect(RoundedRectPrimitive::uniform(
+            sb.track,
+            4.0,
+            Color::rgba(128, 128, 128, 10),
+        ));
+        scene.rounded_rect(RoundedRectPrimitive::uniform(
+            sb.thumb,
+            3.0,
+            theme.colors.scrollbar_thumb,
+        ));
     }
 
     fn paint_split_body_spans(
@@ -759,23 +977,55 @@ impl EditorElement {
         line_height: f32,
     ) {
         for seg in 0..display_row.wrap_left.max(1) {
-            let rect = Rect { x: self.layout.left_text_rect.x,
-                y: rr.y + seg as f32 * line_height, width: self.layout.left_text_rect.width, height: line_height };
+            let rect = Rect {
+                x: self.layout.left_text_rect.x,
+                y: rr.y + seg as f32 * line_height,
+                width: self.layout.left_text_rect.width,
+                height: line_height,
+            };
             if let Some(spans) = self.cached_wrapped_rich_text(
-                doc, line.left_text, line.left_runs, seg, self.wrap_cols_split(), tone_for_left_side(line.row_kind()), theme) {
-                scene.rich_text(RichTextPrimitive { rect, spans,
+                doc,
+                line.left_text,
+                line.left_runs,
+                seg,
+                self.wrap_cols_split(),
+                tone_for_left_side(line.row_kind()),
+                theme,
+            ) {
+                scene.rich_text(RichTextPrimitive {
+                    rect,
+                    spans,
                     default_color: tone_for_left_side(line.row_kind()).default_text(theme),
-                    font_size, font_kind: FontKind::Mono, font_weight: FontWeight::Normal });
+                    font_size,
+                    font_kind: FontKind::Mono,
+                    font_weight: FontWeight::Normal,
+                });
             }
         }
         for seg in 0..display_row.wrap_right.max(1) {
-            let rect = Rect { x: self.layout.right_text_rect.x,
-                y: rr.y + seg as f32 * line_height, width: self.layout.right_text_rect.width, height: line_height };
+            let rect = Rect {
+                x: self.layout.right_text_rect.x,
+                y: rr.y + seg as f32 * line_height,
+                width: self.layout.right_text_rect.width,
+                height: line_height,
+            };
             if let Some(spans) = self.cached_wrapped_rich_text(
-                doc, line.right_text, line.right_runs, seg, self.wrap_cols_split(), tone_for_right_side(line.row_kind()), theme) {
-                scene.rich_text(RichTextPrimitive { rect, spans,
+                doc,
+                line.right_text,
+                line.right_runs,
+                seg,
+                self.wrap_cols_split(),
+                tone_for_right_side(line.row_kind()),
+                theme,
+            ) {
+                scene.rich_text(RichTextPrimitive {
+                    rect,
+                    spans,
                     default_color: tone_for_right_side(line.row_kind()).default_text(theme),
-                    font_size, font_kind: FontKind::Mono, font_weight: FontWeight::Normal });
+                    font_size,
+                    font_kind: FontKind::Mono,
+                    font_weight: FontWeight::Normal,
+                });
             }
         }
     }
@@ -793,20 +1043,57 @@ impl EditorElement {
     ) {
         for seg in 0..display_row.wrap_left.max(1) {
             let y = rr.y + seg as f32 * line_height;
-            let rect = Rect { x: self.layout.unified_text_rect.x, y, width: self.layout.unified_text_rect.width, height: line_height };
+            let rect = Rect {
+                x: self.layout.unified_text_rect.x,
+                y,
+                width: self.layout.unified_text_rect.width,
+                height: line_height,
+            };
             if let Some(spans) = self.cached_wrapped_rich_text(
-                doc, line.left_text, line.left_runs, seg, self.wrap_cols_unified(), RowTone::Removed, theme) {
-                scene.rich_text(RichTextPrimitive { rect, spans, default_color: theme.colors.line_del_text,
-                    font_size, font_kind: FontKind::Mono, font_weight: FontWeight::Normal });
+                doc,
+                line.left_text,
+                line.left_runs,
+                seg,
+                self.wrap_cols_unified(),
+                RowTone::Removed,
+                theme,
+            ) {
+                scene.rich_text(RichTextPrimitive {
+                    rect,
+                    spans,
+                    default_color: theme.colors.line_del_text,
+                    font_size,
+                    font_kind: FontKind::Mono,
+                    font_weight: FontWeight::Normal,
+                });
             }
         }
         for seg in 0..display_row.wrap_right.max(1) {
-            let y = rr.y + display_row.wrap_left.max(1) as f32 * line_height + seg as f32 * line_height;
-            let rect = Rect { x: self.layout.unified_text_rect.x, y, width: self.layout.unified_text_rect.width, height: line_height };
+            let y =
+                rr.y + display_row.wrap_left.max(1) as f32 * line_height + seg as f32 * line_height;
+            let rect = Rect {
+                x: self.layout.unified_text_rect.x,
+                y,
+                width: self.layout.unified_text_rect.width,
+                height: line_height,
+            };
             if let Some(spans) = self.cached_wrapped_rich_text(
-                doc, line.right_text, line.right_runs, seg, self.wrap_cols_unified(), RowTone::Added, theme) {
-                scene.rich_text(RichTextPrimitive { rect, spans, default_color: theme.colors.line_add_text,
-                    font_size, font_kind: FontKind::Mono, font_weight: FontWeight::Normal });
+                doc,
+                line.right_text,
+                line.right_runs,
+                seg,
+                self.wrap_cols_unified(),
+                RowTone::Added,
+                theme,
+            ) {
+                scene.rich_text(RichTextPrimitive {
+                    rect,
+                    spans,
+                    default_color: theme.colors.line_add_text,
+                    font_size,
+                    font_kind: FontKind::Mono,
+                    font_weight: FontWeight::Normal,
+                });
             }
         }
     }
@@ -856,15 +1143,8 @@ impl EditorElement {
             return Some(cached.clone());
         }
 
-        let spans = build_wrapped_rich_text(
-            doc,
-            text_range,
-            runs,
-            segment_index,
-            wrap_cols,
-            tone,
-            theme,
-        )?;
+        let spans =
+            build_wrapped_rich_text(doc, text_range, runs, segment_index, wrap_cols, tone, theme)?;
         self.wrapped_text_cache.insert(key, spans.clone());
         Some(spans)
     }
@@ -898,7 +1178,6 @@ impl EditorElement {
         self.gutter_text_cache.insert(key, text.clone());
         text
     }
-
 
     fn wrap_cols_unified(&self) -> u16 {
         wrap_cols_for_width(
@@ -952,10 +1231,7 @@ impl RowTone {
     }
 }
 
-fn compute_scrollbar_layout(
-    layout: &EditorLayout,
-    state: &EditorState,
-) -> Option<ScrollbarLayout> {
+fn compute_scrollbar_layout(layout: &EditorLayout, state: &EditorState) -> Option<ScrollbarLayout> {
     if state.content_height_px <= state.viewport_height_px || state.viewport_height_px == 0 {
         return None;
     }
@@ -1301,9 +1577,7 @@ fn syntax_kind_from_style_id(style_id: u16) -> SyntaxTokenKind {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        EditorElement, EditorDocument, build_wrapped_rich_text, wrapped_byte_slice,
-    };
+    use super::{EditorDocument, EditorElement, build_wrapped_rich_text, wrapped_byte_slice};
     use crate::core::compare::LayoutMode;
     use crate::render::{Rect, TextMetrics};
     use crate::ui::editor::render_doc::{

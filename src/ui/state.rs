@@ -1052,8 +1052,12 @@ impl AppState {
             }
             Action::ToggleSidebarMode => {
                 self.file_list.mode = match self.file_list.mode {
-                    crate::ui::state::SidebarMode::FlatList => crate::ui::state::SidebarMode::TreeView,
-                    crate::ui::state::SidebarMode::TreeView => crate::ui::state::SidebarMode::FlatList,
+                    crate::ui::state::SidebarMode::FlatList => {
+                        crate::ui::state::SidebarMode::TreeView
+                    }
+                    crate::ui::state::SidebarMode::TreeView => {
+                        crate::ui::state::SidebarMode::FlatList
+                    }
                 };
                 self.file_list.scroll_offset_px = 0.0;
                 Vec::new()
@@ -1868,20 +1872,15 @@ impl AppState {
     fn open_repo_picker(&mut self) {
         let scale = self.ui_scale_factor();
         self.overlays.picker.kind = PickerKind::Repository;
-        self.overlays.picker.list.row_height_px =
-            (Sz::ROW * scale).round() as u32;
-        self.overlays.picker.list.gap_px =
-            (Sp::XS * scale).round() as u32;
+        self.overlays.picker.list.row_height_px = (Sz::ROW * scale).round() as u32;
+        self.overlays.picker.list.gap_px = (Sp::XS * scale).round() as u32;
         self.overlays.picker.browse_path = None;
         self.overlays.picker.selected_index = 0;
         self.overlays.picker.list.scroll_top_px = 0;
 
-        let has_recents = crate::core::frecency::recent_repo_paths(
-            self.frecency.as_ref(),
-            1,
-        )
-        .first()
-        .is_some();
+        let has_recents = crate::core::frecency::recent_repo_paths(self.frecency.as_ref(), 1)
+            .first()
+            .is_some();
 
         if has_recents {
             self.overlays.picker.query = String::new();
@@ -1908,10 +1907,8 @@ impl AppState {
         };
         self.overlays.picker.selected_index = 0;
         self.overlays.picker.list.scroll_top_px = 0;
-        self.overlays.picker.list.row_height_px =
-            (Sz::ROW * scale).round() as u32;
-        self.overlays.picker.list.gap_px =
-            (Sp::XS * scale).round() as u32;
+        self.overlays.picker.list.row_height_px = (Sz::ROW * scale).round() as u32;
+        self.overlays.picker.list.gap_px = (Sp::XS * scale).round() as u32;
         self.rebuild_ref_picker(field);
         self.push_overlay(
             OverlaySurface::RefPicker(field),
@@ -1921,8 +1918,7 @@ impl AppState {
 
     fn open_command_palette(&mut self) {
         let scale = self.ui_scale_factor();
-        self.overlays.command_palette.list.row_height_px =
-            (Sz::ROW * scale).round() as u32;
+        self.overlays.command_palette.list.row_height_px = (Sz::ROW * scale).round() as u32;
         self.overlays.command_palette.list.scroll_top_px = 0;
         self.rebuild_command_palette();
         self.push_overlay(
@@ -1974,15 +1970,17 @@ impl AppState {
                     if delta > 0 {
                         idx = (idx + 1).min(len.saturating_sub(1));
                     } else {
-                        if idx == 0 { break; }
+                        if idx == 0 {
+                            break;
+                        }
                         idx -= 1;
                     }
                 }
                 self.overlays.picker.selected_index = idx;
-                self.overlays.picker.list.reveal_index(
-                    self.overlays.picker.selected_index,
-                    len,
-                );
+                self.overlays
+                    .picker
+                    .list
+                    .reveal_index(self.overlays.picker.selected_index, len);
             }
             Some(OverlaySurface::CommandPalette) => {
                 let max = self
@@ -2007,7 +2005,13 @@ impl AppState {
         match self.overlays.top() {
             Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_)) => {
                 let clamped = index.min(self.overlays.picker.entries.len().saturating_sub(1));
-                if self.overlays.picker.entries.get(clamped).map_or(false, |e| e.section_header) {
+                if self
+                    .overlays
+                    .picker
+                    .entries
+                    .get(clamped)
+                    .map_or(false, |e| e.section_header)
+                {
                     return;
                 }
                 self.overlays.picker.selected_index = clamped;
@@ -2275,10 +2279,7 @@ impl AppState {
     fn rebuild_repo_picker_recent(&mut self, query: &str) {
         let mut entries = Vec::new();
 
-        let all_repos = crate::core::frecency::recent_repo_paths(
-            self.frecency.as_ref(),
-            20,
-        );
+        let all_repos = crate::core::frecency::recent_repo_paths(self.frecency.as_ref(), 20);
 
         let mut seen = HashSet::new();
         let mut unique_repos = Vec::new();
@@ -2312,7 +2313,11 @@ impl AppState {
                     detail: display.clone(),
                     value: repo.display().to_string(),
                     highlight: None,
-                    icon: Some(if is_git { lucide::FOLDER_GIT } else { lucide::FOLDER }),
+                    icon: Some(if is_git {
+                        lucide::FOLDER_GIT
+                    } else {
+                        lucide::FOLDER
+                    }),
                     section_header: false,
                 });
             }
@@ -2340,18 +2345,19 @@ impl AppState {
                     .and_then(|name| name.to_str())
                     .unwrap_or(display)
                     .to_owned();
-                let hl = compute_highlight_range(
-                    m.match_end_col as usize,
-                    query.len(),
-                    label.len(),
-                );
+                let hl =
+                    compute_highlight_range(m.match_end_col as usize, query.len(), label.len());
                 let is_git = repo.join(".git").exists();
                 entries.push(PickerEntry {
                     label,
                     detail: display.clone(),
                     value: repo.display().to_string(),
                     highlight: Some(hl),
-                    icon: Some(if is_git { lucide::FOLDER_GIT } else { lucide::FOLDER }),
+                    icon: Some(if is_git {
+                        lucide::FOLDER_GIT
+                    } else {
+                        lucide::FOLDER
+                    }),
                     section_header: false,
                 });
             }
@@ -2406,11 +2412,7 @@ impl AppState {
                 if !path.is_dir() {
                     continue;
                 }
-                let name = entry
-                    .file_name()
-                    .to_str()
-                    .unwrap_or_default()
-                    .to_owned();
+                let name = entry.file_name().to_str().unwrap_or_default().to_owned();
                 if name.starts_with('.') {
                     continue;
                 }
@@ -2428,7 +2430,11 @@ impl AppState {
                     detail: String::new(),
                     value: path.display().to_string(),
                     highlight: None,
-                    icon: Some(if *is_git { lucide::FOLDER_GIT } else { lucide::FOLDER }),
+                    icon: Some(if *is_git {
+                        lucide::FOLDER_GIT
+                    } else {
+                        lucide::FOLDER
+                    }),
                     section_header: false,
                 });
             }
@@ -2443,17 +2449,18 @@ impl AppState {
             matches.sort_by(|a, b| b.score.cmp(&a.score));
             for m in matches {
                 let (name, path, is_git) = &dirs[m.index as usize];
-                let hl = compute_highlight_range(
-                    m.match_end_col as usize,
-                    filter.len(),
-                    name.len(),
-                );
+                let hl =
+                    compute_highlight_range(m.match_end_col as usize, filter.len(), name.len());
                 entries.push(PickerEntry {
                     label: name.clone(),
                     detail: String::new(),
                     value: path.display().to_string(),
                     highlight: Some(hl),
-                    icon: Some(if *is_git { lucide::FOLDER_GIT } else { lucide::FOLDER }),
+                    icon: Some(if *is_git {
+                        lucide::FOLDER_GIT
+                    } else {
+                        lucide::FOLDER
+                    }),
                     section_header: false,
                 });
             }
@@ -2563,14 +2570,18 @@ impl AppState {
                         query.len(),
                         c.label.len(),
                     );
-                    (m.score, c.ordinal, PickerEntry {
-                        label: c.label.clone(),
-                        detail: c.detail.clone(),
-                        value: c.value.clone(),
-                        highlight: Some(hl),
-                        icon: None,
-                        section_header: false,
-                    })
+                    (
+                        m.score,
+                        c.ordinal,
+                        PickerEntry {
+                            label: c.label.clone(),
+                            detail: c.detail.clone(),
+                            value: c.value.clone(),
+                            highlight: Some(hl),
+                            icon: None,
+                            section_header: false,
+                        },
+                    )
                 })
                 .collect();
             scored.sort_by(|a, b| {
@@ -2683,10 +2694,7 @@ impl AppState {
             });
         }
 
-        let palette_repos = crate::core::frecency::recent_repo_paths(
-            self.frecency.as_ref(),
-            10,
-        );
+        let palette_repos = crate::core::frecency::recent_repo_paths(self.frecency.as_ref(), 10);
         for repo in &palette_repos {
             let repo_name = repo
                 .file_name()
@@ -2745,12 +2753,15 @@ impl AppState {
                         query.len(),
                         c.label.len(),
                     );
-                    (m.score, PaletteEntry {
-                        label: c.label.clone(),
-                        detail: c.detail.clone(),
-                        kind: c.kind.clone(),
-                        highlight: Some(hl),
-                    })
+                    (
+                        m.score,
+                        PaletteEntry {
+                            label: c.label.clone(),
+                            detail: c.detail.clone(),
+                            kind: c.kind.clone(),
+                            highlight: Some(hl),
+                        },
+                    )
                 })
                 .collect();
             scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.label.cmp(&b.1.label)));
@@ -2767,12 +2778,12 @@ impl AppState {
                     .saturating_sub(1),
             );
         let entry_count = self.overlays.command_palette.entries.len();
-        self.overlays.command_palette.list.viewport_height_px =
-            self.overlays.command_palette.list.viewport_for_max_rows(Sz::PICKER_MAX_ROWS, entry_count);
-        self.overlays
+        self.overlays.command_palette.list.viewport_height_px = self
+            .overlays
             .command_palette
             .list
-            .clamp_scroll(entry_count);
+            .viewport_for_max_rows(Sz::PICKER_MAX_ROWS, entry_count);
+        self.overlays.command_palette.list.clamp_scroll(entry_count);
     }
 
     fn shift_loaded_file(&mut self, delta: isize) {
@@ -3218,7 +3229,11 @@ fn next_word_boundary(text: &str, offset: usize) -> usize {
     pos
 }
 
-fn compute_highlight_range(match_end_col: usize, query_len: usize, label_len: usize) -> (usize, usize) {
+fn compute_highlight_range(
+    match_end_col: usize,
+    query_len: usize,
+    label_len: usize,
+) -> (usize, usize) {
     let end = match_end_col.min(label_len);
     let start = end.saturating_sub(query_len);
     (start, end)

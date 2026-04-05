@@ -263,8 +263,7 @@ impl NativeApp {
             .find(|t| t.track_rect.contains(x, y))
         {
             let on_thumb = y >= track.thumb_top && y <= track.thumb_top + track.thumb_height;
-            let mut handler =
-                crate::ui::element::ScrollbarDragHandler::new(track, y);
+            let mut handler = crate::ui::element::ScrollbarDragHandler::new(track, y);
             if !on_thumb {
                 let actions = handler.on_move(x, y);
                 for action in actions {
@@ -334,9 +333,7 @@ impl NativeApp {
             .is_some_and(|rect| rect.contains(x, y))
         {
             self.dispatch_action(Action::FocusViewport);
-            let hovered = self
-                .editor
-                .hit_test_row(&self.state.editor, x, y);
+            let hovered = self.editor.hit_test_row(&self.state.editor, x, y);
             if hovered != self.state.editor.hovered_row {
                 self.dispatch_action(Action::HoverViewportRow(hovered));
             }
@@ -404,8 +401,7 @@ impl NativeApp {
         let hovered_row = if self.input_is_blocked_by_overlay(x, y) {
             None
         } else {
-            self.editor
-                .hit_test_row(&self.state.editor, x, y)
+            self.editor.hit_test_row(&self.state.editor, x, y)
         };
         if hovered_row != self.state.editor.hovered_row {
             self.dispatch_action(Action::HoverViewportRow(hovered_row));
@@ -1073,10 +1069,7 @@ impl ApplicationHandler for NativeApp {
         }
 
         if let Some(window) = self.window.as_ref()
-            && (self.needs_redraw
-                || animating
-                || cursor_blink_changed
-                || toasts_changed)
+            && (self.needs_redraw || animating || cursor_blink_changed || toasts_changed)
         {
             window.request_redraw();
         }

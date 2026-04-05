@@ -2,7 +2,9 @@ use halogen::view;
 
 use crate::ui::actions::Action;
 use crate::ui::design::Sp;
-use crate::ui::element::{div, svg_icon, text, AnyElement, ElementContext, IntoAnyElement, RenderOnce};
+use crate::ui::element::{
+    AnyElement, ElementContext, IntoAnyElement, RenderOnce, div, svg_icon, text,
+};
 use crate::ui::icons::lucide;
 use crate::ui::style::Styled;
 
@@ -43,7 +45,11 @@ impl RenderOnce for Breadcrumb {
             }
 
             let is_last = i == last;
-            let color = if is_last { tc.text_strong } else { tc.text_muted };
+            let color = if is_last {
+                tc.text_strong
+            } else {
+                tc.text_muted
+            };
 
             let mut label = text(segment).text_sm().color(color);
             if is_last {

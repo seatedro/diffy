@@ -2,7 +2,7 @@ use halogen::view;
 
 use crate::ui::actions::Action;
 use crate::ui::design::{Rad, Shadow, Sp, Sz};
-use crate::ui::element::{div, text, AnyElement, ElementContext, IntoAnyElement, RenderOnce};
+use crate::ui::element::{AnyElement, ElementContext, IntoAnyElement, RenderOnce, div, text};
 use crate::ui::style::Styled;
 use crate::ui::theme::Color;
 
@@ -87,9 +87,8 @@ impl RenderOnce for TabBar {
 
             if let Some(svg) = item.icon {
                 let icon_color = if active { tc.accent } else { tc.text_muted };
-                content = content.child(
-                    crate::ui::element::svg_icon(svg, icon_size).color(icon_color),
-                );
+                content =
+                    content.child(crate::ui::element::svg_icon(svg, icon_size).color(icon_color));
             }
 
             content = content.child(text(item.label).text_sm().color(label_color).medium());
@@ -144,7 +143,11 @@ impl RenderOnce for SegmentedTabs {
 
         for item in self.items {
             let active = item.active;
-            let fg = if active { tc.text_strong } else { tc.text_muted };
+            let fg = if active {
+                tc.text_strong
+            } else {
+                tc.text_muted
+            };
 
             let mut tab = div()
                 .flex_row()
@@ -158,9 +161,7 @@ impl RenderOnce for SegmentedTabs {
                 .child(text(item.label).text_sm().color(fg).medium());
 
             if active {
-                tab = tab
-                    .bg(tc.surface)
-                    .shadow_preset(Shadow::SUBTLE);
+                tab = tab.bg(tc.surface).shadow_preset(Shadow::SUBTLE);
             } else {
                 tab = tab.hover_bg(tc.ghost_element_hover);
             }

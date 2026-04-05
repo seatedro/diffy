@@ -7,10 +7,10 @@
 //! 2. **prepaint** — register hitboxes, resolve interaction state.
 //! 3. **paint** — emit scene primitives using resolved hover/hit state.
 
-use crate::ui::design::{Alpha, Sz};
 use crate::render::Scene;
 use crate::render::scene::{BlurRegionPrimitive, EffectQuadPrimitive, EffectType, Rect};
 use crate::ui::actions::Action;
+use crate::ui::design::{Alpha, Sz};
 use crate::ui::effects::Effect;
 use crate::ui::shell::CursorHint;
 use crate::ui::signals::{Signal, SignalStore};
@@ -1320,7 +1320,8 @@ impl Element for Div {
         if let Some(handler) = self.on_click_handler.take() {
             cx.push_click_handler(bounds, self.cursor, handler);
         } else if let Some(action) = self.on_click.take() {
-            cx.hits.push(HitRegion::from_action(bounds, action, self.cursor));
+            cx.hits
+                .push(HitRegion::from_action(bounds, action, self.cursor));
         }
 
         // Clip + scroll children
@@ -2034,7 +2035,8 @@ impl Element for TextInput {
         }
 
         if let Some(action) = self.on_click.take() {
-            cx.hits.push(HitRegion::from_action(bounds, action, CursorHint::Text));
+            cx.hits
+                .push(HitRegion::from_action(bounds, action, CursorHint::Text));
         }
 
         // Register hit area for click-to-position (stored in cx for app.rs to use)

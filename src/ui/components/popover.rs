@@ -1,5 +1,5 @@
 use crate::ui::design::{Shadow, Sp, Sz};
-use crate::ui::element::{div, Div};
+use crate::ui::element::{Div, div};
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
 

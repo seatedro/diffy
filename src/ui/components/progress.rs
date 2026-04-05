@@ -1,7 +1,7 @@
 use halogen::view;
 
 use crate::ui::design::{Sp, Sz};
-use crate::ui::element::{div, text, AnyElement, ElementContext, IntoAnyElement, RenderOnce};
+use crate::ui::element::{AnyElement, ElementContext, IntoAnyElement, RenderOnce, div, text};
 use crate::ui::style::Styled;
 use crate::ui::theme::Color;
 

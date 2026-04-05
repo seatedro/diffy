@@ -74,8 +74,8 @@ impl FrecencyStore {
             _ => return 0.0,
         };
         let now = now_ms();
-        let days_since = (now.saturating_sub(entry.last_access_ms) as f64) / 1000.0
-            / SECONDS_PER_DAY;
+        let days_since =
+            (now.saturating_sub(entry.last_access_ms) as f64) / 1000.0 / SECONDS_PER_DAY;
         entry.access_count as f64 * (-DECAY_CONSTANT * days_since).exp()
     }
 
@@ -87,11 +87,9 @@ impl FrecencyStore {
             let now = now_ms();
             for result in iter {
                 let (key, entry) = result?;
-                let days_since = (now.saturating_sub(entry.last_access_ms) as f64)
-                    / 1000.0
-                    / SECONDS_PER_DAY;
-                let score =
-                    entry.access_count as f64 * (-DECAY_CONSTANT * days_since).exp();
+                let days_since =
+                    (now.saturating_sub(entry.last_access_ms) as f64) / 1000.0 / SECONDS_PER_DAY;
+                let score = entry.access_count as f64 * (-DECAY_CONSTANT * days_since).exp();
                 if score > 0.001 {
                     out.push((key.to_owned(), score));
                 }

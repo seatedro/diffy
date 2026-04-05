@@ -29,16 +29,11 @@ impl SidebarResizeDrag {
 
 impl DragHandler for SidebarResizeDrag {
     fn on_move(&mut self, x: f32, _y: f32) -> Vec<Action> {
-        let target_width = (self.starting_width + (x - self.origin_x))
-            .round()
-            .max(0.0) as u32;
+        let target_width = (self.starting_width + (x - self.origin_x)).round().max(0.0) as u32;
         vec![Action::SetSidebarWidthPx(target_width)]
     }
 
-    fn on_release(
-        &mut self,
-        state: &crate::ui::state::AppState,
-    ) -> DragReleaseResult {
+    fn on_release(&mut self, state: &crate::ui::state::AppState) -> DragReleaseResult {
         DragReleaseResult {
             actions: Vec::new(),
             effects: vec![Effect::SaveSettings(state.settings.clone())],
@@ -314,11 +309,7 @@ pub(crate) fn sidebar(
                             .py((Sp::XXS * scale).round())
                             .rounded((Rad::LG * scale).round())
                             .bg(Color::rgba(255, 255, 255, 10))
-                            .child(
-                                text(file_count.to_string())
-                                    .text_xs()
-                                    .color(tc.text_muted),
-                            ),
+                            .child(text(file_count.to_string()).text_xs().color(tc.text_muted)),
                     )
                 } else {
                     None
@@ -340,9 +331,7 @@ pub(crate) fn sidebar(
                             .rounded((Rad::SM * scale).round())
                             .hover_bg(tc.ghost_element_hover)
                             .on_click(Action::ToggleSidebarMode)
-                            .child(
-                                svg_icon(mode_icon, Ico::SIDEBAR_MODE).color(tc.text_muted),
-                            ),
+                            .child(svg_icon(mode_icon, Ico::SIDEBAR_MODE).color(tc.text_muted)),
                     )
                 } else {
                     None
@@ -355,11 +344,14 @@ pub(crate) fn sidebar(
                     .flex_row()
                     .items_center()
                     .gap(Sp::XS * scale)
-                    .child(components::stat_summary(
-                        file_count,
-                        total_adds.unsigned_abs(),
-                        total_dels.unsigned_abs(),
-                    ).compact()),
+                    .child(
+                        components::stat_summary(
+                            file_count,
+                            total_adds.unsigned_abs(),
+                            total_dels.unsigned_abs(),
+                        )
+                        .compact(),
+                    ),
             )
         } else {
             None
@@ -464,8 +456,7 @@ pub(crate) fn sidebar(
 
         let row_count = visible_count + state.file_list.expanded_folders.len();
         let row_height = state.file_list.row_height;
-        let total_height =
-            row_count as f32 * (row_height + state.file_list.gap);
+        let total_height = row_count as f32 * (row_height + state.file_list.gap);
         let scroll_px = state.file_list.scroll_offset_px;
 
         sidebar_div = sidebar_div.child(
@@ -550,9 +541,7 @@ pub(crate) fn sidebar(
             }
 
             if viewed {
-                row = row.child(
-                    svg_icon(lucide::CHECK, Ico::XS).color(tc.line_add_text),
-                );
+                row = row.child(svg_icon(lucide::CHECK, Ico::XS).color(tc.line_add_text));
             }
 
             list = list.child(row);

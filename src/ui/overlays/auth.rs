@@ -9,7 +9,12 @@ use crate::ui::icons::lucide;
 use crate::ui::state::AppState;
 use crate::ui::style::Styled;
 
-pub fn auth_modal(state: &AppState, theme: &crate::ui::theme::Theme, width: f32, height: f32) -> AnyElement {
+pub fn auth_modal(
+    state: &AppState,
+    theme: &crate::ui::theme::Theme,
+    width: f32,
+    height: f32,
+) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
 
@@ -22,9 +27,17 @@ pub fn auth_modal(state: &AppState, theme: &crate::ui::theme::Theme, width: f32,
     };
 
     let (action_icon, action_label, action) = if state.github.auth.device_flow.is_some() {
-        (lucide::EXTERNAL_LINK, "Open Browser", Action::OpenDeviceFlowBrowser)
+        (
+            lucide::EXTERNAL_LINK,
+            "Open Browser",
+            Action::OpenDeviceFlowBrowser,
+        )
     } else {
-        (lucide::KEY, "Start Device Flow", Action::StartGitHubDeviceFlow)
+        (
+            lucide::KEY,
+            "Start Device Flow",
+            Action::StartGitHubDeviceFlow,
+        )
     };
 
     let mut modal = Modal::new(

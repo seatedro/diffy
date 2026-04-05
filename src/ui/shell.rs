@@ -49,27 +49,37 @@ pub fn build_ui_frame(
     let sidebar_resize_bounds: Rc<Cell<Option<Rect>>> = Rc::new(Cell::new(None));
     let ui_scale = theme.metrics.ui_scale();
 
-    let sidebar_list_height =
-        (height - theme.metrics.title_bar_height - theme.metrics.status_bar_height - Sz::SIDEBAR_LIST_OFFSET * ui_scale).max(0.0);
+    let sidebar_list_height = (height
+        - theme.metrics.title_bar_height
+        - theme.metrics.status_bar_height
+        - Sz::SIDEBAR_LIST_OFFSET * ui_scale)
+        .max(0.0);
     state.file_list.row_height = (Sz::ROW * ui_scale).round();
     state.file_list.gap = (Sp::XS * ui_scale).round();
     let overlay_row_height = (Sz::ROW * ui_scale).round().max(24.0) as u32;
     let overlay_gap = (Sp::XS * ui_scale).round() as u32;
     state.overlays.picker.list.row_height_px = overlay_row_height;
     state.overlays.picker.list.gap_px = overlay_gap;
-    state.overlays.picker.list.viewport_height_px =
-        state.overlays.picker.list.viewport_for_max_rows(Sz::PICKER_MAX_ROWS, state.overlays.picker.entries.len());
+    state.overlays.picker.list.viewport_height_px = state
+        .overlays
+        .picker
+        .list
+        .viewport_for_max_rows(Sz::PICKER_MAX_ROWS, state.overlays.picker.entries.len());
     state.overlays.command_palette.list.row_height_px = overlay_row_height;
     state.overlays.command_palette.list.gap_px = overlay_gap;
     state.overlays.command_palette.list.viewport_height_px =
-        state.overlays.command_palette.list.viewport_for_max_rows(Sz::PICKER_MAX_ROWS, state.overlays.command_palette.entries.len());
+        state.overlays.command_palette.list.viewport_for_max_rows(
+            Sz::PICKER_MAX_ROWS,
+            state.overlays.command_palette.entries.len(),
+        );
     state.file_list.viewport_height = sidebar_list_height;
     state.file_list.clamp_scroll(state.workspace.files.len());
     let sidebar_width_factor = cx
         .ui_signals
         .map(|s| cx.read(s.sidebar_width_factor))
         .unwrap_or(1.0);
-    let sidebar_width = sidebar_mod::preferred_sidebar_width(state, theme, cx, width) * sidebar_width_factor;
+    let sidebar_width =
+        sidebar_mod::preferred_sidebar_width(state, theme, cx, width) * sidebar_width_factor;
 
     let mut root = div()
         .w(width)
@@ -82,16 +92,25 @@ pub fn build_ui_frame(
                 .flex_row()
                 .flex_1()
                 .min_h(0.0)
-                .when(state.workspace_mode == WorkspaceMode::Ready && sidebar_width_factor > 0.001 && width >= Bp::COMPACT * ui_scale, |d| {
-                    d.child(sidebar_mod::sidebar(
-                        state,
-                        theme,
-                        sidebar_width,
-                        file_list_bounds.clone(),
-                        cx,
-                    ))
-                    .child(sidebar_mod::sidebar_resizer(theme, sidebar_resize_bounds.clone(), sidebar_width))
-                })
+                .when(
+                    state.workspace_mode == WorkspaceMode::Ready
+                        && sidebar_width_factor > 0.001
+                        && width >= Bp::COMPACT * ui_scale,
+                    |d| {
+                        d.child(sidebar_mod::sidebar(
+                            state,
+                            theme,
+                            sidebar_width,
+                            file_list_bounds.clone(),
+                            cx,
+                        ))
+                        .child(sidebar_mod::sidebar_resizer(
+                            theme,
+                            sidebar_resize_bounds.clone(),
+                            sidebar_width,
+                        ))
+                    },
+                )
                 .child(toolbar_mod::main_surface(
                     state,
                     theme,
@@ -138,8 +157,8 @@ pub fn build_ui_frame(
                 && state.editor.viewport_height_px > 0
             {
                 let sb = editor.scrollbar_rect();
-                let ratio = state.editor.viewport_height_px as f32
-                    / state.editor.content_height_px as f32;
+                let ratio =
+                    state.editor.viewport_height_px as f32 / state.editor.content_height_px as f32;
                 let thumb_h = (sb.height * ratio).max(Sp::XXL * ui_scale).min(sb.height);
                 let scroll_range = state.editor.max_scroll_top_px().max(1) as f32;
                 let top_ratio = state.editor.scroll_top_px as f32 / scroll_range;

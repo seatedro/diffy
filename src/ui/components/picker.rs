@@ -22,8 +22,16 @@ pub fn picker_list<T: PickerItem>(
     let icon_size = (Ico::XS * scale).round();
     let stride = row_h + gap;
     let visible_count = entries.len().min(max_visible);
-    let list_h = if visible_count == 0 { 0.0 } else { visible_count as f32 * stride - gap };
-    let total_h = if entries.is_empty() { 0.0 } else { entries.len() as f32 * stride - gap };
+    let list_h = if visible_count == 0 {
+        0.0
+    } else {
+        visible_count as f32 * stride - gap
+    };
+    let total_h = if entries.is_empty() {
+        0.0
+    } else {
+        entries.len() as f32 * stride - gap
+    };
     let scroll = scroll_top_px.min((total_h - list_h).max(0.0));
 
     let mut list = div()
@@ -65,14 +73,12 @@ pub fn picker_list<T: PickerItem>(
                         .icon_svg()
                         .map(|svg| svg_icon(svg, icon_size).color(tc.icon)),
                 )
-                .child(
-                    picker_label(
-                        entry.label(),
-                        entry.highlight_range(),
-                        selected,
-                        theme,
-                    ),
-                )
+                .child(picker_label(
+                    entry.label(),
+                    entry.highlight_range(),
+                    selected,
+                    theme,
+                ))
                 .optional_child(
                     entry
                         .detail()
@@ -114,11 +120,6 @@ fn picker_label(
             };
             container.child(row)
         }
-        _ => container.child(
-            text(label_text)
-                .text_sm()
-                .color(base_color)
-                .truncate(),
-        ),
+        _ => container.child(text(label_text).text_sm().color(base_color).truncate()),
     }
 }

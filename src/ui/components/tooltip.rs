@@ -1,5 +1,5 @@
 use crate::ui::design::{Shadow, Sp};
-use crate::ui::element::{div, text, Div};
+use crate::ui::element::{Div, div, text};
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
 
@@ -59,7 +59,15 @@ impl Default for TooltipState {
 }
 
 impl TooltipState {
-    pub fn show(&mut self, text: impl Into<String>, x: f32, y: f32, side: TooltipSide, delay_ms: u64, now_ms: u64) {
+    pub fn show(
+        &mut self,
+        text: impl Into<String>,
+        x: f32,
+        y: f32,
+        side: TooltipSide,
+        delay_ms: u64,
+        now_ms: u64,
+    ) {
         self.text = text.into();
         self.x = x;
         self.y = y;

@@ -19,8 +19,16 @@ impl<'a> FileListItem<'a> {
     fn build(&self, theme: &Theme) -> Div {
         let tc = &theme.colors;
         let scale = theme.metrics.ui_scale();
-        let icon_color = if self.selected { tc.text_accent } else { tc.text_muted };
-        let text_color = if self.selected { tc.text_strong } else { tc.text };
+        let icon_color = if self.selected {
+            tc.text_accent
+        } else {
+            tc.text_muted
+        };
+        let text_color = if self.selected {
+            tc.text_strong
+        } else {
+            tc.text
+        };
 
         let mut row = div()
             .w_full()
@@ -40,11 +48,12 @@ impl<'a> FileListItem<'a> {
 
         row = row.child(svg_icon(lucide::FILE_CODE, Ico::MD).color(icon_color));
         row = row.child(
-            div()
-                .flex_1()
-                .flex_col()
-                .gap(Sz::SEPARATOR_W)
-                .child(text(&self.entry.path).text_sm().color(text_color).truncate()),
+            div().flex_1().flex_col().gap(Sz::SEPARATOR_W).child(
+                text(&self.entry.path)
+                    .text_sm()
+                    .color(text_color)
+                    .truncate(),
+            ),
         );
 
         if self.entry.additions > 0 || self.entry.deletions > 0 {
@@ -96,14 +105,16 @@ impl<'a> Sidebar<'a> {
             .items_center()
             .child(text("FILES").text_xs().semibold().color(tc.text_muted))
             .optional_child(if file_count > 0 {
-                Some(div().px(Sp::SM).child(
-                    div()
-                        .px((Sp::LG / Sp::XXS * scale).round())
-                        .py((Sp::XXS * scale).round())
-                        .rounded_sm()
-                        .bg(Color::rgba(255, 255, 255, 10))
-                        .child(text(file_count.to_string()).text_xs().color(tc.text_muted)),
-                ))
+                Some(
+                    div().px(Sp::SM).child(
+                        div()
+                            .px((Sp::LG / Sp::XXS * scale).round())
+                            .py((Sp::XXS * scale).round())
+                            .rounded_sm()
+                            .bg(Color::rgba(255, 255, 255, 10))
+                            .child(text(file_count.to_string()).text_xs().color(tc.text_muted)),
+                    ),
+                )
             } else {
                 None
             });
@@ -148,7 +159,11 @@ impl<'a> Sidebar<'a> {
 
             for (index, entry) in state.workspace.files.iter().enumerate() {
                 let selected = state.workspace.selected_file_index == Some(index);
-                let item = FileListItem { entry, selected, index };
+                let item = FileListItem {
+                    entry,
+                    selected,
+                    index,
+                };
                 list = list.child(item.build(theme));
             }
 

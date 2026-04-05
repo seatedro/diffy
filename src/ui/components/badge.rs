@@ -1,7 +1,9 @@
 use halogen::view;
 
 use crate::ui::design::{Alpha, Rad, Sp, Sz};
-use crate::ui::element::{div, svg_icon, text, AnyElement, ElementContext, IntoAnyElement, RenderOnce};
+use crate::ui::element::{
+    AnyElement, ElementContext, IntoAnyElement, RenderOnce, div, svg_icon, text,
+};
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, ThemeColors};
 
@@ -109,8 +111,16 @@ fn status_appearance(status: &str, tc: &ThemeColors) -> (Color, Color, String) {
         "a" | "added" => (tc.line_add, tc.line_add_text, "A".into()),
         "d" | "deleted" => (tc.line_del, tc.line_del_text, "D".into()),
         "m" | "modified" | "changed" => (tc.line_modified, tc.status_warning, "M".into()),
-        "r" | "renamed" => (tc.status_info.with_alpha(Alpha::TINT), tc.status_info, "R".into()),
-        "c" | "copied" => (tc.status_info.with_alpha(Alpha::TINT), tc.status_info, "C".into()),
+        "r" | "renamed" => (
+            tc.status_info.with_alpha(Alpha::TINT),
+            tc.status_info,
+            "R".into(),
+        ),
+        "c" | "copied" => (
+            tc.status_info.with_alpha(Alpha::TINT),
+            tc.status_info,
+            "C".into(),
+        ),
         "u" | "untracked" => (tc.element_background, tc.text_muted, "U".into()),
         other => {
             let label = other

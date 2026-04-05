@@ -129,11 +129,7 @@ impl TransientBufferPool {
     }
 }
 
-fn create_transient_buffer(
-    device: &wgpu::Device,
-    label: &'static str,
-    size: u64,
-) -> wgpu::Buffer {
+fn create_transient_buffer(device: &wgpu::Device, label: &'static str, size: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size,
@@ -213,7 +209,6 @@ impl TexturePool {
     fn release(&mut self, target: OffscreenTarget) {
         self.textures[target.pool_index].in_use = false;
     }
-
 }
 
 pub struct Renderer {
@@ -746,8 +741,7 @@ impl Renderer {
                     .iter()
                     .map(|layer| {
                         let (si, sc) = build_shadow_instances(&layer.shadows);
-                        let sb =
-                            buffer_pool.upload(device, queue, "diffy_shadow_instances", &si);
+                        let sb = buffer_pool.upload(device, queue, "diffy_shadow_instances", &si);
                         let (qi, qc) = build_quad_instances(&layer.quads);
                         let qb = buffer_pool.upload(device, queue, "diffy_quad_instances", &qi);
                         let (ei, ec) = build_effect_quad_instances(&layer.effect_quads);
@@ -1158,12 +1152,7 @@ impl Renderer {
                 };
                 let scene_blit_buf = self
                     .instance_buffer_pool
-                    .upload(
-                        &self.device,
-                        &self.queue,
-                        "diffy_scene_blit",
-                        &[scene_blit],
-                    )
+                    .upload(&self.device, &self.queue, "diffy_scene_blit", &[scene_blit])
                     .expect("single blit upload");
                 // Blur region blit.
                 let blur_blit = BlitInstance {
@@ -1173,12 +1162,7 @@ impl Renderer {
                 };
                 let blur_blit_buf = self
                     .instance_buffer_pool
-                    .upload(
-                        &self.device,
-                        &self.queue,
-                        "diffy_blur_blit",
-                        &[blur_blit],
-                    )
+                    .upload(&self.device, &self.queue, "diffy_blur_blit", &[blur_blit])
                     .expect("single blit upload");
 
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2072,53 +2056,53 @@ fn prepare_text_areas<'a>(
     rich_texts: &[ClippedRichText],
     scale_factor: f64,
 ) -> Vec<TextArea<'a>> {
-        *text_cache_frame = text_cache_frame.wrapping_add(1);
-        let frame = *text_cache_frame;
-        let mut keys = Vec::with_capacity(texts.len() + rich_texts.len());
+    *text_cache_frame = text_cache_frame.wrapping_add(1);
+    let frame = *text_cache_frame;
+    let mut keys = Vec::with_capacity(texts.len() + rich_texts.len());
 
-        for text in texts {
-            let key = plain_text_cache_key(&text.primitive, text.clip, scale_factor);
-            if !text_cache.contains_key(&key) {
-                let prepared = build_plain_text_buffer(
-                    font_system,
-                    &text.primitive,
-                    text.clip,
-                    scale_factor,
-                    frame,
-                );
-                text_cache.insert(key, prepared);
-            }
-            if let Some(entry) = text_cache.get_mut(&key) {
-                entry.last_used_frame = frame;
-            }
-            keys.push(key);
+    for text in texts {
+        let key = plain_text_cache_key(&text.primitive, text.clip, scale_factor);
+        if !text_cache.contains_key(&key) {
+            let prepared = build_plain_text_buffer(
+                font_system,
+                &text.primitive,
+                text.clip,
+                scale_factor,
+                frame,
+            );
+            text_cache.insert(key, prepared);
         }
-
-        for text in rich_texts {
-            let key = rich_text_cache_key(&text.primitive, text.clip, scale_factor);
-            if !text_cache.contains_key(&key) {
-                let prepared = build_rich_text_buffer(
-                    font_system,
-                    &text.primitive,
-                    text.clip,
-                    scale_factor,
-                    frame,
-                );
-                text_cache.insert(key, prepared);
-            }
-            if let Some(entry) = text_cache.get_mut(&key) {
-                entry.last_used_frame = frame;
-            }
-            keys.push(key);
+        if let Some(entry) = text_cache.get_mut(&key) {
+            entry.last_used_frame = frame;
         }
+        keys.push(key);
+    }
 
-        if frame % 240 == 0 {
-            trim_text_cache(text_cache, frame);
+    for text in rich_texts {
+        let key = rich_text_cache_key(&text.primitive, text.clip, scale_factor);
+        if !text_cache.contains_key(&key) {
+            let prepared = build_rich_text_buffer(
+                font_system,
+                &text.primitive,
+                text.clip,
+                scale_factor,
+                frame,
+            );
+            text_cache.insert(key, prepared);
         }
+        if let Some(entry) = text_cache.get_mut(&key) {
+            entry.last_used_frame = frame;
+        }
+        keys.push(key);
+    }
 
-        keys.iter()
-            .filter_map(|key| text_cache.get(key).map(text_area_from_cache))
-            .collect()
+    if frame % 240 == 0 {
+        trim_text_cache(text_cache, frame);
+    }
+
+    keys.iter()
+        .filter_map(|key| text_cache.get(key).map(text_area_from_cache))
+        .collect()
 }
 
 fn text_area_from_cache(prepared: &CachedTextBuffer) -> TextArea<'_> {

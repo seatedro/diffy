@@ -87,7 +87,9 @@ impl RenderOnce for Modal {
         let tc = &cx.theme.colors;
         let scale = cx.theme.metrics.ui_scale();
 
-        let panel_width = self.max_width.min(self.window_width - (Sz::MODAL_MARGIN * scale).round());
+        let panel_width = self
+            .max_width
+            .min(self.window_width - (Sz::MODAL_MARGIN * scale).round());
         let padding = (self.padding * scale).round();
         let gap = (self.gap * scale).round();
 

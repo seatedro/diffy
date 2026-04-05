@@ -198,19 +198,15 @@ fn search_bar(state: &AppState, theme: &Theme) -> Div {
 
 fn repo_ready_hint(theme: &Theme) -> Div {
     let tc = &theme.colors;
-    div()
-        .flex_1()
-        .items_center()
-        .justify_center()
-        .child(view! {
-            <div class="flex-col items-center gap-2">
-                <icon svg={lucide::GIT_COMPARE} size={Ico::XXL}
-                      color={tc.text_muted.with_alpha(Alpha::SOFT)} />
-                <text class="text-sm" color={tc.text_muted}>
-                    {"Select refs to compare"}
-                </text>
-            </div>
-        })
+    div().flex_1().items_center().justify_center().child(view! {
+        <div class="flex-col items-center gap-2">
+            <icon svg={lucide::GIT_COMPARE} size={Ico::XXL}
+                  color={tc.text_muted.with_alpha(Alpha::SOFT)} />
+            <text class="text-sm" color={tc.text_muted}>
+                {"Select refs to compare"}
+            </text>
+        </div>
+    })
 }
 
 fn loading_card(state: &AppState, theme: &Theme) -> Div {
@@ -253,10 +249,7 @@ fn loading_card(state: &AppState, theme: &Theme) -> Div {
 fn empty_state(state: &AppState, theme: &Theme) -> Div {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
-    let recent_repos = crate::core::frecency::recent_repo_paths(
-        state.frecency.as_ref(),
-        8,
-    );
+    let recent_repos = crate::core::frecency::recent_repo_paths(state.frecency.as_ref(), 8);
     let has_recent = !recent_repos.is_empty();
 
     let mut card = div()
@@ -277,15 +270,11 @@ fn empty_state(state: &AppState, theme: &Theme) -> Div {
         });
 
     if has_recent {
-        let mut recent_section = div()
-            .flex_col()
-            .gap(Sp::XXS);
+        let mut recent_section = div().flex_col().gap(Sp::XXS);
 
-        recent_section = recent_section.child(
-            view! {
-                <text class="text-xs font-semibold" color={tc.text_muted}>{"Recent"}</text>
-            }
-        );
+        recent_section = recent_section.child(view! {
+            <text class="text-xs font-semibold" color={tc.text_muted}>{"Recent"}</text>
+        });
 
         for repo in recent_repos.iter().take(8) {
             let repo_name = repo

@@ -7,7 +7,12 @@ use crate::ui::element::*;
 use crate::ui::state::{AppState, FocusTarget};
 use crate::ui::style::Styled;
 
-pub fn repo_picker(state: &AppState, theme: &crate::ui::theme::Theme, width: f32, height: f32) -> AnyElement {
+pub fn repo_picker(
+    state: &AppState,
+    theme: &crate::ui::theme::Theme,
+    width: f32,
+    height: f32,
+) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let panel_width = (Sz::MODAL_XL * scale).min(width - (Sz::MODAL_MARGIN * scale).round());

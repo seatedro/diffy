@@ -103,43 +103,121 @@ pub struct ShadowLayer {
 pub struct Shadow;
 
 impl Shadow {
-    pub const SUBTLE: &[ShadowLayer] = &[
-        ShadowLayer { blur: 2.0, offset_y: 1.0, alpha: 30 },
-    ];
+    pub const SUBTLE: &[ShadowLayer] = &[ShadowLayer {
+        blur: 2.0,
+        offset_y: 1.0,
+        alpha: 30,
+    }];
     pub const DROPDOWN: &[ShadowLayer] = &[
-        ShadowLayer { blur: 8.0, offset_y: 4.0, alpha: 40 },
-        ShadowLayer { blur: 2.0, offset_y: 1.0, alpha: 20 },
+        ShadowLayer {
+            blur: 8.0,
+            offset_y: 4.0,
+            alpha: 40,
+        },
+        ShadowLayer {
+            blur: 2.0,
+            offset_y: 1.0,
+            alpha: 20,
+        },
     ];
     pub const TOOLTIP: &[ShadowLayer] = &[
-        ShadowLayer { blur: 8.0, offset_y: 4.0, alpha: 60 },
-        ShadowLayer { blur: 2.0, offset_y: 1.0, alpha: 30 },
+        ShadowLayer {
+            blur: 8.0,
+            offset_y: 4.0,
+            alpha: 60,
+        },
+        ShadowLayer {
+            blur: 2.0,
+            offset_y: 1.0,
+            alpha: 30,
+        },
     ];
     pub const POPOVER: &[ShadowLayer] = &[
-        ShadowLayer { blur: 16.0, offset_y: 8.0, alpha: 40 },
-        ShadowLayer { blur: 4.0, offset_y: 2.0, alpha: 30 },
-        ShadowLayer { blur: 1.0, offset_y: 0.0, alpha: 15 },
+        ShadowLayer {
+            blur: 16.0,
+            offset_y: 8.0,
+            alpha: 40,
+        },
+        ShadowLayer {
+            blur: 4.0,
+            offset_y: 2.0,
+            alpha: 30,
+        },
+        ShadowLayer {
+            blur: 1.0,
+            offset_y: 0.0,
+            alpha: 15,
+        },
     ];
     pub const CONTEXT_MENU: &[ShadowLayer] = &[
-        ShadowLayer { blur: 16.0, offset_y: 8.0, alpha: 50 },
-        ShadowLayer { blur: 4.0, offset_y: 2.0, alpha: 30 },
-        ShadowLayer { blur: 1.0, offset_y: 0.0, alpha: 15 },
+        ShadowLayer {
+            blur: 16.0,
+            offset_y: 8.0,
+            alpha: 50,
+        },
+        ShadowLayer {
+            blur: 4.0,
+            offset_y: 2.0,
+            alpha: 30,
+        },
+        ShadowLayer {
+            blur: 1.0,
+            offset_y: 0.0,
+            alpha: 15,
+        },
     ];
     pub const TOAST: &[ShadowLayer] = &[
-        ShadowLayer { blur: 16.0, offset_y: 4.0, alpha: 60 },
-        ShadowLayer { blur: 4.0, offset_y: 2.0, alpha: 30 },
+        ShadowLayer {
+            blur: 16.0,
+            offset_y: 4.0,
+            alpha: 60,
+        },
+        ShadowLayer {
+            blur: 4.0,
+            offset_y: 2.0,
+            alpha: 30,
+        },
     ];
     pub const MODAL: &[ShadowLayer] = &[
-        ShadowLayer { blur: 24.0, offset_y: 8.0, alpha: 100 },
-        ShadowLayer { blur: 8.0, offset_y: 4.0, alpha: 50 },
-        ShadowLayer { blur: 2.0, offset_y: 1.0, alpha: 30 },
+        ShadowLayer {
+            blur: 24.0,
+            offset_y: 8.0,
+            alpha: 100,
+        },
+        ShadowLayer {
+            blur: 8.0,
+            offset_y: 4.0,
+            alpha: 50,
+        },
+        ShadowLayer {
+            blur: 2.0,
+            offset_y: 1.0,
+            alpha: 30,
+        },
     ];
     pub const FLOAT: &[ShadowLayer] = &[
-        ShadowLayer { blur: 20.0, offset_y: 8.0, alpha: 80 },
-        ShadowLayer { blur: 4.0, offset_y: 2.0, alpha: 40 },
+        ShadowLayer {
+            blur: 20.0,
+            offset_y: 8.0,
+            alpha: 80,
+        },
+        ShadowLayer {
+            blur: 4.0,
+            offset_y: 2.0,
+            alpha: 40,
+        },
     ];
     pub const PANEL: &[ShadowLayer] = &[
-        ShadowLayer { blur: 16.0, offset_y: 6.0, alpha: 80 },
-        ShadowLayer { blur: 4.0, offset_y: 2.0, alpha: 40 },
+        ShadowLayer {
+            blur: 16.0,
+            offset_y: 6.0,
+            alpha: 80,
+        },
+        ShadowLayer {
+            blur: 4.0,
+            offset_y: 2.0,
+            alpha: 40,
+        },
     ];
 }
 

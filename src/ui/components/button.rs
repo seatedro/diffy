@@ -80,8 +80,16 @@ impl RenderOnce for Button {
         let scale = theme.metrics.ui_scale();
 
         let (icon_size, px, py) = match self.size {
-            ButtonSize::Default => (Ico::BUTTON_DEFAULT, (Sp::MD * scale).round(), (Sp::XS * scale).round()),
-            ButtonSize::Compact => (Ico::BUTTON_COMPACT, (Sp::SM * scale).round(), (Sp::XXS * scale).round()),
+            ButtonSize::Default => (
+                Ico::BUTTON_DEFAULT,
+                (Sp::MD * scale).round(),
+                (Sp::XS * scale).round(),
+            ),
+            ButtonSize::Compact => (
+                Ico::BUTTON_COMPACT,
+                (Sp::SM * scale).round(),
+                (Sp::XXS * scale).round(),
+            ),
         };
 
         let (bg, hover_bg, icon_color, text_color) = match self.style {
@@ -101,7 +109,12 @@ impl RenderOnce for Button {
                 if self.active {
                     (tc.element_background, tc.element_hover, tc.text, tc.text)
                 } else {
-                    (Color::TRANSPARENT, tc.ghost_element_hover, tc.text_muted, tc.text_muted)
+                    (
+                        Color::TRANSPARENT,
+                        tc.ghost_element_hover,
+                        tc.text_muted,
+                        tc.text_muted,
+                    )
                 }
             }
             ButtonStyle::Danger => (

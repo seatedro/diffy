@@ -83,7 +83,8 @@ impl<'a> ToastStack<'a> {
     }
 
     pub fn build(self) -> Div {
-        let toast_width = Sz::TOAST_MAX_W.min((self.window_width - Sz::TOAST_MARGIN).max(Sz::TOAST_MIN_W));
+        let toast_width =
+            Sz::TOAST_MAX_W.min((self.window_width - Sz::TOAST_MARGIN).max(Sz::TOAST_MIN_W));
         let status_bar_height = Sz::ROW;
 
         let mut stack = div()

@@ -3,7 +3,7 @@ use halogen::view;
 use crate::ui::actions::Action;
 use crate::ui::design::{Shadow, Sp};
 use crate::ui::element::{
-    div, svg_icon, text, AnyElement, ElementContext, IntoAnyElement, RenderOnce,
+    AnyElement, ElementContext, IntoAnyElement, RenderOnce, div, svg_icon, text,
 };
 use crate::ui::icons::lucide;
 use crate::ui::style::Styled;

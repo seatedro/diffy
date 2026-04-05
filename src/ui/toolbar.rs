@@ -290,7 +290,11 @@ fn loading_card(state: &AppState, theme: &Theme) -> Div {
 fn empty_state(state: &AppState, theme: &Theme) -> Div {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
-    let has_recent = !state.settings.recent_repos.is_empty();
+    let recent_repos = crate::core::frecency::recent_repo_paths(
+        state.frecency.as_ref(),
+        8,
+    );
+    let has_recent = !recent_repos.is_empty();
 
     let mut card = div()
         .w_full()
@@ -323,7 +327,7 @@ fn empty_state(state: &AppState, theme: &Theme) -> Div {
                 .color(tc.text_muted),
         );
 
-        for repo in state.settings.recent_repos.iter().take(8) {
+        for repo in recent_repos.iter().take(8) {
             let repo_name = repo
                 .file_name()
                 .and_then(|n| n.to_str())

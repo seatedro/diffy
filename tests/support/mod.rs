@@ -42,11 +42,13 @@ pub fn render_frame_in(state: &mut AppState, width: f32, height: f32) -> UiFrame
 
 pub fn empty_state_with_recents() -> AppState {
     let mut state = AppState::default();
-    state.settings.recent_repos = vec![
-        PathBuf::from("C:\\work\\diffy"),
-        PathBuf::from("C:\\work\\zed"),
-        PathBuf::from("C:\\work\\rust-analyzer"),
-    ];
+    let temp = std::env::temp_dir().join(format!("diffy_test_frecency_{}", std::process::id()));
+    if let Ok(store) = diffy::core::frecency::FrecencyStore::open(&temp) {
+        store.record_access("repo:C:\\work\\diffy");
+        store.record_access("repo:C:\\work\\zed");
+        store.record_access("repo:C:\\work\\rust-analyzer");
+        state.frecency = Some(store);
+    }
     state
 }
 
@@ -101,6 +103,7 @@ pub fn repo_picker_state(entry_count: usize) -> AppState {
                 label: format!("repo-{index}"),
                 detail: format!("C:\\work\\repo-{index}"),
                 value: format!("C:\\work\\repo-{index}"),
+                highlight: None,
             })
             .collect(),
         selected_index: entry_count.saturating_sub(1).min(2),
@@ -130,6 +133,7 @@ pub fn command_palette_state(entry_count: usize) -> AppState {
                 } else {
                     PaletteCommand::FocusViewport
                 }),
+                highlight: None,
             })
             .collect(),
         selected_index: entry_count.saturating_sub(1).min(3),

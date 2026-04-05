@@ -8,7 +8,6 @@ use crate::core::error::{DiffyError, Result};
 use crate::ui::theme::ThemeMode;
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
-const MAX_RECENT_REPOS: usize = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedCompare {
@@ -57,7 +56,6 @@ pub struct Settings {
     pub theme_name: String,
     pub ui_scale_pct: u16,
     pub sidebar_width_px: Option<u32>,
-    pub recent_repos: Vec<PathBuf>,
     pub last_compare: Option<PersistedCompare>,
     pub viewport: PersistedViewport,
     pub github_token: Option<String>,
@@ -70,21 +68,9 @@ impl Default for Settings {
             theme_name: "diffy-default".to_owned(),
             ui_scale_pct: 100,
             sidebar_width_px: None,
-            recent_repos: Vec::new(),
             last_compare: None,
             viewport: PersistedViewport::default(),
             github_token: None,
-        }
-    }
-}
-
-impl Settings {
-    pub fn remember_repo(&mut self, path: &Path) {
-        let normalized = path.to_path_buf();
-        self.recent_repos.retain(|entry| entry != &normalized);
-        self.recent_repos.insert(0, normalized);
-        if self.recent_repos.len() > MAX_RECENT_REPOS {
-            self.recent_repos.truncate(MAX_RECENT_REPOS);
         }
     }
 }
@@ -137,23 +123,10 @@ impl SettingsStore {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
-
     use tempfile::TempDir;
 
     use super::{PersistedCompare, Settings, SettingsStore};
     use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
-
-    #[test]
-    fn remembers_recent_repositories_without_duplicates() {
-        let mut settings = Settings::default();
-        settings.remember_repo(Path::new("C:\\repo-one"));
-        settings.remember_repo(Path::new("C:\\repo-two"));
-        settings.remember_repo(Path::new("C:\\repo-one"));
-
-        assert_eq!(settings.recent_repos.len(), 2);
-        assert_eq!(settings.recent_repos[0], PathBuf::from("C:\\repo-one"));
-    }
 
     #[test]
     fn round_trips_settings_json() {

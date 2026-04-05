@@ -38,6 +38,8 @@ tree-sitter-nix = "0.3.0"
 tree-sitter-zig = "1.1.2"
 unicode-segmentation = "1.12"
 arboard = "3"
+neo_frizbee = { version = "0.8", features = ["match_end_col"] }
+heed = "0.22"
 parking_lot = "0.12"
 rayon = "1.10"
 tempfile = "3.14"

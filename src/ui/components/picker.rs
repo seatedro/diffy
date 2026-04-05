@@ -76,15 +76,12 @@ fn picker_list_inner<T: PickerItem>(
                 .on_click(Action::SelectOverlayEntry(i))
                 .cursor(CursorHint::Pointer)
                 .child(
-                    div()
-                        .flex_1()
-                        .overflow_hidden()
-                        .child(
-                            text(entry.label())
-                                .text_sm()
-                                .color(if selected { tc.text_strong } else { tc.text })
-                                .truncate(),
-                        ),
+                    picker_label(
+                        entry.label(),
+                        entry.highlight_range(),
+                        selected,
+                        theme,
+                    ),
                 )
                 .optional_child(
                     entry
@@ -96,4 +93,39 @@ fn picker_list_inner<T: PickerItem>(
     }
 
     list
+}
+
+fn picker_label(
+    label_text: &str,
+    highlight: Option<(usize, usize)>,
+    selected: bool,
+    theme: &Theme,
+) -> Div {
+    let tc = &theme.colors;
+    let base_color = if selected { tc.text_strong } else { tc.text };
+
+    let container = div().flex_1().overflow_hidden();
+
+    match highlight {
+        Some((start, end)) if start < end && end <= label_text.len() => {
+            let before = &label_text[..start];
+            let matched = &label_text[start..end];
+            let after = &label_text[end..];
+            let mut row = div().flex_row().overflow_hidden();
+            if !before.is_empty() {
+                row = row.child(text(before).text_sm().color(base_color));
+            }
+            row = row.child(text(matched).text_sm().color(tc.accent));
+            if !after.is_empty() {
+                row = row.child(text(after).text_sm().color(base_color));
+            }
+            container.child(row)
+        }
+        _ => container.child(
+            text(label_text)
+                .text_sm()
+                .color(base_color)
+                .truncate(),
+        ),
+    }
 }

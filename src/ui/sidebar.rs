@@ -278,13 +278,15 @@ pub(crate) fn sidebar(
     let is_tree = state.file_list.mode == SidebarMode::TreeView;
 
     let filtered_indices: Vec<usize> = if has_filter {
-        let lower = filter.to_lowercase();
-        all_files
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| f.path.to_lowercase().contains(&lower))
-            .map(|(i, _)| i)
-            .collect()
+        let haystack: Vec<&str> = all_files.iter().map(|f| f.path.as_str()).collect();
+        let config = neo_frizbee::Config {
+            max_typos: Some(2),
+            sort: false,
+            ..Default::default()
+        };
+        let mut matches = neo_frizbee::match_list(filter, &haystack, &config);
+        matches.sort_by(|a, b| b.score.cmp(&a.score));
+        matches.iter().map(|m| m.index as usize).collect()
     } else {
         (0..file_count).collect()
     };

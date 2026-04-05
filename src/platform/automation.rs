@@ -79,7 +79,6 @@ pub struct AuthDump {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SettingsDump {
-    pub recent_repos: Vec<String>,
     pub theme_name: String,
     pub theme_mode: String,
 }
@@ -215,11 +214,6 @@ impl From<&AppState> for StateDump {
 impl From<&Settings> for SettingsDump {
     fn from(settings: &Settings) -> Self {
         Self {
-            recent_repos: settings
-                .recent_repos
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect(),
             theme_name: settings.theme_name.clone(),
             theme_mode: format!("{:?}", settings.theme_mode).to_ascii_lowercase(),
         }

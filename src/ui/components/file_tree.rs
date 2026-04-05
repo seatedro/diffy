@@ -162,7 +162,7 @@ impl RenderOnce for FileTree {
     fn render(self, cx: &ElementContext) -> AnyElement {
         let tc = &cx.theme.colors;
         let m = &cx.theme.metrics;
-        let row_height = (m.ui_font_size * 2.0).round();
+        let row_height = m.ui_row_height.round();
         let indent_unit = m.spacing_lg;
         let icon_size = m.ui_small_font_size;
 
@@ -241,8 +241,9 @@ impl RenderOnce for FileTree {
                         row_div = row_div.on_click(f(path));
                     }
 
+                    let scale = m.ui_scale();
                     row_div = row_div
-                        .child(svg_icon(chevron, icon_size - Sp::XXS).color(tc.text_muted))
+                        .child(svg_icon(chevron, icon_size - (Sp::XXS * scale).round()).color(tc.text_muted))
                         .child(svg_icon(folder_icon, icon_size).color(tc.text_muted))
                         .child(text(name).text_sm().color(tc.text).medium());
 

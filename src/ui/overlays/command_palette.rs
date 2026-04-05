@@ -34,7 +34,7 @@ pub fn command_palette(state: &AppState, theme: &Theme, width: f32, height: f32)
                     .focus_target(FocusTarget::CommandPaletteInput)
                     .bare()
                     .w_full()
-                    .h((Sz::ROW * scale).round())}
+                    .h(theme.metrics.ui_row_height.round())}
             </div>
         })
         .child(view! {

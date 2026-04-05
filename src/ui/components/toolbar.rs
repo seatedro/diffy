@@ -1,6 +1,6 @@
 use halogen::view;
 
-use crate::ui::design::{Sp, Sz};
+use crate::ui::design::Sp;
 use crate::ui::element::*;
 use crate::ui::style::Styled;
 
@@ -44,7 +44,7 @@ impl RenderOnce for Toolbar {
         }
 
         view! { scale,
-            <div class="w-full flex-row items-center" h={Sz::ROW} px={Sp::MD}
+            <div class="w-full flex-row items-center" h={cx.theme.metrics.ui_row_height} px={Sp::MD}
                  border_b={tc.border_variant}>
                 {left}
                 <spacer />

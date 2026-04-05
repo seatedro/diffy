@@ -100,6 +100,8 @@ pub struct ThemeColors {
     pub hunk_header_bg: Color,
     pub line_add_text: Color,
     pub line_del_text: Color,
+    pub line_add_word_bg: Color,
+    pub line_del_word_bg: Color,
     pub hover_overlay: Color,
     pub search_match_bg: Color,
     pub search_match_active_bg: Color,
@@ -121,6 +123,8 @@ pub struct ThemeMetrics {
     pub ui_small_font_size: f32,
     pub heading_font_size: f32,
     pub mono_font_size: f32,
+    pub ui_row_height: f32,
+    pub code_row_height: f32,
 }
 
 impl ThemeMetrics {
@@ -145,6 +149,8 @@ impl ThemeMetrics {
             ui_small_font_size: self.ui_small_font_size * scale,
             heading_font_size: self.heading_font_size * scale,
             mono_font_size: self.mono_font_size * scale,
+            ui_row_height: self.ui_row_height * scale,
+            code_row_height: self.code_row_height * scale,
         }
     }
 }
@@ -235,8 +241,8 @@ impl Theme {
 
 fn default_metrics() -> ThemeMetrics {
     ThemeMetrics {
-        title_bar_height: 36.0,
-        status_bar_height: 36.0,
+        title_bar_height: 40.0,
+        status_bar_height: 40.0,
         sidebar_width: 280.0,
         panel_radius: 12.0,
         control_radius: 8.0,
@@ -249,6 +255,8 @@ fn default_metrics() -> ThemeMetrics {
         ui_small_font_size: 14.0,
         heading_font_size: 20.0,
         mono_font_size: 15.0,
+        ui_row_height: 40.0,
+        code_row_height: 24.0,
     }
 }
 
@@ -328,6 +336,8 @@ fn dark_colors(n: &Scale, b: &Scale, r: &Scale, g: &Scale, y: &Scale) -> ThemeCo
         line_modified: b[2],
         line_add_text: g[8],
         line_del_text: r[8],
+        line_add_word_bg: g[4],
+        line_del_word_bg: r[4],
 
         search_match_bg: Color::rgba(y[6].r, y[6].g, y[6].b, 90),
         search_match_active_bg: Color::rgba(y[8].r, y[8].g, y[8].b, 180),
@@ -406,6 +416,8 @@ fn light_colors(n: &Scale, b: &Scale, r: &Scale, g: &Scale, y: &Scale) -> ThemeC
         line_modified: b[2],
         line_add_text: g[9],
         line_del_text: r[9],
+        line_add_word_bg: g[4],
+        line_del_word_bg: r[4],
 
         search_match_bg: Color::rgba(y[4].r, y[4].g, y[4].b, 120),
         search_match_active_bg: Color::rgba(y[6].r, y[6].g, y[6].b, 200),

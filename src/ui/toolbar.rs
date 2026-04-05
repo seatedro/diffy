@@ -108,7 +108,7 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> Div {
     };
 
     div()
-        .h((Sz::ROW * scale).round())
+        .h(theme.metrics.ui_row_height.round())
         .w_full()
         .flex_row()
         .items_center()
@@ -134,7 +134,7 @@ fn search_bar(state: &AppState, theme: &Theme) -> Div {
         .on_click(Action::SetFocus(Some(FocusTarget::SearchInput)))
         .bare()
         .w_full()
-        .h((Sz::ROW * scale).round());
+        .h(theme.metrics.ui_row_height.round());
 
     let match_count = search.matches.len();
     let count_label = if search.query.is_empty() {
@@ -147,7 +147,7 @@ fn search_bar(state: &AppState, theme: &Theme) -> Div {
     };
 
     let nav_icon_size = (Ico::SM * scale).round();
-    let nav_btn_size = (Sz::ROW * scale).round();
+    let nav_btn_size = theme.metrics.ui_row_height.round();
     let search_icon_size = (Ico::SM * scale).round();
 
     let nav = view! { scale,
@@ -184,7 +184,7 @@ fn search_bar(state: &AppState, theme: &Theme) -> Div {
 
     div()
         .w_full()
-        .h((Sz::ROW * scale).round())
+        .h(theme.metrics.ui_row_height.round())
         .flex_row()
         .items_center()
         .gap((Sp::SM * scale).round())

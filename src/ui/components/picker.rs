@@ -1,7 +1,7 @@
 use halogen::view;
 
 use crate::ui::actions::Action;
-use crate::ui::design::{Ico, Rad, Sp, Sz};
+use crate::ui::design::{Ico, Rad, Sp};
 use crate::ui::element::*;
 use crate::ui::shell::CursorHint;
 use crate::ui::state::PickerItem;
@@ -17,7 +17,7 @@ pub fn picker_list<T: PickerItem>(
 ) -> Div {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
-    let row_h = (Sz::ROW * scale).round();
+    let row_h = theme.metrics.ui_row_height.round();
     let gap = (Sp::XS * scale).round();
     let icon_size = (Ico::XS * scale).round();
     let stride = row_h + gap;

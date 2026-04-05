@@ -49,14 +49,22 @@ pub fn build_ui_frame(
     let sidebar_resize_bounds: Rc<Cell<Option<Rect>>> = Rc::new(Cell::new(None));
     let ui_scale = theme.metrics.ui_scale();
 
+    let m = &theme.metrics;
+    let row_h = m.ui_row_height;
+    let has_files = !state.workspace.files.is_empty();
+    let sidebar_header_h = if has_files {
+        3.0 * row_h + Sp::SM * ui_scale
+    } else {
+        row_h
+    };
     let sidebar_list_height = (height
-        - theme.metrics.title_bar_height
-        - theme.metrics.status_bar_height
-        - Sz::SIDEBAR_LIST_OFFSET * ui_scale)
+        - m.title_bar_height
+        - m.status_bar_height
+        - sidebar_header_h)
         .max(0.0);
-    state.file_list.row_height = (Sz::ROW * ui_scale).round();
+    state.file_list.row_height = row_h.round();
     state.file_list.gap = (Sp::XS * ui_scale).round();
-    let overlay_row_height = (Sz::ROW * ui_scale).round().max(24.0) as u32;
+    let overlay_row_height = row_h.round().max(24.0) as u32;
     let overlay_gap = (Sp::XS * ui_scale).round() as u32;
     state.overlays.picker.list.row_height_px = overlay_row_height;
     state.overlays.picker.list.gap_px = overlay_gap;
@@ -86,7 +94,7 @@ pub fn build_ui_frame(
         .h(height)
         .flex_col()
         .bg(theme.colors.background)
-        .child(title_bar::title_bar(state, theme, sidebar_width_factor))
+        .child(title_bar::title_bar(state, theme, sidebar_width_factor, width))
         .child(
             div()
                 .flex_row()
@@ -125,7 +133,7 @@ pub fn build_ui_frame(
     }
 
     if !state.toasts.is_empty() {
-        root = root.child(ToastStack::new(&state.toasts, width, height).build());
+        root = root.child(ToastStack::new(&state.toasts, width, height, ui_scale, m.status_bar_height).build());
     }
 
     let mut root = root.into_any();

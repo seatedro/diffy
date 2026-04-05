@@ -31,6 +31,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let (mut state, initial_effects) = AppState::bootstrap(startup, settings);
     let theme_registry = ThemeRegistry::load();
     state.theme_names = theme_registry.names().map(str::to_owned).collect();
+    state.theme_variants = state
+        .theme_names
+        .iter()
+        .map(|n| theme_registry.variant(n))
+        .collect();
     let runtime = AppRuntime::new(AppServices::new(settings_store));
     runtime.dispatch_all(initial_effects);
 

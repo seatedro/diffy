@@ -9,8 +9,16 @@ pub struct ThemeRegistry {
     index: HashMap<String, usize>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeVariant {
+    Dual,
+    Dark,
+    Light,
+}
+
 pub struct ThemeEntry {
     pub name: String,
+    pub variant: ThemeVariant,
     pub dark: SemanticPalette,
     pub light: SemanticPalette,
 }
@@ -57,8 +65,19 @@ impl ThemeRegistry {
             let dark = SemanticPalette::from_json(&value["dark"]);
             let light = SemanticPalette::from_json(&value["light"]);
             let idx = entries.len();
+            let variant = match (dark.is_dark, light.is_dark) {
+                (true, false) => ThemeVariant::Dual,
+                (true, true) => ThemeVariant::Dark,
+                (false, false) => ThemeVariant::Light,
+                (false, true) => ThemeVariant::Dual,
+            };
             index.insert(name.clone(), idx);
-            entries.push(ThemeEntry { name, dark, light });
+            entries.push(ThemeEntry {
+                name,
+                variant,
+                dark,
+                light,
+            });
         }
 
         tracing::info!(count = entries.len(), "theme registry loaded");
@@ -75,6 +94,12 @@ impl ThemeRegistry {
 
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    pub fn variant(&self, name: &str) -> ThemeVariant {
+        self.index
+            .get(name)
+            .map_or(ThemeVariant::Dark, |&i| self.entries[i].variant)
     }
 }
 
@@ -265,6 +290,8 @@ impl SemanticPalette {
             line_modified: s.app_bg.lerp(s.accent, 0.15),
             line_add_text: s.success_text,
             line_del_text: s.danger_text,
+            line_add_word_bg: s.line_add_accent,
+            line_del_word_bg: s.line_del_accent,
 
             search_match_bg: s.warning_text.with_alpha(if d { 90 } else { 120 }),
             search_match_active_bg: s.warning_text.with_alpha(if d { 180 } else { 200 }),

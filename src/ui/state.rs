@@ -567,6 +567,7 @@ pub struct AppState {
     pub next_toast_id: u64,
     pub frecency: Option<FrecencyStore>,
     pub theme_names: Vec<String>,
+    pub theme_variants: Vec<crate::core::themes::ThemeVariant>,
     pub theme_preview_original: Option<String>,
 }
 
@@ -594,6 +595,7 @@ impl Default for AppState {
             next_toast_id: 1,
             frecency: None,
             theme_names: Vec::new(),
+            theme_variants: Vec::new(),
             theme_preview_original: None,
         }
     }
@@ -702,6 +704,7 @@ impl AppState {
             next_toast_id: 1,
             frecency: crate::core::frecency::open_default_store(),
             theme_names: Vec::new(),
+            theme_variants: Vec::new(),
             theme_preview_original: None,
         };
         state.sync_settings_snapshot();
@@ -1919,52 +1922,96 @@ impl AppState {
         self.theme_preview_original = Some(self.settings.theme_name.clone());
         self.overlays.picker.kind = PickerKind::Theme;
         self.overlays.picker.query = String::new();
-        self.overlays.picker.selected_index = 0;
         self.overlays.picker.list.scroll_top_px = 0;
         self.overlays.picker.list.row_height_px = (Sz::ROW * scale).round() as u32;
         self.overlays.picker.list.gap_px = (Sp::XS * scale).round() as u32;
-        self.overlays.picker.entries = self
-            .theme_names
+        self.overlays.picker.entries = self.build_theme_entries_grouped();
+        self.overlays.picker.selected_index = self
+            .overlays
+            .picker
+            .entries
             .iter()
-            .map(|name| {
-                let active = self.settings.theme_name == *name;
-                PickerEntry {
-                    label: name.clone(),
-                    detail: if active {
-                        "\u{2713}".to_owned()
-                    } else {
-                        String::new()
-                    },
-                    value: name.clone(),
-                    highlight: None,
-                    icon: None,
-                    section_header: false,
-                }
-            })
-            .collect();
+            .position(|e| !e.section_header)
+            .unwrap_or(0);
         self.push_overlay(OverlaySurface::ThemePicker, Some(FocusTarget::PickerInput));
+    }
+
+    fn build_theme_entries_grouped(&self) -> Vec<PickerEntry> {
+        use crate::core::themes::ThemeVariant;
+
+        let original = self
+            .theme_preview_original
+            .as_deref()
+            .unwrap_or(&self.settings.theme_name);
+        let make_entry = |name: &String| PickerEntry {
+            label: name.clone(),
+            detail: if *name == *original {
+                "\u{2713}".to_owned()
+            } else {
+                String::new()
+            },
+            value: name.clone(),
+            highlight: None,
+            icon: None,
+            section_header: false,
+        };
+        let make_header = |label: &str| PickerEntry {
+            label: label.to_owned(),
+            detail: String::new(),
+            value: String::new(),
+            highlight: None,
+            icon: None,
+            section_header: true,
+        };
+
+        let mut dual = Vec::new();
+        let mut dark = Vec::new();
+        let mut light = Vec::new();
+        for (i, name) in self.theme_names.iter().enumerate() {
+            let variant = self
+                .theme_variants
+                .get(i)
+                .copied()
+                .unwrap_or(ThemeVariant::Dark);
+            match variant {
+                ThemeVariant::Dual => dual.push(make_entry(name)),
+                ThemeVariant::Dark => dark.push(make_entry(name)),
+                ThemeVariant::Light => light.push(make_entry(name)),
+            }
+        }
+
+        let mut entries = Vec::with_capacity(dual.len() + dark.len() + light.len() + 3);
+        if !dual.is_empty() {
+            entries.push(make_header("Dark & Light"));
+            entries.extend(dual);
+        }
+        if !dark.is_empty() {
+            entries.push(make_header("Dark"));
+            entries.extend(dark);
+        }
+        if !light.is_empty() {
+            entries.push(make_header("Light"));
+            entries.extend(light);
+        }
+        entries
     }
 
     fn rebuild_theme_picker(&mut self) {
         let query = self.overlays.picker.query.trim().to_owned();
-        let current = &self.settings.theme_name;
+        let original = self
+            .theme_preview_original
+            .as_deref()
+            .unwrap_or(&self.settings.theme_name)
+            .to_owned();
         if query.is_empty() {
-            self.overlays.picker.entries = self
-                .theme_names
+            self.overlays.picker.entries = self.build_theme_entries_grouped();
+            self.overlays.picker.selected_index = self
+                .overlays
+                .picker
+                .entries
                 .iter()
-                .map(|name| PickerEntry {
-                    label: name.clone(),
-                    detail: if *name == *current {
-                        "\u{2713}".to_owned()
-                    } else {
-                        String::new()
-                    },
-                    value: name.clone(),
-                    highlight: None,
-                    icon: None,
-                    section_header: false,
-                })
-                .collect();
+                .position(|e| !e.section_header)
+                .unwrap_or(0);
         } else {
             let haystack: Vec<&str> = self.theme_names.iter().map(|s| s.as_str()).collect();
             let config = neo_frizbee::Config {
@@ -1980,7 +2027,7 @@ impl AppState {
                     let name = &self.theme_names[m.index as usize];
                     PickerEntry {
                         label: name.clone(),
-                        detail: if *name == *current {
+                        detail: if *name == *original {
                             "\u{2713}".to_owned()
                         } else {
                             String::new()
@@ -1992,8 +2039,8 @@ impl AppState {
                     }
                 })
                 .collect();
+            self.overlays.picker.selected_index = 0;
         }
-        self.overlays.picker.selected_index = 0;
         self.overlays.picker.list.scroll_top_px = 0;
     }
 
@@ -2069,13 +2116,25 @@ impl AppState {
                     return;
                 }
                 let max = len.saturating_sub(1) as i32;
-                let idx =
+                let mut idx =
                     (self.overlays.picker.selected_index as i32 + delta).clamp(0, max) as usize;
+                while idx < len && entries[idx].section_header {
+                    if delta > 0 {
+                        idx = (idx + 1).min(len.saturating_sub(1));
+                    } else {
+                        if idx == 0 {
+                            break;
+                        }
+                        idx -= 1;
+                    }
+                }
                 self.overlays.picker.selected_index = idx;
                 self.overlays.picker.list.reveal_index(idx, len);
                 if let Some(entry) = self.overlays.picker.entries.get(idx) {
-                    tracing::debug!(theme = %entry.value, "theme preview");
-                    self.settings.theme_name = entry.value.clone();
+                    if !entry.section_header {
+                        tracing::debug!(theme = %entry.value, "theme preview");
+                        self.settings.theme_name = entry.value.clone();
+                    }
                 }
             }
             Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_)) => {

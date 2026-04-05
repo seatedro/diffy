@@ -33,7 +33,7 @@ impl Default for TextMetrics {
             ui_font_size_px: 14.0,
             ui_line_height_px: 18.0,
             mono_font_size_px: 13.0,
-            mono_line_height_px: 20.0,
+            mono_line_height_px: 24.0,
             mono_char_width_px: 8.0,
         }
     }
@@ -625,7 +625,7 @@ impl Renderer {
             ui_font_size_px: 14.0 * scale,
             ui_line_height_px: 18.0 * scale,
             mono_font_size_px: 13.0 * scale,
-            mono_line_height_px: 20.0 * scale,
+            mono_line_height_px: 24.0 * scale,
             mono_char_width_px: 8.0 * scale,
         }
     }

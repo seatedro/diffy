@@ -132,12 +132,13 @@ impl RenderOnce for SegmentedTabs {
     fn render(self, cx: &ElementContext) -> AnyElement {
         let tc = &cx.theme.colors;
         let m = &cx.theme.metrics;
+        let scale = m.ui_scale();
 
         let mut bar = div()
             .flex_row()
             .items_center()
-            .gap(Sp::XXS)
-            .p(Sp::XXS)
+            .gap((Sp::XXS * scale).round())
+            .p((Sp::XXS * scale).round())
             .bg(tc.element_background)
             .rounded(m.control_radius);
 
@@ -156,7 +157,7 @@ impl RenderOnce for SegmentedTabs {
                 .flex_1()
                 .px(m.spacing_md)
                 .py(m.spacing_xs)
-                .rounded(m.control_radius - Sp::XXS)
+                .rounded(m.control_radius - (Sp::XXS * scale).round())
                 .on_click(item.action)
                 .child(text(item.label).text_sm().color(fg).medium());
 

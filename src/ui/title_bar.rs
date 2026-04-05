@@ -3,7 +3,7 @@ use halogen::view;
 use crate::core::compare::CompareMode;
 use crate::ui::actions::Action;
 use crate::ui::components::Button;
-use crate::ui::design::{Ico, Rad, Sp, Sz};
+use crate::ui::design::{Bp, Ico, Rad, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
@@ -11,7 +11,7 @@ use crate::ui::state::{AppState, AsyncStatus, CompareField, OverlaySurface, Work
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
 
-pub(crate) fn title_bar(state: &AppState, theme: &Theme, sidebar_visible: f32) -> Div {
+pub(crate) fn title_bar(state: &AppState, theme: &Theme, sidebar_visible: f32, window_width: f32) -> Div {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let has_repo = state.compare.repo_path.is_some();
@@ -128,7 +128,7 @@ pub(crate) fn title_bar(state: &AppState, theme: &Theme, sidebar_visible: f32) -
         .items_center()
         .gap((Sp::XS * scale).round());
 
-    if is_ready {
+    if is_ready && window_width >= Bp::NARROW * scale {
         let file_count = state.workspace.files.len();
         right = right.child(view! {
             <text class="text-sm" color={tc.text_muted}>{format!("{file_count} files")}</text>

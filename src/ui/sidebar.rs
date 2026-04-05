@@ -290,7 +290,7 @@ pub(crate) fn sidebar(
     let total_adds: i32 = all_files.iter().map(|f| f.additions).sum();
     let total_dels: i32 = all_files.iter().map(|f| f.deletions).sum();
 
-    let row_h = (Sz::ROW * scale).round();
+    let row_h = theme.metrics.ui_row_height.round();
 
     let header = div()
         .px((Sp::MD * scale).round())
@@ -369,7 +369,7 @@ pub(crate) fn sidebar(
             .on_click(Action::SetFocus(Some(FocusTarget::SidebarSearch)))
             .bare()
             .w_full()
-            .h((Sz::ROW * scale).round());
+            .h(theme.metrics.ui_row_height.round());
         let hint = if !search_focused && !has_filter {
             Some("/")
         } else {

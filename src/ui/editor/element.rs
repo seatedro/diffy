@@ -24,8 +24,8 @@ const BASE_COLUMN_GAP: f32 = 18.0;
 const BASE_GUTTER_PADDING: f32 = 8.0;
 const BASE_SCROLLBAR_WIDTH: f32 = 8.0;
 const BASE_SCROLLBAR_MARGIN: f32 = 6.0;
-const BASE_FILE_HEADER_EXTRA: f32 = 10.0;
-const BASE_HUNK_EXTRA: f32 = 6.0;
+const FILE_HEADER_ROW_MULTIPLE: u16 = 2;
+const HUNK_ROW_MULTIPLE: u16 = 1;
 const BASE_SCROLLBAR_THUMB_MIN: f32 = 32.0;
 const BASE_MONO_FONT_SIZE: f32 = 13.0;
 const STRIP_TARGET_HEIGHT_PX: u32 = 480;
@@ -54,6 +54,7 @@ pub struct EditorLayout {
 
     pub line_height: f32,
     pub font_size: f32,
+    pub text_y_offset: f32,
     pub gutter_padding: f32,
     pub column_gap: f32,
     pub scroll_top_px: f32,
@@ -211,6 +212,8 @@ impl EditorElement {
         let s = editor_scale(text_metrics);
         self.layout.font_size = text_metrics.mono_font_size_px;
         self.layout.line_height = self.metrics.body_row_height_px as f32;
+        let glyphon_line_h = text_metrics.mono_font_size_px * 1.35;
+        self.layout.text_y_offset = ((self.layout.line_height - glyphon_line_h) * 0.5).max(0.0);
         self.layout.gutter_padding = scaled(BASE_GUTTER_PADDING, s);
         self.layout.column_gap = scaled(BASE_COLUMN_GAP, s);
 
@@ -281,16 +284,11 @@ impl EditorElement {
     }
 
     fn rebuild_rows(&mut self, doc: &RenderDoc, state: &EditorState, text_metrics: TextMetrics) {
-        let s = editor_scale(text_metrics);
+        let body_h = text_metrics.mono_line_height_px.round().max(1.0) as u16;
         self.metrics = DisplayLayoutMetrics {
-            body_row_height_px: text_metrics.mono_line_height_px.round().max(1.0) as u16,
-            file_header_height_px: (text_metrics.mono_line_height_px
-                + scaled(BASE_FILE_HEADER_EXTRA, s))
-            .round()
-            .max(1.0) as u16,
-            hunk_height_px: (text_metrics.mono_line_height_px + scaled(BASE_HUNK_EXTRA, s))
-                .round()
-                .max(1.0) as u16,
+            body_row_height_px: body_h,
+            file_header_height_px: body_h * FILE_HEADER_ROW_MULTIPLE,
+            hunk_height_px: body_h * HUNK_ROW_MULTIPLE,
         };
         self.config = DisplayLayoutConfig {
             split_mode: state.layout == LayoutMode::Split,
@@ -400,8 +398,10 @@ impl EditorElement {
 
                 self.paint_gutter_backgrounds(scene, theme);
                 self.paint_row_backgrounds(scene, theme, doc);
+                self.paint_inline_change_backgrounds(scene, theme, doc);
                 self.paint_line_highlights(scene, theme);
                 self.paint_search_highlights(scene, theme, _state, doc);
+                self.paint_gutter_diff_indicators(scene, theme, doc);
                 self.paint_gutter_decorations(scene, theme);
                 self.paint_gutter_text(scene, theme, doc);
                 self.paint_body_text(scene, theme, path, doc);
@@ -481,6 +481,7 @@ impl EditorElement {
     // -- Phase 2: Row backgrounds (diff colors) --
 
     fn paint_row_backgrounds(&self, scene: &mut Scene, theme: &Theme, doc: &RenderDoc) {
+        let line_height = self.layout.line_height;
         for row_index in self.layout.visible_row_range.iter() {
             let Some(display_row) = self.rows.get(row_index).copied() else {
                 continue;
@@ -492,7 +493,252 @@ impl EditorElement {
             if !self.row_in_viewport(&rr) {
                 continue;
             }
-            paint_row_background(scene, theme, rr, line.row_kind());
+            let kind = line.row_kind();
+            if kind == RenderRowKind::Modified {
+                self.paint_modified_row_background(
+                    scene,
+                    theme,
+                    rr,
+                    &display_row,
+                    line_height,
+                );
+            } else if self.layout.split_mode
+                && matches!(kind, RenderRowKind::Added | RenderRowKind::Removed)
+            {
+                let left_end = self.layout.left_text_rect.right();
+                let right_start = self.layout.right_gutter_rect.x;
+                if kind == RenderRowKind::Added {
+                    scene.rect(RectPrimitive {
+                        rect: Rect {
+                            x: right_start,
+                            y: rr.y,
+                            width: rr.right() - right_start,
+                            height: rr.height,
+                        },
+                        color: theme.colors.line_add,
+                    });
+                } else {
+                    scene.rect(RectPrimitive {
+                        rect: Rect {
+                            x: rr.x,
+                            y: rr.y,
+                            width: left_end - rr.x,
+                            height: rr.height,
+                        },
+                        color: theme.colors.line_del,
+                    });
+                }
+            } else {
+                paint_row_background(scene, theme, rr, kind);
+            }
+        }
+    }
+
+    fn paint_modified_row_background(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        rr: Rect,
+        display_row: &DisplayRow,
+        line_height: f32,
+    ) {
+        if self.layout.split_mode {
+            let left_end = self.layout.left_text_rect.right();
+            let right_start = self.layout.right_gutter_rect.x;
+            scene.rect(RectPrimitive {
+                rect: Rect {
+                    x: rr.x,
+                    y: rr.y,
+                    width: left_end - rr.x,
+                    height: rr.height,
+                },
+                color: theme.colors.line_del,
+            });
+            scene.rect(RectPrimitive {
+                rect: Rect {
+                    x: right_start,
+                    y: rr.y,
+                    width: rr.right() - right_start,
+                    height: rr.height,
+                },
+                color: theme.colors.line_add,
+            });
+        } else {
+            let del_lines = display_row.wrap_left.max(1) as f32;
+            let del_h = del_lines * line_height;
+            scene.rect(RectPrimitive {
+                rect: Rect {
+                    x: rr.x,
+                    y: rr.y,
+                    width: rr.width,
+                    height: del_h,
+                },
+                color: theme.colors.line_del,
+            });
+            scene.rect(RectPrimitive {
+                rect: Rect {
+                    x: rr.x,
+                    y: rr.y + del_h,
+                    width: rr.width,
+                    height: rr.height - del_h,
+                },
+                color: theme.colors.line_add,
+            });
+        }
+    }
+
+    // -- Phase 2b: Inline change backgrounds (word-level highlighting) --
+
+    fn paint_inline_change_backgrounds(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        doc: &RenderDoc,
+    ) {
+        let char_w = self.text_metrics.mono_char_width_px;
+        let line_height = self.layout.line_height;
+
+        for row_index in self.layout.visible_row_range.iter() {
+            let Some(display_row) = self.rows.get(row_index).copied() else {
+                continue;
+            };
+            let Some(line) = doc.lines.get(display_row.line_index as usize).copied() else {
+                continue;
+            };
+            let rr = self.row_rect_for(&display_row);
+            if !self.row_in_viewport(&rr) {
+                continue;
+            }
+            let kind = line.row_kind();
+            if kind != RenderRowKind::Modified {
+                continue;
+            }
+
+            if self.layout.split_mode {
+                if line.left_text.is_valid() {
+                    self.paint_change_rects_for_side(
+                        scene,
+                        doc,
+                        line.left_text,
+                        line.left_runs,
+                        self.layout.left_text_rect.x,
+                        rr.y,
+                        self.layout.left_text_rect.width,
+                        char_w,
+                        line_height,
+                        theme.colors.line_del_word_bg,
+                    );
+                }
+                if line.right_text.is_valid() {
+                    self.paint_change_rects_for_side(
+                        scene,
+                        doc,
+                        line.right_text,
+                        line.right_runs,
+                        self.layout.right_text_rect.x,
+                        rr.y,
+                        self.layout.right_text_rect.width,
+                        char_w,
+                        line_height,
+                        theme.colors.line_add_word_bg,
+                    );
+                }
+            } else if line.left_text.is_valid() && line.right_text.is_valid() {
+                let del_y = rr.y;
+                let add_y = rr.y + display_row.wrap_left.max(1) as f32 * line_height;
+                self.paint_change_rects_for_side(
+                    scene,
+                    doc,
+                    line.left_text,
+                    line.left_runs,
+                    self.layout.unified_text_rect.x,
+                    del_y,
+                    self.layout.unified_text_rect.width,
+                    char_w,
+                    line_height,
+                    theme.colors.line_del_word_bg,
+                );
+                self.paint_change_rects_for_side(
+                    scene,
+                    doc,
+                    line.right_text,
+                    line.right_runs,
+                    self.layout.unified_text_rect.x,
+                    add_y,
+                    self.layout.unified_text_rect.width,
+                    char_w,
+                    line_height,
+                    theme.colors.line_add_word_bg,
+                );
+            }
+        }
+    }
+
+    fn paint_change_rects_for_side(
+        &self,
+        scene: &mut Scene,
+        doc: &RenderDoc,
+        text_range: ByteRange,
+        runs_range: RunRange,
+        text_x: f32,
+        row_y: f32,
+        text_width: f32,
+        char_w: f32,
+        line_height: f32,
+        bg_color: Color,
+    ) {
+        if !text_range.is_valid() {
+            return;
+        }
+        let text = doc.line_text(text_range);
+        if text.is_empty() {
+            return;
+        }
+        let runs = doc.line_runs(runs_range);
+        let text_right = text_x + text_width;
+
+        let byte_to_col: Vec<u32> = {
+            let mut map = vec![0u32; text.len() + 1];
+            let mut col = 0u32;
+            for (i, _) in text.char_indices() {
+                map[i] = col;
+                col += 1;
+            }
+            map[text.len()] = col;
+            map
+        };
+
+        for run in runs {
+            if run.flags & STYLE_FLAG_CHANGE == 0 {
+                continue;
+            }
+            let start = run.byte_start as usize;
+            let end = start.saturating_add(run.byte_len as usize).min(text.len());
+            if end <= start {
+                continue;
+            }
+            let col_start = byte_to_col.get(start).copied().unwrap_or(0);
+            let col_end = byte_to_col.get(end).copied().unwrap_or(col_start);
+            if col_end <= col_start {
+                continue;
+            }
+
+            let x = text_x + col_start as f32 * char_w;
+            let w = (col_end - col_start) as f32 * char_w;
+            let clamped_w = w.min((text_right - x).max(0.0));
+            if clamped_w <= 0.0 {
+                continue;
+            }
+            scene.rounded_rect(RoundedRectPrimitive::uniform(
+                Rect {
+                    x,
+                    y: row_y,
+                    width: clamped_w,
+                    height: line_height,
+                },
+                3.0,
+                bg_color,
+            ));
         }
     }
 
@@ -667,12 +913,110 @@ impl EditorElement {
                 scene.rect(RectPrimitive {
                     rect: Rect {
                         x,
-                        y: rr.y + y_offset,
+                        y: rr.y + y_offset + self.layout.text_y_offset,
                         width: w,
                         height: line_height,
                     },
                     color,
                 });
+            }
+        }
+    }
+
+    // -- Phase 3b: Gutter diff indicators --
+
+    fn paint_gutter_diff_indicators(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        doc: &RenderDoc,
+    ) {
+        let line_height = self.layout.line_height;
+        let s = editor_scale(self.text_metrics);
+        let strip_w = scaled(3.0, s);
+
+        for row_index in self.layout.visible_row_range.iter() {
+            let Some(display_row) = self.rows.get(row_index).copied() else {
+                continue;
+            };
+            let Some(line) = doc.lines.get(display_row.line_index as usize).copied() else {
+                continue;
+            };
+            let rr = self.row_rect_for(&display_row);
+            if !self.row_in_viewport(&rr) {
+                continue;
+            }
+            let kind = line.row_kind();
+            if !matches!(
+                kind,
+                RenderRowKind::Added | RenderRowKind::Removed | RenderRowKind::Modified
+            ) {
+                continue;
+            }
+
+            if self.layout.split_mode {
+                if matches!(kind, RenderRowKind::Removed | RenderRowKind::Modified) {
+                    scene.rect(RectPrimitive {
+                        rect: Rect {
+                            x: self.layout.left_gutter_rect.right() - strip_w,
+                            y: rr.y,
+                            width: strip_w,
+                            height: rr.height,
+                        },
+                        color: theme.colors.line_del_text,
+                    });
+                }
+                if matches!(kind, RenderRowKind::Added | RenderRowKind::Modified) {
+                    scene.rect(RectPrimitive {
+                        rect: Rect {
+                            x: self.layout.right_gutter_rect.right() - strip_w,
+                            y: rr.y,
+                            width: strip_w,
+                            height: rr.height,
+                        },
+                        color: theme.colors.line_add_text,
+                    });
+                }
+            } else {
+                if kind == RenderRowKind::Modified
+                    && line.left_text.is_valid()
+                    && line.right_text.is_valid()
+                {
+                    let del_h = display_row.wrap_left.max(1) as f32 * line_height;
+                    scene.rect(RectPrimitive {
+                        rect: Rect {
+                            x: self.layout.unified_gutter_rect.right() - strip_w,
+                            y: rr.y,
+                            width: strip_w,
+                            height: del_h,
+                        },
+                        color: theme.colors.line_del_text,
+                    });
+                    scene.rect(RectPrimitive {
+                        rect: Rect {
+                            x: self.layout.unified_gutter_rect.right() - strip_w,
+                            y: rr.y + del_h,
+                            width: strip_w,
+                            height: rr.height - del_h,
+                        },
+                        color: theme.colors.line_add_text,
+                    });
+                } else {
+                    let c = match kind {
+                        RenderRowKind::Added => theme.colors.line_add_text,
+                        RenderRowKind::Removed => theme.colors.line_del_text,
+                        _ => continue,
+                    };
+                    scene.rect(RectPrimitive {
+                        rect: Rect {
+                            x: self.layout.unified_gutter_rect.right() - strip_w,
+                            y: rr.y,
+                            width: strip_w,
+                            height: rr.height,
+                        },
+                        color: c,
+                    });
+                }
             }
         }
     }
@@ -718,6 +1062,7 @@ impl EditorElement {
     fn paint_gutter_text(&mut self, scene: &mut Scene, theme: &Theme, doc: &RenderDoc) {
         let font_size = self.layout.font_size;
         let line_height = self.layout.line_height;
+        let ty = self.layout.text_y_offset;
 
         for row_index in self.layout.visible_row_range.iter() {
             let Some(display_row) = self.rows.get(row_index).copied() else {
@@ -737,7 +1082,7 @@ impl EditorElement {
                     scene.text(TextPrimitive {
                         rect: Rect {
                             x: self.layout.left_gutter_rect.x + self.layout.gutter_padding,
-                            y: rr.y,
+                            y: rr.y + ty,
                             width: self.layout.left_gutter_rect.width
                                 - self.layout.gutter_padding * 2.0,
                             height: line_height,
@@ -756,7 +1101,7 @@ impl EditorElement {
                     scene.text(TextPrimitive {
                         rect: Rect {
                             x: self.layout.right_gutter_rect.x + self.layout.gutter_padding,
-                            y: rr.y,
+                            y: rr.y + ty,
                             width: self.layout.right_gutter_rect.width
                                 - self.layout.gutter_padding * 2.0,
                             height: line_height,
@@ -779,7 +1124,7 @@ impl EditorElement {
                     scene.text(TextPrimitive {
                         rect: Rect {
                             x: self.layout.unified_gutter_rect.x + self.layout.gutter_padding,
-                            y: rr.y,
+                            y: rr.y + ty,
                             width: self.layout.unified_gutter_rect.width
                                 - self.layout.gutter_padding * 2.0,
                             height: line_height,
@@ -799,7 +1144,7 @@ impl EditorElement {
                     scene.text(TextPrimitive {
                         rect: Rect {
                             x: self.layout.unified_gutter_rect.x + self.layout.gutter_padding,
-                            y: added_y,
+                            y: added_y + ty,
                             width: self.layout.unified_gutter_rect.width
                                 - self.layout.gutter_padding * 2.0,
                             height: line_height,
@@ -820,7 +1165,7 @@ impl EditorElement {
                     scene.text(TextPrimitive {
                         rect: Rect {
                             x: self.layout.unified_gutter_rect.x + self.layout.gutter_padding,
-                            y: rr.y,
+                            y: rr.y + ty,
                             width: self.layout.unified_gutter_rect.width
                                 - self.layout.gutter_padding * 2.0,
                             height: line_height,
@@ -846,6 +1191,7 @@ impl EditorElement {
     fn paint_body_text(&mut self, scene: &mut Scene, theme: &Theme, path: &str, doc: &RenderDoc) {
         let font_size = self.layout.font_size;
         let line_height = self.layout.line_height;
+        let ty = self.layout.text_y_offset;
 
         for row_index in self.layout.visible_row_range.iter() {
             let Some(display_row) = self.rows.get(row_index).copied() else {
@@ -864,7 +1210,7 @@ impl EditorElement {
                     scene.text(TextPrimitive {
                         rect: Rect {
                             x: self.text_origin_x(),
-                            y: rr.y,
+                            y: rr.y + ty,
                             width: self.text_width(),
                             height: rr.height,
                         },
@@ -879,7 +1225,7 @@ impl EditorElement {
                     scene.text(TextPrimitive {
                         rect: Rect {
                             x: self.text_origin_x(),
-                            y: rr.y,
+                            y: rr.y + ty,
                             width: self.text_width(),
                             height: rr.height,
                         },
@@ -930,7 +1276,7 @@ impl EditorElement {
                             scene.rich_text(RichTextPrimitive {
                                 rect: Rect {
                                     x: self.layout.unified_text_rect.x,
-                                    y: rr.y,
+                                    y: rr.y + ty,
                                     width: self.layout.unified_text_rect.width,
                                     height: line_height,
                                 },
@@ -976,10 +1322,11 @@ impl EditorElement {
         font_size: f32,
         line_height: f32,
     ) {
+        let ty = self.layout.text_y_offset;
         for seg in 0..display_row.wrap_left.max(1) {
             let rect = Rect {
                 x: self.layout.left_text_rect.x,
-                y: rr.y + seg as f32 * line_height,
+                y: rr.y + seg as f32 * line_height + ty,
                 width: self.layout.left_text_rect.width,
                 height: line_height,
             };
@@ -1005,7 +1352,7 @@ impl EditorElement {
         for seg in 0..display_row.wrap_right.max(1) {
             let rect = Rect {
                 x: self.layout.right_text_rect.x,
-                y: rr.y + seg as f32 * line_height,
+                y: rr.y + seg as f32 * line_height + ty,
                 width: self.layout.right_text_rect.width,
                 height: line_height,
             };
@@ -1041,8 +1388,9 @@ impl EditorElement {
         font_size: f32,
         line_height: f32,
     ) {
+        let ty = self.layout.text_y_offset;
         for seg in 0..display_row.wrap_left.max(1) {
-            let y = rr.y + seg as f32 * line_height;
+            let y = rr.y + seg as f32 * line_height + ty;
             let rect = Rect {
                 x: self.layout.unified_text_rect.x,
                 y,
@@ -1070,7 +1418,7 @@ impl EditorElement {
         }
         for seg in 0..display_row.wrap_right.max(1) {
             let y =
-                rr.y + display_row.wrap_left.max(1) as f32 * line_height + seg as f32 * line_height;
+                rr.y + display_row.wrap_left.max(1) as f32 * line_height + seg as f32 * line_height + ty;
             let rect = Rect {
                 x: self.layout.unified_text_rect.x,
                 y,
@@ -1291,25 +1639,27 @@ fn build_spatial_layout(
             width: gutter_width,
             height: content_bounds.height,
         };
+        let text_left_pad = gutter_padding;
         let left_text_rect = Rect {
-            x: left_gutter_rect.right(),
+            x: left_gutter_rect.right() + text_left_pad,
             y: content_bounds.y,
-            width: col_width,
+            width: (col_width - text_left_pad).max(60.0),
             height: content_bounds.height,
         };
         let right_gutter_rect = Rect {
-            x: left_text_rect.right() + column_gap,
+            x: left_gutter_rect.right() + col_width + column_gap,
             y: content_bounds.y,
             width: gutter_width,
             height: content_bounds.height,
         };
         let right_text_rect = Rect {
-            x: right_gutter_rect.right(),
+            x: right_gutter_rect.right() + text_left_pad,
             y: content_bounds.y,
             width: (content_bounds.right()
                 - scrollbar_width
                 - scrollbar_margin
-                - right_gutter_rect.right())
+                - right_gutter_rect.right()
+                - text_left_pad)
             .max(60.0),
             height: content_bounds.height,
         };
@@ -1333,10 +1683,11 @@ fn build_spatial_layout(
             width: unified_gutter_width,
             height: content_bounds.height,
         };
+        let text_left_pad = gutter_padding;
         let unified_text_rect = Rect {
-            x: unified_gutter_rect.right(),
+            x: unified_gutter_rect.right() + text_left_pad,
             y: content_bounds.y,
-            width: (usable_width - unified_gutter_width).max(60.0),
+            width: (usable_width - unified_gutter_width - text_left_pad).max(60.0),
             height: content_bounds.height,
         };
         EditorLayout {
@@ -1521,22 +1872,9 @@ fn build_segment_spans(
 }
 
 fn style_run_color(run: StyleRun, tone: RowTone, theme: &Theme) -> Color {
-    let is_changed = run.flags & STYLE_FLAG_CHANGE != 0;
-    if is_changed {
-        return match tone {
-            RowTone::Neutral => theme.colors.accent,
-            RowTone::Added => theme.colors.line_add_text,
-            RowTone::Removed => theme.colors.line_del_text,
-        };
-    }
-
     match syntax_kind_from_style_id(run.style_id) {
         SyntaxTokenKind::Keyword | SyntaxTokenKind::Builtin => theme.colors.accent,
-        SyntaxTokenKind::String => match tone {
-            RowTone::Added => theme.colors.line_add_text,
-            RowTone::Removed => theme.colors.line_del_text,
-            RowTone::Neutral => Color::rgba(0xcb, 0xe4, 0xa7, 0xff),
-        },
+        SyntaxTokenKind::String => Color::rgba(0xcb, 0xe4, 0xa7, 0xff),
         SyntaxTokenKind::Comment | SyntaxTokenKind::Label | SyntaxTokenKind::Preprocessor => {
             theme.colors.text_muted
         }

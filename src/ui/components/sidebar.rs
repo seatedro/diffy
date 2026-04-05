@@ -18,7 +18,6 @@ pub struct FileListItem<'a> {
 impl<'a> FileListItem<'a> {
     fn build(&self, theme: &Theme) -> Div {
         let tc = &theme.colors;
-        let scale = theme.metrics.ui_scale();
         let icon_color = if self.selected {
             tc.text_accent
         } else {
@@ -32,7 +31,7 @@ impl<'a> FileListItem<'a> {
 
         let mut row = div()
             .w_full()
-            .h((Sz::ROW * scale).round())
+            .h(theme.metrics.ui_row_height.round())
             .flex_row()
             .items_center()
             .px(Sp::SM)

@@ -48,8 +48,9 @@ pub fn popover_section() -> Div {
 
 pub fn popover_divider(theme: &Theme) -> Div {
     let tc = &theme.colors;
+    let scale = theme.metrics.ui_scale();
     div()
         .w_full()
-        .py(Sp::XS)
+        .py((Sp::XS * scale).round())
         .child(div().w_full().h(Sz::SEPARATOR_W).bg(tc.border_variant))
 }

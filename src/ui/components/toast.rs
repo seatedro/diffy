@@ -67,6 +67,8 @@ pub struct ToastStack<'a> {
     pub toasts: &'a [crate::ui::state::Toast],
     pub window_width: f32,
     pub window_height: f32,
+    pub ui_scale: f32,
+    pub status_bar_height: f32,
 }
 
 impl<'a> ToastStack<'a> {
@@ -74,26 +76,31 @@ impl<'a> ToastStack<'a> {
         toasts: &'a [crate::ui::state::Toast],
         window_width: f32,
         window_height: f32,
+        ui_scale: f32,
+        status_bar_height: f32,
     ) -> Self {
         Self {
             toasts,
             window_width,
             window_height,
+            ui_scale,
+            status_bar_height,
         }
     }
 
     pub fn build(self) -> Div {
+        let scale = self.ui_scale;
         let toast_width =
             Sz::TOAST_MAX_W.min((self.window_width - Sz::TOAST_MARGIN).max(Sz::TOAST_MIN_W));
-        let status_bar_height = Sz::ROW;
+        let status_bar_height = self.status_bar_height;
 
         let mut stack = div()
             .absolute()
-            .bottom(status_bar_height + Sp::LG)
-            .right(Sp::XL)
+            .bottom(status_bar_height + (Sp::LG * scale).round())
+            .right((Sp::XL * scale).round())
             .w(toast_width)
             .flex_col()
-            .gap(Sp::SM)
+            .gap((Sp::SM * scale).round())
             .z_index(200);
 
         for (index, toast) in self.toasts.iter().enumerate().rev() {

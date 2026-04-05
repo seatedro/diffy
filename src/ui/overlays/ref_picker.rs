@@ -44,7 +44,7 @@ pub fn ref_picker(
                     .focus_target(FocusTarget::PickerInput)
                     .bare()
                     .w_full()
-                    .h((Sz::ROW * scale).round())}
+                    .h(theme.metrics.ui_row_height.round())}
             </div>
         })
         .child(view! {

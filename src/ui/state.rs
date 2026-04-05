@@ -72,6 +72,7 @@ pub enum FocusTarget {
     PullRequestConfirm,
     AuthPrimaryAction,
     SidebarSearch,
+    SearchInput,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1015,6 +1016,22 @@ impl AppState {
                 self.file_list.expanded_folders.clear();
                 Vec::new()
             }
+            Action::OpenSearch => {
+                self.open_search();
+                Vec::new()
+            }
+            Action::CloseSearch => {
+                self.close_search();
+                Vec::new()
+            }
+            Action::SearchNext => {
+                self.search_navigate(1);
+                Vec::new()
+            }
+            Action::SearchPrevious => {
+                self.search_navigate(-1);
+                Vec::new()
+            }
             Action::Noop => Vec::new(),
         }
     }
@@ -1420,6 +1437,7 @@ impl AppState {
             FocusTarget::CommandPaletteInput => Some(&self.overlays.command_palette.query),
             FocusTarget::PullRequestInput => Some(&self.github.pull_request.url_input),
             FocusTarget::SidebarSearch => Some(&self.file_list.filter),
+            FocusTarget::SearchInput => Some(&self.editor.search.query),
             _ => None,
         }
     }
@@ -1442,6 +1460,7 @@ impl AppState {
             }
             Some(FocusTarget::PullRequestInput) => Some(&mut self.github.pull_request.url_input),
             Some(FocusTarget::SidebarSearch) => Some(&mut self.file_list.filter),
+            Some(FocusTarget::SearchInput) => Some(&mut self.editor.search.query),
             _ => None,
         }
     }
@@ -1498,6 +1517,7 @@ impl AppState {
                 }
             },
             Some(FocusTarget::CommandPaletteInput) => self.rebuild_command_palette(),
+            Some(FocusTarget::SearchInput) => self.recompute_search_matches(),
             _ => {}
         }
     }
@@ -2337,6 +2357,9 @@ impl AppState {
             render_doc: build_render_doc(&file, index, &output.text_buffer, &output.token_buffer),
         });
         self.editor.clear_document();
+        if self.editor.search.open {
+            self.recompute_search_matches();
+        }
         self.file_list.hovered_index = Some(index);
         if reveal {
             let row_top = index as f32 * self.file_list.row_stride();
@@ -2469,6 +2492,127 @@ impl AppState {
         if self.toasts.len() > MAX_VISIBLE_TOASTS {
             self.toasts.remove(0);
         }
+    }
+
+    fn open_search(&mut self) {
+        self.editor.search.open = true;
+        let len = self.editor.search.query.len();
+        self.text_edit = TextEditState {
+            cursor: len,
+            anchor: 0,
+            cursor_moved_at_ms: self.clock_ms,
+        };
+        self.focus.current = Some(FocusTarget::SearchInput);
+        self.editor.focused = false;
+        self.recompute_search_matches();
+    }
+
+    fn close_search(&mut self) {
+        self.editor.search.open = false;
+        self.editor.search.matches.clear();
+        self.editor.search.active_index = None;
+        self.set_focus(Some(FocusTarget::Editor));
+    }
+
+    fn recompute_search_matches(&mut self) {
+        use crate::ui::editor::state::{MatchSide, SearchMatch};
+
+        self.editor.search.matches.clear();
+        self.editor.search.active_index = None;
+
+        let query = self.editor.search.query.to_ascii_lowercase();
+        if query.is_empty() {
+            return;
+        }
+
+        let Some(active_file) = self.workspace.active_file.as_ref() else {
+            return;
+        };
+        let doc = &active_file.render_doc;
+
+        for (line_idx, line) in doc.lines.iter().enumerate() {
+            let line_idx = line_idx as u32;
+            if line.left_text.is_valid() {
+                let text = doc.line_text(line.left_text);
+                let lower = text.to_ascii_lowercase();
+                let mut start = 0;
+                while let Some(pos) = lower[start..].find(&query) {
+                    let byte_start = (start + pos) as u32;
+                    self.editor.search.matches.push(SearchMatch {
+                        line_index: line_idx,
+                        byte_start,
+                        byte_len: query.len() as u32,
+                        side: MatchSide::Left,
+                    });
+                    start += pos + query.len();
+                }
+            }
+            if line.right_text.is_valid() {
+                let text = doc.line_text(line.right_text);
+                let lower = text.to_ascii_lowercase();
+                let mut start = 0;
+                while let Some(pos) = lower[start..].find(&query) {
+                    let byte_start = (start + pos) as u32;
+                    self.editor.search.matches.push(SearchMatch {
+                        line_index: line_idx,
+                        byte_start,
+                        byte_len: query.len() as u32,
+                        side: MatchSide::Right,
+                    });
+                    start += pos + query.len();
+                }
+            }
+        }
+
+        if !self.editor.search.matches.is_empty() {
+            self.editor.search.active_index = Some(0);
+        }
+    }
+
+    fn search_navigate(&mut self, direction: i32) {
+        let count = self.editor.search.matches.len();
+        if count == 0 {
+            return;
+        }
+
+        let current = self.editor.search.active_index.unwrap_or(0);
+        let next = if direction > 0 {
+            if current + 1 >= count { 0 } else { current + 1 }
+        } else {
+            if current == 0 { count - 1 } else { current - 1 }
+        };
+        self.editor.search.active_index = Some(next);
+        self.scroll_to_search_match(next);
+    }
+
+    fn scroll_to_search_match(&mut self, match_index: usize) {
+        let target_y = if let Some(&y) = self.editor.search_match_y_positions.get(match_index) {
+            y
+        } else {
+            let Some(m) = self.editor.search.matches.get(match_index) else {
+                return;
+            };
+            self.estimate_line_y(m.line_index)
+        };
+
+        let viewport_h = self.editor.viewport_height_px;
+        let centered = target_y.saturating_sub(viewport_h / 3);
+        self.editor.scroll_top_px = centered.min(self.editor.max_scroll_top_px());
+    }
+
+    fn estimate_line_y(&self, line_index: u32) -> u32 {
+        if self.editor.content_height_px == 0 {
+            return 0;
+        }
+        let Some(active_file) = self.workspace.active_file.as_ref() else {
+            return 0;
+        };
+        let total_lines = active_file.render_doc.lines.len() as u32;
+        if total_lines == 0 {
+            return 0;
+        }
+        let avg_height = self.editor.content_height_px / total_lines;
+        line_index.saturating_mul(avg_height)
     }
 }
 

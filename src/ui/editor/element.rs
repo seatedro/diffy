@@ -323,6 +323,19 @@ impl EditorElement {
                 state.file_positions.push(row.y_px);
             }
         }
+
+        state.search_match_y_positions.clear();
+        if state.search.open && !state.search.matches.is_empty() {
+            for m in &state.search.matches {
+                let y = self
+                    .rows
+                    .iter()
+                    .find(|r| r.line_index == m.line_index)
+                    .map(|r| r.y_px)
+                    .unwrap_or(0);
+                state.search_match_y_positions.push(y);
+            }
+        }
     }
 
     fn update_visible_ranges(&mut self, state: &mut EditorState) {
@@ -389,6 +402,7 @@ impl EditorElement {
                 self.paint_gutter_backgrounds(scene, theme);
                 self.paint_row_backgrounds(scene, theme, doc);
                 self.paint_line_highlights(scene, theme);
+                self.paint_search_highlights(scene, theme, _state, doc);
                 self.paint_gutter_decorations(scene, theme);
                 self.paint_gutter_text(scene, theme, doc);
                 self.paint_body_text(scene, theme, path, doc);
@@ -484,6 +498,104 @@ impl EditorElement {
                 width: self.layout.unified_gutter_rect.width, height: rr.height }
         };
         scene.rect(RectPrimitive { rect: gutter_highlight, color: theme.colors.hover_overlay });
+    }
+
+    fn paint_search_highlights(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        state: &EditorState,
+        doc: &RenderDoc,
+    ) {
+        use crate::ui::editor::state::MatchSide;
+
+        if !state.search.open || state.search.matches.is_empty() {
+            return;
+        }
+
+        let char_w = self.text_metrics.mono_char_width_px;
+        let line_height = self.layout.line_height;
+        let active_idx = state.search.active_index;
+
+        let vis = &self.layout.visible_row_range;
+        if vis.is_empty() {
+            return;
+        }
+        let vis_min_line = self.rows.get(vis.start).map(|r| r.line_index).unwrap_or(u32::MAX);
+        let vis_max_line = self.rows.get(vis.end.saturating_sub(1)).map(|r| r.line_index).unwrap_or(0);
+
+        for (match_idx, m) in state.search.matches.iter().enumerate() {
+            let line_idx = m.line_index as usize;
+
+            if m.line_index < vis_min_line || m.line_index > vis_max_line {
+                continue;
+            }
+
+            for row_index in vis.iter() {
+                let Some(display_row) = self.rows.get(row_index).copied() else { continue };
+                if display_row.line_index as usize != line_idx {
+                    continue;
+                }
+                let Some(line) = doc.lines.get(line_idx) else { continue };
+                let rr = self.row_rect_for(&display_row);
+                if !self.row_in_viewport(&rr) {
+                    continue;
+                }
+
+                let text_range = match m.side {
+                    MatchSide::Left => line.left_text,
+                    MatchSide::Right => line.right_text,
+                };
+                if !text_range.is_valid() {
+                    continue;
+                }
+
+                let full_text = doc.line_text(text_range);
+                let byte_start = m.byte_start as usize;
+                let byte_end = byte_start + m.byte_len as usize;
+                if byte_end > full_text.len() {
+                    continue;
+                }
+
+                let col_start = full_text[..byte_start].chars().count() as f32;
+                let col_len = full_text[byte_start..byte_end].chars().count() as f32;
+
+                let (text_rect_x, text_rect_w) = if self.layout.split_mode {
+                    match m.side {
+                        MatchSide::Left => (self.layout.left_text_rect.x, self.layout.left_text_rect.width),
+                        MatchSide::Right => (self.layout.right_text_rect.x, self.layout.right_text_rect.width),
+                    }
+                } else {
+                    (self.layout.unified_text_rect.x, self.layout.unified_text_rect.width)
+                };
+
+                let y_offset = if !self.layout.split_mode
+                    && line.row_kind() == RenderRowKind::Modified
+                    && m.side == MatchSide::Right
+                    && line.left_text.is_valid()
+                    && line.right_text.is_valid()
+                {
+                    display_row.wrap_left.max(1) as f32 * line_height
+                } else {
+                    0.0
+                };
+
+                let x = text_rect_x + col_start * char_w;
+                let w = (col_len * char_w).min(text_rect_w - (x - text_rect_x).max(0.0));
+
+                let is_active = active_idx == Some(match_idx);
+                let color = if is_active {
+                    theme.colors.search_match_active_bg
+                } else {
+                    theme.colors.search_match_bg
+                };
+
+                scene.rect(RectPrimitive {
+                    rect: Rect { x, y: rr.y + y_offset, width: w, height: line_height },
+                    color,
+                });
+            }
+        }
     }
 
     // -- Phase 4: Gutter decorations (separator lines) --

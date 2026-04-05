@@ -101,6 +101,8 @@ pub struct ThemeColors {
     pub line_add_text: Color,
     pub line_del_text: Color,
     pub hover_overlay: Color,
+    pub search_match_bg: Color,
+    pub search_match_active_bg: Color,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -304,6 +306,9 @@ fn dark_colors(n: &Scale, b: &Scale, r: &Scale, g: &Scale, y: &Scale) -> ThemeCo
         line_modified: b[2],
         line_add_text: g[8],
         line_del_text: r[8],
+
+        search_match_bg: Color::rgba(y[6].r, y[6].g, y[6].b, 90),
+        search_match_active_bg: Color::rgba(y[8].r, y[8].g, y[8].b, 180),
     }
 }
 
@@ -379,6 +384,9 @@ fn light_colors(n: &Scale, b: &Scale, r: &Scale, g: &Scale, y: &Scale) -> ThemeC
         line_modified: b[2],
         line_add_text: g[9],
         line_del_text: r[9],
+
+        search_match_bg: Color::rgba(y[4].r, y[4].g, y[4].b, 120),
+        search_match_active_bg: Color::rgba(y[6].r, y[6].g, y[6].b, 200),
     }
 }
 

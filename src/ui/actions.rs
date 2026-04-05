@@ -95,5 +95,9 @@ pub enum Action {
     ToggleSidebar,
     ExpandAllFolders,
     CollapseAllFolders,
+    OpenSearch,
+    CloseSearch,
+    SearchNext,
+    SearchPrevious,
     Noop,
 }

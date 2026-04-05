@@ -616,6 +616,10 @@ impl NativeApp {
             let lower = text.to_ascii_lowercase();
             if ctrl {
                 match lower.as_str() {
+                    "f" => {
+                        self.dispatch_action(Action::OpenSearch);
+                        return;
+                    }
                     "p" => {
                         self.dispatch_action(Action::OpenCommandPalette);
                         return;
@@ -663,13 +667,25 @@ impl NativeApp {
             Key::Named(NamedKey::Escape) => {
                 if self.state.overlays.top().is_some() {
                     self.dispatch_action(Action::CloseOverlay);
+                } else if self.state.editor.search.open {
+                    self.dispatch_action(Action::CloseSearch);
                 } else if self.state.focus.current == Some(FocusTarget::SidebarSearch) {
                     self.dispatch_action(Action::ClearSidebarFilter);
                     self.dispatch_action(Action::SetFocus(None));
                 }
             }
             Key::Named(NamedKey::Tab) => self.cycle_focus(),
-            Key::Named(NamedKey::Enter) => self.activate_current_focus(),
+            Key::Named(NamedKey::Enter) => {
+                if self.state.focus.current == Some(FocusTarget::SearchInput) {
+                    if shift {
+                        self.dispatch_action(Action::SearchPrevious);
+                    } else {
+                        self.dispatch_action(Action::SearchNext);
+                    }
+                } else {
+                    self.activate_current_focus();
+                }
+            }
 
             // Arrow keys: text cursor when text-focused, else overlay/viewport nav
             Key::Named(NamedKey::ArrowLeft) if self.is_text_focused() => {

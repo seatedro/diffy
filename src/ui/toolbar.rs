@@ -8,7 +8,7 @@ use crate::ui::design::{Alpha, Ico, Rad, Shadow, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
-use crate::ui::state::{AppState, WorkspaceMode};
+use crate::ui::state::{AppState, FocusTarget, WorkspaceMode};
 use crate::ui::status_bar::{compare_mode_label, display_ref, renderer_label};
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
@@ -39,6 +39,10 @@ pub(crate) fn main_surface(
                 .unwrap_or("No file selected");
 
             main = main.child(viewport_toolbar(state, theme, file_label));
+
+            if state.editor.search.open {
+                main = main.child(search_bar(state, theme));
+            }
 
             let vb = viewport_bounds.clone();
             main = main.child(
@@ -120,6 +124,104 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> Div {
         .border_b(tc.border_variant)
         .child(left)
         .child(right)
+}
+
+fn search_bar(state: &AppState, theme: &Theme) -> Div {
+    let tc = &theme.colors;
+    let scale = theme.metrics.ui_scale();
+    let search = &state.editor.search;
+    let search_focused = state.focus.current == Some(FocusTarget::SearchInput);
+
+    let input = text_input("", &search.query)
+        .placeholder("Find in diff\u{2026}")
+        .focused(search_focused)
+        .focus_target(FocusTarget::SearchInput)
+        .cursor(state.text_edit.cursor)
+        .anchor(state.text_edit.anchor)
+        .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
+        .on_click(Action::SetFocus(Some(FocusTarget::SearchInput)))
+        .bare()
+        .w_full()
+        .h((Sz::SEARCH_INPUT * scale).round());
+
+    let match_count = search.matches.len();
+    let count_label = if search.query.is_empty() {
+        String::new()
+    } else if match_count == 0 {
+        "No results".to_string()
+    } else {
+        let idx = search.active_index.map(|i| i + 1).unwrap_or(0);
+        format!("{}/{}", idx, match_count)
+    };
+
+    let nav_icon_size = (Ico::SM * scale).round();
+    let nav_btn_size = (Sz::SEARCH_INPUT * scale).round();
+
+    let nav = div()
+        .flex_row()
+        .items_center()
+        .gap(Sp::XXS * scale)
+        .child(
+            div()
+                .flex_shrink_0()
+                .child(
+                    text(&count_label)
+                        .text_xs()
+                        .color(tc.text_muted)
+                        .mono(),
+                ),
+        )
+        .child(
+            div()
+                .w(nav_btn_size)
+                .h(nav_btn_size)
+                .items_center()
+                .justify_center()
+                .rounded(Rad::SM * scale)
+                .hover_bg(tc.ghost_element_hover)
+                .on_click(Action::SearchPrevious)
+                .cursor(CursorHint::Pointer)
+                .child(svg_icon(lucide::CHEVRON_UP, nav_icon_size).color(tc.text_muted)),
+        )
+        .child(
+            div()
+                .w(nav_btn_size)
+                .h(nav_btn_size)
+                .items_center()
+                .justify_center()
+                .rounded(Rad::SM * scale)
+                .hover_bg(tc.ghost_element_hover)
+                .on_click(Action::SearchNext)
+                .cursor(CursorHint::Pointer)
+                .child(svg_icon(lucide::CHEVRON_DOWN, nav_icon_size).color(tc.text_muted)),
+        )
+        .child(
+            div()
+                .w(nav_btn_size)
+                .h(nav_btn_size)
+                .items_center()
+                .justify_center()
+                .rounded(Rad::SM * scale)
+                .hover_bg(tc.ghost_element_hover)
+                .on_click(Action::CloseSearch)
+                .cursor(CursorHint::Pointer)
+                .child(svg_icon(lucide::X, nav_icon_size).color(tc.text_muted)),
+        );
+
+    let search_icon_size = (Ico::SM * scale).round();
+
+    div()
+        .w_full()
+        .flex_row()
+        .items_center()
+        .gap(Sp::SM * scale)
+        .px((Sp::MD * scale).round())
+        .py((Sp::XS * scale).round())
+        .border_b(tc.border_variant)
+        .bg(tc.editor_surface)
+        .child(svg_icon(lucide::SEARCH, search_icon_size).color(tc.text_muted))
+        .child(div().flex_1().min_w(0.0).child(input))
+        .child(nav)
 }
 
 fn repo_ready_hint(theme: &Theme) -> Div {

@@ -1,5 +1,38 @@
 use crate::core::compare::LayoutMode;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchMatch {
+    pub line_index: u32,
+    pub byte_start: u32,
+    pub byte_len: u32,
+    pub side: MatchSide,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchSide {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchState {
+    pub open: bool,
+    pub query: String,
+    pub matches: Vec<SearchMatch>,
+    pub active_index: Option<usize>,
+}
+
+impl Default for SearchState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            query: String::new(),
+            matches: Vec::new(),
+            active_index: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditorState {
     pub layout: LayoutMode,
@@ -15,6 +48,8 @@ pub struct EditorState {
     pub focused: bool,
     pub hunk_positions: Vec<u32>,
     pub file_positions: Vec<u32>,
+    pub search: SearchState,
+    pub search_match_y_positions: Vec<u32>,
 }
 
 impl Default for EditorState {
@@ -33,6 +68,8 @@ impl Default for EditorState {
             focused: false,
             hunk_positions: Vec::new(),
             file_positions: Vec::new(),
+            search: SearchState::default(),
+            search_match_y_positions: Vec::new(),
         }
     }
 }
@@ -46,6 +83,7 @@ impl EditorState {
         self.visible_row_end = None;
         self.hunk_positions.clear();
         self.file_positions.clear();
+        self.search_match_y_positions.clear();
     }
 
     pub fn max_scroll_top_px(&self) -> u32 {

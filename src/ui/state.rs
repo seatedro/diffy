@@ -867,6 +867,22 @@ impl AppState {
                 self.editor.clamp_scroll();
                 Vec::new()
             }
+            Action::GoToNextHunk => {
+                self.navigate_to_hunk(true);
+                Vec::new()
+            }
+            Action::GoToPreviousHunk => {
+                self.navigate_to_hunk(false);
+                Vec::new()
+            }
+            Action::GoToNextFile => {
+                self.navigate_to_file(true);
+                Vec::new()
+            }
+            Action::GoToPreviousFile => {
+                self.navigate_to_file(false);
+                Vec::new()
+            }
             Action::HoverViewportRow(row) => {
                 self.editor.hovered_row = row;
                 Vec::new()
@@ -2377,6 +2393,58 @@ impl AppState {
             delta_px,
             self.editor.max_scroll_top_px(),
         );
+    }
+
+    fn navigate_to_hunk(&mut self, forward: bool) {
+        let positions = &self.editor.hunk_positions;
+        if positions.is_empty() {
+            return;
+        }
+        let current = self.editor.scroll_top_px;
+        let target = if forward {
+            positions
+                .iter()
+                .find(|&&y| y > current)
+                .or_else(|| positions.first())
+                .copied()
+        } else {
+            positions
+                .iter()
+                .rev()
+                .find(|&&y| y < current)
+                .or_else(|| positions.last())
+                .copied()
+        };
+        if let Some(y) = target {
+            self.editor.scroll_top_px = y;
+            self.editor.clamp_scroll();
+        }
+    }
+
+    fn navigate_to_file(&mut self, forward: bool) {
+        let positions = &self.editor.file_positions;
+        if positions.is_empty() {
+            return;
+        }
+        let current = self.editor.scroll_top_px;
+        let target = if forward {
+            positions
+                .iter()
+                .find(|&&y| y > current)
+                .or_else(|| positions.first())
+                .copied()
+        } else {
+            positions
+                .iter()
+                .rev()
+                .find(|&&y| y < current)
+                .or_else(|| positions.last())
+                .copied()
+        };
+        if let Some(y) = target {
+            self.editor.scroll_top_px = y;
+            self.editor.clamp_scroll();
+        }
     }
 
     fn push_error(&mut self, message: &str) {

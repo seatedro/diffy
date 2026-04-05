@@ -13,6 +13,8 @@ pub struct EditorState {
     pub visible_row_start: Option<usize>,
     pub visible_row_end: Option<usize>,
     pub focused: bool,
+    pub hunk_positions: Vec<u32>,
+    pub file_positions: Vec<u32>,
 }
 
 impl Default for EditorState {
@@ -29,6 +31,8 @@ impl Default for EditorState {
             visible_row_start: None,
             visible_row_end: None,
             focused: false,
+            hunk_positions: Vec::new(),
+            file_positions: Vec::new(),
         }
     }
 }
@@ -40,6 +44,8 @@ impl EditorState {
         self.hovered_row = None;
         self.visible_row_start = None;
         self.visible_row_end = None;
+        self.hunk_positions.clear();
+        self.file_positions.clear();
     }
 
     pub fn max_scroll_top_px(&self) -> u32 {
@@ -49,5 +55,17 @@ impl EditorState {
 
     pub fn clamp_scroll(&mut self) {
         self.scroll_top_px = self.scroll_top_px.min(self.max_scroll_top_px());
+    }
+
+    pub fn current_hunk_index(&self) -> Option<(usize, usize)> {
+        if self.hunk_positions.is_empty() {
+            return None;
+        }
+        let scroll = self.scroll_top_px;
+        let idx = self
+            .hunk_positions
+            .partition_point(|&y| y <= scroll)
+            .saturating_sub(1);
+        Some((idx, self.hunk_positions.len()))
     }
 }

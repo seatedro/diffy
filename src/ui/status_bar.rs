@@ -37,6 +37,15 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> Div {
             .child(text(branch).text_xs().color(tc.text_muted).truncate());
     }
 
+    let mut center = div().flex_row().items_center().gap(Sp::SM);
+    if let Some((idx, total)) = state.editor.current_hunk_index() {
+        center = center.child(
+            text(format!("Hunk {}/{}", idx + 1, total))
+                .text_xs()
+                .color(tc.text_muted),
+        );
+    }
+
     let right_text = format!(
         "{}  \u{00b7}  {}",
         compare_mode_label(state.compare.mode),
@@ -52,6 +61,8 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> Div {
         .bg(tc.status_bar_background)
         .border_t(tc.border_variant)
         .child(left)
+        .child(spacer())
+        .child(center)
         .child(spacer())
         .child(text(right_text).text_xs().color(tc.text_muted))
 }

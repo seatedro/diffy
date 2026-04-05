@@ -749,15 +749,37 @@ impl NativeApp {
             Key::Named(NamedKey::Delete) => self.dispatch_action(Action::DeleteForward),
             Key::Character(text) => {
                 if !ctrl && !text.chars().all(char::is_control) {
-                    if text.as_str() == "/"
-                        && !self.is_text_focused()
+                    let viewport_nav = !self.is_text_focused()
                         && self.state.overlays.top().is_none()
-                        && self.state.workspace_mode == WorkspaceMode::Ready
-                    {
-                        self.dispatch_action(Action::SetFocus(Some(FocusTarget::SidebarSearch)));
-                    } else {
-                        self.dispatch_action(Action::InsertText(text.to_string()));
+                        && self.state.workspace_mode == WorkspaceMode::Ready;
+                    if viewport_nav {
+                        match text.as_str() {
+                            "/" => {
+                                self.dispatch_action(Action::SetFocus(Some(
+                                    FocusTarget::SidebarSearch,
+                                )));
+                                return;
+                            }
+                            "]" => {
+                                self.dispatch_action(Action::GoToNextHunk);
+                                return;
+                            }
+                            "[" => {
+                                self.dispatch_action(Action::GoToPreviousHunk);
+                                return;
+                            }
+                            "n" => {
+                                self.dispatch_action(Action::GoToNextFile);
+                                return;
+                            }
+                            "N" => {
+                                self.dispatch_action(Action::GoToPreviousFile);
+                                return;
+                            }
+                            _ => {}
+                        }
                     }
+                    self.dispatch_action(Action::InsertText(text.to_string()));
                 }
             }
             _ => {}

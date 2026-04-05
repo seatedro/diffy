@@ -244,6 +244,7 @@ impl EditorElement {
                 }
 
                 state.content_height_px = self.summary.content_height_px;
+                self.rebuild_navigation_positions(state);
                 state.clamp_scroll();
                 self.update_visible_ranges(state);
 
@@ -310,6 +311,18 @@ impl EditorElement {
         };
         self.summary = rebuild_display_rows(doc, self.config, self.metrics, &mut self.rows);
         build_strip_layouts(&self.rows, STRIP_TARGET_HEIGHT_PX, &mut self.strips);
+    }
+
+    fn rebuild_navigation_positions(&self, state: &mut EditorState) {
+        state.hunk_positions.clear();
+        state.file_positions.clear();
+        for row in &self.rows {
+            if row.kind == RenderRowKind::HunkSeparator as u8 {
+                state.hunk_positions.push(row.y_px);
+            } else if row.kind == RenderRowKind::FileHeader as u8 {
+                state.file_positions.push(row.y_px);
+            }
+        }
     }
 
     fn update_visible_ranges(&mut self, state: &mut EditorState) {

@@ -1,3 +1,5 @@
+use halogen::view;
+
 use crate::ui::devicons::devicon;
 use crate::ui::element::{svg_icon, AnyElement, ElementContext, IntoAnyElement, RenderOnce};
 use crate::ui::icons::lucide;
@@ -128,13 +130,10 @@ impl RenderOnce for FileIcon {
     fn render(self, cx: &ElementContext) -> AnyElement {
         let tc = &cx.theme.colors;
         let (icon_svg, hue) = resolve_file_icon(&self.path);
+        let color = if self.selected { tc.accent } else { lang_color(hue, tc.text_muted) };
 
-        let color = if self.selected {
-            tc.accent
-        } else {
-            lang_color(hue, tc.text_muted)
-        };
-
-        svg_icon(icon_svg, self.size).color(color).into_any()
+        view! {
+            <icon svg={icon_svg} size={self.size} color={color} />
+        }
     }
 }

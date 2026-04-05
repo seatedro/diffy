@@ -1,3 +1,5 @@
+use halogen::view;
+
 use crate::ui::design::{Alpha, Rad, Sp, Sz};
 use crate::ui::element::{div, svg_icon, text, AnyElement, ElementContext, IntoAnyElement, RenderOnce};
 use crate::ui::style::Styled;
@@ -78,22 +80,17 @@ impl RenderOnce for Badge {
         let (bg, fg) = variant_colors(self.variant, tc);
         let icon_size = (m.ui_small_font_size - Sp::XXS * scale).max(Sz::ICON_MIN * scale);
 
-        let mut row = div()
-            .flex_row()
-            .flex_shrink_0()
-            .items_center()
-            .gap(m.spacing_xs)
-            .px(m.spacing_sm)
-            .py(Sp::XXS * scale)
-            .bg(bg)
-            .rounded(Rad::PILL * scale);
-
-        if let Some(svg) = self.icon {
-            row = row.child(svg_icon(svg, icon_size).color(fg));
+        view! { scale,
+            <div class="flex-row shrink-0 items-center"
+                 gap={m.spacing_xs} px={m.spacing_sm}
+                 py={Sp::XXS} bg={bg}
+                 rounded={Rad::PILL}>
+                if let Some(svg) = self.icon {
+                    <icon svg={svg} size={icon_size} color={fg} />
+                }
+                <text class="text-xs medium" color={fg}>{self.label}</text>
+            </div>
         }
-
-        row.child(text(self.label).text_xs().color(fg).medium())
-            .into_any()
     }
 }
 
@@ -134,15 +131,12 @@ impl RenderOnce for StatusBadge {
         let (bg, fg, label) = status_appearance(&self.status, tc);
         let size = (m.ui_small_font_size + Sp::XS * scale).round();
 
-        div()
-            .flex_shrink_0()
-            .items_center()
-            .justify_center()
-            .w(size)
-            .h(size)
-            .bg(bg)
-            .rounded(Rad::SM * scale)
-            .child(text(label).text_xs().color(fg).bold().text_center())
-            .into_any()
+        view! {
+            <div class="shrink-0 items-center justify-center"
+                 w={size} h={size} bg={bg}
+                 rounded={Rad::SM * scale}>
+                <text class="text-xs bold text-center" color={fg}>{label}</text>
+            </div>
+        }
     }
 }

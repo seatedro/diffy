@@ -5,6 +5,7 @@ use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
 use crate::ui::state::ToastKind;
 use crate::ui::style::Styled;
+use halogen::view;
 
 pub struct Toast {
     message: String,
@@ -37,40 +38,28 @@ impl RenderOnce for Toast {
             ToastKind::Error => lucide::ALERT_CIRCLE,
         };
 
-        div()
-            .w_full()
-            .h((Sz::TOAST * scale).round())
-            .flex_row()
-            .items_center()
-            .bg(tc.elevated_surface)
-            .rounded_lg()
-            .border(tc.border)
-            .shadow_preset(Shadow::TOAST)
-            .on_click(Action::DismissToast(self.index))
-            .cursor(CursorHint::Pointer)
-            .child(
-                div()
-                    .w((Sz::TOAST_STRIPE_W * scale).round())
-                    .h_full()
-                    .rounded((Rad::XXL * scale).round())
-                    .bg(accent),
-            )
-            .child(
-                div()
-                    .px((Sp::MD * scale).round())
-                    .child(svg_icon(icon, Ico::SM).color(accent)),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .child(text(&self.message).text_sm().color(tc.text).truncate()),
-            )
-            .child(
-                div()
-                    .px((Sp::MD * scale).round())
-                    .child(text("\u{00d7}").color(tc.text_muted)),
-            )
-            .into_any()
+        view! { scale,
+            <div class="w-full flex-row items-center"
+                h={Sz::TOAST}
+                bg={tc.elevated_surface}
+                rounded_lg
+                border={tc.border}
+                shadow_preset={Shadow::TOAST}
+                on_click={Action::DismissToast(self.index)}
+                cursor={CursorHint::Pointer}
+            >
+                <div class="h-full" w={Sz::TOAST_STRIPE_W} rounded={Rad::XXL} bg={accent} />
+                <div px={Sp::MD}>
+                    <icon svg={icon} size={Ico::SM} color={accent} />
+                </div>
+                <div class="flex-1">
+                    <text class="text-sm truncate" color={tc.text}>{&self.message}</text>
+                </div>
+                <div px={Sp::MD}>
+                    <text color={tc.text_muted}>{"\u{00d7}"}</text>
+                </div>
+            </div>
+        }
     }
 }
 

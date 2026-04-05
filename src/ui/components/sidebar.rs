@@ -1,3 +1,5 @@
+use halogen::view;
+
 use crate::ui::actions::Action;
 use crate::ui::design::{Ico, Sp, Sz};
 use crate::ui::element::*;
@@ -46,22 +48,12 @@ impl<'a> FileListItem<'a> {
         );
 
         if self.entry.additions > 0 || self.entry.deletions > 0 {
-            row = row.child(
-                div()
-                    .flex_row()
-                    .gap(Sp::XS)
-                    .flex_shrink_0()
-                    .child(
-                        text(format!("+{}", self.entry.additions))
-                            .text_xs()
-                            .color(tc.line_add_text),
-                    )
-                    .child(
-                        text(format!("\u{2212}{}", self.entry.deletions))
-                            .text_xs()
-                            .color(tc.line_del_text),
-                    ),
-            );
+            row = row.child(view! {
+                <div class="flex-row shrink-0" gap={Sp::XS}>
+                    <text class="text-xs" color={tc.line_add_text}>{format!("+{}", self.entry.additions)}</text>
+                    <text class="text-xs" color={tc.line_del_text}>{format!("\u{2212}{}", self.entry.deletions)}</text>
+                </div>
+            });
         }
 
         row
@@ -132,20 +124,14 @@ impl<'a> Sidebar<'a> {
             } else {
                 (lucide::FOLDER_OPEN, "Open a repository to start.")
             };
-            sidebar = sidebar.child(
-                div()
-                    .flex_1()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .flex_col()
-                            .items_center()
-                            .gap_2()
-                            .child(svg_icon(icon, Ico::XL).color(tc.text_muted))
-                            .child(text(msg).text_sm().color(tc.text_muted)),
-                    ),
-            );
+            sidebar = sidebar.child(view! {
+                <div class="flex-1 items-center justify-center">
+                    <div class="flex-col items-center gap-2">
+                        <icon svg={icon} size={Ico::XL} color={tc.text_muted} />
+                        <text class="text-sm" color={tc.text_muted}>{msg}</text>
+                    </div>
+                </div>
+            });
         } else {
             let total_height = state.file_list.total_content_height(file_count);
             let scroll_px = state.file_list.scroll_offset_px;

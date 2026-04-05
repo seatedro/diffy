@@ -1,3 +1,5 @@
+use halogen::view;
+
 use crate::ui::design::{Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::style::Styled;
@@ -41,16 +43,13 @@ impl RenderOnce for Toolbar {
             right = right.child(child);
         }
 
-        div()
-            .h((Sz::ROW * scale).round())
-            .w_full()
-            .flex_row()
-            .items_center()
-            .px((Sp::MD * scale).round())
-            .border_b(tc.border_variant)
-            .child(left)
-            .child(spacer())
-            .child(right)
-            .into_any()
+        view! { scale,
+            <div class="w-full flex-row items-center" h={Sz::ROW} px={Sp::MD}
+                 border_b={tc.border_variant}>
+                {left}
+                <spacer />
+                {right}
+            </div>
+        }
     }
 }

@@ -3,6 +3,7 @@ use crate::ui::design::{Rad, Shadow, Sp};
 use crate::ui::element::*;
 use crate::ui::shell::CursorHint;
 use crate::ui::style::Styled;
+use halogen::view;
 
 pub struct SegmentedItem {
     pub label: String,
@@ -35,37 +36,27 @@ impl RenderOnce for SegmentedControl {
         let tc = &cx.theme.colors;
         let scale = cx.theme.metrics.ui_scale();
 
-        let mut row = div()
-            .flex_row()
-            .flex_shrink_0()
-            .rounded_md()
-            .bg(tc.element_background)
-            .p((Sp::XXS * scale).round() + 1.0)
-            .gap((Sp::XXS * scale).round());
-
-        for item in self.items {
-            row = row.child(
-                div()
-                    .flex_shrink_0()
-                    .px((Sp::MD * scale).round())
-                    .py((Sp::XS * scale).round() + 1.0)
-                    .rounded((Rad::LG * scale).round())
-                    .when(item.selected, |d| {
-                        d.bg(tc.surface)
-                            .shadow_preset(Shadow::SUBTLE)
-                    })
-                    .when(!item.selected, |d| d.hover_bg(tc.ghost_element_hover))
-                    .on_click(item.action)
-                    .cursor(CursorHint::Pointer)
-                    .child(
-                        text(&item.label)
-                            .text_sm()
-                            .medium()
-                            .color(if item.selected { tc.text } else { tc.text_muted }),
-                    ),
-            );
+        view! { scale,
+            <div class="flex-row shrink-0 rounded-md"
+                 bg={tc.element_background}
+                 p={(Sp::XXS * scale).round() + 1.0}
+                 gap={Sp::XXS}>
+                for item in self.items {
+                    <div class="shrink-0"
+                         px={Sp::MD} py={(Sp::XS * scale).round() + 1.0}
+                         rounded={Rad::LG}
+                         bg={if item.selected { tc.surface }}
+                         shadow_preset={if item.selected { Shadow::SUBTLE }}
+                         hover_bg={if !item.selected { tc.ghost_element_hover }}
+                         on_click={item.action}
+                         cursor={CursorHint::Pointer}>
+                        <text class="text-sm font-medium"
+                              color={if item.selected { tc.text } else { tc.text_muted }}>
+                            {&item.label}
+                        </text>
+                    </div>
+                }
+            </div>
         }
-
-        row.into_any()
     }
 }

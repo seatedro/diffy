@@ -1,3 +1,5 @@
+use halogen::view;
+
 use crate::ui::element::{div, text, AnyElement, ElementContext, IntoAnyElement, RenderOnce};
 use crate::ui::style::Styled;
 use crate::ui::theme::Color;
@@ -60,22 +62,14 @@ impl RenderOnce for Avatar {
         let inits = initials(&self.name);
         let font_size = (self.size * 0.4).round();
 
-        div()
-            .flex_shrink_0()
-            .items_center()
-            .justify_center()
-            .w(self.size)
-            .h(self.size)
-            .bg(bg)
-            .rounded(self.size / 2.0)
-            .child(
-                text(inits)
-                    .size(font_size)
-                    .color(Color::rgba(255, 255, 255, 255))
-                    .bold()
-                    .text_center(),
-            )
-            .into_any()
+        view! {
+            <div class="shrink-0 items-center justify-center"
+                 w={self.size} h={self.size}
+                 bg={bg} rounded={self.size / 2.0}>
+                <text class="bold text-center" size={font_size}
+                      color={Color::rgba(255, 255, 255, 255)}>{inits}</text>
+            </div>
+        }
     }
 }
 

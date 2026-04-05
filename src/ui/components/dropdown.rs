@@ -1,3 +1,5 @@
+use halogen::view;
+
 use crate::ui::actions::Action;
 use crate::ui::design::{Shadow, Sp};
 use crate::ui::element::{
@@ -94,83 +96,64 @@ impl RenderOnce for Dropdown {
             .items_center()
             .gap(m.spacing_sm)
             .px(m.spacing_md)
-            .py(m.spacing_xs + Sp::XXS * scale)
+            .py(m.spacing_xs + (Sp::XXS * scale).round())
             .bg(tc.element_background)
             .border(tc.border_variant)
             .rounded(m.control_radius)
             .hover_bg(tc.element_hover)
-            .child(
-                div()
-                    .flex_1()
-                    .child(text(self.label).text_sm().color(tc.text)),
-            )
+            .child(view! {
+                <div class="flex-1">
+                    <text class="text-sm" color={tc.text}>{self.label}</text>
+                </div>
+            })
             .child(svg_icon(chevron, icon_size - Sp::XXS * scale).color(tc.text_muted));
 
         if let Some(w) = self.width {
             trigger = trigger.w(w);
         }
-
         if let Some(action) = self.on_toggle {
             trigger = trigger.on_click(action);
         }
 
-        let mut container = div().flex_col();
-        container = container.child(trigger);
-
-        if self.open {
-            let mut menu = div()
-                .flex_col()
-                .w_full()
-                .py(m.spacing_xs)
-                .bg(tc.elevated_surface)
-                .border(tc.border)
-                .rounded(m.control_radius)
-                .shadow_preset(Shadow::DROPDOWN);
-
-            for item in self.items {
-                let selected = item.selected;
-                let fg = if selected {
-                    tc.text_strong
-                } else {
-                    tc.text
-                };
-                let row_bg = if selected {
-                    tc.ghost_element_selected
-                } else {
-                    Color::TRANSPARENT
-                };
-
-                let mut row = div()
-                    .flex_row()
-                    .items_center()
-                    .gap(m.spacing_sm)
-                    .px(m.spacing_md)
-                    .py(m.spacing_xs + Sp::XXS * scale)
-                    .bg(row_bg)
-                    .hover_bg(tc.ghost_element_hover)
-                    .on_click(item.action);
-
-                if let Some(svg) = item.icon {
-                    row = row.child(svg_icon(svg, icon_size).color(tc.icon));
-                }
-
-                let mut label_col = div().flex_col().flex_1();
-                label_col = label_col.child(text(item.label).text_sm().color(fg));
-                if let Some(desc) = item.description {
-                    label_col = label_col.child(text(desc).text_xs().color(tc.text_muted));
-                }
-                row = row.child(label_col);
-
-                if selected {
-                    row = row.child(svg_icon(lucide::CHECK, icon_size).color(tc.accent));
-                }
-
-                menu = menu.child(row);
-            }
-
-            container = container.child(menu);
+        if !self.open {
+            return trigger.into_any();
         }
 
-        container.into_any()
+        view! { scale,
+            <div class="flex-col">
+                {trigger}
+                <div class="flex-col w-full"
+                     py={m.spacing_xs}
+                     bg={tc.elevated_surface}
+                     border={tc.border}
+                     rounded={m.control_radius}
+                     shadow_preset={Shadow::DROPDOWN}>
+                    for item in self.items {
+                        <div class="flex-row items-center"
+                             gap={m.spacing_sm} px={m.spacing_md}
+                             py={m.spacing_xs + Sp::XXS}
+                             bg={if item.selected { tc.ghost_element_selected } else { Color::TRANSPARENT }}
+                             hover_bg={tc.ghost_element_hover}
+                             on_click={item.action}>
+                            if let Some(svg) = item.icon {
+                                <icon svg={svg} size={icon_size} color={tc.icon} />
+                            }
+                            <div class="flex-col flex-1">
+                                <text class="text-sm"
+                                      color={if item.selected { tc.text_strong } else { tc.text }}>
+                                    {item.label}
+                                </text>
+                                if let Some(desc) = item.description {
+                                    <text class="text-xs" color={tc.text_muted}>{desc}</text>
+                                }
+                            </div>
+                            if item.selected {
+                                <icon svg={lucide::CHECK} size={icon_size} color={tc.accent} />
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+        }
     }
 }

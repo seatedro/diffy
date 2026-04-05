@@ -1,3 +1,5 @@
+use halogen::view;
+
 use crate::ui::actions::Action;
 use crate::ui::design::{Alpha, Ico, Rad, Sp};
 use crate::ui::element::{div, svg_icon, text, Div, IntoAnyElement};
@@ -60,13 +62,9 @@ pub fn search_field(
                 .border(tc.border_variant)
                 .rounded(Rad::SM)
                 .shadow(1.0, 1.0, tc.border_soft.with_alpha(Alpha::FAINT))
-                .child(
-                    text(hint)
-                        .text_xs()
-                        .color(tc.text_muted)
-                        .mono()
-                        .text_center(),
-                ),
+                .child(view! {
+                    <text class="text-xs mono text-center" color={tc.text_muted}>{hint}</text>
+                }),
         );
     }
 

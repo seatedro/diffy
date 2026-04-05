@@ -1,3 +1,5 @@
+use halogen::view;
+
 use crate::ui::actions::Action;
 use crate::ui::design::{Ico, Rad, Sp, Sz};
 use crate::ui::element::*;
@@ -32,20 +34,11 @@ pub fn picker_list<T: PickerItem>(
 
     for (i, entry) in entries.iter().enumerate() {
         if entry.is_section_header() {
-            list = list.child(
-                div()
-                    .w_full()
-                    .h(row_h)
-                    .flex_row()
-                    .items_center()
-                    .px((Sp::MD * scale).round())
-                    .child(
-                        text(entry.label())
-                            .text_xs()
-                            .color(tc.text_muted)
-                            .truncate(),
-                    ),
-            );
+            list = list.child(view! { scale,
+                <div class="w-full flex-row items-center" h={row_h} px={Sp::MD}>
+                    <text class="text-xs truncate" color={tc.text_muted}>{entry.label()}</text>
+                </div>
+            });
             continue;
         }
         let selected = i == selected_index;
@@ -103,14 +96,17 @@ fn picker_label(
             let before = &label_text[..start];
             let matched = &label_text[start..end];
             let after = &label_text[end..];
-            let mut row = div().flex_row().overflow_hidden();
-            if !before.is_empty() {
-                row = row.child(text(before).text_sm().color(base_color));
-            }
-            row = row.child(text(matched).text_sm().color(tc.accent));
-            if !after.is_empty() {
-                row = row.child(text(after).text_sm().color(base_color));
-            }
+            let row = view! {
+                <div class="flex-row overflow-hidden">
+                    if !before.is_empty() {
+                        <text class="text-sm" color={base_color}>{before}</text>
+                    }
+                    <text class="text-sm" color={tc.accent}>{matched}</text>
+                    if !after.is_empty() {
+                        <text class="text-sm" color={base_color}>{after}</text>
+                    }
+                </div>
+            };
             container.child(row)
         }
         _ => container.child(

@@ -1,3 +1,5 @@
+use halogen::view;
+
 use crate::ui::actions::Action;
 use crate::ui::design::Sp;
 use crate::ui::element::{div, svg_icon, text, AnyElement, ElementContext, IntoAnyElement, RenderOnce};
@@ -35,15 +37,13 @@ impl RenderOnce for Breadcrumb {
 
         for (i, segment) in self.segments.into_iter().enumerate() {
             if i > 0 {
-                row = row.child(svg_icon(lucide::CHEVRON_RIGHT, icon_size).color(tc.text_muted));
+                row = row.child(view! { scale,
+                    <icon svg={lucide::CHEVRON_RIGHT} size={icon_size} color={tc.text_muted} />
+                });
             }
 
             let is_last = i == last;
-            let color = if is_last {
-                tc.text_strong
-            } else {
-                tc.text_muted
-            };
+            let color = if is_last { tc.text_strong } else { tc.text_muted };
 
             let mut label = text(segment).text_sm().color(color);
             if is_last {

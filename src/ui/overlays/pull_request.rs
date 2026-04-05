@@ -1,3 +1,5 @@
+use halogen::view;
+
 use crate::ui::actions::Action;
 use crate::ui::components::button::{Button, ButtonStyle};
 use crate::ui::components::modal::Modal;
@@ -34,32 +36,15 @@ pub fn pull_request_modal(state: &AppState, theme: &crate::ui::theme::Theme, wid
     );
 
     if let Some(info) = state.github.pull_request.info.as_ref() {
-        modal = modal.body_child(
-            div()
-                .flex_col()
-                .gap((Sp::SM * scale).round())
-                .p((Sp::MD * scale).round())
-                .rounded_md()
-                .bg(tc.surface)
-                .child(
-                    div()
-                        .flex_row()
-                        .flex_shrink_0()
-                        .items_center()
-                        .gap((Sp::SM * scale).round())
-                        .child(svg_icon(lucide::GIT_PULL_REQUEST, Ico::SM).color(tc.accent))
-                        .child(
-                            text(format!("#{} {}", info.number, info.title))
-                                .medium()
-                                .color(tc.text_strong),
-                        ),
-                )
-                .child(
-                    text("Use this compare to apply the PR base/head refs and start diffing.")
-                        .text_sm()
-                        .color(tc.text_muted),
-                ),
-        );
+        modal = modal.body_child(view! { scale,
+            <div class="flex-col" gap={Sp::SM} p={Sp::MD} rounded_md bg={tc.surface}>
+                <div class="flex-row shrink-0 items-center" gap={Sp::SM}>
+                    <icon svg={lucide::GIT_PULL_REQUEST} size={Ico::SM} color={tc.accent} />
+                    <text class="font-medium" color={tc.text_strong}>{format!("#{} {}", info.number, info.title)}</text>
+                </div>
+                <text class="text-sm" color={tc.text_muted}>{"Use this compare to apply the PR base/head refs and start diffing."}</text>
+            </div>
+        });
     }
 
     modal = modal.footer_child(

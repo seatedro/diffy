@@ -1,6 +1,8 @@
+use halogen::view;
+
 use crate::ui::actions::Action;
 use crate::ui::design::{Shadow, Sp, Sz};
-use crate::ui::element::{div, svg_icon, text, Div};
+use crate::ui::element::{div, svg_icon, text, Div, IntoAnyElement};
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
 
@@ -122,14 +124,16 @@ pub fn context_menu_layer(entries: Vec<ContextMenuEntry>, x: f32, y: f32, theme:
                     row = row.child(div().w(icon_size).h(icon_size).flex_shrink_0());
                 }
 
-                row = row.child(
-                    div()
-                        .flex_1()
-                        .child(text(label).text_sm().color(fg)),
-                );
+                row = row.child(view! {
+                    <div class="flex-1">
+                        <text class="text-sm" color={fg}>{label}</text>
+                    </div>
+                });
 
                 if let Some(key) = shortcut {
-                    row = row.child(text(key).text_xs().color(tc.text_muted));
+                    row = row.child(view! {
+                        <text class="text-xs" color={tc.text_muted}>{key}</text>
+                    });
                 }
 
                 menu = menu.child(row);

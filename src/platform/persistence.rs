@@ -105,7 +105,13 @@ impl SettingsStore {
         }
 
         let contents = fs::read_to_string(&self.path)?;
-        Ok(serde_json::from_str(&contents)?)
+        match serde_json::from_str(&contents) {
+            Ok(settings) => Ok(settings),
+            Err(e) => {
+                log::warn!("corrupt settings file, using defaults: {e}");
+                Ok(Settings::default())
+            }
+        }
     }
 
     pub fn save(&self, settings: &Settings) -> Result<()> {

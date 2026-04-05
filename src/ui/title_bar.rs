@@ -1,3 +1,5 @@
+use halogen::view;
+
 use crate::core::compare::CompareMode;
 use crate::ui::actions::Action;
 use crate::ui::components::Button;
@@ -51,11 +53,11 @@ pub(crate) fn title_bar(state: &AppState, theme: &Theme, sidebar_visible: f32) -
     } else {
         left = left
             .child(svg_icon(lucide::GIT_COMPARE, Ico::LG).color(tc.accent))
-            .child(
-                div()
-                    .min_w(0.0)
-                    .child(text("diffy").semibold().color(tc.text_strong).truncate()),
-            );
+            .child(view! {
+                <div min_w={0.0}>
+                    <text class="font-semibold truncate" color={tc.text_strong}>{"diffy"}</text>
+                </div>
+            });
     }
 
     let mut center = div()
@@ -95,16 +97,15 @@ pub(crate) fn title_bar(state: &AppState, theme: &Theme, sidebar_visible: f32) -
                 tc,
                 scale,
             ))
-            .child(
-                div()
-                    .px(Sp::XS * scale)
-                    .py(Sp::XS * scale)
-                    .rounded(Rad::MD)
-                    .hover_bg(tc.ghost_element_hover)
-                    .on_click(Action::CycleCompareMode)
-                    .cursor(CursorHint::Pointer)
-                    .child(text(mode_symbol).text_sm().medium().color(tc.text_muted)),
-            )
+            .child(view! { scale,
+                <div px={Sp::XS} py={Sp::XS}
+                     rounded={Rad::MD}
+                     hover_bg={tc.ghost_element_hover}
+                     on_click={Action::CycleCompareMode}
+                     cursor={CursorHint::Pointer}>
+                    <text class="text-sm font-medium" color={tc.text_muted}>{mode_symbol}</text>
+                </div>
+            })
             .child(ref_selector_button(
                 right_label,
                 lucide::GIT_BRANCH,
@@ -114,7 +115,9 @@ pub(crate) fn title_bar(state: &AppState, theme: &Theme, sidebar_visible: f32) -
                 scale,
             ));
     } else if state.workspace_mode == WorkspaceMode::Loading {
-        center = center.child(text("Comparing\u{2026}").text_sm().color(tc.text_muted));
+        center = center.child(view! {
+            <text class="text-sm" color={tc.text_muted}>{"Comparing\u{2026}"}</text>
+        });
     }
 
     let pr_active = state.overlays.top() == Some(OverlaySurface::PullRequestModal);
@@ -127,11 +130,9 @@ pub(crate) fn title_bar(state: &AppState, theme: &Theme, sidebar_visible: f32) -
 
     if is_ready {
         let file_count = state.workspace.files.len();
-        right = right.child(
-            text(format!("{file_count} files"))
-                .text_sm()
-                .color(tc.text_muted),
-        );
+        right = right.child(view! {
+            <text class="text-sm" color={tc.text_muted}>{format!("{file_count} files")}</text>
+        });
         right = right.child(toolbar_separator(tc));
     }
 
@@ -163,33 +164,31 @@ fn ref_selector_button(
     action: Action,
     tc: &crate::ui::theme::ThemeColors,
     scale: f32,
-) -> Div {
+) -> AnyElement {
     let text_color = if is_placeholder {
         tc.text_muted
     } else {
         tc.text_strong
     };
-    div()
-        .flex_row()
-        .items_center()
-        .gap(Sp::XS * scale)
-        .px(Sp::SM * scale)
-        .py(Sp::XS * scale)
-        .rounded(Rad::MD)
-        .hover_bg(tc.ghost_element_hover)
-        .on_click(action)
-        .cursor(CursorHint::Pointer)
-        .min_w(Sz::REF_SELECTOR_MIN_W * scale)
-        .child(svg_icon(icon, Ico::SM).color(tc.text_muted))
-        .child(
-            div()
-                .min_w(0.0)
-                .flex_1()
-                .child(text(label).text_sm().medium().color(text_color).truncate()),
-        )
-        .child(svg_icon(lucide::CHEVRON_DOWN, Ico::XS).color(tc.text_muted))
+    view! { scale,
+        <div class="flex-row items-center"
+             gap={Sp::XS} px={Sp::SM} py={Sp::XS}
+             rounded={Rad::MD}
+             hover_bg={tc.ghost_element_hover}
+             on_click={action}
+             cursor={CursorHint::Pointer}
+             min_w={Sz::REF_SELECTOR_MIN_W}>
+            <icon svg={icon} size={Ico::SM} color={tc.text_muted} />
+            <div class="flex-1" min_w={0.0}>
+                <text class="text-sm font-medium truncate" color={text_color}>{label}</text>
+            </div>
+            <icon svg={lucide::CHEVRON_DOWN} size={Ico::XS} color={tc.text_muted} />
+        </div>
+    }
 }
 
-fn toolbar_separator(tc: &crate::ui::theme::ThemeColors) -> Div {
-    div().w(Sz::SEPARATOR_W).h(Sz::SEPARATOR_H).bg(tc.border_variant)
+fn toolbar_separator(tc: &crate::ui::theme::ThemeColors) -> AnyElement {
+    view! {
+        <div w={Sz::SEPARATOR_W} h={Sz::SEPARATOR_H} bg={tc.border_variant} />
+    }
 }

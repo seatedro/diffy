@@ -5,9 +5,11 @@ use crate::ui::icons::lucide;
 use crate::ui::state::{AppState, AsyncStatus};
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
+use halogen::view;
 
 pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> Div {
     let tc = &theme.colors;
+    let scale = theme.metrics.ui_scale();
     let (status_icon, status_color, status_text) = match state.repository.status {
         AsyncStatus::Ready => (lucide::CHECK, tc.line_add_text, "ready"),
         AsyncStatus::Loading => (lucide::LOADER, tc.text_muted, "loading"),
@@ -22,29 +24,21 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> Div {
         .find(|b| b.is_head)
         .map(|b| b.name.as_str());
 
-    let mut left = div()
-        .flex_row()
-        .items_center()
-        .gap(Sp::SM)
-        .min_w(0.0)
-        .child(svg_icon(status_icon, Ico::XS).color(status_color))
-        .child(text(status_text).text_xs().color(tc.text_muted));
+    let branch_children = head_branch.map(|branch| {
+        view! { scale,
+            <div class="flex-row items-center" gap={Sp::SM}>
+                <text class="text-xs" color={tc.text_muted}>{"\u{00b7}"}</text>
+                <icon svg={lucide::GIT_BRANCH} size={Ico::XS} color={tc.text_muted} />
+                <text class="text-xs truncate" color={tc.text_muted}>{branch}</text>
+            </div>
+        }
+    });
 
-    if let Some(branch) = head_branch {
-        left = left
-            .child(text("\u{00b7}").text_xs().color(tc.text_muted))
-            .child(svg_icon(lucide::GIT_BRANCH, Ico::XS).color(tc.text_muted))
-            .child(text(branch).text_xs().color(tc.text_muted).truncate());
-    }
-
-    let mut center = div().flex_row().items_center().gap(Sp::SM);
-    if let Some((idx, total)) = state.editor.current_hunk_index() {
-        center = center.child(
-            text(format!("Hunk {}/{}", idx + 1, total))
-                .text_xs()
-                .color(tc.text_muted),
-        );
-    }
+    let hunk_child = state.editor.current_hunk_index().map(|(idx, total)| {
+        view! {
+            <text class="text-xs" color={tc.text_muted}>{format!("Hunk {}/{}", idx + 1, total)}</text>
+        }
+    });
 
     let right_text = format!(
         "{}  \u{00b7}  {}",
@@ -60,9 +54,19 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> Div {
         .px_4()
         .bg(tc.status_bar_background)
         .border_t(tc.border_variant)
-        .child(left)
+        .child(view! { scale,
+            <div class="flex-row items-center" gap={Sp::SM} min_w={0.0}>
+                <icon svg={status_icon} size={Ico::XS} color={status_color} />
+                <text class="text-xs" color={tc.text_muted}>{status_text}</text>
+                {?branch_children}
+            </div>
+        })
         .child(spacer())
-        .child(center)
+        .child(view! { scale,
+            <div class="flex-row items-center" gap={Sp::SM}>
+                {?hunk_child}
+            </div>
+        })
         .child(spacer())
         .child(text(right_text).text_xs().color(tc.text_muted))
 }

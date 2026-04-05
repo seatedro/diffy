@@ -1,3 +1,5 @@
+use halogen::view;
+
 use crate::ui::actions::Action;
 use crate::ui::components::button::{Button, ButtonStyle};
 use crate::ui::components::modal::Modal;
@@ -34,48 +36,26 @@ pub fn auth_modal(state: &AppState, theme: &crate::ui::theme::Theme, width: f32,
         height,
     )
     .height(320.0)
-    .body_child(
-        div()
-            .flex_row()
-            .flex_shrink_0()
-            .items_center()
-            .gap((Sp::SM * scale).round())
-            .child(svg_icon(status_icon, Ico::SM).color(tc.text_muted))
-            .child(text(status_text).text_sm().color(tc.text_muted)),
-    );
+    .body_child(view! { scale,
+        <div class="flex-row shrink-0 items-center" gap={Sp::SM}>
+            <icon svg={status_icon} size={Ico::SM} color={tc.text_muted} />
+            <text class="text-sm" color={tc.text_muted}>{status_text}</text>
+        </div>
+    });
 
     if let Some(flow) = state.github.auth.device_flow.as_ref() {
-        modal = modal.body_child(
-            div()
-                .flex_col()
-                .gap((Sp::MD * scale).round())
-                .p((Sp::MD * scale).round())
-                .rounded_md()
-                .bg(tc.surface)
-                .child(
-                    div()
-                        .flex_row()
-                        .flex_shrink_0()
-                        .items_center()
-                        .gap((Sp::SM * scale).round())
-                        .child(svg_icon(lucide::COPY, Ico::SM).color(tc.text_muted))
-                        .child(
-                            text(format!("User code: {}", flow.user_code))
-                                .mono()
-                                .medium()
-                                .color(tc.text_strong),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex_row()
-                        .flex_shrink_0()
-                        .items_center()
-                        .gap((Sp::SM * scale).round())
-                        .child(svg_icon(lucide::EXTERNAL_LINK, Ico::SM).color(tc.text_accent))
-                        .child(text(&flow.verification_uri).text_sm().color(tc.text_accent)),
-                ),
-        );
+        modal = modal.body_child(view! { scale,
+            <div class="flex-col" gap={Sp::MD} p={Sp::MD} rounded_md bg={tc.surface}>
+                <div class="flex-row shrink-0 items-center" gap={Sp::SM}>
+                    <icon svg={lucide::COPY} size={Ico::SM} color={tc.text_muted} />
+                    <text class="font-mono font-medium" color={tc.text_strong}>{format!("User code: {}", flow.user_code)}</text>
+                </div>
+                <div class="flex-row shrink-0 items-center" gap={Sp::SM}>
+                    <icon svg={lucide::EXTERNAL_LINK} size={Ico::SM} color={tc.text_accent} />
+                    <text class="text-sm" color={tc.text_accent}>{&flow.verification_uri}</text>
+                </div>
+            </div>
+        });
     }
 
     modal = modal.footer_child(

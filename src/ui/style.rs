@@ -481,4 +481,169 @@ pub trait Styled: Sized {
         self.element_style_mut().layout.flex_wrap = taffy::FlexWrap::Wrap;
         self
     }
+
+    fn flex_none(mut self) -> Self {
+        let l = &mut self.element_style_mut().layout;
+        l.flex_grow = 0.0;
+        l.flex_shrink = 0.0;
+        l.flex_basis = taffy::Dimension::auto();
+        self
+    }
+
+    fn flex_auto(mut self) -> Self {
+        let l = &mut self.element_style_mut().layout;
+        l.flex_grow = 1.0;
+        l.flex_shrink = 1.0;
+        l.flex_basis = taffy::Dimension::auto();
+        self
+    }
+
+    fn flex_row_reverse(mut self) -> Self {
+        self.element_style_mut().layout.flex_direction = taffy::FlexDirection::RowReverse;
+        self
+    }
+
+    fn flex_col_reverse(mut self) -> Self {
+        self.element_style_mut().layout.flex_direction = taffy::FlexDirection::ColumnReverse;
+        self
+    }
+
+    fn justify_start(mut self) -> Self {
+        self.element_style_mut().layout.justify_content = Some(taffy::JustifyContent::FlexStart);
+        self
+    }
+
+    fn self_auto(mut self) -> Self {
+        self.element_style_mut().layout.align_self = None;
+        self
+    }
+
+    fn self_start(mut self) -> Self {
+        self.element_style_mut().layout.align_self = Some(taffy::AlignSelf::FlexStart);
+        self
+    }
+
+    fn self_end(mut self) -> Self {
+        self.element_style_mut().layout.align_self = Some(taffy::AlignSelf::FlexEnd);
+        self
+    }
+
+    fn self_center(mut self) -> Self {
+        self.element_style_mut().layout.align_self = Some(taffy::AlignSelf::Center);
+        self
+    }
+
+    fn self_stretch(mut self) -> Self {
+        self.element_style_mut().layout.align_self = Some(taffy::AlignSelf::Stretch);
+        self
+    }
+
+    fn self_baseline(mut self) -> Self {
+        self.element_style_mut().layout.align_self = Some(taffy::AlignSelf::Baseline);
+        self
+    }
+
+    fn items_baseline(mut self) -> Self {
+        self.element_style_mut().layout.align_items = Some(taffy::AlignItems::Baseline);
+        self
+    }
+
+    fn items_stretch(mut self) -> Self {
+        self.element_style_mut().layout.align_items = Some(taffy::AlignItems::Stretch);
+        self
+    }
+
+    fn hidden(mut self) -> Self {
+        self.element_style_mut().layout.display = taffy::Display::None;
+        self
+    }
+
+    fn basis(mut self, v: f32) -> Self {
+        self.element_style_mut().layout.flex_basis = taffy::Dimension::length(v);
+        self
+    }
+
+    fn basis_auto(mut self) -> Self {
+        self.element_style_mut().layout.flex_basis = taffy::Dimension::auto();
+        self
+    }
+
+    fn basis_full(mut self) -> Self {
+        self.element_style_mut().layout.flex_basis = taffy::Dimension::percent(1.0);
+        self
+    }
+
+    fn pl(mut self, v: f32) -> Self {
+        self.element_style_mut().layout.padding.left = taffy::LengthPercentage::length(v);
+        self
+    }
+
+    fn pr(mut self, v: f32) -> Self {
+        self.element_style_mut().layout.padding.right = taffy::LengthPercentage::length(v);
+        self
+    }
+
+    fn size(mut self, v: f32) -> Self {
+        let l = &mut self.element_style_mut().layout;
+        l.size.width = taffy::Dimension::length(v);
+        l.size.height = taffy::Dimension::length(v);
+        self
+    }
+
+    fn size_full(mut self) -> Self {
+        let l = &mut self.element_style_mut().layout;
+        l.size.width = taffy::Dimension::percent(1.0);
+        l.size.height = taffy::Dimension::percent(1.0);
+        self
+    }
+
+    fn gap_0(self) -> Self { self.gap(Sp::NONE) }
+    fn gap_5(self) -> Self { self.gap(Sp::XL) }
+    fn gap_6(self) -> Self { self.gap(Sp::XXL - Sp::XS) }
+    fn gap_8(self) -> Self { self.gap(Sp::XXL + Sp::XS) }
+
+    fn p_0(self) -> Self { self.p(Sp::NONE) }
+
+    fn px_0(self) -> Self { self.px(Sp::NONE) }
+    fn px_1(self) -> Self { self.px(Sp::XS) }
+
+    fn py_0(self) -> Self { self.py(Sp::NONE) }
+    fn py_4(self) -> Self { self.py(Sp::LG) }
+    fn py_5(self) -> Self { self.py(Sp::XL) }
+
+    fn pt_1(self) -> Self { self.pt(Sp::XS) }
+    fn pt_2(self) -> Self { self.pt(Sp::SM) }
+    fn pt_3(self) -> Self { self.pt(Sp::MD) }
+    fn pt_4(self) -> Self { self.pt(Sp::LG) }
+
+    fn pb_1(self) -> Self { self.pb(Sp::XS) }
+    fn pb_2(self) -> Self { self.pb(Sp::SM) }
+    fn pb_3(self) -> Self { self.pb(Sp::MD) }
+    fn pb_4(self) -> Self { self.pb(Sp::LG) }
+
+    fn rounded_none(self) -> Self { self.rounded(0.0) }
+    fn rounded_full(mut self) -> Self {
+        self.element_style_mut().corner_radius = 9999.0;
+        self
+    }
+
+    fn overflow_y_hidden(mut self) -> Self {
+        self.element_style_mut().layout.overflow.y = taffy::Overflow::Hidden;
+        self
+    }
+
+    fn overflow_x_hidden(mut self) -> Self {
+        self.element_style_mut().layout.overflow.x = taffy::Overflow::Hidden;
+        self
+    }
+
+    fn relative(mut self) -> Self {
+        self.element_style_mut().layout.position = taffy::Position::Relative;
+        self
+    }
+
+    fn border_w(mut self, w: f32) -> Self {
+        self.element_style_mut().border_widths = [w; 4];
+        self
+    }
 }

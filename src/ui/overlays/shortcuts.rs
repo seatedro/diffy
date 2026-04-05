@@ -1,3 +1,5 @@
+use halogen::view;
+
 use crate::ui::components::modal::Modal;
 use crate::ui::design::{Sp, Sz};
 use crate::ui::element::*;
@@ -75,32 +77,19 @@ pub fn keyboard_shortcuts(
     for group in GROUPS {
         let mut section = div().flex_col().gap((Sp::XS * scale).round());
 
-        section = section.child(
-            text(group.title)
-                .text_sm()
-                .semibold()
-                .color(tc.accent),
-        );
+        section = section.child(view! {
+            <text class="text-sm font-semibold" color={tc.accent}>{group.title}</text>
+        });
 
         for entry in group.entries {
-            section = section.child(
-                div()
-                    .flex_row()
-                    .items_center()
-                    .gap((Sp::MD * scale).round())
-                    .child(
-                        div()
-                            .w((Sz::CONTEXT_MENU_MIN_W * scale).round())
-                            .flex_shrink_0()
-                            .child(
-                                text(entry.key)
-                                    .mono()
-                                    .text_sm()
-                                    .color(tc.text_strong),
-                            ),
-                    )
-                    .child(text(entry.description).text_sm().color(tc.text_muted)),
-            );
+            section = section.child(view! { scale,
+                <div class="flex-row items-center" gap={Sp::MD}>
+                    <div class="shrink-0" w={Sz::CONTEXT_MENU_MIN_W}>
+                        <text class="font-mono text-sm" color={tc.text_strong}>{entry.key}</text>
+                    </div>
+                    <text class="text-sm" color={tc.text_muted}>{entry.description}</text>
+                </div>
+            });
         }
 
         body = body.child(section);

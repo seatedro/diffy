@@ -660,6 +660,7 @@ dependencies = [
  "fontdue",
  "git2",
  "glyphon",
+ "halogen",
  "heed",
  "log",
  "neo_frizbee",
@@ -1199,6 +1200,15 @@ dependencies = [
  "crunchy",
  "num-traits",
  "zerocopy",
+]
+
+[[package]]
+name = "halogen"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

@@ -1,3 +1,5 @@
+use halogen::view;
+
 use crate::ui::actions::Action;
 use crate::ui::design::{Ico, Shadow, Sp, Sz};
 use crate::ui::element::*;
@@ -92,18 +94,17 @@ impl RenderOnce for Modal {
         let mut header = div()
             .flex_col()
             .gap((Sp::SM * scale).round())
-            .child(
-                div()
-                    .flex_row()
-                    .flex_shrink_0()
-                    .items_center()
-                    .gap((Sp::SM * scale).round())
-                    .child(svg_icon(self.icon, Ico::LG).color(tc.accent))
-                    .child(text(&self.title).text_lg().semibold().color(tc.text_strong)),
-            );
+            .child(view! { scale,
+                <div class="flex-row shrink-0 items-center" gap={Sp::SM}>
+                    <icon svg={self.icon} size={Ico::LG} color={tc.accent} />
+                    <text class="text-lg font-semibold" color={tc.text_strong}>{&self.title}</text>
+                </div>
+            });
 
         if !self.subtitle.is_empty() {
-            header = header.child(text(&self.subtitle).text_sm().color(tc.text_muted));
+            header = header.child(view! {
+                <text class="text-sm" color={tc.text_muted}>{&self.subtitle}</text>
+            });
         }
 
         let mut panel = div()

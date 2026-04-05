@@ -1,3 +1,5 @@
+use halogen::view;
+
 use crate::ui::actions::Action;
 use crate::ui::design::{Rad, Shadow, Sp, Sz};
 use crate::ui::element::{div, text, AnyElement, ElementContext, IntoAnyElement, RenderOnce};
@@ -93,14 +95,12 @@ impl RenderOnce for TabBar {
             content = content.child(text(item.label).text_sm().color(label_color).medium());
 
             if let Some(count_text) = item.count {
-                content = content.child(
-                    div()
-                        .px(m.spacing_xs)
-                        .py(Sz::TAB_BADGE_PY)
-                        .bg(tc.element_background)
-                        .rounded(Rad::XL)
-                        .child(text(count_text).text_xs().color(tc.text_muted)),
-                );
+                content = content.child(view! {
+                    <div px={m.spacing_xs} py={Sz::TAB_BADGE_PY}
+                         bg={tc.element_background} rounded={Rad::XL}>
+                        <text class="text-xs" color={tc.text_muted}>{count_text}</text>
+                    </div>
+                });
             }
 
             let indicator = div().w_full().h(Sz::TAB_INDICATOR_H).bg(indicator_color);

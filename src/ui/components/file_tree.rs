@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 
+use halogen::view;
+
 use crate::ui::actions::Action;
 use crate::ui::design::Sp;
 use crate::ui::element::{div, svg_icon, text, AnyElement, ElementContext, IntoAnyElement, RenderOnce};
@@ -268,21 +270,16 @@ impl RenderOnce for FileTree {
                         );
 
                     if additions > 0 || deletions > 0 {
-                        let mut stats = div().flex_row().flex_shrink_0().gap(m.spacing_xs);
-                        if additions > 0 {
-                            stats = stats.child(
-                                text(format!("+{additions}"))
-                                    .text_xs()
-                                    .color(tc.line_add_text),
-                            );
-                        }
-                        if deletions > 0 {
-                            stats = stats.child(
-                                text(format!("-{deletions}"))
-                                    .text_xs()
-                                    .color(tc.line_del_text),
-                            );
-                        }
+                        let stats = view! {
+                            <div class="flex-row shrink-0" gap={m.spacing_xs}>
+                                if additions > 0 {
+                                    <text class="text-xs" color={tc.line_add_text}>{format!("+{additions}")}</text>
+                                }
+                                if deletions > 0 {
+                                    <text class="text-xs" color={tc.line_del_text}>{format!("-{deletions}")}</text>
+                                }
+                            </div>
+                        };
                         row_div = row_div.child(stats);
                     }
 

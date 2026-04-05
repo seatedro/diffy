@@ -1,3 +1,5 @@
+use halogen::view;
+
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 use crate::ui::actions::Action;
 use crate::ui::components::button::{Button, ButtonStyle};
@@ -117,21 +119,16 @@ pub fn compare_sheet(state: &AppState, theme: &crate::ui::theme::Theme, width: f
     .body_child({
         let validation = state.overlays.compare_sheet.validation_message.as_deref();
         if let Some(msg) = validation {
-            div()
-                .w_full()
-                .flex_row()
-                .flex_shrink_0()
-                .items_center()
-                .gap(Sp::SM)
-                .child(svg_icon(lucide::ALERT_CIRCLE, Ico::SM).color(tc.status_error))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(0.0)
-                        .child(text(msg).text_sm().color(tc.status_error).truncate()),
-                )
+            view! { scale,
+                <div class="w-full flex-row shrink-0 items-center" gap={Sp::SM}>
+                    <icon svg={lucide::ALERT_CIRCLE} size={Ico::SM} color={tc.status_error} />
+                    <div class="flex-1" min_w={0.0}>
+                        <text class="text-sm truncate" color={tc.status_error}>{msg}</text>
+                    </div>
+                </div>
+            }
         } else {
-            div()
+            div().into_any()
         }
     })
     .footer_child(

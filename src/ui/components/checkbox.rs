@@ -1,3 +1,5 @@
+use halogen::view;
+
 use crate::ui::actions::Action;
 use crate::ui::design::{Alpha, Shadow, Sp, Sz};
 use crate::ui::element::{div, svg_icon, text, AnyElement, ElementContext, IntoAnyElement, RenderOnce};
@@ -83,12 +85,10 @@ impl RenderOnce for Checkbox {
         row = row.child(check_box);
 
         if let Some(label_text) = self.label {
-            let c = if self.disabled {
-                tc.text_muted
-            } else {
-                tc.text
-            };
-            row = row.child(text(label_text).text_sm().color(c));
+            let c = if self.disabled { tc.text_muted } else { tc.text };
+            row = row.child(view! {
+                <text class="text-sm" color={c}>{label_text}</text>
+            });
         }
 
         row.into_any()
@@ -188,12 +188,10 @@ impl RenderOnce for Toggle {
         row = row.child(track);
 
         if let Some(label_text) = self.label {
-            let c = if self.disabled {
-                tc.text_muted
-            } else {
-                tc.text
-            };
-            row = row.child(text(label_text).text_sm().color(c));
+            let c = if self.disabled { tc.text_muted } else { tc.text };
+            row = row.child(view! {
+                <text class="text-sm" color={c}>{label_text}</text>
+            });
         }
 
         row.into_any()

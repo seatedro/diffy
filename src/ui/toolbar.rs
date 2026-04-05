@@ -1,6 +1,8 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use halogen::view;
+
 use crate::render::{Rect, TextMetrics};
 use crate::ui::actions::Action;
 use crate::ui::components::{self, Button, ButtonStyle, SegmentedControl, SegmentedItem};
@@ -72,48 +74,39 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> Div {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
 
-    let left = div()
-        .flex_row()
-        .items_center()
-        .gap_1()
-        .flex_1()
-        .min_w(0.0)
-        .child(components::file_icon(file_label, Ico::SM))
-        .child(div().w(Sp::XS))
-        .child(
-            div()
-                .min_w(0.0)
-                .flex_1()
-                .child(text(file_label).text_sm().color(tc.text_muted).truncate()),
-        );
+    let left = view! { scale,
+        <div class="flex-row items-center gap-1 flex-1" min_w={0.0}>
+            {components::file_icon(file_label, Ico::SM)}
+            <div w={Sp::XS} />
+            <div class="flex-1" min_w={0.0}>
+                <text class="text-sm truncate" color={tc.text_muted}>{file_label}</text>
+            </div>
+        </div>
+    };
 
-    let right = div()
-        .flex_row()
-        .items_center()
-        .gap_1()
-        .child(SegmentedControl::new(vec![
-            SegmentedItem::new(
-                "Split",
-                Action::SetLayoutMode(LayoutMode::Split),
-                state.compare.layout == LayoutMode::Split,
-            ),
-            SegmentedItem::new(
-                "Unified",
-                Action::SetLayoutMode(LayoutMode::Unified),
-                state.compare.layout == LayoutMode::Unified,
-            ),
-        ]))
-        .child(
-            Button::new(Action::ToggleWrap)
+    let right = view! {
+        <div class="flex-row items-center gap-1">
+            {SegmentedControl::new(vec![
+                SegmentedItem::new(
+                    "Split",
+                    Action::SetLayoutMode(LayoutMode::Split),
+                    state.compare.layout == LayoutMode::Split,
+                ),
+                SegmentedItem::new(
+                    "Unified",
+                    Action::SetLayoutMode(LayoutMode::Unified),
+                    state.compare.layout == LayoutMode::Unified,
+                ),
+            ])}
+            {Button::new(Action::ToggleWrap)
                 .icon(lucide::WRAP_TEXT)
                 .label("Wrap")
-                .active(state.editor.wrap_enabled),
-        )
-        .child(
-            text(renderer_label(state.compare.renderer))
-                .text_xs()
-                .color(tc.text_muted),
-        );
+                .active(state.editor.wrap_enabled)}
+            <text class="text-xs" color={tc.text_muted}>
+                {renderer_label(state.compare.renderer)}
+            </text>
+        </div>
+    };
 
     div()
         .h((Sz::ROW * scale).round())
@@ -156,65 +149,45 @@ fn search_bar(state: &AppState, theme: &Theme) -> Div {
 
     let nav_icon_size = (Ico::SM * scale).round();
     let nav_btn_size = (Sz::SEARCH_INPUT * scale).round();
-
-    let nav = div()
-        .flex_row()
-        .items_center()
-        .gap(Sp::XXS * scale)
-        .child(
-            div()
-                .flex_shrink_0()
-                .child(
-                    text(&count_label)
-                        .text_xs()
-                        .color(tc.text_muted)
-                        .mono(),
-                ),
-        )
-        .child(
-            div()
-                .w(nav_btn_size)
-                .h(nav_btn_size)
-                .items_center()
-                .justify_center()
-                .rounded(Rad::SM * scale)
-                .hover_bg(tc.ghost_element_hover)
-                .on_click(Action::SearchPrevious)
-                .cursor(CursorHint::Pointer)
-                .child(svg_icon(lucide::CHEVRON_UP, nav_icon_size).color(tc.text_muted)),
-        )
-        .child(
-            div()
-                .w(nav_btn_size)
-                .h(nav_btn_size)
-                .items_center()
-                .justify_center()
-                .rounded(Rad::SM * scale)
-                .hover_bg(tc.ghost_element_hover)
-                .on_click(Action::SearchNext)
-                .cursor(CursorHint::Pointer)
-                .child(svg_icon(lucide::CHEVRON_DOWN, nav_icon_size).color(tc.text_muted)),
-        )
-        .child(
-            div()
-                .w(nav_btn_size)
-                .h(nav_btn_size)
-                .items_center()
-                .justify_center()
-                .rounded(Rad::SM * scale)
-                .hover_bg(tc.ghost_element_hover)
-                .on_click(Action::CloseSearch)
-                .cursor(CursorHint::Pointer)
-                .child(svg_icon(lucide::X, nav_icon_size).color(tc.text_muted)),
-        );
-
     let search_icon_size = (Ico::SM * scale).round();
+
+    let nav = view! { scale,
+        <div class="flex-row items-center" gap={Sp::XXS}>
+            <div class="shrink-0">
+                <text class="text-xs font-mono" color={tc.text_muted}>{&count_label}</text>
+            </div>
+            <div w={nav_btn_size} h={nav_btn_size}
+                 class="items-center justify-center"
+                 rounded={Rad::SM}
+                 hover_bg={tc.ghost_element_hover}
+                 on_click={Action::SearchPrevious}
+                 cursor={CursorHint::Pointer}>
+                <icon svg={lucide::CHEVRON_UP} size={nav_icon_size} color={tc.text_muted} />
+            </div>
+            <div w={nav_btn_size} h={nav_btn_size}
+                 class="items-center justify-center"
+                 rounded={Rad::SM}
+                 hover_bg={tc.ghost_element_hover}
+                 on_click={Action::SearchNext}
+                 cursor={CursorHint::Pointer}>
+                <icon svg={lucide::CHEVRON_DOWN} size={nav_icon_size} color={tc.text_muted} />
+            </div>
+            <div w={nav_btn_size} h={nav_btn_size}
+                 class="items-center justify-center"
+                 rounded={Rad::SM}
+                 hover_bg={tc.ghost_element_hover}
+                 on_click={Action::CloseSearch}
+                 cursor={CursorHint::Pointer}>
+                <icon svg={lucide::X} size={nav_icon_size} color={tc.text_muted} />
+            </div>
+        </div>
+    };
 
     div()
         .w_full()
         .flex_row()
         .items_center()
-        .gap(Sp::SM * scale)
+        .gap((Sp::SM * scale).round())
         .px((Sp::MD * scale).round())
         .py((Sp::XS * scale).round())
         .border_b(tc.border_variant)
@@ -230,61 +203,52 @@ fn repo_ready_hint(theme: &Theme) -> Div {
         .flex_1()
         .items_center()
         .justify_center()
-        .child(
-            div()
-                .flex_col()
-                .items_center()
-                .gap(Sp::SM)
-                .child(svg_icon(lucide::GIT_COMPARE, Ico::XXL).color(tc.text_muted.with_alpha(Alpha::SOFT)))
-                .child(text("Select refs to compare").text_sm().color(tc.text_muted)),
-        )
+        .child(view! {
+            <div class="flex-col items-center gap-2">
+                <icon svg={lucide::GIT_COMPARE} size={Ico::XXL}
+                      color={tc.text_muted.with_alpha(Alpha::SOFT)} />
+                <text class="text-sm" color={tc.text_muted}>
+                    {"Select refs to compare"}
+                </text>
+            </div>
+        })
 }
 
 fn loading_card(state: &AppState, theme: &Theme) -> Div {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
+
+    let refs_label = format!(
+        "{} \u{2022} {} \u{2192} {}",
+        compare_mode_label(state.compare.mode),
+        display_ref(&state.compare.left_ref),
+        display_ref(&state.compare.right_ref)
+    );
+
     div()
         .flex_1()
         .items_center()
         .justify_center()
-        .p(Sp::XL * scale)
-        .child(
-            div()
-                .w_full()
-                .max_w(Sz::CARD_SM * scale)
-                .p(Sp::XL * scale)
-                .flex_col()
-                .gap(Sp::MD * scale)
-                .items_center()
-                .bg(tc.elevated_surface)
-                .rounded_xl()
-                .border_b(tc.border)
-                .shadow_preset(Shadow::PANEL)
-                .child(svg_icon(lucide::LOADER, Ico::XXL).color(tc.text_muted))
-                .child(
-                    div().w_full().min_w(0.0).child(
-                        text("Comparing repository\u{2026}")
-                            .semibold()
-                            .text_center()
-                            .color(tc.text_strong)
-                            .truncate(),
-                    ),
-                )
-                .child(
-                    div().w_full().min_w(0.0).child(
-                        text(format!(
-                            "{} \u{2022} {} \u{2192} {}",
-                            compare_mode_label(state.compare.mode),
-                            display_ref(&state.compare.left_ref),
-                            display_ref(&state.compare.right_ref)
-                        ))
-                        .text_sm()
-                        .text_center()
-                        .color(tc.text_muted)
-                        .truncate(),
-                    ),
-                ),
-        )
+        .p((Sp::XL * scale).round())
+        .child(view! { scale,
+            <div class="w-full flex-col items-center rounded-xl"
+                 max_w={Sz::CARD_SM} p={Sp::XL} gap={Sp::MD}
+                 bg={tc.elevated_surface}
+                 border_b={tc.border}
+                 shadow_preset={Shadow::PANEL}>
+                <icon svg={lucide::LOADER} size={Ico::XXL} color={tc.text_muted} />
+                <div class="w-full" min_w={0.0}>
+                    <text class="font-semibold text-center truncate" color={tc.text_strong}>
+                        {"Comparing repository\u{2026}"}
+                    </text>
+                </div>
+                <div class="w-full" min_w={0.0}>
+                    <text class="text-sm text-center truncate" color={tc.text_muted}>
+                        {refs_label}
+                    </text>
+                </div>
+            </div>
+        })
 }
 
 fn empty_state(state: &AppState, theme: &Theme) -> Div {
@@ -298,22 +262,20 @@ fn empty_state(state: &AppState, theme: &Theme) -> Div {
 
     let mut card = div()
         .w_full()
-        .max_w(Sz::CARD_MD * scale)
-        .p(Sp::XXL * scale)
+        .max_w((Sz::CARD_MD * scale).round())
+        .p((Sp::XXL * scale).round())
         .flex_col()
-        .gap(Sp::LG * scale)
+        .gap((Sp::LG * scale).round())
         .bg(tc.elevated_surface)
         .rounded_xl()
         .border_b(tc.border)
         .shadow_preset(Shadow::FLOAT)
-        .child(
-            div()
-                .flex_row()
-                .items_center()
-                .gap(Sp::SM * scale)
-                .child(svg_icon(lucide::GIT_COMPARE, Ico::XL).color(tc.accent))
-                .child(text("diffy").semibold().color(tc.text_strong)),
-        );
+        .child(view! { scale,
+            <div class="flex-row items-center" gap={Sp::SM}>
+                <icon svg={lucide::GIT_COMPARE} size={Ico::XL} color={tc.accent} />
+                <text class="font-semibold" color={tc.text_strong}>{"diffy"}</text>
+            </div>
+        });
 
     if has_recent {
         let mut recent_section = div()
@@ -321,10 +283,9 @@ fn empty_state(state: &AppState, theme: &Theme) -> Div {
             .gap(Sp::XXS);
 
         recent_section = recent_section.child(
-            text("Recent")
-                .text_xs()
-                .semibold()
-                .color(tc.text_muted),
+            view! {
+                <text class="text-xs font-semibold" color={tc.text_muted}>{"Recent"}</text>
+            }
         );
 
         for repo in recent_repos.iter().take(8) {
@@ -333,54 +294,42 @@ fn empty_state(state: &AppState, theme: &Theme) -> Div {
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
             let repo_path = repo.display().to_string();
-            recent_section = recent_section.child(
-                div()
-                    .w_full()
-                    .py(Sp::SM * scale)
-                    .px(Sp::SM * scale)
-                    .rounded(Rad::MD)
-                    .flex_row()
-                    .items_center()
-                    .gap(Sp::SM * scale)
-                    .hover_bg(tc.ghost_element_hover)
-                    .on_click(Action::OpenRepository(repo.clone()))
-                    .cursor(CursorHint::Pointer)
-                    .child(svg_icon(lucide::FOLDER, Ico::SM).color(tc.text_muted))
-                    .child(
-                        div()
-                            .flex_col()
-                            .flex_1()
-                            .min_w(0.0)
-                            .child(text(repo_name).text_sm().medium().color(tc.text).truncate())
-                            .child(text(repo_path).text_xs().color(tc.text_muted).truncate()),
-                    ),
-            );
+            recent_section = recent_section.child(view! { scale,
+                <div class="w-full flex-row items-center"
+                     py={Sp::SM} px={Sp::SM}
+                     rounded={Rad::MD} gap={Sp::SM}
+                     hover_bg={tc.ghost_element_hover}
+                     on_click={Action::OpenRepository(repo.clone())}
+                     cursor={CursorHint::Pointer}>
+                    <icon svg={lucide::FOLDER} size={Ico::SM} color={tc.text_muted} />
+                    <div class="flex-col flex-1" min_w={0.0}>
+                        <text class="text-sm medium truncate" color={tc.text}>{repo_name}</text>
+                        <text class="text-xs truncate" color={tc.text_muted}>{repo_path}</text>
+                    </div>
+                </div>
+            });
         }
 
         card = card.child(recent_section);
     }
 
-    card = card.child(
-        div()
-            .pt(Sp::XS * scale)
-            .child(
-                Button::new(Action::OpenRepoPicker)
-                    .icon(lucide::FOLDER_OPEN)
-                    .label("Open Folder")
-                    .style(ButtonStyle::Subtle),
-            ),
-    );
+    card = card.child(view! { scale,
+        <div pt={Sp::XS}>
+            {Button::new(Action::OpenRepoPicker)
+                .icon(lucide::FOLDER_OPEN)
+                .label("Open Folder")
+                .style(ButtonStyle::Subtle)}
+        </div>
+    });
 
-    card = card.child(
-        text("or drop a folder here")
-            .text_xs()
-            .color(tc.text_muted),
-    );
+    card = card.child(view! {
+        <text class="text-xs" color={tc.text_muted}>{"or drop a folder here"}</text>
+    });
 
     div()
         .flex_1()
         .items_center()
         .justify_center()
-        .p(Sp::XL * scale)
+        .p((Sp::XL * scale).round())
         .child(card)
 }

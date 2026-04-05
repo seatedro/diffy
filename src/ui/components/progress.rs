@@ -1,3 +1,5 @@
+use halogen::view;
+
 use crate::ui::design::{Sp, Sz};
 use crate::ui::element::{div, text, AnyElement, ElementContext, IntoAnyElement, RenderOnce};
 use crate::ui::style::Styled;
@@ -70,14 +72,14 @@ impl RenderOnce for ProgressBar {
 
         if self.show_label {
             let pct = (v * 100.0).round() as u32;
-            div()
-                .flex_row()
-                .items_center()
-                .gap(Sp::SM)
-                .w_full()
-                .child(div().flex_1().child(track))
-                .child(text(format!("{pct}%")).text_xs().color(tc.text_muted))
-                .into_any()
+            view! {
+                <div class="flex-row items-center w-full" gap={Sp::SM}>
+                    <div class="flex-1">
+                        {track}
+                    </div>
+                    <text class="text-xs" color={tc.text_muted}>{format!("{pct}%")}</text>
+                </div>
+            }
         } else {
             track.into_any()
         }

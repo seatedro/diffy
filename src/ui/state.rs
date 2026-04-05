@@ -17,6 +17,7 @@ use crate::ui::editor::render_doc::{RenderDoc, build_render_doc};
 use crate::ui::editor::state::EditorState;
 use crate::ui::effects::{CompareRequest, Effect};
 use crate::ui::events::{AppEvent, CompareFinished, RepositoryLoaded};
+use crate::ui::icons::lucide;
 use crate::ui::theme::ThemeMode;
 
 const MAX_VISIBLE_TOASTS: usize = 8;
@@ -325,6 +326,12 @@ pub trait PickerItem {
     fn highlight_range(&self) -> Option<(usize, usize)> {
         None
     }
+    fn icon_svg(&self) -> Option<&'static str> {
+        None
+    }
+    fn is_section_header(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -333,6 +340,8 @@ pub struct PickerEntry {
     pub detail: String,
     pub value: String,
     pub highlight: Option<(usize, usize)>,
+    pub icon: Option<&'static str>,
+    pub section_header: bool,
 }
 
 impl PickerItem for PickerEntry {
@@ -345,6 +354,12 @@ impl PickerItem for PickerEntry {
     fn highlight_range(&self) -> Option<(usize, usize)> {
         self.highlight
     }
+    fn icon_svg(&self) -> Option<&'static str> {
+        self.icon
+    }
+    fn is_section_header(&self) -> bool {
+        self.section_header
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -354,6 +369,7 @@ pub struct PickerState {
     pub entries: Vec<PickerEntry>,
     pub selected_index: usize,
     pub list: OverlayListState,
+    pub browse_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -817,6 +833,10 @@ impl AppState {
                 Vec::new()
             }
             Action::ConfirmOverlaySelection => self.confirm_overlay_selection(),
+            Action::TabCompletePickerDir => {
+                self.tab_complete_picker_dir();
+                Vec::new()
+            }
             Action::SelectOverlayEntry(index) => {
                 self.select_overlay_entry(index);
                 self.confirm_overlay_selection()
@@ -1827,12 +1847,10 @@ impl AppState {
     fn open_repo_picker(&mut self) {
         self.overlays.picker.kind = PickerKind::Repository;
         self.overlays.picker.list.viewport_height_px = PICKER_LIST_VIEWPORT_HEIGHT_PX;
-        self.overlays.picker.query = self
-            .compare
-            .repo_path
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_default();
+        self.overlays.picker.query = String::new();
+        self.overlays.picker.browse_path = None;
+        self.overlays.picker.selected_index = 0;
+        self.overlays.picker.list.scroll_top_px = 0;
         self.rebuild_repo_picker();
         self.push_overlay(OverlaySurface::RepoPicker, Some(FocusTarget::PickerInput));
     }
@@ -1892,13 +1910,26 @@ impl AppState {
     fn move_overlay_selection(&mut self, delta: i32) {
         match self.overlays.top() {
             Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_)) => {
-                let max = self.overlays.picker.entries.len().saturating_sub(1) as i32;
-                self.overlays.picker.selected_index =
-                    (self.overlays.picker.selected_index as i32 + delta).clamp(0, max.max(0))
-                        as usize;
+                let entries = &self.overlays.picker.entries;
+                let len = entries.len();
+                if len == 0 {
+                    return;
+                }
+                let max = len.saturating_sub(1) as i32;
+                let mut idx =
+                    (self.overlays.picker.selected_index as i32 + delta).clamp(0, max) as usize;
+                while idx < len && entries[idx].section_header {
+                    if delta > 0 {
+                        idx = (idx + 1).min(len.saturating_sub(1));
+                    } else {
+                        if idx == 0 { break; }
+                        idx -= 1;
+                    }
+                }
+                self.overlays.picker.selected_index = idx;
                 self.overlays.picker.list.reveal_index(
                     self.overlays.picker.selected_index,
-                    self.overlays.picker.entries.len(),
+                    len,
                 );
             }
             Some(OverlaySurface::CommandPalette) => {
@@ -1923,8 +1954,11 @@ impl AppState {
     fn select_overlay_entry(&mut self, index: usize) {
         match self.overlays.top() {
             Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_)) => {
-                self.overlays.picker.selected_index =
-                    index.min(self.overlays.picker.entries.len().saturating_sub(1));
+                let clamped = index.min(self.overlays.picker.entries.len().saturating_sub(1));
+                if self.overlays.picker.entries.get(clamped).map_or(false, |e| e.section_header) {
+                    return;
+                }
+                self.overlays.picker.selected_index = clamped;
                 self.overlays.picker.list.reveal_index(
                     self.overlays.picker.selected_index,
                     self.overlays.picker.entries.len(),
@@ -1973,21 +2007,88 @@ impl AppState {
     }
 
     fn confirm_repo_picker(&mut self) -> Vec<Effect> {
-        let path = self
+        let entry = self
             .overlays
             .picker
             .entries
             .get(self.overlays.picker.selected_index)
-            .map(|entry| PathBuf::from(entry.value.clone()))
-            .or_else(|| {
-                let query = self.overlays.picker.query.trim();
-                (!query.is_empty()).then(|| PathBuf::from(query))
-            });
-        if let Some(path) = path {
-            self.pop_overlay();
-            return self.open_repository(path);
+            .cloned();
+
+        let Some(entry) = entry else {
+            let query = self.overlays.picker.query.trim().to_owned();
+            if !query.is_empty() {
+                let expanded = expand_tilde(&query);
+                let path = PathBuf::from(&expanded);
+                if path.is_dir() && path.join(".git").exists() {
+                    self.pop_overlay();
+                    return self.open_repository(path);
+                }
+                if path.is_dir() {
+                    self.navigate_picker_to_dir(&path);
+                    return Vec::new();
+                }
+            }
+            return Vec::new();
+        };
+
+        if entry.section_header {
+            return Vec::new();
         }
-        Vec::new()
+
+        let path = PathBuf::from(&entry.value);
+
+        if self.overlays.picker.browse_path.is_some() {
+            if entry.label == ".." {
+                self.navigate_picker_to_dir(&path);
+                return Vec::new();
+            }
+            if path.is_dir() && path.join(".git").exists() {
+                self.pop_overlay();
+                return self.open_repository(path);
+            }
+            if path.is_dir() {
+                self.navigate_picker_to_dir(&path);
+                return Vec::new();
+            }
+            return Vec::new();
+        }
+
+        self.pop_overlay();
+        self.open_repository(path)
+    }
+
+    fn tab_complete_picker_dir(&mut self) {
+        if self.overlays.picker.kind != PickerKind::Repository {
+            return;
+        }
+        let entry = self
+            .overlays
+            .picker
+            .entries
+            .get(self.overlays.picker.selected_index)
+            .cloned();
+        let Some(entry) = entry else { return };
+        if entry.section_header || entry.value.is_empty() {
+            return;
+        }
+        let path = PathBuf::from(&entry.value);
+        if path.is_dir() {
+            self.navigate_picker_to_dir(&path);
+        }
+    }
+
+    fn navigate_picker_to_dir(&mut self, path: &Path) {
+        let display = path.display().to_string();
+        let new_query = if display.ends_with('/') || display.ends_with('\\') {
+            display
+        } else {
+            format!("{}/", display)
+        };
+        self.overlays.picker.query = new_query.clone();
+        self.text_edit.cursor = new_query.len();
+        self.text_edit.anchor = new_query.len();
+        self.text_edit.cursor_moved_at_ms = self.clock_ms;
+        self.rebuild_repo_picker();
     }
 
     fn confirm_ref_picker(&mut self, field: CompareField) -> Vec<Effect> {
@@ -2081,28 +2182,47 @@ impl AppState {
     }
 
     fn rebuild_repo_picker(&mut self) {
-        let query = self.overlays.picker.query.trim();
-        let mut entries = Vec::new();
-        let mut seen = HashSet::new();
+        let query = self.overlays.picker.query.clone();
+        let trimmed = query.trim();
 
-        if !query.is_empty() {
-            let path = PathBuf::from(query);
-            if path.exists() && path.is_dir() {
-                entries.push(PickerEntry {
-                    label: path.display().to_string(),
-                    detail: "Use typed path".to_owned(),
-                    value: path.display().to_string(),
-                    highlight: None,
-                });
-                seen.insert(path);
-            }
+        if query_looks_like_path(trimmed) {
+            self.rebuild_repo_picker_browse(trimmed);
+        } else {
+            self.overlays.picker.browse_path = None;
+            self.rebuild_repo_picker_recent(trimmed);
         }
+
+        self.overlays.picker.selected_index = if self.overlays.picker.entries.is_empty() {
+            0
+        } else {
+            let first_selectable = self
+                .overlays
+                .picker
+                .entries
+                .iter()
+                .position(|e| !e.section_header)
+                .unwrap_or(0);
+            self.overlays
+                .picker
+                .selected_index
+                .max(first_selectable)
+                .min(self.overlays.picker.entries.len().saturating_sub(1))
+        };
+        self.overlays
+            .picker
+            .list
+            .clamp_scroll(self.overlays.picker.entries.len());
+    }
+
+    fn rebuild_repo_picker_recent(&mut self, query: &str) {
+        let mut entries = Vec::new();
 
         let all_repos = crate::core::frecency::recent_repo_paths(
             self.frecency.as_ref(),
             20,
         );
 
+        let mut seen = HashSet::new();
         let mut unique_repos = Vec::new();
         for repo in &all_repos {
             if seen.insert(repo.clone()) {
@@ -2110,9 +2230,21 @@ impl AppState {
             }
         }
 
+        if !unique_repos.is_empty() {
+            entries.push(PickerEntry {
+                label: "Recent".to_owned(),
+                detail: String::new(),
+                value: String::new(),
+                highlight: None,
+                icon: None,
+                section_header: true,
+            });
+        }
+
         if query.is_empty() {
             for repo in &unique_repos {
                 let display = repo.display().to_string();
+                let is_git = repo.join(".git").exists();
                 entries.push(PickerEntry {
                     label: repo
                         .file_name()
@@ -2122,6 +2254,8 @@ impl AppState {
                     detail: display.clone(),
                     value: repo.display().to_string(),
                     highlight: None,
+                    icon: Some(if is_git { lucide::FOLDER_GIT } else { lucide::FOLDER }),
+                    section_header: false,
                 });
             }
         } else {
@@ -2137,6 +2271,9 @@ impl AppState {
             };
             let mut matches = neo_frizbee::match_list(query, &haystack_refs, &config);
             matches.sort_by(|a, b| b.score.cmp(&a.score));
+            if matches.is_empty() {
+                entries.clear();
+            }
             for m in matches {
                 let repo = &unique_repos[m.index as usize];
                 let display = &haystack[m.index as usize];
@@ -2150,24 +2287,119 @@ impl AppState {
                     query.len(),
                     label.len(),
                 );
+                let is_git = repo.join(".git").exists();
                 entries.push(PickerEntry {
                     label,
                     detail: display.clone(),
                     value: repo.display().to_string(),
                     highlight: Some(hl),
+                    icon: Some(if is_git { lucide::FOLDER_GIT } else { lucide::FOLDER }),
+                    section_header: false,
                 });
             }
         }
         self.overlays.picker.entries = entries;
-        self.overlays.picker.selected_index = self
-            .overlays
-            .picker
-            .selected_index
-            .min(self.overlays.picker.entries.len().saturating_sub(1));
-        self.overlays
-            .picker
-            .list
-            .clamp_scroll(self.overlays.picker.entries.len());
+    }
+
+    fn rebuild_repo_picker_browse(&mut self, query: &str) {
+        let expanded = expand_tilde(query);
+        let (dir_path, filter) = split_browse_query(&expanded);
+
+        let dir = PathBuf::from(&dir_path);
+        if !dir.is_dir() {
+            self.overlays.picker.browse_path = None;
+            self.overlays.picker.entries = Vec::new();
+            return;
+        }
+
+        self.overlays.picker.browse_path = Some(dir.clone());
+
+        let mut entries = Vec::new();
+
+        entries.push(PickerEntry {
+            label: "Browse".to_owned(),
+            detail: dir.display().to_string(),
+            value: String::new(),
+            highlight: None,
+            icon: None,
+            section_header: true,
+        });
+
+        if dir.parent().is_some() {
+            entries.push(PickerEntry {
+                label: "..".to_owned(),
+                detail: "Parent directory".to_owned(),
+                value: dir
+                    .parent()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+                icon: Some(lucide::CORNER_UP_LEFT),
+                highlight: None,
+                section_header: false,
+            });
+        }
+
+        let mut dirs: Vec<(String, PathBuf, bool)> = Vec::new();
+        if let Ok(read) = std::fs::read_dir(&dir) {
+            for entry in read.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let name = entry
+                    .file_name()
+                    .to_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                if name.starts_with('.') {
+                    continue;
+                }
+                let is_git = path.join(".git").exists();
+                dirs.push((name, path, is_git));
+            }
+        }
+
+        dirs.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+
+        if filter.is_empty() {
+            for (name, path, is_git) in &dirs {
+                entries.push(PickerEntry {
+                    label: name.clone(),
+                    detail: path.display().to_string(),
+                    value: path.display().to_string(),
+                    highlight: None,
+                    icon: Some(if *is_git { lucide::FOLDER_GIT } else { lucide::FOLDER }),
+                    section_header: false,
+                });
+            }
+        } else {
+            let haystack: Vec<&str> = dirs.iter().map(|(n, _, _)| n.as_str()).collect();
+            let config = neo_frizbee::Config {
+                max_typos: Some(1),
+                sort: false,
+                ..Default::default()
+            };
+            let mut matches = neo_frizbee::match_list(filter, &haystack, &config);
+            matches.sort_by(|a, b| b.score.cmp(&a.score));
+            for m in matches {
+                let (name, path, is_git) = &dirs[m.index as usize];
+                let hl = compute_highlight_range(
+                    m.match_end_col as usize,
+                    filter.len(),
+                    name.len(),
+                );
+                entries.push(PickerEntry {
+                    label: name.clone(),
+                    detail: path.display().to_string(),
+                    value: path.display().to_string(),
+                    highlight: Some(hl),
+                    icon: Some(if *is_git { lucide::FOLDER_GIT } else { lucide::FOLDER }),
+                    section_header: false,
+                });
+            }
+        }
+
+        self.overlays.picker.entries = entries;
     }
 
     fn rebuild_ref_picker(&mut self, field: CompareField) {
@@ -2247,6 +2479,8 @@ impl AppState {
                     detail: c.detail,
                     value: c.value,
                     highlight: None,
+                    icon: None,
+                    section_header: false,
                 })
                 .collect();
         } else {
@@ -2274,6 +2508,8 @@ impl AppState {
                         detail: c.detail.clone(),
                         value: c.value.clone(),
                         highlight: Some(hl),
+                        icon: None,
+                        section_header: false,
                     })
                 })
                 .collect();
@@ -2929,6 +3165,44 @@ fn compute_highlight_range(match_end_col: usize, query_len: usize, label_len: us
     (start, end)
 }
 
+fn query_looks_like_path(query: &str) -> bool {
+    query.starts_with('/')
+        || query.starts_with("~/")
+        || query.starts_with("./")
+        || (query.len() >= 2 && query.as_bytes()[1] == b':')
+}
+
+fn expand_tilde(path: &str) -> String {
+    if path.starts_with("~/") || path == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return format!("{}{}", home.display(), &path[1..]);
+        }
+    }
+    path.to_owned()
+}
+
+fn split_browse_query(expanded: &str) -> (String, &str) {
+    if let Some(pos) = expanded.rfind('/') {
+        let dir = if pos == 0 {
+            "/".to_owned()
+        } else {
+            expanded[..pos].to_owned()
+        };
+        let filter = &expanded[pos + 1..];
+        (dir, filter)
+    } else if expanded.len() >= 2 && expanded.as_bytes()[1] == b':' {
+        if let Some(pos) = expanded.rfind('\\') {
+            let dir = expanded[..pos].to_owned();
+            let filter = &expanded[pos + 1..];
+            (dir, filter)
+        } else {
+            (expanded.to_owned(), "")
+        }
+    } else {
+        (expanded.to_owned(), "")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
@@ -3190,6 +3464,8 @@ mod tests {
                 detail: format!("C:\\repo-{index}"),
                 value: format!("C:\\repo-{index}"),
                 highlight: None,
+                icon: None,
+                section_header: false,
             })
             .collect();
         state.overlays.picker.list.viewport_height_px = 120;

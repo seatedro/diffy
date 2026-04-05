@@ -683,7 +683,13 @@ impl NativeApp {
                     self.dispatch_action(Action::SetFocus(None));
                 }
             }
-            Key::Named(NamedKey::Tab) => self.cycle_focus(),
+            Key::Named(NamedKey::Tab) => {
+                if self.state.overlays.top() == Some(OverlaySurface::RepoPicker) {
+                    self.dispatch_action(Action::TabCompletePickerDir);
+                } else {
+                    self.cycle_focus();
+                }
+            }
             Key::Named(NamedKey::Enter) => {
                 if self.state.focus.current == Some(FocusTarget::SearchInput) {
                     if shift {

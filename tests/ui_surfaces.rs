@@ -130,10 +130,6 @@ fn repo_picker_exposes_input_entries_and_scroll_surface() {
         action,
         Action::SelectOverlayEntry(0)
     )));
-    assert!(has_hit(&frame, |action| matches!(
-        action,
-        Action::OpenRepositoryDialog
-    )));
     assert!(has_scroll_region(&frame, |builder| match builder {
         ScrollActionBuilder::Custom(build) => {
             matches!(build(1), Action::ScrollActiveOverlayListPx(1))

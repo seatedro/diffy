@@ -1,5 +1,5 @@
 use crate::ui::actions::Action;
-use crate::ui::design::{Rad, Sp, Sz};
+use crate::ui::design::{Ico, Rad, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::shell::CursorHint;
 use crate::ui::state::PickerItem;
@@ -61,7 +61,25 @@ fn picker_list_inner<T: PickerItem>(
     }
 
     for (i, entry) in entries.iter().enumerate() {
+        if entry.is_section_header() {
+            list = list.child(
+                div()
+                    .w_full()
+                    .h(row_h)
+                    .flex_row()
+                    .items_center()
+                    .px((Sp::MD * scale).round())
+                    .child(
+                        text(entry.label())
+                            .text_xs()
+                            .color(tc.text_muted)
+                            .truncate(),
+                    ),
+            );
+            continue;
+        }
         let selected = i == selected_index;
+        let icon_size = (Ico::SM * scale).round();
         list = list.child(
             div()
                 .w_full()
@@ -75,6 +93,11 @@ fn picker_list_inner<T: PickerItem>(
                 .when(!selected, |d| d.hover_bg(tc.ghost_element_hover))
                 .on_click(Action::SelectOverlayEntry(i))
                 .cursor(CursorHint::Pointer)
+                .optional_child(
+                    entry
+                        .icon_svg()
+                        .map(|svg| svg_icon(svg, icon_size).color(tc.icon)),
+                )
                 .child(
                     picker_label(
                         entry.label(),

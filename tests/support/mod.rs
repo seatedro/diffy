@@ -104,6 +104,8 @@ pub fn repo_picker_state(entry_count: usize) -> AppState {
                 detail: format!("C:\\work\\repo-{index}"),
                 value: format!("C:\\work\\repo-{index}"),
                 highlight: None,
+                icon: None,
+                section_header: false,
             })
             .collect(),
         selected_index: entry_count.saturating_sub(1).min(2),
@@ -111,6 +113,7 @@ pub fn repo_picker_state(entry_count: usize) -> AppState {
             viewport_height_px: 204,
             ..OverlayListState::default()
         },
+        browse_path: None,
     };
     state.focus.current = Some(FocusTarget::PickerInput);
     state

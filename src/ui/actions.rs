@@ -50,6 +50,7 @@ pub enum Action {
     ExtendTextSelection(usize),
     MoveOverlaySelection(i32),
     ConfirmOverlaySelection,
+    TabCompletePickerDir,
     SelectOverlayEntry(usize),
     StartCompare,
     SelectFile(usize),

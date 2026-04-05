@@ -39,6 +39,7 @@ const GROUPS: &[ShortcutGroup] = &[
         entries: &[
             ShortcutEntry { key: "1 / 2", description: "Unified / split diff view" },
             ShortcutEntry { key: "w", description: "Toggle line wrapping" },
+            ShortcutEntry { key: "Cmd+B", description: "Toggle sidebar" },
         ],
     },
     ShortcutGroup {

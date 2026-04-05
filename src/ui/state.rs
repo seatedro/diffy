@@ -6,7 +6,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::core::compare::{CompareMode, CompareOutput, CompareSpec, LayoutMode, RendererKind};
 use crate::core::diff::FileDiff;
-use crate::core::search::fuzzy::fuzzy_score;
+use crate::core::frecency::FrecencyStore;
 use crate::core::syntax::DiffSyntaxAnnotator;
 use crate::core::vcs::git::{BranchInfo, CommitInfo, TagInfo};
 use crate::core::vcs::github::{DeviceFlowState, PullRequestInfo};
@@ -322,6 +322,9 @@ pub enum PickerKind {
 pub trait PickerItem {
     fn label(&self) -> &str;
     fn detail(&self) -> Option<&str>;
+    fn highlight_range(&self) -> Option<(usize, usize)> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -329,6 +332,7 @@ pub struct PickerEntry {
     pub label: String,
     pub detail: String,
     pub value: String,
+    pub highlight: Option<(usize, usize)>,
 }
 
 impl PickerItem for PickerEntry {
@@ -337,6 +341,9 @@ impl PickerItem for PickerEntry {
     }
     fn detail(&self) -> Option<&str> {
         Some(&self.detail)
+    }
+    fn highlight_range(&self) -> Option<(usize, usize)> {
+        self.highlight
     }
 }
 
@@ -375,6 +382,7 @@ pub struct PaletteEntry {
     pub label: String,
     pub detail: String,
     pub kind: PaletteEntryKind,
+    pub highlight: Option<(usize, usize)>,
 }
 
 impl PickerItem for PaletteEntry {
@@ -383,6 +391,9 @@ impl PickerItem for PaletteEntry {
     }
     fn detail(&self) -> Option<&str> {
         Some(&self.detail)
+    }
+    fn highlight_range(&self) -> Option<(usize, usize)> {
+        self.highlight
     }
 }
 
@@ -513,6 +524,7 @@ pub struct AppState {
     pub debug: DebugState,
     pub clock_ms: u64,
     pub next_toast_id: u64,
+    pub frecency: Option<FrecencyStore>,
 }
 
 impl Default for AppState {
@@ -537,6 +549,7 @@ impl Default for AppState {
             debug: DebugState::default(),
             clock_ms: 0,
             next_toast_id: 1,
+            frecency: None,
         }
     }
 }
@@ -642,6 +655,7 @@ impl AppState {
             debug: DebugState::default(),
             clock_ms: 0,
             next_toast_id: 1,
+            frecency: crate::core::frecency::open_default_store(),
         };
         state.sync_settings_snapshot();
 
@@ -1232,7 +1246,9 @@ impl AppState {
         self.repository.branches = payload.branches;
         self.repository.tags = payload.tags;
         self.repository.commits = payload.commits;
-        self.settings.remember_repo(&payload.path);
+        if let Some(ref store) = self.frecency {
+            store.record_access(&format!("repo:{}", payload.path.display()));
+        }
 
         let mut effects = self.persist_settings_effect();
         if let Some(url) = self.startup.pending_pr_url.clone() {
@@ -1487,7 +1503,23 @@ impl AppState {
         self.text_edit.cursor_moved_at_ms = self.clock_ms;
     }
 
-    /// Returns the selected range (min..max) or None if cursor == anchor.
+    fn clamp_cursor(&mut self) {
+        let Some(text) = self.focused_text() else {
+            return;
+        };
+        let len = text.len();
+        let mut cursor = self.text_edit.cursor.min(len);
+        while cursor > 0 && !text.is_char_boundary(cursor) {
+            cursor -= 1;
+        }
+        let mut anchor = self.text_edit.anchor.min(len);
+        while anchor > 0 && !text.is_char_boundary(anchor) {
+            anchor -= 1;
+        }
+        self.text_edit.cursor = cursor;
+        self.text_edit.anchor = anchor;
+    }
+
     fn selection_range(&self) -> Option<(usize, usize)> {
         let (c, a) = (self.text_edit.cursor, self.text_edit.anchor);
         if c == a {
@@ -1499,6 +1531,7 @@ impl AppState {
 
     /// Delete the current selection and collapse cursor. Returns true if something was deleted.
     fn delete_selection(&mut self) -> bool {
+        self.clamp_cursor();
         if let Some((start, end)) = self.selection_range() {
             if let Some(text) = self.focused_text_mut() {
                 text.drain(start..end);
@@ -1561,6 +1594,7 @@ impl AppState {
             return Vec::new();
         }
         self.delete_selection();
+        self.clamp_cursor();
         let cursor = self.text_edit.cursor;
         if let Some(text) = self.focused_text_mut() {
             text.insert_str(cursor, &value);
@@ -1966,6 +2000,9 @@ impl AppState {
         else {
             return Vec::new();
         };
+        if let Some(ref store) = self.frecency {
+            store.record_access(&format!("ref:{}", entry.value));
+        }
         self.update_compare_field(field, entry.value);
         self.pop_overlay();
         let mut effects = self.persist_settings_effect();
@@ -2055,37 +2092,71 @@ impl AppState {
                     label: path.display().to_string(),
                     detail: "Use typed path".to_owned(),
                     value: path.display().to_string(),
+                    highlight: None,
                 });
                 seen.insert(path);
             }
         }
 
-        let mut ranked = Vec::new();
-        for repo in &self.settings.recent_repos {
-            if !seen.insert(repo.clone()) {
-                continue;
+        let all_repos = crate::core::frecency::recent_repo_paths(
+            self.frecency.as_ref(),
+            20,
+        );
+
+        let mut unique_repos = Vec::new();
+        for repo in &all_repos {
+            if seen.insert(repo.clone()) {
+                unique_repos.push(repo.clone());
             }
-            let display = repo.display().to_string();
-            let score = if query.is_empty() {
-                0
-            } else if let Some(score) = fuzzy_score(query, &display) {
-                score
-            } else {
-                continue;
-            };
-            ranked.push((score, display, repo.clone()));
         }
-        ranked.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
-        for (_, display, repo) in ranked {
-            entries.push(PickerEntry {
-                label: repo
+
+        if query.is_empty() {
+            for repo in &unique_repos {
+                let display = repo.display().to_string();
+                entries.push(PickerEntry {
+                    label: repo
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(&display)
+                        .to_owned(),
+                    detail: display.clone(),
+                    value: repo.display().to_string(),
+                    highlight: None,
+                });
+            }
+        } else {
+            let haystack: Vec<String> = unique_repos
+                .iter()
+                .map(|r| r.display().to_string())
+                .collect();
+            let haystack_refs: Vec<&str> = haystack.iter().map(|s| s.as_str()).collect();
+            let config = neo_frizbee::Config {
+                max_typos: Some(2),
+                sort: false,
+                ..Default::default()
+            };
+            let mut matches = neo_frizbee::match_list(query, &haystack_refs, &config);
+            matches.sort_by(|a, b| b.score.cmp(&a.score));
+            for m in matches {
+                let repo = &unique_repos[m.index as usize];
+                let display = &haystack[m.index as usize];
+                let label = repo
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .unwrap_or(&display)
-                    .to_owned(),
-                detail: display.clone(),
-                value: repo.display().to_string(),
-            });
+                    .unwrap_or(display)
+                    .to_owned();
+                let hl = compute_highlight_range(
+                    m.match_end_col as usize,
+                    query.len(),
+                    label.len(),
+                );
+                entries.push(PickerEntry {
+                    label,
+                    detail: display.clone(),
+                    value: repo.display().to_string(),
+                    highlight: Some(hl),
+                });
+            }
         }
         self.overlays.picker.entries = entries;
         self.overlays.picker.selected_index = self
@@ -2105,32 +2176,31 @@ impl AppState {
             CompareField::Right => self.compare.right_ref.trim(),
         };
         let mut seen = HashSet::new();
-        let mut candidates = Vec::new();
+
+        struct RefCandidate {
+            search_text: String,
+            label: String,
+            detail: String,
+            value: String,
+            ordinal: usize,
+        }
+
+        let mut all_candidates = Vec::new();
         let mut ordinal = 0_usize;
 
-        let mut push_candidate =
-            |search_text: String, label: String, detail: String, value: String| {
-                if !seen.insert(value.clone()) {
-                    return;
-                }
-                let score = if query.is_empty() {
-                    0
-                } else if let Some(score) = fuzzy_score(query, &search_text) {
-                    score
-                } else {
-                    return;
-                };
-                candidates.push((
-                    score,
-                    ordinal,
-                    PickerEntry {
-                        label,
-                        detail,
-                        value,
-                    },
-                ));
-                ordinal = ordinal.saturating_add(1);
-            };
+        let mut push = |search_text: String, label: String, detail: String, value: String| {
+            if !seen.insert(value.clone()) {
+                return;
+            }
+            all_candidates.push(RefCandidate {
+                search_text,
+                label,
+                detail,
+                value,
+                ordinal,
+            });
+            ordinal += 1;
+        };
 
         for branch in &self.repository.branches {
             let scope = if branch.is_remote {
@@ -2140,9 +2210,9 @@ impl AppState {
             };
             let mut detail = scope.to_owned();
             if branch.is_head {
-                detail.push_str(" • HEAD");
+                detail.push_str(" \u{2022} HEAD");
             }
-            push_candidate(
+            push(
                 format!("{scope} {}", branch.name),
                 branch.name.clone(),
                 detail,
@@ -2151,7 +2221,7 @@ impl AppState {
         }
 
         for tag in &self.repository.tags {
-            push_candidate(
+            push(
                 format!("tag {}", tag.name),
                 tag.name.clone(),
                 "Tag".to_owned(),
@@ -2160,7 +2230,7 @@ impl AppState {
         }
 
         for commit in &self.repository.commits {
-            push_candidate(
+            push(
                 format!("commit {} {}", commit.short_oid, commit.summary),
                 commit.short_oid.clone(),
                 commit.summary.clone(),
@@ -2168,19 +2238,57 @@ impl AppState {
             );
         }
 
-        candidates.sort_by(|left, right| {
-            right
-                .0
-                .cmp(&left.0)
-                .then(left.1.cmp(&right.1))
-                .then(left.2.label.cmp(&right.2.label))
-        });
+        if query.is_empty() {
+            self.overlays.picker.entries = all_candidates
+                .into_iter()
+                .take(10)
+                .map(|c| PickerEntry {
+                    label: c.label,
+                    detail: c.detail,
+                    value: c.value,
+                    highlight: None,
+                })
+                .collect();
+        } else {
+            let haystack: Vec<&str> = all_candidates
+                .iter()
+                .map(|c| c.search_text.as_str())
+                .collect();
+            let config = neo_frizbee::Config {
+                max_typos: Some(2),
+                sort: false,
+                ..Default::default()
+            };
+            let matches = neo_frizbee::match_list(query, &haystack, &config);
+            let mut scored: Vec<_> = matches
+                .into_iter()
+                .map(|m| {
+                    let c = &all_candidates[m.index as usize];
+                    let hl = compute_highlight_range(
+                        m.match_end_col as usize,
+                        query.len(),
+                        c.label.len(),
+                    );
+                    (m.score, c.ordinal, PickerEntry {
+                        label: c.label.clone(),
+                        detail: c.detail.clone(),
+                        value: c.value.clone(),
+                        highlight: Some(hl),
+                    })
+                })
+                .collect();
+            scored.sort_by(|a, b| {
+                b.0.cmp(&a.0)
+                    .then(a.1.cmp(&b.1))
+                    .then(a.2.label.cmp(&b.2.label))
+            });
+            self.overlays.picker.entries = scored
+                .into_iter()
+                .map(|(_, _, entry)| entry)
+                .take(10)
+                .collect();
+        }
 
-        self.overlays.picker.entries = candidates
-            .into_iter()
-            .map(|(_, _, suggestion)| suggestion)
-            .take(10)
-            .collect();
         self.overlays.picker.selected_index = self
             .overlays
             .picker
@@ -2194,25 +2302,15 @@ impl AppState {
 
     fn rebuild_command_palette(&mut self) {
         let query = self.overlays.command_palette.query.trim();
-        let mut entries = Vec::new();
 
-        let mut push_entry = |label: String, detail: String, kind: PaletteEntryKind| {
-            let score = if query.is_empty() {
-                0
-            } else if let Some(score) = fuzzy_score(query, &format!("{label} {detail}")) {
-                score
-            } else {
-                return;
-            };
-            entries.push((
-                score,
-                PaletteEntry {
-                    label,
-                    detail,
-                    kind,
-                },
-            ));
-        };
+        struct PaletteCandidate {
+            search_text: String,
+            label: String,
+            detail: String,
+            kind: PaletteEntryKind,
+        }
+
+        let mut all_candidates = Vec::new();
 
         for (label, detail, command) in [
             (
@@ -2266,48 +2364,104 @@ impl AppState {
                 PaletteCommand::SetLayout(LayoutMode::Split),
             ),
         ] {
-            push_entry(label, detail, PaletteEntryKind::Command(command));
+            let search_text = format!("{label} {detail}");
+            all_candidates.push(PaletteCandidate {
+                search_text,
+                label,
+                detail,
+                kind: PaletteEntryKind::Command(command),
+            });
         }
 
         for (index, file) in self.workspace.files.iter().enumerate() {
-            push_entry(
-                file.path.clone(),
-                format!(
-                    "File • {} • +{} -{}",
-                    file.status, file.additions, file.deletions
-                ),
-                PaletteEntryKind::File(index),
+            let detail = format!(
+                "File \u{2022} {} \u{2022} +{} -{}",
+                file.status, file.additions, file.deletions
             );
+            let search_text = format!("{} {detail}", file.path);
+            all_candidates.push(PaletteCandidate {
+                search_text,
+                label: file.path.clone(),
+                detail,
+                kind: PaletteEntryKind::File(index),
+            });
         }
 
-        for repo in &self.settings.recent_repos {
+        let palette_repos = crate::core::frecency::recent_repo_paths(
+            self.frecency.as_ref(),
+            10,
+        );
+        for repo in &palette_repos {
             let repo_name = repo
                 .file_name()
                 .and_then(|name| name.to_str())
                 .filter(|n| *n != ".")
                 .map(str::to_owned)
                 .unwrap_or_else(|| repo.display().to_string());
-            push_entry(
-                repo_name,
-                repo.display().to_string(),
-                PaletteEntryKind::Repo(repo.clone()),
-            );
+            let detail = repo.display().to_string();
+            let search_text = format!("{repo_name} {detail}");
+            all_candidates.push(PaletteCandidate {
+                search_text,
+                label: repo_name,
+                detail,
+                kind: PaletteEntryKind::Repo(repo.clone()),
+            });
         }
 
         for branch in &self.repository.branches {
-            push_entry(
-                branch.name.clone(),
-                "Branch".to_owned(),
-                PaletteEntryKind::Ref(CompareField::Left, branch.name.clone()),
-            );
+            let search_text = format!("{} Branch", branch.name);
+            all_candidates.push(PaletteCandidate {
+                search_text,
+                label: branch.name.clone(),
+                detail: "Branch".to_owned(),
+                kind: PaletteEntryKind::Ref(CompareField::Left, branch.name.clone()),
+            });
         }
 
-        entries.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.label.cmp(&right.1.label)));
-        self.overlays.command_palette.entries = entries
-            .into_iter()
-            .map(|(_, entry)| entry)
-            .take(18)
-            .collect();
+        let mut entries: Vec<PaletteEntry>;
+        if query.is_empty() {
+            entries = all_candidates
+                .into_iter()
+                .map(|c| PaletteEntry {
+                    label: c.label,
+                    detail: c.detail,
+                    kind: c.kind,
+                    highlight: None,
+                })
+                .collect();
+        } else {
+            let haystack: Vec<&str> = all_candidates
+                .iter()
+                .map(|c| c.search_text.as_str())
+                .collect();
+            let config = neo_frizbee::Config {
+                max_typos: Some(2),
+                sort: false,
+                ..Default::default()
+            };
+            let matches = neo_frizbee::match_list(query, &haystack, &config);
+            let mut scored: Vec<_> = matches
+                .into_iter()
+                .map(|m| {
+                    let c = &all_candidates[m.index as usize];
+                    let hl = compute_highlight_range(
+                        m.match_end_col as usize,
+                        query.len(),
+                        c.label.len(),
+                    );
+                    (m.score, PaletteEntry {
+                        label: c.label.clone(),
+                        detail: c.detail.clone(),
+                        kind: c.kind.clone(),
+                        highlight: Some(hl),
+                    })
+                })
+                .collect();
+            scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.label.cmp(&b.1.label)));
+            entries = scored.into_iter().map(|(_, e)| e).collect();
+        }
+        entries.truncate(18);
+        self.overlays.command_palette.entries = entries;
         self.overlays.command_palette.selected_index =
             self.overlays.command_palette.selected_index.min(
                 self.overlays
@@ -2769,6 +2923,12 @@ fn next_word_boundary(text: &str, offset: usize) -> usize {
     pos
 }
 
+fn compute_highlight_range(match_end_col: usize, query_len: usize, label_len: usize) -> (usize, usize) {
+    let end = match_end_col.min(label_len);
+    let start = end.saturating_sub(query_len);
+    (start, end)
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
@@ -3029,6 +3189,7 @@ mod tests {
                 label: format!("repo-{index}"),
                 detail: format!("C:\\repo-{index}"),
                 value: format!("C:\\repo-{index}"),
+                highlight: None,
             })
             .collect();
         state.overlays.picker.list.viewport_height_px = 120;

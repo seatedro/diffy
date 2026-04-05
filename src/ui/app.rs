@@ -637,6 +637,10 @@ impl NativeApp {
                         self.dispatch_action(Action::DecreaseUiScale);
                         return;
                     }
+                    "b" => {
+                        self.dispatch_action(Action::ToggleSidebar);
+                        return;
+                    }
                     _ => {}
                 }
             }

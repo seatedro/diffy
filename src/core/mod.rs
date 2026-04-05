@@ -6,4 +6,5 @@ pub mod rendering;
 pub mod search;
 pub mod syntax;
 pub mod text;
+pub mod themes;
 pub mod vcs;

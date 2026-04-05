@@ -166,6 +166,28 @@ impl Theme {
         }
     }
 
+    pub fn from_registry(
+        name: &str,
+        mode: ThemeMode,
+        registry: &crate::core::themes::ThemeRegistry,
+    ) -> Self {
+        let entry = match registry.get(name) {
+            Some(e) => e,
+            None => return Self::for_mode(mode),
+        };
+        let palette = match mode {
+            ThemeMode::Dark => &entry.dark,
+            ThemeMode::Light => &entry.light,
+        };
+        Self {
+            mode,
+            sans_family: default_sans_family(),
+            mono_family: default_mono_family(),
+            colors: palette.to_theme_colors(),
+            metrics: default_metrics(),
+        }
+    }
+
     pub fn with_ui_scale(mut self, scale: f32) -> Self {
         self.metrics = self.metrics.scaled(scale);
         self

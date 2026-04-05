@@ -61,7 +61,7 @@ impl FrecencyStore {
             Ok(())
         })();
         if let Err(e) = result {
-            log::warn!("frecency record_access failed: {e}");
+            tracing::warn!("frecency record_access failed: {e}");
         }
     }
 
@@ -98,7 +98,7 @@ impl FrecencyStore {
         })() {
             Ok(v) => v,
             Err(e) => {
-                log::warn!("frecency recent() failed: {e}");
+                tracing::warn!("frecency recent() failed: {e}");
                 return Vec::new();
             }
         };
@@ -116,7 +116,7 @@ impl FrecencyStore {
             Ok(())
         })();
         if let Err(e) = result {
-            log::warn!("frecency remove failed: {e}");
+            tracing::warn!("frecency remove failed: {e}");
         }
     }
 }
@@ -127,7 +127,7 @@ pub fn open_default_store() -> Option<FrecencyStore> {
     match FrecencyStore::open(&path) {
         Ok(store) => Some(store),
         Err(e) => {
-            log::warn!("failed to open frecency store at {}: {e}", path.display());
+            tracing::warn!("failed to open frecency store at {}: {e}", path.display());
             None
         }
     }

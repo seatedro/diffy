@@ -88,6 +88,8 @@ pub enum Action {
     IncreaseUiScale,
     DecreaseUiScale,
     ToggleThemeMode,
+    SetThemeName(String),
+    OpenThemePicker,
     ToggleFolder(String),
     ToggleFileViewed(usize),
     SetSidebarFilter(String),

@@ -339,6 +339,7 @@ pub enum PickerKind {
     Repository,
     LeftRef,
     RightRef,
+    Theme,
 }
 
 pub trait PickerItem {
@@ -393,7 +394,7 @@ pub struct PickerState {
     pub browse_path: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaletteCommand {
     OpenCompareSheet,
     OpenRepoPicker,
@@ -403,7 +404,9 @@ pub enum PaletteCommand {
     FocusViewport,
     ToggleWrap,
     ToggleThemeMode,
+    ChangeTheme,
     SetLayout(LayoutMode),
+    SetTheme(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -474,6 +477,7 @@ pub enum OverlaySurface {
     PullRequestModal,
     GitHubAuthModal,
     KeyboardShortcuts,
+    ThemePicker,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -562,6 +566,8 @@ pub struct AppState {
     pub clock_ms: u64,
     pub next_toast_id: u64,
     pub frecency: Option<FrecencyStore>,
+    pub theme_names: Vec<String>,
+    pub theme_preview_original: Option<String>,
 }
 
 impl Default for AppState {
@@ -587,6 +593,8 @@ impl Default for AppState {
             clock_ms: 0,
             next_toast_id: 1,
             frecency: None,
+            theme_names: Vec::new(),
+            theme_preview_original: None,
         }
     }
 }
@@ -693,6 +701,8 @@ impl AppState {
             clock_ms: 0,
             next_toast_id: 1,
             frecency: crate::core::frecency::open_default_store(),
+            theme_names: Vec::new(),
+            theme_preview_original: None,
         };
         state.sync_settings_snapshot();
 
@@ -719,6 +729,10 @@ impl AppState {
             }
             Action::OpenRepoPicker => {
                 self.open_repo_picker();
+                Vec::new()
+            }
+            Action::OpenThemePicker => {
+                self.open_theme_picker();
                 Vec::new()
             }
             Action::OpenRefPicker(field) => {
@@ -1018,6 +1032,10 @@ impl AppState {
                     ThemeMode::Dark => ThemeMode::Light,
                     ThemeMode::Light => ThemeMode::Dark,
                 };
+                self.persist_settings_effect()
+            }
+            Action::SetThemeName(name) => {
+                self.settings.theme_name = name;
                 self.persist_settings_effect()
             }
             Action::ToggleFolder(path) => {
@@ -1431,6 +1449,7 @@ impl AppState {
 
     fn persist_settings_effect(&mut self) -> Vec<Effect> {
         self.sync_settings_snapshot();
+        tracing::info!(theme = %self.settings.theme_name, mode = ?self.settings.theme_mode, "saving settings");
         vec![Effect::SaveSettings(self.settings.clone())]
     }
 
@@ -1443,10 +1462,6 @@ impl AppState {
         self.settings.viewport.wrap_enabled = self.editor.wrap_enabled;
         self.settings.viewport.wrap_column = self.editor.wrap_column;
         self.settings.viewport.layout = self.compare.layout;
-        self.settings.theme_name = match self.settings.theme_mode {
-            ThemeMode::Dark => "diffy-zed-dark".to_owned(),
-            ThemeMode::Light => "diffy-zed-light".to_owned(),
-        };
         self.settings.last_compare = Some(PersistedCompare {
             repo_path: self.compare.repo_path.clone(),
             left_ref: self.compare.left_ref.clone(),
@@ -1504,7 +1519,7 @@ impl AppState {
             FocusTarget::CompareLeftRef => Some(&self.compare.left_ref),
             FocusTarget::CompareRightRef => Some(&self.compare.right_ref),
             FocusTarget::PickerInput => match self.overlays.picker.kind {
-                PickerKind::Repository => Some(&self.overlays.picker.query),
+                PickerKind::Repository | PickerKind::Theme => Some(&self.overlays.picker.query),
                 PickerKind::LeftRef => Some(&self.compare.left_ref),
                 PickerKind::RightRef => Some(&self.compare.right_ref),
             },
@@ -1525,7 +1540,7 @@ impl AppState {
             Some(FocusTarget::CompareLeftRef) => Some(&mut self.compare.left_ref),
             Some(FocusTarget::CompareRightRef) => Some(&mut self.compare.right_ref),
             Some(FocusTarget::PickerInput) => match self.overlays.picker.kind {
-                PickerKind::Repository => Some(&mut self.overlays.picker.query),
+                PickerKind::Repository | PickerKind::Theme => Some(&mut self.overlays.picker.query),
                 PickerKind::LeftRef => Some(&mut self.compare.left_ref),
                 PickerKind::RightRef => Some(&mut self.compare.right_ref),
             },
@@ -1606,6 +1621,7 @@ impl AppState {
                 PickerKind::RightRef => {
                     self.compare.resolved_right = None;
                 }
+                PickerKind::Theme => self.rebuild_theme_picker(),
             },
             Some(FocusTarget::CommandPaletteInput) => self.rebuild_command_palette(),
             Some(FocusTarget::SearchInput) => self.recompute_search_matches(),
@@ -1898,6 +1914,89 @@ impl AppState {
         self.push_overlay(OverlaySurface::RepoPicker, Some(FocusTarget::PickerInput));
     }
 
+    fn open_theme_picker(&mut self) {
+        let scale = self.ui_scale_factor();
+        self.theme_preview_original = Some(self.settings.theme_name.clone());
+        self.overlays.picker.kind = PickerKind::Theme;
+        self.overlays.picker.query = String::new();
+        self.overlays.picker.selected_index = 0;
+        self.overlays.picker.list.scroll_top_px = 0;
+        self.overlays.picker.list.row_height_px = (Sz::ROW * scale).round() as u32;
+        self.overlays.picker.list.gap_px = (Sp::XS * scale).round() as u32;
+        self.overlays.picker.entries = self
+            .theme_names
+            .iter()
+            .map(|name| {
+                let active = self.settings.theme_name == *name;
+                PickerEntry {
+                    label: name.clone(),
+                    detail: if active {
+                        "\u{2713}".to_owned()
+                    } else {
+                        String::new()
+                    },
+                    value: name.clone(),
+                    highlight: None,
+                    icon: None,
+                    section_header: false,
+                }
+            })
+            .collect();
+        self.push_overlay(OverlaySurface::ThemePicker, Some(FocusTarget::PickerInput));
+    }
+
+    fn rebuild_theme_picker(&mut self) {
+        let query = self.overlays.picker.query.trim().to_owned();
+        let current = &self.settings.theme_name;
+        if query.is_empty() {
+            self.overlays.picker.entries = self
+                .theme_names
+                .iter()
+                .map(|name| PickerEntry {
+                    label: name.clone(),
+                    detail: if *name == *current {
+                        "\u{2713}".to_owned()
+                    } else {
+                        String::new()
+                    },
+                    value: name.clone(),
+                    highlight: None,
+                    icon: None,
+                    section_header: false,
+                })
+                .collect();
+        } else {
+            let haystack: Vec<&str> = self.theme_names.iter().map(|s| s.as_str()).collect();
+            let config = neo_frizbee::Config {
+                max_typos: Some(2),
+                sort: false,
+                ..Default::default()
+            };
+            let mut matches = neo_frizbee::match_list(&query, &haystack, &config);
+            matches.sort_by(|a, b| b.score.cmp(&a.score));
+            self.overlays.picker.entries = matches
+                .iter()
+                .map(|m| {
+                    let name = &self.theme_names[m.index as usize];
+                    PickerEntry {
+                        label: name.clone(),
+                        detail: if *name == *current {
+                            "\u{2713}".to_owned()
+                        } else {
+                            String::new()
+                        },
+                        value: name.clone(),
+                        highlight: None,
+                        icon: None,
+                        section_header: false,
+                    }
+                })
+                .collect();
+        }
+        self.overlays.picker.selected_index = 0;
+        self.overlays.picker.list.scroll_top_px = 0;
+    }
+
     fn open_ref_picker(&mut self, field: CompareField) {
         let scale = self.ui_scale_factor();
         self.update_compare_field(field, String::new());
@@ -1944,6 +2043,12 @@ impl AppState {
             return;
         };
         match entry.surface {
+            OverlaySurface::ThemePicker => {
+                if let Some(original) = self.theme_preview_original.take() {
+                    self.settings.theme_name = original;
+                }
+                self.overlays.picker = PickerState::default();
+            }
             OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_) => {
                 self.overlays.picker = PickerState::default();
             }
@@ -1957,6 +2062,22 @@ impl AppState {
 
     fn move_overlay_selection(&mut self, delta: i32) {
         match self.overlays.top() {
+            Some(OverlaySurface::ThemePicker) => {
+                let entries = &self.overlays.picker.entries;
+                let len = entries.len();
+                if len == 0 {
+                    return;
+                }
+                let max = len.saturating_sub(1) as i32;
+                let idx =
+                    (self.overlays.picker.selected_index as i32 + delta).clamp(0, max) as usize;
+                self.overlays.picker.selected_index = idx;
+                self.overlays.picker.list.reveal_index(idx, len);
+                if let Some(entry) = self.overlays.picker.entries.get(idx) {
+                    tracing::debug!(theme = %entry.value, "theme preview");
+                    self.settings.theme_name = entry.value.clone();
+                }
+            }
             Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_)) => {
                 let entries = &self.overlays.picker.entries;
                 let len = entries.len();
@@ -2003,6 +2124,17 @@ impl AppState {
 
     fn select_overlay_entry(&mut self, index: usize) {
         match self.overlays.top() {
+            Some(OverlaySurface::ThemePicker) => {
+                let clamped = index.min(self.overlays.picker.entries.len().saturating_sub(1));
+                self.overlays.picker.selected_index = clamped;
+                if let Some(entry) = self.overlays.picker.entries.get(clamped) {
+                    self.settings.theme_name = entry.value.clone();
+                }
+                self.overlays
+                    .picker
+                    .list
+                    .reveal_index(clamped, self.overlays.picker.entries.len());
+            }
             Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_)) => {
                 let clamped = index.min(self.overlays.picker.entries.len().saturating_sub(1));
                 if self
@@ -2039,6 +2171,20 @@ impl AppState {
 
     fn confirm_overlay_selection(&mut self) -> Vec<Effect> {
         match self.overlays.top() {
+            Some(OverlaySurface::ThemePicker) => {
+                if let Some(entry) = self
+                    .overlays
+                    .picker
+                    .entries
+                    .get(self.overlays.picker.selected_index)
+                {
+                    tracing::info!(theme = %entry.value, "theme confirmed");
+                    self.settings.theme_name = entry.value.clone();
+                }
+                self.theme_preview_original = None;
+                self.pop_overlay();
+                self.persist_settings_effect()
+            }
             Some(OverlaySurface::RepoPicker) => self.confirm_repo_picker(),
             Some(OverlaySurface::RefPicker(field)) => self.confirm_ref_picker(field),
             Some(OverlaySurface::CommandPalette) => self.confirm_command_palette(),
@@ -2230,6 +2376,8 @@ impl AppState {
                 PaletteCommand::SetLayout(layout) => {
                     self.apply_action(Action::SetLayoutMode(layout))
                 }
+                PaletteCommand::ChangeTheme => self.apply_action(Action::OpenThemePicker),
+                PaletteCommand::SetTheme(name) => self.apply_action(Action::SetThemeName(name)),
             },
             PaletteEntryKind::File(index) => {
                 self.select_loaded_file(index, true);
@@ -2659,6 +2807,11 @@ impl AppState {
                 "Toggle Theme".to_owned(),
                 "Switch light and dark mode".to_owned(),
                 PaletteCommand::ToggleThemeMode,
+            ),
+            (
+                "Change Theme".to_owned(),
+                "Browse and preview color themes".to_owned(),
+                PaletteCommand::ChangeTheme,
             ),
             (
                 "Use Unified Layout".to_owned(),
@@ -3143,6 +3296,7 @@ fn overlay_name(surface: OverlaySurface) -> &'static str {
         OverlaySurface::PullRequestModal => "pull-request-modal",
         OverlaySurface::GitHubAuthModal => "github-auth-modal",
         OverlaySurface::KeyboardShortcuts => "keyboard-shortcuts",
+        OverlaySurface::ThemePicker => "theme-picker",
     }
 }
 

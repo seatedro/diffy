@@ -5,6 +5,7 @@ pub mod pull_request;
 pub mod ref_picker;
 pub mod repo_picker;
 pub mod shortcuts;
+pub mod theme_picker;
 
 pub use auth::auth_modal;
 pub use command_palette::command_palette;
@@ -33,5 +34,6 @@ pub fn render_active_overlay(
         OverlaySurface::PullRequestModal => pull_request_modal(state, theme, width, height),
         OverlaySurface::GitHubAuthModal => auth_modal(state, theme, width, height),
         OverlaySurface::KeyboardShortcuts => keyboard_shortcuts(state, theme, width, height),
+        OverlaySurface::ThemePicker => theme_picker::theme_picker(state, theme, width, height),
     })
 }

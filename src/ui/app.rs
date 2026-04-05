@@ -10,6 +10,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::app_runtime::{AppRuntime, AppServices};
+use crate::core::themes::ThemeRegistry;
 use crate::platform::automation::{ErrorDump, FilesDump, StateDump, write_json};
 use crate::platform::persistence::SettingsStore;
 use crate::platform::startup::StartupOptions;
@@ -27,7 +28,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 
     let settings_store = SettingsStore::new_default();
     let settings = settings_store.load()?;
-    let (state, initial_effects) = AppState::bootstrap(startup, settings);
+    let (mut state, initial_effects) = AppState::bootstrap(startup, settings);
+    let theme_registry = ThemeRegistry::load();
+    state.theme_names = theme_registry.names().map(str::to_owned).collect();
     let runtime = AppRuntime::new(AppServices::new(settings_store));
     runtime.dispatch_all(initial_effects);
 
@@ -39,7 +42,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         ControlFlow::Wait
     });
 
-    let mut app = NativeApp::new(state, runtime);
+    let mut app = NativeApp::new(state, runtime, theme_registry);
     event_loop.run_app(&mut app)?;
     Ok(())
 }
@@ -47,6 +50,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 struct NativeApp {
     state: AppState,
     theme: Theme,
+    theme_registry: ThemeRegistry,
     runtime: AppRuntime,
     renderer: Option<Renderer>,
     window: Option<Arc<Window>>,
@@ -72,9 +76,13 @@ struct NativeApp {
 }
 
 impl NativeApp {
-    fn new(state: AppState, runtime: AppRuntime) -> Self {
-        let theme =
-            Theme::for_mode(state.settings.theme_mode).with_ui_scale(state.ui_scale_factor());
+    fn new(state: AppState, runtime: AppRuntime, theme_registry: ThemeRegistry) -> Self {
+        let theme = Theme::from_registry(
+            &state.settings.theme_name,
+            state.settings.theme_mode,
+            &theme_registry,
+        )
+        .with_ui_scale(state.ui_scale_factor());
         #[cfg(feature = "capture")]
         let capture_pending = std::env::var("DIFFY_CAPTURE_PATH")
             .ok()
@@ -84,6 +92,7 @@ impl NativeApp {
         Self {
             state,
             theme,
+            theme_registry,
             runtime,
             renderer: None,
             window: None,
@@ -118,8 +127,12 @@ impl NativeApp {
             .as_ref()
             .map(|r| r.scale_factor() as f32)
             .unwrap_or(1.0);
-        self.theme = Theme::for_mode(self.state.settings.theme_mode)
-            .with_ui_scale(self.state.ui_scale_factor() * dpi);
+        self.theme = Theme::from_registry(
+            &self.state.settings.theme_name,
+            self.state.settings.theme_mode,
+            &self.theme_registry,
+        )
+        .with_ui_scale(self.state.ui_scale_factor() * dpi);
     }
 
     fn window_attributes(&self) -> WindowAttributes {
@@ -486,6 +499,10 @@ impl NativeApp {
                 Some(FocusTarget::PullRequestInput) => Some(FocusTarget::PullRequestConfirm),
                 _ => Some(FocusTarget::PullRequestInput),
             },
+            Some(OverlaySurface::ThemePicker) => match self.state.focus.current {
+                Some(FocusTarget::PickerInput) => Some(FocusTarget::PickerList),
+                _ => Some(FocusTarget::PickerInput),
+            },
             Some(OverlaySurface::GitHubAuthModal) => Some(FocusTarget::AuthPrimaryAction),
             Some(OverlaySurface::KeyboardShortcuts) => None,
             None => match self.state.focus.current {
@@ -515,7 +532,8 @@ impl NativeApp {
                 _ => self.dispatch_action(Action::StartCompare),
             },
             Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_))
-            | Some(OverlaySurface::CommandPalette) => {
+            | Some(OverlaySurface::CommandPalette)
+            | Some(OverlaySurface::ThemePicker) => {
                 self.dispatch_action(Action::ConfirmOverlaySelection);
             }
             Some(OverlaySurface::PullRequestModal) => {
@@ -1170,6 +1188,7 @@ fn hit_test_text_offset(
 
 #[cfg(test)]
 mod tests {
+    use crate::core::themes::ThemeRegistry;
     use tempfile::TempDir;
     use winit::dpi::PhysicalPosition;
     use winit::event::{MouseScrollDelta, TouchPhase};
@@ -1186,7 +1205,7 @@ mod tests {
     fn test_app(state: AppState) -> NativeApp {
         let dir = TempDir::new().unwrap();
         let runtime = AppRuntime::new(AppServices::new(SettingsStore::new_in(dir.path())));
-        NativeApp::new(state, runtime)
+        NativeApp::new(state, runtime, ThemeRegistry::load())
     }
 
     #[test]
@@ -1344,9 +1363,11 @@ mod tests {
 }
 
 fn init_logging(log_debug: bool) {
-    let mut builder = env_logger::Builder::from_default_env();
-    if log_debug {
-        builder.filter_level(log::LevelFilter::Debug);
-    }
-    let _ = builder.is_test(false).try_init();
+    use tracing_subscriber::EnvFilter;
+    let filter = if log_debug {
+        EnvFilter::new("debug")
+    } else {
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
+    };
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 }

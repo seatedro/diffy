@@ -108,7 +108,7 @@ impl SettingsStore {
         match serde_json::from_str(&contents) {
             Ok(settings) => Ok(settings),
             Err(e) => {
-                log::warn!("corrupt settings file, using defaults: {e}");
+                tracing::warn!("corrupt settings file, using defaults: {e}");
                 Ok(Settings::default())
             }
         }

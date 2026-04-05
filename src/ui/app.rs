@@ -68,6 +68,7 @@ struct NativeApp {
     overlay_scroll_remainder_px: f32,
     viewport_scroll_remainder_px: f32,
     needs_redraw: bool,
+    pending_g: bool,
 }
 
 impl NativeApp {
@@ -102,6 +103,7 @@ impl NativeApp {
             overlay_scroll_remainder_px: 0.0,
             viewport_scroll_remainder_px: 0.0,
             needs_redraw: true,
+            pending_g: false,
         }
     }
 
@@ -489,14 +491,13 @@ impl NativeApp {
                 _ => Some(FocusTarget::PullRequestInput),
             },
             Some(OverlaySurface::GitHubAuthModal) => Some(FocusTarget::AuthPrimaryAction),
+            Some(OverlaySurface::KeyboardShortcuts) => None,
             None => match self.state.focus.current {
-                Some(FocusTarget::TitleBar) => Some(FocusTarget::FileList),
                 Some(FocusTarget::FileList) => Some(FocusTarget::Editor),
-                Some(FocusTarget::Editor) => Some(FocusTarget::ThemeToggle),
-                Some(FocusTarget::ThemeToggle) => Some(FocusTarget::TitleBar),
+                Some(FocusTarget::Editor) => Some(FocusTarget::FileList),
                 Some(FocusTarget::WorkspacePrimaryButton) => Some(FocusTarget::TitleBar),
                 _ => Some(if self.state.workspace_mode == WorkspaceMode::Ready {
-                    FocusTarget::TitleBar
+                    FocusTarget::FileList
                 } else {
                     FocusTarget::WorkspacePrimaryButton
                 }),
@@ -531,6 +532,7 @@ impl NativeApp {
                     self.dispatch_action(Action::StartGitHubDeviceFlow);
                 }
             }
+            Some(OverlaySurface::KeyboardShortcuts) => {}
             None => match self.state.focus.current {
                 Some(FocusTarget::WorkspacePrimaryButton) => {
                     self.dispatch_action(Action::OpenCompareSheet);
@@ -611,7 +613,10 @@ impl NativeApp {
         let ctrl = self.modifiers.control_key() || self.modifiers.super_key();
         let shift = self.modifiers.shift_key();
 
-        // Global shortcuts
+        if !matches!(key, Key::Character(t) if t.as_str() == "g") {
+            self.pending_g = false;
+        }
+
         if let Key::Character(text) = key {
             let lower = text.to_ascii_lowercase();
             if ctrl {
@@ -765,6 +770,10 @@ impl NativeApp {
             Key::Named(NamedKey::Delete) => self.dispatch_action(Action::DeleteForward),
             Key::Character(text) => {
                 if !ctrl && !text.chars().all(char::is_control) {
+                    if text.as_str() == "?" && !self.is_text_focused() {
+                        self.dispatch_action(Action::ShowKeyboardShortcuts);
+                        return;
+                    }
                     let viewport_nav = !self.is_text_focused()
                         && self.state.overlays.top().is_none()
                         && self.state.workspace_mode == WorkspaceMode::Ready;
@@ -790,6 +799,61 @@ impl NativeApp {
                             }
                             "N" => {
                                 self.dispatch_action(Action::GoToPreviousFile);
+                                return;
+                            }
+                            "j" => {
+                                self.dispatch_action(Action::ScrollViewportLines(1));
+                                return;
+                            }
+                            "k" => {
+                                self.dispatch_action(Action::ScrollViewportLines(-1));
+                                return;
+                            }
+                            "d" => {
+                                self.dispatch_action(Action::ScrollViewportHalfPage(1));
+                                return;
+                            }
+                            "u" => {
+                                self.dispatch_action(Action::ScrollViewportHalfPage(-1));
+                                return;
+                            }
+                            "G" => {
+                                self.dispatch_action(Action::ScrollViewportTo(
+                                    self.state.editor.max_scroll_top_px(),
+                                ));
+                                return;
+                            }
+                            "g" => {
+                                if self.pending_g {
+                                    self.pending_g = false;
+                                    self.dispatch_action(Action::ScrollViewportTo(0));
+                                } else {
+                                    self.pending_g = true;
+                                }
+                                return;
+                            }
+                            "1" => {
+                                self.dispatch_action(Action::SetLayoutMode(
+                                    crate::core::compare::LayoutMode::Unified,
+                                ));
+                                return;
+                            }
+                            "2" => {
+                                self.dispatch_action(Action::SetLayoutMode(
+                                    crate::core::compare::LayoutMode::Split,
+                                ));
+                                return;
+                            }
+                            "w" => {
+                                self.dispatch_action(Action::ToggleWrap);
+                                return;
+                            }
+                            " " => {
+                                if shift {
+                                    self.dispatch_action(Action::ScrollViewportPages(-1));
+                                } else {
+                                    self.dispatch_action(Action::ScrollViewportPages(1));
+                                }
                                 return;
                             }
                             _ => {}

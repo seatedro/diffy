@@ -425,6 +425,7 @@ pub enum OverlaySurface {
     CommandPalette,
     PullRequestModal,
     GitHubAuthModal,
+    KeyboardShortcuts,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1030,6 +1031,18 @@ impl AppState {
             }
             Action::SearchPrevious => {
                 self.search_navigate(-1);
+                Vec::new()
+            }
+            Action::ShowKeyboardShortcuts => {
+                if self.overlays.top() == Some(OverlaySurface::KeyboardShortcuts) {
+                    self.pop_overlay();
+                } else {
+                    self.push_overlay(OverlaySurface::KeyboardShortcuts, None);
+                }
+                Vec::new()
+            }
+            Action::ScrollViewportHalfPage(direction) => {
+                self.scroll_viewport_half_page(direction);
                 Vec::new()
             }
             Action::Noop => Vec::new(),
@@ -1920,6 +1933,7 @@ impl AppState {
                     Vec::new()
                 }
             }
+            Some(OverlaySurface::KeyboardShortcuts) => Vec::new(),
             None => Vec::new(),
         }
     }
@@ -2418,6 +2432,18 @@ impl AppState {
         );
     }
 
+    fn scroll_viewport_half_page(&mut self, direction: i32) {
+        let half_px = ((self.editor.viewport_height_px as f32) * 0.5)
+            .round()
+            .max(1.0) as i32;
+        let delta_px = direction.saturating_mul(half_px);
+        self.editor.scroll_top_px = apply_scroll_delta_px(
+            self.editor.scroll_top_px,
+            delta_px,
+            self.editor.max_scroll_top_px(),
+        );
+    }
+
     fn navigate_to_hunk(&mut self, forward: bool) {
         let positions = &self.editor.hunk_positions;
         if positions.is_empty() {
@@ -2656,6 +2682,7 @@ fn overlay_name(surface: OverlaySurface) -> &'static str {
         OverlaySurface::CommandPalette => "command-palette",
         OverlaySurface::PullRequestModal => "pull-request-modal",
         OverlaySurface::GitHubAuthModal => "github-auth-modal",
+        OverlaySurface::KeyboardShortcuts => "keyboard-shortcuts",
     }
 }
 

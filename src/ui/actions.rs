@@ -99,5 +99,7 @@ pub enum Action {
     CloseSearch,
     SearchNext,
     SearchPrevious,
+    ShowKeyboardShortcuts,
+    ScrollViewportHalfPage(i32),
     Noop,
 }

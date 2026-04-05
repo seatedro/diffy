@@ -9,56 +9,26 @@ use crate::ui::theme::Theme;
 pub fn picker_list<T: PickerItem>(
     entries: &[T],
     selected_index: usize,
-    scroll_top_px: u32,
+    scroll_top_px: f32,
+    viewport_h: f32,
     theme: &Theme,
-) -> Div {
-    picker_list_inner(entries, selected_index, scroll_top_px, theme, true, false)
-}
-
-pub fn picker_list_no_scrollbar<T: PickerItem>(
-    entries: &[T],
-    selected_index: usize,
-    scroll_top_px: u32,
-    theme: &Theme,
-) -> Div {
-    picker_list_inner(entries, selected_index, scroll_top_px, theme, true, true)
-}
-
-pub fn picker_list_flat<T: PickerItem>(
-    entries: &[T],
-    selected_index: usize,
-    theme: &Theme,
-) -> Div {
-    picker_list_inner(entries, selected_index, 0, theme, false, false)
-}
-
-fn picker_list_inner<T: PickerItem>(
-    entries: &[T],
-    selected_index: usize,
-    scroll_top_px: u32,
-    theme: &Theme,
-    scrollable: bool,
-    no_scrollbar: bool,
 ) -> Div {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let row_h = (Sz::ROW * scale).round();
+    let icon_size = (Ico::XS * scale).round();
+    let total_h = entries.len() as f32 * row_h;
+
+    let list_h = total_h.min(viewport_h);
+    let scroll = scroll_top_px.min((total_h - list_h).max(0.0));
 
     let mut list = div()
-        .flex_1()
-        .min_h(0.0)
+        .w_full()
         .flex_col()
-        .clip();
-
-    if scrollable {
-        list = list
-            .scroll_y(scroll_top_px as f32)
-            .scroll_total(entries.len() as f32 * row_h)
-            .on_scroll(ScrollActionBuilder::Custom(Action::ScrollActiveOverlayListPx));
-        if no_scrollbar {
-            list = list.hide_scrollbar();
-        }
-    }
+        .h(list_h)
+        .scroll_y(scroll)
+        .scroll_total(total_h)
+        .hide_scrollbar();
 
     for (i, entry) in entries.iter().enumerate() {
         if entry.is_section_header() {
@@ -79,7 +49,6 @@ fn picker_list_inner<T: PickerItem>(
             continue;
         }
         let selected = i == selected_index;
-        let icon_size = (Ico::SM * scale).round();
         list = list.child(
             div()
                 .w_full()

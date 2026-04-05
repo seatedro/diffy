@@ -30,7 +30,7 @@ pub use dropdown::*;
 pub use file_icon::*;
 pub use file_tree::*;
 pub use modal::Modal;
-pub use picker::{picker_list, picker_list_flat};
+pub use picker::picker_list;
 pub use popover::*;
 pub use progress::*;
 pub use search_field::*;

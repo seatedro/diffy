@@ -13,6 +13,7 @@ use crate::core::vcs::github::{DeviceFlowState, PullRequestInfo};
 use crate::platform::persistence::{PersistedCompare, Settings};
 use crate::platform::startup::StartupOptions;
 use crate::ui::actions::Action;
+use crate::ui::design::Sz;
 use crate::ui::editor::render_doc::{RenderDoc, build_render_doc};
 use crate::ui::editor::state::EditorState;
 use crate::ui::effects::{CompareRequest, Effect};
@@ -23,8 +24,7 @@ use crate::ui::theme::ThemeMode;
 const MAX_VISIBLE_TOASTS: usize = 8;
 const TOAST_LIFETIME_MS: u64 = 10_000;
 const CURSOR_BLINK_INTERVAL_MS: u64 = 530;
-const PICKER_LIST_VIEWPORT_HEIGHT_PX: u32 = 204;
-const COMMAND_PALETTE_LIST_VIEWPORT_HEIGHT_PX: u32 = 432;
+
 const DEFAULT_UI_SCALE_PCT: u16 = 100;
 const MIN_UI_SCALE_PCT: u16 = 70;
 const MAX_UI_SCALE_PCT: u16 = 180;
@@ -1845,17 +1845,41 @@ impl AppState {
     }
 
     fn open_repo_picker(&mut self) {
+        let scale = self.ui_scale_factor();
         self.overlays.picker.kind = PickerKind::Repository;
-        self.overlays.picker.list.viewport_height_px = PICKER_LIST_VIEWPORT_HEIGHT_PX;
-        self.overlays.picker.query = String::new();
+        self.overlays.picker.list.viewport_height_px =
+            (Sz::REPO_PICKER_HEIGHT * scale).round() as u32;
+        self.overlays.picker.list.row_height_px =
+            (Sz::ROW * scale).round() as u32;
         self.overlays.picker.browse_path = None;
         self.overlays.picker.selected_index = 0;
         self.overlays.picker.list.scroll_top_px = 0;
+
+        let has_recents = crate::core::frecency::recent_repo_paths(
+            self.frecency.as_ref(),
+            1,
+        )
+        .first()
+        .is_some();
+
+        if has_recents {
+            self.overlays.picker.query = String::new();
+        } else {
+            let home = dirs::home_dir()
+                .map(|p| format!("{}/", p.display()))
+                .unwrap_or_else(|| "/".to_owned());
+            self.overlays.picker.query = home.clone();
+            self.text_edit.cursor = home.len();
+            self.text_edit.anchor = home.len();
+            self.text_edit.cursor_moved_at_ms = self.clock_ms;
+        }
+
         self.rebuild_repo_picker();
         self.push_overlay(OverlaySurface::RepoPicker, Some(FocusTarget::PickerInput));
     }
 
     fn open_ref_picker(&mut self, field: CompareField) {
+        let scale = self.ui_scale_factor();
         self.update_compare_field(field, String::new());
         self.overlays.picker.kind = match field {
             CompareField::Left => PickerKind::LeftRef,
@@ -1863,7 +1887,10 @@ impl AppState {
         };
         self.overlays.picker.selected_index = 0;
         self.overlays.picker.list.scroll_top_px = 0;
-        self.overlays.picker.list.viewport_height_px = PICKER_LIST_VIEWPORT_HEIGHT_PX;
+        self.overlays.picker.list.viewport_height_px =
+            (Sz::REPO_PICKER_HEIGHT * scale).round() as u32;
+        self.overlays.picker.list.row_height_px =
+            (Sz::ROW * scale).round() as u32;
         self.rebuild_ref_picker(field);
         self.push_overlay(
             OverlaySurface::RefPicker(field),
@@ -1872,6 +1899,10 @@ impl AppState {
     }
 
     fn open_command_palette(&mut self) {
+        let scale = self.ui_scale_factor();
+        self.overlays.command_palette.list.row_height_px =
+            (Sz::ROW * scale).round() as u32;
+        self.overlays.command_palette.list.scroll_top_px = 0;
         self.rebuild_command_palette();
         self.push_overlay(
             OverlaySurface::CommandPalette,
@@ -2033,6 +2064,12 @@ impl AppState {
 
         if entry.section_header {
             return Vec::new();
+        }
+
+        if entry.value.starts_with("open:") {
+            let path = PathBuf::from(&entry.value[5..]);
+            self.pop_overlay();
+            return self.open_repository(path);
         }
 
         let path = PathBuf::from(&entry.value);
@@ -2316,19 +2353,21 @@ impl AppState {
 
         let mut entries = Vec::new();
 
-        entries.push(PickerEntry {
-            label: "Browse".to_owned(),
-            detail: dir.display().to_string(),
-            value: String::new(),
-            highlight: None,
-            icon: None,
-            section_header: true,
-        });
+        if dir.join(".git").exists() {
+            entries.push(PickerEntry {
+                label: "open this directory".to_owned(),
+                detail: String::new(),
+                value: format!("open:{}", dir.display()),
+                icon: Some(lucide::CORNER_UP_LEFT),
+                highlight: None,
+                section_header: false,
+            });
+        }
 
         if dir.parent().is_some() {
             entries.push(PickerEntry {
                 label: "..".to_owned(),
-                detail: "Parent directory".to_owned(),
+                detail: String::new(),
                 value: dir
                     .parent()
                     .map(|p| p.display().to_string())
@@ -2365,7 +2404,7 @@ impl AppState {
             for (name, path, is_git) in &dirs {
                 entries.push(PickerEntry {
                     label: name.clone(),
-                    detail: path.display().to_string(),
+                    detail: String::new(),
                     value: path.display().to_string(),
                     highlight: None,
                     icon: Some(if *is_git { lucide::FOLDER_GIT } else { lucide::FOLDER }),
@@ -2390,7 +2429,7 @@ impl AppState {
                 );
                 entries.push(PickerEntry {
                     label: name.clone(),
-                    detail: path.display().to_string(),
+                    detail: String::new(),
                     value: path.display().to_string(),
                     highlight: Some(hl),
                     icon: Some(if *is_git { lucide::FOLDER_GIT } else { lucide::FOLDER }),
@@ -2706,10 +2745,12 @@ impl AppState {
                     .len()
                     .saturating_sub(1),
             );
+        let scale = self.ui_scale_factor();
         let row_h = self.overlays.command_palette.list.row_height_px;
         let content_h = row_h.saturating_mul(self.overlays.command_palette.entries.len() as u32);
+        let max_viewport = (Sz::CMD_PALETTE_HEIGHT * scale).round() as u32;
         self.overlays.command_palette.list.viewport_height_px =
-            content_h.min(COMMAND_PALETTE_LIST_VIEWPORT_HEIGHT_PX);
+            content_h.min(max_viewport);
         self.overlays
             .command_palette
             .list

@@ -364,7 +364,7 @@ fn empty_state(state: &AppState, theme: &Theme) -> Div {
         div()
             .pt(Sp::XS * scale)
             .child(
-                Button::new(Action::OpenRepositoryDialog)
+                Button::new(Action::OpenRepoPicker)
                     .icon(lucide::FOLDER_OPEN)
                     .label("Open Folder")
                     .style(ButtonStyle::Subtle),

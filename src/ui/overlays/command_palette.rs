@@ -1,5 +1,5 @@
 use crate::ui::actions::Action;
-use crate::ui::components::picker::picker_list_flat;
+use crate::ui::components::picker::picker_list;
 use crate::ui::design::{Shadow, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::state::{AppState, FocusTarget};
@@ -47,11 +47,11 @@ pub fn command_palette(state: &AppState, theme: &Theme, width: f32, height: f32)
         .child(
             div()
                 .p((Sp::XS * scale).round())
-                .h((state.overlays.command_palette.list.viewport_height_px as f32 * scale).round())
-                .overflow_hidden()
-                .child(picker_list_flat(
+                .child(picker_list(
                     &state.overlays.command_palette.entries,
                     state.overlays.command_palette.selected_index,
+                    state.overlays.command_palette.list.scroll_top_px as f32,
+                    state.overlays.command_palette.list.viewport_height_px as f32,
                     theme,
                 )),
         );

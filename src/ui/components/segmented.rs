@@ -37,13 +37,14 @@ impl RenderOnce for SegmentedControl {
         let scale = cx.theme.metrics.ui_scale();
 
         view! { scale,
-            <div class="flex-row shrink-0 rounded-md"
+            <div class="flex-row shrink-0"
                  bg={tc.element_background}
-                 p={(Sp::XXS * scale).round() + 1.0}
-                 gap={Sp::XXS}>
+                 p={Sp::XXS}
+                 gap={Sp::XXS}
+                 rounded={Rad::XL}>
                 for item in self.items {
                     <div class="shrink-0"
-                         px={Sp::MD} py={(Sp::XS * scale).round() + 1.0}
+                         px={Sp::MD} py={Sp::XS}
                          rounded={Rad::LG}
                          bg={if item.selected { tc.surface }}
                          shadow_preset={if item.selected { Shadow::SUBTLE }}

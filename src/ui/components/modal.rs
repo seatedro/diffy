@@ -1,7 +1,7 @@
 use halogen::view;
 
 use crate::ui::actions::Action;
-use crate::ui::design::{Ico, Shadow, Sp, Sz};
+use crate::ui::design::{Ico, Rad, Shadow, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::style::Styled;
 
@@ -114,7 +114,7 @@ impl RenderOnce for Modal {
             .p(padding)
             .gap(gap)
             .bg(tc.elevated_surface)
-            .rounded_xl()
+            .rounded((Rad::XXXL * scale).round())
             .border_b(tc.border)
             .shadow_preset(Shadow::MODAL)
             .on_click(Action::Noop)

@@ -44,7 +44,7 @@ pub fn compare_sheet(state: &AppState, theme: &crate::ui::theme::Theme, width: f
     .body_child(
         div()
             .flex_row()
-            .gap(Sp::MD)
+            .gap((Sp::MD * scale).round())
             .child(
                 text_input("Left ref", &state.compare.left_ref)
                     .placeholder("main")
@@ -75,12 +75,12 @@ pub fn compare_sheet(state: &AppState, theme: &crate::ui::theme::Theme, width: f
     .body_child(
         div()
             .flex_col()
-            .gap(Sp::MD)
+            .gap((Sp::MD * scale).round())
             .child(
                 div()
                     .flex_row()
                     .items_center()
-                    .gap(Sp::MD)
+                    .gap((Sp::MD * scale).round())
                     .child(text("Mode").text_sm().medium().color(tc.text_muted))
                     .child(SegmentedControl::new(vec![
                         SegmentedItem::new("Single", Action::SetCompareMode(CompareMode::SingleCommit), state.compare.mode == CompareMode::SingleCommit),
@@ -91,12 +91,13 @@ pub fn compare_sheet(state: &AppState, theme: &crate::ui::theme::Theme, width: f
             .child(
                 div()
                     .flex_row()
-                    .gap(Sp::XL)
+                    .flex_wrap()
+                    .gap((Sp::MD * scale).round())
                     .child(
                         div()
                             .flex_row()
                             .items_center()
-                            .gap(Sp::MD)
+                            .gap((Sp::MD * scale).round())
                             .child(text("Layout").text_sm().medium().color(tc.text_muted))
                             .child(SegmentedControl::new(vec![
                                 SegmentedItem::new("Unified", Action::SetLayoutMode(LayoutMode::Unified), state.compare.layout == LayoutMode::Unified),
@@ -107,7 +108,7 @@ pub fn compare_sheet(state: &AppState, theme: &crate::ui::theme::Theme, width: f
                         div()
                             .flex_row()
                             .items_center()
-                            .gap(Sp::MD)
+                            .gap((Sp::MD * scale).round())
                             .child(text("Engine").text_sm().medium().color(tc.text_muted))
                             .child(SegmentedControl::new(vec![
                                 SegmentedItem::new("Built-in", Action::SetRenderer(RendererKind::Builtin), state.compare.renderer == RendererKind::Builtin),

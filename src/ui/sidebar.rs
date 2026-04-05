@@ -295,14 +295,14 @@ pub(crate) fn sidebar(
     let total_adds: i32 = all_files.iter().map(|f| f.additions).sum();
     let total_dels: i32 = all_files.iter().map(|f| f.deletions).sum();
 
+    let row_h = (Sz::ROW * scale).round();
+
     let header = div()
         .px((Sp::MD * scale).round())
-        .pt((Sp::MD * scale).round())
-        .pb((Sp::SM * scale).round())
         .flex_col()
-        .gap(Sp::SM * scale)
         .child(
             div()
+                .h(row_h)
                 .flex_row()
                 .items_center()
                 .gap(Sp::SM * scale)
@@ -312,7 +312,7 @@ pub(crate) fn sidebar(
                         div()
                             .px((Rad::LG * scale).round())
                             .py((Sp::XXS * scale).round())
-                            .rounded_sm()
+                            .rounded((Rad::LG * scale).round())
                             .bg(Color::rgba(255, 255, 255, 10))
                             .child(
                                 text(file_count.to_string())
@@ -351,6 +351,7 @@ pub(crate) fn sidebar(
         .optional_child(if file_count > 0 {
             Some(
                 div()
+                    .h(row_h)
                     .flex_row()
                     .items_center()
                     .gap(Sp::XS * scale)
@@ -376,7 +377,7 @@ pub(crate) fn sidebar(
             .on_click(Action::SetFocus(Some(FocusTarget::SidebarSearch)))
             .bare()
             .w_full()
-            .h((Sz::SEARCH_INPUT * scale).round());
+            .h((Sz::ROW * scale).round());
         let hint = if !search_focused && !has_filter {
             Some("/")
         } else {
@@ -421,7 +422,7 @@ pub(crate) fn sidebar(
                 div()
                     .flex_col()
                     .items_center()
-                    .gap_2()
+                    .gap((Sp::SM * scale).round())
                     .child(svg_icon(icon, Ico::XL).color(tc.text_muted))
                     .child(text(msg).text_sm().color(tc.text_muted)),
             ),
@@ -432,7 +433,7 @@ pub(crate) fn sidebar(
                 div()
                     .flex_col()
                     .items_center()
-                    .gap_2()
+                    .gap((Sp::SM * scale).round())
                     .child(svg_icon(lucide::SEARCH, Ico::XL).color(tc.text_muted))
                     .child(
                         text("No files match filter.")

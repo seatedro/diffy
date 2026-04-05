@@ -12,22 +12,26 @@ pub fn picker_list<T: PickerItem>(
     entries: &[T],
     selected_index: usize,
     scroll_top_px: f32,
-    viewport_h: f32,
+    max_visible: usize,
     theme: &Theme,
 ) -> Div {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let row_h = (Sz::ROW * scale).round();
+    let gap = (Sp::XS * scale).round();
     let icon_size = (Ico::XS * scale).round();
-    let total_h = entries.len() as f32 * row_h;
-
-    let list_h = total_h.min(viewport_h);
+    let stride = row_h + gap;
+    let visible_count = entries.len().min(max_visible);
+    let list_h = if visible_count == 0 { 0.0 } else { visible_count as f32 * stride - gap };
+    let total_h = if entries.is_empty() { 0.0 } else { entries.len() as f32 * stride - gap };
     let scroll = scroll_top_px.min((total_h - list_h).max(0.0));
 
     let mut list = div()
         .w_full()
         .flex_col()
+        .gap(gap)
         .h(list_h)
+        .overflow_hidden()
         .scroll_y(scroll)
         .scroll_total(total_h)
         .hide_scrollbar();
@@ -46,6 +50,7 @@ pub fn picker_list<T: PickerItem>(
             div()
                 .w_full()
                 .h(row_h)
+                .flex_shrink_0()
                 .flex_row()
                 .items_center()
                 .gap((Sp::SM * scale).round())

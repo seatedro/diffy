@@ -1,5 +1,5 @@
 use crate::ui::actions::Action;
-use crate::ui::design::{Alpha, Ico, Sp};
+use crate::ui::design::{Alpha, Ico, Rad, Sp};
 use crate::ui::element::*;
 use crate::ui::shell::CursorHint;
 use crate::ui::style::Styled;
@@ -80,8 +80,8 @@ impl RenderOnce for Button {
         let scale = theme.metrics.ui_scale();
 
         let (icon_size, px, py) = match self.size {
-            ButtonSize::Default => (Ico::BUTTON_DEFAULT, (Sp::LG * scale).round(), (Sp::SM * scale).round()),
-            ButtonSize::Compact => (Ico::BUTTON_COMPACT, (Sp::MD * scale).round(), (Sp::XS * scale).round()),
+            ButtonSize::Default => (Ico::BUTTON_DEFAULT, (Sp::MD * scale).round(), (Sp::XS * scale).round()),
+            ButtonSize::Compact => (Ico::BUTTON_COMPACT, (Sp::SM * scale).round(), (Sp::XXS * scale).round()),
         };
 
         let (bg, hover_bg, icon_color, text_color) = match self.style {
@@ -116,10 +116,10 @@ impl RenderOnce for Button {
             .flex_row()
             .flex_shrink_0()
             .items_center()
-            .gap((Sp::XS * scale).round() + Sp::XXS)
+            .gap((Sp::SM * scale).round())
             .px(px)
             .py(py)
-            .rounded_md()
+            .rounded((Rad::XL * scale).round())
             .bg(bg)
             .hover_bg(hover_bg)
             .on_click(self.action)

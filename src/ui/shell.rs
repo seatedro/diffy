@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use crate::render::{Rect, Scene, TextMetrics};
 use crate::ui::components::ToastStack;
-use crate::ui::design::{Rad, Sp, Sz};
+use crate::ui::design::{Bp, Rad, Sp, Sz};
 use crate::ui::editor::element::{EditorDocument, EditorElement};
 use crate::ui::element::*;
 use crate::ui::overlays;
@@ -54,8 +54,15 @@ pub fn build_ui_frame(
     state.file_list.row_height = (Sz::ROW * ui_scale).round();
     state.file_list.gap = (Sp::XS * ui_scale).round();
     let overlay_row_height = (Sz::ROW * ui_scale).round().max(24.0) as u32;
+    let overlay_gap = (Sp::XS * ui_scale).round() as u32;
     state.overlays.picker.list.row_height_px = overlay_row_height;
+    state.overlays.picker.list.gap_px = overlay_gap;
+    state.overlays.picker.list.viewport_height_px =
+        state.overlays.picker.list.viewport_for_max_rows(Sz::PICKER_MAX_ROWS, state.overlays.picker.entries.len());
     state.overlays.command_palette.list.row_height_px = overlay_row_height;
+    state.overlays.command_palette.list.gap_px = overlay_gap;
+    state.overlays.command_palette.list.viewport_height_px =
+        state.overlays.command_palette.list.viewport_for_max_rows(Sz::PICKER_MAX_ROWS, state.overlays.command_palette.entries.len());
     state.file_list.viewport_height = sidebar_list_height;
     state.file_list.clamp_scroll(state.workspace.files.len());
     let sidebar_width_factor = cx
@@ -75,7 +82,7 @@ pub fn build_ui_frame(
                 .flex_row()
                 .flex_1()
                 .min_h(0.0)
-                .when(state.workspace_mode == WorkspaceMode::Ready && sidebar_width_factor > 0.001, |d| {
+                .when(state.workspace_mode == WorkspaceMode::Ready && sidebar_width_factor > 0.001 && width >= Bp::COMPACT * ui_scale, |d| {
                     d.child(sidebar_mod::sidebar(
                         state,
                         theme,

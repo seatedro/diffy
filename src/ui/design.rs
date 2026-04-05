@@ -20,7 +20,7 @@ impl Sp {
 pub struct Sz;
 
 impl Sz {
-    pub const ROW: f32 = 36.0;
+    pub const ROW: f32 = 40.0;
     pub const INPUT: f32 = 44.0;
     pub const INPUT_LABELED: f32 = 64.0;
     pub const SEARCH_INPUT: f32 = 28.0;
@@ -59,6 +59,8 @@ impl Sz {
     pub const INPUT_TOP_PAD: f32 = 8.0;
     pub const CURSOR_WIDTH: f32 = 2.0;
     pub const MAIN_SURFACE_MIN_W: f32 = 320.0;
+    pub const AUTH_MODAL_HEIGHT: f32 = 320.0;
+    pub const PICKER_MAX_ROWS: usize = 8;
 }
 
 pub struct Ico;
@@ -151,6 +153,13 @@ impl Rad {
     pub const XXL: f32 = 12.0;
     pub const XXXL: f32 = 16.0;
     pub const PILL: f32 = 10.0;
+}
+
+pub struct Bp;
+
+impl Bp {
+    pub const COMPACT: f32 = 720.0;
+    pub const NARROW: f32 = 900.0;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

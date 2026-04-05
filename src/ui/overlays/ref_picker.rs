@@ -2,7 +2,7 @@ use halogen::view;
 
 use crate::ui::actions::Action;
 use crate::ui::components::picker::picker_list;
-use crate::ui::design::{Shadow, Sp, Sz};
+use crate::ui::design::{Rad, Shadow, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::state::{AppState, CompareField, FocusTarget};
 use crate::ui::style::Styled;
@@ -17,7 +17,6 @@ pub fn ref_picker(
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let panel_width = (Sz::MODAL_SM * scale).min(width - (Sz::MODAL_MARGIN * scale).round());
-    let max_list_height = (Sz::REPO_PICKER_HEIGHT * scale).round();
 
     let current_value = match field {
         CompareField::Left => &state.compare.left_ref,
@@ -29,7 +28,7 @@ pub fn ref_picker(
         .flex_col()
         .overflow_hidden()
         .bg(tc.elevated_surface)
-        .rounded_lg()
+        .rounded((Rad::XXL * scale).round())
         .border(tc.border)
         .shadow_preset(Shadow::MODAL)
         .on_click(Action::Noop)
@@ -45,7 +44,7 @@ pub fn ref_picker(
                     .focus_target(FocusTarget::PickerInput)
                     .bare()
                     .w_full()
-                    .h((Sz::INPUT * scale).round())}
+                    .h((Sz::ROW * scale).round())}
             </div>
         })
         .child(view! {
@@ -57,7 +56,7 @@ pub fn ref_picker(
                     &state.overlays.picker.entries,
                     state.overlays.picker.selected_index,
                     state.overlays.picker.list.scroll_top_px as f32,
-                    max_list_height,
+                    Sz::PICKER_MAX_ROWS,
                     theme,
                 )}
             </div>

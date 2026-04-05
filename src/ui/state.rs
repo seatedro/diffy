@@ -13,7 +13,7 @@ use crate::core::vcs::github::{DeviceFlowState, PullRequestInfo};
 use crate::platform::persistence::{PersistedCompare, Settings};
 use crate::platform::startup::StartupOptions;
 use crate::ui::actions::Action;
-use crate::ui::design::Sz;
+use crate::ui::design::{Sp, Sz};
 use crate::ui::editor::render_doc::{RenderDoc, build_render_doc};
 use crate::ui::editor::state::EditorState;
 use crate::ui::effects::{CompareRequest, Effect};
@@ -262,6 +262,7 @@ pub struct OverlayListState {
     pub scroll_top_px: u32,
     pub viewport_height_px: u32,
     pub row_height_px: u32,
+    pub gap_px: u32,
 }
 
 impl Default for OverlayListState {
@@ -270,13 +271,33 @@ impl Default for OverlayListState {
             scroll_top_px: 0,
             viewport_height_px: 0,
             row_height_px: 36,
+            gap_px: 0,
         }
     }
 }
 
 impl OverlayListState {
+    pub fn stride_px(&self) -> u32 {
+        self.row_height_px + self.gap_px
+    }
+
     pub fn total_content_height_px(&self, entry_count: usize) -> u32 {
-        self.row_height_px.saturating_mul(entry_count as u32)
+        if entry_count == 0 {
+            return 0;
+        }
+        self.stride_px()
+            .saturating_mul(entry_count as u32)
+            .saturating_sub(self.gap_px)
+    }
+
+    pub fn viewport_for_max_rows(&self, max_rows: usize, entry_count: usize) -> u32 {
+        let visible = entry_count.min(max_rows);
+        if visible == 0 {
+            return 0;
+        }
+        self.stride_px()
+            .saturating_mul(visible as u32)
+            .saturating_sub(self.gap_px)
     }
 
     pub fn max_scroll_top_px(&self, entry_count: usize) -> u32 {
@@ -297,9 +318,9 @@ impl OverlayListState {
     }
 
     pub fn reveal_index(&mut self, index: usize, entry_count: usize) {
-        let row_height_px = self.row_height_px.max(1);
-        let item_top = row_height_px.saturating_mul(index as u32);
-        let item_bottom = item_top.saturating_add(row_height_px);
+        let stride = self.stride_px().max(1);
+        let item_top = stride.saturating_mul(index as u32);
+        let item_bottom = item_top.saturating_add(self.row_height_px);
         let viewport_bottom = self.scroll_top_px.saturating_add(self.viewport_height_px);
 
         if item_top < self.scroll_top_px {
@@ -1847,10 +1868,10 @@ impl AppState {
     fn open_repo_picker(&mut self) {
         let scale = self.ui_scale_factor();
         self.overlays.picker.kind = PickerKind::Repository;
-        self.overlays.picker.list.viewport_height_px =
-            (Sz::REPO_PICKER_HEIGHT * scale).round() as u32;
         self.overlays.picker.list.row_height_px =
             (Sz::ROW * scale).round() as u32;
+        self.overlays.picker.list.gap_px =
+            (Sp::XS * scale).round() as u32;
         self.overlays.picker.browse_path = None;
         self.overlays.picker.selected_index = 0;
         self.overlays.picker.list.scroll_top_px = 0;
@@ -1887,10 +1908,10 @@ impl AppState {
         };
         self.overlays.picker.selected_index = 0;
         self.overlays.picker.list.scroll_top_px = 0;
-        self.overlays.picker.list.viewport_height_px =
-            (Sz::REPO_PICKER_HEIGHT * scale).round() as u32;
         self.overlays.picker.list.row_height_px =
             (Sz::ROW * scale).round() as u32;
+        self.overlays.picker.list.gap_px =
+            (Sp::XS * scale).round() as u32;
         self.rebuild_ref_picker(field);
         self.push_overlay(
             OverlaySurface::RefPicker(field),
@@ -2745,16 +2766,13 @@ impl AppState {
                     .len()
                     .saturating_sub(1),
             );
-        let scale = self.ui_scale_factor();
-        let row_h = self.overlays.command_palette.list.row_height_px;
-        let content_h = row_h.saturating_mul(self.overlays.command_palette.entries.len() as u32);
-        let max_viewport = (Sz::CMD_PALETTE_HEIGHT * scale).round() as u32;
+        let entry_count = self.overlays.command_palette.entries.len();
         self.overlays.command_palette.list.viewport_height_px =
-            content_h.min(max_viewport);
+            self.overlays.command_palette.list.viewport_for_max_rows(Sz::PICKER_MAX_ROWS, entry_count);
         self.overlays
             .command_palette
             .list
-            .clamp_scroll(self.overlays.command_palette.entries.len());
+            .clamp_scroll(entry_count);
     }
 
     fn shift_loaded_file(&mut self, delta: isize) {

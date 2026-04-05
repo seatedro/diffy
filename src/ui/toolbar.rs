@@ -75,17 +75,16 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> Div {
     let scale = theme.metrics.ui_scale();
 
     let left = view! { scale,
-        <div class="flex-row items-center gap-1 flex-1" min_w={0.0}>
+        <div class="flex-row items-center flex-1" gap={Sp::SM} min_w={0.0}>
             {components::file_icon(file_label, Ico::SM)}
-            <div w={Sp::XS} />
             <div class="flex-1" min_w={0.0}>
                 <text class="text-sm truncate" color={tc.text_muted}>{file_label}</text>
             </div>
         </div>
     };
 
-    let right = view! {
-        <div class="flex-row items-center gap-1">
+    let right = view! { scale,
+        <div class="flex-row items-center" gap={Sp::SM}>
             {SegmentedControl::new(vec![
                 SegmentedItem::new(
                     "Split",
@@ -135,7 +134,7 @@ fn search_bar(state: &AppState, theme: &Theme) -> Div {
         .on_click(Action::SetFocus(Some(FocusTarget::SearchInput)))
         .bare()
         .w_full()
-        .h((Sz::SEARCH_INPUT * scale).round());
+        .h((Sz::ROW * scale).round());
 
     let match_count = search.matches.len();
     let count_label = if search.query.is_empty() {
@@ -148,7 +147,7 @@ fn search_bar(state: &AppState, theme: &Theme) -> Div {
     };
 
     let nav_icon_size = (Ico::SM * scale).round();
-    let nav_btn_size = (Sz::SEARCH_INPUT * scale).round();
+    let nav_btn_size = (Sz::ROW * scale).round();
     let search_icon_size = (Ico::SM * scale).round();
 
     let nav = view! { scale,
@@ -185,11 +184,11 @@ fn search_bar(state: &AppState, theme: &Theme) -> Div {
 
     div()
         .w_full()
+        .h((Sz::ROW * scale).round())
         .flex_row()
         .items_center()
         .gap((Sp::SM * scale).round())
         .px((Sp::MD * scale).round())
-        .py((Sp::XS * scale).round())
         .border_b(tc.border_variant)
         .bg(tc.editor_surface)
         .child(svg_icon(lucide::SEARCH, search_icon_size).color(tc.text_muted))
@@ -267,7 +266,7 @@ fn empty_state(state: &AppState, theme: &Theme) -> Div {
         .flex_col()
         .gap((Sp::LG * scale).round())
         .bg(tc.elevated_surface)
-        .rounded_xl()
+        .rounded((Rad::XXXL * scale).round())
         .border_b(tc.border)
         .shadow_preset(Shadow::FLOAT)
         .child(view! { scale,

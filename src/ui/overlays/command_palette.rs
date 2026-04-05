@@ -2,7 +2,7 @@ use halogen::view;
 
 use crate::ui::actions::Action;
 use crate::ui::components::picker::picker_list;
-use crate::ui::design::{Shadow, Sp, Sz};
+use crate::ui::design::{Rad, Shadow, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::state::{AppState, FocusTarget};
 use crate::ui::style::Styled;
@@ -18,7 +18,7 @@ pub fn command_palette(state: &AppState, theme: &Theme, width: f32, height: f32)
         .flex_col()
         .overflow_hidden()
         .bg(tc.elevated_surface)
-        .rounded_lg()
+        .rounded((Rad::XXL * scale).round())
         .border(tc.border)
         .shadow_preset(Shadow::MODAL)
         .on_click(Action::Noop)
@@ -34,7 +34,7 @@ pub fn command_palette(state: &AppState, theme: &Theme, width: f32, height: f32)
                     .focus_target(FocusTarget::CommandPaletteInput)
                     .bare()
                     .w_full()
-                    .h((Sz::INPUT * scale).round())}
+                    .h((Sz::ROW * scale).round())}
             </div>
         })
         .child(view! {
@@ -46,7 +46,7 @@ pub fn command_palette(state: &AppState, theme: &Theme, width: f32, height: f32)
                     &state.overlays.command_palette.entries,
                     state.overlays.command_palette.selected_index,
                     state.overlays.command_palette.list.scroll_top_px as f32,
-                    state.overlays.command_palette.list.viewport_height_px as f32,
+                    Sz::PICKER_MAX_ROWS,
                     theme,
                 )}
             </div>

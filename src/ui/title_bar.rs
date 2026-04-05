@@ -31,7 +31,7 @@ pub(crate) fn title_bar(state: &AppState, theme: &Theme, sidebar_visible: f32) -
         .flex_shrink_0()
         .min_w(0.0)
         .items_center()
-        .gap(Sp::SM);
+        .gap((Sp::SM * scale).round());
 
     if is_ready {
         left = left.child(
@@ -66,7 +66,7 @@ pub(crate) fn title_bar(state: &AppState, theme: &Theme, sidebar_visible: f32) -
         .flex_row()
         .items_center()
         .justify_center()
-        .gap(Sp::XS);
+        .gap((Sp::XS * scale).round());
 
     if has_repo && repo_loaded {
         let left_label = if state.compare.left_ref.is_empty() {
@@ -126,7 +126,7 @@ pub(crate) fn title_bar(state: &AppState, theme: &Theme, sidebar_visible: f32) -
         .flex_row()
         .flex_shrink_0()
         .items_center()
-        .gap_1();
+        .gap((Sp::XS * scale).round());
 
     if is_ready {
         let file_count = state.workspace.files.len();
@@ -149,7 +149,7 @@ pub(crate) fn title_bar(state: &AppState, theme: &Theme, sidebar_visible: f32) -
         .min_w(0.0)
         .h(theme.metrics.title_bar_height)
         .w_full()
-        .px(Sp::XL)
+        .px((Sp::XL * scale).round())
         .bg(tc.title_bar_background)
         .border_b(tc.border_variant)
         .child(left)

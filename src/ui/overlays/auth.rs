@@ -35,7 +35,7 @@ pub fn auth_modal(state: &AppState, theme: &crate::ui::theme::Theme, width: f32,
         width,
         height,
     )
-    .height(320.0)
+    .height(Sz::AUTH_MODAL_HEIGHT)
     .body_child(view! { scale,
         <div class="flex-row shrink-0 items-center" gap={Sp::SM}>
             <icon svg={status_icon} size={Ico::SM} color={tc.text_muted} />

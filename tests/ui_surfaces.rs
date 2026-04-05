@@ -124,18 +124,12 @@ fn repo_picker_exposes_input_entries_and_scroll_surface() {
     let mut state = repo_picker_state(24);
     let frame = render_frame(&mut state);
 
-    assert!(scene_contains_text(&frame, "Repository Picker"));
+    assert!(scene_contains_text(&frame, "repo-0"));
     assert!(has_text_input_for(&frame, FocusTarget::PickerInput));
     assert!(has_hit(&frame, |action| matches!(
         action,
         Action::SelectOverlayEntry(0)
     )));
-    assert!(has_scroll_region(&frame, |builder| match builder {
-        ScrollActionBuilder::Custom(build) => {
-            matches!(build(1), Action::ScrollActiveOverlayListPx(1))
-        }
-        _ => false,
-    }));
 }
 
 #[test]

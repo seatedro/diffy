@@ -51,7 +51,7 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> Div {
         .items_center()
         .h(theme.metrics.status_bar_height)
         .w_full()
-        .px_4()
+        .px((Sp::LG * scale).round())
         .bg(tc.status_bar_background)
         .border_t(tc.border_variant)
         .child(view! { scale,

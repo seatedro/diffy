@@ -127,7 +127,7 @@ impl NativeApp {
             .with_title(self.state.window_title())
             .with_visible(!self.state.startup.hidden_window)
             .with_inner_size(LogicalSize::new(1320.0, 840.0))
-            .with_min_inner_size(LogicalSize::new(980.0, 680.0))
+            .with_min_inner_size(LogicalSize::new(640.0, 480.0))
     }
 
     fn window_id(&self) -> Option<WindowId> {

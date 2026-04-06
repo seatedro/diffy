@@ -161,6 +161,18 @@ pub const GREEN_CHROMA: f32 = 0.14;
 pub const YELLOW_HUE: f32 = 85.0;
 pub const YELLOW_CHROMA: f32 = 0.14;
 
+/// Purple (syntax: keywords).
+pub const PURPLE_HUE: f32 = 300.0;
+pub const PURPLE_CHROMA: f32 = 0.12;
+
+/// Teal/cyan (syntax: types).
+pub const TEAL_HUE: f32 = 190.0;
+pub const TEAL_CHROMA: f32 = 0.10;
+
+/// Orange (syntax: numbers, constants).
+pub const ORANGE_HUE: f32 = 55.0;
+pub const ORANGE_CHROMA: f32 = 0.12;
+
 #[cfg(test)]
 mod tests {
     use super::*;

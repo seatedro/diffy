@@ -130,6 +130,16 @@ def semantic_from(theme: dict) -> dict:
     text_muted = mix(foreground, background, 0.25)
     text_faint = mix(foreground, background, 0.45)
 
+    bright = is_dark
+    syn_keyword = palette[13] if bright else palette[5]   # magenta
+    syn_string = palette[10] if bright else palette[2]    # green
+    syn_comment = palette[8]                               # bright black / gray
+    syn_function = palette[12] if bright else palette[4]  # blue
+    syn_type = palette[14] if bright else palette[6]      # cyan
+    syn_number = palette[11] if bright else palette[3]    # yellow
+    syn_property = palette[9] if bright else palette[1]   # red
+    syn_operator = text_muted
+
     accent_soft = mix(background, accent, 0.26 if is_dark else 0.20)
 
     success_bg = mix(background, success_text, 0.16 if is_dark else 0.12)
@@ -183,6 +193,14 @@ def semantic_from(theme: dict) -> dict:
         "shadowSm": "#1a000000" if is_dark else "#0a000000",
         "shadowMd": "#33000000" if is_dark else "#15000000",
         "shadowLg": "#4d000000" if is_dark else "#22000000",
+        "synKeyword": rgb_to_hex(syn_keyword),
+        "synString": rgb_to_hex(syn_string),
+        "synComment": rgb_to_hex(syn_comment),
+        "synFunction": rgb_to_hex(syn_function),
+        "synType": rgb_to_hex(syn_type),
+        "synNumber": rgb_to_hex(syn_number),
+        "synProperty": rgb_to_hex(syn_property),
+        "synOperator": rgb_to_hex(syn_operator),
     }
 
 

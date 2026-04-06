@@ -11,7 +11,12 @@ use crate::ui::state::{AppState, AsyncStatus, CompareField, OverlaySurface, Work
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
 
-pub(crate) fn title_bar(state: &AppState, theme: &Theme, sidebar_visible: f32, window_width: f32) -> Div {
+pub(crate) fn title_bar(
+    state: &AppState,
+    theme: &Theme,
+    sidebar_visible: f32,
+    window_width: f32,
+) -> Div {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let has_repo = state.compare.repo_path.is_some();

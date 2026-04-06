@@ -105,6 +105,14 @@ pub struct ThemeColors {
     pub hover_overlay: Color,
     pub search_match_bg: Color,
     pub search_match_active_bg: Color,
+    pub syntax_keyword: Color,
+    pub syntax_string: Color,
+    pub syntax_comment: Color,
+    pub syntax_function: Color,
+    pub syntax_type: Color,
+    pub syntax_number: Color,
+    pub syntax_property: Color,
+    pub syntax_operator: Color,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -212,12 +220,15 @@ impl Theme {
         let red = palette::dark_scale(palette::RED_HUE, palette::RED_CHROMA);
         let green = palette::dark_scale(palette::GREEN_HUE, palette::GREEN_CHROMA);
         let yellow = palette::dark_scale(palette::YELLOW_HUE, palette::YELLOW_CHROMA);
+        let purple = palette::dark_scale(palette::PURPLE_HUE, palette::PURPLE_CHROMA);
+        let teal = palette::dark_scale(palette::TEAL_HUE, palette::TEAL_CHROMA);
+        let orange = palette::dark_scale(palette::ORANGE_HUE, palette::ORANGE_CHROMA);
 
         Self {
             mode: ThemeMode::Dark,
             sans_family: default_sans_family(),
             mono_family: default_mono_family(),
-            colors: dark_colors(&n, &blue, &red, &green, &yellow),
+            colors: dark_colors(&n, &blue, &red, &green, &yellow, &purple, &teal, &orange),
             metrics: default_metrics(),
         }
     }
@@ -228,12 +239,15 @@ impl Theme {
         let red = palette::light_scale(palette::RED_HUE, palette::RED_CHROMA);
         let green = palette::light_scale(palette::GREEN_HUE, palette::GREEN_CHROMA);
         let yellow = palette::light_scale(palette::YELLOW_HUE, palette::YELLOW_CHROMA);
+        let purple = palette::light_scale(palette::PURPLE_HUE, palette::PURPLE_CHROMA);
+        let teal = palette::light_scale(palette::TEAL_HUE, palette::TEAL_CHROMA);
+        let orange = palette::light_scale(palette::ORANGE_HUE, palette::ORANGE_CHROMA);
 
         Self {
             mode: ThemeMode::Light,
             sans_family: default_sans_family(),
             mono_family: default_mono_family(),
-            colors: light_colors(&n, &blue, &red, &green, &yellow),
+            colors: light_colors(&n, &blue, &red, &green, &yellow, &purple, &teal, &orange),
             metrics: default_metrics(),
         }
     }
@@ -264,7 +278,16 @@ fn default_metrics() -> ThemeMetrics {
 ///
 /// Mapping convention — `n` is the 12-step neutral, `b` blue accent,
 /// `r` red, `g` green, `y` yellow. Indices are 0-based (step 1 = [0]).
-fn dark_colors(n: &Scale, b: &Scale, r: &Scale, g: &Scale, y: &Scale) -> ThemeColors {
+fn dark_colors(
+    n: &Scale,
+    b: &Scale,
+    r: &Scale,
+    g: &Scale,
+    y: &Scale,
+    purple: &Scale,
+    teal: &Scale,
+    orange: &Scale,
+) -> ThemeColors {
     ThemeColors {
         // Backgrounds — clear visual hierarchy between layers.
         // n[0] is the deepest black, n[3] is noticeably lighter.
@@ -341,11 +364,29 @@ fn dark_colors(n: &Scale, b: &Scale, r: &Scale, g: &Scale, y: &Scale) -> ThemeCo
 
         search_match_bg: Color::rgba(y[6].r, y[6].g, y[6].b, 90),
         search_match_active_bg: Color::rgba(y[8].r, y[8].g, y[8].b, 180),
+
+        syntax_keyword: purple[9],
+        syntax_string: g[9],
+        syntax_comment: n[8],
+        syntax_function: b[9],
+        syntax_type: teal[9],
+        syntax_number: orange[9],
+        syntax_property: r[9],
+        syntax_operator: n[9],
     }
 }
 
 /// Build light-mode theme colors from perceptual scales.
-fn light_colors(n: &Scale, b: &Scale, r: &Scale, g: &Scale, y: &Scale) -> ThemeColors {
+fn light_colors(
+    n: &Scale,
+    b: &Scale,
+    r: &Scale,
+    g: &Scale,
+    y: &Scale,
+    purple: &Scale,
+    teal: &Scale,
+    orange: &Scale,
+) -> ThemeColors {
     ThemeColors {
         // Backgrounds (steps 1-4 — lightest first)
         app_bg: n[0],
@@ -421,6 +462,15 @@ fn light_colors(n: &Scale, b: &Scale, r: &Scale, g: &Scale, y: &Scale) -> ThemeC
 
         search_match_bg: Color::rgba(y[4].r, y[4].g, y[4].b, 120),
         search_match_active_bg: Color::rgba(y[6].r, y[6].g, y[6].b, 200),
+
+        syntax_keyword: purple[9],
+        syntax_string: g[9],
+        syntax_comment: n[8],
+        syntax_function: b[9],
+        syntax_type: teal[9],
+        syntax_number: orange[9],
+        syntax_property: r[9],
+        syntax_operator: n[9],
     }
 }
 

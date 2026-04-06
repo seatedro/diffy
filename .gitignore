@@ -1,5 +1,6 @@
 # Local docs/plans (not shipped)
 .docs/
+.todo.md
 CLAUDE.md
 git_diff_output.txt
 

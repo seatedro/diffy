@@ -30,6 +30,7 @@ const BASE_SCROLLBAR_THUMB_MIN: f32 = 32.0;
 const BASE_MONO_FONT_SIZE: f32 = 13.0;
 const STRIP_TARGET_HEIGHT_PX: u32 = 480;
 const STRIP_OVERSCAN: usize = 1;
+const UNWRAPPED_RENDER_OVERSCAN_COLS: u16 = 16;
 
 fn editor_scale(text_metrics: TextMetrics) -> f32 {
     (text_metrics.mono_font_size_px / BASE_MONO_FONT_SIZE).max(0.5)
@@ -150,6 +151,71 @@ enum GutterTextKind {
     UnifiedNewOnly,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct TextLayoutCacheKey {
+    text_start: u32,
+    text_len: u32,
+}
+
+#[derive(Debug, Clone)]
+struct CachedTextLayout {
+    char_boundaries: Arc<[u32]>,
+}
+
+impl CachedTextLayout {
+    fn new(text: &str) -> Self {
+        let mut char_boundaries = Vec::with_capacity(text.chars().count().saturating_add(1));
+        char_boundaries.push(0);
+        if !text.is_empty() {
+            char_boundaries.extend(text.char_indices().skip(1).map(|(idx, _)| idx as u32));
+            char_boundaries.push(text.len() as u32);
+        }
+        Self {
+            char_boundaries: Arc::from(char_boundaries),
+        }
+    }
+
+    fn char_count(&self) -> u32 {
+        self.char_boundaries.len().saturating_sub(1) as u32
+    }
+
+    fn byte_range_for_cols(&self, start_col: u32, end_col: u32) -> (usize, usize) {
+        let char_count = self.char_count();
+        let start = start_col.min(char_count) as usize;
+        let end = end_col.min(char_count) as usize;
+        (
+            self.char_boundaries[start] as usize,
+            self.char_boundaries[end] as usize,
+        )
+    }
+
+    fn byte_range_for_segment(
+        &self,
+        segment_index: u16,
+        segment_cols: u16,
+    ) -> Option<(usize, usize)> {
+        if segment_cols == u16::MAX {
+            return (segment_index == 0).then(|| self.byte_range_for_cols(0, self.char_count()));
+        }
+
+        let char_count = self.char_count();
+        let segment_cols = u32::from(segment_cols.max(1));
+        let start_col = u32::from(segment_index).saturating_mul(segment_cols);
+        if start_col >= char_count {
+            return None;
+        }
+        let end_col = start_col.saturating_add(segment_cols).min(char_count);
+        Some(self.byte_range_for_cols(start_col, end_col))
+    }
+
+    fn col_for_byte(&self, byte: usize) -> u32 {
+        let byte = (byte as u32).min(self.char_boundaries.last().copied().unwrap_or(0));
+        self.char_boundaries
+            .partition_point(|boundary| *boundary <= byte)
+            .saturating_sub(1) as u32
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct EditorElement {
     layout_key: Option<EditorLayoutKey>,
@@ -161,6 +227,7 @@ pub struct EditorElement {
     strips: Vec<StripLayout>,
     theme_cache_key: Option<EditorThemeKey>,
     wrapped_text_cache: HashMap<WrappedTextCacheKey, Arc<[RichTextSpan]>>,
+    text_layout_cache: HashMap<TextLayoutCacheKey, Arc<CachedTextLayout>>,
     gutter_text_cache: HashMap<GutterTextCacheKey, Arc<str>>,
     text_metrics: TextMetrics,
 }
@@ -177,6 +244,7 @@ impl Default for EditorElement {
             strips: Vec::new(),
             theme_cache_key: None,
             wrapped_text_cache: HashMap::new(),
+            text_layout_cache: HashMap::new(),
             gutter_text_cache: HashMap::new(),
             text_metrics: TextMetrics::default(),
         }
@@ -495,13 +563,7 @@ impl EditorElement {
             }
             let kind = line.row_kind();
             if kind == RenderRowKind::Modified {
-                self.paint_modified_row_background(
-                    scene,
-                    theme,
-                    rr,
-                    &display_row,
-                    line_height,
-                );
+                self.paint_modified_row_background(scene, theme, rr, &display_row, line_height);
             } else if self.layout.split_mode
                 && matches!(kind, RenderRowKind::Added | RenderRowKind::Removed)
             {
@@ -590,7 +652,7 @@ impl EditorElement {
     // -- Phase 2b: Inline change backgrounds (word-level highlighting) --
 
     fn paint_inline_change_backgrounds(
-        &self,
+        &mut self,
         scene: &mut Scene,
         theme: &Theme,
         doc: &RenderDoc,
@@ -626,6 +688,12 @@ impl EditorElement {
                         self.layout.left_text_rect.width,
                         char_w,
                         line_height,
+                        if self.config.wrap_enabled {
+                            display_row.wrap_left.max(1)
+                        } else {
+                            1
+                        },
+                        self.render_cols_split(),
                         theme.colors.line_del_word_bg,
                     );
                 }
@@ -640,6 +708,12 @@ impl EditorElement {
                         self.layout.right_text_rect.width,
                         char_w,
                         line_height,
+                        if self.config.wrap_enabled {
+                            display_row.wrap_right.max(1)
+                        } else {
+                            1
+                        },
+                        self.render_cols_split(),
                         theme.colors.line_add_word_bg,
                     );
                 }
@@ -656,6 +730,12 @@ impl EditorElement {
                     self.layout.unified_text_rect.width,
                     char_w,
                     line_height,
+                    if self.config.wrap_enabled {
+                        display_row.wrap_left.max(1)
+                    } else {
+                        1
+                    },
+                    self.render_cols_unified(),
                     theme.colors.line_del_word_bg,
                 );
                 self.paint_change_rects_for_side(
@@ -668,6 +748,12 @@ impl EditorElement {
                     self.layout.unified_text_rect.width,
                     char_w,
                     line_height,
+                    if self.config.wrap_enabled {
+                        display_row.wrap_right.max(1)
+                    } else {
+                        1
+                    },
+                    self.render_cols_unified(),
                     theme.colors.line_add_word_bg,
                 );
             }
@@ -675,7 +761,7 @@ impl EditorElement {
     }
 
     fn paint_change_rects_for_side(
-        &self,
+        &mut self,
         scene: &mut Scene,
         doc: &RenderDoc,
         text_range: ByteRange,
@@ -685,6 +771,8 @@ impl EditorElement {
         text_width: f32,
         char_w: f32,
         line_height: f32,
+        segment_count: u16,
+        segment_cols: u16,
         bg_color: Color,
     ) {
         if !text_range.is_valid() {
@@ -694,19 +782,12 @@ impl EditorElement {
         if text.is_empty() {
             return;
         }
+        let text_layout = self.cached_text_layout(doc, text_range);
+        let visible_segments = self.visible_segment_range(row_y, segment_count);
+        if visible_segments.is_empty() {
+            return;
+        }
         let runs = doc.line_runs(runs_range);
-        let text_right = text_x + text_width;
-
-        let byte_to_col: Vec<u32> = {
-            let mut map = vec![0u32; text.len() + 1];
-            let mut col = 0u32;
-            for (i, _) in text.char_indices() {
-                map[i] = col;
-                col += 1;
-            }
-            map[text.len()] = col;
-            map
-        };
 
         for run in runs {
             if run.flags & STYLE_FLAG_CHANGE == 0 {
@@ -717,28 +798,25 @@ impl EditorElement {
             if end <= start {
                 continue;
             }
-            let col_start = byte_to_col.get(start).copied().unwrap_or(0);
-            let col_end = byte_to_col.get(end).copied().unwrap_or(col_start);
+            let col_start = text_layout.col_for_byte(start);
+            let col_end = text_layout.col_for_byte(end);
             if col_end <= col_start {
                 continue;
             }
-
-            let x = text_x + col_start as f32 * char_w;
-            let w = (col_end - col_start) as f32 * char_w;
-            let clamped_w = w.min((text_right - x).max(0.0));
-            if clamped_w <= 0.0 {
-                continue;
-            }
-            scene.rounded_rect(RoundedRectPrimitive::uniform(
-                Rect {
-                    x,
-                    y: row_y,
-                    width: clamped_w,
-                    height: line_height,
-                },
-                3.0,
+            paint_column_range_rects(
+                scene,
+                col_start,
+                col_end,
+                text_x,
+                row_y,
+                text_width,
+                char_w,
+                line_height,
+                segment_cols,
+                visible_segments.clone(),
                 bg_color,
-            ));
+                Some(3.0),
+            );
         }
     }
 
@@ -756,51 +834,19 @@ impl EditorElement {
             return;
         }
 
-        let text_highlight = if self.layout.split_mode {
-            Rect {
-                x: self.layout.left_text_rect.x,
-                y: rr.y,
-                width: self.layout.content_bounds.right() - self.layout.left_text_rect.x,
-                height: rr.height,
-            }
-        } else {
-            Rect {
-                x: self.layout.unified_text_rect.x,
-                y: rr.y,
-                width: self.layout.unified_text_rect.width,
-                height: rr.height,
-            }
-        };
         scene.rect(RectPrimitive {
-            rect: text_highlight,
-            color: theme.colors.hover_overlay,
-        });
-
-        let gutter_highlight = if self.layout.split_mode {
-            Rect {
-                x: self.layout.left_gutter_rect.x,
+            rect: Rect {
+                x: rr.x,
                 y: rr.y,
-                width: self.layout.left_gutter_rect.width
-                    + self.layout.right_gutter_rect.width
-                    + self.layout.column_gap,
+                width: rr.width,
                 height: rr.height,
-            }
-        } else {
-            Rect {
-                x: self.layout.unified_gutter_rect.x,
-                y: rr.y,
-                width: self.layout.unified_gutter_rect.width,
-                height: rr.height,
-            }
-        };
-        scene.rect(RectPrimitive {
-            rect: gutter_highlight,
+            },
             color: theme.colors.hover_overlay,
         });
     }
 
     fn paint_search_highlights(
-        &self,
+        &mut self,
         scene: &mut Scene,
         theme: &Theme,
         state: &EditorState,
@@ -816,7 +862,7 @@ impl EditorElement {
         let line_height = self.layout.line_height;
         let active_idx = state.search.active_index;
 
-        let vis = &self.layout.visible_row_range;
+        let vis = self.layout.visible_row_range;
         if vis.is_empty() {
             return;
         }
@@ -867,41 +913,69 @@ impl EditorElement {
                 if byte_end > full_text.len() {
                     continue;
                 }
+                let text_layout = self.cached_text_layout(doc, text_range);
+                let col_start = text_layout.col_for_byte(byte_start);
+                let col_end = text_layout.col_for_byte(byte_end);
+                if col_end <= col_start {
+                    continue;
+                }
 
-                let col_start = full_text[..byte_start].chars().count() as f32;
-                let col_len = full_text[byte_start..byte_end].chars().count() as f32;
-
-                let (text_rect_x, text_rect_w) = if self.layout.split_mode {
-                    match m.side {
-                        MatchSide::Left => (
-                            self.layout.left_text_rect.x,
-                            self.layout.left_text_rect.width,
-                        ),
-                        MatchSide::Right => (
-                            self.layout.right_text_rect.x,
-                            self.layout.right_text_rect.width,
-                        ),
-                    }
-                } else {
-                    (
-                        self.layout.unified_text_rect.x,
-                        self.layout.unified_text_rect.width,
-                    )
-                };
-
-                let y_offset = if !self.layout.split_mode
-                    && line.row_kind() == RenderRowKind::Modified
-                    && m.side == MatchSide::Right
-                    && line.left_text.is_valid()
-                    && line.right_text.is_valid()
-                {
-                    display_row.wrap_left.max(1) as f32 * line_height
-                } else {
-                    0.0
-                };
-
-                let x = text_rect_x + col_start * char_w;
-                let w = (col_len * char_w).min(text_rect_w - (x - text_rect_x).max(0.0));
+                let (text_rect_x, text_rect_w, block_y, segment_count, segment_cols) =
+                    if self.layout.split_mode {
+                        match m.side {
+                            MatchSide::Left => (
+                                self.layout.left_text_rect.x,
+                                self.layout.left_text_rect.width,
+                                rr.y + self.layout.text_y_offset,
+                                if self.config.wrap_enabled {
+                                    display_row.wrap_left.max(1)
+                                } else {
+                                    1
+                                },
+                                self.render_cols_split(),
+                            ),
+                            MatchSide::Right => (
+                                self.layout.right_text_rect.x,
+                                self.layout.right_text_rect.width,
+                                rr.y + self.layout.text_y_offset,
+                                if self.config.wrap_enabled {
+                                    display_row.wrap_right.max(1)
+                                } else {
+                                    1
+                                },
+                                self.render_cols_split(),
+                            ),
+                        }
+                    } else if line.row_kind() == RenderRowKind::Modified
+                        && line.left_text.is_valid()
+                        && line.right_text.is_valid()
+                        && m.side == MatchSide::Right
+                    {
+                        (
+                            self.layout.unified_text_rect.x,
+                            self.layout.unified_text_rect.width,
+                            rr.y + display_row.wrap_left.max(1) as f32 * line_height
+                                + self.layout.text_y_offset,
+                            if self.config.wrap_enabled {
+                                display_row.wrap_right.max(1)
+                            } else {
+                                1
+                            },
+                            self.render_cols_unified(),
+                        )
+                    } else {
+                        (
+                            self.layout.unified_text_rect.x,
+                            self.layout.unified_text_rect.width,
+                            rr.y + self.layout.text_y_offset,
+                            if self.config.wrap_enabled {
+                                display_row.wrap_left.max(1)
+                            } else {
+                                1
+                            },
+                            self.render_cols_unified(),
+                        )
+                    };
 
                 let is_active = active_idx == Some(match_idx);
                 let color = if is_active {
@@ -909,28 +983,31 @@ impl EditorElement {
                 } else {
                     theme.colors.search_match_bg
                 };
-
-                scene.rect(RectPrimitive {
-                    rect: Rect {
-                        x,
-                        y: rr.y + y_offset + self.layout.text_y_offset,
-                        width: w,
-                        height: line_height,
-                    },
+                let visible_segments = self.visible_segment_range(block_y, segment_count);
+                if visible_segments.is_empty() {
+                    continue;
+                }
+                paint_column_range_rects(
+                    scene,
+                    col_start,
+                    col_end,
+                    text_rect_x,
+                    block_y,
+                    text_rect_w,
+                    char_w,
+                    line_height,
+                    segment_cols,
+                    visible_segments,
                     color,
-                });
+                    None,
+                );
             }
         }
     }
 
     // -- Phase 3b: Gutter diff indicators --
 
-    fn paint_gutter_diff_indicators(
-        &self,
-        scene: &mut Scene,
-        theme: &Theme,
-        doc: &RenderDoc,
-    ) {
+    fn paint_gutter_diff_indicators(&self, scene: &mut Scene, theme: &Theme, doc: &RenderDoc) {
         let line_height = self.layout.line_height;
         let s = editor_scale(self.text_metrics);
         let strip_w = scaled(3.0, s);
@@ -1264,28 +1341,37 @@ impl EditorElement {
                 }
                 _ => {
                     if let Some((text_range, runs, tone)) = unified_body_side(&line) {
-                        if let Some(spans) = self.cached_wrapped_rich_text(
-                            doc,
-                            text_range,
-                            runs,
-                            0,
-                            self.wrap_cols_unified(),
-                            tone,
-                            theme,
-                        ) {
-                            scene.rich_text(RichTextPrimitive {
-                                rect: Rect {
-                                    x: self.layout.unified_text_rect.x,
-                                    y: rr.y + ty,
-                                    width: self.layout.unified_text_rect.width,
-                                    height: line_height,
-                                },
-                                spans,
-                                default_color: tone.default_text(theme),
-                                font_size,
-                                font_kind: FontKind::Mono,
-                                font_weight: FontWeight::Normal,
-                            });
+                        let segment_count = if self.config.wrap_enabled {
+                            display_row.wrap_left.max(1)
+                        } else {
+                            1
+                        };
+                        let render_cols = self.render_cols_unified();
+                        let block_y = rr.y + ty;
+                        for seg in self.visible_segment_range(block_y, segment_count) {
+                            if let Some(spans) = self.cached_wrapped_rich_text(
+                                doc,
+                                text_range,
+                                runs,
+                                seg,
+                                render_cols,
+                                tone,
+                                theme,
+                            ) {
+                                scene.rich_text(RichTextPrimitive {
+                                    rect: Rect {
+                                        x: self.layout.unified_text_rect.x,
+                                        y: block_y + seg as f32 * line_height,
+                                        width: self.layout.unified_text_rect.width,
+                                        height: line_height,
+                                    },
+                                    spans,
+                                    default_color: tone.default_text(theme),
+                                    font_size,
+                                    font_kind: FontKind::Mono,
+                                    font_weight: FontWeight::Normal,
+                                });
+                            }
                         }
                     }
                 }
@@ -1323,7 +1409,13 @@ impl EditorElement {
         line_height: f32,
     ) {
         let ty = self.layout.text_y_offset;
-        for seg in 0..display_row.wrap_left.max(1) {
+        let render_cols = self.render_cols_split();
+        let left_segment_count = if self.config.wrap_enabled {
+            display_row.wrap_left.max(1)
+        } else {
+            1
+        };
+        for seg in self.visible_segment_range(rr.y + ty, left_segment_count) {
             let rect = Rect {
                 x: self.layout.left_text_rect.x,
                 y: rr.y + seg as f32 * line_height + ty,
@@ -1335,7 +1427,7 @@ impl EditorElement {
                 line.left_text,
                 line.left_runs,
                 seg,
-                self.wrap_cols_split(),
+                render_cols,
                 tone_for_left_side(line.row_kind()),
                 theme,
             ) {
@@ -1349,7 +1441,12 @@ impl EditorElement {
                 });
             }
         }
-        for seg in 0..display_row.wrap_right.max(1) {
+        let right_segment_count = if self.config.wrap_enabled {
+            display_row.wrap_right.max(1)
+        } else {
+            1
+        };
+        for seg in self.visible_segment_range(rr.y + ty, right_segment_count) {
             let rect = Rect {
                 x: self.layout.right_text_rect.x,
                 y: rr.y + seg as f32 * line_height + ty,
@@ -1361,7 +1458,7 @@ impl EditorElement {
                 line.right_text,
                 line.right_runs,
                 seg,
-                self.wrap_cols_split(),
+                render_cols,
                 tone_for_right_side(line.row_kind()),
                 theme,
             ) {
@@ -1389,7 +1486,13 @@ impl EditorElement {
         line_height: f32,
     ) {
         let ty = self.layout.text_y_offset;
-        for seg in 0..display_row.wrap_left.max(1) {
+        let render_cols = self.render_cols_unified();
+        let left_segment_count = if self.config.wrap_enabled {
+            display_row.wrap_left.max(1)
+        } else {
+            1
+        };
+        for seg in self.visible_segment_range(rr.y + ty, left_segment_count) {
             let y = rr.y + seg as f32 * line_height + ty;
             let rect = Rect {
                 x: self.layout.unified_text_rect.x,
@@ -1402,7 +1505,7 @@ impl EditorElement {
                 line.left_text,
                 line.left_runs,
                 seg,
-                self.wrap_cols_unified(),
+                render_cols,
                 RowTone::Removed,
                 theme,
             ) {
@@ -1416,9 +1519,17 @@ impl EditorElement {
                 });
             }
         }
-        for seg in 0..display_row.wrap_right.max(1) {
-            let y =
-                rr.y + display_row.wrap_left.max(1) as f32 * line_height + seg as f32 * line_height + ty;
+        let right_block_y = rr.y + display_row.wrap_left.max(1) as f32 * line_height + ty;
+        let right_segment_count = if self.config.wrap_enabled {
+            display_row.wrap_right.max(1)
+        } else {
+            1
+        };
+        for seg in self.visible_segment_range(right_block_y, right_segment_count) {
+            let y = rr.y
+                + display_row.wrap_left.max(1) as f32 * line_height
+                + seg as f32 * line_height
+                + ty;
             let rect = Rect {
                 x: self.layout.unified_text_rect.x,
                 y,
@@ -1430,7 +1541,7 @@ impl EditorElement {
                 line.right_text,
                 line.right_runs,
                 seg,
-                self.wrap_cols_unified(),
+                render_cols,
                 RowTone::Added,
                 theme,
             ) {
@@ -1448,6 +1559,7 @@ impl EditorElement {
 
     fn clear_document_caches(&mut self) {
         self.wrapped_text_cache.clear();
+        self.text_layout_cache.clear();
         self.gutter_text_cache.clear();
     }
 
@@ -1491,10 +1603,37 @@ impl EditorElement {
             return Some(cached.clone());
         }
 
-        let spans =
-            build_wrapped_rich_text(doc, text_range, runs, segment_index, wrap_cols, tone, theme)?;
+        let text_layout = self.cached_text_layout(doc, text_range);
+        let spans = build_wrapped_rich_text(
+            doc,
+            text_layout.as_ref(),
+            text_range,
+            runs,
+            segment_index,
+            wrap_cols,
+            tone,
+            theme,
+        )?;
         self.wrapped_text_cache.insert(key, spans.clone());
         Some(spans)
+    }
+
+    fn cached_text_layout(
+        &mut self,
+        doc: &RenderDoc,
+        text_range: ByteRange,
+    ) -> Arc<CachedTextLayout> {
+        let key = TextLayoutCacheKey {
+            text_start: text_range.start,
+            text_len: text_range.len,
+        };
+        if let Some(cached) = self.text_layout_cache.get(&key) {
+            return cached.clone();
+        }
+
+        let layout = Arc::new(CachedTextLayout::new(doc.line_text(text_range)));
+        self.text_layout_cache.insert(key, layout.clone());
+        layout
     }
 
     fn cached_gutter_text(&mut self, key: GutterTextCacheKey) -> Arc<str> {
@@ -1527,8 +1666,8 @@ impl EditorElement {
         text
     }
 
-    fn wrap_cols_unified(&self) -> u16 {
-        wrap_cols_for_width(
+    fn render_cols_unified(&self) -> u16 {
+        render_cols_for_width(
             self.config.wrap_enabled,
             self.config.wrap_column,
             self.config.char_width_px as f32,
@@ -1536,12 +1675,22 @@ impl EditorElement {
         )
     }
 
-    fn wrap_cols_split(&self) -> u16 {
-        wrap_cols_for_width(
+    fn render_cols_split(&self) -> u16 {
+        render_cols_for_width(
             self.config.wrap_enabled,
             self.config.wrap_column,
             self.config.char_width_px as f32,
             self.layout.left_text_rect.width,
+        )
+    }
+
+    fn visible_segment_range(&self, block_y: f32, segment_count: u16) -> Range<u16> {
+        visible_segment_range_for_block(
+            block_y,
+            segment_count.max(1),
+            self.layout.line_height,
+            self.layout.content_bounds.y,
+            self.layout.content_bounds.bottom(),
         )
     }
 
@@ -1660,7 +1809,7 @@ fn build_spatial_layout(
                 - scrollbar_margin
                 - right_gutter_rect.right()
                 - text_left_pad)
-            .max(60.0),
+                .max(60.0),
             height: content_bounds.height,
         };
         EditorLayout {
@@ -1766,8 +1915,99 @@ fn wrap_cols_for_width(
     cols.max(1).min(u16::MAX as u32) as u16
 }
 
+fn render_cols_for_width(
+    wrap_enabled: bool,
+    wrap_column: u32,
+    char_width_px: f32,
+    width_px: f32,
+) -> u16 {
+    if wrap_enabled {
+        return wrap_cols_for_width(true, wrap_column, char_width_px, width_px);
+    }
+
+    let visible_cols = (width_px / char_width_px.max(1.0)).ceil() as u32;
+    visible_cols
+        .saturating_add(u32::from(UNWRAPPED_RENDER_OVERSCAN_COLS))
+        .max(1)
+        .min(u16::MAX as u32) as u16
+}
+
+fn visible_segment_range_for_block(
+    block_y: f32,
+    segment_count: u16,
+    line_height: f32,
+    viewport_top: f32,
+    viewport_bottom: f32,
+) -> Range<u16> {
+    if segment_count == 0 || line_height <= 0.0 {
+        return 0..0;
+    }
+
+    let max_segments = u32::from(segment_count);
+    let start = ((viewport_top - block_y) / line_height).floor().max(0.0) as u32;
+    let end = ((viewport_bottom - block_y) / line_height).ceil().max(0.0) as u32;
+    let start = start.min(max_segments);
+    let end = end.max(start).min(max_segments);
+    start as u16..end as u16
+}
+
+fn paint_column_range_rects(
+    scene: &mut Scene,
+    col_start: u32,
+    col_end: u32,
+    text_x: f32,
+    row_y: f32,
+    text_width: f32,
+    char_w: f32,
+    line_height: f32,
+    segment_cols: u16,
+    visible_segments: Range<u16>,
+    color: Color,
+    corner_radius: Option<f32>,
+) {
+    if col_end <= col_start {
+        return;
+    }
+
+    let segment_cols = u32::from(segment_cols.max(1));
+    let first_segment = (col_start / segment_cols) as u16;
+    let last_segment = ((col_end - 1) / segment_cols).saturating_add(1) as u16;
+    let start = first_segment.max(visible_segments.start);
+    let end = last_segment.min(visible_segments.end);
+
+    for seg in start..end {
+        let segment_start_col = u32::from(seg) * segment_cols;
+        let local_start = col_start.max(segment_start_col) - segment_start_col;
+        let local_end =
+            col_end.min(segment_start_col.saturating_add(segment_cols)) - segment_start_col;
+        if local_end <= local_start {
+            continue;
+        }
+
+        let x = text_x + local_start as f32 * char_w;
+        let width = (local_end - local_start) as f32 * char_w;
+        let clamped_width = width.min((text_x + text_width - x).max(0.0));
+        if clamped_width <= 0.0 {
+            continue;
+        }
+
+        let rect = Rect {
+            x,
+            y: row_y + seg as f32 * line_height,
+            width: clamped_width,
+            height: line_height,
+        };
+        if let Some(radius) = corner_radius {
+            scene.rounded_rect(RoundedRectPrimitive::uniform(rect, radius, color));
+        } else {
+            scene.rect(RectPrimitive { rect, color });
+        }
+    }
+}
+
 fn build_wrapped_rich_text(
     doc: &RenderDoc,
+    text_layout: &CachedTextLayout,
     text_range: ByteRange,
     runs: RunRange,
     segment_index: u16,
@@ -1782,7 +2022,7 @@ fn build_wrapped_rich_text(
     let spans: Arc<[RichTextSpan]> = if full_text.is_empty() {
         Arc::from(Vec::new())
     } else {
-        let (start, end) = wrapped_byte_slice(full_text, wrap_cols, segment_index)?;
+        let (start, end) = wrapped_byte_slice(text_layout, wrap_cols, segment_index)?;
         Arc::from(build_segment_spans(
             full_text,
             start,
@@ -1795,29 +2035,12 @@ fn build_wrapped_rich_text(
     Some(spans)
 }
 
-fn wrapped_byte_slice(text: &str, wrap_cols: u16, segment_index: u16) -> Option<(usize, usize)> {
-    if wrap_cols == u16::MAX {
-        return (segment_index == 0).then_some((0, text.len()));
-    }
-
-    let mut breaks = vec![0_usize];
-    let mut count = 0_u16;
-    for (byte_index, _) in text.char_indices() {
-        if byte_index == 0 {
-            continue;
-        }
-        count = count.saturating_add(1);
-        if count >= wrap_cols.max(1) {
-            breaks.push(byte_index);
-            count = 0;
-        }
-    }
-    breaks.push(text.len());
-
-    let segment_index = segment_index as usize;
-    let start = *breaks.get(segment_index)?;
-    let end = *breaks.get(segment_index + 1)?;
-    Some((start, end))
+fn wrapped_byte_slice(
+    text_layout: &CachedTextLayout,
+    wrap_cols: u16,
+    segment_index: u16,
+) -> Option<(usize, usize)> {
+    text_layout.byte_range_for_segment(segment_index, wrap_cols)
 }
 
 fn build_segment_spans(
@@ -1830,9 +2053,16 @@ fn build_segment_spans(
 ) -> Vec<RichTextSpan> {
     let mut spans = Vec::new();
     let mut cursor = segment_start;
+    let run_start_index = runs.partition_point(|run| {
+        let run_end = run.byte_start.saturating_add(run.byte_len);
+        run_end as usize <= segment_start
+    });
 
-    for run in runs {
+    for run in &runs[run_start_index..] {
         let run_start = run.byte_start as usize;
+        if run_start >= segment_end {
+            break;
+        }
         let run_end = run_start.saturating_add(run.byte_len as usize);
         let start = run_start.max(segment_start);
         let end = run_end.min(segment_end);
@@ -1873,19 +2103,18 @@ fn build_segment_spans(
 
 fn style_run_color(run: StyleRun, tone: RowTone, theme: &Theme) -> Color {
     match syntax_kind_from_style_id(run.style_id) {
-        SyntaxTokenKind::Keyword | SyntaxTokenKind::Builtin => theme.colors.accent,
-        SyntaxTokenKind::String => Color::rgba(0xcb, 0xe4, 0xa7, 0xff),
+        SyntaxTokenKind::Keyword | SyntaxTokenKind::Builtin => theme.colors.syntax_keyword,
+        SyntaxTokenKind::String => theme.colors.syntax_string,
         SyntaxTokenKind::Comment | SyntaxTokenKind::Label | SyntaxTokenKind::Preprocessor => {
-            theme.colors.text_muted
+            theme.colors.syntax_comment
         }
-        SyntaxTokenKind::Number | SyntaxTokenKind::Constant => Color::rgba(0xf5, 0xc2, 0x8b, 0xff),
+        SyntaxTokenKind::Function => theme.colors.syntax_function,
+        SyntaxTokenKind::Number | SyntaxTokenKind::Constant => theme.colors.syntax_number,
         SyntaxTokenKind::Type | SyntaxTokenKind::Namespace | SyntaxTokenKind::Tag => {
-            Color::rgba(0x8f, 0xd3, 0xd7, 0xff)
+            theme.colors.syntax_type
         }
-        SyntaxTokenKind::Function | SyntaxTokenKind::Attribute | SyntaxTokenKind::Property => {
-            Color::rgba(0xf8, 0xe1, 0x9a, 0xff)
-        }
-        SyntaxTokenKind::Operator | SyntaxTokenKind::Punctuation => theme.colors.text_muted,
+        SyntaxTokenKind::Attribute | SyntaxTokenKind::Property => theme.colors.syntax_property,
+        SyntaxTokenKind::Operator | SyntaxTokenKind::Punctuation => theme.colors.syntax_operator,
         SyntaxTokenKind::Variable | SyntaxTokenKind::Normal => tone.default_text(theme),
     }
 }
@@ -1915,7 +2144,10 @@ fn syntax_kind_from_style_id(style_id: u16) -> SyntaxTokenKind {
 
 #[cfg(test)]
 mod tests {
-    use super::{EditorDocument, EditorElement, build_wrapped_rich_text, wrapped_byte_slice};
+    use super::{
+        CachedTextLayout, EditorDocument, EditorElement, build_wrapped_rich_text,
+        render_cols_for_width, visible_segment_range_for_block, wrapped_byte_slice,
+    };
     use crate::core::compare::LayoutMode;
     use crate::render::{Rect, TextMetrics};
     use crate::ui::editor::render_doc::{
@@ -1926,10 +2158,11 @@ mod tests {
 
     #[test]
     fn wrapped_byte_slice_breaks_monospaced_text_by_columns() {
-        assert_eq!(wrapped_byte_slice("abcdefghij", 4, 0), Some((0, 4)));
-        assert_eq!(wrapped_byte_slice("abcdefghij", 4, 1), Some((4, 8)));
-        assert_eq!(wrapped_byte_slice("abcdefghij", 4, 2), Some((8, 10)));
-        assert_eq!(wrapped_byte_slice("abcdefghij", 4, 3), None);
+        let layout = CachedTextLayout::new("abcdefghij");
+        assert_eq!(wrapped_byte_slice(&layout, 4, 0), Some((0, 4)));
+        assert_eq!(wrapped_byte_slice(&layout, 4, 1), Some((4, 8)));
+        assert_eq!(wrapped_byte_slice(&layout, 4, 2), Some((8, 10)));
+        assert_eq!(wrapped_byte_slice(&layout, 4, 3), None);
     }
 
     #[test]
@@ -1951,8 +2184,10 @@ mod tests {
             }],
         };
 
+        let text_layout = CachedTextLayout::new("keyword value");
         let spans = build_wrapped_rich_text(
             &doc,
+            &text_layout,
             doc.lines[0].right_text,
             doc.lines[0].right_runs,
             0,
@@ -1969,6 +2204,24 @@ mod tests {
                 .map(|span| span.text.as_ref())
                 .collect::<String>(),
             "keyword value"
+        );
+    }
+
+    #[test]
+    fn render_cols_cap_unwrapped_rows_to_viewport_budget() {
+        assert_eq!(render_cols_for_width(false, 0, 8.0, 80.0), 26);
+        assert_eq!(render_cols_for_width(true, 0, 8.0, 80.0), 10);
+    }
+
+    #[test]
+    fn visible_segment_range_limits_wrapped_blocks_to_viewport() {
+        assert_eq!(
+            visible_segment_range_for_block(100.0, 10, 20.0, 120.0, 170.0),
+            1..4
+        );
+        assert_eq!(
+            visible_segment_range_for_block(100.0, 10, 20.0, 0.0, 50.0),
+            0..0
         );
     }
 

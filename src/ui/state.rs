@@ -1452,7 +1452,6 @@ impl AppState {
 
     fn persist_settings_effect(&mut self) -> Vec<Effect> {
         self.sync_settings_snapshot();
-        tracing::info!(theme = %self.settings.theme_name, mode = ?self.settings.theme_mode, "saving settings");
         vec![Effect::SaveSettings(self.settings.clone())]
     }
 

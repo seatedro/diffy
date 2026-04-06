@@ -243,7 +243,10 @@ impl RenderOnce for FileTree {
 
                     let scale = m.ui_scale();
                     row_div = row_div
-                        .child(svg_icon(chevron, icon_size - (Sp::XXS * scale).round()).color(tc.text_muted))
+                        .child(
+                            svg_icon(chevron, icon_size - (Sp::XXS * scale).round())
+                                .color(tc.text_muted),
+                        )
                         .child(svg_icon(folder_icon, icon_size).color(tc.text_muted))
                         .child(text(name).text_sm().color(tc.text).medium());
 

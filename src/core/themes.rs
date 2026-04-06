@@ -49,6 +49,14 @@ pub struct SemanticPalette {
     pub line_add_accent: Color,
     pub line_del: Color,
     pub line_del_accent: Color,
+    pub syn_keyword: Color,
+    pub syn_string: Color,
+    pub syn_comment: Color,
+    pub syn_function: Color,
+    pub syn_type: Color,
+    pub syn_number: Color,
+    pub syn_property: Color,
+    pub syn_operator: Color,
     pub is_dark: bool,
 }
 
@@ -163,9 +171,22 @@ fn ensure_contrast(text: Color, bg: Color, min_ratio: f32, is_dark: bool) -> Col
 }
 
 impl SemanticPalette {
+    fn hex_field_opt(obj: &serde_json::Value, key: &str) -> Option<Color> {
+        obj[key].as_str().map(parse_hex)
+    }
+
     fn from_json(obj: &serde_json::Value) -> Self {
         let app_bg = hex_field(obj, "appBg");
         let is_dark = relative_luminance(app_bg) < 0.5;
+
+        let accent = hex_field(obj, "accent");
+        let accent_strong = hex_field(obj, "accentStrong");
+        let text_muted = hex_field(obj, "textMuted");
+        let text_faint = hex_field(obj, "textFaint");
+        let success_text = hex_field(obj, "successText");
+        let danger_text = hex_field(obj, "dangerText");
+        let warning_text = hex_field(obj, "warningText");
+
         Self {
             app_bg,
             canvas: hex_field(obj, "canvas"),
@@ -192,6 +213,14 @@ impl SemanticPalette {
             line_add_accent: hex_field(obj, "lineAddAccent"),
             line_del: hex_field(obj, "lineDel"),
             line_del_accent: hex_field(obj, "lineDelAccent"),
+            syn_keyword: Self::hex_field_opt(obj, "synKeyword").unwrap_or(accent_strong),
+            syn_string: Self::hex_field_opt(obj, "synString").unwrap_or(success_text),
+            syn_comment: Self::hex_field_opt(obj, "synComment").unwrap_or(text_faint),
+            syn_function: Self::hex_field_opt(obj, "synFunction").unwrap_or(accent),
+            syn_type: Self::hex_field_opt(obj, "synType").unwrap_or(accent),
+            syn_number: Self::hex_field_opt(obj, "synNumber").unwrap_or(warning_text),
+            syn_property: Self::hex_field_opt(obj, "synProperty").unwrap_or(danger_text),
+            syn_operator: Self::hex_field_opt(obj, "synOperator").unwrap_or(text_muted),
             is_dark,
         }
     }
@@ -295,6 +324,15 @@ impl SemanticPalette {
 
             search_match_bg: s.warning_text.with_alpha(if d { 90 } else { 120 }),
             search_match_active_bg: s.warning_text.with_alpha(if d { 180 } else { 200 }),
+
+            syntax_keyword: s.syn_keyword,
+            syntax_string: s.syn_string,
+            syntax_comment: s.syn_comment,
+            syntax_function: s.syn_function,
+            syntax_type: s.syn_type,
+            syntax_number: s.syn_number,
+            syntax_property: s.syn_property,
+            syntax_operator: s.syn_operator,
         }
     }
 }

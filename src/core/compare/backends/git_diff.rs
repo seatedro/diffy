@@ -5,7 +5,7 @@ use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::CompareSpec;
 use crate::core::diff::{DiffLine, FileDiff, Hunk, LineKind};
 use crate::core::error::Result;
-use crate::core::text::{DiffTokenSpan, SyntaxTokenKind, TextBuffer, TokenBuffer};
+use crate::core::text::{ChangeIntensity, DiffTokenSpan, SyntaxTokenKind, TextBuffer, TokenBuffer};
 use crate::core::vcs::git::{GitService, WORKDIR_REF};
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -108,6 +108,7 @@ impl DiffBackend for GitDiffBackend {
                                 offset: 0,
                                 length: content.len() as u32,
                                 kind: SyntaxTokenKind::Normal,
+                                intensity: ChangeIntensity::NovelWord,
                             }];
                             let range = token_buffer.append(&removed);
                             let old = old_line;
@@ -118,6 +119,7 @@ impl DiffBackend for GitDiffBackend {
                                 offset: 0,
                                 length: content.len() as u32,
                                 kind: SyntaxTokenKind::Normal,
+                                intensity: ChangeIntensity::NovelWord,
                             }];
                             let range = token_buffer.append(&added);
                             let new = new_line;

@@ -1,9 +1,13 @@
 use crate::core::diff::types::{DiffLine, FileDiff, Hunk};
 use crate::core::rendering::{DiffRowType, FlatDiffRow, flatten_file_diff};
-use crate::core::text::{DiffTokenSpan, SyntaxTokenKind, TextBuffer, TextRange, TokenBuffer};
+use crate::core::text::{
+    ChangeIntensity, DiffTokenSpan, SyntaxTokenKind, TextBuffer, TextRange, TokenBuffer,
+};
 
 pub const INVALID_U32: u32 = u32::MAX;
 pub const STYLE_FLAG_CHANGE: u16 = 0x1;
+pub const STYLE_FLAG_NOVEL_WORD: u16 = 0x2;
+pub const STYLE_FLAG_UNCHANGED_CTX: u16 = 0x4;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -396,12 +400,11 @@ fn append_style_runs(
         if end_byte <= start_byte {
             continue;
         }
-        let syntax_kind = token_kind_at(syntax_tokens, start_byte);
-        let flags = if token_contains(change_tokens, start_byte) {
-            STYLE_FLAG_CHANGE
-        } else {
-            0
+        let syntax_kind = match token_kind_at(syntax_tokens, start_byte) {
+            SyntaxTokenKind::Normal => token_kind_at(change_tokens, start_byte),
+            kind => kind,
         };
+        let flags = change_flags_at(change_tokens, start_byte);
         storage.push(StyleRun {
             byte_start: start_byte,
             byte_len: end_byte - start_byte,
@@ -435,11 +438,18 @@ fn token_kind_at(tokens: &[DiffTokenSpan], offset: u32) -> SyntaxTokenKind {
     SyntaxTokenKind::Normal
 }
 
-fn token_contains(tokens: &[DiffTokenSpan], offset: u32) -> bool {
-    tokens.iter().any(|token| {
+fn change_flags_at(tokens: &[DiffTokenSpan], offset: u32) -> u16 {
+    for token in tokens {
         let end = token.offset.saturating_add(token.length);
-        offset >= token.offset && offset < end
-    })
+        if offset >= token.offset && offset < end {
+            return match token.intensity {
+                ChangeIntensity::NovelWord => STYLE_FLAG_CHANGE | STYLE_FLAG_NOVEL_WORD,
+                ChangeIntensity::UnchangedContext => STYLE_FLAG_CHANGE | STYLE_FLAG_UNCHANGED_CTX,
+                ChangeIntensity::Novel => STYLE_FLAG_CHANGE,
+            };
+        }
+    }
+    0
 }
 
 fn hunk_for_row<'a>(file: &'a FileDiff, row: &FlatDiffRow) -> Option<&'a Hunk> {
@@ -490,11 +500,13 @@ mod tests {
             offset: 4,
             length: 5,
             kind: SyntaxTokenKind::Normal,
+            ..DiffTokenSpan::default()
         }]);
         let added_syntax = token_buffer.append(&[DiffTokenSpan {
             offset: 0,
             length: 3,
             kind: SyntaxTokenKind::Keyword,
+            ..DiffTokenSpan::default()
         }]);
 
         let file = FileDiff {
@@ -573,5 +585,39 @@ mod tests {
         assert_eq!(line.old_line_no, INVALID_U32);
         assert!(!line.left_text.is_valid());
         assert!(line.right_text.is_valid());
+    }
+
+    #[test]
+    fn change_tokens_can_supply_semantic_style_when_syntax_tokens_are_absent() {
+        let mut text_buffer = TextBuffer::default();
+        let mut token_buffer = TokenBuffer::default();
+        let line_text = text_buffer.append("fn old_call();");
+        let semantic_change = token_buffer.append(&[DiffTokenSpan {
+            offset: 3,
+            length: 3,
+            kind: SyntaxTokenKind::Keyword,
+            ..DiffTokenSpan::default()
+        }]);
+
+        let file = FileDiff {
+            path: "src/lib.rs".to_owned(),
+            hunks: vec![Hunk {
+                header: "@@ -1 +1 @@".to_owned(),
+                lines: vec![DiffLine {
+                    kind: LineKind::Removed,
+                    old_line_number: Some(1),
+                    text_range: line_text,
+                    change_tokens: semantic_change,
+                    ..DiffLine::default()
+                }],
+                ..Hunk::default()
+            }],
+            ..FileDiff::default()
+        };
+
+        let doc = build_render_doc(&file, 0, &text_buffer, &token_buffer);
+        let runs = doc.line_runs(doc.lines[2].left_runs);
+        assert_eq!(runs[1].style_id, SyntaxTokenKind::Keyword as u16);
+        assert_eq!(runs[1].flags, STYLE_FLAG_CHANGE);
     }
 }

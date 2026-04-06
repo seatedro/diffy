@@ -1,5 +1,5 @@
 use crate::core::diff::{FileDiff, Hunk, LineKind};
-use crate::core::syntax::{Highlighter, LanguageRegistry};
+use crate::core::syntax::Highlighter;
 use crate::core::text::{DiffTokenSpan, TextBuffer, TokenBuffer};
 
 #[derive(Debug, Clone, Copy)]
@@ -12,7 +12,6 @@ struct LineRef {
 
 #[derive(Debug)]
 pub struct DiffSyntaxAnnotator {
-    registry: LanguageRegistry,
     highlighter: Highlighter,
 }
 
@@ -25,7 +24,6 @@ impl Default for DiffSyntaxAnnotator {
 impl DiffSyntaxAnnotator {
     pub fn new() -> Self {
         Self {
-            registry: LanguageRegistry::new(),
             highlighter: Highlighter::new(),
         }
     }
@@ -39,25 +37,17 @@ impl DiffSyntaxAnnotator {
         if file_diff.is_binary {
             return;
         }
-        let extension = file_diff
-            .path
-            .rsplit_once('.')
-            .map(|(_, ext)| format!(".{ext}"))
-            .unwrap_or_default();
-        let Some(grammar) = self.registry.grammar_for_extension(&extension) else {
-            return;
-        };
 
         let (old_content, new_content, old_refs, new_refs) =
             build_line_refs(&file_diff.hunks, text_buffer);
 
         let old_tokens = self
             .highlighter
-            .highlight(grammar, &old_content)
+            .highlight(&file_diff.path, &old_content)
             .unwrap_or_default();
         let new_tokens = self
             .highlighter
-            .highlight(grammar, &new_content)
+            .highlight(&file_diff.path, &new_content)
             .unwrap_or_default();
         distribute_tokens(&mut file_diff.hunks, token_buffer, &old_tokens, &old_refs);
         distribute_tokens(&mut file_diff.hunks, token_buffer, &new_tokens, &new_refs);
@@ -148,6 +138,7 @@ fn distribute_tokens(
                 offset: (clipped_start - line_start) as u32,
                 length: (clipped_end - clipped_start) as u32,
                 kind: token.kind,
+                ..DiffTokenSpan::default()
             });
         }
 
@@ -199,6 +190,38 @@ mod tests {
             token_kinds.contains(&SyntaxTokenKind::Function)
                 || token_kinds.contains(&SyntaxTokenKind::Keyword)
         );
+        assert!(token_kinds.contains(&SyntaxTokenKind::String));
+    }
+
+    #[test]
+    fn annotator_supports_typescript_via_vendored_difftastic() {
+        let patch = concat!(
+            "diff --git a/test.ts b/test.ts\n",
+            "--- a/test.ts\n",
+            "+++ b/test.ts\n",
+            "@@ -1 +1 @@\n",
+            "-const greeting = \"old\";\n",
+            "+export const greeting = \"new\";\n",
+        );
+        let mut text_buffer = TextBuffer::default();
+        let mut token_buffer = TokenBuffer::default();
+        let mut document = parse_into(patch, &mut text_buffer);
+
+        let annotator = DiffSyntaxAnnotator::new();
+        annotator.annotate(&mut document.files[0], &mut text_buffer, &mut token_buffer);
+
+        let token_kinds = document.files[0]
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter())
+            .flat_map(|line| {
+                token_buffer
+                    .view(line.syntax_tokens)
+                    .iter()
+                    .map(|span| span.kind)
+            })
+            .collect::<Vec<_>>();
+        assert!(token_kinds.contains(&SyntaxTokenKind::Keyword));
         assert!(token_kinds.contains(&SyntaxTokenKind::String));
     }
 }

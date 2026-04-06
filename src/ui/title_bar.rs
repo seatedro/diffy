@@ -42,7 +42,8 @@ pub(crate) fn title_bar(
         left = left.child(
             Button::new(Action::ToggleSidebar)
                 .icon(lucide::PANEL_LEFT)
-                .active(sidebar_visible > 0.5),
+                .active(sidebar_visible > 0.5)
+                .tooltip("Toggle sidebar (\u{2318}B)"),
         );
     }
 
@@ -145,7 +146,8 @@ pub(crate) fn title_bar(
         Button::new(Action::OpenPullRequestModal)
             .icon(lucide::GIT_PULL_REQUEST)
             .label("PR")
-            .active(pr_active),
+            .active(pr_active)
+            .tooltip("Pull request"),
     );
 
     div()

@@ -16,6 +16,7 @@ use crate::platform::persistence::SettingsStore;
 use crate::platform::startup::StartupOptions;
 use crate::render::Renderer;
 use crate::ui::actions::Action;
+use crate::ui::components::{TooltipSide, TooltipState};
 use crate::ui::editor::element::EditorElement;
 use crate::ui::element::{ClickEvent, ClickResult, DragHandler};
 use crate::ui::shell::{CursorHint, UiFrame, build_ui_frame};
@@ -78,6 +79,7 @@ struct NativeApp {
     viewport_scroll_remainder_px: f32,
     needs_redraw: bool,
     pending_g: bool,
+    tooltip_state: TooltipState,
 }
 
 impl NativeApp {
@@ -118,12 +120,91 @@ impl NativeApp {
             viewport_scroll_remainder_px: 0.0,
             needs_redraw: true,
             pending_g: false,
+            tooltip_state: TooltipState::default(),
         }
     }
 
     fn mark_dirty(&mut self) {
         self.dumps_dirty = true;
         self.needs_redraw = true;
+    }
+
+    fn paint_tooltip(&mut self) {
+        use crate::render::{
+            BorderPrimitive, FontKind, FontWeight, Rect, RoundedRectPrimitive, ShadowPrimitive,
+            TextPrimitive,
+        };
+        use crate::ui::design::{Rad, Shadow, Sp};
+        use std::sync::Arc;
+
+        if !self.tooltip_state.visible || self.tooltip_state.text.is_empty() {
+            return;
+        }
+        let renderer = match self.renderer.as_mut() {
+            Some(r) => r,
+            None => return,
+        };
+        let window_size = self
+            .window
+            .as_ref()
+            .map(|w| w.inner_size())
+            .unwrap_or(winit::dpi::PhysicalSize::new(1320, 840));
+        let window_w = window_size.width as f32;
+        let window_h = window_size.height as f32;
+        let tc = &self.theme.colors;
+        let m = &self.theme.metrics;
+        let scale = m.ui_scale();
+        let font_size = m.ui_small_font_size;
+        let text_w = crate::ui::element::measure_text_width(
+            renderer.font_system(),
+            &self.tooltip_state.text,
+            font_size,
+            FontKind::Ui,
+            FontWeight::Normal,
+        );
+        let px = (Sp::SM * scale).round();
+        let py = (Sp::XS * scale).round();
+        let w = text_w + px * 2.0;
+        let h = font_size + py * 2.0;
+        let r = (Rad::MD * scale).round();
+        let gap = (Sp::XS * scale).round();
+        let margin = (Sp::XS * scale).round();
+        let x = self.tooltip_state.x.min(window_w - w - margin).max(margin);
+        let y = (self.tooltip_state.y + gap).min(window_h - h - margin);
+        let rect = Rect { x, y, width: w, height: h };
+        let scene = &mut self.ui_frame.scene;
+
+        scene.push_z_index(500);
+        for layer in Shadow::TOOLTIP {
+            scene.shadow(ShadowPrimitive {
+                rect,
+                blur_radius: layer.blur,
+                corner_radius: r,
+                offset: [0.0, layer.offset_y],
+                color: crate::ui::theme::Color::rgba(0, 0, 0, layer.alpha),
+            });
+        }
+        scene.rounded_rect(RoundedRectPrimitive::uniform(rect, r, tc.elevated_surface));
+        scene.border(BorderPrimitive {
+            rect,
+            widths: [1.0; 4],
+            corner_radii: [r; 4],
+            color: tc.border,
+        });
+        scene.text(TextPrimitive {
+            rect: Rect {
+                x: x + px,
+                y: y + py,
+                width: text_w,
+                height: font_size,
+            },
+            text: Arc::from(self.tooltip_state.text.as_str()),
+            color: tc.text,
+            font_size,
+            font_kind: FontKind::Ui,
+            font_weight: FontWeight::Normal,
+        });
+        scene.pop_z_index();
     }
 
     fn sync_theme(&mut self) {
@@ -211,7 +292,7 @@ impl NativeApp {
             .unwrap_or_else(|| winit::dpi::PhysicalSize::new(1320, 840));
         let text_metrics = self
             .renderer
-            .as_ref()
+            .as_mut()
             .map(Renderer::text_metrics)
             .unwrap_or_default();
         let scale_factor = self
@@ -424,6 +505,29 @@ impl NativeApp {
         if hovered_row != self.state.editor.hovered_row {
             self.dispatch_action(Action::HoverViewportRow(hovered_row));
         }
+
+        let now_ms = self.launch_at.elapsed().as_millis() as u64;
+        let hovered_tooltip = self
+            .ui_frame
+            .tooltip_regions
+            .iter()
+            .rev()
+            .find(|r| r.bounds.contains(x, y));
+        if let Some(region) = hovered_tooltip {
+            if self.tooltip_state.text != region.text {
+                self.tooltip_state.show(
+                    &region.text,
+                    x,
+                    region.bounds.y + region.bounds.height,
+                    TooltipSide::Bottom,
+                    500,
+                    now_ms,
+                );
+            }
+        } else {
+            self.tooltip_state.hide();
+        }
+        self.tooltip_state.tick(now_ms);
 
         if let Some(window) = self.window.as_ref() {
             let icon = match cursor_hint {
@@ -965,8 +1069,11 @@ impl ApplicationHandler for NativeApp {
             }
             WindowEvent::RedrawRequested => {
                 let frame_started_at = Instant::now();
+                let now_ms = self.launch_at.elapsed().as_millis() as u64;
+                self.tooltip_state.tick(now_ms);
                 let frame = self.build_frame();
                 self.ui_frame = frame;
+                self.paint_tooltip();
                 if let Some(renderer) = self.renderer.as_mut() {
                     let time_seconds = self.launch_at.elapsed().as_secs_f32();
                     match renderer.render(&self.ui_frame.scene, time_seconds) {
@@ -1061,6 +1168,11 @@ impl ApplicationHandler for NativeApp {
             return;
         }
 
+        let tooltip_was_visible = self.tooltip_state.visible;
+        let now_ms = self.launch_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        self.tooltip_state.tick(now_ms);
+        let tooltip_changed = self.tooltip_state.visible != tooltip_was_visible;
+
         let animating = self.state.animation.has_active();
         let cursor_blink_changed = self.state.cursor_blink_epoch() != prior_cursor_blink_epoch;
         let toasts_changed = self.state.toasts.len() != prior_toast_count;
@@ -1076,11 +1188,20 @@ impl ApplicationHandler for NativeApp {
                 .state
                 .next_toast_expiry_at_ms()
                 .map(|ms| self.launch_at + std::time::Duration::from_millis(ms));
-            match (next_cursor_blink, next_toast_expiry) {
-                (Some(left), Some(right)) => Some(left.min(right)),
-                (Some(next), None) | (None, Some(next)) => Some(next),
-                (None, None) => None,
-            }
+            let next_tooltip = if !self.tooltip_state.text.is_empty()
+                && !self.tooltip_state.visible
+            {
+                Some(
+                    self.launch_at
+                        + std::time::Duration::from_millis(self.tooltip_state.show_at_ms),
+                )
+            } else {
+                None
+            };
+            [next_cursor_blink, next_toast_expiry, next_tooltip]
+                .into_iter()
+                .flatten()
+                .min()
         };
 
         if should_poll {
@@ -1092,7 +1213,7 @@ impl ApplicationHandler for NativeApp {
         }
 
         if let Some(window) = self.window.as_ref()
-            && (self.needs_redraw || animating || cursor_blink_changed || toasts_changed)
+            && (self.needs_redraw || animating || cursor_blink_changed || toasts_changed || tooltip_changed)
         {
             window.request_redraw();
         }

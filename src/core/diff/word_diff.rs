@@ -1,4 +1,4 @@
-use crate::core::text::token::{DiffTokenSpan, SyntaxTokenKind};
+use crate::core::text::token::{ChangeIntensity, DiffTokenSpan, SyntaxTokenKind};
 
 pub fn compute_word_diff(
     old_text: &str,
@@ -63,6 +63,7 @@ impl Word<'_> {
             offset: self.offset as u32,
             length: self.len as u32,
             kind: SyntaxTokenKind::Normal,
+            intensity: ChangeIntensity::NovelWord,
         }
     }
 }

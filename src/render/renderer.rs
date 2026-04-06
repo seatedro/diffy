@@ -237,6 +237,7 @@ pub struct Renderer {
     text_renderer: TextRenderer,
     text_cache: HashMap<u64, CachedTextBuffer>,
     text_cache_frame: u64,
+    cached_mono_char_width: Option<(f32, f32)>,
 }
 
 impl Renderer {
@@ -585,6 +586,7 @@ impl Renderer {
             text_renderer,
             text_cache: HashMap::new(),
             text_cache_frame: 0,
+            cached_mono_char_width: None,
         })
     }
 
@@ -619,14 +621,25 @@ impl Renderer {
         self.scale_factor
     }
 
-    pub fn text_metrics(&self) -> TextMetrics {
+    pub fn text_metrics(&mut self) -> TextMetrics {
         let scale = self.scale_factor as f32;
+        let mono_font_size = 13.0 * scale;
+        let char_w = match self.cached_mono_char_width {
+            Some((cached_size, cached_w)) if (cached_size - mono_font_size).abs() < 0.001 => {
+                cached_w
+            }
+            _ => {
+                let w = measure_mono_char_width(&mut self.font_system, mono_font_size);
+                self.cached_mono_char_width = Some((mono_font_size, w));
+                w
+            }
+        };
         TextMetrics {
             ui_font_size_px: 14.0 * scale,
             ui_line_height_px: 18.0 * scale,
-            mono_font_size_px: 13.0 * scale,
+            mono_font_size_px: mono_font_size,
             mono_line_height_px: 24.0 * scale,
-            mono_char_width_px: 8.0 * scale,
+            mono_char_width_px: char_w,
         }
     }
 
@@ -1347,11 +1360,17 @@ fn draw_images<'pass>(
             continue;
         };
 
+        let clip = img.clip;
+        let sx = (clip.x as u32).min(viewport_w);
+        let sy = (clip.y as u32).min(viewport_h);
+        let sw = (clip.width as u32).min(viewport_w.saturating_sub(sx));
+        let sh = (clip.height as u32).min(viewport_h.saturating_sub(sy));
+
         pass.set_pipeline(blit_pipeline);
         pass.set_bind_group(0, viewport_bind_group, &[]);
         pass.set_bind_group(1, bind_group, &[]);
         pass.set_vertex_buffer(0, buf.slice(..));
-        pass.set_scissor_rect(0, 0, viewport_w, viewport_h);
+        pass.set_scissor_rect(sx, sy, sw.max(1), sh.max(1));
         pass.draw(0..4, 0..1);
     }
 }
@@ -1672,6 +1691,7 @@ struct ClippedEffectQuad {
 #[derive(Debug, Clone)]
 struct ClippedImage {
     primitive: crate::render::scene::ImagePrimitive,
+    clip: Rect,
 }
 
 #[derive(Debug, Clone)]
@@ -1898,6 +1918,7 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                         let zl = current_z!();
                         zl.images.push(ClippedImage {
                             primitive: img.clone(),
+                            clip,
                         });
                     }
                 }
@@ -2292,6 +2313,29 @@ fn attrs_for_font(
         .family(family)
         .weight(weight)
         .color(glyphon_text_color(color))
+}
+
+fn measure_mono_char_width(font_system: &mut FontSystem, font_size: f32) -> f32 {
+    let metrics = Metrics::new(font_size, font_size * 1.35);
+    let mut buffer = Buffer::new(font_system, metrics);
+    buffer.set_size(font_system, Some(font_size * 100.0), Some(font_size * 2.0));
+    let attrs = Attrs::new().family(Family::Monospace);
+    let sample = "0000000000";
+    buffer.set_text(font_system, sample, &attrs, Shaping::Advanced, None);
+    buffer.shape_until_scroll(font_system, false);
+    let mut total_w = 0.0_f32;
+    let mut glyph_count = 0_u32;
+    for run in buffer.layout_runs() {
+        for glyph in run.glyphs.iter() {
+            total_w += glyph.w;
+            glyph_count += 1;
+        }
+    }
+    if glyph_count > 0 {
+        total_w / glyph_count as f32
+    } else {
+        8.0
+    }
 }
 
 fn glyphon_color(color: Color) -> GlyphonColor {

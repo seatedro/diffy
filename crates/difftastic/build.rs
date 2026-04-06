@@ -1,0 +1,165 @@
+// Clippy errors in this file should not stop build errors being
+// reported elsewhere.
+// https://github.com/rust-lang/rust-clippy/issues/9534
+#![warn(clippy::all)]
+// Has false positives on else if chains that sometimes have the same
+// body for readability.
+#![allow(clippy::if_same_then_else)]
+
+use std::path::PathBuf;
+use std::process::Command;
+
+use rayon::prelude::*;
+use version_check as rustc;
+
+struct TreeSitterParser {
+    name: &'static str,
+    src_dir: &'static str,
+    extra_files: Vec<&'static str>,
+}
+
+impl TreeSitterParser {
+    fn build(&self) {
+        let dir = PathBuf::from(&self.src_dir);
+
+        let mut c_files = vec!["parser.c"];
+        let mut cpp_files = vec![];
+
+        for file in &self.extra_files {
+            if file.ends_with(".c") {
+                c_files.push(file);
+            } else {
+                cpp_files.push(file);
+            }
+        }
+
+        if !cpp_files.is_empty() {
+            let mut cpp_build = cc::Build::new();
+            cpp_build
+                .include(&dir)
+                .cpp(true)
+                .std("c++14")
+                .flag_if_supported("-Wno-implicit-fallthrough")
+                .flag_if_supported("-Wno-unused-parameter")
+                .flag_if_supported("-Wno-ignored-qualifiers")
+                .link_lib_modifier("+whole-archive");
+
+            for file in cpp_files {
+                cpp_build.file(dir.join(file));
+            }
+
+            cpp_build.compile(&format!("{}-cpp", self.name));
+        }
+
+        let mut build = cc::Build::new();
+        if cfg!(target_env = "msvc") {
+            build.flag("/utf-8");
+        }
+        build.include(&dir).warnings(false); // ignore unused parameter warnings
+        for file in c_files {
+            build.file(dir.join(file));
+        }
+
+        build.link_lib_modifier("+whole-archive");
+
+        build.compile(self.name);
+    }
+}
+
+fn main() {
+    let parsers = vec![
+        TreeSitterParser {
+            name: "tree-sitter-commonlisp",
+            src_dir: "vendored_parsers/tree-sitter-commonlisp-src",
+            extra_files: vec![],
+        },
+        TreeSitterParser {
+            name: "tree-sitter-elvish",
+            src_dir: "vendored_parsers/tree-sitter-elvish-src",
+            extra_files: vec![],
+        },
+        TreeSitterParser {
+            name: "tree-sitter-hack",
+            src_dir: "vendored_parsers/tree-sitter-hack-src",
+            extra_files: vec!["scanner.cc"],
+        },
+        TreeSitterParser {
+            name: "tree-sitter-hare",
+            src_dir: "vendored_parsers/tree-sitter-hare-src",
+            extra_files: vec![],
+        },
+        TreeSitterParser {
+            name: "tree-sitter-janet-simple",
+            src_dir: "vendored_parsers/tree-sitter-janet-simple-src",
+            extra_files: vec!["scanner.c"],
+        },
+        TreeSitterParser {
+            name: "tree-sitter-kotlin",
+            src_dir: "vendored_parsers/tree-sitter-kotlin-src",
+            extra_files: vec!["scanner.c"],
+        },
+        TreeSitterParser {
+            name: "tree-sitter-latex",
+            src_dir: "vendored_parsers/tree-sitter-latex-src",
+            extra_files: vec!["scanner.c"],
+        },
+        TreeSitterParser {
+            name: "tree-sitter-scss",
+            src_dir: "vendored_parsers/tree-sitter-scss-src",
+            extra_files: vec!["scanner.c"],
+        },
+        TreeSitterParser {
+            name: "tree-sitter-smali",
+            src_dir: "vendored_parsers/tree-sitter-smali-src",
+            extra_files: vec!["scanner.c"],
+        },
+        TreeSitterParser {
+            name: "tree-sitter-vhdl",
+            src_dir: "vendored_parsers/tree-sitter-vhdl-src",
+            extra_files: vec![],
+        },
+    ];
+
+    // Only rerun if relevant files in the vendored_parsers/ directory change.
+    for parser in &parsers {
+        println!("cargo:rerun-if-changed={}", parser.src_dir);
+    }
+
+    parsers.par_iter().for_each(|p| p.build());
+    commit_info();
+
+    if let Some((version, _, _)) = rustc::triple() {
+        println!("cargo:rustc-env=DFT_RUSTC_VERSION={}", version);
+    }
+
+    // Use 64-KiB pages with jemalloc. This solves "<jemalloc>:
+    // Unsupported system page size" errors, and performs the same as
+    // jemalloc's default settings.
+    //
+    // Note that difftastic does not use jemalloc on all operating
+    // systems, but it's harmless to set this unconditionally.
+    println!("cargo:rustc-env=JEMALLOC_SYS_WITH_LG_PAGE=16");
+}
+
+fn commit_info() {
+    if !PathBuf::from(".git").exists() {
+        return;
+    }
+
+    let output = match Command::new("git")
+        .arg("log")
+        .arg("-1")
+        .arg("--date=short")
+        .arg("--format=%H %h %cd")
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return,
+    };
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let mut parts = stdout.split_whitespace();
+    let mut next = || parts.next().unwrap();
+    let _commit_hash = next();
+    println!("cargo:rustc-env=DFT_COMMIT_SHORT_HASH={}", next());
+    println!("cargo:rustc-env=DFT_COMMIT_DATE={}", next())
+}

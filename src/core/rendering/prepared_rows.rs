@@ -167,11 +167,13 @@ mod tests {
             offset: 0,
             length: 3,
             kind: SyntaxTokenKind::Keyword,
+            ..DiffTokenSpan::default()
         }]);
         let added_changes = token_buffer.append(&[DiffTokenSpan {
             offset: 4,
             length: 5,
             kind: SyntaxTokenKind::String,
+            ..DiffTokenSpan::default()
         }]);
 
         let file = FileDiff {

@@ -100,7 +100,8 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> Div {
             {Button::new(Action::ToggleWrap)
                 .icon(lucide::WRAP_TEXT)
                 .label("Wrap")
-                .active(state.editor.wrap_enabled)}
+                .active(state.editor.wrap_enabled)
+                .tooltip("Toggle line wrapping (w)")}
             <text class="text-xs" color={tc.text_muted}>
                 {renderer_label(state.compare.renderer)}
             </text>

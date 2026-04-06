@@ -79,8 +79,10 @@ pub fn rebuild_display_rows(
 
     for (line_index, line) in doc.lines.iter().enumerate() {
         let kind = line.row_kind();
+        if kind == RenderRowKind::FileHeader {
+            continue;
+        }
         let (wrap_left, wrap_right, h_px) = match kind {
-            RenderRowKind::FileHeader => (1_u16, 1_u16, metrics.file_header_height_px),
             RenderRowKind::HunkSeparator => (1_u16, 1_u16, metrics.hunk_height_px),
             _ if config.split_mode => {
                 let left_cols = split_wrap_cols.max(1);

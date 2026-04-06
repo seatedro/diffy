@@ -24,16 +24,4 @@ impl From<ureq::Error> for DiffyError {
     }
 }
 
-impl From<tree_sitter::LanguageError> for DiffyError {
-    fn from(value: tree_sitter::LanguageError) -> Self {
-        Self::Syntax(value.to_string())
-    }
-}
-
-impl From<tree_sitter::QueryError> for DiffyError {
-    fn from(value: tree_sitter::QueryError) -> Self {
-        Self::Syntax(value.to_string())
-    }
-}
-
 pub type Result<T> = std::result::Result<T, DiffyError>;

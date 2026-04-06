@@ -1,8 +1,6 @@
-use halogen::view;
-
 use crate::ui::actions::Action;
-use crate::ui::design::{Alpha, Ico, Rad, Sp};
-use crate::ui::element::{Div, IntoAnyElement, div, svg_icon, text};
+use crate::ui::design::{Ico, Sp};
+use crate::ui::element::{Div, IntoAnyElement, div, svg_icon};
 use crate::ui::icons::lucide;
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
@@ -17,8 +15,7 @@ pub fn search_field(
     let tc = &theme.colors;
     let m = &theme.metrics;
     let icon_size = m.ui_small_font_size;
-
-    let search_icon_size = (icon_size - 1.0).max(Ico::XS);
+    let search_icon_size = Ico::XS;
 
     let mut container = div()
         .w_full()
@@ -27,7 +24,6 @@ pub fn search_field(
         .gap(m.spacing_sm)
         .px(m.spacing_sm + Sp::XXS)
         .py(m.spacing_xs)
-        .bg(tc.element_background)
         .rounded(m.control_radius)
         .border(tc.border_variant)
         .child(svg_icon(lucide::SEARCH, search_icon_size).color(tc.text_muted))
@@ -50,22 +46,7 @@ pub fn search_field(
             );
         }
     } else if let Some(hint) = shortcut_hint {
-        let kbd_h = m.ui_small_font_size + Sp::XXS;
-        container = container.child(
-            div()
-                .flex_shrink_0()
-                .items_center()
-                .justify_center()
-                .h(kbd_h)
-                .min_w(kbd_h)
-                .px(Sp::XS)
-                .border(tc.border_variant)
-                .rounded(Rad::SM)
-                .shadow(1.0, 1.0, tc.border_soft.with_alpha(Alpha::FAINT))
-                .child(view! {
-                    <text class="text-xs mono text-center" color={tc.text_muted}>{hint}</text>
-                }),
-        );
+        container = container.child(super::kbd(hint, theme));
     }
 
     container

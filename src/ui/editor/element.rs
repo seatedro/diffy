@@ -14,7 +14,7 @@ use super::display_layout::{
 };
 use super::render_doc::{
     ByteRange, DisplayRow, INVALID_U32, RenderDoc, RenderLine, RenderRowKind, RunRange,
-    STYLE_FLAG_CHANGE, StyleRun,
+    STYLE_FLAG_NOVEL_WORD, StyleRun,
 };
 use super::state::EditorState;
 use super::strip_layout::{StripLayout, build_strip_layouts, visible_strip_range};
@@ -567,27 +567,26 @@ impl EditorElement {
             } else if self.layout.split_mode
                 && matches!(kind, RenderRowKind::Added | RenderRowKind::Removed)
             {
-                let left_end = self.layout.left_text_rect.right();
-                let right_start = self.layout.right_gutter_rect.x;
+                let mid = self.layout.right_gutter_rect.x;
                 if kind == RenderRowKind::Added {
                     scene.rect(RectPrimitive {
                         rect: Rect {
-                            x: right_start,
+                            x: mid,
                             y: rr.y,
-                            width: rr.right() - right_start,
+                            width: rr.right() - mid,
                             height: rr.height,
                         },
-                        color: theme.colors.line_add,
+                        color: dim_bg(theme.colors.line_add),
                     });
                 } else {
                     scene.rect(RectPrimitive {
                         rect: Rect {
                             x: rr.x,
                             y: rr.y,
-                            width: left_end - rr.x,
+                            width: mid - rr.x,
                             height: rr.height,
                         },
-                        color: theme.colors.line_del,
+                        color: dim_bg(theme.colors.line_del),
                     });
                 }
             } else {
@@ -604,26 +603,27 @@ impl EditorElement {
         display_row: &DisplayRow,
         line_height: f32,
     ) {
+        let del_bg = dim_bg(theme.colors.line_del);
+        let add_bg = dim_bg(theme.colors.line_add);
         if self.layout.split_mode {
-            let left_end = self.layout.left_text_rect.right();
-            let right_start = self.layout.right_gutter_rect.x;
+            let mid = self.layout.right_gutter_rect.x;
             scene.rect(RectPrimitive {
                 rect: Rect {
                     x: rr.x,
                     y: rr.y,
-                    width: left_end - rr.x,
+                    width: mid - rr.x,
                     height: rr.height,
                 },
-                color: theme.colors.line_del,
+                color: del_bg,
             });
             scene.rect(RectPrimitive {
                 rect: Rect {
-                    x: right_start,
+                    x: mid,
                     y: rr.y,
-                    width: rr.right() - right_start,
+                    width: rr.right() - mid,
                     height: rr.height,
                 },
-                color: theme.colors.line_add,
+                color: add_bg,
             });
         } else {
             let del_lines = display_row.wrap_left.max(1) as f32;
@@ -635,7 +635,7 @@ impl EditorElement {
                     width: rr.width,
                     height: del_h,
                 },
-                color: theme.colors.line_del,
+                color: del_bg,
             });
             scene.rect(RectPrimitive {
                 rect: Rect {
@@ -644,7 +644,7 @@ impl EditorElement {
                     width: rr.width,
                     height: rr.height - del_h,
                 },
-                color: theme.colors.line_add,
+                color: add_bg,
             });
         }
     }
@@ -790,7 +790,7 @@ impl EditorElement {
         let runs = doc.line_runs(runs_range);
 
         for run in runs {
-            if run.flags & STYLE_FLAG_CHANGE == 0 {
+            if run.flags & STYLE_FLAG_NOVEL_WORD == 0 {
                 continue;
             }
             let start = run.byte_start as usize;
@@ -1506,13 +1506,13 @@ impl EditorElement {
                 line.left_runs,
                 seg,
                 render_cols,
-                RowTone::Removed,
+                RowTone::ModifiedOld,
                 theme,
             ) {
                 scene.rich_text(RichTextPrimitive {
                     rect,
                     spans,
-                    default_color: theme.colors.line_del_text,
+                    default_color: RowTone::ModifiedOld.default_text(theme),
                     font_size,
                     font_kind: FontKind::Mono,
                     font_weight: FontWeight::Normal,
@@ -1542,13 +1542,13 @@ impl EditorElement {
                 line.right_runs,
                 seg,
                 render_cols,
-                RowTone::Added,
+                RowTone::ModifiedNew,
                 theme,
             ) {
                 scene.rich_text(RichTextPrimitive {
                     rect,
                     spans,
-                    default_color: theme.colors.line_add_text,
+                    default_color: RowTone::ModifiedNew.default_text(theme),
                     font_size,
                     font_kind: FontKind::Mono,
                     font_weight: FontWeight::Normal,
@@ -1716,6 +1716,8 @@ enum RowTone {
     Neutral,
     Added,
     Removed,
+    ModifiedOld,
+    ModifiedNew,
 }
 
 impl RowTone {
@@ -1724,8 +1726,11 @@ impl RowTone {
             Self::Neutral => theme.colors.text_strong,
             Self::Added => theme.colors.line_add_text,
             Self::Removed => theme.colors.line_del_text,
+            Self::ModifiedOld => theme.colors.text_strong,
+            Self::ModifiedNew => theme.colors.text_strong,
         }
     }
+
 }
 
 fn compute_scrollbar_layout(layout: &EditorLayout, state: &EditorState) -> Option<ScrollbarLayout> {
@@ -1851,14 +1856,18 @@ fn build_spatial_layout(
     }
 }
 
+fn dim_bg(c: Color) -> Color {
+    Color { a: c.a / 2, ..c }
+}
+
 fn paint_row_background(scene: &mut Scene, theme: &Theme, row_rect: Rect, kind: RenderRowKind) {
     let color = match kind {
         RenderRowKind::FileHeader => theme.colors.file_header_bg,
         RenderRowKind::HunkSeparator => theme.colors.hunk_header_bg,
         RenderRowKind::Context => theme.colors.canvas,
-        RenderRowKind::Added => theme.colors.line_add,
-        RenderRowKind::Removed => theme.colors.line_del,
-        RenderRowKind::Modified => theme.colors.line_modified,
+        RenderRowKind::Added => dim_bg(theme.colors.line_add),
+        RenderRowKind::Removed => dim_bg(theme.colors.line_del),
+        RenderRowKind::Modified => dim_bg(theme.colors.line_modified),
     };
     scene.rect(RectPrimitive {
         rect: row_rect,
@@ -1885,17 +1894,20 @@ fn unified_body_side(line: &RenderLine) -> Option<(ByteRange, RunRange, RowTone)
 
 fn tone_for_left_side(kind: RenderRowKind) -> RowTone {
     match kind {
-        RenderRowKind::Removed | RenderRowKind::Modified => RowTone::Removed,
+        RenderRowKind::Modified => RowTone::ModifiedOld,
+        RenderRowKind::Removed => RowTone::Removed,
         _ => RowTone::Neutral,
     }
 }
 
 fn tone_for_right_side(kind: RenderRowKind) -> RowTone {
     match kind {
-        RenderRowKind::Added | RenderRowKind::Modified => RowTone::Added,
+        RenderRowKind::Modified => RowTone::ModifiedNew,
+        RenderRowKind::Added => RowTone::Added,
         _ => RowTone::Neutral,
     }
 }
+
 
 fn wrap_cols_for_width(
     wrap_enabled: bool,
@@ -2102,7 +2114,7 @@ fn build_segment_spans(
 }
 
 fn style_run_color(run: StyleRun, tone: RowTone, theme: &Theme) -> Color {
-    match syntax_kind_from_style_id(run.style_id) {
+    let base = match syntax_kind_from_style_id(run.style_id) {
         SyntaxTokenKind::Keyword | SyntaxTokenKind::Builtin => theme.colors.syntax_keyword,
         SyntaxTokenKind::String => theme.colors.syntax_string,
         SyntaxTokenKind::Comment | SyntaxTokenKind::Label | SyntaxTokenKind::Preprocessor => {
@@ -2116,7 +2128,8 @@ fn style_run_color(run: StyleRun, tone: RowTone, theme: &Theme) -> Color {
         SyntaxTokenKind::Attribute | SyntaxTokenKind::Property => theme.colors.syntax_property,
         SyntaxTokenKind::Operator | SyntaxTokenKind::Punctuation => theme.colors.syntax_operator,
         SyntaxTokenKind::Variable | SyntaxTokenKind::Normal => tone.default_text(theme),
-    }
+    };
+    base
 }
 
 fn syntax_kind_from_style_id(style_id: u16) -> SyntaxTokenKind {

@@ -30,6 +30,7 @@ pub struct UiFrame {
     pub scroll_regions: Vec<ScrollRegion>,
     pub text_input_hit_areas: Vec<TextInputHitArea>,
     pub scrollbar_tracks: Vec<ScrollbarTrack>,
+    pub tooltip_regions: Vec<TooltipRegion>,
     pub file_list_rect: Option<Rect>,
     pub sidebar_resize_handle_rect: Option<Rect>,
     pub viewport_rect: Option<Rect>,
@@ -195,6 +196,7 @@ pub fn build_ui_frame(
     let hits = std::mem::take(&mut cx.hits);
     let scroll_regions = std::mem::take(&mut cx.scroll_regions);
     let text_input_hit_areas = std::mem::take(&mut cx.text_input_hit_areas);
+    let tooltip_regions = std::mem::take(&mut cx.tooltip_regions);
     let file_list_rect = scroll_regions.iter().find_map(|region| {
         matches!(region.action_builder, ScrollActionBuilder::FileList).then_some(region.bounds)
     });
@@ -205,6 +207,7 @@ pub fn build_ui_frame(
         scroll_regions,
         text_input_hit_areas,
         scrollbar_tracks,
+        tooltip_regions,
         file_list_rect: file_list_rect.or_else(|| file_list_bounds.get()),
         sidebar_resize_handle_rect: sidebar_resize_bounds.get(),
         viewport_rect: viewport_bounds.get(),

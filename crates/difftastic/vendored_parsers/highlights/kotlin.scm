@@ -1,0 +1,1 @@
+../tree-sitter-kotlin/queries/highlights.scm

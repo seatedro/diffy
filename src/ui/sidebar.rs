@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use crate::render::{Rect, RectPrimitive, RoundedRectPrimitive, ShadowPrimitive};
+use crate::render::{Rect, RectPrimitive, RoundedRectPrimitive};
 use crate::ui::actions::Action;
 use crate::ui::components;
 use crate::ui::design::{Alpha, Ico, Rad, Sp, Sz};
@@ -62,7 +62,7 @@ pub(crate) fn preferred_sidebar_width(
     let scrollbar_gutter = Ico::LG * ui_scale;
     let auto_min_width = theme.metrics.sidebar_width;
     let manual_min_width = (theme.metrics.sidebar_width * 0.64).round();
-    let file_icon_width = Ico::MD * ui_scale;
+    let file_icon_width = Ico::XS;
     let hard_max = available_width.max(0.0);
     let max_width = if hard_max >= auto_min_width {
         (available_width - Sz::MAIN_SURFACE_MIN_W)
@@ -185,10 +185,10 @@ pub(crate) fn sidebar_resizer(
 ) -> Canvas {
     let tc = theme.colors;
     let scale = theme.metrics.ui_scale();
-    let handle_width = (Ico::LG * scale).round().max(Ico::SM);
-    let track_width = (Sz::SEPARATOR_W * scale).max(1.0);
-    let thumb_width = (Rad::LG * scale).round().max(Rad::MD);
-    let thumb_height = (Sp::XXXXL * scale).round().max(Sz::SIDEBAR_LIST_OFFSET);
+    let handle_width = (Sp::SM * scale).round().max(Sp::SM);
+    let track_width = 1.0_f32;
+    let thumb_width = (Sp::XXS * scale).round().max(2.0);
+    let thumb_height = (Sp::XXL * scale).round().max(Sp::LG);
 
     canvas(move |bounds, scene, cx| {
         bounds_cell.set(Some(bounds));
@@ -198,19 +198,14 @@ pub(crate) fn sidebar_resizer(
         let center_x = bounds.x + bounds.width * 0.5;
         let center_y = bounds.y + bounds.height * 0.5;
         let line_color = if hovered {
-            tc.accent.with_alpha(Alpha::MUTED)
+            tc.border_variant
         } else {
-            tc.border_variant.with_alpha(Alpha::MEDIUM)
-        };
-        let glow = if hovered {
-            tc.accent.with_alpha(Alpha::SOFT)
-        } else {
-            tc.accent.with_alpha(Alpha::WHISPER)
+            tc.border_variant.with_alpha(Alpha::SOFT)
         };
         let thumb_color = if hovered {
-            Color::rgba(255, 255, 255, 210)
+            tc.text_muted
         } else {
-            tc.scrollbar_thumb.with_alpha(Alpha::STRONG)
+            tc.border_variant
         };
 
         let sw = starting_width;
@@ -225,23 +220,11 @@ pub(crate) fn sidebar_resizer(
         scene.rect(RectPrimitive {
             rect: Rect {
                 x: center_x - track_width * 0.5,
-                y: bounds.y + handle_width,
+                y: bounds.y,
                 width: track_width,
-                height: (bounds.height - handle_width * 2.0).max(0.0),
+                height: bounds.height,
             },
             color: line_color,
-        });
-        scene.shadow(ShadowPrimitive {
-            rect: Rect {
-                x: center_x - thumb_width * 0.5,
-                y: center_y - thumb_height * 0.5,
-                width: thumb_width,
-                height: thumb_height,
-            },
-            blur_radius: handle_width,
-            corner_radius: thumb_width,
-            offset: [0.0, 0.0],
-            color: glow,
         });
         scene.rounded_rect(RoundedRectPrimitive::uniform(
             Rect {
@@ -480,6 +463,7 @@ pub(crate) fn sidebar(
             .min_h(0.0)
             .flex_col()
             .px((Rad::LG * scale).round())
+            .pt((Sp::XXS * scale).round())
             .gap((Sp::XS * scale).round())
             .clip()
             .scroll_y(scroll_px)
@@ -508,13 +492,25 @@ pub(crate) fn sidebar(
                 row = row.hover_bg(tc.sidebar_row_hover);
             }
 
-            row = row.child(components::file_icon(&file.path, Ico::MD * scale).selected(selected));
+            row = row.child(components::file_icon(&file.path, Ico::XS).selected(selected));
+
+            let (filename, dir_path) = match file.path.rfind('/') {
+                Some(pos) => (&file.path[pos + 1..], Some(&file.path[..pos])),
+                None => (file.path.as_str(), None),
+            };
 
             row = row.child(
                 div()
                     .flex_1()
+                    .flex_row()
+                    .items_center()
+                    .gap(Sp::SM * scale)
                     .overflow_hidden()
-                    .child(text(&file.path).text_sm().color(text_color).truncate()),
+                    .min_w(0.0)
+                    .child(div().flex_shrink_0().child(text(filename).text_sm().color(text_color)))
+                    .optional_child(dir_path.map(|p| {
+                        text(p).text_xs().color(tc.text_muted).truncate()
+                    })),
             );
 
             if file.additions > 0 || file.deletions > 0 {

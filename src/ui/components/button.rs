@@ -27,6 +27,7 @@ pub struct Button {
     size: ButtonSize,
     active: bool,
     disabled: bool,
+    tooltip_text: Option<String>,
 }
 
 impl Button {
@@ -39,6 +40,7 @@ impl Button {
             size: ButtonSize::Default,
             active: false,
             disabled: false,
+            tooltip_text: None,
         }
     }
 
@@ -69,6 +71,11 @@ impl Button {
 
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    pub fn tooltip(mut self, text: impl Into<String>) -> Self {
+        self.tooltip_text = Some(text.into());
         self
     }
 }
@@ -125,12 +132,15 @@ impl RenderOnce for Button {
             ),
         };
 
+        let icon_only = self.icon.is_some() && self.label.is_none();
+        let actual_px = if icon_only { py } else { px };
+
         let mut btn = div()
             .flex_row()
             .flex_shrink_0()
             .items_center()
             .gap((Sp::SM * scale).round())
-            .px(px)
+            .px(actual_px)
             .py(py)
             .rounded((Rad::XL * scale).round())
             .bg(bg)
@@ -149,6 +159,10 @@ impl RenderOnce for Button {
                 ButtonSize::Compact => txt = txt.text_xs(),
             }
             btn = btn.child(txt);
+        }
+
+        if let Some(tip) = self.tooltip_text {
+            btn = btn.tooltip(tip);
         }
 
         btn.into_any()

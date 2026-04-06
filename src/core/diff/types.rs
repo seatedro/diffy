@@ -19,6 +19,8 @@ pub struct DiffLine {
     pub text_range: TextRange,
     pub syntax_tokens: TokenRange,
     pub change_tokens: TokenRange,
+    #[serde(skip)]
+    pub pair_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]

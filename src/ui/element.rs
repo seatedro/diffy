@@ -247,6 +247,12 @@ impl ScrollActionBuilder {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct TooltipRegion {
+    pub bounds: Bounds,
+    pub text: String,
+}
+
 // ---------------------------------------------------------------------------
 // ElementContext
 // ---------------------------------------------------------------------------
@@ -265,6 +271,7 @@ pub struct ElementContext<'a> {
     pub debug_wireframe: bool,
     pub text_input_hit_areas: Vec<TextInputHitArea>,
     pub scrollbar_tracks: Vec<ScrollbarTrack>,
+    pub tooltip_regions: Vec<TooltipRegion>,
     hitboxes: Vec<Hitbox>,
     hovered_hitboxes: Vec<HitboxId>,
     next_hitbox_id: usize,
@@ -294,6 +301,7 @@ impl<'a> ElementContext<'a> {
             debug_wireframe: false,
             text_input_hit_areas: Vec::new(),
             scrollbar_tracks: Vec::new(),
+            tooltip_regions: Vec::new(),
             hitboxes: Vec::new(),
             hovered_hitboxes: Vec::new(),
             next_hitbox_id: 0,
@@ -966,6 +974,7 @@ pub struct Div {
     hide_scrollbar: bool,
     clips: bool,
     focus_target: Option<crate::ui::state::FocusTarget>,
+    tooltip: Option<String>,
 }
 
 pub fn div() -> Div {
@@ -984,6 +993,7 @@ pub fn div() -> Div {
         hide_scrollbar: false,
         clips: false,
         focus_target: None,
+        tooltip: None,
     }
 }
 
@@ -1089,6 +1099,11 @@ impl Div {
 
     pub fn focus_ring(mut self, target: crate::ui::state::FocusTarget) -> Self {
         self.focus_target = Some(target);
+        self
+    }
+
+    pub fn tooltip(mut self, text: impl Into<String>) -> Self {
+        self.tooltip = Some(text.into());
         self
     }
 
@@ -1324,7 +1339,13 @@ impl Element for Div {
                 .push(HitRegion::from_action(bounds, action, self.cursor));
         }
 
-        // Clip + scroll children
+        if let Some(tip) = self.tooltip.take() {
+            cx.tooltip_regions.push(TooltipRegion {
+                bounds,
+                text: tip,
+            });
+        }
+
         if self.clips {
             scene.clip(bounds);
         }
@@ -1340,59 +1361,52 @@ impl Element for Div {
         }
 
         if self.scroll_total_height > bounds.height && !self.hide_scrollbar {
-            let track_h = bounds.height;
             let content_h = self.scroll_total_height;
-            let max_scroll = content_h - track_h;
-            let thumb_h = (track_h / content_h * track_h).max(32.0).min(track_h);
+            let max_scroll = content_h - bounds.height;
+            let sb_width = 8.0;
+            let sb_margin = 6.0;
+            let track = Rect {
+                x: bounds.right() - sb_width,
+                y: bounds.y + sb_margin,
+                width: sb_width,
+                height: (bounds.height - sb_margin * 2.0).max(0.0),
+            };
+            let thumb_h = (track.height / content_h * bounds.height)
+                .max(32.0)
+                .min(track.height);
             let thumb_y = if max_scroll > 0.0 {
-                (self.scroll_y / max_scroll) * (track_h - thumb_h)
+                (self.scroll_y / max_scroll) * (track.height - thumb_h)
             } else {
                 0.0
             };
-            let thumb_w = 8.0;
-            let track_pad = 3.0;
-            let thumb_x = bounds.x + bounds.width - thumb_w - track_pad;
 
-            // Track background (subtle)
+            scene.rounded_rect(RoundedRectPrimitive::uniform(track, 4.0, Color::rgba(128, 128, 128, 10)));
+
             scene.rounded_rect(RoundedRectPrimitive::uniform(
                 Rect {
-                    x: thumb_x - 1.0,
-                    y: bounds.y,
-                    width: thumb_w + 2.0,
-                    height: track_h,
-                },
-                5.0,
-                Color::rgba(128, 128, 128, 10),
-            ));
-
-            // Thumb
-            let thumb_inset = 1.0;
-            scene.rounded_rect(RoundedRectPrimitive::uniform(
-                Rect {
-                    x: thumb_x + thumb_inset,
-                    y: bounds.y + thumb_y + thumb_inset,
-                    width: thumb_w - thumb_inset * 2.0,
-                    height: thumb_h - thumb_inset * 2.0,
+                    x: track.x + 1.0,
+                    y: track.y + thumb_y + 1.0,
+                    width: track.width - 2.0,
+                    height: thumb_h - 2.0,
                 },
                 3.0,
                 cx.theme.colors.scrollbar_thumb,
             ));
 
-            // Register scrollbar track for click-to-scroll and drag.
             if let Some(ref builder) = self.on_scroll {
-                let hit_w = thumb_w + 12.0; // wider hit area for easy grabbing
+                let hit_w = sb_width + 12.0;
                 let track_rect = Rect {
-                    x: thumb_x - 6.0,
+                    x: track.x - 6.0,
                     y: bounds.y,
                     width: hit_w,
-                    height: track_h,
+                    height: bounds.height,
                 };
                 cx.scrollbar_tracks.push(ScrollbarTrack {
                     track_rect,
-                    thumb_top: bounds.y + thumb_y,
+                    thumb_top: track.y + thumb_y,
                     thumb_height: thumb_h,
                     content_height: content_h,
-                    viewport_height: track_h,
+                    viewport_height: bounds.height,
                     action_builder: builder.clone(),
                 });
             }

@@ -24,11 +24,21 @@ pub enum SyntaxTokenKind {
     Preprocessor,
 }
 
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub enum ChangeIntensity {
+    #[default]
+    Novel = 0,
+    NovelWord = 1,
+    UnchangedContext = 2,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct DiffTokenSpan {
     pub offset: u32,
     pub length: u32,
     pub kind: SyntaxTokenKind,
+    pub intensity: ChangeIntensity,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]

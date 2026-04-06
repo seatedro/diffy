@@ -1,5 +1,6 @@
 use halogen::view;
 
+use crate::ui::components;
 use crate::ui::components::modal::Modal;
 use crate::ui::design::{Sp, Sz};
 use crate::ui::element::*;
@@ -136,11 +137,31 @@ pub fn keyboard_shortcuts(
         });
 
         for entry in group.entries {
+            let mut keys_row = div()
+                .flex_shrink_0()
+                .min_w(Sz::CONTEXT_MENU_MIN_W)
+                .flex_row()
+                .items_center()
+                .flex_wrap()
+                .gap((Sp::XS * scale).round());
+
+            let parts: Vec<&str> = entry.key.split(" / ").collect();
+            for (i, part) in parts.iter().enumerate() {
+                if i > 0 {
+                    keys_row = keys_row.child(text("/").text_xs().color(tc.text_muted));
+                }
+                let subparts: Vec<&str> = part.split('+').collect();
+                for (j, sub) in subparts.iter().enumerate() {
+                    if j > 0 {
+                        keys_row = keys_row.child(text("+").text_xs().color(tc.text_muted));
+                    }
+                    keys_row = keys_row.child(components::kbd(sub.trim(), theme));
+                }
+            }
+
             section = section.child(view! { scale,
                 <div class="flex-row items-center" gap={Sp::MD}>
-                    <div class="shrink-0" w={Sz::CONTEXT_MENU_MIN_W}>
-                        <text class="font-mono text-sm" color={tc.text_strong}>{entry.key}</text>
-                    </div>
+                    {keys_row}
                     <text class="text-sm" color={tc.text_muted}>{entry.description}</text>
                 </div>
             });

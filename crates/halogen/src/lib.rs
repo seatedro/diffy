@@ -592,7 +592,10 @@ impl EmitCtx {
         match attr {
             Attr::Flag(name) => quote! { #chain.#name() },
             Attr::KeyValue(name, expr) => {
-                if self.should_autoscale(name) {
+                if let Expr::Tuple(tup) = expr {
+                    let elems = &tup.elems;
+                    quote! { #chain.#name(#elems) }
+                } else if self.should_autoscale(name) {
                     let scale = self.scale.as_ref().unwrap();
                     quote! { #chain.#name((#expr * #scale).round()) }
                 } else {

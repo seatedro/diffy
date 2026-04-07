@@ -345,8 +345,8 @@ pub enum PickerKind {
 pub trait PickerItem {
     fn label(&self) -> &str;
     fn detail(&self) -> Option<&str>;
-    fn highlight_range(&self) -> Option<(usize, usize)> {
-        None
+    fn highlight_ranges(&self) -> &[(usize, usize)] {
+        &[]
     }
     fn icon_svg(&self) -> Option<&'static str> {
         None
@@ -361,7 +361,7 @@ pub struct PickerEntry {
     pub label: String,
     pub detail: String,
     pub value: String,
-    pub highlight: Option<(usize, usize)>,
+    pub highlights: Vec<(usize, usize)>,
     pub icon: Option<&'static str>,
     pub section_header: bool,
 }
@@ -373,8 +373,8 @@ impl PickerItem for PickerEntry {
     fn detail(&self) -> Option<&str> {
         Some(&self.detail)
     }
-    fn highlight_range(&self) -> Option<(usize, usize)> {
-        self.highlight
+    fn highlight_ranges(&self) -> &[(usize, usize)] {
+        &self.highlights
     }
     fn icon_svg(&self) -> Option<&'static str> {
         self.icon
@@ -422,7 +422,7 @@ pub struct PaletteEntry {
     pub label: String,
     pub detail: String,
     pub kind: PaletteEntryKind,
-    pub highlight: Option<(usize, usize)>,
+    pub highlights: Vec<(usize, usize)>,
 }
 
 impl PickerItem for PaletteEntry {
@@ -432,8 +432,8 @@ impl PickerItem for PaletteEntry {
     fn detail(&self) -> Option<&str> {
         Some(&self.detail)
     }
-    fn highlight_range(&self) -> Option<(usize, usize)> {
-        self.highlight
+    fn highlight_ranges(&self) -> &[(usize, usize)] {
+        &self.highlights
     }
 }
 
@@ -1619,9 +1619,11 @@ impl AppState {
                 PickerKind::Repository => self.rebuild_repo_picker(),
                 PickerKind::LeftRef => {
                     self.compare.resolved_left = None;
+                    self.rebuild_ref_picker(CompareField::Left);
                 }
                 PickerKind::RightRef => {
                     self.compare.resolved_right = None;
+                    self.rebuild_ref_picker(CompareField::Right);
                 }
                 PickerKind::Theme => self.rebuild_theme_picker(),
             },
@@ -1950,7 +1952,7 @@ impl AppState {
                 String::new()
             },
             value: name.clone(),
-            highlight: None,
+            highlights: Vec::new(),
             icon: None,
             section_header: false,
         };
@@ -1958,7 +1960,7 @@ impl AppState {
             label: label.to_owned(),
             detail: String::new(),
             value: String::new(),
-            highlight: None,
+            highlights: Vec::new(),
             icon: None,
             section_header: true,
         };
@@ -2018,7 +2020,7 @@ impl AppState {
                 sort: false,
                 ..Default::default()
             };
-            let mut matches = neo_frizbee::match_list(&query, &haystack, &config);
+            let mut matches = neo_frizbee::match_list_indices(&query, &haystack, &config);
             matches.sort_by(|a, b| b.score.cmp(&a.score));
             self.overlays.picker.entries = matches
                 .iter()
@@ -2032,7 +2034,7 @@ impl AppState {
                             String::new()
                         },
                         value: name.clone(),
-                        highlight: None,
+                        highlights: highlight_ranges_from_match_indices(name, &m.indices),
                         icon: None,
                         section_header: false,
                     }
@@ -2040,6 +2042,12 @@ impl AppState {
                 .collect();
             self.overlays.picker.selected_index = 0;
         }
+        let entry_count = self.overlays.picker.entries.len();
+        self.overlays.picker.list.viewport_height_px = self
+            .overlays
+            .picker
+            .list
+            .viewport_for_max_rows(Sz::PICKER_MAX_ROWS, entry_count);
         self.overlays.picker.list.scroll_top_px = 0;
     }
 
@@ -2064,6 +2072,7 @@ impl AppState {
     fn open_command_palette(&mut self) {
         let scale = self.ui_scale_factor();
         self.overlays.command_palette.list.row_height_px = (Sz::ROW * scale).round() as u32;
+        self.overlays.command_palette.list.gap_px = (Sp::XS * scale).round() as u32;
         self.overlays.command_palette.list.scroll_top_px = 0;
         self.rebuild_command_palette();
         self.push_overlay(
@@ -2358,13 +2367,27 @@ impl AppState {
     }
 
     fn confirm_ref_picker(&mut self, field: CompareField) -> Vec<Effect> {
-        let Some(entry) = self
+        let entry = self
             .overlays
             .picker
             .entries
             .get(self.overlays.picker.selected_index)
             .cloned()
-        else {
+            .or_else(|| {
+                let query = match field {
+                    CompareField::Left => self.compare.left_ref.trim(),
+                    CompareField::Right => self.compare.right_ref.trim(),
+                };
+                (!query.is_empty()).then(|| PickerEntry {
+                    label: query.to_owned(),
+                    detail: "Use typed ref".to_owned(),
+                    value: query.to_owned(),
+                    highlights: vec![(0, query.len())],
+                    icon: None,
+                    section_header: false,
+                })
+            });
+        let Some(entry) = entry else {
             return Vec::new();
         };
         if let Some(ref store) = self.frecency {
@@ -2476,10 +2499,13 @@ impl AppState {
                 .max(first_selectable)
                 .min(self.overlays.picker.entries.len().saturating_sub(1))
         };
-        self.overlays
+        let entry_count = self.overlays.picker.entries.len();
+        self.overlays.picker.list.viewport_height_px = self
+            .overlays
             .picker
             .list
-            .clamp_scroll(self.overlays.picker.entries.len());
+            .viewport_for_max_rows(Sz::PICKER_MAX_ROWS, entry_count);
+        self.overlays.picker.list.clamp_scroll(entry_count);
     }
 
     fn rebuild_repo_picker_recent(&mut self, query: &str) {
@@ -2500,7 +2526,7 @@ impl AppState {
                 label: "Recent".to_owned(),
                 detail: String::new(),
                 value: String::new(),
-                highlight: None,
+                highlights: Vec::new(),
                 icon: None,
                 section_header: true,
             });
@@ -2518,7 +2544,7 @@ impl AppState {
                         .to_owned(),
                     detail: display.clone(),
                     value: repo.display().to_string(),
-                    highlight: None,
+                    highlights: Vec::new(),
                     icon: Some(if is_git {
                         lucide::FOLDER_GIT
                     } else {
@@ -2538,7 +2564,7 @@ impl AppState {
                 sort: false,
                 ..Default::default()
             };
-            let mut matches = neo_frizbee::match_list(query, &haystack_refs, &config);
+            let mut matches = neo_frizbee::match_list_indices(query, &haystack_refs, &config);
             matches.sort_by(|a, b| b.score.cmp(&a.score));
             if matches.is_empty() {
                 entries.clear();
@@ -2551,14 +2577,14 @@ impl AppState {
                     .and_then(|name| name.to_str())
                     .unwrap_or(display)
                     .to_owned();
-                let hl =
-                    compute_highlight_range(m.match_end_col as usize, query.len(), label.len());
+                let highlights =
+                    highlight_ranges_for_visible_match(query, &label, &m.indices, &config);
                 let is_git = repo.join(".git").exists();
                 entries.push(PickerEntry {
                     label,
                     detail: display.clone(),
                     value: repo.display().to_string(),
-                    highlight: Some(hl),
+                    highlights,
                     icon: Some(if is_git {
                         lucide::FOLDER_GIT
                     } else {
@@ -2592,7 +2618,7 @@ impl AppState {
                 detail: String::new(),
                 value: format!("open:{}", dir.display()),
                 icon: Some(lucide::CORNER_UP_LEFT),
-                highlight: None,
+                highlights: Vec::new(),
                 section_header: false,
             });
         }
@@ -2606,7 +2632,7 @@ impl AppState {
                     .map(|p| p.display().to_string())
                     .unwrap_or_default(),
                 icon: Some(lucide::CORNER_UP_LEFT),
-                highlight: None,
+                highlights: Vec::new(),
                 section_header: false,
             });
         }
@@ -2635,7 +2661,7 @@ impl AppState {
                     label: name.clone(),
                     detail: String::new(),
                     value: path.display().to_string(),
-                    highlight: None,
+                    highlights: Vec::new(),
                     icon: Some(if *is_git {
                         lucide::FOLDER_GIT
                     } else {
@@ -2651,17 +2677,15 @@ impl AppState {
                 sort: false,
                 ..Default::default()
             };
-            let mut matches = neo_frizbee::match_list(filter, &haystack, &config);
+            let mut matches = neo_frizbee::match_list_indices(filter, &haystack, &config);
             matches.sort_by(|a, b| b.score.cmp(&a.score));
             for m in matches {
                 let (name, path, is_git) = &dirs[m.index as usize];
-                let hl =
-                    compute_highlight_range(m.match_end_col as usize, filter.len(), name.len());
                 entries.push(PickerEntry {
                     label: name.clone(),
                     detail: String::new(),
                     value: path.display().to_string(),
-                    highlight: Some(hl),
+                    highlights: highlight_ranges_from_match_indices(name, &m.indices),
                     icon: Some(if *is_git {
                         lucide::FOLDER_GIT
                     } else {
@@ -2717,27 +2741,25 @@ impl AppState {
             if branch.is_head {
                 detail.push_str(" \u{2022} HEAD");
             }
-            push(
-                format!("{scope} {}", branch.name),
-                branch.name.clone(),
-                detail,
-                branch.name.clone(),
-            );
+            let label = branch.name.clone();
+            push(format!("{label} {detail}"), label.clone(), detail, label);
         }
 
         for tag in &self.repository.tags {
+            let label = tag.name.clone();
             push(
-                format!("tag {}", tag.name),
-                tag.name.clone(),
+                format!("{label} Tag"),
+                label.clone(),
                 "Tag".to_owned(),
-                tag.name.clone(),
+                label,
             );
         }
 
         for commit in &self.repository.commits {
+            let label = commit.short_oid.clone();
             push(
-                format!("commit {} {}", commit.short_oid, commit.summary),
-                commit.short_oid.clone(),
+                format!("{label} {} {}", commit.summary, commit.oid),
+                label,
                 commit.summary.clone(),
                 commit.oid.clone(),
             );
@@ -2751,7 +2773,7 @@ impl AppState {
                     label: c.label,
                     detail: c.detail,
                     value: c.value,
-                    highlight: None,
+                    highlights: Vec::new(),
                     icon: None,
                     section_header: false,
                 })
@@ -2766,16 +2788,11 @@ impl AppState {
                 sort: false,
                 ..Default::default()
             };
-            let matches = neo_frizbee::match_list(query, &haystack, &config);
+            let matches = neo_frizbee::match_list_indices(query, &haystack, &config);
             let mut scored: Vec<_> = matches
                 .into_iter()
                 .map(|m| {
                     let c = &all_candidates[m.index as usize];
-                    let hl = compute_highlight_range(
-                        m.match_end_col as usize,
-                        query.len(),
-                        c.label.len(),
-                    );
                     (
                         m.score,
                         c.ordinal,
@@ -2783,7 +2800,12 @@ impl AppState {
                             label: c.label.clone(),
                             detail: c.detail.clone(),
                             value: c.value.clone(),
-                            highlight: Some(hl),
+                            highlights: highlight_ranges_for_visible_match(
+                                query,
+                                &c.label,
+                                &m.indices,
+                                &config,
+                            ),
                             icon: None,
                             section_header: false,
                         },
@@ -2800,17 +2822,40 @@ impl AppState {
                 .map(|(_, _, entry)| entry)
                 .take(10)
                 .collect();
+            if !self
+                .overlays
+                .picker
+                .entries
+                .iter()
+                .any(|entry| entry.value == query)
+            {
+                self.overlays.picker.entries.insert(
+                    0,
+                    PickerEntry {
+                        label: query.to_owned(),
+                        detail: "Use typed ref".to_owned(),
+                        value: query.to_owned(),
+                        highlights: vec![(0, query.len())],
+                        icon: None,
+                        section_header: false,
+                    },
+                );
+            }
         }
 
+        self.overlays.picker.entries.truncate(10);
         self.overlays.picker.selected_index = self
             .overlays
             .picker
             .selected_index
             .min(self.overlays.picker.entries.len().saturating_sub(1));
-        self.overlays
+        let entry_count = self.overlays.picker.entries.len();
+        self.overlays.picker.list.viewport_height_px = self
+            .overlays
             .picker
             .list
-            .clamp_scroll(self.overlays.picker.entries.len());
+            .viewport_for_max_rows(Sz::PICKER_MAX_ROWS, entry_count);
+        self.overlays.picker.list.clamp_scroll(entry_count);
     }
 
     fn rebuild_command_palette(&mut self) {
@@ -2941,7 +2986,7 @@ impl AppState {
                     label: c.label,
                     detail: c.detail,
                     kind: c.kind,
-                    highlight: None,
+                    highlights: Vec::new(),
                 })
                 .collect();
         } else {
@@ -2954,23 +2999,23 @@ impl AppState {
                 sort: false,
                 ..Default::default()
             };
-            let matches = neo_frizbee::match_list(query, &haystack, &config);
+            let matches = neo_frizbee::match_list_indices(query, &haystack, &config);
             let mut scored: Vec<_> = matches
                 .into_iter()
                 .map(|m| {
                     let c = &all_candidates[m.index as usize];
-                    let hl = compute_highlight_range(
-                        m.match_end_col as usize,
-                        query.len(),
-                        c.label.len(),
-                    );
                     (
                         m.score,
                         PaletteEntry {
                             label: c.label.clone(),
                             detail: c.detail.clone(),
                             kind: c.kind.clone(),
-                            highlight: Some(hl),
+                            highlights: highlight_ranges_for_visible_match(
+                                query,
+                                &c.label,
+                                &m.indices,
+                                &config,
+                            ),
                         },
                     )
                 })
@@ -3067,7 +3112,11 @@ impl AppState {
 
     fn scroll_active_overlay_list_px(&mut self, delta_px: i32) {
         match self.overlays.top() {
-            Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_)) => {
+            Some(
+                OverlaySurface::RepoPicker
+                | OverlaySurface::RefPicker(_)
+                | OverlaySurface::ThemePicker,
+            ) => {
                 self.overlays
                     .picker
                     .list
@@ -3441,14 +3490,60 @@ fn next_word_boundary(text: &str, offset: usize) -> usize {
     pos
 }
 
-fn compute_highlight_range(
-    match_end_col: usize,
-    query_len: usize,
-    label_len: usize,
-) -> (usize, usize) {
-    let end = match_end_col.min(label_len);
-    let start = end.saturating_sub(query_len);
-    (start, end)
+fn highlight_ranges_from_match_indices(text: &str, indices_rev: &[usize]) -> Vec<(usize, usize)> {
+    let len = text.len();
+    let mut indices: Vec<usize> = indices_rev
+        .iter()
+        .copied()
+        .filter(|&idx| idx < len && text.is_char_boundary(idx))
+        .collect();
+    indices.sort_unstable();
+
+    let mut ranges = Vec::new();
+    for index in indices {
+        let mut end = index + 1;
+        while end < len && !text.is_char_boundary(end) {
+            end += 1;
+        }
+        if let Some((_, last_end)) = ranges.last_mut() {
+            if index <= *last_end {
+                *last_end = (*last_end).max(end);
+                continue;
+            }
+        }
+        ranges.push((index, end));
+    }
+    ranges
+}
+
+fn highlight_ranges_for_prefix_match(text: &str, indices_rev: &[usize]) -> Vec<(usize, usize)> {
+    let prefix_indices: Vec<usize> = indices_rev
+        .iter()
+        .copied()
+        .filter(|&idx| idx < text.len())
+        .collect();
+    highlight_ranges_from_match_indices(text, &prefix_indices)
+}
+
+fn highlight_ranges_for_visible_match(
+    query: &str,
+    visible_text: &str,
+    search_indices_rev: &[usize],
+    config: &neo_frizbee::Config,
+) -> Vec<(usize, usize)> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+
+    let visible_only = [visible_text];
+    if let Some(m) = neo_frizbee::match_list_indices(query, &visible_only, config)
+        .into_iter()
+        .next()
+    {
+        return highlight_ranges_from_match_indices(visible_text, &m.indices);
+    }
+
+    highlight_ranges_for_prefix_match(visible_text, search_indices_rev)
 }
 
 fn query_looks_like_path(query: &str) -> bool {
@@ -3493,7 +3588,9 @@ fn split_browse_query(expanded: &str) -> (String, &str) {
 mod tests {
     use clap::Parser;
 
-    use super::{AppState, FileListEntry, FocusTarget, OverlaySurface, WorkspaceMode};
+    use super::{
+        AppState, CompareField, FileListEntry, FocusTarget, OverlaySurface, WorkspaceMode,
+    };
     use crate::core::compare::{CompareMode, CompareOutput, LayoutMode, RendererKind};
     use crate::core::diff::{DiffLine, FileDiff, Hunk, LineKind};
     use crate::platform::persistence::Settings;
@@ -3749,7 +3846,7 @@ mod tests {
                 label: format!("repo-{index}"),
                 detail: format!("C:\\repo-{index}"),
                 value: format!("C:\\repo-{index}"),
-                highlight: None,
+                highlights: Vec::new(),
                 icon: None,
                 section_header: false,
             })
@@ -3764,6 +3861,61 @@ mod tests {
 
         state.apply_action(Action::ScrollActiveOverlayListPx(-1_000));
         assert_eq!(state.overlays.picker.list.scroll_top_px, 0);
+    }
+
+    #[test]
+    fn ref_picker_rebuilds_matches_while_typing_and_keeps_raw_git_revisions_selectable() {
+        let mut state = AppState::default();
+        state.repository.branches = vec![crate::core::vcs::git::BranchInfo {
+            name: "main".to_owned(),
+            is_remote: false,
+            is_head: true,
+        }];
+
+        state.open_ref_picker(CompareField::Left);
+        state.apply_action(Action::InsertText("mai".to_owned()));
+
+        let branch_entry = state
+            .overlays
+            .picker
+            .entries
+            .iter()
+            .find(|entry| entry.value == "main")
+            .expect("main branch entry");
+        assert_eq!(branch_entry.highlights, vec![(0, 3)]);
+
+        let mut state = AppState::default();
+        state.open_ref_picker(CompareField::Left);
+        state.apply_action(Action::InsertText("HEAD~2".to_owned()));
+
+        let typed_entry = state
+            .overlays
+            .picker
+            .entries
+            .first()
+            .expect("typed ref entry");
+        assert_eq!(typed_entry.value, "HEAD~2");
+        assert_eq!(typed_entry.highlights, vec![(0, "HEAD~2".len())]);
+
+        state.apply_action(Action::ConfirmOverlaySelection);
+        assert_eq!(state.compare.left_ref, "HEAD~2");
+    }
+
+    #[test]
+    fn command_palette_uses_actual_match_indices_for_highlighting() {
+        let mut state = AppState::default();
+        state.overlays.command_palette.query = "them".to_owned();
+
+        state.rebuild_command_palette();
+
+        let change_theme = state
+            .overlays
+            .command_palette
+            .entries
+            .iter()
+            .find(|entry| entry.label == "Change Theme")
+            .expect("Change Theme entry");
+        assert_eq!(change_theme.highlights, vec![(7, 11)]);
     }
 
     #[test]

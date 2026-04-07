@@ -171,7 +171,12 @@ impl NativeApp {
         let margin = (Sp::XS * scale).round();
         let x = self.tooltip_state.x.min(window_w - w - margin).max(margin);
         let y = (self.tooltip_state.y + gap).min(window_h - h - margin);
-        let rect = Rect { x, y, width: w, height: h };
+        let rect = Rect {
+            x,
+            y,
+            width: w,
+            height: h,
+        };
         let scene = &mut self.ui_frame.scene;
 
         scene.push_z_index(500);
@@ -708,16 +713,14 @@ impl NativeApp {
 
     fn active_overlay_row_height_px(&self) -> f32 {
         match self.state.overlays.top() {
-            Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_)) => {
-                self.state.overlays.picker.list.row_height_px.max(1) as f32
+            Some(
+                OverlaySurface::RepoPicker
+                | OverlaySurface::RefPicker(_)
+                | OverlaySurface::ThemePicker,
+            ) => self.state.overlays.picker.list.stride_px().max(1) as f32,
+            Some(OverlaySurface::CommandPalette) => {
+                self.state.overlays.command_palette.list.stride_px().max(1) as f32
             }
-            Some(OverlaySurface::CommandPalette) => self
-                .state
-                .overlays
-                .command_palette
-                .list
-                .row_height_px
-                .max(1) as f32,
             _ => 36.0,
         }
     }
@@ -1169,7 +1172,11 @@ impl ApplicationHandler for NativeApp {
         }
 
         let tooltip_was_visible = self.tooltip_state.visible;
-        let now_ms = self.launch_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        let now_ms = self
+            .launch_at
+            .elapsed()
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64;
         self.tooltip_state.tick(now_ms);
         let tooltip_changed = self.tooltip_state.visible != tooltip_was_visible;
 
@@ -1188,8 +1195,7 @@ impl ApplicationHandler for NativeApp {
                 .state
                 .next_toast_expiry_at_ms()
                 .map(|ms| self.launch_at + std::time::Duration::from_millis(ms));
-            let next_tooltip = if !self.tooltip_state.text.is_empty()
-                && !self.tooltip_state.visible
+            let next_tooltip = if !self.tooltip_state.text.is_empty() && !self.tooltip_state.visible
             {
                 Some(
                     self.launch_at
@@ -1213,7 +1219,11 @@ impl ApplicationHandler for NativeApp {
         }
 
         if let Some(window) = self.window.as_ref()
-            && (self.needs_redraw || animating || cursor_blink_changed || toasts_changed || tooltip_changed)
+            && (self.needs_redraw
+                || animating
+                || cursor_blink_changed
+                || toasts_changed
+                || tooltip_changed)
         {
             window.request_redraw();
         }

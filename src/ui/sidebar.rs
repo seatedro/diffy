@@ -507,10 +507,14 @@ pub(crate) fn sidebar(
                     .gap(Sp::SM * scale)
                     .overflow_hidden()
                     .min_w(0.0)
-                    .child(div().flex_shrink_0().child(text(filename).text_sm().color(text_color)))
-                    .optional_child(dir_path.map(|p| {
-                        text(p).text_xs().color(tc.text_muted).truncate()
-                    })),
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .child(text(filename).text_sm().color(text_color)),
+                    )
+                    .optional_child(
+                        dir_path.map(|p| text(p).text_xs().color(tc.text_muted).truncate()),
+                    ),
             );
 
             if file.additions > 0 || file.deletions > 0 {

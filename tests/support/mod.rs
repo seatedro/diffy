@@ -103,7 +103,7 @@ pub fn repo_picker_state(entry_count: usize) -> AppState {
                 label: format!("repo-{index}"),
                 detail: format!("C:\\work\\repo-{index}"),
                 value: format!("C:\\work\\repo-{index}"),
-                highlight: None,
+                highlights: Vec::new(),
                 icon: None,
                 section_header: false,
             })
@@ -136,7 +136,7 @@ pub fn command_palette_state(entry_count: usize) -> AppState {
                 } else {
                     PaletteCommand::FocusViewport
                 }),
-                highlight: None,
+                highlights: Vec::new(),
             })
             .collect(),
         selected_index: entry_count.saturating_sub(1).min(3),

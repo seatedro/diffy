@@ -42,6 +42,9 @@ pub fn picker_list<T: PickerItem>(
         .overflow_hidden()
         .scroll_y(scroll)
         .scroll_total(total_h)
+        .on_scroll(ScrollActionBuilder::Custom(
+            Action::ScrollActiveOverlayListPx,
+        ))
         .hide_scrollbar();
 
     for (i, entry) in entries.iter().enumerate() {
@@ -75,7 +78,7 @@ pub fn picker_list<T: PickerItem>(
                 )
                 .child(picker_label(
                     entry.label(),
-                    entry.highlight_range(),
+                    entry.highlight_ranges(),
                     selected,
                     theme,
                 ))
@@ -93,7 +96,7 @@ pub fn picker_list<T: PickerItem>(
 
 fn picker_label(
     label_text: &str,
-    highlight: Option<(usize, usize)>,
+    highlights: &[(usize, usize)],
     selected: bool,
     theme: &Theme,
 ) -> Div {
@@ -102,24 +105,25 @@ fn picker_label(
 
     let container = div().flex_1().overflow_hidden();
 
-    match highlight {
-        Some((start, end)) if start < end && end <= label_text.len() => {
-            let before = &label_text[..start];
-            let matched = &label_text[start..end];
-            let after = &label_text[end..];
-            let row = view! {
-                <div class="flex-row overflow-hidden">
-                    if !before.is_empty() {
-                        <text class="text-sm" color={base_color}>{before}</text>
-                    }
-                    <text class="text-sm" color={tc.accent}>{matched}</text>
-                    if !after.is_empty() {
-                        <text class="text-sm" color={base_color}>{after}</text>
-                    }
-                </div>
-            };
-            container.child(row)
-        }
-        _ => container.child(text(label_text).text_sm().color(base_color).truncate()),
+    if highlights.is_empty() {
+        return container.child(text(label_text).text_sm().color(base_color).truncate());
     }
+
+    let mut row = div().flex_row().overflow_hidden();
+    let mut cursor = 0;
+    for &(start, end) in highlights {
+        if start >= end || end > label_text.len() {
+            continue;
+        }
+        if cursor < start {
+            row = row.child(text(&label_text[cursor..start]).text_sm().color(base_color));
+        }
+        row = row.child(text(&label_text[start..end]).text_sm().color(tc.accent));
+        cursor = end;
+    }
+    if cursor < label_text.len() {
+        row = row.child(text(&label_text[cursor..]).text_sm().color(base_color));
+    }
+
+    container.child(row)
 }

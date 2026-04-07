@@ -1730,7 +1730,6 @@ impl RowTone {
             Self::ModifiedNew => theme.colors.text_strong,
         }
     }
-
 }
 
 fn compute_scrollbar_layout(layout: &EditorLayout, state: &EditorState) -> Option<ScrollbarLayout> {
@@ -1907,7 +1906,6 @@ fn tone_for_right_side(kind: RenderRowKind) -> RowTone {
         _ => RowTone::Neutral,
     }
 }
-
 
 fn wrap_cols_for_width(
     wrap_enabled: bool,

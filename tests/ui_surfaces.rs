@@ -126,6 +126,10 @@ fn repo_picker_exposes_input_entries_and_scroll_surface() {
 
     assert!(scene_contains_text(&frame, "repo-0"));
     assert!(has_text_input_for(&frame, FocusTarget::PickerInput));
+    assert!(has_scroll_region(&frame, |builder| matches!(
+        builder,
+        ScrollActionBuilder::Custom(_)
+    )));
     assert!(has_hit(&frame, |action| matches!(
         action,
         Action::SelectOverlayEntry(0)
@@ -138,6 +142,10 @@ fn command_palette_exposes_input_entries_and_scroll_surface() {
     let frame = render_frame(&mut state);
 
     assert!(has_text_input_for(&frame, FocusTarget::CommandPaletteInput));
+    assert!(has_scroll_region(&frame, |builder| matches!(
+        builder,
+        ScrollActionBuilder::Custom(_)
+    )));
     assert!(has_hit(&frame, |action| matches!(
         action,
         Action::SelectOverlayEntry(_)

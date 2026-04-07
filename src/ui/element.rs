@@ -1340,10 +1340,7 @@ impl Element for Div {
         }
 
         if let Some(tip) = self.tooltip.take() {
-            cx.tooltip_regions.push(TooltipRegion {
-                bounds,
-                text: tip,
-            });
+            cx.tooltip_regions.push(TooltipRegion { bounds, text: tip });
         }
 
         if self.clips {
@@ -1380,7 +1377,11 @@ impl Element for Div {
                 0.0
             };
 
-            scene.rounded_rect(RoundedRectPrimitive::uniform(track, 4.0, Color::rgba(128, 128, 128, 10)));
+            scene.rounded_rect(RoundedRectPrimitive::uniform(
+                track,
+                4.0,
+                Color::rgba(128, 128, 128, 10),
+            ));
 
             scene.rounded_rect(RoundedRectPrimitive::uniform(
                 Rect {

@@ -104,10 +104,17 @@ fn lookup_filename(name: &str) -> Option<&'static str> {
         "gemfile" | "rakefile" => sym::RUBY,
         "go.mod" | "go.sum" => sym::GO,
         ".gitignore" | ".gitattributes" | ".gitmodules" => sym::GIT,
-        ".eslintrc" | ".eslintrc.js" | ".eslintrc.json" | "eslint.config.js" | "eslint.config.ts" | "eslint.config.mjs" => sym::ESLINT,
-        ".prettierrc" | ".prettierrc.js" | ".prettierrc.json" | "prettier.config.js" | "prettier.config.mjs" => sym::PRETTIER,
+        ".eslintrc" | ".eslintrc.js" | ".eslintrc.json" | "eslint.config.js"
+        | "eslint.config.ts" | "eslint.config.mjs" => sym::ESLINT,
+        ".prettierrc"
+        | ".prettierrc.js"
+        | ".prettierrc.json"
+        | "prettier.config.js"
+        | "prettier.config.mjs" => sym::PRETTIER,
         ".babelrc" | "babel.config.js" | "babel.config.json" => sym::BABEL,
-        "docker-compose.yml" | "docker-compose.yaml" | "compose.yml" | "compose.yaml" => sym::DOCKER,
+        "docker-compose.yml" | "docker-compose.yaml" | "compose.yml" | "compose.yaml" => {
+            sym::DOCKER
+        }
         "yarn.lock" => sym::YARN,
         "pnpm-lock.yaml" | ".pnpmfile.cjs" => sym::PNPM,
         "bun.lockb" | "bunfig.toml" => sym::BUN,
@@ -194,7 +201,11 @@ impl RenderOnce for FileIcon {
     fn render(self, cx: &ElementContext) -> AnyElement {
         let tc = &cx.theme.colors;
         let icon_svg = resolve_file_icon(&self.path);
-        let color = if self.selected { tc.text } else { tc.text_muted };
+        let color = if self.selected {
+            tc.text
+        } else {
+            tc.text_muted
+        };
 
         view! {
             <icon svg={icon_svg} size={self.size} color={color} />

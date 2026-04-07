@@ -12,9 +12,7 @@ use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::{CompareMode, CompareSpec};
 use crate::core::diff::{DiffLine, FileDiff, Hunk, LineKind};
 use crate::core::error::{DiffyError, Result};
-use crate::core::text::{
-    ChangeIntensity, DiffTokenSpan, SyntaxTokenKind, TextBuffer, TokenBuffer,
-};
+use crate::core::text::{ChangeIntensity, DiffTokenSpan, SyntaxTokenKind, TextBuffer, TokenBuffer};
 use crate::core::vcs::git::{GitService, WORKDIR_REF};
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -235,8 +233,10 @@ fn convert_semantic_result(
         }
 
         if !hunk.lines.is_empty() {
-            let computed_old_start = old_start.unwrap_or_else(|| new_start.unwrap_or(0).saturating_sub(1));
-            let computed_new_start = new_start.unwrap_or_else(|| old_start.unwrap_or(0).saturating_sub(1));
+            let computed_old_start =
+                old_start.unwrap_or_else(|| new_start.unwrap_or(0).saturating_sub(1));
+            let computed_new_start =
+                new_start.unwrap_or_else(|| old_start.unwrap_or(0).saturating_sub(1));
             hunk.old_start = computed_old_start;
             hunk.old_count = old_count;
             hunk.new_start = computed_new_start;
@@ -607,9 +607,15 @@ mod tests {
 
         let removed_tokens = token_buffer.view(file.hunks[0].lines[0].change_tokens);
         assert_eq!(removed_tokens.len(), 3);
-        assert_eq!(removed_tokens[0].intensity, ChangeIntensity::UnchangedContext);
+        assert_eq!(
+            removed_tokens[0].intensity,
+            ChangeIntensity::UnchangedContext
+        );
         assert_eq!(removed_tokens[1].intensity, ChangeIntensity::NovelWord);
-        assert_eq!(removed_tokens[2].intensity, ChangeIntensity::UnchangedContext);
+        assert_eq!(
+            removed_tokens[2].intensity,
+            ChangeIntensity::UnchangedContext
+        );
 
         let added_tokens = token_buffer.view(file.hunks[0].lines[1].change_tokens);
         assert_eq!(added_tokens.len(), 1);
@@ -673,20 +679,44 @@ mod tests {
 
     #[test]
     fn highlight_mapping_covers_all_variants() {
-        assert_eq!(map_highlight(HighlightKind::Normal), SyntaxTokenKind::Normal);
-        assert_eq!(map_highlight(HighlightKind::Keyword), SyntaxTokenKind::Keyword);
-        assert_eq!(map_highlight(HighlightKind::String), SyntaxTokenKind::String);
-        assert_eq!(map_highlight(HighlightKind::Comment), SyntaxTokenKind::Comment);
+        assert_eq!(
+            map_highlight(HighlightKind::Normal),
+            SyntaxTokenKind::Normal
+        );
+        assert_eq!(
+            map_highlight(HighlightKind::Keyword),
+            SyntaxTokenKind::Keyword
+        );
+        assert_eq!(
+            map_highlight(HighlightKind::String),
+            SyntaxTokenKind::String
+        );
+        assert_eq!(
+            map_highlight(HighlightKind::Comment),
+            SyntaxTokenKind::Comment
+        );
         assert_eq!(map_highlight(HighlightKind::Type), SyntaxTokenKind::Type);
-        assert_eq!(map_highlight(HighlightKind::Punctuation), SyntaxTokenKind::Punctuation);
-        assert_eq!(map_highlight(HighlightKind::Preprocessor), SyntaxTokenKind::Preprocessor);
+        assert_eq!(
+            map_highlight(HighlightKind::Punctuation),
+            SyntaxTokenKind::Punctuation
+        );
+        assert_eq!(
+            map_highlight(HighlightKind::Preprocessor),
+            SyntaxTokenKind::Preprocessor
+        );
     }
 
     #[test]
     fn intensity_mapping_covers_all_variants() {
         assert_eq!(map_intensity(DftIntensity::Novel), ChangeIntensity::Novel);
-        assert_eq!(map_intensity(DftIntensity::NovelWord), ChangeIntensity::NovelWord);
-        assert_eq!(map_intensity(DftIntensity::UnchangedContext), ChangeIntensity::UnchangedContext);
+        assert_eq!(
+            map_intensity(DftIntensity::NovelWord),
+            ChangeIntensity::NovelWord
+        );
+        assert_eq!(
+            map_intensity(DftIntensity::UnchangedContext),
+            ChangeIntensity::UnchangedContext
+        );
     }
 
     #[test]
@@ -759,21 +789,19 @@ mod tests {
 
     #[test]
     fn change_highlights_align_with_render_doc_text() {
-        use crate::core::syntax::DiffSyntaxAnnotator;
         use super::convert_semantic_result;
+        use crate::core::syntax::DiffSyntaxAnnotator;
 
         let old_src = "fn greet(name: &str) {\n    println!(\"hello {}\", name);\n}\n";
         let new_src = "fn greet(label: &str) {\n    println!(\"hi {}\", label);\n}\n";
 
-        let semantic = vendored_difftastic::diff_bytes_semantic(
-            vendored_difftastic::DiffRequest {
-                display_path: "src/lib.rs",
-                lhs_path: Some(Path::new("src/lib.rs")),
-                rhs_path: Some(Path::new("src/lib.rs")),
-                lhs_bytes: old_src.as_bytes(),
-                rhs_bytes: new_src.as_bytes(),
-            },
-        )
+        let semantic = vendored_difftastic::diff_bytes_semantic(vendored_difftastic::DiffRequest {
+            display_path: "src/lib.rs",
+            lhs_path: Some(Path::new("src/lib.rs")),
+            rhs_path: Some(Path::new("src/lib.rs")),
+            lhs_bytes: old_src.as_bytes(),
+            rhs_bytes: new_src.as_bytes(),
+        })
         .unwrap();
 
         let mut text_buffer = TextBuffer::default();
@@ -790,13 +818,10 @@ mod tests {
 
         DiffSyntaxAnnotator::new().annotate(&mut file, &mut text_buffer, &mut token_buffer);
 
-        let doc = crate::ui::editor::render_doc::build_render_doc(
-            &file, 0, &text_buffer, &token_buffer,
-        );
+        let doc =
+            crate::ui::editor::render_doc::build_render_doc(&file, 0, &text_buffer, &token_buffer);
 
-        use crate::ui::editor::render_doc::{
-            RenderRowKind, STYLE_FLAG_NOVEL_WORD,
-        };
+        use crate::ui::editor::render_doc::{RenderRowKind, STYLE_FLAG_NOVEL_WORD};
 
         for (i, line) in doc.lines.iter().enumerate() {
             if line.row_kind() != RenderRowKind::Modified {

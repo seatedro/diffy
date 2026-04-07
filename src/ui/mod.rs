@@ -8,6 +8,7 @@ pub mod effects;
 pub mod element;
 pub mod events;
 pub mod icons;
+pub mod input;
 pub mod nonicons;
 pub mod overlays;
 pub mod palette;

@@ -4,9 +4,8 @@ use std::time::Instant;
 
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
+use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::app_runtime::{AppRuntime, AppServices};
@@ -16,11 +15,11 @@ use crate::platform::persistence::SettingsStore;
 use crate::platform::startup::StartupOptions;
 use crate::render::Renderer;
 use crate::ui::actions::Action;
-use crate::ui::components::{TooltipSide, TooltipState};
+use crate::ui::components::TooltipState;
 use crate::ui::editor::element::EditorElement;
-use crate::ui::element::{ClickEvent, ClickResult, DragHandler};
-use crate::ui::shell::{CursorHint, UiFrame, build_ui_frame};
-use crate::ui::state::{AppState, FocusTarget, OverlaySurface, WorkspaceMode};
+use crate::ui::input::InputSystem;
+use crate::ui::shell::{UiFrame, build_ui_frame};
+use crate::ui::state::AppState;
 use crate::ui::theme::Theme;
 
 pub fn run() -> Result<(), Box<dyn Error>> {
@@ -62,23 +61,14 @@ struct NativeApp {
     window: Option<Arc<Window>>,
     ui_frame: UiFrame,
     editor: EditorElement,
-    mouse_position: Option<(f32, f32)>,
+    input: InputSystem,
     signal_store: crate::ui::signals::SignalStore,
     ui_signals: crate::ui::ui_signals::UiSignals,
     launch_at: Instant,
     dumps_dirty: bool,
-    modifiers: ModifiersState,
     #[cfg(feature = "capture")]
     capture_pending: Option<std::path::PathBuf>,
-    /// When dragging in a text input, tracks which field is being drag-selected.
-    mouse_drag_target: Option<FocusTarget>,
-    /// Generalized pointer capture — active drag handler from a ClickHandler.
-    pointer_capture: Option<Box<dyn DragHandler>>,
-    file_list_scroll_remainder_px: f32,
-    overlay_scroll_remainder_px: f32,
-    viewport_scroll_remainder_px: f32,
     needs_redraw: bool,
-    pending_g: bool,
     tooltip_state: TooltipState,
 }
 
@@ -104,22 +94,15 @@ impl NativeApp {
             renderer: None,
             window: None,
             ui_frame: UiFrame::default(),
+            input: InputSystem::default(),
             signal_store,
             ui_signals,
             editor: EditorElement::default(),
-            mouse_position: None,
             launch_at: Instant::now(),
             dumps_dirty: true,
-            modifiers: ModifiersState::default(),
             #[cfg(feature = "capture")]
             capture_pending,
-            mouse_drag_target: None,
-            pointer_capture: None,
-            file_list_scroll_remainder_px: 0.0,
-            overlay_scroll_remainder_px: 0.0,
-            viewport_scroll_remainder_px: 0.0,
             needs_redraw: true,
-            pending_g: false,
             tooltip_state: TooltipState::default(),
         }
     }
@@ -331,7 +314,7 @@ impl NativeApp {
             &self.theme,
             scale_factor,
             font_system,
-            self.mouse_position,
+            self.input.mouse_position(),
             &mut self.signal_store,
         )
         .with_focus(self.state.focus.current)
@@ -358,647 +341,15 @@ impl NativeApp {
         self.mark_dirty();
     }
 
-    fn handle_left_click(&mut self, x: f32, y: f32) {
-        if let Some(track) = self
-            .ui_frame
-            .scrollbar_tracks
-            .iter()
-            .rev()
-            .find(|t| t.track_rect.contains(x, y))
-        {
-            let on_thumb = y >= track.thumb_top && y <= track.thumb_top + track.thumb_height;
-            let mut handler = crate::ui::element::ScrollbarDragHandler::new(track, y);
-            if !on_thumb {
-                let actions = handler.on_move(x, y);
-                for action in actions {
-                    self.dispatch_action(action);
-                }
-            }
-            self.pointer_capture = Some(Box::new(handler));
-            return;
+    fn apply_input_outcome(&mut self, outcome: crate::ui::input::InputOutcome) {
+        for action in outcome.actions {
+            self.dispatch_action(action);
         }
-
-        // Check text input hit areas for click-to-position
-        if let Some(hit_area) = self
-            .ui_frame
-            .text_input_hit_areas
-            .iter()
-            .rev()
-            .find(|ha| ha.bounds.contains(x, y))
-        {
-            let target = hit_area.focus_target;
-            let byte_offset = hit_test_text_offset(
-                self.renderer.as_mut().map(|r| r.font_system()),
-                &hit_area.value,
-                hit_area.font_size,
-                x - hit_area.text_x,
-            );
-            // Focus the field and set cursor position
-            self.dispatch_action(Action::SetFocus(Some(target)));
-            self.dispatch_action(Action::SetTextCursor(byte_offset));
-            self.mouse_drag_target = Some(target);
-            return;
+        if !outcome.effects.is_empty() {
+            self.runtime.dispatch_all(outcome.effects);
         }
-
-        if let Some(idx) = self
-            .ui_frame
-            .hits
-            .iter()
-            .enumerate()
-            .rev()
-            .find_map(|(i, hit)| hit.rect.contains(x, y).then_some(i))
-        {
-            let hit = &mut self.ui_frame.hits[idx];
-            if let Some(handler) = hit.on_click.take() {
-                match handler.invoke(ClickEvent { x, y }) {
-                    ClickResult::Handled => {}
-                    ClickResult::Actions(actions) => {
-                        for action in actions {
-                            self.dispatch_action(action);
-                        }
-                    }
-                    ClickResult::CaptureDrag(drag) => {
-                        self.pointer_capture = Some(drag);
-                    }
-                }
-            } else {
-                let action = hit.action.clone();
-                if matches!(action, Action::SelectFile(_)) {
-                    self.dispatch_action(Action::SetFocus(Some(FocusTarget::FileList)));
-                }
-                self.dispatch_action(action);
-            }
-            return;
-        }
-
-        if self
-            .ui_frame
-            .viewport_rect
-            .is_some_and(|rect| rect.contains(x, y))
-        {
-            self.dispatch_action(Action::FocusViewport);
-            let hovered = self.editor.hit_test_row(&self.state.editor, x, y);
-            if hovered != self.state.editor.hovered_row {
-                self.dispatch_action(Action::HoverViewportRow(hovered));
-            }
-        }
-    }
-
-    fn handle_cursor_moved(&mut self, x: f32, y: f32) {
-        self.mouse_position = Some((x, y));
-
-        if let Some(ref mut capture) = self.pointer_capture {
-            let actions = capture.on_move(x, y);
-            for action in actions {
-                self.dispatch_action(action);
-            }
-        }
-
-        if let Some(drag_target) = self.mouse_drag_target {
-            if let Some(hit_area) = self
-                .ui_frame
-                .text_input_hit_areas
-                .iter()
-                .find(|ha| ha.focus_target == drag_target)
-            {
-                let byte_offset = hit_test_text_offset(
-                    self.renderer.as_mut().map(|r| r.font_system()),
-                    &hit_area.value,
-                    hit_area.font_size,
-                    x - hit_area.text_x,
-                );
-                self.dispatch_action(Action::ExtendTextSelection(byte_offset));
-            }
-        }
-
-        let hovered_hit = self
-            .ui_frame
-            .hits
-            .iter()
-            .rev()
-            .find(|hit| hit.rect.contains(x, y));
-        let hovered_file = hovered_hit.and_then(|hit| match &hit.action {
-            Action::SelectFile(i) => Some(*i),
-            _ => None,
-        });
-        let hovered_toast = hovered_hit.and_then(|hit| match &hit.action {
-            Action::DismissToast(i) => Some(*i),
-            _ => None,
-        });
-        let cursor_hint = hovered_hit
-            .map(|hit| hit.cursor)
-            .unwrap_or(CursorHint::Default);
-        let cursor_hint = if let Some(ref capture) = self.pointer_capture {
-            capture.cursor()
-        } else {
-            cursor_hint
-        };
-
-        if hovered_file != self.state.file_list.hovered_index {
-            self.dispatch_action(Action::HoverFile(hovered_file));
-        }
-        let current_hovered_toast = self.state.toasts.iter().position(|toast| toast.hovered);
-        if hovered_toast != current_hovered_toast {
-            self.dispatch_action(Action::HoverToast(hovered_toast));
-        }
-
-        let hovered_row = if self.input_is_blocked_by_overlay(x, y) {
-            None
-        } else {
-            self.editor.hit_test_row(&self.state.editor, x, y)
-        };
-        if hovered_row != self.state.editor.hovered_row {
-            self.dispatch_action(Action::HoverViewportRow(hovered_row));
-        }
-
-        let now_ms = self.launch_at.elapsed().as_millis() as u64;
-        let hovered_tooltip = self
-            .ui_frame
-            .tooltip_regions
-            .iter()
-            .rev()
-            .find(|r| r.bounds.contains(x, y));
-        if let Some(region) = hovered_tooltip {
-            if self.tooltip_state.text != region.text {
-                self.tooltip_state.show(
-                    &region.text,
-                    x,
-                    region.bounds.y + region.bounds.height,
-                    TooltipSide::Bottom,
-                    500,
-                    now_ms,
-                );
-            }
-        } else {
-            self.tooltip_state.hide();
-        }
-        self.tooltip_state.tick(now_ms);
-
-        if let Some(window) = self.window.as_ref() {
-            let icon = match cursor_hint {
-                CursorHint::Default => winit::window::CursorIcon::Default,
-                CursorHint::Pointer => winit::window::CursorIcon::Pointer,
-                CursorHint::Text => winit::window::CursorIcon::Text,
-                CursorHint::ResizeCol => winit::window::CursorIcon::EwResize,
-            };
-            window.set_cursor(icon);
-        }
-    }
-
-    fn handle_scroll(&mut self, delta: MouseScrollDelta, phase: TouchPhase) {
-        let Some((x, y)) = self.mouse_position else {
-            return;
-        };
-
-        if matches!(phase, TouchPhase::Started | TouchPhase::Cancelled) {
-            self.reset_scroll_remainders();
-        }
-
-        let Some(target) = self.scroll_target_at(x, y) else {
-            return;
-        };
-        let line_step_px = self.scroll_target_line_step_px(&target);
-        let delta_px = scroll_delta_to_px(delta, line_step_px);
-        let rounded_delta_px = match &target {
-            ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::FileList) => {
-                quantize_scroll_delta_px(&mut self.file_list_scroll_remainder_px, delta_px)
-            }
-            ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::Custom(_)) => {
-                quantize_scroll_delta_px(&mut self.overlay_scroll_remainder_px, delta_px)
-            }
-            ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::ViewportLines)
-            | ScrollTarget::ViewportFallback => {
-                quantize_scroll_delta_px(&mut self.viewport_scroll_remainder_px, delta_px)
-            }
-        };
-        if rounded_delta_px != 0 {
-            match target {
-                ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::FileList) => {
-                    self.dispatch_action(Action::ScrollFileListPx(rounded_delta_px));
-                }
-                ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::Custom(build)) => {
-                    self.dispatch_action(build(rounded_delta_px));
-                }
-                ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::ViewportLines)
-                | ScrollTarget::ViewportFallback => {
-                    self.dispatch_action(Action::ScrollViewportPx(rounded_delta_px));
-                }
-            }
-        }
-
-        if matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
-            self.reset_scroll_remainders();
-        }
-    }
-
-    fn cycle_focus(&mut self) {
-        let next = match self.state.overlays.top() {
-            Some(OverlaySurface::CompareSheet) => match self.state.focus.current {
-                Some(FocusTarget::CompareRepoButton) => Some(FocusTarget::CompareLeftRef),
-                Some(FocusTarget::CompareLeftRef) => Some(FocusTarget::CompareRightRef),
-                Some(FocusTarget::CompareRightRef) => Some(FocusTarget::CompareStartButton),
-                _ => Some(FocusTarget::CompareRepoButton),
-            },
-            Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_)) => {
-                match self.state.focus.current {
-                    Some(FocusTarget::PickerInput) => Some(FocusTarget::PickerList),
-                    _ => Some(FocusTarget::PickerInput),
-                }
-            }
-            Some(OverlaySurface::CommandPalette) => match self.state.focus.current {
-                Some(FocusTarget::CommandPaletteInput) => Some(FocusTarget::CommandPaletteList),
-                _ => Some(FocusTarget::CommandPaletteInput),
-            },
-            Some(OverlaySurface::PullRequestModal) => match self.state.focus.current {
-                Some(FocusTarget::PullRequestInput) => Some(FocusTarget::PullRequestConfirm),
-                _ => Some(FocusTarget::PullRequestInput),
-            },
-            Some(OverlaySurface::ThemePicker) => match self.state.focus.current {
-                Some(FocusTarget::PickerInput) => Some(FocusTarget::PickerList),
-                _ => Some(FocusTarget::PickerInput),
-            },
-            Some(OverlaySurface::GitHubAuthModal) => Some(FocusTarget::AuthPrimaryAction),
-            Some(OverlaySurface::KeyboardShortcuts) => None,
-            None => match self.state.focus.current {
-                Some(FocusTarget::FileList) => Some(FocusTarget::Editor),
-                Some(FocusTarget::Editor) => Some(FocusTarget::FileList),
-                Some(FocusTarget::WorkspacePrimaryButton) => Some(FocusTarget::TitleBar),
-                _ => Some(if self.state.workspace_mode == WorkspaceMode::Ready {
-                    FocusTarget::FileList
-                } else {
-                    FocusTarget::WorkspacePrimaryButton
-                }),
-            },
-        };
-        self.dispatch_action(Action::SetFocus(next));
-    }
-
-    fn activate_current_focus(&mut self) {
-        match self.state.overlays.top() {
-            Some(OverlaySurface::CompareSheet) => match self.state.focus.current {
-                Some(FocusTarget::CompareRepoButton) => {
-                    self.dispatch_action(Action::OpenRepoPicker)
-                }
-                Some(FocusTarget::CompareLeftRef) => self
-                    .dispatch_action(Action::OpenRefPicker(crate::ui::state::CompareField::Left)),
-                Some(FocusTarget::CompareRightRef) => self
-                    .dispatch_action(Action::OpenRefPicker(crate::ui::state::CompareField::Right)),
-                _ => self.dispatch_action(Action::StartCompare),
-            },
-            Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_))
-            | Some(OverlaySurface::CommandPalette)
-            | Some(OverlaySurface::ThemePicker) => {
-                self.dispatch_action(Action::ConfirmOverlaySelection);
-            }
-            Some(OverlaySurface::PullRequestModal) => {
-                self.dispatch_action(Action::SubmitPullRequest);
-            }
-            Some(OverlaySurface::GitHubAuthModal) => {
-                if self.state.github.auth.device_flow.is_some() {
-                    self.dispatch_action(Action::OpenDeviceFlowBrowser);
-                } else {
-                    self.dispatch_action(Action::StartGitHubDeviceFlow);
-                }
-            }
-            Some(OverlaySurface::KeyboardShortcuts) => {}
-            None => match self.state.focus.current {
-                Some(FocusTarget::WorkspacePrimaryButton) => {
-                    self.dispatch_action(Action::OpenCompareSheet);
-                }
-                Some(FocusTarget::ThemeToggle) => self.dispatch_action(Action::ToggleThemeMode),
-                _ => {}
-            },
-        }
-    }
-
-    fn is_text_focused(&self) -> bool {
-        self.state.is_text_focused()
-    }
-
-    fn reset_scroll_remainders(&mut self) {
-        self.file_list_scroll_remainder_px = 0.0;
-        self.overlay_scroll_remainder_px = 0.0;
-        self.viewport_scroll_remainder_px = 0.0;
-    }
-
-    fn scroll_target_at(&self, x: f32, y: f32) -> Option<ScrollTarget> {
-        for region in self.ui_frame.scroll_regions.iter().rev() {
-            if region.bounds.contains(x, y) {
-                return Some(ScrollTarget::Region(region.action_builder.clone()));
-            }
-        }
-
-        if self.input_is_blocked_by_overlay(x, y) {
-            return None;
-        }
-
-        self.ui_frame
-            .viewport_rect
-            .filter(|rect| rect.contains(x, y))
-            .map(|_| ScrollTarget::ViewportFallback)
-    }
-
-    fn scroll_target_line_step_px(&self, target: &ScrollTarget) -> f32 {
-        match target {
-            ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::FileList) => {
-                self.state.file_list.row_stride().max(1.0)
-            }
-            ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::Custom(_)) => {
-                self.active_overlay_row_height_px()
-            }
-            ScrollTarget::Region(crate::ui::element::ScrollActionBuilder::ViewportLines)
-            | ScrollTarget::ViewportFallback => self.editor.scroll_line_height_px(),
-        }
-    }
-
-    fn active_overlay_row_height_px(&self) -> f32 {
-        match self.state.overlays.top() {
-            Some(
-                OverlaySurface::RepoPicker
-                | OverlaySurface::RefPicker(_)
-                | OverlaySurface::ThemePicker,
-            ) => self.state.overlays.picker.list.stride_px().max(1) as f32,
-            Some(OverlaySurface::CommandPalette) => {
-                self.state.overlays.command_palette.list.stride_px().max(1) as f32
-            }
-            _ => 36.0,
-        }
-    }
-
-    fn input_is_blocked_by_overlay(&self, x: f32, y: f32) -> bool {
-        self.state.overlays.top().is_some()
-            && self
-                .ui_frame
-                .hits
-                .iter()
-                .rev()
-                .any(|hit| hit.rect.contains(x, y))
-    }
-
-    fn handle_key(&mut self, key: &Key) {
-        let ctrl = self.modifiers.control_key() || self.modifiers.super_key();
-        let shift = self.modifiers.shift_key();
-
-        if !matches!(key, Key::Character(t) if t.as_str() == "g") {
-            self.pending_g = false;
-        }
-
-        if let Key::Character(text) = key {
-            let lower = text.to_ascii_lowercase();
-            if ctrl {
-                match lower.as_str() {
-                    "f" => {
-                        self.dispatch_action(Action::OpenSearch);
-                        return;
-                    }
-                    "p" => {
-                        self.dispatch_action(Action::OpenCommandPalette);
-                        return;
-                    }
-                    "=" | "+" => {
-                        self.dispatch_action(Action::IncreaseUiScale);
-                        return;
-                    }
-                    "-" | "_" => {
-                        self.dispatch_action(Action::DecreaseUiScale);
-                        return;
-                    }
-                    "b" => {
-                        self.dispatch_action(Action::ToggleSidebar);
-                        return;
-                    }
-                    _ => {}
-                }
-            }
-            // Clipboard shortcuts (when text is focused)
-            if ctrl && self.is_text_focused() {
-                match lower.as_str() {
-                    "a" => {
-                        self.dispatch_action(Action::SelectAll);
-                        return;
-                    }
-                    "c" => {
-                        self.dispatch_action(Action::Copy);
-                        return;
-                    }
-                    "x" => {
-                        self.dispatch_action(Action::Cut);
-                        return;
-                    }
-                    "v" => {
-                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                            if let Ok(text) = clipboard.get_text() {
-                                self.dispatch_action(Action::Paste(text));
-                            }
-                        }
-                        return;
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        match key {
-            Key::Named(NamedKey::Escape) => {
-                if self.state.overlays.top().is_some() {
-                    self.dispatch_action(Action::CloseOverlay);
-                } else if self.state.editor.search.open {
-                    self.dispatch_action(Action::CloseSearch);
-                } else if self.state.focus.current == Some(FocusTarget::SidebarSearch) {
-                    self.dispatch_action(Action::ClearSidebarFilter);
-                    self.dispatch_action(Action::SetFocus(None));
-                }
-            }
-            Key::Named(NamedKey::Tab) => {
-                if self.state.overlays.top() == Some(OverlaySurface::RepoPicker) {
-                    self.dispatch_action(Action::TabCompletePickerDir);
-                } else {
-                    self.cycle_focus();
-                }
-            }
-            Key::Named(NamedKey::Enter) => {
-                if self.state.focus.current == Some(FocusTarget::SearchInput) {
-                    if shift {
-                        self.dispatch_action(Action::SearchPrevious);
-                    } else {
-                        self.dispatch_action(Action::SearchNext);
-                    }
-                } else {
-                    self.activate_current_focus();
-                }
-            }
-
-            // Arrow keys: text cursor when text-focused, else overlay/viewport nav
-            Key::Named(NamedKey::ArrowLeft) if self.is_text_focused() => {
-                let action = match (ctrl, shift) {
-                    (true, true) => Action::SelectWordLeft,
-                    (true, false) => Action::CursorWordLeft,
-                    (false, true) => Action::SelectLeft,
-                    (false, false) => Action::CursorLeft,
-                };
-                self.dispatch_action(action);
-            }
-            Key::Named(NamedKey::ArrowRight) if self.is_text_focused() => {
-                let action = match (ctrl, shift) {
-                    (true, true) => Action::SelectWordRight,
-                    (true, false) => Action::CursorWordRight,
-                    (false, true) => Action::SelectRight,
-                    (false, false) => Action::CursorRight,
-                };
-                self.dispatch_action(action);
-            }
-            Key::Named(NamedKey::Home) if self.is_text_focused() => {
-                self.dispatch_action(if shift {
-                    Action::SelectHome
-                } else {
-                    Action::CursorHome
-                });
-            }
-            Key::Named(NamedKey::End) if self.is_text_focused() => {
-                self.dispatch_action(if shift {
-                    Action::SelectEnd
-                } else {
-                    Action::CursorEnd
-                });
-            }
-
-            Key::Named(NamedKey::ArrowDown) => {
-                if self.state.overlays.top().is_some() {
-                    self.dispatch_action(Action::MoveOverlaySelection(1));
-                } else if self.state.focus.current == Some(FocusTarget::Editor) {
-                    self.dispatch_action(Action::ScrollViewportLines(1));
-                } else if self.state.workspace_mode == WorkspaceMode::Ready {
-                    self.dispatch_action(Action::SelectNextFile);
-                }
-            }
-            Key::Named(NamedKey::ArrowUp) => {
-                if self.state.overlays.top().is_some() {
-                    self.dispatch_action(Action::MoveOverlaySelection(-1));
-                } else if self.state.focus.current == Some(FocusTarget::Editor) {
-                    self.dispatch_action(Action::ScrollViewportLines(-1));
-                } else if self.state.workspace_mode == WorkspaceMode::Ready {
-                    self.dispatch_action(Action::SelectPreviousFile);
-                }
-            }
-            Key::Named(NamedKey::PageDown) if self.state.workspace_mode == WorkspaceMode::Ready => {
-                if self.state.focus.current == Some(FocusTarget::Editor) {
-                    self.dispatch_action(Action::ScrollViewportPages(1));
-                } else {
-                    self.dispatch_action(Action::ScrollFileList(10));
-                }
-            }
-            Key::Named(NamedKey::PageUp) if self.state.workspace_mode == WorkspaceMode::Ready => {
-                if self.state.focus.current == Some(FocusTarget::Editor) {
-                    self.dispatch_action(Action::ScrollViewportPages(-1));
-                } else {
-                    self.dispatch_action(Action::ScrollFileList(-10));
-                }
-            }
-            Key::Named(NamedKey::Home) if self.state.workspace_mode == WorkspaceMode::Ready => {
-                self.dispatch_action(Action::ScrollViewportTo(0));
-            }
-            Key::Named(NamedKey::End) if self.state.workspace_mode == WorkspaceMode::Ready => {
-                self.dispatch_action(Action::ScrollViewportTo(
-                    self.state.editor.max_scroll_top_px(),
-                ));
-            }
-            Key::Named(NamedKey::Backspace) => self.dispatch_action(Action::Backspace),
-            Key::Named(NamedKey::Delete) => self.dispatch_action(Action::DeleteForward),
-            Key::Character(text) => {
-                if !ctrl && !text.chars().all(char::is_control) {
-                    if text.as_str() == "?" && !self.is_text_focused() {
-                        self.dispatch_action(Action::ShowKeyboardShortcuts);
-                        return;
-                    }
-                    let viewport_nav = !self.is_text_focused()
-                        && self.state.overlays.top().is_none()
-                        && self.state.workspace_mode == WorkspaceMode::Ready;
-                    if viewport_nav {
-                        match text.as_str() {
-                            "/" => {
-                                self.dispatch_action(Action::SetFocus(Some(
-                                    FocusTarget::SidebarSearch,
-                                )));
-                                return;
-                            }
-                            "]" => {
-                                self.dispatch_action(Action::GoToNextHunk);
-                                return;
-                            }
-                            "[" => {
-                                self.dispatch_action(Action::GoToPreviousHunk);
-                                return;
-                            }
-                            "n" => {
-                                self.dispatch_action(Action::GoToNextFile);
-                                return;
-                            }
-                            "N" => {
-                                self.dispatch_action(Action::GoToPreviousFile);
-                                return;
-                            }
-                            "j" => {
-                                self.dispatch_action(Action::ScrollViewportLines(1));
-                                return;
-                            }
-                            "k" => {
-                                self.dispatch_action(Action::ScrollViewportLines(-1));
-                                return;
-                            }
-                            "d" => {
-                                self.dispatch_action(Action::ScrollViewportHalfPage(1));
-                                return;
-                            }
-                            "u" => {
-                                self.dispatch_action(Action::ScrollViewportHalfPage(-1));
-                                return;
-                            }
-                            "G" => {
-                                self.dispatch_action(Action::ScrollViewportTo(
-                                    self.state.editor.max_scroll_top_px(),
-                                ));
-                                return;
-                            }
-                            "g" => {
-                                if self.pending_g {
-                                    self.pending_g = false;
-                                    self.dispatch_action(Action::ScrollViewportTo(0));
-                                } else {
-                                    self.pending_g = true;
-                                }
-                                return;
-                            }
-                            "1" => {
-                                self.dispatch_action(Action::SetLayoutMode(
-                                    crate::core::compare::LayoutMode::Unified,
-                                ));
-                                return;
-                            }
-                            "2" => {
-                                self.dispatch_action(Action::SetLayoutMode(
-                                    crate::core::compare::LayoutMode::Split,
-                                ));
-                                return;
-                            }
-                            "w" => {
-                                self.dispatch_action(Action::ToggleWrap);
-                                return;
-                            }
-                            " " => {
-                                if shift {
-                                    self.dispatch_action(Action::ScrollViewportPages(-1));
-                                } else {
-                                    self.dispatch_action(Action::ScrollViewportPages(1));
-                                }
-                                return;
-                            }
-                            _ => {}
-                        }
-                    }
-                    self.dispatch_action(Action::InsertText(text.to_string()));
-                }
-            }
-            _ => {}
+        if outcome.dirty {
+            self.mark_dirty();
         }
     }
 
@@ -1067,9 +418,6 @@ impl ApplicationHandler for NativeApp {
                 }
                 self.mark_dirty();
             }
-            WindowEvent::ModifiersChanged(modifiers) => {
-                self.modifiers = modifiers.state();
-            }
             WindowEvent::RedrawRequested => {
                 let frame_started_at = Instant::now();
                 let now_ms = self.launch_at.elapsed().as_millis() as u64;
@@ -1106,48 +454,21 @@ impl ApplicationHandler for NativeApp {
                 self.dumps_dirty = true;
                 self.needs_redraw = false;
             }
-            WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(position.x as f32, position.y as f32);
-                self.mark_dirty();
-            }
-            WindowEvent::MouseWheel { delta, phase, .. } => {
-                self.handle_scroll(delta, phase);
-                self.mark_dirty();
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if let Some((x, y)) = self.mouse_position {
-                    self.handle_left_click(x, y);
+            event => {
+                let outcome = self.input.handle_window_event(
+                    &mut self.state,
+                    &mut self.ui_frame,
+                    &self.editor,
+                    self.renderer.as_mut(),
+                    self.window.as_ref(),
+                    &mut self.tooltip_state,
+                    self.launch_at,
+                    event,
+                );
+                if let Some(outcome) = outcome {
+                    self.apply_input_outcome(outcome);
                 }
-                self.mark_dirty();
             }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if let Some(mut capture) = self.pointer_capture.take() {
-                    let result = capture.on_release(&self.state);
-                    for action in result.actions {
-                        self.dispatch_action(action);
-                    }
-                    self.runtime.dispatch_all(result.effects);
-                    self.mark_dirty();
-                }
-                self.mouse_drag_target = None;
-                self.mark_dirty();
-            }
-            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                self.handle_key(&event.logical_key);
-                self.mark_dirty();
-            }
-            WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
-                self.dispatch_action(Action::InsertText(text));
-            }
-            _ => {}
         }
     }
 
@@ -1230,19 +551,6 @@ impl ApplicationHandler for NativeApp {
     }
 }
 
-#[derive(Debug, Clone)]
-enum ScrollTarget {
-    Region(crate::ui::element::ScrollActionBuilder),
-    ViewportFallback,
-}
-
-fn scroll_delta_to_px(delta: MouseScrollDelta, line_step_px: f32) -> f32 {
-    match delta {
-        MouseScrollDelta::LineDelta(_, y) => -y * line_step_px,
-        MouseScrollDelta::PixelDelta(position) => -(position.y as f32),
-    }
-}
-
 fn scale_text_metrics(
     metrics: crate::render::TextMetrics,
     scale: f32,
@@ -1257,83 +565,21 @@ fn scale_text_metrics(
     }
 }
 
-fn quantize_scroll_delta_px(remainder_px: &mut f32, delta_px: f32) -> i32 {
-    *remainder_px += delta_px;
-    let whole_px = remainder_px.trunc() as i32;
-    *remainder_px -= whole_px as f32;
-    whole_px
-}
-
-/// Map a click x-coordinate (relative to text start) to a byte offset in the string.
-fn hit_test_text_offset(
-    font_system: Option<&mut glyphon::FontSystem>,
-    text: &str,
-    font_size: f32,
-    click_x: f32,
-) -> usize {
-    if text.is_empty() || click_x <= 0.0 {
-        return 0;
-    }
-    let Some(font_system) = font_system else {
-        return text.len();
-    };
-
-    // Shape the text into a glyphon buffer and walk glyphs to find the offset
-    let metrics = glyphon::Metrics::new(font_size, font_size * 1.2);
-    let mut buffer = glyphon::Buffer::new(font_system, metrics);
-    let attrs = glyphon::Attrs::new().family(glyphon::Family::SansSerif);
-    buffer.set_size(font_system, None, None);
-    buffer.set_text(font_system, text, &attrs, glyphon::Shaping::Advanced, None);
-    buffer.shape_until_scroll(font_system, false);
-
-    // Walk glyphs to find the click position
-    let mut best_offset = text.len();
-    let mut best_dist = f32::MAX;
-
-    for run in buffer.layout_runs() {
-        // Check position 0 (before first glyph)
-        let dist = click_x.abs();
-        if dist < best_dist {
-            best_dist = dist;
-            best_offset = 0;
-        }
-        for glyph in run.glyphs.iter() {
-            // Check left edge of glyph
-            let left_dist = (click_x - glyph.x).abs();
-            if left_dist < best_dist {
-                best_dist = left_dist;
-                best_offset = glyph.start;
-            }
-            // Check right edge of glyph
-            let right_dist = (click_x - (glyph.x + glyph.w)).abs();
-            if right_dist < best_dist {
-                best_dist = right_dist;
-                best_offset = glyph.end;
-            }
-        }
-        // Check end of run
-        let dist = (click_x - run.line_w).abs();
-        if dist < best_dist {
-            best_dist = dist;
-            best_offset = text.len();
-        }
-    }
-
-    best_offset
-}
-
 #[cfg(test)]
 mod tests {
     use crate::core::themes::ThemeRegistry;
     use tempfile::TempDir;
     use winit::dpi::PhysicalPosition;
     use winit::event::{MouseScrollDelta, TouchPhase};
-    use winit::keyboard::{Key, ModifiersState};
+    use winit::keyboard::ModifiersState;
 
-    use super::{NativeApp, ScrollTarget, quantize_scroll_delta_px, scroll_delta_to_px};
+    use super::NativeApp;
     use crate::app_runtime::{AppRuntime, AppServices};
     use crate::platform::persistence::SettingsStore;
     use crate::ui::actions::Action;
+    use crate::ui::input::{
+        InputEvent, KeyChord, KeyKind, quantize_scroll_delta_px, scroll_delta_to_px,
+    };
     use crate::ui::state::{
         AppState, FileListEntry, FocusTarget, OverlayEntry, OverlaySurface, WorkspaceMode,
     };
@@ -1342,6 +588,29 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let runtime = AppRuntime::new(AppServices::new(SettingsStore::new_in(dir.path())));
         NativeApp::new(state, runtime, ThemeRegistry::load())
+    }
+
+    fn dispatch_input_event(app: &mut NativeApp, event: InputEvent) {
+        let outcome = app.input.handle_input_event_for_test(
+            &mut app.state,
+            &mut app.ui_frame,
+            &app.editor,
+            app.renderer.as_mut(),
+            app.window.as_ref(),
+            &mut app.tooltip_state,
+            app.launch_at,
+            event,
+        );
+        app.apply_input_outcome(outcome);
+    }
+
+    fn keypress(text: impl Into<String>, modifiers: ModifiersState) -> InputEvent {
+        InputEvent::KeyPress(KeyChord {
+            logical: KeyKind::Character(text.into()),
+            physical: None,
+            modifiers,
+            repeat: false,
+        })
     }
 
     #[test]
@@ -1377,7 +646,7 @@ mod tests {
     fn file_list_scroll_region_wins_over_viewport_fallback() {
         let mut state = AppState::default();
         state.workspace_mode = WorkspaceMode::Ready;
-        state.workspace.files = (0..12)
+        state.workspace.files = (0..32)
             .map(|index| FileListEntry {
                 path: format!("src/file_{index}.rs"),
                 status: "M".to_owned(),
@@ -1406,12 +675,17 @@ mod tests {
         let x = region.bounds.x + 10.0;
         let y = region.bounds.y + 10.0;
 
-        assert!(matches!(
-            app.scroll_target_at(x, y),
-            Some(ScrollTarget::Region(
-                crate::ui::element::ScrollActionBuilder::FileList
-            ))
-        ));
+        dispatch_input_event(&mut app, InputEvent::PointerMoved { x, y });
+        dispatch_input_event(
+            &mut app,
+            InputEvent::Wheel {
+                delta: MouseScrollDelta::LineDelta(0.0, -2.0),
+                phase: TouchPhase::Moved,
+            },
+        );
+
+        assert!(app.state.file_list.scroll_offset_px > 0.0);
+        assert_eq!(app.state.editor.scroll_top_px, 0);
     }
 
     #[test]
@@ -1444,9 +718,16 @@ mod tests {
                 )
             })
             .unwrap();
-        app.mouse_position = Some((region.bounds.x + 10.0, region.bounds.y + 10.0));
-
-        app.handle_scroll(MouseScrollDelta::LineDelta(0.0, -3.0), TouchPhase::Moved);
+        let x = region.bounds.x + 10.0;
+        let y = region.bounds.y + 10.0;
+        dispatch_input_event(&mut app, InputEvent::PointerMoved { x, y });
+        dispatch_input_event(
+            &mut app,
+            InputEvent::Wheel {
+                delta: MouseScrollDelta::LineDelta(0.0, -3.0),
+                phase: TouchPhase::Moved,
+            },
+        );
 
         assert!(app.state.file_list.scroll_offset_px > 0.0);
     }
@@ -1481,20 +762,68 @@ mod tests {
         let x = overlay_hit.rect.x + overlay_hit.rect.width * 0.5;
         let y = overlay_hit.rect.y + overlay_hit.rect.height * 0.5;
 
-        assert!(app.input_is_blocked_by_overlay(x, y));
-        assert!(app.scroll_target_at(x, y).is_none());
+        dispatch_input_event(&mut app, InputEvent::PointerMoved { x, y });
+        dispatch_input_event(
+            &mut app,
+            InputEvent::Wheel {
+                delta: MouseScrollDelta::LineDelta(0.0, -3.0),
+                phase: TouchPhase::Moved,
+            },
+        );
+
+        assert_eq!(app.state.editor.scroll_top_px, 0);
+        assert_eq!(app.state.file_list.scroll_offset_px, 0.0);
     }
 
     #[test]
     fn command_shortcuts_adjust_ui_scale() {
         let mut app = test_app(AppState::default());
-        app.modifiers = ModifiersState::SUPER;
-
-        app.handle_key(&Key::Character("=".into()));
+        dispatch_input_event(&mut app, keypress("=", ModifiersState::SUPER));
         assert_eq!(app.state.settings.ui_scale_pct, 110);
 
-        app.handle_key(&Key::Character("-".into()));
+        dispatch_input_event(&mut app, keypress("-", ModifiersState::SUPER));
         assert_eq!(app.state.settings.ui_scale_pct, 100);
+    }
+
+    #[test]
+    fn space_in_picker_input_inserts_text() {
+        let mut state = AppState::default();
+        state.apply_action(crate::ui::actions::Action::OpenRepoPicker);
+        let mut app = test_app(state);
+        let before = app.state.overlays.picker.query.clone();
+
+        dispatch_input_event(&mut app, InputEvent::TextInput(" ".to_owned()));
+
+        assert_eq!(app.state.overlays.picker.query, format!("{before} "));
+    }
+
+    #[test]
+    fn command_palette_shortcut_still_works_while_text_focused() {
+        let mut state = AppState::default();
+        state.apply_action(crate::ui::actions::Action::OpenSearch);
+        let mut app = test_app(state);
+
+        dispatch_input_event(&mut app, keypress("p", ModifiersState::SUPER));
+
+        assert_eq!(
+            app.state.overlays.top(),
+            Some(OverlaySurface::CommandPalette)
+        );
+    }
+
+    #[test]
+    fn ime_commit_inserts_once_into_text_field() {
+        let mut state = AppState::default();
+        state.apply_action(crate::ui::actions::Action::OpenSearch);
+        let mut app = test_app(state);
+
+        dispatch_input_event(
+            &mut app,
+            InputEvent::ImePreedit("ni".to_owned(), Some((2, 2))),
+        );
+        dispatch_input_event(&mut app, InputEvent::TextInput("に".to_owned()));
+
+        assert_eq!(app.state.editor.search.query, "に");
     }
 }
 

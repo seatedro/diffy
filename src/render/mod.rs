@@ -2,6 +2,8 @@
 pub mod capture;
 pub mod renderer;
 pub mod scene;
+mod shaders;
+mod text;
 
 pub use renderer::{FrameStats, OffscreenTarget, RenderError, Renderer, TextMetrics};
 pub use scene::{

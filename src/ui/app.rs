@@ -47,7 +47,18 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         ControlFlow::Wait
     });
 
+    #[cfg(feature = "hot-reload")]
+    let hot_reload_pending = {
+        let pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        crate::hot_reload::connect(event_loop.create_proxy(), pending.clone());
+        pending
+    };
+
     let mut app = NativeApp::new(state, runtime, theme_registry);
+    #[cfg(feature = "hot-reload")]
+    {
+        app.hot_reload_pending = Some(hot_reload_pending);
+    }
     event_loop.run_app(&mut app)?;
     Ok(())
 }
@@ -70,6 +81,8 @@ struct NativeApp {
     capture_pending: Option<std::path::PathBuf>,
     needs_redraw: bool,
     tooltip_state: TooltipState,
+    #[cfg(feature = "hot-reload")]
+    hot_reload_pending: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl NativeApp {
@@ -104,6 +117,8 @@ impl NativeApp {
             capture_pending,
             needs_redraw: true,
             tooltip_state: TooltipState::default(),
+            #[cfg(feature = "hot-reload")]
+            hot_reload_pending: None,
         }
     }
 
@@ -322,6 +337,20 @@ impl NativeApp {
         .with_ui_signals(self.ui_signals);
         cx.debug_wireframe = std::env::var("DIFFY_DEBUG_WIREFRAME").is_ok();
 
+        #[cfg(feature = "hot-reload")]
+        return subsecond::call(|| {
+            build_ui_frame(
+                &mut self.state,
+                &self.theme,
+                &mut self.editor,
+                scale_text_metrics(text_metrics, ui_scale),
+                width,
+                height,
+                &mut cx,
+            )
+        });
+
+        #[cfg(not(feature = "hot-reload"))]
         build_ui_frame(
             &mut self.state,
             &self.theme,
@@ -482,6 +511,14 @@ impl ApplicationHandler for NativeApp {
                 .min(u128::from(u64::MAX)) as u64,
         );
         self.process_runtime_events();
+
+        #[cfg(feature = "hot-reload")]
+        if let Some(pending) = &self.hot_reload_pending {
+            if pending.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                self.mark_dirty();
+            }
+        }
+
         self.write_dumps_if_needed();
 
         if self.should_exit() {
@@ -549,6 +586,7 @@ impl ApplicationHandler for NativeApp {
             window.request_redraw();
         }
     }
+
 }
 
 fn scale_text_metrics(

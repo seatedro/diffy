@@ -12,6 +12,7 @@ rust-version = "1.92"
 default = ["native"]
 native = ["dep:winit"]
 capture = ["dep:tiny-skia", "dep:png", "dep:fontdue"]
+hot-reload = ["dep:tungstenite", "dep:subsecond"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -41,6 +42,8 @@ wgpu = "28.0.0"
 winit = { version = "0.30", optional = true }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+subsecond = { version = "0.7", optional = true }
+tungstenite = { version = "0.29", optional = true }
 
 [[bin]]
 name = "diffy"

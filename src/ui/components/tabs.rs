@@ -2,7 +2,7 @@ use halogen::view;
 
 use crate::actions::Action;
 use crate::ui::design::{Rad, Shadow, Sp, Sz};
-use crate::ui::element::{AnyElement, ElementContext, IntoAnyElement, RenderOnce, div, text};
+use crate::ui::element::{AnyElement, ElementContext, IntoAnyElement, RenderOnce, div, svg_icon, text};
 use crate::ui::style::Styled;
 use crate::ui::theme::Color;
 
@@ -62,63 +62,39 @@ impl RenderOnce for TabBar {
         let tc = &cx.theme.colors;
         let m = &cx.theme.metrics;
         let icon_size = m.ui_small_font_size;
+        let fill = self.fill;
 
-        let mut bar = div().flex_row().items_end().border_b(tc.border_variant);
-
-        for item in self.items {
-            let active = item.active;
-            let label_color = if active {
-                tc.text_strong
-            } else {
-                tc.text_muted
-            };
-            let indicator_color = if active {
-                tc.accent
-            } else {
-                Color::TRANSPARENT
-            };
-
-            let mut content = div()
-                .flex_row()
-                .items_center()
-                .gap(m.spacing_xs)
-                .px(m.spacing_md)
-                .py(m.spacing_sm);
-
-            if let Some(svg) = item.icon {
-                let icon_color = if active { tc.accent } else { tc.text_muted };
-                content =
-                    content.child(crate::ui::element::svg_icon(svg, icon_size).color(icon_color));
-            }
-
-            content = content.child(text(item.label).text_sm().color(label_color).medium());
-
-            if let Some(count_text) = item.count {
-                content = content.child(view! {
-                    <div px={m.spacing_xs} py={Sz::TAB_BADGE_PY}
-                         bg={tc.element_background} rounded={Rad::XL}>
-                        <text class="text-xs" color={tc.text_muted}>{count_text}</text>
+        view! {
+            <div class="flex-row items-end" border_b={tc.border_variant}>
+                for item in self.items {
+                    <div class="flex-col items-center"
+                         on_click={item.action}
+                         @when {!item.active} { hover_bg={tc.ghost_element_hover} }
+                         @when {fill} { flex_1 }>
+                        <div class="flex-row items-center"
+                             gap={m.spacing_xs} px={m.spacing_md} py={m.spacing_sm}>
+                            if let Some(svg) = item.icon {
+                                <icon svg={svg} size={icon_size}
+                                      color={if item.active { tc.accent } else { tc.text_muted }} />
+                            }
+                            <text class="text-sm"
+                                  color={if item.active { tc.text_strong } else { tc.text_muted }}
+                                  @when {item.active} { medium }>
+                                {item.label}
+                            </text>
+                            if let Some(count_text) = item.count {
+                                <div px={m.spacing_xs} py={Sz::TAB_BADGE_PY}
+                                     bg={tc.element_background} rounded={Rad::XL}>
+                                    <text class="text-xs" color={tc.text_muted}>{count_text}</text>
+                                </div>
+                            }
+                        </div>
+                        <div w_full h={Sz::TAB_INDICATOR_H}
+                             bg={if item.active { tc.accent } else { Color::TRANSPARENT }} />
                     </div>
-                });
-            }
-
-            let indicator = div().w_full().h(Sz::TAB_INDICATOR_H).bg(indicator_color);
-
-            let fill = self.fill;
-            let tab = view! {
-                <div class="flex-col items-center"
-                     on_click={item.action}
-                     @when {!active} { hover_bg={tc.ghost_element_hover} }
-                     @when {fill} { flex_1 }>
-                    {content}
-                    {indicator}
-                </div>
-            };
-
-            bar = bar.child(tab);
+                }
+            </div>
         }
-
-        bar.into_any()
     }
 }
 
@@ -135,43 +111,27 @@ impl RenderOnce for SegmentedTabs {
         let tc = &cx.theme.colors;
         let m = &cx.theme.metrics;
         let scale = m.ui_scale();
+        let seg_gap = (Sp::XXS * scale).round();
+        let inner_radius = m.control_radius - seg_gap;
 
-        let mut bar = div()
-            .flex_row()
-            .items_center()
-            .gap((Sp::XXS * scale).round())
-            .p((Sp::XXS * scale).round())
-            .bg(tc.element_background)
-            .rounded(m.control_radius);
-
-        for item in self.items {
-            let active = item.active;
-            let fg = if active {
-                tc.text_strong
-            } else {
-                tc.text_muted
-            };
-
-            let mut tab = div()
-                .flex_row()
-                .items_center()
-                .justify_center()
-                .flex_1()
-                .px(m.spacing_md)
-                .py(m.spacing_xs)
-                .rounded(m.control_radius - (Sp::XXS * scale).round())
-                .on_click(item.action)
-                .child(text(item.label).text_sm().color(fg).medium());
-
-            if active {
-                tab = tab.bg(tc.surface).shadow_preset(Shadow::SUBTLE);
-            } else {
-                tab = tab.hover_bg(tc.ghost_element_hover);
-            }
-
-            bar = bar.child(tab);
+        view! {
+            <div class="flex-row items-center"
+                 gap={seg_gap} p={seg_gap}
+                 bg={tc.element_background} rounded={m.control_radius}>
+                for item in self.items {
+                    <div class="flex-row flex-1 items-center justify-center"
+                         px={m.spacing_md} py={m.spacing_xs}
+                         rounded={inner_radius}
+                         on_click={item.action}
+                         @when {item.active} { bg={tc.surface} shadow_preset={Shadow::SUBTLE} }
+                         @when {!item.active} { hover_bg={tc.ghost_element_hover} }>
+                        <text class="text-sm font-medium"
+                              color={if item.active { tc.text_strong } else { tc.text_muted }}>
+                            {item.label}
+                        </text>
+                    </div>
+                }
+            </div>
         }
-
-        bar.into_any()
     }
 }

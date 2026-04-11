@@ -92,73 +92,49 @@ impl RenderOnce for Modal {
             .min(self.window_width - (Sz::MODAL_MARGIN * scale).round());
         let padding = (self.padding * scale).round();
         let gap = (self.gap * scale).round();
+        let max_h = self.window_height - (Sz::MODAL_MARGIN * scale).round() * 2.0;
 
-        let mut header = div()
-            .flex_col()
-            .gap((Sp::SM * scale).round())
-            .child(view! { scale,
+        let header = view! { scale,
+            <div class="flex-col" gap={Sp::SM}>
                 <div class="flex-row shrink-0 items-center" gap={Sp::SM}>
                     <icon svg={self.icon} size={Ico::LG} color={tc.accent} />
                     <text class="text-lg font-semibold" color={tc.text_strong}>{&self.title}</text>
                 </div>
-            });
+                if !self.subtitle.is_empty() {
+                    <text class="text-sm" color={tc.text_muted}>{&self.subtitle}</text>
+                }
+            </div>
+        };
 
-        if !self.subtitle.is_empty() {
-            header = header.child(view! {
-                <text class="text-sm" color={tc.text_muted}>{&self.subtitle}</text>
-            });
+        let panel = view! { scale,
+            <div class="flex-col overflow-hidden"
+                 w={panel_width} p={padding} gap={gap}
+                 bg={tc.elevated_surface} rounded={Rad::XXXL}
+                 border_b={tc.border} shadow_preset={Shadow::MODAL}
+                 on_click={Action::Noop}
+                 @when {self.height.is_some()} { h={(self.height.unwrap() * scale).round().min(max_h)} }>
+                {header}
+                {...self.body}
+                if !self.footer.is_empty() {
+                    <spacer />
+                    <div class="flex-row" gap={Sp::LG}>
+                        {...self.footer}
+                    </div>
+                }
+            </div>
+        };
+
+        view! { scale,
+            <div class="absolute flex-col items-center"
+                 top={0.0} left={0.0}
+                 w={self.window_width} h={self.window_height}
+                 z_index={100}
+                 bg={tc.overlay_scrim}
+                 on_click={Action::CloseOverlay}
+                 @when {self.align == ModalAlign::Center} { justify_center }
+                 @when {self.align == ModalAlign::Top} { pt={Sz::MODAL_TOP_OFFSET} }>
+                {panel}
+            </div>
         }
-
-        let mut panel = div()
-            .w(panel_width)
-            .flex_col()
-            .overflow_hidden()
-            .p(padding)
-            .gap(gap)
-            .bg(tc.elevated_surface)
-            .rounded((Rad::XXXL * scale).round())
-            .border_b(tc.border)
-            .shadow_preset(Shadow::MODAL)
-            .on_click(Action::Noop)
-            .child(header);
-
-        if let Some(h) = self.height {
-            let max_h = self.window_height - (Sz::MODAL_MARGIN * scale).round() * 2.0;
-            panel = panel.h((h * scale).round().min(max_h));
-        }
-
-        for child in self.body {
-            panel = panel.child(child);
-        }
-
-        if !self.footer.is_empty() {
-            panel = panel.child(spacer());
-            let mut footer_row = div().flex_row().gap((Sp::LG * scale).round());
-            for child in self.footer {
-                footer_row = footer_row.child(child);
-            }
-            panel = panel.child(footer_row);
-        }
-
-        let mut backdrop = div()
-            .absolute()
-            .top(0.0)
-            .left(0.0)
-            .w(self.window_width)
-            .h(self.window_height)
-            .z_index(100)
-            .flex_col()
-            .bg(tc.overlay_scrim)
-            .on_click(Action::CloseOverlay)
-            .items_center();
-
-        match self.align {
-            ModalAlign::Center => backdrop = backdrop.justify_center(),
-            ModalAlign::Top => {
-                backdrop = backdrop.pt((Sz::MODAL_TOP_OFFSET * scale).round());
-            }
-        }
-
-        backdrop.child(panel).into_any()
     }
 }

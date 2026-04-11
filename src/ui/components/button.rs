@@ -149,9 +149,14 @@ impl RenderOnce for Button {
             .py(py)
             .rounded((Rad::XL * scale).round())
             .bg(bg)
-            .hover_bg(hover_bg)
             .on_click(self.action)
             .cursor(CursorHint::Pointer);
+
+        if icon_only {
+            btn = btn.hover_icon_color(tc.text);
+        } else {
+            btn = btn.hover_bg(hover_bg);
+        }
 
         if let Some(icon) = self.icon {
             btn = btn.child(svg_icon(icon, icon_size).color(icon_color));

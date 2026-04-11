@@ -71,28 +71,18 @@ impl RenderOnce for Checkbox {
             </div>
         };
 
-        let mut row = div().flex_row().items_center().gap(m.spacing_sm);
+        let click_action = self.on_toggle.filter(|_| !self.disabled);
+        let label_color = if self.disabled { tc.text_muted } else { tc.text };
 
-        if let Some(action) = self.on_toggle {
-            if !self.disabled {
-                row = row.on_click(action);
-            }
+        view! {
+            <div class="flex-row items-center" gap={m.spacing_sm}
+                 @when {click_action.is_some()} { on_click={click_action.unwrap()} }>
+                {check_box}
+                if let Some(label_text) = self.label {
+                    <text class="text-sm" color={label_color}>{label_text}</text>
+                }
+            </div>
         }
-
-        row = row.child(check_box);
-
-        if let Some(label_text) = self.label {
-            let c = if self.disabled {
-                tc.text_muted
-            } else {
-                tc.text
-            };
-            row = row.child(view! {
-                <text class="text-sm" color={c}>{label_text}</text>
-            });
-        }
-
-        row.into_any()
     }
 }
 
@@ -135,10 +125,11 @@ impl RenderOnce for Toggle {
         let m = &cx.theme.metrics;
         let scale = m.ui_scale();
         let thumb_inset = Sp::XXS * scale;
+        let xs_scaled = Sp::XS * scale;
 
         let track_w = (m.ui_font_size * 2.25).round();
         let track_h = (m.ui_font_size * 1.25).round();
-        let thumb_size = track_h - Sp::XS * scale;
+        let thumb_size = track_h - xs_scaled;
         let thumb_left = if self.on {
             track_w - thumb_size - thumb_inset
         } else {
@@ -153,16 +144,6 @@ impl RenderOnce for Toggle {
             (tc.element_background, tc.icon)
         };
 
-        let thumb = div()
-            .absolute()
-            .top(thumb_inset)
-            .left(thumb_left)
-            .w(thumb_size)
-            .h(thumb_size)
-            .bg(thumb_bg)
-            .rounded(thumb_size / 2.0)
-            .shadow_preset(Shadow::SUBTLE);
-
         let hover_bg = if self.on {
             tc.accent.with_alpha(Alpha::HOVER_ALT)
         } else {
@@ -170,36 +151,34 @@ impl RenderOnce for Toggle {
         };
 
         let enabled = !self.disabled;
-        let track = div()
-            .flex_shrink_0()
-            .w(track_w)
-            .h(track_h)
-            .bg(track_bg)
-            .rounded(track_h / 2.0)
-            .when(enabled, |d| d.hover_bg(hover_bg))
-            .child(thumb);
 
-        let mut row = div().flex_row().items_center().gap(m.spacing_sm);
+        let thumb = view! {
+            <div absolute top={thumb_inset} left={thumb_left}
+                 w={thumb_size} h={thumb_size}
+                 bg={thumb_bg} rounded={thumb_size / 2.0}
+                 shadow_preset={Shadow::SUBTLE} />
+        };
 
-        if let Some(action) = self.on_toggle {
-            if !self.disabled {
-                row = row.on_click(action);
-            }
+        let track = view! {
+            <div flex_shrink_0
+                 w={track_w} h={track_h}
+                 bg={track_bg} rounded={track_h / 2.0}
+                 @when {enabled} { hover_bg={hover_bg} }>
+                {thumb}
+            </div>
+        };
+
+        let click_action = self.on_toggle.filter(|_| !self.disabled);
+        let label_color = if self.disabled { tc.text_muted } else { tc.text };
+
+        view! {
+            <div class="flex-row items-center" gap={m.spacing_sm}
+                 @when {click_action.is_some()} { on_click={click_action.unwrap()} }>
+                {track}
+                if let Some(label_text) = self.label {
+                    <text class="text-sm" color={label_color}>{label_text}</text>
+                }
+            </div>
         }
-
-        row = row.child(track);
-
-        if let Some(label_text) = self.label {
-            let c = if self.disabled {
-                tc.text_muted
-            } else {
-                tc.text
-            };
-            row = row.child(view! {
-                <text class="text-sm" color={c}>{label_text}</text>
-            });
-        }
-
-        row.into_any()
     }
 }

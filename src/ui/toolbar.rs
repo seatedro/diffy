@@ -70,53 +70,44 @@ pub(crate) fn main_surface(
     main
 }
 
-fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> Div {
+fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
 
-    let left = view! { scale,
-        <div class="flex-row items-center flex-1" gap={Sp::SM} min_w={0.0}>
-            {components::file_icon(file_label, Ico::SM)}
-            <div class="flex-1" min_w={0.0}>
-                <text class="text-sm truncate" color={tc.text_muted}>{file_label}</text>
+    view! { scale,
+        <div class="w-full flex-row items-center"
+             h={theme.metrics.ui_row_height.round()}
+             px={Sp::MD} border_b={tc.border_variant}>
+            <div class="flex-row items-center flex-1" gap={Sp::SM} min_w={0.0}>
+                {components::file_icon(file_label, Ico::SM)}
+                <div class="flex-1" min_w={0.0}>
+                    <text class="text-sm truncate" color={tc.text_muted}>{file_label}</text>
+                </div>
+            </div>
+            <div class="flex-row items-center" gap={Sp::SM}>
+                {SegmentedControl::new(vec![
+                    SegmentedItem::new(
+                        "Split",
+                        Action::SetLayoutMode(LayoutMode::Split),
+                        state.compare.layout == LayoutMode::Split,
+                    ),
+                    SegmentedItem::new(
+                        "Unified",
+                        Action::SetLayoutMode(LayoutMode::Unified),
+                        state.compare.layout == LayoutMode::Unified,
+                    ),
+                ])}
+                {Button::new(Action::ToggleWrap)
+                    .icon(lucide::WRAP_TEXT)
+                    .label("Wrap")
+                    .active(state.editor.wrap_enabled)
+                    .tooltip("Toggle line wrapping (w)")}
             </div>
         </div>
-    };
-
-    let right = view! { scale,
-        <div class="flex-row items-center" gap={Sp::SM}>
-            {SegmentedControl::new(vec![
-                SegmentedItem::new(
-                    "Split",
-                    Action::SetLayoutMode(LayoutMode::Split),
-                    state.compare.layout == LayoutMode::Split,
-                ),
-                SegmentedItem::new(
-                    "Unified",
-                    Action::SetLayoutMode(LayoutMode::Unified),
-                    state.compare.layout == LayoutMode::Unified,
-                ),
-            ])}
-            {Button::new(Action::ToggleWrap)
-                .icon(lucide::WRAP_TEXT)
-                .label("Wrap")
-                .active(state.editor.wrap_enabled)
-                .tooltip("Toggle line wrapping (w)")}
-        </div>
-    };
-
-    div()
-        .h(theme.metrics.ui_row_height.round())
-        .w_full()
-        .flex_row()
-        .items_center()
-        .px((Sp::MD * scale).round())
-        .border_b(tc.border_variant)
-        .child(left)
-        .child(right)
+    }
 }
 
-fn search_bar(state: &AppState, theme: &Theme) -> Div {
+fn search_bar(state: &AppState, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let search = &state.editor.search;
@@ -180,34 +171,38 @@ fn search_bar(state: &AppState, theme: &Theme) -> Div {
         </div>
     };
 
-    div()
-        .w_full()
-        .h(theme.metrics.ui_row_height.round())
-        .flex_row()
-        .items_center()
-        .gap((Sp::SM * scale).round())
-        .px((Sp::MD * scale).round())
-        .border_b(tc.border_variant)
-        .bg(tc.editor_surface)
-        .child(svg_icon(lucide::SEARCH, search_icon_size).color(tc.text_muted))
-        .child(div().flex_1().min_w(0.0).child(input))
-        .child(nav)
-}
-
-fn repo_ready_hint(theme: &Theme) -> Div {
-    let tc = &theme.colors;
-    div().flex_1().items_center().justify_center().child(view! {
-        <div class="flex-col items-center gap-2">
-            <icon svg={lucide::GIT_COMPARE} size={Ico::XXL}
-                  color={tc.text_muted.with_alpha(Alpha::SOFT)} />
-            <text class="text-sm" color={tc.text_muted}>
-                {"Select refs to compare"}
-            </text>
+    view! { scale,
+        <div class="w-full flex-row items-center"
+             h={theme.metrics.ui_row_height.round()}
+             gap={Sp::SM} px={Sp::MD}
+             border_b={tc.border_variant}
+             bg={tc.editor_surface}>
+            {svg_icon(lucide::SEARCH, search_icon_size).color(tc.text_muted)}
+            <div class="flex-1" min_w={0.0}>
+                {input}
+            </div>
+            {nav}
         </div>
-    })
+    }
 }
 
-fn loading_card(state: &AppState, theme: &Theme) -> Div {
+fn repo_ready_hint(theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = theme.metrics.ui_scale();
+    view! { scale,
+        <div class="flex-1 items-center justify-center">
+            <div class="flex-col items-center" gap={Sp::MD}>
+                <icon svg={lucide::GIT_COMPARE} size={Ico::XXL}
+                      color={tc.text_muted.with_alpha(Alpha::SOFT)} />
+                <text class="text-sm" color={tc.text_muted}>
+                    {"Select refs to compare"}
+                </text>
+            </div>
+        </div>
+    }
+}
+
+fn loading_card(state: &AppState, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
 
@@ -218,12 +213,8 @@ fn loading_card(state: &AppState, theme: &Theme) -> Div {
         display_ref(&state.compare.right_ref)
     );
 
-    div()
-        .flex_1()
-        .items_center()
-        .justify_center()
-        .p((Sp::XL * scale).round())
-        .child(view! { scale,
+    view! { scale,
+        <div class="flex-1 items-center justify-center" p={Sp::XL}>
             <div class="w-full flex-col items-center rounded-xl"
                  max_w={Sz::CARD_SM} p={Sp::XL} gap={Sp::MD}
                  bg={tc.elevated_surface}
@@ -241,10 +232,11 @@ fn loading_card(state: &AppState, theme: &Theme) -> Div {
                     </text>
                 </div>
             </div>
-        })
+        </div>
+    }
 }
 
-fn empty_state(state: &AppState, theme: &Theme) -> Div {
+fn empty_state(state: &AppState, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let recent_repos = crate::core::frecency::recent_repo_paths(state.frecency.as_ref(), 8);
@@ -268,9 +260,9 @@ fn empty_state(state: &AppState, theme: &Theme) -> Div {
         });
 
     if has_recent {
-        let mut recent_section = div().flex_col().gap(Sp::XXS);
+        let mut recent_section = div().flex_col().gap((Sp::XXS * scale).round());
 
-        recent_section = recent_section.child(view! {
+        recent_section = recent_section.child(view! { scale,
             <text class="text-xs font-semibold" color={tc.text_muted}>{"Recent"}</text>
         });
 
@@ -308,14 +300,13 @@ fn empty_state(state: &AppState, theme: &Theme) -> Div {
         </div>
     });
 
-    card = card.child(view! {
+    card = card.child(view! { scale,
         <text class="text-xs" color={tc.text_muted}>{"or drop a folder here"}</text>
     });
 
-    div()
-        .flex_1()
-        .items_center()
-        .justify_center()
-        .p((Sp::XL * scale).round())
-        .child(card)
+    view! { scale,
+        <div class="flex-1 items-center justify-center" p={Sp::XL}>
+            {card}
+        </div>
+    }
 }

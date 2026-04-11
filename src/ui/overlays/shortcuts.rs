@@ -118,6 +118,34 @@ const GROUPS: &[ShortcutGroup] = &[
     },
 ];
 
+fn build_keys_row(key: &str, theme: &crate::ui::theme::Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = theme.metrics.ui_scale();
+    let mut row = div()
+        .flex_shrink_0()
+        .min_w(Sz::CONTEXT_MENU_MIN_W)
+        .flex_row()
+        .items_center()
+        .flex_wrap()
+        .gap((Sp::XS * scale).round());
+
+    let parts: Vec<&str> = key.split(" / ").collect();
+    for (i, part) in parts.iter().enumerate() {
+        if i > 0 {
+            row = row.child(text("/").text_xs().color(tc.text_muted));
+        }
+        let subparts: Vec<&str> = part.split('+').collect();
+        for (j, sub) in subparts.iter().enumerate() {
+            if j > 0 {
+                row = row.child(text("+").text_xs().color(tc.text_muted));
+            }
+            row = row.child(components::kbd(sub.trim(), theme));
+        }
+    }
+
+    row.into_any()
+}
+
 pub fn keyboard_shortcuts(
     _state: &AppState,
     theme: &crate::ui::theme::Theme,
@@ -127,48 +155,21 @@ pub fn keyboard_shortcuts(
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
 
-    let mut body = div().flex_col().gap((Sp::XL * scale).round());
-
-    for group in GROUPS {
-        let mut section = div().flex_col().gap((Sp::XS * scale).round());
-
-        section = section.child(view! {
-            <text class="text-sm font-semibold" color={tc.accent}>{group.title}</text>
-        });
-
-        for entry in group.entries {
-            let mut keys_row = div()
-                .flex_shrink_0()
-                .min_w(Sz::CONTEXT_MENU_MIN_W)
-                .flex_row()
-                .items_center()
-                .flex_wrap()
-                .gap((Sp::XS * scale).round());
-
-            let parts: Vec<&str> = entry.key.split(" / ").collect();
-            for (i, part) in parts.iter().enumerate() {
-                if i > 0 {
-                    keys_row = keys_row.child(text("/").text_xs().color(tc.text_muted));
-                }
-                let subparts: Vec<&str> = part.split('+').collect();
-                for (j, sub) in subparts.iter().enumerate() {
-                    if j > 0 {
-                        keys_row = keys_row.child(text("+").text_xs().color(tc.text_muted));
+    let body = view! { scale,
+        <div class="flex-col" gap={Sp::XL}>
+            for group in GROUPS {
+                <div class="flex-col" gap={Sp::XS}>
+                    <text class="text-sm font-semibold" color={tc.accent}>{group.title}</text>
+                    for entry in group.entries {
+                        <div class="flex-row items-center" gap={Sp::MD}>
+                            {build_keys_row(entry.key, theme)}
+                            <text class="text-sm" color={tc.text_muted}>{entry.description}</text>
+                        </div>
                     }
-                    keys_row = keys_row.child(components::kbd(sub.trim(), theme));
-                }
-            }
-
-            section = section.child(view! { scale,
-                <div class="flex-row items-center" gap={Sp::MD}>
-                    {keys_row}
-                    <text class="text-sm" color={tc.text_muted}>{entry.description}</text>
                 </div>
-            });
-        }
-
-        body = body.child(section);
-    }
+            }
+        </div>
+    };
 
     Modal::new(
         "Keyboard Shortcuts",

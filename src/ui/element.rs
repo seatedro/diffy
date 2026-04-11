@@ -278,6 +278,7 @@ pub struct ElementContext<'a> {
     z_index_stack: Vec<i32>,
     element_offset_stack: Vec<(f32, f32)>,
     text_color_stack: Vec<Color>,
+    icon_color_stack: Vec<Color>,
 }
 
 impl<'a> ElementContext<'a> {
@@ -309,6 +310,7 @@ impl<'a> ElementContext<'a> {
             z_index_stack: vec![0],
             element_offset_stack: vec![(0.0, 0.0)],
             text_color_stack: Vec::new(),
+            icon_color_stack: Vec::new(),
         }
     }
 
@@ -380,6 +382,18 @@ impl<'a> ElementContext<'a> {
 
     pub fn text_color_override(&self) -> Option<Color> {
         self.text_color_stack.last().copied()
+    }
+
+    pub fn push_icon_color(&mut self, color: Color) {
+        self.icon_color_stack.push(color);
+    }
+
+    pub fn pop_icon_color(&mut self) {
+        self.icon_color_stack.pop();
+    }
+
+    pub fn icon_color_override(&self) -> Option<Color> {
+        self.icon_color_stack.last().copied()
     }
 
     pub fn current_element_offset(&self) -> (f32, f32) {
@@ -1090,6 +1104,11 @@ impl Div {
         self.hover(|s| s.text_color(color))
     }
 
+    /// Convenience: set only the hover icon color (propagates to child svg icons).
+    pub fn hover_icon_color(self, color: Color) -> Self {
+        self.hover(|s| s.icon_color(color))
+    }
+
     /// Conditionally apply style/config changes.
     pub fn when(self, condition: bool, f: impl FnOnce(Self) -> Self) -> Self {
         if condition { f(self) } else { self }
@@ -1373,8 +1392,18 @@ impl Element for Div {
         } else {
             None
         };
+        let pushed_icon_color = if hovered {
+            self.hover_style
+                .as_ref()
+                .and_then(|ov| ov.icon_color)
+        } else {
+            None
+        };
         if let Some(tc) = pushed_text_color {
             cx.push_text_color(tc);
+        }
+        if let Some(ic) = pushed_icon_color {
+            cx.push_icon_color(ic);
         }
 
         if self.scroll_y != 0.0 {
@@ -1387,6 +1416,9 @@ impl Element for Div {
             }
         }
 
+        if pushed_icon_color.is_some() {
+            cx.pop_icon_color();
+        }
         if pushed_text_color.is_some() {
             cx.pop_text_color();
         }
@@ -2267,7 +2299,7 @@ impl Element for SvgIcon {
         scene: &mut Scene,
         cx: &mut ElementContext,
     ) {
-        let color = self.color.unwrap_or(cx.theme.colors.icon);
+        let color = cx.icon_color_override().unwrap_or_else(|| self.color.unwrap_or(cx.theme.colors.icon));
         let scale = cx.theme.metrics.ui_scale();
         let px_size = (self.size * scale).ceil() as u32;
         let key = crate::ui::icons::cache_key(self.svg, px_size, color);

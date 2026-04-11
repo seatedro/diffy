@@ -16,7 +16,7 @@ pub(crate) fn title_bar(
     theme: &Theme,
     sidebar_visible: f32,
     window_width: f32,
-) -> Div {
+) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let has_repo = state.compare.repo_path.is_some();
@@ -31,141 +31,116 @@ pub(crate) fn title_bar(
         .and_then(|name| name.to_str())
         .unwrap_or("diffy");
 
-    let mut left = div()
-        .flex_row()
-        .flex_shrink_0()
-        .min_w(0.0)
-        .items_center()
-        .gap((Sp::SM * scale).round());
-
-    if is_ready {
-        let sidebar_icon = if sidebar_visible > 0.5 {
-            lucide::PANEL_LEFT_CLOSE
-        } else {
-            lucide::PANEL_LEFT_OPEN
-        };
-        left = left.child(
-            Button::new(Action::ToggleSidebar)
-                .icon(sidebar_icon)
-                .tooltip("Toggle sidebar (\u{2318}B)"),
-        );
-    }
-
-    if has_repo {
-        left = left.child(ref_selector_button(
-            repo_label,
-            lucide::FOLDER,
-            false,
-            Action::OpenRepoPicker,
-            tc,
-            scale,
-        ));
+    let sidebar_icon = if sidebar_visible > 0.5 {
+        lucide::PANEL_LEFT_CLOSE
     } else {
-        left = left
-            .child(svg_icon(lucide::GIT_COMPARE, Ico::LG).color(tc.accent))
-            .child(view! {
-                <div min_w={0.0}>
-                    <text class="font-semibold truncate" color={tc.text_strong}>{"diffy"}</text>
-                </div>
-            });
-    }
+        lucide::PANEL_LEFT_OPEN
+    };
 
-    let mut center = div()
-        .flex_1()
-        .min_w(0.0)
-        .flex_row()
-        .items_center()
-        .justify_center()
-        .gap((Sp::XS * scale).round());
+    let left_label = if state.compare.left_ref.is_empty() {
+        "base"
+    } else {
+        &state.compare.left_ref
+    };
+    let right_label = if state.compare.right_ref.is_empty() {
+        "head"
+    } else if state.compare.right_ref == crate::core::vcs::git::service::WORKDIR_REF {
+        "working copy"
+    } else {
+        &state.compare.right_ref
+    };
 
-    if has_repo && repo_loaded {
-        let left_label = if state.compare.left_ref.is_empty() {
-            "base"
-        } else {
-            &state.compare.left_ref
-        };
-        let right_label = if state.compare.right_ref.is_empty() {
-            "head"
-        } else if state.compare.right_ref == crate::core::vcs::git::service::WORKDIR_REF {
-            "working copy"
-        } else {
-            &state.compare.right_ref
-        };
-
-        let mode_symbol = match state.compare.mode {
-            CompareMode::SingleCommit => "\u{00b7}",
-            CompareMode::TwoDot => "\u{00b7}\u{00b7}",
-            CompareMode::ThreeDot => "\u{00b7}\u{00b7}\u{00b7}",
-        };
-
-        center = center
-            .child(ref_selector_button(
-                left_label,
-                lucide::GIT_BRANCH,
-                state.compare.left_ref.is_empty(),
-                Action::OpenRefPicker(CompareField::Left),
-                tc,
-                scale,
-            ))
-            .child(view! { scale,
-                <div px={Sp::XS} py={Sp::XS}
-                     rounded={Rad::MD}
-                     hover_bg={tc.ghost_element_hover}
-                     on_click={Action::CycleCompareMode}
-                     cursor={CursorHint::Pointer}>
-                    <text class="text-sm font-medium" color={tc.text_muted}>{mode_symbol}</text>
-                </div>
-            })
-            .child(ref_selector_button(
-                right_label,
-                lucide::GIT_BRANCH,
-                state.compare.right_ref.is_empty(),
-                Action::OpenRefPicker(CompareField::Right),
-                tc,
-                scale,
-            ));
-    } else if state.workspace_mode == WorkspaceMode::Loading {
-        center = center.child(view! {
-            <text class="text-sm" color={tc.text_muted}>{"Comparing\u{2026}"}</text>
-        });
-    }
+    let mode_symbol = match state.compare.mode {
+        CompareMode::SingleCommit => "\u{00b7}",
+        CompareMode::TwoDot => "\u{00b7}\u{00b7}",
+        CompareMode::ThreeDot => "\u{00b7}\u{00b7}\u{00b7}",
+    };
 
     let pr_active = state.overlays.top() == Some(OverlaySurface::PullRequestModal);
+    let file_count = state.workspace.files.len();
 
-    let mut right = div()
-        .flex_row()
-        .flex_shrink_0()
-        .items_center()
-        .gap((Sp::XS * scale).round());
+    view! { scale,
+        <div class="flex-row items-center" min_w={0.0}
+             h={theme.metrics.title_bar_height} w_full
+             px={Sp::XL}
+             bg={tc.title_bar_background}
+             border_b={tc.border_variant}>
 
-    if is_ready && window_width >= Bp::NARROW * scale {
-        let file_count = state.workspace.files.len();
-        right = right.child(view! {
-            <text class="text-sm" color={tc.text_muted}>{format!("{file_count} files")}</text>
-        });
-        right = right.child(toolbar_separator(tc));
+            // left
+            <div class="flex-row flex-shrink-0 items-center" min_w={0.0} gap={Sp::SM}>
+                if is_ready {
+                    {Button::new(Action::ToggleSidebar)
+                        .icon(sidebar_icon)
+                        .tooltip("Toggle sidebar (\u{2318}B)")}
+                }
+                if has_repo {
+                    {ref_selector_button(
+                        repo_label,
+                        lucide::FOLDER,
+                        false,
+                        Action::OpenRepoPicker,
+                        tc,
+                        scale,
+                    )}
+                } else {
+                    <div class="flex-row items-center" gap={Sp::SM}>
+                        <icon svg={lucide::GIT_COMPARE} size={Ico::LG} color={tc.accent} />
+                        <div min_w={0.0}>
+                            <text class="font-semibold truncate" color={tc.text_strong}>{"diffy"}</text>
+                        </div>
+                    </div>
+                }
+            </div>
+
+            // center
+            <div class="flex-1 flex-row items-center justify-center" min_w={0.0} gap={Sp::XS}>
+                if has_repo && repo_loaded {
+                    <div class="flex-row items-center" gap={Sp::XS}>
+                        {ref_selector_button(
+                            left_label,
+                            lucide::GIT_BRANCH,
+                            state.compare.left_ref.is_empty(),
+                            Action::OpenRefPicker(CompareField::Left),
+                            tc,
+                            scale,
+                        )}
+                        <div px={Sp::XS} py={Sp::XS}
+                             rounded={Rad::MD}
+                             hover_bg={tc.ghost_element_hover}
+                             on_click={Action::CycleCompareMode}
+                             cursor={CursorHint::Pointer}>
+                            <text class="text-sm font-medium" color={tc.text_muted}>{mode_symbol}</text>
+                        </div>
+                        {ref_selector_button(
+                            right_label,
+                            lucide::GIT_BRANCH,
+                            state.compare.right_ref.is_empty(),
+                            Action::OpenRefPicker(CompareField::Right),
+                            tc,
+                            scale,
+                        )}
+                    </div>
+                } else if state.workspace_mode == WorkspaceMode::Loading {
+                    <text class="text-sm" color={tc.text_muted}>{"Comparing\u{2026}"}</text>
+                }
+            </div>
+
+            // right
+            <div class="flex-row flex-shrink-0 items-center" gap={Sp::XS}>
+                if is_ready && window_width >= Bp::NARROW * scale {
+                    <div class="flex-row items-center" gap={Sp::XS}>
+                        <text class="text-sm" color={tc.text_muted}>{format!("{file_count} files")}</text>
+                        {toolbar_separator(tc)}
+                    </div>
+                }
+                {Button::new(Action::OpenPullRequestModal)
+                    .icon(lucide::GIT_PULL_REQUEST)
+                    .label("PR")
+                    .active(pr_active)
+                    .tooltip("Pull request")}
+            </div>
+        </div>
     }
-
-    right = right.child(
-        Button::new(Action::OpenPullRequestModal)
-            .icon(lucide::GIT_PULL_REQUEST)
-            .label("PR")
-            .active(pr_active)
-            .tooltip("Pull request"),
-    );
-
-    div()
-        .flex_row()
-        .items_center()
-        .min_w(0.0)
-        .h(theme.metrics.title_bar_height)
-        .w_full()
-        .px((Sp::XL * scale).round())
-        .bg(tc.title_bar_background)
-        .border_b(tc.border_variant)
-        .child(left)
-        .child(center)
-        .child(right)
 }
 
 fn ref_selector_button(

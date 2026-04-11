@@ -16,7 +16,7 @@ pub struct FileListItem<'a> {
 }
 
 impl<'a> FileListItem<'a> {
-    fn build(&self, theme: &Theme) -> Div {
+    fn build(&self, theme: &Theme) -> AnyElement {
         let tc = &theme.colors;
         let icon_color = if self.selected {
             tc.text_accent
@@ -29,42 +29,26 @@ impl<'a> FileListItem<'a> {
             tc.text
         };
 
-        let mut row = div()
-            .w_full()
-            .h(theme.metrics.ui_row_height.round())
-            .flex_row()
-            .items_center()
-            .px(Sp::SM)
-            .gap_2()
-            .on_click(Action::SelectFile(self.index))
-            .cursor(CursorHint::Pointer);
-
-        if self.selected {
-            row = row.bg(tc.sidebar_row_selected).border_l(tc.accent);
-        } else {
-            row = row.hover_bg(tc.sidebar_row_hover);
-        }
-
-        row = row.child(svg_icon(lucide::FILE_CODE, Ico::MD).color(icon_color));
-        row = row.child(
-            div().flex_1().flex_col().gap(Sz::SEPARATOR_W).child(
-                text(&self.entry.path)
-                    .text_sm()
-                    .color(text_color)
-                    .truncate(),
-            ),
-        );
-
-        if self.entry.additions > 0 || self.entry.deletions > 0 {
-            row = row.child(view! {
-                <div class="flex-row shrink-0" gap={Sp::XS}>
-                    <text class="text-xs" color={tc.line_add_text}>{format!("+{}", self.entry.additions)}</text>
-                    <text class="text-xs" color={tc.line_del_text}>{format!("\u{2212}{}", self.entry.deletions)}</text>
+        view! {
+            <div class="w-full flex-row items-center" gap_2
+                 h={theme.metrics.ui_row_height.round()}
+                 px={Sp::SM}
+                 on_click={Action::SelectFile(self.index)}
+                 cursor={CursorHint::Pointer}
+                 @when {self.selected} { bg={tc.sidebar_row_selected} border_l={tc.accent} }
+                 @when {!self.selected} { hover_bg={tc.sidebar_row_hover} }>
+                <icon svg={lucide::FILE_CODE} size={Ico::MD} color={icon_color} />
+                <div class="flex-1 flex-col" gap={Sz::SEPARATOR_W}>
+                    <text class="text-sm truncate" color={text_color}>{&self.entry.path}</text>
                 </div>
-            });
+                if self.entry.additions > 0 || self.entry.deletions > 0 {
+                    <div class="flex-row shrink-0" gap={Sp::XS}>
+                        <text class="text-xs" color={tc.line_add_text}>{format!("+{}", self.entry.additions)}</text>
+                        <text class="text-xs" color={tc.line_del_text}>{format!("\u{2212}{}", self.entry.deletions)}</text>
+                    </div>
+                }
+            </div>
         }
-
-        row
     }
 }
 
@@ -86,9 +70,9 @@ impl<'a> Sidebar<'a> {
         self
     }
 
-    pub fn build(self, theme: &Theme) -> Div {
+    pub fn build(self, theme: &Theme) -> AnyElement {
         if self.width_factor < 0.001 {
-            return div().w(0.0).h_full();
+            return div().w(0.0).h_full().into_any();
         }
 
         let tc = &theme.colors;
@@ -97,78 +81,57 @@ impl<'a> Sidebar<'a> {
         let state = self.state;
         let file_count = state.workspace.files.len();
 
-        let header = div()
-            .px_4()
-            .py_3()
-            .flex_row()
-            .items_center()
-            .child(text("FILES").text_xs().semibold().color(tc.text_muted))
-            .optional_child(if file_count > 0 {
-                Some(
-                    div().px(Sp::SM).child(
-                        div()
-                            .px((Sp::LG / Sp::XXS * scale).round())
-                            .py((Sp::XXS * scale).round())
-                            .rounded_sm()
-                            .bg(Color::rgba(255, 255, 255, 10))
-                            .child(text(file_count.to_string()).text_xs().color(tc.text_muted)),
-                    ),
-                )
-            } else {
-                None
-            });
-
-        let mut sidebar = div()
-            .flex_col()
-            .w(sidebar_width)
-            .flex_shrink_0()
-            .overflow_hidden()
-            .h_full()
-            .bg(tc.sidebar_background)
-            .border_r(tc.border_variant)
-            .child(header);
-
-        if state.workspace.files.is_empty() {
-            let (icon, msg) = if state.compare.repo_path.is_some() {
-                (lucide::GIT_COMPARE, "Run a compare to see changes.")
-            } else {
-                (lucide::FOLDER_OPEN, "Open a repository to start.")
-            };
-            sidebar = sidebar.child(view! {
-                <div class="flex-1 items-center justify-center">
-                    <div class="flex-col items-center gap-2">
-                        <icon svg={icon} size={Ico::XL} color={tc.text_muted} />
-                        <text class="text-sm" color={tc.text_muted}>{msg}</text>
-                    </div>
-                </div>
-            });
+        let (empty_icon, empty_msg) = if state.compare.repo_path.is_some() {
+            (lucide::GIT_COMPARE, "Run a compare to see changes.")
         } else {
-            let total_height = state.file_list.total_content_height(file_count);
-            let scroll_px = state.file_list.scroll_offset_px;
+            (lucide::FOLDER_OPEN, "Open a repository to start.")
+        };
 
-            let mut list = div()
-                .flex_1()
-                .flex_col()
-                .px((Sp::LG / Sp::XXS * scale).round())
-                .gap(Sp::XS)
-                .clip()
-                .scroll_y(scroll_px)
-                .scroll_total(total_height)
-                .on_scroll(ScrollActionBuilder::FileList);
+        let total_height = state.file_list.total_content_height(file_count);
+        let scroll_px = state.file_list.scroll_offset_px;
 
-            for (index, entry) in state.workspace.files.iter().enumerate() {
-                let selected = state.workspace.selected_file_index == Some(index);
-                let item = FileListItem {
-                    entry,
-                    selected,
-                    index,
-                };
-                list = list.child(item.build(theme));
-            }
-
-            sidebar = sidebar.child(list);
+        view! { scale,
+            <div class="flex-col flex-shrink-0 overflow-hidden h-full"
+                 w={sidebar_width}
+                 bg={tc.sidebar_background}
+                 border_r={tc.border_variant}>
+                <div class="flex-row items-center" px_4 py_3>
+                    <text class="text-xs semibold" color={tc.text_muted}>{"FILES"}</text>
+                    if file_count > 0 {
+                        <div px={Sp::SM}>
+                            <div class="rounded-sm"
+                                 px={Sp::LG / Sp::XXS}
+                                 py={Sp::XXS}
+                                 bg={Color::rgba(255, 255, 255, 10)}>
+                                <text class="text-xs" color={tc.text_muted}>{file_count.to_string()}</text>
+                            </div>
+                        </div>
+                    }
+                </div>
+                if state.workspace.files.is_empty() {
+                    <div class="flex-1 items-center justify-center">
+                        <div class="flex-col items-center" gap_2>
+                            <icon svg={empty_icon} size={Ico::XL} color={tc.text_muted} />
+                            <text class="text-sm" color={tc.text_muted}>{empty_msg}</text>
+                        </div>
+                    </div>
+                } else {
+                    <div class="flex-1 flex-col" clip
+                         px={Sp::LG / Sp::XXS}
+                         gap={Sp::XS}
+                         scroll_y={scroll_px}
+                         scroll_total={total_height}
+                         on_scroll={ScrollActionBuilder::FileList}>
+                        for (index, entry) in state.workspace.files.iter().enumerate() {
+                            {FileListItem {
+                                entry,
+                                selected: state.workspace.selected_file_index == Some(index),
+                                index,
+                            }.build(theme)}
+                        }
+                    </div>
+                }
+            </div>
         }
-
-        sidebar
     }
 }

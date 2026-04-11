@@ -2,7 +2,7 @@ use halogen::view;
 
 use crate::actions::Action;
 use crate::ui::design::{Shadow, Sp, Sz};
-use crate::ui::element::{Div, IntoAnyElement, div, svg_icon, text};
+use crate::ui::element::{AnyElement, IntoAnyElement, div, svg_icon, text};
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
 
@@ -63,93 +63,65 @@ impl ContextMenuEntry {
     }
 }
 
-pub fn context_menu_layer(entries: Vec<ContextMenuEntry>, x: f32, y: f32, theme: &Theme) -> Div {
+pub fn context_menu_layer(entries: Vec<ContextMenuEntry>, x: f32, y: f32, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let m = &theme.metrics;
     let scale = m.ui_scale();
 
-    let mut menu = div()
-        .absolute()
-        .left(x)
-        .top(y)
-        .z_index(250)
-        .flex_col()
-        .min_w(Sz::CONTEXT_MENU_MIN_W * scale)
-        .py(m.spacing_xs)
-        .bg(tc.elevated_surface)
-        .border(tc.border)
-        .rounded(m.panel_radius)
-        .shadow_preset(Shadow::CONTEXT_MENU);
-
-    for entry in entries {
-        match entry {
-            ContextMenuEntry::Item {
-                label,
-                icon,
-                action,
-                shortcut,
-                destructive,
-                disabled,
-            } => {
-                let fg = if disabled {
-                    tc.text_muted
-                } else if destructive {
-                    tc.status_error
-                } else {
-                    tc.text
-                };
-                let icon_color = if disabled {
-                    tc.text_muted
-                } else if destructive {
-                    tc.status_error
-                } else {
-                    tc.icon
-                };
-                let icon_size = m.ui_small_font_size;
-
-                let mut row = div()
-                    .flex_row()
-                    .items_center()
-                    .gap(m.spacing_sm)
-                    .px(m.spacing_md)
-                    .py(m.spacing_xs + Sp::XXS * scale);
-
-                if !disabled {
-                    row = row.on_click(action).hover_bg(tc.sidebar_row_hover);
+    view! {
+        <div class="absolute flex-col" left={x} top={y} z_index={250}
+             min_w={Sz::CONTEXT_MENU_MIN_W * scale}
+             py={m.spacing_xs}
+             bg={tc.elevated_surface} border={tc.border}
+             rounded={m.panel_radius} shadow_preset={Shadow::CONTEXT_MENU}>
+            for entry in entries {
+                match entry {
+                    ContextMenuEntry::Item { label, icon, action, shortcut, destructive, disabled } => {
+                        let fg = if disabled {
+                            tc.text_muted
+                        } else if destructive {
+                            tc.status_error
+                        } else {
+                            tc.text
+                        };
+                        let icon_color = if disabled {
+                            tc.text_muted
+                        } else if destructive {
+                            tc.status_error
+                        } else {
+                            tc.icon
+                        };
+                        let icon_size = m.ui_small_font_size;
+                        view! {
+                            <div class="flex-row items-center"
+                                 gap={m.spacing_sm} px={m.spacing_md}
+                                 py={m.spacing_xs + Sp::XXS * scale}
+                                 @when {!disabled} { on_click={action} hover_bg={tc.sidebar_row_hover} }>
+                                if let Some(svg) = icon {
+                                    <icon svg={svg} size={icon_size} color={icon_color} />
+                                } else {
+                                    <div class="shrink-0" w={icon_size} h={icon_size} />
+                                }
+                                <div class="flex-1">
+                                    <text class="text-sm" color={fg}>{label}</text>
+                                </div>
+                                if let Some(key) = shortcut {
+                                    <text class="text-xs" color={tc.text_muted}>{key}</text>
+                                }
+                            </div>
+                        }
+                    }
+                    ContextMenuEntry::Separator => {
+                        view! {
+                            <div py={m.spacing_xs} px={m.spacing_sm}>
+                                <div class="w-full" h={Sz::SEPARATOR_W} bg={tc.border_variant} />
+                            </div>
+                        }
+                    }
                 }
-
-                if let Some(svg) = icon {
-                    row = row.child(svg_icon(svg, icon_size).color(icon_color));
-                } else {
-                    row = row.child(div().w(icon_size).h(icon_size).flex_shrink_0());
-                }
-
-                row = row.child(view! {
-                    <div class="flex-1">
-                        <text class="text-sm" color={fg}>{label}</text>
-                    </div>
-                });
-
-                if let Some(key) = shortcut {
-                    row = row.child(view! {
-                        <text class="text-xs" color={tc.text_muted}>{key}</text>
-                    });
-                }
-
-                menu = menu.child(row);
             }
-            ContextMenuEntry::Separator => {
-                menu = menu.child(
-                    div()
-                        .py(m.spacing_xs)
-                        .px(m.spacing_sm)
-                        .child(div().w_full().h(Sz::SEPARATOR_W).bg(tc.border_variant)),
-                );
-            }
-        }
+        </div>
     }
-
-    menu
 }
 
 pub struct ContextMenuState {
@@ -183,7 +155,7 @@ impl ContextMenuState {
         self.entries.clear();
     }
 
-    pub fn render(&mut self, theme: &Theme) -> Option<Div> {
+    pub fn render(&mut self, theme: &Theme) -> Option<AnyElement> {
         if self.visible && !self.entries.is_empty() {
             let entries = std::mem::take(&mut self.entries);
             let result = context_menu_layer(entries, self.x, self.y, theme);

@@ -7,7 +7,7 @@ use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
 use halogen::view;
 
-pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> Div {
+pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let (status_icon, status_color, status_text) = match state.repository.status {
@@ -46,29 +46,25 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> Div {
         renderer_label(state.compare.renderer),
     );
 
-    div()
-        .flex_row()
-        .items_center()
-        .h(theme.metrics.status_bar_height)
-        .w_full()
-        .px((Sp::LG * scale).round())
-        .bg(tc.status_bar_background)
-        .border_t(tc.border_variant)
-        .child(view! { scale,
+    view! { scale,
+        <div class="flex-row items-center w-full"
+             h={theme.metrics.status_bar_height}
+             px={Sp::LG}
+             bg={tc.status_bar_background}
+             border_t={tc.border_variant}>
             <div class="flex-row items-center" gap={Sp::SM} min_w={0.0}>
                 <icon svg={status_icon} size={Ico::XS} color={status_color} />
                 <text class="text-xs" color={tc.text_muted}>{status_text}</text>
                 {?branch_children}
             </div>
-        })
-        .child(spacer())
-        .child(view! { scale,
+            <spacer />
             <div class="flex-row items-center" gap={Sp::SM}>
                 {?hunk_child}
             </div>
-        })
-        .child(spacer())
-        .child(text(right_text).text_xs().color(tc.text_muted))
+            <spacer />
+            <text class="text-xs" color={tc.text_muted}>{right_text}</text>
+        </div>
+    }
 }
 
 pub(crate) fn compare_mode_label(mode: CompareMode) -> &'static str {

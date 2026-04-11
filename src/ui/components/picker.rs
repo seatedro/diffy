@@ -14,7 +14,7 @@ pub fn picker_list<T: PickerItem>(
     scroll_top_px: f32,
     max_visible: usize,
     theme: &Theme,
-) -> Div {
+) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let row_h = theme.metrics.ui_row_height.round();
@@ -34,56 +34,59 @@ pub fn picker_list<T: PickerItem>(
     };
     let scroll = scroll_top_px.min((total_h - list_h).max(0.0));
 
-    let mut list = div()
-        .w_full()
-        .flex_col()
-        .gap(gap)
-        .h(list_h)
-        .overflow_hidden()
-        .scroll_y(scroll)
-        .scroll_total(total_h)
-        .on_scroll(ScrollActionBuilder::Custom(
-            Action::ScrollActiveOverlayListPx,
-        ))
-        .hide_scrollbar();
-
-    for (i, entry) in entries.iter().enumerate() {
-        if entry.is_section_header() {
-            list = list.child(view! { scale,
-                <div class="w-full flex-row items-center" h={row_h} px={Sp::MD}>
-                    <text class="text-xs truncate" color={tc.text_muted}>{entry.label()}</text>
-                </div>
-            });
-            continue;
-        }
-        let selected = i == selected_index;
-        let row_bg = if selected {
-            tc.sidebar_row_selected
-        } else {
-            Color::TRANSPARENT
-        };
-        let icon_child = entry
-            .icon_svg()
-            .map(|svg| svg_icon(svg, icon_size).color(tc.icon));
-        let detail_child = entry
-            .detail()
-            .filter(|d| !d.is_empty())
-            .map(|d| text(d).text_xs().color(tc.text_muted).truncate());
-        list = list.child(view! { scale,
-            <div class="w-full shrink-0 flex-row items-center"
-                 h={row_h} gap={Sp::SM} px={Sp::MD} rounded={Rad::MD}
-                 bg={row_bg}
-                 @when {!selected} { hover_bg={tc.sidebar_row_hover} }
-                 on_click={Action::SelectOverlayEntry(i)}
-                 cursor={CursorHint::Pointer}>
-                {?icon_child}
-                {picker_label(entry.label(), entry.highlight_ranges(), selected, theme)}
-                {?detail_child}
-            </div>
-        });
+    view! { scale,
+        <div class="w-full flex-col" gap={Sp::XS} h={list_h}
+             overflow_hidden scroll_y={scroll} scroll_total={total_h}
+             on_scroll={ScrollActionBuilder::Custom(Action::ScrollActiveOverlayListPx)}
+             hide_scrollbar>
+            for (i, entry) in entries.iter().enumerate() {
+                if entry.is_section_header() {
+                    <div class="w-full flex-row items-center" h={row_h} px={Sp::MD}>
+                        <text class="text-xs truncate" color={tc.text_muted}>{entry.label()}</text>
+                    </div>
+                } else {
+                    {picker_row(i, entry, selected_index, row_h, icon_size, theme)}
+                }
+            }
+        </div>
     }
+}
 
-    list
+fn picker_row<T: PickerItem>(
+    i: usize,
+    entry: &T,
+    selected_index: usize,
+    row_h: f32,
+    icon_size: f32,
+    theme: &Theme,
+) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = theme.metrics.ui_scale();
+    let selected = i == selected_index;
+    let row_bg = if selected {
+        tc.sidebar_row_selected
+    } else {
+        Color::TRANSPARENT
+    };
+    let icon_child = entry
+        .icon_svg()
+        .map(|svg| svg_icon(svg, icon_size).color(tc.icon));
+    let detail_child = entry
+        .detail()
+        .filter(|d| !d.is_empty())
+        .map(|d| text(d).text_xs().color(tc.text_muted).truncate());
+    view! { scale,
+        <div class="w-full shrink-0 flex-row items-center"
+             h={row_h} gap={Sp::SM} px={Sp::MD} rounded={Rad::MD}
+             bg={row_bg}
+             @when {!selected} { hover_bg={tc.sidebar_row_hover} }
+             on_click={Action::SelectOverlayEntry(i)}
+             cursor={CursorHint::Pointer}>
+            {?icon_child}
+            {picker_label(entry.label(), entry.highlight_ranges(), selected, theme)}
+            {?detail_child}
+        </div>
+    }
 }
 
 fn picker_label(
@@ -91,14 +94,14 @@ fn picker_label(
     highlights: &[(usize, usize)],
     selected: bool,
     theme: &Theme,
-) -> Div {
+) -> AnyElement {
     let tc = &theme.colors;
     let base_color = if selected { tc.text_strong } else { tc.text };
 
     let container = div().flex_1().overflow_hidden();
 
     if highlights.is_empty() {
-        return container.child(text(label_text).text_sm().color(base_color).truncate());
+        return container.child(text(label_text).text_sm().color(base_color).truncate()).into_any();
     }
 
     let mut row = div().flex_row().overflow_hidden();
@@ -117,5 +120,5 @@ fn picker_label(
         row = row.child(text(&label_text[cursor..]).text_sm().color(base_color));
     }
 
-    container.child(row)
+    container.child(row).into_any()
 }

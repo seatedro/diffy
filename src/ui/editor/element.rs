@@ -2288,7 +2288,8 @@ mod tests {
         );
 
         assert_eq!(state.visible_row_start, Some(0));
-        assert!(state.visible_row_end.expect("visible end") >= 3);
+        // FileHeader lines are skipped in layout, so only 2 display rows exist.
+        assert!(state.visible_row_end.expect("visible end") >= 2);
         let body = runtime.body_bounds();
         assert_eq!(
             runtime.hit_test_row(&state, body.x + 20.0, body.y + 5.0),

@@ -391,12 +391,10 @@ mod tests {
             &mut rows,
         );
 
+        // FileHeader lines are skipped, so only 2 rows are produced.
+        assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].y_px, 0);
         assert_eq!(rows[1].y_px, u32::from(rows[0].h_px));
-        assert_eq!(
-            rows[2].y_px,
-            u32::from(rows[0].h_px) + u32::from(rows[1].h_px)
-        );
-        assert_eq!(summary.content_height_px, rows[2].bottom_px());
+        assert_eq!(summary.content_height_px, rows[1].bottom_px());
     }
 }

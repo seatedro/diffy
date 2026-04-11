@@ -66,7 +66,9 @@ fn sidebar_expands_for_long_file_names_when_not_manually_resized() {
     state.workspace.files[1].path = long_path.clone();
     let frame = render_frame(&mut state);
 
-    assert!(scene_contains_text(&frame, &long_path));
+    // The sidebar splits paths into filename + directory, so check for the filename part.
+    let filename = long_path.rsplit('/').next().unwrap();
+    assert!(scene_contains_text(&frame, filename));
     assert!(frame.file_list_rect.is_some_and(|rect| rect.width > 280.0));
 }
 

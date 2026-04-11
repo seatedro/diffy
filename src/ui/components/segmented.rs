@@ -37,15 +37,17 @@ impl RenderOnce for SegmentedControl {
         let scale = cx.theme.metrics.ui_scale();
 
         view! { scale,
-            <div class="flex-row shrink-0 items-center"
+            <div class="flex-row shrink-0 items-center overflow-hidden"
                  bg={tc.element_background}
-                 rounded={Rad::XL}>
+                 rounded={Rad::XL}
+                 p={Sp::XXS} gap={Sp::XXS}>
                 for item in self.items {
-                    <div class="shrink-0"
-                         px={Sp::MD} py={Sp::XS}
-                         rounded={Rad::XL}
+                    <div class="flex-1 items-center justify-center"
+                         px={Sp::MD} py={Sp::XXS}
+                         rounded={Rad::LG}
                          bg={if item.selected { tc.ghost_element_hover }}
                          hover_bg={if !item.selected { tc.ghost_element_hover }}
+                         hover_text_color={if !item.selected { tc.text }}
                          on_click={item.action}
                          cursor={CursorHint::Pointer}>
                         <text class="text-sm font-medium"

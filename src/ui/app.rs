@@ -515,6 +515,7 @@ impl ApplicationHandler for NativeApp {
         #[cfg(feature = "hot-reload")]
         if let Some(pending) = &self.hot_reload_pending {
             if pending.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                self.sync_theme();
                 self.mark_dirty();
             }
         }

@@ -277,6 +277,7 @@ pub struct ElementContext<'a> {
     next_hitbox_id: usize,
     z_index_stack: Vec<i32>,
     element_offset_stack: Vec<(f32, f32)>,
+    text_color_stack: Vec<Color>,
 }
 
 impl<'a> ElementContext<'a> {
@@ -307,6 +308,7 @@ impl<'a> ElementContext<'a> {
             next_hitbox_id: 0,
             z_index_stack: vec![0],
             element_offset_stack: vec![(0.0, 0.0)],
+            text_color_stack: Vec::new(),
         }
     }
 
@@ -366,6 +368,18 @@ impl<'a> ElementContext<'a> {
         if self.z_index_stack.len() > 1 {
             self.z_index_stack.pop();
         }
+    }
+
+    pub fn push_text_color(&mut self, color: Color) {
+        self.text_color_stack.push(color);
+    }
+
+    pub fn pop_text_color(&mut self) {
+        self.text_color_stack.pop();
+    }
+
+    pub fn text_color_override(&self) -> Option<Color> {
+        self.text_color_stack.last().copied()
     }
 
     pub fn current_element_offset(&self) -> (f32, f32) {
@@ -1071,6 +1085,11 @@ impl Div {
         self.hover(|s| s.bg(color))
     }
 
+    /// Convenience: set only the hover text color (propagates to child text elements).
+    pub fn hover_text_color(self, color: Color) -> Self {
+        self.hover(|s| s.text_color(color))
+    }
+
     /// Conditionally apply style/config changes.
     pub fn when(self, condition: bool, f: impl FnOnce(Self) -> Self) -> Self {
         if condition { f(self) } else { self }
@@ -1347,6 +1366,17 @@ impl Element for Div {
             scene.clip(bounds);
         }
 
+        let pushed_text_color = if hovered {
+            self.hover_style
+                .as_ref()
+                .and_then(|ov| ov.text_color)
+        } else {
+            None
+        };
+        if let Some(tc) = pushed_text_color {
+            cx.push_text_color(tc);
+        }
+
         if self.scroll_y != 0.0 {
             for child in &mut self.children {
                 child.paint_with_offset(engine, scene, cx, 0.0, -self.scroll_y);
@@ -1355,6 +1385,10 @@ impl Element for Div {
             for child in &mut self.children {
                 child.paint(engine, scene, cx);
             }
+        }
+
+        if pushed_text_color.is_some() {
+            cx.pop_text_color();
         }
 
         if self.scroll_total_height > bounds.height && !self.hide_scrollbar {
@@ -1678,7 +1712,10 @@ impl Element for TextElement {
         cx: &mut ElementContext,
     ) {
         let (font_size, _line_height, natural_width) = *state;
-        let color = self.color.unwrap_or(cx.theme.colors.text);
+        let color = cx
+            .text_color_override()
+            .or(self.color)
+            .unwrap_or(cx.theme.colors.text);
 
         let mut content = std::mem::take(&mut self.content);
         let mut text_width = natural_width;
@@ -2235,8 +2272,14 @@ impl Element for SvgIcon {
         let px_size = (self.size * scale).ceil() as u32;
         let key = crate::ui::icons::cache_key(self.svg, px_size, color);
         let (rgba, w, h) = crate::ui::icons::rasterize_svg(self.svg, px_size, color);
+        let snapped = Bounds {
+            x: bounds.x.round(),
+            y: bounds.y.round(),
+            width: bounds.width.round(),
+            height: bounds.height.round(),
+        };
         scene.image(crate::render::ImagePrimitive {
-            rect: bounds,
+            rect: snapped,
             width: w,
             height: h,
             rgba,

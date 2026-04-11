@@ -492,7 +492,7 @@ pub(crate) fn sidebar(
                 row = row.hover_bg(tc.sidebar_row_hover);
             }
 
-            row = row.child(components::file_icon(&file.path, Ico::XS).selected(selected));
+            row = row.child(components::file_icon(&file.path, Ico::LG).selected(selected));
 
             let (filename, dir_path) = match file.path.rfind('/') {
                 Some(pos) => (&file.path[pos + 1..], Some(&file.path[..pos])),

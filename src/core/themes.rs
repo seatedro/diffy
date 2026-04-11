@@ -236,16 +236,8 @@ impl SemanticPalette {
         let element_hover = s.panel.lerp(s.text_base, 0.08);
         let element_active = s.panel.lerp(s.text_base, 0.14);
 
-        let ghost_hover = if d {
-            Color::rgba(255, 255, 255, 20)
-        } else {
-            Color::rgba(0, 0, 0, 15)
-        };
-        let ghost_active = if d {
-            Color::rgba(255, 255, 255, 36)
-        } else {
-            Color::rgba(0, 0, 0, 31)
-        };
+        let ghost_hover = s.panel.lerp(s.accent_soft, 0.3);
+        let ghost_active = s.panel.lerp(s.accent_soft, 0.5);
 
         ThemeColors {
             app_bg: s.app_bg,

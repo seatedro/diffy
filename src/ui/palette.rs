@@ -9,8 +9,39 @@
 
 use crate::ui::theme::Color;
 
-/// A 12-step color scale (indices 0..12 map to steps 1..12).
-pub type Scale = [Color; 12];
+#[derive(Debug, Clone, Copy)]
+#[repr(usize)]
+pub enum Step {
+    Bg = 0,
+    BgAlt = 1,
+    Element = 2,
+    ElementHover = 3,
+    ElementActive = 4,
+    BorderSubtle = 5,
+    Border = 6,
+    BorderStrong = 7,
+    Solid = 8,
+    TextSubtle = 9,
+    Text = 10,
+    TextStrong = 11,
+}
+
+/// A 12-step color scale indexed by [`Step`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Scale([Color; 12]);
+
+impl Scale {
+    pub fn as_array(&self) -> &[Color; 12] {
+        &self.0
+    }
+}
+
+impl std::ops::Index<Step> for Scale {
+    type Output = Color;
+    fn index(&self, step: Step) -> &Color {
+        &self.0[step as usize]
+    }
+}
 
 /// A 12-step alpha scale — same hue but with varying alpha.
 pub type AlphaScale = [Color; 12];
@@ -90,11 +121,11 @@ pub fn dark_scale(hue: f32, peak_chroma: f32) -> Scale {
         0.55, 0.30, 0.12,
     ];
 
-    let mut scale = [Color::default(); 12];
+    let mut arr = [Color::default(); 12];
     for i in 0..12 {
-        scale[i] = oklch_to_color(L[i], peak_chroma * C_FACTOR[i], hue);
+        arr[i] = oklch_to_color(L[i], peak_chroma * C_FACTOR[i], hue);
     }
-    scale
+    Scale(arr)
 }
 
 /// Generate a 12-step light-mode scale.
@@ -119,11 +150,11 @@ pub fn light_scale(hue: f32, peak_chroma: f32) -> Scale {
         0.10, 0.12, 0.15, 0.18, 0.22, 0.28, 0.35, 0.45, 1.00, 0.60, 0.40, 0.20,
     ];
 
-    let mut scale = [Color::default(); 12];
+    let mut arr = [Color::default(); 12];
     for i in 0..12 {
-        scale[i] = oklch_to_color(L[i], peak_chroma * C_FACTOR[i], hue);
+        arr[i] = oklch_to_color(L[i], peak_chroma * C_FACTOR[i], hue);
     }
-    scale
+    Scale(arr)
 }
 
 /// Generate an alpha scale from a base color, with alpha ranging from subtle
@@ -180,11 +211,10 @@ mod tests {
     #[test]
     fn dark_neutral_scale_is_monotonically_brighter() {
         let scale = dark_scale(NEUTRAL_HUE, NEUTRAL_CHROMA);
-        // Rough check: each step should have higher perceived brightness.
-        // We use the sum of RGB as a proxy.
+        let arr = scale.as_array();
         for i in 1..12 {
-            let prev_sum = scale[i - 1].r as u16 + scale[i - 1].g as u16 + scale[i - 1].b as u16;
-            let curr_sum = scale[i].r as u16 + scale[i].g as u16 + scale[i].b as u16;
+            let prev_sum = arr[i - 1].r as u16 + arr[i - 1].g as u16 + arr[i - 1].b as u16;
+            let curr_sum = arr[i].r as u16 + arr[i].g as u16 + arr[i].b as u16;
             assert!(
                 curr_sum >= prev_sum,
                 "step {} (sum={}) should be >= step {} (sum={})",
@@ -199,9 +229,10 @@ mod tests {
     #[test]
     fn light_neutral_scale_is_monotonically_darker() {
         let scale = light_scale(NEUTRAL_HUE, NEUTRAL_CHROMA);
+        let arr = scale.as_array();
         for i in 1..12 {
-            let prev_sum = scale[i - 1].r as u16 + scale[i - 1].g as u16 + scale[i - 1].b as u16;
-            let curr_sum = scale[i].r as u16 + scale[i].g as u16 + scale[i].b as u16;
+            let prev_sum = arr[i - 1].r as u16 + arr[i - 1].g as u16 + arr[i - 1].b as u16;
+            let curr_sum = arr[i].r as u16 + arr[i].g as u16 + arr[i].b as u16;
             assert!(
                 curr_sum <= prev_sum,
                 "step {} (sum={}) should be <= step {} (sum={})",

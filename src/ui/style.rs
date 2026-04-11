@@ -59,6 +59,7 @@ pub struct StyleOverride {
     pub border_color: Option<Color>,
     pub corner_radius: Option<f32>,
     pub opacity: Option<f32>,
+    pub text_color: Option<Color>,
 }
 
 impl StyleOverride {
@@ -79,6 +80,11 @@ impl StyleOverride {
 
     pub fn opacity(mut self, v: f32) -> Self {
         self.opacity = Some(v);
+        self
+    }
+
+    pub fn text_color(mut self, color: Color) -> Self {
+        self.text_color = Some(color);
         self
     }
 }

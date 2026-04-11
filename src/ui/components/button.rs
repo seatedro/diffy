@@ -114,7 +114,12 @@ impl RenderOnce for Button {
             ),
             ButtonStyle::Ghost => {
                 if self.active {
-                    (tc.element_background, tc.element_hover, tc.text, tc.text)
+                    (
+                        tc.ghost_element_active,
+                        tc.ghost_element_hover,
+                        tc.text,
+                        tc.text,
+                    )
                 } else {
                     (
                         Color::TRANSPARENT,

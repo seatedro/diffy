@@ -1,4 +1,4 @@
-use crate::ui::palette::{self, Scale};
+use crate::ui::palette::{self, Scale, Step};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -277,7 +277,7 @@ fn default_metrics() -> ThemeMetrics {
 /// Build dark-mode theme colors from perceptual scales.
 ///
 /// Mapping convention — `n` is the 12-step neutral, `b` blue accent,
-/// `r` red, `g` green, `y` yellow. Indices are 0-based (step 1 = [0]).
+/// `r` red, `g` green, `y` yellow. Indexed via `Step` enum.
 fn dark_colors(
     n: &Scale,
     b: &Scale,
@@ -288,59 +288,60 @@ fn dark_colors(
     teal: &Scale,
     orange: &Scale,
 ) -> ThemeColors {
+    use Step::*;
+
     ThemeColors {
         // Backgrounds — clear visual hierarchy between layers.
-        // n[0] is the deepest black, n[3] is noticeably lighter.
-        app_bg: n[0],
-        canvas: n[1],
-        panel: n[2],
-        panel_strong: n[3],
-        background: n[0],
-        surface: n[2],
-        editor_surface: n[1],
-        elevated_surface: n[3],
-        modal_surface: n[4],
-        title_bar_background: n[2], // slightly lifted from bg
-        status_bar_background: n[1],
-        sidebar_background: n[1],
-        empty_state_background: n[2],
-        gutter_bg: n[0],
-        file_header_bg: n[3],
-        hunk_header_bg: b[3],
+        app_bg: n[Bg],
+        canvas: n[BgAlt],
+        panel: n[Element],
+        panel_strong: n[ElementHover],
+        background: n[Bg],
+        surface: n[Element],
+        editor_surface: n[BgAlt],
+        elevated_surface: n[ElementHover],
+        modal_surface: n[ElementActive],
+        title_bar_background: n[Element],
+        status_bar_background: n[BgAlt],
+        sidebar_background: n[BgAlt],
+        empty_state_background: n[Element],
+        gutter_bg: n[Bg],
+        file_header_bg: n[ElementHover],
+        hunk_header_bg: b[ElementHover],
 
         // Interactive elements — clear affordance
-        element_background: n[3],
-        element_hover: n[4],
-        element_active: n[5],
-        element_selected: b[5],
+        element_background: n[ElementHover],
+        element_hover: n[ElementActive],
+        element_active: n[BorderSubtle],
+        element_selected: b[BorderSubtle],
 
-        // Ghost elements (semi-transparent overlays)
-        ghost_element_hover: Color::rgba(255, 255, 255, 20),
-        ghost_element_active: Color::rgba(255, 255, 255, 36),
-        ghost_element_selected: b[4],
-        hover_overlay: b[3],
+        // Ghost elements — accent-tinted so they feel integrated with the theme
+        ghost_element_hover: b[ElementHover],
+        ghost_element_active: b[ElementActive],
+        ghost_element_selected: b[ElementActive],
+        hover_overlay: b[ElementHover],
 
-        sidebar_row_hover: b[3],
-        sidebar_row_selected: b[4],
+        sidebar_row_hover: b[ElementHover],
+        sidebar_row_selected: b[ElementActive],
 
         // Borders — subtle but visible separation
-        border_soft: n[3],
-        border: n[4],
-        border_variant: n[3],
-        focus_border: b[8],
-        empty_state_border: n[4],
+        border_soft: n[ElementHover],
+        border: n[ElementActive],
+        border_variant: n[ElementHover],
+        focus_border: b[Solid],
+        empty_state_border: n[ElementActive],
 
         // Text — readable hierarchy
         text_strong: Color::rgba(240, 240, 245, 255),
-        text: n[10],
-        text_muted: n[8],
-        text_accent: b[9],
-        icon: n[9],
-        gutter_text: n[7],
+        text: n[Text],
+        text_muted: n[Solid],
+        text_accent: b[TextSubtle],
+        icon: n[TextSubtle],
+        gutter_text: n[BorderStrong],
 
         // Accent — vibrant blue
-        accent: b[8],
-        selection_bg: b[4],
+        accent: b[Solid],
+        selection_bg: b[ElementActive],
 
         // Overlay
         overlay_scrim: Color::rgba(0, 0, 0, 180),
@@ -349,30 +350,30 @@ fn dark_colors(
         scrollbar_thumb: Color::rgba(255, 255, 255, 100),
 
         // Status indicators
-        status_info: b[8],
-        status_warning: y[8],
-        status_error: r[8],
+        status_info: b[Solid],
+        status_warning: y[Solid],
+        status_error: r[Solid],
 
         // Diff colors
-        line_add: g[2],
-        line_del: r[2],
-        line_modified: b[2],
-        line_add_text: g[8],
-        line_del_text: r[8],
-        line_add_word_bg: g[4],
-        line_del_word_bg: r[4],
+        line_add: g[Element],
+        line_del: r[Element],
+        line_modified: b[Element],
+        line_add_text: g[Solid],
+        line_del_text: r[Solid],
+        line_add_word_bg: g[ElementActive],
+        line_del_word_bg: r[ElementActive],
 
-        search_match_bg: Color::rgba(y[6].r, y[6].g, y[6].b, 90),
-        search_match_active_bg: Color::rgba(y[8].r, y[8].g, y[8].b, 180),
+        search_match_bg: Color::rgba(y[Border].r, y[Border].g, y[Border].b, 90),
+        search_match_active_bg: Color::rgba(y[Solid].r, y[Solid].g, y[Solid].b, 180),
 
-        syntax_keyword: purple[9],
-        syntax_string: g[9],
-        syntax_comment: n[8],
-        syntax_function: b[9],
-        syntax_type: teal[9],
-        syntax_number: orange[9],
-        syntax_property: r[9],
-        syntax_operator: n[9],
+        syntax_keyword: purple[TextSubtle],
+        syntax_string: g[TextSubtle],
+        syntax_comment: n[Solid],
+        syntax_function: b[TextSubtle],
+        syntax_type: teal[TextSubtle],
+        syntax_number: orange[TextSubtle],
+        syntax_property: r[TextSubtle],
+        syntax_operator: n[TextSubtle],
     }
 }
 
@@ -387,90 +388,92 @@ fn light_colors(
     teal: &Scale,
     orange: &Scale,
 ) -> ThemeColors {
+    use Step::*;
+
     ThemeColors {
-        // Backgrounds (steps 1-4 — lightest first)
-        app_bg: n[0],
-        canvas: n[1],
-        panel: n[2],
-        panel_strong: n[3],
-        background: n[0],
-        surface: n[2],
-        editor_surface: n[1],
-        elevated_surface: n[2],
-        modal_surface: n[2],
-        title_bar_background: n[3],
-        status_bar_background: n[3],
-        sidebar_background: n[1],
-        empty_state_background: n[2],
-        gutter_bg: n[3],
-        file_header_bg: n[3],
-        hunk_header_bg: b[2],
+        // Backgrounds (lightest first in light mode)
+        app_bg: n[Bg],
+        canvas: n[BgAlt],
+        panel: n[Element],
+        panel_strong: n[ElementHover],
+        background: n[Bg],
+        surface: n[Element],
+        editor_surface: n[BgAlt],
+        elevated_surface: n[Element],
+        modal_surface: n[Element],
+        title_bar_background: n[ElementHover],
+        status_bar_background: n[ElementHover],
+        sidebar_background: n[BgAlt],
+        empty_state_background: n[Element],
+        gutter_bg: n[ElementHover],
+        file_header_bg: n[ElementHover],
+        hunk_header_bg: b[Element],
 
         // Interactive elements
-        element_background: n[3],
-        element_hover: n[4],
-        element_active: n[5],
-        element_selected: b[4],
+        element_background: n[ElementHover],
+        element_hover: n[ElementActive],
+        element_active: n[BorderSubtle],
+        element_selected: b[ElementActive],
 
-        // Ghost elements (semi-transparent dark overlays)
-        ghost_element_hover: Color::rgba(0, 0, 0, 15), // ~6%
-        ghost_element_active: Color::rgba(0, 0, 0, 31), // ~12%
-        ghost_element_selected: b[3],
-        hover_overlay: b[2],
+        // Ghost elements — accent-tinted so they feel integrated with the theme
+        ghost_element_hover: b[Element],
+        ghost_element_active: b[ElementHover],
+        ghost_element_selected: b[ElementHover],
+        hover_overlay: b[Element],
 
-        sidebar_row_hover: b[2],
-        sidebar_row_selected: b[3],
+        sidebar_row_hover: b[Element],
+        sidebar_row_selected: b[ElementHover],
 
         // Borders
-        border_soft: n[6],
-        border: n[6],
-        border_variant: n[5],
-        focus_border: b[8],
-        empty_state_border: n[6],
+        border_soft: n[Border],
+        border: n[Border],
+        border_variant: n[BorderSubtle],
+        focus_border: b[Solid],
+        empty_state_border: n[Border],
 
-        // Text (steps 10-12 — darkest)
-        text_strong: n[11],
-        text: n[11],
-        text_muted: n[9],
-        text_accent: b[9],
-        icon: n[9],
-        gutter_text: n[8],
+        // Text (darkest in light mode)
+        text_strong: n[TextStrong],
+        text: n[TextStrong],
+        text_muted: n[TextSubtle],
+        text_accent: b[TextSubtle],
+        icon: n[TextSubtle],
+        gutter_text: n[Solid],
 
         // Accent
-        accent: b[8],
-        selection_bg: b[3],
+        accent: b[Solid],
+        selection_bg: b[ElementHover],
 
         // Overlay
         overlay_scrim: Color::rgba(11, 21, 32, 51),
 
         // Scrollbar
-        scrollbar_thumb: n[7],
+        scrollbar_thumb: n[BorderStrong],
 
         // Status
-        status_info: b[8],
-        status_warning: y[8],
-        status_error: r[8],
+        status_info: b[Solid],
+        status_warning: y[Solid],
+        status_error: r[Solid],
 
         // Diff
-        line_add: g[2],
-        line_del: r[2],
-        line_modified: b[2],
-        line_add_text: g[9],
-        line_del_text: r[9],
-        line_add_word_bg: g[4],
-        line_del_word_bg: r[4],
+        line_add: g[Element],
+        line_del: r[Element],
+        line_modified: b[Element],
+        line_add_text: g[TextSubtle],
+        line_del_text: r[TextSubtle],
+        line_add_word_bg: g[ElementActive],
+        line_del_word_bg: r[ElementActive],
 
-        search_match_bg: Color::rgba(y[4].r, y[4].g, y[4].b, 120),
-        search_match_active_bg: Color::rgba(y[6].r, y[6].g, y[6].b, 200),
+        search_match_bg: Color::rgba(y[ElementActive].r, y[ElementActive].g, y[ElementActive].b, 120),
+        search_match_active_bg: Color::rgba(y[Border].r, y[Border].g, y[Border].b, 200),
 
-        syntax_keyword: purple[9],
-        syntax_string: g[9],
-        syntax_comment: n[8],
-        syntax_function: b[9],
-        syntax_type: teal[9],
-        syntax_number: orange[9],
-        syntax_property: r[9],
-        syntax_operator: n[9],
+        syntax_keyword: purple[TextSubtle],
+        syntax_string: g[TextSubtle],
+        syntax_comment: n[Solid],
+        syntax_function: b[TextSubtle],
+        syntax_type: teal[TextSubtle],
+        syntax_number: orange[TextSubtle],
+        syntax_property: r[TextSubtle],
+        syntax_operator: n[TextSubtle],
     }
 }
 

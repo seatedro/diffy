@@ -11,7 +11,7 @@ use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
 use crate::ui::state::{AppState, FocusTarget, WorkspaceMode};
-use crate::ui::status_bar::{compare_mode_label, display_ref, renderer_label};
+use crate::ui::status_bar::{compare_mode_label, display_ref};
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
 
@@ -102,9 +102,6 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> Div {
                 .label("Wrap")
                 .active(state.editor.wrap_enabled)
                 .tooltip("Toggle line wrapping (w)")}
-            <text class="text-xs" color={tc.text_muted}>
-                {renderer_label(state.compare.renderer)}
-            </text>
         </div>
     };
 

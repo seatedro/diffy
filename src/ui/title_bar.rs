@@ -39,10 +39,14 @@ pub(crate) fn title_bar(
         .gap((Sp::SM * scale).round());
 
     if is_ready {
+        let sidebar_icon = if sidebar_visible > 0.5 {
+            lucide::PANEL_LEFT_CLOSE
+        } else {
+            lucide::PANEL_LEFT_OPEN
+        };
         left = left.child(
             Button::new(Action::ToggleSidebar)
-                .icon(lucide::PANEL_LEFT)
-                .active(sidebar_visible > 0.5)
+                .icon(sidebar_icon)
                 .tooltip("Toggle sidebar (\u{2318}B)"),
         );
     }

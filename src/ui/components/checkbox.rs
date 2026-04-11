@@ -59,22 +59,17 @@ impl RenderOnce for Checkbox {
             (Color::TRANSPARENT, tc.border, tc.icon)
         };
 
-        let check_box = div()
-            .flex_shrink_0()
-            .items_center()
-            .justify_center()
-            .w(size)
-            .h(size)
-            .bg(box_bg)
-            .border(box_border)
-            .rounded(radius)
-            .when(!self.disabled && !self.checked, |d| {
-                d.hover_bg(tc.ghost_element_hover)
-            })
-            .optional_child(
-                self.checked
-                    .then(|| svg_icon(lucide::CHECK, icon_size).color(check_color)),
-            );
+        let can_hover = !self.disabled && !self.checked;
+        let check_box = view! {
+            <div class="shrink-0 items-center justify-center"
+                 w={size} h={size}
+                 bg={box_bg} border={box_border} rounded={radius}
+                 @when {can_hover} { hover_bg={tc.ghost_element_hover} }>
+                if self.checked {
+                    <icon svg={lucide::CHECK} size={icon_size} color={check_color} />
+                }
+            </div>
+        };
 
         let mut row = div().flex_row().items_center().gap(m.spacing_sm);
 
@@ -174,13 +169,14 @@ impl RenderOnce for Toggle {
             tc.element_hover
         };
 
+        let enabled = !self.disabled;
         let track = div()
             .flex_shrink_0()
             .w(track_w)
             .h(track_h)
             .bg(track_bg)
             .rounded(track_h / 2.0)
-            .when(!self.disabled, |d| d.hover_bg(hover_bg))
+            .when(enabled, |d| d.hover_bg(hover_bg))
             .child(thumb);
 
         let mut row = div().flex_row().items_center().gap(m.spacing_sm);

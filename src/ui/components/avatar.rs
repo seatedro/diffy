@@ -116,8 +116,7 @@ impl RenderOnce for AvatarGroup {
                 .rounded(self.size / 2.0)
                 .child(a);
             if i > 0 {
-                wrapper.element_style_mut().layout.margin.left =
-                    taffy::LengthPercentageAuto::length(overlap);
+                wrapper = wrapper.margin_left(overlap);
             }
             row = row.child(wrapper);
         }
@@ -125,7 +124,7 @@ impl RenderOnce for AvatarGroup {
         if remaining > 0 {
             let count_size = self.size;
             let font_size = (count_size * 0.35).round();
-            let mut count = div()
+            let count = div()
                 .flex_shrink_0()
                 .items_center()
                 .justify_center()
@@ -139,9 +138,8 @@ impl RenderOnce for AvatarGroup {
                         .size(font_size)
                         .color(tc.text_muted)
                         .medium(),
-                );
-            count.element_style_mut().layout.margin.left =
-                taffy::LengthPercentageAuto::length(overlap);
+                )
+                .margin_left(overlap);
             row = row.child(count);
         }
 

@@ -130,6 +130,11 @@ pub trait Styled: Sized {
         self
     }
 
+    fn flex_grow_val(mut self, v: f32) -> Self {
+        self.element_style_mut().layout.flex_grow = v;
+        self
+    }
+
     fn flex_shrink_0(mut self) -> Self {
         self.element_style_mut().layout.flex_shrink = 0.0;
         self
@@ -584,6 +589,11 @@ pub trait Styled: Sized {
 
     fn pr(mut self, v: f32) -> Self {
         self.element_style_mut().layout.padding.right = taffy::LengthPercentage::length(v);
+        self
+    }
+
+    fn margin_left(mut self, v: f32) -> Self {
+        self.element_style_mut().layout.margin.left = taffy::LengthPercentageAuto::length(v);
         self
     }
 

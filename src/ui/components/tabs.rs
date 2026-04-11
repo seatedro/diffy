@@ -104,14 +104,16 @@ impl RenderOnce for TabBar {
 
             let indicator = div().w_full().h(Sz::TAB_INDICATOR_H).bg(indicator_color);
 
-            let tab = div()
-                .flex_col()
-                .items_center()
-                .on_click(item.action)
-                .when(!active, |d| d.hover_bg(tc.ghost_element_hover))
-                .when(self.fill, |d| d.flex_1())
-                .child(content)
-                .child(indicator);
+            let fill = self.fill;
+            let tab = view! {
+                <div class="flex-col items-center"
+                     on_click={item.action}
+                     @when {!active} { hover_bg={tc.ghost_element_hover} }
+                     @when {fill} { flex_1 }>
+                    {content}
+                    {indicator}
+                </div>
+            };
 
             bar = bar.child(tab);
         }

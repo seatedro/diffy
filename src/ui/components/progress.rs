@@ -53,12 +53,14 @@ impl RenderOnce for ProgressBar {
         let h = self.height;
         let v = self.value;
 
-        let mut fill = div().h_full().bg(fill_color).rounded(h / 2.0);
-        fill.element_style_mut().layout.flex_grow = if v > 0.001 { v } else { 0.001 };
+        let fill = div()
+            .h_full()
+            .bg(fill_color)
+            .rounded(h / 2.0)
+            .flex_grow_val(if v > 0.001 { v } else { 0.001 });
 
-        let mut empty = div().h_full();
         let remainder = (1.0 - v).max(0.001);
-        empty.element_style_mut().layout.flex_grow = remainder;
+        let empty = div().h_full().flex_grow_val(remainder);
 
         let track = div()
             .w_full()
@@ -115,11 +117,15 @@ impl RenderOnce for DiffStatBar {
         let del_ratio = self.deletions as f32 / total;
         let h = Sz::DIFFSTAT_H;
 
-        let mut add_bar = div().h_full().bg(tc.line_add_text);
-        add_bar.element_style_mut().layout.flex_grow = add_ratio.max(0.001);
+        let add_bar = div()
+            .h_full()
+            .bg(tc.line_add_text)
+            .flex_grow_val(add_ratio.max(0.001));
 
-        let mut del_bar = div().h_full().bg(tc.line_del_text);
-        del_bar.element_style_mut().layout.flex_grow = del_ratio.max(0.001);
+        let del_bar = div()
+            .h_full()
+            .bg(tc.line_del_text)
+            .flex_grow_val(del_ratio.max(0.001));
 
         let mut track = div()
             .flex_row()

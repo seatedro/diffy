@@ -100,6 +100,7 @@ enum Attr {
     KeyValue(Ident, Expr),
     Class(LitStr),
     IfAttr(Ident, ExprIf),
+    When(Expr, Vec<Attr>),
 }
 
 // ---------------------------------------------------------------------------
@@ -299,6 +300,25 @@ fn parse_closing_tag(input: ParseStream, open_tag: &Tag) -> Result<()> {
 
 impl Parse for Attr {
     fn parse(input: ParseStream) -> Result<Self> {
+        // @when {condition} { attr1 attr2=val ... }
+        if input.peek(Token![@]) {
+            input.parse::<Token![@]>()?;
+            let kw: Ident = input.parse()?;
+            if kw != "when" {
+                return Err(syn::Error::new(kw.span(), "expected `when` after `@`"));
+            }
+            let cond_content;
+            braced!(cond_content in input);
+            let cond: Expr = cond_content.parse()?;
+            let attrs_content;
+            braced!(attrs_content in input);
+            let mut attrs = Vec::new();
+            while !attrs_content.is_empty() {
+                attrs.push(attrs_content.parse::<Attr>()?);
+            }
+            return Ok(Attr::When(cond, attrs));
+        }
+
         let name: Ident = input.parse()?;
         if name == "class" {
             input.parse::<Token![=]>()?;
@@ -503,7 +523,7 @@ impl EmitCtx {
                 Attr::Flag(name) => {
                     chain = quote! { #chain.#name() };
                 }
-                Attr::Class(_) | Attr::IfAttr(_, _) => {}
+                Attr::Class(_) | Attr::IfAttr(_, _) | Attr::When(_, _) => {}
             }
         }
 
@@ -532,6 +552,7 @@ impl EmitCtx {
                     }
                 }
                 Attr::IfAttr(_, _) => {}
+                Attr::When(_, _) => {} // handled in second pass below
             }
         }
 
@@ -543,6 +564,30 @@ impl EmitCtx {
 
         for call in &builder_calls {
             chain = quote! { #chain #call };
+        }
+
+        // Apply @when directives
+        for attr in &el.attrs {
+            if let Attr::When(cond, inner_attrs) = attr {
+                let mut inner = quote! { __w };
+                for a in inner_attrs {
+                    match a {
+                        Attr::Flag(name) => {
+                            inner = quote! { #inner.#name() };
+                        }
+                        Attr::KeyValue(name, expr) => {
+                            inner = quote! { #inner.#name(#expr) };
+                        }
+                        Attr::Class(lit) => {
+                            for call in self.class_to_calls(lit) {
+                                inner = quote! { #inner #call };
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                chain = quote! { { let __w = #chain; if #cond { #inner } else { __w } } };
+            }
         }
 
         for child in &el.children {
@@ -607,6 +652,13 @@ impl EmitCtx {
                 quote! { #chain #(#calls)* }
             }
             Attr::IfAttr(name, if_expr) => self.emit_if_attr(chain, name, if_expr),
+            Attr::When(cond, attrs) => {
+                let mut inner = quote! { __w };
+                for a in attrs {
+                    inner = self.emit_styled_attr(inner, a);
+                }
+                quote! { { let __w = #chain; if #cond { #inner } else { __w } } }
+            }
         }
     }
 
@@ -653,6 +705,13 @@ impl EmitCtx {
                 quote! { #chain #(#calls)* }
             }
             Attr::IfAttr(name, if_expr) => self.emit_if_attr(chain, name, if_expr),
+            Attr::When(cond, attrs) => {
+                let mut inner = quote! { __w };
+                for a in attrs {
+                    inner = self.emit_text_attr(inner, a);
+                }
+                quote! { { let __w = #chain; if #cond { #inner } else { __w } } }
+            }
         }
     }
 

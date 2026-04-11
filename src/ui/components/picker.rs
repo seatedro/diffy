@@ -6,7 +6,7 @@ use crate::ui::element::*;
 use crate::ui::shell::CursorHint;
 use crate::ui::state::PickerItem;
 use crate::ui::style::Styled;
-use crate::ui::theme::Theme;
+use crate::ui::theme::{Color, Theme};
 
 pub fn picker_list<T: PickerItem>(
     entries: &[T],
@@ -57,38 +57,30 @@ pub fn picker_list<T: PickerItem>(
             continue;
         }
         let selected = i == selected_index;
-        list = list.child(
-            div()
-                .w_full()
-                .h(row_h)
-                .flex_shrink_0()
-                .flex_row()
-                .items_center()
-                .gap((Sp::SM * scale).round())
-                .px((Sp::MD * scale).round())
-                .rounded((Rad::MD * scale).round())
-                .when(selected, |d| d.bg(tc.sidebar_row_selected))
-                .when(!selected, |d| d.hover_bg(tc.ghost_element_hover))
-                .on_click(Action::SelectOverlayEntry(i))
-                .cursor(CursorHint::Pointer)
-                .optional_child(
-                    entry
-                        .icon_svg()
-                        .map(|svg| svg_icon(svg, icon_size).color(tc.icon)),
-                )
-                .child(picker_label(
-                    entry.label(),
-                    entry.highlight_ranges(),
-                    selected,
-                    theme,
-                ))
-                .optional_child(
-                    entry
-                        .detail()
-                        .filter(|d| !d.is_empty())
-                        .map(|d| text(d).text_xs().color(tc.text_muted).truncate()),
-                ),
-        );
+        let row_bg = if selected {
+            tc.sidebar_row_selected
+        } else {
+            Color::TRANSPARENT
+        };
+        let icon_child = entry
+            .icon_svg()
+            .map(|svg| svg_icon(svg, icon_size).color(tc.icon));
+        let detail_child = entry
+            .detail()
+            .filter(|d| !d.is_empty())
+            .map(|d| text(d).text_xs().color(tc.text_muted).truncate());
+        list = list.child(view! { scale,
+            <div class="w-full shrink-0 flex-row items-center"
+                 h={row_h} gap={Sp::SM} px={Sp::MD} rounded={Rad::MD}
+                 bg={row_bg}
+                 @when {!selected} { hover_bg={tc.ghost_element_hover} }
+                 on_click={Action::SelectOverlayEntry(i)}
+                 cursor={CursorHint::Pointer}>
+                {?icon_child}
+                {picker_label(entry.label(), entry.highlight_ranges(), selected, theme)}
+                {?detail_child}
+            </div>
+        });
     }
 
     list

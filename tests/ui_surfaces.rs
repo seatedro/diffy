@@ -1,6 +1,6 @@
 mod support;
 
-use diffy::ui::actions::Action;
+use diffy::actions::Action;
 use diffy::ui::element::ScrollActionBuilder;
 use diffy::ui::state::FocusTarget;
 

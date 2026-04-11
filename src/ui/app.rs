@@ -788,7 +788,7 @@ mod tests {
     #[test]
     fn space_in_picker_input_inserts_text() {
         let mut state = AppState::default();
-        state.apply_action(crate::ui::actions::Action::OpenRepoPicker);
+        state.apply_action(crate::actions::Action::OpenRepoPicker);
         let mut app = test_app(state);
         let before = app.state.overlays.picker.query.clone();
 
@@ -800,7 +800,7 @@ mod tests {
     #[test]
     fn command_palette_shortcut_still_works_while_text_focused() {
         let mut state = AppState::default();
-        state.apply_action(crate::ui::actions::Action::OpenSearch);
+        state.apply_action(crate::actions::Action::OpenSearch);
         let mut app = test_app(state);
 
         dispatch_input_event(&mut app, keypress("p", ModifiersState::SUPER));
@@ -814,7 +814,7 @@ mod tests {
     #[test]
     fn ime_commit_inserts_once_into_text_field() {
         let mut state = AppState::default();
-        state.apply_action(crate::ui::actions::Action::OpenSearch);
+        state.apply_action(crate::actions::Action::OpenSearch);
         let mut app = test_app(state);
 
         dispatch_input_event(

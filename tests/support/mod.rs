@@ -265,13 +265,13 @@ pub fn largest_rounded_rect(frame: &UiFrame) -> Option<Rect> {
         })
 }
 
-pub fn has_hit(frame: &UiFrame, predicate: impl Fn(&diffy::ui::actions::Action) -> bool) -> bool {
+pub fn has_hit(frame: &UiFrame, predicate: impl Fn(&diffy::actions::Action) -> bool) -> bool {
     frame.hits.iter().any(|hit| predicate(&hit.action))
 }
 
 pub fn count_hits(
     frame: &UiFrame,
-    predicate: impl Fn(&diffy::ui::actions::Action) -> bool,
+    predicate: impl Fn(&diffy::actions::Action) -> bool,
 ) -> usize {
     frame
         .hits

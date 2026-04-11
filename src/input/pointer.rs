@@ -204,7 +204,11 @@ impl InputSystem {
             window.set_cursor(icon);
         }
 
-        InputOutcome::actions(actions)
+        // Always request a redraw on mouse movement so that hitbox-based
+        // hover styles (e.g. picker item highlights) update immediately.
+        let mut outcome = InputOutcome::actions(actions);
+        outcome.dirty = true;
+        outcome
     }
 
     pub(super) fn handle_left_release(&mut self, state: &AppState) -> InputOutcome {

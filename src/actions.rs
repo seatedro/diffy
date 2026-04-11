@@ -52,6 +52,7 @@ pub enum Action {
     ConfirmOverlaySelection,
     TabCompletePickerDir,
     SelectOverlayEntry(usize),
+    HoverOverlayEntry(Option<usize>),
     StartCompare,
     SelectFile(usize),
     SelectFilePath(String),

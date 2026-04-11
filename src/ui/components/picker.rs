@@ -73,7 +73,6 @@ pub fn picker_list<T: PickerItem>(
             <div class="w-full shrink-0 flex-row items-center"
                  h={row_h} gap={Sp::SM} px={Sp::MD} rounded={Rad::MD}
                  bg={row_bg}
-                 @when {!selected} { hover_bg={tc.ghost_element_hover} }
                  on_click={Action::SelectOverlayEntry(i)}
                  cursor={CursorHint::Pointer}>
                 {?icon_child}

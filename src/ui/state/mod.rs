@@ -391,6 +391,7 @@ pub struct PickerState {
     pub query: String,
     pub entries: Vec<PickerEntry>,
     pub selected_index: usize,
+    pub hovered_index: Option<usize>,
     pub list: OverlayListState,
     pub browse_path: Option<PathBuf>,
     pub ref_resolve_generation: u64,
@@ -741,7 +742,7 @@ impl AppState {
             | OpenRefPicker(_) | OpenCommandPalette
             | OpenPullRequestModal | OpenGitHubAuthModal | CloseOverlay
             | MoveOverlaySelection(_) | ConfirmOverlaySelection
-            | TabCompletePickerDir | SelectOverlayEntry(_)
+            | TabCompletePickerDir | SelectOverlayEntry(_) | HoverOverlayEntry(_)
             | ScrollActiveOverlayListPx(_) | ShowKeyboardShortcuts
                 => self.apply_overlay_action(action),
 
@@ -862,6 +863,15 @@ impl AppState {
             Action::SelectOverlayEntry(index) => {
                 self.select_overlay_entry(index);
                 self.confirm_overlay_selection()
+            }
+            Action::HoverOverlayEntry(Some(index)) => {
+                self.overlays.picker.hovered_index = Some(index);
+                self.select_overlay_entry(index);
+                Vec::new()
+            }
+            Action::HoverOverlayEntry(None) => {
+                self.overlays.picker.hovered_index = None;
+                Vec::new()
             }
             Action::ScrollActiveOverlayListPx(delta_px) => {
                 self.scroll_active_overlay_list_px(delta_px);
@@ -1788,6 +1798,11 @@ impl AppState {
                 })
                 .collect();
             self.overlays.picker.selected_index = 0;
+        }
+        if let Some(entry) = self.overlays.picker.entries.get(self.overlays.picker.selected_index) {
+            if !entry.section_header {
+                self.settings.theme_name = entry.value.clone();
+            }
         }
         let entry_count = self.overlays.picker.entries.len();
         self.overlays.picker.list.viewport_height_px = self

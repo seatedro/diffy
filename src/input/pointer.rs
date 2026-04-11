@@ -147,6 +147,10 @@ impl InputSystem {
             Action::DismissToast(i) => Some(*i),
             _ => None,
         });
+        let hovered_overlay_entry = hovered_hit.and_then(|hit| match &hit.action {
+            Action::SelectOverlayEntry(i) => Some(*i),
+            _ => None,
+        });
         let cursor_hint = if let Some(ref capture) = self.pointer_capture {
             capture.cursor()
         } else {
@@ -157,6 +161,9 @@ impl InputSystem {
 
         if hovered_file != state.file_list.hovered_index {
             actions.push(Action::HoverFile(hovered_file));
+        }
+        if hovered_overlay_entry != state.overlays.picker.hovered_index {
+            actions.push(Action::HoverOverlayEntry(hovered_overlay_entry));
         }
         let current_hovered_toast = state.toasts.iter().position(|toast| toast.hovered);
         if hovered_toast != current_hovered_toast {

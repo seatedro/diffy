@@ -109,6 +109,7 @@ pub fn repo_picker_state(entry_count: usize) -> AppState {
             })
             .collect(),
         selected_index: entry_count.saturating_sub(1).min(2),
+        hovered_index: None,
         list: OverlayListState {
             viewport_height_px: 204,
             ..OverlayListState::default()

@@ -1,4 +1,4 @@
-use crate::ui::actions::Action;
+use crate::actions::Action;
 use crate::ui::design::{Ico, Sp};
 use crate::ui::element::{Div, IntoAnyElement, div, svg_icon};
 use crate::ui::icons::lucide;

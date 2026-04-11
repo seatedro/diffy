@@ -12,12 +12,12 @@ use crate::core::vcs::git::{BranchInfo, CommitInfo, TagInfo};
 use crate::core::vcs::github::{DeviceFlowState, PullRequestInfo};
 use crate::platform::persistence::{PersistedCompare, Settings};
 use crate::platform::startup::StartupOptions;
-use crate::ui::actions::Action;
+use crate::actions::Action;
 use crate::ui::design::{Sp, Sz};
 use crate::ui::editor::render_doc::{RenderDoc, build_render_doc};
 use crate::ui::editor::state::EditorState;
-use crate::ui::effects::{CompareRequest, Effect};
-use crate::ui::events::{AppEvent, CompareFinished, RepositoryLoaded};
+use crate::effects::{CompareRequest, Effect};
+use crate::events::{AppEvent, CompareFinished, RepositoryLoaded};
 use crate::ui::icons::lucide;
 use crate::ui::theme::ThemeMode;
 
@@ -3595,7 +3595,7 @@ mod tests {
     use crate::core::diff::{DiffLine, FileDiff, Hunk, LineKind};
     use crate::platform::persistence::Settings;
     use crate::platform::startup::{Args, StartupOptions};
-    use crate::ui::actions::Action;
+    use crate::actions::Action;
 
     fn loaded_state_with_files(paths: &[&str]) -> AppState {
         let mut state = AppState::default();

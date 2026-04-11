@@ -1,6 +1,6 @@
 use halogen::view;
 
-use crate::ui::actions::Action;
+use crate::actions::Action;
 use crate::ui::design::{Ico, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;

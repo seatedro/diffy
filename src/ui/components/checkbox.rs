@@ -1,6 +1,6 @@
 use halogen::view;
 
-use crate::ui::actions::Action;
+use crate::actions::Action;
 use crate::ui::design::{Alpha, Shadow, Sp, Sz};
 use crate::ui::element::{
     AnyElement, ElementContext, IntoAnyElement, RenderOnce, div, svg_icon, text,

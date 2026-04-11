@@ -1,7 +1,7 @@
 use halogen::view;
 
 use crate::core::compare::CompareMode;
-use crate::ui::actions::Action;
+use crate::actions::Action;
 use crate::ui::components::Button;
 use crate::ui::design::{Bp, Ico, Rad, Sp, Sz};
 use crate::ui::element::*;

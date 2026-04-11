@@ -9,8 +9,8 @@ use crate::core::vcs::github::{
     DeviceFlowState, GitHubApi, PullRequestInfo, parse_pr_url, poll_for_token, start_device_flow,
 };
 use crate::platform::persistence::{Settings, SettingsStore};
-use crate::ui::effects::CompareRequest;
-use crate::ui::events::{CompareFinished, RepositoryLoaded};
+use crate::effects::CompareRequest;
+use crate::events::{CompareFinished, RepositoryLoaded};
 
 #[derive(Debug, Clone)]
 pub struct AppServices {
@@ -127,7 +127,7 @@ mod tests {
     use super::AppServices;
     use crate::core::compare::{CompareMode, CompareSpec, LayoutMode, RendererKind};
     use crate::platform::persistence::SettingsStore;
-    use crate::ui::effects::CompareRequest;
+    use crate::effects::CompareRequest;
 
     fn commit_file(repo: &Repository, relative_path: &str, content: &str, message: &str) -> String {
         let workdir = repo.workdir().expect("repo workdir");

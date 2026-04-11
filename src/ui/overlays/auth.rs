@@ -1,6 +1,6 @@
 use halogen::view;
 
-use crate::ui::actions::Action;
+use crate::actions::Action;
 use crate::ui::components::button::{Button, ButtonStyle};
 use crate::ui::components::modal::Modal;
 use crate::ui::design::{Ico, Sp, Sz};

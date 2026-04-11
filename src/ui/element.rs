@@ -9,9 +9,9 @@
 
 use crate::render::Scene;
 use crate::render::scene::{BlurRegionPrimitive, EffectQuadPrimitive, EffectType, Rect};
-use crate::ui::actions::Action;
+use crate::actions::Action;
 use crate::ui::design::{Alpha, Sz};
-use crate::ui::effects::Effect;
+use crate::effects::Effect;
 use crate::ui::shell::CursorHint;
 use crate::ui::signals::{Signal, SignalStore};
 use crate::ui::theme::Theme;

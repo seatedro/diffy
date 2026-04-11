@@ -4,7 +4,7 @@ use std::rc::Rc;
 use halogen::view;
 
 use crate::render::{Rect, TextMetrics};
-use crate::ui::actions::Action;
+use crate::actions::Action;
 use crate::ui::components::{self, Button, ButtonStyle, SegmentedControl, SegmentedItem};
 use crate::ui::design::{Alpha, Ico, Rad, Shadow, Sp, Sz};
 use crate::ui::element::*;

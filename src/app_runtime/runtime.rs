@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use crate::app_runtime::services::AppServices;
 use crate::platform::persistence::Settings;
-use crate::ui::effects::Effect;
-use crate::ui::events::AppEvent;
+use crate::effects::Effect;
+use crate::events::AppEvent;
 
 const SETTINGS_SAVE_DEBOUNCE: Duration = Duration::from_millis(250);
 
@@ -250,8 +250,8 @@ mod tests {
     use super::{AppRuntime, SETTINGS_SAVE_DEBOUNCE};
     use crate::app_runtime::services::AppServices;
     use crate::platform::persistence::{Settings, SettingsStore};
-    use crate::ui::effects::Effect;
-    use crate::ui::events::AppEvent;
+    use crate::effects::Effect;
+    use crate::events::AppEvent;
 
     fn wait_for<P>(mut predicate: P)
     where

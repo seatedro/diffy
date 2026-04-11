@@ -2,10 +2,10 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::render::{Rect, RectPrimitive, RoundedRectPrimitive};
-use crate::ui::actions::Action;
+use crate::actions::Action;
 use crate::ui::components;
 use crate::ui::design::{Alpha, Ico, Rad, Sp, Sz};
-use crate::ui::effects::Effect;
+use crate::effects::Effect;
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;

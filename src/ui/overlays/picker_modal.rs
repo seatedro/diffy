@@ -1,6 +1,6 @@
 use halogen::view;
 
-use crate::ui::actions::Action;
+use crate::actions::Action;
 use crate::ui::components::picker::picker_list;
 use crate::ui::design::{Rad, Shadow, Sp, Sz};
 use crate::ui::element::*;

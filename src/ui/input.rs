@@ -8,10 +8,10 @@ use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{CursorIcon, Window};
 
 use crate::render::Renderer;
-use crate::ui::actions::Action;
+use crate::actions::Action;
 use crate::ui::components::{TooltipSide, TooltipState};
 use crate::ui::editor::element::EditorElement;
-use crate::ui::effects::Effect;
+use crate::effects::Effect;
 use crate::ui::element::{ClickEvent, ClickResult, DragHandler};
 use crate::ui::shell::UiFrame;
 use crate::ui::state::{AppState, CompareField, FocusTarget, OverlaySurface, WorkspaceMode};

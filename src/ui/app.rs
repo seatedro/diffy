@@ -14,7 +14,7 @@ use crate::platform::automation::{ErrorDump, FilesDump, StateDump, write_json};
 use crate::platform::persistence::SettingsStore;
 use crate::platform::startup::StartupOptions;
 use crate::render::Renderer;
-use crate::ui::actions::Action;
+use crate::actions::Action;
 use crate::ui::components::TooltipState;
 use crate::ui::editor::element::EditorElement;
 use crate::ui::input::InputSystem;
@@ -576,7 +576,7 @@ mod tests {
     use super::NativeApp;
     use crate::app_runtime::{AppRuntime, AppServices};
     use crate::platform::persistence::SettingsStore;
-    use crate::ui::actions::Action;
+    use crate::actions::Action;
     use crate::ui::input::{
         InputEvent, KeyChord, KeyKind, quantize_scroll_delta_px, scroll_delta_to_px,
     };

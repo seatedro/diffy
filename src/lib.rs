@@ -6,6 +6,7 @@ pub mod core;
 pub mod effects;
 pub mod events;
 pub mod fonts;
+pub mod input;
 pub mod platform;
 pub mod render;
 pub mod ui;

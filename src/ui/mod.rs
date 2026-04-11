@@ -5,7 +5,6 @@ pub mod design;
 pub mod editor;
 pub mod element;
 pub mod icons;
-pub mod input;
 pub mod nonicons;
 pub mod overlays;
 pub mod palette;

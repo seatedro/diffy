@@ -17,7 +17,7 @@ use crate::render::Renderer;
 use crate::actions::Action;
 use crate::ui::components::TooltipState;
 use crate::ui::editor::element::EditorElement;
-use crate::ui::input::InputSystem;
+use crate::input::InputSystem;
 use crate::ui::shell::{UiFrame, build_ui_frame};
 use crate::ui::state::AppState;
 use crate::ui::theme::Theme;
@@ -341,7 +341,7 @@ impl NativeApp {
         self.mark_dirty();
     }
 
-    fn apply_input_outcome(&mut self, outcome: crate::ui::input::InputOutcome) {
+    fn apply_input_outcome(&mut self, outcome: crate::input::InputOutcome) {
         for action in outcome.actions {
             self.dispatch_action(action);
         }
@@ -577,7 +577,7 @@ mod tests {
     use crate::app_runtime::{AppRuntime, AppServices};
     use crate::platform::persistence::SettingsStore;
     use crate::actions::Action;
-    use crate::ui::input::{
+    use crate::input::{
         InputEvent, KeyChord, KeyKind, quantize_scroll_delta_px, scroll_delta_to_px,
     };
     use crate::ui::state::{

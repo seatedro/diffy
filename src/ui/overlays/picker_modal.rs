@@ -4,18 +4,26 @@ use crate::ui::actions::Action;
 use crate::ui::components::picker::picker_list;
 use crate::ui::design::{Rad, Shadow, Sp, Sz};
 use crate::ui::element::*;
-use crate::ui::state::{AppState, FocusTarget};
+use crate::ui::state::{AppState, FocusTarget, PickerItem};
 use crate::ui::style::Styled;
+use crate::ui::theme::Theme;
 
-pub fn theme_picker(
+pub fn picker_modal<T: PickerItem>(
+    query: &str,
+    placeholder: &str,
+    entries: &[T],
+    selected_index: usize,
+    scroll_top_px: f32,
+    panel_width_class: f32,
+    focus_target: FocusTarget,
     state: &AppState,
-    theme: &crate::ui::theme::Theme,
+    theme: &Theme,
     width: f32,
     height: f32,
 ) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
-    let panel_width = (Sz::MODAL_XL * scale).min(width - (Sz::MODAL_MARGIN * scale).round());
+    let panel_width = (panel_width_class * scale).min(width - (Sz::MODAL_MARGIN * scale).round());
 
     let panel = div()
         .w(panel_width)
@@ -28,14 +36,14 @@ pub fn theme_picker(
         .on_click(Action::Noop)
         .child(view! { scale,
             <div class="w-full" px={Sp::MD}>
-                {text_input("", &state.overlays.picker.query)
-                    .placeholder("Search themes\u{2026}")
-                    .focused(state.focus.current == Some(FocusTarget::PickerInput))
-                    .on_click(Action::SetFocus(Some(FocusTarget::PickerInput)))
+                {text_input("", query)
+                    .placeholder(placeholder)
+                    .focused(state.focus.current == Some(focus_target))
+                    .on_click(Action::SetFocus(Some(focus_target)))
                     .cursor(state.text_edit.cursor)
                     .anchor(state.text_edit.anchor)
                     .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
-                    .focus_target(FocusTarget::PickerInput)
+                    .focus_target(focus_target)
                     .bare()
                     .w_full()
                     .h(theme.metrics.ui_row_height.round())}
@@ -47,9 +55,9 @@ pub fn theme_picker(
         .child(view! { scale,
             <div p={Sp::XS}>
                 {picker_list(
-                    &state.overlays.picker.entries,
-                    state.overlays.picker.selected_index,
-                    state.overlays.picker.list.scroll_top_px as f32,
+                    entries,
+                    selected_index,
+                    scroll_top_px,
                     Sz::PICKER_MAX_ROWS,
                     theme,
                 )}

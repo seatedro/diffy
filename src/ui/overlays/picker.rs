@@ -8,7 +8,7 @@ use crate::ui::state::{AppState, FocusTarget, PickerItem};
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
 
-pub fn picker_modal<T: PickerItem>(
+pub fn picker<T: PickerItem>(
     query: &str,
     placeholder: &str,
     entries: &[T],

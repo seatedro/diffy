@@ -1,12 +1,12 @@
 pub mod auth;
 pub mod compare_sheet;
-pub mod picker_modal;
+pub mod picker;
 pub mod pull_request;
 pub mod shortcuts;
 
 pub use auth::auth_modal;
 pub use compare_sheet::compare_sheet;
-pub use picker_modal::picker_modal;
+pub use picker::picker;
 pub use pull_request::pull_request_modal;
 pub use shortcuts::keyboard_shortcuts;
 
@@ -30,7 +30,7 @@ pub fn render_active_overlay(
             } else {
                 "Search recent or type a path (e.g. ~/projects/repo)"
             };
-            picker_modal(
+            picker(
                 &state.overlays.picker.query,
                 placeholder,
                 &state.overlays.picker.entries,
@@ -49,7 +49,7 @@ pub fn render_active_overlay(
                 CompareField::Left => &state.compare.left_ref,
                 CompareField::Right => &state.compare.right_ref,
             };
-            picker_modal(
+            picker(
                 query,
                 "Search branches, tags, commits",
                 &state.overlays.picker.entries,
@@ -63,7 +63,7 @@ pub fn render_active_overlay(
                 height,
             )
         }
-        OverlaySurface::CommandPalette => picker_modal(
+        OverlaySurface::CommandPalette => picker(
             &state.overlays.command_palette.query,
             "Type a command, file, repo, or ref",
             &state.overlays.command_palette.entries,
@@ -79,7 +79,7 @@ pub fn render_active_overlay(
         OverlaySurface::PullRequestModal => pull_request_modal(state, theme, width, height),
         OverlaySurface::GitHubAuthModal => auth_modal(state, theme, width, height),
         OverlaySurface::KeyboardShortcuts => keyboard_shortcuts(state, theme, width, height),
-        OverlaySurface::ThemePicker => picker_modal(
+        OverlaySurface::ThemePicker => picker(
             &state.overlays.picker.query,
             "Search themes\u{2026}",
             &state.overlays.picker.entries,

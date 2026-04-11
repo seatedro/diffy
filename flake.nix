@@ -39,14 +39,16 @@
               pkgs.git
             ];
 
-            buildInputs = pkgs.lib.optionals isLinux [
+            buildInputs = [
+              pkgs.openssl
+            ] ++ pkgs.lib.optionals isLinux [
               pkgs.libxkbcommon
               pkgs.wayland
               pkgs.libGL
-              pkgs.xorg.libX11
-              pkgs.xorg.libXi
-              pkgs.xorg.libXcursor
-              pkgs.xorg.libXrandr
+              pkgs.libx11
+              pkgs.libxi
+              pkgs.libxcursor
+              pkgs.libxrandr
             ];
           };
         });
@@ -80,6 +82,9 @@
             ];
 
             shellHook = ''
+              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath (
+                [ pkgs.libxkbcommon pkgs.wayland pkgs.libGL pkgs.vulkan-loader ]
+              )}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               echo "Diffy dev shell ready"
               echo "Build: cargo build"
               echo "Test: cargo test"

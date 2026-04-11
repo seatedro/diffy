@@ -33,6 +33,11 @@ pub enum Effect {
         device_code: String,
         interval_seconds: u32,
     },
+    ResolveRef {
+        repo_path: PathBuf,
+        query: String,
+        generation: u64,
+    },
     SaveSettings(Settings),
     OpenBrowser {
         url: String,

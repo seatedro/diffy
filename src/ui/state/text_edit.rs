@@ -30,7 +30,7 @@ impl AppState {
     }
 
     /// Called after text mutation to sync compare fields and rebuild pickers.
-    pub(super) fn after_text_mutation(&mut self) {
+    pub(super) fn after_text_mutation(&mut self) -> Vec<Effect> {
         match self.focus.current {
             Some(FocusTarget::CompareLeftRef) => {
                 self.compare.resolved_left = None;
@@ -42,11 +42,11 @@ impl AppState {
                 PickerKind::Repository => self.rebuild_repo_picker(),
                 PickerKind::LeftRef => {
                     self.compare.resolved_left = None;
-                    self.rebuild_ref_picker(CompareField::Left);
+                    return self.rebuild_ref_picker(CompareField::Left);
                 }
                 PickerKind::RightRef => {
                     self.compare.resolved_right = None;
-                    self.rebuild_ref_picker(CompareField::Right);
+                    return self.rebuild_ref_picker(CompareField::Right);
                 }
                 PickerKind::Theme => self.rebuild_theme_picker(),
             },
@@ -54,6 +54,7 @@ impl AppState {
             Some(FocusTarget::SearchInput) => self.recompute_search_matches(),
             _ => {}
         }
+        Vec::new()
     }
 
     /// Should we persist settings after editing the current field?
@@ -69,12 +70,11 @@ impl AppState {
     }
 
     pub(super) fn text_edit_effects(&mut self) -> Vec<Effect> {
-        self.after_text_mutation();
+        let mut effects = self.after_text_mutation();
         if self.needs_persist() {
-            self.persist_settings_effect()
-        } else {
-            Vec::new()
+            effects.extend(self.persist_settings_effect());
         }
+        effects
     }
 
     pub(super) fn insert_text(&mut self, value: String) -> Vec<Effect> {
@@ -230,18 +230,31 @@ impl AppState {
         self.touch_cursor();
     }
 
-    pub(super) fn copy_selection(&self) -> Vec<Effect> {
+    /// Copy text selection or, if none, the selected overlay entry.
+    /// Returns `(effects, Some(value))` when copying an entry (toast-worthy).
+    pub(super) fn copy_selection(&self) -> (Vec<Effect>, Option<String>) {
         if let Some((start, end)) = self.selection_range() {
             if let Some(text) = self.focused_text() {
                 let selected = text[start..end].to_string();
-                return vec![Effect::SetClipboard(selected)];
+                return (vec![Effect::SetClipboard(selected)], None);
             }
         }
-        Vec::new()
+        // No text selection — copy the selected picker/palette entry's value.
+        if matches!(self.focus.current, Some(FocusTarget::PickerInput)) {
+            if let Some(entry) = self.overlays.picker.entries.get(self.overlays.picker.selected_index) {
+                return (vec![Effect::SetClipboard(entry.value.clone())], Some(entry.value.clone()));
+            }
+        }
+        if matches!(self.focus.current, Some(FocusTarget::CommandPaletteInput)) {
+            if let Some(entry) = self.overlays.command_palette.entries.get(self.overlays.command_palette.selected_index) {
+                return (vec![Effect::SetClipboard(entry.label.clone())], Some(entry.label.clone()));
+            }
+        }
+        (Vec::new(), None)
     }
 
     pub(super) fn cut_selection(&mut self) -> Vec<Effect> {
-        let mut effects = self.copy_selection();
+        let (mut effects, ..) = self.copy_selection();
         if self.delete_selection() {
             self.touch_cursor();
             effects.extend(self.text_edit_effects());

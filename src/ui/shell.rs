@@ -137,7 +137,7 @@ pub fn build_ui_frame(
 
     if !state.toasts.is_empty() {
         root = root.child(
-            ToastStack::new(&state.toasts, width, height, ui_scale, m.status_bar_height).build(),
+            ToastStack::new(&state.toasts, &state.animation, width, height, ui_scale, m.status_bar_height).build(),
         );
     }
 

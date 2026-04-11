@@ -114,6 +114,7 @@ pub fn repo_picker_state(entry_count: usize) -> AppState {
             ..OverlayListState::default()
         },
         browse_path: None,
+        ref_resolve_generation: 0,
     };
     state.focus.current = Some(FocusTarget::PickerInput);
     state

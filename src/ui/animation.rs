@@ -10,6 +10,7 @@ pub enum AnimationKey {
     ViewportRowHover(usize),
     ToastEntrance(u64),
     ToastExit(u64),
+    ToastStackFan,
 }
 
 // ---------------------------------------------------------------------------

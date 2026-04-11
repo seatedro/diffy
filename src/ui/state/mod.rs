@@ -21,8 +21,9 @@ use crate::events::{AppEvent, CompareFinished, RepositoryLoaded};
 use crate::ui::icons::lucide;
 use crate::ui::theme::ThemeMode;
 
-const MAX_VISIBLE_TOASTS: usize = 8;
-const TOAST_LIFETIME_MS: u64 = 10_000;
+const MAX_VISIBLE_TOASTS: usize = 5;
+const TOAST_LIFETIME_MS: u64 = 5_000;
+const TOAST_ANIM_MS: u64 = 150;
 const CURSOR_BLINK_INTERVAL_MS: u64 = 530;
 
 const DEFAULT_UI_SCALE_PCT: u16 = 100;
@@ -392,6 +393,7 @@ pub struct PickerState {
     pub selected_index: usize,
     pub list: OverlayListState,
     pub browse_path: Option<PathBuf>,
+    pub ref_resolve_generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -785,8 +787,15 @@ impl AppState {
                 Vec::new()
             }
             HoverToast(index) => {
+                let was_any_hovered = self.toasts.iter().any(|t| t.hovered);
                 let hovered_id = index.and_then(|i| self.toasts.get(i)).map(|toast| toast.id);
                 for toast in &mut self.toasts { toast.hovered = Some(toast.id) == hovered_id; }
+                let is_any_hovered = self.toasts.iter().any(|t| t.hovered);
+                if was_any_hovered != is_any_hovered {
+                    use crate::ui::animation::AnimationKey;
+                    let target = if is_any_hovered { 1.0 } else { 0.0 };
+                    self.animation.set_target(AnimationKey::ToastStackFan, target, 150, self.clock_ms);
+                }
                 Vec::new()
             }
             Noop => Vec::new(),
@@ -811,7 +820,18 @@ impl AppState {
             Action::SelectHome => { self.cursor_home(true); Vec::new() }
             Action::SelectEnd => { self.cursor_end(true); Vec::new() }
             Action::SelectAll => { self.select_all(); Vec::new() }
-            Action::Copy => self.copy_selection(),
+            Action::Copy => {
+                let (effects, copied) = self.copy_selection();
+                if let Some(value) = copied {
+                    let truncated = if value.len() > 32 {
+                        format!("{}…", &value[..32])
+                    } else {
+                        value
+                    };
+                    self.push_info(&format!("Copied {truncated}"));
+                }
+                effects
+            }
             Action::Cut => self.cut_selection(),
             Action::Paste(value) => self.paste(value),
             Action::SetTextCursor(offset) => { self.move_cursor(offset, false); Vec::new() }
@@ -825,7 +845,7 @@ impl AppState {
             Action::OpenCompareSheet => { self.open_compare_sheet(); Vec::new() }
             Action::OpenRepoPicker => { self.open_repo_picker(); Vec::new() }
             Action::OpenThemePicker => { self.open_theme_picker(); Vec::new() }
-            Action::OpenRefPicker(field) => { self.open_ref_picker(field); Vec::new() }
+            Action::OpenRefPicker(field) => self.open_ref_picker(field),
             Action::OpenCommandPalette => { self.open_command_palette(); Vec::new() }
             Action::OpenPullRequestModal => {
                 self.push_overlay(OverlaySurface::PullRequestModal, Some(FocusTarget::PullRequestInput));
@@ -865,12 +885,14 @@ impl AppState {
             Action::OpenRepositoryDialog => vec![Effect::OpenRepositoryDialog],
             Action::OpenRepository(path) => self.open_repository(path),
             Action::SetLeftRef(value) => {
-                self.update_compare_field(CompareField::Left, value);
-                self.persist_settings_effect()
+                let mut effects = self.update_compare_field(CompareField::Left, value);
+                effects.extend(self.persist_settings_effect());
+                effects
             }
             Action::SetRightRef(value) => {
-                self.update_compare_field(CompareField::Right, value);
-                self.persist_settings_effect()
+                let mut effects = self.update_compare_field(CompareField::Right, value);
+                effects.extend(self.persist_settings_effect());
+                effects
             }
             Action::SetCompareMode(mode) => {
                 self.compare.mode = mode;
@@ -1143,6 +1165,39 @@ impl AppState {
             AppEvent::DeviceFlowFailed { message } => {
                 self.github.auth.status = AsyncStatus::Failed;
                 self.push_error(&message);
+                Vec::new()
+            }
+            AppEvent::RefResolved {
+                query,
+                generation,
+                short_oid,
+                summary,
+            } => {
+                if generation == self.overlays.picker.ref_resolve_generation {
+                    if let Some(entry) = self
+                        .overlays
+                        .picker
+                        .entries
+                        .iter_mut()
+                        .find(|e| e.value == query && e.detail == "Resolving\u{2026}")
+                    {
+                        entry.detail = format!("{short_oid} \u{2014} {summary}");
+                    }
+                }
+                Vec::new()
+            }
+            AppEvent::RefResolveFailed { generation } => {
+                if generation == self.overlays.picker.ref_resolve_generation {
+                    if let Some(entry) = self
+                        .overlays
+                        .picker
+                        .entries
+                        .iter_mut()
+                        .find(|e| e.detail == "Resolving\u{2026}")
+                    {
+                        entry.detail = "Use typed ref".to_owned();
+                    }
+                }
                 Vec::new()
             }
             AppEvent::SettingsSaved => Vec::new(),
@@ -1518,7 +1573,7 @@ impl AppState {
 
     // Text editing methods are in text_edit.rs
 
-    fn update_compare_field(&mut self, field: CompareField, value: String) {
+    fn update_compare_field(&mut self, field: CompareField, value: String) -> Vec<Effect> {
         match field {
             CompareField::Left => {
                 self.compare.left_ref = value;
@@ -1529,11 +1584,14 @@ impl AppState {
                 self.compare.resolved_right = None;
             }
         }
-        if matches!(self.overlays.top(), Some(OverlaySurface::RefPicker(active)) if active == field)
+        let effects = if matches!(self.overlays.top(), Some(OverlaySurface::RefPicker(active)) if active == field)
         {
-            self.rebuild_ref_picker(field);
-        }
+            self.rebuild_ref_picker(field)
+        } else {
+            Vec::new()
+        };
         self.rebuild_command_palette();
+        effects
     }
 
     fn submit_pull_request(&mut self) -> Vec<Effect> {
@@ -1563,8 +1621,9 @@ impl AppState {
             self.push_error("Load a pull request before using its compare.");
             return Vec::new();
         };
-        self.update_compare_field(CompareField::Left, left);
-        self.update_compare_field(CompareField::Right, right);
+        // Picker won't be open here so resolve effects are empty, but drain them.
+        let _ = self.update_compare_field(CompareField::Left, left);
+        let _ = self.update_compare_field(CompareField::Right, right);
         self.compare.mode = CompareMode::ThreeDot;
         self.overlays.clear();
         self.kickoff_compare()
@@ -1739,9 +1798,8 @@ impl AppState {
         self.overlays.picker.list.scroll_top_px = 0;
     }
 
-    fn open_ref_picker(&mut self, field: CompareField) {
+    fn open_ref_picker(&mut self, field: CompareField) -> Vec<Effect> {
         let scale = self.ui_scale_factor();
-        self.update_compare_field(field, String::new());
         self.overlays.picker.kind = match field {
             CompareField::Left => PickerKind::LeftRef,
             CompareField::Right => PickerKind::RightRef,
@@ -1750,11 +1808,12 @@ impl AppState {
         self.overlays.picker.list.scroll_top_px = 0;
         self.overlays.picker.list.row_height_px = (Sz::ROW * scale).round() as u32;
         self.overlays.picker.list.gap_px = (Sp::XS * scale).round() as u32;
-        self.rebuild_ref_picker(field);
+        let effects = self.rebuild_ref_picker(field);
         self.push_overlay(
             OverlaySurface::RefPicker(field),
             Some(FocusTarget::PickerInput),
         );
+        effects
     }
 
     fn open_command_palette(&mut self) {
@@ -2081,7 +2140,7 @@ impl AppState {
         if let Some(ref store) = self.frecency {
             store.record_access(&format!("ref:{}", entry.value));
         }
-        self.update_compare_field(field, entry.value);
+        let _ = self.update_compare_field(field, entry.value);
         self.pop_overlay();
         let mut effects = self.persist_settings_effect();
         if self.compare.repo_path.is_some()
@@ -2154,7 +2213,7 @@ impl AppState {
             }
             PaletteEntryKind::Repo(path) => self.open_repository(path),
             PaletteEntryKind::Ref(field, value) => {
-                self.update_compare_field(field, value);
+                let _ = self.update_compare_field(field, value);
                 self.persist_settings_effect()
             }
         }
@@ -2387,7 +2446,7 @@ impl AppState {
         self.overlays.picker.entries = entries;
     }
 
-    fn rebuild_ref_picker(&mut self, field: CompareField) {
+    fn rebuild_ref_picker(&mut self, field: CompareField) -> Vec<Effect> {
         let query = match field {
             CompareField::Left => self.compare.left_ref.trim(),
             CompareField::Right => self.compare.right_ref.trim(),
@@ -2402,8 +2461,20 @@ impl AppState {
             ordinal: usize,
         }
 
+        let mut pinned = Vec::new();
         let mut all_candidates = Vec::new();
         let mut ordinal = 0_usize;
+
+        // Pin @workdir so it's always visible at the top of the picker.
+        pinned.push(PickerEntry {
+            label: "@workdir".to_owned(),
+            detail: "Uncommitted changes on disk".to_owned(),
+            value: "@workdir".to_owned(),
+            highlights: Vec::new(),
+            icon: None,
+            section_header: false,
+        });
+        seen.insert("@workdir".to_owned());
 
         let mut push = |search_text: String, label: String, detail: String, value: String| {
             if !seen.insert(value.clone()) {
@@ -2453,19 +2524,23 @@ impl AppState {
             );
         }
 
+        let mut needs_resolve = false;
+
         if query.is_empty() {
-            self.overlays.picker.entries = all_candidates
-                .into_iter()
-                .take(10)
-                .map(|c| PickerEntry {
-                    label: c.label,
-                    detail: c.detail,
-                    value: c.value,
-                    highlights: Vec::new(),
-                    icon: None,
-                    section_header: false,
-                })
-                .collect();
+            self.overlays.picker.entries = pinned;
+            self.overlays.picker.entries.extend(
+                all_candidates
+                    .into_iter()
+                    .take(10)
+                    .map(|c| PickerEntry {
+                        label: c.label,
+                        detail: c.detail,
+                        value: c.value,
+                        highlights: Vec::new(),
+                        icon: None,
+                        section_header: false,
+                    }),
+            );
         } else {
             let haystack: Vec<&str> = all_candidates
                 .iter()
@@ -2505,11 +2580,9 @@ impl AppState {
                     .then(a.1.cmp(&b.1))
                     .then(a.2.label.cmp(&b.2.label))
             });
-            self.overlays.picker.entries = scored
-                .into_iter()
-                .map(|(_, _, entry)| entry)
-                .take(10)
-                .collect();
+            let mut entries = pinned;
+            entries.extend(scored.into_iter().map(|(_, _, entry)| entry).take(10));
+            self.overlays.picker.entries = entries;
             if !self
                 .overlays
                 .picker
@@ -2521,13 +2594,14 @@ impl AppState {
                     0,
                     PickerEntry {
                         label: query.to_owned(),
-                        detail: "Use typed ref".to_owned(),
+                        detail: "Resolving\u{2026}".to_owned(),
                         value: query.to_owned(),
                         highlights: vec![(0, query.len())],
                         icon: None,
                         section_header: false,
                     },
                 );
+                needs_resolve = true;
             }
         }
 
@@ -2544,6 +2618,18 @@ impl AppState {
             .list
             .viewport_for_max_rows(Sz::PICKER_MAX_ROWS, entry_count);
         self.overlays.picker.list.clamp_scroll(entry_count);
+
+        if needs_resolve {
+            if let Some(repo_path) = self.compare.repo_path.clone() {
+                self.overlays.picker.ref_resolve_generation += 1;
+                return vec![Effect::ResolveRef {
+                    repo_path,
+                    query: query.to_owned(),
+                    generation: self.overlays.picker.ref_resolve_generation,
+                }];
+            }
+        }
+        Vec::new()
     }
 
     fn rebuild_command_palette(&mut self) {
@@ -2914,8 +3000,15 @@ impl AppState {
     }
 
     fn push_toast(&mut self, kind: ToastKind, message: &str) {
+        use crate::ui::animation::AnimationKey;
         let id = self.next_toast_id;
         self.next_toast_id = self.next_toast_id.saturating_add(1);
+        self.animation.set_target(
+            AnimationKey::ToastEntrance(id),
+            1.0,
+            TOAST_ANIM_MS,
+            self.clock_ms,
+        );
         self.toasts.push(Toast {
             id,
             kind,

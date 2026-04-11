@@ -159,6 +159,26 @@ impl EffectRunner {
                     let _ = sender.send(event);
                 });
             }
+            Effect::ResolveRef {
+                repo_path,
+                query,
+                generation,
+            } => {
+                let services = self.services.clone();
+                let sender = self.sender.clone();
+                thread::spawn(move || {
+                    let event = match services.resolve_ref(&repo_path, &query) {
+                        Ok((short_oid, summary)) => AppEvent::RefResolved {
+                            query,
+                            generation,
+                            short_oid,
+                            summary,
+                        },
+                        Err(_) => AppEvent::RefResolveFailed { generation },
+                    };
+                    let _ = sender.send(event);
+                });
+            }
             Effect::SaveSettings(settings) => {
                 self.save_worker.dispatch(settings);
             }

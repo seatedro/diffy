@@ -56,6 +56,15 @@ pub enum AppEvent {
     DeviceFlowFailed {
         message: String,
     },
+    RefResolved {
+        query: String,
+        generation: u64,
+        short_oid: String,
+        summary: String,
+    },
+    RefResolveFailed {
+        generation: u64,
+    },
     SettingsSaved,
     SettingsSaveFailed {
         message: String,

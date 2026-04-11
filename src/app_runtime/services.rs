@@ -109,6 +109,25 @@ impl AppServices {
         rfd::FileDialog::new().pick_folder()
     }
 
+    pub fn resolve_ref(&self, repo_path: &Path, reference: &str) -> Result<(String, String)> {
+        let mut git = GitService::new();
+        git.open(repo_path.to_string_lossy().as_ref())?;
+        // libgit2 may not support bare `@` as HEAD alias; normalize it.
+        let normalized;
+        let reference = if reference == "@" || reference.starts_with("@~") || reference.starts_with("@^") {
+            normalized = format!("HEAD{}", &reference[1..]);
+            &normalized
+        } else {
+            reference
+        };
+        let oid = git.resolve_commit_oid(reference)?;
+        let repo = git.repo()?;
+        let commit = repo.find_commit(oid)?;
+        let short_oid = git.abbreviate_oid(&oid.to_string()).unwrap_or_else(|_| oid.to_string()[..7].to_owned());
+        let summary = commit.summary().unwrap_or_default().to_owned();
+        Ok((short_oid, summary))
+    }
+
     pub fn open_browser(&self, url: &str) -> Result<()> {
         webbrowser::open(url)
             .map(|_| ())

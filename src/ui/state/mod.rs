@@ -722,48 +722,148 @@ impl AppState {
     }
 
     pub fn apply_action(&mut self, action: Action) -> Vec<Effect> {
+        use Action::*;
+        match action {
+            // Text editing
+            InsertText(_) | Backspace | DeleteForward
+            | CursorLeft | CursorRight | CursorWordLeft | CursorWordRight
+            | CursorHome | CursorEnd
+            | SelectLeft | SelectRight | SelectWordLeft | SelectWordRight
+            | SelectHome | SelectEnd | SelectAll
+            | Copy | Cut | Paste(_)
+            | SetTextCursor(_) | ExtendTextSelection(_)
+                => self.apply_text_edit_action(action),
+
+            // Overlay management
+            OpenCompareSheet | OpenRepoPicker | OpenThemePicker
+            | OpenRefPicker(_) | OpenCommandPalette
+            | OpenPullRequestModal | OpenGitHubAuthModal | CloseOverlay
+            | MoveOverlaySelection(_) | ConfirmOverlaySelection
+            | TabCompletePickerDir | SelectOverlayEntry(_)
+            | ScrollActiveOverlayListPx(_) | ShowKeyboardShortcuts
+                => self.apply_overlay_action(action),
+
+            // Compare & repository
+            Bootstrap | OpenRepositoryDialog | OpenRepository(_)
+            | SetLeftRef(_) | SetRightRef(_)
+            | SetCompareMode(_) | CycleCompareMode
+            | SetLayoutMode(_) | SetRenderer(_) | StartCompare
+                => self.apply_compare_action(action),
+
+            // File list & sidebar
+            SelectFile(_) | SelectFilePath(_) | SelectNextFile | SelectPreviousFile
+            | ScrollFileList(_) | ScrollFileListPx(_) | ScrollFileListToPx(_)
+            | HoverFile(_) | ToggleFolder(_) | ToggleFileViewed(_)
+            | SetSidebarFilter(_) | ClearSidebarFilter
+            | ToggleSidebarMode | ToggleSidebar
+            | ExpandAllFolders | CollapseAllFolders
+                => self.apply_file_list_action(action),
+
+            // Viewport & editor navigation
+            ScrollViewportLines(_) | ScrollViewportPx(_) | ScrollViewportPages(_)
+            | ScrollViewportTo(_) | ScrollViewportHalfPage(_)
+            | HoverViewportRow(_) | FocusViewport
+            | GoToNextHunk | GoToPreviousHunk | GoToNextFile | GoToPreviousFile
+            | OpenSearch | CloseSearch | SearchNext | SearchPrevious
+                => self.apply_navigation_action(action),
+
+            // Settings & UI
+            ToggleWrap | SetWrapColumn(_) | SetSidebarWidthPx(_)
+            | IncreaseUiScale | DecreaseUiScale
+            | ToggleThemeMode | SetThemeName(_)
+                => self.apply_settings_action(action),
+
+            // GitHub
+            SubmitPullRequest | UsePullRequestCompare
+            | StartGitHubDeviceFlow | OpenDeviceFlowBrowser
+                => self.apply_github_action(action),
+
+            // Focus & misc
+            SetFocus(target) => { self.set_focus(target); Vec::new() }
+            DismissToast(index) => {
+                if index < self.toasts.len() { self.toasts.remove(index); }
+                Vec::new()
+            }
+            HoverToast(index) => {
+                let hovered_id = index.and_then(|i| self.toasts.get(i)).map(|toast| toast.id);
+                for toast in &mut self.toasts { toast.hovered = Some(toast.id) == hovered_id; }
+                Vec::new()
+            }
+            Noop => Vec::new(),
+        }
+    }
+
+    fn apply_text_edit_action(&mut self, action: Action) -> Vec<Effect> {
+        match action {
+            Action::InsertText(value) => self.insert_text(value),
+            Action::Backspace => self.backspace(),
+            Action::DeleteForward => self.delete_forward(),
+            Action::CursorLeft => { self.cursor_left(false); Vec::new() }
+            Action::CursorRight => { self.cursor_right(false); Vec::new() }
+            Action::CursorWordLeft => { self.cursor_word_left(false); Vec::new() }
+            Action::CursorWordRight => { self.cursor_word_right(false); Vec::new() }
+            Action::CursorHome => { self.cursor_home(false); Vec::new() }
+            Action::CursorEnd => { self.cursor_end(false); Vec::new() }
+            Action::SelectLeft => { self.cursor_left(true); Vec::new() }
+            Action::SelectRight => { self.cursor_right(true); Vec::new() }
+            Action::SelectWordLeft => { self.cursor_word_left(true); Vec::new() }
+            Action::SelectWordRight => { self.cursor_word_right(true); Vec::new() }
+            Action::SelectHome => { self.cursor_home(true); Vec::new() }
+            Action::SelectEnd => { self.cursor_end(true); Vec::new() }
+            Action::SelectAll => { self.select_all(); Vec::new() }
+            Action::Copy => self.copy_selection(),
+            Action::Cut => self.cut_selection(),
+            Action::Paste(value) => self.paste(value),
+            Action::SetTextCursor(offset) => { self.move_cursor(offset, false); Vec::new() }
+            Action::ExtendTextSelection(offset) => { self.move_cursor(offset, true); Vec::new() }
+            _ => Vec::new(),
+        }
+    }
+
+    fn apply_overlay_action(&mut self, action: Action) -> Vec<Effect> {
+        match action {
+            Action::OpenCompareSheet => { self.open_compare_sheet(); Vec::new() }
+            Action::OpenRepoPicker => { self.open_repo_picker(); Vec::new() }
+            Action::OpenThemePicker => { self.open_theme_picker(); Vec::new() }
+            Action::OpenRefPicker(field) => { self.open_ref_picker(field); Vec::new() }
+            Action::OpenCommandPalette => { self.open_command_palette(); Vec::new() }
+            Action::OpenPullRequestModal => {
+                self.push_overlay(OverlaySurface::PullRequestModal, Some(FocusTarget::PullRequestInput));
+                Vec::new()
+            }
+            Action::OpenGitHubAuthModal => {
+                self.push_overlay(OverlaySurface::GitHubAuthModal, Some(FocusTarget::AuthPrimaryAction));
+                Vec::new()
+            }
+            Action::CloseOverlay => { self.pop_overlay(); Vec::new() }
+            Action::MoveOverlaySelection(delta) => { self.move_overlay_selection(delta); Vec::new() }
+            Action::ConfirmOverlaySelection => self.confirm_overlay_selection(),
+            Action::TabCompletePickerDir => { self.tab_complete_picker_dir(); Vec::new() }
+            Action::SelectOverlayEntry(index) => {
+                self.select_overlay_entry(index);
+                self.confirm_overlay_selection()
+            }
+            Action::ScrollActiveOverlayListPx(delta_px) => {
+                self.scroll_active_overlay_list_px(delta_px);
+                Vec::new()
+            }
+            Action::ShowKeyboardShortcuts => {
+                if self.overlays.top() == Some(OverlaySurface::KeyboardShortcuts) {
+                    self.pop_overlay();
+                } else {
+                    self.push_overlay(OverlaySurface::KeyboardShortcuts, None);
+                }
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn apply_compare_action(&mut self, action: Action) -> Vec<Effect> {
         match action {
             Action::Bootstrap => Vec::new(),
             Action::OpenRepositoryDialog => vec![Effect::OpenRepositoryDialog],
             Action::OpenRepository(path) => self.open_repository(path),
-            Action::OpenCompareSheet => {
-                self.open_compare_sheet();
-                Vec::new()
-            }
-            Action::OpenRepoPicker => {
-                self.open_repo_picker();
-                Vec::new()
-            }
-            Action::OpenThemePicker => {
-                self.open_theme_picker();
-                Vec::new()
-            }
-            Action::OpenRefPicker(field) => {
-                self.open_ref_picker(field);
-                Vec::new()
-            }
-            Action::OpenCommandPalette => {
-                self.open_command_palette();
-                Vec::new()
-            }
-            Action::OpenPullRequestModal => {
-                self.push_overlay(
-                    OverlaySurface::PullRequestModal,
-                    Some(FocusTarget::PullRequestInput),
-                );
-                Vec::new()
-            }
-            Action::OpenGitHubAuthModal => {
-                self.push_overlay(
-                    OverlaySurface::GitHubAuthModal,
-                    Some(FocusTarget::AuthPrimaryAction),
-                );
-                Vec::new()
-            }
-            Action::CloseOverlay => {
-                self.pop_overlay();
-                Vec::new()
-            }
             Action::SetLeftRef(value) => {
                 self.update_compare_field(CompareField::Left, value);
                 self.persist_settings_effect()
@@ -796,123 +896,30 @@ impl AppState {
                 self.compare.renderer = renderer;
                 self.persist_settings_effect()
             }
-            Action::SetFocus(target) => {
-                self.set_focus(target);
-                Vec::new()
-            }
-            Action::InsertText(value) => self.insert_text(value),
-            Action::Backspace => self.backspace(),
-            Action::DeleteForward => self.delete_forward(),
-            Action::CursorLeft => {
-                self.cursor_left(false);
-                Vec::new()
-            }
-            Action::CursorRight => {
-                self.cursor_right(false);
-                Vec::new()
-            }
-            Action::CursorWordLeft => {
-                self.cursor_word_left(false);
-                Vec::new()
-            }
-            Action::CursorWordRight => {
-                self.cursor_word_right(false);
-                Vec::new()
-            }
-            Action::CursorHome => {
-                self.cursor_home(false);
-                Vec::new()
-            }
-            Action::CursorEnd => {
-                self.cursor_end(false);
-                Vec::new()
-            }
-            Action::SelectLeft => {
-                self.cursor_left(true);
-                Vec::new()
-            }
-            Action::SelectRight => {
-                self.cursor_right(true);
-                Vec::new()
-            }
-            Action::SelectWordLeft => {
-                self.cursor_word_left(true);
-                Vec::new()
-            }
-            Action::SelectWordRight => {
-                self.cursor_word_right(true);
-                Vec::new()
-            }
-            Action::SelectHome => {
-                self.cursor_home(true);
-                Vec::new()
-            }
-            Action::SelectEnd => {
-                self.cursor_end(true);
-                Vec::new()
-            }
-            Action::SelectAll => {
-                self.select_all();
-                Vec::new()
-            }
-            Action::Copy => self.copy_selection(),
-            Action::Cut => self.cut_selection(),
-            Action::Paste(value) => self.paste(value),
-            Action::SetTextCursor(offset) => {
-                self.move_cursor(offset, false);
-                Vec::new()
-            }
-            Action::ExtendTextSelection(offset) => {
-                self.move_cursor(offset, true);
-                Vec::new()
-            }
-            Action::MoveOverlaySelection(delta) => {
-                self.move_overlay_selection(delta);
-                Vec::new()
-            }
-            Action::ConfirmOverlaySelection => self.confirm_overlay_selection(),
-            Action::TabCompletePickerDir => {
-                self.tab_complete_picker_dir();
-                Vec::new()
-            }
-            Action::SelectOverlayEntry(index) => {
-                self.select_overlay_entry(index);
-                self.confirm_overlay_selection()
-            }
             Action::StartCompare => self.kickoff_compare(),
-            Action::SelectFile(index) => {
-                self.select_loaded_file(index, false);
-                Vec::new()
-            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn apply_file_list_action(&mut self, action: Action) -> Vec<Effect> {
+        match action {
+            Action::SelectFile(index) => { self.select_loaded_file(index, false); Vec::new() }
             Action::SelectFilePath(path) => {
-                if let Some(index) = self
-                    .workspace
-                    .files
-                    .iter()
-                    .position(|file| file.path == path)
-                {
+                if let Some(index) = self.workspace.files.iter().position(|file| file.path == path) {
                     self.select_loaded_file(index, true);
                 } else {
                     self.startup.preferred_file_path = Some(path);
                 }
                 Vec::new()
             }
-            Action::SelectNextFile => {
-                self.shift_loaded_file(1);
-                Vec::new()
-            }
-            Action::SelectPreviousFile => {
-                self.shift_loaded_file(-1);
-                Vec::new()
-            }
+            Action::SelectNextFile => { self.shift_loaded_file(1); Vec::new() }
+            Action::SelectPreviousFile => { self.shift_loaded_file(-1); Vec::new() }
             Action::ScrollFileList(delta) => {
-                self.file_list
-                    .scroll_rows(delta, self.workspace.files.len());
+                self.file_list.scroll_rows(delta, self.workspace.files.len());
                 Vec::new()
             }
             Action::ScrollFileListPx(delta_px) => {
-                self.file_list
-                    .scroll_px(delta_px as f32, self.workspace.files.len());
+                self.file_list.scroll_px(delta_px as f32, self.workspace.files.len());
                 Vec::new()
             }
             Action::ScrollFileListToPx(px) => {
@@ -920,126 +927,16 @@ impl AppState {
                 self.file_list.clamp_scroll(self.workspace.files.len());
                 Vec::new()
             }
-            Action::ScrollActiveOverlayListPx(delta_px) => {
-                self.scroll_active_overlay_list_px(delta_px);
-                Vec::new()
-            }
-            Action::ScrollViewportLines(delta) => {
-                self.scroll_viewport_lines(delta);
-                Vec::new()
-            }
-            Action::ScrollViewportPx(delta_px) => {
-                self.scroll_viewport_px(delta_px);
-                Vec::new()
-            }
-            Action::ScrollViewportPages(delta) => {
-                self.scroll_viewport_pages(delta);
-                Vec::new()
-            }
-            Action::ScrollViewportTo(scroll_top_px) => {
-                self.editor.scroll_top_px = scroll_top_px;
-                self.editor.clamp_scroll();
-                Vec::new()
-            }
-            Action::GoToNextHunk => {
-                self.navigate_to_hunk(true);
-                Vec::new()
-            }
-            Action::GoToPreviousHunk => {
-                self.navigate_to_hunk(false);
-                Vec::new()
-            }
-            Action::GoToNextFile => {
-                self.navigate_to_file(true);
-                Vec::new()
-            }
-            Action::GoToPreviousFile => {
-                self.navigate_to_file(false);
-                Vec::new()
-            }
-            Action::HoverViewportRow(row) => {
-                self.editor.hovered_row = row;
-                Vec::new()
-            }
-            Action::FocusViewport => {
-                self.set_focus(Some(FocusTarget::Editor));
-                Vec::new()
-            }
             Action::HoverFile(index) => {
                 use crate::ui::animation::AnimationKey;
                 if let Some(prev) = self.file_list.hovered_index {
-                    self.animation.set_target(
-                        AnimationKey::FileListHover(prev),
-                        0.0,
-                        150,
-                        self.clock_ms,
-                    );
+                    self.animation.set_target(AnimationKey::FileListHover(prev), 0.0, 150, self.clock_ms);
                 }
                 if let Some(next) = index {
-                    self.animation.set_target(
-                        AnimationKey::FileListHover(next),
-                        1.0,
-                        150,
-                        self.clock_ms,
-                    );
+                    self.animation.set_target(AnimationKey::FileListHover(next), 1.0, 150, self.clock_ms);
                 }
                 self.file_list.hovered_index = index;
                 Vec::new()
-            }
-            Action::SubmitPullRequest => self.submit_pull_request(),
-            Action::UsePullRequestCompare => self.use_pull_request_compare(),
-            Action::StartGitHubDeviceFlow => {
-                self.github.auth.status = AsyncStatus::Loading;
-                vec![Effect::StartDeviceFlow {
-                    client_id: self.github.client_id.clone(),
-                }]
-            }
-            Action::OpenDeviceFlowBrowser => {
-                if let Some(device_flow) = self.github.auth.device_flow.as_ref() {
-                    vec![Effect::OpenBrowser {
-                        url: device_flow.verification_uri.clone(),
-                    }]
-                } else {
-                    Vec::new()
-                }
-            }
-            Action::DismissToast(index) => {
-                if index < self.toasts.len() {
-                    self.toasts.remove(index);
-                }
-                Vec::new()
-            }
-            Action::HoverToast(index) => {
-                let hovered_id = index.and_then(|i| self.toasts.get(i)).map(|toast| toast.id);
-                for toast in &mut self.toasts {
-                    toast.hovered = Some(toast.id) == hovered_id;
-                }
-                Vec::new()
-            }
-            Action::ToggleWrap => {
-                self.editor.wrap_enabled = !self.editor.wrap_enabled;
-                self.persist_settings_effect()
-            }
-            Action::SetWrapColumn(column) => {
-                self.editor.wrap_column = column;
-                self.persist_settings_effect()
-            }
-            Action::SetSidebarWidthPx(width) => {
-                self.settings.sidebar_width_px = Some(self.clamp_sidebar_width_px(width));
-                Vec::new()
-            }
-            Action::IncreaseUiScale => self.adjust_ui_scale(UI_SCALE_STEP_PCT as i16),
-            Action::DecreaseUiScale => self.adjust_ui_scale(-(UI_SCALE_STEP_PCT as i16)),
-            Action::ToggleThemeMode => {
-                self.settings.theme_mode = match self.settings.theme_mode {
-                    ThemeMode::Dark => ThemeMode::Light,
-                    ThemeMode::Light => ThemeMode::Dark,
-                };
-                self.persist_settings_effect()
-            }
-            Action::SetThemeName(name) => {
-                self.settings.theme_name = name;
-                self.persist_settings_effect()
             }
             Action::ToggleFolder(path) => {
                 if self.file_list.expanded_folders.contains(&path) {
@@ -1067,18 +964,11 @@ impl AppState {
                 self.file_list.scroll_offset_px = 0.0;
                 Vec::new()
             }
-            Action::ToggleSidebar => {
-                self.sidebar_visible = !self.sidebar_visible;
-                Vec::new()
-            }
+            Action::ToggleSidebar => { self.sidebar_visible = !self.sidebar_visible; Vec::new() }
             Action::ToggleSidebarMode => {
                 self.file_list.mode = match self.file_list.mode {
-                    crate::ui::state::SidebarMode::FlatList => {
-                        crate::ui::state::SidebarMode::TreeView
-                    }
-                    crate::ui::state::SidebarMode::TreeView => {
-                        crate::ui::state::SidebarMode::FlatList
-                    }
+                    SidebarMode::FlatList => SidebarMode::TreeView,
+                    SidebarMode::TreeView => SidebarMode::FlatList,
                 };
                 self.file_list.scroll_offset_px = 0.0;
                 Vec::new()
@@ -1093,39 +983,83 @@ impl AppState {
                 }
                 Vec::new()
             }
-            Action::CollapseAllFolders => {
-                self.file_list.expanded_folders.clear();
+            Action::CollapseAllFolders => { self.file_list.expanded_folders.clear(); Vec::new() }
+            _ => Vec::new(),
+        }
+    }
+
+    fn apply_navigation_action(&mut self, action: Action) -> Vec<Effect> {
+        match action {
+            Action::ScrollViewportLines(delta) => { self.scroll_viewport_lines(delta); Vec::new() }
+            Action::ScrollViewportPx(delta_px) => { self.scroll_viewport_px(delta_px); Vec::new() }
+            Action::ScrollViewportPages(delta) => { self.scroll_viewport_pages(delta); Vec::new() }
+            Action::ScrollViewportTo(px) => {
+                self.editor.scroll_top_px = px;
+                self.editor.clamp_scroll();
                 Vec::new()
             }
-            Action::OpenSearch => {
-                self.open_search();
+            Action::ScrollViewportHalfPage(dir) => { self.scroll_viewport_half_page(dir); Vec::new() }
+            Action::HoverViewportRow(row) => { self.editor.hovered_row = row; Vec::new() }
+            Action::FocusViewport => { self.set_focus(Some(FocusTarget::Editor)); Vec::new() }
+            Action::GoToNextHunk => { self.navigate_to_hunk(true); Vec::new() }
+            Action::GoToPreviousHunk => { self.navigate_to_hunk(false); Vec::new() }
+            Action::GoToNextFile => { self.navigate_to_file(true); Vec::new() }
+            Action::GoToPreviousFile => { self.navigate_to_file(false); Vec::new() }
+            Action::OpenSearch => { self.open_search(); Vec::new() }
+            Action::CloseSearch => { self.close_search(); Vec::new() }
+            Action::SearchNext => { self.search_navigate(1); Vec::new() }
+            Action::SearchPrevious => { self.search_navigate(-1); Vec::new() }
+            _ => Vec::new(),
+        }
+    }
+
+    fn apply_settings_action(&mut self, action: Action) -> Vec<Effect> {
+        match action {
+            Action::ToggleWrap => {
+                self.editor.wrap_enabled = !self.editor.wrap_enabled;
+                self.persist_settings_effect()
+            }
+            Action::SetWrapColumn(column) => {
+                self.editor.wrap_column = column;
+                self.persist_settings_effect()
+            }
+            Action::SetSidebarWidthPx(width) => {
+                self.settings.sidebar_width_px = Some(self.clamp_sidebar_width_px(width));
                 Vec::new()
             }
-            Action::CloseSearch => {
-                self.close_search();
-                Vec::new()
+            Action::IncreaseUiScale => self.adjust_ui_scale(UI_SCALE_STEP_PCT as i16),
+            Action::DecreaseUiScale => self.adjust_ui_scale(-(UI_SCALE_STEP_PCT as i16)),
+            Action::ToggleThemeMode => {
+                self.settings.theme_mode = match self.settings.theme_mode {
+                    ThemeMode::Dark => ThemeMode::Light,
+                    ThemeMode::Light => ThemeMode::Dark,
+                };
+                self.persist_settings_effect()
             }
-            Action::SearchNext => {
-                self.search_navigate(1);
-                Vec::new()
+            Action::SetThemeName(name) => {
+                self.settings.theme_name = name;
+                self.persist_settings_effect()
             }
-            Action::SearchPrevious => {
-                self.search_navigate(-1);
-                Vec::new()
+            _ => Vec::new(),
+        }
+    }
+
+    fn apply_github_action(&mut self, action: Action) -> Vec<Effect> {
+        match action {
+            Action::SubmitPullRequest => self.submit_pull_request(),
+            Action::UsePullRequestCompare => self.use_pull_request_compare(),
+            Action::StartGitHubDeviceFlow => {
+                self.github.auth.status = AsyncStatus::Loading;
+                vec![Effect::StartDeviceFlow { client_id: self.github.client_id.clone() }]
             }
-            Action::ShowKeyboardShortcuts => {
-                if self.overlays.top() == Some(OverlaySurface::KeyboardShortcuts) {
-                    self.pop_overlay();
+            Action::OpenDeviceFlowBrowser => {
+                if let Some(device_flow) = self.github.auth.device_flow.as_ref() {
+                    vec![Effect::OpenBrowser { url: device_flow.verification_uri.clone() }]
                 } else {
-                    self.push_overlay(OverlaySurface::KeyboardShortcuts, None);
+                    Vec::new()
                 }
-                Vec::new()
             }
-            Action::ScrollViewportHalfPage(direction) => {
-                self.scroll_viewport_half_page(direction);
-                Vec::new()
-            }
-            Action::Noop => Vec::new(),
+            _ => Vec::new(),
         }
     }
 

@@ -318,9 +318,9 @@ fn dark_colors(
         ghost_element_hover: Color::rgba(255, 255, 255, 20),
         ghost_element_active: Color::rgba(255, 255, 255, 36),
         ghost_element_selected: b[4],
-        hover_overlay: Color::rgba(255, 255, 255, 14),
+        hover_overlay: b[3],
 
-        sidebar_row_hover: Color::rgba(255, 255, 255, 14),
+        sidebar_row_hover: b[3],
         sidebar_row_selected: b[4],
 
         // Borders — subtle but visible separation
@@ -416,9 +416,9 @@ fn light_colors(
         ghost_element_hover: Color::rgba(0, 0, 0, 15), // ~6%
         ghost_element_active: Color::rgba(0, 0, 0, 31), // ~12%
         ghost_element_selected: b[3],
-        hover_overlay: Color::rgba(0, 0, 0, 20), // ~8%
+        hover_overlay: b[2],
 
-        sidebar_row_hover: n[4],
+        sidebar_row_hover: b[2],
         sidebar_row_selected: b[3],
 
         // Borders

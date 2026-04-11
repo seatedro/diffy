@@ -115,7 +115,7 @@ pub fn context_menu_layer(entries: Vec<ContextMenuEntry>, x: f32, y: f32, theme:
                     .py(m.spacing_xs + Sp::XXS * scale);
 
                 if !disabled {
-                    row = row.on_click(action).hover_bg(tc.ghost_element_hover);
+                    row = row.on_click(action).hover_bg(tc.sidebar_row_hover);
                 }
 
                 if let Some(svg) = icon {

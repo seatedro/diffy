@@ -275,13 +275,9 @@ impl SemanticPalette {
             ghost_element_hover: ghost_hover,
             ghost_element_active: ghost_active,
             ghost_element_selected: s.accent_soft,
-            hover_overlay: if d {
-                Color::rgba(255, 255, 255, 14)
-            } else {
-                Color::rgba(0, 0, 0, 20)
-            },
+            hover_overlay: s.panel.lerp(s.accent_soft, 0.5),
 
-            sidebar_row_hover: ghost_hover,
+            sidebar_row_hover: s.panel.lerp(s.accent_soft, 0.5),
             sidebar_row_selected: s.accent_soft,
 
             border: s.border_strong,

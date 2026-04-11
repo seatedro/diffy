@@ -287,7 +287,7 @@ fn empty_state(state: &AppState, theme: &Theme) -> Div {
                 <div class="w-full flex-row items-center"
                      py={Sp::SM} px={Sp::SM}
                      rounded={Rad::MD} gap={Sp::SM}
-                     hover_bg={tc.ghost_element_hover}
+                     hover_bg={tc.sidebar_row_hover}
                      on_click={Action::OpenRepository(repo.clone())}
                      cursor={CursorHint::Pointer}>
                     <icon svg={lucide::FOLDER} size={Ico::SM} color={tc.text_muted} />

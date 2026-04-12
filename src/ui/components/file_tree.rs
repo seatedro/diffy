@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashSet};
 use halogen::view;
 
 use crate::actions::Action;
-use crate::ui::design::Sp;
+use crate::ui::design::Ico;
 use crate::ui::element::{
     AnyElement, ElementContext, IntoAnyElement, RenderOnce, div, svg_icon, text,
 };
@@ -164,7 +164,9 @@ impl RenderOnce for FileTree {
         let m = &cx.theme.metrics;
         let row_height = m.ui_row_height.round();
         let indent_unit = m.spacing_lg;
-        let icon_size = m.ui_small_font_size;
+        let scale = m.ui_scale();
+        let icon_size = Ico::SM;
+        let chevron_size = Ico::XS;
 
         let Self {
             entries,
@@ -241,11 +243,9 @@ impl RenderOnce for FileTree {
                         row_div = row_div.on_click(f(path));
                     }
 
-                    let scale = m.ui_scale();
                     row_div = row_div
                         .child(
-                            svg_icon(chevron, icon_size - (Sp::XXS * scale).round())
-                                .color(tc.text_muted),
+                            svg_icon(chevron, chevron_size).color(tc.text_muted),
                         )
                         .child(svg_icon(folder_icon, icon_size).color(tc.text_muted))
                         .child(text(name).text_sm().color(tc.text).medium());
@@ -282,7 +282,8 @@ impl RenderOnce for FileTree {
                         row_div = row_div.hover_bg(tc.sidebar_row_hover);
                     }
 
-                    let indent_w = indent_unit * depth as f32 + icon_size;
+                    let indent_w =
+                        indent_unit * depth as f32 + chevron_size * scale + m.spacing_xs;
                     if indent_w > 0.1 {
                         row_div = row_div.child(div().w(indent_w).flex_shrink_0());
                     }

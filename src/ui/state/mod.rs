@@ -9,9 +9,11 @@ use crate::core::compare::{CompareMode, CompareOutput, CompareSpec, LayoutMode, 
 use crate::core::diff::FileDiff;
 use crate::core::frecency::FrecencyStore;
 use crate::core::syntax::DiffSyntaxAnnotator;
-use crate::core::vcs::git::{BranchInfo, CommitInfo, StatusItem, StatusScope, TagInfo};
+use crate::core::vcs::git::{
+    BranchInfo, CommitInfo, StatusItem, StatusOperation, StatusScope, TagInfo,
+};
 use crate::core::vcs::github::{DeviceFlowState, PullRequestInfo};
-use crate::effects::{CompareRequest, Effect, StatusDiffRequest};
+use crate::effects::{CompareRequest, Effect, StatusDiffRequest, StatusOperationRequest};
 use crate::events::{
     AppEvent, CompareFinished, RepositoryChangeKind, RepositorySnapshot, RepositorySyncReason,
     StatusDiffFinished,
@@ -274,6 +276,23 @@ impl FileListState {
     pub fn scroll_px(&mut self, delta_px: f32, file_count: usize) {
         self.scroll_offset_px += delta_px;
         self.clamp_scroll(file_count);
+    }
+}
+
+impl AppState {
+    pub fn sidebar_row_count(&self) -> usize {
+        if self.workspace.source == WorkspaceSource::Status && self.file_list.filter.is_empty() {
+            self.workspace.files.len() + status_section_count(&self.workspace.status_items)
+        } else {
+            self.workspace.files.len()
+        }
+    }
+
+    fn sidebar_row_index_for_file(&self, index: usize) -> usize {
+        if self.workspace.source != WorkspaceSource::Status || !self.file_list.filter.is_empty() {
+            return index;
+        }
+        index + status_section_count_before(&self.workspace.status_items, index + 1)
     }
 }
 
@@ -789,7 +808,8 @@ impl AppState {
             // Compare & repository
             Bootstrap | OpenRepositoryDialog | OpenRepository(_) | SetLeftRef(_)
             | SetRightRef(_) | SetCompareMode(_) | CycleCompareMode | SetLayoutMode(_)
-            | SetRenderer(_) | StartCompare => self.apply_compare_action(action),
+            | SetRenderer(_) | StartCompare | StageSelectedFile | UnstageSelectedFile
+            | DiscardSelectedFile => self.apply_compare_action(action),
 
             // File list & sidebar
             SelectFile(_)
@@ -1070,6 +1090,15 @@ impl AppState {
                 self.persist_settings_effect()
             }
             Action::StartCompare => self.kickoff_compare(),
+            Action::StageSelectedFile => {
+                self.apply_selected_status_operation(StatusOperation::Stage)
+            }
+            Action::UnstageSelectedFile => {
+                self.apply_selected_status_operation(StatusOperation::Unstage)
+            }
+            Action::DiscardSelectedFile => {
+                self.apply_selected_status_operation(StatusOperation::Discard)
+            }
             _ => Vec::new(),
         }
     }
@@ -1099,18 +1128,17 @@ impl AppState {
                 Vec::new()
             }
             Action::ScrollFileList(delta) => {
-                self.file_list
-                    .scroll_rows(delta, self.workspace.files.len());
+                self.file_list.scroll_rows(delta, self.sidebar_row_count());
                 Vec::new()
             }
             Action::ScrollFileListPx(delta_px) => {
                 self.file_list
-                    .scroll_px(delta_px as f32, self.workspace.files.len());
+                    .scroll_px(delta_px as f32, self.sidebar_row_count());
                 Vec::new()
             }
             Action::ScrollFileListToPx(px) => {
                 self.file_list.scroll_offset_px = px as f32;
-                self.file_list.clamp_scroll(self.workspace.files.len());
+                self.file_list.clamp_scroll(self.sidebar_row_count());
                 Vec::new()
             }
             Action::HoverFile(index) => {
@@ -1356,6 +1384,12 @@ impl AppState {
             } => {
                 if generation == self.workspace.status_generation {
                     self.workspace.status = AsyncStatus::Failed;
+                    self.push_error(&message);
+                }
+                Vec::new()
+            }
+            AppEvent::StatusOperationFailed { path, message } => {
+                if self.compare.repo_path.as_ref() == Some(&path) {
                     self.push_error(&message);
                 }
                 Vec::new()
@@ -1756,6 +1790,17 @@ impl AppState {
                     .status_items
                     .iter()
                     .position(|item| item.path == path && item.scope == scope)
+            })
+            .or_else(|| {
+                self.workspace
+                    .selected_file_path
+                    .as_deref()
+                    .and_then(|path| {
+                        self.workspace
+                            .status_items
+                            .iter()
+                            .position(|item| item.path == path)
+                    })
             })
             .or_else(|| (!self.workspace.status_items.is_empty()).then_some(0));
 
@@ -3268,7 +3313,8 @@ impl AppState {
         }
         self.file_list.hovered_index = Some(index);
         if reveal {
-            let row_top = index as f32 * self.file_list.row_stride();
+            let row_top =
+                self.sidebar_row_index_for_file(index) as f32 * self.file_list.row_stride();
             let row_bottom = row_top + self.file_list.row_height;
             if row_top < self.file_list.scroll_offset_px {
                 self.file_list.scroll_offset_px = row_top;
@@ -3276,7 +3322,7 @@ impl AppState {
             {
                 self.file_list.scroll_offset_px = row_bottom - self.file_list.viewport_height;
             }
-            self.file_list.clamp_scroll(self.workspace.files.len());
+            self.file_list.clamp_scroll(self.sidebar_row_count());
         }
     }
 
@@ -3297,7 +3343,8 @@ impl AppState {
         self.editor.clear_document();
         self.file_list.hovered_index = Some(index);
         if reveal {
-            let row_top = index as f32 * self.file_list.row_stride();
+            let row_top =
+                self.sidebar_row_index_for_file(index) as f32 * self.file_list.row_stride();
             let row_bottom = row_top + self.file_list.row_height;
             if row_top < self.file_list.scroll_offset_px {
                 self.file_list.scroll_offset_px = row_top;
@@ -3305,14 +3352,39 @@ impl AppState {
             {
                 self.file_list.scroll_offset_px = row_bottom - self.file_list.viewport_height;
             }
-            self.file_list.clamp_scroll(self.workspace.files.len());
+            self.file_list.clamp_scroll(self.sidebar_row_count());
         }
 
         vec![Effect::LoadStatusDiff {
             generation: self.workspace.status_generation,
             index,
-            request: StatusDiffRequest { repo_path, item },
+            request: StatusDiffRequest {
+                repo_path,
+                item,
+                renderer: self.compare.renderer,
+            },
         }]
+    }
+
+    fn apply_selected_status_operation(&mut self, operation: StatusOperation) -> Vec<Effect> {
+        if self.workspace.source != WorkspaceSource::Status {
+            return Vec::new();
+        }
+        let Some(repo_path) = self.compare.repo_path.clone() else {
+            return Vec::new();
+        };
+        let Some(index) = self.workspace.selected_file_index else {
+            return Vec::new();
+        };
+        let Some(item) = self.workspace.status_items.get(index).cloned() else {
+            return Vec::new();
+        };
+
+        vec![Effect::ApplyStatusOperation(StatusOperationRequest {
+            repo_path,
+            item,
+            operation,
+        })]
     }
 
     fn scroll_viewport_lines(&mut self, delta_lines: i32) {
@@ -3613,6 +3685,22 @@ fn build_file_entries(files: &[FileDiff]) -> Vec<FileListEntry> {
 
 fn build_status_file_entries(items: &[StatusItem]) -> Vec<FileListEntry> {
     items.iter().map(FileListEntry::from).collect()
+}
+
+fn status_section_count(items: &[StatusItem]) -> usize {
+    let mut last_scope = None;
+    let mut count = 0;
+    for item in items {
+        if Some(item.scope) != last_scope {
+            count += 1;
+            last_scope = Some(item.scope);
+        }
+    }
+    count
+}
+
+fn status_section_count_before(items: &[StatusItem], len: usize) -> usize {
+    status_section_count(&items[..len.min(items.len())])
 }
 
 fn overlay_name(surface: OverlaySurface) -> &'static str {

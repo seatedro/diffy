@@ -18,6 +18,23 @@ impl StatusScope {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusOperation {
+    Stage,
+    Unstage,
+    Discard,
+}
+
+impl StatusOperation {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Stage => "stage",
+            Self::Unstage => "unstage",
+            Self::Discard => "discard",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StatusItem {
     pub path: String,

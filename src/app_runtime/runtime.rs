@@ -87,6 +87,13 @@ impl EffectRunner {
             Effect::SyncRepository { path, reason } => {
                 self.git_worker.dispatch_sync(path, reason);
             }
+            Effect::ApplyStatusOperation(request) => {
+                self.git_worker.dispatch_operation(
+                    request.repo_path,
+                    request.item,
+                    request.operation,
+                );
+            }
             Effect::RunCompare {
                 generation,
                 request,

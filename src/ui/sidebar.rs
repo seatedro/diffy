@@ -403,13 +403,38 @@ pub(crate) fn sidebar(
             </div>
         })
     } else {
-        let total_height = state.file_list.total_content_height(visible_count);
+        let grouped_status = state.workspace.source == WorkspaceSource::Status && !has_filter;
+        let total_height = state.file_list.total_content_height(if grouped_status {
+            state.sidebar_row_count()
+        } else {
+            visible_count
+        });
         let scroll_px = state.file_list.scroll_offset_px;
 
-        let rows: Vec<AnyElement> = filtered_indices
-            .iter()
-            .map(|&index| file_row(&all_files[index], index, state, tc, scale))
-            .collect();
+        let rows: Vec<AnyElement> = if grouped_status {
+            let mut rows = Vec::new();
+            let mut last_scope = None;
+            for &index in &filtered_indices {
+                let scope = state
+                    .workspace
+                    .status_items
+                    .get(index)
+                    .map(|item| item.scope);
+                if scope != last_scope {
+                    if let Some(scope) = scope {
+                        rows.push(status_section_row(scope.label(), tc, scale, row_h).into_any());
+                    }
+                    last_scope = scope;
+                }
+                rows.push(file_row(&all_files[index], index, state, tc, scale));
+            }
+            rows
+        } else {
+            filtered_indices
+                .iter()
+                .map(|&index| file_row(&all_files[index], index, state, tc, scale))
+                .collect()
+        };
 
         Some(view! { scale,
             <div class="flex-1 flex-col" min_h={0.0}
@@ -432,6 +457,22 @@ pub(crate) fn sidebar(
             {?content}
         </div>
     }
+}
+
+fn status_section_row(
+    label: &str,
+    tc: &crate::ui::theme::ThemeColors,
+    scale: f32,
+    row_height: f32,
+) -> AnyElement {
+    view! { scale,
+        <div class="w-full flex-row items-center"
+             h={row_height}
+             px={Sp::SM}>
+            <text class="text-xs font-semibold" color={tc.text_muted}>{label}</text>
+        </div>
+    }
+    .into_any()
 }
 
 fn file_row(
@@ -460,7 +501,9 @@ fn file_row(
         .workspace
         .status_items
         .get(index)
-        .filter(|_| state.workspace.source == WorkspaceSource::Status)
+        .filter(|_| {
+            state.workspace.source == WorkspaceSource::Status && !state.file_list.filter.is_empty()
+        })
         .map(|item| item.scope.label());
 
     view! { scale,

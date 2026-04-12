@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use git2::{BranchType, Status, StatusOptions};
 
-use crate::core::vcs::git::{GitService, status::status_items_from_entry};
+use crate::core::vcs::git::{
+    GitService, StatusItem, StatusOperation, status::status_items_from_entry,
+};
 use crate::events::{AppEvent, RepositoryChangeKind, RepositorySnapshot, RepositorySyncReason};
 
 const GIT_DIRTY_DEBOUNCE: Duration = Duration::from_millis(150);
@@ -25,6 +27,14 @@ impl GitWorker {
         let _ = self.sender.send(GitWorkerCommand::Sync { path, reason });
     }
 
+    pub fn dispatch_operation(&self, path: PathBuf, item: StatusItem, operation: StatusOperation) {
+        let _ = self.sender.send(GitWorkerCommand::ApplyOperation {
+            path,
+            item,
+            operation,
+        });
+    }
+
     pub(crate) fn sender(&self) -> Sender<GitWorkerCommand> {
         self.sender.clone()
     }
@@ -35,6 +45,11 @@ pub(crate) enum GitWorkerCommand {
     Sync {
         path: PathBuf,
         reason: RepositorySyncReason,
+    },
+    ApplyOperation {
+        path: PathBuf,
+        item: StatusItem,
+        operation: StatusOperation,
     },
     Dirty {
         path: PathBuf,
@@ -92,6 +107,14 @@ fn git_worker_loop(event_sender: Sender<AppEvent>, receiver: Receiver<GitWorkerC
                 pending_dirty = None;
                 sync_repository(&mut state, &event_sender, path, reason);
             }
+            Some(GitWorkerCommand::ApplyOperation {
+                path,
+                item,
+                operation,
+            }) => {
+                pending_dirty = None;
+                apply_status_operation(&mut state, &event_sender, path, item, operation);
+            }
             Some(GitWorkerCommand::Dirty { path }) => {
                 pending_dirty = Some(path);
             }
@@ -103,6 +126,40 @@ fn git_worker_loop(event_sender: Sender<AppEvent>, receiver: Receiver<GitWorkerC
             }
         }
     }
+}
+
+fn apply_status_operation(
+    state: &mut GitWorkerState,
+    event_sender: &Sender<AppEvent>,
+    path: PathBuf,
+    item: StatusItem,
+    operation: StatusOperation,
+) {
+    if state.active_path.as_ref() != Some(&path) {
+        state.git.close();
+        state.snapshot = None;
+        state.active_path = Some(path.clone());
+    }
+
+    if !state.git.is_open() {
+        if let Err(error) = state.git.open(path.to_string_lossy().as_ref()) {
+            let _ = event_sender.send(AppEvent::StatusOperationFailed {
+                path,
+                message: error.to_string(),
+            });
+            return;
+        }
+    }
+
+    if let Err(error) = state.git.apply_status_operation(&item, operation) {
+        let _ = event_sender.send(AppEvent::StatusOperationFailed {
+            path: path.clone(),
+            message: error.to_string(),
+        });
+        return;
+    }
+
+    sync_repository(state, event_sender, path, RepositorySyncReason::Dirty);
 }
 
 fn sync_repository(

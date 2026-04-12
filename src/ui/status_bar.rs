@@ -2,6 +2,7 @@ use crate::core::compare::{CompareMode, RendererKind};
 use crate::ui::design::{Ico, Sp};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
+use crate::ui::state::WorkspaceSource;
 use crate::ui::state::{AppState, AsyncStatus};
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
@@ -40,11 +41,18 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
         }
     });
 
-    let right_text = format!(
-        "{}  \u{00b7}  {}",
-        compare_mode_label(state.compare.mode),
-        renderer_label(state.compare.renderer),
-    );
+    let right_text = match state.workspace.source {
+        WorkspaceSource::Status => state
+            .workspace
+            .selected_status_scope
+            .map(|scope| format!("working tree  \u{00b7}  {}", scope.label()))
+            .unwrap_or_else(|| "working tree".to_owned()),
+        _ => format!(
+            "{}  \u{00b7}  {}",
+            compare_mode_label(state.compare.mode),
+            renderer_label(state.compare.renderer),
+        ),
+    };
 
     view! { scale,
         <div class="flex-row items-center w-full"

@@ -13,7 +13,7 @@ use crate::core::compare::spec::{CompareMode, CompareSpec};
 use crate::core::diff::{DiffLine, FileDiff, Hunk, LineKind};
 use crate::core::error::{DiffyError, Result};
 use crate::core::text::{ChangeIntensity, DiffTokenSpan, SyntaxTokenKind, TextBuffer, TokenBuffer};
-use crate::core::vcs::git::{GitService, WORKDIR_REF};
+use crate::core::vcs::git::{GitService, StatusItem, StatusScope, WORKDIR_REF};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DifftasticBackend;
@@ -21,6 +21,16 @@ pub struct DifftasticBackend;
 impl DifftasticBackend {
     pub const fn is_available() -> bool {
         true
+    }
+
+    pub fn compare_status_item(
+        &self,
+        item: &StatusItem,
+        git: &GitService,
+    ) -> Result<CompareOutput> {
+        let repo = git.repo()?;
+        let changed = changed_path_for_status_item(repo, item)?;
+        compare_changed_paths(vec![changed])
     }
 }
 
@@ -45,52 +55,56 @@ impl DiffBackend for DifftasticBackend {
         let repo = git.repo()?;
         let changed_paths = collect_changed_paths(repo, &left, &right)?;
 
-        let mut output = CompareOutput::default();
-        let mut text_buffer = TextBuffer::default();
-        let mut token_buffer = TokenBuffer::default();
+        Ok(Some(compare_changed_paths(changed_paths)?))
+    }
+}
 
-        for changed in changed_paths {
-            let display_path = changed
-                .new_path
-                .as_deref()
-                .or(changed.old_path.as_deref())
-                .unwrap_or_default();
-            if changed.is_binary {
-                output.files.push(FileDiff {
-                    path: display_path.to_owned(),
-                    status: changed.status,
-                    is_binary: true,
-                    ..FileDiff::default()
-                });
-                continue;
-            }
+fn compare_changed_paths(changed_paths: Vec<ChangedPath>) -> Result<CompareOutput> {
+    let mut output = CompareOutput::default();
+    let mut text_buffer = TextBuffer::default();
+    let mut token_buffer = TokenBuffer::default();
 
-            let semantic = vendored_difftastic::diff_bytes_semantic(DiffRequest {
-                display_path,
-                lhs_path: changed.old_path.as_deref().map(Path::new),
-                rhs_path: changed.new_path.as_deref().map(Path::new),
-                lhs_bytes: &changed.old_content,
-                rhs_bytes: &changed.new_content,
-            })
-            .map_err(|error| DiffyError::General(format!("difftastic failed: {error}")))?;
-            let old_src = String::from_utf8_lossy(&changed.old_content);
-            let new_src = String::from_utf8_lossy(&changed.new_content);
-            let file = convert_semantic_result(
-                &semantic,
-                display_path,
-                &changed.status,
-                &old_src,
-                &new_src,
-                &mut text_buffer,
-                &mut token_buffer,
-            );
-            output.files.push(file);
+    for changed in changed_paths {
+        let display_path = changed
+            .new_path
+            .as_deref()
+            .or(changed.old_path.as_deref())
+            .unwrap_or_default();
+        if changed.is_binary {
+            output.files.push(FileDiff {
+                path: display_path.to_owned(),
+                status: changed.status,
+                is_binary: true,
+                ..FileDiff::default()
+            });
+            continue;
         }
 
-        output.text_buffer = text_buffer;
-        output.token_buffer = token_buffer;
-        Ok(Some(output))
+        let semantic = vendored_difftastic::diff_bytes_semantic(DiffRequest {
+            display_path,
+            lhs_path: changed.old_path.as_deref().map(Path::new),
+            rhs_path: changed.new_path.as_deref().map(Path::new),
+            lhs_bytes: &changed.old_content,
+            rhs_bytes: &changed.new_content,
+        })
+        .map_err(|error| DiffyError::General(format!("difftastic failed: {error}")))?;
+        let old_src = String::from_utf8_lossy(&changed.old_content);
+        let new_src = String::from_utf8_lossy(&changed.new_content);
+        let file = convert_semantic_result(
+            &semantic,
+            display_path,
+            &changed.status,
+            &old_src,
+            &new_src,
+            &mut text_buffer,
+            &mut token_buffer,
+        );
+        output.files.push(file);
     }
+
+    output.text_buffer = text_buffer;
+    output.token_buffer = token_buffer;
+    Ok(output)
 }
 
 fn convert_semantic_result(
@@ -374,6 +388,71 @@ fn collect_changed_paths(repo: &Repository, left: &str, right: &str) -> Result<V
         });
     }
     Ok(changed)
+}
+
+fn changed_path_for_status_item(repo: &Repository, item: &StatusItem) -> Result<ChangedPath> {
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| DiffyError::General("repository has no workdir".to_owned()))?;
+    let path = Path::new(&item.path);
+    let index = repo.index()?;
+
+    let head_tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
+    let head_entry = head_tree.as_ref().and_then(|tree| tree.get_path(path).ok());
+    let index_entry = index.get_path(path, 0);
+
+    let old_content = match item.scope {
+        StatusScope::Staged => head_entry
+            .as_ref()
+            .map(|entry| {
+                repo.find_blob(entry.id())
+                    .map(|blob| blob.content().to_vec())
+            })
+            .transpose()?,
+        StatusScope::Unstaged => index_entry
+            .as_ref()
+            .map(|entry| repo.find_blob(entry.id).map(|blob| blob.content().to_vec()))
+            .transpose()?,
+        StatusScope::Untracked => None,
+    };
+
+    let new_content = match item.scope {
+        StatusScope::Staged => index_entry
+            .as_ref()
+            .map(|entry| repo.find_blob(entry.id).map(|blob| blob.content().to_vec()))
+            .transpose()?,
+        StatusScope::Unstaged | StatusScope::Untracked => {
+            let absolute_path = workdir.join(path);
+            match fs::read(&absolute_path) {
+                Ok(content) => Some(content),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.into()),
+            }
+        }
+    };
+
+    let old_binary = old_content
+        .as_ref()
+        .is_some_and(|bytes| bytes.iter().take(1024).any(|b| *b == 0));
+    let new_binary = new_content
+        .as_ref()
+        .is_some_and(|bytes| bytes.iter().take(1024).any(|b| *b == 0));
+
+    Ok(ChangedPath {
+        status: item.status.clone(),
+        old_path: match item.scope {
+            StatusScope::Untracked => None,
+            _ => Some(item.path.clone()),
+        },
+        new_path: if item.status == "D" && item.scope != StatusScope::Untracked {
+            None
+        } else {
+            Some(item.path.clone())
+        },
+        old_content: old_content.unwrap_or_default(),
+        new_content: new_content.unwrap_or_default(),
+        is_binary: old_binary || new_binary,
+    })
 }
 
 fn load_blob_content(repo: &Repository, oid: git2::Oid) -> Result<Option<Vec<u8>>> {

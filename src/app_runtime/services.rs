@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-use crate::core::compare::{CompareOutput, CompareService};
+use crate::core::compare::{CompareOutput, CompareService, RendererKind};
 use crate::core::error::{DiffyError, Result};
 use crate::core::vcs::git::GitService;
 use crate::core::vcs::github::{
@@ -52,7 +52,13 @@ impl AppServices {
     ) -> Result<StatusDiffFinished> {
         let mut git = GitService::new();
         git.open(request.repo_path.to_string_lossy().as_ref())?;
-        let output: CompareOutput = git.diff_status_item(&request.item)?;
+        let output: CompareOutput = match request.renderer {
+            RendererKind::Builtin => git.diff_status_item(&request.item)?,
+            RendererKind::Difftastic => {
+                crate::core::compare::backends::DifftasticBackend
+                    .compare_status_item(&request.item, &git)?
+            }
+        };
 
         Ok(StatusDiffFinished {
             generation,

@@ -68,6 +68,10 @@ pub enum AppEvent {
         index: usize,
         message: String,
     },
+    StatusOperationFailed {
+        path: PathBuf,
+        message: String,
+    },
     PullRequestLoaded {
         url: String,
         info: PullRequestInfo,

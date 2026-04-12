@@ -90,6 +90,36 @@ pub(crate) fn main_surface(
 fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
+    let selected_scope = state.workspace.selected_status_scope;
+    let status_actions: Option<AnyElement> = if state.workspace.source == WorkspaceSource::Status {
+        Some(view! { scale,
+            <div class="flex-row items-center" gap={Sp::XS}>
+                if matches!(selected_scope, Some(crate::core::vcs::git::StatusScope::Unstaged | crate::core::vcs::git::StatusScope::Untracked)) {
+                    {Button::new(Action::StageSelectedFile)
+                        .icon(lucide::PLUS)
+                        .label("Stage")
+                        .tooltip("Stage selected file")
+                        .style(ButtonStyle::Subtle)}
+                }
+                if matches!(selected_scope, Some(crate::core::vcs::git::StatusScope::Staged)) {
+                    {Button::new(Action::UnstageSelectedFile)
+                        .icon(lucide::MINUS)
+                        .label("Unstage")
+                        .tooltip("Unstage selected file")
+                        .style(ButtonStyle::Subtle)}
+                }
+                if selected_scope.is_some() {
+                    {Button::new(Action::DiscardSelectedFile)
+                        .icon(lucide::CORNER_UP_LEFT)
+                        .label("Discard")
+                        .tooltip("Discard selected file changes")
+                        .style(ButtonStyle::Danger)}
+                }
+            </div>
+        })
+    } else {
+        None
+    };
 
     view! { scale,
         <div class="w-full flex-row items-center"
@@ -102,23 +132,26 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                 </div>
             </div>
             <div class="flex-row items-center" gap={Sp::SM}>
-                {SegmentedControl::new(vec![
-                    SegmentedItem::new(
-                        "Split",
-                        Action::SetLayoutMode(LayoutMode::Split),
-                        state.compare.layout == LayoutMode::Split,
-                    ).tooltip("Side-by-side view"),
-                    SegmentedItem::new(
-                        "Unified",
-                        Action::SetLayoutMode(LayoutMode::Unified),
-                        state.compare.layout == LayoutMode::Unified,
-                    ).tooltip("Inline view"),
-                ])}
-                {Button::new(Action::ToggleWrap)
-                    .icon(lucide::WRAP_TEXT)
-                    .label("Wrap")
-                    .active(state.editor.wrap_enabled)
-                    .tooltip("Toggle line wrapping (w)")}
+                if state.workspace.source == WorkspaceSource::Compare {
+                    {SegmentedControl::new(vec![
+                        SegmentedItem::new(
+                            "Split",
+                            Action::SetLayoutMode(LayoutMode::Split),
+                            state.compare.layout == LayoutMode::Split,
+                        ).tooltip("Side-by-side view"),
+                        SegmentedItem::new(
+                            "Unified",
+                            Action::SetLayoutMode(LayoutMode::Unified),
+                            state.compare.layout == LayoutMode::Unified,
+                        ).tooltip("Inline view"),
+                    ])}
+                    {Button::new(Action::ToggleWrap)
+                        .icon(lucide::WRAP_TEXT)
+                        .label("Wrap")
+                        .active(state.editor.wrap_enabled)
+                        .tooltip("Toggle line wrapping (w)")}
+                }
+                {?status_actions}
             </div>
         </div>
     }

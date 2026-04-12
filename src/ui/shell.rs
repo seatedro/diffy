@@ -79,7 +79,7 @@ pub fn build_ui_frame(
             state.overlays.command_palette.entries.len(),
         );
     state.file_list.viewport_height = sidebar_list_height;
-    state.file_list.clamp_scroll(state.workspace.files.len());
+    state.file_list.clamp_scroll(state.sidebar_row_count());
     let sidebar_width_factor = cx
         .ui_signals
         .map(|s| cx.read(s.sidebar_width_factor))
@@ -137,7 +137,15 @@ pub fn build_ui_frame(
 
     if !state.toasts.is_empty() {
         root = root.child(
-            ToastStack::new(&state.toasts, &state.animation, width, height, ui_scale, m.status_bar_height).build(),
+            ToastStack::new(
+                &state.toasts,
+                &state.animation,
+                width,
+                height,
+                ui_scale,
+                m.status_bar_height,
+            )
+            .build(),
         );
     }
 

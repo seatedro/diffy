@@ -1,8 +1,9 @@
 use std::cmp::Ordering;
+use std::path::Path;
 
 use git2::{
     BranchType, Cred, DiffFormat, DiffOptions, FetchOptions, ObjectType, Oid, RemoteCallbacks,
-    Repository,
+    Repository, build::CheckoutBuilder,
 };
 use serde::Serialize;
 
@@ -10,7 +11,7 @@ use crate::core::compare::backends::compare_output_from_diff;
 use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::CompareMode;
 use crate::core::error::{DiffyError, Result};
-use crate::core::vcs::git::status::{StatusItem, StatusScope};
+use crate::core::vcs::git::status::{StatusItem, StatusOperation, StatusScope};
 use crate::core::vcs::github::{GitHubApi, parse_pr_url};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -247,6 +248,18 @@ impl GitService {
         compare_output_from_diff(&mut diff)
     }
 
+    pub fn apply_status_operation(
+        &self,
+        item: &StatusItem,
+        operation: StatusOperation,
+    ) -> Result<()> {
+        match operation {
+            StatusOperation::Stage => self.stage_path(&item.path),
+            StatusOperation::Unstage => self.unstage_path(&item.path),
+            StatusOperation::Discard => self.discard_path(&item.path),
+        }
+    }
+
     pub fn abbreviate_oid(&self, full_oid: &str) -> Result<String> {
         let oid = Oid::from_str(full_oid)?;
         let short = self.repo()?.find_object(oid, None)?.short_id()?;
@@ -452,13 +465,97 @@ impl GitService {
             .as_ref()
             .ok_or_else(|| DiffyError::General("repository is not open".to_owned()))
     }
+
+    fn stage_path(&self, path: &str) -> Result<()> {
+        let repo = self.repo()?;
+        let mut index = repo.index()?;
+        index.add_path(Path::new(path))?;
+        index.write()?;
+        Ok(())
+    }
+
+    fn unstage_path(&self, path: &str) -> Result<()> {
+        let repo = self.repo()?;
+        let head = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
+        let head_object = head.as_ref().map(|commit| commit.as_object());
+        repo.reset_default(head_object, [Path::new(path)])?;
+        Ok(())
+    }
+
+    fn discard_path(&self, path: &str) -> Result<()> {
+        let repo = self.repo()?;
+        let mut checkout = CheckoutBuilder::new();
+        checkout.path(path).force().remove_untracked(true);
+
+        let head = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
+        let head_object = head.as_ref().map(|commit| commit.as_object());
+        repo.reset_default(head_object, [Path::new(path)])?;
+
+        let mut index = repo.index()?;
+        repo.checkout_index(Some(&mut index), Some(&mut checkout))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::Path;
+
     use git2::CredentialType;
+    use git2::{Repository, Signature, Status, StatusOptions};
+    use tempfile::TempDir;
 
     use super::{RemoteCredentialKind, select_remote_credential};
+    use crate::core::vcs::git::{GitService, StatusItem, StatusOperation, StatusScope};
+
+    fn commit_file(repo: &Repository, relative_path: &str, content: &str, message: &str) -> String {
+        let workdir = repo.workdir().expect("repo workdir");
+        let full_path = workdir.join(relative_path);
+        if let Some(parent) = full_path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&full_path, content).unwrap();
+
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new(relative_path)).unwrap();
+        index.write().unwrap();
+
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let signature = Signature::now("Diffy", "diffy@example.com").unwrap();
+        let parents = repo
+            .head()
+            .ok()
+            .and_then(|head| head.target())
+            .map(|oid| repo.find_commit(oid).unwrap())
+            .into_iter()
+            .collect::<Vec<_>>();
+        let parent_refs = parents.iter().collect::<Vec<_>>();
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            message,
+            &tree,
+            &parent_refs,
+        )
+        .unwrap()
+        .to_string()
+    }
+
+    fn statuses(repo: &Repository) -> Vec<(String, Status)> {
+        let mut options = StatusOptions::new();
+        options
+            .include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .include_ignored(false);
+        repo.statuses(Some(&mut options))
+            .unwrap()
+            .iter()
+            .map(|entry| (entry.path().unwrap_or_default().to_owned(), entry.status()))
+            .collect()
+    }
 
     #[test]
     fn prefers_https_token_for_github_remotes() {
@@ -492,5 +589,81 @@ mod tests {
                 username: "git".to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn can_stage_unstage_and_discard_status_items() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        commit_file(&repo, "src/lib.rs", "old\n", "initial");
+
+        fs::write(repo_dir.path().join("src/lib.rs"), "new\n").unwrap();
+
+        let mut git = GitService::new();
+        git.open(repo_dir.path().to_str().unwrap()).unwrap();
+
+        git.apply_status_operation(
+            &StatusItem {
+                path: "src/lib.rs".to_owned(),
+                scope: StatusScope::Unstaged,
+                status: "M".to_owned(),
+            },
+            StatusOperation::Stage,
+        )
+        .unwrap();
+
+        let staged = statuses(&repo);
+        assert!(staged[0].1.contains(Status::INDEX_MODIFIED));
+
+        git.apply_status_operation(
+            &StatusItem {
+                path: "src/lib.rs".to_owned(),
+                scope: StatusScope::Staged,
+                status: "M".to_owned(),
+            },
+            StatusOperation::Unstage,
+        )
+        .unwrap();
+
+        let unstaged = statuses(&repo);
+        assert!(unstaged[0].1.contains(Status::WT_MODIFIED));
+
+        git.apply_status_operation(
+            &StatusItem {
+                path: "src/lib.rs".to_owned(),
+                scope: StatusScope::Unstaged,
+                status: "M".to_owned(),
+            },
+            StatusOperation::Discard,
+        )
+        .unwrap();
+
+        assert!(statuses(&repo).is_empty());
+        assert_eq!(
+            fs::read_to_string(repo_dir.path().join("src/lib.rs")).unwrap(),
+            "old\n"
+        );
+    }
+
+    #[test]
+    fn can_discard_untracked_file() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        commit_file(&repo, "src/lib.rs", "old\n", "initial");
+        fs::write(repo_dir.path().join("src/new.rs"), "hello\n").unwrap();
+
+        let mut git = GitService::new();
+        git.open(repo_dir.path().to_str().unwrap()).unwrap();
+        git.apply_status_operation(
+            &StatusItem {
+                path: "src/new.rs".to_owned(),
+                scope: StatusScope::Untracked,
+                status: "U".to_owned(),
+            },
+            StatusOperation::Discard,
+        )
+        .unwrap();
+
+        assert!(!repo_dir.path().join("src/new.rs").exists());
     }
 }

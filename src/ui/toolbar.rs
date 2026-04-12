@@ -352,11 +352,12 @@ fn empty_state(state: &AppState, theme: &Theme) -> AnyElement {
                 </div>
                 {?recent_section}
                 <div pt={Sp::XS}>
-                    {Button::new(Action::OpenRepoPicker)
-                        .icon(lucide::FOLDER_OPEN)
-                        .label("Open Folder")
-                        .tooltip("Open a repository folder")
-                        .style(ButtonStyle::Subtle)}
+                    <Button action={Action::OpenRepoPicker}
+                            tooltip={"Open a repository folder"}
+                            style={ButtonStyle::Subtle}>
+                        <Icon>{lucide::FOLDER_OPEN}</Icon>
+                        <Label>{"Open Folder"}</Label>
+                    </Button>
                 </div>
                 <text class="text-xs" color={tc.text_muted}>{"or drop a folder here"}</text>
             </div>

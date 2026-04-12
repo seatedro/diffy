@@ -107,33 +107,35 @@ pub fn compare_sheet(
         height,
     )
     .gap(Sp::XL)
-    .body_child(
-        Button::new(Action::OpenRepoPicker)
-            .icon(lucide::FOLDER)
-            .label(
+    .body_child(view! {
+        <Button action={Action::OpenRepoPicker}
+                tooltip={"Switch repository"}
+                style={ButtonStyle::Subtle}>
+            <Icon>{lucide::FOLDER}</Icon>
+            <Label>{
                 state
                     .compare
                     .repo_path
                     .as_ref()
                     .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "Choose repository\u{2026}".into()),
-            )
-            .tooltip("Switch repository")
-            .style(ButtonStyle::Subtle),
-    )
+                    .unwrap_or_else(|| "Choose repository\u{2026}".into())
+            }</Label>
+        </Button>
+    })
     .body_child(refs_row)
     .body_child(options)
     .body_child(validation_row)
-    .footer_child(
-        Button::new(Action::StartCompare)
-            .icon(lucide::PLAY)
-            .label(if state.workspace.status == AsyncStatus::Loading {
+    .footer_child(view! {
+        <Button action={Action::StartCompare}
+                tooltip={"Run diff comparison"}
+                style={ButtonStyle::Filled}>
+            <Icon>{lucide::PLAY}</Icon>
+            <Label>{if state.workspace.status == AsyncStatus::Loading {
                 "Comparing\u{2026}"
             } else {
                 "Start Compare"
-            })
-            .tooltip("Run diff comparison")
-            .style(ButtonStyle::Filled),
-    )
+            }}</Label>
+        </Button>
+    })
     .into_any()
 }

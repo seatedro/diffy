@@ -20,11 +20,13 @@ pub fn search_field(
 
     let trailing = if has_value {
         on_clear.map(|action| {
-            Button::new(action)
-                .icon(lucide::X)
-                .tooltip("Clear")
-                .size(ButtonSize::Compact)
-                .into_any()
+            view! {
+                <Button action={action}
+                        tooltip={"Clear"}
+                        size={ButtonSize::Compact}>
+                    <Icon>{lucide::X}</Icon>
+                </Button>
+            }
         })
     } else {
         shortcut_hint.map(|hint| super::kbd(hint, theme).into_any())

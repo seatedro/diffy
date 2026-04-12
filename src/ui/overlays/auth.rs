@@ -76,13 +76,14 @@ pub fn auth_modal(
     } else {
         "Begin GitHub authentication"
     };
-    modal = modal.footer_child(
-        Button::new(action)
-            .icon(action_icon)
-            .label(action_label)
-            .tooltip(action_tooltip)
-            .style(ButtonStyle::Filled),
-    );
+    modal = modal.footer_child(view! {
+        <Button action={action}
+                tooltip={action_tooltip}
+                style={ButtonStyle::Filled}>
+            <Icon>{action_icon}</Icon>
+            <Label>{action_label}</Label>
+        </Button>
+    });
 
     modal.into_any()
 }

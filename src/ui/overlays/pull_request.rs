@@ -52,28 +52,30 @@ pub fn pull_request_modal(
         });
     }
 
-    modal = modal.footer_child(
-        Button::new(Action::SubmitPullRequest)
-            .icon(lucide::PLAY)
-            .label(
+    modal = modal.footer_child(view! {
+        <Button action={Action::SubmitPullRequest}
+                tooltip={"Fetch pull request details"}
+                style={ButtonStyle::Filled}>
+            <Icon>{lucide::PLAY}</Icon>
+            <Label>{
                 if state.github.pull_request.status == AsyncStatus::Loading {
                     "Loading\u{2026}"
                 } else {
                     "Load PR"
-                },
-            )
-            .tooltip("Fetch pull request details")
-            .style(ButtonStyle::Filled),
-    );
+                }
+            }</Label>
+        </Button>
+    });
 
     if state.github.pull_request.info.is_some() {
-        modal = modal.footer_child(
-            Button::new(Action::UsePullRequestCompare)
-                .icon(lucide::GIT_COMPARE)
-                .label("Use Compare")
-                .tooltip("Apply PR refs to compare")
-                .style(ButtonStyle::Subtle),
-        );
+        modal = modal.footer_child(view! {
+            <Button action={Action::UsePullRequestCompare}
+                    tooltip={"Apply PR refs to compare"}
+                    style={ButtonStyle::Subtle}>
+                <Icon>{lucide::GIT_COMPARE}</Icon>
+                <Label>{"Use Compare"}</Label>
+            </Button>
+        });
     }
 
     modal.into_any()

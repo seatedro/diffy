@@ -297,10 +297,11 @@ pub(crate) fn sidebar(
                 }
                 <spacer />
                 if file_count > 0 && state.workspace.source == WorkspaceSource::Compare {
-                    {Button::new(Action::ToggleSidebarMode)
-                        .icon(mode_icon)
-                        .tooltip(mode_tip)
-                        .fixed_size(Sz::MODE_TOGGLE)}
+                    <Button action={Action::ToggleSidebarMode}
+                            tooltip={mode_tip}
+                            fixed_size={Sz::MODE_TOGGLE}>
+                        <Icon>{mode_icon}</Icon>
+                    </Button>
                 }
             </div>
             if file_count > 0 {

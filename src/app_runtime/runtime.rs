@@ -116,6 +116,13 @@ impl EffectRunner {
                     request.operation,
                 );
             }
+            Effect::ApplyBatchStatusOperation(request) => {
+                self.git_worker.dispatch_batch_operation(
+                    request.repo_path,
+                    request.items,
+                    request.operation,
+                );
+            }
             Effect::RunCompare {
                 generation,
                 request,

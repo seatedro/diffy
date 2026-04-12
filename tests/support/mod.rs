@@ -9,9 +9,9 @@ use diffy::ui::element::{ElementContext, ScrollActionBuilder};
 use diffy::ui::shell::{UiFrame, build_ui_frame};
 use diffy::ui::signals::SignalStore;
 use diffy::ui::state::{
-    AppState, AsyncStatus, CommandPaletteState, FileListEntry, FocusTarget, OverlayEntry,
-    OverlayListState, OverlaySurface, PaletteCommand, PaletteEntry, PaletteEntryKind,
-    PickerEntry, PickerKind, PickerState, Toast, ToastKind, WorkspaceMode,
+    ActiveFile, AppState, AsyncStatus, CommandPaletteState, FileListEntry, FocusTarget,
+    OverlayEntry, OverlayListState, OverlaySurface, PaletteCommand, PaletteEntry,
+    PaletteEntryKind, PickerEntry, PickerKind, PickerState, Toast, ToastKind, WorkspaceMode,
 };
 use diffy::ui::theme::Theme;
 
@@ -73,6 +73,12 @@ pub fn ready_state_with_files(file_count: usize) -> AppState {
     if let Some(first) = state.workspace.files.first() {
         state.workspace.selected_file_index = Some(0);
         state.workspace.selected_file_path = Some(first.path.clone());
+        state.workspace.active_file = Some(ActiveFile {
+            index: 0,
+            path: first.path.clone(),
+            file: Default::default(),
+            render_doc: Default::default(),
+        });
     }
     state.file_list.viewport_height = 180.0;
     state

@@ -6,11 +6,12 @@ use halogen::view;
 use crate::actions::Action;
 use crate::effects::Effect;
 use crate::render::{Rect, RectPrimitive, RoundedRectPrimitive};
-use crate::ui::components::{self, Button};
+use crate::ui::components::{self, Button, ButtonSize, ButtonStyle};
 use crate::ui::design::{Alpha, Ico, Rad, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
+use crate::core::vcs::git::StatusScope;
 use crate::ui::state::{AppState, FocusTarget, SidebarMode, SidebarWidthCache, WorkspaceSource};
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme};
@@ -429,7 +430,7 @@ pub(crate) fn sidebar(
                     .map(|item| item.scope);
                 if scope != last_scope {
                     if let Some(scope) = scope {
-                        rows.push(status_section_row(scope.label(), tc, scale, row_h).into_any());
+                        rows.push(status_section_row(scope, tc, scale, row_h));
                     }
                     last_scope = scope;
                 }
@@ -467,16 +468,36 @@ pub(crate) fn sidebar(
 }
 
 fn status_section_row(
-    label: &str,
+    scope: StatusScope,
     tc: &crate::ui::theme::ThemeColors,
     scale: f32,
     row_height: f32,
 ) -> AnyElement {
+    let label = scope.label();
+    let section_action: Option<(Action, &str, &str)> = match scope {
+        StatusScope::Unstaged | StatusScope::Untracked => {
+            Some((Action::StageAllFiles, lucide::PLUS, "Stage All"))
+        }
+        StatusScope::Staged => {
+            Some((Action::UnstageAllFiles, lucide::MINUS, "Unstage All"))
+        }
+    };
+
     view! { scale,
-        <div class="w-full flex-row items-center"
+        <div class="w-full shrink-0 flex-row items-center"
              h={row_height}
              px={Sp::SM}>
             <text class="text-xs font-semibold" color={tc.text_muted}>{label}</text>
+            <spacer />
+            if let Some((action, icon, btn_label)) = section_action {
+                <Button action={action}
+                        tooltip={btn_label}
+                        style={ButtonStyle::Subtle}
+                        size={ButtonSize::Compact}>
+                    <Icon>{icon}</Icon>
+                    <Label>{btn_label}</Label>
+                </Button>
+            }
         </div>
     }
     .into_any()
@@ -504,17 +525,44 @@ fn file_row(
 
     let has_stats = file.additions > 0 || file.deletions > 0;
     let has_status = !file.status.is_empty();
+    let is_status_view = state.workspace.source == WorkspaceSource::Status;
     let status_scope = state
         .workspace
         .status_items
         .get(index)
-        .filter(|_| {
-            state.workspace.source == WorkspaceSource::Status && !state.file_list.filter.is_empty()
-        })
+        .filter(|_| is_status_view && !state.file_list.filter.is_empty())
         .map(|item| item.scope.label());
 
+    let stage_action: Option<(Action, &str, &str)> = state
+        .workspace
+        .status_items
+        .get(index)
+        .filter(|_| is_status_view)
+        .and_then(|item| match item.scope {
+            StatusScope::Unstaged | StatusScope::Untracked => {
+                Some((Action::StageFile(index), lucide::PLUS, "Stage"))
+            }
+            StatusScope::Staged => {
+                Some((Action::UnstageFile(index), lucide::MINUS, "Unstage"))
+            }
+        });
+
+    let hovered = state.file_list.hovered_index == Some(index);
+    let show_stage_btn = hovered || selected;
+    let stage_btn: Option<AnyElement> = stage_action.filter(|_| show_stage_btn).map(
+        |(action, icon, tooltip)| {
+            view! { scale,
+                <Button action={action}
+                        tooltip={tooltip}
+                        fixed_size={Sz::MODE_TOGGLE}>
+                    <Icon>{icon}</Icon>
+                </Button>
+            }
+        },
+    );
+
     view! { scale,
-        <div class="w-full flex-row items-center"
+        <div class="w-full shrink-0 flex-row items-center"
              h={row_height} px={Sp::SM} gap={Sp::SM}
              on_click={Action::SelectFile(index)}
              cursor={CursorHint::Pointer}
@@ -538,6 +586,7 @@ fn file_row(
                     <text class="text-xs" color={tc.text_muted}>{scope}</text>
                 </div>
             }
+            {?stage_btn}
             if has_status {
                 {components::status_badge(&file.status)}
             }

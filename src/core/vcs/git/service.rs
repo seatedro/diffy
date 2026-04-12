@@ -260,6 +260,38 @@ impl GitService {
         }
     }
 
+    pub fn apply_batch_status_operation(
+        &self,
+        items: &[StatusItem],
+        operation: StatusOperation,
+    ) -> Result<()> {
+        match operation {
+            StatusOperation::Stage => {
+                let repo = self.repo()?;
+                let mut index = repo.index()?;
+                for item in items {
+                    index.add_path(Path::new(&item.path))?;
+                }
+                index.write()?;
+                Ok(())
+            }
+            StatusOperation::Unstage => {
+                let repo = self.repo()?;
+                let head = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+                let head_object = head.as_ref().map(|c| c.as_object());
+                let paths: Vec<&Path> = items.iter().map(|i| Path::new(i.path.as_str())).collect();
+                repo.reset_default(head_object, paths)?;
+                Ok(())
+            }
+            StatusOperation::Discard => {
+                for item in items {
+                    self.discard_path(&item.path)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
     pub fn abbreviate_oid(&self, full_oid: &str) -> Result<String> {
         let oid = Oid::from_str(full_oid)?;
         let short = self.repo()?.find_object(oid, None)?.short_id()?;

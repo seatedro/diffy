@@ -27,6 +27,13 @@ pub struct StatusOperationRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchStatusOperationRequest {
+    pub repo_path: PathBuf,
+    pub items: Vec<StatusItem>,
+    pub operation: StatusOperation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     OpenRepositoryDialog,
     WatchRepository {
@@ -46,6 +53,7 @@ pub enum Effect {
         request: StatusDiffRequest,
     },
     ApplyStatusOperation(StatusOperationRequest),
+    ApplyBatchStatusOperation(BatchStatusOperationRequest),
     LoadPullRequest {
         url: String,
         repo_path: PathBuf,

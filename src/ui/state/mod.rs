@@ -13,7 +13,9 @@ use crate::core::vcs::git::{
     BranchInfo, CommitInfo, StatusItem, StatusOperation, StatusScope, TagInfo,
 };
 use crate::core::vcs::github::{DeviceFlowState, PullRequestInfo};
-use crate::effects::{CompareRequest, Effect, StatusDiffRequest, StatusOperationRequest};
+use crate::effects::{
+    BatchStatusOperationRequest, CompareRequest, Effect, StatusDiffRequest, StatusOperationRequest,
+};
 use crate::events::{
     AppEvent, CompareFinished, RepositoryChangeKind, RepositorySnapshot, RepositorySyncReason,
     StatusDiffFinished,
@@ -796,7 +798,8 @@ impl AppState {
             Bootstrap | OpenRepositoryDialog | OpenRepository(_) | SetLeftRef(_)
             | SetRightRef(_) | SetCompareMode(_) | CycleCompareMode | SetLayoutMode(_)
             | SetRenderer(_) | StartCompare | StageSelectedFile | UnstageSelectedFile
-            | DiscardSelectedFile | ShowWorkingTree => self.apply_compare_action(action),
+            | DiscardSelectedFile | StageFile(_) | UnstageFile(_) | StageAllFiles
+            | UnstageAllFiles | ShowWorkingTree => self.apply_compare_action(action),
 
             // File list & sidebar
             SelectFile(_)
@@ -1080,6 +1083,19 @@ impl AppState {
             }
             Action::DiscardSelectedFile => {
                 self.apply_selected_status_operation(StatusOperation::Discard)
+            }
+            Action::StageFile(index) => {
+                self.apply_file_status_operation(index, StatusOperation::Stage)
+            }
+            Action::UnstageFile(index) => {
+                self.apply_file_status_operation(index, StatusOperation::Unstage)
+            }
+            Action::StageAllFiles => self.apply_batch_scope_operation(
+                &[StatusScope::Unstaged, StatusScope::Untracked],
+                StatusOperation::Stage,
+            ),
+            Action::UnstageAllFiles => {
+                self.apply_batch_scope_operation(&[StatusScope::Staged], StatusOperation::Unstage)
             }
             _ => Vec::new(),
         }
@@ -3337,6 +3353,59 @@ impl AppState {
             item,
             operation,
         })]
+    }
+
+    fn apply_file_status_operation(
+        &mut self,
+        index: usize,
+        operation: StatusOperation,
+    ) -> Vec<Effect> {
+        if self.workspace.source != WorkspaceSource::Status {
+            return Vec::new();
+        }
+        let Some(repo_path) = self.compare.repo_path.clone() else {
+            return Vec::new();
+        };
+        let Some(item) = self.workspace.status_items.get(index).cloned() else {
+            return Vec::new();
+        };
+
+        vec![Effect::ApplyStatusOperation(StatusOperationRequest {
+            repo_path,
+            item,
+            operation,
+        })]
+    }
+
+    fn apply_batch_scope_operation(
+        &mut self,
+        scopes: &[StatusScope],
+        operation: StatusOperation,
+    ) -> Vec<Effect> {
+        if self.workspace.source != WorkspaceSource::Status {
+            return Vec::new();
+        }
+        let Some(repo_path) = self.compare.repo_path.clone() else {
+            return Vec::new();
+        };
+        let items: Vec<StatusItem> = self
+            .workspace
+            .status_items
+            .iter()
+            .filter(|item| scopes.contains(&item.scope))
+            .cloned()
+            .collect();
+        if items.is_empty() {
+            return Vec::new();
+        }
+
+        vec![Effect::ApplyBatchStatusOperation(
+            BatchStatusOperationRequest {
+                repo_path,
+                items,
+                operation,
+            },
+        )]
     }
 
     fn scroll_viewport_lines(&mut self, delta_lines: i32) {

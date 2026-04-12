@@ -140,7 +140,9 @@ impl InputSystem {
             .rev()
             .find(|hit| hit.rect.contains(x, y));
         let hovered_file = hovered_hit.and_then(|hit| match &hit.action {
-            Action::SelectFile(i) => Some(*i),
+            Action::SelectFile(i)
+            | Action::StageFile(i)
+            | Action::UnstageFile(i) => Some(*i),
             _ => None,
         });
         let hovered_toast = hovered_hit.and_then(|hit| match &hit.action {

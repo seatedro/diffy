@@ -36,6 +36,19 @@ impl GitWorker {
         });
     }
 
+    pub fn dispatch_batch_operation(
+        &self,
+        path: PathBuf,
+        items: Vec<StatusItem>,
+        operation: StatusOperation,
+    ) {
+        let _ = self.sender.send(GitWorkerCommand::ApplyBatchOperation {
+            path,
+            items,
+            operation,
+        });
+    }
+
     pub(crate) fn sender(&self) -> Sender<GitWorkerCommand> {
         self.sender.clone()
     }
@@ -50,6 +63,11 @@ pub(crate) enum GitWorkerCommand {
     ApplyOperation {
         path: PathBuf,
         item: StatusItem,
+        operation: StatusOperation,
+    },
+    ApplyBatchOperation {
+        path: PathBuf,
+        items: Vec<StatusItem>,
         operation: StatusOperation,
     },
     Dirty {
@@ -116,6 +134,14 @@ fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorke
                 pending_dirty = None;
                 apply_status_operation(&mut state, &event_sender, path, item, operation);
             }
+            Some(GitWorkerCommand::ApplyBatchOperation {
+                path,
+                items,
+                operation,
+            }) => {
+                pending_dirty = None;
+                apply_batch_status_operation(&mut state, &event_sender, path, items, operation);
+            }
             Some(GitWorkerCommand::Dirty { path }) => {
                 pending_dirty = Some(path);
             }
@@ -153,6 +179,40 @@ fn apply_status_operation(
     }
 
     if let Err(error) = state.git.apply_status_operation(&item, operation) {
+        event_sender.send(AppEvent::StatusOperationFailed {
+            path: path.clone(),
+            message: error.to_string(),
+        });
+        return;
+    }
+
+    sync_repository(state, event_sender, path, RepositorySyncReason::Dirty);
+}
+
+fn apply_batch_status_operation(
+    state: &mut GitWorkerState,
+    event_sender: &RuntimeEventSender,
+    path: PathBuf,
+    items: Vec<StatusItem>,
+    operation: StatusOperation,
+) {
+    if state.active_path.as_ref() != Some(&path) {
+        state.git.close();
+        state.snapshot = None;
+        state.active_path = Some(path.clone());
+    }
+
+    if !state.git.is_open() {
+        if let Err(error) = state.git.open(path.to_string_lossy().as_ref()) {
+            event_sender.send(AppEvent::StatusOperationFailed {
+                path,
+                message: error.to_string(),
+            });
+            return;
+        }
+    }
+
+    if let Err(error) = state.git.apply_batch_status_operation(&items, operation) {
         event_sender.send(AppEvent::StatusOperationFailed {
             path: path.clone(),
             message: error.to_string(),

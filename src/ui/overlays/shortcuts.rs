@@ -121,29 +121,29 @@ const GROUPS: &[ShortcutGroup] = &[
 fn build_keys_row(key: &str, theme: &crate::ui::theme::Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
-    let mut row = div()
-        .flex_shrink_0()
-        .min_w(Sz::CONTEXT_MENU_MIN_W)
-        .flex_row()
-        .items_center()
-        .flex_wrap()
-        .gap((Sp::XS * scale).round());
-
     let parts: Vec<&str> = key.split(" / ").collect();
-    for (i, part) in parts.iter().enumerate() {
-        if i > 0 {
-            row = row.child(text("/").text_xs().color(tc.text_muted));
-        }
-        let subparts: Vec<&str> = part.split('+').collect();
-        for (j, sub) in subparts.iter().enumerate() {
-            if j > 0 {
-                row = row.child(text("+").text_xs().color(tc.text_muted));
-            }
-            row = row.child(components::kbd(sub.trim(), theme));
-        }
-    }
 
-    row.into_any()
+    view! { scale,
+        <div class="shrink-0 flex-row items-center flex-wrap"
+             min_w={Sz::CONTEXT_MENU_MIN_W}
+             gap={Sp::XS}>
+            for (i, part) in parts.iter().enumerate() {
+                <fragment>
+                    if i > 0 {
+                        <text class="text-xs" color={tc.text_muted}>{"/"}</text>
+                    }
+                    for (j, sub) in part.split('+').enumerate() {
+                        <fragment>
+                            if j > 0 {
+                                <text class="text-xs" color={tc.text_muted}>{"+"}</text>
+                            }
+                            {components::kbd(sub.trim(), theme)}
+                        </fragment>
+                    }
+                </fragment>
+            }
+        </div>
+    }
 }
 
 pub fn keyboard_shortcuts(

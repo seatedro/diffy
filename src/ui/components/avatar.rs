@@ -105,44 +105,34 @@ impl RenderOnce for AvatarGroup {
         let overlap = -(self.size * 0.25).round();
         let shown = self.names.len().min(self.max_show);
         let remaining = self.names.len().saturating_sub(self.max_show);
+        let count_size = self.size;
+        let font_size = (count_size * 0.35).round();
 
-        let mut row = div().flex_row().items_center();
-
-        for (i, name) in self.names.into_iter().take(shown).enumerate() {
-            let a = avatar(name).size(self.size);
-            let mut wrapper = div()
-                .flex_shrink_0()
-                .border(tc.background)
-                .rounded(self.size / 2.0)
-                .child(a);
-            if i > 0 {
-                wrapper = wrapper.margin_left(overlap);
-            }
-            row = row.child(wrapper);
+        view! {
+            <div class="flex-row items-center">
+                for (i, name) in self.names.into_iter().take(shown).enumerate() {
+                    <div class="shrink-0"
+                         border={tc.background}
+                         rounded={self.size / 2.0}
+                         @when {i > 0} { margin_left={overlap} }>
+                        {avatar(name).size(self.size)}
+                    </div>
+                }
+                if remaining > 0 {
+                    <div class="shrink-0 items-center justify-center"
+                         w={count_size} h={count_size}
+                         bg={tc.element_background}
+                         border={tc.background}
+                         rounded={count_size / 2.0}
+                         margin_left={overlap}>
+                        <text color={tc.text_muted}
+                              size={font_size}
+                              medium>
+                            {format!("+{remaining}")}
+                        </text>
+                    </div>
+                }
+            </div>
         }
-
-        if remaining > 0 {
-            let count_size = self.size;
-            let font_size = (count_size * 0.35).round();
-            let count = div()
-                .flex_shrink_0()
-                .items_center()
-                .justify_center()
-                .w(count_size)
-                .h(count_size)
-                .bg(tc.element_background)
-                .border(tc.background)
-                .rounded(count_size / 2.0)
-                .child(
-                    text(format!("+{remaining}"))
-                        .size(font_size)
-                        .color(tc.text_muted)
-                        .medium(),
-                )
-                .margin_left(overlap);
-            row = row.child(count);
-        }
-
-        row.into_any()
     }
 }

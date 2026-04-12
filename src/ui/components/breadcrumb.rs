@@ -35,43 +35,27 @@ impl RenderOnce for Breadcrumb {
         let icon_size = (m.ui_small_font_size - Sp::XXS * scale).max(Sp::SM * scale);
         let last = self.segments.len().saturating_sub(1);
 
-        let mut row = div().flex_row().items_center().gap(m.spacing_xs);
-
-        for (i, segment) in self.segments.into_iter().enumerate() {
-            if i > 0 {
-                row = row.child(view! { scale,
-                    <icon svg={lucide::CHEVRON_RIGHT} size={icon_size} color={tc.text_muted} />
-                });
-            }
-
-            let is_last = i == last;
-            let color = if is_last {
-                tc.text_strong
-            } else {
-                tc.text_muted
-            };
-
-            let mut label = text(segment).text_sm().color(color);
-            if is_last {
-                label = label.medium();
-            }
-
-            let mut seg = div()
-                .px(m.spacing_xs)
-                .py(Sp::XXS * scale)
-                .rounded(m.control_radius - Sp::XS * scale)
-                .child(label);
-
-            if !is_last {
-                if let Some(f) = self.on_click_segment {
-                    seg = seg.on_click(f(i));
+        view! { scale,
+            <div class="flex-row items-center" gap={m.spacing_xs}>
+                for (i, segment) in self.segments.into_iter().enumerate() {
+                    <fragment>
+                        if i > 0 {
+                            <icon svg={lucide::CHEVRON_RIGHT} size={icon_size} color={tc.text_muted} />
+                        }
+                        <div px={m.spacing_xs}
+                             py={Sp::XXS}
+                             rounded={m.control_radius - Sp::XS * scale}
+                             @when {i != last && self.on_click_segment.is_some()} { on_click={(self.on_click_segment.unwrap())(i)} }
+                             @when {i != last} { hover_bg={tc.ghost_element_hover} }>
+                            <text class="text-sm"
+                                  color={if i == last { tc.text_strong } else { tc.text_muted }}
+                                  @when {i == last} { medium }>
+                                {segment}
+                            </text>
+                        </div>
+                    </fragment>
                 }
-                seg = seg.hover_bg(tc.ghost_element_hover);
-            }
-
-            row = row.child(seg);
+            </div>
         }
-
-        row.into_any()
     }
 }

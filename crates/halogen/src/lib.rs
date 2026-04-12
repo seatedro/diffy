@@ -15,7 +15,8 @@ pub fn view(input: TokenStream) -> TokenStream {
         scale: view_input.scale,
     };
     match ctx.emit_node(&view_input.root) {
-        ChildMode::Child(t) | ChildMode::Optional(t) | ChildMode::Spread(t) => t.into(),
+        ChildMode::Child(t) | ChildMode::Optional(t) => t.into(),
+        ChildMode::Spread(t) => quote! { div().children(#t).into_any() }.into(),
     }
 }
 
@@ -92,6 +93,7 @@ enum Tag {
     Text,
     Icon,
     Spacer,
+    Fragment,
     Component(syn::Path),
 }
 
@@ -247,6 +249,7 @@ fn parse_tag(input: ParseStream) -> Result<Tag> {
         "text" => Ok(Tag::Text),
         "icon" => Ok(Tag::Icon),
         "spacer" => Ok(Tag::Spacer),
+        "fragment" => Ok(Tag::Fragment),
         _ => {
             let mut path = syn::Path::from(ident);
             while input.peek(Token![::]) {
@@ -272,6 +275,7 @@ fn parse_closing_tag(input: ParseStream, open_tag: &Tag) -> Result<()> {
         Tag::Text => "text",
         Tag::Icon => "icon",
         Tag::Spacer => "spacer",
+        Tag::Fragment => "fragment",
         Tag::Component(p) => {
             let last = p
                 .segments
@@ -382,7 +386,10 @@ const SPATIAL_ATTRS: &[&str] = &[
 impl EmitCtx {
     fn emit_node(&self, node: &Node) -> ChildMode {
         match node {
-            Node::Element(el) => ChildMode::Child(self.emit_element(el)),
+            Node::Element(el) => match el.tag {
+                Tag::Fragment => ChildMode::Spread(self.emit_children_spread(&el.children)),
+                _ => ChildMode::Child(self.emit_element(el)),
+            },
             Node::Expr(expr) => ChildMode::Child(quote! { #expr }),
             Node::OptionalExpr(expr) => ChildMode::Optional(quote! { #expr }),
             Node::SpreadExpr(expr) => ChildMode::Spread(quote! { #expr }),
@@ -428,9 +435,12 @@ impl EmitCtx {
     fn emit_for_loop(&self, fl: &ForLoopNode) -> TokenStream2 {
         let pat = &fl.pat;
         let iter = &fl.iter;
-        let body = self.emit_children_fragment(&fl.body_children);
+        let body = self.emit_children_spread(&fl.body_children);
         quote! {
-            (#iter).into_iter().map(|#pat| #body).collect::<Vec<_>>()
+            (#iter)
+                .into_iter()
+                .flat_map(|#pat| #body)
+                .collect::<Vec<_>>()
         }
     }
 
@@ -453,12 +463,39 @@ impl EmitCtx {
         }
     }
 
+    fn emit_children_spread(&self, children: &[Node]) -> TokenStream2 {
+        let mut stmts = Vec::new();
+        for child in children {
+            let stmt = match self.emit_node(child) {
+                ChildMode::Child(tokens) => quote! {
+                    __halogen_children.push(#tokens);
+                },
+                ChildMode::Optional(tokens) => quote! {
+                    if let Some(__halogen_child) = (#tokens) {
+                        __halogen_children.push(__halogen_child);
+                    }
+                },
+                ChildMode::Spread(tokens) => quote! {
+                    __halogen_children.extend(#tokens);
+                },
+            };
+            stmts.push(stmt);
+        }
+
+        quote! {{
+            let mut __halogen_children = Vec::new();
+            #(#stmts)*
+            __halogen_children
+        }}
+    }
+
     fn emit_element(&self, el: &ElementNode) -> TokenStream2 {
         match &el.tag {
             Tag::Div => self.emit_div(el),
             Tag::Text => self.emit_text(el),
             Tag::Icon => self.emit_icon(el),
             Tag::Spacer => quote! { spacer() },
+            Tag::Fragment => unreachable!("fragments are handled in emit_node"),
             Tag::Component(path) => self.emit_component(path, el),
         }
     }
@@ -947,6 +984,7 @@ fn tag_tokens(tag: &Tag) -> TokenStream2 {
         Tag::Text => quote! { text },
         Tag::Icon => quote! { icon },
         Tag::Spacer => quote! { spacer },
+        Tag::Fragment => quote! { fragment },
         Tag::Component(path) => quote! { #path },
     }
 }
@@ -1014,7 +1052,11 @@ mod tests {
         let expected = quote! {
             ((actions)
                 .into_iter()
-                .map(|action| Button::new(action).into_any())
+                .flat_map(|action| {
+                    let mut __halogen_children = Vec::new();
+                    __halogen_children.push(Button::new(action).into_any());
+                    __halogen_children
+                })
                 .collect::<Vec<_>>())
                 .into_iter()
                 .fold(
@@ -1098,6 +1140,77 @@ mod tests {
             .body_child(body)
             .footer_child(Button::new(Action::CloseOverlay).into_any())
             .into_any()
+        }
+        .to_string();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn for_loops_flatten_multiple_children() {
+        let actual = emit(
+            r#"
+            <div>
+                for item in items {
+                    if show_separators {
+                        <text>{"|"}</text>
+                    }
+                    <text>{item}</text>
+                }
+            </div>
+            "#,
+        );
+
+        let expected = quote! {
+            div()
+                .children(
+                    (items)
+                        .into_iter()
+                        .flat_map(|item| {
+                            let mut __halogen_children = Vec::new();
+                            if let Some(__halogen_child) =
+                                (if show_separators {
+                                    Some(text("|").into_any())
+                                } else {
+                                    None
+                                })
+                            {
+                                __halogen_children.push(__halogen_child);
+                            }
+                            __halogen_children.push(text(item).into_any());
+                            __halogen_children
+                        })
+                        .collect::<Vec<_>>()
+                )
+                .into_any()
+        }
+        .to_string();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn fragment_flattens_children_into_parent() {
+        let actual = emit(
+            r#"
+            <div>
+                <fragment>
+                    <text>{"left"}</text>
+                    <text>{"right"}</text>
+                </fragment>
+            </div>
+            "#,
+        );
+
+        let expected = quote! {
+            div()
+                .children({
+                    let mut __halogen_children = Vec::new();
+                    __halogen_children.push(text("left").into_any());
+                    __halogen_children.push(text("right").into_any());
+                    __halogen_children
+                })
+                .into_any()
         }
         .to_string();
 

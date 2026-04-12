@@ -98,29 +98,37 @@ fn picker_label(
     let tc = &theme.colors;
     let base_color = if selected { tc.text_strong } else { tc.text };
 
-    let container = div().flex_1().overflow_hidden();
-
     if highlights.is_empty() {
-        return container
-            .child(text(label_text).text_sm().color(base_color).truncate())
-            .into_any();
+        return view! {
+            <div class="flex-1 overflow-hidden">
+                <text class="text-sm truncate" color={base_color}>{label_text}</text>
+            </div>
+        };
     }
 
-    let mut row = div().flex_row().overflow_hidden();
+    let mut spans = Vec::new();
     let mut cursor = 0;
     for &(start, end) in highlights {
         if start >= end || end > label_text.len() {
             continue;
         }
         if cursor < start {
-            row = row.child(text(&label_text[cursor..start]).text_sm().color(base_color));
+            spans.push((&label_text[cursor..start], base_color));
         }
-        row = row.child(text(&label_text[start..end]).text_sm().color(tc.accent));
+        spans.push((&label_text[start..end], tc.accent));
         cursor = end;
     }
     if cursor < label_text.len() {
-        row = row.child(text(&label_text[cursor..]).text_sm().color(base_color));
+        spans.push((&label_text[cursor..], base_color));
     }
 
-    container.child(row).into_any()
+    view! {
+        <div class="flex-1 overflow-hidden">
+            <div class="flex-row overflow-hidden">
+                for (segment, color) in spans {
+                    <text class="text-sm" color={color}>{segment}</text>
+                }
+            </div>
+        </div>
+    }
 }

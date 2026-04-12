@@ -297,7 +297,7 @@ fn cycle_focus_target(state: &AppState) -> Option<FocusTarget> {
             _ => Some(FocusTarget::PickerInput),
         },
         Some(OverlaySurface::GitHubAuthModal) => Some(FocusTarget::AuthPrimaryAction),
-        Some(OverlaySurface::KeyboardShortcuts) => None,
+        Some(OverlaySurface::KeyboardShortcuts | OverlaySurface::CompareMenu) => None,
         None => match state.focus.current {
             Some(FocusTarget::FileList) => Some(FocusTarget::Editor),
             Some(FocusTarget::Editor) => Some(FocusTarget::FileList),
@@ -327,7 +327,7 @@ fn activate_current_focus_actions(state: &AppState) -> Option<Vec<Action>> {
                 Action::StartGitHubDeviceFlow
             }])
         }
-        Some(OverlaySurface::KeyboardShortcuts) => Some(Vec::new()),
+        Some(OverlaySurface::KeyboardShortcuts | OverlaySurface::CompareMenu) => Some(Vec::new()),
         None => match state.focus.current {
             Some(FocusTarget::WorkspacePrimaryButton) => Some(vec![Action::OpenRepoPicker]),
             Some(FocusTarget::ThemeToggle) => Some(vec![Action::ToggleThemeMode]),

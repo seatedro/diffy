@@ -1381,7 +1381,11 @@ impl Element for Div {
             cx.tooltip_regions.push(TooltipRegion { bounds, text: tip });
         }
 
-        if self.clips {
+        let should_clip = self.clips
+            || style.layout.overflow.x != taffy::Overflow::Visible
+            || style.layout.overflow.y != taffy::Overflow::Visible;
+
+        if should_clip {
             scene.clip(bounds);
         }
 
@@ -1475,7 +1479,7 @@ impl Element for Div {
             }
         }
 
-        if self.clips {
+        if should_clip {
             scene.pop_clip();
         }
 
@@ -3064,6 +3068,39 @@ mod tests {
             "child y={} should be ~-20 (scrolled)",
             bg.rect.y
         );
+    }
+
+    #[test]
+    fn overflow_hidden_clips_children() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
+        let mut scene = Scene::default();
+
+        let red = Color::rgba(255, 0, 0, 255);
+
+        let mut root = div()
+            .w(120.0)
+            .h(40.0)
+            .overflow_hidden()
+            .child(div().w(220.0).h(40.0).bg(red))
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 120.0, 40.0);
+
+        let clip_starts = scene
+            .primitives
+            .iter()
+            .filter(|p| matches!(p, crate::render::Primitive::ClipStart(_)))
+            .count();
+        let clip_ends = scene
+            .primitives
+            .iter()
+            .filter(|p| matches!(p, crate::render::Primitive::ClipEnd))
+            .count();
+
+        assert_eq!(clip_starts, 1, "overflow-hidden should push a clip region");
+        assert_eq!(clip_ends, 1, "overflow-hidden should pop its clip region");
     }
 
     // -- New tests --

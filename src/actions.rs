@@ -19,6 +19,8 @@ pub enum Action {
     SetRightRef(String),
     SetCompareMode(CompareMode),
     CycleCompareMode,
+    OpenCompareMenu,
+    ApplyComparePreset(String),
     SetLayoutMode(LayoutMode),
     SetRenderer(RendererKind),
     SetFocus(Option<FocusTarget>),

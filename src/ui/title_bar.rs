@@ -116,7 +116,7 @@ pub(crate) fn title_bar(
                         <div px={Sp::SM} py={Sp::XS}
                              rounded={Rad::MD}
                              hover_bg={tc.ghost_element_hover}
-                             on_click={Action::CycleCompareMode}
+                             on_click={Action::OpenCompareMenu}
                              cursor={CursorHint::Pointer}
                              tooltip={mode_tooltip}>
                             <text class="text-xs font-medium" color={tc.text_muted}>{mode_label}</text>

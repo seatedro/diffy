@@ -1,9 +1,11 @@
 pub mod auth;
+pub mod compare_menu;
 pub mod picker;
 pub mod pull_request;
 pub mod shortcuts;
 
 pub use auth::auth_modal;
+pub use compare_menu::compare_menu;
 pub use picker::picker;
 pub use pull_request::pull_request_modal;
 pub use shortcuts::keyboard_shortcuts;
@@ -76,6 +78,7 @@ pub fn render_active_overlay(
         OverlaySurface::PullRequestModal => pull_request_modal(state, theme, width, height),
         OverlaySurface::GitHubAuthModal => auth_modal(state, theme, width, height),
         OverlaySurface::KeyboardShortcuts => keyboard_shortcuts(state, theme, width, height),
+        OverlaySurface::CompareMenu => compare_menu(state, theme, width, height),
         OverlaySurface::ThemePicker => picker(
             &state.overlays.picker.query,
             "Search themes\u{2026}",

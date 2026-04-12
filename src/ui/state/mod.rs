@@ -510,6 +510,7 @@ pub enum OverlaySurface {
     GitHubAuthModal,
     KeyboardShortcuts,
     ThemePicker,
+    CompareMenu,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -795,11 +796,26 @@ impl AppState {
             | ShowKeyboardShortcuts => self.apply_overlay_action(action),
 
             // Compare & repository
-            Bootstrap | OpenRepositoryDialog | OpenRepository(_) | SetLeftRef(_)
-            | SetRightRef(_) | SetCompareMode(_) | CycleCompareMode | SetLayoutMode(_)
-            | SetRenderer(_) | StartCompare | StageSelectedFile | UnstageSelectedFile
-            | DiscardSelectedFile | StageFile(_) | UnstageFile(_) | StageAllFiles
-            | UnstageAllFiles | ShowWorkingTree => self.apply_compare_action(action),
+            Bootstrap
+            | OpenRepositoryDialog
+            | OpenRepository(_)
+            | SetLeftRef(_)
+            | SetRightRef(_)
+            | SetCompareMode(_)
+            | CycleCompareMode
+            | OpenCompareMenu
+            | ApplyComparePreset(_)
+            | SetLayoutMode(_)
+            | SetRenderer(_)
+            | StartCompare
+            | StageSelectedFile
+            | UnstageSelectedFile
+            | DiscardSelectedFile
+            | StageFile(_)
+            | UnstageFile(_)
+            | StageAllFiles
+            | UnstageAllFiles
+            | ShowWorkingTree => self.apply_compare_action(action),
 
             // File list & sidebar
             SelectFile(_)
@@ -1053,6 +1069,9 @@ impl AppState {
             }
             Action::SetCompareMode(mode) => {
                 self.compare.mode = mode;
+                if self.overlays.top() == Some(OverlaySurface::CompareMenu) {
+                    self.pop_overlay();
+                }
                 self.persist_settings_effect()
             }
             Action::CycleCompareMode => {
@@ -1063,6 +1082,11 @@ impl AppState {
                 };
                 self.persist_settings_effect()
             }
+            Action::OpenCompareMenu => {
+                self.push_overlay(OverlaySurface::CompareMenu, None);
+                Vec::new()
+            }
+            Action::ApplyComparePreset(preset) => self.apply_compare_preset(&preset),
             Action::SetLayoutMode(layout) => {
                 self.compare.layout = layout;
                 self.editor.layout = layout;
@@ -2447,7 +2471,7 @@ impl AppState {
                     self.apply_action(Action::StartGitHubDeviceFlow)
                 }
             }
-            Some(OverlaySurface::KeyboardShortcuts) => Vec::new(),
+            Some(OverlaySurface::KeyboardShortcuts | OverlaySurface::CompareMenu) => Vec::new(),
             None => Vec::new(),
         }
     }
@@ -2567,6 +2591,9 @@ impl AppState {
         let Some(entry) = entry else {
             return Vec::new();
         };
+        if let Some(rest) = entry.value.strip_prefix("@preset:") {
+            return self.apply_compare_preset(rest);
+        }
         if let Some(ref store) = self.frecency {
             store.record_access(&format!("ref:{}", entry.value));
         }
@@ -2581,6 +2608,30 @@ impl AppState {
                 &self.compare.right_ref,
             )
         {
+            effects.extend(self.kickoff_compare());
+        }
+        effects
+    }
+
+    fn apply_compare_preset(&mut self, preset: &str) -> Vec<Effect> {
+        let parts: Vec<&str> = preset.splitn(3, ':').collect();
+        if parts.len() != 3 {
+            return Vec::new();
+        }
+        let (left, right, mode_str) = (parts[0], parts[1], parts[2]);
+        let mode = match mode_str {
+            "commit" => CompareMode::SingleCommit,
+            "diff" => CompareMode::TwoDot,
+            _ => CompareMode::ThreeDot,
+        };
+        self.compare.left_ref = left.to_owned();
+        self.compare.right_ref = right.to_owned();
+        self.compare.resolved_left = None;
+        self.compare.resolved_right = None;
+        self.compare.mode = mode;
+        self.pop_overlay();
+        let mut effects = self.persist_settings_effect();
+        if self.compare.repo_path.is_some() {
             effects.extend(self.kickoff_compare());
         }
         effects
@@ -2884,19 +2935,9 @@ impl AppState {
             ordinal: usize,
         }
 
-        let mut pinned = Vec::new();
         let mut all_candidates = Vec::new();
         let mut ordinal = 0_usize;
 
-        // Pin @workdir so it's always visible at the top of the picker.
-        pinned.push(PickerEntry {
-            label: "@workdir".to_owned(),
-            detail: "Uncommitted changes on disk".to_owned(),
-            value: "@workdir".to_owned(),
-            highlights: Vec::new(),
-            icon: None,
-            section_header: false,
-        });
         seen.insert("@workdir".to_owned());
 
         let mut push = |search_text: String, label: String, detail: String, value: String| {
@@ -2950,18 +2991,23 @@ impl AppState {
         let mut needs_resolve = false;
 
         if query.is_empty() {
-            self.overlays.picker.entries = pinned;
-            self.overlays
-                .picker
-                .entries
-                .extend(all_candidates.into_iter().take(10).map(|c| PickerEntry {
-                    label: c.label,
-                    detail: c.detail,
-                    value: c.value,
-                    highlights: Vec::new(),
-                    icon: None,
-                    section_header: false,
-                }));
+            let mut entries = vec![PickerEntry {
+                label: "@workdir".to_owned(),
+                detail: "Uncommitted changes on disk".to_owned(),
+                value: "@workdir".to_owned(),
+                highlights: Vec::new(),
+                icon: None,
+                section_header: false,
+            }];
+            entries.extend(all_candidates.into_iter().take(10).map(|c| PickerEntry {
+                label: c.label,
+                detail: c.detail,
+                value: c.value,
+                highlights: Vec::new(),
+                icon: None,
+                section_header: false,
+            }));
+            self.overlays.picker.entries = entries;
         } else {
             let haystack: Vec<&str> = all_candidates
                 .iter()
@@ -2998,7 +3044,14 @@ impl AppState {
                     .then(a.1.cmp(&b.1))
                     .then(a.2.label.cmp(&b.2.label))
             });
-            let mut entries = pinned;
+            let mut entries = vec![PickerEntry {
+                label: "@workdir".to_owned(),
+                detail: "Uncommitted changes on disk".to_owned(),
+                value: "@workdir".to_owned(),
+                highlights: Vec::new(),
+                icon: None,
+                section_header: false,
+            }];
             entries.extend(scored.into_iter().map(|(_, _, entry)| entry).take(10));
             self.overlays.picker.entries = entries;
             if !self
@@ -3751,6 +3804,7 @@ fn overlay_name(surface: OverlaySurface) -> &'static str {
         OverlaySurface::GitHubAuthModal => "github-auth-modal",
         OverlaySurface::KeyboardShortcuts => "keyboard-shortcuts",
         OverlaySurface::ThemePicker => "theme-picker",
+        OverlaySurface::CompareMenu => "compare-menu",
     }
 }
 

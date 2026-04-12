@@ -9,8 +9,6 @@ edition = "2024"
 rust-version = "1.92"
 
 [features]
-default = ["native"]
-native = ["dep:winit"]
 capture = ["dep:tiny-skia", "dep:png", "dep:fontdue"]
 hot-reload = ["dep:tungstenite", "dep:subsecond"]
 
@@ -39,7 +37,7 @@ halogen = { path = "crates/halogen" }
 vendored_difftastic = { package = "difftastic", path = "crates/difftastic" }
 resvg = "0.45"
 wgpu = "28.0.0"
-winit = { version = "0.30", optional = true }
+winit = { version = "0.30" }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 subsecond = { version = "0.7", optional = true }

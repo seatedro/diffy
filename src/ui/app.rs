@@ -445,6 +445,7 @@ impl ApplicationHandler for NativeApp {
                 {
                     renderer.resize(size.width, size.height, window.scale_factor());
                 }
+                self.sync_theme();
                 self.mark_dirty();
             }
             WindowEvent::RedrawRequested => {

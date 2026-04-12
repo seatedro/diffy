@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use crate::render::{Rect, RectPrimitive, RoundedRectPrimitive};
 use crate::actions::Action;
-use crate::ui::components;
+use crate::ui::components::{self, Button};
 use crate::ui::design::{Alpha, Ico, Rad, Sp, Sz};
 use crate::effects::Effect;
 use crate::ui::element::*;
@@ -305,16 +305,9 @@ pub(crate) fn sidebar(
                         lucide::FOLDER
                     };
                     Some(
-                        div()
-                            .flex_shrink_0()
-                            .items_center()
-                            .justify_center()
-                            .w((Sz::MODE_TOGGLE * scale).round())
-                            .h((Sz::MODE_TOGGLE * scale).round())
-                            .rounded((Rad::SM * scale).round())
-                            .hover_bg(tc.ghost_element_hover)
-                            .on_click(Action::ToggleSidebarMode)
-                            .child(svg_icon(mode_icon, Ico::SIDEBAR_MODE).color(tc.text_muted)),
+                        Button::new(Action::ToggleSidebarMode)
+                            .icon(mode_icon)
+                            .fixed_size(Sz::MODE_TOGGLE),
                     )
                 } else {
                     None

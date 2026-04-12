@@ -135,8 +135,6 @@ fn search_bar(state: &AppState, theme: &Theme) -> AnyElement {
         format!("{}/{}", idx, match_count)
     };
 
-    let nav_icon_size = (Ico::SM * scale).round();
-    let nav_btn_size = theme.metrics.ui_row_height.round();
     let search_icon_size = (Ico::SM * scale).round();
 
     let nav = view! { scale,
@@ -144,30 +142,15 @@ fn search_bar(state: &AppState, theme: &Theme) -> AnyElement {
             <div class="shrink-0">
                 <text class="text-xs font-mono" color={tc.text_muted}>{&count_label}</text>
             </div>
-            <div w={nav_btn_size} h={nav_btn_size}
-                 class="items-center justify-center"
-                 rounded={Rad::SM}
-                 hover_bg={tc.ghost_element_hover}
-                 on_click={Action::SearchPrevious}
-                 cursor={CursorHint::Pointer}>
-                <icon svg={lucide::CHEVRON_UP} size={nav_icon_size} color={tc.text_muted} />
-            </div>
-            <div w={nav_btn_size} h={nav_btn_size}
-                 class="items-center justify-center"
-                 rounded={Rad::SM}
-                 hover_bg={tc.ghost_element_hover}
-                 on_click={Action::SearchNext}
-                 cursor={CursorHint::Pointer}>
-                <icon svg={lucide::CHEVRON_DOWN} size={nav_icon_size} color={tc.text_muted} />
-            </div>
-            <div w={nav_btn_size} h={nav_btn_size}
-                 class="items-center justify-center"
-                 rounded={Rad::SM}
-                 hover_bg={tc.ghost_element_hover}
-                 on_click={Action::CloseSearch}
-                 cursor={CursorHint::Pointer}>
-                <icon svg={lucide::X} size={nav_icon_size} color={tc.text_muted} />
-            </div>
+            {Button::new(Action::SearchPrevious)
+                .icon(lucide::CHEVRON_UP)
+                .fixed_size(Sz::ROW)}
+            {Button::new(Action::SearchNext)
+                .icon(lucide::CHEVRON_DOWN)
+                .fixed_size(Sz::ROW)}
+            {Button::new(Action::CloseSearch)
+                .icon(lucide::X)
+                .fixed_size(Sz::ROW)}
         </div>
     };
 

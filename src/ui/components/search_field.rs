@@ -1,4 +1,5 @@
 use crate::actions::Action;
+use crate::ui::components::{Button, ButtonSize};
 use crate::ui::design::{Ico, Sp};
 use crate::ui::element::{Div, IntoAnyElement, div, svg_icon};
 use crate::ui::icons::lucide;
@@ -14,7 +15,6 @@ pub fn search_field(
 ) -> Div {
     let tc = &theme.colors;
     let m = &theme.metrics;
-    let icon_size = m.ui_small_font_size;
     let search_icon_size = Ico::XS;
 
     let mut container = div()
@@ -31,18 +31,10 @@ pub fn search_field(
 
     if has_value {
         if let Some(clear_action) = on_clear {
-            let clear_size = icon_size + Sp::XS;
             container = container.child(
-                div()
-                    .flex_shrink_0()
-                    .items_center()
-                    .justify_center()
-                    .w(clear_size)
-                    .h(clear_size)
-                    .rounded(clear_size / 2.0)
-                    .hover_bg(tc.ghost_element_hover)
-                    .on_click(clear_action)
-                    .child(svg_icon(lucide::X, icon_size - Sp::XXS).color(tc.text_muted)),
+                Button::new(clear_action)
+                    .icon(lucide::X)
+                    .size(ButtonSize::Compact),
             );
         }
     } else if let Some(hint) = shortcut_hint {

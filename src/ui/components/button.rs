@@ -28,6 +28,7 @@ pub struct Button {
     active: bool,
     disabled: bool,
     tooltip_text: Option<String>,
+    fixed_size: Option<f32>,
 }
 
 impl Button {
@@ -41,6 +42,7 @@ impl Button {
             active: false,
             disabled: false,
             tooltip_text: None,
+            fixed_size: None,
         }
     }
 
@@ -76,6 +78,11 @@ impl Button {
 
     pub fn tooltip(mut self, text: impl Into<String>) -> Self {
         self.tooltip_text = Some(text.into());
+        self
+    }
+
+    pub fn fixed_size(mut self, size: f32) -> Self {
+        self.fixed_size = Some(size);
         self
     }
 }
@@ -138,19 +145,31 @@ impl RenderOnce for Button {
         };
 
         let icon_only = self.icon.is_some() && self.label.is_none();
-        let actual_px = if icon_only { py } else { px };
 
         let mut btn = div()
-            .flex_row()
             .flex_shrink_0()
-            .items_center()
-            .gap((Sp::SM * scale).round())
-            .px(actual_px)
-            .py(py)
-            .rounded((Rad::XL * scale).round())
             .bg(bg)
             .on_click(self.action)
             .cursor(CursorHint::Pointer);
+
+        if let Some(size) = self.fixed_size {
+            let s = (size * scale).round();
+            btn = btn
+                .items_center()
+                .justify_center()
+                .w(s)
+                .h(s)
+                .rounded((Rad::SM * scale).round());
+        } else {
+            let actual_px = if icon_only { py } else { px };
+            btn = btn
+                .flex_row()
+                .items_center()
+                .gap((Sp::SM * scale).round())
+                .px(actual_px)
+                .py(py)
+                .rounded((Rad::XL * scale).round());
+        }
 
         if icon_only {
             btn = btn.hover_icon_color(tc.text);

@@ -43,7 +43,7 @@ pub(crate) fn main_surface(
     };
 
     let vb = viewport_bounds.clone();
-    let viewport_canvas = if state.workspace_mode == WorkspaceMode::Ready {
+    let viewport_canvas = if state.workspace_mode == WorkspaceMode::Ready && state.workspace.active_file.is_some() {
         Some(
             canvas(move |bounds, _scene, _cx| {
                 vb.set(Some(bounds));

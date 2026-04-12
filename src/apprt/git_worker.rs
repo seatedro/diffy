@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use git2::{BranchType, Status, StatusOptions};
 
-use crate::app_runtime::runtime::RuntimeEventSender;
+use crate::apprt::runtime::RuntimeEventSender;
 use crate::core::vcs::git::{
     GitService, StatusItem, StatusOperation, status::status_items_from_entry,
 };

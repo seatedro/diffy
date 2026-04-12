@@ -2,9 +2,9 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::Duration;
 
-use crate::app_runtime::git_worker::GitWorker;
-use crate::app_runtime::services::AppServices;
-use crate::app_runtime::watcher::RepoWatchWorker;
+use crate::apprt::git_worker::GitWorker;
+use crate::apprt::services::AppServices;
+use crate::apprt::watcher::RepoWatchWorker;
 use crate::effects::Effect;
 use crate::events::AppEvent;
 use crate::platform::persistence::Settings;
@@ -323,7 +323,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{AppRuntime, SETTINGS_SAVE_DEBOUNCE};
-    use crate::app_runtime::services::AppServices;
+    use crate::apprt::services::AppServices;
     use crate::effects::Effect;
     use crate::events::AppEvent;
     use crate::platform::persistence::{Settings, SettingsStore};

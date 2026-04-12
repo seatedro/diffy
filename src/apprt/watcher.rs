@@ -7,7 +7,7 @@ use git2::Repository;
 use notify::event::{EventKind, MetadataKind, ModifyKind};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 
-use crate::app_runtime::git_worker::GitWorkerCommand;
+use crate::apprt::git_worker::GitWorkerCommand;
 
 const REPO_WATCH_DEBOUNCE: Duration = Duration::from_millis(150);
 

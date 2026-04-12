@@ -9,7 +9,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::actions::Action;
-use crate::app_runtime::{AppRuntime, AppServices};
+use crate::apprt::{AppRuntime, AppServices};
 use crate::core::themes::ThemeRegistry;
 use crate::effects::Effect;
 use crate::events::RepositorySyncReason;
@@ -636,7 +636,7 @@ mod tests {
 
     use super::NativeApp;
     use crate::actions::Action;
-    use crate::app_runtime::{AppRuntime, AppServices};
+    use crate::apprt::{AppRuntime, AppServices};
     use crate::input::{
         InputEvent, KeyChord, KeyKind, quantize_scroll_delta_px, scroll_delta_to_px,
     };

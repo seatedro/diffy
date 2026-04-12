@@ -1,7 +1,7 @@
 #![recursion_limit = "4096"]
 
 pub mod actions;
-pub mod app_runtime;
+pub mod apprt;
 pub mod core;
 pub mod effects;
 pub mod events;

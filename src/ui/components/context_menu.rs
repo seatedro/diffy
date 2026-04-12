@@ -63,7 +63,12 @@ impl ContextMenuEntry {
     }
 }
 
-pub fn context_menu_layer(entries: Vec<ContextMenuEntry>, x: f32, y: f32, theme: &Theme) -> AnyElement {
+pub fn context_menu_layer(
+    entries: Vec<ContextMenuEntry>,
+    x: f32,
+    y: f32,
+    theme: &Theme,
+) -> AnyElement {
     let tc = &theme.colors;
     let m = &theme.metrics;
     let scale = m.ui_scale();

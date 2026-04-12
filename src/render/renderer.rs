@@ -1,12 +1,9 @@
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 use bytemuck::{Pod, Zeroable};
 use glyphon::{
-    Buffer, Cache, Color as GlyphonColor, FontSystem, Resolution,
-    SwashCache, TextAtlas, TextRenderer, Viewport,
+    Buffer, Cache, Color as GlyphonColor, FontSystem, Resolution, SwashCache, TextAtlas,
+    TextRenderer, Viewport,
 };
 use thiserror::Error;
 use wgpu::util::DeviceExt;

@@ -129,32 +129,36 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                             state.compare.layout == LayoutMode::Unified,
                         ).tooltip("Inline view"),
                     ])}
-                    {Button::new(Action::ToggleWrap)
-                        .icon(lucide::WRAP_TEXT)
-                        .label("Wrap")
-                        .active(state.editor.wrap_enabled)
-                        .tooltip("Toggle line wrapping (w)")}
+                    <Button action={Action::ToggleWrap}
+                            active={state.editor.wrap_enabled}
+                            tooltip={"Toggle line wrapping (w)"}>
+                        <Icon>{lucide::WRAP_TEXT}</Icon>
+                        <Label>{"Wrap"}</Label>
+                    </Button>
                 }
                 if state.workspace.source == WorkspaceSource::Status && show_stage {
-                    {Button::new(Action::StageSelectedFile)
-                        .icon(lucide::PLUS)
-                        .label("Stage")
-                        .tooltip("Stage selected file")
-                        .style(ButtonStyle::Subtle)}
+                    <Button action={Action::StageSelectedFile}
+                            style={ButtonStyle::Subtle}
+                            tooltip={"Stage selected file"}>
+                        <Icon>{lucide::PLUS}</Icon>
+                        <Label>{"Stage"}</Label>
+                    </Button>
                 }
                 if state.workspace.source == WorkspaceSource::Status && show_unstage {
-                    {Button::new(Action::UnstageSelectedFile)
-                        .icon(lucide::MINUS)
-                        .label("Unstage")
-                        .tooltip("Unstage selected file")
-                        .style(ButtonStyle::Subtle)}
+                    <Button action={Action::UnstageSelectedFile}
+                            style={ButtonStyle::Subtle}
+                            tooltip={"Unstage selected file"}>
+                        <Icon>{lucide::MINUS}</Icon>
+                        <Label>{"Unstage"}</Label>
+                    </Button>
                 }
                 if state.workspace.source == WorkspaceSource::Status && show_discard {
-                    {Button::new(Action::DiscardSelectedFile)
-                        .icon(lucide::CORNER_UP_LEFT)
-                        .label("Discard")
-                        .tooltip("Discard selected file changes")
-                        .style(ButtonStyle::Danger)}
+                    <Button action={Action::DiscardSelectedFile}
+                            style={ButtonStyle::Danger}
+                            tooltip={"Discard selected file changes"}>
+                        <Icon>{lucide::CORNER_UP_LEFT}</Icon>
+                        <Label>{"Discard"}</Label>
+                    </Button>
                 }
             </div>
         </div>
@@ -196,18 +200,21 @@ fn search_bar(state: &AppState, theme: &Theme) -> AnyElement {
             <div class="shrink-0">
                 <text class="text-xs font-mono" color={tc.text_muted}>{&count_label}</text>
             </div>
-            {Button::new(Action::SearchPrevious)
-                .icon(lucide::CHEVRON_UP)
-                .tooltip("Previous match")
-                .fixed_size(Sz::ROW)}
-            {Button::new(Action::SearchNext)
-                .icon(lucide::CHEVRON_DOWN)
-                .tooltip("Next match")
-                .fixed_size(Sz::ROW)}
-            {Button::new(Action::CloseSearch)
-                .icon(lucide::X)
-                .tooltip("Close search (Esc)")
-                .fixed_size(Sz::ROW)}
+            <Button action={Action::SearchPrevious}
+                    tooltip={"Previous match"}
+                    fixed_size={Sz::ROW}>
+                <Icon>{lucide::CHEVRON_UP}</Icon>
+            </Button>
+            <Button action={Action::SearchNext}
+                    tooltip={"Next match"}
+                    fixed_size={Sz::ROW}>
+                <Icon>{lucide::CHEVRON_DOWN}</Icon>
+            </Button>
+            <Button action={Action::CloseSearch}
+                    tooltip={"Close search (Esc)"}
+                    fixed_size={Sz::ROW}>
+                <Icon>{lucide::X}</Icon>
+            </Button>
         </div>
     };
 

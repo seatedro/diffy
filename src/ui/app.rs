@@ -46,7 +46,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         .iter()
         .map(|n| theme_registry.variant(n))
         .collect();
-    let runtime = AppRuntime::new(AppServices::new(settings_store), Some(event_loop.create_proxy()));
+    let runtime = AppRuntime::new(
+        AppServices::new(settings_store),
+        Some(event_loop.create_proxy()),
+    );
     runtime.dispatch_all(initial_effects);
 
     #[cfg(feature = "hot-reload")]

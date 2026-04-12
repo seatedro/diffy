@@ -7,11 +7,11 @@
 //! 2. **prepaint** — register hitboxes, resolve interaction state.
 //! 3. **paint** — emit scene primitives using resolved hover/hit state.
 
+use crate::actions::Action;
+use crate::effects::Effect;
 use crate::render::Scene;
 use crate::render::scene::{BlurRegionPrimitive, EffectQuadPrimitive, EffectType, Rect};
-use crate::actions::Action;
 use crate::ui::design::{Alpha, Sz};
-use crate::effects::Effect;
 use crate::ui::shell::CursorHint;
 use crate::ui::signals::{Signal, SignalStore};
 use crate::ui::theme::Theme;
@@ -1386,16 +1386,12 @@ impl Element for Div {
         }
 
         let pushed_text_color = if hovered {
-            self.hover_style
-                .as_ref()
-                .and_then(|ov| ov.text_color)
+            self.hover_style.as_ref().and_then(|ov| ov.text_color)
         } else {
             None
         };
         let pushed_icon_color = if hovered {
-            self.hover_style
-                .as_ref()
-                .and_then(|ov| ov.icon_color)
+            self.hover_style.as_ref().and_then(|ov| ov.icon_color)
         } else {
             None
         };
@@ -2299,7 +2295,9 @@ impl Element for SvgIcon {
         scene: &mut Scene,
         cx: &mut ElementContext,
     ) {
-        let color = cx.icon_color_override().unwrap_or_else(|| self.color.unwrap_or(cx.theme.colors.icon));
+        let color = cx
+            .icon_color_override()
+            .unwrap_or_else(|| self.color.unwrap_or(cx.theme.colors.icon));
         let scale = cx.theme.metrics.ui_scale();
         let px_size = (self.size * scale).ceil() as u32;
         let key = crate::ui::icons::cache_key(self.svg, px_size, color);

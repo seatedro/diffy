@@ -100,8 +100,7 @@ impl<'a> ToastStack<'a> {
 
         // Interpolate container height between collapsed and fanned.
         let collapsed_height = toast_height + (MAX_VISIBLE_BEHIND as f32) * peek;
-        let fanned_height =
-            toast_height + (visible.saturating_sub(1) as f32) * fan_stride;
+        let fanned_height = toast_height + (visible.saturating_sub(1) as f32) * fan_stride;
         let stack_height = collapsed_height + fan_t * (fanned_height - collapsed_height);
 
         let mut container = div()

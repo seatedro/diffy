@@ -72,7 +72,11 @@ impl RenderOnce for Checkbox {
         };
 
         let click_action = self.on_toggle.filter(|_| !self.disabled);
-        let label_color = if self.disabled { tc.text_muted } else { tc.text };
+        let label_color = if self.disabled {
+            tc.text_muted
+        } else {
+            tc.text
+        };
 
         view! {
             <div class="flex-row items-center" gap={m.spacing_sm}
@@ -169,7 +173,11 @@ impl RenderOnce for Toggle {
         };
 
         let click_action = self.on_toggle.filter(|_| !self.disabled);
-        let label_color = if self.disabled { tc.text_muted } else { tc.text };
+        let label_color = if self.disabled {
+            tc.text_muted
+        } else {
+            tc.text
+        };
 
         view! {
             <div class="flex-row items-center" gap={m.spacing_sm}

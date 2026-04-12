@@ -54,10 +54,8 @@ impl AppServices {
         git.open(request.repo_path.to_string_lossy().as_ref())?;
         let output: CompareOutput = match request.renderer {
             RendererKind::Builtin => git.diff_status_item(&request.item)?,
-            RendererKind::Difftastic => {
-                crate::core::compare::backends::DifftasticBackend
-                    .compare_status_item(&request.item, &git)?
-            }
+            RendererKind::Difftastic => crate::core::compare::backends::DifftasticBackend
+                .compare_status_item(&request.item, &git)?,
         };
 
         Ok(StatusDiffFinished {

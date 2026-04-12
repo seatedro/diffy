@@ -271,10 +271,7 @@ pub fn has_hit(frame: &UiFrame, predicate: impl Fn(&diffy::actions::Action) -> b
     frame.hits.iter().any(|hit| predicate(&hit.action))
 }
 
-pub fn count_hits(
-    frame: &UiFrame,
-    predicate: impl Fn(&diffy::actions::Action) -> bool,
-) -> usize {
+pub fn count_hits(frame: &UiFrame, predicate: impl Fn(&diffy::actions::Action) -> bool) -> usize {
     frame
         .hits
         .iter()

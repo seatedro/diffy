@@ -13,7 +13,13 @@ pub enum TooltipSide {
     Right,
 }
 
-pub fn tooltip_layer(content: &str, x: f32, y: f32, side: TooltipSide, theme: &Theme) -> AnyElement {
+pub fn tooltip_layer(
+    content: &str,
+    x: f32,
+    y: f32,
+    side: TooltipSide,
+    theme: &Theme,
+) -> AnyElement {
     let tc = &theme.colors;
     let m = &theme.metrics;
 

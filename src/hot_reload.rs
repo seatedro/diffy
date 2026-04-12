@@ -1,7 +1,7 @@
 #[cfg(feature = "hot-reload")]
 mod inner {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
 
     use serde::Deserialize;

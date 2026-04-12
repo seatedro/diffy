@@ -1,7 +1,7 @@
 use halogen::view;
 
-use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 use crate::actions::Action;
+use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 use crate::ui::components::button::{Button, ButtonStyle};
 use crate::ui::components::modal::Modal;
 use crate::ui::components::segmented::{SegmentedControl, SegmentedItem};

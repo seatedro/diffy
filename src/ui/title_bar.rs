@@ -71,9 +71,10 @@ pub(crate) fn title_bar(
             // left
             <div class="flex-row flex-shrink-0 items-center" min_w={0.0} gap={Sp::SM}>
                 if is_ready {
-                    {Button::new(Action::ToggleSidebar)
-                        .icon(sidebar_icon)
-                        .tooltip("Toggle sidebar (\u{2318}B)")}
+                    <Button action={Action::ToggleSidebar}
+                            tooltip={"Toggle sidebar (\u{2318}B)"}>
+                        <Icon>{sidebar_icon}</Icon>
+                    </Button>
                 }
                 if has_repo {
                     {ref_selector_button(
@@ -134,11 +135,12 @@ pub(crate) fn title_bar(
             // right
             <div class="flex-row flex-shrink-0 items-center" gap={Sp::XS}>
                 if is_ready {
-                    {Button::new(Action::ShowWorkingTree)
-                        .icon(lucide::FOLDER_GIT)
-                        .label("Working tree")
-                        .active(state.workspace.source == WorkspaceSource::Status)
-                        .tooltip("Show working tree changes")}
+                    <Button action={Action::ShowWorkingTree}
+                            active={state.workspace.source == WorkspaceSource::Status}
+                            tooltip={"Show working tree changes"}>
+                        <Icon>{lucide::FOLDER_GIT}</Icon>
+                        <Label>{"Working tree"}</Label>
+                    </Button>
                 }
                 if is_ready && window_width >= Bp::NARROW * scale {
                     <div class="flex-row items-center" gap={Sp::XS}>
@@ -146,11 +148,12 @@ pub(crate) fn title_bar(
                         {toolbar_separator(tc)}
                     </div>
                 }
-                {Button::new(Action::OpenPullRequestModal)
-                    .icon(lucide::GIT_PULL_REQUEST)
-                    .label("PR")
-                    .active(pr_active)
-                    .tooltip("Pull request")}
+                <Button action={Action::OpenPullRequestModal}
+                        active={pr_active}
+                        tooltip={"Pull request"}>
+                    <Icon>{lucide::GIT_PULL_REQUEST}</Icon>
+                    <Label>{"PR"}</Label>
+                </Button>
             </div>
         </div>
     }

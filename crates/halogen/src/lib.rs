@@ -364,6 +364,17 @@ enum ChildMode {
     Spread(TokenStream2),
 }
 
+#[derive(Clone, Copy)]
+enum ComponentSlotKind {
+    Value,
+    Child,
+}
+
+struct ComponentSlot {
+    method: Ident,
+    kind: ComponentSlotKind,
+}
+
 const SPATIAL_ATTRS: &[&str] = &[
     "gap", "gap_x", "gap_y", "p", "px", "py", "pt", "pb", "pl", "pr", "rounded",
 ];
@@ -591,10 +602,103 @@ impl EmitCtx {
         }
 
         for child in &el.children {
-            chain = self.append_child(chain, child);
+            chain = self.emit_component_child(chain, child);
         }
 
         quote! { #chain.into_any() }
+    }
+
+    fn emit_component_child(&self, chain: TokenStream2, child: &Node) -> TokenStream2 {
+        let Node::Element(slot_el) = child else {
+            return self.append_child(chain, child);
+        };
+        let Some(slot) = component_slot(&slot_el.tag) else {
+            return self.append_child(chain, child);
+        };
+
+        if !slot_el.attrs.is_empty() {
+            let err = syn::Error::new_spanned(
+                tag_tokens(&slot_el.tag),
+                "slot tags do not support attributes; use the parent component attributes for builder methods",
+            )
+            .to_compile_error();
+            return quote! {{ #err #chain }};
+        }
+
+        match slot.kind {
+            ComponentSlotKind::Value => {
+                self.emit_component_value_slot(chain, &slot.method, &slot_el.children, &slot_el.tag)
+            }
+            ComponentSlotKind::Child => {
+                self.emit_component_child_slot(chain, &slot.method, &slot_el.children)
+            }
+        }
+    }
+
+    fn emit_component_value_slot(
+        &self,
+        chain: TokenStream2,
+        method: &Ident,
+        children: &[Node],
+        tag: &Tag,
+    ) -> TokenStream2 {
+        let [child] = children else {
+            let err = syn::Error::new_spanned(
+                tag_tokens(tag),
+                "value slot tags require exactly one child expression or node",
+            )
+            .to_compile_error();
+            return quote! {{ #err #chain }};
+        };
+
+        match self.emit_node(child) {
+            ChildMode::Child(tokens) => quote! { #chain.#method(#tokens) },
+            ChildMode::Optional(tokens) => quote! {{
+                let __halogen_slot = #chain;
+                if let Some(__halogen_value) = (#tokens) {
+                    __halogen_slot.#method(__halogen_value)
+                } else {
+                    __halogen_slot
+                }
+            }},
+            ChildMode::Spread(_) => {
+                let err = syn::Error::new_spanned(
+                    tag_tokens(tag),
+                    "value slot tags do not support spread children",
+                )
+                .to_compile_error();
+                quote! {{ #err #chain }}
+            }
+        }
+    }
+
+    fn emit_component_child_slot(
+        &self,
+        mut chain: TokenStream2,
+        method: &Ident,
+        children: &[Node],
+    ) -> TokenStream2 {
+        for child in children {
+            chain = match self.emit_node(child) {
+                ChildMode::Child(tokens) => quote! { #chain.#method(#tokens) },
+                ChildMode::Optional(tokens) => quote! {{
+                    let __halogen_slot = #chain;
+                    if let Some(__halogen_child) = (#tokens) {
+                        __halogen_slot.#method(__halogen_child)
+                    } else {
+                        __halogen_slot
+                    }
+                }},
+                ChildMode::Spread(tokens) => quote! {
+                    (#tokens)
+                        .into_iter()
+                        .fold(#chain, |__halogen_slot, __halogen_child| {
+                            __halogen_slot.#method(__halogen_child)
+                        })
+                },
+            };
+        }
+        chain
     }
 
     // -----------------------------------------------------------------------
@@ -740,4 +844,159 @@ fn is_constructor_arg(name: &Ident) -> bool {
         s.as_str(),
         "action" | "label" | "title" | "value" | "status"
     )
+}
+
+fn component_slot(tag: &Tag) -> Option<ComponentSlot> {
+    let Tag::Component(path) = tag else {
+        return None;
+    };
+    if path.leading_colon.is_some() || path.segments.len() != 1 {
+        return None;
+    }
+
+    let ident = &path.segments[0].ident;
+    let (method, kind) = match ident.to_string().as_str() {
+        "Icon" => ("icon", ComponentSlotKind::Value),
+        "Label" => ("label", ComponentSlotKind::Value),
+        "Tooltip" => ("tooltip", ComponentSlotKind::Value),
+        "Description" => ("description", ComponentSlotKind::Value),
+        "Count" => ("count", ComponentSlotKind::Value),
+        "Shortcut" => ("shortcut", ComponentSlotKind::Value),
+        "Body" => ("body_child", ComponentSlotKind::Child),
+        "Footer" => ("footer_child", ComponentSlotKind::Child),
+        "Left" => ("left_child", ComponentSlotKind::Child),
+        "Right" => ("right_child", ComponentSlotKind::Child),
+        _ => return None,
+    };
+
+    Some(ComponentSlot {
+        method: Ident::new(method, ident.span()),
+        kind,
+    })
+}
+
+fn tag_tokens(tag: &Tag) -> TokenStream2 {
+    match tag {
+        Tag::Div => quote! { div },
+        Tag::Text => quote! { text },
+        Tag::Icon => quote! { icon },
+        Tag::Spacer => quote! { spacer },
+        Tag::Component(path) => quote! { #path },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn emit(input: &str) -> String {
+        let view_input: ViewInput = syn::parse_str(input).expect("parse view input");
+        let ctx = EmitCtx {
+            scale: view_input.scale,
+        };
+        match ctx.emit_node(&view_input.root) {
+            ChildMode::Child(tokens) | ChildMode::Optional(tokens) | ChildMode::Spread(tokens) => {
+                tokens.to_string()
+            }
+        }
+    }
+
+    #[test]
+    fn component_slots_lower_to_builder_calls() {
+        let actual = emit(
+            r#"
+            <Button action={Action::ShowWorkingTree} active={is_active} tooltip={"Show working tree changes"}>
+                <Icon>{lucide::FOLDER_GIT}</Icon>
+                <Label>{"Working tree"}</Label>
+            </Button>
+            "#,
+        );
+
+        let expected = quote! {
+            Button::new(Action::ShowWorkingTree)
+                .active(is_active)
+                .tooltip("Show working tree changes")
+                .icon(lucide::FOLDER_GIT)
+                .label("Working tree")
+                .into_any()
+        }
+        .to_string();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn child_slots_expand_to_repeated_child_builder_calls() {
+        let actual = emit(
+            r#"
+            <Toolbar>
+                <Left>
+                    <Button action={Action::ToggleSidebar} />
+                    if show_search {
+                        <Button action={Action::CloseSearch} />
+                    }
+                </Left>
+                <Right>
+                    for action in actions {
+                        <Button action={action} />
+                    }
+                </Right>
+            </Toolbar>
+            "#,
+        );
+
+        let expected = quote! {
+            ((actions)
+                .into_iter()
+                .map(|action| Button::new(action).into_any())
+                .collect::<Vec<_>>())
+                .into_iter()
+                .fold(
+                    {
+                        let __halogen_slot = Toolbar::new()
+                            .left_child(Button::new(Action::ToggleSidebar).into_any());
+                        if let Some(__halogen_child) =
+                            (if show_search {
+                                Some(Button::new(Action::CloseSearch).into_any())
+                            } else {
+                                None
+                            })
+                        {
+                            __halogen_slot.left_child(__halogen_child)
+                        } else {
+                            __halogen_slot
+                        }
+                    },
+                    |__halogen_slot, __halogen_child| {
+                        __halogen_slot.right_child(__halogen_child)
+                    }
+                )
+                .into_any()
+        }
+        .to_string();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn non_slot_component_children_still_use_child() {
+        let actual = emit(
+            r#"
+            <Parent>
+                <Avatar />
+                <Button action={Action::ToggleSidebar} />
+            </Parent>
+            "#,
+        );
+
+        let expected = quote! {
+            Parent::new()
+                .child(Avatar::new().into_any())
+                .child(Button::new(Action::ToggleSidebar).into_any())
+                .into_any()
+        }
+        .to_string();
+
+        assert_eq!(actual, expected);
+    }
 }

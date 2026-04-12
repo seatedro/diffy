@@ -5,21 +5,23 @@ mod scroll;
 use std::sync::Arc;
 use std::time::Instant;
 
-use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
+use winit::event::{
+    ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
+};
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::Window;
 
-use crate::render::Renderer;
 use crate::actions::Action;
+use crate::effects::Effect;
+use crate::render::Renderer;
 use crate::ui::components::TooltipState;
 use crate::ui::editor::element::EditorElement;
-use crate::effects::Effect;
 use crate::ui::element::DragHandler;
 use crate::ui::shell::UiFrame;
 use crate::ui::state::{AppState, FocusTarget, OverlaySurface, WorkspaceMode};
 
 pub use pointer::hit_test_text_offset;
-pub use scroll::{scroll_delta_to_px, quantize_scroll_delta_px};
+pub use scroll::{quantize_scroll_delta_px, scroll_delta_to_px};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputEvent {

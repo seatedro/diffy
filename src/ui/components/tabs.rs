@@ -2,7 +2,9 @@ use halogen::view;
 
 use crate::actions::Action;
 use crate::ui::design::{Rad, Shadow, Sp, Sz};
-use crate::ui::element::{AnyElement, ElementContext, IntoAnyElement, RenderOnce, div, svg_icon, text};
+use crate::ui::element::{
+    AnyElement, ElementContext, IntoAnyElement, RenderOnce, div, svg_icon, text,
+};
 use crate::ui::style::Styled;
 use crate::ui::theme::Color;
 

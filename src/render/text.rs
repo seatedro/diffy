@@ -236,11 +236,7 @@ fn font_weight_tag(weight: FontWeight) -> u8 {
     }
 }
 
-fn attrs_for_font(
-    font_kind: FontKind,
-    font_weight: FontWeight,
-    color: Color,
-) -> Attrs<'static> {
+fn attrs_for_font(font_kind: FontKind, font_weight: FontWeight, color: Color) -> Attrs<'static> {
     let family = match font_kind {
         FontKind::Ui => Family::SansSerif,
         FontKind::Mono => Family::Monospace,

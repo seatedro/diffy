@@ -101,7 +101,9 @@ fn picker_label(
     let container = div().flex_1().overflow_hidden();
 
     if highlights.is_empty() {
-        return container.child(text(label_text).text_sm().color(base_color).truncate()).into_any();
+        return container
+            .child(text(label_text).text_sm().color(base_color).truncate())
+            .into_any();
     }
 
     let mut row = div().flex_row().overflow_hidden();

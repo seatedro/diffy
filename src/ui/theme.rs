@@ -463,7 +463,12 @@ fn light_colors(
         line_add_word_bg: g[ElementActive],
         line_del_word_bg: r[ElementActive],
 
-        search_match_bg: Color::rgba(y[ElementActive].r, y[ElementActive].g, y[ElementActive].b, 120),
+        search_match_bg: Color::rgba(
+            y[ElementActive].r,
+            y[ElementActive].g,
+            y[ElementActive].b,
+            120,
+        ),
         search_match_active_bg: Color::rgba(y[Border].r, y[Border].g, y[Border].b, 200),
 
         syntax_keyword: purple[TextSubtle],

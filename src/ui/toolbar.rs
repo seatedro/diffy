@@ -90,36 +90,20 @@ pub(crate) fn main_surface(
 fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
+    let has_active_diff = state.workspace.active_file.is_some();
     let selected_scope = state.workspace.selected_status_scope;
-    let status_actions: Option<AnyElement> = if state.workspace.source == WorkspaceSource::Status {
-        Some(view! { scale,
-            <div class="flex-row items-center" gap={Sp::XS}>
-                if matches!(selected_scope, Some(crate::core::vcs::git::StatusScope::Unstaged | crate::core::vcs::git::StatusScope::Untracked)) {
-                    {Button::new(Action::StageSelectedFile)
-                        .icon(lucide::PLUS)
-                        .label("Stage")
-                        .tooltip("Stage selected file")
-                        .style(ButtonStyle::Subtle)}
-                }
-                if matches!(selected_scope, Some(crate::core::vcs::git::StatusScope::Staged)) {
-                    {Button::new(Action::UnstageSelectedFile)
-                        .icon(lucide::MINUS)
-                        .label("Unstage")
-                        .tooltip("Unstage selected file")
-                        .style(ButtonStyle::Subtle)}
-                }
-                if selected_scope.is_some() {
-                    {Button::new(Action::DiscardSelectedFile)
-                        .icon(lucide::CORNER_UP_LEFT)
-                        .label("Discard")
-                        .tooltip("Discard selected file changes")
-                        .style(ButtonStyle::Danger)}
-                }
-            </div>
-        })
-    } else {
-        None
-    };
+    let show_stage = matches!(
+        selected_scope,
+        Some(
+            crate::core::vcs::git::StatusScope::Unstaged
+                | crate::core::vcs::git::StatusScope::Untracked
+        )
+    );
+    let show_unstage = matches!(
+        selected_scope,
+        Some(crate::core::vcs::git::StatusScope::Staged)
+    );
+    let show_discard = selected_scope.is_some();
 
     view! { scale,
         <div class="w-full flex-row items-center"
@@ -132,7 +116,7 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                 </div>
             </div>
             <div class="flex-row items-center" gap={Sp::SM}>
-                if state.workspace.source == WorkspaceSource::Compare {
+                if has_active_diff {
                     {SegmentedControl::new(vec![
                         SegmentedItem::new(
                             "Split",
@@ -151,7 +135,27 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                         .active(state.editor.wrap_enabled)
                         .tooltip("Toggle line wrapping (w)")}
                 }
-                {?status_actions}
+                if state.workspace.source == WorkspaceSource::Status && show_stage {
+                    {Button::new(Action::StageSelectedFile)
+                        .icon(lucide::PLUS)
+                        .label("Stage")
+                        .tooltip("Stage selected file")
+                        .style(ButtonStyle::Subtle)}
+                }
+                if state.workspace.source == WorkspaceSource::Status && show_unstage {
+                    {Button::new(Action::UnstageSelectedFile)
+                        .icon(lucide::MINUS)
+                        .label("Unstage")
+                        .tooltip("Unstage selected file")
+                        .style(ButtonStyle::Subtle)}
+                }
+                if state.workspace.source == WorkspaceSource::Status && show_discard {
+                    {Button::new(Action::DiscardSelectedFile)
+                        .icon(lucide::CORNER_UP_LEFT)
+                        .label("Discard")
+                        .tooltip("Discard selected file changes")
+                        .style(ButtonStyle::Danger)}
+                }
             </div>
         </div>
     }

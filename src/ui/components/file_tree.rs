@@ -14,6 +14,7 @@ use crate::ui::theme::Color;
 pub struct FileTreeEntry {
     pub path: String,
     pub status: String,
+    pub scope: Option<String>,
     pub additions: i32,
     pub deletions: i32,
 }
@@ -60,7 +61,7 @@ impl FileTree {
 
 struct TreeNode {
     children_dirs: BTreeMap<String, TreeNode>,
-    files: Vec<(usize, String, String, i32, i32)>,
+    files: Vec<(usize, String, String, Option<String>, i32, i32)>,
 }
 
 impl TreeNode {
@@ -77,6 +78,7 @@ impl TreeNode {
         original_index: usize,
         file_name: &str,
         status: &str,
+        scope: Option<&str>,
         adds: i32,
         dels: i32,
     ) {
@@ -85,6 +87,7 @@ impl TreeNode {
                 original_index,
                 file_name.to_string(),
                 status.to_string(),
+                scope.map(str::to_owned),
                 adds,
                 dels,
             ));
@@ -94,7 +97,15 @@ impl TreeNode {
                 .children_dirs
                 .entry(dir.to_string())
                 .or_insert_with(TreeNode::new);
-            child.insert(&parts[1..], original_index, file_name, status, adds, dels);
+            child.insert(
+                &parts[1..],
+                original_index,
+                file_name,
+                status,
+                scope,
+                adds,
+                dels,
+            );
         }
     }
 }
@@ -111,6 +122,7 @@ enum FlatRow {
         original_index: usize,
         depth: usize,
         status: String,
+        scope: Option<String>,
         additions: i32,
         deletions: i32,
         selected: bool,
@@ -145,12 +157,13 @@ fn flatten_tree(
         }
     }
 
-    for &(orig_idx, ref name, ref status, adds, dels) in &node.files {
+    for &(orig_idx, ref name, ref status, ref scope, adds, dels) in &node.files {
         out.push(FlatRow::File {
             name: name.clone(),
             original_index: orig_idx,
             depth,
             status: status.clone(),
+            scope: scope.clone(),
             additions: adds,
             deletions: dels,
             selected: selected == Some(orig_idx),
@@ -187,6 +200,7 @@ impl RenderOnce for FileTree {
                     i,
                     file_name,
                     &entry.status,
+                    entry.scope.as_deref(),
                     entry.additions,
                     entry.deletions,
                 );
@@ -195,6 +209,7 @@ impl RenderOnce for FileTree {
                     i,
                     entry.path.clone(),
                     entry.status.clone(),
+                    entry.scope.clone(),
                     entry.additions,
                     entry.deletions,
                 ));
@@ -244,9 +259,7 @@ impl RenderOnce for FileTree {
                     }
 
                     row_div = row_div
-                        .child(
-                            svg_icon(chevron, chevron_size).color(tc.text_muted),
-                        )
+                        .child(svg_icon(chevron, chevron_size).color(tc.text_muted))
                         .child(svg_icon(folder_icon, icon_size).color(tc.text_muted))
                         .child(text(name).text_sm().color(tc.text).medium());
 
@@ -257,6 +270,7 @@ impl RenderOnce for FileTree {
                     original_index,
                     depth,
                     status,
+                    scope,
                     additions,
                     deletions,
                     selected: is_selected,
@@ -282,8 +296,7 @@ impl RenderOnce for FileTree {
                         row_div = row_div.hover_bg(tc.sidebar_row_hover);
                     }
 
-                    let indent_w =
-                        indent_unit * depth as f32 + chevron_size * scale + m.spacing_xs;
+                    let indent_w = indent_unit * depth as f32 + chevron_size * scale + m.spacing_xs;
                     if indent_w > 0.1 {
                         row_div = row_div.child(div().w(indent_w).flex_shrink_0());
                     }
@@ -309,6 +322,10 @@ impl RenderOnce for FileTree {
                             </div>
                         };
                         row_div = row_div.child(stats);
+                    }
+
+                    if let Some(scope) = scope {
+                        row_div = row_div.child(text(scope).text_xs().color(tc.text_muted));
                     }
 
                     if !status.is_empty() {

@@ -377,6 +377,12 @@ pub(crate) fn sidebar(
                 components::FileTreeEntry {
                     path: f.path.clone(),
                     status: f.status.clone(),
+                    scope: state
+                        .workspace
+                        .status_items
+                        .get(i)
+                        .filter(|_| state.workspace.source == WorkspaceSource::Status)
+                        .map(|item| item.scope.label().to_owned()),
                     additions: f.additions,
                     deletions: f.deletions,
                 }

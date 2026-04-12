@@ -1,13 +1,15 @@
 use halogen::view;
 
-use crate::core::compare::CompareMode;
 use crate::actions::Action;
-use crate::ui::components::Button;
+use crate::core::compare::CompareMode;
+use crate::ui::components::{Button, ButtonStyle};
 use crate::ui::design::{Bp, Ico, Rad, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
-use crate::ui::state::{AppState, AsyncStatus, CompareField, OverlaySurface, WorkspaceMode};
+use crate::ui::state::{
+    AppState, AsyncStatus, CompareField, OverlaySurface, WorkspaceMode, WorkspaceSource,
+};
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
 
@@ -96,34 +98,54 @@ pub(crate) fn title_bar(
             // center
             <div class="flex-1 flex-row items-center justify-center" min_w={0.0} gap={Sp::XS}>
                 if has_repo && repo_loaded {
-                    <div class="flex-row items-center" gap={Sp::XS}>
-                        {ref_selector_button(
-                            left_label,
-                            lucide::GIT_BRANCH,
-                            state.compare.left_ref.is_empty(),
-                            Action::OpenRefPicker(CompareField::Left),
-                            "Select base ref",
-                            tc,
-                            scale,
-                        )}
-                        <div px={Sp::XS} py={Sp::XS}
-                             rounded={Rad::MD}
-                             hover_bg={tc.ghost_element_hover}
-                             on_click={Action::CycleCompareMode}
-                             cursor={CursorHint::Pointer}
-                             tooltip={"Cycle compare mode"}>
-                            <text class="text-sm font-medium" color={tc.text_muted}>{mode_symbol}</text>
+                    if state.workspace.source == WorkspaceSource::Compare {
+                        <div class="flex-row items-center" gap={Sp::SM}>
+                            {ref_selector_button(
+                                left_label,
+                                lucide::GIT_BRANCH,
+                                state.compare.left_ref.is_empty(),
+                                Action::OpenRefPicker(CompareField::Left),
+                                "Select base ref",
+                                tc,
+                                scale,
+                            )}
+                            <div px={Sp::XS} py={Sp::XS}
+                                 rounded={Rad::MD}
+                                 hover_bg={tc.ghost_element_hover}
+                                 on_click={Action::CycleCompareMode}
+                                 cursor={CursorHint::Pointer}
+                                 tooltip={"Cycle compare mode"}>
+                                <text class="text-sm font-medium" color={tc.text_muted}>{mode_symbol}</text>
+                            </div>
+                            {ref_selector_button(
+                                right_label,
+                                lucide::GIT_BRANCH,
+                                state.compare.right_ref.is_empty(),
+                                Action::OpenRefPicker(CompareField::Right),
+                                "Select head ref",
+                                tc,
+                                scale,
+                            )}
                         </div>
-                        {ref_selector_button(
-                            right_label,
-                            lucide::GIT_BRANCH,
-                            state.compare.right_ref.is_empty(),
-                            Action::OpenRefPicker(CompareField::Right),
-                            "Select head ref",
-                            tc,
-                            scale,
-                        )}
-                    </div>
+                    } else {
+                        <div class="flex-row items-center" gap={Sp::SM}>
+                            <div class="flex-row items-center"
+                                 gap={Sp::XS} px={Sp::SM} py={Sp::XS}
+                                 rounded={Rad::MD}
+                                 bg={tc.ghost_element_active}>
+                                <icon svg={lucide::FOLDER_GIT} size={Ico::SM} color={tc.text_muted} />
+                                <text class="text-sm font-medium" color={tc.text_strong}>{"Working tree"}</text>
+                                if let Some(scope) = state.workspace.selected_status_scope {
+                                    <text class="text-xs" color={tc.text_muted}>{scope.label()}</text>
+                                }
+                            </div>
+                            {Button::new(Action::OpenCompareSheet)
+                                .icon(lucide::GIT_COMPARE)
+                                .label("Compare")
+                                .style(ButtonStyle::Subtle)
+                                .tooltip("Open compare settings")}
+                        </div>
+                    }
                 } else if state.workspace_mode == WorkspaceMode::Loading {
                     <text class="text-sm" color={tc.text_muted}>{"Comparing\u{2026}"}</text>
                 }

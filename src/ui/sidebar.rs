@@ -355,7 +355,7 @@ pub(crate) fn sidebar(
             (lucide::FOLDER_OPEN, "Open a repository to start.")
         };
         Some(view! { scale,
-            <div class="flex-1 items-center justify-center">
+            <div class="flex-1 items-center justify-center" pb={row_h}>
                 <div class="flex-col items-center" gap={Sp::SM}>
                     <icon svg={icon} size={Ico::XL} color={tc.text_muted} />
                     <text class="text-sm" color={tc.text_muted}>{msg}</text>

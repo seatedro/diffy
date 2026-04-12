@@ -133,7 +133,7 @@ pub(crate) fn title_bar(
             </div>
 
             // right
-            <div class="flex-1 flex-row flex-shrink-0 items-center justify-end" gap={Sp::XS}>
+            <div class="flex-1 flex-row items-center justify-end" min_w={0.0} gap={Sp::XS}>
                 if is_ready && window_width >= Bp::NARROW * scale {
                     <div class="flex-row items-center" gap={Sp::XS}>
                         <text class="text-sm" color={tc.text_muted}>{format!("{file_count} files")}</text>

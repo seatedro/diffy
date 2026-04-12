@@ -1,6 +1,8 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use halogen::view;
+
 use crate::render::{Rect, RectPrimitive, RoundedRectPrimitive};
 use crate::actions::Action;
 use crate::ui::components::{self, Button};
@@ -246,7 +248,7 @@ pub(crate) fn sidebar(
     sidebar_width: f32,
     _bounds_cell: Rc<Cell<Option<Rect>>>,
     cx: &ElementContext,
-) -> Div {
+) -> AnyElement {
     let tc = &theme.colors;
     let all_files = &state.workspace.files;
     let file_count = all_files.len();
@@ -275,65 +277,40 @@ pub(crate) fn sidebar(
 
     let row_h = theme.metrics.ui_row_height.round();
 
-    let header = div()
-        .px((Sp::MD * scale).round())
-        .flex_col()
-        .child(
-            div()
-                .h(row_h)
-                .flex_row()
-                .items_center()
-                .gap(Sp::SM * scale)
-                .child(text("FILES").text_xs().semibold().color(tc.text_muted))
-                .optional_child(if file_count > 0 {
-                    Some(
-                        div()
-                            .px((Rad::LG * scale).round())
-                            .py((Sp::XXS * scale).round())
-                            .rounded((Rad::LG * scale).round())
-                            .bg(Color::rgba(255, 255, 255, 10))
-                            .child(text(file_count.to_string()).text_xs().color(tc.text_muted)),
-                    )
-                } else {
-                    None
-                })
-                .child(spacer())
-                .optional_child(if file_count > 0 {
-                    let mode_icon = if is_tree {
-                        lucide::ROWS
-                    } else {
-                        lucide::FOLDER
-                    };
-                    Some(
-                        Button::new(Action::ToggleSidebarMode)
-                            .icon(mode_icon)
-                            .fixed_size(Sz::MODE_TOGGLE),
-                    )
-                } else {
-                    None
-                }),
-        )
-        .optional_child(if file_count > 0 {
-            Some(
-                div()
-                    .h(row_h)
-                    .flex_row()
-                    .items_center()
-                    .gap(Sp::XS * scale)
-                    .child(
-                        components::stat_summary(
-                            file_count,
-                            total_adds.unsigned_abs(),
-                            total_dels.unsigned_abs(),
-                        )
-                        .compact(),
-                    ),
-            )
-        } else {
-            None
-        });
+    let mode_icon = if is_tree { lucide::ROWS } else { lucide::FOLDER };
+    let mode_tip = if is_tree { "List view" } else { "Tree view" };
 
-    let search_bar = if file_count > 0 {
+    let header = view! { scale,
+        <div class="flex-col" px={Sp::MD}>
+            <div class="flex-row items-center" h={row_h} gap={Sp::SM}>
+                <text class="text-xs font-semibold" color={tc.text_muted}>{"FILES"}</text>
+                if file_count > 0 {
+                    <div px={Rad::LG} py={Sp::XXS} rounded={Rad::LG}
+                         bg={Color::rgba(255, 255, 255, 10)}>
+                        <text class="text-xs" color={tc.text_muted}>{file_count.to_string()}</text>
+                    </div>
+                }
+                <spacer />
+                if file_count > 0 {
+                    {Button::new(Action::ToggleSidebarMode)
+                        .icon(mode_icon)
+                        .tooltip(mode_tip)
+                        .fixed_size(Sz::MODE_TOGGLE)}
+                }
+            </div>
+            if file_count > 0 {
+                <div class="flex-row items-center" h={row_h} gap={Sp::XS}>
+                    {components::stat_summary(
+                        file_count,
+                        total_adds.unsigned_abs(),
+                        total_dels.unsigned_abs(),
+                    ).compact()}
+                </div>
+            }
+        </div>
+    };
+
+    let search_bar: Option<AnyElement> = if file_count > 0 {
         let search_focused = cx.is_focused(FocusTarget::SidebarSearch);
         let input = text_input("", &state.file_list.filter)
             .placeholder("Filter files\u{2026}")
@@ -345,71 +322,40 @@ pub(crate) fn sidebar(
             .on_click(Action::SetFocus(Some(FocusTarget::SidebarSearch)))
             .bare()
             .w_full()
-            .h(theme.metrics.ui_row_height.round());
-        let hint = if !search_focused && !has_filter {
-            Some("/")
-        } else {
-            None
-        };
-        Some(
-            div()
-                .w_full()
-                .px((Sp::SM + Sp::XXS) * scale)
-                .pb((Sp::SM * scale).round())
-                .child(components::search_field(
-                    input,
-                    has_filter,
-                    Some(Action::ClearSidebarFilter),
-                    hint,
-                    theme,
-                )),
-        )
+            .h(row_h);
+        let hint = if !search_focused && !has_filter { Some("/") } else { None };
+        Some(view! { scale,
+            <div class="w-full" px={Sp::SM + Sp::XXS} pb={Sp::SM}>
+                {components::search_field(input, has_filter, Some(Action::ClearSidebarFilter), hint, theme)}
+            </div>
+        })
     } else {
         None
     };
 
-    let mut sidebar_div = div()
-        .flex_col()
-        .w(sidebar_width)
-        .flex_shrink_0()
-        .h_full()
-        .min_h(0.0)
-        .bg(tc.sidebar_background)
-        .border_r(tc.border_variant)
-        .child(header)
-        .optional_child(search_bar);
-
-    if all_files.is_empty() {
+    let content: Option<AnyElement> = if all_files.is_empty() {
         let (icon, msg) = if state.compare.repo_path.is_some() {
             (lucide::GIT_COMPARE, "Run a compare to see changes.")
         } else {
             (lucide::FOLDER_OPEN, "Open a repository to start.")
         };
-        sidebar_div = sidebar_div.child(
-            div().flex_1().items_center().justify_center().child(
-                div()
-                    .flex_col()
-                    .items_center()
-                    .gap((Sp::SM * scale).round())
-                    .child(svg_icon(icon, Ico::XL).color(tc.text_muted))
-                    .child(text(msg).text_sm().color(tc.text_muted)),
-            ),
-        );
+        Some(view! { scale,
+            <div class="flex-1 items-center justify-center">
+                <div class="flex-col items-center" gap={Sp::SM}>
+                    <icon svg={icon} size={Ico::XL} color={tc.text_muted} />
+                    <text class="text-sm" color={tc.text_muted}>{msg}</text>
+                </div>
+            </div>
+        })
     } else if visible_count == 0 && has_filter {
-        sidebar_div = sidebar_div.child(
-            div().flex_1().items_center().justify_center().child(
-                div()
-                    .flex_col()
-                    .items_center()
-                    .gap((Sp::SM * scale).round())
-                    .child(svg_icon(lucide::SEARCH, Ico::XL).color(tc.text_muted))
-                    .child(
-                        text("No files match filter.")
-                            .text_sm()
-                            .color(tc.text_muted),
-                    ),
-            ),
-        );
+        Some(view! { scale,
+            <div class="flex-1 items-center justify-center">
+                <div class="flex-col items-center" gap={Sp::SM}>
+                    <icon svg={lucide::SEARCH} size={Ico::XL} color={tc.text_muted} />
+                    <text class="text-sm" color={tc.text_muted}>{"No files match filter."}</text>
+                </div>
+            </div>
+        })
     } else if is_tree && !has_filter {
         let entries: Vec<components::FileTreeEntry> = filtered_indices
             .iter()
@@ -435,113 +381,95 @@ pub(crate) fn sidebar(
         let total_height = row_count as f32 * (row_height + state.file_list.gap);
         let scroll_px = state.file_list.scroll_offset_px;
 
-        sidebar_div = sidebar_div.child(
-            div()
-                .flex_1()
-                .min_h(0.0)
-                .flex_col()
-                .clip()
-                .scroll_y(scroll_px)
-                .scroll_total(total_height)
-                .on_scroll(ScrollActionBuilder::FileList)
-                .child(tree),
-        );
+        Some(view! { scale,
+            <div class="flex-1 flex-col" min_h={0.0}
+                 clip scroll_y={scroll_px}
+                 scroll_total={total_height}
+                 on_scroll={ScrollActionBuilder::FileList}>
+                {tree}
+            </div>
+        })
     } else {
-        let row_height = state.file_list.row_height;
         let total_height = state.file_list.total_content_height(visible_count);
         let scroll_px = state.file_list.scroll_offset_px;
 
-        let mut list = div()
-            .flex_1()
-            .min_h(0.0)
-            .flex_col()
-            .px((Rad::LG * scale).round())
-            .pt((Sp::XXS * scale).round())
-            .gap((Sp::XS * scale).round())
-            .clip()
-            .scroll_y(scroll_px)
-            .scroll_total(total_height)
-            .on_scroll(ScrollActionBuilder::FileList);
+        let rows: Vec<AnyElement> = filtered_indices
+            .iter()
+            .map(|&index| file_row(&all_files[index], index, state, tc, scale))
+            .collect();
 
-        for &index in &filtered_indices {
-            let file = &all_files[index];
-            let selected = state.workspace.selected_file_index == Some(index);
-            let viewed = state.file_list.viewed_files.contains(&index);
-            let text_color = if selected { tc.text_strong } else { tc.text };
+        Some(view! { scale,
+            <div class="flex-1 flex-col" min_h={0.0}
+                 px={Rad::LG} pt={Sp::XXS} gap={Sp::XS}
+                 clip scroll_y={scroll_px}
+                 scroll_total={total_height}
+                 on_scroll={ScrollActionBuilder::FileList}>
+                {...rows}
+            </div>
+        })
+    };
 
-            let mut row = div()
-                .w_full()
-                .h(row_height)
-                .flex_row()
-                .items_center()
-                .px(Sp::SM * scale)
-                .gap(Sp::SM * scale)
-                .on_click(Action::SelectFile(index))
-                .cursor(CursorHint::Pointer);
-
-            if selected {
-                row = row.bg(tc.sidebar_row_selected).border_l(tc.accent);
-            } else {
-                row = row.hover_bg(tc.sidebar_row_hover);
-            }
-
-            row = row.child(components::file_icon(&file.path, Ico::LG).selected(selected));
-
-            let (filename, dir_path) = match file.path.rfind('/') {
-                Some(pos) => (&file.path[pos + 1..], Some(&file.path[..pos])),
-                None => (file.path.as_str(), None),
-            };
-
-            row = row.child(
-                div()
-                    .flex_1()
-                    .flex_row()
-                    .items_center()
-                    .gap(Sp::SM * scale)
-                    .overflow_hidden()
-                    .min_w(0.0)
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .child(text(filename).text_sm().color(text_color)),
-                    )
-                    .optional_child(
-                        dir_path.map(|p| text(p).text_xs().color(tc.text_muted).truncate()),
-                    ),
-            );
-
-            if file.additions > 0 || file.deletions > 0 {
-                row = row.child(
-                    div()
-                        .flex_row()
-                        .gap(Sp::XS * scale)
-                        .flex_shrink_0()
-                        .child(
-                            text(format!("+{}", file.additions))
-                                .text_xs()
-                                .color(tc.line_add_text),
-                        )
-                        .child(
-                            text(format!("\u{2212}{}", file.deletions))
-                                .text_xs()
-                                .color(tc.line_del_text),
-                        ),
-                );
-            }
-
-            if !file.status.is_empty() {
-                row = row.child(components::status_badge(&file.status));
-            }
-
-            if viewed {
-                row = row.child(svg_icon(lucide::CHECK, Ico::XS).color(tc.line_add_text));
-            }
-
-            list = list.child(row);
-        }
-
-        sidebar_div = sidebar_div.child(list);
+    view! { scale,
+        <div class="flex-col shrink-0 h-full" min_h={0.0}
+             w={sidebar_width}
+             bg={tc.sidebar_background}
+             border_r={tc.border_variant}>
+            {header}
+            {?search_bar}
+            {?content}
+        </div>
     }
+}
 
-    sidebar_div
+fn file_row(
+    file: &crate::ui::state::FileListEntry,
+    index: usize,
+    state: &AppState,
+    tc: &crate::ui::theme::ThemeColors,
+    scale: f32,
+) -> AnyElement {
+    let selected = state.workspace.selected_file_index == Some(index);
+    let viewed = state.file_list.viewed_files.contains(&index);
+    let text_color = if selected { tc.text_strong } else { tc.text };
+    let row_height = state.file_list.row_height;
+
+    let (filename, dir_path) = match file.path.rfind('/') {
+        Some(pos) => (&file.path[pos + 1..], Some(&file.path[..pos])),
+        None => (file.path.as_str(), None),
+    };
+
+    let dir_el: Option<AnyElement> =
+        dir_path.map(|p| text(p).text_xs().color(tc.text_muted).truncate().into_any());
+
+    let has_stats = file.additions > 0 || file.deletions > 0;
+    let has_status = !file.status.is_empty();
+
+    view! { scale,
+        <div class="w-full flex-row items-center"
+             h={row_height} px={Sp::SM} gap={Sp::SM}
+             on_click={Action::SelectFile(index)}
+             cursor={CursorHint::Pointer}
+             @when { selected } { bg={tc.sidebar_row_selected} border_l={tc.accent} }
+             @when { !selected } { hover_bg={tc.sidebar_row_hover} }>
+            {components::file_icon(&file.path, Ico::LG).selected(selected)}
+            <div class="flex-1 flex-row items-center overflow-hidden" min_w={0.0} gap={Sp::SM}>
+                <div class="shrink-0">
+                    <text class="text-sm" color={text_color}>{filename}</text>
+                </div>
+                {?dir_el}
+            </div>
+            if has_stats {
+                <div class="flex-row shrink-0" gap={Sp::XS}>
+                    <text class="text-xs" color={tc.line_add_text}>{format!("+{}", file.additions)}</text>
+                    <text class="text-xs" color={tc.line_del_text}>{format!("\u{2212}{}", file.deletions)}</text>
+                </div>
+            }
+            if has_status {
+                {components::status_badge(&file.status)}
+            }
+            if viewed {
+                <icon svg={lucide::CHECK} size={Ico::XS} color={tc.line_add_text} />
+            }
+        </div>
+    }
 }

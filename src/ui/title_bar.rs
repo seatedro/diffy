@@ -79,6 +79,7 @@ pub(crate) fn title_bar(
                         lucide::FOLDER,
                         false,
                         Action::OpenRepoPicker,
+                        "Switch repository",
                         tc,
                         scale,
                     )}
@@ -101,6 +102,7 @@ pub(crate) fn title_bar(
                             lucide::GIT_BRANCH,
                             state.compare.left_ref.is_empty(),
                             Action::OpenRefPicker(CompareField::Left),
+                            "Select base ref",
                             tc,
                             scale,
                         )}
@@ -108,7 +110,8 @@ pub(crate) fn title_bar(
                              rounded={Rad::MD}
                              hover_bg={tc.ghost_element_hover}
                              on_click={Action::CycleCompareMode}
-                             cursor={CursorHint::Pointer}>
+                             cursor={CursorHint::Pointer}
+                             tooltip={"Cycle compare mode"}>
                             <text class="text-sm font-medium" color={tc.text_muted}>{mode_symbol}</text>
                         </div>
                         {ref_selector_button(
@@ -116,6 +119,7 @@ pub(crate) fn title_bar(
                             lucide::GIT_BRANCH,
                             state.compare.right_ref.is_empty(),
                             Action::OpenRefPicker(CompareField::Right),
+                            "Select head ref",
                             tc,
                             scale,
                         )}
@@ -148,6 +152,7 @@ fn ref_selector_button(
     icon: &'static str,
     is_placeholder: bool,
     action: Action,
+    tooltip_text: &str,
     tc: &crate::ui::theme::ThemeColors,
     scale: f32,
 ) -> AnyElement {
@@ -163,6 +168,7 @@ fn ref_selector_button(
              hover_bg={tc.ghost_element_hover}
              on_click={action}
              cursor={CursorHint::Pointer}
+             tooltip={tooltip_text}
              min_w={Sz::REF_SELECTOR_MIN_W}>
             <icon svg={icon} size={Ico::SM} color={tc.text_muted} />
             <div class="flex-1" min_w={0.0}>

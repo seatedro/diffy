@@ -71,10 +71,16 @@ pub fn auth_modal(
         });
     }
 
+    let action_tooltip = if state.github.auth.device_flow.is_some() {
+        "Open GitHub in your browser"
+    } else {
+        "Begin GitHub authentication"
+    };
     modal = modal.footer_child(
         Button::new(action)
             .icon(action_icon)
             .label(action_label)
+            .tooltip(action_tooltip)
             .style(ButtonStyle::Filled),
     );
 

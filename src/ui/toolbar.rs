@@ -22,52 +22,60 @@ pub(crate) fn main_surface(
     theme: &Theme,
     _text_metrics: TextMetrics,
     viewport_bounds: Rc<Cell<Option<Rect>>>,
-) -> Div {
+) -> AnyElement {
     let tc = &theme.colors;
-    let mut main = div()
-        .flex_1()
-        .flex_col()
-        .h_full()
-        .min_h(0.0)
-        .bg(tc.editor_surface);
-
     let has_overlay = state.active_overlay_name().is_some();
-    match state.workspace_mode {
-        WorkspaceMode::Ready => {
-            let file_label = state
-                .workspace
-                .selected_file_path
-                .as_deref()
-                .unwrap_or("No file selected");
 
-            main = main.child(viewport_toolbar(state, theme, file_label));
+    let toolbar = if state.workspace_mode == WorkspaceMode::Ready {
+        let file_label = state
+            .workspace
+            .selected_file_path
+            .as_deref()
+            .unwrap_or("No file selected");
+        Some(viewport_toolbar(state, theme, file_label))
+    } else {
+        None
+    };
 
-            if state.editor.search.open {
-                main = main.child(search_bar(state, theme));
-            }
+    let search = if state.workspace_mode == WorkspaceMode::Ready && state.editor.search.open {
+        Some(search_bar(state, theme))
+    } else {
+        None
+    };
 
-            let vb = viewport_bounds.clone();
-            main = main.child(
-                canvas(move |bounds, _scene, _cx| {
-                    vb.set(Some(bounds));
-                })
-                .flex_1(),
-            );
-        }
-        WorkspaceMode::Loading => {
-            main = main.child(loading_card(state, theme));
-        }
+    let vb = viewport_bounds.clone();
+    let viewport_canvas = if state.workspace_mode == WorkspaceMode::Ready {
+        Some(
+            canvas(move |bounds, _scene, _cx| {
+                vb.set(Some(bounds));
+            })
+            .flex_1()
+            .into_any(),
+        )
+    } else {
+        None
+    };
+
+    let content = match state.workspace_mode {
+        WorkspaceMode::Loading => Some(loading_card(state, theme)),
         WorkspaceMode::Empty if !has_overlay => {
             if state.compare.repo_path.is_some() {
-                main = main.child(repo_ready_hint(theme));
+                Some(repo_ready_hint(theme))
             } else {
-                main = main.child(empty_state(state, theme));
+                Some(empty_state(state, theme))
             }
         }
-        WorkspaceMode::Empty => {}
-    }
+        _ => None,
+    };
 
-    main
+    view! { scale,
+        <div class="flex-1 flex-col h-full" min_h={0.0} bg={tc.editor_surface}>
+            {?toolbar}
+            {?search}
+            {?viewport_canvas}
+            {?content}
+        </div>
+    }
 }
 
 fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyElement {
@@ -90,12 +98,12 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                         "Split",
                         Action::SetLayoutMode(LayoutMode::Split),
                         state.compare.layout == LayoutMode::Split,
-                    ),
+                    ).tooltip("Side-by-side view"),
                     SegmentedItem::new(
                         "Unified",
                         Action::SetLayoutMode(LayoutMode::Unified),
                         state.compare.layout == LayoutMode::Unified,
-                    ),
+                    ).tooltip("Inline view"),
                 ])}
                 {Button::new(Action::ToggleWrap)
                     .icon(lucide::WRAP_TEXT)
@@ -144,12 +152,15 @@ fn search_bar(state: &AppState, theme: &Theme) -> AnyElement {
             </div>
             {Button::new(Action::SearchPrevious)
                 .icon(lucide::CHEVRON_UP)
+                .tooltip("Previous match")
                 .fixed_size(Sz::ROW)}
             {Button::new(Action::SearchNext)
                 .icon(lucide::CHEVRON_DOWN)
+                .tooltip("Next match")
                 .fixed_size(Sz::ROW)}
             {Button::new(Action::CloseSearch)
                 .icon(lucide::X)
+                .tooltip("Close search (Esc)")
                 .fixed_size(Sz::ROW)}
         </div>
     };
@@ -225,71 +236,67 @@ fn empty_state(state: &AppState, theme: &Theme) -> AnyElement {
     let recent_repos = crate::core::frecency::recent_repo_paths(state.frecency.as_ref(), 8);
     let has_recent = !recent_repos.is_empty();
 
-    let mut card = div()
-        .w_full()
-        .max_w((Sz::CARD_MD * scale).round())
-        .p((Sp::XXL * scale).round())
-        .flex_col()
-        .gap((Sp::LG * scale).round())
-        .bg(tc.elevated_surface)
-        .rounded((Rad::XXXL * scale).round())
-        .border_b(tc.border)
-        .shadow_preset(Shadow::FLOAT)
-        .child(view! { scale,
-            <div class="flex-row items-center" gap={Sp::SM}>
-                <icon svg={lucide::GIT_COMPARE} size={Ico::XL} color={tc.accent} />
-                <text class="font-semibold" color={tc.text_strong}>{"diffy"}</text>
+    let recent_section: Option<AnyElement> = if has_recent {
+        Some(view! { scale,
+            <div class="flex-col" gap={Sp::XXS}>
+                <text class="text-xs font-semibold" color={tc.text_muted}>{"Recent"}</text>
+                for repo in recent_repos.iter().take(8) {
+                    {repo_row(repo, tc, scale)}
+                }
             </div>
-        });
-
-    if has_recent {
-        let mut recent_section = div().flex_col().gap((Sp::XXS * scale).round());
-
-        recent_section = recent_section.child(view! { scale,
-            <text class="text-xs font-semibold" color={tc.text_muted}>{"Recent"}</text>
-        });
-
-        for repo in recent_repos.iter().take(8) {
-            let repo_name = repo
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown");
-            let repo_path = repo.display().to_string();
-            recent_section = recent_section.child(view! { scale,
-                <div class="w-full flex-row items-center"
-                     py={Sp::SM} px={Sp::SM}
-                     rounded={Rad::MD} gap={Sp::SM}
-                     hover_bg={tc.sidebar_row_hover}
-                     on_click={Action::OpenRepository(repo.clone())}
-                     cursor={CursorHint::Pointer}>
-                    <icon svg={lucide::FOLDER} size={Ico::SM} color={tc.text_muted} />
-                    <div class="flex-col flex-1" min_w={0.0}>
-                        <text class="text-sm medium truncate" color={tc.text}>{repo_name}</text>
-                        <text class="text-xs truncate" color={tc.text_muted}>{repo_path}</text>
-                    </div>
-                </div>
-            });
-        }
-
-        card = card.child(recent_section);
-    }
-
-    card = card.child(view! { scale,
-        <div pt={Sp::XS}>
-            {Button::new(Action::OpenRepoPicker)
-                .icon(lucide::FOLDER_OPEN)
-                .label("Open Folder")
-                .style(ButtonStyle::Subtle)}
-        </div>
-    });
-
-    card = card.child(view! { scale,
-        <text class="text-xs" color={tc.text_muted}>{"or drop a folder here"}</text>
-    });
+        })
+    } else {
+        None
+    };
 
     view! { scale,
         <div class="flex-1 items-center justify-center" p={Sp::XL}>
-            {card}
+            <div class="w-full flex-col" max_w={Sz::CARD_MD}
+                 p={Sp::XXL} gap={Sp::LG}
+                 bg={tc.elevated_surface}
+                 rounded={Rad::XXXL}
+                 border_b={tc.border}
+                 shadow_preset={Shadow::FLOAT}>
+                <div class="flex-row items-center" gap={Sp::SM}>
+                    <icon svg={lucide::GIT_COMPARE} size={Ico::XL} color={tc.accent} />
+                    <text class="font-semibold" color={tc.text_strong}>{"diffy"}</text>
+                </div>
+                {?recent_section}
+                <div pt={Sp::XS}>
+                    {Button::new(Action::OpenRepoPicker)
+                        .icon(lucide::FOLDER_OPEN)
+                        .label("Open Folder")
+                        .tooltip("Open a repository folder")
+                        .style(ButtonStyle::Subtle)}
+                </div>
+                <text class="text-xs" color={tc.text_muted}>{"or drop a folder here"}</text>
+            </div>
+        </div>
+    }
+}
+
+fn repo_row(
+    repo: &std::path::Path,
+    tc: &crate::ui::theme::ThemeColors,
+    scale: f32,
+) -> AnyElement {
+    let repo_name = repo
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown");
+    let repo_path = repo.display().to_string();
+    view! { scale,
+        <div class="w-full flex-row items-center"
+             py={Sp::SM} px={Sp::SM}
+             rounded={Rad::MD} gap={Sp::SM}
+             hover_bg={tc.sidebar_row_hover}
+             on_click={Action::OpenRepository(repo.to_path_buf())}
+             cursor={CursorHint::Pointer}>
+            <icon svg={lucide::FOLDER} size={Ico::SM} color={tc.text_muted} />
+            <div class="flex-col flex-1" min_w={0.0}>
+                <text class="text-sm medium truncate" color={tc.text}>{repo_name}</text>
+                <text class="text-xs truncate" color={tc.text_muted}>{repo_path}</text>
+            </div>
         </div>
     }
 }

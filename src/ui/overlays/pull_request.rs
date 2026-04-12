@@ -62,6 +62,7 @@ pub fn pull_request_modal(
                     "Load PR"
                 },
             )
+            .tooltip("Fetch pull request details")
             .style(ButtonStyle::Filled),
     );
 
@@ -70,6 +71,7 @@ pub fn pull_request_modal(
             Button::new(Action::UsePullRequestCompare)
                 .icon(lucide::GIT_COMPARE)
                 .label("Use Compare")
+                .tooltip("Apply PR refs to compare")
                 .style(ButtonStyle::Subtle),
         );
     }

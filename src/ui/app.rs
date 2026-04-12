@@ -160,8 +160,8 @@ impl NativeApp {
             FontKind::Ui,
             FontWeight::Normal,
         );
-        let px = (Sp::SM * scale).round();
-        let py = (Sp::XS * scale).round();
+        let px = (Sp::MD * scale).round();
+        let py = (Sp::SM * scale).round();
         let w = text_w + px * 2.0;
         let h = font_size + py * 2.0;
         let r = (Rad::MD * scale).round();
@@ -194,12 +194,13 @@ impl NativeApp {
             corner_radii: [r; 4],
             color: tc.border,
         });
+        let line_height = font_size * 1.35;
         scene.text(TextPrimitive {
             rect: Rect {
                 x: x + px,
-                y: y + py,
-                width: text_w,
-                height: font_size,
+                y: y + ((h - line_height) / 2.0).round(),
+                width: text_w + px,
+                height: line_height,
             },
             text: Arc::from(self.tooltip_state.text.as_str()),
             color: tc.text,

@@ -24,6 +24,80 @@ pub fn compare_sheet(
     let tc = &theme.colors;
     let scale = ui_scale(theme);
 
+    let left_input = text_input("Left ref", &state.compare.left_ref)
+        .placeholder("main")
+        .focused(state.focus.current == Some(FocusTarget::CompareLeftRef))
+        .on_click(Action::SetFocus(Some(FocusTarget::CompareLeftRef)))
+        .cursor(state.text_edit.cursor)
+        .anchor(state.text_edit.anchor)
+        .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
+        .focus_target(FocusTarget::CompareLeftRef)
+        .w_full()
+        .h(Sz::INPUT_LABELED * scale)
+        .flex_1();
+
+    let right_input = text_input("Right ref", &state.compare.right_ref)
+        .placeholder("feature")
+        .focused(state.focus.current == Some(FocusTarget::CompareRightRef))
+        .on_click(Action::SetFocus(Some(FocusTarget::CompareRightRef)))
+        .cursor(state.text_edit.cursor)
+        .anchor(state.text_edit.anchor)
+        .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
+        .focus_target(FocusTarget::CompareRightRef)
+        .w_full()
+        .h(Sz::INPUT_LABELED * scale)
+        .flex_1();
+
+    let refs_row = view! { scale,
+        <div class="flex-row" gap={Sp::MD}>
+            {left_input}
+            {right_input}
+        </div>
+    };
+
+    let options = view! { scale,
+        <div class="flex-col" gap={Sp::MD}>
+            <div class="flex-row items-center" gap={Sp::MD}>
+                <text class="text-sm font-medium" color={tc.text_muted}>{"Mode"}</text>
+                {SegmentedControl::new(vec![
+                    SegmentedItem::new("Single", Action::SetCompareMode(CompareMode::SingleCommit), state.compare.mode == CompareMode::SingleCommit),
+                    SegmentedItem::new("Two Dot", Action::SetCompareMode(CompareMode::TwoDot), state.compare.mode == CompareMode::TwoDot),
+                    SegmentedItem::new("Three Dot", Action::SetCompareMode(CompareMode::ThreeDot), state.compare.mode == CompareMode::ThreeDot),
+                ])}
+            </div>
+            <div class="flex-row flex-wrap" gap={Sp::MD}>
+                <div class="flex-row items-center" gap={Sp::MD}>
+                    <text class="text-sm font-medium" color={tc.text_muted}>{"Layout"}</text>
+                    {SegmentedControl::new(vec![
+                        SegmentedItem::new("Unified", Action::SetLayoutMode(LayoutMode::Unified), state.compare.layout == LayoutMode::Unified),
+                        SegmentedItem::new("Split", Action::SetLayoutMode(LayoutMode::Split), state.compare.layout == LayoutMode::Split),
+                    ])}
+                </div>
+                <div class="flex-row items-center" gap={Sp::MD}>
+                    <text class="text-sm font-medium" color={tc.text_muted}>{"Engine"}</text>
+                    {SegmentedControl::new(vec![
+                        SegmentedItem::new("Built-in", Action::SetRenderer(RendererKind::Builtin), state.compare.renderer == RendererKind::Builtin),
+                        SegmentedItem::new("Difftastic", Action::SetRenderer(RendererKind::Difftastic), state.compare.renderer == RendererKind::Difftastic),
+                    ])}
+                </div>
+            </div>
+        </div>
+    };
+
+    let validation = state.overlays.compare_sheet.validation_message.as_deref();
+    let validation_row: AnyElement = if let Some(msg) = validation {
+        view! { scale,
+            <div class="w-full flex-row shrink-0 items-center" gap={Sp::SM}>
+                <icon svg={lucide::ALERT_CIRCLE} size={Ico::SM} color={tc.status_error} />
+                <div class="flex-1" min_w={0.0}>
+                    <text class="text-sm truncate" color={tc.status_error}>{msg}</text>
+                </div>
+            </div>
+        }
+    } else {
+        div().into_any()
+    };
+
     Modal::new(
         "Compare Setup",
         "Pick a repository, refs, compare mode, and renderer.",
@@ -44,127 +118,12 @@ pub fn compare_sheet(
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "Choose repository\u{2026}".into()),
             )
+            .tooltip("Switch repository")
             .style(ButtonStyle::Subtle),
     )
-    .body_child(
-        div()
-            .flex_row()
-            .gap((Sp::MD * scale).round())
-            .child(
-                text_input("Left ref", &state.compare.left_ref)
-                    .placeholder("main")
-                    .focused(state.focus.current == Some(FocusTarget::CompareLeftRef))
-                    .on_click(Action::SetFocus(Some(FocusTarget::CompareLeftRef)))
-                    .cursor(state.text_edit.cursor)
-                    .anchor(state.text_edit.anchor)
-                    .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
-                    .focus_target(FocusTarget::CompareLeftRef)
-                    .w_full()
-                    .h(Sz::INPUT_LABELED * scale)
-                    .flex_1(),
-            )
-            .child(
-                text_input("Right ref", &state.compare.right_ref)
-                    .placeholder("feature")
-                    .focused(state.focus.current == Some(FocusTarget::CompareRightRef))
-                    .on_click(Action::SetFocus(Some(FocusTarget::CompareRightRef)))
-                    .cursor(state.text_edit.cursor)
-                    .anchor(state.text_edit.anchor)
-                    .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
-                    .focus_target(FocusTarget::CompareRightRef)
-                    .w_full()
-                    .h(Sz::INPUT_LABELED * scale)
-                    .flex_1(),
-            ),
-    )
-    .body_child(
-        div()
-            .flex_col()
-            .gap((Sp::MD * scale).round())
-            .child(
-                div()
-                    .flex_row()
-                    .items_center()
-                    .gap((Sp::MD * scale).round())
-                    .child(text("Mode").text_sm().medium().color(tc.text_muted))
-                    .child(SegmentedControl::new(vec![
-                        SegmentedItem::new(
-                            "Single",
-                            Action::SetCompareMode(CompareMode::SingleCommit),
-                            state.compare.mode == CompareMode::SingleCommit,
-                        ),
-                        SegmentedItem::new(
-                            "Two Dot",
-                            Action::SetCompareMode(CompareMode::TwoDot),
-                            state.compare.mode == CompareMode::TwoDot,
-                        ),
-                        SegmentedItem::new(
-                            "Three Dot",
-                            Action::SetCompareMode(CompareMode::ThreeDot),
-                            state.compare.mode == CompareMode::ThreeDot,
-                        ),
-                    ])),
-            )
-            .child(
-                div()
-                    .flex_row()
-                    .flex_wrap()
-                    .gap((Sp::MD * scale).round())
-                    .child(
-                        div()
-                            .flex_row()
-                            .items_center()
-                            .gap((Sp::MD * scale).round())
-                            .child(text("Layout").text_sm().medium().color(tc.text_muted))
-                            .child(SegmentedControl::new(vec![
-                                SegmentedItem::new(
-                                    "Unified",
-                                    Action::SetLayoutMode(LayoutMode::Unified),
-                                    state.compare.layout == LayoutMode::Unified,
-                                ),
-                                SegmentedItem::new(
-                                    "Split",
-                                    Action::SetLayoutMode(LayoutMode::Split),
-                                    state.compare.layout == LayoutMode::Split,
-                                ),
-                            ])),
-                    )
-                    .child(
-                        div()
-                            .flex_row()
-                            .items_center()
-                            .gap((Sp::MD * scale).round())
-                            .child(text("Engine").text_sm().medium().color(tc.text_muted))
-                            .child(SegmentedControl::new(vec![
-                                SegmentedItem::new(
-                                    "Built-in",
-                                    Action::SetRenderer(RendererKind::Builtin),
-                                    state.compare.renderer == RendererKind::Builtin,
-                                ),
-                                SegmentedItem::new(
-                                    "Difftastic",
-                                    Action::SetRenderer(RendererKind::Difftastic),
-                                    state.compare.renderer == RendererKind::Difftastic,
-                                ),
-                            ])),
-                    ),
-            ),
-    )
-    .body_child({
-        let validation = state.overlays.compare_sheet.validation_message.as_deref();
-        if let Some(msg) = validation {
-            view! { scale,
-                <div class="w-full flex-row shrink-0 items-center" gap={Sp::SM}>
-                    <icon svg={lucide::ALERT_CIRCLE} size={Ico::SM} color={tc.status_error} />
-                    <div class="flex-1" min_w={0.0}>
-                        <text class="text-sm truncate" color={tc.status_error}>{msg}</text>
-                    </div>
-                </div>
-            }
-        } else {
-            div().into_any()
-        }
-    })
+    .body_child(refs_row)
+    .body_child(options)
+    .body_child(validation_row)
     .footer_child(
         Button::new(Action::StartCompare)
             .icon(lucide::PLAY)
@@ -173,6 +132,7 @@ pub fn compare_sheet(
             } else {
                 "Start Compare"
             })
+            .tooltip("Run diff comparison")
             .style(ButtonStyle::Filled),
     )
     .into_any()

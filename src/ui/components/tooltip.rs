@@ -1,5 +1,7 @@
+use halogen::view;
+
 use crate::ui::design::{Shadow, Sp};
-use crate::ui::element::{Div, div, text};
+use crate::ui::element::*;
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
 
@@ -11,7 +13,7 @@ pub enum TooltipSide {
     Right,
 }
 
-pub fn tooltip_layer(content: &str, x: f32, y: f32, side: TooltipSide, theme: &Theme) -> Div {
+pub fn tooltip_layer(content: &str, x: f32, y: f32, side: TooltipSide, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let m = &theme.metrics;
 
@@ -22,18 +24,18 @@ pub fn tooltip_layer(content: &str, x: f32, y: f32, side: TooltipSide, theme: &T
         TooltipSide::Right => (m.spacing_sm + Sp::XS, 0.0),
     };
 
-    div()
-        .absolute()
-        .left(x + offset_x)
-        .top(y + offset_y)
-        .z_index(500)
-        .px(m.spacing_sm)
-        .py(m.spacing_xs)
-        .bg(tc.elevated_surface)
-        .border(tc.border)
-        .rounded(m.control_radius - Sp::XXS)
-        .shadow_preset(Shadow::TOOLTIP)
-        .child(text(content).text_xs().color(tc.text))
+    view! {
+        <div class="absolute"
+             left={x + offset_x} top={y + offset_y}
+             z_index={500}
+             px={m.spacing_sm} py={m.spacing_xs}
+             bg={tc.elevated_surface}
+             border={tc.border}
+             rounded={m.control_radius - Sp::XXS}
+             shadow_preset={Shadow::TOOLTIP}>
+            <text class="text-xs" color={tc.text}>{content}</text>
+        </div>
+    }
 }
 
 pub struct TooltipState {
@@ -87,7 +89,7 @@ impl TooltipState {
         }
     }
 
-    pub fn render(&self, theme: &Theme) -> Option<Div> {
+    pub fn render(&self, theme: &Theme) -> Option<AnyElement> {
         if self.visible && !self.text.is_empty() {
             Some(tooltip_layer(&self.text, self.x, self.y, self.side, theme))
         } else {

@@ -1,7 +1,9 @@
+use halogen::view;
+
 use crate::actions::Action;
 use crate::ui::components::{Button, ButtonSize};
 use crate::ui::design::{Ico, Sp};
-use crate::ui::element::{Div, IntoAnyElement, div, svg_icon};
+use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
@@ -12,47 +14,47 @@ pub fn search_field(
     on_clear: Option<Action>,
     shortcut_hint: Option<&str>,
     theme: &Theme,
-) -> Div {
+) -> AnyElement {
     let tc = &theme.colors;
     let m = &theme.metrics;
-    let search_icon_size = Ico::XS;
 
-    let mut container = div()
-        .w_full()
-        .flex_row()
-        .items_center()
-        .gap(m.spacing_sm)
-        .px(m.spacing_sm + Sp::XXS)
-        .py(m.spacing_xs)
-        .rounded(m.control_radius)
-        .border(tc.border_variant)
-        .child(svg_icon(lucide::SEARCH, search_icon_size).color(tc.text_muted))
-        .child(div().flex_1().min_w(0.0).child(input));
+    let trailing = if has_value {
+        on_clear.map(|action| {
+            Button::new(action)
+                .icon(lucide::X)
+                .tooltip("Clear")
+                .size(ButtonSize::Compact)
+                .into_any()
+        })
+    } else {
+        shortcut_hint.map(|hint| super::kbd(hint, theme).into_any())
+    };
 
-    if has_value {
-        if let Some(clear_action) = on_clear {
-            container = container.child(
-                Button::new(clear_action)
-                    .icon(lucide::X)
-                    .size(ButtonSize::Compact),
-            );
-        }
-    } else if let Some(hint) = shortcut_hint {
-        container = container.child(super::kbd(hint, theme));
+    view! {
+        <div class="w-full flex-row items-center"
+             gap={m.spacing_sm}
+             px={m.spacing_sm + Sp::XXS}
+             py={m.spacing_xs}
+             rounded={m.control_radius}
+             border={tc.border_variant}>
+            <icon svg={lucide::SEARCH} size={Ico::XS} color={tc.text_muted} />
+            <div class="flex-1" min_w={0.0}>
+                {input}
+            </div>
+            {?trailing}
+        </div>
     }
-
-    container
 }
 
-pub fn filter_bar(theme: &Theme) -> Div {
+pub fn filter_bar(theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let m = &theme.metrics;
 
-    div()
-        .flex_row()
-        .items_center()
-        .gap(m.spacing_sm)
-        .px(m.spacing_sm)
-        .py(m.spacing_xs)
-        .border_b(tc.border_variant)
+    view! {
+        <div class="flex-row items-center"
+             gap={m.spacing_sm}
+             px={m.spacing_sm}
+             py={m.spacing_xs}
+             border_b={tc.border_variant} />
+    }
 }

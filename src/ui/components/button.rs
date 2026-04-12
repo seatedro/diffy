@@ -1,3 +1,5 @@
+use halogen::view;
+
 use crate::actions::Action;
 use crate::ui::design::{Alpha, Ico, Rad, Sp};
 use crate::ui::element::*;
@@ -93,17 +95,9 @@ impl RenderOnce for Button {
         let tc = &theme.colors;
         let scale = theme.metrics.ui_scale();
 
-        let (icon_size, px, py) = match self.size {
-            ButtonSize::Default => (
-                Ico::BUTTON_DEFAULT,
-                (Sp::MD * scale).round(),
-                (Sp::XS * scale).round(),
-            ),
-            ButtonSize::Compact => (
-                Ico::BUTTON_COMPACT,
-                (Sp::SM * scale).round(),
-                (Sp::XXS * scale).round(),
-            ),
+        let (icon_size, unscaled_px, unscaled_py) = match self.size {
+            ButtonSize::Default => (Ico::BUTTON_DEFAULT, Sp::MD, Sp::XS),
+            ButtonSize::Compact => (Ico::BUTTON_COMPACT, Sp::SM, Sp::XXS),
         };
 
         let (bg, hover_bg, icon_color, text_color) = match self.style {
@@ -145,55 +139,45 @@ impl RenderOnce for Button {
         };
 
         let icon_only = self.icon.is_some() && self.label.is_none();
+        let actual_px = if icon_only { unscaled_py } else { unscaled_px };
+        let fixed = self.fixed_size.map(|s| (s * scale).round());
+        let icon = self.icon;
+        let action = self.action;
+        let tooltip_text = self.tooltip_text;
 
-        let mut btn = div()
-            .flex_shrink_0()
-            .bg(bg)
-            .on_click(self.action)
-            .cursor(CursorHint::Pointer);
-
-        if let Some(size) = self.fixed_size {
-            let s = (size * scale).round();
-            btn = btn
-                .items_center()
-                .justify_center()
-                .w(s)
-                .h(s)
-                .rounded((Rad::SM * scale).round());
-        } else {
-            let actual_px = if icon_only { py } else { px };
-            btn = btn
-                .flex_row()
-                .items_center()
-                .gap((Sp::SM * scale).round())
-                .px(actual_px)
-                .py(py)
-                .rounded((Rad::XL * scale).round());
-        }
-
-        if icon_only {
-            btn = btn.hover_icon_color(tc.text);
-        } else {
-            btn = btn.hover_bg(hover_bg);
-        }
-
-        if let Some(icon) = self.icon {
-            btn = btn.child(svg_icon(icon, icon_size).color(icon_color));
-        }
-
-        if let Some(label) = self.label {
+        let label_el = self.label.map(|label| {
             let mut txt = text(label).medium().color(text_color);
             match self.size {
                 ButtonSize::Default => txt = txt.text_sm(),
                 ButtonSize::Compact => txt = txt.text_xs(),
             }
-            btn = btn.child(txt);
-        }
+            txt
+        });
 
-        if let Some(tip) = self.tooltip_text {
-            btn = btn.tooltip(tip);
+        view! { scale,
+            <div class="shrink-0" bg={bg}
+                 on_click={action}
+                 cursor={CursorHint::Pointer}
+                 @when { fixed.is_some() } {
+                     items_center justify_center
+                     w={fixed.unwrap()} h={fixed.unwrap()}
+                     rounded={Rad::SM}
+                 }
+                 @when { fixed.is_none() } {
+                     class="flex-row items-center"
+                     gap={Sp::SM} px={actual_px} py={unscaled_py}
+                     rounded={Rad::XL}
+                 }
+                 @when { icon_only } { hover_icon_color={tc.text} }
+                 @when { !icon_only } { hover_bg={hover_bg} }
+                 @when { tooltip_text.is_some() } {
+                     tooltip={tooltip_text.as_deref().unwrap_or_default()}
+                 }>
+                if icon.is_some() {
+                    <icon svg={icon.unwrap()} size={icon_size} color={icon_color} />
+                }
+                {?label_el}
+            </div>
         }
-
-        btn.into_any()
     }
 }

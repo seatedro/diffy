@@ -133,17 +133,12 @@ pub(crate) fn title_bar(
 
             // right
             <div class="flex-row flex-shrink-0 items-center" gap={Sp::XS}>
-                if is_ready && state.workspace.source == WorkspaceSource::Status {
-                    <div class="flex-row items-center"
-                         gap={Sp::XS} px={Sp::SM} py={Sp::XS}
-                         rounded={Rad::MD}
-                         bg={tc.ghost_element_active}>
-                        <icon svg={lucide::FOLDER_GIT} size={Ico::SM} color={tc.text_muted} />
-                        <text class="text-sm font-medium" color={tc.text_strong}>{"Working tree"}</text>
-                        if let Some(scope) = state.workspace.selected_status_scope {
-                            <text class="text-xs" color={tc.text_muted}>{scope.label()}</text>
-                        }
-                    </div>
+                if is_ready {
+                    {Button::new(Action::ShowWorkingTree)
+                        .icon(lucide::FOLDER_GIT)
+                        .label("Working tree")
+                        .active(state.workspace.source == WorkspaceSource::Status)
+                        .tooltip("Show working tree changes")}
                 }
                 if is_ready && window_width >= Bp::NARROW * scale {
                     <div class="flex-row items-center" gap={Sp::XS}>

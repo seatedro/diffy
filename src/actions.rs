@@ -13,6 +13,7 @@ pub enum Action {
     OpenRefPicker(CompareField),
     OpenCommandPalette,
     OpenPullRequestModal,
+    ShowWorkingTree,
     OpenGitHubAuthModal,
     CloseOverlay,
     SetLeftRef(String),

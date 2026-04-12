@@ -809,7 +809,7 @@ impl AppState {
             Bootstrap | OpenRepositoryDialog | OpenRepository(_) | SetLeftRef(_)
             | SetRightRef(_) | SetCompareMode(_) | CycleCompareMode | SetLayoutMode(_)
             | SetRenderer(_) | StartCompare | StageSelectedFile | UnstageSelectedFile
-            | DiscardSelectedFile => self.apply_compare_action(action),
+            | DiscardSelectedFile | ShowWorkingTree => self.apply_compare_action(action),
 
             // File list & sidebar
             SelectFile(_)
@@ -1090,6 +1090,7 @@ impl AppState {
                 self.persist_settings_effect()
             }
             Action::StartCompare => self.kickoff_compare(),
+            Action::ShowWorkingTree => self.show_working_tree(),
             Action::StageSelectedFile => {
                 self.apply_selected_status_operation(StatusOperation::Stage)
             }
@@ -1863,6 +1864,15 @@ impl AppState {
                 },
             },
         ]
+    }
+
+    fn show_working_tree(&mut self) -> Vec<Effect> {
+        self.compare.left_ref = "HEAD".to_owned();
+        self.compare.right_ref = crate::core::vcs::git::service::WORKDIR_REF.to_owned();
+        self.compare.mode = CompareMode::TwoDot;
+        let mut effects = self.persist_settings_effect();
+        effects.extend(self.activate_status_view(true));
+        effects
     }
 
     fn persist_settings_effect(&mut self) -> Vec<Effect> {

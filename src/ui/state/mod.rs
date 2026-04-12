@@ -2001,6 +2001,7 @@ impl AppState {
                 self.compare.resolved_right = None;
             }
         }
+        self.auto_select_compare_mode();
         let effects = if matches!(self.overlays.top(), Some(OverlaySurface::RefPicker(active)) if active == field)
         {
             self.rebuild_ref_picker(field)
@@ -2009,6 +2010,22 @@ impl AppState {
         };
         self.rebuild_command_palette();
         effects
+    }
+
+    fn auto_select_compare_mode(&mut self) {
+        let left = &self.compare.left_ref;
+        let right = &self.compare.right_ref;
+        if left.is_empty() || right.is_empty() {
+            return;
+        }
+        if left == right && right != crate::core::vcs::git::service::WORKDIR_REF {
+            self.compare.mode = CompareMode::SingleCommit;
+            return;
+        }
+        let is_trunk = |r: &str| matches!(r, "main" | "master" | "develop" | "development");
+        if is_trunk(left) != is_trunk(right) {
+            self.compare.mode = CompareMode::ThreeDot;
+        }
     }
 
     fn submit_pull_request(&mut self) -> Vec<Effect> {

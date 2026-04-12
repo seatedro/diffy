@@ -4,6 +4,7 @@ use std::rc::Rc;
 use halogen::view;
 
 use crate::actions::Action;
+use crate::core::vcs::git::StatusScope;
 use crate::effects::Effect;
 use crate::render::{Rect, RectPrimitive, RoundedRectPrimitive};
 use crate::ui::components::{self, Button, ButtonSize, ButtonStyle};
@@ -11,7 +12,6 @@ use crate::ui::design::{Alpha, Ico, Rad, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
-use crate::core::vcs::git::StatusScope;
 use crate::ui::state::{AppState, FocusTarget, SidebarMode, SidebarWidthCache, WorkspaceSource};
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme};
@@ -478,9 +478,7 @@ fn status_section_row(
         StatusScope::Unstaged | StatusScope::Untracked => {
             Some((Action::StageAllFiles, lucide::PLUS, "Stage All"))
         }
-        StatusScope::Staged => {
-            Some((Action::UnstageAllFiles, lucide::MINUS, "Unstage All"))
-        }
+        StatusScope::Staged => Some((Action::UnstageAllFiles, lucide::MINUS, "Unstage All")),
     };
 
     view! { scale,
@@ -542,24 +540,23 @@ fn file_row(
             StatusScope::Unstaged | StatusScope::Untracked => {
                 Some((Action::StageFile(index), lucide::PLUS, "Stage"))
             }
-            StatusScope::Staged => {
-                Some((Action::UnstageFile(index), lucide::MINUS, "Unstage"))
-            }
+            StatusScope::Staged => Some((Action::UnstageFile(index), lucide::MINUS, "Unstage")),
         });
 
     let hovered = state.file_list.hovered_index == Some(index);
     let show_stage_btn = hovered || selected;
-    let stage_btn: Option<AnyElement> = stage_action.filter(|_| show_stage_btn).map(
-        |(action, icon, tooltip)| {
-            view! { scale,
-                <Button action={action}
-                        tooltip={tooltip}
-                        fixed_size={Sz::MODE_TOGGLE}>
-                    <Icon>{icon}</Icon>
-                </Button>
-            }
-        },
-    );
+    let stage_btn: Option<AnyElement> =
+        stage_action
+            .filter(|_| show_stage_btn)
+            .map(|(action, icon, tooltip)| {
+                view! { scale,
+                    <Button action={action}
+                            tooltip={tooltip}
+                            fixed_size={Sz::MODE_TOGGLE}>
+                        <Icon>{icon}</Icon>
+                    </Button>
+                }
+            });
 
     view! { scale,
         <div class="w-full shrink-0 flex-row items-center"

@@ -10,8 +10,8 @@ use diffy::ui::shell::{UiFrame, build_ui_frame};
 use diffy::ui::signals::SignalStore;
 use diffy::ui::state::{
     ActiveFile, AppState, AsyncStatus, CommandPaletteState, FileListEntry, FocusTarget,
-    OverlayEntry, OverlayListState, OverlaySurface, PaletteCommand, PaletteEntry,
-    PaletteEntryKind, PickerEntry, PickerKind, PickerState, Toast, ToastKind, WorkspaceMode,
+    OverlayEntry, OverlayListState, OverlaySurface, PaletteCommand, PaletteEntry, PaletteEntryKind,
+    PickerEntry, PickerKind, PickerState, Toast, ToastKind, WorkspaceMode,
 };
 use diffy::ui::theme::Theme;
 

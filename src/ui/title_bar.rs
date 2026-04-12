@@ -52,10 +52,16 @@ pub(crate) fn title_bar(
         &state.compare.right_ref
     };
 
-    let mode_symbol = match state.compare.mode {
-        CompareMode::SingleCommit => "\u{00b7}",
-        CompareMode::TwoDot => "\u{00b7}\u{00b7}",
-        CompareMode::ThreeDot => "\u{00b7}\u{00b7}\u{00b7}",
+    let (mode_label, mode_tooltip) = match state.compare.mode {
+        CompareMode::SingleCommit => (
+            "commit",
+            "Single commit \u{2014} diff a commit against its parent",
+        ),
+        CompareMode::TwoDot => ("diff", "Diff \u{2014} compare two refs directly"),
+        CompareMode::ThreeDot => (
+            "merge",
+            "Merge \u{2014} changes since the right ref diverged from the left",
+        ),
     };
 
     let pr_active = state.overlays.top() == Some(OverlaySurface::PullRequestModal);
@@ -107,13 +113,13 @@ pub(crate) fn title_bar(
                             tc,
                             scale,
                         )}
-                        <div px={Sp::XS} py={Sp::XS}
+                        <div px={Sp::SM} py={Sp::XS}
                              rounded={Rad::MD}
                              hover_bg={tc.ghost_element_hover}
                              on_click={Action::CycleCompareMode}
                              cursor={CursorHint::Pointer}
-                             tooltip={"Cycle compare mode"}>
-                            <text class="text-sm font-medium" color={tc.text_muted}>{mode_symbol}</text>
+                             tooltip={mode_tooltip}>
+                            <text class="text-xs font-medium" color={tc.text_muted}>{mode_label}</text>
                         </div>
                         {ref_selector_button(
                             right_label,
@@ -182,4 +188,3 @@ fn ref_selector_button(
         </div>
     }
 }
-

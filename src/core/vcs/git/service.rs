@@ -334,15 +334,13 @@ impl GitService {
                 };
                 if commit_ref.is_empty() {
                     return Err(DiffyError::Parse(
-                        "single-commit mode requires a commit reference".to_owned(),
+                        "commit mode requires a commit reference".to_owned(),
                     ));
                 }
                 let right_oid = self.resolve_commit_oid(commit_ref)?;
                 let commit = repo.find_commit(right_oid)?;
                 let parent = commit.parent(0).map_err(|_| {
-                    DiffyError::Parse(
-                        "cannot diff the root commit in single-commit mode yet".to_owned(),
-                    )
+                    DiffyError::Parse("cannot diff the root commit in commit mode yet".to_owned())
                 })?;
                 Ok((parent.id().to_string(), commit.id().to_string()))
             }

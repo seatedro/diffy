@@ -5,10 +5,9 @@ use diffy::ui::element::ScrollActionBuilder;
 use diffy::ui::state::FocusTarget;
 
 use support::{
-    auth_modal_state, command_palette_state, count_hits,
-    empty_state_with_recents, has_hit, has_scroll_region, has_text_input_for,
-    pull_request_modal_state, ready_state_with_files, render_frame,
-    repo_picker_state, scene_contains_text, toasts_state,
+    auth_modal_state, command_palette_state, count_hits, empty_state_with_recents, has_hit,
+    has_scroll_region, has_text_input_for, pull_request_modal_state, ready_state_with_files,
+    render_frame, repo_picker_state, scene_contains_text, toasts_state,
 };
 
 #[test]

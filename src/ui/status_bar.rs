@@ -77,9 +77,9 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
 
 pub(crate) fn compare_mode_label(mode: CompareMode) -> &'static str {
     match mode {
-        CompareMode::SingleCommit => "single-commit",
-        CompareMode::TwoDot => "two-dot",
-        CompareMode::ThreeDot => "three-dot",
+        CompareMode::SingleCommit => "commit",
+        CompareMode::TwoDot => "diff",
+        CompareMode::ThreeDot => "merge",
     }
 }
 

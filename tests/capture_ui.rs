@@ -3,8 +3,8 @@
 mod support;
 
 use support::{
-    assert_scene_snapshot, command_palette_state, empty_state_with_recents,
-    ready_state_with_files, repo_picker_state, toasts_state,
+    assert_scene_snapshot, command_palette_state, empty_state_with_recents, ready_state_with_files,
+    repo_picker_state, toasts_state,
 };
 
 #[test]

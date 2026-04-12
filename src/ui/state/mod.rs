@@ -1609,7 +1609,7 @@ impl AppState {
                 } else {
                     self.compare.left_ref = "HEAD".to_owned();
                     self.compare.right_ref = crate::core::vcs::git::service::WORKDIR_REF.to_owned();
-                    self.compare.mode = CompareMode::TwoDot;
+                    self.compare.mode = CompareMode::ThreeDot;
                     effects.extend(self.activate_status_view(true));
                 }
                 effects
@@ -1821,7 +1821,7 @@ impl AppState {
             &self.compare.left_ref,
             &self.compare.right_ref,
         ) {
-            self.push_error("Provide the required refs for the selected compare mode.");
+            self.push_error("Provide the required refs for the selected mode.");
             return Vec::new();
         }
 

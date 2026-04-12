@@ -8,7 +8,6 @@ pub enum Action {
     Bootstrap,
     OpenRepositoryDialog,
     OpenRepository(PathBuf),
-    OpenCompareSheet,
     OpenRepoPicker,
     OpenRefPicker(CompareField),
     OpenCommandPalette,

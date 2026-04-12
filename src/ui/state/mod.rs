@@ -75,10 +75,6 @@ pub enum FocusTarget {
     ThemeToggle,
     FileList,
     Editor,
-    CompareRepoButton,
-    CompareLeftRef,
-    CompareRightRef,
-    CompareStartButton,
     PickerInput,
     PickerList,
     CommandPaletteInput,
@@ -131,11 +127,6 @@ impl Default for CompareState {
             resolved_right: None,
         }
     }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CompareSheetState {
-    pub validation_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -437,7 +428,6 @@ pub struct PickerState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaletteCommand {
-    OpenCompareSheet,
     OpenRepoPicker,
     OpenPullRequestModal,
     OpenGitHubAuthModal,
@@ -511,7 +501,6 @@ pub struct GitHubState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlaySurface {
-    CompareSheet,
     RepoPicker,
     RefPicker(CompareField),
     CommandPalette,
@@ -530,7 +519,6 @@ pub struct OverlayEntry {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OverlayStackState {
     pub stack: Vec<OverlayEntry>,
-    pub compare_sheet: CompareSheetState,
     pub picker: PickerState,
     pub command_palette: CommandPaletteState,
 }
@@ -701,7 +689,7 @@ impl AppState {
             overlays: OverlayStackState::default(),
             focus: FocusState {
                 current: if repo_path.is_some() {
-                    Some(FocusTarget::CompareLeftRef)
+                    Some(FocusTarget::TitleBar)
                 } else {
                     Some(FocusTarget::WorkspacePrimaryButton)
                 },
@@ -789,8 +777,7 @@ impl AppState {
             | ExtendTextSelection(_) => self.apply_text_edit_action(action),
 
             // Overlay management
-            OpenCompareSheet
-            | OpenRepoPicker
+            OpenRepoPicker
             | OpenThemePicker
             | OpenRefPicker(_)
             | OpenCommandPalette
@@ -977,10 +964,6 @@ impl AppState {
 
     fn apply_overlay_action(&mut self, action: Action) -> Vec<Effect> {
         match action {
-            Action::OpenCompareSheet => {
-                self.open_compare_sheet();
-                Vec::new()
-            }
             Action::OpenRepoPicker => {
                 self.open_repo_picker();
                 Vec::new()
@@ -1067,7 +1050,6 @@ impl AppState {
             }
             Action::SetCompareMode(mode) => {
                 self.compare.mode = mode;
-                self.overlays.compare_sheet.validation_message = None;
                 self.persist_settings_effect()
             }
             Action::CycleCompareMode => {
@@ -1076,7 +1058,6 @@ impl AppState {
                     CompareMode::TwoDot => CompareMode::ThreeDot,
                     CompareMode::ThreeDot => CompareMode::SingleCommit,
                 };
-                self.overlays.compare_sheet.validation_message = None;
                 self.persist_settings_effect()
             }
             Action::SetLayoutMode(layout) => {
@@ -1356,7 +1337,6 @@ impl AppState {
                         self.repository.status = AsyncStatus::Failed;
                         self.workspace_mode = WorkspaceMode::Empty;
                         self.push_error(&message);
-                        self.open_compare_sheet();
                     } else {
                         self.last_error = Some(message);
                     }
@@ -1371,9 +1351,7 @@ impl AppState {
                 if generation == self.workspace.compare_generation {
                     self.workspace.status = AsyncStatus::Failed;
                     self.workspace_mode = WorkspaceMode::Empty;
-                    self.overlays.compare_sheet.validation_message = Some(message.clone());
                     self.push_error(&message);
-                    self.open_compare_sheet();
                 }
                 Vec::new()
             }
@@ -1554,7 +1532,6 @@ impl AppState {
         self.compare.repo_path = Some(path.clone());
         self.compare.resolved_left = None;
         self.compare.resolved_right = None;
-        self.overlays.compare_sheet.validation_message = None;
         self.repository.status = AsyncStatus::Loading;
         self.workspace.clear_compare();
         self.file_list = FileListState::default();
@@ -1565,7 +1542,7 @@ impl AppState {
         self.github.pull_request.candidate_left_ref = None;
         self.github.pull_request.candidate_right_ref = None;
         self.overlays.clear();
-        self.focus.current = Some(FocusTarget::CompareLeftRef);
+        self.focus.current = Some(FocusTarget::TitleBar);
         self.sync_settings_snapshot();
         vec![
             Effect::SaveSettings(self.settings.clone()),
@@ -1658,7 +1635,6 @@ impl AppState {
         self.workspace.source = WorkspaceSource::Compare;
         self.workspace.status = AsyncStatus::Ready;
         self.workspace_mode = WorkspaceMode::Ready;
-        self.overlays.compare_sheet.validation_message = None;
         self.compare.layout = payload.spec.layout;
         self.compare.renderer = payload.spec.renderer;
         self.compare.resolved_left = Some(payload.resolved_left);
@@ -1820,10 +1796,7 @@ impl AppState {
 
     fn kickoff_compare(&mut self) -> Vec<Effect> {
         let Some(repo_path) = self.compare.repo_path.clone() else {
-            self.overlays.compare_sheet.validation_message =
-                Some("Open a repository before starting a compare.".to_owned());
             self.push_error("Open a repository before starting a compare.");
-            self.open_compare_sheet();
             return Vec::new();
         };
 
@@ -1832,17 +1805,13 @@ impl AppState {
             &self.compare.left_ref,
             &self.compare.right_ref,
         ) {
-            self.overlays.compare_sheet.validation_message =
-                Some("Provide the required refs for the selected compare mode.".to_owned());
             self.push_error("Provide the required refs for the selected compare mode.");
-            self.open_compare_sheet();
             return Vec::new();
         }
 
         self.workspace.source = WorkspaceSource::Compare;
         self.workspace_mode = WorkspaceMode::Loading;
         self.workspace.status = AsyncStatus::Loading;
-        self.overlays.compare_sheet.validation_message = None;
         self.workspace.compare_generation = self.workspace.compare_generation.saturating_add(1);
         self.overlays.clear();
         self.sync_settings_snapshot();
@@ -1943,8 +1912,6 @@ impl AppState {
     /// Returns a reference to the text string for the given focus target, if it's a text field.
     fn text_for_focus(&self, target: FocusTarget) -> Option<&str> {
         match target {
-            FocusTarget::CompareLeftRef => Some(&self.compare.left_ref),
-            FocusTarget::CompareRightRef => Some(&self.compare.right_ref),
             FocusTarget::PickerInput => match self.overlays.picker.kind {
                 PickerKind::Repository | PickerKind::Theme => Some(&self.overlays.picker.query),
                 PickerKind::LeftRef => Some(&self.compare.left_ref),
@@ -1964,8 +1931,6 @@ impl AppState {
 
     fn focused_text_mut(&mut self) -> Option<&mut String> {
         match self.focus.current {
-            Some(FocusTarget::CompareLeftRef) => Some(&mut self.compare.left_ref),
-            Some(FocusTarget::CompareRightRef) => Some(&mut self.compare.right_ref),
             Some(FocusTarget::PickerInput) => match self.overlays.picker.kind {
                 PickerKind::Repository | PickerKind::Theme => Some(&mut self.overlays.picker.query),
                 PickerKind::LeftRef => Some(&mut self.compare.left_ref),
@@ -2063,13 +2028,6 @@ impl AppState {
         self.compare.mode = CompareMode::ThreeDot;
         self.overlays.clear();
         self.kickoff_compare()
-    }
-
-    fn open_compare_sheet(&mut self) {
-        self.push_overlay(
-            OverlaySurface::CompareSheet,
-            Some(FocusTarget::CompareLeftRef),
-        );
     }
 
     fn open_repo_picker(&mut self) {
@@ -2456,13 +2414,6 @@ impl AppState {
                     self.apply_action(Action::StartGitHubDeviceFlow)
                 }
             }
-            Some(OverlaySurface::CompareSheet) => {
-                if self.focus.current == Some(FocusTarget::CompareStartButton) {
-                    self.kickoff_compare()
-                } else {
-                    Vec::new()
-                }
-            }
             Some(OverlaySurface::KeyboardShortcuts) => Vec::new(),
             None => Vec::new(),
         }
@@ -2615,10 +2566,6 @@ impl AppState {
         self.overlays.clear();
         match entry.kind {
             PaletteEntryKind::Command(command) => match command {
-                PaletteCommand::OpenCompareSheet => {
-                    self.open_compare_sheet();
-                    Vec::new()
-                }
                 PaletteCommand::OpenRepoPicker => {
                     self.open_repo_picker();
                     Vec::new()
@@ -3083,11 +3030,6 @@ impl AppState {
         let mut all_candidates = Vec::new();
 
         for (label, detail, command) in [
-            (
-                "Compare Settings".to_owned(),
-                "Configure compare mode, engine, and layout".to_owned(),
-                PaletteCommand::OpenCompareSheet,
-            ),
             (
                 "Choose Repository".to_owned(),
                 "Open repository picker".to_owned(),
@@ -3715,7 +3657,6 @@ fn status_section_count_before(items: &[StatusItem], len: usize) -> usize {
 
 fn overlay_name(surface: OverlaySurface) -> &'static str {
     match surface {
-        OverlaySurface::CompareSheet => "compare-sheet",
         OverlaySurface::RepoPicker => "repo-picker",
         OverlaySurface::RefPicker(CompareField::Left) => "left-ref-picker",
         OverlaySurface::RefPicker(CompareField::Right) => "right-ref-picker",
@@ -3916,7 +3857,7 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_with_repo_starts_repo_sync_without_compare_sheet() {
+    fn bootstrap_with_repo_starts_repo_sync() {
         let startup = StartupOptions::from_parts(
             Args {
                 repo: Some("C:\\repo".into()),

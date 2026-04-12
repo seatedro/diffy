@@ -3,7 +3,7 @@
 mod support;
 
 use support::{
-    assert_scene_snapshot, command_palette_state, compare_sheet_state, empty_state_with_recents,
+    assert_scene_snapshot, command_palette_state, empty_state_with_recents,
     ready_state_with_files, repo_picker_state, toasts_state,
 };
 
@@ -17,12 +17,6 @@ fn capture_empty_state_snapshot() {
 fn capture_ready_workspace_snapshot() {
     let mut state = ready_state_with_files(12);
     assert_scene_snapshot("ready_workspace", &mut state, 0xb45c_c9be_330c_531c);
-}
-
-#[test]
-fn capture_compare_sheet_snapshot() {
-    let mut state = compare_sheet_state();
-    assert_scene_snapshot("compare_sheet", &mut state, 0x9837_c631_fdf9_d202);
 }
 
 #[test]

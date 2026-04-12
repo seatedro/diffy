@@ -27,12 +27,11 @@ pub(crate) fn main_surface(
     let has_overlay = state.active_overlay_name().is_some();
 
     let toolbar = if state.workspace_mode == WorkspaceMode::Ready {
-        let file_label = state
+        state
             .workspace
             .selected_file_path
             .as_deref()
-            .unwrap_or("No file selected");
-        Some(viewport_toolbar(state, theme, file_label))
+            .map(|file_label| viewport_toolbar(state, theme, file_label))
     } else {
         None
     };
@@ -129,6 +128,8 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                             state.compare.layout == LayoutMode::Unified,
                         ).tooltip("Inline view"),
                     ])}
+                }
+                if has_active_diff {
                     <Button action={Action::ToggleWrap}
                             active={state.editor.wrap_enabled}
                             tooltip={"Toggle line wrapping (w)"}>

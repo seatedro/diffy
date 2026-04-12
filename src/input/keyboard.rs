@@ -2,7 +2,7 @@ use winit::event::KeyEvent;
 use winit::keyboard::{ModifiersState, NamedKey};
 
 use crate::actions::Action;
-use crate::ui::state::{AppState, CompareField, FocusTarget, OverlaySurface, WorkspaceMode};
+use crate::ui::state::{AppState, FocusTarget, OverlaySurface, WorkspaceMode};
 
 use super::{InputContext, InputOutcome, InputOwner, InputSystem, KeyChord};
 
@@ -278,12 +278,6 @@ fn workspace_key_actions_inner(
 
 fn cycle_focus_target(state: &AppState) -> Option<FocusTarget> {
     match state.overlays.top() {
-        Some(OverlaySurface::CompareSheet) => match state.focus.current {
-            Some(FocusTarget::CompareRepoButton) => Some(FocusTarget::CompareLeftRef),
-            Some(FocusTarget::CompareLeftRef) => Some(FocusTarget::CompareRightRef),
-            Some(FocusTarget::CompareRightRef) => Some(FocusTarget::CompareStartButton),
-            _ => Some(FocusTarget::CompareRepoButton),
-        },
         Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_)) => {
             match state.focus.current {
                 Some(FocusTarget::PickerInput) => Some(FocusTarget::PickerList),
@@ -319,12 +313,6 @@ fn cycle_focus_target(state: &AppState) -> Option<FocusTarget> {
 
 fn activate_current_focus_actions(state: &AppState) -> Option<Vec<Action>> {
     match state.overlays.top() {
-        Some(OverlaySurface::CompareSheet) => Some(match state.focus.current {
-            Some(FocusTarget::CompareRepoButton) => vec![Action::OpenRepoPicker],
-            Some(FocusTarget::CompareLeftRef) => vec![Action::OpenRefPicker(CompareField::Left)],
-            Some(FocusTarget::CompareRightRef) => vec![Action::OpenRefPicker(CompareField::Right)],
-            _ => vec![Action::StartCompare],
-        }),
         Some(
             OverlaySurface::RepoPicker
             | OverlaySurface::RefPicker(_)
@@ -341,7 +329,7 @@ fn activate_current_focus_actions(state: &AppState) -> Option<Vec<Action>> {
         }
         Some(OverlaySurface::KeyboardShortcuts) => Some(Vec::new()),
         None => match state.focus.current {
-            Some(FocusTarget::WorkspacePrimaryButton) => Some(vec![Action::OpenCompareSheet]),
+            Some(FocusTarget::WorkspacePrimaryButton) => Some(vec![Action::OpenRepoPicker]),
             Some(FocusTarget::ThemeToggle) => Some(vec![Action::ToggleThemeMode]),
             _ => None,
         },

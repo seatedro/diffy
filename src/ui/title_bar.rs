@@ -69,7 +69,7 @@ pub(crate) fn title_bar(
              border_b={tc.border_variant}>
 
             // left
-            <div class="flex-row flex-shrink-0 items-center" min_w={0.0} gap={Sp::SM}>
+            <div class="flex-1 flex-row items-center" min_w={0.0} gap={Sp::SM}>
                 if is_ready {
                     <Button action={Action::ToggleSidebar}
                             tooltip={"Toggle sidebar (\u{2318}B)"}>
@@ -97,7 +97,7 @@ pub(crate) fn title_bar(
             </div>
 
             // center
-            <div class="flex-1 flex-row items-center justify-center" min_w={0.0} gap={Sp::XS}>
+            <div class="flex-shrink-0 flex-row items-center" gap={Sp::XS}>
                 if has_repo && repo_loaded {
                     <div class="flex-row items-center" gap={Sp::SM}>
                         {ref_selector_button(
@@ -133,15 +133,7 @@ pub(crate) fn title_bar(
             </div>
 
             // right
-            <div class="flex-row flex-shrink-0 items-center" gap={Sp::XS}>
-                if is_ready {
-                    <Button action={Action::ShowWorkingTree}
-                            active={state.workspace.source == WorkspaceSource::Status}
-                            tooltip={"Show working tree changes"}>
-                        <Icon>{lucide::FOLDER_GIT}</Icon>
-                        <Label>{"Working tree"}</Label>
-                    </Button>
-                }
+            <div class="flex-1 flex-row flex-shrink-0 items-center justify-end" gap={Sp::XS}>
                 if is_ready && window_width >= Bp::NARROW * scale {
                     <div class="flex-row items-center" gap={Sp::XS}>
                         <text class="text-sm" color={tc.text_muted}>{format!("{file_count} files")}</text>
@@ -154,6 +146,14 @@ pub(crate) fn title_bar(
                     <Icon>{lucide::GIT_PULL_REQUEST}</Icon>
                     <Label>{"PR"}</Label>
                 </Button>
+                if is_ready {
+                    <Button action={Action::ShowWorkingTree}
+                            active={state.workspace.source == WorkspaceSource::Status}
+                            tooltip={"Show working tree changes"}>
+                        <Icon>{lucide::FOLDER_GIT}</Icon>
+                        <Label>{"Working tree"}</Label>
+                    </Button>
+                }
             </div>
         </div>
     }

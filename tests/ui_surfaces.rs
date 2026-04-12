@@ -5,10 +5,10 @@ use diffy::ui::element::ScrollActionBuilder;
 use diffy::ui::state::FocusTarget;
 
 use support::{
-    auth_modal_state, command_palette_state, compare_sheet_state, count_hits,
-    empty_state_with_recents, has_hit, has_scroll_region, has_text_input_for, largest_rounded_rect,
-    pull_request_modal_state, ready_state_with_files, render_frame, render_frame_in,
-    repo_picker_state, scene_contains_text, scene_text_rect, toasts_state,
+    auth_modal_state, command_palette_state, count_hits,
+    empty_state_with_recents, has_hit, has_scroll_region, has_text_input_for,
+    pull_request_modal_state, ready_state_with_files, render_frame,
+    repo_picker_state, scene_contains_text, toasts_state,
 };
 
 #[test]
@@ -70,55 +70,6 @@ fn sidebar_expands_for_long_file_names_when_not_manually_resized() {
     let filename = long_path.rsplit('/').next().unwrap();
     assert!(scene_contains_text(&frame, filename));
     assert!(frame.file_list_rect.is_some_and(|rect| rect.width > 280.0));
-}
-
-#[test]
-fn compare_sheet_exposes_backdrop_and_controls() {
-    let mut state = compare_sheet_state();
-    let frame = render_frame(&mut state);
-
-    assert!(scene_contains_text(&frame, "Compare Setup"));
-    assert!(scene_contains_text(&frame, "Start Compare"));
-    assert!(has_hit(&frame, |action| matches!(
-        action,
-        Action::CloseOverlay
-    )));
-    assert!(has_hit(&frame, |action| matches!(
-        action,
-        Action::OpenRepoPicker
-    )));
-    assert!(has_text_input_for(&frame, FocusTarget::CompareLeftRef));
-    assert!(has_text_input_for(&frame, FocusTarget::CompareRightRef));
-    assert!(has_hit(&frame, |action| matches!(
-        action,
-        Action::StartCompare
-    )));
-}
-
-#[test]
-fn compare_sheet_reflows_inside_panel_at_high_scale() {
-    let mut state = compare_sheet_state();
-    state.settings.ui_scale_pct = 170;
-    state.overlays.compare_sheet.validation_message = Some(
-        "Git error: revspec 'native' not found; class=Reference (4); code=NotFound (-3)".into(),
-    );
-    let frame = render_frame_in(&mut state, 840.0, 620.0);
-    let panel = largest_rounded_rect(&frame).expect("modal panel");
-
-    for needle in [
-        "Compare Setup",
-        "Three Dot",
-        "Difftastic",
-        "Start Compare",
-        "Git error:",
-    ] {
-        let rect =
-            scene_text_rect(&frame, needle).unwrap_or_else(|| panic!("missing text {needle}"));
-        assert!(
-            rect.right() <= panel.right() + 0.5,
-            "{needle} overflowed the modal"
-        );
-    }
 }
 
 #[test]

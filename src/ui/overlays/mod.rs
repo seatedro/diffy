@@ -1,11 +1,9 @@
 pub mod auth;
-pub mod compare_sheet;
 pub mod picker;
 pub mod pull_request;
 pub mod shortcuts;
 
 pub use auth::auth_modal;
-pub use compare_sheet::compare_sheet;
 pub use picker::picker;
 pub use pull_request::pull_request_modal;
 pub use shortcuts::keyboard_shortcuts;
@@ -23,7 +21,6 @@ pub fn render_active_overlay(
 ) -> Option<AnyElement> {
     let top = state.overlays.stack.last().cloned()?;
     Some(match top.surface {
-        OverlaySurface::CompareSheet => compare_sheet(state, theme, width, height),
         OverlaySurface::RepoPicker => {
             let placeholder = if cfg!(target_os = "windows") {
                 "Search recent or type a path (e.g. C:\\work\\repo)"

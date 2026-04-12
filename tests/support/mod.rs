@@ -10,8 +10,8 @@ use diffy::ui::shell::{UiFrame, build_ui_frame};
 use diffy::ui::signals::SignalStore;
 use diffy::ui::state::{
     AppState, AsyncStatus, CommandPaletteState, FileListEntry, FocusTarget, OverlayEntry,
-    OverlayListState, OverlaySurface, PaletteCommand, PaletteEntry, PaletteEntryKind, PickerEntry,
-    PickerKind, PickerState, Toast, ToastKind, WorkspaceMode,
+    OverlayListState, OverlaySurface, PaletteCommand, PaletteEntry, PaletteEntryKind,
+    PickerEntry, PickerKind, PickerState, Toast, ToastKind, WorkspaceMode,
 };
 use diffy::ui::theme::Theme;
 
@@ -78,16 +78,6 @@ pub fn ready_state_with_files(file_count: usize) -> AppState {
     state
 }
 
-pub fn compare_sheet_state() -> AppState {
-    let mut state = ready_state_with_files(6);
-    state.overlays.stack.push(OverlayEntry {
-        surface: OverlaySurface::CompareSheet,
-        focus_return: Some(FocusTarget::TitleBar),
-    });
-    state.focus.current = Some(FocusTarget::CompareLeftRef);
-    state
-}
-
 pub fn repo_picker_state(entry_count: usize) -> AppState {
     let mut state = AppState::default();
     state.compare.repo_path = Some(PathBuf::from("C:\\work\\diffy"));
@@ -134,7 +124,7 @@ pub fn command_palette_state(entry_count: usize) -> AppState {
                 label: format!("Open item {index}"),
                 detail: format!("detail-{index}"),
                 kind: PaletteEntryKind::Command(if index % 2 == 0 {
-                    PaletteCommand::OpenCompareSheet
+                    PaletteCommand::OpenRepoPicker
                 } else {
                     PaletteCommand::FocusViewport
                 }),

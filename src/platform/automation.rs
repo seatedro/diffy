@@ -43,7 +43,6 @@ pub struct CompareDump {
     pub file_count: usize,
     pub used_fallback: bool,
     pub fallback_message: String,
-    pub validation_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -144,7 +143,6 @@ impl From<&AppState> for StateDump {
                 file_count: state.workspace.files.len(),
                 used_fallback: state.workspace.used_fallback,
                 fallback_message: state.workspace.fallback_message.clone(),
-                validation_message: state.overlays.compare_sheet.validation_message.clone(),
             },
             selected_file_index: state.workspace.selected_file_index,
             selected_file_path: state.workspace.selected_file_path.clone(),

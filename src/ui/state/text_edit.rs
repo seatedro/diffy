@@ -32,12 +32,6 @@ impl AppState {
     /// Called after text mutation to sync compare fields and rebuild pickers.
     pub(super) fn after_text_mutation(&mut self) -> Vec<Effect> {
         match self.focus.current {
-            Some(FocusTarget::CompareLeftRef) => {
-                self.compare.resolved_left = None;
-            }
-            Some(FocusTarget::CompareRightRef) => {
-                self.compare.resolved_right = None;
-            }
             Some(FocusTarget::PickerInput) => match self.overlays.picker.kind {
                 PickerKind::Repository => self.rebuild_repo_picker(),
                 PickerKind::LeftRef => {
@@ -60,9 +54,6 @@ impl AppState {
     /// Should we persist settings after editing the current field?
     pub(super) fn needs_persist(&self) -> bool {
         matches!(
-            self.focus.current,
-            Some(FocusTarget::CompareLeftRef | FocusTarget::CompareRightRef)
-        ) || matches!(
             self.focus.current,
             Some(FocusTarget::PickerInput)
                 if matches!(self.overlays.picker.kind, PickerKind::LeftRef | PickerKind::RightRef)

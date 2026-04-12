@@ -2616,13 +2616,13 @@ mod tests {
         let mut root = div()
             .w(200.0)
             .h(50.0)
-            .on_click(Action::OpenCompareSheet)
+            .on_click(Action::OpenRepoPicker)
             .into_any();
 
         render_element(&mut root, &mut scene, &mut cx, 200.0, 50.0);
 
         assert_eq!(cx.hits.len(), 1);
-        assert_eq!(cx.hits[0].action, Action::OpenCompareSheet);
+        assert_eq!(cx.hits[0].action, Action::OpenRepoPicker);
         assert_eq!(cx.hits[0].cursor, CursorHint::Pointer);
         assert!(cx.hits[0].rect.width > 0.0);
     }
@@ -2713,7 +2713,7 @@ mod tests {
                             .rounded(7.0)
                             .bg(theme.colors.element_background)
                             .hover_bg(theme.colors.element_hover)
-                            .on_click(Action::OpenCompareSheet)
+                            .on_click(Action::OpenRepoPicker)
                             .child(text("Compare").text_sm().color(theme.colors.text)),
                     )
                     .child(
@@ -2751,7 +2751,7 @@ mod tests {
 
         // Should have 2 hit regions (Compare + PR buttons)
         assert_eq!(cx.hits.len(), 2);
-        assert_eq!(cx.hits[0].action, Action::OpenCompareSheet);
+        assert_eq!(cx.hits[0].action, Action::OpenRepoPicker);
         assert_eq!(cx.hits[1].action, Action::OpenPullRequestModal);
     }
 

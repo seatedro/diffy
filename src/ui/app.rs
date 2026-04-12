@@ -807,7 +807,7 @@ mod tests {
         state.workspace.selected_file_index = Some(0);
         state.workspace.selected_file_path = Some("src/file_0.rs".to_owned());
         state.overlays.stack.push(OverlayEntry {
-            surface: OverlaySurface::CompareSheet,
+            surface: OverlaySurface::PullRequestModal,
             focus_return: Some(FocusTarget::TitleBar),
         });
 

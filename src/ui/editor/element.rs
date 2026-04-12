@@ -444,14 +444,7 @@ impl EditorElement {
         });
 
         match document {
-            EditorDocument::Empty => {
-                self.paint_placeholder(
-                    scene,
-                    theme,
-                    "No file selected",
-                    "Choose a file from the list to render the native viewport.",
-                );
-            }
+            EditorDocument::Empty => {}
             EditorDocument::Binary { path } => {
                 self.paint_placeholder(
                     scene,

@@ -98,44 +98,44 @@ pub fn compare_sheet(
         div().into_any()
     };
 
-    Modal::new(
-        "Compare Setup",
-        "Pick a repository, refs, compare mode, and renderer.",
-        lucide::GIT_COMPARE,
-        Sz::MODAL_MD * scale,
-        width,
-        height,
-    )
-    .gap(Sp::XL)
-    .body_child(view! {
-        <Button action={Action::OpenRepoPicker}
-                tooltip={"Switch repository"}
-                style={ButtonStyle::Subtle}>
-            <Icon>{lucide::FOLDER}</Icon>
-            <Label>{
-                state
-                    .compare
-                    .repo_path
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "Choose repository\u{2026}".into())
-            }</Label>
-        </Button>
-    })
-    .body_child(refs_row)
-    .body_child(options)
-    .body_child(validation_row)
-    .footer_child(view! {
-        <Button action={Action::StartCompare}
-                tooltip={"Run diff comparison"}
-                style={ButtonStyle::Filled}>
-            <Icon>{lucide::PLAY}</Icon>
-            <Label>{if state.workspace.status == AsyncStatus::Loading {
-                "Comparing\u{2026}"
-            } else {
-                "Start Compare"
-            }}</Label>
-        </Button>
-    })
-    .into_any()
+    view! { scale,
+        <Modal title={"Compare Setup"}
+               subtitle={"Pick a repository, refs, compare mode, and renderer."}
+               icon={lucide::GIT_COMPARE}
+               max_width={Sz::MODAL_MD * scale}
+               window_width={width}
+               window_height={height}
+               gap={Sp::XL}>
+            <Body>
+                <Button action={Action::OpenRepoPicker}
+                        tooltip={"Switch repository"}
+                        style={ButtonStyle::Subtle}>
+                    <Icon>{lucide::FOLDER}</Icon>
+                    <Label>{
+                        state
+                            .compare
+                            .repo_path
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "Choose repository\u{2026}".into())
+                    }</Label>
+                </Button>
+            </Body>
+            <Body>{refs_row}</Body>
+            <Body>{options}</Body>
+            <Body>{validation_row}</Body>
+            <Footer>
+                <Button action={Action::StartCompare}
+                        tooltip={"Run diff comparison"}
+                        style={ButtonStyle::Filled}>
+                    <Icon>{lucide::PLAY}</Icon>
+                    <Label>{if state.workspace.status == AsyncStatus::Loading {
+                        "Comparing\u{2026}"
+                    } else {
+                        "Start Compare"
+                    }}</Label>
+                </Button>
+            </Footer>
+        </Modal>
+    }
 }

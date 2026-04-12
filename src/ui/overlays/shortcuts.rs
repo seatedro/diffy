@@ -171,14 +171,14 @@ pub fn keyboard_shortcuts(
         </div>
     };
 
-    Modal::new(
-        "Keyboard Shortcuts",
-        "Press ? to dismiss",
-        lucide::COMMAND,
-        Sz::MODAL_LG * scale,
-        width,
-        height,
-    )
-    .body_child(body)
-    .into_any()
+    view! { scale,
+        <Modal title={"Keyboard Shortcuts"}
+               subtitle={"Press ? to dismiss"}
+               icon={lucide::COMMAND}
+               max_width={Sz::MODAL_LG * scale}
+               window_width={width}
+               window_height={height}>
+            <Body>{body}</Body>
+        </Modal>
+    }
 }

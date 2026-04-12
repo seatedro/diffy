@@ -542,14 +542,33 @@ impl EmitCtx {
     }
 
     fn emit_component(&self, path: &syn::Path, el: &ElementNode) -> TokenStream2 {
-        let mut required_args = Vec::new();
+        let constructor_arg_names = constructor_arg_order(path);
+        let mut required_args = vec![None; constructor_arg_names.len()];
         let mut builder_calls = Vec::new();
+        let mut errors = Vec::new();
 
         for attr in &el.attrs {
             match attr {
                 Attr::KeyValue(name, expr) => {
-                    if is_constructor_arg(name) {
-                        required_args.push(quote! { #expr });
+                    if let Some(index) = constructor_arg_index(path, name) {
+                        if required_args[index].is_some() {
+                            errors.push(
+                                syn::Error::new_spanned(
+                                    name,
+                                    format!(
+                                        "duplicate constructor arg `{}` for component `{}`",
+                                        name,
+                                        path.segments
+                                            .last()
+                                            .map(|segment| segment.ident.to_string())
+                                            .unwrap_or_default()
+                                    ),
+                                )
+                                .to_compile_error(),
+                            );
+                        } else {
+                            required_args[index] = Some(quote! { #expr });
+                        }
                     } else {
                         builder_calls.push(quote! { .#name(#expr) });
                     }
@@ -567,9 +586,36 @@ impl EmitCtx {
             }
         }
 
+        for (index, arg_name) in constructor_arg_names.iter().enumerate() {
+            if required_args[index].is_none() {
+                errors.push(
+                    syn::Error::new_spanned(
+                        path,
+                        format!(
+                            "missing constructor arg `{}` for component `{}`",
+                            arg_name,
+                            path.segments
+                                .last()
+                                .map(|segment| segment.ident.to_string())
+                                .unwrap_or_default()
+                        ),
+                    )
+                    .to_compile_error(),
+                );
+            }
+        }
+
+        if !errors.is_empty() {
+            return quote! {{
+                #(#errors)*
+                unreachable!()
+            }};
+        }
+
         let mut chain = if required_args.is_empty() {
             quote! { #path::new() }
         } else {
+            let required_args = required_args.into_iter().flatten();
             quote! { #path::new(#(#required_args),*) }
         };
 
@@ -838,12 +884,32 @@ fn unwrap_block_expr(expr: &Expr) -> TokenStream2 {
     quote! { #expr }
 }
 
-fn is_constructor_arg(name: &Ident) -> bool {
-    let s = name.to_string();
-    matches!(
-        s.as_str(),
-        "action" | "label" | "title" | "value" | "status"
-    )
+fn constructor_arg_order(path: &syn::Path) -> &'static [&'static str] {
+    let Some(last) = path.segments.last() else {
+        return &[];
+    };
+    match last.ident.to_string().as_str() {
+        "Button" => &["action"],
+        "DropdownItem" => &["label", "action"],
+        "TabItem" => &["label", "action"],
+        "SegmentedItem" => &["label", "action", "selected"],
+        "Modal" => &[
+            "title",
+            "subtitle",
+            "icon",
+            "max_width",
+            "window_width",
+            "window_height",
+        ],
+        _ => &[],
+    }
+}
+
+fn constructor_arg_index(path: &syn::Path, name: &Ident) -> Option<usize> {
+    let name = name.to_string();
+    constructor_arg_order(path)
+        .iter()
+        .position(|candidate| *candidate == name)
 }
 
 fn component_slot(tag: &Tag) -> Option<ComponentSlot> {
@@ -994,6 +1060,44 @@ mod tests {
                 .child(Avatar::new().into_any())
                 .child(Button::new(Action::ToggleSidebar).into_any())
                 .into_any()
+        }
+        .to_string();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn modal_constructor_args_are_ordered_by_signature() {
+        let actual = emit(
+            r#"
+            <Modal window_height={height}
+                   title={"Keyboard Shortcuts"}
+                   icon={lucide::COMMAND}
+                   max_width={max_width}
+                   subtitle={"Press ? to dismiss"}
+                   window_width={width}
+                   gap={Sp::XL}>
+                <Body>{body}</Body>
+                <Footer>
+                    <Button action={Action::CloseOverlay} />
+                </Footer>
+            </Modal>
+            "#,
+        );
+
+        let expected = quote! {
+            Modal::new(
+                "Keyboard Shortcuts",
+                "Press ? to dismiss",
+                lucide::COMMAND,
+                max_width,
+                width,
+                height
+            )
+            .gap(Sp::XL)
+            .body_child(body)
+            .footer_child(Button::new(Action::CloseOverlay).into_any())
+            .into_any()
         }
         .to_string();
 

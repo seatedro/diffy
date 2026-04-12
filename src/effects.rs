@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
 use crate::core::compare::CompareSpec;
+use crate::core::vcs::git::StatusItem;
+use crate::events::RepositorySyncReason;
 use crate::platform::persistence::Settings;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,14 +13,29 @@ pub struct CompareRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusDiffRequest {
+    pub repo_path: PathBuf,
+    pub item: StatusItem,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     OpenRepositoryDialog,
-    LoadRepository {
+    WatchRepository {
+        path: Option<PathBuf>,
+    },
+    SyncRepository {
         path: PathBuf,
+        reason: RepositorySyncReason,
     },
     RunCompare {
         generation: u64,
         request: CompareRequest,
+    },
+    LoadStatusDiff {
+        generation: u64,
+        index: usize,
+        request: StatusDiffRequest,
     },
     LoadPullRequest {
         url: String,

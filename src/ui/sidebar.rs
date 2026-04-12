@@ -3,15 +3,15 @@ use std::rc::Rc;
 
 use halogen::view;
 
-use crate::render::{Rect, RectPrimitive, RoundedRectPrimitive};
 use crate::actions::Action;
+use crate::effects::Effect;
+use crate::render::{Rect, RectPrimitive, RoundedRectPrimitive};
 use crate::ui::components::{self, Button};
 use crate::ui::design::{Alpha, Ico, Rad, Sp, Sz};
-use crate::effects::Effect;
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
-use crate::ui::state::{AppState, FocusTarget, SidebarMode, SidebarWidthCache};
+use crate::ui::state::{AppState, FocusTarget, SidebarMode, SidebarWidthCache, WorkspaceSource};
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme};
 
@@ -255,7 +255,8 @@ pub(crate) fn sidebar(
     let scale = theme.metrics.ui_scale();
     let filter = &state.file_list.filter;
     let has_filter = !filter.is_empty();
-    let is_tree = state.file_list.mode == SidebarMode::TreeView;
+    let is_tree = state.file_list.mode == SidebarMode::TreeView
+        && state.workspace.source == WorkspaceSource::Compare;
 
     let filtered_indices: Vec<usize> = if has_filter {
         let haystack: Vec<&str> = all_files.iter().map(|f| f.path.as_str()).collect();
@@ -277,7 +278,11 @@ pub(crate) fn sidebar(
 
     let row_h = theme.metrics.ui_row_height.round();
 
-    let mode_icon = if is_tree { lucide::ROWS } else { lucide::FOLDER };
+    let mode_icon = if is_tree {
+        lucide::ROWS
+    } else {
+        lucide::FOLDER
+    };
     let mode_tip = if is_tree { "List view" } else { "Tree view" };
 
     let header = view! { scale,
@@ -291,7 +296,7 @@ pub(crate) fn sidebar(
                     </div>
                 }
                 <spacer />
-                if file_count > 0 {
+                if file_count > 0 && state.workspace.source == WorkspaceSource::Compare {
                     {Button::new(Action::ToggleSidebarMode)
                         .icon(mode_icon)
                         .tooltip(mode_tip)
@@ -323,7 +328,11 @@ pub(crate) fn sidebar(
             .bare()
             .w_full()
             .h(row_h);
-        let hint = if !search_focused && !has_filter { Some("/") } else { None };
+        let hint = if !search_focused && !has_filter {
+            Some("/")
+        } else {
+            None
+        };
         Some(view! { scale,
             <div class="w-full" px={Sp::SM + Sp::XXS} pb={Sp::SM}>
                 {components::search_field(input, has_filter, Some(Action::ClearSidebarFilter), hint, theme)}
@@ -335,7 +344,11 @@ pub(crate) fn sidebar(
 
     let content: Option<AnyElement> = if all_files.is_empty() {
         let (icon, msg) = if state.compare.repo_path.is_some() {
-            (lucide::GIT_COMPARE, "Run a compare to see changes.")
+            if state.workspace.source == WorkspaceSource::Status {
+                (lucide::CHECK, "Working tree clean.")
+            } else {
+                (lucide::GIT_COMPARE, "Run a compare to see changes.")
+            }
         } else {
             (lucide::FOLDER_OPEN, "Open a repository to start.")
         };
@@ -443,6 +456,12 @@ fn file_row(
 
     let has_stats = file.additions > 0 || file.deletions > 0;
     let has_status = !file.status.is_empty();
+    let status_scope = state
+        .workspace
+        .status_items
+        .get(index)
+        .filter(|_| state.workspace.source == WorkspaceSource::Status)
+        .map(|item| item.scope.label());
 
     view! { scale,
         <div class="w-full flex-row items-center"
@@ -462,6 +481,11 @@ fn file_row(
                 <div class="flex-row shrink-0" gap={Sp::XS}>
                     <text class="text-xs" color={tc.line_add_text}>{format!("+{}", file.additions)}</text>
                     <text class="text-xs" color={tc.line_del_text}>{format!("\u{2212}{}", file.deletions)}</text>
+                </div>
+            }
+            if let Some(scope) = status_scope {
+                <div class="shrink-0">
+                    <text class="text-xs" color={tc.text_muted}>{scope}</text>
                 </div>
             }
             if has_status {

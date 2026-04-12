@@ -4,20 +4,23 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::actions::Action;
 use crate::core::compare::{CompareMode, CompareOutput, CompareSpec, LayoutMode, RendererKind};
 use crate::core::diff::FileDiff;
 use crate::core::frecency::FrecencyStore;
 use crate::core::syntax::DiffSyntaxAnnotator;
-use crate::core::vcs::git::{BranchInfo, CommitInfo, TagInfo};
+use crate::core::vcs::git::{BranchInfo, CommitInfo, StatusItem, StatusScope, TagInfo};
 use crate::core::vcs::github::{DeviceFlowState, PullRequestInfo};
+use crate::effects::{CompareRequest, Effect, StatusDiffRequest};
+use crate::events::{
+    AppEvent, CompareFinished, RepositoryChangeKind, RepositorySnapshot, RepositorySyncReason,
+    StatusDiffFinished,
+};
 use crate::platform::persistence::{PersistedCompare, Settings};
 use crate::platform::startup::StartupOptions;
-use crate::actions::Action;
 use crate::ui::design::{Sp, Sz};
 use crate::ui::editor::render_doc::{RenderDoc, build_render_doc};
 use crate::ui::editor::state::EditorState;
-use crate::effects::{CompareRequest, Effect};
-use crate::events::{AppEvent, CompareFinished, RepositoryLoaded};
 use crate::ui::icons::lucide;
 use crate::ui::theme::ThemeMode;
 
@@ -37,6 +40,14 @@ pub enum WorkspaceMode {
     Empty,
     Loading,
     Ready,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WorkspaceSource {
+    #[default]
+    None,
+    Status,
+    Compare,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -159,11 +170,15 @@ pub struct SidebarWidthCache {
 
 #[derive(Debug, Clone, Default)]
 pub struct WorkspaceState {
+    pub source: WorkspaceSource,
     pub status: AsyncStatus,
     pub compare_generation: u64,
+    pub status_generation: u64,
     pub files: Vec<FileListEntry>,
+    pub status_items: Vec<StatusItem>,
     pub selected_file_index: Option<usize>,
     pub selected_file_path: Option<String>,
+    pub selected_status_scope: Option<StatusScope>,
     pub compare_output: Option<CompareOutput>,
     pub active_file: Option<ActiveFile>,
     pub raw_diff_len: usize,
@@ -174,10 +189,14 @@ pub struct WorkspaceState {
 
 impl WorkspaceState {
     fn clear_compare(&mut self) {
+        self.source = WorkspaceSource::None;
         self.status = AsyncStatus::Idle;
+        self.status_generation = 0;
         self.files.clear();
+        self.status_items.clear();
         self.selected_file_index = None;
         self.selected_file_path = None;
+        self.selected_status_scope = None;
         self.compare_output = None;
         self.active_file = None;
         self.raw_diff_len = 0;
@@ -712,14 +731,14 @@ impl AppState {
         };
         state.sync_settings_snapshot();
 
-        if repo_path.is_some() && !auto_compare_pending {
-            state.open_compare_sheet();
-        }
-
         let mut effects = Vec::new();
         if let Some(path) = repo_path {
             state.repository.status = AsyncStatus::Loading;
-            effects.push(Effect::LoadRepository { path });
+            effects.push(Effect::SyncRepository {
+                path: path.clone(),
+                reason: RepositorySyncReason::Open,
+            });
+            effects.push(Effect::WatchRepository { path: Some(path) });
         }
         (state, effects)
     }
@@ -728,74 +747,124 @@ impl AppState {
         use Action::*;
         match action {
             // Text editing
-            InsertText(_) | Backspace | DeleteForward
-            | CursorLeft | CursorRight | CursorWordLeft | CursorWordRight
-            | CursorHome | CursorEnd
-            | SelectLeft | SelectRight | SelectWordLeft | SelectWordRight
-            | SelectHome | SelectEnd | SelectAll
-            | Copy | Cut | Paste(_)
-            | SetTextCursor(_) | ExtendTextSelection(_)
-                => self.apply_text_edit_action(action),
+            InsertText(_)
+            | Backspace
+            | DeleteForward
+            | CursorLeft
+            | CursorRight
+            | CursorWordLeft
+            | CursorWordRight
+            | CursorHome
+            | CursorEnd
+            | SelectLeft
+            | SelectRight
+            | SelectWordLeft
+            | SelectWordRight
+            | SelectHome
+            | SelectEnd
+            | SelectAll
+            | Copy
+            | Cut
+            | Paste(_)
+            | SetTextCursor(_)
+            | ExtendTextSelection(_) => self.apply_text_edit_action(action),
 
             // Overlay management
-            OpenCompareSheet | OpenRepoPicker | OpenThemePicker
-            | OpenRefPicker(_) | OpenCommandPalette
-            | OpenPullRequestModal | OpenGitHubAuthModal | CloseOverlay
-            | MoveOverlaySelection(_) | ConfirmOverlaySelection
-            | TabCompletePickerDir | SelectOverlayEntry(_) | HoverOverlayEntry(_)
-            | ScrollActiveOverlayListPx(_) | ShowKeyboardShortcuts
-                => self.apply_overlay_action(action),
+            OpenCompareSheet
+            | OpenRepoPicker
+            | OpenThemePicker
+            | OpenRefPicker(_)
+            | OpenCommandPalette
+            | OpenPullRequestModal
+            | OpenGitHubAuthModal
+            | CloseOverlay
+            | MoveOverlaySelection(_)
+            | ConfirmOverlaySelection
+            | TabCompletePickerDir
+            | SelectOverlayEntry(_)
+            | HoverOverlayEntry(_)
+            | ScrollActiveOverlayListPx(_)
+            | ShowKeyboardShortcuts => self.apply_overlay_action(action),
 
             // Compare & repository
-            Bootstrap | OpenRepositoryDialog | OpenRepository(_)
-            | SetLeftRef(_) | SetRightRef(_)
-            | SetCompareMode(_) | CycleCompareMode
-            | SetLayoutMode(_) | SetRenderer(_) | StartCompare
-                => self.apply_compare_action(action),
+            Bootstrap | OpenRepositoryDialog | OpenRepository(_) | SetLeftRef(_)
+            | SetRightRef(_) | SetCompareMode(_) | CycleCompareMode | SetLayoutMode(_)
+            | SetRenderer(_) | StartCompare => self.apply_compare_action(action),
 
             // File list & sidebar
-            SelectFile(_) | SelectFilePath(_) | SelectNextFile | SelectPreviousFile
-            | ScrollFileList(_) | ScrollFileListPx(_) | ScrollFileListToPx(_)
-            | HoverFile(_) | ToggleFolder(_) | ToggleFileViewed(_)
-            | SetSidebarFilter(_) | ClearSidebarFilter
-            | ToggleSidebarMode | ToggleSidebar
-            | ExpandAllFolders | CollapseAllFolders
-                => self.apply_file_list_action(action),
+            SelectFile(_)
+            | SelectFilePath(_)
+            | SelectNextFile
+            | SelectPreviousFile
+            | ScrollFileList(_)
+            | ScrollFileListPx(_)
+            | ScrollFileListToPx(_)
+            | HoverFile(_)
+            | ToggleFolder(_)
+            | ToggleFileViewed(_)
+            | SetSidebarFilter(_)
+            | ClearSidebarFilter
+            | ToggleSidebarMode
+            | ToggleSidebar
+            | ExpandAllFolders
+            | CollapseAllFolders => self.apply_file_list_action(action),
 
             // Viewport & editor navigation
-            ScrollViewportLines(_) | ScrollViewportPx(_) | ScrollViewportPages(_)
-            | ScrollViewportTo(_) | ScrollViewportHalfPage(_)
-            | HoverViewportRow(_) | FocusViewport
-            | GoToNextHunk | GoToPreviousHunk | GoToNextFile | GoToPreviousFile
-            | OpenSearch | CloseSearch | SearchNext | SearchPrevious
-                => self.apply_navigation_action(action),
+            ScrollViewportLines(_)
+            | ScrollViewportPx(_)
+            | ScrollViewportPages(_)
+            | ScrollViewportTo(_)
+            | ScrollViewportHalfPage(_)
+            | HoverViewportRow(_)
+            | FocusViewport
+            | GoToNextHunk
+            | GoToPreviousHunk
+            | GoToNextFile
+            | GoToPreviousFile
+            | OpenSearch
+            | CloseSearch
+            | SearchNext
+            | SearchPrevious => self.apply_navigation_action(action),
 
             // Settings & UI
-            ToggleWrap | SetWrapColumn(_) | SetSidebarWidthPx(_)
-            | IncreaseUiScale | DecreaseUiScale
-            | ToggleThemeMode | SetThemeName(_)
-                => self.apply_settings_action(action),
+            ToggleWrap | SetWrapColumn(_) | SetSidebarWidthPx(_) | IncreaseUiScale
+            | DecreaseUiScale | ToggleThemeMode | SetThemeName(_) => {
+                self.apply_settings_action(action)
+            }
 
             // GitHub
-            SubmitPullRequest | UsePullRequestCompare
-            | StartGitHubDeviceFlow | OpenDeviceFlowBrowser
-                => self.apply_github_action(action),
+            SubmitPullRequest
+            | UsePullRequestCompare
+            | StartGitHubDeviceFlow
+            | OpenDeviceFlowBrowser => self.apply_github_action(action),
 
             // Focus & misc
-            SetFocus(target) => { self.set_focus(target); Vec::new() }
+            SetFocus(target) => {
+                self.set_focus(target);
+                Vec::new()
+            }
             DismissToast(index) => {
-                if index < self.toasts.len() { self.toasts.remove(index); }
+                if index < self.toasts.len() {
+                    self.toasts.remove(index);
+                }
                 Vec::new()
             }
             HoverToast(index) => {
                 let was_any_hovered = self.toasts.iter().any(|t| t.hovered);
                 let hovered_id = index.and_then(|i| self.toasts.get(i)).map(|toast| toast.id);
-                for toast in &mut self.toasts { toast.hovered = Some(toast.id) == hovered_id; }
+                for toast in &mut self.toasts {
+                    toast.hovered = Some(toast.id) == hovered_id;
+                }
                 let is_any_hovered = self.toasts.iter().any(|t| t.hovered);
                 if was_any_hovered != is_any_hovered {
                     use crate::ui::animation::AnimationKey;
                     let target = if is_any_hovered { 1.0 } else { 0.0 };
-                    self.animation.set_target(AnimationKey::ToastStackFan, target, 150, self.clock_ms);
+                    self.animation.set_target(
+                        AnimationKey::ToastStackFan,
+                        target,
+                        150,
+                        self.clock_ms,
+                    );
                 }
                 Vec::new()
             }
@@ -808,19 +877,58 @@ impl AppState {
             Action::InsertText(value) => self.insert_text(value),
             Action::Backspace => self.backspace(),
             Action::DeleteForward => self.delete_forward(),
-            Action::CursorLeft => { self.cursor_left(false); Vec::new() }
-            Action::CursorRight => { self.cursor_right(false); Vec::new() }
-            Action::CursorWordLeft => { self.cursor_word_left(false); Vec::new() }
-            Action::CursorWordRight => { self.cursor_word_right(false); Vec::new() }
-            Action::CursorHome => { self.cursor_home(false); Vec::new() }
-            Action::CursorEnd => { self.cursor_end(false); Vec::new() }
-            Action::SelectLeft => { self.cursor_left(true); Vec::new() }
-            Action::SelectRight => { self.cursor_right(true); Vec::new() }
-            Action::SelectWordLeft => { self.cursor_word_left(true); Vec::new() }
-            Action::SelectWordRight => { self.cursor_word_right(true); Vec::new() }
-            Action::SelectHome => { self.cursor_home(true); Vec::new() }
-            Action::SelectEnd => { self.cursor_end(true); Vec::new() }
-            Action::SelectAll => { self.select_all(); Vec::new() }
+            Action::CursorLeft => {
+                self.cursor_left(false);
+                Vec::new()
+            }
+            Action::CursorRight => {
+                self.cursor_right(false);
+                Vec::new()
+            }
+            Action::CursorWordLeft => {
+                self.cursor_word_left(false);
+                Vec::new()
+            }
+            Action::CursorWordRight => {
+                self.cursor_word_right(false);
+                Vec::new()
+            }
+            Action::CursorHome => {
+                self.cursor_home(false);
+                Vec::new()
+            }
+            Action::CursorEnd => {
+                self.cursor_end(false);
+                Vec::new()
+            }
+            Action::SelectLeft => {
+                self.cursor_left(true);
+                Vec::new()
+            }
+            Action::SelectRight => {
+                self.cursor_right(true);
+                Vec::new()
+            }
+            Action::SelectWordLeft => {
+                self.cursor_word_left(true);
+                Vec::new()
+            }
+            Action::SelectWordRight => {
+                self.cursor_word_right(true);
+                Vec::new()
+            }
+            Action::SelectHome => {
+                self.cursor_home(true);
+                Vec::new()
+            }
+            Action::SelectEnd => {
+                self.cursor_end(true);
+                Vec::new()
+            }
+            Action::SelectAll => {
+                self.select_all();
+                Vec::new()
+            }
             Action::Copy => {
                 let (effects, copied) = self.copy_selection();
                 if let Some(value) = copied {
@@ -835,31 +943,64 @@ impl AppState {
             }
             Action::Cut => self.cut_selection(),
             Action::Paste(value) => self.paste(value),
-            Action::SetTextCursor(offset) => { self.move_cursor(offset, false); Vec::new() }
-            Action::ExtendTextSelection(offset) => { self.move_cursor(offset, true); Vec::new() }
+            Action::SetTextCursor(offset) => {
+                self.move_cursor(offset, false);
+                Vec::new()
+            }
+            Action::ExtendTextSelection(offset) => {
+                self.move_cursor(offset, true);
+                Vec::new()
+            }
             _ => Vec::new(),
         }
     }
 
     fn apply_overlay_action(&mut self, action: Action) -> Vec<Effect> {
         match action {
-            Action::OpenCompareSheet => { self.open_compare_sheet(); Vec::new() }
-            Action::OpenRepoPicker => { self.open_repo_picker(); Vec::new() }
-            Action::OpenThemePicker => { self.open_theme_picker(); Vec::new() }
+            Action::OpenCompareSheet => {
+                self.open_compare_sheet();
+                Vec::new()
+            }
+            Action::OpenRepoPicker => {
+                self.open_repo_picker();
+                Vec::new()
+            }
+            Action::OpenThemePicker => {
+                self.open_theme_picker();
+                Vec::new()
+            }
             Action::OpenRefPicker(field) => self.open_ref_picker(field),
-            Action::OpenCommandPalette => { self.open_command_palette(); Vec::new() }
+            Action::OpenCommandPalette => {
+                self.open_command_palette();
+                Vec::new()
+            }
             Action::OpenPullRequestModal => {
-                self.push_overlay(OverlaySurface::PullRequestModal, Some(FocusTarget::PullRequestInput));
+                self.push_overlay(
+                    OverlaySurface::PullRequestModal,
+                    Some(FocusTarget::PullRequestInput),
+                );
                 Vec::new()
             }
             Action::OpenGitHubAuthModal => {
-                self.push_overlay(OverlaySurface::GitHubAuthModal, Some(FocusTarget::AuthPrimaryAction));
+                self.push_overlay(
+                    OverlaySurface::GitHubAuthModal,
+                    Some(FocusTarget::AuthPrimaryAction),
+                );
                 Vec::new()
             }
-            Action::CloseOverlay => { self.pop_overlay(); Vec::new() }
-            Action::MoveOverlaySelection(delta) => { self.move_overlay_selection(delta); Vec::new() }
+            Action::CloseOverlay => {
+                self.pop_overlay();
+                Vec::new()
+            }
+            Action::MoveOverlaySelection(delta) => {
+                self.move_overlay_selection(delta);
+                Vec::new()
+            }
             Action::ConfirmOverlaySelection => self.confirm_overlay_selection(),
-            Action::TabCompletePickerDir => { self.tab_complete_picker_dir(); Vec::new() }
+            Action::TabCompletePickerDir => {
+                self.tab_complete_picker_dir();
+                Vec::new()
+            }
             Action::SelectOverlayEntry(index) => {
                 self.select_overlay_entry(index);
                 self.confirm_overlay_selection()
@@ -935,23 +1076,36 @@ impl AppState {
 
     fn apply_file_list_action(&mut self, action: Action) -> Vec<Effect> {
         match action {
-            Action::SelectFile(index) => { self.select_loaded_file(index, false); Vec::new() }
+            Action::SelectFile(index) => self.select_file(index, false),
             Action::SelectFilePath(path) => {
-                if let Some(index) = self.workspace.files.iter().position(|file| file.path == path) {
-                    self.select_loaded_file(index, true);
+                if let Some(index) = self
+                    .workspace
+                    .files
+                    .iter()
+                    .position(|file| file.path == path)
+                {
+                    return self.select_file(index, true);
                 } else {
                     self.startup.preferred_file_path = Some(path);
                 }
                 Vec::new()
             }
-            Action::SelectNextFile => { self.shift_loaded_file(1); Vec::new() }
-            Action::SelectPreviousFile => { self.shift_loaded_file(-1); Vec::new() }
+            Action::SelectNextFile => {
+                self.shift_loaded_file(1);
+                Vec::new()
+            }
+            Action::SelectPreviousFile => {
+                self.shift_loaded_file(-1);
+                Vec::new()
+            }
             Action::ScrollFileList(delta) => {
-                self.file_list.scroll_rows(delta, self.workspace.files.len());
+                self.file_list
+                    .scroll_rows(delta, self.workspace.files.len());
                 Vec::new()
             }
             Action::ScrollFileListPx(delta_px) => {
-                self.file_list.scroll_px(delta_px as f32, self.workspace.files.len());
+                self.file_list
+                    .scroll_px(delta_px as f32, self.workspace.files.len());
                 Vec::new()
             }
             Action::ScrollFileListToPx(px) => {
@@ -962,10 +1116,20 @@ impl AppState {
             Action::HoverFile(index) => {
                 use crate::ui::animation::AnimationKey;
                 if let Some(prev) = self.file_list.hovered_index {
-                    self.animation.set_target(AnimationKey::FileListHover(prev), 0.0, 150, self.clock_ms);
+                    self.animation.set_target(
+                        AnimationKey::FileListHover(prev),
+                        0.0,
+                        150,
+                        self.clock_ms,
+                    );
                 }
                 if let Some(next) = index {
-                    self.animation.set_target(AnimationKey::FileListHover(next), 1.0, 150, self.clock_ms);
+                    self.animation.set_target(
+                        AnimationKey::FileListHover(next),
+                        1.0,
+                        150,
+                        self.clock_ms,
+                    );
                 }
                 self.file_list.hovered_index = index;
                 Vec::new()
@@ -996,7 +1160,10 @@ impl AppState {
                 self.file_list.scroll_offset_px = 0.0;
                 Vec::new()
             }
-            Action::ToggleSidebar => { self.sidebar_visible = !self.sidebar_visible; Vec::new() }
+            Action::ToggleSidebar => {
+                self.sidebar_visible = !self.sidebar_visible;
+                Vec::new()
+            }
             Action::ToggleSidebarMode => {
                 self.file_list.mode = match self.file_list.mode {
                     SidebarMode::FlatList => SidebarMode::TreeView,
@@ -1015,32 +1182,77 @@ impl AppState {
                 }
                 Vec::new()
             }
-            Action::CollapseAllFolders => { self.file_list.expanded_folders.clear(); Vec::new() }
+            Action::CollapseAllFolders => {
+                self.file_list.expanded_folders.clear();
+                Vec::new()
+            }
             _ => Vec::new(),
         }
     }
 
     fn apply_navigation_action(&mut self, action: Action) -> Vec<Effect> {
         match action {
-            Action::ScrollViewportLines(delta) => { self.scroll_viewport_lines(delta); Vec::new() }
-            Action::ScrollViewportPx(delta_px) => { self.scroll_viewport_px(delta_px); Vec::new() }
-            Action::ScrollViewportPages(delta) => { self.scroll_viewport_pages(delta); Vec::new() }
+            Action::ScrollViewportLines(delta) => {
+                self.scroll_viewport_lines(delta);
+                Vec::new()
+            }
+            Action::ScrollViewportPx(delta_px) => {
+                self.scroll_viewport_px(delta_px);
+                Vec::new()
+            }
+            Action::ScrollViewportPages(delta) => {
+                self.scroll_viewport_pages(delta);
+                Vec::new()
+            }
             Action::ScrollViewportTo(px) => {
                 self.editor.scroll_top_px = px;
                 self.editor.clamp_scroll();
                 Vec::new()
             }
-            Action::ScrollViewportHalfPage(dir) => { self.scroll_viewport_half_page(dir); Vec::new() }
-            Action::HoverViewportRow(row) => { self.editor.hovered_row = row; Vec::new() }
-            Action::FocusViewport => { self.set_focus(Some(FocusTarget::Editor)); Vec::new() }
-            Action::GoToNextHunk => { self.navigate_to_hunk(true); Vec::new() }
-            Action::GoToPreviousHunk => { self.navigate_to_hunk(false); Vec::new() }
-            Action::GoToNextFile => { self.navigate_to_file(true); Vec::new() }
-            Action::GoToPreviousFile => { self.navigate_to_file(false); Vec::new() }
-            Action::OpenSearch => { self.open_search(); Vec::new() }
-            Action::CloseSearch => { self.close_search(); Vec::new() }
-            Action::SearchNext => { self.search_navigate(1); Vec::new() }
-            Action::SearchPrevious => { self.search_navigate(-1); Vec::new() }
+            Action::ScrollViewportHalfPage(dir) => {
+                self.scroll_viewport_half_page(dir);
+                Vec::new()
+            }
+            Action::HoverViewportRow(row) => {
+                self.editor.hovered_row = row;
+                Vec::new()
+            }
+            Action::FocusViewport => {
+                self.set_focus(Some(FocusTarget::Editor));
+                Vec::new()
+            }
+            Action::GoToNextHunk => {
+                self.navigate_to_hunk(true);
+                Vec::new()
+            }
+            Action::GoToPreviousHunk => {
+                self.navigate_to_hunk(false);
+                Vec::new()
+            }
+            Action::GoToNextFile => {
+                self.navigate_to_file(true);
+                Vec::new()
+            }
+            Action::GoToPreviousFile => {
+                self.navigate_to_file(false);
+                Vec::new()
+            }
+            Action::OpenSearch => {
+                self.open_search();
+                Vec::new()
+            }
+            Action::CloseSearch => {
+                self.close_search();
+                Vec::new()
+            }
+            Action::SearchNext => {
+                self.search_navigate(1);
+                Vec::new()
+            }
+            Action::SearchPrevious => {
+                self.search_navigate(-1);
+                Vec::new()
+            }
             _ => Vec::new(),
         }
     }
@@ -1082,11 +1294,15 @@ impl AppState {
             Action::UsePullRequestCompare => self.use_pull_request_compare(),
             Action::StartGitHubDeviceFlow => {
                 self.github.auth.status = AsyncStatus::Loading;
-                vec![Effect::StartDeviceFlow { client_id: self.github.client_id.clone() }]
+                vec![Effect::StartDeviceFlow {
+                    client_id: self.github.client_id.clone(),
+                }]
             }
             Action::OpenDeviceFlowBrowser => {
                 if let Some(device_flow) = self.github.auth.device_flow.as_ref() {
-                    vec![Effect::OpenBrowser { url: device_flow.verification_uri.clone() }]
+                    vec![Effect::OpenBrowser {
+                        url: device_flow.verification_uri.clone(),
+                    }]
                 } else {
                     Vec::new()
                 }
@@ -1100,13 +1316,21 @@ impl AppState {
             AppEvent::RepositoryDialogClosed { path } => {
                 path.map_or_else(Vec::new, |path| self.open_repository(path))
             }
-            AppEvent::RepositoryLoaded(payload) => self.handle_repository_loaded(payload),
-            AppEvent::RepositoryLoadFailed { path, message } => {
+            AppEvent::RepositorySnapshotReady(payload) => self.handle_repository_snapshot(payload),
+            AppEvent::RepositorySnapshotFailed {
+                path,
+                reason,
+                message,
+            } => {
                 if self.compare.repo_path.as_ref() == Some(&path) {
-                    self.repository.status = AsyncStatus::Failed;
-                    self.workspace_mode = WorkspaceMode::Empty;
-                    self.push_error(&message);
-                    self.open_compare_sheet();
+                    if reason == RepositorySyncReason::Open {
+                        self.repository.status = AsyncStatus::Failed;
+                        self.workspace_mode = WorkspaceMode::Empty;
+                        self.push_error(&message);
+                        self.open_compare_sheet();
+                    } else {
+                        self.last_error = Some(message);
+                    }
                 }
                 Vec::new()
             }
@@ -1121,6 +1345,18 @@ impl AppState {
                     self.overlays.compare_sheet.validation_message = Some(message.clone());
                     self.push_error(&message);
                     self.open_compare_sheet();
+                }
+                Vec::new()
+            }
+            AppEvent::StatusDiffFinished(payload) => self.handle_status_diff_finished(payload),
+            AppEvent::StatusDiffFailed {
+                generation,
+                index: _,
+                message,
+            } => {
+                if generation == self.workspace.status_generation {
+                    self.workspace.status = AsyncStatus::Failed;
+                    self.push_error(&message);
                 }
                 Vec::new()
             }
@@ -1298,11 +1534,15 @@ impl AppState {
         self.sync_settings_snapshot();
         vec![
             Effect::SaveSettings(self.settings.clone()),
-            Effect::LoadRepository { path },
+            Effect::SyncRepository {
+                path: path.clone(),
+                reason: RepositorySyncReason::Open,
+            },
+            Effect::WatchRepository { path: Some(path) },
         ]
     }
 
-    fn handle_repository_loaded(&mut self, payload: RepositoryLoaded) -> Vec<Effect> {
+    fn handle_repository_snapshot(&mut self, payload: RepositorySnapshot) -> Vec<Effect> {
         if self.compare.repo_path.as_ref() != Some(&payload.path) {
             return Vec::new();
         }
@@ -1311,37 +1551,68 @@ impl AppState {
         self.repository.branches = payload.branches;
         self.repository.tags = payload.tags;
         self.repository.commits = payload.commits;
-        if let Some(ref store) = self.frecency {
-            store.record_access(&format!("repo:{}", payload.path.display()));
-        }
+        self.workspace.status_items = payload.status_items;
 
-        let mut effects = self.persist_settings_effect();
-        if let Some(url) = self.startup.pending_pr_url.clone() {
-            self.startup.pending_pr_url = None;
-            self.github.pull_request.status = AsyncStatus::Loading;
-            effects.push(Effect::LoadPullRequest {
-                url,
-                repo_path: payload.path,
-                github_token: self.settings.github_token.clone(),
-            });
-        } else if self.startup.auto_compare_pending {
-            self.startup.auto_compare_pending = false;
-            effects.extend(self.kickoff_compare());
-        } else if let Some(persisted) = self.settings.last_compare.as_ref().filter(|c| {
-            c.repo_path.as_ref() == Some(&payload.path)
-                && compare_refs_are_valid(c.mode, &c.left_ref, &c.right_ref)
-        }) {
-            self.compare.left_ref = persisted.left_ref.clone();
-            self.compare.right_ref = persisted.right_ref.clone();
-            self.compare.mode = persisted.mode;
-            effects.extend(self.kickoff_compare());
-        } else {
-            self.compare.left_ref = "HEAD".to_owned();
-            self.compare.right_ref = crate::core::vcs::git::service::WORKDIR_REF.to_owned();
-            self.compare.mode = CompareMode::TwoDot;
-            effects.extend(self.kickoff_compare());
+        match payload.reason {
+            RepositorySyncReason::Open => {
+                if let Some(ref store) = self.frecency {
+                    store.record_access(&format!("repo:{}", payload.path.display()));
+                }
+                let mut effects = self.persist_settings_effect();
+                if let Some(url) = self.startup.pending_pr_url.clone() {
+                    self.startup.pending_pr_url = None;
+                    self.github.pull_request.status = AsyncStatus::Loading;
+                    effects.push(Effect::LoadPullRequest {
+                        url,
+                        repo_path: payload.path,
+                        github_token: self.settings.github_token.clone(),
+                    });
+                } else if self.startup.auto_compare_pending {
+                    self.startup.auto_compare_pending = false;
+                    effects.extend(self.kickoff_compare());
+                } else if let Some(persisted) = self.settings.last_compare.as_ref().filter(|c| {
+                    c.repo_path.as_ref() == Some(&payload.path)
+                        && compare_refs_are_valid(c.mode, &c.left_ref, &c.right_ref)
+                }) {
+                    self.compare.left_ref = persisted.left_ref.clone();
+                    self.compare.right_ref = persisted.right_ref.clone();
+                    self.compare.mode = persisted.mode;
+                    effects.extend(self.kickoff_compare());
+                } else {
+                    self.compare.left_ref = "HEAD".to_owned();
+                    self.compare.right_ref = crate::core::vcs::git::service::WORKDIR_REF.to_owned();
+                    self.compare.mode = CompareMode::TwoDot;
+                    effects.extend(self.activate_status_view(true));
+                }
+                effects
+            }
+            RepositorySyncReason::Dirty | RepositorySyncReason::Rescan => {
+                if self.workspace.source == WorkspaceSource::Status {
+                    return self.activate_status_view(false);
+                }
+
+                if !compare_refs_are_valid(
+                    self.compare.mode,
+                    &self.compare.left_ref,
+                    &self.compare.right_ref,
+                ) {
+                    return Vec::new();
+                }
+
+                match payload.change_kind {
+                    Some(RepositoryChangeKind::Git | RepositoryChangeKind::Both) => {
+                        self.kickoff_compare()
+                    }
+                    Some(RepositoryChangeKind::Worktree)
+                        if self.compare.right_ref
+                            == crate::core::vcs::git::service::WORKDIR_REF =>
+                    {
+                        self.kickoff_compare()
+                    }
+                    _ => Vec::new(),
+                }
+            }
         }
-        effects
     }
 
     fn handle_compare_finished(&mut self, payload: CompareFinished) -> Vec<Effect> {
@@ -1349,6 +1620,7 @@ impl AppState {
             return Vec::new();
         }
 
+        self.workspace.source = WorkspaceSource::Compare;
         self.workspace.status = AsyncStatus::Ready;
         self.workspace_mode = WorkspaceMode::Ready;
         self.overlays.compare_sheet.validation_message = None;
@@ -1388,10 +1660,11 @@ impl AppState {
             .or(preferred_index.filter(|index| *index < self.workspace.files.len()))
             .or_else(|| (!self.workspace.files.is_empty()).then_some(0))
         {
-            self.select_loaded_file(index, true);
+            let _ = self.select_file(index, true);
         } else {
             self.workspace.selected_file_index = None;
             self.workspace.selected_file_path = None;
+            self.workspace.selected_status_scope = None;
             self.workspace.active_file = None;
             self.editor.clear_document();
         }
@@ -1400,6 +1673,103 @@ impl AppState {
             self.push_info(&self.workspace.fallback_message.clone());
         }
         Vec::new()
+    }
+
+    fn handle_status_diff_finished(&mut self, payload: StatusDiffFinished) -> Vec<Effect> {
+        if payload.generation != self.workspace.status_generation {
+            return Vec::new();
+        }
+        let Some(current_item) = self.workspace.status_items.get(payload.index) else {
+            return Vec::new();
+        };
+        if current_item.path != payload.item.path || current_item.scope != payload.item.scope {
+            return Vec::new();
+        }
+
+        self.workspace.source = WorkspaceSource::Status;
+        self.workspace.status = AsyncStatus::Ready;
+        self.workspace_mode = WorkspaceMode::Ready;
+        let mut output = payload.output;
+        self.workspace.used_fallback = output.used_fallback;
+        self.workspace.fallback_message = output.fallback_message.clone();
+        self.workspace.raw_diff_len = output.raw_diff.len();
+        self.workspace.compare_output = None;
+
+        let Some(mut file) = output.files.into_iter().next() else {
+            self.workspace.active_file = None;
+            self.editor.clear_document();
+            return Vec::new();
+        };
+
+        DiffSyntaxAnnotator::new().annotate(
+            &mut file,
+            &mut output.text_buffer,
+            &mut output.token_buffer,
+        );
+        file.syntax_annotated = true;
+        let render_doc = build_render_doc(
+            &file,
+            payload.index,
+            &output.text_buffer,
+            &output.token_buffer,
+        );
+
+        self.workspace.selected_file_index = Some(payload.index);
+        self.workspace.selected_file_path = Some(payload.item.path.clone());
+        self.workspace.selected_status_scope = Some(payload.item.scope);
+        self.workspace.active_file = Some(ActiveFile {
+            index: payload.index,
+            path: payload.item.path.clone(),
+            file,
+            render_doc,
+        });
+        self.editor.clear_document();
+        if self.editor.search.open {
+            self.recompute_search_matches();
+        }
+        Vec::new()
+    }
+
+    fn activate_status_view(&mut self, reset_scroll: bool) -> Vec<Effect> {
+        self.workspace.source = WorkspaceSource::Status;
+        self.workspace.status = AsyncStatus::Ready;
+        self.workspace_mode = WorkspaceMode::Ready;
+        self.workspace.compare_output = None;
+        self.workspace.files = build_status_file_entries(&self.workspace.status_items);
+        self.workspace.status_generation = self.workspace.status_generation.saturating_add(1);
+        self.workspace.sidebar_auto_width = None;
+        self.workspace.used_fallback = false;
+        self.workspace.fallback_message.clear();
+        self.workspace.raw_diff_len = 0;
+        if reset_scroll {
+            self.file_list.scroll_offset_px = 0.0;
+        }
+
+        let current_selection = self
+            .workspace
+            .selected_file_path
+            .clone()
+            .zip(self.workspace.selected_status_scope);
+        let selected_index = current_selection
+            .and_then(|(path, scope)| {
+                self.workspace
+                    .status_items
+                    .iter()
+                    .position(|item| item.path == path && item.scope == scope)
+            })
+            .or_else(|| (!self.workspace.status_items.is_empty()).then_some(0));
+
+        match selected_index {
+            Some(index) => self.select_status_item(index, false),
+            None => {
+                self.workspace.selected_file_index = None;
+                self.workspace.selected_file_path = None;
+                self.workspace.selected_status_scope = None;
+                self.workspace.active_file = None;
+                self.editor.clear_document();
+                Vec::new()
+            }
+        }
     }
 
     fn kickoff_compare(&mut self) -> Vec<Effect> {
@@ -1423,6 +1793,7 @@ impl AppState {
             return Vec::new();
         }
 
+        self.workspace.source = WorkspaceSource::Compare;
         self.workspace_mode = WorkspaceMode::Loading;
         self.workspace.status = AsyncStatus::Loading;
         self.overlays.compare_sheet.validation_message = None;
@@ -1799,7 +2170,12 @@ impl AppState {
                 .collect();
             self.overlays.picker.selected_index = 0;
         }
-        if let Some(entry) = self.overlays.picker.entries.get(self.overlays.picker.selected_index) {
+        if let Some(entry) = self
+            .overlays
+            .picker
+            .entries
+            .get(self.overlays.picker.selected_index)
+        {
             if !entry.section_header {
                 self.settings.theme_name = entry.value.clone();
             }
@@ -2222,10 +2598,7 @@ impl AppState {
                 PaletteCommand::ChangeTheme => self.apply_action(Action::OpenThemePicker),
                 PaletteCommand::SetTheme(name) => self.apply_action(Action::SetThemeName(name)),
             },
-            PaletteEntryKind::File(index) => {
-                self.select_loaded_file(index, true);
-                Vec::new()
-            }
+            PaletteEntryKind::File(index) => self.select_file(index, true),
             PaletteEntryKind::Repo(path) => self.open_repository(path),
             PaletteEntryKind::Ref(field, value) => {
                 let _ = self.update_compare_field(field, value);
@@ -2543,19 +2916,17 @@ impl AppState {
 
         if query.is_empty() {
             self.overlays.picker.entries = pinned;
-            self.overlays.picker.entries.extend(
-                all_candidates
-                    .into_iter()
-                    .take(10)
-                    .map(|c| PickerEntry {
-                        label: c.label,
-                        detail: c.detail,
-                        value: c.value,
-                        highlights: Vec::new(),
-                        icon: None,
-                        section_header: false,
-                    }),
-            );
+            self.overlays
+                .picker
+                .entries
+                .extend(all_candidates.into_iter().take(10).map(|c| PickerEntry {
+                    label: c.label,
+                    detail: c.detail,
+                    value: c.value,
+                    highlights: Vec::new(),
+                    icon: None,
+                    section_header: false,
+                }));
         } else {
             let haystack: Vec<&str> = all_candidates
                 .iter()
@@ -2579,10 +2950,7 @@ impl AppState {
                             detail: c.detail.clone(),
                             value: c.value.clone(),
                             highlights: highlight_ranges_for_visible_match(
-                                query,
-                                &c.label,
-                                &m.indices,
-                                &config,
+                                query, &c.label, &m.indices, &config,
                             ),
                             icon: None,
                             section_header: false,
@@ -2800,10 +3168,7 @@ impl AppState {
                             detail: c.detail.clone(),
                             kind: c.kind.clone(),
                             highlights: highlight_ranges_for_visible_match(
-                                query,
-                                &c.label,
-                                &m.indices,
-                                &config,
+                                query, &c.label, &m.indices, &config,
                             ),
                         },
                     )
@@ -2843,10 +3208,32 @@ impl AppState {
                 .saturating_add(delta as usize)
                 .min(self.workspace.files.len().saturating_sub(1))
         };
-        self.select_loaded_file(next, true);
+        match self.workspace.source {
+            WorkspaceSource::Compare => {
+                self.select_loaded_compare_file(next, true);
+            }
+            WorkspaceSource::Status => {
+                let _ = self.select_status_item(next, true);
+            }
+            WorkspaceSource::None => {}
+        }
     }
 
-    fn select_loaded_file(&mut self, index: usize, reveal: bool) {
+    fn select_file(&mut self, index: usize, reveal: bool) -> Vec<Effect> {
+        match self.workspace.source {
+            WorkspaceSource::Compare => {
+                self.select_loaded_compare_file(index, reveal);
+                Vec::new()
+            }
+            WorkspaceSource::Status => self.select_status_item(index, reveal),
+            WorkspaceSource::None => {
+                self.startup.preferred_file_index = Some(index);
+                Vec::new()
+            }
+        }
+    }
+
+    fn select_loaded_compare_file(&mut self, index: usize, reveal: bool) {
         let Some(output) = self.workspace.compare_output.as_mut() else {
             self.startup.preferred_file_index = Some(index);
             return;
@@ -2891,6 +3278,41 @@ impl AppState {
             }
             self.file_list.clamp_scroll(self.workspace.files.len());
         }
+    }
+
+    fn select_status_item(&mut self, index: usize, reveal: bool) -> Vec<Effect> {
+        let Some(item) = self.workspace.status_items.get(index).cloned() else {
+            return Vec::new();
+        };
+        let Some(repo_path) = self.compare.repo_path.clone() else {
+            return Vec::new();
+        };
+
+        self.workspace.source = WorkspaceSource::Status;
+        self.workspace.status = AsyncStatus::Loading;
+        self.workspace.selected_file_index = Some(index);
+        self.workspace.selected_file_path = Some(item.path.clone());
+        self.workspace.selected_status_scope = Some(item.scope);
+        self.workspace.active_file = None;
+        self.editor.clear_document();
+        self.file_list.hovered_index = Some(index);
+        if reveal {
+            let row_top = index as f32 * self.file_list.row_stride();
+            let row_bottom = row_top + self.file_list.row_height;
+            if row_top < self.file_list.scroll_offset_px {
+                self.file_list.scroll_offset_px = row_top;
+            } else if row_bottom > self.file_list.scroll_offset_px + self.file_list.viewport_height
+            {
+                self.file_list.scroll_offset_px = row_bottom - self.file_list.viewport_height;
+            }
+            self.file_list.clamp_scroll(self.workspace.files.len());
+        }
+
+        vec![Effect::LoadStatusDiff {
+            generation: self.workspace.status_generation,
+            index,
+            request: StatusDiffRequest { repo_path, item },
+        }]
     }
 
     fn scroll_viewport_lines(&mut self, delta_lines: i32) {
@@ -3189,6 +3611,10 @@ fn build_file_entries(files: &[FileDiff]) -> Vec<FileListEntry> {
     files.iter().map(FileListEntry::from).collect()
 }
 
+fn build_status_file_entries(items: &[StatusItem]) -> Vec<FileListEntry> {
+    items.iter().map(FileListEntry::from).collect()
+}
+
 fn overlay_name(surface: OverlaySurface) -> &'static str {
     match surface {
         OverlaySurface::CompareSheet => "compare-sheet",
@@ -3219,6 +3645,18 @@ impl From<&FileDiff> for FileListEntry {
             additions: value.additions,
             deletions: value.deletions,
             is_binary: value.is_binary,
+        }
+    }
+}
+
+impl From<&StatusItem> for FileListEntry {
+    fn from(value: &StatusItem) -> Self {
+        Self {
+            path: value.path.clone(),
+            status: value.status.clone(),
+            additions: 0,
+            deletions: 0,
+            is_binary: false,
         }
     }
 }
@@ -3329,12 +3767,13 @@ mod tests {
 
     use super::{
         AppState, CompareField, FileListEntry, FocusTarget, OverlaySurface, WorkspaceMode,
+        WorkspaceSource,
     };
+    use crate::actions::Action;
     use crate::core::compare::{CompareMode, CompareOutput, LayoutMode, RendererKind};
     use crate::core::diff::{DiffLine, FileDiff, Hunk, LineKind};
     use crate::platform::persistence::Settings;
     use crate::platform::startup::{Args, StartupOptions};
-    use crate::actions::Action;
 
     fn loaded_state_with_files(paths: &[&str]) -> AppState {
         let mut state = AppState::default();
@@ -3351,6 +3790,7 @@ mod tests {
             files: files.clone(),
             ..CompareOutput::default()
         });
+        state.workspace.source = WorkspaceSource::Compare;
         state.workspace.files = files.iter().map(FileListEntry::from).collect();
         state.workspace_mode = WorkspaceMode::Ready;
         state.file_list.row_height = 36.0;
@@ -3378,7 +3818,7 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_with_repo_opens_compare_sheet() {
+    fn bootstrap_with_repo_starts_repo_sync_without_compare_sheet() {
         let startup = StartupOptions::from_parts(
             Args {
                 repo: Some("C:\\repo".into()),
@@ -3403,8 +3843,8 @@ mod tests {
 
         let (state, effects) = AppState::bootstrap(startup, Settings::default());
         assert_eq!(state.workspace_mode, WorkspaceMode::Empty);
-        assert_eq!(state.active_overlay_name(), Some("compare-sheet"));
-        assert_eq!(effects.len(), 1);
+        assert_eq!(state.active_overlay_name(), None);
+        assert_eq!(effects.len(), 2);
     }
 
     #[test]
@@ -3536,6 +3976,7 @@ mod tests {
             ..FileDiff::default()
         }];
         state.workspace.compare_output = Some(output);
+        state.workspace.source = WorkspaceSource::Compare;
         state.workspace.files = vec![FileListEntry {
             path: "src/lib.rs".to_owned(),
             status: "M".to_owned(),

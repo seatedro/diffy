@@ -8,6 +8,7 @@ use crate::core::vcs::git::GitService;
 
 pub use difftastic::DifftasticBackend;
 pub use git_diff::GitDiffBackend;
+pub(crate) use git_diff::compare_output_from_diff;
 
 pub trait DiffBackend: Send + Sync {
     fn compare(&self, spec: &CompareSpec, git: &GitService) -> Result<Option<CompareOutput>>;

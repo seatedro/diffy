@@ -6,8 +6,11 @@ use git2::{
 };
 use serde::Serialize;
 
+use crate::core::compare::backends::compare_output_from_diff;
+use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::CompareMode;
 use crate::core::error::{DiffyError, Result};
+use crate::core::vcs::git::status::{StatusItem, StatusScope};
 use crate::core::vcs::github::{GitHubApi, parse_pr_url};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,6 +222,29 @@ impl GitService {
 
     pub fn resolve_ref(&self, reference: &str) -> Result<String> {
         Ok(self.resolve_commit_oid(reference)?.to_string())
+    }
+
+    pub fn diff_status_item(&self, item: &StatusItem) -> Result<CompareOutput> {
+        let repo = self.repo()?;
+        let mut options = DiffOptions::new();
+        options.context_lines(3);
+        options.pathspec(&item.path);
+
+        let mut diff = match item.scope {
+            StatusScope::Staged => {
+                let mut index = repo.index()?;
+                let head_tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
+                repo.diff_tree_to_index(head_tree.as_ref(), Some(&mut index), Some(&mut options))?
+            }
+            StatusScope::Unstaged | StatusScope::Untracked => {
+                options.include_untracked(true);
+                options.recurse_untracked_dirs(true);
+                let mut index = repo.index()?;
+                repo.diff_index_to_workdir(Some(&mut index), Some(&mut options))?
+            }
+        };
+
+        compare_output_from_diff(&mut diff)
     }
 
     pub fn abbreviate_oid(&self, full_oid: &str) -> Result<String> {

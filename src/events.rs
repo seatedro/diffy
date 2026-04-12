@@ -1,15 +1,32 @@
 use std::path::PathBuf;
 
 use crate::core::compare::{CompareOutput, CompareSpec};
-use crate::core::vcs::git::{BranchInfo, CommitInfo, TagInfo};
+use crate::core::vcs::git::{BranchInfo, CommitInfo, StatusItem, TagInfo};
 use crate::core::vcs::github::{DeviceFlowState, PullRequestInfo};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepositorySyncReason {
+    Open,
+    Dirty,
+    Rescan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepositoryChangeKind {
+    Worktree,
+    Git,
+    Both,
+}
+
 #[derive(Debug, Clone)]
-pub struct RepositoryLoaded {
+pub struct RepositorySnapshot {
     pub path: PathBuf,
+    pub reason: RepositorySyncReason,
+    pub change_kind: Option<RepositoryChangeKind>,
     pub branches: Vec<BranchInfo>,
     pub tags: Vec<TagInfo>,
     pub commits: Vec<CommitInfo>,
+    pub status_items: Vec<StatusItem>,
 }
 
 #[derive(Debug, Clone)]
@@ -22,18 +39,33 @@ pub struct CompareFinished {
 }
 
 #[derive(Debug, Clone)]
+pub struct StatusDiffFinished {
+    pub generation: u64,
+    pub index: usize,
+    pub item: StatusItem,
+    pub output: CompareOutput,
+}
+
+#[derive(Debug, Clone)]
 pub enum AppEvent {
     RepositoryDialogClosed {
         path: Option<PathBuf>,
     },
-    RepositoryLoaded(RepositoryLoaded),
-    RepositoryLoadFailed {
+    RepositorySnapshotReady(RepositorySnapshot),
+    RepositorySnapshotFailed {
         path: PathBuf,
+        reason: RepositorySyncReason,
         message: String,
     },
     CompareFinished(CompareFinished),
     CompareFailed {
         generation: u64,
+        message: String,
+    },
+    StatusDiffFinished(StatusDiffFinished),
+    StatusDiffFailed {
+        generation: u64,
+        index: usize,
         message: String,
     },
     PullRequestLoaded {

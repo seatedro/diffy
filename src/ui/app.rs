@@ -8,16 +8,18 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
+use crate::actions::Action;
 use crate::app_runtime::{AppRuntime, AppServices};
 use crate::core::themes::ThemeRegistry;
+use crate::effects::Effect;
+use crate::events::RepositorySyncReason;
+use crate::input::InputSystem;
 use crate::platform::automation::{ErrorDump, FilesDump, StateDump, write_json};
 use crate::platform::persistence::SettingsStore;
 use crate::platform::startup::StartupOptions;
 use crate::render::Renderer;
-use crate::actions::Action;
 use crate::ui::components::TooltipState;
 use crate::ui::editor::element::EditorElement;
-use crate::input::InputSystem;
 use crate::ui::shell::{UiFrame, build_ui_frame};
 use crate::ui::state::AppState;
 use crate::ui::theme::Theme;
@@ -440,6 +442,15 @@ impl ApplicationHandler for NativeApp {
                 self.write_dumps_if_needed();
                 event_loop.exit();
             }
+            WindowEvent::Focused(true) => {
+                if let Some(path) = self.state.compare.repo_path.clone() {
+                    self.runtime.dispatch_all(vec![Effect::SyncRepository {
+                        path,
+                        reason: RepositorySyncReason::Rescan,
+                    }]);
+                }
+                self.mark_dirty();
+            }
             WindowEvent::Resized(size) => {
                 if let (Some(renderer), Some(window)) =
                     (self.renderer.as_mut(), self.window.as_ref())
@@ -589,7 +600,6 @@ impl ApplicationHandler for NativeApp {
             window.request_redraw();
         }
     }
-
 }
 
 fn scale_text_metrics(
@@ -615,12 +625,12 @@ mod tests {
     use winit::keyboard::ModifiersState;
 
     use super::NativeApp;
-    use crate::app_runtime::{AppRuntime, AppServices};
-    use crate::platform::persistence::SettingsStore;
     use crate::actions::Action;
+    use crate::app_runtime::{AppRuntime, AppServices};
     use crate::input::{
         InputEvent, KeyChord, KeyKind, quantize_scroll_delta_px, scroll_delta_to_px,
     };
+    use crate::platform::persistence::SettingsStore;
     use crate::ui::state::{
         AppState, FileListEntry, FocusTarget, OverlayEntry, OverlaySurface, WorkspaceMode,
     };

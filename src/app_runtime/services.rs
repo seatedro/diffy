@@ -2,15 +2,15 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-use crate::core::compare::CompareService;
+use crate::core::compare::{CompareOutput, CompareService};
 use crate::core::error::{DiffyError, Result};
 use crate::core::vcs::git::GitService;
 use crate::core::vcs::github::{
     DeviceFlowState, GitHubApi, PullRequestInfo, parse_pr_url, poll_for_token, start_device_flow,
 };
+use crate::effects::{CompareRequest, StatusDiffRequest};
+use crate::events::{CompareFinished, StatusDiffFinished};
 use crate::platform::persistence::{Settings, SettingsStore};
-use crate::effects::CompareRequest;
-use crate::events::{CompareFinished, RepositoryLoaded};
 
 #[derive(Debug, Clone)]
 pub struct AppServices {
@@ -20,18 +20,6 @@ pub struct AppServices {
 impl AppServices {
     pub fn new(settings_store: SettingsStore) -> Self {
         Self { settings_store }
-    }
-
-    pub fn load_repository(&self, path: PathBuf) -> Result<RepositoryLoaded> {
-        let mut git = GitService::new();
-        git.open(path.to_string_lossy().as_ref())?;
-
-        Ok(RepositoryLoaded {
-            path,
-            branches: git.branches()?,
-            tags: git.tags()?,
-            commits: git.commits("HEAD", 200).unwrap_or_default(),
-        })
     }
 
     pub fn run_compare(&self, generation: u64, request: CompareRequest) -> Result<CompareFinished> {
@@ -52,6 +40,24 @@ impl AppServices {
             spec: request.spec,
             resolved_left,
             resolved_right,
+            output,
+        })
+    }
+
+    pub fn load_status_diff(
+        &self,
+        generation: u64,
+        index: usize,
+        request: StatusDiffRequest,
+    ) -> Result<StatusDiffFinished> {
+        let mut git = GitService::new();
+        git.open(request.repo_path.to_string_lossy().as_ref())?;
+        let output: CompareOutput = git.diff_status_item(&request.item)?;
+
+        Ok(StatusDiffFinished {
+            generation,
+            index,
+            item: request.item,
             output,
         })
     }
@@ -114,16 +120,19 @@ impl AppServices {
         git.open(repo_path.to_string_lossy().as_ref())?;
         // libgit2 may not support bare `@` as HEAD alias; normalize it.
         let normalized;
-        let reference = if reference == "@" || reference.starts_with("@~") || reference.starts_with("@^") {
-            normalized = format!("HEAD{}", &reference[1..]);
-            &normalized
-        } else {
-            reference
-        };
+        let reference =
+            if reference == "@" || reference.starts_with("@~") || reference.starts_with("@^") {
+                normalized = format!("HEAD{}", &reference[1..]);
+                &normalized
+            } else {
+                reference
+            };
         let oid = git.resolve_commit_oid(reference)?;
         let repo = git.repo()?;
         let commit = repo.find_commit(oid)?;
-        let short_oid = git.abbreviate_oid(&oid.to_string()).unwrap_or_else(|_| oid.to_string()[..7].to_owned());
+        let short_oid = git
+            .abbreviate_oid(&oid.to_string())
+            .unwrap_or_else(|_| oid.to_string()[..7].to_owned());
         let summary = commit.summary().unwrap_or_default().to_owned();
         Ok((short_oid, summary))
     }
@@ -145,8 +154,8 @@ mod tests {
 
     use super::AppServices;
     use crate::core::compare::{CompareMode, CompareSpec, LayoutMode, RendererKind};
-    use crate::platform::persistence::SettingsStore;
     use crate::effects::CompareRequest;
+    use crate::platform::persistence::SettingsStore;
 
     fn commit_file(repo: &Repository, relative_path: &str, content: &str, message: &str) -> String {
         let workdir = repo.workdir().expect("repo workdir");
@@ -184,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn services_can_load_repository_and_run_compare() {
+    fn services_can_run_compare() {
         let repo_dir = TempDir::new().unwrap();
         let repo = Repository::init(repo_dir.path()).unwrap();
         let left = commit_file(&repo, "src/lib.rs", "fn a() -> i32 { 1 }\n", "initial");
@@ -192,11 +201,6 @@ mod tests {
 
         let store_dir = TempDir::new().unwrap();
         let services = AppServices::new(SettingsStore::new_in(store_dir.path()));
-
-        let loaded = services
-            .load_repository(repo_dir.path().to_path_buf())
-            .unwrap();
-        assert!(!loaded.branches.is_empty());
 
         let finished = services
             .run_compare(

@@ -3,14 +3,14 @@ use std::rc::Rc;
 
 use halogen::view;
 
-use crate::render::{Rect, TextMetrics};
 use crate::actions::Action;
+use crate::render::{Rect, TextMetrics};
 use crate::ui::components::{self, Button, ButtonStyle, SegmentedControl, SegmentedItem};
 use crate::ui::design::{Alpha, Ico, Rad, Shadow, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
-use crate::ui::state::{AppState, FocusTarget, WorkspaceMode};
+use crate::ui::state::{AppState, FocusTarget, WorkspaceMode, WorkspaceSource};
 use crate::ui::status_bar::{compare_mode_label, display_ref};
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
@@ -58,6 +58,15 @@ pub(crate) fn main_surface(
 
     let content = match state.workspace_mode {
         WorkspaceMode::Loading => Some(loading_card(state, theme)),
+        WorkspaceMode::Ready if state.workspace.active_file.is_none() && !has_overlay => {
+            if state.workspace.source == WorkspaceSource::Status {
+                Some(status_ready_hint(theme, state.workspace.files.is_empty()))
+            } else if state.compare.repo_path.is_some() {
+                Some(repo_ready_hint(theme))
+            } else {
+                None
+            }
+        }
         WorkspaceMode::Empty if !has_overlay => {
             if state.compare.repo_path.is_some() {
                 Some(repo_ready_hint(theme))
@@ -200,31 +209,67 @@ fn loading_card(state: &AppState, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
 
-    let refs_label = format!(
-        "{} \u{2022} {} \u{2192} {}",
-        compare_mode_label(state.compare.mode),
-        display_ref(&state.compare.left_ref),
-        display_ref(&state.compare.right_ref)
-    );
+    let (title, detail) = if state.workspace.source == WorkspaceSource::Status {
+        (
+            "Loading diff\u{2026}",
+            state
+                .workspace
+                .selected_file_path
+                .clone()
+                .unwrap_or_else(|| "Working tree".to_owned()),
+        )
+    } else {
+        (
+            "Comparing repository\u{2026}",
+            format!(
+                "{} \u{2022} {} \u{2192} {}",
+                compare_mode_label(state.compare.mode),
+                display_ref(&state.compare.left_ref),
+                display_ref(&state.compare.right_ref)
+            ),
+        )
+    };
 
     view! { scale,
         <div class="flex-1 items-center justify-center" p={Sp::XL}>
             <div class="w-full flex-col items-center rounded-xl"
                  max_w={Sz::CARD_SM} p={Sp::XL} gap={Sp::MD}
-                 bg={tc.elevated_surface}
-                 border_b={tc.border}
-                 shadow_preset={Shadow::PANEL}>
+                bg={tc.elevated_surface}
+                border_b={tc.border}
+                shadow_preset={Shadow::PANEL}>
                 <icon svg={lucide::LOADER} size={Ico::XXL} color={tc.text_muted} />
                 <div class="w-full" min_w={0.0}>
                     <text class="font-semibold text-center truncate" color={tc.text_strong}>
-                        {"Comparing repository\u{2026}"}
+                        {title}
                     </text>
                 </div>
                 <div class="w-full" min_w={0.0}>
                     <text class="text-sm text-center truncate" color={tc.text_muted}>
-                        {refs_label}
+                        {detail}
                     </text>
                 </div>
+            </div>
+        </div>
+    }
+}
+
+fn status_ready_hint(theme: &Theme, is_clean: bool) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = theme.metrics.ui_scale();
+    let (icon, message) = if is_clean {
+        (lucide::CHECK, "No uncommitted changes")
+    } else {
+        (lucide::FILE_DIFF, "Select a file to inspect changes")
+    };
+
+    view! { scale,
+        <div class="flex-1 items-center justify-center">
+            <div class="flex-col items-center" gap={Sp::MD}>
+                <icon svg={icon} size={Ico::XXL}
+                      color={tc.text_muted.with_alpha(Alpha::SOFT)} />
+                <text class="text-sm" color={tc.text_muted}>
+                    {message}
+                </text>
             </div>
         </div>
     }
@@ -275,11 +320,7 @@ fn empty_state(state: &AppState, theme: &Theme) -> AnyElement {
     }
 }
 
-fn repo_row(
-    repo: &std::path::Path,
-    tc: &crate::ui::theme::ThemeColors,
-    scale: f32,
-) -> AnyElement {
+fn repo_row(repo: &std::path::Path, tc: &crate::ui::theme::ThemeColors, scale: f32) -> AnyElement {
     let repo_name = repo
         .file_name()
         .and_then(|n| n.to_str())

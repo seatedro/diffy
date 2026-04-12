@@ -2,10 +2,12 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::Duration;
 
+use crate::app_runtime::git_worker::GitWorker;
 use crate::app_runtime::services::AppServices;
-use crate::platform::persistence::Settings;
+use crate::app_runtime::watcher::RepoWatchWorker;
 use crate::effects::Effect;
 use crate::events::AppEvent;
+use crate::platform::persistence::Settings;
 
 const SETTINGS_SAVE_DEBOUNCE: Duration = Duration::from_millis(250);
 
@@ -18,12 +20,16 @@ impl AppRuntime {
     pub fn new(services: AppServices) -> Self {
         let (sender, receiver) = mpsc::channel();
         let save_worker = SaveWorker::new(services.clone(), sender.clone());
+        let git_worker = GitWorker::new(sender.clone());
+        let repo_watch_worker = RepoWatchWorker::new(git_worker.sender());
         Self {
             receiver,
             runner: EffectRunner {
                 services,
                 sender,
                 save_worker,
+                git_worker,
+                repo_watch_worker,
             },
         }
     }
@@ -43,6 +49,8 @@ struct EffectRunner {
     services: AppServices,
     sender: Sender<AppEvent>,
     save_worker: SaveWorker,
+    git_worker: GitWorker,
+    repo_watch_worker: RepoWatchWorker,
 }
 
 struct SaveWorker {
@@ -73,19 +81,11 @@ impl EffectRunner {
                     });
                 });
             }
-            Effect::LoadRepository { path } => {
-                let services = self.services.clone();
-                let sender = self.sender.clone();
-                thread::spawn(move || {
-                    let event = match services.load_repository(path.clone()) {
-                        Ok(payload) => AppEvent::RepositoryLoaded(payload),
-                        Err(error) => AppEvent::RepositoryLoadFailed {
-                            path,
-                            message: error.to_string(),
-                        },
-                    };
-                    let _ = sender.send(event);
-                });
+            Effect::WatchRepository { path } => {
+                self.repo_watch_worker.dispatch(path);
+            }
+            Effect::SyncRepository { path, reason } => {
+                self.git_worker.dispatch_sync(path, reason);
             }
             Effect::RunCompare {
                 generation,
@@ -98,6 +98,25 @@ impl EffectRunner {
                         Ok(payload) => AppEvent::CompareFinished(payload),
                         Err(error) => AppEvent::CompareFailed {
                             generation,
+                            message: error.to_string(),
+                        },
+                    };
+                    let _ = sender.send(event);
+                });
+            }
+            Effect::LoadStatusDiff {
+                generation,
+                index,
+                request,
+            } => {
+                let services = self.services.clone();
+                let sender = self.sender.clone();
+                thread::spawn(move || {
+                    let event = match services.load_status_diff(generation, index, request) {
+                        Ok(payload) => AppEvent::StatusDiffFinished(payload),
+                        Err(error) => AppEvent::StatusDiffFailed {
+                            generation,
+                            index,
                             message: error.to_string(),
                         },
                     };
@@ -269,9 +288,9 @@ mod tests {
 
     use super::{AppRuntime, SETTINGS_SAVE_DEBOUNCE};
     use crate::app_runtime::services::AppServices;
-    use crate::platform::persistence::{Settings, SettingsStore};
     use crate::effects::Effect;
     use crate::events::AppEvent;
+    use crate::platform::persistence::{Settings, SettingsStore};
 
     fn wait_for<P>(mut predicate: P)
     where

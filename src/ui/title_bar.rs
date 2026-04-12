@@ -3,7 +3,7 @@ use halogen::view;
 use crate::actions::Action;
 use crate::core::compare::CompareMode;
 use crate::ui::components::Button;
-use crate::ui::design::{Bp, Ico, Rad, Sp, Sz};
+use crate::ui::design::{Ico, Rad, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
@@ -17,7 +17,7 @@ pub(crate) fn title_bar(
     state: &AppState,
     theme: &Theme,
     sidebar_visible: f32,
-    window_width: f32,
+    _window_width: f32,
 ) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
@@ -59,8 +59,6 @@ pub(crate) fn title_bar(
     };
 
     let pr_active = state.overlays.top() == Some(OverlaySurface::PullRequestModal);
-    let file_count = state.workspace.files.len();
-
     view! { scale,
         <div class="flex-row items-center" min_w={0.0}
              h={theme.metrics.title_bar_height} w_full
@@ -134,12 +132,6 @@ pub(crate) fn title_bar(
 
             // right
             <div class="flex-1 flex-row items-center justify-end" min_w={0.0} gap={Sp::XS}>
-                if is_ready && window_width >= Bp::NARROW * scale {
-                    <div class="flex-row items-center" gap={Sp::XS}>
-                        <text class="text-sm" color={tc.text_muted}>{format!("{file_count} files")}</text>
-                        {toolbar_separator(tc)}
-                    </div>
-                }
                 <Button action={Action::OpenPullRequestModal}
                         active={pr_active}
                         tooltip={"Pull request"}>
@@ -191,8 +183,3 @@ fn ref_selector_button(
     }
 }
 
-fn toolbar_separator(tc: &crate::ui::theme::ThemeColors) -> AnyElement {
-    view! {
-        <div w={Sz::SEPARATOR_W} h={Sz::SEPARATOR_H} bg={tc.border_variant} />
-    }
-}

@@ -11,9 +11,9 @@ pub enum StatusScope {
 impl StatusScope {
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Staged => "staged",
-            Self::Unstaged => "unstaged",
-            Self::Untracked => "untracked",
+            Self::Staged => "Staged",
+            Self::Unstaged => "Unstaged",
+            Self::Untracked => "Untracked",
         }
     }
 }

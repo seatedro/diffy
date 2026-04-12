@@ -8,6 +8,7 @@ use crate::app_runtime::watcher::RepoWatchWorker;
 use crate::effects::Effect;
 use crate::events::AppEvent;
 use crate::platform::persistence::Settings;
+use winit::event_loop::EventLoopProxy;
 
 const SETTINGS_SAVE_DEBOUNCE: Duration = Duration::from_millis(250);
 
@@ -17,16 +18,17 @@ pub struct AppRuntime {
 }
 
 impl AppRuntime {
-    pub fn new(services: AppServices) -> Self {
+    pub fn new(services: AppServices, wake_proxy: Option<EventLoopProxy<()>>) -> Self {
         let (sender, receiver) = mpsc::channel();
-        let save_worker = SaveWorker::new(services.clone(), sender.clone());
-        let git_worker = GitWorker::new(sender.clone());
+        let event_sender = RuntimeEventSender::new(sender, wake_proxy);
+        let save_worker = SaveWorker::new(services.clone(), event_sender.clone());
+        let git_worker = GitWorker::new(event_sender.clone());
         let repo_watch_worker = RepoWatchWorker::new(git_worker.sender());
         Self {
             receiver,
             runner: EffectRunner {
                 services,
-                sender,
+                event_sender,
                 save_worker,
                 git_worker,
                 repo_watch_worker,
@@ -47,7 +49,7 @@ impl AppRuntime {
 
 struct EffectRunner {
     services: AppServices,
-    sender: Sender<AppEvent>,
+    event_sender: RuntimeEventSender,
     save_worker: SaveWorker,
     git_worker: GitWorker,
     repo_watch_worker: RepoWatchWorker,
@@ -57,8 +59,28 @@ struct SaveWorker {
     sender: Sender<Settings>,
 }
 
+#[derive(Clone)]
+pub(crate) struct RuntimeEventSender {
+    sender: Sender<AppEvent>,
+    wake_proxy: Option<EventLoopProxy<()>>,
+}
+
+impl RuntimeEventSender {
+    fn new(sender: Sender<AppEvent>, wake_proxy: Option<EventLoopProxy<()>>) -> Self {
+        Self { sender, wake_proxy }
+    }
+
+    pub(crate) fn send(&self, event: AppEvent) {
+        if self.sender.send(event).is_ok() {
+            if let Some(wake_proxy) = &self.wake_proxy {
+                let _ = wake_proxy.send_event(());
+            }
+        }
+    }
+}
+
 impl SaveWorker {
-    fn new(services: AppServices, event_sender: Sender<AppEvent>) -> Self {
+    fn new(services: AppServices, event_sender: RuntimeEventSender) -> Self {
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || save_worker_loop(services, event_sender, receiver));
         Self { sender }
@@ -74,9 +96,9 @@ impl EffectRunner {
         match effect {
             Effect::OpenRepositoryDialog => {
                 let services = self.services.clone();
-                let sender = self.sender.clone();
+                let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
-                    let _ = sender.send(AppEvent::RepositoryDialogClosed {
+                    event_sender.send(AppEvent::RepositoryDialogClosed {
                         path: services.open_repository_dialog(),
                     });
                 });
@@ -99,7 +121,7 @@ impl EffectRunner {
                 request,
             } => {
                 let services = self.services.clone();
-                let sender = self.sender.clone();
+                let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event = match services.run_compare(generation, request) {
                         Ok(payload) => AppEvent::CompareFinished(payload),
@@ -108,7 +130,7 @@ impl EffectRunner {
                             message: error.to_string(),
                         },
                     };
-                    let _ = sender.send(event);
+                    event_sender.send(event);
                 });
             }
             Effect::LoadStatusDiff {
@@ -117,7 +139,7 @@ impl EffectRunner {
                 request,
             } => {
                 let services = self.services.clone();
-                let sender = self.sender.clone();
+                let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event = match services.load_status_diff(generation, index, request) {
                         Ok(payload) => AppEvent::StatusDiffFinished(payload),
@@ -127,7 +149,7 @@ impl EffectRunner {
                             message: error.to_string(),
                         },
                     };
-                    let _ = sender.send(event);
+                    event_sender.send(event);
                 });
             }
             Effect::LoadPullRequest {
@@ -136,7 +158,7 @@ impl EffectRunner {
                 github_token,
             } => {
                 let services = self.services.clone();
-                let sender = self.sender.clone();
+                let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event = match services.load_pull_request(&url, &repo_path, github_token) {
                         Ok((info, left_ref, right_ref)) => AppEvent::PullRequestLoaded {
@@ -150,12 +172,12 @@ impl EffectRunner {
                             message: error.to_string(),
                         },
                     };
-                    let _ = sender.send(event);
+                    event_sender.send(event);
                 });
             }
             Effect::StartDeviceFlow { client_id } => {
                 let services = self.services.clone();
-                let sender = self.sender.clone();
+                let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event = match services.start_device_flow(&client_id) {
                         Ok(state) => AppEvent::DeviceFlowStarted(state),
@@ -163,7 +185,7 @@ impl EffectRunner {
                             message: error.to_string(),
                         },
                     };
-                    let _ = sender.send(event);
+                    event_sender.send(event);
                 });
             }
             Effect::PollDeviceFlow {
@@ -172,7 +194,7 @@ impl EffectRunner {
                 interval_seconds,
             } => {
                 let services = self.services.clone();
-                let sender = self.sender.clone();
+                let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event =
                         match services.poll_device_flow(&client_id, &device_code, interval_seconds)
@@ -182,7 +204,7 @@ impl EffectRunner {
                                 message: error.to_string(),
                             },
                         };
-                    let _ = sender.send(event);
+                    event_sender.send(event);
                 });
             }
             Effect::ResolveRef {
@@ -191,7 +213,7 @@ impl EffectRunner {
                 generation,
             } => {
                 let services = self.services.clone();
-                let sender = self.sender.clone();
+                let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event = match services.resolve_ref(&repo_path, &query) {
                         Ok((short_oid, summary)) => AppEvent::RefResolved {
@@ -202,7 +224,7 @@ impl EffectRunner {
                         },
                         Err(_) => AppEvent::RefResolveFailed { generation },
                     };
-                    let _ = sender.send(event);
+                    event_sender.send(event);
                 });
             }
             Effect::SaveSettings(settings) => {
@@ -210,10 +232,10 @@ impl EffectRunner {
             }
             Effect::OpenBrowser { url } => {
                 let services = self.services.clone();
-                let sender = self.sender.clone();
+                let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     if let Err(error) = services.open_browser(&url) {
-                        let _ = sender.send(AppEvent::BrowserOpenFailed {
+                        event_sender.send(AppEvent::BrowserOpenFailed {
                             message: error.to_string(),
                         });
                     }
@@ -232,7 +254,7 @@ impl EffectRunner {
 
 fn save_worker_loop(
     services: AppServices,
-    event_sender: Sender<AppEvent>,
+    event_sender: RuntimeEventSender,
     receiver: Receiver<Settings>,
 ) {
     let mut last_saved: Option<Settings> = None;
@@ -260,7 +282,7 @@ fn save_worker_loop(
 
 fn persist_settings(
     services: &AppServices,
-    event_sender: &Sender<AppEvent>,
+    event_sender: &RuntimeEventSender,
     last_saved: &mut Option<Settings>,
     settings: Settings,
 ) {
@@ -283,7 +305,7 @@ fn persist_settings(
             message: error.to_string(),
         },
     };
-    let _ = event_sender.send(event);
+    event_sender.send(event);
 }
 
 #[cfg(test)]
@@ -317,7 +339,7 @@ mod tests {
     fn save_settings_coalesces_rapid_updates_and_keeps_latest() {
         let dir = TempDir::new().unwrap();
         let store = SettingsStore::new_in(dir.path());
-        let runtime = AppRuntime::new(AppServices::new(store.clone()));
+        let runtime = AppRuntime::new(AppServices::new(store.clone()), None);
 
         let mut settings = Settings::default();
         settings.theme_name = "One".to_owned();
@@ -348,7 +370,7 @@ mod tests {
     fn save_settings_skips_duplicate_snapshots() {
         let dir = TempDir::new().unwrap();
         let store = SettingsStore::new_in(dir.path());
-        let runtime = AppRuntime::new(AppServices::new(store.clone()));
+        let runtime = AppRuntime::new(AppServices::new(store.clone()), None);
 
         let mut settings = Settings::default();
         settings.theme_name = "Gruvbox Hard".to_owned();

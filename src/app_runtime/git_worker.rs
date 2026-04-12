@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use git2::{BranchType, Status, StatusOptions};
 
+use crate::app_runtime::runtime::RuntimeEventSender;
 use crate::core::vcs::git::{
     GitService, StatusItem, StatusOperation, status::status_items_from_entry,
 };
@@ -17,7 +18,7 @@ pub struct GitWorker {
 }
 
 impl GitWorker {
-    pub fn new(event_sender: Sender<AppEvent>) -> Self {
+    pub fn new(event_sender: RuntimeEventSender) -> Self {
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || git_worker_loop(event_sender, receiver));
         Self { sender }
@@ -84,7 +85,7 @@ struct SnapshotBundle {
     state: RepositorySnapshotState,
 }
 
-fn git_worker_loop(event_sender: Sender<AppEvent>, receiver: Receiver<GitWorkerCommand>) {
+fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorkerCommand>) {
     let mut state = GitWorkerState::default();
     let mut pending_dirty: Option<PathBuf> = None;
 
@@ -130,7 +131,7 @@ fn git_worker_loop(event_sender: Sender<AppEvent>, receiver: Receiver<GitWorkerC
 
 fn apply_status_operation(
     state: &mut GitWorkerState,
-    event_sender: &Sender<AppEvent>,
+    event_sender: &RuntimeEventSender,
     path: PathBuf,
     item: StatusItem,
     operation: StatusOperation,
@@ -143,7 +144,7 @@ fn apply_status_operation(
 
     if !state.git.is_open() {
         if let Err(error) = state.git.open(path.to_string_lossy().as_ref()) {
-            let _ = event_sender.send(AppEvent::StatusOperationFailed {
+            event_sender.send(AppEvent::StatusOperationFailed {
                 path,
                 message: error.to_string(),
             });
@@ -152,7 +153,7 @@ fn apply_status_operation(
     }
 
     if let Err(error) = state.git.apply_status_operation(&item, operation) {
-        let _ = event_sender.send(AppEvent::StatusOperationFailed {
+        event_sender.send(AppEvent::StatusOperationFailed {
             path: path.clone(),
             message: error.to_string(),
         });
@@ -164,7 +165,7 @@ fn apply_status_operation(
 
 fn sync_repository(
     state: &mut GitWorkerState,
-    event_sender: &Sender<AppEvent>,
+    event_sender: &RuntimeEventSender,
     path: PathBuf,
     reason: RepositorySyncReason,
 ) {
@@ -176,7 +177,7 @@ fn sync_repository(
 
     if !state.git.is_open() {
         if let Err(error) = state.git.open(path.to_string_lossy().as_ref()) {
-            let _ = event_sender.send(AppEvent::RepositorySnapshotFailed {
+            event_sender.send(AppEvent::RepositorySnapshotFailed {
                 path,
                 reason,
                 message: error.to_string(),
@@ -188,7 +189,7 @@ fn sync_repository(
     let bundle = match collect_snapshot(&state.git, path.clone(), reason) {
         Ok(bundle) => bundle,
         Err(error) => {
-            let _ = event_sender.send(AppEvent::RepositorySnapshotFailed {
+            event_sender.send(AppEvent::RepositorySnapshotFailed {
                 path,
                 reason,
                 message: error.to_string(),
@@ -212,7 +213,7 @@ fn sync_repository(
         } else {
             change_kind
         };
-        let _ = event_sender.send(AppEvent::RepositorySnapshotReady(snapshot));
+        event_sender.send(AppEvent::RepositorySnapshotReady(snapshot));
     }
 }
 

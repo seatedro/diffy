@@ -27,6 +27,14 @@ use crate::ui::theme::Theme;
 pub fn run() -> Result<(), Box<dyn Error>> {
     let startup = StartupOptions::load();
     init_logging(startup.log_debug);
+    let should_poll = startup.exit_after().is_some();
+
+    let event_loop = EventLoop::new()?;
+    event_loop.set_control_flow(if should_poll {
+        ControlFlow::Poll
+    } else {
+        ControlFlow::Wait
+    });
 
     let settings_store = SettingsStore::new_default();
     let settings = settings_store.load()?;
@@ -38,16 +46,8 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         .iter()
         .map(|n| theme_registry.variant(n))
         .collect();
-    let runtime = AppRuntime::new(AppServices::new(settings_store));
+    let runtime = AppRuntime::new(AppServices::new(settings_store), Some(event_loop.create_proxy()));
     runtime.dispatch_all(initial_effects);
-
-    let event_loop = EventLoop::new()?;
-    let should_poll = state.startup.exit_after.is_some();
-    event_loop.set_control_flow(if should_poll {
-        ControlFlow::Poll
-    } else {
-        ControlFlow::Wait
-    });
 
     #[cfg(feature = "hot-reload")]
     let hot_reload_pending = {
@@ -394,6 +394,13 @@ impl NativeApp {
 }
 
 impl ApplicationHandler for NativeApp {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+        self.process_runtime_events();
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -637,7 +644,7 @@ mod tests {
 
     fn test_app(state: AppState) -> NativeApp {
         let dir = TempDir::new().unwrap();
-        let runtime = AppRuntime::new(AppServices::new(SettingsStore::new_in(dir.path())));
+        let runtime = AppRuntime::new(AppServices::new(SettingsStore::new_in(dir.path())), None);
         NativeApp::new(state, runtime, ThemeRegistry::load())
     }
 

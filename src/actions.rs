@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
-use crate::ui::state::{CompareField, FocusTarget};
+use crate::ui::state::{CompareField, FocusTarget, SidebarTab};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -106,6 +106,10 @@ pub enum Action {
     ClearSidebarFilter,
     ToggleSidebarMode,
     ToggleSidebar,
+    SetSidebarTab(SidebarTab),
+    SelectSidebarCommit(String),
+    ClearSidebarCommit,
+    ScrollCommitListPx(i32),
     ExpandAllFolders,
     CollapseAllFolders,
     OpenSearch,

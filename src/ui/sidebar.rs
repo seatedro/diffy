@@ -4,15 +4,17 @@ use std::rc::Rc;
 use halogen::view;
 
 use crate::actions::Action;
-use crate::core::vcs::git::StatusScope;
+use crate::core::vcs::git::{CommitInfo, StatusScope};
 use crate::effects::Effect;
 use crate::render::{Rect, RectPrimitive, RoundedRectPrimitive};
-use crate::ui::components::{self, Button, ButtonSize, ButtonStyle};
+use crate::ui::components::{self, Button, ButtonSize, ButtonStyle, SegmentedControl, SegmentedItem};
 use crate::ui::design::{Alpha, Ico, Rad, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
-use crate::ui::state::{AppState, FocusTarget, SidebarMode, SidebarWidthCache, WorkspaceSource};
+use crate::ui::state::{
+    AppState, FocusTarget, SidebarMode, SidebarTab, SidebarWidthCache, WorkspaceSource,
+};
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme};
 
@@ -256,6 +258,122 @@ pub(crate) fn sidebar(
     let scale = theme.metrics.ui_scale();
     let filter = &state.file_list.filter;
     let has_filter = !filter.is_empty();
+    let row_h = theme.metrics.ui_row_height.round();
+
+    let range_commits = &state.workspace.range_commits;
+    let show_tabs = state.workspace.source == WorkspaceSource::Compare && range_commits.len() > 1;
+    let on_commits_tab = show_tabs && state.file_list.tab == SidebarTab::Commits;
+    let is_drilled = state.workspace.pre_drill_compare.is_some();
+
+    let tab_bar: Option<AnyElement> = if show_tabs {
+        Some(view! { scale,
+            <div class="flex-col" px={Sp::MD} pt={Sp::XS} pb={Sp::XS}>
+                {SegmentedControl::new(vec![
+                    SegmentedItem::new(
+                        format!("Files {}", file_count),
+                        Action::SetSidebarTab(SidebarTab::Files),
+                        !on_commits_tab,
+                    ),
+                    SegmentedItem::new(
+                        format!("Commits {}", range_commits.len()),
+                        Action::SetSidebarTab(SidebarTab::Commits),
+                        on_commits_tab,
+                    ),
+                ])}
+            </div>
+        })
+    } else {
+        None
+    };
+
+    if on_commits_tab {
+        let filtered_commits: Vec<usize> = if has_filter {
+            let haystack: Vec<String> = range_commits
+                .iter()
+                .map(|c| format!("{} {}", c.short_oid, c.summary))
+                .collect();
+            let haystack_refs: Vec<&str> = haystack.iter().map(|s| s.as_str()).collect();
+            let config = neo_frizbee::Config {
+                max_typos: Some(2),
+                sort: false,
+                ..Default::default()
+            };
+            let mut matches = neo_frizbee::match_list(filter, &haystack_refs, &config);
+            matches.sort_by(|a, b| b.score.cmp(&a.score));
+            matches.iter().map(|m| m.index as usize).collect()
+        } else {
+            (0..range_commits.len()).collect()
+        };
+
+        let search_bar: Option<AnyElement> = if !range_commits.is_empty() {
+            let search_focused = cx.is_focused(FocusTarget::SidebarSearch);
+            let input = text_input("", &state.file_list.filter)
+                .placeholder("Filter commits\u{2026}")
+                .focused(search_focused)
+                .focus_target(FocusTarget::SidebarSearch)
+                .cursor(state.text_edit.cursor)
+                .anchor(state.text_edit.anchor)
+                .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
+                .on_click(Action::SetFocus(Some(FocusTarget::SidebarSearch)))
+                .bare()
+                .w_full()
+                .h(row_h);
+            let hint = if !search_focused && !has_filter {
+                Some("/")
+            } else {
+                None
+            };
+            Some(view! { scale,
+                <div class="w-full" px={Sp::SM + Sp::XXS} pb={Sp::SM}>
+                    {components::search_field(input, has_filter, Some(Action::ClearSidebarFilter), hint, theme)}
+                </div>
+            })
+        } else {
+            None
+        };
+
+        let content: AnyElement = if filtered_commits.is_empty() && has_filter {
+            view! { scale,
+                <div class="flex-1 items-center justify-center">
+                    <div class="flex-col items-center" gap={Sp::SM}>
+                        <icon svg={lucide::SEARCH} size={Ico::XL} color={tc.text_muted} />
+                        <text class="text-sm" color={tc.text_muted}>{"No commits match filter."}</text>
+                    </div>
+                </div>
+            }
+        } else {
+            let total_height = state
+                .file_list
+                .total_content_height(filtered_commits.len());
+            let scroll_px = state.file_list.commits_scroll_offset_px;
+            let rows: Vec<AnyElement> = filtered_commits
+                .iter()
+                .map(|&i| commit_row(&range_commits[i], i, state, tc, scale, is_drilled))
+                .collect();
+
+            view! { scale,
+                <div class="flex-1 flex-col" min_h={0.0}
+                     px={Rad::LG} pt={Sp::XXS} gap={Sp::XS}
+                     clip scroll_y={scroll_px}
+                     scroll_total={total_height}
+                     on_scroll={ScrollActionBuilder::Custom(Action::ScrollCommitListPx)}>
+                    {...rows}
+                </div>
+            }
+        };
+
+        return view! { scale,
+            <div class="flex-col shrink-0 h-full" min_h={0.0}
+                 w={sidebar_width}
+                 bg={tc.sidebar_background}
+                 border_r={tc.border_variant}>
+                {?tab_bar}
+                {?search_bar}
+                {content}
+            </div>
+        };
+    }
+
     let is_tree = state.file_list.mode == SidebarMode::TreeView
         && state.workspace.source == WorkspaceSource::Compare;
 
@@ -277,8 +395,6 @@ pub(crate) fn sidebar(
     let total_adds: i32 = all_files.iter().map(|f| f.additions).sum();
     let total_dels: i32 = all_files.iter().map(|f| f.deletions).sum();
 
-    let row_h = theme.metrics.ui_row_height.round();
-
     let mode_icon = if is_tree {
         lucide::ROWS
     } else {
@@ -286,35 +402,65 @@ pub(crate) fn sidebar(
     };
     let mode_tip = if is_tree { "List view" } else { "Tree view" };
 
-    let header = view! { scale,
-        <div class="flex-col" px={Sp::MD}>
-            <div class="flex-row items-center" h={row_h} gap={Sp::SM}>
-                <text class="text-xs font-semibold" color={tc.text_muted}>{"FILES"}</text>
+    let header: Option<AnyElement> = if show_tabs {
+        None
+    } else {
+        Some(view! { scale,
+            <div class="flex-col" px={Sp::MD}>
+                <div class="flex-row items-center" h={row_h} gap={Sp::SM}>
+                    <text class="text-xs font-semibold" color={tc.text_muted}>{"FILES"}</text>
+                    if file_count > 0 {
+                        <div px={Rad::LG} py={Sp::XXS} rounded={Rad::LG}
+                             bg={Color::rgba(255, 255, 255, 10)}>
+                            <text class="text-xs" color={tc.text_muted}>{file_count.to_string()}</text>
+                        </div>
+                    }
+                    <spacer />
+                    if file_count > 0 && state.workspace.source == WorkspaceSource::Compare {
+                        <Button action={Action::ToggleSidebarMode}
+                                tooltip={mode_tip}
+                                fixed_size={Sz::MODE_TOGGLE}>
+                            <Icon>{mode_icon}</Icon>
+                        </Button>
+                    }
+                </div>
                 if file_count > 0 {
-                    <div px={Rad::LG} py={Sp::XXS} rounded={Rad::LG}
-                         bg={Color::rgba(255, 255, 255, 10)}>
-                        <text class="text-xs" color={tc.text_muted}>{file_count.to_string()}</text>
+                    <div class="flex-row items-center" h={row_h} gap={Sp::XS}>
+                        {components::stat_summary(
+                            file_count,
+                            total_adds.unsigned_abs(),
+                            total_dels.unsigned_abs(),
+                        ).compact()}
                     </div>
                 }
-                <spacer />
-                if file_count > 0 && state.workspace.source == WorkspaceSource::Compare {
-                    <Button action={Action::ToggleSidebarMode}
-                            tooltip={mode_tip}
-                            fixed_size={Sz::MODE_TOGGLE}>
-                        <Icon>{mode_icon}</Icon>
-                    </Button>
-                }
             </div>
-            if file_count > 0 {
-                <div class="flex-row items-center" h={row_h} gap={Sp::XS}>
-                    {components::stat_summary(
-                        file_count,
-                        total_adds.unsigned_abs(),
-                        total_dels.unsigned_abs(),
-                    ).compact()}
+        })
+    };
+
+    let files_header: Option<AnyElement> = if show_tabs {
+        Some(view! { scale,
+            <div class="flex-col" px={Sp::MD}>
+                <div class="flex-row items-center" h={row_h} gap={Sp::SM}>
+                    if file_count > 0 {
+                        {components::stat_summary(
+                            file_count,
+                            total_adds.unsigned_abs(),
+                            total_dels.unsigned_abs(),
+                        ).compact()}
+                    }
+                    <spacer />
+                    if file_count > 0 && state.workspace.source == WorkspaceSource::Compare {
+                        <Button action={Action::ToggleSidebarMode}
+                                tooltip={mode_tip}
+                                fixed_size={Sz::MODE_TOGGLE}>
+                            <Icon>{mode_icon}</Icon>
+                        </Button>
+                    }
                 </div>
-            }
-        </div>
+            </div>
+        })
+    } else {
+        None
     };
 
     let search_bar: Option<AnyElement> = if file_count > 0 {
@@ -460,7 +606,9 @@ pub(crate) fn sidebar(
              w={sidebar_width}
              bg={tc.sidebar_background}
              border_r={tc.border_variant}>
-            {header}
+            {?tab_bar}
+            {?header}
+            {?files_header}
             {?search_bar}
             {?content}
         </div>
@@ -590,6 +738,40 @@ fn file_row(
             if viewed {
                 <icon svg={lucide::CHECK} size={Ico::XS} color={tc.line_add_text} />
             }
+        </div>
+    }
+}
+
+fn commit_row(
+    commit: &CommitInfo,
+    _index: usize,
+    state: &AppState,
+    tc: &crate::ui::theme::ThemeColors,
+    scale: f32,
+    is_drilled: bool,
+) -> AnyElement {
+    let row_height = state.file_list.row_height;
+    let selected = is_drilled && commit.oid.starts_with(&state.compare.left_ref);
+    let action = if selected {
+        Action::ClearSidebarCommit
+    } else {
+        Action::SelectSidebarCommit(commit.oid.clone())
+    };
+
+    view! { scale,
+        <div class="w-full shrink-0 flex-row items-center"
+             h={row_height} px={Sp::SM} gap={Sp::SM}
+             on_click={action}
+             cursor={CursorHint::Pointer}
+             @when { selected } { bg={tc.sidebar_row_selected} border_l={tc.accent} }
+             @when { !selected } { hover_bg={tc.sidebar_row_hover} }>
+            <icon svg={lucide::CIRCLE_DOT} size={Ico::SM} color={if selected { tc.accent } else { tc.text_muted }} />
+            <div class="flex-1 overflow-hidden" min_w={0.0}>
+                <text class="text-sm" color={if selected { tc.text_strong } else { tc.text }}>{&commit.summary}</text>
+            </div>
+            <div class="shrink-0">
+                <text class="text-xs font-mono" color={tc.text_muted}>{&commit.short_oid}</text>
+            </div>
         </div>
     }
 }

@@ -200,6 +200,29 @@ impl GitService {
             .collect()
     }
 
+    pub fn commits_in_range(
+        &self,
+        left: &str,
+        right: &str,
+        max_count: usize,
+    ) -> Result<Vec<CommitInfo>> {
+        let repo = self.repo()?;
+        let right_oid = self.resolve_commit_oid(right)?;
+        let left_oid = self.resolve_commit_oid(left)?;
+        let mut walk = repo.revwalk()?;
+        walk.set_sorting(git2::Sort::TIME)?;
+        walk.push(right_oid)?;
+        walk.hide(left_oid)?;
+
+        walk.take(max_count)
+            .map(|entry| {
+                entry
+                    .map_err(Into::into)
+                    .and_then(|oid| self.commit_info(repo, oid))
+            })
+            .collect()
+    }
+
     pub fn search_commits(&self, hex_prefix: &str) -> Result<Vec<CommitInfo>> {
         if hex_prefix.len() < 4 {
             return Ok(Vec::new());

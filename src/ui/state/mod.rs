@@ -180,6 +180,8 @@ pub struct WorkspaceState {
     pub used_fallback: bool,
     pub fallback_message: String,
     pub sidebar_auto_width: Option<SidebarWidthCache>,
+    pub range_commits: Vec<CommitInfo>,
+    pub pre_drill_compare: Option<(String, String, CompareMode)>,
 }
 
 impl WorkspaceState {
@@ -198,6 +200,8 @@ impl WorkspaceState {
         self.used_fallback = false;
         self.fallback_message.clear();
         self.sidebar_auto_width = None;
+        self.range_commits.clear();
+        self.pre_drill_compare = None;
     }
 }
 
@@ -208,15 +212,24 @@ pub enum SidebarMode {
     TreeView,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SidebarTab {
+    #[default]
+    Files,
+    Commits,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FileListState {
     pub scroll_offset_px: f32,
+    pub commits_scroll_offset_px: f32,
     pub hovered_index: Option<usize>,
     pub row_height: f32,
     pub gap: f32,
     pub viewport_height: f32,
     pub filter: String,
     pub mode: SidebarMode,
+    pub tab: SidebarTab,
     pub expanded_folders: HashSet<String>,
     pub viewed_files: HashSet<usize>,
 }
@@ -225,12 +238,14 @@ impl Default for FileListState {
     fn default() -> Self {
         Self {
             scroll_offset_px: 0.0,
+            commits_scroll_offset_px: 0.0,
             hovered_index: None,
             row_height: 36.0,
             gap: 4.0,
             viewport_height: 0.0,
             filter: String::new(),
             mode: SidebarMode::FlatList,
+            tab: SidebarTab::Files,
             expanded_folders: HashSet::new(),
             viewed_files: HashSet::new(),
         }
@@ -832,8 +847,13 @@ impl AppState {
             | ClearSidebarFilter
             | ToggleSidebarMode
             | ToggleSidebar
+            | SetSidebarTab(_)
+            | ScrollCommitListPx(_)
             | ExpandAllFolders
             | CollapseAllFolders => self.apply_file_list_action(action),
+
+            SelectSidebarCommit(_)
+            | ClearSidebarCommit => self.apply_compare_action(action),
 
             // Viewport & editor navigation
             ScrollViewportLines(_)
@@ -1121,8 +1141,38 @@ impl AppState {
             Action::UnstageAllFiles => {
                 self.apply_batch_scope_operation(&[StatusScope::Staged], StatusOperation::Unstage)
             }
+            Action::SelectSidebarCommit(oid) => self.drill_into_commit(&oid),
+            Action::ClearSidebarCommit => self.restore_pre_drill_compare(),
             _ => Vec::new(),
         }
+    }
+
+    fn drill_into_commit(&mut self, oid: &str) -> Vec<Effect> {
+        if self.workspace.pre_drill_compare.is_none() {
+            self.workspace.pre_drill_compare = Some((
+                self.compare.left_ref.clone(),
+                self.compare.right_ref.clone(),
+                self.compare.mode,
+            ));
+        }
+        self.compare.left_ref = oid[..7.min(oid.len())].to_owned();
+        self.compare.right_ref.clear();
+        self.compare.resolved_left = None;
+        self.compare.resolved_right = None;
+        self.compare.mode = CompareMode::SingleCommit;
+        self.kickoff_compare()
+    }
+
+    fn restore_pre_drill_compare(&mut self) -> Vec<Effect> {
+        let Some((left, right, mode)) = self.workspace.pre_drill_compare.take() else {
+            return Vec::new();
+        };
+        self.compare.left_ref = left;
+        self.compare.right_ref = right;
+        self.compare.resolved_left = None;
+        self.compare.resolved_right = None;
+        self.compare.mode = mode;
+        self.kickoff_compare()
     }
 
     fn apply_file_list_action(&mut self, action: Action) -> Vec<Effect> {
@@ -1202,12 +1252,20 @@ impl AppState {
             }
             Action::SetSidebarFilter(query) => {
                 self.file_list.filter = query;
-                self.file_list.scroll_offset_px = 0.0;
+                if self.file_list.tab == SidebarTab::Commits {
+                    self.file_list.commits_scroll_offset_px = 0.0;
+                } else {
+                    self.file_list.scroll_offset_px = 0.0;
+                }
                 Vec::new()
             }
             Action::ClearSidebarFilter => {
                 self.file_list.filter.clear();
-                self.file_list.scroll_offset_px = 0.0;
+                if self.file_list.tab == SidebarTab::Commits {
+                    self.file_list.commits_scroll_offset_px = 0.0;
+                } else {
+                    self.file_list.scroll_offset_px = 0.0;
+                }
                 Vec::new()
             }
             Action::ToggleSidebar => {
@@ -1234,6 +1292,21 @@ impl AppState {
             }
             Action::CollapseAllFolders => {
                 self.file_list.expanded_folders.clear();
+                Vec::new()
+            }
+            Action::SetSidebarTab(tab) => {
+                self.file_list.tab = tab;
+                self.file_list.filter.clear();
+                Vec::new()
+            }
+            Action::ScrollCommitListPx(delta) => {
+                let stride = self.file_list.row_stride();
+                let commit_count = self.workspace.range_commits.len();
+                let total = self.file_list.total_content_height(commit_count);
+                let max_scroll = (total - self.file_list.viewport_height).max(0.0);
+                self.file_list.commits_scroll_offset_px =
+                    (self.file_list.commits_scroll_offset_px + delta as f32 * stride)
+                        .clamp(0.0, max_scroll);
                 Vec::new()
             }
             _ => Vec::new(),
@@ -1685,7 +1758,11 @@ impl AppState {
         self.workspace.files = build_file_entries(&payload.output.files);
         self.workspace.compare_output = Some(payload.output);
         self.workspace.sidebar_auto_width = None;
+        if self.workspace.pre_drill_compare.is_none() {
+            self.workspace.range_commits = payload.range_commits;
+        }
         self.file_list.scroll_offset_px = 0.0;
+        self.file_list.commits_scroll_offset_px = 0.0;
         self.set_focus(Some(FocusTarget::FileList));
         self.editor.clear_document();
         self.overlays.clear();
@@ -1850,8 +1927,6 @@ impl AppState {
         }
 
         self.workspace.source = WorkspaceSource::Compare;
-        self.workspace_mode = WorkspaceMode::Loading;
-        self.workspace.status = AsyncStatus::Loading;
         self.workspace.compare_generation = self.workspace.compare_generation.saturating_add(1);
         self.overlays.clear();
         self.sync_settings_snapshot();
@@ -2015,6 +2090,7 @@ impl AppState {
     // Text editing methods are in text_edit.rs
 
     fn update_compare_field(&mut self, field: CompareField, value: String) -> Vec<Effect> {
+        self.workspace.pre_drill_compare = None;
         match field {
             CompareField::Left => {
                 self.compare.left_ref = value;
@@ -2624,6 +2700,7 @@ impl AppState {
             "diff" => CompareMode::TwoDot,
             _ => CompareMode::ThreeDot,
         };
+        self.workspace.pre_drill_compare = None;
         self.compare.left_ref = left.to_owned();
         self.compare.right_ref = right.to_owned();
         self.compare.resolved_left = None;

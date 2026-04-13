@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use crate::core::compare::{CompareOutput, CompareService, RendererKind};
 use crate::core::error::{DiffyError, Result};
-use crate::core::vcs::git::GitService;
+use crate::core::vcs::git::{GitService, WORKDIR_REF};
 use crate::core::vcs::github::{
     DeviceFlowState, GitHubApi, PullRequestInfo, parse_pr_url, poll_for_token, start_device_flow,
 };
@@ -35,12 +35,22 @@ impl AppServices {
         )?;
         let output = CompareService::default().compare(&request.spec, &git)?;
 
+        let range_right = if resolved_right == WORKDIR_REF {
+            "HEAD"
+        } else {
+            &resolved_right
+        };
+        let range_commits = git
+            .commits_in_range(&resolved_left, range_right, 500)
+            .unwrap_or_default();
+
         Ok(CompareFinished {
             generation,
             spec: request.spec,
             resolved_left,
             resolved_right,
             output,
+            range_commits,
         })
     }
 

@@ -36,6 +36,7 @@ pub struct CompareFinished {
     pub resolved_left: String,
     pub resolved_right: String,
     pub output: CompareOutput,
+    pub range_commits: Vec<CommitInfo>,
 }
 
 #[derive(Debug, Clone)]

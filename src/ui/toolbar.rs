@@ -342,7 +342,7 @@ fn empty_state(state: &AppState, theme: &Theme) -> AnyElement {
 
     view! { scale,
         <div class="flex-1 items-center justify-center" p={Sp::XL}>
-            <div class="w-full flex-col" max_w={Sz::CARD_MD}
+            <div class="w-full flex-col" max_w={Sz::CARD_LG}
                  p={Sp::XXL} gap={Sp::LG}
                  bg={tc.elevated_surface}
                  rounded={Rad::XXXL}

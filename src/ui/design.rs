@@ -46,6 +46,7 @@ impl Sz {
     pub const SIDEBAR_LIST_OFFSET: f32 = 40.0;
     pub const CARD_SM: f32 = 440.0;
     pub const CARD_MD: f32 = 520.0;
+    pub const CARD_LG: f32 = 860.0;
     pub const CARD_AUTH: f32 = 580.0;
     pub const PROGRESS_H: f32 = 6.0;
     pub const DIFFSTAT_H: f32 = 8.0;

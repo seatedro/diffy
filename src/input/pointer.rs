@@ -46,6 +46,15 @@ impl InputSystem {
             .rev()
             .find(|ha| ha.bounds.contains(x, y))
         {
+            if hit_area.multiline {
+                let click_x = (x - hit_area.text_x) as i32;
+                let click_y = (y - hit_area.text_y) as i32;
+                self.mouse_drag_target = Some(hit_area.focus_target);
+                return InputOutcome::actions(vec![
+                    Action::SetFocus(Some(hit_area.focus_target)),
+                    Action::EditorClick(click_x, click_y),
+                ]);
+            }
             let byte_offset = hit_test_text_offset(
                 renderer.map(Renderer::font_system),
                 &hit_area.value,
@@ -125,13 +134,19 @@ impl InputSystem {
                 .iter()
                 .find(|ha| ha.focus_target == drag_target)
         {
-            let byte_offset = hit_test_text_offset(
-                renderer.map(Renderer::font_system),
-                &hit_area.value,
-                hit_area.font_size,
-                x - hit_area.text_x,
-            );
-            actions.push(Action::ExtendTextSelection(byte_offset));
+            if hit_area.multiline {
+                let drag_x = (x - hit_area.text_x) as i32;
+                let drag_y = (y - hit_area.text_y) as i32;
+                actions.push(Action::EditorDrag(drag_x, drag_y));
+            } else {
+                let byte_offset = hit_test_text_offset(
+                    renderer.map(Renderer::font_system),
+                    &hit_area.value,
+                    hit_area.font_size,
+                    x - hit_area.text_x,
+                );
+                actions.push(Action::ExtendTextSelection(byte_offset));
+            }
         }
 
         let hovered_hit = ui_frame

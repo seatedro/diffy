@@ -3,6 +3,7 @@
 pub mod actions;
 pub mod apprt;
 pub mod core;
+pub mod editor;
 pub mod effects;
 pub mod events;
 pub mod fonts;

@@ -73,6 +73,13 @@ pub enum AppEvent {
         path: PathBuf,
         message: String,
     },
+    CommitCreated {
+        path: PathBuf,
+    },
+    CommitFailed {
+        path: PathBuf,
+        message: String,
+    },
     PullRequestLoaded {
         url: String,
         info: PullRequestInfo,

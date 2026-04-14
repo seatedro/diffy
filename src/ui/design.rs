@@ -59,6 +59,7 @@ impl Sz {
     pub const INPUT_SIDE_PAD: f32 = 14.0;
     pub const INPUT_TOP_PAD: f32 = 8.0;
     pub const CURSOR_WIDTH: f32 = 2.0;
+    pub const COMMIT_BOX_H: f32 = 140.0;
     pub const MAIN_SURFACE_MIN_W: f32 = 320.0;
     pub const AUTH_MODAL_HEIGHT: f32 = 320.0;
     pub const PICKER_MAX_ROWS: usize = 8;

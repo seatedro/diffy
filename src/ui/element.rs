@@ -1935,6 +1935,7 @@ pub struct TextInputHitArea {
     pub value: String,
     pub font_size: f32,
     pub focus_target: crate::ui::state::FocusTarget,
+    pub multiline: bool,
 }
 
 impl Element for TextInput {
@@ -2135,6 +2136,7 @@ impl Element for TextInput {
                 value,
                 font_size: value_size,
                 focus_target: target,
+                multiline: false,
             });
         }
     }

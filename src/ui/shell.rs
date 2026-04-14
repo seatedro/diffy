@@ -58,8 +58,14 @@ pub fn build_ui_frame(
     } else {
         row_h
     };
+    let commit_box_h = if state.workspace.source == crate::ui::state::WorkspaceSource::Status {
+        (Sz::COMMIT_BOX_H * ui_scale).round() + Sp::SM * 2.0 * ui_scale
+    } else {
+        0.0
+    };
     let sidebar_list_height =
-        (height - m.title_bar_height - m.status_bar_height - sidebar_header_h).max(0.0);
+        (height - m.title_bar_height - m.status_bar_height - sidebar_header_h - commit_box_h)
+            .max(0.0);
     state.file_list.row_height = row_h.round();
     state.file_list.gap = (Sp::XS * ui_scale).round();
     let overlay_row_height = row_h.round().max(24.0) as u32;

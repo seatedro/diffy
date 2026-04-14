@@ -34,6 +34,12 @@ pub struct BatchStatusOperationRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitRequest {
+    pub repo_path: PathBuf,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     OpenRepositoryDialog,
     WatchRepository {
@@ -54,6 +60,7 @@ pub enum Effect {
     },
     ApplyStatusOperation(StatusOperationRequest),
     ApplyBatchStatusOperation(BatchStatusOperationRequest),
+    CreateCommit(CommitRequest),
     LoadPullRequest {
         url: String,
         repo_path: PathBuf,

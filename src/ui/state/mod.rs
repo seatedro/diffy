@@ -13,8 +13,10 @@ use crate::core::vcs::git::{
     BranchInfo, CommitInfo, StatusItem, StatusOperation, StatusScope, TagInfo,
 };
 use crate::core::vcs::github::{DeviceFlowState, PullRequestInfo};
+use crate::editor::Editor;
 use crate::effects::{
-    BatchStatusOperationRequest, CompareRequest, Effect, StatusDiffRequest, StatusOperationRequest,
+    BatchStatusOperationRequest, CommitRequest, CompareRequest, Effect, StatusDiffRequest,
+    StatusOperationRequest,
 };
 use crate::events::{
     AppEvent, CompareFinished, RepositoryChangeKind, RepositorySnapshot, RepositorySyncReason,
@@ -86,6 +88,21 @@ pub enum FocusTarget {
     AuthPrimaryAction,
     SidebarSearch,
     SearchInput,
+    CommitEditor,
+}
+
+impl FocusTarget {
+    pub fn is_text_field(self) -> bool {
+        matches!(
+            self,
+            Self::PickerInput
+                | Self::CommandPaletteInput
+                | Self::PullRequestInput
+                | Self::SidebarSearch
+                | Self::SearchInput
+                | Self::CommitEditor
+        )
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -608,6 +625,7 @@ pub struct AppState {
     pub last_error: Option<String>,
     pub toasts: Vec<Toast>,
     pub animation: crate::ui::animation::AnimationState,
+    pub commit_editor: Editor,
     pub sidebar_visible: bool,
     pub debug: DebugState,
     pub clock_ms: u64,
@@ -636,6 +654,7 @@ impl Default for AppState {
             last_error: None,
             toasts: Vec::new(),
             animation: crate::ui::animation::AnimationState::default(),
+            commit_editor: Editor::default(),
             sidebar_visible: true,
             debug: DebugState::default(),
             clock_ms: 0,
@@ -745,6 +764,7 @@ impl AppState {
             last_error: None,
             toasts: Vec::new(),
             animation: crate::ui::animation::AnimationState::default(),
+            commit_editor: Editor::default(),
             sidebar_visible: true,
             debug: DebugState::default(),
             clock_ms: 0,
@@ -774,19 +794,30 @@ impl AppState {
             // Text editing
             InsertText(_)
             | Backspace
+            | BackspaceWord
+            | BackspaceLine
             | DeleteForward
+            | DeleteForwardWord
             | CursorLeft
             | CursorRight
+            | CursorUp
+            | CursorDown
             | CursorWordLeft
             | CursorWordRight
             | CursorHome
             | CursorEnd
+            | CursorSoftHome
+            | CursorSoftEnd
             | SelectLeft
             | SelectRight
+            | SelectUp
+            | SelectDown
             | SelectWordLeft
             | SelectWordRight
             | SelectHome
             | SelectEnd
+            | SelectSoftHome
+            | SelectSoftEnd
             | SelectAll
             | Copy
             | Cut
@@ -830,7 +861,8 @@ impl AppState {
             | UnstageFile(_)
             | StageAllFiles
             | UnstageAllFiles
-            | ShowWorkingTree => self.apply_compare_action(action),
+            | ShowWorkingTree
+            | SubmitCommit => self.apply_compare_action(action),
 
             // File list & sidebar
             SelectFile(_)
@@ -852,8 +884,7 @@ impl AppState {
             | ExpandAllFolders
             | CollapseAllFolders => self.apply_file_list_action(action),
 
-            SelectSidebarCommit(_)
-            | ClearSidebarCommit => self.apply_compare_action(action),
+            SelectSidebarCommit(_) | ClearSidebarCommit => self.apply_compare_action(action),
 
             // Viewport & editor navigation
             ScrollViewportLines(_)
@@ -914,11 +945,26 @@ impl AppState {
                 }
                 Vec::new()
             }
+            EditorClick(x, y) => {
+                self.commit_editor.click(x, y);
+                Vec::new()
+            }
+            EditorDrag(x, y) => {
+                self.commit_editor.drag(x, y);
+                Vec::new()
+            }
+            EditorScrollPx(delta) => {
+                self.commit_editor.scroll(delta as f32);
+                Vec::new()
+            }
             Noop => Vec::new(),
         }
     }
 
     fn apply_text_edit_action(&mut self, action: Action) -> Vec<Effect> {
+        if self.focus.current == Some(FocusTarget::CommitEditor) {
+            return self.apply_commit_editor_action(action);
+        }
         match action {
             Action::InsertText(value) => self.insert_text(value),
             Action::Backspace => self.backspace(),
@@ -999,6 +1045,56 @@ impl AppState {
             }
             _ => Vec::new(),
         }
+    }
+
+    fn apply_commit_editor_action(&mut self, action: Action) -> Vec<Effect> {
+        match action {
+            Action::InsertText(value) => self.commit_editor.insert_text(&value),
+            Action::Backspace => self.commit_editor.delete_backward(),
+            Action::BackspaceWord => self.commit_editor.delete_backward_word(),
+            Action::BackspaceLine => self.commit_editor.delete_backward_line(),
+            Action::DeleteForward => self.commit_editor.delete_forward(),
+            Action::DeleteForwardWord => self.commit_editor.delete_forward_word(),
+            Action::CursorLeft => self.commit_editor.move_left(false),
+            Action::CursorRight => self.commit_editor.move_right(false),
+            Action::CursorUp => self.commit_editor.move_up(false),
+            Action::CursorDown => self.commit_editor.move_down(false),
+            Action::CursorWordLeft => self.commit_editor.move_word_left(false),
+            Action::CursorWordRight => self.commit_editor.move_word_right(false),
+            Action::CursorHome => self.commit_editor.move_home(false),
+            Action::CursorEnd => self.commit_editor.move_end(false),
+            Action::CursorSoftHome => self.commit_editor.move_soft_home(false),
+            Action::CursorSoftEnd => self.commit_editor.move_soft_end(false),
+            Action::SelectLeft => self.commit_editor.move_left(true),
+            Action::SelectRight => self.commit_editor.move_right(true),
+            Action::SelectUp => self.commit_editor.move_up(true),
+            Action::SelectDown => self.commit_editor.move_down(true),
+            Action::SelectWordLeft => self.commit_editor.move_word_left(true),
+            Action::SelectWordRight => self.commit_editor.move_word_right(true),
+            Action::SelectHome => self.commit_editor.move_home(true),
+            Action::SelectEnd => self.commit_editor.move_end(true),
+            Action::SelectSoftHome => self.commit_editor.move_soft_home(true),
+            Action::SelectSoftEnd => self.commit_editor.move_soft_end(true),
+            Action::SelectAll => self.commit_editor.select_all(),
+            Action::Copy => {
+                if let Some(text) = self.commit_editor.selected_text() {
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        let _ = clipboard.set_text(text);
+                    }
+                }
+            }
+            Action::Cut => {
+                if let Some(text) = self.commit_editor.selected_text() {
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        let _ = clipboard.set_text(text);
+                    }
+                    self.commit_editor.delete_backward();
+                }
+            }
+            Action::Paste(value) => self.commit_editor.insert_text(&value),
+            _ => {}
+        }
+        Vec::new()
     }
 
     fn apply_overlay_action(&mut self, action: Action) -> Vec<Effect> {
@@ -1141,10 +1237,30 @@ impl AppState {
             Action::UnstageAllFiles => {
                 self.apply_batch_scope_operation(&[StatusScope::Staged], StatusOperation::Unstage)
             }
+            Action::SubmitCommit => self.submit_commit(),
             Action::SelectSidebarCommit(oid) => self.drill_into_commit(&oid),
             Action::ClearSidebarCommit => self.restore_pre_drill_compare(),
             _ => Vec::new(),
         }
+    }
+
+    fn submit_commit(&mut self) -> Vec<Effect> {
+        let message = self.commit_editor.text().trim().to_owned();
+        if message.is_empty() {
+            return Vec::new();
+        }
+        let Some(repo_path) = self.compare.repo_path.clone() else {
+            return Vec::new();
+        };
+        let has_staged = self
+            .workspace
+            .status_items
+            .iter()
+            .any(|item| item.scope == StatusScope::Staged);
+        if !has_staged {
+            return Vec::new();
+        }
+        vec![Effect::CreateCommit(CommitRequest { repo_path, message })]
     }
 
     fn drill_into_commit(&mut self, oid: &str) -> Vec<Effect> {
@@ -1304,9 +1420,9 @@ impl AppState {
                 let commit_count = self.workspace.range_commits.len();
                 let total = self.file_list.total_content_height(commit_count);
                 let max_scroll = (total - self.file_list.viewport_height).max(0.0);
-                self.file_list.commits_scroll_offset_px =
-                    (self.file_list.commits_scroll_offset_px + delta as f32 * stride)
-                        .clamp(0.0, max_scroll);
+                self.file_list.commits_scroll_offset_px = (self.file_list.commits_scroll_offset_px
+                    + delta as f32 * stride)
+                    .clamp(0.0, max_scroll);
                 Vec::new()
             }
             _ => Vec::new(),
@@ -1481,6 +1597,19 @@ impl AppState {
                 Vec::new()
             }
             AppEvent::StatusOperationFailed { path, message } => {
+                if self.compare.repo_path.as_ref() == Some(&path) {
+                    self.push_error(&message);
+                }
+                Vec::new()
+            }
+            AppEvent::CommitCreated { path } => {
+                if self.compare.repo_path.as_ref() == Some(&path) {
+                    self.commit_editor.request_clear();
+                    self.push_info("Commit created.");
+                }
+                Vec::new()
+            }
+            AppEvent::CommitFailed { path, message } => {
                 if self.compare.repo_path.as_ref() == Some(&path) {
                     self.push_error(&message);
                 }
@@ -2036,6 +2165,7 @@ impl AppState {
             FocusTarget::PullRequestInput => Some(&self.github.pull_request.url_input),
             FocusTarget::SidebarSearch => Some(&self.file_list.filter),
             FocusTarget::SearchInput => Some(&self.editor.search.query),
+            FocusTarget::CommitEditor => None,
             _ => None,
         }
     }
@@ -2057,13 +2187,16 @@ impl AppState {
             Some(FocusTarget::PullRequestInput) => Some(&mut self.github.pull_request.url_input),
             Some(FocusTarget::SidebarSearch) => Some(&mut self.file_list.filter),
             Some(FocusTarget::SearchInput) => Some(&mut self.editor.search.query),
+            Some(FocusTarget::CommitEditor) => None,
             _ => None,
         }
     }
 
     /// Returns true if the current focus target is a text editing field.
     pub fn is_text_focused(&self) -> bool {
-        self.focused_text().is_some()
+        self.focus
+            .current
+            .is_some_and(|target| target.is_text_field())
     }
 
     fn touch_cursor(&mut self) {

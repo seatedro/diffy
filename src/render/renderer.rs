@@ -10,7 +10,7 @@ use wgpu::util::DeviceExt;
 use winit::{dpi::PhysicalSize, window::Window};
 
 use crate::render::scene::{
-    ClipPrimitive, Primitive, Rect, RichTextPrimitive, Scene, TextPrimitive,
+    ClipPrimitive, EditorTextSlot, Primitive, Rect, RichTextPrimitive, Scene, TextPrimitive,
 };
 
 use super::shaders::{BLIT_SHADER, BLUR_SHADER, EFFECT_SHADER, QUAD_SHADER, SHADOW_SHADER};
@@ -677,7 +677,12 @@ impl Renderer {
         self.texture_pool.release(target);
     }
 
-    pub fn render(&mut self, scene: &Scene, time_seconds: f32) -> Result<FrameStats, RenderError> {
+    pub fn render(
+        &mut self,
+        scene: &Scene,
+        time_seconds: f32,
+        commit_editor: Option<&crate::editor::Editor>,
+    ) -> Result<FrameStats, RenderError> {
         if self.surface_config.width == 0 || self.surface_config.height == 0 {
             return Ok(FrameStats::default());
         }
@@ -828,7 +833,7 @@ impl Renderer {
             let zl = &flattened.z_layers[0];
             let zlb = &z_layer_buffers[0];
 
-            let text_areas = prepare_text_areas(
+            let mut text_areas = prepare_text_areas(
                 &mut self.font_system,
                 &mut self.text_cache,
                 &mut self.text_cache_frame,
@@ -836,6 +841,7 @@ impl Renderer {
                 &zl.rich_texts,
                 self.scale_factor,
             );
+            append_editor_text_areas(&mut text_areas, &zl.editor_slots, commit_editor);
 
             self.text_renderer.prepare(
                 &self.device,
@@ -899,7 +905,7 @@ impl Renderer {
             let mut first = true;
 
             for (zl, zlb) in flattened.z_layers.iter().zip(z_layer_buffers.iter()) {
-                let text_areas = prepare_text_areas(
+                let mut text_areas = prepare_text_areas(
                     &mut self.font_system,
                     &mut self.text_cache,
                     &mut self.text_cache_frame,
@@ -907,6 +913,7 @@ impl Renderer {
                     &zl.rich_texts,
                     self.scale_factor,
                 );
+                append_editor_text_areas(&mut text_areas, &zl.editor_slots, commit_editor);
 
                 self.text_renderer.prepare(
                     &self.device,
@@ -993,6 +1000,11 @@ impl Renderer {
                 .z_layers
                 .iter()
                 .flat_map(|z| z.rich_texts.iter().cloned())
+                .collect();
+            let all_editor_slots: Vec<ClippedEditorSlot> = flattened
+                .z_layers
+                .iter()
+                .flat_map(|z| z.editor_slots.iter().copied())
                 .collect();
 
             let blur = flattened.blur_regions[0];
@@ -1146,7 +1158,7 @@ impl Renderer {
 
             // Step 4: Composite to surface.
             {
-                let text_areas = prepare_text_areas(
+                let mut text_areas = prepare_text_areas(
                     &mut self.font_system,
                     &mut self.text_cache,
                     &mut self.text_cache_frame,
@@ -1154,6 +1166,7 @@ impl Renderer {
                     &all_rich,
                     self.scale_factor,
                 );
+                append_editor_text_areas(&mut text_areas, &all_editor_slots, commit_editor);
 
                 // Full-screen blit of scene_tex.
                 let scene_blit = BlitInstance {
@@ -1660,6 +1673,13 @@ struct ZLayer {
     texts: Vec<ClippedText>,
     rich_texts: Vec<ClippedRichText>,
     images: Vec<ClippedImage>,
+    editor_slots: Vec<ClippedEditorSlot>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ClippedEditorSlot {
+    slot: EditorTextSlot,
+    clip: Rect,
 }
 
 #[derive(Debug, Clone)]
@@ -1921,6 +1941,17 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                     }
                 }
             }
+            Primitive::EditorText(slot) => {
+                if let Some(clip) = clips.last().copied()
+                    && let Some(intersection) = slot.rect.intersection(clip)
+                {
+                    let zl = current_z!();
+                    zl.editor_slots.push(ClippedEditorSlot {
+                        slot: *slot,
+                        clip: intersection,
+                    });
+                }
+            }
             Primitive::Icon(_) => {}
             Primitive::ClipStart(ClipPrimitive { rect }) => {
                 let next = clips
@@ -1949,6 +1980,34 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
     // Collect z-layers sorted by z-index (BTreeMap is already sorted).
     flattened.z_layers = z_map.into_values().collect();
     flattened
+}
+
+fn append_editor_text_areas<'a>(
+    text_areas: &mut Vec<glyphon::TextArea<'a>>,
+    slots: &[ClippedEditorSlot],
+    commit_editor: Option<&'a crate::editor::Editor>,
+) {
+    let Some(editor) = commit_editor else { return };
+    let Some(buffer) = editor.buffer() else {
+        return;
+    };
+    for es in slots {
+        let color = es.slot.color;
+        text_areas.push(glyphon::TextArea {
+            buffer,
+            left: es.slot.rect.x,
+            top: es.slot.rect.y - es.slot.scroll_y,
+            scale: 1.0,
+            bounds: glyphon::TextBounds {
+                left: es.clip.x.round() as i32,
+                top: es.clip.y.round() as i32,
+                right: es.clip.right().round() as i32,
+                bottom: es.clip.bottom().round() as i32,
+            },
+            default_color: GlyphonColor::rgba(color.r, color.g, color.b, color.a),
+            custom_glyphs: &[],
+        });
+    }
 }
 
 fn push_quad(

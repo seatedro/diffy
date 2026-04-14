@@ -49,6 +49,10 @@ impl GitWorker {
         });
     }
 
+    pub fn dispatch_commit(&self, path: PathBuf, message: String) {
+        let _ = self.sender.send(GitWorkerCommand::Commit { path, message });
+    }
+
     pub(crate) fn sender(&self) -> Sender<GitWorkerCommand> {
         self.sender.clone()
     }
@@ -69,6 +73,10 @@ pub(crate) enum GitWorkerCommand {
         path: PathBuf,
         items: Vec<StatusItem>,
         operation: StatusOperation,
+    },
+    Commit {
+        path: PathBuf,
+        message: String,
     },
     Dirty {
         path: PathBuf,
@@ -141,6 +149,10 @@ fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorke
             }) => {
                 pending_dirty = None;
                 apply_batch_status_operation(&mut state, &event_sender, path, items, operation);
+            }
+            Some(GitWorkerCommand::Commit { path, message }) => {
+                pending_dirty = None;
+                apply_commit(&mut state, &event_sender, path, &message);
             }
             Some(GitWorkerCommand::Dirty { path }) => {
                 pending_dirty = Some(path);
@@ -220,6 +232,40 @@ fn apply_batch_status_operation(
         return;
     }
 
+    sync_repository(state, event_sender, path, RepositorySyncReason::Dirty);
+}
+
+fn apply_commit(
+    state: &mut GitWorkerState,
+    event_sender: &RuntimeEventSender,
+    path: PathBuf,
+    message: &str,
+) {
+    if state.active_path.as_ref() != Some(&path) {
+        state.git.close();
+        state.snapshot = None;
+        state.active_path = Some(path.clone());
+    }
+
+    if !state.git.is_open() {
+        if let Err(error) = state.git.open(path.to_string_lossy().as_ref()) {
+            event_sender.send(AppEvent::CommitFailed {
+                path,
+                message: error.to_string(),
+            });
+            return;
+        }
+    }
+
+    if let Err(error) = state.git.commit(message) {
+        event_sender.send(AppEvent::CommitFailed {
+            path,
+            message: error.to_string(),
+        });
+        return;
+    }
+
+    event_sender.send(AppEvent::CommitCreated { path: path.clone() });
     sync_repository(state, event_sender, path, RepositorySyncReason::Dirty);
 }
 

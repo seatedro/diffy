@@ -128,6 +128,10 @@ impl Scene {
         self.push(Primitive::BlurRegion(blur));
     }
 
+    pub fn editor_text(&mut self, slot: EditorTextSlot) {
+        self.push(Primitive::EditorText(slot));
+    }
+
     pub fn effect_quad(&mut self, effect: EffectQuadPrimitive) {
         self.push(Primitive::EffectQuad(effect));
     }
@@ -175,6 +179,15 @@ pub enum Primitive {
     /// Pop the current z-index context.
     ZIndexPop,
     LayerBoundary,
+    EditorText(EditorTextSlot),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct EditorTextSlot {
+    pub rect: Rect,
+    pub color: Color,
+    pub font_size: f32,
+    pub scroll_y: f32,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]

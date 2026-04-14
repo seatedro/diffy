@@ -123,6 +123,10 @@ impl EffectRunner {
                     request.operation,
                 );
             }
+            Effect::CreateCommit(request) => {
+                self.git_worker
+                    .dispatch_commit(request.repo_path, request.message);
+            }
             Effect::RunCompare {
                 generation,
                 request,

@@ -21,7 +21,7 @@ use crate::render::Renderer;
 use crate::ui::components::TooltipState;
 use crate::ui::editor::element::EditorElement;
 use crate::ui::shell::{UiFrame, build_ui_frame};
-use crate::ui::state::AppState;
+use crate::ui::state::{AppState, FocusTarget};
 use crate::ui::theme::Theme;
 
 pub fn run() -> Result<(), Box<dyn Error>> {
@@ -370,6 +370,9 @@ impl NativeApp {
 
     fn dispatch_action(&mut self, action: Action) {
         let effects = self.state.apply_action(action);
+        if let Some(renderer) = self.renderer.as_mut() {
+            self.state.commit_editor.flush(renderer.font_system_mut());
+        }
         self.runtime.dispatch_all(effects);
         self.sync_theme();
         self.refresh_window_title();
@@ -477,9 +480,31 @@ impl ApplicationHandler for NativeApp {
                 let frame = self.build_frame();
                 self.ui_frame = frame;
                 self.paint_tooltip();
+                if let Some(ha) = self
+                    .ui_frame
+                    .text_input_hit_areas
+                    .iter()
+                    .find(|ha| ha.focus_target == FocusTarget::CommitEditor)
+                {
+                    let w = ha.text_width;
+                    let h = ha.text_height;
+                    let fs = ha.font_size;
+                    if let Some(renderer) = self.renderer.as_mut() {
+                        self.state
+                            .commit_editor
+                            .set_font_size(renderer.font_system_mut(), fs);
+                        self.state
+                            .commit_editor
+                            .sync_size(renderer.font_system_mut(), w, h);
+                    }
+                }
                 if let Some(renderer) = self.renderer.as_mut() {
                     let time_seconds = self.launch_at.elapsed().as_secs_f32();
-                    match renderer.render(&self.ui_frame.scene, time_seconds) {
+                    match renderer.render(
+                        &self.ui_frame.scene,
+                        time_seconds,
+                        Some(&self.state.commit_editor),
+                    ) {
                         Ok(frame) => {
                             self.state.debug.last_scene_primitive_count = frame.primitive_count;
                             self.state.debug.last_frame_time_us = frame_started_at

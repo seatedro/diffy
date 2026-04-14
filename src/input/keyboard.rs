@@ -85,6 +85,13 @@ fn text_field_key_actions(
     chord: &KeyChord,
 ) -> Option<Vec<Action>> {
     match chord.named() {
+        Some(NamedKey::Enter) if target == FocusTarget::CommitEditor => {
+            if chord.ctrl_or_super() {
+                Some(vec![Action::SubmitCommit])
+            } else {
+                Some(vec![Action::InsertText("\n".to_owned())])
+            }
+        }
         Some(NamedKey::Enter) if target == FocusTarget::SearchInput => {
             Some(vec![if chord.shift() {
                 Action::SearchPrevious
@@ -92,18 +99,50 @@ fn text_field_key_actions(
                 Action::SearchNext
             }])
         }
-        Some(NamedKey::ArrowLeft) => Some(vec![match (chord.ctrl_or_super(), chord.shift()) {
-            (true, true) => Action::SelectWordLeft,
-            (true, false) => Action::CursorWordLeft,
-            (false, true) => Action::SelectLeft,
-            (false, false) => Action::CursorLeft,
-        }]),
-        Some(NamedKey::ArrowRight) => Some(vec![match (chord.ctrl_or_super(), chord.shift()) {
-            (true, true) => Action::SelectWordRight,
-            (true, false) => Action::CursorWordRight,
-            (false, true) => Action::SelectRight,
-            (false, false) => Action::CursorRight,
-        }]),
+        Some(NamedKey::ArrowUp) if target == FocusTarget::CommitEditor => {
+            Some(vec![if chord.shift() {
+                Action::SelectUp
+            } else {
+                Action::CursorUp
+            }])
+        }
+        Some(NamedKey::ArrowDown) if target == FocusTarget::CommitEditor => {
+            Some(vec![if chord.shift() {
+                Action::SelectDown
+            } else {
+                Action::CursorDown
+            }])
+        }
+        Some(NamedKey::ArrowLeft) => {
+            let is_mac = cfg!(target_os = "macos");
+            Some(vec![
+                match (chord.ctrl_or_super(), chord.alt(), chord.shift()) {
+                    (true, _, true) if is_mac => Action::SelectSoftHome,
+                    (true, _, false) if is_mac => Action::CursorSoftHome,
+                    (_, true, true) if is_mac => Action::SelectWordLeft,
+                    (_, true, false) if is_mac => Action::CursorWordLeft,
+                    (true, _, true) => Action::SelectWordLeft,
+                    (true, _, false) => Action::CursorWordLeft,
+                    (_, _, true) => Action::SelectLeft,
+                    (_, _, false) => Action::CursorLeft,
+                },
+            ])
+        }
+        Some(NamedKey::ArrowRight) => {
+            let is_mac = cfg!(target_os = "macos");
+            Some(vec![
+                match (chord.ctrl_or_super(), chord.alt(), chord.shift()) {
+                    (true, _, true) if is_mac => Action::SelectSoftEnd,
+                    (true, _, false) if is_mac => Action::CursorSoftEnd,
+                    (_, true, true) if is_mac => Action::SelectWordRight,
+                    (_, true, false) if is_mac => Action::CursorWordRight,
+                    (true, _, true) => Action::SelectWordRight,
+                    (true, _, false) => Action::CursorWordRight,
+                    (_, _, true) => Action::SelectRight,
+                    (_, _, false) => Action::CursorRight,
+                },
+            ])
+        }
         Some(NamedKey::Home) => Some(vec![if chord.shift() {
             Action::SelectHome
         } else {
@@ -114,8 +153,26 @@ fn text_field_key_actions(
         } else {
             Action::CursorEnd
         }]),
-        Some(NamedKey::Backspace) => Some(vec![Action::Backspace]),
-        Some(NamedKey::Delete) => Some(vec![Action::DeleteForward]),
+        Some(NamedKey::Backspace) => {
+            let is_mac = cfg!(target_os = "macos");
+            Some(vec![if chord.ctrl_or_super() && is_mac {
+                Action::BackspaceLine
+            } else if chord.alt() && is_mac || chord.ctrl_or_super() && !is_mac {
+                Action::BackspaceWord
+            } else {
+                Action::Backspace
+            }])
+        }
+        Some(NamedKey::Delete) => {
+            let is_mac = cfg!(target_os = "macos");
+            Some(vec![
+                if chord.alt() && is_mac || chord.ctrl_or_super() && !is_mac {
+                    Action::DeleteForwardWord
+                } else {
+                    Action::DeleteForward
+                },
+            ])
+        }
         Some(NamedKey::Escape) if ctx.overlay.is_some() => Some(vec![Action::CloseOverlay]),
         _ => None,
     }

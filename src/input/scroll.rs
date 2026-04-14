@@ -8,6 +8,10 @@ use crate::ui::state::AppState;
 
 use super::{InputOutcome, InputSystem, ScrollTarget};
 
+fn custom_scroll_is_editor(build: fn(i32) -> Action) -> bool {
+    matches!(build(0), Action::EditorScrollPx(_))
+}
+
 impl InputSystem {
     pub(super) fn handle_wheel(
         &mut self,
@@ -34,8 +38,12 @@ impl InputSystem {
             ScrollTarget::Region(ScrollActionBuilder::FileList) => {
                 quantize_scroll_delta_px(&mut self.file_list_scroll_remainder_px, delta_px)
             }
-            ScrollTarget::Region(ScrollActionBuilder::Custom(_)) => {
-                quantize_scroll_delta_px(&mut self.overlay_scroll_remainder_px, delta_px)
+            ScrollTarget::Region(ScrollActionBuilder::Custom(build)) => {
+                if custom_scroll_is_editor(*build) {
+                    quantize_scroll_delta_px(&mut self.editor_scroll_remainder_px, delta_px)
+                } else {
+                    quantize_scroll_delta_px(&mut self.overlay_scroll_remainder_px, delta_px)
+                }
             }
             ScrollTarget::Region(ScrollActionBuilder::ViewportLines)
             | ScrollTarget::ViewportFallback => {
@@ -69,6 +77,7 @@ impl InputSystem {
     pub(super) fn reset_scroll_remainders(&mut self) {
         self.file_list_scroll_remainder_px = 0.0;
         self.overlay_scroll_remainder_px = 0.0;
+        self.editor_scroll_remainder_px = 0.0;
         self.viewport_scroll_remainder_px = 0.0;
     }
 
@@ -111,8 +120,12 @@ impl InputSystem {
             ScrollTarget::Region(ScrollActionBuilder::FileList) => {
                 state.file_list.row_stride().max(1.0)
             }
-            ScrollTarget::Region(ScrollActionBuilder::Custom(_)) => {
-                active_overlay_row_height_px(state)
+            ScrollTarget::Region(ScrollActionBuilder::Custom(build)) => {
+                if custom_scroll_is_editor(*build) {
+                    state.commit_editor.scroll_line_height_px().max(1.0)
+                } else {
+                    active_overlay_row_height_px(state)
+                }
             }
             ScrollTarget::Region(ScrollActionBuilder::ViewportLines)
             | ScrollTarget::ViewportFallback => editor.scroll_line_height_px(),
@@ -145,4 +158,22 @@ pub fn quantize_scroll_delta_px(remainder_px: &mut f32, delta_px: f32) -> i32 {
     let whole_px = remainder_px.trunc() as i32;
     *remainder_px -= whole_px as f32;
     whole_px
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::editor::element::EditorElement;
+
+    #[test]
+    fn commit_editor_scroll_uses_editor_line_height() {
+        let input = InputSystem::default();
+        let state = AppState::default();
+        let editor = EditorElement::default();
+        let target = ScrollTarget::Region(ScrollActionBuilder::Custom(Action::EditorScrollPx));
+
+        let line_step = input.scroll_target_line_step_px(&state, &target, &editor);
+
+        assert!((line_step - state.commit_editor.scroll_line_height_px()).abs() < f32::EPSILON);
+    }
 }

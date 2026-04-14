@@ -7,8 +7,11 @@ use crate::actions::Action;
 use crate::core::vcs::git::{CommitInfo, StatusScope};
 use crate::effects::Effect;
 use crate::render::{Rect, RectPrimitive, RoundedRectPrimitive};
-use crate::ui::components::{self, Button, ButtonSize, ButtonStyle, SegmentedControl, SegmentedItem};
+use crate::ui::components::{
+    self, Button, ButtonSize, ButtonStyle, SegmentedControl, SegmentedItem,
+};
 use crate::ui::design::{Alpha, Ico, Rad, Sp, Sz};
+use crate::ui::editor_element::{CursorSnapshot, text_editor_element};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
@@ -342,9 +345,7 @@ pub(crate) fn sidebar(
                 </div>
             }
         } else {
-            let total_height = state
-                .file_list
-                .total_content_height(filtered_commits.len());
+            let total_height = state.file_list.total_content_height(filtered_commits.len());
             let scroll_px = state.file_list.commits_scroll_offset_px;
             let rows: Vec<AnyElement> = filtered_commits
                 .iter()
@@ -601,6 +602,59 @@ pub(crate) fn sidebar(
         })
     };
 
+    let commit_box: Option<AnyElement> = if state.workspace.source == WorkspaceSource::Status {
+        let commit_focused = cx.is_focused(FocusTarget::CommitEditor);
+        let has_staged = state
+            .workspace
+            .status_items
+            .iter()
+            .any(|item| item.scope == StatusScope::Staged);
+        let can_commit = has_staged && !state.commit_editor.text().trim().is_empty();
+        let box_h = (Sz::COMMIT_BOX_H * scale).round();
+        let cursor_snap = CursorSnapshot {
+            x: state.commit_editor.cursor_pos.x,
+            y: state.commit_editor.cursor_pos.y,
+            moved_at_ms: state.commit_editor.cursor_moved_at_ms,
+        };
+        let sel_rects = state.commit_editor.selection_rects();
+        let editor_el = text_editor_element()
+            .placeholder("Enter commit message")
+            .is_empty(state.commit_editor.is_empty())
+            .focused(commit_focused)
+            .focus_target(FocusTarget::CommitEditor)
+            .font_size(theme.metrics.ui_small_font_size)
+            .text_color(tc.text)
+            .cursor(cursor_snap)
+            .selection(sel_rects)
+            .content_height(state.commit_editor.content_height())
+            .scroll_y(state.commit_editor.scroll_y)
+            .w_full()
+            .flex_1();
+        Some(view! { scale,
+            <div class="flex-col shrink-0" px={Sp::SM + Sp::XXS} py={Sp::SM}>
+                <div class="flex-col w-full"
+                     h={box_h}
+                     rounded={Rad::LG}
+                     border={tc.border_variant}
+                     @when { commit_focused } { border={tc.accent} }>
+                    <div class="flex-1 w-full" min_h={0.0}
+                         px={Sp::SM} pt={Sp::XS}>
+                        {editor_el}
+                    </div>
+                    <div class="flex-row items-center" px={Sp::SM} pb={Sp::SM}>
+                        <spacer />
+                        {Button::new(Action::SubmitCommit)
+                            .label("Commit")
+                            .style(ButtonStyle::Subtle)
+                            .disabled(!can_commit)}
+                    </div>
+                </div>
+            </div>
+        })
+    } else {
+        None
+    };
+
     view! { scale,
         <div class="flex-col shrink-0 h-full" min_h={0.0}
              w={sidebar_width}
@@ -611,6 +665,7 @@ pub(crate) fn sidebar(
             {?files_header}
             {?search_bar}
             {?content}
+            {?commit_box}
         </div>
     }
 }

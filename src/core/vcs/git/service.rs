@@ -519,6 +519,30 @@ impl GitService {
             .ok_or_else(|| DiffyError::General("repository is not open".to_owned()))
     }
 
+    pub fn commit(&self, message: &str) -> Result<Oid> {
+        let repo = self.repo()?;
+        let mut index = repo.index()?;
+        let tree_id = index.write_tree()?;
+        let tree = repo.find_tree(tree_id)?;
+        let signature = repo.signature()?;
+        let parents = repo
+            .head()
+            .ok()
+            .and_then(|head| head.target())
+            .map(|oid| repo.find_commit(oid))
+            .transpose()?;
+        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+        let oid = repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            message,
+            &tree,
+            &parent_refs,
+        )?;
+        Ok(oid)
+    }
+
     fn stage_path(&self, path: &str) -> Result<()> {
         let repo = self.repo()?;
         let mut index = repo.index()?;

@@ -86,6 +86,10 @@ impl KeyChord {
         self.modifiers.shift_key()
     }
 
+    pub fn alt(&self) -> bool {
+        self.modifiers.alt_key()
+    }
+
     pub fn logical_char(&self) -> Option<&str> {
         match &self.logical {
             KeyKind::Character(text) => Some(text.as_str()),
@@ -162,6 +166,7 @@ pub struct InputSystem {
     pointer_capture: Option<Box<dyn DragHandler>>,
     file_list_scroll_remainder_px: f32,
     overlay_scroll_remainder_px: f32,
+    editor_scroll_remainder_px: f32,
     viewport_scroll_remainder_px: f32,
     pending_g: bool,
     ime_composing: bool,
@@ -176,6 +181,7 @@ impl Default for InputSystem {
             pointer_capture: None,
             file_list_scroll_remainder_px: 0.0,
             overlay_scroll_remainder_px: 0.0,
+            editor_scroll_remainder_px: 0.0,
             viewport_scroll_remainder_px: 0.0,
             pending_g: false,
             ime_composing: false,

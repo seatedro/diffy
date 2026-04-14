@@ -3,6 +3,7 @@ pub mod app;
 pub mod components;
 pub mod design;
 pub mod editor;
+pub mod editor_element;
 pub mod element;
 pub mod icons;
 pub mod nonicons;

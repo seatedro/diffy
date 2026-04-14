@@ -176,6 +176,7 @@ pub fn scene_to_rgba(scene: &Scene, width: u32, height: u32) -> Vec<u8> {
             Primitive::BlurRegion(_) => {
                 // Can't software-blur; skip.
             }
+            Primitive::EditorText(_) => {}
             Primitive::Icon(_) => {}
             Primitive::ClipStart(_) | Primitive::ClipEnd => {
                 // Clip masking omitted in software capture.

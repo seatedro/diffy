@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/halogen"]
+members = [".", "crates/halogen", "crates/halogen-macros"]
 exclude = ["crates/difftastic"]
 
 [package]

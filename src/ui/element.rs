@@ -13,7 +13,7 @@ use crate::render::Scene;
 use crate::render::scene::{BlurRegionPrimitive, EffectQuadPrimitive, EffectType, Rect};
 use crate::ui::design::{Alpha, Sz};
 use crate::ui::shell::CursorHint;
-use crate::ui::signals::{Signal, SignalStore};
+use halogen::reactive::{Signal, SignalStore};
 use crate::ui::theme::Theme;
 
 pub use taffy::NodeId as LayoutId;
@@ -265,7 +265,7 @@ pub struct ElementContext<'a> {
     pub hits: Vec<HitRegion>,
     pub scroll_regions: Vec<ScrollRegion>,
     pub focus: Option<crate::ui::state::FocusTarget>,
-    pub signal_store: &'a mut SignalStore,
+    pub signal_store: &'a SignalStore,
     pub clock_ms: u64,
     pub ui_signals: Option<crate::ui::ui_signals::UiSignals>,
     pub debug_wireframe: bool,
@@ -287,7 +287,7 @@ impl<'a> ElementContext<'a> {
         scale_factor: f32,
         font_system: &'a mut glyphon::FontSystem,
         mouse_position: Option<(f32, f32)>,
-        signal_store: &'a mut SignalStore,
+        signal_store: &'a SignalStore,
     ) -> Self {
         Self {
             theme,

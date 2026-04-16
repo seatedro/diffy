@@ -11,7 +11,6 @@ pub mod overlays;
 pub mod palette;
 pub mod shell;
 pub mod sidebar;
-pub mod signals;
 pub mod state;
 pub mod status_bar;
 pub mod style;

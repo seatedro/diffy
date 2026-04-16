@@ -2,7 +2,11 @@ mod text_edit;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::Duration;
+
+use halogen::Store;
+use halogen::reactive::{Signal, SignalStore};
 
 use crate::actions::Action;
 use crate::core::compare::{CompareMode, CompareOutput, CompareSpec, LayoutMode, RendererKind};
@@ -605,7 +609,7 @@ pub struct StartupState {
     pub dump_errors_json: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
 pub struct DebugState {
     pub last_scene_primitive_count: usize,
     pub last_frame_time_us: u64,
@@ -629,8 +633,12 @@ pub struct AppState {
     pub toasts: Vec<Toast>,
     pub animation: crate::ui::animation::AnimationState,
     pub commit_editor: Editor,
-    pub sidebar_visible: bool,
-    pub debug: DebugState,
+    /// Shared reactive store. Signals (like `sidebar_visible`) are handles
+    /// into this store. Kept in `AppState` so state methods (apply_action etc.)
+    /// can freely read/write signals without threading a store parameter.
+    pub store: Rc<SignalStore>,
+    pub sidebar_visible: Signal<bool>,
+    pub debug: DebugStateStore,
     pub clock_ms: u64,
     pub next_toast_id: u64,
     pub frecency: Option<FrecencyStore>,
@@ -641,6 +649,9 @@ pub struct AppState {
 
 impl Default for AppState {
     fn default() -> Self {
+        let store = Rc::new(SignalStore::default());
+        let sidebar_visible = store.create(true);
+        let debug = DebugStateStore::new(&store, DebugState::default());
         Self {
             workspace_mode: WorkspaceMode::default(),
             compare: CompareState::default(),
@@ -658,8 +669,9 @@ impl Default for AppState {
             toasts: Vec::new(),
             animation: crate::ui::animation::AnimationState::default(),
             commit_editor: Editor::default(),
-            sidebar_visible: true,
-            debug: DebugState::default(),
+            sidebar_visible,
+            debug,
+            store,
             clock_ms: 0,
             next_toast_id: 1,
             frecency: None,
@@ -707,6 +719,9 @@ impl AppState {
             .unwrap_or_default();
         let auto_compare_pending = startup.wants_compare(mode, &left_ref, &right_ref);
 
+        let store = Rc::new(SignalStore::default());
+        let sidebar_visible = store.create(true);
+        let debug = DebugStateStore::new(&store, DebugState::default());
         let mut state = Self {
             workspace_mode: if repo_path.is_some() && auto_compare_pending {
                 WorkspaceMode::Loading
@@ -768,8 +783,9 @@ impl AppState {
             toasts: Vec::new(),
             animation: crate::ui::animation::AnimationState::default(),
             commit_editor: Editor::default(),
-            sidebar_visible: true,
-            debug: DebugState::default(),
+            sidebar_visible,
+            debug,
+            store,
             clock_ms: 0,
             next_toast_id: 1,
             frecency: crate::core::frecency::open_default_store(),
@@ -1426,7 +1442,7 @@ impl AppState {
                 Vec::new()
             }
             Action::ToggleSidebar => {
-                self.sidebar_visible = !self.sidebar_visible;
+                self.store.update(self.sidebar_visible, |v| *v = !*v);
                 Vec::new()
             }
             Action::ToggleSidebarMode => {

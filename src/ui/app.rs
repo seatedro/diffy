@@ -78,7 +78,6 @@ struct NativeApp {
     ui_frame: UiFrame,
     editor: EditorElement,
     input: InputSystem,
-    signal_store: crate::ui::signals::SignalStore,
     ui_signals: crate::ui::ui_signals::UiSignals,
     launch_at: Instant,
     dumps_dirty: bool,
@@ -102,8 +101,7 @@ impl NativeApp {
         let capture_pending = std::env::var("DIFFY_CAPTURE_PATH")
             .ok()
             .map(std::path::PathBuf::from);
-        let mut signal_store = crate::ui::signals::SignalStore::new();
-        let ui_signals = crate::ui::ui_signals::UiSignals::new(&mut signal_store);
+        let ui_signals = crate::ui::ui_signals::UiSignals::new(&state.store);
         Self {
             state,
             theme,
@@ -113,7 +111,6 @@ impl NativeApp {
             window: None,
             ui_frame: UiFrame::default(),
             input: InputSystem::default(),
-            signal_store,
             ui_signals,
             editor: EditorElement::default(),
             launch_at: Instant::now(),
@@ -270,7 +267,9 @@ impl NativeApp {
 
         if self.state.startup.hidden_window {
             let frame = self.build_frame();
-            self.state.debug.last_scene_primitive_count = frame.scene.len();
+            self.state
+                .store
+                .write(self.state.debug.last_scene_primitive_count, frame.scene.len());
             self.ui_frame = frame;
         }
 
@@ -323,20 +322,22 @@ impl NativeApp {
         let height = size.height.max(1) as f32;
         let ui_scale = self.state.ui_scale_factor();
 
+        // Clone the Rc so `cx` can hold `&SignalStore` independently of
+        // `self.state` (which we need to borrow mutably for build_ui_frame).
+        let store = std::rc::Rc::clone(&self.state.store);
         self.ui_signals.sync_from_state(
-            &mut self.signal_store,
+            &store,
             self.state.file_list.scroll_offset_px,
             self.state.editor.scroll_top_px as f32,
-            self.state.sidebar_visible,
+            store.read(self.state.sidebar_visible),
         );
-        self.signal_store.update_memos();
 
         let mut cx = crate::ui::element::ElementContext::new(
             &self.theme,
             scale_factor,
             font_system,
             self.input.mouse_position(),
-            &mut self.signal_store,
+            &store,
         )
         .with_focus(self.state.focus.current)
         .with_clock(self.state.clock_ms)
@@ -506,12 +507,19 @@ impl ApplicationHandler for NativeApp {
                         Some(&self.state.commit_editor),
                     ) {
                         Ok(frame) => {
-                            self.state.debug.last_scene_primitive_count = frame.primitive_count;
-                            self.state.debug.last_frame_time_us = frame_started_at
-                                .elapsed()
-                                .as_micros()
-                                .min(u128::from(u64::MAX))
-                                as u64;
+                            let store = &self.state.store;
+                            store.write(
+                                self.state.debug.last_scene_primitive_count,
+                                frame.primitive_count,
+                            );
+                            store.write(
+                                self.state.debug.last_frame_time_us,
+                                frame_started_at
+                                    .elapsed()
+                                    .as_micros()
+                                    .min(u128::from(u64::MAX))
+                                    as u64,
+                            );
                         }
                         Err(error) => {
                             eprintln!("render failed: {error}");
@@ -530,6 +538,7 @@ impl ApplicationHandler for NativeApp {
 
                 self.dumps_dirty = true;
                 self.needs_redraw = false;
+                self.state.store.clear_dirty();
             }
             event => {
                 let outcome = self.input.handle_window_event(
@@ -627,6 +636,7 @@ impl ApplicationHandler for NativeApp {
 
         if let Some(window) = self.window.as_ref()
             && (self.needs_redraw
+                || self.state.store.any_dirty()
                 || animating
                 || cursor_blink_changed
                 || toasts_changed

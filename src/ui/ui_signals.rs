@@ -4,7 +4,7 @@
 //! scroll positions) that would otherwise clutter AppState. Components read
 //! them via `cx.read()` during rendering.
 
-use crate::ui::signals::{Signal, SignalStore};
+use halogen::reactive::{Signal, SignalStore};
 
 /// All UI signal handles. Created once at app startup, persists across frames.
 #[derive(Debug, Clone, Copy)]
@@ -28,7 +28,7 @@ pub struct UiSignals {
 
 impl UiSignals {
     /// Create all UI signals in the given store.
-    pub fn new(store: &mut SignalStore) -> Self {
+    pub fn new(store: &SignalStore) -> Self {
         Self {
             sidebar_width_factor: store.create(1.0_f32),
             hovered_file_index: store.create(None::<usize>),
@@ -41,15 +41,15 @@ impl UiSignals {
     /// Sync scroll positions from AppState into signals (called each frame).
     pub fn sync_from_state(
         &self,
-        store: &mut SignalStore,
+        store: &SignalStore,
         file_list_scroll: f32,
         viewport_scroll: f32,
         sidebar_visible: bool,
     ) {
-        store.write(self.file_list_scroll_px, file_list_scroll);
-        store.write(self.viewport_scroll_px, viewport_scroll);
+        store.set_if_changed(self.file_list_scroll_px, file_list_scroll);
+        store.set_if_changed(self.viewport_scroll_px, viewport_scroll);
 
         let target = if sidebar_visible { 1.0 } else { 0.0 };
-        store.write(self.sidebar_width_factor, target);
+        store.set_if_changed(self.sidebar_width_factor, target);
     }
 }

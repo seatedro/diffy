@@ -698,7 +698,7 @@ pub struct DebugState {
     pub last_frame_time_us: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AppState {
     pub workspace_mode: Signal<WorkspaceMode>,
     pub compare: CompareStateStore,

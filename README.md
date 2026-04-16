@@ -15,6 +15,12 @@ A native GPU-accelerated Git diff viewer built in Rust.
 
 ## Build
 
+Clone repo with submodules
+
+```bash
+git clone git@github.com:seatedro/diffy.git --recursive
+```
+
 ```bash
 cargo build
 cargo run

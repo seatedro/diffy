@@ -78,6 +78,7 @@ pub fn ready_state_with_files(file_count: usize) -> AppState {
             path: first.path.clone(),
             file: Default::default(),
             render_doc: Default::default(),
+            text_buffer: Default::default(),
         });
     }
     state.file_list.viewport_height = 180.0;

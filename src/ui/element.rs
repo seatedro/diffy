@@ -897,6 +897,34 @@ pub fn render_element(
     root.paint(&engine, scene, cx);
 }
 
+pub fn render_element_at(
+    root: &mut AnyElement,
+    scene: &mut Scene,
+    cx: &mut ElementContext,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+) {
+    let start = scene.len();
+    let mut engine = LayoutEngine::new();
+    let root_id = root.request_layout(&mut engine, cx);
+    engine.compute_layout(root_id, width, height);
+    root.prepaint(&engine, cx);
+    cx.run_hit_test();
+    root.paint(&engine, scene, cx);
+    for prim in &mut scene.primitives[start..] {
+        prim.offset(x, y);
+    }
+    for hit in cx.hits.iter_mut().rev() {
+        if hit.rect.x < width && hit.rect.y < height {
+            hit.rect = hit.rect.offset(x, y);
+        } else {
+            break;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Div — the fundamental container element
 // ---------------------------------------------------------------------------

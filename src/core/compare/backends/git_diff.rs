@@ -157,20 +157,22 @@ pub(crate) fn compare_output_from_diff(diff: &mut git2::Diff<'_>) -> Result<Comp
                 }
 
                 if !current_hunk.lines.is_empty() {
+                    current_hunk.old_count = current_hunk
+                        .lines
+                        .iter()
+                        .filter(|l| l.kind != LineKind::Added)
+                        .count() as i32;
+                    current_hunk.new_count = current_hunk
+                        .lines
+                        .iter()
+                        .filter(|l| l.kind != LineKind::Removed)
+                        .count() as i32;
                     current_hunk.header = format!(
                         "@@ -{},{} +{},{} @@",
                         current_hunk.old_start,
-                        current_hunk
-                            .lines
-                            .iter()
-                            .filter(|l| l.kind != LineKind::Added)
-                            .count(),
+                        current_hunk.old_count,
                         current_hunk.new_start,
-                        current_hunk
-                            .lines
-                            .iter()
-                            .filter(|l| l.kind != LineKind::Removed)
-                            .count()
+                        current_hunk.new_count,
                     );
                     file.hunks.push(current_hunk);
                 }

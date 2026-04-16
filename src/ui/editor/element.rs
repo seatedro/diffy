@@ -6,6 +6,7 @@ use crate::render::{
     FontKind, FontWeight, Rect, RectPrimitive, RichTextPrimitive, RichTextSpan,
     RoundedRectPrimitive, Scene, TextMetrics, TextPrimitive,
 };
+use crate::ui::design::{Alpha, Sz};
 use crate::ui::theme::{Color, Theme};
 
 use super::display_layout::{
@@ -62,6 +63,8 @@ pub struct EditorLayout {
     pub visible_row_range: VisibleRange,
     pub highlighted_row: Option<usize>,
     pub scrollbar: Option<ScrollbarLayout>,
+    pub show_staging_controls: bool,
+    pub file_is_staged: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -219,7 +222,7 @@ impl CachedTextLayout {
 #[derive(Debug, Clone)]
 pub struct EditorElement {
     layout_key: Option<EditorLayoutKey>,
-    layout: EditorLayout,
+    pub layout: EditorLayout,
     config: DisplayLayoutConfig,
     metrics: DisplayLayoutMetrics,
     summary: DisplayLayoutSummary,
@@ -351,6 +354,151 @@ impl EditorElement {
         })
     }
 
+    pub fn is_gutter_hit(&self, x: f32, _y: f32) -> bool {
+        if self.layout.split_mode {
+            self.layout
+                .left_gutter_rect
+                .contains(x, self.layout.left_gutter_rect.y)
+        } else {
+            self.layout
+                .unified_gutter_rect
+                .contains(x, self.layout.unified_gutter_rect.y)
+        }
+    }
+
+    pub fn render_line_index_for_row(&self, display_row_index: usize) -> Option<u32> {
+        self.rows.get(display_row_index).map(|row| row.line_index)
+    }
+
+    pub fn hunk_action_bar_rect(&self, doc: &RenderDoc) -> Option<Rect> {
+        let idx = self.layout.highlighted_row?;
+        let display_row = self.rows.get(idx)?;
+        let line = doc.lines.get(display_row.line_index as usize)?;
+        if line.hunk_index < 0 {
+            return None;
+        }
+        let hunk_index = line.hunk_index;
+
+        let mut first_idx = idx;
+        while first_idx > 0 {
+            let prev = self.rows.get(first_idx - 1)?;
+            let prev_line = doc.lines.get(prev.line_index as usize)?;
+            if prev_line.hunk_index != hunk_index {
+                break;
+            }
+            first_idx -= 1;
+        }
+
+        let mut last_idx = idx;
+        while last_idx + 1 < self.rows.len() {
+            let next = &self.rows[last_idx + 1];
+            let Some(next_line) = doc.lines.get(next.line_index as usize) else {
+                break;
+            };
+            if next_line.hunk_index != hunk_index {
+                break;
+            }
+            last_idx += 1;
+        }
+
+        let first_rect = self.row_rect_for(&self.rows[first_idx]);
+        let last_rect = self.row_rect_for(&self.rows[last_idx]);
+        let row_h = first_rect.height;
+        let viewport_top = self.layout.content_bounds.y;
+        let viewport_bottom = self.layout.content_bounds.bottom();
+
+        let max_y = (last_rect.y + last_rect.height - row_h).max(first_rect.y);
+        let y = first_rect.y.max(viewport_top).min(max_y);
+        if y + row_h <= viewport_top || y >= viewport_bottom {
+            return None;
+        }
+
+        let text_rect = if self.layout.split_mode {
+            self.layout.left_text_rect
+        } else {
+            self.layout.unified_text_rect
+        };
+        Some(Rect {
+            x: text_rect.x,
+            y,
+            width: text_rect.width,
+            height: row_h,
+        })
+    }
+
+    pub fn line_selection_bar_rect(&self, doc: &RenderDoc, state: &EditorState) -> Option<Rect> {
+        use super::render_doc::RenderRowKind;
+
+        if state.line_selection.is_empty() {
+            return None;
+        }
+        tracing::info!(
+            entries = state.line_selection.entries.len(),
+            rows = self.rows.len(),
+            "line_selection_bar_rect: called with non-empty selection"
+        );
+
+        let mut anchor: Option<&DisplayRow> = None;
+        let mut scanned = 0usize;
+        for row in &self.rows {
+            scanned += 1;
+            let Some(line) = doc.lines.get(row.line_index as usize) else {
+                continue;
+            };
+            let kind = line.row_kind();
+            if !matches!(
+                kind,
+                RenderRowKind::Added | RenderRowKind::Removed | RenderRowKind::Modified
+            ) {
+                continue;
+            }
+            let selected = (line.old_line_index >= 0
+                && state
+                    .line_selection
+                    .contains(line.hunk_index, line.old_line_index))
+                || (line.new_line_index >= 0
+                    && state
+                        .line_selection
+                        .contains(line.hunk_index, line.new_line_index));
+            if selected {
+                anchor = Some(row);
+                break;
+            }
+        }
+
+        let Some(row) = anchor else {
+            tracing::warn!(
+                entries = state.line_selection.entries.len(),
+                scanned,
+                rows = self.rows.len(),
+                "line_selection_bar_rect: no anchor found"
+            );
+            return None;
+        };
+        let rr = self.row_rect_for(row);
+        if !self.row_in_viewport(&rr) {
+            tracing::warn!(
+                rr_y = rr.y,
+                rr_h = rr.height,
+                vp_y = self.layout.content_bounds.y,
+                vp_h = self.layout.content_bounds.height,
+                "line_selection_bar_rect: anchor outside viewport"
+            );
+            return None;
+        }
+        let text_rect = if self.layout.split_mode {
+            self.layout.left_text_rect
+        } else {
+            self.layout.unified_text_rect
+        };
+        Some(Rect {
+            x: text_rect.x,
+            y: rr.y,
+            width: text_rect.width,
+            height: rr.height,
+        })
+    }
+
     fn rebuild_rows(&mut self, doc: &RenderDoc, state: &EditorState, text_metrics: TextMetrics) {
         let body_h = text_metrics.mono_line_height_px.round().max(1.0) as u16;
         self.metrics = DisplayLayoutMetrics {
@@ -461,6 +609,7 @@ impl EditorElement {
                 self.paint_row_backgrounds(scene, theme, doc);
                 self.paint_inline_change_backgrounds(scene, theme, doc);
                 self.paint_line_highlights(scene, theme);
+                self.paint_line_selection(scene, theme, _state, doc);
                 self.paint_search_highlights(scene, theme, _state, doc);
                 self.paint_gutter_diff_indicators(scene, theme, doc);
                 self.paint_gutter_decorations(scene, theme);
@@ -519,8 +668,6 @@ impl EditorElement {
             && row_rect.y <= self.layout.content_bounds.bottom()
     }
 
-    // -- Phase 1: Gutter backgrounds (full viewport height) --
-
     fn paint_gutter_backgrounds(&self, scene: &mut Scene, theme: &Theme) {
         if self.layout.split_mode {
             scene.rect(RectPrimitive {
@@ -538,8 +685,6 @@ impl EditorElement {
             });
         }
     }
-
-    // -- Phase 2: Row backgrounds (diff colors) --
 
     fn paint_row_backgrounds(&self, scene: &mut Scene, theme: &Theme, doc: &RenderDoc) {
         let line_height = self.layout.line_height;
@@ -641,8 +786,6 @@ impl EditorElement {
             });
         }
     }
-
-    // -- Phase 2b: Inline change backgrounds (word-level highlighting) --
 
     fn paint_inline_change_backgrounds(
         &mut self,
@@ -813,8 +956,6 @@ impl EditorElement {
         }
     }
 
-    // -- Phase 3: Line highlights (hover) --
-
     fn paint_line_highlights(&self, scene: &mut Scene, theme: &Theme) {
         let Some(hovered) = self.layout.highlighted_row else {
             return;
@@ -836,6 +977,81 @@ impl EditorElement {
             },
             color: theme.colors.hover_overlay,
         });
+    }
+
+    fn paint_line_selection(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        state: &EditorState,
+        doc: &RenderDoc,
+    ) {
+        use super::render_doc::RenderRowKind;
+
+        if state.line_selection.is_empty() {
+            return;
+        }
+
+        let gutter_rect = if self.layout.split_mode {
+            self.layout.left_gutter_rect
+        } else {
+            self.layout.unified_gutter_rect
+        };
+
+        for row_idx in self.layout.visible_row_range.iter() {
+            let Some(display_row) = self.rows.get(row_idx).copied() else {
+                continue;
+            };
+            let Some(line) = doc.lines.get(display_row.line_index as usize) else {
+                continue;
+            };
+            let kind = line.row_kind();
+            if !matches!(
+                kind,
+                RenderRowKind::Added | RenderRowKind::Removed | RenderRowKind::Modified
+            ) {
+                continue;
+            }
+            let selected = (line.old_line_index >= 0
+                && state
+                    .line_selection
+                    .contains(line.hunk_index, line.old_line_index))
+                || (line.new_line_index >= 0
+                    && state
+                        .line_selection
+                        .contains(line.hunk_index, line.new_line_index));
+            if !selected {
+                continue;
+            }
+
+            let rr = self.row_rect_for(&display_row);
+            if !self.row_in_viewport(&rr) {
+                continue;
+            }
+
+            let indicator_w = scaled(Sz::GUTTER_STRIPE_W, editor_scale(self.text_metrics));
+            scene.rect(RectPrimitive {
+                rect: Rect {
+                    x: gutter_rect.x,
+                    y: rr.y,
+                    width: gutter_rect.width,
+                    height: rr.height,
+                },
+                color: Color {
+                    a: Alpha::TINT,
+                    ..theme.colors.accent
+                },
+            });
+            scene.rect(RectPrimitive {
+                rect: Rect {
+                    x: gutter_rect.x,
+                    y: rr.y,
+                    width: indicator_w,
+                    height: rr.height,
+                },
+                color: theme.colors.accent,
+            });
+        }
     }
 
     fn paint_search_highlights(
@@ -998,8 +1214,6 @@ impl EditorElement {
         }
     }
 
-    // -- Phase 3b: Gutter diff indicators --
-
     fn paint_gutter_diff_indicators(&self, scene: &mut Scene, theme: &Theme, doc: &RenderDoc) {
         let line_height = self.layout.line_height;
         let s = editor_scale(self.text_metrics);
@@ -1091,8 +1305,6 @@ impl EditorElement {
         }
     }
 
-    // -- Phase 4: Gutter decorations (separator lines) --
-
     fn paint_gutter_decorations(&self, scene: &mut Scene, theme: &Theme) {
         let cb = self.layout.content_bounds;
         if self.layout.split_mode {
@@ -1126,8 +1338,6 @@ impl EditorElement {
             });
         }
     }
-
-    // -- Phase 5: Gutter text (line numbers) --
 
     fn paint_gutter_text(&mut self, scene: &mut Scene, theme: &Theme, doc: &RenderDoc) {
         let font_size = self.layout.font_size;
@@ -1256,8 +1466,6 @@ impl EditorElement {
         }
     }
 
-    // -- Phase 6: Body text (code content with syntax highlighting) --
-
     fn paint_body_text(&mut self, scene: &mut Scene, theme: &Theme, path: &str, doc: &RenderDoc) {
         let font_size = self.layout.font_size;
         let line_height = self.layout.line_height;
@@ -1371,8 +1579,6 @@ impl EditorElement {
             }
         }
     }
-
-    // -- Phase 7: Scrollbar --
 
     fn paint_scrollbar(&self, scene: &mut Scene, theme: &Theme) {
         let Some(sb) = self.layout.scrollbar else {

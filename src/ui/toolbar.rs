@@ -138,7 +138,10 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                         <Label>{"Wrap"}</Label>
                     </Button>
                 }
-                if state.workspace.source == WorkspaceSource::Status && show_stage {
+                if state.workspace.source == WorkspaceSource::Status
+                    && state.editor.line_selection.is_empty()
+                    && show_stage
+                {
                     <Button action={Action::StageSelectedFile}
                             style={ButtonStyle::Subtle}
                             tooltip={"Stage selected file"}>
@@ -146,7 +149,10 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                         <Label>{"Stage"}</Label>
                     </Button>
                 }
-                if state.workspace.source == WorkspaceSource::Status && show_unstage {
+                if state.workspace.source == WorkspaceSource::Status
+                    && state.editor.line_selection.is_empty()
+                    && show_unstage
+                {
                     <Button action={Action::UnstageSelectedFile}
                             style={ButtonStyle::Subtle}
                             tooltip={"Unstage selected file"}>
@@ -154,12 +160,56 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                         <Label>{"Unstage"}</Label>
                     </Button>
                 }
-                if state.workspace.source == WorkspaceSource::Status && show_discard {
+                if state.workspace.source == WorkspaceSource::Status
+                    && state.editor.line_selection.is_empty()
+                    && show_discard
+                {
                     <Button action={Action::DiscardSelectedFile}
                             style={ButtonStyle::Danger}
                             tooltip={"Discard selected file changes"}>
                         <Icon>{lucide::CORNER_UP_LEFT}</Icon>
                         <Label>{"Discard"}</Label>
+                    </Button>
+                }
+                if state.workspace.source == WorkspaceSource::Status
+                    && !state.editor.line_selection.is_empty()
+                    && show_stage
+                {
+                    <Button action={Action::StageSelectedLines}
+                            style={ButtonStyle::Subtle}
+                            tooltip={"Stage selected lines (s)"}>
+                        <Icon>{lucide::PLUS}</Icon>
+                        <Label>{"Stage Lines"}</Label>
+                    </Button>
+                }
+                if state.workspace.source == WorkspaceSource::Status
+                    && !state.editor.line_selection.is_empty()
+                    && show_unstage
+                {
+                    <Button action={Action::UnstageSelectedLines}
+                            style={ButtonStyle::Subtle}
+                            tooltip={"Unstage selected lines (S)"}>
+                        <Icon>{lucide::MINUS}</Icon>
+                        <Label>{"Unstage Lines"}</Label>
+                    </Button>
+                }
+                if state.workspace.source == WorkspaceSource::Status
+                    && !state.editor.line_selection.is_empty()
+                    && show_discard
+                {
+                    <Button action={Action::DiscardSelectedLines}
+                            style={ButtonStyle::Danger}
+                            tooltip={"Discard selected lines (x)"}>
+                        <Icon>{lucide::CORNER_UP_LEFT}</Icon>
+                        <Label>{"Discard Lines"}</Label>
+                    </Button>
+                }
+                if state.workspace.source == WorkspaceSource::Status
+                    && !state.editor.line_selection.is_empty()
+                {
+                    <Button action={Action::ClearLineSelection}
+                            tooltip={"Clear line selection"}>
+                        <Icon>{lucide::X}</Icon>
                     </Button>
                 }
             </div>

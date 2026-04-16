@@ -9,7 +9,7 @@ use crate::ui::components::{TooltipSide, TooltipState};
 use crate::ui::editor::element::EditorElement;
 use crate::ui::element::{ClickEvent, ClickResult, DragHandler};
 use crate::ui::shell::UiFrame;
-use crate::ui::state::{AppState, FocusTarget};
+use crate::ui::state::{AppState, FocusTarget, WorkspaceSource};
 
 use super::{InputOutcome, InputSystem};
 
@@ -100,6 +100,43 @@ impl InputSystem {
             .is_some_and(|rect| rect.contains(x, y))
         {
             let hovered = editor.hit_test_row(&state.editor, x, y);
+            if state.workspace.source == WorkspaceSource::Status && editor.is_gutter_hit(x, y) {
+                if let Some(row) = hovered {
+                    let line_idx =
+                        editor.render_line_index_for_row(row).unwrap_or(u32::MAX) as usize;
+                    let is_hunk_sep = state
+                        .workspace
+                        .active_file
+                        .as_ref()
+                        .and_then(|af| af.render_doc.lines.get(line_idx))
+                        .is_some_and(|line| {
+                            line.row_kind()
+                                == crate::ui::editor::render_doc::RenderRowKind::HunkSeparator
+                        });
+                    let mut actions =
+                        vec![Action::FocusViewport, Action::HoverViewportRow(hovered)];
+                    if is_hunk_sep {
+                        let is_staged = matches!(
+                            state.workspace.selected_status_scope,
+                            Some(crate::core::vcs::git::StatusScope::Staged)
+                        );
+                        actions.push(if is_staged {
+                            Action::UnstageHunk
+                        } else {
+                            Action::StageHunk
+                        });
+                    } else if self.modifiers.shift_key() {
+                        if let Some(anchor) = state.editor.line_selection.last_toggled_row {
+                            actions.push(Action::ToggleLineSelectionRange(line_idx, anchor));
+                        } else {
+                            actions.push(Action::ToggleLineSelection(line_idx));
+                        }
+                    } else {
+                        actions.push(Action::ToggleLineSelection(line_idx));
+                    }
+                    return InputOutcome::actions(actions);
+                }
+            }
             return InputOutcome::actions(vec![
                 Action::FocusViewport,
                 Action::HoverViewportRow(hovered),

@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::core::compare::LayoutMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +52,43 @@ pub struct EditorState {
     pub file_positions: Vec<u32>,
     pub search: SearchState,
     pub search_match_y_positions: Vec<u32>,
+    pub line_selection: LineSelection,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LineSelection {
+    pub entries: BTreeSet<(i16, i16)>,
+    pub last_toggled_row: Option<usize>,
+}
+
+impl LineSelection {
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.last_toggled_row = None;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn contains(&self, hunk_index: i16, line_index: i16) -> bool {
+        self.entries.contains(&(hunk_index, line_index))
+    }
+
+    pub fn toggle(&mut self, hunk_index: i16, line_index: i16) {
+        let key = (hunk_index, line_index);
+        if !self.entries.remove(&key) {
+            self.entries.insert(key);
+        }
+    }
+
+    pub fn selected_lines_for_hunk(&self, hunk_index: i16) -> Vec<usize> {
+        self.entries
+            .iter()
+            .filter(|(h, _)| *h == hunk_index)
+            .map(|(_, l)| *l as usize)
+            .collect()
+    }
 }
 
 impl Default for EditorState {
@@ -70,6 +109,7 @@ impl Default for EditorState {
             file_positions: Vec::new(),
             search: SearchState::default(),
             search_match_y_positions: Vec::new(),
+            line_selection: LineSelection::default(),
         }
     }
 }
@@ -84,6 +124,7 @@ impl EditorState {
         self.hunk_positions.clear();
         self.file_positions.clear();
         self.search_match_y_positions.clear();
+        self.line_selection.clear();
     }
 
     pub fn max_scroll_top_px(&self) -> u32 {

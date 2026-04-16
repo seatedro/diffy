@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::core::compare::{CompareSpec, RendererKind};
+use crate::core::vcs::git::status::StatusScope;
 use crate::core::vcs::git::{StatusItem, StatusOperation};
 use crate::events::RepositorySyncReason;
 use crate::platform::persistence::Settings;
@@ -34,6 +35,14 @@ pub struct BatchStatusOperationRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatchOperationRequest {
+    pub repo_path: PathBuf,
+    pub patch: String,
+    pub scope: StatusScope,
+    pub operation: StatusOperation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitRequest {
     pub repo_path: PathBuf,
     pub message: String,
@@ -60,6 +69,7 @@ pub enum Effect {
     },
     ApplyStatusOperation(StatusOperationRequest),
     ApplyBatchStatusOperation(BatchStatusOperationRequest),
+    ApplyPatchOperation(PatchOperationRequest),
     CreateCommit(CommitRequest),
     LoadPullRequest {
         url: String,

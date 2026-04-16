@@ -9,14 +9,16 @@ use crate::core::compare::{CompareMode, CompareOutput, CompareSpec, LayoutMode, 
 use crate::core::diff::FileDiff;
 use crate::core::frecency::FrecencyStore;
 use crate::core::syntax::DiffSyntaxAnnotator;
+use crate::core::text::TextBuffer;
+use crate::core::vcs::git::patch;
 use crate::core::vcs::git::{
     BranchInfo, CommitInfo, StatusItem, StatusOperation, StatusScope, TagInfo,
 };
 use crate::core::vcs::github::{DeviceFlowState, PullRequestInfo};
 use crate::editor::Editor;
 use crate::effects::{
-    BatchStatusOperationRequest, CommitRequest, CompareRequest, Effect, StatusDiffRequest,
-    StatusOperationRequest,
+    BatchStatusOperationRequest, CommitRequest, CompareRequest, Effect, PatchOperationRequest,
+    StatusDiffRequest, StatusOperationRequest,
 };
 use crate::events::{
     AppEvent, CompareFinished, RepositoryChangeKind, RepositorySnapshot, RepositorySyncReason,
@@ -171,6 +173,7 @@ pub struct ActiveFile {
     pub path: String,
     pub file: FileDiff,
     pub render_doc: RenderDoc,
+    pub text_buffer: TextBuffer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -861,6 +864,15 @@ impl AppState {
             | UnstageFile(_)
             | StageAllFiles
             | UnstageAllFiles
+            | StageHunk
+            | UnstageHunk
+            | DiscardHunk
+            | ToggleLineSelection(_)
+            | ToggleLineSelectionRange(_, _)
+            | StageSelectedLines
+            | UnstageSelectedLines
+            | DiscardSelectedLines
+            | ClearLineSelection
             | ShowWorkingTree
             | SubmitCommit => self.apply_compare_action(action),
 
@@ -1236,6 +1248,35 @@ impl AppState {
             ),
             Action::UnstageAllFiles => {
                 self.apply_batch_scope_operation(&[StatusScope::Staged], StatusOperation::Unstage)
+            }
+            Action::StageHunk => self.apply_hunk_operation(StatusOperation::Stage),
+            Action::UnstageHunk => self.apply_hunk_operation(StatusOperation::Unstage),
+            Action::DiscardHunk => self.apply_hunk_operation(StatusOperation::Discard),
+            Action::ToggleLineSelection(row) => {
+                self.toggle_line_selection(row, false);
+                tracing::info!(
+                    row,
+                    entries = self.editor.line_selection.entries.len(),
+                    "ToggleLineSelection"
+                );
+                Vec::new()
+            }
+            Action::ToggleLineSelectionRange(row, anchor) => {
+                self.toggle_line_selection_range(row, anchor);
+                Vec::new()
+            }
+            Action::StageSelectedLines => {
+                self.apply_line_selection_operation(StatusOperation::Stage)
+            }
+            Action::UnstageSelectedLines => {
+                self.apply_line_selection_operation(StatusOperation::Unstage)
+            }
+            Action::DiscardSelectedLines => {
+                self.apply_line_selection_operation(StatusOperation::Discard)
+            }
+            Action::ClearLineSelection => {
+                self.editor.line_selection.clear();
+                Vec::new()
             }
             Action::SubmitCommit => self.submit_commit(),
             Action::SelectSidebarCommit(oid) => self.drill_into_commit(&oid),
@@ -1979,8 +2020,10 @@ impl AppState {
             path: payload.item.path.clone(),
             file,
             render_doc,
+            text_buffer: output.text_buffer,
         });
         self.editor.clear_document();
+        self.editor.line_selection.clear();
         if self.editor.search.open {
             self.recompute_search_matches();
         }
@@ -3554,8 +3597,10 @@ impl AppState {
             path: file.path.clone(),
             file: file.clone(),
             render_doc: build_render_doc(&file, index, &output.text_buffer, &output.token_buffer),
+            text_buffer: output.text_buffer.clone(),
         });
         self.editor.clear_document();
+        self.editor.line_selection.clear();
         if self.editor.search.open {
             self.recompute_search_matches();
         }
@@ -3686,6 +3731,181 @@ impl AppState {
                 operation,
             },
         )]
+    }
+
+    fn current_hunk_index_from_hover(&self) -> Option<i16> {
+        let active = self.workspace.active_file.as_ref()?;
+        let hovered = self.editor.hovered_row?;
+        let line = active.render_doc.lines.get(hovered)?;
+        if line.hunk_index < 0 {
+            return None;
+        }
+        Some(line.hunk_index)
+    }
+
+    fn apply_hunk_operation(&mut self, operation: StatusOperation) -> Vec<Effect> {
+        if self.workspace.source != WorkspaceSource::Status {
+            return Vec::new();
+        }
+        let Some(repo_path) = self.compare.repo_path.clone() else {
+            return Vec::new();
+        };
+        let Some(active) = self.workspace.active_file.as_ref() else {
+            return Vec::new();
+        };
+        let Some(scope) = self.workspace.selected_status_scope else {
+            return Vec::new();
+        };
+        let hunk_index = match self.current_hunk_index_from_hover() {
+            Some(idx) => idx as usize,
+            None => return Vec::new(),
+        };
+
+        let patch_text = if operation == StatusOperation::Stage {
+            patch::format_hunk_patch(&active.file, hunk_index, &active.text_buffer)
+        } else {
+            patch::format_reverse_hunk_patch(&active.file, hunk_index, &active.text_buffer)
+        };
+        let Some(patch) = patch_text else {
+            return Vec::new();
+        };
+
+        vec![Effect::ApplyPatchOperation(PatchOperationRequest {
+            repo_path,
+            patch,
+            scope,
+            operation,
+        })]
+    }
+
+    fn toggle_line_selection(&mut self, row: usize, _extend: bool) {
+        let Some(active) = self.workspace.active_file.as_ref() else {
+            return;
+        };
+        let Some(line) = active.render_doc.lines.get(row) else {
+            return;
+        };
+        let kind = line.row_kind();
+        if !matches!(
+            kind,
+            crate::ui::editor::render_doc::RenderRowKind::Added
+                | crate::ui::editor::render_doc::RenderRowKind::Removed
+                | crate::ui::editor::render_doc::RenderRowKind::Modified
+        ) {
+            return;
+        }
+        if line.hunk_index < 0 {
+            return;
+        }
+        if line.old_line_index >= 0 {
+            self.editor
+                .line_selection
+                .toggle(line.hunk_index, line.old_line_index);
+        }
+        if line.new_line_index >= 0 {
+            self.editor
+                .line_selection
+                .toggle(line.hunk_index, line.new_line_index);
+        }
+        self.editor.line_selection.last_toggled_row = Some(row);
+    }
+
+    fn toggle_line_selection_range(&mut self, row: usize, anchor: usize) {
+        let Some(active) = self.workspace.active_file.as_ref() else {
+            return;
+        };
+        let (start, end) = if row <= anchor {
+            (row, anchor)
+        } else {
+            (anchor, row)
+        };
+        for r in start..=end {
+            let Some(line) = active.render_doc.lines.get(r) else {
+                continue;
+            };
+            let kind = line.row_kind();
+            if !matches!(
+                kind,
+                crate::ui::editor::render_doc::RenderRowKind::Added
+                    | crate::ui::editor::render_doc::RenderRowKind::Removed
+                    | crate::ui::editor::render_doc::RenderRowKind::Modified
+            ) {
+                continue;
+            }
+            if line.hunk_index < 0 {
+                continue;
+            }
+            if line.old_line_index >= 0 {
+                self.editor
+                    .line_selection
+                    .entries
+                    .insert((line.hunk_index, line.old_line_index));
+            }
+            if line.new_line_index >= 0 {
+                self.editor
+                    .line_selection
+                    .entries
+                    .insert((line.hunk_index, line.new_line_index));
+            }
+        }
+        self.editor.line_selection.last_toggled_row = Some(row);
+    }
+
+    fn apply_line_selection_operation(&mut self, operation: StatusOperation) -> Vec<Effect> {
+        if self.workspace.source != WorkspaceSource::Status {
+            return Vec::new();
+        }
+        if self.editor.line_selection.is_empty() {
+            return Vec::new();
+        }
+        let Some(repo_path) = self.compare.repo_path.clone() else {
+            return Vec::new();
+        };
+        let Some(active) = self.workspace.active_file.as_ref() else {
+            return Vec::new();
+        };
+        let Some(scope) = self.workspace.selected_status_scope else {
+            return Vec::new();
+        };
+        let reverse = operation != StatusOperation::Stage;
+
+        let mut patches = Vec::new();
+        let hunk_indices: Vec<i16> = self
+            .editor
+            .line_selection
+            .entries
+            .iter()
+            .map(|(h, _)| *h)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+
+        for hunk_idx in hunk_indices {
+            let selected = self.editor.line_selection.selected_lines_for_hunk(hunk_idx);
+            if let Some(p) = patch::format_lines_patch(
+                &active.file,
+                hunk_idx as usize,
+                &selected,
+                &active.text_buffer,
+                reverse,
+            ) {
+                patches.push(p);
+            }
+        }
+
+        self.editor.line_selection.clear();
+
+        patches
+            .into_iter()
+            .map(|p| {
+                Effect::ApplyPatchOperation(PatchOperationRequest {
+                    repo_path: repo_path.clone(),
+                    patch: p,
+                    scope,
+                    operation,
+                })
+            })
+            .collect()
     }
 
     fn scroll_viewport_lines(&mut self, delta_lines: i32) {

@@ -2,7 +2,7 @@ use winit::event::KeyEvent;
 use winit::keyboard::{ModifiersState, NamedKey};
 
 use crate::actions::Action;
-use crate::ui::state::{AppState, FocusTarget, OverlaySurface, WorkspaceMode};
+use crate::ui::state::{AppState, FocusTarget, OverlaySurface, WorkspaceMode, WorkspaceSource};
 
 use super::{InputContext, InputOutcome, InputOwner, InputSystem, KeyChord};
 
@@ -322,6 +322,27 @@ fn workspace_key_actions_inner(
                     crate::core::compare::LayoutMode::Split,
                 )]),
                 "w" => Some(vec![Action::ToggleWrap]),
+                "s" if state.workspace.source == WorkspaceSource::Status => {
+                    if state.editor.line_selection.is_empty() {
+                        Some(vec![Action::StageHunk])
+                    } else {
+                        Some(vec![Action::StageSelectedLines])
+                    }
+                }
+                "S" if state.workspace.source == WorkspaceSource::Status => {
+                    if state.editor.line_selection.is_empty() {
+                        Some(vec![Action::UnstageHunk])
+                    } else {
+                        Some(vec![Action::UnstageSelectedLines])
+                    }
+                }
+                "x" if state.workspace.source == WorkspaceSource::Status => {
+                    if state.editor.line_selection.is_empty() {
+                        Some(vec![Action::DiscardHunk])
+                    } else {
+                        Some(vec![Action::DiscardSelectedLines])
+                    }
+                }
                 " " => Some(vec![if chord.shift() {
                     Action::ScrollViewportPages(-1)
                 } else {

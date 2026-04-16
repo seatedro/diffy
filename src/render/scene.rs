@@ -50,6 +50,14 @@ impl Rect {
         }
     }
 
+    pub fn offset(self, dx: f32, dy: f32) -> Self {
+        Self {
+            x: self.x + dx,
+            y: self.y + dy,
+            ..self
+        }
+    }
+
     pub fn intersection(self, other: Self) -> Option<Self> {
         let left = self.x.max(other.x);
         let top = self.y.max(other.y);
@@ -180,6 +188,26 @@ pub enum Primitive {
     ZIndexPop,
     LayerBoundary,
     EditorText(EditorTextSlot),
+}
+
+impl Primitive {
+    pub fn offset(&mut self, dx: f32, dy: f32) {
+        match self {
+            Self::Rect(p) => p.rect = p.rect.offset(dx, dy),
+            Self::RoundedRect(p) => p.rect = p.rect.offset(dx, dy),
+            Self::Border(p) => p.rect = p.rect.offset(dx, dy),
+            Self::Shadow(p) => p.rect = p.rect.offset(dx, dy),
+            Self::TextRun(p) => p.rect = p.rect.offset(dx, dy),
+            Self::RichTextRun(p) => p.rect = p.rect.offset(dx, dy),
+            Self::Icon(p) => p.rect = p.rect.offset(dx, dy),
+            Self::Image(p) => p.rect = p.rect.offset(dx, dy),
+            Self::EffectQuad(p) => p.rect = p.rect.offset(dx, dy),
+            Self::BlurRegion(p) => p.rect = p.rect.offset(dx, dy),
+            Self::ClipStart(p) => p.rect = p.rect.offset(dx, dy),
+            Self::EditorText(p) => p.rect = p.rect.offset(dx, dy),
+            Self::ClipEnd | Self::ZIndexPush(_) | Self::ZIndexPop | Self::LayerBoundary => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]

@@ -82,7 +82,7 @@ impl RenderRowKind {
 pub struct RenderLine {
     pub kind: u8,
     pub flags: u8,
-    pub reserved: u16,
+    pub hunk_index: i16,
     pub old_line_no: u32,
     pub new_line_no: u32,
     pub left_cols: u32,
@@ -91,6 +91,10 @@ pub struct RenderLine {
     pub right_text: ByteRange,
     pub left_runs: RunRange,
     pub right_runs: RunRange,
+    pub line_index: i16,
+    pub old_line_index: i16,
+    pub new_line_index: i16,
+    pub _pad: i16,
 }
 
 impl RenderLine {
@@ -207,6 +211,7 @@ fn build_render_line(
     token_buffer: &TokenBuffer,
 ) -> RenderLine {
     let kind = RenderRowKind::from_diff_row(row.row_type);
+    let source = SourceIndices::from_row(row);
     match row.row_type {
         DiffRowType::FileHeader => {
             let left_text = append_text(text_bytes, &file.path);
@@ -229,6 +234,7 @@ fn build_render_line(
             let left_text = append_text(text_bytes, header);
             RenderLine {
                 kind: kind as u8,
+                hunk_index: source.hunk_index,
                 left_cols: header.chars().count() as u32,
                 left_text,
                 right_text: ByteRange::invalid(),
@@ -241,7 +247,7 @@ fn build_render_line(
         }
         DiffRowType::Context => {
             let line = main_line_for_row(file, row);
-            build_dual_sided_line(
+            let mut rl = build_dual_sided_line(
                 kind,
                 line,
                 line,
@@ -249,11 +255,13 @@ fn build_render_line(
                 style_runs,
                 text_buffer,
                 token_buffer,
-            )
+            );
+            source.apply(&mut rl);
+            rl
         }
         DiffRowType::Added => {
             let line = new_line_for_row(file, row);
-            build_dual_sided_line(
+            let mut rl = build_dual_sided_line(
                 kind,
                 None,
                 line,
@@ -261,11 +269,13 @@ fn build_render_line(
                 style_runs,
                 text_buffer,
                 token_buffer,
-            )
+            );
+            source.apply(&mut rl);
+            rl
         }
         DiffRowType::Removed => {
             let line = old_line_for_row(file, row);
-            build_dual_sided_line(
+            let mut rl = build_dual_sided_line(
                 kind,
                 line,
                 None,
@@ -273,12 +283,14 @@ fn build_render_line(
                 style_runs,
                 text_buffer,
                 token_buffer,
-            )
+            );
+            source.apply(&mut rl);
+            rl
         }
         DiffRowType::Modified => {
             let old_line = old_line_for_row(file, row);
             let new_line = new_line_for_row(file, row);
-            build_dual_sided_line(
+            let mut rl = build_dual_sided_line(
                 kind,
                 old_line,
                 new_line,
@@ -286,8 +298,35 @@ fn build_render_line(
                 style_runs,
                 text_buffer,
                 token_buffer,
-            )
+            );
+            source.apply(&mut rl);
+            rl
         }
+    }
+}
+
+struct SourceIndices {
+    hunk_index: i16,
+    line_index: i16,
+    old_line_index: i16,
+    new_line_index: i16,
+}
+
+impl SourceIndices {
+    fn from_row(row: &FlatDiffRow) -> Self {
+        Self {
+            hunk_index: row.hunk_index as i16,
+            line_index: row.line_index as i16,
+            old_line_index: row.old_line_index as i16,
+            new_line_index: row.new_line_index as i16,
+        }
+    }
+
+    fn apply(&self, line: &mut RenderLine) {
+        line.hunk_index = self.hunk_index;
+        line.line_index = self.line_index;
+        line.old_line_index = self.old_line_index;
+        line.new_line_index = self.new_line_index;
     }
 }
 

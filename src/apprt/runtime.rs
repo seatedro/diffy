@@ -123,6 +123,14 @@ impl EffectRunner {
                     request.operation,
                 );
             }
+            Effect::ApplyPatchOperation(request) => {
+                self.git_worker.dispatch_patch_operation(
+                    request.repo_path,
+                    request.patch,
+                    request.scope,
+                    request.operation,
+                );
+            }
             Effect::CreateCommit(request) => {
                 self.git_worker
                     .dispatch_commit(request.repo_path, request.message);

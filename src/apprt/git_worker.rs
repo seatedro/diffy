@@ -7,7 +7,7 @@ use git2::{BranchType, Status, StatusOptions};
 
 use crate::apprt::runtime::RuntimeEventSender;
 use crate::core::vcs::git::{
-    GitService, StatusItem, StatusOperation, status::status_items_from_entry,
+    GitService, StatusItem, StatusOperation, StatusScope, status::status_items_from_entry,
 };
 use crate::events::{AppEvent, RepositoryChangeKind, RepositorySnapshot, RepositorySyncReason};
 
@@ -49,6 +49,21 @@ impl GitWorker {
         });
     }
 
+    pub fn dispatch_patch_operation(
+        &self,
+        path: PathBuf,
+        patch: String,
+        scope: StatusScope,
+        operation: StatusOperation,
+    ) {
+        let _ = self.sender.send(GitWorkerCommand::ApplyPatch {
+            path,
+            patch,
+            scope,
+            operation,
+        });
+    }
+
     pub fn dispatch_commit(&self, path: PathBuf, message: String) {
         let _ = self.sender.send(GitWorkerCommand::Commit { path, message });
     }
@@ -72,6 +87,12 @@ pub(crate) enum GitWorkerCommand {
     ApplyBatchOperation {
         path: PathBuf,
         items: Vec<StatusItem>,
+        operation: StatusOperation,
+    },
+    ApplyPatch {
+        path: PathBuf,
+        patch: String,
+        scope: StatusScope,
         operation: StatusOperation,
     },
     Commit {
@@ -149,6 +170,15 @@ fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorke
             }) => {
                 pending_dirty = None;
                 apply_batch_status_operation(&mut state, &event_sender, path, items, operation);
+            }
+            Some(GitWorkerCommand::ApplyPatch {
+                path,
+                patch,
+                scope,
+                operation,
+            }) => {
+                pending_dirty = None;
+                apply_patch_operation(&mut state, &event_sender, path, &patch, scope, operation);
             }
             Some(GitWorkerCommand::Commit { path, message }) => {
                 pending_dirty = None;
@@ -228,6 +258,53 @@ fn apply_batch_status_operation(
         event_sender.send(AppEvent::StatusOperationFailed {
             path: path.clone(),
             message: error.to_string(),
+        });
+        return;
+    }
+
+    sync_repository(state, event_sender, path, RepositorySyncReason::Dirty);
+}
+
+fn apply_patch_operation(
+    state: &mut GitWorkerState,
+    event_sender: &RuntimeEventSender,
+    path: PathBuf,
+    patch: &str,
+    _scope: StatusScope,
+    operation: StatusOperation,
+) {
+    if state.active_path.as_ref() != Some(&path) {
+        state.git.close();
+        state.snapshot = None;
+        state.active_path = Some(path.clone());
+    }
+
+    if !state.git.is_open() {
+        if let Err(error) = state.git.open(path.to_string_lossy().as_ref()) {
+            event_sender.send(AppEvent::StatusOperationFailed {
+                path,
+                message: error.to_string(),
+            });
+            return;
+        }
+    }
+
+    let location = match operation {
+        StatusOperation::Discard => git2::ApplyLocation::WorkDir,
+        _ => git2::ApplyLocation::Index,
+    };
+
+    if let Err(error) = state.git.apply_patch(patch, location) {
+        tracing::error!(
+            ?operation,
+            path = %path.display(),
+            error = %error,
+            patch = %patch,
+            "patch apply failed"
+        );
+        event_sender.send(AppEvent::StatusOperationFailed {
+            path: path.clone(),
+            message: format!("{} failed: {}", operation.label(), error),
         });
         return;
     }

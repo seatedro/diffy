@@ -96,6 +96,31 @@ const GROUPS: &[ShortcutGroup] = &[
         ],
     },
     ShortcutGroup {
+        title: "Staging (Working Tree)",
+        entries: &[
+            ShortcutEntry {
+                key: "s",
+                description: "Stage hunk / selected lines",
+            },
+            ShortcutEntry {
+                key: "S",
+                description: "Unstage hunk / selected lines",
+            },
+            ShortcutEntry {
+                key: "x",
+                description: "Discard hunk / selected lines",
+            },
+            ShortcutEntry {
+                key: "Gutter click",
+                description: "Toggle line selection",
+            },
+            ShortcutEntry {
+                key: "Shift + Gutter click",
+                description: "Extend line selection",
+            },
+        ],
+    },
+    ShortcutGroup {
         title: "General",
         entries: &[
             ShortcutEntry {

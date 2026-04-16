@@ -2,8 +2,8 @@ use std::cmp::Ordering;
 use std::path::Path;
 
 use git2::{
-    BranchType, Cred, DiffFormat, DiffOptions, FetchOptions, ObjectType, Oid, RemoteCallbacks,
-    Repository, build::CheckoutBuilder,
+    ApplyLocation, BranchType, Cred, Diff, DiffFormat, DiffOptions, FetchOptions, ObjectType, Oid,
+    RemoteCallbacks, Repository, build::CheckoutBuilder,
 };
 use serde::Serialize;
 
@@ -572,6 +572,13 @@ impl GitService {
         repo.checkout_index(Some(&mut index), Some(&mut checkout))?;
         Ok(())
     }
+
+    pub fn apply_patch(&self, patch_text: &str, location: ApplyLocation) -> Result<()> {
+        let repo = self.repo()?;
+        let diff = Diff::from_buffer(patch_text.as_bytes())?;
+        repo.apply(&diff, location, None)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -742,5 +749,67 @@ mod tests {
         .unwrap();
 
         assert!(!repo_dir.path().join("src/new.rs").exists());
+    }
+
+    #[test]
+    fn can_stage_hunk_via_patch() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        commit_file(&repo, "src/lib.rs", "line1\nline2\nline3\n", "initial");
+        fs::write(
+            repo_dir.path().join("src/lib.rs"),
+            "line1\nchanged\nline3\nextra\n",
+        )
+        .unwrap();
+
+        let mut git = GitService::new();
+        git.open(repo_dir.path().to_str().unwrap()).unwrap();
+
+        let patch = concat!(
+            "diff --git a/src/lib.rs b/src/lib.rs\n",
+            "--- a/src/lib.rs\n",
+            "+++ b/src/lib.rs\n",
+            "@@ -1,3 +1,4 @@\n",
+            " line1\n",
+            "-line2\n",
+            "+changed\n",
+            " line3\n",
+            "+extra\n",
+        );
+        git.apply_patch(patch, git2::ApplyLocation::Index).unwrap();
+
+        let st = statuses(&repo);
+        assert!(st[0].1.contains(Status::INDEX_MODIFIED));
+    }
+
+    #[test]
+    fn can_unstage_hunk_via_reverse_patch() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        commit_file(&repo, "src/lib.rs", "aaa\nbbb\n", "initial");
+        fs::write(repo_dir.path().join("src/lib.rs"), "aaa\nccc\n").unwrap();
+
+        let mut git = GitService::new();
+        git.open(repo_dir.path().to_str().unwrap()).unwrap();
+
+        git.stage_path("src/lib.rs").unwrap();
+        let st = statuses(&repo);
+        assert!(st[0].1.contains(Status::INDEX_MODIFIED));
+
+        let reverse_patch = concat!(
+            "diff --git a/src/lib.rs b/src/lib.rs\n",
+            "--- a/src/lib.rs\n",
+            "+++ b/src/lib.rs\n",
+            "@@ -1,2 +1,2 @@\n",
+            " aaa\n",
+            "-ccc\n",
+            "+bbb\n",
+        );
+        git.apply_patch(reverse_patch, git2::ApplyLocation::Index)
+            .unwrap();
+
+        let st2 = statuses(&repo);
+        assert!(st2[0].1.contains(Status::WT_MODIFIED));
+        assert!(!st2[0].1.contains(Status::INDEX_MODIFIED));
     }
 }

@@ -1,14 +1,18 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use halogen::view;
+
+use crate::actions::Action;
 use crate::render::{Rect, Scene, TextMetrics};
-use crate::ui::components::ToastStack;
-use crate::ui::design::{Bp, Rad, Sp, Sz};
+use crate::ui::components::{Button, ButtonSize, ButtonStyle, ToastStack};
+use crate::ui::design::{Bp, Rad, Shadow, Sp, Sz};
 use crate::ui::editor::element::{EditorDocument, EditorElement};
 use crate::ui::element::*;
+use crate::ui::icons::lucide;
 use crate::ui::overlays;
 use crate::ui::sidebar as sidebar_mod;
-use crate::ui::state::{AppState, WorkspaceMode};
+use crate::ui::state::{AppState, WorkspaceMode, WorkspaceSource};
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
 use crate::ui::title_bar;
@@ -58,7 +62,7 @@ pub fn build_ui_frame(
     } else {
         row_h
     };
-    let commit_box_h = if state.workspace.source == crate::ui::state::WorkspaceSource::Status {
+    let commit_box_h = if state.workspace.source == WorkspaceSource::Status {
         (Sz::COMMIT_BOX_H * ui_scale).round() + Sp::SM * 2.0 * ui_scale
     } else {
         0.0
@@ -176,9 +180,84 @@ pub fn build_ui_frame(
                 None => EditorDocument::Empty,
             };
             editor.prepare(&mut state.editor, document, vp_bounds, text_metrics);
+            editor.layout.show_staging_controls = state.workspace.source == WorkspaceSource::Status;
+            editor.layout.file_is_staged = matches!(
+                state.workspace.selected_status_scope,
+                Some(crate::core::vcs::git::StatusScope::Staged)
+            );
             scene.clip(vp_bounds);
             editor.paint(&mut scene, theme, &state.editor, document);
             scene.pop_clip();
+
+            if editor.layout.show_staging_controls {
+                if let EditorDocument::Text { doc, .. } = document {
+                    let is_staged = editor.layout.file_is_staged;
+                    let has_line_selection = !state.editor.line_selection.is_empty();
+
+                    let line_bar_rect = if has_line_selection {
+                        editor.line_selection_bar_rect(doc, &state.editor)
+                    } else {
+                        None
+                    };
+                    let hunk_bar_rect = if line_bar_rect.is_none() {
+                        editor.hunk_action_bar_rect(doc)
+                    } else {
+                        None
+                    };
+
+                    if let Some(bar_rect) = line_bar_rect {
+                        let (stage_action, stage_label, stage_icon) = if is_staged {
+                            (Action::UnstageSelectedLines, "Unstage Lines", lucide::MINUS)
+                        } else {
+                            (Action::StageSelectedLines, "Stage Lines", lucide::PLUS)
+                        };
+                        let mut bar = build_staging_bar(
+                            theme,
+                            ui_scale,
+                            bar_rect,
+                            stage_action,
+                            stage_label,
+                            stage_icon,
+                            Action::DiscardSelectedLines,
+                            "Discard Lines",
+                        );
+                        render_element_at(
+                            &mut bar,
+                            &mut scene,
+                            cx,
+                            bar_rect.x,
+                            bar_rect.y,
+                            bar_rect.width,
+                            bar_rect.height,
+                        );
+                    } else if let Some(bar_rect) = hunk_bar_rect {
+                        let (stage_action, stage_label, stage_icon) = if is_staged {
+                            (Action::UnstageHunk, "Unstage Hunk", lucide::MINUS)
+                        } else {
+                            (Action::StageHunk, "Stage Hunk", lucide::PLUS)
+                        };
+                        let mut bar = build_staging_bar(
+                            theme,
+                            ui_scale,
+                            bar_rect,
+                            stage_action,
+                            stage_label,
+                            stage_icon,
+                            Action::DiscardHunk,
+                            "Discard Hunk",
+                        );
+                        render_element_at(
+                            &mut bar,
+                            &mut scene,
+                            cx,
+                            bar_rect.x,
+                            bar_rect.y,
+                            bar_rect.width,
+                            bar_rect.height,
+                        );
+                    }
+                }
+            }
 
             if state.editor.content_height_px > state.editor.viewport_height_px
                 && state.editor.viewport_height_px > 0
@@ -225,5 +304,49 @@ pub fn build_ui_frame(
         file_list_rect: file_list_rect.or_else(|| file_list_bounds.get()),
         sidebar_resize_handle_rect: sidebar_resize_bounds.get(),
         viewport_rect: viewport_bounds.get(),
+    }
+}
+
+fn build_staging_bar(
+    theme: &Theme,
+    ui_scale: f32,
+    bar_rect: Rect,
+    stage_action: Action,
+    stage_label: &'static str,
+    stage_icon: &'static str,
+    discard_action: Action,
+    discard_label: &'static str,
+) -> AnyElement {
+    let tc = &theme.colors;
+    view! { ui_scale,
+        <div class="flex-row items-center"
+             w={bar_rect.width} h={bar_rect.height}
+             pr={Sp::SM}>
+            <spacer />
+            <div class="flex-row items-center"
+                 bg={tc.elevated_surface}
+                 border_b={tc.border_variant}
+                 border_l={tc.border_variant}
+                 border_r={tc.border_variant}
+                 rounded={Rad::MD}
+                 shadow_preset={Shadow::DROPDOWN}
+                 on_click={Action::Noop}
+                 gap={Sp::XXS}
+                 px={Sp::XXS}
+                 py={Sp::XXS}>
+                <Button action={stage_action}
+                        style={ButtonStyle::Ghost}
+                        size={ButtonSize::Compact}>
+                    <Icon>{stage_icon}</Icon>
+                    <Label>{stage_label}</Label>
+                </Button>
+                <Button action={discard_action}
+                        style={ButtonStyle::Ghost}
+                        size={ButtonSize::Compact}>
+                    <Icon>{lucide::CORNER_UP_LEFT}</Icon>
+                    <Label>{discard_label}</Label>
+                </Button>
+            </div>
+        </div>
     }
 }

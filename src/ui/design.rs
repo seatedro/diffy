@@ -31,6 +31,7 @@ impl Sz {
     pub const TOAST_MAX_W: f32 = 360.0;
     pub const TOAST_MIN_W: f32 = 220.0;
     pub const TOAST_STRIPE_W: f32 = 3.0;
+    pub const GUTTER_STRIPE_W: f32 = 2.0;
     pub const TOAST_MARGIN: f32 = 32.0;
     pub const MODAL_MARGIN: f32 = 48.0;
     pub const MODAL_TOP_OFFSET: f32 = 80.0;

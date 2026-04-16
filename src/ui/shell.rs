@@ -102,10 +102,11 @@ pub fn build_ui_frame(
         .viewport_height
         .set(&state.store, sidebar_list_height);
     state.file_list_clamp_scroll(state.sidebar_row_count());
-    let sidebar_width_factor = cx
-        .ui_signals
-        .map(|s| cx.read(s.sidebar_width_factor))
-        .unwrap_or(1.0);
+    let sidebar_width_factor = if state.sidebar_visible.get(&state.store) {
+        1.0
+    } else {
+        0.0
+    };
     let sidebar_width =
         sidebar_mod::preferred_sidebar_width(state, theme, cx, width) * sidebar_width_factor;
 

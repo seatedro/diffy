@@ -18,6 +18,5 @@ pub mod symbols;
 pub mod theme;
 pub mod title_bar;
 pub mod toolbar;
-pub mod ui_signals;
 
 pub use app::run;

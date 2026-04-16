@@ -267,7 +267,6 @@ pub struct ElementContext<'a> {
     pub focus: Option<crate::ui::state::FocusTarget>,
     pub signal_store: &'a SignalStore,
     pub clock_ms: u64,
-    pub ui_signals: Option<crate::ui::ui_signals::UiSignals>,
     pub debug_wireframe: bool,
     pub text_input_hit_areas: Vec<TextInputHitArea>,
     pub scrollbar_tracks: Vec<ScrollbarTrack>,
@@ -299,7 +298,6 @@ impl<'a> ElementContext<'a> {
             focus: None,
             signal_store,
             clock_ms: 0,
-            ui_signals: None,
             debug_wireframe: false,
             text_input_hit_areas: Vec::new(),
             scrollbar_tracks: Vec::new(),
@@ -346,11 +344,6 @@ impl<'a> ElementContext<'a> {
 
     pub fn with_clock(mut self, clock_ms: u64) -> Self {
         self.clock_ms = clock_ms;
-        self
-    }
-
-    pub fn with_ui_signals(mut self, signals: crate::ui::ui_signals::UiSignals) -> Self {
-        self.ui_signals = Some(signals);
         self
     }
 

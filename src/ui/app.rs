@@ -78,7 +78,6 @@ struct NativeApp {
     ui_frame: UiFrame,
     editor: EditorElement,
     input: InputSystem,
-    ui_signals: crate::ui::ui_signals::UiSignals,
     launch_at: Instant,
     dumps_dirty: bool,
     #[cfg(feature = "capture")]
@@ -101,7 +100,6 @@ impl NativeApp {
         let capture_pending = std::env::var("DIFFY_CAPTURE_PATH")
             .ok()
             .map(std::path::PathBuf::from);
-        let ui_signals = crate::ui::ui_signals::UiSignals::new(&state.store);
         Self {
             state,
             theme,
@@ -111,7 +109,6 @@ impl NativeApp {
             window: None,
             ui_frame: UiFrame::default(),
             input: InputSystem::default(),
-            ui_signals,
             editor: EditorElement::default(),
             launch_at: Instant::now(),
             dumps_dirty: true,
@@ -326,8 +323,6 @@ impl NativeApp {
         // Clone the Rc so `cx` can hold `&SignalStore` independently of
         // `self.state` (which we need to borrow mutably for build_ui_frame).
         let store = std::rc::Rc::clone(&self.state.store);
-        self.ui_signals
-            .sync_from_state(&store, store.read(self.state.sidebar_visible));
 
         let mut cx = crate::ui::element::ElementContext::new(
             &self.theme,
@@ -337,8 +332,7 @@ impl NativeApp {
             &store,
         )
         .with_focus(store.read(self.state.focus))
-        .with_clock(self.state.clock_ms)
-        .with_ui_signals(self.ui_signals);
+        .with_clock(self.state.clock_ms);
         cx.debug_wireframe = std::env::var("DIFFY_DEBUG_WIREFRAME").is_ok();
 
         #[cfg(feature = "hot-reload")]

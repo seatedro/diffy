@@ -247,7 +247,7 @@ fn workspace_key_actions_inner(
         Some(NamedKey::ArrowDown) => {
             if state.focus.get(&state.store) == Some(FocusTarget::Editor) {
                 Some(vec![Action::ScrollViewportLines(1)])
-            } else if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready {
+            } else if state.is_workspace_ready() {
                 Some(vec![Action::SelectNextFile])
             } else {
                 None
@@ -256,14 +256,14 @@ fn workspace_key_actions_inner(
         Some(NamedKey::ArrowUp) => {
             if state.focus.get(&state.store) == Some(FocusTarget::Editor) {
                 Some(vec![Action::ScrollViewportLines(-1)])
-            } else if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready {
+            } else if state.is_workspace_ready() {
                 Some(vec![Action::SelectPreviousFile])
             } else {
                 None
             }
         }
         Some(NamedKey::PageDown)
-            if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready =>
+            if state.is_workspace_ready() =>
         {
             if state.focus.get(&state.store) == Some(FocusTarget::Editor) {
                 Some(vec![Action::ScrollViewportPages(1)])
@@ -272,7 +272,7 @@ fn workspace_key_actions_inner(
             }
         }
         Some(NamedKey::PageUp)
-            if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready =>
+            if state.is_workspace_ready() =>
         {
             if state.focus.get(&state.store) == Some(FocusTarget::Editor) {
                 Some(vec![Action::ScrollViewportPages(-1)])
@@ -280,10 +280,10 @@ fn workspace_key_actions_inner(
                 Some(vec![Action::ScrollFileList(-10)])
             }
         }
-        Some(NamedKey::Home) if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready => {
+        Some(NamedKey::Home) if state.is_workspace_ready() => {
             Some(vec![Action::ScrollViewportTo(0)])
         }
-        Some(NamedKey::End) if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready => {
+        Some(NamedKey::End) if state.is_workspace_ready() => {
             Some(vec![Action::ScrollViewportTo(
                 state.editor_max_scroll_top_px(),
             )])
@@ -399,7 +399,7 @@ fn cycle_focus_target(state: &AppState) -> Option<FocusTarget> {
             Some(FocusTarget::Editor) => Some(FocusTarget::FileList),
             Some(FocusTarget::WorkspacePrimaryButton) => Some(FocusTarget::TitleBar),
             _ => Some(
-                if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready {
+                if state.is_workspace_ready() {
                     FocusTarget::FileList
                 } else {
                     FocusTarget::WorkspacePrimaryButton

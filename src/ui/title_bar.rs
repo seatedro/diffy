@@ -23,7 +23,7 @@ pub(crate) fn title_bar(
     let scale = theme.metrics.ui_scale();
     let has_repo = state.compare.repo_path.with(&state.store, |p| p.is_some());
     let repo_loaded = state.repository.status.get(&state.store) == AsyncStatus::Ready;
-    let is_ready = state.workspace_mode.get(&state.store) == WorkspaceMode::Ready;
+    let is_ready = state.is_workspace_ready();
 
     let repo_label = state.compare.repo_path.with(&state.store, |p| {
         p.as_ref()

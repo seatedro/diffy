@@ -2673,6 +2673,11 @@ impl AppState {
             .is_some_and(|target| target.is_text_field())
     }
 
+    /// Returns true when the workspace is in `Ready` mode.
+    pub fn is_workspace_ready(&self) -> bool {
+        self.workspace_mode.get(&self.store) == WorkspaceMode::Ready
+    }
+
     fn touch_cursor(&mut self) {
         self.text_edit
             .cursor_moved_at_ms

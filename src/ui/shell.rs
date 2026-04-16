@@ -127,7 +127,7 @@ pub fn build_ui_frame(
                 .flex_1()
                 .min_h(0.0)
                 .when(
-                    state.workspace_mode.get(&state.store) == WorkspaceMode::Ready
+                    state.is_workspace_ready()
                         && sidebar_width_factor > 0.001
                         && width >= Bp::COMPACT * ui_scale,
                     |d| {
@@ -185,7 +185,7 @@ pub fn build_ui_frame(
     render_element(&mut root, &mut scene, cx, width, height);
     let mut scrollbar_tracks = std::mem::take(&mut cx.scrollbar_tracks);
 
-    if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready {
+    if state.is_workspace_ready() {
         if let Some(vp_bounds) = viewport_bounds.get() {
             let active_file_snapshot = state.workspace.active_file.get(&state.store);
             let compare_generation = state.workspace.compare_generation.get(&state.store);

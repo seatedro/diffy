@@ -26,7 +26,7 @@ pub(crate) fn main_surface(
     let tc = &theme.colors;
     let has_overlay = state.active_overlay_name().is_some();
 
-    let toolbar = if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready {
+    let toolbar = if state.is_workspace_ready() {
         state
             .workspace
             .selected_file_path
@@ -36,7 +36,7 @@ pub(crate) fn main_surface(
         None
     };
 
-    let search = if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready
+    let search = if state.is_workspace_ready()
         && state.editor.search.open.get(&state.store)
     {
         Some(search_bar(state, theme))
@@ -45,7 +45,7 @@ pub(crate) fn main_surface(
     };
 
     let vb = viewport_bounds.clone();
-    let viewport_canvas = if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready
+    let viewport_canvas = if state.is_workspace_ready()
         && state.workspace.active_file.with(&state.store, |af| af.is_some())
     {
         Some(

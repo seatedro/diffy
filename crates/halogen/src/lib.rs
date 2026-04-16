@@ -7,9 +7,11 @@
 
 pub use halogen_macros::{Store, view};
 
+pub mod color;
 pub mod geometry;
 pub mod hit;
 pub mod reactive;
 
+pub use color::Color;
 pub use geometry::Rect;
 pub use hit::{ClickEvent, ClickHandler, CursorHint, HitIdentity, HitRegion};

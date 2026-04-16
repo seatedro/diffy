@@ -12,8 +12,8 @@ use crate::effects::Effect;
 use crate::render::Scene;
 use crate::render::scene::{BlurRegionPrimitive, EffectQuadPrimitive, EffectType, Rect};
 use crate::ui::design::{Alpha, Sz};
-use crate::ui::shell::CursorHint;
 use crate::ui::theme::Theme;
+pub use halogen::hit::{ClickEvent, CursorHint, HitIdentity};
 use halogen::reactive::{Signal, SignalStore};
 
 pub use taffy::NodeId as LayoutId;
@@ -25,72 +25,34 @@ pub use taffy::NodeId as LayoutId;
 pub type Bounds = Rect;
 
 // ---------------------------------------------------------------------------
-// HitRegion — clickable area registered during paint
+// HitRegion / ClickHandler — halogen-generic hit-testing, diffy-typed result
 // ---------------------------------------------------------------------------
 
-/// Opaque, enum-free identity payload for a hit region.
-///
-/// Input handling uses this to answer "which file/toast/entry is hovered?"
-/// without pattern-matching on the app's `Action` enum. Halogen-owned
-/// hit-region code stays independent of diffy's action variants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HitIdentity {
-    File(usize),
-    Toast(usize),
-    OverlayEntry(usize),
-    OverlayBackdrop,
-}
+/// Diffy's hit region: a halogen hit region specialized on `ClickResult`.
+pub type HitRegion = halogen::hit::HitRegion<ClickResult>;
 
-#[derive(Debug, Clone)]
-pub struct HitRegion {
-    pub rect: Rect,
-    pub cursor: CursorHint,
-    pub on_click: ClickHandler,
-    pub identity: Option<HitIdentity>,
-}
+/// Diffy's click handler: a halogen click handler producing `ClickResult`.
+pub type ClickHandler = halogen::hit::ClickHandler<ClickResult>;
 
-impl HitRegion {
-    pub fn new(rect: Rect, cursor: CursorHint, on_click: ClickHandler) -> Self {
-        Self {
-            rect,
-            cursor,
-            on_click,
-            identity: None,
-        }
-    }
-
-    pub fn with_identity(mut self, identity: HitIdentity) -> Self {
-        self.identity = Some(identity);
-        self
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ClickHandler / ClickResult / DragHandler — composable event dispatch
-// ---------------------------------------------------------------------------
-
-#[derive(Clone)]
-pub struct ClickHandler(std::rc::Rc<dyn Fn(ClickEvent) -> ClickResult>);
-
-impl ClickHandler {
-    pub fn new(f: impl Fn(ClickEvent) -> ClickResult + 'static) -> Self {
-        Self(std::rc::Rc::new(f))
-    }
-
-    /// Build a handler that emits `action` on click. The action is captured
-    /// by value and cloned per invocation; halogen-owned HitRegion code
-    /// never needs to name the concrete Action type.
-    pub fn from_action(action: Action) -> Self {
-        Self::new(move |_| ClickResult::Actions(vec![action.clone()]))
-    }
-
-    pub fn invoke(&self, event: ClickEvent) -> ClickResult {
-        (self.0)(event)
-    }
+/// Helpers that make sense only when the handler's output is diffy's
+/// `ClickResult`. Extension trait so we can add methods without owning the
+/// underlying halogen type.
+pub trait ClickHandlerActionExt {
+    /// Build a handler that emits `action` on click. Action is captured by
+    /// value and cloned per invocation.
+    fn from_action(action: Action) -> Self;
 
     /// Actions this handler would emit, for test introspection. Drag
-    /// captures yield an empty vec — tests shouldn't assert against them.
-    pub fn peek_actions(&self) -> Vec<Action> {
+    /// captures yield an empty vec.
+    fn peek_actions(&self) -> Vec<Action>;
+}
+
+impl ClickHandlerActionExt for ClickHandler {
+    fn from_action(action: Action) -> Self {
+        halogen::hit::ClickHandler::new(move |_| ClickResult::Actions(vec![action.clone()]))
+    }
+
+    fn peek_actions(&self) -> Vec<Action> {
         match self.invoke(ClickEvent { x: 0.0, y: 0.0 }) {
             ClickResult::Actions(actions) => actions,
             ClickResult::Handled | ClickResult::CaptureDrag(_) => Vec::new(),
@@ -98,17 +60,9 @@ impl ClickHandler {
     }
 }
 
-impl std::fmt::Debug for ClickHandler {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ClickHandler(..)")
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct ClickEvent {
-    pub x: f32,
-    pub y: f32,
-}
+// ---------------------------------------------------------------------------
+// ClickResult / DragHandler — diffy-local payload types
+// ---------------------------------------------------------------------------
 
 pub enum ClickResult {
     Handled,

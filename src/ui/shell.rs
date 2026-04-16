@@ -18,14 +18,7 @@ use crate::ui::theme::Theme;
 use crate::ui::title_bar;
 use crate::ui::toolbar as toolbar_mod;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum CursorHint {
-    #[default]
-    Default,
-    Pointer,
-    Text,
-    ResizeCol,
-}
+pub use halogen::CursorHint;
 
 #[derive(Debug, Clone, Default)]
 pub struct UiFrame {

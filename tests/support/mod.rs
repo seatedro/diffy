@@ -5,7 +5,7 @@ use diffy::core::vcs::github::{DeviceFlowState, PullRequestInfo};
 use diffy::render::capture::{scene_to_png, scene_to_rgba};
 use diffy::render::{Primitive, Rect, TextMetrics};
 use diffy::ui::editor::element::EditorElement;
-use diffy::ui::element::{ElementContext, ScrollActionBuilder};
+use diffy::ui::element::{ClickHandlerActionExt, ElementContext, ScrollActionBuilder};
 use diffy::ui::shell::{UiFrame, build_ui_frame};
 use halogen::reactive::SignalStore;
 use diffy::ui::state::{

@@ -81,6 +81,7 @@ fn picker_row<T: PickerItem>(
              bg={row_bg}
              @when {!selected} { hover_bg={tc.sidebar_row_hover} }
              on_click={Action::SelectOverlayEntry(i)}
+             hit_identity={HitIdentity::OverlayEntry(i)}
              cursor={CursorHint::Pointer}>
             {?icon_child}
             {picker_label(entry.label(), entry.highlight_ranges(), selected, theme)}

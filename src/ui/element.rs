@@ -28,12 +28,26 @@ pub type Bounds = Rect;
 // HitRegion — clickable area registered during paint
 // ---------------------------------------------------------------------------
 
+/// Opaque, enum-free identity payload for a hit region.
+///
+/// Input handling uses this to answer "which file/toast/entry is hovered?"
+/// without pattern-matching on the app's `Action` enum. Halogen-owned
+/// hit-region code stays independent of diffy's action variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HitIdentity {
+    File(usize),
+    Toast(usize),
+    OverlayEntry(usize),
+    OverlayBackdrop,
+}
+
 #[derive(Debug, Clone)]
 pub struct HitRegion {
     pub rect: Rect,
     pub action: Action,
     pub cursor: CursorHint,
     pub on_click: Option<ClickHandler>,
+    pub identity: Option<HitIdentity>,
 }
 
 impl HitRegion {
@@ -43,7 +57,13 @@ impl HitRegion {
             action,
             cursor,
             on_click: None,
+            identity: None,
         }
+    }
+
+    pub fn with_identity(mut self, identity: HitIdentity) -> Self {
+        self.identity = Some(identity);
+        self
     }
 
     pub fn with_click_handler(rect: Rect, cursor: CursorHint, handler: ClickHandler) -> Self {
@@ -52,6 +72,7 @@ impl HitRegion {
             action: Action::Noop,
             cursor,
             on_click: Some(handler),
+            identity: None,
         }
     }
 }
@@ -1024,6 +1045,7 @@ pub struct Div {
     clips: bool,
     focus_target: Option<crate::ui::state::FocusTarget>,
     tooltip: Option<String>,
+    hit_identity: Option<HitIdentity>,
 }
 
 pub fn div() -> Div {
@@ -1043,6 +1065,7 @@ pub fn div() -> Div {
         clips: false,
         focus_target: None,
         tooltip: None,
+        hit_identity: None,
     }
 }
 
@@ -1094,6 +1117,13 @@ impl Div {
     pub fn on_click_handler(mut self, handler: ClickHandler) -> Self {
         self.on_click_handler = Some(handler);
         self.cursor = CursorHint::Pointer;
+        self
+    }
+
+    /// Attach an opaque identity payload used by hover/click dispatch to
+    /// route behavior without pattern-matching the app's Action enum.
+    pub fn hit_identity(mut self, identity: HitIdentity) -> Self {
+        self.hit_identity = Some(identity);
         self
     }
 
@@ -1391,11 +1421,15 @@ impl Element for Div {
         // Register parent hit BEFORE children so that children's hit regions
         // (pushed later) are found first by the reverse search in handle_left_click.
         // This gives correct z-order: child clicks take priority over parent clicks.
+        let identity = self.hit_identity.take();
         if let Some(handler) = self.on_click_handler.take() {
-            cx.push_click_handler(bounds, self.cursor, handler);
+            let mut region = HitRegion::with_click_handler(bounds, self.cursor, handler);
+            region.identity = identity;
+            cx.hits.push(region);
         } else if let Some(action) = self.on_click.take() {
-            cx.hits
-                .push(HitRegion::from_action(bounds, action, self.cursor));
+            let mut region = HitRegion::from_action(bounds, action, self.cursor);
+            region.identity = identity;
+            cx.hits.push(region);
         }
 
         if let Some(tip) = self.tooltip.take() {

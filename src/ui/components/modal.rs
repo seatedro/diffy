@@ -131,6 +131,7 @@ impl RenderOnce for Modal {
                  z_index={100}
                  bg={tc.overlay_scrim}
                  on_click={Action::CloseOverlay}
+                 hit_identity={HitIdentity::OverlayBackdrop}
                  @when {self.align == ModalAlign::Center} { justify_center }
                  @when {self.align == ModalAlign::Top} { pt={Sz::MODAL_TOP_OFFSET} }>
                 {panel}

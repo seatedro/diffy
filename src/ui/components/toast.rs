@@ -32,6 +32,7 @@ impl RenderOnce for ToastVisuals {
                 border={tc.border}
                 shadow_preset={Shadow::TOAST}
                 on_click={Action::DismissToast(self.index)}
+                hit_identity={HitIdentity::Toast(self.index)}
                 cursor={CursorHint::Pointer}
                 z_index={self.z}
                 px={Sp::LG}

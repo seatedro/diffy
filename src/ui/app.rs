@@ -874,7 +874,7 @@ mod tests {
             .hits
             .iter()
             .rev()
-            .find(|hit| matches!(hit.action, Action::CloseOverlay | Action::Noop))
+            .find(|hit| matches!(hit.identity, Some(crate::ui::element::HitIdentity::OverlayBackdrop)))
             .expect("overlay hit");
         let x = overlay_hit.rect.x + overlay_hit.rect.width * 0.5;
         let y = overlay_hit.rect.y + overlay_hit.rect.height * 0.5;

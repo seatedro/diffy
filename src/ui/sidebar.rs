@@ -797,6 +797,7 @@ fn file_row(
         <div class="w-full shrink-0 flex-row items-center"
              h={row_height} px={Sp::SM} gap={Sp::SM}
              on_click={Action::SelectFile(index)}
+             hit_identity={HitIdentity::File(index)}
              cursor={CursorHint::Pointer}
              @when { selected } { bg={tc.sidebar_row_selected} border_l={tc.accent} }
              @when { !selected } { hover_bg={tc.sidebar_row_hover} }>

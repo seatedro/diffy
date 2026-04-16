@@ -28,7 +28,9 @@ pub fn picker<T: PickerItem>(
     view! { scale,
         <div class="absolute flex-col items-center" top={0.0} left={0.0}
              w={width} h={height} z_index={100}
-             bg={tc.overlay_scrim} on_click={Action::CloseOverlay}
+             bg={tc.overlay_scrim}
+             on_click={Action::CloseOverlay}
+             hit_identity={HitIdentity::OverlayBackdrop}
              pt={Sz::MODAL_TOP_OFFSET}>
             <div class="flex-col overflow-hidden"
                  w={panel_width}

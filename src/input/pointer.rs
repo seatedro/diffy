@@ -7,7 +7,7 @@ use crate::actions::Action;
 use crate::render::Renderer;
 use crate::ui::components::{TooltipSide, TooltipState};
 use crate::ui::editor::element::EditorElement;
-use crate::ui::element::{ClickEvent, ClickResult, DragHandler};
+use crate::ui::element::{ClickEvent, ClickResult, DragHandler, HitIdentity};
 use crate::ui::shell::UiFrame;
 use crate::ui::state::{AppState, FocusTarget, WorkspaceSource};
 
@@ -87,7 +87,7 @@ impl InputSystem {
                 }
             } else {
                 let action = hit.action.clone();
-                if matches!(action, Action::SelectFile(_)) {
+                if matches!(hit.identity, Some(HitIdentity::File(_))) {
                     actions.push(Action::SetFocus(Some(FocusTarget::FileList)));
                 }
                 actions.push(action);
@@ -198,16 +198,16 @@ impl InputSystem {
             .iter()
             .rev()
             .find(|hit| hit.rect.contains(x, y));
-        let hovered_file = hovered_hit.and_then(|hit| match &hit.action {
-            Action::SelectFile(i) | Action::StageFile(i) | Action::UnstageFile(i) => Some(*i),
+        let hovered_file = hovered_hit.and_then(|hit| match hit.identity {
+            Some(HitIdentity::File(i)) => Some(i),
             _ => None,
         });
-        let hovered_toast = hovered_hit.and_then(|hit| match &hit.action {
-            Action::DismissToast(i) => Some(*i),
+        let hovered_toast = hovered_hit.and_then(|hit| match hit.identity {
+            Some(HitIdentity::Toast(i)) => Some(i),
             _ => None,
         });
-        let hovered_overlay_entry = hovered_hit.and_then(|hit| match &hit.action {
-            Action::SelectOverlayEntry(i) => Some(*i),
+        let hovered_overlay_entry = hovered_hit.and_then(|hit| match hit.identity {
+            Some(HitIdentity::OverlayEntry(i)) => Some(i),
             _ => None,
         });
         let cursor_hint = if let Some(ref capture) = self.pointer_capture {

@@ -34,6 +34,7 @@ impl<'a> FileListItem<'a> {
                  h={theme.metrics.ui_row_height.round()}
                  px={Sp::SM}
                  on_click={Action::SelectFile(self.index)}
+                 hit_identity={HitIdentity::File(self.index)}
                  cursor={CursorHint::Pointer}
                  @when {self.selected} { bg={tc.sidebar_row_selected} border_l={tc.accent} }
                  @when {!self.selected} { hover_bg={tc.sidebar_row_hover} }>

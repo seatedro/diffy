@@ -52,7 +52,8 @@ pub fn compare_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
         <div class="absolute" left={0.0} top={0.0} w={width} h={height}
              z_index={200}
              bg={Color::TRANSPARENT}
-             on_click={Action::CloseOverlay}>
+             on_click={Action::CloseOverlay}
+             hit_identity={HitIdentity::OverlayBackdrop}>
             <div class="absolute flex-col overflow-hidden"
                  left={menu_x} top={menu_y}
                  w={menu_w}

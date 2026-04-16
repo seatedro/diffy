@@ -99,25 +99,28 @@ impl InputSystem {
             .viewport_rect
             .is_some_and(|rect| rect.contains(x, y))
         {
-            let hovered = editor.hit_test_row(&state.editor, x, y);
-            if state.workspace.source == WorkspaceSource::Status && editor.is_gutter_hit(x, y) {
+            let editor_snap = state.editor.snapshot(&state.store);
+            let hovered = editor.hit_test_row(&editor_snap, x, y);
+            if state.workspace.source.get(&state.store) == WorkspaceSource::Status
+                && editor.is_gutter_hit(x, y)
+            {
                 if let Some(row) = hovered {
                     let line_idx =
                         editor.render_line_index_for_row(row).unwrap_or(u32::MAX) as usize;
-                    let is_hunk_sep = state
-                        .workspace
-                        .active_file
-                        .as_ref()
-                        .and_then(|af| af.render_doc.lines.get(line_idx))
-                        .is_some_and(|line| {
-                            line.row_kind()
-                                == crate::ui::editor::render_doc::RenderRowKind::HunkSeparator
+                    let is_hunk_sep =
+                        state.workspace.active_file.with(&state.store, |af| {
+                            af.as_ref()
+                                .and_then(|a| a.render_doc.lines.get(line_idx).copied())
+                                .is_some_and(|line| {
+                                    line.row_kind()
+                                        == crate::ui::editor::render_doc::RenderRowKind::HunkSeparator
+                                })
                         });
                     let mut actions =
                         vec![Action::FocusViewport, Action::HoverViewportRow(hovered)];
                     if is_hunk_sep {
                         let is_staged = matches!(
-                            state.workspace.selected_status_scope,
+                            state.workspace.selected_status_scope.get(&state.store),
                             Some(crate::core::vcs::git::StatusScope::Staged)
                         );
                         actions.push(if is_staged {
@@ -126,7 +129,11 @@ impl InputSystem {
                             Action::StageHunk
                         });
                     } else if self.modifiers.shift_key() {
-                        if let Some(anchor) = state.editor.line_selection.last_toggled_row {
+                        let anchor = state
+                            .editor
+                            .line_selection
+                            .with(&state.store, |ls| ls.last_toggled_row);
+                        if let Some(anchor) = anchor {
                             actions.push(Action::ToggleLineSelectionRange(line_idx, anchor));
                         } else {
                             actions.push(Action::ToggleLineSelection(line_idx));
@@ -211,10 +218,10 @@ impl InputSystem {
                 .unwrap_or(crate::ui::shell::CursorHint::Default)
         };
 
-        if hovered_file != state.file_list.hovered_index {
+        if hovered_file != state.file_list.hovered_index.get(&state.store) {
             actions.push(Action::HoverFile(hovered_file));
         }
-        if hovered_overlay_entry != state.overlays.picker.hovered_index {
+        if hovered_overlay_entry != state.overlays.picker.hovered_index.get(&state.store) {
             actions.push(Action::HoverOverlayEntry(hovered_overlay_entry));
         }
         let current_hovered_toast = state.toasts.iter().position(|toast| toast.hovered);
@@ -225,9 +232,10 @@ impl InputSystem {
         let hovered_row = if input_is_blocked_by_overlay(state, ui_frame, x, y) {
             None
         } else {
-            editor.hit_test_row(&state.editor, x, y)
+            let editor_snap = state.editor.snapshot(&state.store);
+            editor.hit_test_row(&editor_snap, x, y)
         };
-        if hovered_row != state.editor.hovered_row {
+        if hovered_row != state.editor.hovered_row.get(&state.store) {
             actions.push(Action::HoverViewportRow(hovered_row));
         }
 
@@ -284,7 +292,7 @@ impl InputSystem {
 }
 
 fn input_is_blocked_by_overlay(state: &AppState, ui_frame: &UiFrame, x: f32, y: f32) -> bool {
-    state.overlays.top().is_some()
+    state.overlays_top().is_some()
         && ui_frame
             .hits
             .iter()

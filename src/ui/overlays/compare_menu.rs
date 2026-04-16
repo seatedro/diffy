@@ -27,22 +27,26 @@ pub fn compare_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
         ),
     ];
 
-    let head_branch = state
-        .repository
-        .branches
-        .iter()
-        .find(|b| b.is_head && !b.is_remote)
-        .map(|b| b.name.as_str());
-    let trunk = state
-        .repository
-        .branches
-        .iter()
-        .find(|b| !b.is_remote && matches!(b.name.as_str(), "main" | "master" | "develop"))
-        .map(|b| b.name.as_str());
+    let (head_branch, trunk) = state.repository.branches.with(&state.store, |branches| {
+        let head = branches
+            .iter()
+            .find(|b| b.is_head && !b.is_remote)
+            .map(|b| b.name.clone());
+        let trunk = branches
+            .iter()
+            .find(|b| !b.is_remote && matches!(b.name.as_str(), "main" | "master" | "develop"))
+            .map(|b| b.name.clone());
+        (head, trunk)
+    });
 
-    let show_branch_preset = matches!((head_branch, trunk), (Some(h), Some(t)) if h != t);
-    let has_commits = !state.repository.commits.is_empty();
+    let show_branch_preset = matches!((&head_branch, &trunk), (Some(h), Some(t)) if h != t);
+    let head_commit = state
+        .repository
+        .commits
+        .with(&state.store, |commits| commits.first().cloned());
+    let has_commits = head_commit.is_some();
     let show_presets = show_branch_preset || has_commits;
+    let compare_mode = state.compare.mode.get(&state.store);
 
     view! { scale,
         <div class="absolute" left={0.0} top={0.0} w={width} h={height}
@@ -59,7 +63,7 @@ pub fn compare_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
                  shadow_preset={Shadow::DROPDOWN}
                  on_click={Action::Noop}>
                 for (mode, label, desc) in modes {
-                    {mode_row(mode, label, desc, state.compare.mode, theme)}
+                    {mode_row(mode, label, desc, compare_mode, theme)}
                 }
                 if show_presets {
                     <div class="w-full" py={Sp::XS} px={Sp::SM}>
@@ -68,20 +72,20 @@ pub fn compare_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
                 }
                 if show_branch_preset {
                     {preset_row(
-                        &format!("{} vs {}", head_branch.unwrap(), trunk.unwrap()),
+                        &format!("{} vs {}", head_branch.as_deref().unwrap(), trunk.as_deref().unwrap()),
                         "Changes since fork",
                         Action::ApplyComparePreset(
-                            format!("{}:{}:merge", trunk.unwrap(), head_branch.unwrap())
+                            format!("{}:{}:merge", trunk.as_deref().unwrap(), head_branch.as_deref().unwrap())
                         ),
                         theme,
                     )}
                 }
-                if has_commits {
+                if let Some(commit) = head_commit.as_ref() {
                     {preset_row(
-                        &format!("HEAD ({})", state.repository.commits[0].short_oid),
-                        &state.repository.commits[0].summary,
+                        &format!("HEAD ({})", commit.short_oid),
+                        &commit.summary,
                         Action::ApplyComparePreset(
-                            format!("{}::commit", state.repository.commits[0].oid)
+                            format!("{}::commit", commit.oid)
                         ),
                         theme,
                     )}

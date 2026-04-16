@@ -11,7 +11,7 @@ use halogen::view;
 pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
-    let (status_icon, status_color, status_text) = match state.repository.status {
+    let (status_icon, status_color, status_text) = match state.repository.status.get(&state.store) {
         AsyncStatus::Ready => (lucide::CHECK, tc.line_add_text, "ready"),
         AsyncStatus::Loading => (lucide::LOADER, tc.text_muted, "loading"),
         AsyncStatus::Failed => (lucide::ALERT_CIRCLE, tc.status_error, "error"),
@@ -21,9 +21,12 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
     let head_branch = state
         .repository
         .branches
-        .iter()
-        .find(|b| b.is_head)
-        .map(|b| b.name.as_str());
+        .with(&state.store, |branches| {
+            branches
+                .iter()
+                .find(|b| b.is_head)
+                .map(|b| b.name.clone())
+        });
 
     let branch_children = head_branch.map(|branch| {
         view! { scale,
@@ -35,22 +38,23 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
         }
     });
 
-    let hunk_child = state.editor.current_hunk_index().map(|(idx, total)| {
+    let hunk_child = state.editor_current_hunk_index().map(|(idx, total)| {
         view! {
             <text class="text-xs" color={tc.text_muted}>{format!("Hunk {}/{}", idx + 1, total)}</text>
         }
     });
 
-    let right_text = match state.workspace.source {
+    let right_text = match state.workspace.source.get(&state.store) {
         WorkspaceSource::Status => state
             .workspace
             .selected_status_scope
+            .get(&state.store)
             .map(|scope| format!("working tree  \u{00b7}  {}", scope.label()))
             .unwrap_or_else(|| "working tree".to_owned()),
         _ => format!(
             "{}  \u{00b7}  {}",
-            compare_mode_label(state.compare.mode),
-            renderer_label(state.compare.renderer),
+            compare_mode_label(state.compare.mode.get(&state.store)),
+            renderer_label(state.compare.renderer.get(&state.store)),
         ),
     };
 

@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
 
+use halogen::Store;
+
 use crate::core::compare::LayoutMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,7 +18,7 @@ pub enum MatchSide {
     Right,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Store)]
 pub struct SearchState {
     pub open: bool,
     pub query: String,
@@ -35,7 +37,7 @@ impl Default for SearchState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Store)]
 pub struct EditorState {
     pub layout: LayoutMode,
     pub wrap_enabled: bool,
@@ -50,6 +52,7 @@ pub struct EditorState {
     pub focused: bool,
     pub hunk_positions: Vec<u32>,
     pub file_positions: Vec<u32>,
+    #[store(flatten)]
     pub search: SearchState,
     pub search_match_y_positions: Vec<u32>,
     pub line_selection: LineSelection,

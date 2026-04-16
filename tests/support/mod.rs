@@ -54,14 +54,26 @@ pub fn empty_state_with_recents() -> AppState {
 
 pub fn ready_state_with_files(file_count: usize) -> AppState {
     let mut state = AppState::default();
-    state.workspace_mode = WorkspaceMode::Ready;
-    state.compare.repo_path = Some(PathBuf::from("C:\\work\\diffy"));
-    state.compare.left_ref = "main".to_owned();
-    state.compare.right_ref = "feature/native-ui".to_owned();
-    state.compare.resolved_left = Some("abc1234".to_owned());
-    state.compare.resolved_right = Some("def5678".to_owned());
-    state.repository.status = AsyncStatus::Ready;
-    state.workspace.files = (0..file_count)
+    state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+    state
+        .compare
+        .repo_path
+        .set(&state.store, Some(PathBuf::from("C:\\work\\diffy")));
+    state.compare.left_ref.set(&state.store, "main".to_owned());
+    state
+        .compare
+        .right_ref
+        .set(&state.store, "feature/native-ui".to_owned());
+    state
+        .compare
+        .resolved_left
+        .set(&state.store, Some("abc1234".to_owned()));
+    state
+        .compare
+        .resolved_right
+        .set(&state.store, Some("def5678".to_owned()));
+    state.repository.status.set(&state.store, AsyncStatus::Ready);
+    let files: Vec<FileListEntry> = (0..file_count)
         .map(|index| FileListEntry {
             path: format!("src/file_{index}.rs"),
             status: "M".to_owned(),
@@ -70,29 +82,45 @@ pub fn ready_state_with_files(file_count: usize) -> AppState {
             is_binary: false,
         })
         .collect();
-    if let Some(first) = state.workspace.files.first() {
-        state.workspace.selected_file_index = Some(0);
-        state.workspace.selected_file_path = Some(first.path.clone());
-        state.workspace.active_file = Some(ActiveFile {
-            index: 0,
-            path: first.path.clone(),
-            file: Default::default(),
-            render_doc: Default::default(),
-            text_buffer: Default::default(),
-        });
+    let first_path = files.first().map(|f| f.path.clone());
+    state.workspace.files.set(&state.store, files);
+    if let Some(first_path) = first_path {
+        state
+            .workspace
+            .selected_file_index
+            .set(&state.store, Some(0));
+        state
+            .workspace
+            .selected_file_path
+            .set(&state.store, Some(first_path.clone()));
+        state.workspace.active_file.set(
+            &state.store,
+            Some(ActiveFile {
+                index: 0,
+                path: first_path,
+                file: Default::default(),
+                render_doc: Default::default(),
+                text_buffer: Default::default(),
+            }),
+        );
     }
-    state.file_list.viewport_height = 180.0;
+    state.file_list.viewport_height.set(&state.store, 180.0);
     state
 }
 
 pub fn repo_picker_state(entry_count: usize) -> AppState {
     let mut state = AppState::default();
-    state.compare.repo_path = Some(PathBuf::from("C:\\work\\diffy"));
-    state.overlays.stack.push(OverlayEntry {
-        surface: OverlaySurface::RepoPicker,
-        focus_return: Some(FocusTarget::TitleBar),
+    state
+        .compare
+        .repo_path
+        .set(&state.store, Some(PathBuf::from("C:\\work\\diffy")));
+    state.overlays.stack.update(&state.store, |stack| {
+        stack.push(OverlayEntry {
+            surface: OverlaySurface::RepoPicker,
+            focus_return: Some(FocusTarget::TitleBar),
+        });
     });
-    state.overlays.picker = PickerState {
+    let picker = PickerState {
         kind: PickerKind::Repository,
         query: "diff".to_owned(),
         entries: (0..entry_count)
@@ -114,17 +142,47 @@ pub fn repo_picker_state(entry_count: usize) -> AppState {
         browse_path: None,
         ref_resolve_generation: 0,
     };
+    state.overlays.picker.kind.set(&state.store, picker.kind);
+    state.overlays.picker.query.set(&state.store, picker.query);
+    state
+        .overlays
+        .picker
+        .entries
+        .set(&state.store, picker.entries);
+    state
+        .overlays
+        .picker
+        .selected_index
+        .set(&state.store, picker.selected_index);
+    state
+        .overlays
+        .picker
+        .hovered_index
+        .set(&state.store, picker.hovered_index);
+    state.overlays.picker.list.set(&state.store, picker.list);
+    state
+        .overlays
+        .picker
+        .browse_path
+        .set(&state.store, picker.browse_path);
+    state
+        .overlays
+        .picker
+        .ref_resolve_generation
+        .set(&state.store, picker.ref_resolve_generation);
     state.focus.current = Some(FocusTarget::PickerInput);
     state
 }
 
 pub fn command_palette_state(entry_count: usize) -> AppState {
     let mut state = ready_state_with_files(8);
-    state.overlays.stack.push(OverlayEntry {
-        surface: OverlaySurface::CommandPalette,
-        focus_return: Some(FocusTarget::TitleBar),
+    state.overlays.stack.update(&state.store, |stack| {
+        stack.push(OverlayEntry {
+            surface: OverlaySurface::CommandPalette,
+            focus_return: Some(FocusTarget::TitleBar),
+        });
     });
-    state.overlays.command_palette = CommandPaletteState {
+    let palette = CommandPaletteState {
         query: "open".to_owned(),
         entries: (0..entry_count)
             .map(|index| PaletteEntry {
@@ -144,15 +202,37 @@ pub fn command_palette_state(entry_count: usize) -> AppState {
             ..OverlayListState::default()
         },
     };
+    state
+        .overlays
+        .command_palette
+        .query
+        .set(&state.store, palette.query);
+    state
+        .overlays
+        .command_palette
+        .entries
+        .set(&state.store, palette.entries);
+    state
+        .overlays
+        .command_palette
+        .selected_index
+        .set(&state.store, palette.selected_index);
+    state
+        .overlays
+        .command_palette
+        .list
+        .set(&state.store, palette.list);
     state.focus.current = Some(FocusTarget::CommandPaletteInput);
     state
 }
 
 pub fn pull_request_modal_state() -> AppState {
     let mut state = ready_state_with_files(3);
-    state.overlays.stack.push(OverlayEntry {
-        surface: OverlaySurface::PullRequestModal,
-        focus_return: Some(FocusTarget::TitleBar),
+    state.overlays.stack.update(&state.store, |stack| {
+        stack.push(OverlayEntry {
+            surface: OverlaySurface::PullRequestModal,
+            focus_return: Some(FocusTarget::TitleBar),
+        });
     });
     state.focus.current = Some(FocusTarget::PullRequestInput);
     state.github.pull_request.url_input = "https://github.com/owner/repo/pull/42".to_owned();
@@ -176,9 +256,11 @@ pub fn pull_request_modal_state() -> AppState {
 
 pub fn auth_modal_state(with_device_flow: bool) -> AppState {
     let mut state = AppState::default();
-    state.overlays.stack.push(OverlayEntry {
-        surface: OverlaySurface::GitHubAuthModal,
-        focus_return: Some(FocusTarget::TitleBar),
+    state.overlays.stack.update(&state.store, |stack| {
+        stack.push(OverlayEntry {
+            surface: OverlaySurface::GitHubAuthModal,
+            focus_return: Some(FocusTarget::TitleBar),
+        });
     });
     state.focus.current = Some(FocusTarget::AuthPrimaryAction);
     state.github.auth.token_present = false;

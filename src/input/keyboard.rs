@@ -222,9 +222,9 @@ fn workspace_key_actions_inner(
 ) -> Option<Vec<Action>> {
     match chord.named() {
         Some(NamedKey::Escape) => {
-            if state.overlays.top().is_some() {
+            if state.overlays_top().is_some() {
                 Some(vec![Action::CloseOverlay])
-            } else if state.editor.search.open {
+            } else if state.editor.search.open.get(&state.store) {
                 Some(vec![Action::CloseSearch])
             } else if state.focus.get(&state.store) == Some(FocusTarget::SidebarSearch) {
                 Some(vec![Action::ClearSidebarFilter, Action::SetFocus(None)])
@@ -285,7 +285,7 @@ fn workspace_key_actions_inner(
         }
         Some(NamedKey::End) if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready => {
             Some(vec![Action::ScrollViewportTo(
-                state.editor.max_scroll_top_px(),
+                state.editor_max_scroll_top_px(),
             )])
         }
         _ => {
@@ -293,7 +293,7 @@ fn workspace_key_actions_inner(
             if ch == "?" {
                 return Some(vec![Action::ShowKeyboardShortcuts]);
             }
-            if state.overlays.top().is_some()
+            if state.overlays_top().is_some()
                 || state.workspace_mode.get(&state.store) != WorkspaceMode::Ready
             {
                 return None;
@@ -309,7 +309,7 @@ fn workspace_key_actions_inner(
                 "d" => Some(vec![Action::ScrollViewportHalfPage(1)]),
                 "u" => Some(vec![Action::ScrollViewportHalfPage(-1)]),
                 "G" => Some(vec![Action::ScrollViewportTo(
-                    state.editor.max_scroll_top_px(),
+                    state.editor_max_scroll_top_px(),
                 )]),
                 "g" => {
                     let input = input.as_mut()?;
@@ -328,22 +328,34 @@ fn workspace_key_actions_inner(
                     crate::core::compare::LayoutMode::Split,
                 )]),
                 "w" => Some(vec![Action::ToggleWrap]),
-                "s" if state.workspace.source == WorkspaceSource::Status => {
-                    if state.editor.line_selection.is_empty() {
+                "s" if state.workspace.source.get(&state.store) == WorkspaceSource::Status => {
+                    if state
+                        .editor
+                        .line_selection
+                        .with(&state.store, |ls| ls.is_empty())
+                    {
                         Some(vec![Action::StageHunk])
                     } else {
                         Some(vec![Action::StageSelectedLines])
                     }
                 }
-                "S" if state.workspace.source == WorkspaceSource::Status => {
-                    if state.editor.line_selection.is_empty() {
+                "S" if state.workspace.source.get(&state.store) == WorkspaceSource::Status => {
+                    if state
+                        .editor
+                        .line_selection
+                        .with(&state.store, |ls| ls.is_empty())
+                    {
                         Some(vec![Action::UnstageHunk])
                     } else {
                         Some(vec![Action::UnstageSelectedLines])
                     }
                 }
-                "x" if state.workspace.source == WorkspaceSource::Status => {
-                    if state.editor.line_selection.is_empty() {
+                "x" if state.workspace.source.get(&state.store) == WorkspaceSource::Status => {
+                    if state
+                        .editor
+                        .line_selection
+                        .with(&state.store, |ls| ls.is_empty())
+                    {
                         Some(vec![Action::DiscardHunk])
                     } else {
                         Some(vec![Action::DiscardSelectedLines])
@@ -361,7 +373,7 @@ fn workspace_key_actions_inner(
 }
 
 fn cycle_focus_target(state: &AppState) -> Option<FocusTarget> {
-    match state.overlays.top() {
+    match state.overlays_top() {
         Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_)) => {
             match state.focus.get(&state.store) {
                 Some(FocusTarget::PickerInput) => Some(FocusTarget::PickerList),
@@ -398,7 +410,7 @@ fn cycle_focus_target(state: &AppState) -> Option<FocusTarget> {
 }
 
 fn activate_current_focus_actions(state: &AppState) -> Option<Vec<Action>> {
-    match state.overlays.top() {
+    match state.overlays_top() {
         Some(
             OverlaySurface::RepoPicker
             | OverlaySurface::RefPicker(_)
@@ -407,7 +419,12 @@ fn activate_current_focus_actions(state: &AppState) -> Option<Vec<Action>> {
         ) => Some(vec![Action::ConfirmOverlaySelection]),
         Some(OverlaySurface::PullRequestModal) => Some(vec![Action::SubmitPullRequest]),
         Some(OverlaySurface::GitHubAuthModal) => {
-            Some(vec![if state.github.auth.device_flow.is_some() {
+            let has_flow = state
+                .github
+                .auth
+                .device_flow
+                .with(&state.store, |opt| opt.is_some());
+            Some(vec![if has_flow {
                 Action::OpenDeviceFlowBrowser
             } else {
                 Action::StartGitHubDeviceFlow

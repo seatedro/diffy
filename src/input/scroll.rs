@@ -94,7 +94,7 @@ impl InputSystem {
             }
         }
 
-        if state.overlays.top().is_some()
+        if state.overlays_top().is_some()
             && ui_frame
                 .hits
                 .iter()
@@ -118,7 +118,7 @@ impl InputSystem {
     ) -> f32 {
         match target {
             ScrollTarget::Region(ScrollActionBuilder::FileList) => {
-                state.file_list.row_stride().max(1.0)
+                state.file_list_row_stride().max(1.0)
             }
             ScrollTarget::Region(ScrollActionBuilder::Custom(build)) => {
                 if custom_scroll_is_editor(*build) {
@@ -135,13 +135,19 @@ impl InputSystem {
 
 fn active_overlay_row_height_px(state: &AppState) -> f32 {
     use crate::ui::state::OverlaySurface;
-    match state.overlays.top() {
+    match state.overlays_top() {
         Some(
             OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_) | OverlaySurface::ThemePicker,
-        ) => state.overlays.picker.list.stride_px().max(1) as f32,
-        Some(OverlaySurface::CommandPalette) => {
-            state.overlays.command_palette.list.stride_px().max(1) as f32
-        }
+        ) => state
+            .overlays
+            .picker
+            .list
+            .with(&state.store, |l| l.stride_px().max(1)) as f32,
+        Some(OverlaySurface::CommandPalette) => state
+            .overlays
+            .command_palette
+            .list
+            .with(&state.store, |l| l.stride_px().max(1)) as f32,
         _ => 36.0,
     }
 }

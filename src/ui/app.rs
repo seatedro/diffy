@@ -328,8 +328,8 @@ impl NativeApp {
         let store = std::rc::Rc::clone(&self.state.store);
         self.ui_signals.sync_from_state(
             &store,
-            self.state.file_list.scroll_offset_px,
-            self.state.editor.scroll_top_px as f32,
+            self.state.file_list.scroll_offset_px.get(&store),
+            self.state.editor.scroll_top_px.get(&store) as f32,
             store.read(self.state.sidebar_visible),
         );
 
@@ -458,7 +458,7 @@ impl ApplicationHandler for NativeApp {
                 event_loop.exit();
             }
             WindowEvent::Focused(true) => {
-                if let Some(path) = self.state.compare.repo_path.clone() {
+                if let Some(path) = self.state.compare.repo_path.get(&self.state.store) {
                     self.runtime.dispatch_all(vec![Effect::SyncRepository {
                         path,
                         reason: RepositorySyncReason::Rescan,
@@ -745,17 +745,26 @@ mod tests {
     fn file_list_scroll_region_wins_over_viewport_fallback() {
         let mut state = AppState::default();
         state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
-        state.workspace.files = (0..32)
-            .map(|index| FileListEntry {
-                path: format!("src/file_{index}.rs"),
-                status: "M".to_owned(),
-                additions: 1,
-                deletions: 0,
-                is_binary: false,
-            })
-            .collect();
-        state.workspace.selected_file_index = Some(0);
-        state.workspace.selected_file_path = Some("src/file_0.rs".to_owned());
+        state.workspace.files.set(
+            &state.store,
+            (0..32)
+                .map(|index| FileListEntry {
+                    path: format!("src/file_{index}.rs"),
+                    status: "M".to_owned(),
+                    additions: 1,
+                    deletions: 0,
+                    is_binary: false,
+                })
+                .collect(),
+        );
+        state
+            .workspace
+            .selected_file_index
+            .set(&state.store, Some(0));
+        state
+            .workspace
+            .selected_file_path
+            .set(&state.store, Some("src/file_0.rs".to_owned()));
 
         let mut app = test_app(state);
         app.ui_frame = app.build_frame();
@@ -783,25 +792,37 @@ mod tests {
             },
         );
 
-        assert!(app.state.file_list.scroll_offset_px > 0.0);
-        assert_eq!(app.state.editor.scroll_top_px, 0);
+        assert!(app.state.file_list.scroll_offset_px.get(&app.state.store) > 0.0);
+        assert_eq!(
+            app.state.editor.scroll_top_px.get(&app.state.store),
+            0
+        );
     }
 
     #[test]
     fn file_list_wheel_scroll_moves_sidebar_contents() {
         let mut state = AppState::default();
         state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
-        state.workspace.files = (0..32)
-            .map(|index| FileListEntry {
-                path: format!("src/file_{index}.rs"),
-                status: "M".to_owned(),
-                additions: 1,
-                deletions: 0,
-                is_binary: false,
-            })
-            .collect();
-        state.workspace.selected_file_index = Some(0);
-        state.workspace.selected_file_path = Some("src/file_0.rs".to_owned());
+        state.workspace.files.set(
+            &state.store,
+            (0..32)
+                .map(|index| FileListEntry {
+                    path: format!("src/file_{index}.rs"),
+                    status: "M".to_owned(),
+                    additions: 1,
+                    deletions: 0,
+                    is_binary: false,
+                })
+                .collect(),
+        );
+        state
+            .workspace
+            .selected_file_index
+            .set(&state.store, Some(0));
+        state
+            .workspace
+            .selected_file_path
+            .set(&state.store, Some("src/file_0.rs".to_owned()));
 
         let mut app = test_app(state);
         app.ui_frame = app.build_frame();
@@ -828,25 +849,36 @@ mod tests {
             },
         );
 
-        assert!(app.state.file_list.scroll_offset_px > 0.0);
+        assert!(app.state.file_list.scroll_offset_px.get(&app.state.store) > 0.0);
     }
 
     #[test]
     fn overlay_blocks_viewport_scroll_fallback() {
         let mut state = AppState::default();
         state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
-        state.workspace.files = vec![FileListEntry {
-            path: "src/file_0.rs".to_owned(),
-            status: "M".to_owned(),
-            additions: 1,
-            deletions: 0,
-            is_binary: false,
-        }];
-        state.workspace.selected_file_index = Some(0);
-        state.workspace.selected_file_path = Some("src/file_0.rs".to_owned());
-        state.overlays.stack.push(OverlayEntry {
-            surface: OverlaySurface::PullRequestModal,
-            focus_return: Some(FocusTarget::TitleBar),
+        state.workspace.files.set(
+            &state.store,
+            vec![FileListEntry {
+                path: "src/file_0.rs".to_owned(),
+                status: "M".to_owned(),
+                additions: 1,
+                deletions: 0,
+                is_binary: false,
+            }],
+        );
+        state
+            .workspace
+            .selected_file_index
+            .set(&state.store, Some(0));
+        state
+            .workspace
+            .selected_file_path
+            .set(&state.store, Some("src/file_0.rs".to_owned()));
+        state.overlays.stack.update(&state.store, |stack| {
+            stack.push(OverlayEntry {
+                surface: OverlaySurface::PullRequestModal,
+                focus_return: Some(FocusTarget::TitleBar),
+            });
         });
 
         let mut app = test_app(state);
@@ -870,8 +902,11 @@ mod tests {
             },
         );
 
-        assert_eq!(app.state.editor.scroll_top_px, 0);
-        assert_eq!(app.state.file_list.scroll_offset_px, 0.0);
+        assert_eq!(
+            app.state.editor.scroll_top_px.get(&app.state.store),
+            0
+        );
+        assert_eq!(app.state.file_list.scroll_offset_px.get(&app.state.store), 0.0);
     }
 
     #[test]
@@ -889,11 +924,23 @@ mod tests {
         let mut state = AppState::default();
         state.apply_action(crate::actions::Action::OpenRepoPicker);
         let mut app = test_app(state);
-        let before = app.state.overlays.picker.query.clone();
+        let before = app
+            .state
+            .overlays
+            .picker
+            .query
+            .with(&app.state.store, |q| q.clone());
 
         dispatch_input_event(&mut app, InputEvent::TextInput(" ".to_owned()));
 
-        assert_eq!(app.state.overlays.picker.query, format!("{before} "));
+        assert_eq!(
+            app.state
+                .overlays
+                .picker
+                .query
+                .with(&app.state.store, |q| q.clone()),
+            format!("{before} ")
+        );
     }
 
     #[test]
@@ -905,7 +952,7 @@ mod tests {
         dispatch_input_event(&mut app, keypress("p", ModifiersState::SUPER));
 
         assert_eq!(
-            app.state.overlays.top(),
+            app.state.overlays_top(),
             Some(OverlaySurface::CommandPalette)
         );
     }
@@ -922,7 +969,14 @@ mod tests {
         );
         dispatch_input_event(&mut app, InputEvent::TextInput("に".to_owned()));
 
-        assert_eq!(app.state.editor.search.query, "に");
+        assert_eq!(
+            app.state
+                .editor
+                .search
+                .query
+                .with(&app.state.store, |s| s.clone()),
+            "に"
+        );
     }
 }
 

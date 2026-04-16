@@ -18,6 +18,10 @@ pub fn pull_request_modal(
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
 
+    let url_input = state.github.pull_request.url_input.get(&state.store);
+    let info = state.github.pull_request.info.get(&state.store);
+    let status = state.github.pull_request.status.get(&state.store);
+
     view! { scale,
         <Modal title={"GitHub Pull Request"}
                subtitle={"Paste a PR URL to load its base and head refs for diffing."}
@@ -27,19 +31,19 @@ pub fn pull_request_modal(
                window_height={height}
                height={Sz::PR_MODAL_HEIGHT}>
             <Body>
-                {text_input("Pull request URL", &state.github.pull_request.url_input)
+                {text_input("Pull request URL", &url_input)
                     .placeholder("https://github.com/owner/repo/pull/42")
                     .focused(state.focus.get(&state.store) == Some(FocusTarget::PullRequestInput))
                     .on_click(Action::SetFocus(Some(FocusTarget::PullRequestInput)))
-                    .cursor(state.text_edit.cursor)
-                    .anchor(state.text_edit.anchor)
-                    .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
+                    .cursor(state.text_edit.cursor.get(&state.store))
+                    .anchor(state.text_edit.anchor.get(&state.store))
+                    .cursor_moved_at(state.text_edit.cursor_moved_at_ms.get(&state.store))
                     .focus_target(FocusTarget::PullRequestInput)
                     .w_full()
                     .h(Sz::INPUT_LABELED * scale)}
             </Body>
             <Body>
-                if let Some(info) = state.github.pull_request.info.as_ref() {
+                if let Some(info) = info.as_ref() {
                     <div class="flex-col" gap={Sp::SM} p={Sp::MD} rounded_md bg={tc.surface}>
                         <div class="flex-row shrink-0 items-center" gap={Sp::SM}>
                             <icon svg={lucide::GIT_PULL_REQUEST} size={Ico::SM} color={tc.accent} />
@@ -55,7 +59,7 @@ pub fn pull_request_modal(
                         style={ButtonStyle::Filled}>
                     <Icon>{lucide::PLAY}</Icon>
                     <Label>{
-                        if state.github.pull_request.status == AsyncStatus::Loading {
+                        if status == AsyncStatus::Loading {
                             "Loading\u{2026}"
                         } else {
                             "Load PR"
@@ -64,7 +68,7 @@ pub fn pull_request_modal(
                 </Button>
             </Footer>
             <Footer>
-                if state.github.pull_request.info.is_some() {
+                if info.is_some() {
                     <Button action={Action::UsePullRequestCompare}
                             tooltip={"Apply PR refs to compare"}
                             style={ButtonStyle::Subtle}>

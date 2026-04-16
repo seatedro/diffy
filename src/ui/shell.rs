@@ -56,13 +56,13 @@ pub fn build_ui_frame(
 
     let m = &theme.metrics;
     let row_h = m.ui_row_height;
-    let has_files = !state.workspace.files.is_empty();
+    let has_files = state.workspace.files.with(&state.store, |f| !f.is_empty());
     let sidebar_header_h = if has_files {
         3.0 * row_h + Sp::SM * ui_scale
     } else {
         row_h
     };
-    let commit_box_h = if state.workspace.source == WorkspaceSource::Status {
+    let commit_box_h = if state.workspace.source.get(&state.store) == WorkspaceSource::Status {
         (Sz::COMMIT_BOX_H * ui_scale).round() + Sp::SM * 2.0 * ui_scale
     } else {
         0.0
@@ -70,26 +70,38 @@ pub fn build_ui_frame(
     let sidebar_list_height =
         (height - m.title_bar_height - m.status_bar_height - sidebar_header_h - commit_box_h)
             .max(0.0);
-    state.file_list.row_height = row_h.round();
-    state.file_list.gap = (Sp::XS * ui_scale).round();
+    state.file_list.row_height.set(&state.store, row_h.round());
+    state
+        .file_list
+        .gap
+        .set(&state.store, (Sp::XS * ui_scale).round());
     let overlay_row_height = row_h.round().max(24.0) as u32;
     let overlay_gap = (Sp::XS * ui_scale).round() as u32;
-    state.overlays.picker.list.row_height_px = overlay_row_height;
-    state.overlays.picker.list.gap_px = overlay_gap;
-    state.overlays.picker.list.viewport_height_px = state
+    let picker_entries_len = state
         .overlays
         .picker
-        .list
-        .viewport_for_max_rows(Sz::PICKER_MAX_ROWS, state.overlays.picker.entries.len());
-    state.overlays.command_palette.list.row_height_px = overlay_row_height;
-    state.overlays.command_palette.list.gap_px = overlay_gap;
-    state.overlays.command_palette.list.viewport_height_px =
-        state.overlays.command_palette.list.viewport_for_max_rows(
-            Sz::PICKER_MAX_ROWS,
-            state.overlays.command_palette.entries.len(),
-        );
-    state.file_list.viewport_height = sidebar_list_height;
-    state.file_list.clamp_scroll(state.sidebar_row_count());
+        .entries
+        .with(&state.store, |e| e.len());
+    state.overlays.picker.list.update(&state.store, |l| {
+        l.row_height_px = overlay_row_height;
+        l.gap_px = overlay_gap;
+        l.viewport_height_px = l.viewport_for_max_rows(Sz::PICKER_MAX_ROWS, picker_entries_len);
+    });
+    let palette_entries_len = state
+        .overlays
+        .command_palette
+        .entries
+        .with(&state.store, |e| e.len());
+    state.overlays.command_palette.list.update(&state.store, |l| {
+        l.row_height_px = overlay_row_height;
+        l.gap_px = overlay_gap;
+        l.viewport_height_px = l.viewport_for_max_rows(Sz::PICKER_MAX_ROWS, palette_entries_len);
+    });
+    state
+        .file_list
+        .viewport_height
+        .set(&state.store, sidebar_list_height);
+    state.file_list_clamp_scroll(state.sidebar_row_count());
     let sidebar_width_factor = cx
         .ui_signals
         .map(|s| cx.read(s.sidebar_width_factor))
@@ -167,35 +179,84 @@ pub fn build_ui_frame(
 
     if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready {
         if let Some(vp_bounds) = viewport_bounds.get() {
-            let document = match state.workspace.active_file.as_ref() {
+            let active_file_snapshot = state.workspace.active_file.get(&state.store);
+            let compare_generation = state.workspace.compare_generation.get(&state.store);
+            let document = match active_file_snapshot.as_ref() {
                 Some(active_file) if active_file.file.is_binary => EditorDocument::Binary {
                     path: &active_file.path,
                 },
                 Some(active_file) => EditorDocument::Text {
-                    compare_generation: state.workspace.compare_generation,
+                    compare_generation,
                     file_index: active_file.index,
                     path: &active_file.path,
                     doc: &active_file.render_doc,
                 },
                 None => EditorDocument::Empty,
             };
-            editor.prepare(&mut state.editor, document, vp_bounds, text_metrics);
-            editor.layout.show_staging_controls = state.workspace.source == WorkspaceSource::Status;
+            let mut editor_snap = state.editor.snapshot(&state.store);
+            editor.prepare(&mut editor_snap, document, vp_bounds, text_metrics);
+            // Write back every field prepare may have mutated.
+            state
+                .editor
+                .viewport_width_px
+                .set_if_changed(&state.store, editor_snap.viewport_width_px);
+            state
+                .editor
+                .viewport_height_px
+                .set_if_changed(&state.store, editor_snap.viewport_height_px);
+            state
+                .editor
+                .content_height_px
+                .set_if_changed(&state.store, editor_snap.content_height_px);
+            state
+                .editor
+                .scroll_top_px
+                .set_if_changed(&state.store, editor_snap.scroll_top_px);
+            state
+                .editor
+                .visible_row_start
+                .set_if_changed(&state.store, editor_snap.visible_row_start);
+            state
+                .editor
+                .visible_row_end
+                .set_if_changed(&state.store, editor_snap.visible_row_end);
+            state
+                .editor
+                .hovered_row
+                .set_if_changed(&state.store, editor_snap.hovered_row);
+            state
+                .editor
+                .hunk_positions
+                .set_if_changed(&state.store, editor_snap.hunk_positions.clone());
+            state
+                .editor
+                .file_positions
+                .set_if_changed(&state.store, editor_snap.file_positions.clone());
+            state
+                .editor
+                .search_match_y_positions
+                .set_if_changed(&state.store, editor_snap.search_match_y_positions.clone());
+            state
+                .editor
+                .line_selection
+                .set_if_changed(&state.store, editor_snap.line_selection.clone());
+            editor.layout.show_staging_controls =
+                state.workspace.source.get(&state.store) == WorkspaceSource::Status;
             editor.layout.file_is_staged = matches!(
-                state.workspace.selected_status_scope,
+                state.workspace.selected_status_scope.get(&state.store),
                 Some(crate::core::vcs::git::StatusScope::Staged)
             );
             scene.clip(vp_bounds);
-            editor.paint(&mut scene, theme, &state.editor, document);
+            editor.paint(&mut scene, theme, &editor_snap, document);
             scene.pop_clip();
 
             if editor.layout.show_staging_controls {
                 if let EditorDocument::Text { doc, .. } = document {
                     let is_staged = editor.layout.file_is_staged;
-                    let has_line_selection = !state.editor.line_selection.is_empty();
+                    let has_line_selection = !editor_snap.line_selection.is_empty();
 
                     let line_bar_rect = if has_line_selection {
-                        editor.line_selection_bar_rect(doc, &state.editor)
+                        editor.line_selection_bar_rect(doc, &editor_snap)
                     } else {
                         None
                     };
@@ -259,15 +320,14 @@ pub fn build_ui_frame(
                 }
             }
 
-            if state.editor.content_height_px > state.editor.viewport_height_px
-                && state.editor.viewport_height_px > 0
-            {
+            let content_h = state.editor.content_height_px.get(&state.store);
+            let viewport_h = state.editor.viewport_height_px.get(&state.store);
+            if content_h > viewport_h && viewport_h > 0 {
                 let sb = editor.scrollbar_rect();
-                let ratio =
-                    state.editor.viewport_height_px as f32 / state.editor.content_height_px as f32;
+                let ratio = viewport_h as f32 / content_h as f32;
                 let thumb_h = (sb.height * ratio).max(Sp::XXL * ui_scale).min(sb.height);
-                let scroll_range = state.editor.max_scroll_top_px().max(1) as f32;
-                let top_ratio = state.editor.scroll_top_px as f32 / scroll_range;
+                let scroll_range = state.editor_max_scroll_top_px().max(1) as f32;
+                let top_ratio = state.editor.scroll_top_px.get(&state.store) as f32 / scroll_range;
                 let thumb_y = sb.y + (sb.height - thumb_h) * top_ratio;
                 scrollbar_tracks.push(ScrollbarTrack {
                     track_rect: Rect {
@@ -278,8 +338,8 @@ pub fn build_ui_frame(
                     },
                     thumb_top: thumb_y,
                     thumb_height: thumb_h,
-                    content_height: state.editor.content_height_px as f32,
-                    viewport_height: state.editor.viewport_height_px as f32,
+                    content_height: content_h as f32,
+                    viewport_height: viewport_h as f32,
                     action_builder: ScrollActionBuilder::ViewportLines,
                 });
             }

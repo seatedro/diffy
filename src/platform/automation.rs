@@ -121,8 +121,8 @@ impl From<&AppState> for StateDump {
         let (overlay_query, overlay_selection_label) = overlay_dump_fields(state);
         Self {
             workspace_mode: workspace_mode_name(state.workspace_mode.get(&state.store)),
-            repository_status: async_status_name(state.repository.status),
-            compare_status: async_status_name(state.workspace.status),
+            repository_status: async_status_name(state.repository.status.get(&state.store)),
+            compare_status: async_status_name(state.workspace.status.get(&state.store)),
             active_overlay: state.active_overlay_name(),
             overlay_query,
             overlay_selection_label,
@@ -130,66 +130,59 @@ impl From<&AppState> for StateDump {
                 repo_path: state
                     .compare
                     .repo_path
-                    .as_ref()
-                    .map(|path| path.display().to_string()),
-                left_ref: state.compare.left_ref.clone(),
-                right_ref: state.compare.right_ref.clone(),
-                resolved_left: state.compare.resolved_left.clone(),
-                resolved_right: state.compare.resolved_right.clone(),
-                mode: state.compare.mode,
-                layout: state.compare.layout,
-                renderer: state.compare.renderer,
-                compare_generation: state.workspace.compare_generation,
-                file_count: state.workspace.files.len(),
-                used_fallback: state.workspace.used_fallback,
-                fallback_message: state.workspace.fallback_message.clone(),
+                    .with(&state.store, |p| p.as_ref().map(|path| path.display().to_string())),
+                left_ref: state.compare.left_ref.get(&state.store),
+                right_ref: state.compare.right_ref.get(&state.store),
+                resolved_left: state.compare.resolved_left.get(&state.store),
+                resolved_right: state.compare.resolved_right.get(&state.store),
+                mode: state.compare.mode.get(&state.store),
+                layout: state.compare.layout.get(&state.store),
+                renderer: state.compare.renderer.get(&state.store),
+                compare_generation: state.workspace.compare_generation.get(&state.store),
+                file_count: state.workspace.files.with(&state.store, |f| f.len()),
+                used_fallback: state.workspace.used_fallback.get(&state.store),
+                fallback_message: state.workspace.fallback_message.get(&state.store),
             },
-            selected_file_index: state.workspace.selected_file_index,
-            selected_file_path: state.workspace.selected_file_path.clone(),
+            selected_file_index: state.workspace.selected_file_index.get(&state.store),
+            selected_file_path: state.workspace.selected_file_path.get(&state.store),
             viewport: ViewportDump {
-                layout: state.editor.layout,
-                wrap_enabled: state.editor.wrap_enabled,
-                wrap_column: state.editor.wrap_column,
-                scroll_top_px: state.editor.scroll_top_px,
-                content_height_px: state.editor.content_height_px,
-                viewport_width_px: state.editor.viewport_width_px,
-                viewport_height_px: state.editor.viewport_height_px,
-                hovered_row: state.editor.hovered_row,
-                visible_row_start: state.editor.visible_row_start,
-                visible_row_end: state.editor.visible_row_end,
-                focused: state.editor.focused,
+                layout: state.editor.layout.get(&state.store),
+                wrap_enabled: state.editor.wrap_enabled.get(&state.store),
+                wrap_column: state.editor.wrap_column.get(&state.store),
+                scroll_top_px: state.editor.scroll_top_px.get(&state.store),
+                content_height_px: state.editor.content_height_px.get(&state.store),
+                viewport_width_px: state.editor.viewport_width_px.get(&state.store),
+                viewport_height_px: state.editor.viewport_height_px.get(&state.store),
+                hovered_row: state.editor.hovered_row.get(&state.store),
+                visible_row_start: state.editor.visible_row_start.get(&state.store),
+                visible_row_end: state.editor.visible_row_end.get(&state.store),
+                focused: state.editor.focused.get(&state.store),
             },
             pull_request: PullRequestDump {
-                status: async_status_name(state.github.pull_request.status),
-                url_input: state.github.pull_request.url_input.clone(),
+                status: async_status_name(state.github.pull_request.status.get(&state.store)),
+                url_input: state.github.pull_request.url_input.get(&state.store),
                 title: state
                     .github
                     .pull_request
                     .info
-                    .as_ref()
-                    .map(|info| info.title.clone()),
+                    .with(&state.store, |info| {
+                        info.as_ref().map(|info| info.title.clone())
+                    }),
                 number: state
                     .github
                     .pull_request
                     .info
-                    .as_ref()
-                    .map(|info| info.number),
+                    .with(&state.store, |info| info.as_ref().map(|info| info.number)),
             },
             auth: AuthDump {
-                status: async_status_name(state.github.auth.status),
-                token_present: state.github.auth.token_present,
-                user_code: state
-                    .github
-                    .auth
-                    .device_flow
-                    .as_ref()
-                    .map(|flow| flow.user_code.clone()),
-                verification_uri: state
-                    .github
-                    .auth
-                    .device_flow
-                    .as_ref()
-                    .map(|flow| flow.verification_uri.clone()),
+                status: async_status_name(state.github.auth.status.get(&state.store)),
+                token_present: state.github.auth.token_present.get(&state.store),
+                user_code: state.github.auth.device_flow.with(&state.store, |flow| {
+                    flow.as_ref().map(|flow| flow.user_code.clone())
+                }),
+                verification_uri: state.github.auth.device_flow.with(&state.store, |flow| {
+                    flow.as_ref().map(|flow| flow.verification_uri.clone())
+                }),
             },
             last_error: state.last_error.get(&state.store),
             toasts: state
@@ -223,20 +216,20 @@ impl From<&Settings> for SettingsDump {
 impl From<&AppState> for FilesDump {
     fn from(state: &AppState) -> Self {
         Self {
-            selected_file_index: state.workspace.selected_file_index,
-            selected_file_path: state.workspace.selected_file_path.clone(),
-            files: state
-                .workspace
-                .files
-                .iter()
-                .map(|file| FileDump {
-                    path: file.path.clone(),
-                    status: file.status.clone(),
-                    additions: file.additions,
-                    deletions: file.deletions,
-                    is_binary: file.is_binary,
-                })
-                .collect(),
+            selected_file_index: state.workspace.selected_file_index.get(&state.store),
+            selected_file_path: state.workspace.selected_file_path.get(&state.store),
+            files: state.workspace.files.with(&state.store, |files| {
+                files
+                    .iter()
+                    .map(|file| FileDump {
+                        path: file.path.clone(),
+                        status: file.status.clone(),
+                        additions: file.additions,
+                        deletions: file.deletions,
+                        is_binary: file.is_binary,
+                    })
+                    .collect()
+            }),
         }
     }
 }
@@ -281,25 +274,42 @@ where
 
 fn overlay_dump_fields(state: &AppState) -> (Option<String>, Option<String>) {
     match state.active_overlay_name() {
-        Some("repo-picker") | Some("left-ref-picker") | Some("right-ref-picker") => (
-            Some(state.overlays.picker.query.clone()),
-            state
+        Some("repo-picker") | Some("left-ref-picker") | Some("right-ref-picker") => {
+            let query = state.overlays.picker.query.with(&state.store, |q| q.clone());
+            let selected = state.overlays.picker.selected_index.get(&state.store);
+            let label = state
                 .overlays
                 .picker
                 .entries
-                .get(state.overlays.picker.selected_index)
-                .map(|entry| entry.label.clone()),
-        ),
-        Some("command-palette") => (
-            Some(state.overlays.command_palette.query.clone()),
-            state
+                .with(&state.store, |entries| {
+                    entries.get(selected).map(|e| e.label.clone())
+                });
+            (Some(query), label)
+        }
+        Some("command-palette") => {
+            let query = state
+                .overlays
+                .command_palette
+                .query
+                .with(&state.store, |q| q.clone());
+            let selected = state
+                .overlays
+                .command_palette
+                .selected_index
+                .get(&state.store);
+            let label = state
                 .overlays
                 .command_palette
                 .entries
-                .get(state.overlays.command_palette.selected_index)
-                .map(|entry| entry.label.clone()),
+                .with(&state.store, |entries| {
+                    entries.get(selected).map(|e| e.label.clone())
+                });
+            (Some(query), label)
+        }
+        Some("pull-request-modal") => (
+            Some(state.github.pull_request.url_input.get(&state.store)),
+            None,
         ),
-        Some("pull-request-modal") => (Some(state.github.pull_request.url_input.clone()), None),
         _ => (None, None),
     }
 }

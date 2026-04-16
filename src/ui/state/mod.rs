@@ -32,7 +32,7 @@ use crate::platform::persistence::{PersistedCompare, Settings};
 use crate::platform::startup::StartupOptions;
 use crate::ui::design::{Sp, Sz};
 use crate::ui::editor::render_doc::{RenderDoc, build_render_doc};
-use crate::ui::editor::state::EditorState;
+use crate::ui::editor::state::{EditorState, EditorStateStore, SearchMatch};
 use crate::ui::icons::lucide;
 use crate::ui::theme::ThemeMode;
 
@@ -114,7 +114,7 @@ impl FocusTarget {
 // Focus is stored directly as a Signal on AppState — no wrapper struct.
 
 /// Cursor/selection state for the currently focused text field.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
 pub struct TextEditState {
     /// Byte offset of the caret.
     pub cursor: usize,
@@ -124,7 +124,7 @@ pub struct TextEditState {
     pub cursor_moved_at_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Store)]
 pub struct CompareState {
     pub repo_path: Option<PathBuf>,
     pub left_ref: String,
@@ -151,7 +151,7 @@ impl Default for CompareState {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
 pub struct RepositoryState {
     pub status: AsyncStatus,
     pub branches: Vec<BranchInfo>,
@@ -184,7 +184,7 @@ pub struct SidebarWidthCache {
     pub intrinsic_width_px: f32,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Store)]
 pub struct WorkspaceState {
     pub source: WorkspaceSource,
     pub status: AsyncStatus,
@@ -205,27 +205,6 @@ pub struct WorkspaceState {
     pub pre_drill_compare: Option<(String, String, CompareMode)>,
 }
 
-impl WorkspaceState {
-    fn clear_compare(&mut self) {
-        self.source = WorkspaceSource::None;
-        self.status = AsyncStatus::Idle;
-        self.status_generation = 0;
-        self.files.clear();
-        self.status_items.clear();
-        self.selected_file_index = None;
-        self.selected_file_path = None;
-        self.selected_status_scope = None;
-        self.compare_output = None;
-        self.active_file = None;
-        self.raw_diff_len = 0;
-        self.used_fallback = false;
-        self.fallback_message.clear();
-        self.sidebar_auto_width = None;
-        self.range_commits.clear();
-        self.pre_drill_compare = None;
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SidebarMode {
     #[default]
@@ -240,7 +219,7 @@ pub enum SidebarTab {
     Commits,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Store)]
 pub struct FileListState {
     pub scroll_offset_px: f32,
     pub commits_scroll_offset_px: f32,
@@ -273,55 +252,110 @@ impl Default for FileListState {
     }
 }
 
-impl FileListState {
-    pub fn row_stride(&self) -> f32 {
-        self.row_height + self.gap
+impl AppState {
+    pub fn file_list_row_stride(&self) -> f32 {
+        self.file_list.row_height.get(&self.store) + self.file_list.gap.get(&self.store)
     }
 
-    pub fn total_content_height(&self, file_count: usize) -> f32 {
+    pub fn file_list_total_content_height(&self, file_count: usize) -> f32 {
         if file_count == 0 {
             return 0.0;
         }
-        file_count as f32 * self.row_stride() - self.gap
+        file_count as f32 * self.file_list_row_stride() - self.file_list.gap.get(&self.store)
     }
 
-    pub fn max_scroll_px(&self, file_count: usize) -> f32 {
-        (self.total_content_height(file_count) - self.viewport_height).max(0.0)
+    pub fn file_list_max_scroll_px(&self, file_count: usize) -> f32 {
+        (self.file_list_total_content_height(file_count)
+            - self.file_list.viewport_height.get(&self.store))
+        .max(0.0)
     }
 
-    pub fn clamp_scroll(&mut self, file_count: usize) {
-        let max = self.max_scroll_px(file_count);
-        self.scroll_offset_px = self.scroll_offset_px.clamp(0.0, max);
+    pub fn file_list_clamp_scroll(&mut self, file_count: usize) {
+        let max = self.file_list_max_scroll_px(file_count);
+        let cur = self.file_list.scroll_offset_px.get(&self.store);
+        self.file_list
+            .scroll_offset_px
+            .set(&self.store, cur.clamp(0.0, max));
     }
 
     /// Scroll by a number of rows (positive = down).
-    pub fn scroll_rows(&mut self, delta: i32, file_count: usize) {
-        let px_delta = delta as f32 * self.row_stride();
-        self.scroll_offset_px += px_delta;
-        self.clamp_scroll(file_count);
+    pub fn file_list_scroll_rows(&mut self, delta: i32, file_count: usize) {
+        let px_delta = delta as f32 * self.file_list_row_stride();
+        let cur = self.file_list.scroll_offset_px.get(&self.store);
+        self.file_list
+            .scroll_offset_px
+            .set(&self.store, cur + px_delta);
+        self.file_list_clamp_scroll(file_count);
     }
 
     /// Scroll by a raw pixel delta (positive = down).
-    pub fn scroll_px(&mut self, delta_px: f32, file_count: usize) {
-        self.scroll_offset_px += delta_px;
-        self.clamp_scroll(file_count);
+    pub fn file_list_scroll_px(&mut self, delta_px: f32, file_count: usize) {
+        let cur = self.file_list.scroll_offset_px.get(&self.store);
+        self.file_list
+            .scroll_offset_px
+            .set(&self.store, cur + delta_px);
+        self.file_list_clamp_scroll(file_count);
     }
-}
 
-impl AppState {
+    /// Reset every file-list signal back to its default value.
+    pub fn reset_file_list(&mut self) {
+        let d = FileListState::default();
+        self.file_list
+            .scroll_offset_px
+            .set(&self.store, d.scroll_offset_px);
+        self.file_list
+            .commits_scroll_offset_px
+            .set(&self.store, d.commits_scroll_offset_px);
+        self.file_list
+            .hovered_index
+            .set(&self.store, d.hovered_index);
+        self.file_list.row_height.set(&self.store, d.row_height);
+        self.file_list.gap.set(&self.store, d.gap);
+        self.file_list
+            .viewport_height
+            .set(&self.store, d.viewport_height);
+        self.file_list.filter.set(&self.store, d.filter);
+        self.file_list.mode.set(&self.store, d.mode);
+        self.file_list.tab.set(&self.store, d.tab);
+        self.file_list
+            .expanded_folders
+            .set(&self.store, d.expanded_folders);
+        self.file_list
+            .viewed_files
+            .set(&self.store, d.viewed_files);
+    }
+
     pub fn sidebar_row_count(&self) -> usize {
-        if self.workspace.source == WorkspaceSource::Status && self.file_list.filter.is_empty() {
-            self.workspace.files.len() + status_section_count(&self.workspace.status_items)
+        if self.workspace.source.get(&self.store) == WorkspaceSource::Status
+            && self
+                .file_list
+                .filter
+                .with(&self.store, |s| s.is_empty())
+        {
+            self.workspace.files.with(&self.store, |f| f.len())
+                + self
+                    .workspace
+                    .status_items
+                    .with(&self.store, |s| status_section_count(s))
         } else {
-            self.workspace.files.len()
+            self.workspace.files.with(&self.store, |f| f.len())
         }
     }
 
     fn sidebar_row_index_for_file(&self, index: usize) -> usize {
-        if self.workspace.source != WorkspaceSource::Status || !self.file_list.filter.is_empty() {
+        if self.workspace.source.get(&self.store) != WorkspaceSource::Status
+            || !self
+                .file_list
+                .filter
+                .with(&self.store, |s| s.is_empty())
+        {
             return index;
         }
-        index + status_section_count_before(&self.workspace.status_items, index + 1)
+        index
+            + self
+                .workspace
+                .status_items
+                .with(&self.store, |s| status_section_count_before(s, index + 1))
     }
 }
 
@@ -452,7 +486,7 @@ impl PickerItem for PickerEntry {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
 pub struct PickerState {
     pub kind: PickerKind,
     pub query: String,
@@ -506,7 +540,7 @@ impl PickerItem for PaletteEntry {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
 pub struct CommandPaletteState {
     pub query: String,
     pub entries: Vec<PaletteEntry>,
@@ -514,7 +548,7 @@ pub struct CommandPaletteState {
     pub list: OverlayListState,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
 pub struct PullRequestState {
     pub status: AsyncStatus,
     pub url_input: String,
@@ -523,17 +557,19 @@ pub struct PullRequestState {
     pub candidate_right_ref: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
 pub struct GitHubAuthState {
     pub status: AsyncStatus,
     pub device_flow: Option<DeviceFlowState>,
     pub token_present: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
 pub struct GitHubState {
     pub client_id: String,
+    #[store(flatten)]
     pub auth: GitHubAuthState,
+    #[store(flatten)]
     pub pull_request: PullRequestState,
 }
 
@@ -555,26 +591,76 @@ pub struct OverlayEntry {
     pub focus_return: Option<FocusTarget>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
 pub struct OverlayStackState {
     pub stack: Vec<OverlayEntry>,
+    #[store(flatten)]
     pub picker: PickerState,
+    #[store(flatten)]
     pub command_palette: CommandPaletteState,
 }
 
-impl OverlayStackState {
-    pub fn top(&self) -> Option<OverlaySurface> {
-        self.stack.last().map(|entry| entry.surface)
+impl AppState {
+    pub fn overlays_top(&self) -> Option<OverlaySurface> {
+        self.overlays
+            .stack
+            .with(&self.store, |stack| stack.last().map(|e| e.surface))
     }
 
-    pub fn active_name(&self) -> Option<&'static str> {
-        self.top().map(overlay_name)
+    pub fn overlays_active_name(&self) -> Option<&'static str> {
+        self.overlays_top().map(overlay_name)
     }
 
-    pub fn clear(&mut self) {
-        self.stack.clear();
-        self.picker = PickerState::default();
-        self.command_palette = CommandPaletteState::default();
+    pub fn reset_picker(&mut self) {
+        let d = PickerState::default();
+        self.overlays.picker.kind.set(&self.store, d.kind);
+        self.overlays.picker.query.set(&self.store, d.query);
+        self.overlays.picker.entries.set(&self.store, d.entries);
+        self.overlays
+            .picker
+            .selected_index
+            .set(&self.store, d.selected_index);
+        self.overlays
+            .picker
+            .hovered_index
+            .set(&self.store, d.hovered_index);
+        self.overlays.picker.list.set(&self.store, d.list);
+        self.overlays
+            .picker
+            .browse_path
+            .set(&self.store, d.browse_path);
+        self.overlays
+            .picker
+            .ref_resolve_generation
+            .set(&self.store, d.ref_resolve_generation);
+    }
+
+    pub fn reset_command_palette(&mut self) {
+        let d = CommandPaletteState::default();
+        self.overlays
+            .command_palette
+            .query
+            .set(&self.store, d.query);
+        self.overlays
+            .command_palette
+            .entries
+            .set(&self.store, d.entries);
+        self.overlays
+            .command_palette
+            .selected_index
+            .set(&self.store, d.selected_index);
+        self.overlays
+            .command_palette
+            .list
+            .set(&self.store, d.list);
+    }
+
+    pub fn clear_overlays(&mut self) {
+        self.overlays
+            .stack
+            .update(&self.store, |stack| stack.clear());
+        self.reset_picker();
+        self.reset_command_palette();
     }
 }
 
@@ -615,15 +701,15 @@ pub struct DebugState {
 #[derive(Debug, Clone)]
 pub struct AppState {
     pub workspace_mode: Signal<WorkspaceMode>,
-    pub compare: CompareState,
-    pub repository: RepositoryState,
-    pub workspace: WorkspaceState,
-    pub file_list: FileListState,
-    pub overlays: OverlayStackState,
+    pub compare: CompareStateStore,
+    pub repository: RepositoryStateStore,
+    pub workspace: WorkspaceStateStore,
+    pub file_list: FileListStateStore,
+    pub overlays: OverlayStackStateStore,
     pub focus: Signal<Option<FocusTarget>>,
-    pub text_edit: TextEditState,
-    pub editor: EditorState,
-    pub github: GitHubState,
+    pub text_edit: TextEditStateStore,
+    pub editor: EditorStateStore,
+    pub github: GitHubStateStore,
     pub settings: Settings,
     pub startup: StartupState,
     pub last_error: Signal<Option<String>>,
@@ -653,17 +739,25 @@ impl Default for AppState {
         let last_error = store.create(None::<String>);
         let theme_preview_original = store.create(None::<String>);
         let debug = DebugStateStore::new(&store, DebugState::default());
+        let file_list = FileListStateStore::new_default(&store);
+        let editor = EditorStateStore::new_default(&store);
+        let overlays = OverlayStackStateStore::new_default(&store);
+        let compare = CompareStateStore::new_default(&store);
+        let repository = RepositoryStateStore::new_default(&store);
+        let workspace = WorkspaceStateStore::new_default(&store);
+        let text_edit = TextEditStateStore::new_default(&store);
+        let github = GitHubStateStore::new_default(&store);
         Self {
             workspace_mode,
-            compare: CompareState::default(),
-            repository: RepositoryState::default(),
-            workspace: WorkspaceState::default(),
-            file_list: FileListState::default(),
-            overlays: OverlayStackState::default(),
+            compare,
+            repository,
+            workspace,
+            file_list,
+            overlays,
             focus,
-            text_edit: TextEditState::default(),
-            editor: EditorState::default(),
-            github: GitHubState::default(),
+            text_edit,
+            editor,
+            github,
             settings: Settings::default(),
             startup: StartupState::default(),
             last_error,
@@ -735,9 +829,20 @@ impl AppState {
         let last_error = store.create(None::<String>);
         let theme_preview_original = store.create(None::<String>);
         let debug = DebugStateStore::new(&store, DebugState::default());
-        let mut state = Self {
-            workspace_mode,
-            compare: CompareState {
+        let file_list = FileListStateStore::new_default(&store);
+        let editor = EditorStateStore::new(
+            &store,
+            EditorState {
+                layout,
+                wrap_enabled: settings.viewport.wrap_enabled,
+                wrap_column: settings.viewport.wrap_column,
+                ..EditorState::default()
+            },
+        );
+        let overlays = OverlayStackStateStore::new_default(&store);
+        let compare = CompareStateStore::new(
+            &store,
+            CompareState {
                 repo_path: repo_path.clone(),
                 left_ref,
                 right_ref,
@@ -747,19 +852,13 @@ impl AppState {
                 resolved_left: None,
                 resolved_right: None,
             },
-            repository: RepositoryState::default(),
-            workspace: WorkspaceState::default(),
-            file_list: FileListState::default(),
-            overlays: OverlayStackState::default(),
-            focus,
-            text_edit: TextEditState::default(),
-            editor: EditorState {
-                layout,
-                wrap_enabled: settings.viewport.wrap_enabled,
-                wrap_column: settings.viewport.wrap_column,
-                ..EditorState::default()
-            },
-            github: GitHubState {
+        );
+        let repository = RepositoryStateStore::new_default(&store);
+        let workspace = WorkspaceStateStore::new_default(&store);
+        let text_edit = TextEditStateStore::new_default(&store);
+        let github = GitHubStateStore::new(
+            &store,
+            GitHubState {
                 client_id: startup.github_client_id.clone(),
                 auth: GitHubAuthState {
                     token_present: settings.github_token.is_some(),
@@ -770,6 +869,18 @@ impl AppState {
                     ..PullRequestState::default()
                 },
             },
+        );
+        let mut state = Self {
+            workspace_mode,
+            compare,
+            repository,
+            workspace,
+            file_list,
+            overlays,
+            focus,
+            text_edit,
+            editor,
+            github,
             settings,
             startup: StartupState {
                 auto_compare_pending,
@@ -800,7 +911,7 @@ impl AppState {
 
         let mut effects = Vec::new();
         if let Some(path) = repo_path {
-            state.repository.status = AsyncStatus::Loading;
+            state.repository.status.set(&state.store, AsyncStatus::Loading);
             effects.push(Effect::SyncRepository {
                 path: path.clone(),
                 reason: RepositorySyncReason::Open,
@@ -1175,12 +1286,15 @@ impl AppState {
                 self.confirm_overlay_selection()
             }
             Action::HoverOverlayEntry(Some(index)) => {
-                self.overlays.picker.hovered_index = Some(index);
+                self.overlays
+                    .picker
+                    .hovered_index
+                    .set(&self.store, Some(index));
                 self.select_overlay_entry(index);
                 Vec::new()
             }
             Action::HoverOverlayEntry(None) => {
-                self.overlays.picker.hovered_index = None;
+                self.overlays.picker.hovered_index.set(&self.store, None);
                 Vec::new()
             }
             Action::ScrollActiveOverlayListPx(delta_px) => {
@@ -1188,7 +1302,7 @@ impl AppState {
                 Vec::new()
             }
             Action::ShowKeyboardShortcuts => {
-                if self.overlays.top() == Some(OverlaySurface::KeyboardShortcuts) {
+                if self.overlays_top() == Some(OverlaySurface::KeyboardShortcuts) {
                     self.pop_overlay();
                 } else {
                     self.push_overlay(OverlaySurface::KeyboardShortcuts, None);
@@ -1215,18 +1329,19 @@ impl AppState {
                 effects
             }
             Action::SetCompareMode(mode) => {
-                self.compare.mode = mode;
-                if self.overlays.top() == Some(OverlaySurface::CompareMenu) {
+                self.compare.mode.set(&self.store, mode);
+                if self.overlays_top() == Some(OverlaySurface::CompareMenu) {
                     self.pop_overlay();
                 }
                 self.persist_settings_effect()
             }
             Action::CycleCompareMode => {
-                self.compare.mode = match self.compare.mode {
+                let next = match self.compare.mode.get(&self.store) {
                     CompareMode::SingleCommit => CompareMode::TwoDot,
                     CompareMode::TwoDot => CompareMode::ThreeDot,
                     CompareMode::ThreeDot => CompareMode::SingleCommit,
                 };
+                self.compare.mode.set(&self.store, next);
                 self.persist_settings_effect()
             }
             Action::OpenCompareMenu => {
@@ -1235,13 +1350,13 @@ impl AppState {
             }
             Action::ApplyComparePreset(preset) => self.apply_compare_preset(&preset),
             Action::SetLayoutMode(layout) => {
-                self.compare.layout = layout;
-                self.editor.layout = layout;
+                self.compare.layout.set(&self.store, layout);
+                self.editor.layout.set(&self.store, layout);
                 self.rebuild_command_palette();
                 self.persist_settings_effect()
             }
             Action::SetRenderer(renderer) => {
-                self.compare.renderer = renderer;
+                self.compare.renderer.set(&self.store, renderer);
                 self.persist_settings_effect()
             }
             Action::StartCompare => self.kickoff_compare(),
@@ -1273,11 +1388,11 @@ impl AppState {
             Action::DiscardHunk => self.apply_hunk_operation(StatusOperation::Discard),
             Action::ToggleLineSelection(row) => {
                 self.toggle_line_selection(row, false);
-                tracing::info!(
-                    row,
-                    entries = self.editor.line_selection.entries.len(),
-                    "ToggleLineSelection"
-                );
+                let entries_len = self
+                    .editor
+                    .line_selection
+                    .with(&self.store, |ls| ls.entries.len());
+                tracing::info!(row, entries = entries_len, "ToggleLineSelection");
                 Vec::new()
             }
             Action::ToggleLineSelectionRange(row, anchor) => {
@@ -1294,7 +1409,9 @@ impl AppState {
                 self.apply_line_selection_operation(StatusOperation::Discard)
             }
             Action::ClearLineSelection => {
-                self.editor.line_selection.clear();
+                self.editor
+                    .line_selection
+                    .update(&self.store, |ls| ls.clear());
                 Vec::new()
             }
             Action::SubmitCommit => self.submit_commit(),
@@ -1309,14 +1426,13 @@ impl AppState {
         if message.is_empty() {
             return Vec::new();
         }
-        let Some(repo_path) = self.compare.repo_path.clone() else {
+        let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
             return Vec::new();
         };
         let has_staged = self
             .workspace
             .status_items
-            .iter()
-            .any(|item| item.scope == StatusScope::Staged);
+            .with(&self.store, |items| items.iter().any(|item| item.scope == StatusScope::Staged));
         if !has_staged {
             return Vec::new();
         }
@@ -1324,30 +1440,41 @@ impl AppState {
     }
 
     fn drill_into_commit(&mut self, oid: &str) -> Vec<Effect> {
-        if self.workspace.pre_drill_compare.is_none() {
-            self.workspace.pre_drill_compare = Some((
-                self.compare.left_ref.clone(),
-                self.compare.right_ref.clone(),
-                self.compare.mode,
-            ));
+        if self
+            .workspace
+            .pre_drill_compare
+            .with(&self.store, |p| p.is_none())
+        {
+            let left = self.compare.left_ref.get(&self.store);
+            let right = self.compare.right_ref.get(&self.store);
+            let mode = self.compare.mode.get(&self.store);
+            self.workspace
+                .pre_drill_compare
+                .set(&self.store, Some((left, right, mode)));
         }
-        self.compare.left_ref = oid[..7.min(oid.len())].to_owned();
-        self.compare.right_ref.clear();
-        self.compare.resolved_left = None;
-        self.compare.resolved_right = None;
-        self.compare.mode = CompareMode::SingleCommit;
+        self.compare
+            .left_ref
+            .set(&self.store, oid[..7.min(oid.len())].to_owned());
+        self.compare.right_ref.set(&self.store, String::new());
+        self.compare.resolved_left.set(&self.store, None);
+        self.compare.resolved_right.set(&self.store, None);
+        self.compare.mode.set(&self.store, CompareMode::SingleCommit);
         self.kickoff_compare()
     }
 
     fn restore_pre_drill_compare(&mut self) -> Vec<Effect> {
-        let Some((left, right, mode)) = self.workspace.pre_drill_compare.take() else {
+        let mut taken: Option<(String, String, CompareMode)> = None;
+        self.workspace
+            .pre_drill_compare
+            .update(&self.store, |p| taken = p.take());
+        let Some((left, right, mode)) = taken else {
             return Vec::new();
         };
-        self.compare.left_ref = left;
-        self.compare.right_ref = right;
-        self.compare.resolved_left = None;
-        self.compare.resolved_right = None;
-        self.compare.mode = mode;
+        self.compare.left_ref.set(&self.store, left);
+        self.compare.right_ref.set(&self.store, right);
+        self.compare.resolved_left.set(&self.store, None);
+        self.compare.resolved_right.set(&self.store, None);
+        self.compare.mode.set(&self.store, mode);
         self.kickoff_compare()
     }
 
@@ -1355,12 +1482,13 @@ impl AppState {
         match action {
             Action::SelectFile(index) => self.select_file(index, false),
             Action::SelectFilePath(path) => {
-                if let Some(index) = self
+                let idx = self
                     .workspace
                     .files
-                    .iter()
-                    .position(|file| file.path == path)
-                {
+                    .with(&self.store, |files| {
+                        files.iter().position(|file| file.path == path)
+                    });
+                if let Some(index) = idx {
                     return self.select_file(index, true);
                 } else {
                     self.startup.preferred_file_path = Some(path);
@@ -1376,22 +1504,23 @@ impl AppState {
                 Vec::new()
             }
             Action::ScrollFileList(delta) => {
-                self.file_list.scroll_rows(delta, self.sidebar_row_count());
+                self.file_list_scroll_rows(delta, self.sidebar_row_count());
                 Vec::new()
             }
             Action::ScrollFileListPx(delta_px) => {
-                self.file_list
-                    .scroll_px(delta_px as f32, self.sidebar_row_count());
+                self.file_list_scroll_px(delta_px as f32, self.sidebar_row_count());
                 Vec::new()
             }
             Action::ScrollFileListToPx(px) => {
-                self.file_list.scroll_offset_px = px as f32;
-                self.file_list.clamp_scroll(self.sidebar_row_count());
+                self.file_list
+                    .scroll_offset_px
+                    .set(&self.store, px as f32);
+                self.file_list_clamp_scroll(self.sidebar_row_count());
                 Vec::new()
             }
             Action::HoverFile(index) => {
                 use crate::ui::animation::AnimationKey;
-                if let Some(prev) = self.file_list.hovered_index {
+                if let Some(prev) = self.file_list.hovered_index.get(&self.store) {
                     self.animation.set_target(
                         AnimationKey::FileListHover(prev),
                         0.0,
@@ -1407,40 +1536,50 @@ impl AppState {
                         self.clock_ms,
                     );
                 }
-                self.file_list.hovered_index = index;
+                self.file_list.hovered_index.set(&self.store, index);
                 Vec::new()
             }
             Action::ToggleFolder(path) => {
-                if self.file_list.expanded_folders.contains(&path) {
-                    self.file_list.expanded_folders.remove(&path);
-                } else {
-                    self.file_list.expanded_folders.insert(path);
-                }
+                self.file_list.expanded_folders.update(&self.store, |set| {
+                    if set.contains(&path) {
+                        set.remove(&path);
+                    } else {
+                        set.insert(path);
+                    }
+                });
                 Vec::new()
             }
             Action::ToggleFileViewed(index) => {
-                if self.file_list.viewed_files.contains(&index) {
-                    self.file_list.viewed_files.remove(&index);
-                } else {
-                    self.file_list.viewed_files.insert(index);
-                }
+                self.file_list.viewed_files.update(&self.store, |set| {
+                    if set.contains(&index) {
+                        set.remove(&index);
+                    } else {
+                        set.insert(index);
+                    }
+                });
                 Vec::new()
             }
             Action::SetSidebarFilter(query) => {
-                self.file_list.filter = query;
-                if self.file_list.tab == SidebarTab::Commits {
-                    self.file_list.commits_scroll_offset_px = 0.0;
+                self.file_list.filter.set(&self.store, query);
+                if self.file_list.tab.get(&self.store) == SidebarTab::Commits {
+                    self.file_list
+                        .commits_scroll_offset_px
+                        .set(&self.store, 0.0);
                 } else {
-                    self.file_list.scroll_offset_px = 0.0;
+                    self.file_list.scroll_offset_px.set(&self.store, 0.0);
                 }
                 Vec::new()
             }
             Action::ClearSidebarFilter => {
-                self.file_list.filter.clear();
-                if self.file_list.tab == SidebarTab::Commits {
-                    self.file_list.commits_scroll_offset_px = 0.0;
+                self.file_list
+                    .filter
+                    .update(&self.store, |s| s.clear());
+                if self.file_list.tab.get(&self.store) == SidebarTab::Commits {
+                    self.file_list
+                        .commits_scroll_offset_px
+                        .set(&self.store, 0.0);
                 } else {
-                    self.file_list.scroll_offset_px = 0.0;
+                    self.file_list.scroll_offset_px.set(&self.store, 0.0);
                 }
                 Vec::new()
             }
@@ -1449,40 +1588,56 @@ impl AppState {
                 Vec::new()
             }
             Action::ToggleSidebarMode => {
-                self.file_list.mode = match self.file_list.mode {
+                let next = match self.file_list.mode.get(&self.store) {
                     SidebarMode::FlatList => SidebarMode::TreeView,
                     SidebarMode::TreeView => SidebarMode::FlatList,
                 };
-                self.file_list.scroll_offset_px = 0.0;
+                self.file_list.mode.set(&self.store, next);
+                self.file_list.scroll_offset_px.set(&self.store, 0.0);
                 Vec::new()
             }
             Action::ExpandAllFolders => {
-                for file in &self.workspace.files {
-                    let parts: Vec<&str> = file.path.split('/').collect();
-                    for depth in 0..parts.len().saturating_sub(1) {
-                        let folder_path = parts[..=depth].join("/");
-                        self.file_list.expanded_folders.insert(folder_path);
+                let paths = self
+                    .workspace
+                    .files
+                    .with(&self.store, |files| {
+                        files.iter().map(|f| f.path.clone()).collect::<Vec<_>>()
+                    });
+                self.file_list.expanded_folders.update(&self.store, |set| {
+                    for path in &paths {
+                        let parts: Vec<&str> = path.split('/').collect();
+                        for depth in 0..parts.len().saturating_sub(1) {
+                            let folder_path = parts[..=depth].join("/");
+                            set.insert(folder_path);
+                        }
                     }
-                }
+                });
                 Vec::new()
             }
             Action::CollapseAllFolders => {
-                self.file_list.expanded_folders.clear();
+                self.file_list
+                    .expanded_folders
+                    .update(&self.store, |s| s.clear());
                 Vec::new()
             }
             Action::SetSidebarTab(tab) => {
-                self.file_list.tab = tab;
-                self.file_list.filter.clear();
+                self.file_list.tab.set(&self.store, tab);
+                self.file_list
+                    .filter
+                    .update(&self.store, |s| s.clear());
                 Vec::new()
             }
             Action::ScrollCommitListPx(delta) => {
-                let stride = self.file_list.row_stride();
-                let commit_count = self.workspace.range_commits.len();
-                let total = self.file_list.total_content_height(commit_count);
-                let max_scroll = (total - self.file_list.viewport_height).max(0.0);
-                self.file_list.commits_scroll_offset_px = (self.file_list.commits_scroll_offset_px
-                    + delta as f32 * stride)
-                    .clamp(0.0, max_scroll);
+                let stride = self.file_list_row_stride();
+                let commit_count = self.workspace.range_commits.with(&self.store, |c| c.len());
+                let total = self.file_list_total_content_height(commit_count);
+                let max_scroll =
+                    (total - self.file_list.viewport_height.get(&self.store)).max(0.0);
+                let cur = self.file_list.commits_scroll_offset_px.get(&self.store);
+                self.file_list.commits_scroll_offset_px.set(
+                    &self.store,
+                    (cur + delta as f32 * stride).clamp(0.0, max_scroll),
+                );
                 Vec::new()
             }
             _ => Vec::new(),
@@ -1504,8 +1659,8 @@ impl AppState {
                 Vec::new()
             }
             Action::ScrollViewportTo(px) => {
-                self.editor.scroll_top_px = px;
-                self.editor.clamp_scroll();
+                self.editor.scroll_top_px.set(&self.store, px);
+                self.editor_clamp_scroll();
                 Vec::new()
             }
             Action::ScrollViewportHalfPage(dir) => {
@@ -1513,7 +1668,7 @@ impl AppState {
                 Vec::new()
             }
             Action::HoverViewportRow(row) => {
-                self.editor.hovered_row = row;
+                self.editor.hovered_row.set(&self.store, row);
                 Vec::new()
             }
             Action::FocusViewport => {
@@ -1559,11 +1714,12 @@ impl AppState {
     fn apply_settings_action(&mut self, action: Action) -> Vec<Effect> {
         match action {
             Action::ToggleWrap => {
-                self.editor.wrap_enabled = !self.editor.wrap_enabled;
+                let current = self.editor.wrap_enabled.get(&self.store);
+                self.editor.wrap_enabled.set(&self.store, !current);
                 self.persist_settings_effect()
             }
             Action::SetWrapColumn(column) => {
-                self.editor.wrap_column = column;
+                self.editor.wrap_column.set(&self.store, column);
                 self.persist_settings_effect()
             }
             Action::SetSidebarWidthPx(width) => {
@@ -1592,16 +1748,21 @@ impl AppState {
             Action::SubmitPullRequest => self.submit_pull_request(),
             Action::UsePullRequestCompare => self.use_pull_request_compare(),
             Action::StartGitHubDeviceFlow => {
-                self.github.auth.status = AsyncStatus::Loading;
+                self.github.auth.status.set(&self.store, AsyncStatus::Loading);
                 vec![Effect::StartDeviceFlow {
-                    client_id: self.github.client_id.clone(),
+                    client_id: self.github.client_id.get(&self.store),
                 }]
             }
             Action::OpenDeviceFlowBrowser => {
-                if let Some(device_flow) = self.github.auth.device_flow.as_ref() {
-                    vec![Effect::OpenBrowser {
-                        url: device_flow.verification_uri.clone(),
-                    }]
+                let verification_uri = self
+                    .github
+                    .auth
+                    .device_flow
+                    .with(&self.store, |opt| {
+                        opt.as_ref().map(|df| df.verification_uri.clone())
+                    });
+                if let Some(url) = verification_uri {
+                    vec![Effect::OpenBrowser { url }]
                 } else {
                     Vec::new()
                 }
@@ -1621,9 +1782,13 @@ impl AppState {
                 reason,
                 message,
             } => {
-                if self.compare.repo_path.as_ref() == Some(&path) {
+                if self
+                    .compare
+                    .repo_path
+                    .with(&self.store, |p| p.as_ref() == Some(&path))
+                {
                     if reason == RepositorySyncReason::Open {
-                        self.repository.status = AsyncStatus::Failed;
+                        self.repository.status.set(&self.store, AsyncStatus::Failed);
                         self.workspace_mode.set(&self.store, WorkspaceMode::Empty);
                         self.push_error(&message);
                     } else {
@@ -1637,8 +1802,8 @@ impl AppState {
                 generation,
                 message,
             } => {
-                if generation == self.workspace.compare_generation {
-                    self.workspace.status = AsyncStatus::Failed;
+                if generation == self.workspace.compare_generation.get(&self.store) {
+                    self.workspace.status.set(&self.store, AsyncStatus::Failed);
                     self.workspace_mode.set(&self.store, WorkspaceMode::Empty);
                     self.push_error(&message);
                 }
@@ -1650,27 +1815,39 @@ impl AppState {
                 index: _,
                 message,
             } => {
-                if generation == self.workspace.status_generation {
-                    self.workspace.status = AsyncStatus::Failed;
+                if generation == self.workspace.status_generation.get(&self.store) {
+                    self.workspace.status.set(&self.store, AsyncStatus::Failed);
                     self.push_error(&message);
                 }
                 Vec::new()
             }
             AppEvent::StatusOperationFailed { path, message } => {
-                if self.compare.repo_path.as_ref() == Some(&path) {
+                if self
+                    .compare
+                    .repo_path
+                    .with(&self.store, |p| p.as_ref() == Some(&path))
+                {
                     self.push_error(&message);
                 }
                 Vec::new()
             }
             AppEvent::CommitCreated { path } => {
-                if self.compare.repo_path.as_ref() == Some(&path) {
+                if self
+                    .compare
+                    .repo_path
+                    .with(&self.store, |p| p.as_ref() == Some(&path))
+                {
                     self.commit_editor.request_clear();
                     self.push_info("Commit created.");
                 }
                 Vec::new()
             }
             AppEvent::CommitFailed { path, message } => {
-                if self.compare.repo_path.as_ref() == Some(&path) {
+                if self
+                    .compare
+                    .repo_path
+                    .with(&self.store, |p| p.as_ref() == Some(&path))
+                {
                     self.push_error(&message);
                 }
                 Vec::new()
@@ -1681,50 +1858,77 @@ impl AppState {
                 left_ref,
                 right_ref,
             } => {
-                self.github.pull_request.status = AsyncStatus::Ready;
-                self.github.pull_request.url_input = url;
-                self.github.pull_request.info = Some(info);
-                self.github.pull_request.candidate_left_ref = Some(left_ref);
-                self.github.pull_request.candidate_right_ref = Some(right_ref);
+                self.github
+                    .pull_request
+                    .status
+                    .set(&self.store, AsyncStatus::Ready);
+                self.github.pull_request.url_input.set(&self.store, url);
+                self.github.pull_request.info.set(&self.store, Some(info));
+                self.github
+                    .pull_request
+                    .candidate_left_ref
+                    .set(&self.store, Some(left_ref));
+                self.github
+                    .pull_request
+                    .candidate_right_ref
+                    .set(&self.store, Some(right_ref));
                 Vec::new()
             }
             AppEvent::PullRequestLoadFailed { message, .. } => {
-                self.github.pull_request.status = AsyncStatus::Failed;
+                self.github
+                    .pull_request
+                    .status
+                    .set(&self.store, AsyncStatus::Failed);
                 self.push_error(&message);
                 Vec::new()
             }
             AppEvent::DeviceFlowStarted(device_flow) => {
-                self.github.auth.status = AsyncStatus::Loading;
-                self.github.auth.device_flow = Some(device_flow.clone());
+                self.github
+                    .auth
+                    .status
+                    .set(&self.store, AsyncStatus::Loading);
+                self.github
+                    .auth
+                    .device_flow
+                    .set(&self.store, Some(device_flow.clone()));
                 vec![
                     Effect::OpenBrowser {
                         url: device_flow.verification_uri.clone(),
                     },
                     Effect::PollDeviceFlow {
-                        client_id: self.github.client_id.clone(),
+                        client_id: self.github.client_id.get(&self.store),
                         device_code: device_flow.device_code,
                         interval_seconds: device_flow.interval,
                     },
                 ]
             }
             AppEvent::DeviceFlowStartFailed { message } => {
-                self.github.auth.status = AsyncStatus::Failed;
+                self.github
+                    .auth
+                    .status
+                    .set(&self.store, AsyncStatus::Failed);
                 self.push_error(&message);
                 Vec::new()
             }
             AppEvent::DeviceFlowCompleted { token } => {
-                self.github.auth.status = AsyncStatus::Ready;
-                self.github.auth.device_flow = None;
-                self.github.auth.token_present = true;
+                self.github
+                    .auth
+                    .status
+                    .set(&self.store, AsyncStatus::Ready);
+                self.github.auth.device_flow.set(&self.store, None);
+                self.github.auth.token_present.set(&self.store, true);
                 self.settings.github_token = Some(token);
                 self.push_info("GitHub authentication completed.");
-                if self.overlays.top() == Some(OverlaySurface::GitHubAuthModal) {
+                if self.overlays_top() == Some(OverlaySurface::GitHubAuthModal) {
                     self.pop_overlay();
                 }
                 self.persist_settings_effect()
             }
             AppEvent::DeviceFlowFailed { message } => {
-                self.github.auth.status = AsyncStatus::Failed;
+                self.github
+                    .auth
+                    .status
+                    .set(&self.store, AsyncStatus::Failed);
                 self.push_error(&message);
                 Vec::new()
             }
@@ -1734,30 +1938,27 @@ impl AppState {
                 short_oid,
                 summary,
             } => {
-                if generation == self.overlays.picker.ref_resolve_generation {
-                    if let Some(entry) = self
-                        .overlays
-                        .picker
-                        .entries
-                        .iter_mut()
-                        .find(|e| e.value == query && e.detail == "Resolving\u{2026}")
-                    {
-                        entry.detail = format!("{short_oid} \u{2014} {summary}");
-                    }
+                if generation == self.overlays.picker.ref_resolve_generation.get(&self.store) {
+                    self.overlays.picker.entries.update(&self.store, |entries| {
+                        if let Some(entry) = entries
+                            .iter_mut()
+                            .find(|e| e.value == query && e.detail == "Resolving\u{2026}")
+                        {
+                            entry.detail = format!("{short_oid} \u{2014} {summary}");
+                        }
+                    });
                 }
                 Vec::new()
             }
             AppEvent::RefResolveFailed { generation } => {
-                if generation == self.overlays.picker.ref_resolve_generation {
-                    if let Some(entry) = self
-                        .overlays
-                        .picker
-                        .entries
-                        .iter_mut()
-                        .find(|e| e.detail == "Resolving\u{2026}")
-                    {
-                        entry.detail = "Use typed ref".to_owned();
-                    }
+                if generation == self.overlays.picker.ref_resolve_generation.get(&self.store) {
+                    self.overlays.picker.entries.update(&self.store, |entries| {
+                        if let Some(entry) =
+                            entries.iter_mut().find(|e| e.detail == "Resolving\u{2026}")
+                        {
+                            entry.detail = "Use typed ref".to_owned();
+                        }
+                    });
                 }
                 Vec::new()
             }
@@ -1775,14 +1976,18 @@ impl AppState {
 
     pub fn window_title(&self) -> String {
         let workspace_mode = workspace_mode_name(self.workspace_mode.get(&self.store));
-        let repo = self
-            .compare
-            .repo_path
-            .as_deref()
-            .and_then(Path::file_name)
-            .and_then(|value| value.to_str())
-            .unwrap_or("native");
-        if let Some(path) = self.workspace.selected_file_path.as_deref() {
+        let repo = self.compare.repo_path.with(&self.store, |p| {
+            p.as_deref()
+                .and_then(Path::file_name)
+                .and_then(|value| value.to_str())
+                .unwrap_or("native")
+                .to_owned()
+        });
+        let selected_path = self
+            .workspace
+            .selected_file_path
+            .get(&self.store);
+        if let Some(path) = selected_path.as_deref() {
             format!("diffy native - {repo} [{workspace_mode}] {path}")
         } else {
             format!("diffy native - {repo} [{workspace_mode}]")
@@ -1800,20 +2005,17 @@ impl AppState {
     pub fn cursor_blink_epoch(&self) -> Option<u64> {
         self.is_text_focused().then(|| {
             self.clock_ms
-                .saturating_sub(self.text_edit.cursor_moved_at_ms)
+                .saturating_sub(self.text_edit.cursor_moved_at_ms.get(&self.store))
                 / CURSOR_BLINK_INTERVAL_MS
         })
     }
 
     pub fn next_cursor_blink_at_ms(&self) -> Option<u64> {
         self.is_text_focused().then(|| {
-            let elapsed = self
-                .clock_ms
-                .saturating_sub(self.text_edit.cursor_moved_at_ms);
+            let moved_at = self.text_edit.cursor_moved_at_ms.get(&self.store);
+            let elapsed = self.clock_ms.saturating_sub(moved_at);
             let next_epoch = elapsed / CURSOR_BLINK_INTERVAL_MS + 1;
-            self.text_edit
-                .cursor_moved_at_ms
-                .saturating_add(next_epoch.saturating_mul(CURSOR_BLINK_INTERVAL_MS))
+            moved_at.saturating_add(next_epoch.saturating_mul(CURSOR_BLINK_INTERVAL_MS))
         })
     }
 
@@ -1826,24 +2028,30 @@ impl AppState {
     }
 
     pub fn active_overlay_name(&self) -> Option<&'static str> {
-        self.overlays.active_name()
+        self.overlays_active_name()
     }
 
     fn open_repository(&mut self, path: PathBuf) -> Vec<Effect> {
         self.workspace_mode.set(&self.store, WorkspaceMode::Loading);
-        self.compare.repo_path = Some(path.clone());
-        self.compare.resolved_left = None;
-        self.compare.resolved_right = None;
-        self.repository.status = AsyncStatus::Loading;
-        self.workspace.clear_compare();
-        self.file_list = FileListState::default();
-        self.editor.clear_document();
-        self.editor.focused = false;
+        self.compare.repo_path.set(&self.store, Some(path.clone()));
+        self.compare.resolved_left.set(&self.store, None);
+        self.compare.resolved_right.set(&self.store, None);
+        self.repository.status.set(&self.store, AsyncStatus::Loading);
+        self.workspace_clear_compare();
+        self.reset_file_list();
+        self.editor_clear_document();
+        self.editor.focused.set(&self.store, false);
         self.last_error.set(&self.store, None);
-        self.github.pull_request.info = None;
-        self.github.pull_request.candidate_left_ref = None;
-        self.github.pull_request.candidate_right_ref = None;
-        self.overlays.clear();
+        self.github.pull_request.info.set(&self.store, None);
+        self.github
+            .pull_request
+            .candidate_left_ref
+            .set(&self.store, None);
+        self.github
+            .pull_request
+            .candidate_right_ref
+            .set(&self.store, None);
+        self.clear_overlays();
         self.focus.set(&self.store, Some(FocusTarget::TitleBar));
         self.sync_settings_snapshot();
         vec![
@@ -1856,16 +2064,45 @@ impl AppState {
         ]
     }
 
+    /// Clear the workspace back to a blank "no compare loaded" state. Replaces
+    /// the former `WorkspaceState::clear_compare(&mut self)` method.
+    fn workspace_clear_compare(&mut self) {
+        self.workspace.source.set(&self.store, WorkspaceSource::None);
+        self.workspace.status.set(&self.store, AsyncStatus::Idle);
+        self.workspace.status_generation.set(&self.store, 0);
+        self.workspace.files.set(&self.store, Vec::new());
+        self.workspace.status_items.set(&self.store, Vec::new());
+        self.workspace.selected_file_index.set(&self.store, None);
+        self.workspace.selected_file_path.set(&self.store, None);
+        self.workspace.selected_status_scope.set(&self.store, None);
+        self.workspace.compare_output.set(&self.store, None);
+        self.workspace.active_file.set(&self.store, None);
+        self.workspace.raw_diff_len.set(&self.store, 0);
+        self.workspace.used_fallback.set(&self.store, false);
+        self.workspace
+            .fallback_message
+            .set(&self.store, String::new());
+        self.workspace.sidebar_auto_width.set(&self.store, None);
+        self.workspace.range_commits.set(&self.store, Vec::new());
+        self.workspace.pre_drill_compare.set(&self.store, None);
+    }
+
     fn handle_repository_snapshot(&mut self, payload: RepositorySnapshot) -> Vec<Effect> {
-        if self.compare.repo_path.as_ref() != Some(&payload.path) {
+        if self
+            .compare
+            .repo_path
+            .with(&self.store, |p| p.as_ref() != Some(&payload.path))
+        {
             return Vec::new();
         }
 
-        self.repository.status = AsyncStatus::Ready;
-        self.repository.branches = payload.branches;
-        self.repository.tags = payload.tags;
-        self.repository.commits = payload.commits;
-        self.workspace.status_items = payload.status_items;
+        self.repository.status.set(&self.store, AsyncStatus::Ready);
+        self.repository.branches.set(&self.store, payload.branches);
+        self.repository.tags.set(&self.store, payload.tags);
+        self.repository.commits.set(&self.store, payload.commits);
+        self.workspace
+            .status_items
+            .set(&self.store, payload.status_items);
 
         match payload.reason {
             RepositorySyncReason::Open => {
@@ -1875,7 +2112,10 @@ impl AppState {
                 let mut effects = self.persist_settings_effect();
                 if let Some(url) = self.startup.pending_pr_url.clone() {
                     self.startup.pending_pr_url = None;
-                    self.github.pull_request.status = AsyncStatus::Loading;
+                    self.github
+                        .pull_request
+                        .status
+                        .set(&self.store, AsyncStatus::Loading);
                     effects.push(Effect::LoadPullRequest {
                         url,
                         repo_path: payload.path,
@@ -1888,28 +2128,36 @@ impl AppState {
                     c.repo_path.as_ref() == Some(&payload.path)
                         && compare_refs_are_valid(c.mode, &c.left_ref, &c.right_ref)
                 }) {
-                    self.compare.left_ref = persisted.left_ref.clone();
-                    self.compare.right_ref = persisted.right_ref.clone();
-                    self.compare.mode = persisted.mode;
+                    self.compare
+                        .left_ref
+                        .set(&self.store, persisted.left_ref.clone());
+                    self.compare
+                        .right_ref
+                        .set(&self.store, persisted.right_ref.clone());
+                    self.compare.mode.set(&self.store, persisted.mode);
                     effects.extend(self.kickoff_compare());
                 } else {
-                    self.compare.left_ref = "HEAD".to_owned();
-                    self.compare.right_ref = crate::core::vcs::git::service::WORKDIR_REF.to_owned();
-                    self.compare.mode = CompareMode::ThreeDot;
+                    self.compare.left_ref.set(&self.store, "HEAD".to_owned());
+                    self.compare.right_ref.set(
+                        &self.store,
+                        crate::core::vcs::git::service::WORKDIR_REF.to_owned(),
+                    );
+                    self.compare.mode.set(&self.store, CompareMode::ThreeDot);
                     effects.extend(self.activate_status_view(true));
                 }
                 effects
             }
             RepositorySyncReason::Dirty | RepositorySyncReason::Rescan => {
-                if self.workspace.source == WorkspaceSource::Status {
+                if self.workspace.source.get(&self.store) == WorkspaceSource::Status {
                     return self.activate_status_view(false);
                 }
 
-                if !compare_refs_are_valid(
-                    self.compare.mode,
-                    &self.compare.left_ref,
-                    &self.compare.right_ref,
-                ) {
+                let (mode, left_ref, right_ref) = (
+                    self.compare.mode.get(&self.store),
+                    self.compare.left_ref.get(&self.store),
+                    self.compare.right_ref.get(&self.store),
+                );
+                if !compare_refs_are_valid(mode, &left_ref, &right_ref) {
                     return Vec::new();
                 }
 
@@ -1918,8 +2166,7 @@ impl AppState {
                         self.kickoff_compare()
                     }
                     Some(RepositoryChangeKind::Worktree)
-                        if self.compare.right_ref
-                            == crate::core::vcs::git::service::WORKDIR_REF =>
+                        if right_ref == crate::core::vcs::git::service::WORKDIR_REF =>
                     {
                         self.kickoff_compare()
                     }
@@ -1930,91 +2177,135 @@ impl AppState {
     }
 
     fn handle_compare_finished(&mut self, payload: CompareFinished) -> Vec<Effect> {
-        if payload.generation != self.workspace.compare_generation {
+        if payload.generation != self.workspace.compare_generation.get(&self.store) {
             return Vec::new();
         }
 
-        self.workspace.source = WorkspaceSource::Compare;
-        self.workspace.status = AsyncStatus::Ready;
+        self.workspace
+            .source
+            .set(&self.store, WorkspaceSource::Compare);
+        self.workspace.status.set(&self.store, AsyncStatus::Ready);
         self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
-        self.compare.layout = payload.spec.layout;
-        self.compare.renderer = payload.spec.renderer;
-        self.compare.resolved_left = Some(payload.resolved_left);
-        self.compare.resolved_right = Some(payload.resolved_right);
-        self.workspace.raw_diff_len = payload.output.raw_diff.len();
-        self.workspace.used_fallback = payload.output.used_fallback;
-        self.workspace.fallback_message = payload.output.fallback_message.clone();
-        self.workspace.files = build_file_entries(&payload.output.files);
-        self.workspace.compare_output = Some(payload.output);
-        self.workspace.sidebar_auto_width = None;
-        if self.workspace.pre_drill_compare.is_none() {
-            self.workspace.range_commits = payload.range_commits;
+        self.compare.layout.set(&self.store, payload.spec.layout);
+        self.compare
+            .renderer
+            .set(&self.store, payload.spec.renderer);
+        self.compare
+            .resolved_left
+            .set(&self.store, Some(payload.resolved_left));
+        self.compare
+            .resolved_right
+            .set(&self.store, Some(payload.resolved_right));
+        self.workspace
+            .raw_diff_len
+            .set(&self.store, payload.output.raw_diff.len());
+        self.workspace
+            .used_fallback
+            .set(&self.store, payload.output.used_fallback);
+        self.workspace
+            .fallback_message
+            .set(&self.store, payload.output.fallback_message.clone());
+        self.workspace
+            .files
+            .set(&self.store, build_file_entries(&payload.output.files));
+        self.workspace
+            .compare_output
+            .set(&self.store, Some(payload.output));
+        self.workspace.sidebar_auto_width.set(&self.store, None);
+        if self
+            .workspace
+            .pre_drill_compare
+            .with(&self.store, |p| p.is_none())
+        {
+            self.workspace
+                .range_commits
+                .set(&self.store, payload.range_commits);
         }
-        self.file_list.scroll_offset_px = 0.0;
-        self.file_list.commits_scroll_offset_px = 0.0;
+        self.file_list.scroll_offset_px.set(&self.store, 0.0);
+        self.file_list
+            .commits_scroll_offset_px
+            .set(&self.store, 0.0);
         self.set_focus(Some(FocusTarget::FileList));
-        self.editor.clear_document();
-        self.overlays.clear();
+        self.editor_clear_document();
+        self.clear_overlays();
 
         let preferred_index = self
             .startup
             .preferred_file_index
-            .or(self.workspace.selected_file_index);
+            .or(self.workspace.selected_file_index.get(&self.store));
         let preferred_path = self
             .startup
             .preferred_file_path
             .clone()
-            .or_else(|| self.workspace.selected_file_path.clone());
+            .or_else(|| self.workspace.selected_file_path.get(&self.store));
 
-        if let Some(index) = preferred_path
-            .as_deref()
-            .and_then(|path| {
-                self.workspace
-                    .files
-                    .iter()
-                    .position(|file| file.path == path)
-            })
-            .or(preferred_index.filter(|index| *index < self.workspace.files.len()))
-            .or_else(|| (!self.workspace.files.is_empty()).then_some(0))
+        let (file_count, index_for_path) =
+            self.workspace.files.with(&self.store, |files| {
+                let idx = preferred_path
+                    .as_deref()
+                    .and_then(|path| files.iter().position(|file| file.path == path));
+                (files.len(), idx)
+            });
+
+        if let Some(index) = index_for_path
+            .or(preferred_index.filter(|index| *index < file_count))
+            .or_else(|| (file_count > 0).then_some(0))
         {
             let _ = self.select_file(index, true);
         } else {
-            self.workspace.selected_file_index = None;
-            self.workspace.selected_file_path = None;
-            self.workspace.selected_status_scope = None;
-            self.workspace.active_file = None;
-            self.editor.clear_document();
+            self.workspace.selected_file_index.set(&self.store, None);
+            self.workspace.selected_file_path.set(&self.store, None);
+            self.workspace.selected_status_scope.set(&self.store, None);
+            self.workspace.active_file.set(&self.store, None);
+            self.editor_clear_document();
         }
 
-        if self.workspace.used_fallback && !self.workspace.fallback_message.is_empty() {
-            self.push_info(&self.workspace.fallback_message.clone());
+        let (used_fallback, fallback_message) = (
+            self.workspace.used_fallback.get(&self.store),
+            self.workspace.fallback_message.get(&self.store),
+        );
+        if used_fallback && !fallback_message.is_empty() {
+            self.push_info(&fallback_message);
         }
         Vec::new()
     }
 
     fn handle_status_diff_finished(&mut self, payload: StatusDiffFinished) -> Vec<Effect> {
-        if payload.generation != self.workspace.status_generation {
+        if payload.generation != self.workspace.status_generation.get(&self.store) {
             return Vec::new();
         }
-        let Some(current_item) = self.workspace.status_items.get(payload.index) else {
-            return Vec::new();
-        };
-        if current_item.path != payload.item.path || current_item.scope != payload.item.scope {
+        let matches = self.workspace.status_items.with(&self.store, |items| {
+            match items.get(payload.index) {
+                Some(current) => {
+                    current.path == payload.item.path && current.scope == payload.item.scope
+                }
+                None => false,
+            }
+        });
+        if !matches {
             return Vec::new();
         }
 
-        self.workspace.source = WorkspaceSource::Status;
-        self.workspace.status = AsyncStatus::Ready;
+        self.workspace
+            .source
+            .set(&self.store, WorkspaceSource::Status);
+        self.workspace.status.set(&self.store, AsyncStatus::Ready);
         self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
         let mut output = payload.output;
-        self.workspace.used_fallback = output.used_fallback;
-        self.workspace.fallback_message = output.fallback_message.clone();
-        self.workspace.raw_diff_len = output.raw_diff.len();
-        self.workspace.compare_output = None;
+        self.workspace
+            .used_fallback
+            .set(&self.store, output.used_fallback);
+        self.workspace
+            .fallback_message
+            .set(&self.store, output.fallback_message.clone());
+        self.workspace
+            .raw_diff_len
+            .set(&self.store, output.raw_diff.len());
+        self.workspace.compare_output.set(&self.store, None);
 
         let Some(mut file) = output.files.into_iter().next() else {
-            self.workspace.active_file = None;
-            self.editor.clear_document();
+            self.workspace.active_file.set(&self.store, None);
+            self.editor_clear_document();
             return Vec::new();
         };
 
@@ -2031,109 +2322,142 @@ impl AppState {
             &output.token_buffer,
         );
 
-        self.workspace.selected_file_index = Some(payload.index);
-        self.workspace.selected_file_path = Some(payload.item.path.clone());
-        self.workspace.selected_status_scope = Some(payload.item.scope);
-        self.workspace.active_file = Some(ActiveFile {
-            index: payload.index,
-            path: payload.item.path.clone(),
-            file,
-            render_doc,
-            text_buffer: output.text_buffer,
-        });
-        self.editor.clear_document();
-        self.editor.line_selection.clear();
-        if self.editor.search.open {
+        self.workspace
+            .selected_file_index
+            .set(&self.store, Some(payload.index));
+        self.workspace
+            .selected_file_path
+            .set(&self.store, Some(payload.item.path.clone()));
+        self.workspace
+            .selected_status_scope
+            .set(&self.store, Some(payload.item.scope));
+        self.workspace.active_file.set(
+            &self.store,
+            Some(ActiveFile {
+                index: payload.index,
+                path: payload.item.path.clone(),
+                file,
+                render_doc,
+                text_buffer: output.text_buffer,
+            }),
+        );
+        self.editor_clear_document();
+        self.editor
+            .line_selection
+            .update(&self.store, |ls| ls.clear());
+        if self.editor.search.open.get(&self.store) {
             self.recompute_search_matches();
         }
         Vec::new()
     }
 
     fn activate_status_view(&mut self, reset_scroll: bool) -> Vec<Effect> {
-        self.workspace.source = WorkspaceSource::Status;
-        self.workspace.status = AsyncStatus::Ready;
+        self.workspace
+            .source
+            .set(&self.store, WorkspaceSource::Status);
+        self.workspace.status.set(&self.store, AsyncStatus::Ready);
         self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
-        self.workspace.compare_output = None;
-        self.workspace.files = build_status_file_entries(&self.workspace.status_items);
-        self.workspace.status_generation = self.workspace.status_generation.saturating_add(1);
-        self.workspace.sidebar_auto_width = None;
-        self.workspace.used_fallback = false;
-        self.workspace.fallback_message.clear();
-        self.workspace.raw_diff_len = 0;
+        self.workspace.compare_output.set(&self.store, None);
+        let new_files = self
+            .workspace
+            .status_items
+            .with(&self.store, |items| build_status_file_entries(items));
+        self.workspace.files.set(&self.store, new_files);
+        let next_status_gen = self
+            .workspace
+            .status_generation
+            .get(&self.store)
+            .saturating_add(1);
+        self.workspace
+            .status_generation
+            .set(&self.store, next_status_gen);
+        self.workspace.sidebar_auto_width.set(&self.store, None);
+        self.workspace.used_fallback.set(&self.store, false);
+        self.workspace
+            .fallback_message
+            .set(&self.store, String::new());
+        self.workspace.raw_diff_len.set(&self.store, 0);
         if reset_scroll {
-            self.file_list.scroll_offset_px = 0.0;
+            self.file_list.scroll_offset_px.set(&self.store, 0.0);
         }
 
-        let current_selection = self
+        let current_path = self.workspace.selected_file_path.get(&self.store);
+        let current_scope = self.workspace.selected_status_scope.get(&self.store);
+        let selected_index = self
             .workspace
-            .selected_file_path
-            .clone()
-            .zip(self.workspace.selected_status_scope);
-        let selected_index = current_selection
-            .and_then(|(path, scope)| {
-                self.workspace
-                    .status_items
-                    .iter()
-                    .position(|item| item.path == path && item.scope == scope)
-            })
-            .or_else(|| {
-                self.workspace
-                    .selected_file_path
-                    .as_deref()
-                    .and_then(|path| {
-                        self.workspace
-                            .status_items
-                            .iter()
-                            .position(|item| item.path == path)
-                    })
-            })
-            .or_else(|| (!self.workspace.status_items.is_empty()).then_some(0));
+            .status_items
+            .with(&self.store, |items| {
+                if let Some((path, scope)) = current_path.clone().zip(current_scope) {
+                    if let Some(idx) = items
+                        .iter()
+                        .position(|item| item.path == path && item.scope == scope)
+                    {
+                        return Some(idx);
+                    }
+                }
+                if let Some(path) = current_path.as_deref() {
+                    if let Some(idx) = items.iter().position(|item| item.path == path) {
+                        return Some(idx);
+                    }
+                }
+                (!items.is_empty()).then_some(0)
+            });
 
         match selected_index {
             Some(index) => self.select_status_item(index, false),
             None => {
-                self.workspace.selected_file_index = None;
-                self.workspace.selected_file_path = None;
-                self.workspace.selected_status_scope = None;
-                self.workspace.active_file = None;
-                self.editor.clear_document();
+                self.workspace.selected_file_index.set(&self.store, None);
+                self.workspace.selected_file_path.set(&self.store, None);
+                self.workspace.selected_status_scope.set(&self.store, None);
+                self.workspace.active_file.set(&self.store, None);
+                self.editor_clear_document();
                 Vec::new()
             }
         }
     }
 
     fn kickoff_compare(&mut self) -> Vec<Effect> {
-        let Some(repo_path) = self.compare.repo_path.clone() else {
+        let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
             self.push_error("Open a repository before starting a compare.");
             return Vec::new();
         };
 
-        if !compare_refs_are_valid(
-            self.compare.mode,
-            &self.compare.left_ref,
-            &self.compare.right_ref,
-        ) {
+        let mode = self.compare.mode.get(&self.store);
+        let left_ref = self.compare.left_ref.get(&self.store);
+        let right_ref = self.compare.right_ref.get(&self.store);
+        if !compare_refs_are_valid(mode, &left_ref, &right_ref) {
             self.push_error("Provide the required refs for the selected mode.");
             return Vec::new();
         }
 
-        self.workspace.source = WorkspaceSource::Compare;
-        self.workspace.compare_generation = self.workspace.compare_generation.saturating_add(1);
-        self.overlays.clear();
+        self.workspace
+            .source
+            .set(&self.store, WorkspaceSource::Compare);
+        let next_gen = self
+            .workspace
+            .compare_generation
+            .get(&self.store)
+            .saturating_add(1);
+        self.workspace
+            .compare_generation
+            .set(&self.store, next_gen);
+        self.clear_overlays();
         self.sync_settings_snapshot();
 
+        let renderer = self.compare.renderer.get(&self.store);
+        let layout = self.compare.layout.get(&self.store);
         vec![
             Effect::SaveSettings(self.settings.clone()),
             Effect::RunCompare {
-                generation: self.workspace.compare_generation,
+                generation: next_gen,
                 request: CompareRequest {
                     repo_path,
                     spec: CompareSpec {
-                        mode: self.compare.mode,
-                        left_ref: self.compare.left_ref.clone(),
-                        right_ref: self.compare.right_ref.clone(),
-                        renderer: self.compare.renderer,
-                        layout: self.compare.layout,
+                        mode,
+                        left_ref,
+                        right_ref,
+                        renderer,
+                        layout,
                     },
                     github_token: self.settings.github_token.clone(),
                 },
@@ -2142,9 +2466,12 @@ impl AppState {
     }
 
     fn show_working_tree(&mut self) -> Vec<Effect> {
-        self.compare.left_ref = "HEAD".to_owned();
-        self.compare.right_ref = crate::core::vcs::git::service::WORKDIR_REF.to_owned();
-        self.compare.mode = CompareMode::TwoDot;
+        self.compare.left_ref.set(&self.store, "HEAD".to_owned());
+        self.compare.right_ref.set(
+            &self.store,
+            crate::core::vcs::git::service::WORKDIR_REF.to_owned(),
+        );
+        self.compare.mode.set(&self.store, CompareMode::TwoDot);
         let mut effects = self.persist_settings_effect();
         effects.extend(self.activate_status_view(true));
         effects
@@ -2161,16 +2488,16 @@ impl AppState {
             .settings
             .sidebar_width_px
             .map(|width| self.clamp_sidebar_width_px(width));
-        self.settings.viewport.wrap_enabled = self.editor.wrap_enabled;
-        self.settings.viewport.wrap_column = self.editor.wrap_column;
-        self.settings.viewport.layout = self.compare.layout;
+        self.settings.viewport.wrap_enabled = self.editor.wrap_enabled.get(&self.store);
+        self.settings.viewport.wrap_column = self.editor.wrap_column.get(&self.store);
+        self.settings.viewport.layout = self.compare.layout.get(&self.store);
         self.settings.last_compare = Some(PersistedCompare {
-            repo_path: self.compare.repo_path.clone(),
-            left_ref: self.compare.left_ref.clone(),
-            right_ref: self.compare.right_ref.clone(),
-            mode: self.compare.mode,
-            layout: self.compare.layout,
-            renderer: self.compare.renderer,
+            repo_path: self.compare.repo_path.get(&self.store),
+            left_ref: self.compare.left_ref.get(&self.store),
+            right_ref: self.compare.right_ref.get(&self.store),
+            mode: self.compare.mode.get(&self.store),
+            layout: self.compare.layout.get(&self.store),
+            renderer: self.compare.renderer.get(&self.store),
         });
     }
 
@@ -2203,54 +2530,125 @@ impl AppState {
         if target != self.focus.get(&self.store) {
             // Reset cursor to end of the new field
             let len = target
-                .and_then(|t| self.text_for_focus(t).map(|s| s.len()))
+                .and_then(|t| self.with_text_for_focus(t, |s| s.len()))
                 .unwrap_or(0);
-            self.text_edit = TextEditState {
-                cursor: len,
-                anchor: len,
-                cursor_moved_at_ms: self.clock_ms,
-            };
+            self.reset_text_edit(len);
         }
         self.focus.set(&self.store, target);
-        self.editor.focused = target == Some(FocusTarget::Editor);
+        self.editor
+            .focused
+            .set(&self.store, target == Some(FocusTarget::Editor));
     }
 
-    /// Returns a reference to the text string for the given focus target, if it's a text field.
-    fn text_for_focus(&self, target: FocusTarget) -> Option<&str> {
+    /// Set cursor and anchor to the same offset and refresh the blink timestamp.
+    pub(super) fn reset_text_edit(&mut self, offset: usize) {
+        self.text_edit.cursor.set(&self.store, offset);
+        self.text_edit.anchor.set(&self.store, offset);
+        self.text_edit
+            .cursor_moved_at_ms
+            .set(&self.store, self.clock_ms);
+    }
+
+    /// Run `f` against the text string for the given focus target, if it's a text field.
+    pub(super) fn with_text_for_focus<R>(
+        &self,
+        target: FocusTarget,
+        f: impl FnOnce(&str) -> R,
+    ) -> Option<R> {
         match target {
-            FocusTarget::PickerInput => match self.overlays.picker.kind {
-                PickerKind::Repository | PickerKind::Theme => Some(&self.overlays.picker.query),
-                PickerKind::LeftRef => Some(&self.compare.left_ref),
-                PickerKind::RightRef => Some(&self.compare.right_ref),
+            FocusTarget::PickerInput => match self.overlays.picker.kind.get(&self.store) {
+                PickerKind::Repository | PickerKind::Theme => {
+                    Some(self.overlays.picker.query.with(&self.store, |s| f(s)))
+                }
+                PickerKind::LeftRef => Some(self.compare.left_ref.with(&self.store, |s| f(s))),
+                PickerKind::RightRef => Some(self.compare.right_ref.with(&self.store, |s| f(s))),
             },
-            FocusTarget::CommandPaletteInput => Some(&self.overlays.command_palette.query),
-            FocusTarget::PullRequestInput => Some(&self.github.pull_request.url_input),
-            FocusTarget::SidebarSearch => Some(&self.file_list.filter),
-            FocusTarget::SearchInput => Some(&self.editor.search.query),
+            FocusTarget::CommandPaletteInput => Some(
+                self.overlays
+                    .command_palette
+                    .query
+                    .with(&self.store, |s| f(s)),
+            ),
+            FocusTarget::PullRequestInput => Some(
+                self.github
+                    .pull_request
+                    .url_input
+                    .with(&self.store, |s| f(s)),
+            ),
+            FocusTarget::SidebarSearch => Some(self.file_list.filter.with(&self.store, |s| f(s))),
+            FocusTarget::SearchInput => {
+                Some(self.editor.search.query.with(&self.store, |s| f(s)))
+            }
             FocusTarget::CommitEditor => None,
             _ => None,
         }
     }
 
-    fn focused_text(&self) -> Option<&str> {
-        self.focus
-            .get(&self.store)
-            .and_then(|t| self.text_for_focus(t))
+    pub(super) fn with_focused_text<R>(&self, f: impl FnOnce(&str) -> R) -> Option<R> {
+        let target = self.focus.get(&self.store)?;
+        self.with_text_for_focus(target, f)
     }
 
-    fn focused_text_mut(&mut self) -> Option<&mut String> {
+    pub(super) fn update_focused_text<R>(
+        &mut self,
+        f: impl FnOnce(&mut String) -> R,
+    ) -> Option<R> {
         match self.focus.get(&self.store) {
-            Some(FocusTarget::PickerInput) => match self.overlays.picker.kind {
-                PickerKind::Repository | PickerKind::Theme => Some(&mut self.overlays.picker.query),
-                PickerKind::LeftRef => Some(&mut self.compare.left_ref),
-                PickerKind::RightRef => Some(&mut self.compare.right_ref),
+            Some(FocusTarget::PickerInput) => match self.overlays.picker.kind.get(&self.store) {
+                PickerKind::Repository | PickerKind::Theme => {
+                    let mut out = None;
+                    self.overlays
+                        .picker
+                        .query
+                        .update(&self.store, |s| out = Some(f(s)));
+                    out
+                }
+                PickerKind::LeftRef => {
+                    let mut out = None;
+                    self.compare
+                        .left_ref
+                        .update(&self.store, |s| out = Some(f(s)));
+                    out
+                }
+                PickerKind::RightRef => {
+                    let mut out = None;
+                    self.compare
+                        .right_ref
+                        .update(&self.store, |s| out = Some(f(s)));
+                    out
+                }
             },
             Some(FocusTarget::CommandPaletteInput) => {
-                Some(&mut self.overlays.command_palette.query)
+                let mut out = None;
+                self.overlays
+                    .command_palette
+                    .query
+                    .update(&self.store, |s| out = Some(f(s)));
+                out
             }
-            Some(FocusTarget::PullRequestInput) => Some(&mut self.github.pull_request.url_input),
-            Some(FocusTarget::SidebarSearch) => Some(&mut self.file_list.filter),
-            Some(FocusTarget::SearchInput) => Some(&mut self.editor.search.query),
+            Some(FocusTarget::PullRequestInput) => {
+                let mut out = None;
+                self.github
+                    .pull_request
+                    .url_input
+                    .update(&self.store, |s| out = Some(f(s)));
+                out
+            }
+            Some(FocusTarget::SidebarSearch) => {
+                let mut out = None;
+                self.file_list
+                    .filter
+                    .update(&self.store, |s| out = Some(f(s)));
+                out
+            }
+            Some(FocusTarget::SearchInput) => {
+                let mut out = None;
+                self.editor
+                    .search
+                    .query
+                    .update(&self.store, |s| out = Some(f(s)));
+                out
+            }
             Some(FocusTarget::CommitEditor) => None,
             _ => None,
         }
@@ -2264,42 +2662,48 @@ impl AppState {
     }
 
     fn touch_cursor(&mut self) {
-        self.text_edit.cursor_moved_at_ms = self.clock_ms;
+        self.text_edit
+            .cursor_moved_at_ms
+            .set(&self.store, self.clock_ms);
     }
 
     fn clamp_cursor(&mut self) {
-        let Some(text) = self.focused_text() else {
+        let cursor_now = self.text_edit.cursor.get(&self.store);
+        let anchor_now = self.text_edit.anchor.get(&self.store);
+        let Some((cursor, anchor)) = self.with_focused_text(|text| {
+            let len = text.len();
+            let mut cursor = cursor_now.min(len);
+            while cursor > 0 && !text.is_char_boundary(cursor) {
+                cursor -= 1;
+            }
+            let mut anchor = anchor_now.min(len);
+            while anchor > 0 && !text.is_char_boundary(anchor) {
+                anchor -= 1;
+            }
+            (cursor, anchor)
+        }) else {
             return;
         };
-        let len = text.len();
-        let mut cursor = self.text_edit.cursor.min(len);
-        while cursor > 0 && !text.is_char_boundary(cursor) {
-            cursor -= 1;
-        }
-        let mut anchor = self.text_edit.anchor.min(len);
-        while anchor > 0 && !text.is_char_boundary(anchor) {
-            anchor -= 1;
-        }
-        self.text_edit.cursor = cursor;
-        self.text_edit.anchor = anchor;
+        self.text_edit.cursor.set(&self.store, cursor);
+        self.text_edit.anchor.set(&self.store, anchor);
     }
 
     // Text editing methods are in text_edit.rs
 
     fn update_compare_field(&mut self, field: CompareField, value: String) -> Vec<Effect> {
-        self.workspace.pre_drill_compare = None;
+        self.workspace.pre_drill_compare.set(&self.store, None);
         match field {
             CompareField::Left => {
-                self.compare.left_ref = value;
-                self.compare.resolved_left = None;
+                self.compare.left_ref.set(&self.store, value);
+                self.compare.resolved_left.set(&self.store, None);
             }
             CompareField::Right => {
-                self.compare.right_ref = value;
-                self.compare.resolved_right = None;
+                self.compare.right_ref.set(&self.store, value);
+                self.compare.resolved_right.set(&self.store, None);
             }
         }
         self.auto_select_compare_mode();
-        let effects = if matches!(self.overlays.top(), Some(OverlaySurface::RefPicker(active)) if active == field)
+        let effects = if matches!(self.overlays_top(), Some(OverlaySurface::RefPicker(active)) if active == field)
         {
             self.rebuild_ref_picker(field)
         } else {
@@ -2310,32 +2714,39 @@ impl AppState {
     }
 
     fn auto_select_compare_mode(&mut self) {
-        let left = &self.compare.left_ref;
-        let right = &self.compare.right_ref;
+        let left = self.compare.left_ref.get(&self.store);
+        let right = self.compare.right_ref.get(&self.store);
         if left.is_empty() || right.is_empty() {
             return;
         }
         if left == right && right != crate::core::vcs::git::service::WORKDIR_REF {
-            self.compare.mode = CompareMode::SingleCommit;
+            self.compare.mode.set(&self.store, CompareMode::SingleCommit);
             return;
         }
         let is_trunk = |r: &str| matches!(r, "main" | "master" | "develop" | "development");
-        if is_trunk(left) != is_trunk(right) {
-            self.compare.mode = CompareMode::ThreeDot;
+        if is_trunk(&left) != is_trunk(&right) {
+            self.compare.mode.set(&self.store, CompareMode::ThreeDot);
         }
     }
 
     fn submit_pull_request(&mut self) -> Vec<Effect> {
-        let Some(repo_path) = self.compare.repo_path.clone() else {
+        let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
             self.push_error("Open a repository before loading a pull request.");
             return Vec::new();
         };
-        let url = self.github.pull_request.url_input.trim().to_owned();
+        let url = self
+            .github
+            .pull_request
+            .url_input
+            .with(&self.store, |s| s.trim().to_owned());
         if url.is_empty() {
             self.push_error("Paste a GitHub pull request URL first.");
             return Vec::new();
         }
-        self.github.pull_request.status = AsyncStatus::Loading;
+        self.github
+            .pull_request
+            .status
+            .set(&self.store, AsyncStatus::Loading);
         vec![Effect::LoadPullRequest {
             url,
             repo_path,
@@ -2344,45 +2755,49 @@ impl AppState {
     }
 
     fn use_pull_request_compare(&mut self) -> Vec<Effect> {
-        let Some(left) = self.github.pull_request.candidate_left_ref.clone() else {
+        let Some(left) = self.github.pull_request.candidate_left_ref.get(&self.store) else {
             self.push_error("Load a pull request before using its compare.");
             return Vec::new();
         };
-        let Some(right) = self.github.pull_request.candidate_right_ref.clone() else {
+        let Some(right) = self.github.pull_request.candidate_right_ref.get(&self.store) else {
             self.push_error("Load a pull request before using its compare.");
             return Vec::new();
         };
         // Picker won't be open here so resolve effects are empty, but drain them.
         let _ = self.update_compare_field(CompareField::Left, left);
         let _ = self.update_compare_field(CompareField::Right, right);
-        self.compare.mode = CompareMode::ThreeDot;
-        self.overlays.clear();
+        self.compare.mode.set(&self.store, CompareMode::ThreeDot);
+        self.clear_overlays();
         self.kickoff_compare()
     }
 
     fn open_repo_picker(&mut self) {
         let scale = self.ui_scale_factor();
-        self.overlays.picker.kind = PickerKind::Repository;
-        self.overlays.picker.list.row_height_px = (Sz::ROW * scale).round() as u32;
-        self.overlays.picker.list.gap_px = (Sp::XS * scale).round() as u32;
-        self.overlays.picker.browse_path = None;
-        self.overlays.picker.selected_index = 0;
-        self.overlays.picker.list.scroll_top_px = 0;
+        self.overlays
+            .picker
+            .kind
+            .set(&self.store, PickerKind::Repository);
+        self.overlays.picker.list.update(&self.store, |l| {
+            l.row_height_px = (Sz::ROW * scale).round() as u32;
+            l.gap_px = (Sp::XS * scale).round() as u32;
+            l.scroll_top_px = 0;
+        });
+        self.overlays.picker.browse_path.set(&self.store, None);
+        self.overlays.picker.selected_index.set(&self.store, 0);
 
         let has_recents = crate::core::frecency::recent_repo_paths(self.frecency.as_ref(), 1)
             .first()
             .is_some();
 
         if has_recents {
-            self.overlays.picker.query = String::new();
+            self.overlays.picker.query.set(&self.store, String::new());
         } else {
             let home = dirs::home_dir()
                 .map(|p| format!("{}/", p.display()))
                 .unwrap_or_else(|| "/".to_owned());
-            self.overlays.picker.query = home.clone();
-            self.text_edit.cursor = home.len();
-            self.text_edit.anchor = home.len();
-            self.text_edit.cursor_moved_at_ms = self.clock_ms;
+            let home_len = home.len();
+            self.overlays.picker.query.set(&self.store, home);
+            self.reset_text_edit(home_len);
         }
 
         self.rebuild_repo_picker();
@@ -2393,19 +2808,26 @@ impl AppState {
         let scale = self.ui_scale_factor();
         self.theme_preview_original
             .set(&self.store, Some(self.settings.theme_name.clone()));
-        self.overlays.picker.kind = PickerKind::Theme;
-        self.overlays.picker.query = String::new();
-        self.overlays.picker.list.scroll_top_px = 0;
-        self.overlays.picker.list.row_height_px = (Sz::ROW * scale).round() as u32;
-        self.overlays.picker.list.gap_px = (Sp::XS * scale).round() as u32;
-        self.overlays.picker.entries = self.build_theme_entries_grouped();
-        self.overlays.picker.selected_index = self
-            .overlays
+        self.overlays
             .picker
-            .entries
+            .kind
+            .set(&self.store, PickerKind::Theme);
+        self.overlays.picker.query.set(&self.store, String::new());
+        self.overlays.picker.list.update(&self.store, |l| {
+            l.scroll_top_px = 0;
+            l.row_height_px = (Sz::ROW * scale).round() as u32;
+            l.gap_px = (Sp::XS * scale).round() as u32;
+        });
+        let entries = self.build_theme_entries_grouped();
+        let selected = entries
             .iter()
             .position(|e| !e.section_header)
             .unwrap_or(0);
+        self.overlays.picker.entries.set(&self.store, entries);
+        self.overlays
+            .picker
+            .selected_index
+            .set(&self.store, selected);
         self.push_overlay(OverlaySurface::ThemePicker, Some(FocusTarget::PickerInput));
     }
 
@@ -2470,20 +2892,22 @@ impl AppState {
     }
 
     fn rebuild_theme_picker(&mut self) {
-        let query = self.overlays.picker.query.trim().to_owned();
+        let query = self
+            .overlays
+            .picker
+            .query
+            .with(&self.store, |q| q.trim().to_owned());
         let original = self
             .theme_preview_original
             .get(&self.store)
             .unwrap_or_else(|| self.settings.theme_name.clone());
-        if query.is_empty() {
-            self.overlays.picker.entries = self.build_theme_entries_grouped();
-            self.overlays.picker.selected_index = self
-                .overlays
-                .picker
-                .entries
+        let (entries, selected) = if query.is_empty() {
+            let entries = self.build_theme_entries_grouped();
+            let selected = entries
                 .iter()
                 .position(|e| !e.section_header)
                 .unwrap_or(0);
+            (entries, selected)
         } else {
             let haystack: Vec<&str> = self.theme_names.iter().map(|s| s.as_str()).collect();
             let config = neo_frizbee::Config {
@@ -2493,7 +2917,7 @@ impl AppState {
             };
             let mut matches = neo_frizbee::match_list_indices(&query, &haystack, &config);
             matches.sort_by(|a, b| b.score.cmp(&a.score));
-            self.overlays.picker.entries = matches
+            let entries: Vec<PickerEntry> = matches
                 .iter()
                 .map(|m| {
                     let name = &self.theme_names[m.index as usize];
@@ -2511,37 +2935,40 @@ impl AppState {
                     }
                 })
                 .collect();
-            self.overlays.picker.selected_index = 0;
-        }
-        if let Some(entry) = self
-            .overlays
-            .picker
-            .entries
-            .get(self.overlays.picker.selected_index)
-        {
+            (entries, 0)
+        };
+        if let Some(entry) = entries.get(selected) {
             if !entry.section_header {
                 self.settings.theme_name = entry.value.clone();
             }
         }
-        let entry_count = self.overlays.picker.entries.len();
-        self.overlays.picker.list.viewport_height_px = self
-            .overlays
+        let entry_count = entries.len();
+        self.overlays.picker.entries.set(&self.store, entries);
+        self.overlays
             .picker
-            .list
-            .viewport_for_max_rows(Sz::PICKER_MAX_ROWS, entry_count);
-        self.overlays.picker.list.scroll_top_px = 0;
+            .selected_index
+            .set(&self.store, selected);
+        self.overlays.picker.list.update(&self.store, |l| {
+            l.viewport_height_px = l.viewport_for_max_rows(Sz::PICKER_MAX_ROWS, entry_count);
+            l.scroll_top_px = 0;
+        });
     }
 
     fn open_ref_picker(&mut self, field: CompareField) -> Vec<Effect> {
         let scale = self.ui_scale_factor();
-        self.overlays.picker.kind = match field {
-            CompareField::Left => PickerKind::LeftRef,
-            CompareField::Right => PickerKind::RightRef,
-        };
-        self.overlays.picker.selected_index = 0;
-        self.overlays.picker.list.scroll_top_px = 0;
-        self.overlays.picker.list.row_height_px = (Sz::ROW * scale).round() as u32;
-        self.overlays.picker.list.gap_px = (Sp::XS * scale).round() as u32;
+        self.overlays.picker.kind.set(
+            &self.store,
+            match field {
+                CompareField::Left => PickerKind::LeftRef,
+                CompareField::Right => PickerKind::RightRef,
+            },
+        );
+        self.overlays.picker.selected_index.set(&self.store, 0);
+        self.overlays.picker.list.update(&self.store, |l| {
+            l.scroll_top_px = 0;
+            l.row_height_px = (Sz::ROW * scale).round() as u32;
+            l.gap_px = (Sp::XS * scale).round() as u32;
+        });
         let effects = self.rebuild_ref_picker(field);
         self.push_overlay(
             OverlaySurface::RefPicker(field),
@@ -2552,9 +2979,11 @@ impl AppState {
 
     fn open_command_palette(&mut self) {
         let scale = self.ui_scale_factor();
-        self.overlays.command_palette.list.row_height_px = (Sz::ROW * scale).round() as u32;
-        self.overlays.command_palette.list.gap_px = (Sp::XS * scale).round() as u32;
-        self.overlays.command_palette.list.scroll_top_px = 0;
+        self.overlays.command_palette.list.update(&self.store, |l| {
+            l.row_height_px = (Sz::ROW * scale).round() as u32;
+            l.gap_px = (Sp::XS * scale).round() as u32;
+            l.scroll_top_px = 0;
+        });
         self.rebuild_command_palette();
         self.push_overlay(
             OverlaySurface::CommandPalette,
@@ -2563,19 +2992,26 @@ impl AppState {
     }
 
     fn push_overlay(&mut self, surface: OverlaySurface, focus_target: Option<FocusTarget>) {
-        if self.overlays.top() == Some(surface) {
+        if self.overlays_top() == Some(surface) {
             self.set_focus(focus_target);
             return;
         }
-        self.overlays.stack.push(OverlayEntry {
-            surface,
-            focus_return: self.focus.get(&self.store),
+        let focus_return = self.focus.get(&self.store);
+        self.overlays.stack.update(&self.store, |stack| {
+            stack.push(OverlayEntry {
+                surface,
+                focus_return,
+            });
         });
         self.set_focus(focus_target);
     }
 
     fn pop_overlay(&mut self) {
-        let Some(entry) = self.overlays.stack.pop() else {
+        let mut popped: Option<OverlayEntry> = None;
+        self.overlays.stack.update(&self.store, |stack| {
+            popped = stack.pop();
+        });
+        let Some(entry) = popped else {
             return;
         };
         match entry.surface {
@@ -2585,13 +3021,13 @@ impl AppState {
                 if let Some(original) = original {
                     self.settings.theme_name = original;
                 }
-                self.overlays.picker = PickerState::default();
+                self.reset_picker();
             }
             OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_) => {
-                self.overlays.picker = PickerState::default();
+                self.reset_picker();
             }
             OverlaySurface::CommandPalette => {
-                self.overlays.command_palette = CommandPaletteState::default();
+                self.reset_command_palette();
             }
             _ => {}
         }
@@ -2599,137 +3035,180 @@ impl AppState {
     }
 
     fn move_overlay_selection(&mut self, delta: i32) {
-        match self.overlays.top() {
+        match self.overlays_top() {
             Some(OverlaySurface::ThemePicker) => {
-                let entries = &self.overlays.picker.entries;
-                let len = entries.len();
+                let current = self.overlays.picker.selected_index.get(&self.store);
+                let (idx, len, value) =
+                    self.overlays.picker.entries.with(&self.store, |entries| {
+                        let len = entries.len();
+                        if len == 0 {
+                            return (current, len, None);
+                        }
+                        let max = len.saturating_sub(1) as i32;
+                        let mut idx = (current as i32 + delta).clamp(0, max) as usize;
+                        while idx < len && entries[idx].section_header {
+                            if delta > 0 {
+                                idx = (idx + 1).min(len.saturating_sub(1));
+                            } else {
+                                if idx == 0 {
+                                    break;
+                                }
+                                idx -= 1;
+                            }
+                        }
+                        let value = entries
+                            .get(idx)
+                            .filter(|e| !e.section_header)
+                            .map(|e| e.value.clone());
+                        (idx, len, value)
+                    });
                 if len == 0 {
                     return;
                 }
-                let max = len.saturating_sub(1) as i32;
-                let mut idx =
-                    (self.overlays.picker.selected_index as i32 + delta).clamp(0, max) as usize;
-                while idx < len && entries[idx].section_header {
-                    if delta > 0 {
-                        idx = (idx + 1).min(len.saturating_sub(1));
-                    } else {
-                        if idx == 0 {
-                            break;
-                        }
-                        idx -= 1;
-                    }
-                }
-                self.overlays.picker.selected_index = idx;
-                self.overlays.picker.list.reveal_index(idx, len);
-                if let Some(entry) = self.overlays.picker.entries.get(idx) {
-                    if !entry.section_header {
-                        tracing::debug!(theme = %entry.value, "theme preview");
-                        self.settings.theme_name = entry.value.clone();
-                    }
-                }
-            }
-            Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_)) => {
-                let entries = &self.overlays.picker.entries;
-                let len = entries.len();
-                if len == 0 {
-                    return;
-                }
-                let max = len.saturating_sub(1) as i32;
-                let mut idx =
-                    (self.overlays.picker.selected_index as i32 + delta).clamp(0, max) as usize;
-                while idx < len && entries[idx].section_header {
-                    if delta > 0 {
-                        idx = (idx + 1).min(len.saturating_sub(1));
-                    } else {
-                        if idx == 0 {
-                            break;
-                        }
-                        idx -= 1;
-                    }
-                }
-                self.overlays.picker.selected_index = idx;
+                self.overlays.picker.selected_index.set(&self.store, idx);
                 self.overlays
                     .picker
                     .list
-                    .reveal_index(self.overlays.picker.selected_index, len);
+                    .update(&self.store, |l| l.reveal_index(idx, len));
+                if let Some(value) = value {
+                    tracing::debug!(theme = %value, "theme preview");
+                    self.settings.theme_name = value;
+                }
+            }
+            Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_)) => {
+                let current = self.overlays.picker.selected_index.get(&self.store);
+                let (idx, len) = self.overlays.picker.entries.with(&self.store, |entries| {
+                    let len = entries.len();
+                    if len == 0 {
+                        return (current, len);
+                    }
+                    let max = len.saturating_sub(1) as i32;
+                    let mut idx = (current as i32 + delta).clamp(0, max) as usize;
+                    while idx < len && entries[idx].section_header {
+                        if delta > 0 {
+                            idx = (idx + 1).min(len.saturating_sub(1));
+                        } else {
+                            if idx == 0 {
+                                break;
+                            }
+                            idx -= 1;
+                        }
+                    }
+                    (idx, len)
+                });
+                if len == 0 {
+                    return;
+                }
+                self.overlays.picker.selected_index.set(&self.store, idx);
+                self.overlays
+                    .picker
+                    .list
+                    .update(&self.store, |l| l.reveal_index(idx, len));
             }
             Some(OverlaySurface::CommandPalette) => {
-                let max = self
+                let entry_count = self
                     .overlays
                     .command_palette
                     .entries
-                    .len()
-                    .saturating_sub(1) as i32;
-                self.overlays.command_palette.selected_index =
-                    (self.overlays.command_palette.selected_index as i32 + delta)
-                        .clamp(0, max.max(0)) as usize;
-                self.overlays.command_palette.list.reveal_index(
-                    self.overlays.command_palette.selected_index,
-                    self.overlays.command_palette.entries.len(),
-                );
+                    .with(&self.store, |e| e.len());
+                let max = entry_count.saturating_sub(1) as i32;
+                let current = self
+                    .overlays
+                    .command_palette
+                    .selected_index
+                    .get(&self.store);
+                let idx = (current as i32 + delta).clamp(0, max.max(0)) as usize;
+                self.overlays
+                    .command_palette
+                    .selected_index
+                    .set(&self.store, idx);
+                self.overlays
+                    .command_palette
+                    .list
+                    .update(&self.store, |l| l.reveal_index(idx, entry_count));
             }
             _ => {}
         }
     }
 
     fn select_overlay_entry(&mut self, index: usize) {
-        match self.overlays.top() {
+        match self.overlays_top() {
             Some(OverlaySurface::ThemePicker) => {
-                let clamped = index.min(self.overlays.picker.entries.len().saturating_sub(1));
-                self.overlays.picker.selected_index = clamped;
-                if let Some(entry) = self.overlays.picker.entries.get(clamped) {
-                    self.settings.theme_name = entry.value.clone();
+                let (clamped, len, value) =
+                    self.overlays.picker.entries.with(&self.store, |entries| {
+                        let len = entries.len();
+                        let clamped = index.min(len.saturating_sub(1));
+                        let value = entries.get(clamped).map(|e| e.value.clone());
+                        (clamped, len, value)
+                    });
+                self.overlays
+                    .picker
+                    .selected_index
+                    .set(&self.store, clamped);
+                if let Some(value) = value {
+                    self.settings.theme_name = value;
                 }
                 self.overlays
                     .picker
                     .list
-                    .reveal_index(clamped, self.overlays.picker.entries.len());
+                    .update(&self.store, |l| l.reveal_index(clamped, len));
             }
             Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_)) => {
-                let clamped = index.min(self.overlays.picker.entries.len().saturating_sub(1));
-                if self
-                    .overlays
-                    .picker
-                    .entries
-                    .get(clamped)
-                    .map_or(false, |e| e.section_header)
-                {
+                let (clamped, len, is_header) =
+                    self.overlays.picker.entries.with(&self.store, |entries| {
+                        let len = entries.len();
+                        let clamped = index.min(len.saturating_sub(1));
+                        let is_header = entries
+                            .get(clamped)
+                            .map_or(false, |e| e.section_header);
+                        (clamped, len, is_header)
+                    });
+                if is_header {
                     return;
                 }
-                self.overlays.picker.selected_index = clamped;
-                self.overlays.picker.list.reveal_index(
-                    self.overlays.picker.selected_index,
-                    self.overlays.picker.entries.len(),
-                );
+                self.overlays
+                    .picker
+                    .selected_index
+                    .set(&self.store, clamped);
+                self.overlays
+                    .picker
+                    .list
+                    .update(&self.store, |l| l.reveal_index(clamped, len));
             }
             Some(OverlaySurface::CommandPalette) => {
-                self.overlays.command_palette.selected_index = index.min(
-                    self.overlays
-                        .command_palette
-                        .entries
-                        .len()
-                        .saturating_sub(1),
-                );
-                self.overlays.command_palette.list.reveal_index(
-                    self.overlays.command_palette.selected_index,
-                    self.overlays.command_palette.entries.len(),
-                );
+                let len = self
+                    .overlays
+                    .command_palette
+                    .entries
+                    .with(&self.store, |e| e.len());
+                let clamped = index.min(len.saturating_sub(1));
+                self.overlays
+                    .command_palette
+                    .selected_index
+                    .set(&self.store, clamped);
+                self.overlays
+                    .command_palette
+                    .list
+                    .update(&self.store, |l| l.reveal_index(clamped, len));
             }
             _ => {}
         }
     }
 
     fn confirm_overlay_selection(&mut self) -> Vec<Effect> {
-        match self.overlays.top() {
+        match self.overlays_top() {
             Some(OverlaySurface::ThemePicker) => {
-                if let Some(entry) = self
+                let selected = self.overlays.picker.selected_index.get(&self.store);
+                let value = self
                     .overlays
                     .picker
                     .entries
-                    .get(self.overlays.picker.selected_index)
-                {
-                    tracing::info!(theme = %entry.value, "theme confirmed");
-                    self.settings.theme_name = entry.value.clone();
+                    .with(&self.store, |entries| {
+                        entries.get(selected).map(|e| e.value.clone())
+                    });
+                if let Some(value) = value {
+                    tracing::info!(theme = %value, "theme confirmed");
+                    self.settings.theme_name = value;
                 }
                 self.theme_preview_original.set(&self.store, None);
                 self.pop_overlay();
@@ -2740,7 +3219,12 @@ impl AppState {
             Some(OverlaySurface::CommandPalette) => self.confirm_command_palette(),
             Some(OverlaySurface::PullRequestModal) => self.submit_pull_request(),
             Some(OverlaySurface::GitHubAuthModal) => {
-                if self.github.auth.device_flow.is_some() {
+                if self
+                    .github
+                    .auth
+                    .device_flow
+                    .with(&self.store, |opt| opt.is_some())
+                {
                     self.apply_action(Action::OpenDeviceFlowBrowser)
                 } else {
                     self.apply_action(Action::StartGitHubDeviceFlow)
@@ -2752,15 +3236,19 @@ impl AppState {
     }
 
     fn confirm_repo_picker(&mut self) -> Vec<Effect> {
+        let selected = self.overlays.picker.selected_index.get(&self.store);
         let entry = self
             .overlays
             .picker
             .entries
-            .get(self.overlays.picker.selected_index)
-            .cloned();
+            .with(&self.store, |entries| entries.get(selected).cloned());
 
         let Some(entry) = entry else {
-            let query = self.overlays.picker.query.trim().to_owned();
+            let query = self
+                .overlays
+                .picker
+                .query
+                .with(&self.store, |q| q.trim().to_owned());
             if !query.is_empty() {
                 let expanded = expand_tilde(&query);
                 let path = PathBuf::from(&expanded);
@@ -2788,7 +3276,12 @@ impl AppState {
 
         let path = PathBuf::from(&entry.value);
 
-        if self.overlays.picker.browse_path.is_some() {
+        let browsing = self
+            .overlays
+            .picker
+            .browse_path
+            .with(&self.store, |p| p.is_some());
+        if browsing {
             if entry.label == ".." {
                 self.navigate_picker_to_dir(&path);
                 return Vec::new();
@@ -2809,15 +3302,15 @@ impl AppState {
     }
 
     fn tab_complete_picker_dir(&mut self) {
-        if self.overlays.picker.kind != PickerKind::Repository {
+        if self.overlays.picker.kind.get(&self.store) != PickerKind::Repository {
             return;
         }
+        let selected = self.overlays.picker.selected_index.get(&self.store);
         let entry = self
             .overlays
             .picker
             .entries
-            .get(self.overlays.picker.selected_index)
-            .cloned();
+            .with(&self.store, |entries| entries.get(selected).cloned());
         let Some(entry) = entry else { return };
         if entry.section_header || entry.value.is_empty() {
             return;
@@ -2835,29 +3328,34 @@ impl AppState {
         } else {
             format!("{}/", display)
         };
-        self.overlays.picker.query = new_query.clone();
-        self.text_edit.cursor = new_query.len();
-        self.text_edit.anchor = new_query.len();
-        self.text_edit.cursor_moved_at_ms = self.clock_ms;
+        let new_len = new_query.len();
+        self.overlays.picker.query.set(&self.store, new_query);
+        self.reset_text_edit(new_len);
         self.rebuild_repo_picker();
     }
 
     fn confirm_ref_picker(&mut self, field: CompareField) -> Vec<Effect> {
+        let selected = self.overlays.picker.selected_index.get(&self.store);
         let entry = self
             .overlays
             .picker
             .entries
-            .get(self.overlays.picker.selected_index)
-            .cloned()
+            .with(&self.store, |entries| entries.get(selected).cloned())
             .or_else(|| {
                 let query = match field {
-                    CompareField::Left => self.compare.left_ref.trim(),
-                    CompareField::Right => self.compare.right_ref.trim(),
+                    CompareField::Left => self
+                        .compare
+                        .left_ref
+                        .with(&self.store, |s| s.trim().to_owned()),
+                    CompareField::Right => self
+                        .compare
+                        .right_ref
+                        .with(&self.store, |s| s.trim().to_owned()),
                 };
                 (!query.is_empty()).then(|| PickerEntry {
-                    label: query.to_owned(),
+                    label: query.clone(),
                     detail: "Use typed ref".to_owned(),
-                    value: query.to_owned(),
+                    value: query.clone(),
                     highlights: vec![(0, query.len())],
                     icon: None,
                     section_header: false,
@@ -2875,14 +3373,14 @@ impl AppState {
         let _ = self.update_compare_field(field, entry.value);
         self.pop_overlay();
         let mut effects = self.persist_settings_effect();
-        if self.compare.repo_path.is_some()
-            && self.workspace.status != AsyncStatus::Loading
-            && compare_refs_are_valid(
-                self.compare.mode,
-                &self.compare.left_ref,
-                &self.compare.right_ref,
-            )
-        {
+        let has_repo = self.compare.repo_path.with(&self.store, |p| p.is_some());
+        let not_loading = self.workspace.status.get(&self.store) != AsyncStatus::Loading;
+        let refs_valid = compare_refs_are_valid(
+            self.compare.mode.get(&self.store),
+            &self.compare.left_ref.get(&self.store),
+            &self.compare.right_ref.get(&self.store),
+        );
+        if has_repo && not_loading && refs_valid {
             effects.extend(self.kickoff_compare());
         }
         effects
@@ -2899,31 +3397,35 @@ impl AppState {
             "diff" => CompareMode::TwoDot,
             _ => CompareMode::ThreeDot,
         };
-        self.workspace.pre_drill_compare = None;
-        self.compare.left_ref = left.to_owned();
-        self.compare.right_ref = right.to_owned();
-        self.compare.resolved_left = None;
-        self.compare.resolved_right = None;
-        self.compare.mode = mode;
+        self.workspace.pre_drill_compare.set(&self.store, None);
+        self.compare.left_ref.set(&self.store, left.to_owned());
+        self.compare.right_ref.set(&self.store, right.to_owned());
+        self.compare.resolved_left.set(&self.store, None);
+        self.compare.resolved_right.set(&self.store, None);
+        self.compare.mode.set(&self.store, mode);
         self.pop_overlay();
         let mut effects = self.persist_settings_effect();
-        if self.compare.repo_path.is_some() {
+        if self.compare.repo_path.with(&self.store, |p| p.is_some()) {
             effects.extend(self.kickoff_compare());
         }
         effects
     }
 
     fn confirm_command_palette(&mut self) -> Vec<Effect> {
+        let selected = self
+            .overlays
+            .command_palette
+            .selected_index
+            .get(&self.store);
         let Some(entry) = self
             .overlays
             .command_palette
             .entries
-            .get(self.overlays.command_palette.selected_index)
-            .cloned()
+            .with(&self.store, |entries| entries.get(selected).cloned())
         else {
             return Vec::new();
         };
-        self.overlays.clear();
+        self.clear_overlays();
         match entry.kind {
             PaletteEntryKind::Command(command) => match command {
                 PaletteCommand::OpenRepoPicker => {
@@ -2970,39 +3472,45 @@ impl AppState {
     }
 
     fn rebuild_repo_picker(&mut self) {
-        let query = self.overlays.picker.query.clone();
+        let query = self
+            .overlays
+            .picker
+            .query
+            .with(&self.store, |q| q.clone());
         let trimmed = query.trim();
 
         if query_looks_like_path(trimmed) {
             self.rebuild_repo_picker_browse(trimmed);
         } else {
-            self.overlays.picker.browse_path = None;
+            self.overlays.picker.browse_path.set(&self.store, None);
             self.rebuild_repo_picker_recent(trimmed);
         }
 
-        self.overlays.picker.selected_index = if self.overlays.picker.entries.is_empty() {
-            0
-        } else {
-            let first_selectable = self
-                .overlays
-                .picker
-                .entries
-                .iter()
-                .position(|e| !e.section_header)
-                .unwrap_or(0);
-            self.overlays
-                .picker
-                .selected_index
-                .max(first_selectable)
-                .min(self.overlays.picker.entries.len().saturating_sub(1))
-        };
-        let entry_count = self.overlays.picker.entries.len();
-        self.overlays.picker.list.viewport_height_px = self
-            .overlays
+        let current_selected = self.overlays.picker.selected_index.get(&self.store);
+        let (entry_count, new_selected) =
+            self.overlays.picker.entries.with(&self.store, |entries| {
+                let entry_count = entries.len();
+                let new_selected = if entries.is_empty() {
+                    0
+                } else {
+                    let first_selectable = entries
+                        .iter()
+                        .position(|e| !e.section_header)
+                        .unwrap_or(0);
+                    current_selected
+                        .max(first_selectable)
+                        .min(entries.len().saturating_sub(1))
+                };
+                (entry_count, new_selected)
+            });
+        self.overlays
             .picker
-            .list
-            .viewport_for_max_rows(Sz::PICKER_MAX_ROWS, entry_count);
-        self.overlays.picker.list.clamp_scroll(entry_count);
+            .selected_index
+            .set(&self.store, new_selected);
+        self.overlays.picker.list.update(&self.store, |l| {
+            l.viewport_height_px = l.viewport_for_max_rows(Sz::PICKER_MAX_ROWS, entry_count);
+            l.clamp_scroll(entry_count);
+        });
     }
 
     fn rebuild_repo_picker_recent(&mut self, query: &str) {
@@ -3091,7 +3599,7 @@ impl AppState {
                 });
             }
         }
-        self.overlays.picker.entries = entries;
+        self.overlays.picker.entries.set(&self.store, entries);
     }
 
     fn rebuild_repo_picker_browse(&mut self, query: &str) {
@@ -3100,12 +3608,15 @@ impl AppState {
 
         let dir = PathBuf::from(&dir_path);
         if !dir.is_dir() {
-            self.overlays.picker.browse_path = None;
-            self.overlays.picker.entries = Vec::new();
+            self.overlays.picker.browse_path.set(&self.store, None);
+            self.overlays.picker.entries.set(&self.store, Vec::new());
             return;
         }
 
-        self.overlays.picker.browse_path = Some(dir.clone());
+        self.overlays
+            .picker
+            .browse_path
+            .set(&self.store, Some(dir.clone()));
 
         let mut entries = Vec::new();
 
@@ -3193,14 +3704,21 @@ impl AppState {
             }
         }
 
-        self.overlays.picker.entries = entries;
+        self.overlays.picker.entries.set(&self.store, entries);
     }
 
     fn rebuild_ref_picker(&mut self, field: CompareField) -> Vec<Effect> {
-        let query = match field {
-            CompareField::Left => self.compare.left_ref.trim(),
-            CompareField::Right => self.compare.right_ref.trim(),
+        let query_owned = match field {
+            CompareField::Left => self
+                .compare
+                .left_ref
+                .with(&self.store, |s| s.trim().to_owned()),
+            CompareField::Right => self
+                .compare
+                .right_ref
+                .with(&self.store, |s| s.trim().to_owned()),
         };
+        let query = query_owned.as_str();
         let mut seen = HashSet::new();
 
         struct RefCandidate {
@@ -3230,7 +3748,11 @@ impl AppState {
             ordinal += 1;
         };
 
-        for branch in &self.repository.branches {
+        let branches = self.repository.branches.get(&self.store);
+        let tags = self.repository.tags.get(&self.store);
+        let commits = self.repository.commits.get(&self.store);
+
+        for branch in &branches {
             let scope = if branch.is_remote {
                 "Remote branch"
             } else {
@@ -3244,7 +3766,7 @@ impl AppState {
             push(format!("{label} {detail}"), label.clone(), detail, label);
         }
 
-        for tag in &self.repository.tags {
+        for tag in &tags {
             let label = tag.name.clone();
             push(
                 format!("{label} Tag"),
@@ -3254,7 +3776,7 @@ impl AppState {
             );
         }
 
-        for commit in &self.repository.commits {
+        for commit in &commits {
             let label = commit.short_oid.clone();
             push(
                 format!("{label} {} {}", commit.summary, commit.oid),
@@ -3283,7 +3805,7 @@ impl AppState {
                 icon: None,
                 section_header: false,
             }));
-            self.overlays.picker.entries = entries;
+            self.overlays.picker.entries.set(&self.store, entries);
         } else {
             let haystack: Vec<&str> = all_candidates
                 .iter()
@@ -3329,15 +3851,8 @@ impl AppState {
                 section_header: false,
             }];
             entries.extend(scored.into_iter().map(|(_, _, entry)| entry).take(10));
-            self.overlays.picker.entries = entries;
-            if !self
-                .overlays
-                .picker
-                .entries
-                .iter()
-                .any(|entry| entry.value == query)
-            {
-                self.overlays.picker.entries.insert(
+            if !entries.iter().any(|entry| entry.value == query) {
+                entries.insert(
                     0,
                     PickerEntry {
                         label: query.to_owned(),
@@ -3350,29 +3865,39 @@ impl AppState {
                 );
                 needs_resolve = true;
             }
+            self.overlays.picker.entries.set(&self.store, entries);
         }
 
-        self.overlays.picker.entries.truncate(10);
-        self.overlays.picker.selected_index = self
-            .overlays
+        self.overlays.picker.entries.update(&self.store, |e| {
+            e.truncate(10);
+        });
+        let entry_count = self.overlays.picker.entries.with(&self.store, |e| e.len());
+        let current_selected = self.overlays.picker.selected_index.get(&self.store);
+        self.overlays
             .picker
             .selected_index
-            .min(self.overlays.picker.entries.len().saturating_sub(1));
-        let entry_count = self.overlays.picker.entries.len();
-        self.overlays.picker.list.viewport_height_px = self
-            .overlays
-            .picker
-            .list
-            .viewport_for_max_rows(Sz::PICKER_MAX_ROWS, entry_count);
-        self.overlays.picker.list.clamp_scroll(entry_count);
+            .set(&self.store, current_selected.min(entry_count.saturating_sub(1)));
+        self.overlays.picker.list.update(&self.store, |l| {
+            l.viewport_height_px = l.viewport_for_max_rows(Sz::PICKER_MAX_ROWS, entry_count);
+            l.clamp_scroll(entry_count);
+        });
 
         if needs_resolve {
-            if let Some(repo_path) = self.compare.repo_path.clone() {
-                self.overlays.picker.ref_resolve_generation += 1;
+            if let Some(repo_path) = self.compare.repo_path.get(&self.store) {
+                let new_gen = self
+                    .overlays
+                    .picker
+                    .ref_resolve_generation
+                    .get(&self.store)
+                    + 1;
+                self.overlays
+                    .picker
+                    .ref_resolve_generation
+                    .set(&self.store, new_gen);
                 return vec![Effect::ResolveRef {
                     repo_path,
                     query: query.to_owned(),
-                    generation: self.overlays.picker.ref_resolve_generation,
+                    generation: new_gen,
                 }];
             }
         }
@@ -3380,7 +3905,12 @@ impl AppState {
     }
 
     fn rebuild_command_palette(&mut self) {
-        let query = self.overlays.command_palette.query.trim();
+        let query_owned = self
+            .overlays
+            .command_palette
+            .query
+            .with(&self.store, |q| q.trim().to_owned());
+        let query = query_owned.as_str();
 
         struct PaletteCandidate {
             search_text: String,
@@ -3452,7 +3982,8 @@ impl AppState {
             });
         }
 
-        for (index, file) in self.workspace.files.iter().enumerate() {
+        let workspace_files = self.workspace.files.get(&self.store);
+        for (index, file) in workspace_files.iter().enumerate() {
             let detail = format!(
                 "File \u{2022} {} \u{2022} +{} -{}",
                 file.status, file.additions, file.deletions
@@ -3484,7 +4015,8 @@ impl AppState {
             });
         }
 
-        for branch in &self.repository.branches {
+        let repo_branches = self.repository.branches.get(&self.store);
+        for branch in &repo_branches {
             let search_text = format!("{} Branch", branch.name);
             all_candidates.push(PaletteCandidate {
                 search_text,
@@ -3537,37 +4069,44 @@ impl AppState {
             entries = scored.into_iter().map(|(_, e)| e).collect();
         }
         entries.truncate(18);
-        self.overlays.command_palette.entries = entries;
-        self.overlays.command_palette.selected_index =
-            self.overlays.command_palette.selected_index.min(
-                self.overlays
-                    .command_palette
-                    .entries
-                    .len()
-                    .saturating_sub(1),
-            );
-        let entry_count = self.overlays.command_palette.entries.len();
-        self.overlays.command_palette.list.viewport_height_px = self
+        let entry_count = entries.len();
+        self.overlays
+            .command_palette
+            .entries
+            .set(&self.store, entries);
+        let current_selected = self
             .overlays
             .command_palette
-            .list
-            .viewport_for_max_rows(Sz::PICKER_MAX_ROWS, entry_count);
-        self.overlays.command_palette.list.clamp_scroll(entry_count);
+            .selected_index
+            .get(&self.store);
+        self.overlays
+            .command_palette
+            .selected_index
+            .set(&self.store, current_selected.min(entry_count.saturating_sub(1)));
+        self.overlays.command_palette.list.update(&self.store, |l| {
+            l.viewport_height_px = l.viewport_for_max_rows(Sz::PICKER_MAX_ROWS, entry_count);
+            l.clamp_scroll(entry_count);
+        });
     }
 
     fn shift_loaded_file(&mut self, delta: isize) {
-        if self.workspace.files.is_empty() {
+        let file_count = self.workspace.files.with(&self.store, |f| f.len());
+        if file_count == 0 {
             return;
         }
-        let current = self.workspace.selected_file_index.unwrap_or(0);
+        let current = self
+            .workspace
+            .selected_file_index
+            .get(&self.store)
+            .unwrap_or(0);
         let next = if delta.is_negative() {
             current.saturating_sub(delta.unsigned_abs())
         } else {
             current
                 .saturating_add(delta as usize)
-                .min(self.workspace.files.len().saturating_sub(1))
+                .min(file_count.saturating_sub(1))
         };
-        match self.workspace.source {
+        match self.workspace.source.get(&self.store) {
             WorkspaceSource::Compare => {
                 self.select_loaded_compare_file(next, true);
             }
@@ -3579,7 +4118,7 @@ impl AppState {
     }
 
     fn select_file(&mut self, index: usize, reveal: bool) -> Vec<Effect> {
-        match self.workspace.source {
+        match self.workspace.source.get(&self.store) {
             WorkspaceSource::Compare => {
                 self.select_loaded_compare_file(index, reveal);
                 Vec::new()
@@ -3593,106 +4132,148 @@ impl AppState {
     }
 
     fn select_loaded_compare_file(&mut self, index: usize, reveal: bool) {
-        let Some(output) = self.workspace.compare_output.as_mut() else {
+        let mut out: Option<(FileDiff, CompareOutput)> = None;
+        let mut oob = false;
+        self.workspace
+            .compare_output
+            .update(&self.store, |maybe_output| {
+                let Some(output) = maybe_output.as_mut() else {
+                    return;
+                };
+                let Some(file) = output.files.get_mut(index) else {
+                    oob = true;
+                    return;
+                };
+                if !file.syntax_annotated {
+                    DiffSyntaxAnnotator::new().annotate(
+                        file,
+                        &mut output.text_buffer,
+                        &mut output.token_buffer,
+                    );
+                    file.syntax_annotated = true;
+                }
+                out = Some((file.clone(), output.clone()));
+            });
+
+        if out.is_none() {
+            if oob {
+                self.push_error("Selected file index is out of range.");
+                return;
+            }
             self.startup.preferred_file_index = Some(index);
             return;
-        };
-        let Some(file) = output.files.get_mut(index) else {
-            self.push_error("Selected file index is out of range.");
-            return;
-        };
-
-        if !file.syntax_annotated {
-            DiffSyntaxAnnotator::new().annotate(
-                file,
-                &mut output.text_buffer,
-                &mut output.token_buffer,
-            );
-            file.syntax_annotated = true;
         }
+        let (file, output) = out.unwrap();
 
-        let file = file.clone();
-
-        self.workspace.selected_file_index = Some(index);
-        self.workspace.selected_file_path = Some(file.path.clone());
-        self.workspace.active_file = Some(ActiveFile {
-            index,
-            path: file.path.clone(),
-            file: file.clone(),
-            render_doc: build_render_doc(&file, index, &output.text_buffer, &output.token_buffer),
-            text_buffer: output.text_buffer.clone(),
-        });
-        self.editor.clear_document();
-        self.editor.line_selection.clear();
-        if self.editor.search.open {
+        self.workspace
+            .selected_file_index
+            .set(&self.store, Some(index));
+        self.workspace
+            .selected_file_path
+            .set(&self.store, Some(file.path.clone()));
+        self.workspace.active_file.set(
+            &self.store,
+            Some(ActiveFile {
+                index,
+                path: file.path.clone(),
+                file: file.clone(),
+                render_doc: build_render_doc(
+                    &file,
+                    index,
+                    &output.text_buffer,
+                    &output.token_buffer,
+                ),
+                text_buffer: output.text_buffer.clone(),
+            }),
+        );
+        self.editor_clear_document();
+        self.editor
+            .line_selection
+            .update(&self.store, |ls| ls.clear());
+        if self.editor.search.open.get(&self.store) {
             self.recompute_search_matches();
         }
-        self.file_list.hovered_index = Some(index);
+        self.file_list.hovered_index.set(&self.store, Some(index));
         if reveal {
-            let row_top =
-                self.sidebar_row_index_for_file(index) as f32 * self.file_list.row_stride();
-            let row_bottom = row_top + self.file_list.row_height;
-            if row_top < self.file_list.scroll_offset_px {
-                self.file_list.scroll_offset_px = row_top;
-            } else if row_bottom > self.file_list.scroll_offset_px + self.file_list.viewport_height
-            {
-                self.file_list.scroll_offset_px = row_bottom - self.file_list.viewport_height;
-            }
-            self.file_list.clamp_scroll(self.sidebar_row_count());
+            self.reveal_file_list_row(index);
         }
     }
 
+    fn reveal_file_list_row(&mut self, index: usize) {
+        let row_top = self.sidebar_row_index_for_file(index) as f32 * self.file_list_row_stride();
+        let row_bottom = row_top + self.file_list.row_height.get(&self.store);
+        let scroll = self.file_list.scroll_offset_px.get(&self.store);
+        let viewport = self.file_list.viewport_height.get(&self.store);
+        if row_top < scroll {
+            self.file_list.scroll_offset_px.set(&self.store, row_top);
+        } else if row_bottom > scroll + viewport {
+            self.file_list
+                .scroll_offset_px
+                .set(&self.store, row_bottom - viewport);
+        }
+        self.file_list_clamp_scroll(self.sidebar_row_count());
+    }
+
     fn select_status_item(&mut self, index: usize, reveal: bool) -> Vec<Effect> {
-        let Some(item) = self.workspace.status_items.get(index).cloned() else {
+        let Some(item) = self
+            .workspace
+            .status_items
+            .with(&self.store, |items| items.get(index).cloned())
+        else {
             return Vec::new();
         };
-        let Some(repo_path) = self.compare.repo_path.clone() else {
+        let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
             return Vec::new();
         };
 
-        self.workspace.source = WorkspaceSource::Status;
-        self.workspace.status = AsyncStatus::Loading;
-        self.workspace.selected_file_index = Some(index);
-        self.workspace.selected_file_path = Some(item.path.clone());
-        self.workspace.selected_status_scope = Some(item.scope);
-        self.workspace.active_file = None;
-        self.editor.clear_document();
-        self.file_list.hovered_index = Some(index);
+        self.workspace
+            .source
+            .set(&self.store, WorkspaceSource::Status);
+        self.workspace.status.set(&self.store, AsyncStatus::Loading);
+        self.workspace
+            .selected_file_index
+            .set(&self.store, Some(index));
+        self.workspace
+            .selected_file_path
+            .set(&self.store, Some(item.path.clone()));
+        self.workspace
+            .selected_status_scope
+            .set(&self.store, Some(item.scope));
+        self.workspace.active_file.set(&self.store, None);
+        self.editor_clear_document();
+        self.file_list.hovered_index.set(&self.store, Some(index));
         if reveal {
-            let row_top =
-                self.sidebar_row_index_for_file(index) as f32 * self.file_list.row_stride();
-            let row_bottom = row_top + self.file_list.row_height;
-            if row_top < self.file_list.scroll_offset_px {
-                self.file_list.scroll_offset_px = row_top;
-            } else if row_bottom > self.file_list.scroll_offset_px + self.file_list.viewport_height
-            {
-                self.file_list.scroll_offset_px = row_bottom - self.file_list.viewport_height;
-            }
-            self.file_list.clamp_scroll(self.sidebar_row_count());
+            self.reveal_file_list_row(index);
         }
 
+        let generation = self.workspace.status_generation.get(&self.store);
+        let renderer = self.compare.renderer.get(&self.store);
         vec![Effect::LoadStatusDiff {
-            generation: self.workspace.status_generation,
+            generation,
             index,
             request: StatusDiffRequest {
                 repo_path,
                 item,
-                renderer: self.compare.renderer,
+                renderer,
             },
         }]
     }
 
     fn apply_selected_status_operation(&mut self, operation: StatusOperation) -> Vec<Effect> {
-        if self.workspace.source != WorkspaceSource::Status {
+        if self.workspace.source.get(&self.store) != WorkspaceSource::Status {
             return Vec::new();
         }
-        let Some(repo_path) = self.compare.repo_path.clone() else {
+        let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
             return Vec::new();
         };
-        let Some(index) = self.workspace.selected_file_index else {
+        let Some(index) = self.workspace.selected_file_index.get(&self.store) else {
             return Vec::new();
         };
-        let Some(item) = self.workspace.status_items.get(index).cloned() else {
+        let Some(item) = self
+            .workspace
+            .status_items
+            .with(&self.store, |items| items.get(index).cloned())
+        else {
             return Vec::new();
         };
 
@@ -3708,13 +4289,17 @@ impl AppState {
         index: usize,
         operation: StatusOperation,
     ) -> Vec<Effect> {
-        if self.workspace.source != WorkspaceSource::Status {
+        if self.workspace.source.get(&self.store) != WorkspaceSource::Status {
             return Vec::new();
         }
-        let Some(repo_path) = self.compare.repo_path.clone() else {
+        let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
             return Vec::new();
         };
-        let Some(item) = self.workspace.status_items.get(index).cloned() else {
+        let Some(item) = self
+            .workspace
+            .status_items
+            .with(&self.store, |items| items.get(index).cloned())
+        else {
             return Vec::new();
         };
 
@@ -3730,19 +4315,19 @@ impl AppState {
         scopes: &[StatusScope],
         operation: StatusOperation,
     ) -> Vec<Effect> {
-        if self.workspace.source != WorkspaceSource::Status {
+        if self.workspace.source.get(&self.store) != WorkspaceSource::Status {
             return Vec::new();
         }
-        let Some(repo_path) = self.compare.repo_path.clone() else {
+        let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
             return Vec::new();
         };
-        let items: Vec<StatusItem> = self
-            .workspace
-            .status_items
-            .iter()
-            .filter(|item| scopes.contains(&item.scope))
-            .cloned()
-            .collect();
+        let items: Vec<StatusItem> = self.workspace.status_items.with(&self.store, |items| {
+            items
+                .iter()
+                .filter(|item| scopes.contains(&item.scope))
+                .cloned()
+                .collect()
+        });
         if items.is_empty() {
             return Vec::new();
         }
@@ -3757,26 +4342,25 @@ impl AppState {
     }
 
     fn current_hunk_index_from_hover(&self) -> Option<i16> {
-        let active = self.workspace.active_file.as_ref()?;
-        let hovered = self.editor.hovered_row?;
-        let line = active.render_doc.lines.get(hovered)?;
-        if line.hunk_index < 0 {
-            return None;
-        }
-        Some(line.hunk_index)
+        let hovered = self.editor.hovered_row.get(&self.store)?;
+        self.workspace.active_file.with(&self.store, |af| {
+            let active = af.as_ref()?;
+            let line = active.render_doc.lines.get(hovered)?;
+            if line.hunk_index < 0 {
+                return None;
+            }
+            Some(line.hunk_index)
+        })
     }
 
     fn apply_hunk_operation(&mut self, operation: StatusOperation) -> Vec<Effect> {
-        if self.workspace.source != WorkspaceSource::Status {
+        if self.workspace.source.get(&self.store) != WorkspaceSource::Status {
             return Vec::new();
         }
-        let Some(repo_path) = self.compare.repo_path.clone() else {
+        let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
             return Vec::new();
         };
-        let Some(active) = self.workspace.active_file.as_ref() else {
-            return Vec::new();
-        };
-        let Some(scope) = self.workspace.selected_status_scope else {
+        let Some(scope) = self.workspace.selected_status_scope.get(&self.store) else {
             return Vec::new();
         };
         let hunk_index = match self.current_hunk_index_from_hover() {
@@ -3784,11 +4368,14 @@ impl AppState {
             None => return Vec::new(),
         };
 
-        let patch_text = if operation == StatusOperation::Stage {
-            patch::format_hunk_patch(&active.file, hunk_index, &active.text_buffer)
-        } else {
-            patch::format_reverse_hunk_patch(&active.file, hunk_index, &active.text_buffer)
-        };
+        let patch_text = self.workspace.active_file.with(&self.store, |af| {
+            let active = af.as_ref()?;
+            if operation == StatusOperation::Stage {
+                patch::format_hunk_patch(&active.file, hunk_index, &active.text_buffer)
+            } else {
+                patch::format_reverse_hunk_patch(&active.file, hunk_index, &active.text_buffer)
+            }
+        });
         let Some(patch) = patch_text else {
             return Vec::new();
         };
@@ -3802,10 +4389,11 @@ impl AppState {
     }
 
     fn toggle_line_selection(&mut self, row: usize, _extend: bool) {
-        let Some(active) = self.workspace.active_file.as_ref() else {
-            return;
-        };
-        let Some(line) = active.render_doc.lines.get(row) else {
+        let line_opt = self.workspace.active_file.with(&self.store, |af| {
+            af.as_ref()
+                .and_then(|active| active.render_doc.lines.get(row).copied())
+        });
+        let Some(line) = line_opt else {
             return;
         };
         let kind = line.row_kind();
@@ -3820,103 +4408,113 @@ impl AppState {
         if line.hunk_index < 0 {
             return;
         }
-        if line.old_line_index >= 0 {
-            self.editor
-                .line_selection
-                .toggle(line.hunk_index, line.old_line_index);
-        }
-        if line.new_line_index >= 0 {
-            self.editor
-                .line_selection
-                .toggle(line.hunk_index, line.new_line_index);
-        }
-        self.editor.line_selection.last_toggled_row = Some(row);
+        self.editor.line_selection.update(&self.store, |ls| {
+            if line.old_line_index >= 0 {
+                ls.toggle(line.hunk_index, line.old_line_index);
+            }
+            if line.new_line_index >= 0 {
+                ls.toggle(line.hunk_index, line.new_line_index);
+            }
+            ls.last_toggled_row = Some(row);
+        });
     }
 
     fn toggle_line_selection_range(&mut self, row: usize, anchor: usize) {
-        let Some(active) = self.workspace.active_file.as_ref() else {
-            return;
-        };
         let (start, end) = if row <= anchor {
             (row, anchor)
         } else {
             (anchor, row)
         };
-        for r in start..=end {
-            let Some(line) = active.render_doc.lines.get(r) else {
-                continue;
+        let lines = self.workspace.active_file.with(&self.store, |af| {
+            let Some(active) = af.as_ref() else {
+                return Vec::new();
             };
-            let kind = line.row_kind();
-            if !matches!(
-                kind,
-                crate::ui::editor::render_doc::RenderRowKind::Added
-                    | crate::ui::editor::render_doc::RenderRowKind::Removed
-                    | crate::ui::editor::render_doc::RenderRowKind::Modified
-            ) {
-                continue;
-            }
-            if line.hunk_index < 0 {
-                continue;
-            }
-            if line.old_line_index >= 0 {
-                self.editor
-                    .line_selection
-                    .entries
-                    .insert((line.hunk_index, line.old_line_index));
-            }
-            if line.new_line_index >= 0 {
-                self.editor
-                    .line_selection
-                    .entries
-                    .insert((line.hunk_index, line.new_line_index));
-            }
+            (start..=end)
+                .filter_map(|r| active.render_doc.lines.get(r).copied())
+                .collect::<Vec<_>>()
+        });
+        if lines.is_empty() {
+            return;
         }
-        self.editor.line_selection.last_toggled_row = Some(row);
+        self.editor.line_selection.update(&self.store, |ls| {
+            for line in &lines {
+                let kind = line.row_kind();
+                if !matches!(
+                    kind,
+                    crate::ui::editor::render_doc::RenderRowKind::Added
+                        | crate::ui::editor::render_doc::RenderRowKind::Removed
+                        | crate::ui::editor::render_doc::RenderRowKind::Modified
+                ) {
+                    continue;
+                }
+                if line.hunk_index < 0 {
+                    continue;
+                }
+                if line.old_line_index >= 0 {
+                    ls.entries.insert((line.hunk_index, line.old_line_index));
+                }
+                if line.new_line_index >= 0 {
+                    ls.entries.insert((line.hunk_index, line.new_line_index));
+                }
+            }
+            ls.last_toggled_row = Some(row);
+        });
     }
 
     fn apply_line_selection_operation(&mut self, operation: StatusOperation) -> Vec<Effect> {
-        if self.workspace.source != WorkspaceSource::Status {
+        if self.workspace.source.get(&self.store) != WorkspaceSource::Status {
             return Vec::new();
         }
-        if self.editor.line_selection.is_empty() {
+        if self
+            .editor
+            .line_selection
+            .with(&self.store, |ls| ls.is_empty())
+        {
             return Vec::new();
         }
-        let Some(repo_path) = self.compare.repo_path.clone() else {
+        let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
             return Vec::new();
         };
-        let Some(active) = self.workspace.active_file.as_ref() else {
-            return Vec::new();
-        };
-        let Some(scope) = self.workspace.selected_status_scope else {
+        let Some(scope) = self.workspace.selected_status_scope.get(&self.store) else {
             return Vec::new();
         };
         let reverse = operation != StatusOperation::Stage;
 
-        let mut patches = Vec::new();
-        let hunk_indices: Vec<i16> = self
-            .editor
-            .line_selection
-            .entries
-            .iter()
-            .map(|(h, _)| *h)
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect();
+        let (hunk_indices, selection_snapshot) =
+            self.editor.line_selection.with(&self.store, |ls| {
+                let indices: Vec<i16> = ls
+                    .entries
+                    .iter()
+                    .map(|(h, _)| *h)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                (indices, ls.clone())
+            });
 
-        for hunk_idx in hunk_indices {
-            let selected = self.editor.line_selection.selected_lines_for_hunk(hunk_idx);
-            if let Some(p) = patch::format_lines_patch(
-                &active.file,
-                hunk_idx as usize,
-                &selected,
-                &active.text_buffer,
-                reverse,
-            ) {
-                patches.push(p);
+        let patches = self.workspace.active_file.with(&self.store, |af| {
+            let Some(active) = af.as_ref() else {
+                return Vec::new();
+            };
+            let mut patches = Vec::new();
+            for hunk_idx in hunk_indices {
+                let selected = selection_snapshot.selected_lines_for_hunk(hunk_idx);
+                if let Some(p) = patch::format_lines_patch(
+                    &active.file,
+                    hunk_idx as usize,
+                    &selected,
+                    &active.text_buffer,
+                    reverse,
+                ) {
+                    patches.push(p);
+                }
             }
-        }
+            patches
+        });
 
-        self.editor.line_selection.clear();
+        self.editor
+            .line_selection
+            .update(&self.store, |ls| ls.clear());
 
         patches
             .into_iter()
@@ -3938,108 +4536,111 @@ impl AppState {
     }
 
     fn scroll_active_overlay_list_px(&mut self, delta_px: i32) {
-        match self.overlays.top() {
+        match self.overlays_top() {
             Some(
                 OverlaySurface::RepoPicker
                 | OverlaySurface::RefPicker(_)
                 | OverlaySurface::ThemePicker,
             ) => {
+                let count = self.overlays.picker.entries.with(&self.store, |e| e.len());
                 self.overlays
                     .picker
                     .list
-                    .scroll_px(delta_px, self.overlays.picker.entries.len());
+                    .update(&self.store, |l| l.scroll_px(delta_px, count));
             }
             Some(OverlaySurface::CommandPalette) => {
+                let count = self
+                    .overlays
+                    .command_palette
+                    .entries
+                    .with(&self.store, |e| e.len());
                 self.overlays
                     .command_palette
                     .list
-                    .scroll_px(delta_px, self.overlays.command_palette.entries.len());
+                    .update(&self.store, |l| l.scroll_px(delta_px, count));
             }
             _ => {}
         }
     }
 
     fn scroll_viewport_px(&mut self, delta_px: i32) {
-        self.editor.scroll_top_px = apply_scroll_delta_px(
-            self.editor.scroll_top_px,
-            delta_px,
-            self.editor.max_scroll_top_px(),
-        );
+        let current = self.editor.scroll_top_px.get(&self.store);
+        let max = self.editor_max_scroll_top_px();
+        let next = apply_scroll_delta_px(current, delta_px, max);
+        self.editor.scroll_top_px.set(&self.store, next);
     }
 
     fn scroll_viewport_pages(&mut self, delta_pages: i32) {
-        let page_px = ((self.editor.viewport_height_px as f32) * 0.85)
-            .round()
-            .max(1.0) as i32;
+        let viewport = self.editor.viewport_height_px.get(&self.store);
+        let page_px = ((viewport as f32) * 0.85).round().max(1.0) as i32;
         let delta_px = delta_pages.saturating_mul(page_px);
-        self.editor.scroll_top_px = apply_scroll_delta_px(
-            self.editor.scroll_top_px,
-            delta_px,
-            self.editor.max_scroll_top_px(),
-        );
+        let current = self.editor.scroll_top_px.get(&self.store);
+        let max = self.editor_max_scroll_top_px();
+        let next = apply_scroll_delta_px(current, delta_px, max);
+        self.editor.scroll_top_px.set(&self.store, next);
     }
 
     fn scroll_viewport_half_page(&mut self, direction: i32) {
-        let half_px = ((self.editor.viewport_height_px as f32) * 0.5)
-            .round()
-            .max(1.0) as i32;
+        let viewport = self.editor.viewport_height_px.get(&self.store);
+        let half_px = ((viewport as f32) * 0.5).round().max(1.0) as i32;
         let delta_px = direction.saturating_mul(half_px);
-        self.editor.scroll_top_px = apply_scroll_delta_px(
-            self.editor.scroll_top_px,
-            delta_px,
-            self.editor.max_scroll_top_px(),
-        );
+        let current = self.editor.scroll_top_px.get(&self.store);
+        let max = self.editor_max_scroll_top_px();
+        let next = apply_scroll_delta_px(current, delta_px, max);
+        self.editor.scroll_top_px.set(&self.store, next);
     }
 
     fn navigate_to_hunk(&mut self, forward: bool) {
-        let positions = &self.editor.hunk_positions;
-        if positions.is_empty() {
-            return;
-        }
-        let current = self.editor.scroll_top_px;
-        let target = if forward {
-            positions
-                .iter()
-                .find(|&&y| y > current)
-                .or_else(|| positions.first())
-                .copied()
-        } else {
-            positions
-                .iter()
-                .rev()
-                .find(|&&y| y < current)
-                .or_else(|| positions.last())
-                .copied()
-        };
+        let current = self.editor.scroll_top_px.get(&self.store);
+        let target = self.editor.hunk_positions.with(&self.store, |positions| {
+            if positions.is_empty() {
+                return None;
+            }
+            if forward {
+                positions
+                    .iter()
+                    .find(|&&y| y > current)
+                    .or_else(|| positions.first())
+                    .copied()
+            } else {
+                positions
+                    .iter()
+                    .rev()
+                    .find(|&&y| y < current)
+                    .or_else(|| positions.last())
+                    .copied()
+            }
+        });
         if let Some(y) = target {
-            self.editor.scroll_top_px = y;
-            self.editor.clamp_scroll();
+            self.editor.scroll_top_px.set(&self.store, y);
+            self.editor_clamp_scroll();
         }
     }
 
     fn navigate_to_file(&mut self, forward: bool) {
-        let positions = &self.editor.file_positions;
-        if positions.is_empty() {
-            return;
-        }
-        let current = self.editor.scroll_top_px;
-        let target = if forward {
-            positions
-                .iter()
-                .find(|&&y| y > current)
-                .or_else(|| positions.first())
-                .copied()
-        } else {
-            positions
-                .iter()
-                .rev()
-                .find(|&&y| y < current)
-                .or_else(|| positions.last())
-                .copied()
-        };
+        let current = self.editor.scroll_top_px.get(&self.store);
+        let target = self.editor.file_positions.with(&self.store, |positions| {
+            if positions.is_empty() {
+                return None;
+            }
+            if forward {
+                positions
+                    .iter()
+                    .find(|&&y| y > current)
+                    .or_else(|| positions.first())
+                    .copied()
+            } else {
+                positions
+                    .iter()
+                    .rev()
+                    .find(|&&y| y < current)
+                    .or_else(|| positions.last())
+                    .copied()
+            }
+        });
         if let Some(y) = target {
-            self.editor.scroll_top_px = y;
-            self.editor.clamp_scroll();
+            self.editor.scroll_top_px.set(&self.store, y);
+            self.editor_clamp_scroll();
         }
     }
 
@@ -4075,124 +4676,205 @@ impl AppState {
     }
 
     fn open_search(&mut self) {
-        self.editor.search.open = true;
-        let len = self.editor.search.query.len();
-        self.text_edit = TextEditState {
-            cursor: len,
-            anchor: 0,
-            cursor_moved_at_ms: self.clock_ms,
-        };
+        self.editor.search.open.set(&self.store, true);
+        let len = self.editor.search.query.with(&self.store, |q| q.len());
+        self.text_edit.cursor.set(&self.store, len);
+        self.text_edit.anchor.set(&self.store, 0);
+        self.text_edit
+            .cursor_moved_at_ms
+            .set(&self.store, self.clock_ms);
         self.focus.set(&self.store, Some(FocusTarget::SearchInput));
-        self.editor.focused = false;
+        self.editor.focused.set(&self.store, false);
         self.recompute_search_matches();
     }
 
     fn close_search(&mut self) {
-        self.editor.search.open = false;
-        self.editor.search.matches.clear();
-        self.editor.search.active_index = None;
+        self.editor.search.open.set(&self.store, false);
+        self.editor
+            .search
+            .matches
+            .update(&self.store, |matches| matches.clear());
+        self.editor.search.active_index.set(&self.store, None);
         self.set_focus(Some(FocusTarget::Editor));
     }
 
     fn recompute_search_matches(&mut self) {
-        use crate::ui::editor::state::{MatchSide, SearchMatch};
+        use crate::ui::editor::state::MatchSide;
 
-        self.editor.search.matches.clear();
-        self.editor.search.active_index = None;
+        self.editor
+            .search
+            .matches
+            .update(&self.store, |matches| matches.clear());
+        self.editor.search.active_index.set(&self.store, None);
 
-        let query = self.editor.search.query.to_ascii_lowercase();
+        let query = self
+            .editor
+            .search
+            .query
+            .with(&self.store, |q| q.to_ascii_lowercase());
         if query.is_empty() {
             return;
         }
 
-        let Some(active_file) = self.workspace.active_file.as_ref() else {
-            return;
-        };
-        let doc = &active_file.render_doc;
-
-        for (line_idx, line) in doc.lines.iter().enumerate() {
-            let line_idx = line_idx as u32;
-            if line.left_text.is_valid() {
-                let text = doc.line_text(line.left_text);
-                let lower = text.to_ascii_lowercase();
-                let mut start = 0;
-                while let Some(pos) = lower[start..].find(&query) {
-                    let byte_start = (start + pos) as u32;
-                    self.editor.search.matches.push(SearchMatch {
-                        line_index: line_idx,
-                        byte_start,
-                        byte_len: query.len() as u32,
-                        side: MatchSide::Left,
-                    });
-                    start += pos + query.len();
+        let new_matches: Vec<SearchMatch> =
+            self.workspace.active_file.with(&self.store, |af| {
+                let Some(active_file) = af.as_ref() else {
+                    return Vec::new();
+                };
+                let doc = &active_file.render_doc;
+                let mut new_matches: Vec<SearchMatch> = Vec::new();
+                for (line_idx, line) in doc.lines.iter().enumerate() {
+                    let line_idx = line_idx as u32;
+                    if line.left_text.is_valid() {
+                        let text = doc.line_text(line.left_text);
+                        let lower = text.to_ascii_lowercase();
+                        let mut start = 0;
+                        while let Some(pos) = lower[start..].find(&query) {
+                            let byte_start = (start + pos) as u32;
+                            new_matches.push(SearchMatch {
+                                line_index: line_idx,
+                                byte_start,
+                                byte_len: query.len() as u32,
+                                side: MatchSide::Left,
+                            });
+                            start += pos + query.len();
+                        }
+                    }
+                    if line.right_text.is_valid() {
+                        let text = doc.line_text(line.right_text);
+                        let lower = text.to_ascii_lowercase();
+                        let mut start = 0;
+                        while let Some(pos) = lower[start..].find(&query) {
+                            let byte_start = (start + pos) as u32;
+                            new_matches.push(SearchMatch {
+                                line_index: line_idx,
+                                byte_start,
+                                byte_len: query.len() as u32,
+                                side: MatchSide::Right,
+                            });
+                            start += pos + query.len();
+                        }
+                    }
                 }
-            }
-            if line.right_text.is_valid() {
-                let text = doc.line_text(line.right_text);
-                let lower = text.to_ascii_lowercase();
-                let mut start = 0;
-                while let Some(pos) = lower[start..].find(&query) {
-                    let byte_start = (start + pos) as u32;
-                    self.editor.search.matches.push(SearchMatch {
-                        line_index: line_idx,
-                        byte_start,
-                        byte_len: query.len() as u32,
-                        side: MatchSide::Right,
-                    });
-                    start += pos + query.len();
-                }
-            }
-        }
+                new_matches
+            });
 
-        if !self.editor.search.matches.is_empty() {
-            self.editor.search.active_index = Some(0);
+        let has_matches = !new_matches.is_empty();
+        self.editor.search.matches.set(&self.store, new_matches);
+        if has_matches {
+            self.editor.search.active_index.set(&self.store, Some(0));
         }
     }
 
     fn search_navigate(&mut self, direction: i32) {
-        let count = self.editor.search.matches.len();
+        let count = self.editor.search.matches.with(&self.store, |m| m.len());
         if count == 0 {
             return;
         }
 
-        let current = self.editor.search.active_index.unwrap_or(0);
+        let current = self
+            .editor
+            .search
+            .active_index
+            .get(&self.store)
+            .unwrap_or(0);
         let next = if direction > 0 {
             if current + 1 >= count { 0 } else { current + 1 }
         } else {
             if current == 0 { count - 1 } else { current - 1 }
         };
-        self.editor.search.active_index = Some(next);
+        self.editor.search.active_index.set(&self.store, Some(next));
         self.scroll_to_search_match(next);
     }
 
     fn scroll_to_search_match(&mut self, match_index: usize) {
-        let target_y = if let Some(&y) = self.editor.search_match_y_positions.get(match_index) {
+        let y_pos = self
+            .editor
+            .search_match_y_positions
+            .with(&self.store, |v| v.get(match_index).copied());
+        let target_y = if let Some(y) = y_pos {
             y
         } else {
-            let Some(m) = self.editor.search.matches.get(match_index) else {
+            let m = self
+                .editor
+                .search
+                .matches
+                .with(&self.store, |m| m.get(match_index).copied());
+            let Some(m) = m else {
                 return;
             };
             self.estimate_line_y(m.line_index)
         };
 
-        let viewport_h = self.editor.viewport_height_px;
+        let viewport_h = self.editor.viewport_height_px.get(&self.store);
         let centered = target_y.saturating_sub(viewport_h / 3);
-        self.editor.scroll_top_px = centered.min(self.editor.max_scroll_top_px());
+        let max = self.editor_max_scroll_top_px();
+        self.editor.scroll_top_px.set(&self.store, centered.min(max));
     }
 
     fn estimate_line_y(&self, line_index: u32) -> u32 {
-        if self.editor.content_height_px == 0 {
+        let content_height = self.editor.content_height_px.get(&self.store);
+        if content_height == 0 {
             return 0;
         }
-        let Some(active_file) = self.workspace.active_file.as_ref() else {
-            return 0;
-        };
-        let total_lines = active_file.render_doc.lines.len() as u32;
+        let total_lines = self.workspace.active_file.with(&self.store, |af| {
+            af.as_ref()
+                .map(|active_file| active_file.render_doc.lines.len() as u32)
+                .unwrap_or(0)
+        });
         if total_lines == 0 {
             return 0;
         }
-        let avg_height = self.editor.content_height_px / total_lines;
+        let avg_height = content_height / total_lines;
         line_index.saturating_mul(avg_height)
+    }
+
+    // -------- EditorState helpers on AppState --------
+
+    /// Clear document-specific editor state (scroll, content, hunks, etc.)
+    pub fn editor_clear_document(&mut self) {
+        self.editor.scroll_top_px.set(&self.store, 0);
+        self.editor.content_height_px.set(&self.store, 0);
+        self.editor.hovered_row.set(&self.store, None);
+        self.editor.visible_row_start.set(&self.store, None);
+        self.editor.visible_row_end.set(&self.store, None);
+        self.editor
+            .hunk_positions
+            .update(&self.store, |v| v.clear());
+        self.editor
+            .file_positions
+            .update(&self.store, |v| v.clear());
+        self.editor
+            .search_match_y_positions
+            .update(&self.store, |v| v.clear());
+        self.editor
+            .line_selection
+            .update(&self.store, |ls| ls.clear());
+    }
+
+    pub fn editor_max_scroll_top_px(&self) -> u32 {
+        let content = self.editor.content_height_px.get(&self.store);
+        let viewport = self.editor.viewport_height_px.get(&self.store);
+        content.saturating_sub(viewport.max(1))
+    }
+
+    pub fn editor_clamp_scroll(&mut self) {
+        let max = self.editor_max_scroll_top_px();
+        let cur = self.editor.scroll_top_px.get(&self.store);
+        self.editor.scroll_top_px.set(&self.store, cur.min(max));
+    }
+
+    pub fn editor_current_hunk_index(&self) -> Option<(usize, usize)> {
+        let scroll = self.editor.scroll_top_px.get(&self.store);
+        self.editor.hunk_positions.with(&self.store, |positions| {
+            if positions.is_empty() {
+                return None;
+            }
+            let idx = positions
+                .partition_point(|&y| y <= scroll)
+                .saturating_sub(1);
+            Some((idx, positions.len()))
+        })
     }
 }
 
@@ -4418,16 +5100,25 @@ mod tests {
             })
             .collect();
 
-        state.workspace.compare_output = Some(CompareOutput {
-            files: files.clone(),
-            ..CompareOutput::default()
-        });
-        state.workspace.source = WorkspaceSource::Compare;
-        state.workspace.files = files.iter().map(FileListEntry::from).collect();
+        state.workspace.compare_output.set(
+            &state.store,
+            Some(CompareOutput {
+                files: files.clone(),
+                ..CompareOutput::default()
+            }),
+        );
+        state
+            .workspace
+            .source
+            .set(&state.store, WorkspaceSource::Compare);
+        state.workspace.files.set(
+            &state.store,
+            files.iter().map(FileListEntry::from).collect(),
+        );
         state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
-        state.file_list.row_height = 36.0;
-        state.file_list.gap = 4.0;
-        state.file_list.viewport_height = 80.0;
+        state.file_list.row_height.set(&state.store, 36.0);
+        state.file_list.gap.set(&state.store, 4.0);
+        state.file_list.viewport_height.set(&state.store, 80.0);
         state
     }
 
@@ -4490,7 +5181,7 @@ mod tests {
         let (mut state, _) = AppState::bootstrap(startup, Settings::default());
         state.apply_action(Action::SetFocus(Some(FocusTarget::TitleBar)));
         state.apply_action(Action::OpenCommandPalette);
-        assert_eq!(state.overlays.top(), Some(OverlaySurface::CommandPalette));
+        assert_eq!(state.overlays_top(), Some(OverlaySurface::CommandPalette));
         state.apply_action(Action::CloseOverlay);
         assert_eq!(state.focus.get(&state.store), Some(FocusTarget::TitleBar));
     }
@@ -4499,91 +5190,106 @@ mod tests {
     fn pixel_scroll_actions_clamp_file_list_and_viewport() {
         let mut state = AppState::default();
 
-        state.workspace.files = vec![
-            FileListEntry {
-                path: "a.rs".into(),
-                status: "M".into(),
-                additions: 0,
-                deletions: 0,
-                is_binary: false,
-            },
-            FileListEntry {
-                path: "b.rs".into(),
-                status: "M".into(),
-                additions: 0,
-                deletions: 0,
-                is_binary: false,
-            },
-            FileListEntry {
-                path: "c.rs".into(),
-                status: "M".into(),
-                additions: 0,
-                deletions: 0,
-                is_binary: false,
-            },
-            FileListEntry {
-                path: "d.rs".into(),
-                status: "M".into(),
-                additions: 0,
-                deletions: 0,
-                is_binary: false,
-            },
-            FileListEntry {
-                path: "e.rs".into(),
-                status: "M".into(),
-                additions: 0,
-                deletions: 0,
-                is_binary: false,
-            },
-        ];
-        state.file_list.row_height = 36.0;
-        state.file_list.gap = 4.0;
-        state.file_list.viewport_height = 80.0;
+        state.workspace.files.set(
+            &state.store,
+            vec![
+                FileListEntry {
+                    path: "a.rs".into(),
+                    status: "M".into(),
+                    additions: 0,
+                    deletions: 0,
+                    is_binary: false,
+                },
+                FileListEntry {
+                    path: "b.rs".into(),
+                    status: "M".into(),
+                    additions: 0,
+                    deletions: 0,
+                    is_binary: false,
+                },
+                FileListEntry {
+                    path: "c.rs".into(),
+                    status: "M".into(),
+                    additions: 0,
+                    deletions: 0,
+                    is_binary: false,
+                },
+                FileListEntry {
+                    path: "d.rs".into(),
+                    status: "M".into(),
+                    additions: 0,
+                    deletions: 0,
+                    is_binary: false,
+                },
+                FileListEntry {
+                    path: "e.rs".into(),
+                    status: "M".into(),
+                    additions: 0,
+                    deletions: 0,
+                    is_binary: false,
+                },
+            ],
+        );
+        state.file_list.row_height.set(&state.store, 36.0);
+        state.file_list.gap.set(&state.store, 4.0);
+        state.file_list.viewport_height.set(&state.store, 80.0);
 
         state.apply_action(Action::ScrollFileListPx(50));
-        assert_eq!(state.file_list.scroll_offset_px, 50.0);
+        assert_eq!(state.file_list.scroll_offset_px.get(&state.store), 50.0);
 
         state.apply_action(Action::ScrollFileListPx(500));
-        assert_eq!(state.file_list.scroll_offset_px, 116.0);
+        assert_eq!(state.file_list.scroll_offset_px.get(&state.store), 116.0);
 
         state.apply_action(Action::ScrollFileListPx(-500));
-        assert_eq!(state.file_list.scroll_offset_px, 0.0);
+        assert_eq!(state.file_list.scroll_offset_px.get(&state.store), 0.0);
 
-        state.editor.content_height_px = 600;
-        state.editor.viewport_height_px = 200;
+        state.editor.content_height_px.set(&state.store, 600);
+        state.editor.viewport_height_px.set(&state.store, 200);
 
         state.apply_action(Action::ScrollViewportPx(75));
-        assert_eq!(state.editor.scroll_top_px, 75);
+        assert_eq!(state.editor.scroll_top_px.get(&state.store), 75);
 
         state.apply_action(Action::ScrollViewportPx(500));
-        assert_eq!(state.editor.scroll_top_px, 400);
+        assert_eq!(state.editor.scroll_top_px.get(&state.store), 400);
 
         state.apply_action(Action::ScrollViewportPx(-500));
-        assert_eq!(state.editor.scroll_top_px, 0);
+        assert_eq!(state.editor.scroll_top_px.get(&state.store), 0);
     }
 
     #[test]
     fn clicking_a_visible_file_does_not_force_sidebar_reveal() {
         let mut state = loaded_state_with_files(&["a.rs", "b.rs", "c.rs"]);
-        state.file_list.scroll_offset_px = 10.0;
+        state.file_list.scroll_offset_px.set(&state.store, 10.0);
 
         state.apply_action(Action::SelectFile(0));
 
-        assert_eq!(state.workspace.selected_file_index, Some(0));
-        assert_eq!(state.file_list.scroll_offset_px, 10.0);
+        assert_eq!(
+            state.workspace.selected_file_index.get(&state.store),
+            Some(0)
+        );
+        assert_eq!(state.file_list.scroll_offset_px.get(&state.store), 10.0);
     }
 
     #[test]
     fn keyboard_file_navigation_still_reveals_selection() {
         let mut state = loaded_state_with_files(&["a.rs", "b.rs", "c.rs", "d.rs"]);
-        state.workspace.selected_file_index = Some(0);
-        state.workspace.selected_file_path = Some("a.rs".into());
-        state.file_list.scroll_offset_px = 50.0;
+        state
+            .workspace
+            .selected_file_index
+            .set(&state.store, Some(0));
+        state
+            .workspace
+            .selected_file_path
+            .set(&state.store, Some("a.rs".into()));
+        state.file_list.scroll_offset_px.set(&state.store, 50.0);
 
         state.apply_action(Action::SelectNextFile);
 
-        assert_eq!(state.workspace.selected_file_index, Some(1));
-        assert_eq!(state.file_list.scroll_offset_px, 40.0);
+        assert_eq!(
+            state.workspace.selected_file_index.get(&state.store),
+            Some(1)
+        );
+        assert_eq!(state.file_list.scroll_offset_px.get(&state.store), 40.0);
     }
 
     #[test]
@@ -4607,53 +5313,59 @@ mod tests {
             }],
             ..FileDiff::default()
         }];
-        state.workspace.compare_output = Some(output);
-        state.workspace.source = WorkspaceSource::Compare;
-        state.workspace.files = vec![FileListEntry {
-            path: "src/lib.rs".to_owned(),
-            status: "M".to_owned(),
-            additions: 0,
-            deletions: 0,
-            is_binary: false,
-        }];
+        state
+            .workspace
+            .compare_output
+            .set(&state.store, Some(output));
+        state
+            .workspace
+            .source
+            .set(&state.store, WorkspaceSource::Compare);
+        state.workspace.files.set(
+            &state.store,
+            vec![FileListEntry {
+                path: "src/lib.rs".to_owned(),
+                status: "M".to_owned(),
+                additions: 0,
+                deletions: 0,
+                is_binary: false,
+            }],
+        );
         state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
 
         state.apply_action(Action::SelectFile(0));
 
-        let output = state
-            .workspace
-            .compare_output
-            .as_ref()
-            .expect("compare output");
-        assert!(output.files[0].syntax_annotated);
-        assert!(
-            !output
-                .token_buffer
-                .view(output.files[0].hunks[0].lines[0].syntax_tokens)
-                .is_empty()
-        );
-
-        let previous_tokens = output.files[0].hunks[0].lines[0].syntax_tokens;
+        let previous_tokens = state.workspace.compare_output.with(&state.store, |co| {
+            let output = co.as_ref().expect("compare output");
+            assert!(output.files[0].syntax_annotated);
+            assert!(
+                !output
+                    .token_buffer
+                    .view(output.files[0].hunks[0].lines[0].syntax_tokens)
+                    .is_empty()
+            );
+            output.files[0].hunks[0].lines[0].syntax_tokens
+        });
         state.apply_action(Action::SelectFile(0));
-        let output = state
-            .workspace
-            .compare_output
-            .as_ref()
-            .expect("compare output");
-        assert_eq!(
-            output.files[0].hunks[0].lines[0].syntax_tokens,
-            previous_tokens
-        );
+        state.workspace.compare_output.with(&state.store, |co| {
+            let output = co.as_ref().expect("compare output");
+            assert_eq!(
+                output.files[0].hunks[0].lines[0].syntax_tokens,
+                previous_tokens
+            );
+        });
     }
 
     #[test]
     fn overlay_list_pixel_scroll_action_clamps_active_overlay() {
         let mut state = AppState::default();
-        state.overlays.stack.push(super::OverlayEntry {
-            surface: OverlaySurface::RepoPicker,
-            focus_return: None,
+        state.overlays.stack.update(&state.store, |stack| {
+            stack.push(super::OverlayEntry {
+                surface: OverlaySurface::RepoPicker,
+                focus_return: None,
+            });
         });
-        state.overlays.picker.entries = (0..12)
+        let picker_entries: Vec<super::PickerEntry> = (0..12)
             .map(|index| super::PickerEntry {
                 label: format!("repo-{index}"),
                 detail: format!("C:\\repo-{index}"),
@@ -4663,71 +5375,102 @@ mod tests {
                 section_header: false,
             })
             .collect();
-        state.overlays.picker.list.viewport_height_px = 120;
+        state
+            .overlays
+            .picker
+            .entries
+            .set(&state.store, picker_entries);
+        state
+            .overlays
+            .picker
+            .list
+            .update(&state.store, |l| l.viewport_height_px = 120);
 
         state.apply_action(Action::ScrollActiveOverlayListPx(50));
-        assert_eq!(state.overlays.picker.list.scroll_top_px, 50);
+        assert_eq!(
+            state.overlays.picker.list.with(&state.store, |l| l.scroll_top_px),
+            50
+        );
 
         state.apply_action(Action::ScrollActiveOverlayListPx(1_000));
-        assert_eq!(state.overlays.picker.list.scroll_top_px, 312);
+        assert_eq!(
+            state.overlays.picker.list.with(&state.store, |l| l.scroll_top_px),
+            312
+        );
 
         state.apply_action(Action::ScrollActiveOverlayListPx(-1_000));
-        assert_eq!(state.overlays.picker.list.scroll_top_px, 0);
+        assert_eq!(
+            state.overlays.picker.list.with(&state.store, |l| l.scroll_top_px),
+            0
+        );
     }
 
     #[test]
     fn ref_picker_rebuilds_matches_while_typing_and_keeps_raw_git_revisions_selectable() {
         let mut state = AppState::default();
-        state.repository.branches = vec![crate::core::vcs::git::BranchInfo {
-            name: "main".to_owned(),
-            is_remote: false,
-            is_head: true,
-        }];
+        state.repository.branches.set(
+            &state.store,
+            vec![crate::core::vcs::git::BranchInfo {
+                name: "main".to_owned(),
+                is_remote: false,
+                is_head: true,
+            }],
+        );
 
         state.open_ref_picker(CompareField::Left);
         state.apply_action(Action::InsertText("mai".to_owned()));
 
-        let branch_entry = state
-            .overlays
-            .picker
-            .entries
-            .iter()
-            .find(|entry| entry.value == "main")
-            .expect("main branch entry");
-        assert_eq!(branch_entry.highlights, vec![(0, 3)]);
+        let branch_highlights =
+            state.overlays.picker.entries.with(&state.store, |entries| {
+                entries
+                    .iter()
+                    .find(|entry| entry.value == "main")
+                    .expect("main branch entry")
+                    .highlights
+                    .clone()
+            });
+        assert_eq!(branch_highlights, vec![(0, 3)]);
 
         let mut state = AppState::default();
         state.open_ref_picker(CompareField::Left);
         state.apply_action(Action::InsertText("HEAD~2".to_owned()));
 
-        let typed_entry = state
-            .overlays
-            .picker
-            .entries
-            .first()
-            .expect("typed ref entry");
-        assert_eq!(typed_entry.value, "HEAD~2");
-        assert_eq!(typed_entry.highlights, vec![(0, "HEAD~2".len())]);
+        let (typed_value, typed_highlights) =
+            state.overlays.picker.entries.with(&state.store, |entries| {
+                let typed_entry = entries.first().expect("typed ref entry");
+                (typed_entry.value.clone(), typed_entry.highlights.clone())
+            });
+        assert_eq!(typed_value, "HEAD~2");
+        assert_eq!(typed_highlights, vec![(0, "HEAD~2".len())]);
 
         state.apply_action(Action::ConfirmOverlaySelection);
-        assert_eq!(state.compare.left_ref, "HEAD~2");
+        assert_eq!(state.compare.left_ref.get(&state.store), "HEAD~2");
     }
 
     #[test]
     fn command_palette_uses_actual_match_indices_for_highlighting() {
         let mut state = AppState::default();
-        state.overlays.command_palette.query = "them".to_owned();
+        state
+            .overlays
+            .command_palette
+            .query
+            .set(&state.store, "them".to_owned());
 
         state.rebuild_command_palette();
 
-        let change_theme = state
+        let highlights = state
             .overlays
             .command_palette
             .entries
-            .iter()
-            .find(|entry| entry.label == "Change Theme")
-            .expect("Change Theme entry");
-        assert_eq!(change_theme.highlights, vec![(7, 11)]);
+            .with(&state.store, |entries| {
+                entries
+                    .iter()
+                    .find(|entry| entry.label == "Change Theme")
+                    .expect("Change Theme entry")
+                    .highlights
+                    .clone()
+            });
+        assert_eq!(highlights, vec![(7, 11)]);
     }
 
     #[test]

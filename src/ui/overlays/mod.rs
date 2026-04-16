@@ -21,7 +21,42 @@ pub fn render_active_overlay(
     width: f32,
     height: f32,
 ) -> Option<AnyElement> {
-    let top = state.overlays.stack.last().cloned()?;
+    let top = state
+        .overlays
+        .stack
+        .with(&state.store, |stack| stack.last().cloned())?;
+    let picker_query = state.overlays.picker.query.with(&state.store, |s| s.clone());
+    let picker_entries = state
+        .overlays
+        .picker
+        .entries
+        .with(&state.store, |e| e.clone());
+    let picker_selected = state.overlays.picker.selected_index.get(&state.store);
+    let picker_scroll = state
+        .overlays
+        .picker
+        .list
+        .with(&state.store, |l| l.scroll_top_px);
+    let palette_query = state
+        .overlays
+        .command_palette
+        .query
+        .with(&state.store, |s| s.clone());
+    let palette_entries = state
+        .overlays
+        .command_palette
+        .entries
+        .with(&state.store, |e| e.clone());
+    let palette_selected = state
+        .overlays
+        .command_palette
+        .selected_index
+        .get(&state.store);
+    let palette_scroll = state
+        .overlays
+        .command_palette
+        .list
+        .with(&state.store, |l| l.scroll_top_px);
     Some(match top.surface {
         OverlaySurface::RepoPicker => {
             let placeholder = if cfg!(target_os = "windows") {
@@ -30,11 +65,11 @@ pub fn render_active_overlay(
                 "Search recent or type a path (e.g. ~/projects/repo)"
             };
             picker(
-                &state.overlays.picker.query,
+                &picker_query,
                 placeholder,
-                &state.overlays.picker.entries,
-                state.overlays.picker.selected_index,
-                state.overlays.picker.list.scroll_top_px as f32,
+                &picker_entries,
+                picker_selected,
+                picker_scroll as f32,
                 Sz::MODAL_XL,
                 FocusTarget::PickerInput,
                 state,
@@ -45,15 +80,15 @@ pub fn render_active_overlay(
         }
         OverlaySurface::RefPicker(field) => {
             let query = match field {
-                CompareField::Left => &state.compare.left_ref,
-                CompareField::Right => &state.compare.right_ref,
+                CompareField::Left => state.compare.left_ref.get(&state.store),
+                CompareField::Right => state.compare.right_ref.get(&state.store),
             };
             picker(
-                query,
+                &query,
                 "Search branches, tags, commits",
-                &state.overlays.picker.entries,
-                state.overlays.picker.selected_index,
-                state.overlays.picker.list.scroll_top_px as f32,
+                &picker_entries,
+                picker_selected,
+                picker_scroll as f32,
                 Sz::MODAL_XL,
                 FocusTarget::PickerInput,
                 state,
@@ -63,11 +98,11 @@ pub fn render_active_overlay(
             )
         }
         OverlaySurface::CommandPalette => picker(
-            &state.overlays.command_palette.query,
+            &palette_query,
             "Type a command, file, repo, or ref",
-            &state.overlays.command_palette.entries,
-            state.overlays.command_palette.selected_index,
-            state.overlays.command_palette.list.scroll_top_px as f32,
+            &palette_entries,
+            palette_selected,
+            palette_scroll as f32,
             Sz::MODAL_XL,
             FocusTarget::CommandPaletteInput,
             state,
@@ -80,11 +115,11 @@ pub fn render_active_overlay(
         OverlaySurface::KeyboardShortcuts => keyboard_shortcuts(state, theme, width, height),
         OverlaySurface::CompareMenu => compare_menu(state, theme, width, height),
         OverlaySurface::ThemePicker => picker(
-            &state.overlays.picker.query,
+            &picker_query,
             "Search themes\u{2026}",
-            &state.overlays.picker.entries,
-            state.overlays.picker.selected_index,
-            state.overlays.picker.list.scroll_top_px as f32,
+            &picker_entries,
+            picker_selected,
+            picker_scroll as f32,
             Sz::MODAL_XL,
             FocusTarget::PickerInput,
             state,

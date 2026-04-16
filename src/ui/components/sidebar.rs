@@ -79,16 +79,22 @@ impl<'a> Sidebar<'a> {
         let scale = theme.metrics.ui_scale();
         let sidebar_width = theme.metrics.sidebar_width * self.width_factor;
         let state = self.state;
-        let file_count = state.workspace.files.len();
+        let files_snapshot = state.workspace.files.get(&state.store);
+        let file_count = files_snapshot.len();
+        let has_repo = state
+            .compare
+            .repo_path
+            .with(&state.store, |p| p.is_some());
+        let selected_index = state.workspace.selected_file_index.get(&state.store);
 
-        let (empty_icon, empty_msg) = if state.compare.repo_path.is_some() {
+        let (empty_icon, empty_msg) = if has_repo {
             (lucide::GIT_COMPARE, "Run a compare to see changes.")
         } else {
             (lucide::FOLDER_OPEN, "Open a repository to start.")
         };
 
-        let total_height = state.file_list.total_content_height(file_count);
-        let scroll_px = state.file_list.scroll_offset_px;
+        let total_height = state.file_list_total_content_height(file_count);
+        let scroll_px = state.file_list.scroll_offset_px.get(&state.store);
 
         view! { scale,
             <div class="flex-col flex-shrink-0 overflow-hidden h-full"
@@ -108,7 +114,7 @@ impl<'a> Sidebar<'a> {
                         </div>
                     }
                 </div>
-                if state.workspace.files.is_empty() {
+                if files_snapshot.is_empty() {
                     <div class="flex-1 items-center justify-center">
                         <div class="flex-col items-center" gap_2>
                             <icon svg={empty_icon} size={Ico::XL} color={tc.text_muted} />
@@ -122,10 +128,10 @@ impl<'a> Sidebar<'a> {
                          scroll_y={scroll_px}
                          scroll_total={total_height}
                          on_scroll={ScrollActionBuilder::FileList}>
-                        for (index, entry) in state.workspace.files.iter().enumerate() {
+                        for (index, entry) in files_snapshot.iter().enumerate() {
                             {FileListItem {
                                 entry,
-                                selected: state.workspace.selected_file_index == Some(index),
+                                selected: selected_index == Some(index),
                                 index,
                             }.build(theme)}
                         }

@@ -79,7 +79,8 @@ pub(crate) fn preferred_sidebar_width(
     } else {
         hard_max
     };
-    if state.workspace.files.is_empty() {
+    let file_count = state.workspace.files.with(&state.store, |f| f.len());
+    if file_count == 0 {
         return state
             .settings
             .sidebar_width_px
@@ -94,11 +95,17 @@ pub(crate) fn preferred_sidebar_width(
         return (preferred_width as f32).clamp(manual_min_width, max_width);
     }
 
-    let cached_intrinsic_width = state.workspace.sidebar_auto_width.and_then(|cache| {
-        (cache.compare_generation == state.workspace.compare_generation
-            && cache.ui_scale_pct == state.settings.ui_scale_pct)
-            .then_some(cache.intrinsic_width_px)
-    });
+    let compare_generation = state.workspace.compare_generation.get(&state.store);
+    let cached_intrinsic_width = state
+        .workspace
+        .sidebar_auto_width
+        .with(&state.store, |cache_opt| {
+            cache_opt.and_then(|cache| {
+                (cache.compare_generation == compare_generation
+                    && cache.ui_scale_pct == state.settings.ui_scale_pct)
+                    .then_some(cache.intrinsic_width_px)
+            })
+        });
 
     let intrinsic_width = if let Some(width) = cached_intrinsic_width {
         width
@@ -110,12 +117,12 @@ pub(crate) fn preferred_sidebar_width(
             crate::render::FontKind::Ui,
             crate::render::FontWeight::Semibold,
         );
-        let header_badge_width = if state.workspace.files.is_empty() {
+        let header_badge_width = if file_count == 0 {
             0.0
         } else {
             let count_width = measure_text_width(
                 cx.font_system,
-                &state.workspace.files.len().to_string(),
+                &file_count.to_string(),
                 theme.metrics.ui_small_font_size - 1.0,
                 crate::render::FontKind::Ui,
                 crate::render::FontWeight::Normal,
@@ -124,62 +131,65 @@ pub(crate) fn preferred_sidebar_width(
         };
         let header_width = header_side_padding + header_label_width + header_badge_width;
 
-        let widest_row = state
-            .workspace
-            .files
-            .iter()
-            .map(|file| {
-                let path_width = measure_text_width(
-                    cx.font_system,
-                    &file.path,
-                    theme.metrics.ui_small_font_size,
-                    crate::render::FontKind::Ui,
-                    crate::render::FontWeight::Normal,
-                );
-
-                let stats_width = if file.additions > 0 || file.deletions > 0 {
-                    let additions_width = measure_text_width(
+        let widest_row = state.workspace.files.with(&state.store, |files| {
+            files
+                .iter()
+                .map(|file| {
+                    let path_width = measure_text_width(
                         cx.font_system,
-                        &format!("+{}", file.additions),
-                        theme.metrics.ui_small_font_size - 1.0,
+                        &file.path,
+                        theme.metrics.ui_small_font_size,
                         crate::render::FontKind::Ui,
                         crate::render::FontWeight::Normal,
                     );
-                    let deletions_width = measure_text_width(
-                        cx.font_system,
-                        &format!("\u{2212}{}", file.deletions),
-                        theme.metrics.ui_small_font_size - 1.0,
-                        crate::render::FontKind::Ui,
-                        crate::render::FontWeight::Normal,
-                    );
-                    row_gap + additions_width + stats_gap + deletions_width
-                } else {
-                    0.0
-                };
 
-                let status_badge_width = if !file.status.is_empty() {
-                    row_gap + (theme.metrics.ui_small_font_size + Sp::XS).round()
-                } else {
-                    0.0
-                };
+                    let stats_width = if file.additions > 0 || file.deletions > 0 {
+                        let additions_width = measure_text_width(
+                            cx.font_system,
+                            &format!("+{}", file.additions),
+                            theme.metrics.ui_small_font_size - 1.0,
+                            crate::render::FontKind::Ui,
+                            crate::render::FontWeight::Normal,
+                        );
+                        let deletions_width = measure_text_width(
+                            cx.font_system,
+                            &format!("\u{2212}{}", file.deletions),
+                            theme.metrics.ui_small_font_size - 1.0,
+                            crate::render::FontKind::Ui,
+                            crate::render::FontWeight::Normal,
+                        );
+                        row_gap + additions_width + stats_gap + deletions_width
+                    } else {
+                        0.0
+                    };
 
-                list_side_padding
-                    + row_side_padding
-                    + file_icon_width
-                    + row_gap
-                    + path_width
-                    + stats_width
-                    + status_badge_width
-                    + scrollbar_gutter
-            })
-            .fold(0.0_f32, f32::max);
+                    let status_badge_width = if !file.status.is_empty() {
+                        row_gap + (theme.metrics.ui_small_font_size + Sp::XS).round()
+                    } else {
+                        0.0
+                    };
+
+                    list_side_padding
+                        + row_side_padding
+                        + file_icon_width
+                        + row_gap
+                        + path_width
+                        + stats_width
+                        + status_badge_width
+                        + scrollbar_gutter
+                })
+                .fold(0.0_f32, f32::max)
+        });
 
         let intrinsic_width = widest_row.max(header_width);
-        state.workspace.sidebar_auto_width = Some(SidebarWidthCache {
-            compare_generation: state.workspace.compare_generation,
-            ui_scale_pct: state.settings.ui_scale_pct,
-            intrinsic_width_px: intrinsic_width,
-        });
+        state.workspace.sidebar_auto_width.set(
+            &state.store,
+            Some(SidebarWidthCache {
+                compare_generation,
+                ui_scale_pct: state.settings.ui_scale_pct,
+                intrinsic_width_px: intrinsic_width,
+            }),
+        );
         intrinsic_width
     };
 
@@ -256,17 +266,21 @@ pub(crate) fn sidebar(
     cx: &ElementContext,
 ) -> AnyElement {
     let tc = &theme.colors;
-    let all_files = &state.workspace.files;
+    let all_files = state.workspace.files.get(&state.store);
     let file_count = all_files.len();
     let scale = theme.metrics.ui_scale();
-    let filter = &state.file_list.filter;
+    let filter = state.file_list.filter.get(&state.store);
     let has_filter = !filter.is_empty();
     let row_h = theme.metrics.ui_row_height.round();
 
-    let range_commits = &state.workspace.range_commits;
-    let show_tabs = state.workspace.source == WorkspaceSource::Compare && range_commits.len() > 1;
-    let on_commits_tab = show_tabs && state.file_list.tab == SidebarTab::Commits;
-    let is_drilled = state.workspace.pre_drill_compare.is_some();
+    let range_commits = state.workspace.range_commits.get(&state.store);
+    let workspace_source = state.workspace.source.get(&state.store);
+    let show_tabs = workspace_source == WorkspaceSource::Compare && range_commits.len() > 1;
+    let on_commits_tab = show_tabs && state.file_list.tab.get(&state.store) == SidebarTab::Commits;
+    let is_drilled = state
+        .workspace
+        .pre_drill_compare
+        .with(&state.store, |p| p.is_some());
 
     let tab_bar: Option<AnyElement> = if show_tabs {
         Some(view! { scale,
@@ -301,7 +315,7 @@ pub(crate) fn sidebar(
                 sort: false,
                 ..Default::default()
             };
-            let mut matches = neo_frizbee::match_list(filter, &haystack_refs, &config);
+            let mut matches = neo_frizbee::match_list(&filter, &haystack_refs, &config);
             matches.sort_by(|a, b| b.score.cmp(&a.score));
             matches.iter().map(|m| m.index as usize).collect()
         } else {
@@ -310,13 +324,13 @@ pub(crate) fn sidebar(
 
         let search_bar: Option<AnyElement> = if !range_commits.is_empty() {
             let search_focused = cx.is_focused(FocusTarget::SidebarSearch);
-            let input = text_input("", &state.file_list.filter)
+            let input = text_input("", &filter)
                 .placeholder("Filter commits\u{2026}")
                 .focused(search_focused)
                 .focus_target(FocusTarget::SidebarSearch)
-                .cursor(state.text_edit.cursor)
-                .anchor(state.text_edit.anchor)
-                .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
+                .cursor(state.text_edit.cursor.get(&state.store))
+                .anchor(state.text_edit.anchor.get(&state.store))
+                .cursor_moved_at(state.text_edit.cursor_moved_at_ms.get(&state.store))
                 .on_click(Action::SetFocus(Some(FocusTarget::SidebarSearch)))
                 .bare()
                 .w_full()
@@ -345,8 +359,8 @@ pub(crate) fn sidebar(
                 </div>
             }
         } else {
-            let total_height = state.file_list.total_content_height(filtered_commits.len());
-            let scroll_px = state.file_list.commits_scroll_offset_px;
+            let total_height = state.file_list_total_content_height(filtered_commits.len());
+            let scroll_px = state.file_list.commits_scroll_offset_px.get(&state.store);
             let rows: Vec<AnyElement> = filtered_commits
                 .iter()
                 .map(|&i| commit_row(&range_commits[i], i, state, tc, scale, is_drilled))
@@ -375,8 +389,8 @@ pub(crate) fn sidebar(
         };
     }
 
-    let is_tree = state.file_list.mode == SidebarMode::TreeView
-        && state.workspace.source == WorkspaceSource::Compare;
+    let is_tree = state.file_list.mode.get(&state.store) == SidebarMode::TreeView
+        && workspace_source == WorkspaceSource::Compare;
 
     let filtered_indices: Vec<usize> = if has_filter {
         let haystack: Vec<&str> = all_files.iter().map(|f| f.path.as_str()).collect();
@@ -385,7 +399,7 @@ pub(crate) fn sidebar(
             sort: false,
             ..Default::default()
         };
-        let mut matches = neo_frizbee::match_list(filter, &haystack, &config);
+        let mut matches = neo_frizbee::match_list(&filter, &haystack, &config);
         matches.sort_by(|a, b| b.score.cmp(&a.score));
         matches.iter().map(|m| m.index as usize).collect()
     } else {
@@ -417,7 +431,7 @@ pub(crate) fn sidebar(
                         </div>
                     }
                     <spacer />
-                    if file_count > 0 && state.workspace.source == WorkspaceSource::Compare {
+                    if file_count > 0 && workspace_source == WorkspaceSource::Compare {
                         <Button action={Action::ToggleSidebarMode}
                                 tooltip={mode_tip}
                                 fixed_size={Sz::MODE_TOGGLE}>
@@ -450,7 +464,7 @@ pub(crate) fn sidebar(
                         ).compact()}
                     }
                     <spacer />
-                    if file_count > 0 && state.workspace.source == WorkspaceSource::Compare {
+                    if file_count > 0 && workspace_source == WorkspaceSource::Compare {
                         <Button action={Action::ToggleSidebarMode}
                                 tooltip={mode_tip}
                                 fixed_size={Sz::MODE_TOGGLE}>
@@ -466,13 +480,13 @@ pub(crate) fn sidebar(
 
     let search_bar: Option<AnyElement> = if file_count > 0 {
         let search_focused = cx.is_focused(FocusTarget::SidebarSearch);
-        let input = text_input("", &state.file_list.filter)
+        let input = text_input("", &filter)
             .placeholder("Filter files\u{2026}")
             .focused(search_focused)
             .focus_target(FocusTarget::SidebarSearch)
-            .cursor(state.text_edit.cursor)
-            .anchor(state.text_edit.anchor)
-            .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
+            .cursor(state.text_edit.cursor.get(&state.store))
+            .anchor(state.text_edit.anchor.get(&state.store))
+            .cursor_moved_at(state.text_edit.cursor_moved_at_ms.get(&state.store))
             .on_click(Action::SetFocus(Some(FocusTarget::SidebarSearch)))
             .bare()
             .w_full()
@@ -492,8 +506,12 @@ pub(crate) fn sidebar(
     };
 
     let content: Option<AnyElement> = if all_files.is_empty() {
-        let (icon, msg) = if state.compare.repo_path.is_some() {
-            if state.workspace.source == WorkspaceSource::Status {
+        let has_repo = state
+            .compare
+            .repo_path
+            .with(&state.store, |p| p.is_some());
+        let (icon, msg) = if has_repo {
+            if workspace_source == WorkspaceSource::Status {
                 (lucide::CHECK, "Working tree clean.")
             } else {
                 (lucide::GIT_COMPARE, "Run a compare to see changes.")
@@ -519,35 +537,39 @@ pub(crate) fn sidebar(
             </div>
         })
     } else if is_tree && !has_filter {
-        let entries: Vec<components::FileTreeEntry> = filtered_indices
-            .iter()
-            .map(|&i| {
-                let f = &all_files[i];
-                components::FileTreeEntry {
-                    path: f.path.clone(),
-                    status: f.status.clone(),
-                    scope: state
-                        .workspace
-                        .status_items
-                        .get(i)
-                        .filter(|_| state.workspace.source == WorkspaceSource::Status)
-                        .map(|item| item.scope.label().to_owned()),
-                    additions: f.additions,
-                    deletions: f.deletions,
-                }
-            })
-            .collect();
+        let entries: Vec<components::FileTreeEntry> =
+            state.workspace.status_items.with(&state.store, |items| {
+                filtered_indices
+                    .iter()
+                    .map(|&i| {
+                        let f = &all_files[i];
+                        components::FileTreeEntry {
+                            path: f.path.clone(),
+                            status: f.status.clone(),
+                            scope: items
+                                .get(i)
+                                .filter(|_| workspace_source == WorkspaceSource::Status)
+                                .map(|item| item.scope.label().to_owned()),
+                            additions: f.additions,
+                            deletions: f.deletions,
+                        }
+                    })
+                    .collect()
+            });
 
+        let expanded_folders = state.file_list.expanded_folders.get(&state.store);
+        let expanded_count = expanded_folders.len();
         let tree = components::file_tree(entries)
-            .expanded(state.file_list.expanded_folders.clone())
-            .selected(state.workspace.selected_file_index)
+            .expanded(expanded_folders)
+            .selected(state.workspace.selected_file_index.get(&state.store))
             .on_select_file(Action::SelectFile)
             .on_toggle_folder(Action::ToggleFolder);
 
-        let row_count = visible_count + state.file_list.expanded_folders.len();
-        let row_height = state.file_list.row_height;
-        let total_height = row_count as f32 * (row_height + state.file_list.gap);
-        let scroll_px = state.file_list.scroll_offset_px;
+        let row_count = visible_count + expanded_count;
+        let row_height = state.file_list.row_height.get(&state.store);
+        let total_height =
+            row_count as f32 * (row_height + state.file_list.gap.get(&state.store));
+        let scroll_px = state.file_list.scroll_offset_px.get(&state.store);
 
         Some(view! { scale,
             <div class="flex-1 flex-col" min_h={0.0}
@@ -558,23 +580,26 @@ pub(crate) fn sidebar(
             </div>
         })
     } else {
-        let grouped_status = state.workspace.source == WorkspaceSource::Status && !has_filter;
-        let total_height = state.file_list.total_content_height(if grouped_status {
+        let grouped_status = workspace_source == WorkspaceSource::Status && !has_filter;
+        let total_height = state.file_list_total_content_height(if grouped_status {
             state.sidebar_row_count()
         } else {
             visible_count
         });
-        let scroll_px = state.file_list.scroll_offset_px;
+        let scroll_px = state.file_list.scroll_offset_px.get(&state.store);
 
         let rows: Vec<AnyElement> = if grouped_status {
+            let scopes_by_index: Vec<Option<StatusScope>> =
+                state.workspace.status_items.with(&state.store, |items| {
+                    filtered_indices
+                        .iter()
+                        .map(|&index| items.get(index).map(|item| item.scope))
+                        .collect()
+                });
             let mut rows = Vec::new();
             let mut last_scope = None;
-            for &index in &filtered_indices {
-                let scope = state
-                    .workspace
-                    .status_items
-                    .get(index)
-                    .map(|item| item.scope);
+            for (pos, &index) in filtered_indices.iter().enumerate() {
+                let scope = scopes_by_index[pos];
                 if scope != last_scope {
                     if let Some(scope) = scope {
                         rows.push(status_section_row(scope, tc, scale, row_h));
@@ -602,13 +627,11 @@ pub(crate) fn sidebar(
         })
     };
 
-    let commit_box: Option<AnyElement> = if state.workspace.source == WorkspaceSource::Status {
+    let commit_box: Option<AnyElement> = if workspace_source == WorkspaceSource::Status {
         let commit_focused = cx.is_focused(FocusTarget::CommitEditor);
-        let has_staged = state
-            .workspace
-            .status_items
-            .iter()
-            .any(|item| item.scope == StatusScope::Staged);
+        let has_staged = state.workspace.status_items.with(&state.store, |items| {
+            items.iter().any(|item| item.scope == StatusScope::Staged)
+        });
         let can_commit = has_staged && !state.commit_editor.text().trim().is_empty();
         let box_h = (Sz::COMMIT_BOX_H * scale).round();
         let cursor_snap = CursorSnapshot {
@@ -711,10 +734,13 @@ fn file_row(
     tc: &crate::ui::theme::ThemeColors,
     scale: f32,
 ) -> AnyElement {
-    let selected = state.workspace.selected_file_index == Some(index);
-    let viewed = state.file_list.viewed_files.contains(&index);
+    let selected = state.workspace.selected_file_index.get(&state.store) == Some(index);
+    let viewed = state
+        .file_list
+        .viewed_files
+        .with(&state.store, |s| s.contains(&index));
     let text_color = if selected { tc.text_strong } else { tc.text };
-    let row_height = state.file_list.row_height;
+    let row_height = state.file_list.row_height.get(&state.store);
 
     let (filename, dir_path) = match file.path.rfind('/') {
         Some(pos) => (&file.path[pos + 1..], Some(&file.path[..pos])),
@@ -726,27 +752,33 @@ fn file_row(
 
     let has_stats = file.additions > 0 || file.deletions > 0;
     let has_status = !file.status.is_empty();
-    let is_status_view = state.workspace.source == WorkspaceSource::Status;
+    let is_status_view = state.workspace.source.get(&state.store) == WorkspaceSource::Status;
     let status_scope = state
         .workspace
         .status_items
-        .get(index)
-        .filter(|_| is_status_view && !state.file_list.filter.is_empty())
+        .with(&state.store, |items| items.get(index).cloned())
+        .filter(|_| {
+            is_status_view
+                && !state
+                    .file_list
+                    .filter
+                    .with(&state.store, |s| s.is_empty())
+        })
         .map(|item| item.scope.label());
 
     let stage_action: Option<(Action, &str, &str)> = state
         .workspace
         .status_items
-        .get(index)
+        .with(&state.store, |items| items.get(index).map(|i| i.scope))
         .filter(|_| is_status_view)
-        .and_then(|item| match item.scope {
+        .and_then(|scope| match scope {
             StatusScope::Unstaged | StatusScope::Untracked => {
                 Some((Action::StageFile(index), lucide::PLUS, "Stage"))
             }
             StatusScope::Staged => Some((Action::UnstageFile(index), lucide::MINUS, "Unstage")),
         });
 
-    let hovered = state.file_list.hovered_index == Some(index);
+    let hovered = state.file_list.hovered_index.get(&state.store) == Some(index);
     let show_stage_btn = hovered || selected;
     let stage_btn: Option<AnyElement> =
         stage_action
@@ -805,8 +837,12 @@ fn commit_row(
     scale: f32,
     is_drilled: bool,
 ) -> AnyElement {
-    let row_height = state.file_list.row_height;
-    let selected = is_drilled && commit.oid.starts_with(&state.compare.left_ref);
+    let row_height = state.file_list.row_height.get(&state.store);
+    let selected = is_drilled
+        && state
+            .compare
+            .left_ref
+            .with(&state.store, |left| commit.oid.starts_with(left));
     let action = if selected {
         Action::ClearSidebarCommit
     } else {

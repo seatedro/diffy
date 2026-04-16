@@ -30,14 +30,14 @@ pub(crate) fn main_surface(
         state
             .workspace
             .selected_file_path
-            .as_deref()
-            .map(|file_label| viewport_toolbar(state, theme, file_label))
+            .get(&state.store)
+            .map(|file_label| viewport_toolbar(state, theme, &file_label))
     } else {
         None
     };
 
     let search = if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready
-        && state.editor.search.open
+        && state.editor.search.open.get(&state.store)
     {
         Some(search_bar(state, theme))
     } else {
@@ -46,7 +46,7 @@ pub(crate) fn main_surface(
 
     let vb = viewport_bounds.clone();
     let viewport_canvas = if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready
-        && state.workspace.active_file.is_some()
+        && state.workspace.active_file.with(&state.store, |af| af.is_some())
     {
         Some(
             canvas(move |bounds, _scene, _cx| {
@@ -61,17 +61,21 @@ pub(crate) fn main_surface(
 
     let content = match state.workspace_mode.get(&state.store) {
         WorkspaceMode::Loading => Some(loading_card(state, theme)),
-        WorkspaceMode::Ready if state.workspace.active_file.is_none() && !has_overlay => {
-            if state.workspace.source == WorkspaceSource::Status {
-                Some(status_ready_hint(theme, state.workspace.files.is_empty()))
-            } else if state.compare.repo_path.is_some() {
+        WorkspaceMode::Ready
+            if state.workspace.active_file.with(&state.store, |af| af.is_none())
+                && !has_overlay =>
+        {
+            if state.workspace.source.get(&state.store) == WorkspaceSource::Status {
+                let no_files = state.workspace.files.with(&state.store, |f| f.is_empty());
+                Some(status_ready_hint(theme, no_files))
+            } else if state.compare.repo_path.with(&state.store, |p| p.is_some()) {
                 Some(repo_ready_hint(theme))
             } else {
                 None
             }
         }
         WorkspaceMode::Empty if !has_overlay => {
-            if state.compare.repo_path.is_some() {
+            if state.compare.repo_path.with(&state.store, |p| p.is_some()) {
                 Some(repo_ready_hint(theme))
             } else {
                 Some(empty_state(state, theme))
@@ -93,8 +97,9 @@ pub(crate) fn main_surface(
 fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
-    let has_active_diff = state.workspace.active_file.is_some();
-    let selected_scope = state.workspace.selected_status_scope;
+    let has_active_diff = state.workspace.active_file.with(&state.store, |af| af.is_some());
+    let selected_scope = state.workspace.selected_status_scope.get(&state.store);
+    let compare_layout = state.compare.layout.get(&state.store);
     let show_stage = matches!(
         selected_scope,
         Some(
@@ -124,25 +129,25 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                         SegmentedItem::new(
                             "Split",
                             Action::SetLayoutMode(LayoutMode::Split),
-                            state.compare.layout == LayoutMode::Split,
+                            compare_layout == LayoutMode::Split,
                         ).tooltip("Side-by-side view"),
                         SegmentedItem::new(
                             "Unified",
                             Action::SetLayoutMode(LayoutMode::Unified),
-                            state.compare.layout == LayoutMode::Unified,
+                            compare_layout == LayoutMode::Unified,
                         ).tooltip("Inline view"),
                     ])}
                 }
                 if has_active_diff {
                     <Button action={Action::ToggleWrap}
-                            active={state.editor.wrap_enabled}
+                            active={state.editor.wrap_enabled.get(&state.store)}
                             tooltip={"Toggle line wrapping (w)"}>
                         <Icon>{lucide::WRAP_TEXT}</Icon>
                         <Label>{"Wrap"}</Label>
                     </Button>
                 }
-                if state.workspace.source == WorkspaceSource::Status
-                    && state.editor.line_selection.is_empty()
+                if state.workspace.source.get(&state.store) == WorkspaceSource::Status
+                    && state.editor.line_selection.with(&state.store, |ls| ls.is_empty())
                     && show_stage
                 {
                     <Button action={Action::StageSelectedFile}
@@ -152,8 +157,8 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                         <Label>{"Stage"}</Label>
                     </Button>
                 }
-                if state.workspace.source == WorkspaceSource::Status
-                    && state.editor.line_selection.is_empty()
+                if state.workspace.source.get(&state.store) == WorkspaceSource::Status
+                    && state.editor.line_selection.with(&state.store, |ls| ls.is_empty())
                     && show_unstage
                 {
                     <Button action={Action::UnstageSelectedFile}
@@ -163,8 +168,8 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                         <Label>{"Unstage"}</Label>
                     </Button>
                 }
-                if state.workspace.source == WorkspaceSource::Status
-                    && state.editor.line_selection.is_empty()
+                if state.workspace.source.get(&state.store) == WorkspaceSource::Status
+                    && state.editor.line_selection.with(&state.store, |ls| ls.is_empty())
                     && show_discard
                 {
                     <Button action={Action::DiscardSelectedFile}
@@ -174,8 +179,8 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                         <Label>{"Discard"}</Label>
                     </Button>
                 }
-                if state.workspace.source == WorkspaceSource::Status
-                    && !state.editor.line_selection.is_empty()
+                if state.workspace.source.get(&state.store) == WorkspaceSource::Status
+                    && !state.editor.line_selection.with(&state.store, |ls| ls.is_empty())
                     && show_stage
                 {
                     <Button action={Action::StageSelectedLines}
@@ -185,8 +190,8 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                         <Label>{"Stage Lines"}</Label>
                     </Button>
                 }
-                if state.workspace.source == WorkspaceSource::Status
-                    && !state.editor.line_selection.is_empty()
+                if state.workspace.source.get(&state.store) == WorkspaceSource::Status
+                    && !state.editor.line_selection.with(&state.store, |ls| ls.is_empty())
                     && show_unstage
                 {
                     <Button action={Action::UnstageSelectedLines}
@@ -196,8 +201,8 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                         <Label>{"Unstage Lines"}</Label>
                     </Button>
                 }
-                if state.workspace.source == WorkspaceSource::Status
-                    && !state.editor.line_selection.is_empty()
+                if state.workspace.source.get(&state.store) == WorkspaceSource::Status
+                    && !state.editor.line_selection.with(&state.store, |ls| ls.is_empty())
                     && show_discard
                 {
                     <Button action={Action::DiscardSelectedLines}
@@ -207,8 +212,8 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                         <Label>{"Discard Lines"}</Label>
                     </Button>
                 }
-                if state.workspace.source == WorkspaceSource::Status
-                    && !state.editor.line_selection.is_empty()
+                if state.workspace.source.get(&state.store) == WorkspaceSource::Status
+                    && !state.editor.line_selection.with(&state.store, |ls| ls.is_empty())
                 {
                     <Button action={Action::ClearLineSelection}
                             tooltip={"Clear line selection"}>
@@ -223,28 +228,29 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
 fn search_bar(state: &AppState, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
-    let search = &state.editor.search;
+    let search_query = state.editor.search.query.with(&state.store, |s| s.clone());
+    let match_count = state.editor.search.matches.with(&state.store, |m| m.len());
+    let active_index = state.editor.search.active_index.get(&state.store);
     let search_focused = state.focus.get(&state.store) == Some(FocusTarget::SearchInput);
 
-    let input = text_input("", &search.query)
+    let input = text_input("", &search_query)
         .placeholder("Find in diff\u{2026}")
         .focused(search_focused)
         .focus_target(FocusTarget::SearchInput)
-        .cursor(state.text_edit.cursor)
-        .anchor(state.text_edit.anchor)
-        .cursor_moved_at(state.text_edit.cursor_moved_at_ms)
+        .cursor(state.text_edit.cursor.get(&state.store))
+        .anchor(state.text_edit.anchor.get(&state.store))
+        .cursor_moved_at(state.text_edit.cursor_moved_at_ms.get(&state.store))
         .on_click(Action::SetFocus(Some(FocusTarget::SearchInput)))
         .bare()
         .w_full()
         .h(theme.metrics.ui_row_height.round());
 
-    let match_count = search.matches.len();
-    let count_label = if search.query.is_empty() {
+    let count_label = if search_query.is_empty() {
         String::new()
     } else if match_count == 0 {
         "No results".to_string()
     } else {
-        let idx = search.active_index.map(|i| i + 1).unwrap_or(0);
+        let idx = active_index.map(|i| i + 1).unwrap_or(0);
         format!("{}/{}", idx, match_count)
     };
 
@@ -308,23 +314,25 @@ fn loading_card(state: &AppState, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
 
-    let (title, detail) = if state.workspace.source == WorkspaceSource::Status {
+    let (title, detail) = if state.workspace.source.get(&state.store) == WorkspaceSource::Status {
         (
             "Loading diff\u{2026}",
             state
                 .workspace
                 .selected_file_path
-                .clone()
+                .get(&state.store)
                 .unwrap_or_else(|| "Working tree".to_owned()),
         )
     } else {
+        let left = state.compare.left_ref.get(&state.store);
+        let right = state.compare.right_ref.get(&state.store);
         (
             "Comparing repository\u{2026}",
             format!(
                 "{} \u{2022} {} \u{2192} {}",
-                compare_mode_label(state.compare.mode),
-                display_ref(&state.compare.left_ref),
-                display_ref(&state.compare.right_ref)
+                compare_mode_label(state.compare.mode.get(&state.store)),
+                display_ref(&left),
+                display_ref(&right)
             ),
         )
     };

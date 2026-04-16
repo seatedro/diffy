@@ -18,15 +18,19 @@ pub fn auth_modal(
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
 
-    let (status_icon, status_text) = if state.github.auth.token_present {
+    let token_present = state.github.auth.token_present.get(&state.store);
+    let device_flow = state.github.auth.device_flow.get(&state.store);
+    let has_flow = device_flow.is_some();
+
+    let (status_icon, status_text) = if token_present {
         (lucide::CHECK, "Token stored")
-    } else if state.github.auth.device_flow.is_some() {
+    } else if has_flow {
         (lucide::LOADER, "Waiting for authorization")
     } else {
         (lucide::SHIELD, "Not authenticated")
     };
 
-    let (action_icon, action_label, action) = if state.github.auth.device_flow.is_some() {
+    let (action_icon, action_label, action) = if has_flow {
         (
             lucide::EXTERNAL_LINK,
             "Open Browser",
@@ -40,7 +44,7 @@ pub fn auth_modal(
         )
     };
 
-    let action_tooltip = if state.github.auth.device_flow.is_some() {
+    let action_tooltip = if has_flow {
         "Open GitHub in your browser"
     } else {
         "Begin GitHub authentication"
@@ -61,7 +65,7 @@ pub fn auth_modal(
                 </div>
             </Body>
             <Body>
-                if let Some(flow) = state.github.auth.device_flow.as_ref() {
+                if let Some(flow) = device_flow.as_ref() {
                     <div class="flex-col" gap={Sp::MD} p={Sp::MD} rounded_md bg={tc.surface}>
                         <div class="flex-row shrink-0 items-center" gap={Sp::SM}>
                             <icon svg={lucide::COPY} size={Ico::SM} color={tc.text_muted} />

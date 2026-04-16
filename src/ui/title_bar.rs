@@ -21,17 +21,17 @@ pub(crate) fn title_bar(
 ) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
-    let has_repo = state.compare.repo_path.is_some();
-    let repo_loaded = state.repository.status == AsyncStatus::Ready;
+    let has_repo = state.compare.repo_path.with(&state.store, |p| p.is_some());
+    let repo_loaded = state.repository.status.get(&state.store) == AsyncStatus::Ready;
     let is_ready = state.workspace_mode.get(&state.store) == WorkspaceMode::Ready;
 
-    let repo_label = state
-        .compare
-        .repo_path
-        .as_ref()
-        .and_then(|path| path.file_name())
-        .and_then(|name| name.to_str())
-        .unwrap_or("diffy");
+    let repo_label = state.compare.repo_path.with(&state.store, |p| {
+        p.as_ref()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .unwrap_or("diffy")
+            .to_owned()
+    });
 
     let sidebar_icon = if sidebar_visible > 0.5 {
         lucide::PANEL_LEFT_CLOSE
@@ -39,20 +39,22 @@ pub(crate) fn title_bar(
         lucide::PANEL_LEFT_OPEN
     };
 
-    let left_label = if state.compare.left_ref.is_empty() {
-        "base"
+    let left_ref_value = state.compare.left_ref.get(&state.store);
+    let right_ref_value = state.compare.right_ref.get(&state.store);
+    let left_label = if left_ref_value.is_empty() {
+        "base".to_owned()
     } else {
-        &state.compare.left_ref
+        left_ref_value.clone()
     };
-    let right_label = if state.compare.right_ref.is_empty() {
-        "head"
-    } else if state.compare.right_ref == crate::core::vcs::git::service::WORKDIR_REF {
-        "working copy"
+    let right_label = if right_ref_value.is_empty() {
+        "head".to_owned()
+    } else if right_ref_value == crate::core::vcs::git::service::WORKDIR_REF {
+        "working copy".to_owned()
     } else {
-        &state.compare.right_ref
+        right_ref_value.clone()
     };
 
-    let (mode_label, mode_tooltip) = match state.compare.mode {
+    let (mode_label, mode_tooltip) = match state.compare.mode.get(&state.store) {
         CompareMode::SingleCommit => (
             "commit",
             "Single commit \u{2014} diff a commit against its parent",
@@ -64,7 +66,7 @@ pub(crate) fn title_bar(
         ),
     };
 
-    let pr_active = state.overlays.top() == Some(OverlaySurface::PullRequestModal);
+    let pr_active = state.overlays_top() == Some(OverlaySurface::PullRequestModal);
     view! { scale,
         <div class="flex-row items-center" min_w={0.0}
              h={theme.metrics.title_bar_height} w_full
@@ -82,7 +84,7 @@ pub(crate) fn title_bar(
                 }
                 if has_repo {
                     {ref_selector_button(
-                        repo_label,
+                        &repo_label,
                         lucide::FOLDER,
                         false,
                         Action::OpenRepoPicker,
@@ -105,9 +107,9 @@ pub(crate) fn title_bar(
                 if has_repo && repo_loaded {
                     <div class="flex-row items-center" gap={Sp::SM}>
                         {ref_selector_button(
-                            left_label,
+                            &left_label,
                             lucide::GIT_BRANCH,
-                            state.compare.left_ref.is_empty(),
+                            left_ref_value.is_empty(),
                             Action::OpenRefPicker(CompareField::Left),
                             "Select base ref",
                             tc,
@@ -122,9 +124,9 @@ pub(crate) fn title_bar(
                             <text class="text-xs font-medium" color={tc.text_muted}>{mode_label}</text>
                         </div>
                         {ref_selector_button(
-                            right_label,
+                            &right_label,
                             lucide::GIT_BRANCH,
-                            state.compare.right_ref.is_empty(),
+                            right_ref_value.is_empty(),
                             Action::OpenRefPicker(CompareField::Right),
                             "Select head ref",
                             tc,
@@ -146,7 +148,7 @@ pub(crate) fn title_bar(
                 </Button>
                 if is_ready {
                     <Button action={Action::ShowWorkingTree}
-                            active={state.workspace.source == WorkspaceSource::Status}
+                            active={state.workspace.source.get(&state.store) == WorkspaceSource::Status}
                             tooltip={"Show working tree changes"}>
                         <Icon>{lucide::FOLDER_GIT}</Icon>
                         <Label>{"Working tree"}</Label>

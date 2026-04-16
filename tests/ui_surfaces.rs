@@ -62,7 +62,9 @@ fn overflowing_sidebar_registers_a_file_list_scrollbar_track() {
 fn sidebar_expands_for_long_file_names_when_not_manually_resized() {
     let mut state = ready_state_with_files(3);
     let long_path = "src/features/worktree/native/sidebar/this_is_a_deliberately_extremely_long_filename_for_layout_regression_checks.rs".to_owned();
-    state.workspace.files[1].path = long_path.clone();
+    state.workspace.files.update(&state.store, |files| {
+        files[1].path = long_path.clone();
+    });
     let frame = render_frame(&mut state);
 
     // The sidebar splits paths into filename + directory, so check for the filename part.

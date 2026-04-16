@@ -97,6 +97,7 @@ pub(crate) fn main_surface(
 fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
+    let cx = &*state.store;
     let has_active_diff = state.workspace.active_file.with(&state.store, |af| af.is_some());
     let selected_scope = state.workspace.selected_status_scope.get(&state.store);
     let compare_layout = state.compare.layout.get(&state.store);
@@ -140,7 +141,7 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                 }
                 if has_active_diff {
                     <Button action={Action::ToggleWrap}
-                            active={state.editor.wrap_enabled.get(&state.store)}
+                            active={@state.editor.wrap_enabled}
                             tooltip={"Toggle line wrapping (w)"}>
                         <Icon>{lucide::WRAP_TEXT}</Icon>
                         <Label>{"Wrap"}</Label>

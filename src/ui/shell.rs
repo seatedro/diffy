@@ -12,7 +12,7 @@ use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::overlays;
 use crate::ui::sidebar as sidebar_mod;
-use crate::ui::state::{AppState, WorkspaceMode, WorkspaceSource};
+use crate::ui::state::{AppState, WorkspaceSource};
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
 use crate::ui::title_bar;

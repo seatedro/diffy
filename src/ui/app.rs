@@ -374,7 +374,6 @@ impl NativeApp {
         self.runtime.dispatch_all(effects);
         self.sync_theme();
         self.refresh_window_title();
-        self.mark_dirty();
     }
 
     fn apply_input_outcome(&mut self, outcome: crate::input::InputOutcome) {

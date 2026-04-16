@@ -99,3 +99,72 @@ pub fn apply_override(base: &mut ElementStyle, ov: &StyleOverride) {
         base.opacity = op;
     }
 }
+
+#[derive(Debug, Clone, Copy)]
+pub enum BackgroundEffect {
+    NoiseGradient {
+        scale: f32,
+        color_a: Color,
+        color_b: Color,
+    },
+    LinearGradient {
+        angle: f32,
+        color_a: Color,
+        color_b: Color,
+    },
+    RadialGradient {
+        color_a: Color,
+        color_b: Color,
+    },
+    Shimmer {
+        base: Color,
+        highlight: Color,
+        speed: f32,
+    },
+    Vignette {
+        color: Color,
+        intensity: f32,
+    },
+    ColorTint {
+        color: Color,
+    },
+}
+
+pub fn noise_gradient(scale: f32, color_a: Color, color_b: Color) -> BackgroundEffect {
+    BackgroundEffect::NoiseGradient {
+        scale,
+        color_a,
+        color_b,
+    }
+}
+
+pub fn linear_gradient(angle: f32, color_a: Color, color_b: Color) -> BackgroundEffect {
+    BackgroundEffect::LinearGradient {
+        angle,
+        color_a,
+        color_b,
+    }
+}
+
+pub fn radial_gradient(center: Color, edge: Color) -> BackgroundEffect {
+    BackgroundEffect::RadialGradient {
+        color_a: center,
+        color_b: edge,
+    }
+}
+
+pub fn shimmer(base: Color, highlight: Color, speed: f32) -> BackgroundEffect {
+    BackgroundEffect::Shimmer {
+        base,
+        highlight,
+        speed,
+    }
+}
+
+pub fn vignette(color: Color, intensity: f32) -> BackgroundEffect {
+    BackgroundEffect::Vignette { color, intensity }
+}
+
+pub fn color_tint(color: Color) -> BackgroundEffect {
+    BackgroundEffect::ColorTint { color }
+}

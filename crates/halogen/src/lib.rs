@@ -26,4 +26,4 @@ pub use scene::{
     EffectType, FontKind, FontWeight, IconPrimitive, ImagePrimitive, Primitive, RectPrimitive,
     RichTextPrimitive, RichTextSpan, RoundedRectPrimitive, Scene, ShadowPrimitive, TextPrimitive,
 };
-pub use style::{ElementStyle, ShadowStyle, StyleOverride, apply_override};
+pub use style::{BackgroundEffect, ElementStyle, ShadowStyle, StyleOverride, apply_override};

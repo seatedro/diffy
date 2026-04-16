@@ -829,86 +829,10 @@ use crate::render::{BorderPrimitive, FontWeight, RoundedRectPrimitive, ShadowPri
 use crate::ui::style::{ElementStyle, StyleOverride, Styled, apply_override};
 use crate::ui::theme::Color;
 
-// ---------------------------------------------------------------------------
-// BackgroundEffect — procedural GPU-computed backgrounds
-// ---------------------------------------------------------------------------
-
-/// A procedural background effect rendered by the GPU effect shader.
-#[derive(Debug, Clone, Copy)]
-pub enum BackgroundEffect {
-    /// Simplex noise blended between two colors. `scale` controls noise
-    /// frequency (try 0.01–0.05 for subtle, 0.1+ for coarse).
-    NoiseGradient {
-        scale: f32,
-        color_a: Color,
-        color_b: Color,
-    },
-    /// Linear gradient between two colors at the given angle (radians).
-    /// 0 = left→right, π/2 = top→bottom.
-    LinearGradient {
-        angle: f32,
-        color_a: Color,
-        color_b: Color,
-    },
-    /// Radial gradient — `color_a` at center, `color_b` at edge.
-    RadialGradient { color_a: Color, color_b: Color },
-    /// Animated diagonal shimmer sweep (loading skeleton).
-    /// `speed` controls animation speed (try 1.0–3.0).
-    Shimmer {
-        base: Color,
-        highlight: Color,
-        speed: f32,
-    },
-    /// Edge darkening/tinting. `intensity` controls falloff (try 0.3–0.8).
-    Vignette { color: Color, intensity: f32 },
-    /// Flat semi-transparent color overlay.
-    ColorTint { color: Color },
-}
-
-/// Convenience: create a noise gradient background effect.
-pub fn noise_gradient(scale: f32, color_a: Color, color_b: Color) -> BackgroundEffect {
-    BackgroundEffect::NoiseGradient {
-        scale,
-        color_a,
-        color_b,
-    }
-}
-
-/// Convenience: create a linear gradient background effect.
-pub fn linear_gradient(angle: f32, color_a: Color, color_b: Color) -> BackgroundEffect {
-    BackgroundEffect::LinearGradient {
-        angle,
-        color_a,
-        color_b,
-    }
-}
-
-/// Convenience: create a radial gradient (center → edge).
-pub fn radial_gradient(center: Color, edge: Color) -> BackgroundEffect {
-    BackgroundEffect::RadialGradient {
-        color_a: center,
-        color_b: edge,
-    }
-}
-
-/// Convenience: create an animated shimmer (loading skeleton effect).
-pub fn shimmer(base: Color, highlight: Color, speed: f32) -> BackgroundEffect {
-    BackgroundEffect::Shimmer {
-        base,
-        highlight,
-        speed,
-    }
-}
-
-/// Convenience: create a vignette (edge darkening).
-pub fn vignette(color: Color, intensity: f32) -> BackgroundEffect {
-    BackgroundEffect::Vignette { color, intensity }
-}
-
-/// Convenience: create a flat color tint overlay.
-pub fn color_tint(color: Color) -> BackgroundEffect {
-    BackgroundEffect::ColorTint { color }
-}
+pub use halogen::style::{
+    BackgroundEffect, color_tint, linear_gradient, noise_gradient, radial_gradient, shimmer,
+    vignette,
+};
 
 /// A flexbox container. The core building block.
 pub struct Div {

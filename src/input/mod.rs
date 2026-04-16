@@ -386,7 +386,11 @@ impl InputSystem {
 }
 
 pub fn resolve_input_context(state: &AppState, ime_active: bool) -> InputContext {
-    let owner = if let Some(target) = state.focus.get(&state.store).filter(|_| state.is_text_focused()) {
+    let owner = if let Some(target) = state
+        .focus
+        .get(&state.store)
+        .filter(|_| state.is_text_focused())
+    {
         InputOwner::TextField(target)
     } else if let Some(overlay) = state.overlays.top() {
         InputOwner::Overlay(overlay)

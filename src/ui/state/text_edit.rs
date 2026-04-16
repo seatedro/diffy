@@ -244,7 +244,10 @@ impl AppState {
                 );
             }
         }
-        if matches!(self.focus.get(&self.store), Some(FocusTarget::CommandPaletteInput)) {
+        if matches!(
+            self.focus.get(&self.store),
+            Some(FocusTarget::CommandPaletteInput)
+        ) {
             if let Some(entry) = self
                 .overlays
                 .command_palette

@@ -202,7 +202,9 @@ impl From<&AppState> for StateDump {
                 .collect(),
             settings: SettingsDump::from(&state.settings),
             debug: DebugDump {
-                last_scene_primitive_count: state.store.read(state.debug.last_scene_primitive_count),
+                last_scene_primitive_count: state
+                    .store
+                    .read(state.debug.last_scene_primitive_count),
                 last_frame_time_us: state.store.read(state.debug.last_frame_time_us),
             },
         }

@@ -2233,7 +2233,9 @@ impl AppState {
     }
 
     fn focused_text(&self) -> Option<&str> {
-        self.focus.get(&self.store).and_then(|t| self.text_for_focus(t))
+        self.focus
+            .get(&self.store)
+            .and_then(|t| self.text_for_focus(t))
     }
 
     fn focused_text_mut(&mut self) -> Option<&mut String> {

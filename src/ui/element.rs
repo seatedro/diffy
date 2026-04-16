@@ -13,8 +13,8 @@ use crate::render::Scene;
 use crate::render::scene::{BlurRegionPrimitive, EffectQuadPrimitive, EffectType, Rect};
 use crate::ui::design::{Alpha, Sz};
 use crate::ui::shell::CursorHint;
-use halogen::reactive::{Signal, SignalStore};
 use crate::ui::theme::Theme;
+use halogen::reactive::{Signal, SignalStore};
 
 pub use taffy::NodeId as LayoutId;
 

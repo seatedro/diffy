@@ -3,23 +3,20 @@
 use halogen::Store;
 use halogen::reactive::SignalStore;
 
-#[derive(Debug, Clone, Default, PartialEq)]
-#[derive(Store)]
+#[derive(Debug, Clone, Default, PartialEq, Store)]
 pub struct Pane {
     pub scroll_px: f32,
     pub hovered: Option<usize>,
     pub filter: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
-#[derive(Store)]
+#[derive(Debug, Clone, Default, PartialEq, Store)]
 pub struct PaneDebug {
     pub last_primitive_count: usize,
     pub last_frame_us: u64,
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
-#[derive(Store)]
+#[derive(Debug, Clone, Default, PartialEq, Store)]
 pub struct Workspace {
     pub ready: bool,
     #[store(flatten)]

@@ -267,9 +267,10 @@ impl NativeApp {
 
         if self.state.startup.hidden_window {
             let frame = self.build_frame();
-            self.state
-                .store
-                .write(self.state.debug.last_scene_primitive_count, frame.scene.len());
+            self.state.store.write(
+                self.state.debug.last_scene_primitive_count,
+                frame.scene.len(),
+            );
             self.ui_frame = frame;
         }
 

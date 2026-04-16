@@ -262,14 +262,18 @@ fn workspace_key_actions_inner(
                 None
             }
         }
-        Some(NamedKey::PageDown) if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready => {
+        Some(NamedKey::PageDown)
+            if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready =>
+        {
             if state.focus.get(&state.store) == Some(FocusTarget::Editor) {
                 Some(vec![Action::ScrollViewportPages(1)])
             } else {
                 Some(vec![Action::ScrollFileList(10)])
             }
         }
-        Some(NamedKey::PageUp) if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready => {
+        Some(NamedKey::PageUp)
+            if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready =>
+        {
             if state.focus.get(&state.store) == Some(FocusTarget::Editor) {
                 Some(vec![Action::ScrollViewportPages(-1)])
             } else {
@@ -289,7 +293,9 @@ fn workspace_key_actions_inner(
             if ch == "?" {
                 return Some(vec![Action::ShowKeyboardShortcuts]);
             }
-            if state.overlays.top().is_some() || state.workspace_mode.get(&state.store) != WorkspaceMode::Ready {
+            if state.overlays.top().is_some()
+                || state.workspace_mode.get(&state.store) != WorkspaceMode::Ready
+            {
                 return None;
             }
             match ch {
@@ -380,11 +386,13 @@ fn cycle_focus_target(state: &AppState) -> Option<FocusTarget> {
             Some(FocusTarget::FileList) => Some(FocusTarget::Editor),
             Some(FocusTarget::Editor) => Some(FocusTarget::FileList),
             Some(FocusTarget::WorkspacePrimaryButton) => Some(FocusTarget::TitleBar),
-            _ => Some(if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready {
-                FocusTarget::FileList
-            } else {
-                FocusTarget::WorkspacePrimaryButton
-            }),
+            _ => Some(
+                if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready {
+                    FocusTarget::FileList
+                } else {
+                    FocusTarget::WorkspacePrimaryButton
+                },
+            ),
         },
     }
 }

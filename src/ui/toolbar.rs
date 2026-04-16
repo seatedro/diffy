@@ -36,25 +36,28 @@ pub(crate) fn main_surface(
         None
     };
 
-    let search = if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready && state.editor.search.open {
+    let search = if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready
+        && state.editor.search.open
+    {
         Some(search_bar(state, theme))
     } else {
         None
     };
 
     let vb = viewport_bounds.clone();
-    let viewport_canvas =
-        if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready && state.workspace.active_file.is_some() {
-            Some(
-                canvas(move |bounds, _scene, _cx| {
-                    vb.set(Some(bounds));
-                })
-                .flex_1()
-                .into_any(),
-            )
-        } else {
-            None
-        };
+    let viewport_canvas = if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready
+        && state.workspace.active_file.is_some()
+    {
+        Some(
+            canvas(move |bounds, _scene, _cx| {
+                vb.set(Some(bounds));
+            })
+            .flex_1()
+            .into_any(),
+        )
+    } else {
+        None
+    };
 
     let content = match state.workspace_mode.get(&state.store) {
         WorkspaceMode::Loading => Some(loading_card(state, theme)),

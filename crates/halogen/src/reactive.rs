@@ -198,7 +198,10 @@ impl std::fmt::Debug for SignalStore {
         match self.inner.try_borrow() {
             Ok(inner) => f
                 .debug_struct("SignalStore")
-                .field("len", &inner.slots.iter().filter(|s| s.value.is_some()).count())
+                .field(
+                    "len",
+                    &inner.slots.iter().filter(|s| s.value.is_some()).count(),
+                )
                 .field("any_dirty", &inner.any_dirty)
                 .finish(),
             Err(_) => f.write_str("SignalStore { <borrowed> }"),
@@ -224,16 +227,16 @@ impl SignalStore {
     /// Shared-borrow helper. Panics with a clear message on re-entrancy
     /// (e.g. attempting a write from inside a read or vice versa).
     fn inner_ref(&self) -> std::cell::Ref<'_, Inner> {
-        self.inner.try_borrow().expect(
-            "signal store re-entrancy: tried to read while a write is in progress",
-        )
+        self.inner
+            .try_borrow()
+            .expect("signal store re-entrancy: tried to read while a write is in progress")
     }
 
     /// Exclusive-borrow helper. Panics on re-entrancy.
     fn inner_mut(&self) -> std::cell::RefMut<'_, Inner> {
-        self.inner.try_borrow_mut().expect(
-            "signal store re-entrancy: tried to write while another access is in progress",
-        )
+        self.inner
+            .try_borrow_mut()
+            .expect("signal store re-entrancy: tried to write while another access is in progress")
     }
 
     /// Create a new signal with the given initial value.
@@ -373,11 +376,7 @@ impl SignalStore {
     /// Write only if the new value differs from the current one (`PartialEq`).
     /// Returns `true` if the write happened. Use when pushing values that may
     /// be equal frame-to-frame so stable values don't re-dirty subscribers.
-    pub fn set_if_changed<T: 'static + PartialEq>(
-        &self,
-        signal: Signal<T>,
-        value: T,
-    ) -> bool {
+    pub fn set_if_changed<T: 'static + PartialEq>(&self, signal: Signal<T>, value: T) -> bool {
         let idx = signal.id.index as usize;
         {
             let mut inner = self.inner_mut();

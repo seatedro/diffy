@@ -38,14 +38,16 @@ fn parse_store_field_attr(attrs: &[syn::Attribute]) -> Result<FieldKind> {
             } else if m.path.is_ident("skip") {
                 (FieldKind::Skip, "skip")
             } else {
-                return Err(m.error(
-                    "unknown `#[store(...)]` attribute; supported: `flatten`, `skip`",
-                ));
+                return Err(
+                    m.error("unknown `#[store(...)]` attribute; supported: `flatten`, `skip`")
+                );
             };
             if let Some((_, prev_span)) = kind {
                 let mut err = syn::Error::new(
                     m.path.span(),
-                    format!("conflicting `#[store({label})]` — field already has a store attribute"),
+                    format!(
+                        "conflicting `#[store({label})]` — field already has a store attribute"
+                    ),
                 );
                 err.combine(syn::Error::new(
                     prev_span,

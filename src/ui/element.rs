@@ -194,11 +194,7 @@ impl ScrollActionBuilder {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct TooltipRegion {
-    pub bounds: Bounds,
-    pub text: String,
-}
+pub use halogen::hit::TooltipRegion;
 
 // ---------------------------------------------------------------------------
 // ElementContext

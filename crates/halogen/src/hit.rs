@@ -148,6 +148,15 @@ pub struct Hitbox {
     pub z_index: i32,
 }
 
+/// A tooltip-bearing rectangle collected during paint. The host app drains
+/// these off the built UI frame each tick and renders the tooltip when the
+/// cursor lingers inside `bounds`.
+#[derive(Debug, Clone)]
+pub struct TooltipRegion {
+    pub bounds: Rect,
+    pub text: String,
+}
+
 /// Resolve which hitboxes are hovered given the current mouse position.
 ///
 /// Walks candidates whose bounds contain the mouse, orders them by z-index

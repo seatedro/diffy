@@ -19,7 +19,7 @@ pub use color::Color;
 pub use geometry::Rect;
 pub use hit::{
     ClickEvent, ClickHandler, CursorHint, HitIdentity, HitRegion, Hitbox, HitboxBehavior, HitboxId,
-    resolve_hovered,
+    TooltipRegion, resolve_hovered,
 };
 pub use scene::{
     BlurRegionPrimitive, BorderPrimitive, ClipPrimitive, EditorTextSlot, EffectQuadPrimitive,

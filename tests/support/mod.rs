@@ -7,7 +7,7 @@ use diffy::render::{Primitive, Rect, TextMetrics};
 use diffy::ui::editor::element::EditorElement;
 use diffy::ui::element::{ElementContext, ScrollActionBuilder};
 use diffy::ui::shell::{UiFrame, build_ui_frame};
-use diffy::ui::signals::SignalStore;
+use halogen::reactive::SignalStore;
 use diffy::ui::state::{
     ActiveFile, AppState, AsyncStatus, CommandPaletteState, FileListEntry, FocusTarget,
     OverlayEntry, OverlayListState, OverlaySurface, PaletteCommand, PaletteEntry, PaletteEntryKind,
@@ -25,8 +25,8 @@ pub fn render_frame(state: &mut AppState) -> UiFrame {
 pub fn render_frame_in(state: &mut AppState, width: f32, height: f32) -> UiFrame {
     let theme = Theme::default_dark().with_ui_scale(state.ui_scale_factor());
     let mut font_system = diffy::fonts::new_font_system();
-    let mut store = SignalStore::new();
-    let mut cx = ElementContext::new(&theme, 1.0, &mut font_system, None, &mut store);
+    let store = SignalStore::default();
+    let mut cx = ElementContext::new(&theme, 1.0, &mut font_system, None, &store);
     let mut editor = EditorElement::default();
 
     build_ui_frame(
@@ -53,7 +53,7 @@ pub fn empty_state_with_recents() -> AppState {
 }
 
 pub fn ready_state_with_files(file_count: usize) -> AppState {
-    let mut state = AppState::default();
+    let state = AppState::default();
     state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
     state
         .compare
@@ -109,7 +109,7 @@ pub fn ready_state_with_files(file_count: usize) -> AppState {
 }
 
 pub fn repo_picker_state(entry_count: usize) -> AppState {
-    let mut state = AppState::default();
+    let state = AppState::default();
     state
         .compare
         .repo_path
@@ -170,12 +170,14 @@ pub fn repo_picker_state(entry_count: usize) -> AppState {
         .picker
         .ref_resolve_generation
         .set(&state.store, picker.ref_resolve_generation);
-    state.focus.current = Some(FocusTarget::PickerInput);
+    state
+        .focus
+        .set(&state.store, Some(FocusTarget::PickerInput));
     state
 }
 
 pub fn command_palette_state(entry_count: usize) -> AppState {
-    let mut state = ready_state_with_files(8);
+    let state = ready_state_with_files(8);
     state.overlays.stack.update(&state.store, |stack| {
         stack.push(OverlayEntry {
             surface: OverlaySurface::CommandPalette,
@@ -222,54 +224,69 @@ pub fn command_palette_state(entry_count: usize) -> AppState {
         .command_palette
         .list
         .set(&state.store, palette.list);
-    state.focus.current = Some(FocusTarget::CommandPaletteInput);
+    state
+        .focus
+        .set(&state.store, Some(FocusTarget::CommandPaletteInput));
     state
 }
 
 pub fn pull_request_modal_state() -> AppState {
-    let mut state = ready_state_with_files(3);
+    let state = ready_state_with_files(3);
     state.overlays.stack.update(&state.store, |stack| {
         stack.push(OverlayEntry {
             surface: OverlaySurface::PullRequestModal,
             focus_return: Some(FocusTarget::TitleBar),
         });
     });
-    state.focus.current = Some(FocusTarget::PullRequestInput);
-    state.github.pull_request.url_input = "https://github.com/owner/repo/pull/42".to_owned();
-    state.github.pull_request.info = Some(PullRequestInfo {
-        title: "Improve scroll plumbing".to_owned(),
-        state: "open".to_owned(),
-        author_login: "ro".to_owned(),
-        number: 42,
-        additions: 12,
-        deletions: 3,
-        changed_files: 2,
-        base_branch: "main".to_owned(),
-        head_branch: "feature/native-ui".to_owned(),
-        base_sha: "abc".to_owned(),
-        head_sha: "def".to_owned(),
-        base_repo_url: "https://github.com/owner/repo.git".to_owned(),
-        head_repo_url: "https://github.com/owner/repo.git".to_owned(),
-    });
+    state
+        .focus
+        .set(&state.store, Some(FocusTarget::PullRequestInput));
+    state.github.pull_request.url_input.set(
+        &state.store,
+        "https://github.com/owner/repo/pull/42".to_owned(),
+    );
+    state.github.pull_request.info.set(
+        &state.store,
+        Some(PullRequestInfo {
+            title: "Improve scroll plumbing".to_owned(),
+            state: "open".to_owned(),
+            author_login: "ro".to_owned(),
+            number: 42,
+            additions: 12,
+            deletions: 3,
+            changed_files: 2,
+            base_branch: "main".to_owned(),
+            head_branch: "feature/native-ui".to_owned(),
+            base_sha: "abc".to_owned(),
+            head_sha: "def".to_owned(),
+            base_repo_url: "https://github.com/owner/repo.git".to_owned(),
+            head_repo_url: "https://github.com/owner/repo.git".to_owned(),
+        }),
+    );
     state
 }
 
 pub fn auth_modal_state(with_device_flow: bool) -> AppState {
-    let mut state = AppState::default();
+    let state = AppState::default();
     state.overlays.stack.update(&state.store, |stack| {
         stack.push(OverlayEntry {
             surface: OverlaySurface::GitHubAuthModal,
             focus_return: Some(FocusTarget::TitleBar),
         });
     });
-    state.focus.current = Some(FocusTarget::AuthPrimaryAction);
-    state.github.auth.token_present = false;
-    state.github.auth.device_flow = with_device_flow.then_some(DeviceFlowState {
-        device_code: "device-code".to_owned(),
-        user_code: "ABCD-EFGH".to_owned(),
-        verification_uri: "https://github.com/login/device".to_owned(),
-        interval: 5,
-    });
+    state
+        .focus
+        .set(&state.store, Some(FocusTarget::AuthPrimaryAction));
+    state.github.auth.token_present.set(&state.store, false);
+    state.github.auth.device_flow.set(
+        &state.store,
+        with_device_flow.then_some(DeviceFlowState {
+            device_code: "device-code".to_owned(),
+            user_code: "ABCD-EFGH".to_owned(),
+            verification_uri: "https://github.com/login/device".to_owned(),
+            interval: 5,
+        }),
+    );
     state
 }
 

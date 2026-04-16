@@ -116,3 +116,75 @@ impl<R: 'static> HitRegion<R> {
         self
     }
 }
+
+// ---------------------------------------------------------------------------
+// Hitbox — prepaint-phase interaction regions with z-ordering and blocking
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HitboxId(usize);
+
+impl HitboxId {
+    pub fn new(id: usize) -> Self {
+        Self(id)
+    }
+
+    pub fn raw(self) -> usize {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HitboxBehavior {
+    Normal,
+    BlockMouse,
+}
+
+#[derive(Debug, Clone)]
+pub struct Hitbox {
+    pub id: HitboxId,
+    pub bounds: Rect,
+    pub behavior: HitboxBehavior,
+    pub z_index: i32,
+}
+
+/// Resolve which hitboxes are hovered given the current mouse position.
+///
+/// Walks candidates whose bounds contain the mouse, orders them by z-index
+/// descending (with last-registered winning ties), then culls any hitbox
+/// behind a `BlockMouse` whose bounds overlap the blocker.
+pub fn resolve_hovered(hitboxes: &[Hitbox], mouse: Option<(f32, f32)>) -> Vec<HitboxId> {
+    let mouse = match mouse {
+        Some(pos) => pos,
+        None => return Vec::new(),
+    };
+
+    let mut candidates: Vec<(HitboxId, Rect, HitboxBehavior, i32)> = Vec::new();
+    for hb in hitboxes {
+        if hb.bounds.contains(mouse.0, mouse.1) {
+            candidates.push((hb.id, hb.bounds, hb.behavior, hb.z_index));
+        }
+    }
+
+    candidates.reverse();
+    candidates.sort_by(|a, b| b.3.cmp(&a.3));
+
+    let mut hovered = Vec::new();
+    let mut blocked_regions: Vec<Rect> = Vec::new();
+
+    for &(id, bounds, behavior, _z) in &candidates {
+        let is_blocked = blocked_regions
+            .iter()
+            .any(|blocker| blocker.intersection(bounds).is_some());
+
+        if !is_blocked {
+            hovered.push(id);
+        }
+
+        if behavior == HitboxBehavior::BlockMouse {
+            blocked_regions.push(bounds);
+        }
+    }
+
+    hovered
+}

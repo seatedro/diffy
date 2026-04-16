@@ -17,7 +17,10 @@ pub mod style;
 
 pub use color::Color;
 pub use geometry::Rect;
-pub use hit::{ClickEvent, ClickHandler, CursorHint, HitIdentity, HitRegion};
+pub use hit::{
+    ClickEvent, ClickHandler, CursorHint, Hitbox, HitboxBehavior, HitboxId, HitIdentity,
+    HitRegion, resolve_hovered,
+};
 pub use scene::{
     BlurRegionPrimitive, BorderPrimitive, ClipPrimitive, EditorTextSlot, EffectQuadPrimitive,
     EffectType, FontKind, FontWeight, IconPrimitive, ImagePrimitive, Primitive, RectPrimitive,

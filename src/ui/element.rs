@@ -13,7 +13,9 @@ use crate::render::Scene;
 use crate::render::scene::{BlurRegionPrimitive, EffectQuadPrimitive, EffectType, Rect};
 use crate::ui::design::{Alpha, Sz};
 use crate::ui::theme::Theme;
-pub use halogen::hit::{ClickEvent, CursorHint, HitIdentity};
+pub use halogen::hit::{
+    ClickEvent, CursorHint, HitIdentity, Hitbox, HitboxBehavior, HitboxId,
+};
 use halogen::reactive::{Signal, SignalStore};
 
 pub use taffy::NodeId as LayoutId;
@@ -151,33 +153,6 @@ impl DragHandler for ScrollbarDragHandler {
         DragReleaseResult::empty()
     }
 }
-
-// ---------------------------------------------------------------------------
-// HitboxId / Hitbox — hitbox system for prepaint-phase interaction
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct HitboxId(usize);
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum HitboxBehavior {
-    /// Normal hitbox — participates in hover detection.
-    Normal,
-    /// Blocks mouse events from reaching hitboxes painted earlier (behind it).
-    BlockMouse,
-}
-
-#[derive(Debug, Clone)]
-pub struct Hitbox {
-    pub id: HitboxId,
-    pub bounds: Bounds,
-    pub behavior: HitboxBehavior,
-    pub z_index: i32,
-}
-
-// ---------------------------------------------------------------------------
-// ElementContext — shared state available during layout, prepaint, and paint
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // ScrollRegion — registered during prepaint for scroll wheel dispatch
@@ -388,9 +363,8 @@ impl<'a> ElementContext<'a> {
         self.hits.push(HitRegion::new(bounds, cursor, handler));
     }
 
-    /// Register a hitbox during prepaint. Returns an ID for later hover queries.
     pub fn insert_hitbox(&mut self, bounds: Bounds, behavior: HitboxBehavior) -> HitboxId {
-        let id = HitboxId(self.next_hitbox_id);
+        let id = HitboxId::new(self.next_hitbox_id);
         self.next_hitbox_id += 1;
         self.hitboxes.push(Hitbox {
             id,
@@ -401,50 +375,13 @@ impl<'a> ElementContext<'a> {
         id
     }
 
-    /// Returns true if the given hitbox is hovered (determined after `run_hit_test`).
     pub fn is_hovered(&self, id: HitboxId) -> bool {
         self.hovered_hitboxes.contains(&id)
     }
 
-    /// Run hit-testing: walk hitboxes back-to-front (last registered = topmost).
-    /// If a `BlockMouse` hitbox contains the mouse, all hitboxes behind it that
-    /// overlap with the blocking hitbox are excluded from hover.
     pub fn run_hit_test(&mut self) {
-        self.hovered_hitboxes.clear();
-        let mouse = match self.mouse_position {
-            Some(pos) => pos,
-            None => return,
-        };
-
-        // Collect which hitboxes the mouse is inside.
-        let mut candidates: Vec<(HitboxId, Bounds, HitboxBehavior, i32)> = Vec::new();
-        for hb in &self.hitboxes {
-            if hb.bounds.contains(mouse.0, mouse.1) {
-                candidates.push((hb.id, hb.bounds, hb.behavior, hb.z_index));
-            }
-        }
-
-        // Reverse so last-registered (topmost within same paint order) comes first,
-        // then stable-sort by z_index descending. Result: highest z first, and
-        // within same z, last-registered first.
-        candidates.reverse();
-        candidates.sort_by(|a, b| b.3.cmp(&a.3));
-
-        let mut blocked_regions: Vec<Bounds> = Vec::new();
-
-        for &(id, bounds, behavior, _z) in &candidates {
-            let is_blocked = blocked_regions
-                .iter()
-                .any(|blocker| blocker.intersection(bounds).is_some());
-
-            if !is_blocked {
-                self.hovered_hitboxes.push(id);
-            }
-
-            if behavior == HitboxBehavior::BlockMouse {
-                blocked_regions.push(bounds);
-            }
-        }
+        self.hovered_hitboxes =
+            halogen::hit::resolve_hovered(&self.hitboxes, self.mouse_position);
     }
 }
 

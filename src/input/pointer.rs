@@ -75,22 +75,17 @@ impl InputSystem {
             .rev()
             .find_map(|(i, hit)| hit.rect.contains(x, y).then_some(i))
         {
-            let hit = &mut ui_frame.hits[idx];
+            let hit = &ui_frame.hits[idx];
             let mut actions = Vec::new();
-            if let Some(handler) = hit.on_click.take() {
-                match handler.invoke(ClickEvent { x, y }) {
-                    ClickResult::Handled => {}
-                    ClickResult::Actions(handler_actions) => actions.extend(handler_actions),
-                    ClickResult::CaptureDrag(drag) => {
-                        self.pointer_capture = Some(drag);
-                    }
+            if matches!(hit.identity, Some(HitIdentity::File(_))) {
+                actions.push(Action::SetFocus(Some(FocusTarget::FileList)));
+            }
+            match hit.on_click.invoke(ClickEvent { x, y }) {
+                ClickResult::Handled => {}
+                ClickResult::Actions(handler_actions) => actions.extend(handler_actions),
+                ClickResult::CaptureDrag(drag) => {
+                    self.pointer_capture = Some(drag);
                 }
-            } else {
-                let action = hit.action.clone();
-                if matches!(hit.identity, Some(HitIdentity::File(_))) {
-                    actions.push(Action::SetFocus(Some(FocusTarget::FileList)));
-                }
-                actions.push(action);
             }
             return InputOutcome::actions(actions);
         }

@@ -44,19 +44,17 @@ pub enum HitIdentity {
 #[derive(Debug, Clone)]
 pub struct HitRegion {
     pub rect: Rect,
-    pub action: Action,
     pub cursor: CursorHint,
-    pub on_click: Option<ClickHandler>,
+    pub on_click: ClickHandler,
     pub identity: Option<HitIdentity>,
 }
 
 impl HitRegion {
-    pub fn from_action(rect: Rect, action: Action, cursor: CursorHint) -> Self {
+    pub fn new(rect: Rect, cursor: CursorHint, on_click: ClickHandler) -> Self {
         Self {
             rect,
-            action,
             cursor,
-            on_click: None,
+            on_click,
             identity: None,
         }
     }
@@ -65,37 +63,38 @@ impl HitRegion {
         self.identity = Some(identity);
         self
     }
-
-    pub fn with_click_handler(rect: Rect, cursor: CursorHint, handler: ClickHandler) -> Self {
-        Self {
-            rect,
-            action: Action::Noop,
-            cursor,
-            on_click: Some(handler),
-            identity: None,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
 // ClickHandler / ClickResult / DragHandler — composable event dispatch
 // ---------------------------------------------------------------------------
 
-pub struct ClickHandler(Box<dyn FnOnce(ClickEvent) -> ClickResult>);
+#[derive(Clone)]
+pub struct ClickHandler(std::rc::Rc<dyn Fn(ClickEvent) -> ClickResult>);
 
 impl ClickHandler {
-    pub fn new(f: impl FnOnce(ClickEvent) -> ClickResult + 'static) -> Self {
-        Self(Box::new(f))
+    pub fn new(f: impl Fn(ClickEvent) -> ClickResult + 'static) -> Self {
+        Self(std::rc::Rc::new(f))
     }
 
-    pub fn invoke(self, event: ClickEvent) -> ClickResult {
+    /// Build a handler that emits `action` on click. The action is captured
+    /// by value and cloned per invocation; halogen-owned HitRegion code
+    /// never needs to name the concrete Action type.
+    pub fn from_action(action: Action) -> Self {
+        Self::new(move |_| ClickResult::Actions(vec![action.clone()]))
+    }
+
+    pub fn invoke(&self, event: ClickEvent) -> ClickResult {
         (self.0)(event)
     }
-}
 
-impl Clone for ClickHandler {
-    fn clone(&self) -> Self {
-        unreachable!("ClickHandler is FnOnce and should never be cloned")
+    /// Actions this handler would emit, for test introspection. Drag
+    /// captures yield an empty vec — tests shouldn't assert against them.
+    pub fn peek_actions(&self) -> Vec<Action> {
+        match self.invoke(ClickEvent { x: 0.0, y: 0.0 }) {
+            ClickResult::Actions(actions) => actions,
+            ClickResult::Handled | ClickResult::CaptureDrag(_) => Vec::new(),
+        }
     }
 }
 
@@ -432,8 +431,7 @@ impl<'a> ElementContext<'a> {
         cursor: CursorHint,
         handler: ClickHandler,
     ) {
-        self.hits
-            .push(HitRegion::with_click_handler(bounds, cursor, handler));
+        self.hits.push(HitRegion::new(bounds, cursor, handler));
     }
 
     /// Register a hitbox during prepaint. Returns an ID for later hover queries.
@@ -1422,12 +1420,12 @@ impl Element for Div {
         // (pushed later) are found first by the reverse search in handle_left_click.
         // This gives correct z-order: child clicks take priority over parent clicks.
         let identity = self.hit_identity.take();
-        if let Some(handler) = self.on_click_handler.take() {
-            let mut region = HitRegion::with_click_handler(bounds, self.cursor, handler);
-            region.identity = identity;
-            cx.hits.push(region);
-        } else if let Some(action) = self.on_click.take() {
-            let mut region = HitRegion::from_action(bounds, action, self.cursor);
+        let handler = self
+            .on_click_handler
+            .take()
+            .or_else(|| self.on_click.take().map(ClickHandler::from_action));
+        if let Some(handler) = handler {
+            let mut region = HitRegion::new(bounds, self.cursor, handler);
             region.identity = identity;
             cx.hits.push(region);
         }
@@ -2175,8 +2173,11 @@ impl Element for TextInput {
         }
 
         if let Some(action) = self.on_click.take() {
-            cx.hits
-                .push(HitRegion::from_action(bounds, action, CursorHint::Text));
+            cx.hits.push(HitRegion::new(
+                bounds,
+                CursorHint::Text,
+                ClickHandler::from_action(action),
+            ));
         }
 
         // Register hit area for click-to-position (stored in cx for app.rs to use)
@@ -2683,7 +2684,10 @@ mod tests {
         render_element(&mut root, &mut scene, &mut cx, 200.0, 50.0);
 
         assert_eq!(cx.hits.len(), 1);
-        assert_eq!(cx.hits[0].action, Action::OpenRepoPicker);
+        assert_eq!(
+            cx.hits[0].on_click.peek_actions(),
+            vec![Action::OpenRepoPicker]
+        );
         assert_eq!(cx.hits[0].cursor, CursorHint::Pointer);
         assert!(cx.hits[0].rect.width > 0.0);
     }
@@ -2812,8 +2816,14 @@ mod tests {
 
         // Should have 2 hit regions (Compare + PR buttons)
         assert_eq!(cx.hits.len(), 2);
-        assert_eq!(cx.hits[0].action, Action::OpenRepoPicker);
-        assert_eq!(cx.hits[1].action, Action::OpenPullRequestModal);
+        assert_eq!(
+            cx.hits[0].on_click.peek_actions(),
+            vec![Action::OpenRepoPicker]
+        );
+        assert_eq!(
+            cx.hits[1].on_click.peek_actions(),
+            vec![Action::OpenPullRequestModal]
+        );
     }
 
     #[test]
@@ -3026,7 +3036,10 @@ mod tests {
 
         // 4 file items should generate 4 hit regions
         assert_eq!(cx.hits.len(), 4);
-        assert_eq!(cx.hits[2].action, Action::SelectFile(2));
+        assert_eq!(
+            cx.hits[2].on_click.peek_actions(),
+            vec![Action::SelectFile(2)]
+        );
 
         // Should have text for header + 4 files = 5 text primitives
         let text_count = scene

@@ -1,114 +1,13 @@
 //! Style system — shared layout + visual properties for elements.
+//!
+//! Pure data types (`ElementStyle`, `StyleOverride`, `ShadowStyle`, `apply_override`)
+//! live in `halogen::style`. The `Styled` trait defined here layers diffy's
+//! design-token shortcuts (`Sp`, `Rad`, `ShadowLayer`) on top.
 
 use crate::ui::design::{Rad, ShadowLayer, Sp};
 use crate::ui::theme::Color;
 
-// ---------------------------------------------------------------------------
-// ShadowStyle
-// ---------------------------------------------------------------------------
-
-#[derive(Clone)]
-pub struct ShadowStyle {
-    pub blur_radius: f32,
-    pub offset: [f32; 2],
-    pub corner_radius: f32,
-    pub color: Color,
-}
-
-// ---------------------------------------------------------------------------
-// ElementStyle — combined layout + visual
-// ---------------------------------------------------------------------------
-
-#[derive(Clone)]
-pub struct ElementStyle {
-    pub layout: taffy::Style,
-    pub background: Option<Color>,
-    pub border_color: Option<Color>,
-    pub border_widths: [f32; 4],
-    pub corner_radius: f32,
-    pub opacity: f32,
-    pub z_index: i32,
-    pub shadows: Vec<ShadowStyle>,
-}
-
-impl Default for ElementStyle {
-    fn default() -> Self {
-        Self {
-            layout: taffy::Style {
-                display: taffy::Display::Flex,
-                ..Default::default()
-            },
-            background: None,
-            border_color: None,
-            border_widths: [0.0; 4],
-            corner_radius: 0.0,
-            opacity: 1.0,
-            z_index: 0,
-            shadows: Vec::new(),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// StyleOverride — partial overlay for hover/active/focus
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Default)]
-pub struct StyleOverride {
-    pub background: Option<Color>,
-    pub border_color: Option<Color>,
-    pub corner_radius: Option<f32>,
-    pub opacity: Option<f32>,
-    pub text_color: Option<Color>,
-    pub icon_color: Option<Color>,
-}
-
-impl StyleOverride {
-    pub fn bg(mut self, color: Color) -> Self {
-        self.background = Some(color);
-        self
-    }
-
-    pub fn border_color(mut self, color: Color) -> Self {
-        self.border_color = Some(color);
-        self
-    }
-
-    pub fn rounded(mut self, r: f32) -> Self {
-        self.corner_radius = Some(r);
-        self
-    }
-
-    pub fn opacity(mut self, v: f32) -> Self {
-        self.opacity = Some(v);
-        self
-    }
-
-    pub fn text_color(mut self, color: Color) -> Self {
-        self.text_color = Some(color);
-        self
-    }
-
-    pub fn icon_color(mut self, color: Color) -> Self {
-        self.icon_color = Some(color);
-        self
-    }
-}
-
-pub fn apply_override(base: &mut ElementStyle, ov: &StyleOverride) {
-    if let Some(bg) = ov.background {
-        base.background = Some(bg);
-    }
-    if let Some(bc) = ov.border_color {
-        base.border_color = Some(bc);
-    }
-    if let Some(cr) = ov.corner_radius {
-        base.corner_radius = cr;
-    }
-    if let Some(op) = ov.opacity {
-        base.opacity = op;
-    }
-}
+pub use halogen::style::{ElementStyle, ShadowStyle, StyleOverride, apply_override};
 
 // ---------------------------------------------------------------------------
 // Styled trait — fluent setters shared across element types

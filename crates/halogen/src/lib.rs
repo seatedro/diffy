@@ -11,7 +11,9 @@ pub mod color;
 pub mod geometry;
 pub mod hit;
 pub mod reactive;
+pub mod style;
 
 pub use color::Color;
 pub use geometry::Rect;
 pub use hit::{ClickEvent, ClickHandler, CursorHint, HitIdentity, HitRegion};
+pub use style::{ElementStyle, ShadowStyle, StyleOverride, apply_override};

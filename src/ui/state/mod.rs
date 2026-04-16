@@ -714,6 +714,8 @@ pub struct AppState {
     pub startup: StartupState,
     pub last_error: Signal<Option<String>>,
     pub toasts: Signal<Vec<Toast>>,
+    /// Memoized: `true` when `focus` targets a text-editing field.
+    pub text_focused: Signal<bool>,
     pub animation: crate::ui::animation::AnimationState,
     pub commit_editor: Editor,
     /// Shared reactive store. Signals (like `sidebar_visible`) are handles
@@ -735,6 +737,9 @@ impl Default for AppState {
         let store = Rc::new(SignalStore::default());
         let sidebar_visible = store.create(true);
         let focus = store.create(None::<FocusTarget>);
+        let text_focused = store.create_memo(move |s| {
+            s.read(focus).is_some_and(|t| t.is_text_field())
+        });
         let workspace_mode = store.create(WorkspaceMode::default());
         let last_error = store.create(None::<String>);
         let theme_preview_original = store.create(None::<String>);
@@ -763,6 +768,7 @@ impl Default for AppState {
             startup: StartupState::default(),
             last_error,
             toasts,
+            text_focused,
             animation: crate::ui::animation::AnimationState::default(),
             commit_editor: Editor::default(),
             sidebar_visible,
@@ -821,6 +827,9 @@ impl AppState {
             Some(FocusTarget::TitleBar)
         } else {
             Some(FocusTarget::WorkspacePrimaryButton)
+        });
+        let text_focused = store.create_memo(move |s| {
+            s.read(focus).is_some_and(|t| t.is_text_field())
         });
         let workspace_mode = store.create(if repo_path.is_some() && auto_compare_pending {
             WorkspaceMode::Loading
@@ -897,6 +906,7 @@ impl AppState {
             },
             last_error,
             toasts,
+            text_focused,
             animation: crate::ui::animation::AnimationState::default(),
             commit_editor: Editor::default(),
             sidebar_visible,
@@ -2667,10 +2677,9 @@ impl AppState {
     }
 
     /// Returns true if the current focus target is a text editing field.
+    /// Backed by a memo; `focus` writes invalidate it automatically.
     pub fn is_text_focused(&self) -> bool {
-        self.focus
-            .get(&self.store)
-            .is_some_and(|target| target.is_text_field())
+        self.text_focused.get(&self.store)
     }
 
     /// Returns true when the workspace is in `Ready` mode.

@@ -18,15 +18,9 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
         AsyncStatus::Idle => (lucide::INFO, tc.text_muted, "idle"),
     };
 
-    let head_branch = state
-        .repository
-        .branches
-        .with(&state.store, |branches| {
-            branches
-                .iter()
-                .find(|b| b.is_head)
-                .map(|b| b.name.clone())
-        });
+    let head_branch = state.repository.branches.with(&state.store, |branches| {
+        branches.iter().find(|b| b.is_head).map(|b| b.name.clone())
+    });
 
     let branch_children = head_branch.map(|branch| {
         view! { scale,

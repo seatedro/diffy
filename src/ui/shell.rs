@@ -85,11 +85,16 @@ pub fn build_ui_frame(
         .command_palette
         .entries
         .with(&state.store, |e| e.len());
-    state.overlays.command_palette.list.update(&state.store, |l| {
-        l.row_height_px = overlay_row_height;
-        l.gap_px = overlay_gap;
-        l.viewport_height_px = l.viewport_for_max_rows(Sz::PICKER_MAX_ROWS, palette_entries_len);
-    });
+    state
+        .overlays
+        .command_palette
+        .list
+        .update(&state.store, |l| {
+            l.row_height_px = overlay_row_height;
+            l.gap_px = overlay_gap;
+            l.viewport_height_px =
+                l.viewport_for_max_rows(Sz::PICKER_MAX_ROWS, palette_entries_len);
+        });
     state
         .file_list
         .viewport_height

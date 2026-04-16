@@ -127,10 +127,9 @@ impl From<&AppState> for StateDump {
             overlay_query,
             overlay_selection_label,
             compare: CompareDump {
-                repo_path: state
-                    .compare
-                    .repo_path
-                    .with(&state.store, |p| p.as_ref().map(|path| path.display().to_string())),
+                repo_path: state.compare.repo_path.with(&state.store, |p| {
+                    p.as_ref().map(|path| path.display().to_string())
+                }),
                 left_ref: state.compare.left_ref.get(&state.store),
                 right_ref: state.compare.right_ref.get(&state.store),
                 resolved_left: state.compare.resolved_left.get(&state.store),
@@ -161,13 +160,9 @@ impl From<&AppState> for StateDump {
             pull_request: PullRequestDump {
                 status: async_status_name(state.github.pull_request.status.get(&state.store)),
                 url_input: state.github.pull_request.url_input.get(&state.store),
-                title: state
-                    .github
-                    .pull_request
-                    .info
-                    .with(&state.store, |info| {
-                        info.as_ref().map(|info| info.title.clone())
-                    }),
+                title: state.github.pull_request.info.with(&state.store, |info| {
+                    info.as_ref().map(|info| info.title.clone())
+                }),
                 number: state
                     .github
                     .pull_request
@@ -277,15 +272,15 @@ where
 fn overlay_dump_fields(state: &AppState) -> (Option<String>, Option<String>) {
     match state.active_overlay_name() {
         Some("repo-picker") | Some("left-ref-picker") | Some("right-ref-picker") => {
-            let query = state.overlays.picker.query.with(&state.store, |q| q.clone());
-            let selected = state.overlays.picker.selected_index.get(&state.store);
-            let label = state
+            let query = state
                 .overlays
                 .picker
-                .entries
-                .with(&state.store, |entries| {
-                    entries.get(selected).map(|e| e.label.clone())
-                });
+                .query
+                .with(&state.store, |q| q.clone());
+            let selected = state.overlays.picker.selected_index.get(&state.store);
+            let label = state.overlays.picker.entries.with(&state.store, |entries| {
+                entries.get(selected).map(|e| e.label.clone())
+            });
             (Some(query), label)
         }
         Some("command-palette") => {

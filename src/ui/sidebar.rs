@@ -96,16 +96,17 @@ pub(crate) fn preferred_sidebar_width(
     }
 
     let compare_generation = state.workspace.compare_generation.get(&state.store);
-    let cached_intrinsic_width = state
-        .workspace
-        .sidebar_auto_width
-        .with(&state.store, |cache_opt| {
-            cache_opt.and_then(|cache| {
-                (cache.compare_generation == compare_generation
-                    && cache.ui_scale_pct == state.settings.ui_scale_pct)
-                    .then_some(cache.intrinsic_width_px)
-            })
-        });
+    let cached_intrinsic_width =
+        state
+            .workspace
+            .sidebar_auto_width
+            .with(&state.store, |cache_opt| {
+                cache_opt.and_then(|cache| {
+                    (cache.compare_generation == compare_generation
+                        && cache.ui_scale_pct == state.settings.ui_scale_pct)
+                        .then_some(cache.intrinsic_width_px)
+                })
+            });
 
     let intrinsic_width = if let Some(width) = cached_intrinsic_width {
         width
@@ -506,10 +507,7 @@ pub(crate) fn sidebar(
     };
 
     let content: Option<AnyElement> = if all_files.is_empty() {
-        let has_repo = state
-            .compare
-            .repo_path
-            .with(&state.store, |p| p.is_some());
+        let has_repo = state.compare.repo_path.with(&state.store, |p| p.is_some());
         let (icon, msg) = if has_repo {
             if workspace_source == WorkspaceSource::Status {
                 (lucide::CHECK, "Working tree clean.")
@@ -567,8 +565,7 @@ pub(crate) fn sidebar(
 
         let row_count = visible_count + expanded_count;
         let row_height = state.file_list.row_height.get(&state.store);
-        let total_height =
-            row_count as f32 * (row_height + state.file_list.gap.get(&state.store));
+        let total_height = row_count as f32 * (row_height + state.file_list.gap.get(&state.store));
         let scroll_px = state.file_list.scroll_offset_px.get(&state.store);
 
         Some(view! { scale,
@@ -757,13 +754,7 @@ fn file_row(
         .workspace
         .status_items
         .with(&state.store, |items| items.get(index).cloned())
-        .filter(|_| {
-            is_status_view
-                && !state
-                    .file_list
-                    .filter
-                    .with(&state.store, |s| s.is_empty())
-        })
+        .filter(|_| is_status_view && !state.file_list.filter.with(&state.store, |s| s.is_empty()))
         .map(|item| item.scope.label());
 
     let stage_action: Option<(Action, &str, &str)> = state

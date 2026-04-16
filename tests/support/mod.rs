@@ -7,13 +7,13 @@ use diffy::render::{Primitive, Rect, TextMetrics};
 use diffy::ui::editor::element::EditorElement;
 use diffy::ui::element::{ClickHandlerActionExt, ElementContext, ScrollActionBuilder};
 use diffy::ui::shell::{UiFrame, build_ui_frame};
-use halogen::reactive::SignalStore;
 use diffy::ui::state::{
     ActiveFile, AppState, AsyncStatus, CommandPaletteState, FileListEntry, FocusTarget,
     OverlayEntry, OverlayListState, OverlaySurface, PaletteCommand, PaletteEntry, PaletteEntryKind,
     PickerEntry, PickerKind, PickerState, Toast, ToastKind, WorkspaceMode,
 };
 use diffy::ui::theme::Theme;
+use halogen::reactive::SignalStore;
 
 pub const TEST_WIDTH: u32 = 1320;
 pub const TEST_HEIGHT: u32 = 840;
@@ -72,7 +72,10 @@ pub fn ready_state_with_files(file_count: usize) -> AppState {
         .compare
         .resolved_right
         .set(&state.store, Some("def5678".to_owned()));
-    state.repository.status.set(&state.store, AsyncStatus::Ready);
+    state
+        .repository
+        .status
+        .set(&state.store, AsyncStatus::Ready);
     let files: Vec<FileListEntry> = (0..file_count)
         .map(|index| FileListEntry {
             path: format!("src/file_{index}.rs"),

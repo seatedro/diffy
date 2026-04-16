@@ -82,10 +82,7 @@ impl<'a> Sidebar<'a> {
         let state = self.state;
         let files_snapshot = state.workspace.files.get(&state.store);
         let file_count = files_snapshot.len();
-        let has_repo = state
-            .compare
-            .repo_path
-            .with(&state.store, |p| p.is_some());
+        let has_repo = state.compare.repo_path.with(&state.store, |p| p.is_some());
         let selected_index = state.workspace.selected_file_index.get(&state.store);
 
         let (empty_icon, empty_msg) = if has_repo {

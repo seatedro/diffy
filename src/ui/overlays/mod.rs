@@ -25,7 +25,11 @@ pub fn render_active_overlay(
         .overlays
         .stack
         .with(&state.store, |stack| stack.last().cloned())?;
-    let picker_query = state.overlays.picker.query.with(&state.store, |s| s.clone());
+    let picker_query = state
+        .overlays
+        .picker
+        .query
+        .with(&state.store, |s| s.clone());
     let picker_entries = state
         .overlays
         .picker

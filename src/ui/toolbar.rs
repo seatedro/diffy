@@ -36,9 +36,7 @@ pub(crate) fn main_surface(
         None
     };
 
-    let search = if state.is_workspace_ready()
-        && state.editor.search.open.get(&state.store)
-    {
+    let search = if state.is_workspace_ready() && state.editor.search.open.get(&state.store) {
         Some(search_bar(state, theme))
     } else {
         None
@@ -46,7 +44,10 @@ pub(crate) fn main_surface(
 
     let vb = viewport_bounds.clone();
     let viewport_canvas = if state.is_workspace_ready()
-        && state.workspace.active_file.with(&state.store, |af| af.is_some())
+        && state
+            .workspace
+            .active_file
+            .with(&state.store, |af| af.is_some())
     {
         Some(
             canvas(move |bounds, _scene, _cx| {
@@ -62,7 +63,10 @@ pub(crate) fn main_surface(
     let content = match state.workspace_mode.get(&state.store) {
         WorkspaceMode::Loading => Some(loading_card(state, theme)),
         WorkspaceMode::Ready
-            if state.workspace.active_file.with(&state.store, |af| af.is_none())
+            if state
+                .workspace
+                .active_file
+                .with(&state.store, |af| af.is_none())
                 && !has_overlay =>
         {
             if state.workspace.source.get(&state.store) == WorkspaceSource::Status {
@@ -98,7 +102,10 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let cx = &*state.store;
-    let has_active_diff = state.workspace.active_file.with(&state.store, |af| af.is_some());
+    let has_active_diff = state
+        .workspace
+        .active_file
+        .with(&state.store, |af| af.is_some());
     let selected_scope = state.workspace.selected_status_scope.get(&state.store);
     let compare_layout = state.compare.layout.get(&state.store);
     let show_stage = matches!(

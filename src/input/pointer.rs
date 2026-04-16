@@ -102,15 +102,14 @@ impl InputSystem {
                 if let Some(row) = hovered {
                     let line_idx =
                         editor.render_line_index_for_row(row).unwrap_or(u32::MAX) as usize;
-                    let is_hunk_sep =
-                        state.workspace.active_file.with(&state.store, |af| {
-                            af.as_ref()
-                                .and_then(|a| a.render_doc.lines.get(line_idx).copied())
-                                .is_some_and(|line| {
-                                    line.row_kind()
-                                        == crate::ui::editor::render_doc::RenderRowKind::HunkSeparator
-                                })
-                        });
+                    let is_hunk_sep = state.workspace.active_file.with(&state.store, |af| {
+                        af.as_ref()
+                            .and_then(|a| a.render_doc.lines.get(line_idx).copied())
+                            .is_some_and(|line| {
+                                line.row_kind()
+                                    == crate::ui::editor::render_doc::RenderRowKind::HunkSeparator
+                            })
+                    });
                     let mut actions =
                         vec![Action::FocusViewport, Action::HoverViewportRow(hovered)];
                     if is_hunk_sep {

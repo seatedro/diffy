@@ -147,7 +147,8 @@ fn active_overlay_row_height_px(state: &AppState) -> f32 {
             .overlays
             .command_palette
             .list
-            .with(&state.store, |l| l.stride_px().max(1)) as f32,
+            .with(&state.store, |l| l.stride_px().max(1))
+            as f32,
         _ => 36.0,
     }
 }

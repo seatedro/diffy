@@ -13,9 +13,7 @@ use crate::render::Scene;
 use crate::render::scene::{BlurRegionPrimitive, EffectQuadPrimitive, EffectType, Rect};
 use crate::ui::design::{Alpha, Sz};
 use crate::ui::theme::Theme;
-pub use halogen::hit::{
-    ClickEvent, CursorHint, HitIdentity, Hitbox, HitboxBehavior, HitboxId,
-};
+pub use halogen::hit::{ClickEvent, CursorHint, HitIdentity, Hitbox, HitboxBehavior, HitboxId};
 use halogen::reactive::{Signal, SignalStore};
 
 pub use taffy::NodeId as LayoutId;
@@ -380,8 +378,7 @@ impl<'a> ElementContext<'a> {
     }
 
     pub fn run_hit_test(&mut self) {
-        self.hovered_hitboxes =
-            halogen::hit::resolve_hovered(&self.hitboxes, self.mouse_position);
+        self.hovered_hitboxes = halogen::hit::resolve_hovered(&self.hitboxes, self.mouse_position);
     }
 }
 

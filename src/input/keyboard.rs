@@ -262,18 +262,14 @@ fn workspace_key_actions_inner(
                 None
             }
         }
-        Some(NamedKey::PageDown)
-            if state.is_workspace_ready() =>
-        {
+        Some(NamedKey::PageDown) if state.is_workspace_ready() => {
             if state.focus.get(&state.store) == Some(FocusTarget::Editor) {
                 Some(vec![Action::ScrollViewportPages(1)])
             } else {
                 Some(vec![Action::ScrollFileList(10)])
             }
         }
-        Some(NamedKey::PageUp)
-            if state.is_workspace_ready() =>
-        {
+        Some(NamedKey::PageUp) if state.is_workspace_ready() => {
             if state.focus.get(&state.store) == Some(FocusTarget::Editor) {
                 Some(vec![Action::ScrollViewportPages(-1)])
             } else {
@@ -283,11 +279,9 @@ fn workspace_key_actions_inner(
         Some(NamedKey::Home) if state.is_workspace_ready() => {
             Some(vec![Action::ScrollViewportTo(0)])
         }
-        Some(NamedKey::End) if state.is_workspace_ready() => {
-            Some(vec![Action::ScrollViewportTo(
-                state.editor_max_scroll_top_px(),
-            )])
-        }
+        Some(NamedKey::End) if state.is_workspace_ready() => Some(vec![Action::ScrollViewportTo(
+            state.editor_max_scroll_top_px(),
+        )]),
         _ => {
             let ch = chord.logical_char()?;
             if ch == "?" {
@@ -398,13 +392,11 @@ fn cycle_focus_target(state: &AppState) -> Option<FocusTarget> {
             Some(FocusTarget::FileList) => Some(FocusTarget::Editor),
             Some(FocusTarget::Editor) => Some(FocusTarget::FileList),
             Some(FocusTarget::WorkspacePrimaryButton) => Some(FocusTarget::TitleBar),
-            _ => Some(
-                if state.is_workspace_ready() {
-                    FocusTarget::FileList
-                } else {
-                    FocusTarget::WorkspacePrimaryButton
-                },
-            ),
+            _ => Some(if state.is_workspace_ready() {
+                FocusTarget::FileList
+            } else {
+                FocusTarget::WorkspacePrimaryButton
+            }),
         },
     }
 }

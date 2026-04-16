@@ -244,18 +244,11 @@ impl AppState {
         // No text selection — copy the selected picker/palette entry's value.
         if matches!(self.focus.get(&self.store), Some(FocusTarget::PickerInput)) {
             let selected = self.overlays.picker.selected_index.get(&self.store);
-            let value = self
-                .overlays
-                .picker
-                .entries
-                .with(&self.store, |entries| {
-                    entries.get(selected).map(|e| e.value.clone())
-                });
+            let value = self.overlays.picker.entries.with(&self.store, |entries| {
+                entries.get(selected).map(|e| e.value.clone())
+            });
             if let Some(value) = value {
-                return (
-                    vec![Effect::SetClipboard(value.clone())],
-                    Some(value),
-                );
+                return (vec![Effect::SetClipboard(value.clone())], Some(value));
             }
         }
         if matches!(
@@ -275,10 +268,7 @@ impl AppState {
                     entries.get(selected).map(|e| e.label.clone())
                 });
             if let Some(label) = label {
-                return (
-                    vec![Effect::SetClipboard(label.clone())],
-                    Some(label),
-                );
+                return (vec![Effect::SetClipboard(label.clone())], Some(label));
             }
         }
         (Vec::new(), None)

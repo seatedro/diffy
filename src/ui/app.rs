@@ -242,6 +242,14 @@ impl NativeApp {
         }
     }
 
+    fn sync_window_text_input(&self) {
+        if let Some(window) = self.window.as_ref() {
+            // winit disables IME/text input by default. Mirror Diffy's focus state so
+            // picker/search fields and the commit editor receive translated text.
+            window.set_ime_allowed(self.state.is_text_focused());
+        }
+    }
+
     fn process_runtime_events(&mut self) {
         let events = self.runtime.drain_events();
         if events.is_empty() {
@@ -254,6 +262,7 @@ impl NativeApp {
         }
         self.sync_theme();
         self.refresh_window_title();
+        self.sync_window_text_input();
         self.mark_dirty();
     }
 
@@ -368,6 +377,7 @@ impl NativeApp {
         self.runtime.dispatch_all(effects);
         self.sync_theme();
         self.refresh_window_title();
+        self.sync_window_text_input();
     }
 
     fn apply_input_outcome(&mut self, outcome: crate::input::InputOutcome) {
@@ -422,6 +432,7 @@ impl ApplicationHandler for NativeApp {
                 }
                 self.sync_theme();
                 self.refresh_window_title();
+                self.sync_window_text_input();
                 self.write_dumps_if_needed();
             }
             Err(error) => {
@@ -779,10 +790,7 @@ mod tests {
         );
 
         assert!(app.state.file_list.scroll_offset_px.get(&app.state.store) > 0.0);
-        assert_eq!(
-            app.state.editor.scroll_top_px.get(&app.state.store),
-            0
-        );
+        assert_eq!(app.state.editor.scroll_top_px.get(&app.state.store), 0);
     }
 
     #[test]
@@ -874,7 +882,12 @@ mod tests {
             .hits
             .iter()
             .rev()
-            .find(|hit| matches!(hit.identity, Some(crate::ui::element::HitIdentity::OverlayBackdrop)))
+            .find(|hit| {
+                matches!(
+                    hit.identity,
+                    Some(crate::ui::element::HitIdentity::OverlayBackdrop)
+                )
+            })
             .expect("overlay hit");
         let x = overlay_hit.rect.x + overlay_hit.rect.width * 0.5;
         let y = overlay_hit.rect.y + overlay_hit.rect.height * 0.5;
@@ -888,11 +901,11 @@ mod tests {
             },
         );
 
+        assert_eq!(app.state.editor.scroll_top_px.get(&app.state.store), 0);
         assert_eq!(
-            app.state.editor.scroll_top_px.get(&app.state.store),
-            0
+            app.state.file_list.scroll_offset_px.get(&app.state.store),
+            0.0
         );
-        assert_eq!(app.state.file_list.scroll_offset_px.get(&app.state.store), 0.0);
     }
 
     #[test]

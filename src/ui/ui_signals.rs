@@ -13,12 +13,6 @@ pub struct UiSignals {
     /// Animated smoothly on toggle.
     pub sidebar_width_factor: Signal<f32>,
 
-    /// Currently hovered file index in the sidebar.
-    pub hovered_file_index: Signal<Option<usize>>,
-
-    /// Currently hovered toast index.
-    pub hovered_toast_index: Signal<Option<usize>>,
-
     /// File list scroll position in pixels.
     pub file_list_scroll_px: Signal<f32>,
 
@@ -31,8 +25,6 @@ impl UiSignals {
     pub fn new(store: &SignalStore) -> Self {
         Self {
             sidebar_width_factor: store.create(1.0_f32),
-            hovered_file_index: store.create(None::<usize>),
-            hovered_toast_index: store.create(None::<usize>),
             file_list_scroll_px: store.create(0.0_f32),
             viewport_scroll_px: store.create(0.0_f32),
         }

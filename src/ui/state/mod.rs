@@ -111,10 +111,7 @@ impl FocusTarget {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct FocusState {
-    pub current: Option<FocusTarget>,
-}
+// Focus is stored directly as a Signal on AppState — no wrapper struct.
 
 /// Cursor/selection state for the currently focused text field.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -617,19 +614,19 @@ pub struct DebugState {
 
 #[derive(Debug, Clone)]
 pub struct AppState {
-    pub workspace_mode: WorkspaceMode,
+    pub workspace_mode: Signal<WorkspaceMode>,
     pub compare: CompareState,
     pub repository: RepositoryState,
     pub workspace: WorkspaceState,
     pub file_list: FileListState,
     pub overlays: OverlayStackState,
-    pub focus: FocusState,
+    pub focus: Signal<Option<FocusTarget>>,
     pub text_edit: TextEditState,
     pub editor: EditorState,
     pub github: GitHubState,
     pub settings: Settings,
     pub startup: StartupState,
-    pub last_error: Option<String>,
+    pub last_error: Signal<Option<String>>,
     pub toasts: Vec<Toast>,
     pub animation: crate::ui::animation::AnimationState,
     pub commit_editor: Editor,
@@ -644,28 +641,32 @@ pub struct AppState {
     pub frecency: Option<FrecencyStore>,
     pub theme_names: Vec<String>,
     pub theme_variants: Vec<crate::core::themes::ThemeVariant>,
-    pub theme_preview_original: Option<String>,
+    pub theme_preview_original: Signal<Option<String>>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
         let store = Rc::new(SignalStore::default());
         let sidebar_visible = store.create(true);
+        let focus = store.create(None::<FocusTarget>);
+        let workspace_mode = store.create(WorkspaceMode::default());
+        let last_error = store.create(None::<String>);
+        let theme_preview_original = store.create(None::<String>);
         let debug = DebugStateStore::new(&store, DebugState::default());
         Self {
-            workspace_mode: WorkspaceMode::default(),
+            workspace_mode,
             compare: CompareState::default(),
             repository: RepositoryState::default(),
             workspace: WorkspaceState::default(),
             file_list: FileListState::default(),
             overlays: OverlayStackState::default(),
-            focus: FocusState::default(),
+            focus,
             text_edit: TextEditState::default(),
             editor: EditorState::default(),
             github: GitHubState::default(),
             settings: Settings::default(),
             startup: StartupState::default(),
-            last_error: None,
+            last_error,
             toasts: Vec::new(),
             animation: crate::ui::animation::AnimationState::default(),
             commit_editor: Editor::default(),
@@ -677,7 +678,7 @@ impl Default for AppState {
             frecency: None,
             theme_names: Vec::new(),
             theme_variants: Vec::new(),
-            theme_preview_original: None,
+            theme_preview_original,
         }
     }
 }
@@ -721,13 +722,21 @@ impl AppState {
 
         let store = Rc::new(SignalStore::default());
         let sidebar_visible = store.create(true);
+        let focus = store.create(if repo_path.is_some() {
+            Some(FocusTarget::TitleBar)
+        } else {
+            Some(FocusTarget::WorkspacePrimaryButton)
+        });
+        let workspace_mode = store.create(if repo_path.is_some() && auto_compare_pending {
+            WorkspaceMode::Loading
+        } else {
+            WorkspaceMode::Empty
+        });
+        let last_error = store.create(None::<String>);
+        let theme_preview_original = store.create(None::<String>);
         let debug = DebugStateStore::new(&store, DebugState::default());
         let mut state = Self {
-            workspace_mode: if repo_path.is_some() && auto_compare_pending {
-                WorkspaceMode::Loading
-            } else {
-                WorkspaceMode::Empty
-            },
+            workspace_mode,
             compare: CompareState {
                 repo_path: repo_path.clone(),
                 left_ref,
@@ -742,13 +751,7 @@ impl AppState {
             workspace: WorkspaceState::default(),
             file_list: FileListState::default(),
             overlays: OverlayStackState::default(),
-            focus: FocusState {
-                current: if repo_path.is_some() {
-                    Some(FocusTarget::TitleBar)
-                } else {
-                    Some(FocusTarget::WorkspacePrimaryButton)
-                },
-            },
+            focus,
             text_edit: TextEditState::default(),
             editor: EditorState {
                 layout,
@@ -779,7 +782,7 @@ impl AppState {
                 dump_files_json: startup.args.dump_files_json.clone(),
                 dump_errors_json: startup.args.dump_errors_json.clone(),
             },
-            last_error: None,
+            last_error,
             toasts: Vec::new(),
             animation: crate::ui::animation::AnimationState::default(),
             commit_editor: Editor::default(),
@@ -791,7 +794,7 @@ impl AppState {
             frecency: crate::core::frecency::open_default_store(),
             theme_names: Vec::new(),
             theme_variants: Vec::new(),
-            theme_preview_original: None,
+            theme_preview_original,
         };
         state.sync_settings_snapshot();
 
@@ -990,7 +993,7 @@ impl AppState {
     }
 
     fn apply_text_edit_action(&mut self, action: Action) -> Vec<Effect> {
-        if self.focus.current == Some(FocusTarget::CommitEditor) {
+        if self.focus.get(&self.store) == Some(FocusTarget::CommitEditor) {
             return self.apply_commit_editor_action(action);
         }
         match action {
@@ -1621,10 +1624,10 @@ impl AppState {
                 if self.compare.repo_path.as_ref() == Some(&path) {
                     if reason == RepositorySyncReason::Open {
                         self.repository.status = AsyncStatus::Failed;
-                        self.workspace_mode = WorkspaceMode::Empty;
+                        self.workspace_mode.set(&self.store, WorkspaceMode::Empty);
                         self.push_error(&message);
                     } else {
-                        self.last_error = Some(message);
+                        self.last_error.set(&self.store, Some(message));
                     }
                 }
                 Vec::new()
@@ -1636,7 +1639,7 @@ impl AppState {
             } => {
                 if generation == self.workspace.compare_generation {
                     self.workspace.status = AsyncStatus::Failed;
-                    self.workspace_mode = WorkspaceMode::Empty;
+                    self.workspace_mode.set(&self.store, WorkspaceMode::Empty);
                     self.push_error(&message);
                 }
                 Vec::new()
@@ -1771,7 +1774,7 @@ impl AppState {
     }
 
     pub fn window_title(&self) -> String {
-        let workspace_mode = workspace_mode_name(self.workspace_mode);
+        let workspace_mode = workspace_mode_name(self.workspace_mode.get(&self.store));
         let repo = self
             .compare
             .repo_path
@@ -1827,7 +1830,7 @@ impl AppState {
     }
 
     fn open_repository(&mut self, path: PathBuf) -> Vec<Effect> {
-        self.workspace_mode = WorkspaceMode::Loading;
+        self.workspace_mode.set(&self.store, WorkspaceMode::Loading);
         self.compare.repo_path = Some(path.clone());
         self.compare.resolved_left = None;
         self.compare.resolved_right = None;
@@ -1836,12 +1839,12 @@ impl AppState {
         self.file_list = FileListState::default();
         self.editor.clear_document();
         self.editor.focused = false;
-        self.last_error = None;
+        self.last_error.set(&self.store, None);
         self.github.pull_request.info = None;
         self.github.pull_request.candidate_left_ref = None;
         self.github.pull_request.candidate_right_ref = None;
         self.overlays.clear();
-        self.focus.current = Some(FocusTarget::TitleBar);
+        self.focus.set(&self.store, Some(FocusTarget::TitleBar));
         self.sync_settings_snapshot();
         vec![
             Effect::SaveSettings(self.settings.clone()),
@@ -1933,7 +1936,7 @@ impl AppState {
 
         self.workspace.source = WorkspaceSource::Compare;
         self.workspace.status = AsyncStatus::Ready;
-        self.workspace_mode = WorkspaceMode::Ready;
+        self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
         self.compare.layout = payload.spec.layout;
         self.compare.renderer = payload.spec.renderer;
         self.compare.resolved_left = Some(payload.resolved_left);
@@ -2002,7 +2005,7 @@ impl AppState {
 
         self.workspace.source = WorkspaceSource::Status;
         self.workspace.status = AsyncStatus::Ready;
-        self.workspace_mode = WorkspaceMode::Ready;
+        self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
         let mut output = payload.output;
         self.workspace.used_fallback = output.used_fallback;
         self.workspace.fallback_message = output.fallback_message.clone();
@@ -2049,7 +2052,7 @@ impl AppState {
     fn activate_status_view(&mut self, reset_scroll: bool) -> Vec<Effect> {
         self.workspace.source = WorkspaceSource::Status;
         self.workspace.status = AsyncStatus::Ready;
-        self.workspace_mode = WorkspaceMode::Ready;
+        self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
         self.workspace.compare_output = None;
         self.workspace.files = build_status_file_entries(&self.workspace.status_items);
         self.workspace.status_generation = self.workspace.status_generation.saturating_add(1);
@@ -2197,7 +2200,7 @@ impl AppState {
     }
 
     fn set_focus(&mut self, target: Option<FocusTarget>) {
-        if target != self.focus.current {
+        if target != self.focus.get(&self.store) {
             // Reset cursor to end of the new field
             let len = target
                 .and_then(|t| self.text_for_focus(t).map(|s| s.len()))
@@ -2208,7 +2211,7 @@ impl AppState {
                 cursor_moved_at_ms: self.clock_ms,
             };
         }
-        self.focus.current = target;
+        self.focus.set(&self.store, target);
         self.editor.focused = target == Some(FocusTarget::Editor);
     }
 
@@ -2230,11 +2233,11 @@ impl AppState {
     }
 
     fn focused_text(&self) -> Option<&str> {
-        self.focus.current.and_then(|t| self.text_for_focus(t))
+        self.focus.get(&self.store).and_then(|t| self.text_for_focus(t))
     }
 
     fn focused_text_mut(&mut self) -> Option<&mut String> {
-        match self.focus.current {
+        match self.focus.get(&self.store) {
             Some(FocusTarget::PickerInput) => match self.overlays.picker.kind {
                 PickerKind::Repository | PickerKind::Theme => Some(&mut self.overlays.picker.query),
                 PickerKind::LeftRef => Some(&mut self.compare.left_ref),
@@ -2254,7 +2257,7 @@ impl AppState {
     /// Returns true if the current focus target is a text editing field.
     pub fn is_text_focused(&self) -> bool {
         self.focus
-            .current
+            .get(&self.store)
             .is_some_and(|target| target.is_text_field())
     }
 
@@ -2386,7 +2389,8 @@ impl AppState {
 
     fn open_theme_picker(&mut self) {
         let scale = self.ui_scale_factor();
-        self.theme_preview_original = Some(self.settings.theme_name.clone());
+        self.theme_preview_original
+            .set(&self.store, Some(self.settings.theme_name.clone()));
         self.overlays.picker.kind = PickerKind::Theme;
         self.overlays.picker.query = String::new();
         self.overlays.picker.list.scroll_top_px = 0;
@@ -2408,11 +2412,11 @@ impl AppState {
 
         let original = self
             .theme_preview_original
-            .as_deref()
-            .unwrap_or(&self.settings.theme_name);
+            .get(&self.store)
+            .unwrap_or_else(|| self.settings.theme_name.clone());
         let make_entry = |name: &String| PickerEntry {
             label: name.clone(),
-            detail: if *name == *original {
+            detail: if *name == original {
                 "\u{2713}".to_owned()
             } else {
                 String::new()
@@ -2467,9 +2471,8 @@ impl AppState {
         let query = self.overlays.picker.query.trim().to_owned();
         let original = self
             .theme_preview_original
-            .as_deref()
-            .unwrap_or(&self.settings.theme_name)
-            .to_owned();
+            .get(&self.store)
+            .unwrap_or_else(|| self.settings.theme_name.clone());
         if query.is_empty() {
             self.overlays.picker.entries = self.build_theme_entries_grouped();
             self.overlays.picker.selected_index = self
@@ -2564,7 +2567,7 @@ impl AppState {
         }
         self.overlays.stack.push(OverlayEntry {
             surface,
-            focus_return: self.focus.current,
+            focus_return: self.focus.get(&self.store),
         });
         self.set_focus(focus_target);
     }
@@ -2575,7 +2578,9 @@ impl AppState {
         };
         match entry.surface {
             OverlaySurface::ThemePicker => {
-                if let Some(original) = self.theme_preview_original.take() {
+                let original = self.theme_preview_original.get(&self.store);
+                self.theme_preview_original.set(&self.store, None);
+                if let Some(original) = original {
                     self.settings.theme_name = original;
                 }
                 self.overlays.picker = PickerState::default();
@@ -2724,7 +2729,7 @@ impl AppState {
                     tracing::info!(theme = %entry.value, "theme confirmed");
                     self.settings.theme_name = entry.value.clone();
                 }
-                self.theme_preview_original = None;
+                self.theme_preview_original.set(&self.store, None);
                 self.pop_overlay();
                 self.persist_settings_effect()
             }
@@ -4037,7 +4042,7 @@ impl AppState {
     }
 
     fn push_error(&mut self, message: &str) {
-        self.last_error = Some(message.to_owned());
+        self.last_error.set(&self.store, Some(message.to_owned()));
         self.push_toast(ToastKind::Error, message);
     }
 
@@ -4075,7 +4080,7 @@ impl AppState {
             anchor: 0,
             cursor_moved_at_ms: self.clock_ms,
         };
-        self.focus.current = Some(FocusTarget::SearchInput);
+        self.focus.set(&self.store, Some(FocusTarget::SearchInput));
         self.editor.focused = false;
         self.recompute_search_matches();
     }
@@ -4417,7 +4422,7 @@ mod tests {
         });
         state.workspace.source = WorkspaceSource::Compare;
         state.workspace.files = files.iter().map(FileListEntry::from).collect();
-        state.workspace_mode = WorkspaceMode::Ready;
+        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
         state.file_list.row_height = 36.0;
         state.file_list.gap = 4.0;
         state.file_list.viewport_height = 80.0;
@@ -4434,9 +4439,9 @@ mod tests {
         );
 
         let (state, effects) = AppState::bootstrap(startup, Settings::default());
-        assert_eq!(state.workspace_mode, WorkspaceMode::Empty);
+        assert_eq!(state.workspace_mode.get(&state.store), WorkspaceMode::Empty);
         assert_eq!(
-            state.focus.current,
+            state.focus.get(&state.store),
             Some(FocusTarget::WorkspacePrimaryButton)
         );
         assert!(effects.is_empty());
@@ -4467,7 +4472,7 @@ mod tests {
         );
 
         let (state, effects) = AppState::bootstrap(startup, Settings::default());
-        assert_eq!(state.workspace_mode, WorkspaceMode::Empty);
+        assert_eq!(state.workspace_mode.get(&state.store), WorkspaceMode::Empty);
         assert_eq!(state.active_overlay_name(), None);
         assert_eq!(effects.len(), 2);
     }
@@ -4485,7 +4490,7 @@ mod tests {
         state.apply_action(Action::OpenCommandPalette);
         assert_eq!(state.overlays.top(), Some(OverlaySurface::CommandPalette));
         state.apply_action(Action::CloseOverlay);
-        assert_eq!(state.focus.current, Some(FocusTarget::TitleBar));
+        assert_eq!(state.focus.get(&state.store), Some(FocusTarget::TitleBar));
     }
 
     #[test]
@@ -4609,7 +4614,7 @@ mod tests {
             deletions: 0,
             is_binary: false,
         }];
-        state.workspace_mode = WorkspaceMode::Ready;
+        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
 
         state.apply_action(Action::SelectFile(0));
 

@@ -226,7 +226,7 @@ fn workspace_key_actions_inner(
                 Some(vec![Action::CloseOverlay])
             } else if state.editor.search.open {
                 Some(vec![Action::CloseSearch])
-            } else if state.focus.current == Some(FocusTarget::SidebarSearch) {
+            } else if state.focus.get(&state.store) == Some(FocusTarget::SidebarSearch) {
                 Some(vec![Action::ClearSidebarFilter, Action::SetFocus(None)])
             } else {
                 None
@@ -234,7 +234,7 @@ fn workspace_key_actions_inner(
         }
         Some(NamedKey::Tab) => Some(vec![Action::SetFocus(cycle_focus_target(state))]),
         Some(NamedKey::Enter) => {
-            if state.focus.current == Some(FocusTarget::SearchInput) {
+            if state.focus.get(&state.store) == Some(FocusTarget::SearchInput) {
                 Some(vec![if chord.shift() {
                     Action::SearchPrevious
                 } else {
@@ -245,41 +245,41 @@ fn workspace_key_actions_inner(
             }
         }
         Some(NamedKey::ArrowDown) => {
-            if state.focus.current == Some(FocusTarget::Editor) {
+            if state.focus.get(&state.store) == Some(FocusTarget::Editor) {
                 Some(vec![Action::ScrollViewportLines(1)])
-            } else if state.workspace_mode == WorkspaceMode::Ready {
+            } else if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready {
                 Some(vec![Action::SelectNextFile])
             } else {
                 None
             }
         }
         Some(NamedKey::ArrowUp) => {
-            if state.focus.current == Some(FocusTarget::Editor) {
+            if state.focus.get(&state.store) == Some(FocusTarget::Editor) {
                 Some(vec![Action::ScrollViewportLines(-1)])
-            } else if state.workspace_mode == WorkspaceMode::Ready {
+            } else if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready {
                 Some(vec![Action::SelectPreviousFile])
             } else {
                 None
             }
         }
-        Some(NamedKey::PageDown) if state.workspace_mode == WorkspaceMode::Ready => {
-            if state.focus.current == Some(FocusTarget::Editor) {
+        Some(NamedKey::PageDown) if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready => {
+            if state.focus.get(&state.store) == Some(FocusTarget::Editor) {
                 Some(vec![Action::ScrollViewportPages(1)])
             } else {
                 Some(vec![Action::ScrollFileList(10)])
             }
         }
-        Some(NamedKey::PageUp) if state.workspace_mode == WorkspaceMode::Ready => {
-            if state.focus.current == Some(FocusTarget::Editor) {
+        Some(NamedKey::PageUp) if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready => {
+            if state.focus.get(&state.store) == Some(FocusTarget::Editor) {
                 Some(vec![Action::ScrollViewportPages(-1)])
             } else {
                 Some(vec![Action::ScrollFileList(-10)])
             }
         }
-        Some(NamedKey::Home) if state.workspace_mode == WorkspaceMode::Ready => {
+        Some(NamedKey::Home) if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready => {
             Some(vec![Action::ScrollViewportTo(0)])
         }
-        Some(NamedKey::End) if state.workspace_mode == WorkspaceMode::Ready => {
+        Some(NamedKey::End) if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready => {
             Some(vec![Action::ScrollViewportTo(
                 state.editor.max_scroll_top_px(),
             )])
@@ -289,7 +289,7 @@ fn workspace_key_actions_inner(
             if ch == "?" {
                 return Some(vec![Action::ShowKeyboardShortcuts]);
             }
-            if state.overlays.top().is_some() || state.workspace_mode != WorkspaceMode::Ready {
+            if state.overlays.top().is_some() || state.workspace_mode.get(&state.store) != WorkspaceMode::Ready {
                 return None;
             }
             match ch {
@@ -357,30 +357,30 @@ fn workspace_key_actions_inner(
 fn cycle_focus_target(state: &AppState) -> Option<FocusTarget> {
     match state.overlays.top() {
         Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_)) => {
-            match state.focus.current {
+            match state.focus.get(&state.store) {
                 Some(FocusTarget::PickerInput) => Some(FocusTarget::PickerList),
                 _ => Some(FocusTarget::PickerInput),
             }
         }
-        Some(OverlaySurface::CommandPalette) => match state.focus.current {
+        Some(OverlaySurface::CommandPalette) => match state.focus.get(&state.store) {
             Some(FocusTarget::CommandPaletteInput) => Some(FocusTarget::CommandPaletteList),
             _ => Some(FocusTarget::CommandPaletteInput),
         },
-        Some(OverlaySurface::PullRequestModal) => match state.focus.current {
+        Some(OverlaySurface::PullRequestModal) => match state.focus.get(&state.store) {
             Some(FocusTarget::PullRequestInput) => Some(FocusTarget::PullRequestConfirm),
             _ => Some(FocusTarget::PullRequestInput),
         },
-        Some(OverlaySurface::ThemePicker) => match state.focus.current {
+        Some(OverlaySurface::ThemePicker) => match state.focus.get(&state.store) {
             Some(FocusTarget::PickerInput) => Some(FocusTarget::PickerList),
             _ => Some(FocusTarget::PickerInput),
         },
         Some(OverlaySurface::GitHubAuthModal) => Some(FocusTarget::AuthPrimaryAction),
         Some(OverlaySurface::KeyboardShortcuts | OverlaySurface::CompareMenu) => None,
-        None => match state.focus.current {
+        None => match state.focus.get(&state.store) {
             Some(FocusTarget::FileList) => Some(FocusTarget::Editor),
             Some(FocusTarget::Editor) => Some(FocusTarget::FileList),
             Some(FocusTarget::WorkspacePrimaryButton) => Some(FocusTarget::TitleBar),
-            _ => Some(if state.workspace_mode == WorkspaceMode::Ready {
+            _ => Some(if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready {
                 FocusTarget::FileList
             } else {
                 FocusTarget::WorkspacePrimaryButton
@@ -406,7 +406,7 @@ fn activate_current_focus_actions(state: &AppState) -> Option<Vec<Action>> {
             }])
         }
         Some(OverlaySurface::KeyboardShortcuts | OverlaySurface::CompareMenu) => Some(Vec::new()),
-        None => match state.focus.current {
+        None => match state.focus.get(&state.store) {
             Some(FocusTarget::WorkspacePrimaryButton) => Some(vec![Action::OpenRepoPicker]),
             Some(FocusTarget::ThemeToggle) => Some(vec![Action::ToggleThemeMode]),
             _ => None,

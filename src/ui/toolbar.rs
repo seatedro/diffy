@@ -26,7 +26,7 @@ pub(crate) fn main_surface(
     let tc = &theme.colors;
     let has_overlay = state.active_overlay_name().is_some();
 
-    let toolbar = if state.workspace_mode == WorkspaceMode::Ready {
+    let toolbar = if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready {
         state
             .workspace
             .selected_file_path
@@ -36,7 +36,7 @@ pub(crate) fn main_surface(
         None
     };
 
-    let search = if state.workspace_mode == WorkspaceMode::Ready && state.editor.search.open {
+    let search = if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready && state.editor.search.open {
         Some(search_bar(state, theme))
     } else {
         None
@@ -44,7 +44,7 @@ pub(crate) fn main_surface(
 
     let vb = viewport_bounds.clone();
     let viewport_canvas =
-        if state.workspace_mode == WorkspaceMode::Ready && state.workspace.active_file.is_some() {
+        if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready && state.workspace.active_file.is_some() {
             Some(
                 canvas(move |bounds, _scene, _cx| {
                     vb.set(Some(bounds));
@@ -56,7 +56,7 @@ pub(crate) fn main_surface(
             None
         };
 
-    let content = match state.workspace_mode {
+    let content = match state.workspace_mode.get(&state.store) {
         WorkspaceMode::Loading => Some(loading_card(state, theme)),
         WorkspaceMode::Ready if state.workspace.active_file.is_none() && !has_overlay => {
             if state.workspace.source == WorkspaceSource::Status {
@@ -221,7 +221,7 @@ fn search_bar(state: &AppState, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let search = &state.editor.search;
-    let search_focused = state.focus.current == Some(FocusTarget::SearchInput);
+    let search_focused = state.focus.get(&state.store) == Some(FocusTarget::SearchInput);
 
     let input = text_input("", &search.query)
         .placeholder("Find in diff\u{2026}")

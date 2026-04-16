@@ -40,7 +40,7 @@ pub fn picker<T: PickerItem>(
                 <div class="w-full" px={Sp::MD}>
                     {text_input("", query)
                         .placeholder(placeholder)
-                        .focused(state.focus.current == Some(focus_target))
+                        .focused(state.focus.get(&state.store) == Some(focus_target))
                         .on_click(Action::SetFocus(Some(focus_target)))
                         .cursor(state.text_edit.cursor)
                         .anchor(state.text_edit.anchor)

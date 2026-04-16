@@ -29,7 +29,7 @@ pub fn pull_request_modal(
             <Body>
                 {text_input("Pull request URL", &state.github.pull_request.url_input)
                     .placeholder("https://github.com/owner/repo/pull/42")
-                    .focused(state.focus.current == Some(FocusTarget::PullRequestInput))
+                    .focused(state.focus.get(&state.store) == Some(FocusTarget::PullRequestInput))
                     .on_click(Action::SetFocus(Some(FocusTarget::PullRequestInput)))
                     .cursor(state.text_edit.cursor)
                     .anchor(state.text_edit.anchor)

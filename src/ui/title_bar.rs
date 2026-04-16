@@ -23,7 +23,7 @@ pub(crate) fn title_bar(
     let scale = theme.metrics.ui_scale();
     let has_repo = state.compare.repo_path.is_some();
     let repo_loaded = state.repository.status == AsyncStatus::Ready;
-    let is_ready = state.workspace_mode == WorkspaceMode::Ready;
+    let is_ready = state.workspace_mode.get(&state.store) == WorkspaceMode::Ready;
 
     let repo_label = state
         .compare
@@ -131,7 +131,7 @@ pub(crate) fn title_bar(
                             scale,
                         )}
                     </div>
-                } else if state.workspace_mode == WorkspaceMode::Loading {
+                } else if state.workspace_mode.get(&state.store) == WorkspaceMode::Loading {
                     <text class="text-sm" color={tc.text_muted}>{"Comparing\u{2026}"}</text>
                 }
             </div>

@@ -120,7 +120,7 @@ impl From<&AppState> for StateDump {
     fn from(state: &AppState) -> Self {
         let (overlay_query, overlay_selection_label) = overlay_dump_fields(state);
         Self {
-            workspace_mode: workspace_mode_name(state.workspace_mode),
+            workspace_mode: workspace_mode_name(state.workspace_mode.get(&state.store)),
             repository_status: async_status_name(state.repository.status),
             compare_status: async_status_name(state.workspace.status),
             active_overlay: state.active_overlay_name(),
@@ -191,7 +191,7 @@ impl From<&AppState> for StateDump {
                     .as_ref()
                     .map(|flow| flow.verification_uri.clone()),
             },
-            last_error: state.last_error.clone(),
+            last_error: state.last_error.get(&state.store),
             toasts: state
                 .toasts
                 .iter()
@@ -242,7 +242,7 @@ impl From<&AppState> for FilesDump {
 impl From<&AppState> for ErrorDump {
     fn from(state: &AppState) -> Self {
         Self {
-            last_error: state.last_error.clone(),
+            last_error: state.last_error.get(&state.store),
             toasts: state
                 .toasts
                 .iter()

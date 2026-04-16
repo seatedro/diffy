@@ -31,7 +31,7 @@ impl AppState {
 
     /// Called after text mutation to sync compare fields and rebuild pickers.
     pub(super) fn after_text_mutation(&mut self) -> Vec<Effect> {
-        match self.focus.current {
+        match self.focus.get(&self.store) {
             Some(FocusTarget::PickerInput) => match self.overlays.picker.kind {
                 PickerKind::Repository => self.rebuild_repo_picker(),
                 PickerKind::LeftRef => {
@@ -54,7 +54,7 @@ impl AppState {
     /// Should we persist settings after editing the current field?
     pub(super) fn needs_persist(&self) -> bool {
         matches!(
-            self.focus.current,
+            self.focus.get(&self.store),
             Some(FocusTarget::PickerInput)
                 if matches!(self.overlays.picker.kind, PickerKind::LeftRef | PickerKind::RightRef)
         )
@@ -231,7 +231,7 @@ impl AppState {
             }
         }
         // No text selection — copy the selected picker/palette entry's value.
-        if matches!(self.focus.current, Some(FocusTarget::PickerInput)) {
+        if matches!(self.focus.get(&self.store), Some(FocusTarget::PickerInput)) {
             if let Some(entry) = self
                 .overlays
                 .picker
@@ -244,7 +244,7 @@ impl AppState {
                 );
             }
         }
-        if matches!(self.focus.current, Some(FocusTarget::CommandPaletteInput)) {
+        if matches!(self.focus.get(&self.store), Some(FocusTarget::CommandPaletteInput)) {
             if let Some(entry) = self
                 .overlays
                 .command_palette

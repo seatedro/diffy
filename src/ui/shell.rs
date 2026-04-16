@@ -114,7 +114,7 @@ pub fn build_ui_frame(
                 .flex_1()
                 .min_h(0.0)
                 .when(
-                    state.workspace_mode == WorkspaceMode::Ready
+                    state.workspace_mode.get(&state.store) == WorkspaceMode::Ready
                         && sidebar_width_factor > 0.001
                         && width >= Bp::COMPACT * ui_scale,
                     |d| {
@@ -165,7 +165,7 @@ pub fn build_ui_frame(
     render_element(&mut root, &mut scene, cx, width, height);
     let mut scrollbar_tracks = std::mem::take(&mut cx.scrollbar_tracks);
 
-    if state.workspace_mode == WorkspaceMode::Ready {
+    if state.workspace_mode.get(&state.store) == WorkspaceMode::Ready {
         if let Some(vp_bounds) = viewport_bounds.get() {
             let document = match state.workspace.active_file.as_ref() {
                 Some(active_file) if active_file.file.is_binary => EditorDocument::Binary {

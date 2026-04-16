@@ -339,7 +339,7 @@ impl NativeApp {
             self.input.mouse_position(),
             &store,
         )
-        .with_focus(self.state.focus.current)
+        .with_focus(store.read(self.state.focus))
         .with_clock(self.state.clock_ms)
         .with_ui_signals(self.ui_signals);
         cx.debug_wireframe = std::env::var("DIFFY_DEBUG_WIREFRAME").is_ok();
@@ -523,7 +523,9 @@ impl ApplicationHandler for NativeApp {
                         }
                         Err(error) => {
                             eprintln!("render failed: {error}");
-                            self.state.last_error = Some(error.to_string());
+                            self.state
+                                .last_error
+                                .set(&self.state.store, Some(error.to_string()));
                         }
                     }
                 }
@@ -741,7 +743,7 @@ mod tests {
     #[test]
     fn file_list_scroll_region_wins_over_viewport_fallback() {
         let mut state = AppState::default();
-        state.workspace_mode = WorkspaceMode::Ready;
+        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
         state.workspace.files = (0..32)
             .map(|index| FileListEntry {
                 path: format!("src/file_{index}.rs"),
@@ -787,7 +789,7 @@ mod tests {
     #[test]
     fn file_list_wheel_scroll_moves_sidebar_contents() {
         let mut state = AppState::default();
-        state.workspace_mode = WorkspaceMode::Ready;
+        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
         state.workspace.files = (0..32)
             .map(|index| FileListEntry {
                 path: format!("src/file_{index}.rs"),
@@ -831,7 +833,7 @@ mod tests {
     #[test]
     fn overlay_blocks_viewport_scroll_fallback() {
         let mut state = AppState::default();
-        state.workspace_mode = WorkspaceMode::Ready;
+        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
         state.workspace.files = vec![FileListEntry {
             path: "src/file_0.rs".to_owned(),
             status: "M".to_owned(),

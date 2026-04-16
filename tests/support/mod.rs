@@ -291,23 +291,26 @@ pub fn auth_modal_state(with_device_flow: bool) -> AppState {
 }
 
 pub fn toasts_state() -> AppState {
-    let mut state = ready_state_with_files(2);
-    state.toasts = vec![
-        Toast {
-            id: 1,
-            kind: ToastKind::Info,
-            message: "Compare completed in 142ms".to_owned(),
-            created_at_ms: 0,
-            hovered: false,
-        },
-        Toast {
-            id: 2,
-            kind: ToastKind::Error,
-            message: "Failed to resolve ref 'origin/old-branch'".to_owned(),
-            created_at_ms: 0,
-            hovered: false,
-        },
-    ];
+    let state = ready_state_with_files(2);
+    state.toasts.set(
+        &state.store,
+        vec![
+            Toast {
+                id: 1,
+                kind: ToastKind::Info,
+                message: "Compare completed in 142ms".to_owned(),
+                created_at_ms: 0,
+                hovered: false,
+            },
+            Toast {
+                id: 2,
+                kind: ToastKind::Error,
+                message: "Failed to resolve ref 'origin/old-branch'".to_owned(),
+                created_at_ms: 0,
+                hovered: false,
+            },
+        ],
+    );
     state
 }
 

@@ -713,7 +713,7 @@ pub struct AppState {
     pub settings: Settings,
     pub startup: StartupState,
     pub last_error: Signal<Option<String>>,
-    pub toasts: Vec<Toast>,
+    pub toasts: Signal<Vec<Toast>>,
     pub animation: crate::ui::animation::AnimationState,
     pub commit_editor: Editor,
     /// Shared reactive store. Signals (like `sidebar_visible`) are handles
@@ -738,6 +738,7 @@ impl Default for AppState {
         let workspace_mode = store.create(WorkspaceMode::default());
         let last_error = store.create(None::<String>);
         let theme_preview_original = store.create(None::<String>);
+        let toasts = store.create(Vec::<Toast>::new());
         let debug = DebugStateStore::new(&store, DebugState::default());
         let file_list = FileListStateStore::new_default(&store);
         let editor = EditorStateStore::new_default(&store);
@@ -761,7 +762,7 @@ impl Default for AppState {
             settings: Settings::default(),
             startup: StartupState::default(),
             last_error,
-            toasts: Vec::new(),
+            toasts,
             animation: crate::ui::animation::AnimationState::default(),
             commit_editor: Editor::default(),
             sidebar_visible,
@@ -828,6 +829,7 @@ impl AppState {
         });
         let last_error = store.create(None::<String>);
         let theme_preview_original = store.create(None::<String>);
+        let toasts = store.create(Vec::<Toast>::new());
         let debug = DebugStateStore::new(&store, DebugState::default());
         let file_list = FileListStateStore::new_default(&store);
         let editor = EditorStateStore::new(
@@ -894,7 +896,7 @@ impl AppState {
                 dump_errors_json: startup.args.dump_errors_json.clone(),
             },
             last_error,
-            toasts: Vec::new(),
+            toasts,
             animation: crate::ui::animation::AnimationState::default(),
             commit_editor: Editor::default(),
             sidebar_visible,
@@ -1063,18 +1065,24 @@ impl AppState {
                 Vec::new()
             }
             DismissToast(index) => {
-                if index < self.toasts.len() {
-                    self.toasts.remove(index);
-                }
+                self.toasts.update(&self.store, |toasts| {
+                    if index < toasts.len() {
+                        toasts.remove(index);
+                    }
+                });
                 Vec::new()
             }
             HoverToast(index) => {
-                let was_any_hovered = self.toasts.iter().any(|t| t.hovered);
-                let hovered_id = index.and_then(|i| self.toasts.get(i)).map(|toast| toast.id);
-                for toast in &mut self.toasts {
-                    toast.hovered = Some(toast.id) == hovered_id;
-                }
-                let is_any_hovered = self.toasts.iter().any(|t| t.hovered);
+                let mut was_any_hovered = false;
+                let mut is_any_hovered = false;
+                self.toasts.update(&self.store, |toasts| {
+                    was_any_hovered = toasts.iter().any(|t| t.hovered);
+                    let hovered_id = index.and_then(|i| toasts.get(i)).map(|t| t.id);
+                    for toast in toasts.iter_mut() {
+                        toast.hovered = Some(toast.id) == hovered_id;
+                    }
+                    is_any_hovered = toasts.iter().any(|t| t.hovered);
+                });
                 if was_any_hovered != is_any_hovered {
                     use crate::ui::animation::AnimationKey;
                     let target = if is_any_hovered { 1.0 } else { 0.0 };
@@ -1997,8 +2005,10 @@ impl AppState {
     pub fn update_time(&mut self, now_ms: u64) {
         self.clock_ms = now_ms;
         self.animation.tick(now_ms);
-        self.toasts.retain(|toast| {
-            toast.hovered || now_ms.saturating_sub(toast.created_at_ms) < TOAST_LIFETIME_MS
+        self.toasts.update(&self.store, |toasts| {
+            toasts.retain(|toast| {
+                toast.hovered || now_ms.saturating_sub(toast.created_at_ms) < TOAST_LIFETIME_MS
+            });
         });
     }
 
@@ -2020,11 +2030,13 @@ impl AppState {
     }
 
     pub fn next_toast_expiry_at_ms(&self) -> Option<u64> {
-        self.toasts
-            .iter()
-            .filter(|toast| !toast.hovered)
-            .map(|toast| toast.created_at_ms.saturating_add(TOAST_LIFETIME_MS))
-            .min()
+        self.toasts.with(&self.store, |toasts| {
+            toasts
+                .iter()
+                .filter(|toast| !toast.hovered)
+                .map(|toast| toast.created_at_ms.saturating_add(TOAST_LIFETIME_MS))
+                .min()
+        })
     }
 
     pub fn active_overlay_name(&self) -> Option<&'static str> {
@@ -4663,16 +4675,19 @@ impl AppState {
             TOAST_ANIM_MS,
             self.clock_ms,
         );
-        self.toasts.push(Toast {
-            id,
-            kind,
-            message: message.to_owned(),
-            created_at_ms: self.clock_ms,
-            hovered: false,
+        let now = self.clock_ms;
+        self.toasts.update(&self.store, |toasts| {
+            toasts.push(Toast {
+                id,
+                kind,
+                message: message.to_owned(),
+                created_at_ms: now,
+                hovered: false,
+            });
+            if toasts.len() > MAX_VISIBLE_TOASTS {
+                toasts.remove(0);
+            }
         });
-        if self.toasts.len() > MAX_VISIBLE_TOASTS {
-            self.toasts.remove(0);
-        }
     }
 
     fn open_search(&mut self) {

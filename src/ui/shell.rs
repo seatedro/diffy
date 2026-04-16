@@ -157,18 +157,25 @@ pub fn build_ui_frame(
         root = root.child(overlay);
     }
 
-    if !state.toasts.is_empty() {
-        root = root.child(
-            ToastStack::new(
-                &state.toasts,
-                &state.animation,
-                width,
-                height,
-                ui_scale,
-                m.status_bar_height,
+    let toast_stack = state.toasts.with(&state.store, |toasts| {
+        if toasts.is_empty() {
+            None
+        } else {
+            Some(
+                ToastStack::new(
+                    toasts,
+                    &state.animation,
+                    width,
+                    height,
+                    ui_scale,
+                    m.status_bar_height,
+                )
+                .build(),
             )
-            .build(),
-        );
+        }
+    });
+    if let Some(stack) = toast_stack {
+        root = root.child(stack);
     }
 
     let mut root = root.into_any();

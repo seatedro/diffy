@@ -224,7 +224,9 @@ impl InputSystem {
         if hovered_overlay_entry != state.overlays.picker.hovered_index.get(&state.store) {
             actions.push(Action::HoverOverlayEntry(hovered_overlay_entry));
         }
-        let current_hovered_toast = state.toasts.iter().position(|toast| toast.hovered);
+        let current_hovered_toast = state
+            .toasts
+            .with(&state.store, |toasts| toasts.iter().position(|t| t.hovered));
         if hovered_toast != current_hovered_toast {
             actions.push(Action::HoverToast(hovered_toast));
         }

@@ -185,14 +185,15 @@ impl From<&AppState> for StateDump {
                 }),
             },
             last_error: state.last_error.get(&state.store),
-            toasts: state
-                .toasts
-                .iter()
-                .map(|toast| ToastDump {
-                    kind: toast_kind_name(toast.kind),
-                    message: toast.message.clone(),
-                })
-                .collect(),
+            toasts: state.toasts.with(&state.store, |toasts| {
+                toasts
+                    .iter()
+                    .map(|toast| ToastDump {
+                        kind: toast_kind_name(toast.kind),
+                        message: toast.message.clone(),
+                    })
+                    .collect()
+            }),
             settings: SettingsDump::from(&state.settings),
             debug: DebugDump {
                 last_scene_primitive_count: state
@@ -238,14 +239,15 @@ impl From<&AppState> for ErrorDump {
     fn from(state: &AppState) -> Self {
         Self {
             last_error: state.last_error.get(&state.store),
-            toasts: state
-                .toasts
-                .iter()
-                .map(|toast| ToastDump {
-                    kind: toast_kind_name(toast.kind),
-                    message: toast.message.clone(),
-                })
-                .collect(),
+            toasts: state.toasts.with(&state.store, |toasts| {
+                toasts
+                    .iter()
+                    .map(|toast| ToastDump {
+                        kind: toast_kind_name(toast.kind),
+                        message: toast.message.clone(),
+                    })
+                    .collect()
+            }),
         }
     }
 }

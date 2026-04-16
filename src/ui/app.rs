@@ -557,7 +557,6 @@ impl ApplicationHandler for NativeApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let prior_toast_count = self.state.toasts.len();
         let prior_cursor_blink_epoch = self.state.cursor_blink_epoch();
         self.state.update_time(
             self.launch_at
@@ -596,7 +595,6 @@ impl ApplicationHandler for NativeApp {
 
         let animating = self.state.animation.has_active();
         let cursor_blink_changed = self.state.cursor_blink_epoch() != prior_cursor_blink_epoch;
-        let toasts_changed = self.state.toasts.len() != prior_toast_count;
         let should_poll = self.state.startup.exit_after.is_some();
         let next_wake = if animating {
             Some(std::time::Instant::now() + std::time::Duration::from_millis(16))
@@ -637,7 +635,6 @@ impl ApplicationHandler for NativeApp {
                 || self.state.store.any_dirty()
                 || animating
                 || cursor_blink_changed
-                || toasts_changed
                 || tooltip_changed)
         {
             window.request_redraw();

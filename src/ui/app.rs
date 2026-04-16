@@ -326,12 +326,8 @@ impl NativeApp {
         // Clone the Rc so `cx` can hold `&SignalStore` independently of
         // `self.state` (which we need to borrow mutably for build_ui_frame).
         let store = std::rc::Rc::clone(&self.state.store);
-        self.ui_signals.sync_from_state(
-            &store,
-            self.state.file_list.scroll_offset_px.get(&store),
-            self.state.editor.scroll_top_px.get(&store) as f32,
-            store.read(self.state.sidebar_visible),
-        );
+        self.ui_signals
+            .sync_from_state(&store, store.read(self.state.sidebar_visible));
 
         let mut cx = crate::ui::element::ElementContext::new(
             &self.theme,

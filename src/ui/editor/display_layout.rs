@@ -1,3 +1,4 @@
+use super::decoration::decoration_for_kind;
 use super::render_doc::{DisplayRow, INVALID_U32, RenderDoc, RenderRowKind};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -82,56 +83,53 @@ pub fn rebuild_display_rows(
         if kind == RenderRowKind::FileHeader {
             continue;
         }
-        let (wrap_left, wrap_right, h_px) = match kind {
-            RenderRowKind::HunkSeparator => (1_u16, 1_u16, metrics.hunk_height_px),
-            _ if config.split_mode => {
-                let left_cols = split_wrap_cols.max(1);
-                let right_cols = split_wrap_cols.max(1);
-                let wrap_left = if line.left_text.is_valid() {
-                    wrap_count(line.left_cols, left_cols)
-                } else {
-                    1
-                };
-                let wrap_right = if line.right_text.is_valid() {
-                    wrap_count(line.right_cols, right_cols)
-                } else {
-                    1
-                };
-                (
-                    wrap_left,
-                    wrap_right,
-                    metrics
-                        .body_row_height_px
-                        .saturating_mul(wrap_left.max(wrap_right).max(1)),
-                )
-            }
-            RenderRowKind::Modified => {
-                let wrap_left = if line.left_text.is_valid() {
-                    wrap_count(line.left_cols, unified_wrap_cols.max(1))
-                } else {
-                    1
-                };
-                let wrap_right = if line.right_text.is_valid() {
-                    wrap_count(line.right_cols, unified_wrap_cols.max(1))
-                } else {
-                    1
-                };
-                (
-                    wrap_left,
-                    wrap_right,
-                    metrics
-                        .body_row_height_px
-                        .saturating_mul(wrap_left.max(1).saturating_add(wrap_right.max(1))),
-                )
-            }
-            _ => {
-                let wrap = wrap_count(line.primary_cols(), unified_wrap_cols.max(1));
-                (
-                    wrap,
-                    wrap,
-                    metrics.body_row_height_px.saturating_mul(wrap.max(1)),
-                )
-            }
+        let (wrap_left, wrap_right, h_px) = if let Some(deco) = decoration_for_kind(kind) {
+            (1_u16, 1_u16, deco.height(&metrics))
+        } else if config.split_mode {
+            let left_cols = split_wrap_cols.max(1);
+            let right_cols = split_wrap_cols.max(1);
+            let wrap_left = if line.left_text.is_valid() {
+                wrap_count(line.left_cols, left_cols)
+            } else {
+                1
+            };
+            let wrap_right = if line.right_text.is_valid() {
+                wrap_count(line.right_cols, right_cols)
+            } else {
+                1
+            };
+            (
+                wrap_left,
+                wrap_right,
+                metrics
+                    .body_row_height_px
+                    .saturating_mul(wrap_left.max(wrap_right).max(1)),
+            )
+        } else if kind == RenderRowKind::Modified {
+            let wrap_left = if line.left_text.is_valid() {
+                wrap_count(line.left_cols, unified_wrap_cols.max(1))
+            } else {
+                1
+            };
+            let wrap_right = if line.right_text.is_valid() {
+                wrap_count(line.right_cols, unified_wrap_cols.max(1))
+            } else {
+                1
+            };
+            (
+                wrap_left,
+                wrap_right,
+                metrics
+                    .body_row_height_px
+                    .saturating_mul(wrap_left.max(1).saturating_add(wrap_right.max(1))),
+            )
+        } else {
+            let wrap = wrap_count(line.primary_cols(), unified_wrap_cols.max(1));
+            (
+                wrap,
+                wrap,
+                metrics.body_row_height_px.saturating_mul(wrap.max(1)),
+            )
         };
 
         max_cols = max_cols.max(line.left_cols.max(line.right_cols));

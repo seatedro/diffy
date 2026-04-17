@@ -9,6 +9,7 @@ use crate::render::{
 use crate::ui::design::{Alpha, Sz};
 use crate::ui::theme::{Color, Theme};
 
+use super::decoration::{RowPaintCtx, decoration_for_kind};
 use super::display_layout::{
     DisplayLayoutConfig, DisplayLayoutMetrics, DisplayLayoutSummary, compute_gutter_digits,
     rebuild_display_rows,
@@ -606,7 +607,7 @@ impl EditorElement {
                 scene.clip(self.layout.content_bounds);
 
                 self.paint_gutter_backgrounds(scene, theme);
-                self.paint_row_backgrounds(scene, theme, doc);
+                self.paint_row_backgrounds(scene, theme, path, doc);
                 self.paint_inline_change_backgrounds(scene, theme, doc);
                 self.paint_line_highlights(scene, theme);
                 self.paint_line_selection(scene, theme, _state, doc);
@@ -686,8 +687,10 @@ impl EditorElement {
         }
     }
 
-    fn paint_row_backgrounds(&self, scene: &mut Scene, theme: &Theme, doc: &RenderDoc) {
+    fn paint_row_backgrounds(&self, scene: &mut Scene, theme: &Theme, path: &str, doc: &RenderDoc) {
         let line_height = self.layout.line_height;
+        let font_size = self.layout.font_size;
+        let text_y_offset = self.layout.text_y_offset;
         for row_index in self.layout.visible_row_range.iter() {
             let Some(display_row) = self.rows.get(row_index).copied() else {
                 continue;
@@ -727,6 +730,19 @@ impl EditorElement {
                         color: dim_bg(theme.colors.line_del),
                     });
                 }
+            } else if let Some(deco) = decoration_for_kind(kind) {
+                let mut ctx = RowPaintCtx {
+                    scene,
+                    theme,
+                    layout: &self.layout,
+                    row_rect: rr,
+                    text_y_offset,
+                    font_size,
+                    line,
+                    doc,
+                    path,
+                };
+                deco.paint_background(&mut ctx);
             } else {
                 paint_row_background(scene, theme, rr, kind);
             }
@@ -1483,37 +1499,24 @@ impl EditorElement {
                 continue;
             }
 
-            match line.row_kind() {
-                RenderRowKind::FileHeader => {
-                    scene.text(TextPrimitive {
-                        rect: Rect {
-                            x: self.text_origin_x(),
-                            y: rr.y + ty,
-                            width: self.text_width(),
-                            height: rr.height,
-                        },
-                        text: path.into(),
-                        color: theme.colors.text_strong,
-                        font_size: font_size + 1.0,
-                        font_kind: FontKind::Ui,
-                        font_weight: FontWeight::Medium,
-                    });
-                }
-                RenderRowKind::HunkSeparator => {
-                    scene.text(TextPrimitive {
-                        rect: Rect {
-                            x: self.text_origin_x(),
-                            y: rr.y + ty,
-                            width: self.text_width(),
-                            height: rr.height,
-                        },
-                        text: doc.line_text(line.left_text).into(),
-                        color: theme.colors.text_muted,
-                        font_size,
-                        font_kind: FontKind::Mono,
-                        font_weight: FontWeight::Normal,
-                    });
-                }
+            let kind = line.row_kind();
+            if let Some(deco) = decoration_for_kind(kind) {
+                let mut ctx = RowPaintCtx {
+                    scene,
+                    theme,
+                    layout: &self.layout,
+                    row_rect: rr,
+                    text_y_offset: ty,
+                    font_size,
+                    line: &line,
+                    doc,
+                    path,
+                };
+                deco.paint_content(&mut ctx);
+                continue;
+            }
+
+            match kind {
                 _ if self.layout.split_mode => {
                     self.paint_split_body_spans(
                         scene,
@@ -1892,22 +1895,6 @@ impl EditorElement {
             self.layout.content_bounds.bottom(),
         )
     }
-
-    fn text_origin_x(&self) -> f32 {
-        if self.layout.split_mode {
-            self.layout.left_text_rect.x
-        } else {
-            self.layout.unified_text_rect.x
-        }
-    }
-
-    fn text_width(&self) -> f32 {
-        if self.layout.split_mode {
-            self.layout.left_text_rect.width
-        } else {
-            self.layout.unified_text_rect.width
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2060,12 +2047,11 @@ fn dim_bg(c: Color) -> Color {
 
 fn paint_row_background(scene: &mut Scene, theme: &Theme, row_rect: Rect, kind: RenderRowKind) {
     let color = match kind {
-        RenderRowKind::FileHeader => theme.colors.file_header_bg,
-        RenderRowKind::HunkSeparator => theme.colors.hunk_header_bg,
         RenderRowKind::Context => theme.colors.canvas,
         RenderRowKind::Added => dim_bg(theme.colors.line_add),
         RenderRowKind::Removed => dim_bg(theme.colors.line_del),
         RenderRowKind::Modified => dim_bg(theme.colors.line_modified),
+        RenderRowKind::FileHeader | RenderRowKind::HunkSeparator => return,
     };
     scene.rect(RectPrimitive {
         rect: row_rect,
@@ -2493,6 +2479,59 @@ mod tests {
         assert_eq!(
             runtime.hit_test_row(&state, body.x + 20.0, body.y + 5.0),
             Some(0)
+        );
+    }
+
+    #[test]
+    fn hunk_separator_decoration_emits_background_rect() {
+        use crate::render::{Primitive, Scene};
+
+        let mut state = EditorState {
+            layout: LayoutMode::Unified,
+            ..EditorState::default()
+        };
+        let doc = RenderDoc {
+            text_bytes: b"@@ hdr @@".to_vec(),
+            style_runs: Vec::new(),
+            lines: vec![RenderLine {
+                kind: RenderRowKind::HunkSeparator as u8,
+                left_text: ByteRange { start: 0, len: 9 },
+                left_cols: 9,
+                ..RenderLine::default()
+            }],
+        };
+
+        let mut runtime = EditorElement::default();
+        let document = EditorDocument::Text {
+            compare_generation: 1,
+            file_index: 0,
+            path: "demo.txt",
+            doc: &doc,
+        };
+        runtime.prepare(
+            &mut state,
+            document,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 600.0,
+            },
+            TextMetrics::default(),
+        );
+
+        let theme = Theme::default_dark();
+        let mut scene = Scene::default();
+        runtime.paint(&mut scene, &theme, &state, document);
+
+        let hunk_bg = theme.colors.hunk_header_bg;
+        let has_hunk_bg = scene.primitives.iter().any(|p| match p {
+            Primitive::Rect(r) => r.color == hunk_bg,
+            _ => false,
+        });
+        assert!(
+            has_hunk_bg,
+            "expected a rect with hunk_header_bg color to be emitted"
         );
     }
 }

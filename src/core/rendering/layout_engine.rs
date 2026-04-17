@@ -480,7 +480,7 @@ mod tests {
         let rows = engine.rows();
         assert_eq!(rows.len(), 5);
         assert_eq!(rows[2].left_row_index, 2);
-        assert_eq!(rows[2].right_row_index, 2);
+        assert_eq!(rows[2].right_row_index, 4);
         assert_eq!(
             rows[2].row_type,
             crate::core::rendering::flat_rows::DiffRowType::Modified
@@ -491,8 +491,8 @@ mod tests {
             rows[3].row_type,
             crate::core::rendering::flat_rows::DiffRowType::Removed
         );
-        assert_eq!(rows[4].left_row_index, 4);
-        assert_eq!(rows[4].right_row_index, 4);
+        assert_eq!(rows[4].left_row_index, 5);
+        assert_eq!(rows[4].right_row_index, 5);
         assert_eq!(
             rows[4].row_type,
             crate::core::rendering::flat_rows::DiffRowType::Context

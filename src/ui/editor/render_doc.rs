@@ -529,7 +529,7 @@ mod tests {
     use crate::core::text::{DiffTokenSpan, SyntaxTokenKind, TextBuffer, TokenBuffer};
 
     #[test]
-    fn render_doc_keeps_headers_and_dual_sided_modified_lines() {
+    fn render_doc_keeps_headers_and_emits_block_style_changes() {
         let mut text_buffer = TextBuffer::default();
         let mut token_buffer = TokenBuffer::default();
 
@@ -575,24 +575,29 @@ mod tests {
 
         let doc = build_render_doc(&file, 0, &text_buffer, &token_buffer);
 
-        assert_eq!(doc.lines.len(), 3);
+        assert_eq!(doc.lines.len(), 4);
         assert_eq!(doc.lines[0].row_kind(), RenderRowKind::FileHeader);
         assert_eq!(
             doc.line_text(doc.lines[0].left_text),
             "src/app/controller.rs"
         );
         assert_eq!(doc.lines[1].row_kind(), RenderRowKind::HunkSeparator);
-        assert_eq!(doc.lines[2].row_kind(), RenderRowKind::Modified);
+        assert_eq!(doc.lines[2].row_kind(), RenderRowKind::Removed);
         assert_eq!(doc.line_text(doc.lines[2].left_text), "old value");
-        assert_eq!(doc.line_text(doc.lines[2].right_text), "new value");
+        assert!(!doc.lines[2].right_text.is_valid());
         assert_eq!(doc.lines[2].old_line_no, 1);
-        assert_eq!(doc.lines[2].new_line_no, 1);
+        assert_eq!(doc.lines[2].new_line_no, INVALID_U32);
         assert_eq!(
             doc.line_runs(doc.lines[2].left_runs)[1].flags,
             STYLE_FLAG_CHANGE
         );
+        assert_eq!(doc.lines[3].row_kind(), RenderRowKind::Added);
+        assert!(!doc.lines[3].left_text.is_valid());
+        assert_eq!(doc.line_text(doc.lines[3].right_text), "new value");
+        assert_eq!(doc.lines[3].old_line_no, INVALID_U32);
+        assert_eq!(doc.lines[3].new_line_no, 1);
         assert_eq!(
-            doc.line_runs(doc.lines[2].right_runs)[0].style_id,
+            doc.line_runs(doc.lines[3].right_runs)[0].style_id,
             SyntaxTokenKind::Keyword as u16
         );
     }

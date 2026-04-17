@@ -204,14 +204,18 @@ mod tests {
         let rows = flatten_file_diff(&file, 0);
         let prepared = prepare_rows(&rows, &[file], &text_buffer, &|text| text.len() as f64);
 
-        assert_eq!(prepared.len(), 3);
+        assert_eq!(prepared.len(), 4);
         assert_eq!(prepared[0].flat.row_type, DiffRowType::FileHeader);
         assert_eq!(prepared[0].measured_width, 10.0);
         assert_eq!(prepared[1].flat.row_type, DiffRowType::HunkSeparator);
         assert_eq!(prepared[1].measured_width, 11.0);
-        assert_eq!(prepared[2].flat.row_type, DiffRowType::Modified);
+        assert_eq!(prepared[2].flat.row_type, DiffRowType::Removed);
         assert_eq!(prepared[2].measured_width, 9.0);
-        assert_eq!(text_buffer.view(prepared[2].text_range), "new value");
-        assert_eq!(prepared[2].change_tokens, added_changes);
+        assert_eq!(text_buffer.view(prepared[2].text_range), "old value");
+        assert_eq!(prepared[2].syntax_tokens, removed_tokens);
+        assert_eq!(prepared[3].flat.row_type, DiffRowType::Added);
+        assert_eq!(prepared[3].measured_width, 9.0);
+        assert_eq!(text_buffer.view(prepared[3].text_range), "new value");
+        assert_eq!(prepared[3].change_tokens, added_changes);
     }
 }

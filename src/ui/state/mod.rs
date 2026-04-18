@@ -13,7 +13,7 @@ use crate::core::compare::{CompareMode, CompareOutput, CompareSpec, LayoutMode, 
 use crate::core::diff::FileDiff;
 use crate::core::frecency::FrecencyStore;
 use crate::core::syntax::DiffSyntaxAnnotator;
-use crate::core::text::TextBuffer;
+use crate::core::text::{TextBuffer, TokenBuffer};
 use crate::core::vcs::git::patch;
 use crate::core::vcs::git::{
     BranchInfo, CommitInfo, StatusItem, StatusOperation, StatusScope, TagInfo,
@@ -168,6 +168,15 @@ pub struct FileListEntry {
     pub is_binary: bool,
 }
 
+fn refs_for_status_scope(scope: StatusScope) -> (String, String) {
+    use crate::core::vcs::git::{INDEX_REF, WORKDIR_REF};
+    match scope {
+        StatusScope::Staged => ("HEAD".to_owned(), INDEX_REF.to_owned()),
+        StatusScope::Unstaged => (INDEX_REF.to_owned(), WORKDIR_REF.to_owned()),
+        StatusScope::Untracked => (String::new(), WORKDIR_REF.to_owned()),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ActiveFile {
     pub index: usize,
@@ -175,6 +184,12 @@ pub struct ActiveFile {
     pub file: FileDiff,
     pub render_doc: RenderDoc,
     pub text_buffer: TextBuffer,
+    pub base_file: FileDiff,
+    pub base_text_buffer: TextBuffer,
+    pub token_buffer: TokenBuffer,
+    pub left_ref: String,
+    pub right_ref: String,
+    pub file_line_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -203,6 +218,7 @@ pub struct WorkspaceState {
     pub sidebar_auto_width: Option<SidebarWidthCache>,
     pub range_commits: Vec<CommitInfo>,
     pub pre_drill_compare: Option<(String, String, CompareMode)>,
+    pub expansions: crate::ui::editor::expansion::FileExpansionMap,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1107,6 +1123,17 @@ impl AppState {
                 self.commit_editor.scroll(delta as f32);
                 Vec::new()
             }
+            ExpandContextAbove(hunk_index, amount) => self.expand_context(
+                hunk_index,
+                crate::ui::editor::expansion::ExpandDirection::Above,
+                amount,
+            ),
+            ExpandContextBelow(hunk_index, amount) => self.expand_context(
+                hunk_index,
+                crate::ui::editor::expansion::ExpandDirection::Below,
+                amount,
+            ),
+            ExpandAllContext => self.expand_all_context(),
             Noop => Vec::new(),
         }
     }
@@ -1963,6 +1990,15 @@ impl AppState {
                 self.push_error(&message);
                 Vec::new()
             }
+            AppEvent::ContextLinesReady(payload) => self.handle_context_lines_ready(payload),
+            AppEvent::ContextLinesFailed {
+                generation: _,
+                file_index: _,
+                message,
+            } => {
+                self.push_error(&message);
+                Vec::new()
+            }
         }
     }
 
@@ -2082,6 +2118,7 @@ impl AppState {
         self.workspace.sidebar_auto_width.set(&self.store, None);
         self.workspace.range_commits.set(&self.store, Vec::new());
         self.workspace.pre_drill_compare.set(&self.store, None);
+        self.workspace.expansions.update(&self.store, |m| m.clear());
     }
 
     fn handle_repository_snapshot(&mut self, payload: RepositorySnapshot) -> Vec<Effect> {
@@ -2171,6 +2208,203 @@ impl AppState {
                 }
             }
         }
+    }
+
+    fn expand_context(
+        &mut self,
+        hunk_index: usize,
+        direction: crate::ui::editor::expansion::ExpandDirection,
+        amount: u32,
+    ) -> Vec<Effect> {
+        use crate::events::ContextDirection;
+        use crate::ui::editor::expansion::{ExpandDirection, gap_budgets};
+
+        if amount == 0 {
+            return Vec::new();
+        }
+
+        let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
+            return Vec::new();
+        };
+
+        let Some((file_index, path, reference, clamped, generation)) =
+            self.workspace.active_file.with(&self.store, |af| {
+                let active = af.as_ref()?;
+                let expansion = self
+                    .workspace
+                    .expansions
+                    .with(&self.store, |m| m.get(&active.path).cloned())
+                    .unwrap_or_default();
+                let budgets = gap_budgets(&active.base_file, &expansion, active.file_line_count);
+                let budget = budgets.get(hunk_index).copied()?;
+                let cap = match direction {
+                    ExpandDirection::Above => budget.above_cap,
+                    ExpandDirection::Below => budget.below_cap,
+                };
+                let clamped = amount.min(cap);
+                if clamped == 0 {
+                    return None;
+                }
+                let reference = if active.right_ref.is_empty() {
+                    active.left_ref.clone()
+                } else {
+                    active.right_ref.clone()
+                };
+                let generation = self.workspace.compare_generation.get(&self.store);
+                Some((
+                    active.index,
+                    active.path.clone(),
+                    reference,
+                    clamped,
+                    generation,
+                ))
+            })
+        else {
+            return Vec::new();
+        };
+
+        vec![Effect::FetchContextLines(
+            crate::effects::FetchContextLinesRequest {
+                repo_path,
+                reference,
+                path,
+                generation,
+                file_index,
+                hunk_index,
+                direction: match direction {
+                    ExpandDirection::Above => ContextDirection::Above,
+                    ExpandDirection::Below => ContextDirection::Below,
+                },
+                amount: clamped,
+            },
+        )]
+    }
+
+    fn expand_all_context(&mut self) -> Vec<Effect> {
+        use crate::events::ContextDirection;
+
+        let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
+            return Vec::new();
+        };
+        let Some((file_index, path, reference, generation)) =
+            self.workspace.active_file.with(&self.store, |af| {
+                let active = af.as_ref()?;
+                if active.base_file.hunks.is_empty() {
+                    return None;
+                }
+                let reference = if active.right_ref.is_empty() {
+                    active.left_ref.clone()
+                } else {
+                    active.right_ref.clone()
+                };
+                Some((
+                    active.index,
+                    active.path.clone(),
+                    reference,
+                    self.workspace.compare_generation.get(&self.store),
+                ))
+            })
+        else {
+            return Vec::new();
+        };
+
+        vec![Effect::FetchContextLines(
+            crate::effects::FetchContextLinesRequest {
+                repo_path,
+                reference,
+                path,
+                generation,
+                file_index,
+                hunk_index: 0,
+                direction: ContextDirection::All,
+                amount: 0,
+            },
+        )]
+    }
+
+    fn handle_context_lines_ready(
+        &mut self,
+        payload: crate::events::ContextLinesReady,
+    ) -> Vec<Effect> {
+        use crate::events::ContextDirection;
+        use crate::ui::editor::expansion::{apply_expansion, gap_budgets};
+
+        if payload.generation != self.workspace.compare_generation.get(&self.store) {
+            return Vec::new();
+        }
+
+        let Some((active_index, active_path, base_file, base_text_buffer, token_buffer)) =
+            self.workspace.active_file.with(&self.store, |af| {
+                af.as_ref().and_then(|active| {
+                    if active.index != payload.file_index || active.path != payload.path {
+                        return None;
+                    }
+                    Some((
+                        active.index,
+                        active.path.clone(),
+                        active.base_file.clone(),
+                        active.base_text_buffer.clone(),
+                        active.token_buffer.clone(),
+                    ))
+                })
+            })
+        else {
+            return Vec::new();
+        };
+
+        let hunk_count = base_file.hunks.len();
+        self.workspace.expansions.update(&self.store, |map| {
+            let entry = map.entry(active_path.clone()).or_default();
+            entry.ensure_hunk_count(hunk_count);
+            match payload.direction {
+                ContextDirection::Above => {
+                    if let Some(h) = entry.hunks.get_mut(payload.hunk_index) {
+                        h.above = h.above.saturating_add(payload.amount);
+                    }
+                }
+                ContextDirection::Below => {
+                    if let Some(h) = entry.hunks.get_mut(payload.hunk_index)
+                        && let Some(base_hunk) = base_file.hunks.get(payload.hunk_index)
+                    {
+                        let old_end = (base_hunk.old_start + base_hunk.old_count - 1).max(0) as u32;
+                        let remaining =
+                            (payload.lines.len() as u32).saturating_sub(old_end + h.below);
+                        h.below = h.below.saturating_add(payload.amount.min(remaining));
+                    }
+                }
+                ContextDirection::All => {
+                    let budgets = gap_budgets(&base_file, entry, Some(payload.lines.len() as u32));
+                    for (idx, h) in entry.hunks.iter_mut().enumerate() {
+                        if let Some(b) = budgets.get(idx) {
+                            h.above = h.above.saturating_add(b.above_cap);
+                            h.below = h.below.saturating_add(b.below_cap);
+                        }
+                    }
+                }
+            }
+        });
+
+        let expansion = self
+            .workspace
+            .expansions
+            .with(&self.store, |m| m.get(&active_path).cloned())
+            .unwrap_or_default();
+        let (new_file, new_text_buffer) =
+            apply_expansion(&base_file, &base_text_buffer, &expansion, &payload.lines);
+        let render_doc = build_render_doc(&new_file, active_index, &new_text_buffer, &token_buffer);
+
+        let total_lines = payload.lines.len() as u32;
+        self.workspace.active_file.update(&self.store, |af| {
+            if let Some(active) = af.as_mut() {
+                active.file = new_file;
+                active.text_buffer = new_text_buffer;
+                active.render_doc = render_doc;
+                active.file_line_count = Some(total_lines);
+            }
+        });
+        self.editor_clear_document();
+
+        Vec::new()
     }
 
     fn handle_compare_finished(&mut self, payload: CompareFinished) -> Vec<Effect> {
@@ -2328,14 +2562,21 @@ impl AppState {
         self.workspace
             .selected_status_scope
             .set(&self.store, Some(payload.item.scope));
+        let (left_ref, right_ref) = refs_for_status_scope(payload.item.scope);
         self.workspace.active_file.set(
             &self.store,
             Some(ActiveFile {
                 index: payload.index,
                 path: payload.item.path.clone(),
-                file,
+                file: file.clone(),
                 render_doc,
-                text_buffer: output.text_buffer,
+                text_buffer: output.text_buffer.clone(),
+                base_file: file,
+                base_text_buffer: output.text_buffer,
+                token_buffer: output.token_buffer,
+                left_ref,
+                right_ref,
+                file_line_count: None,
             }),
         );
         self.editor_clear_document();
@@ -2345,7 +2586,40 @@ impl AppState {
         if self.editor.search.open.get(&self.store) {
             self.recompute_search_matches();
         }
-        Vec::new()
+        self.emit_file_line_count_probe()
+    }
+
+    fn emit_file_line_count_probe(&self) -> Vec<Effect> {
+        let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
+            return Vec::new();
+        };
+        let probe = self.workspace.active_file.with(&self.store, |af| {
+            let active = af.as_ref()?;
+            if active.file.is_binary || active.base_file.hunks.is_empty() {
+                return None;
+            }
+            if active.file_line_count.is_some() {
+                return None;
+            }
+            let reference = if active.right_ref.is_empty() {
+                active.left_ref.clone()
+            } else {
+                active.right_ref.clone()
+            };
+            Some(crate::effects::FetchContextLinesRequest {
+                repo_path: repo_path.clone(),
+                reference,
+                path: active.path.clone(),
+                generation: self.workspace.compare_generation.get(&self.store),
+                file_index: active.index,
+                hunk_index: 0,
+                direction: crate::events::ContextDirection::Below,
+                amount: 0,
+            })
+        });
+        probe
+            .map(|req| vec![Effect::FetchContextLines(req)])
+            .unwrap_or_default()
     }
 
     fn activate_status_view(&mut self, reset_scroll: bool) -> Vec<Effect> {
@@ -2433,6 +2707,7 @@ impl AppState {
             .get(&self.store)
             .saturating_add(1);
         self.workspace.compare_generation.set(&self.store, next_gen);
+        self.workspace.expansions.update(&self.store, |m| m.clear());
         self.clear_overlays();
         self.sync_settings_snapshot();
 
@@ -4095,7 +4370,7 @@ impl AppState {
         match self.workspace.source.get(&self.store) {
             WorkspaceSource::Compare => {
                 self.select_loaded_compare_file(index, reveal);
-                Vec::new()
+                self.emit_file_line_count_probe()
             }
             WorkspaceSource::Status => self.select_status_item(index, reveal),
             WorkspaceSource::None => {
@@ -4145,19 +4420,23 @@ impl AppState {
         self.workspace
             .selected_file_path
             .set(&self.store, Some(file.path.clone()));
+        let left_ref = self.compare.left_ref.get(&self.store);
+        let right_ref = self.compare.right_ref.get(&self.store);
+        let render_doc = build_render_doc(&file, index, &output.text_buffer, &output.token_buffer);
         self.workspace.active_file.set(
             &self.store,
             Some(ActiveFile {
                 index,
                 path: file.path.clone(),
                 file: file.clone(),
-                render_doc: build_render_doc(
-                    &file,
-                    index,
-                    &output.text_buffer,
-                    &output.token_buffer,
-                ),
+                render_doc,
                 text_buffer: output.text_buffer.clone(),
+                base_file: file,
+                base_text_buffer: output.text_buffer,
+                token_buffer: output.token_buffer,
+                left_ref,
+                right_ref,
+                file_line_count: None,
             }),
         );
         self.editor_clear_document();

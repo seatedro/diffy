@@ -200,6 +200,24 @@ pub fn build_ui_frame(
                 None => EditorDocument::Empty,
             };
             let mut editor_snap = state.editor.snapshot(&state.store);
+            if let Some(active_file) = active_file_snapshot.as_ref() {
+                let expansion = state
+                    .workspace
+                    .expansions
+                    .with(&state.store, |m| m.get(&active_file.path).cloned())
+                    .unwrap_or_default();
+                let caps = crate::ui::editor::expansion::populate_expand_blocks(
+                    editor.blocks_mut(),
+                    &active_file.base_file,
+                    &active_file.render_doc,
+                    &expansion,
+                    active_file.file_line_count,
+                );
+                editor.set_hunk_expand_caps(caps);
+            } else {
+                editor.blocks_mut().clear();
+                editor.set_hunk_expand_caps(Vec::new());
+            }
             editor.prepare(&mut editor_snap, document, vp_bounds, text_metrics);
             // Write back every field prepare may have mutated.
             state

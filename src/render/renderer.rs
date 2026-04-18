@@ -1952,7 +1952,33 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                     });
                 }
             }
-            Primitive::Icon(_) => {}
+            Primitive::Icon(icon) => {
+                if let Some(clip) = clips.last().copied() {
+                    if icon.rect.intersection(clip).is_some() {
+                        let px_size = icon.rect.width.max(icon.rect.height).ceil() as u32;
+                        let cache_key =
+                            crate::ui::icons::cache_key(&icon.name, px_size, icon.color);
+                        let (rgba, w, h) =
+                            crate::ui::icons::rasterize_svg(&icon.name, px_size, icon.color);
+                        let zl = current_z!();
+                        zl.images.push(ClippedImage {
+                            primitive: crate::render::scene::ImagePrimitive {
+                                rect: crate::render::Rect {
+                                    x: icon.rect.x.round(),
+                                    y: icon.rect.y.round(),
+                                    width: icon.rect.width.round(),
+                                    height: icon.rect.height.round(),
+                                },
+                                width: w,
+                                height: h,
+                                rgba,
+                                cache_key,
+                            },
+                            clip,
+                        });
+                    }
+                }
+            }
             Primitive::ClipStart(ClipPrimitive { rect }) => {
                 let next = clips
                     .last()

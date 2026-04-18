@@ -96,10 +96,41 @@ impl InputSystem {
         {
             let editor_snap = state.editor.snapshot(&state.store);
             let hovered = editor.hit_test_row(&editor_snap, x, y);
+            if let Some(row) = hovered
+                && editor.is_block_row(row)
+                && let Some(block_action) = editor.block_action_for_row(row)
+            {
+                return InputOutcome::actions(vec![
+                    Action::FocusViewport,
+                    Action::HoverViewportRow(hovered),
+                    block_action,
+                ]);
+            }
+            if let Some(row) = hovered
+                && editor.is_gutter_hit(x, y)
+            {
+                let expand_action = state.workspace.active_file.with(&state.store, |af| {
+                    af.as_ref()
+                        .and_then(|a| editor.hunk_expand_action_for_row(row, &a.render_doc))
+                });
+                if let Some(action) = expand_action {
+                    return InputOutcome::actions(vec![
+                        Action::FocusViewport,
+                        Action::HoverViewportRow(hovered),
+                        action,
+                    ]);
+                }
+            }
             if state.workspace.source.get(&state.store) == WorkspaceSource::Status
                 && editor.is_gutter_hit(x, y)
             {
                 if let Some(row) = hovered {
+                    if editor.is_block_row(row) {
+                        return InputOutcome::actions(vec![
+                            Action::FocusViewport,
+                            Action::HoverViewportRow(hovered),
+                        ]);
+                    }
                     let line_idx =
                         editor.render_line_index_for_row(row).unwrap_or(u32::MAX) as usize;
                     let is_hunk_sep = state.workspace.active_file.with(&state.store, |af| {
@@ -234,6 +265,21 @@ impl InputSystem {
         if hovered_row != state.editor.hovered_row.get(&state.store) {
             actions.push(Action::HoverViewportRow(hovered_row));
         }
+
+        let cursor_hint = if hovered_row.is_some_and(|row| editor.is_block_row(row)) {
+            crate::ui::shell::CursorHint::Pointer
+        } else if let Some(row) = hovered_row
+            && editor.is_gutter_hit(x, y)
+            && state.workspace.active_file.with(&state.store, |af| {
+                af.as_ref()
+                    .and_then(|a| editor.hunk_expand_action_for_row(row, &a.render_doc))
+                    .is_some()
+            })
+        {
+            crate::ui::shell::CursorHint::Pointer
+        } else {
+            cursor_hint
+        };
 
         let now_ms = launch_at.elapsed().as_millis() as u64;
         let hovered_tooltip = ui_frame

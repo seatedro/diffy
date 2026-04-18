@@ -1,4 +1,4 @@
-use super::decoration::decoration_for_kind;
+use super::decoration::{BlockPlacement, BlockRegistry, decoration_for_kind};
 use super::render_doc::{DisplayRow, INVALID_U32, RenderDoc, RenderRowKind};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -56,10 +56,11 @@ pub fn rebuild_display_rows(
     doc: &RenderDoc,
     config: DisplayLayoutConfig,
     metrics: DisplayLayoutMetrics,
+    blocks: &BlockRegistry,
     out: &mut Vec<DisplayRow>,
 ) -> DisplayLayoutSummary {
     out.clear();
-    out.reserve(doc.lines.len());
+    out.reserve(doc.lines.len() + blocks.len());
 
     let gutter_digits = compute_gutter_digits(doc);
     let unified_wrap_cols = wrap_cols_for_width(
@@ -83,6 +84,16 @@ pub fn rebuild_display_rows(
         if kind == RenderRowKind::FileHeader {
             continue;
         }
+
+        let anchor = line_index as u32;
+        y_px = push_blocks(
+            blocks,
+            BlockPlacement::Above(anchor),
+            metrics,
+            anchor,
+            y_px,
+            out,
+        );
         let (wrap_left, wrap_right, h_px) = if let Some(deco) = decoration_for_kind(kind) {
             (1_u16, 1_u16, deco.height(&metrics))
         } else if config.split_mode {
@@ -134,17 +145,25 @@ pub fn rebuild_display_rows(
 
         max_cols = max_cols.max(line.left_cols.max(line.right_cols));
         out.push(DisplayRow {
-            line_index: line_index as u32,
+            line_index: anchor,
             y_px,
             h_px,
             wrap_left,
             wrap_right,
             kind: line.kind,
-            reserved0: 0,
-            reserved1: 0,
-            reserved2: 0,
+            _pad: 0,
+            block_index: 0,
         });
         y_px = y_px.saturating_add(u32::from(h_px));
+
+        y_px = push_blocks(
+            blocks,
+            BlockPlacement::Below(anchor),
+            metrics,
+            anchor,
+            y_px,
+            out,
+        );
     }
 
     DisplayLayoutSummary {
@@ -152,6 +171,34 @@ pub fn rebuild_display_rows(
         content_height_px: y_px,
         max_cols,
     }
+}
+
+fn push_blocks(
+    blocks: &BlockRegistry,
+    placement: BlockPlacement,
+    metrics: DisplayLayoutMetrics,
+    anchor_line: u32,
+    mut y_px: u32,
+    out: &mut Vec<DisplayRow>,
+) -> u32 {
+    for block_index in blocks.indices_at(placement) {
+        let h_px = blocks
+            .get(block_index as usize)
+            .map(|deco| deco.height(&metrics))
+            .unwrap_or(0);
+        out.push(DisplayRow {
+            line_index: anchor_line,
+            y_px,
+            h_px,
+            wrap_left: 1,
+            wrap_right: 1,
+            kind: RenderRowKind::Block as u8,
+            _pad: 0,
+            block_index,
+        });
+        y_px = y_px.saturating_add(u32::from(h_px));
+    }
+    y_px
 }
 
 fn wrap_cols_for_width(
@@ -176,9 +223,23 @@ mod tests {
         DisplayLayoutConfig, DisplayLayoutMetrics, compute_gutter_digits, effective_wrap_cols,
         rebuild_display_rows, wrap_count,
     };
+    use crate::ui::editor::decoration::{
+        BlockDecoration, BlockPaintCtx, BlockPlacement, BlockRegistry,
+    };
     use crate::ui::editor::render_doc::{
         ByteRange, INVALID_U32, RenderDoc, RenderLine, RenderRowKind,
     };
+
+    #[derive(Debug)]
+    struct FixedHeightBlock(u16);
+
+    impl BlockDecoration for FixedHeightBlock {
+        fn height(&self, _metrics: &DisplayLayoutMetrics) -> u16 {
+            self.0
+        }
+
+        fn paint(&self, _ctx: &mut BlockPaintCtx) {}
+    }
 
     fn valid_range() -> ByteRange {
         ByteRange { start: 0, len: 1 }
@@ -257,6 +318,7 @@ mod tests {
                 file_header_height_px: 32,
                 hunk_height_px: 24,
             },
+            &BlockRegistry::new(),
             &mut rows,
         );
 
@@ -298,6 +360,7 @@ mod tests {
                 file_header_height_px: 32,
                 hunk_height_px: 24,
             },
+            &BlockRegistry::new(),
             &mut rows,
         );
 
@@ -337,6 +400,7 @@ mod tests {
                 file_header_height_px: 32,
                 hunk_height_px: 24,
             },
+            &BlockRegistry::new(),
             &mut rows,
         );
 
@@ -386,6 +450,7 @@ mod tests {
                 file_header_height_px: 32,
                 hunk_height_px: 24,
             },
+            &BlockRegistry::new(),
             &mut rows,
         );
 
@@ -394,5 +459,132 @@ mod tests {
         assert_eq!(rows[0].y_px, 0);
         assert_eq!(rows[1].y_px, u32::from(rows[0].h_px));
         assert_eq!(summary.content_height_px, rows[1].bottom_px());
+    }
+
+    #[test]
+    fn block_registry_injects_rows_above_and_below_anchor() {
+        let doc = RenderDoc {
+            text_bytes: Vec::new(),
+            style_runs: Vec::new(),
+            lines: vec![
+                RenderLine {
+                    kind: RenderRowKind::HunkSeparator as u8,
+                    ..RenderLine::default()
+                },
+                RenderLine {
+                    kind: RenderRowKind::Context as u8,
+                    left_cols: 4,
+                    right_cols: 4,
+                    left_text: valid_range(),
+                    right_text: valid_range(),
+                    ..RenderLine::default()
+                },
+            ],
+        };
+        let mut blocks = BlockRegistry::new();
+        blocks.push(BlockPlacement::Above(1), Box::new(FixedHeightBlock(18)));
+        blocks.push(BlockPlacement::Below(1), Box::new(FixedHeightBlock(9)));
+
+        let mut rows = Vec::new();
+        let summary = rebuild_display_rows(
+            &doc,
+            DisplayLayoutConfig {
+                split_mode: false,
+                wrap_enabled: false,
+                wrap_column: 0,
+                char_width_px: 8.0,
+                unified_text_width_px: 96.0,
+                split_text_width_px: 48.0,
+            },
+            DisplayLayoutMetrics {
+                body_row_height_px: 20,
+                file_header_height_px: 32,
+                hunk_height_px: 24,
+            },
+            &blocks,
+            &mut rows,
+        );
+
+        // hunk (24) + block-above (18) + context (20) + block-below (9) = 4 rows
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].kind, RenderRowKind::HunkSeparator as u8);
+        assert_eq!(rows[1].kind, RenderRowKind::Block as u8);
+        assert_eq!(rows[1].block_index, 0);
+        assert_eq!(rows[1].h_px, 18);
+        assert_eq!(rows[2].kind, RenderRowKind::Context as u8);
+        assert_eq!(rows[3].kind, RenderRowKind::Block as u8);
+        assert_eq!(rows[3].block_index, 1);
+        assert_eq!(rows[3].h_px, 9);
+        assert_eq!(rows[1].y_px, 24);
+        assert_eq!(rows[2].y_px, 42);
+        assert_eq!(rows[3].y_px, 62);
+        assert_eq!(summary.content_height_px, 71);
+    }
+
+    #[test]
+    fn block_registry_preserves_order_for_multiple_blocks_at_same_anchor() {
+        let doc = RenderDoc {
+            text_bytes: Vec::new(),
+            style_runs: Vec::new(),
+            lines: vec![RenderLine {
+                kind: RenderRowKind::HunkSeparator as u8,
+                ..RenderLine::default()
+            }],
+        };
+        let mut blocks = BlockRegistry::new();
+        blocks.push(BlockPlacement::Above(0), Box::new(FixedHeightBlock(5)));
+        blocks.push(BlockPlacement::Above(0), Box::new(FixedHeightBlock(7)));
+
+        let mut rows = Vec::new();
+        rebuild_display_rows(
+            &doc,
+            DisplayLayoutConfig::default(),
+            DisplayLayoutMetrics {
+                body_row_height_px: 20,
+                file_header_height_px: 32,
+                hunk_height_px: 24,
+            },
+            &blocks,
+            &mut rows,
+        );
+
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].block_index, 0);
+        assert_eq!(rows[0].h_px, 5);
+        assert_eq!(rows[1].block_index, 1);
+        assert_eq!(rows[1].h_px, 7);
+        assert_eq!(rows[2].kind, RenderRowKind::HunkSeparator as u8);
+        assert_eq!(rows[2].y_px, 12);
+    }
+
+    #[test]
+    fn block_registry_is_inert_when_empty() {
+        let doc = RenderDoc {
+            text_bytes: Vec::new(),
+            style_runs: Vec::new(),
+            lines: vec![RenderLine {
+                kind: RenderRowKind::Context as u8,
+                left_cols: 4,
+                right_cols: 4,
+                left_text: valid_range(),
+                right_text: valid_range(),
+                ..RenderLine::default()
+            }],
+        };
+        let mut rows = Vec::new();
+        rebuild_display_rows(
+            &doc,
+            DisplayLayoutConfig::default(),
+            DisplayLayoutMetrics {
+                body_row_height_px: 20,
+                file_header_height_px: 32,
+                hunk_height_px: 24,
+            },
+            &BlockRegistry::new(),
+            &mut rows,
+        );
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, RenderRowKind::Context as u8);
     }
 }

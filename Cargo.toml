@@ -44,6 +44,7 @@ subsecond = { version = "0.7", optional = true }
 tungstenite = { version = "0.29", optional = true }
 notify = "8.2.0"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 
 [[bin]]
 name = "diffy"

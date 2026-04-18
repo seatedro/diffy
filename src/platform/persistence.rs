@@ -59,7 +59,6 @@ pub struct Settings {
     pub sidebar_width_px: Option<u32>,
     pub last_compare: Option<PersistedCompare>,
     pub viewport: PersistedViewport,
-    pub github_token: Option<String>,
     pub github_user: Option<GitHubUser>,
 }
 
@@ -72,7 +71,6 @@ impl Default for Settings {
             sidebar_width_px: None,
             last_compare: None,
             viewport: PersistedViewport::default(),
-            github_token: None,
             github_user: None,
         }
     }
@@ -143,7 +141,6 @@ mod tests {
         let store = SettingsStore::new_in(dir.path());
         let settings = Settings {
             theme_name: "storm".to_owned(),
-            github_token: Some("secret".to_owned()),
             last_compare: Some(PersistedCompare {
                 repo_path: Some("C:\\repo".into()),
                 left_ref: "main".to_owned(),

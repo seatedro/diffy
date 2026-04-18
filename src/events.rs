@@ -112,6 +112,15 @@ pub enum AppEvent {
     DeviceFlowFailed {
         message: String,
     },
+    GitHubTokenLoaded {
+        token: Option<String>,
+    },
+    GitHubTokenLoadFailed {
+        message: String,
+    },
+    GitHubTokenSaveFailed {
+        message: String,
+    },
     GitHubUserFetched {
         user: GitHubUser,
     },

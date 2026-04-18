@@ -74,7 +74,7 @@ pub fn poll_for_token(client_id: &str, device_code: &str) -> Result<Option<Strin
                     "missing access token in device flow response".to_owned(),
                 ))
             } else {
-                Ok(Some(token.to_owned()))
+                Ok(Some(decode_form_value(token)))
             }
         }
     }

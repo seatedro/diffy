@@ -9,6 +9,7 @@ use crate::core::vcs::github::{
     DeviceFlowState, GitHubApi, GitHubUser, PullRequestInfo, parse_pr_url, poll_for_token,
     start_device_flow,
 };
+use crate::platform::secrets;
 use crate::effects::{CompareRequest, StatusDiffRequest};
 use crate::events::{CompareFinished, StatusDiffFinished};
 use crate::platform::persistence::{Settings, SettingsStore};
@@ -120,6 +121,18 @@ impl AppServices {
                 None => thread::sleep(Duration::from_secs(u64::from(interval_seconds.max(5)))),
             }
         }
+    }
+
+    pub fn load_github_token(&self) -> Result<Option<String>> {
+        secrets::load_github_token()
+    }
+
+    pub fn save_github_token(&self, token: &str) -> Result<()> {
+        secrets::save_github_token(token)
+    }
+
+    pub fn clear_github_token(&self) -> Result<()> {
+        secrets::clear_github_token()
     }
 
     pub fn peek_pull_request(

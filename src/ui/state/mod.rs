@@ -875,6 +875,7 @@ pub struct AppState {
     pub theme_names: Vec<String>,
     pub theme_variants: Vec<crate::core::themes::ThemeVariant>,
     pub theme_preview_original: Signal<Option<String>>,
+    pub github_access_token: Option<String>,
 }
 
 impl Default for AppState {
@@ -924,16 +925,13 @@ impl Default for AppState {
             theme_names: Vec::new(),
             theme_variants: Vec::new(),
             theme_preview_original,
+            github_access_token: None,
         }
     }
 }
 
 impl AppState {
-    pub fn bootstrap(startup: StartupOptions, mut settings: Settings) -> (Self, Vec<Effect>) {
-        if startup.github_token.is_some() {
-            settings.github_token = startup.github_token.clone();
-        }
-
+    pub fn bootstrap(startup: StartupOptions, settings: Settings) -> (Self, Vec<Effect>) {
         let persisted = matching_persisted_compare(&startup, &settings).cloned();
         let repo_path = startup.args.repo.clone();
         let left_ref = startup
@@ -1010,12 +1008,13 @@ impl AppState {
         let repository = RepositoryStateStore::new_default(&store);
         let workspace = WorkspaceStateStore::new_default(&store);
         let text_edit = TextEditStateStore::new_default(&store);
+        let initial_token_present = settings.github_user.is_some();
         let github = GitHubStateStore::new(
             &store,
             GitHubState {
                 client_id: startup.github_client_id.clone(),
                 auth: GitHubAuthState {
-                    token_present: settings.github_token.is_some(),
+                    token_present: initial_token_present,
                     user: settings.github_user.clone(),
                     ..GitHubAuthState::default()
                 },
@@ -1059,6 +1058,7 @@ impl AppState {
             theme_names: Vec::new(),
             theme_variants: Vec::new(),
             theme_preview_original,
+            github_access_token: None,
         };
         state.sync_settings_snapshot();
 
@@ -1074,16 +1074,20 @@ impl AppState {
             });
             effects.push(Effect::WatchRepository { path: Some(path) });
         }
-        // If we have a token but no cached user (upgrade path), hydrate from GitHub.
-        if let Some(token) = state.settings.github_token.clone() {
-            if state.settings.github_user.is_none() {
-                effects.push(Effect::FetchGitHubUser { token });
-            } else if let Some(user) = state.settings.github_user.as_ref()
-                && let Some(url) = avatar_url_sized(&user.avatar_url, 128)
-            {
-                state.github.auth.avatar_fetching.set(&state.store, true);
-                effects.push(Effect::FetchAvatar { url });
-            }
+        if let Some(token) = startup.github_token.clone() {
+            state.github_access_token = Some(token.clone());
+            state.github.auth.token_present.set(&state.store, true);
+            effects.push(Effect::SaveGitHubToken(token));
+        } else {
+            effects.push(Effect::LoadGitHubToken);
+        }
+
+        // Show the cached user + avatar optimistically while the token loads.
+        if let Some(user) = state.settings.github_user.as_ref()
+            && let Some(url) = avatar_url_sized(&user.avatar_url, 128)
+        {
+            state.github.auth.avatar_fetching.set(&state.store, true);
+            effects.push(Effect::FetchAvatar { url });
         }
         (state, effects)
     }
@@ -1961,10 +1965,12 @@ impl AppState {
                     .pull_request
                     .pending_confirm
                     .set(&self.store, None);
-                self.settings.github_token = None;
+                self.github_access_token = None;
                 self.settings.github_user = None;
                 self.push_info("Signed out of GitHub.");
-                self.persist_settings_effect()
+                let mut effects = self.persist_settings_effect();
+                effects.push(Effect::ClearGitHubToken);
+                effects
             }
             _ => Vec::new(),
         }
@@ -2181,12 +2187,13 @@ impl AppState {
                 self.github.auth.status.set(&self.store, AsyncStatus::Ready);
                 self.github.auth.device_flow.set(&self.store, None);
                 self.github.auth.token_present.set(&self.store, true);
-                self.settings.github_token = Some(token.clone());
+                self.github_access_token = Some(token.clone());
                 self.push_info("GitHub authentication completed.");
                 if self.overlays_top() == Some(OverlaySurface::GitHubAuthModal) {
                     self.pop_overlay();
                 }
                 let mut effects = self.persist_settings_effect();
+                effects.push(Effect::SaveGitHubToken(token.clone()));
                 effects.push(Effect::FetchGitHubUser { token });
                 effects
             }
@@ -2197,6 +2204,37 @@ impl AppState {
                     .set(&self.store, AsyncStatus::Failed);
                 self.push_error(&message);
                 Vec::new()
+            }
+            AppEvent::GitHubTokenLoaded { token } => {
+                self.github_access_token = token.clone();
+                let has_token = token.is_some();
+                self.github
+                    .auth
+                    .token_present
+                    .set(&self.store, has_token);
+                let mut effects = Vec::new();
+                if let Some(token) = token
+                    && self.github.auth.user.with(&self.store, |u| u.is_none())
+                {
+                    effects.push(Effect::FetchGitHubUser { token });
+                }
+                effects
+            }
+            AppEvent::GitHubTokenLoadFailed { message } => {
+                self.github_access_token = None;
+                self.github.auth.token_present.set(&self.store, false);
+                self.push_error(&format!("Keyring unavailable: {message}"));
+                Vec::new()
+            }
+            AppEvent::GitHubTokenSaveFailed { message } => {
+                self.github_access_token = None;
+                self.github.auth.token_present.set(&self.store, false);
+                self.github.auth.user.set(&self.store, None);
+                self.settings.github_user = None;
+                self.push_error(&format!(
+                    "Couldn't save GitHub token to keyring: {message}"
+                ));
+                self.persist_settings_effect()
             }
             AppEvent::GitHubUserFetched { user } => {
                 let avatar_src = avatar_url_sized(&user.avatar_url, 128);
@@ -2471,7 +2509,7 @@ impl AppState {
                     effects.push(Effect::LoadPullRequest {
                         url,
                         repo_path: payload.path,
-                        github_token: self.settings.github_token.clone(),
+                        github_token: self.github_access_token.clone(),
                     });
                 } else if self.startup.auto_compare_pending {
                     self.startup.auto_compare_pending = false;
@@ -2997,7 +3035,7 @@ impl AppState {
                         renderer,
                         layout,
                     },
-                    github_token: self.settings.github_token.clone(),
+                    github_token: self.github_access_token.clone(),
                 },
             },
         ]
@@ -4427,7 +4465,7 @@ impl AppState {
                 parsed.repo.clone(),
                 parsed.number,
             );
-            let token = self.settings.github_token.clone();
+            let token = self.github_access_token.clone();
             let repo_path = self.compare.repo_path.get(&self.store);
 
             let already_cached =
@@ -5673,6 +5711,7 @@ mod tests {
     use crate::actions::Action;
     use crate::core::compare::{CompareMode, CompareOutput, LayoutMode, RendererKind};
     use crate::core::diff::{DiffLine, FileDiff, Hunk, LineKind};
+    use crate::effects::Effect;
     use crate::platform::persistence::Settings;
     use crate::platform::startup::{Args, StartupOptions};
 
@@ -5724,7 +5763,11 @@ mod tests {
             state.focus.get(&state.store),
             Some(FocusTarget::WorkspacePrimaryButton)
         );
-        assert!(effects.is_empty());
+        assert!(
+            effects
+                .iter()
+                .all(|e| matches!(e, Effect::LoadGitHubToken))
+        );
     }
 
     #[test]
@@ -5754,7 +5797,16 @@ mod tests {
         let (state, effects) = AppState::bootstrap(startup, Settings::default());
         assert_eq!(state.workspace_mode.get(&state.store), WorkspaceMode::Empty);
         assert_eq!(state.active_overlay_name(), None);
-        assert_eq!(effects.len(), 2);
+        assert_eq!(
+            effects
+                .iter()
+                .filter(|e| matches!(
+                    e,
+                    Effect::SyncRepository { .. } | Effect::WatchRepository { .. }
+                ))
+                .count(),
+            2
+        );
     }
 
     #[test]

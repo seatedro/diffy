@@ -49,6 +49,7 @@
               pkgs.libxi
               pkgs.libxcursor
               pkgs.libxrandr
+              pkgs.dbus
             ];
           };
         });

@@ -226,6 +226,38 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
+            Effect::LoadGitHubToken => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services.load_github_token() {
+                        Ok(token) => AppEvent::GitHubTokenLoaded { token },
+                        Err(error) => AppEvent::GitHubTokenLoadFailed {
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
+            Effect::SaveGitHubToken(token) => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    if let Err(error) = services.save_github_token(&token) {
+                        event_sender.send(AppEvent::GitHubTokenSaveFailed {
+                            message: error.to_string(),
+                        });
+                    }
+                });
+            }
+            Effect::ClearGitHubToken => {
+                let services = self.services.clone();
+                thread::spawn(move || {
+                    if let Err(error) = services.clear_github_token() {
+                        tracing::warn!("failed to clear GitHub token: {error}");
+                    }
+                });
+            }
             Effect::FetchGitHubUser { token } => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();

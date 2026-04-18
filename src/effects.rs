@@ -96,6 +96,9 @@ pub enum Effect {
         number: i32,
         github_token: Option<String>,
     },
+    LoadGitHubToken,
+    SaveGitHubToken(String),
+    ClearGitHubToken,
     ResolveRef {
         repo_path: PathBuf,
         query: String,

@@ -160,6 +160,47 @@ pub fn build_ui_frame(
         if toasts.is_empty() {
             None
         } else {
+            use crate::ui::components::toast::{
+                DESC_MAX_LINES, INNER_TEXT_W, TITLE_MAX_LINES, ToastLayout, compute_toast_height,
+            };
+            let title_fs = theme.metrics.ui_small_font_size;
+            let desc_fs = theme.metrics.ui_small_font_size - 1.0;
+            let layouts: Vec<ToastLayout> = toasts
+                .iter()
+                .map(|t| {
+                    let title_lines = crate::ui::element::wrap_text_to_lines(
+                        cx.font_system,
+                        &t.message,
+                        title_fs,
+                        crate::render::FontKind::Ui,
+                        crate::render::FontWeight::Medium,
+                        INNER_TEXT_W,
+                        TITLE_MAX_LINES,
+                    );
+                    let description_lines = t
+                        .description
+                        .as_deref()
+                        .map(|d| {
+                            crate::ui::element::wrap_text_to_lines(
+                                cx.font_system,
+                                d,
+                                desc_fs,
+                                crate::render::FontKind::Ui,
+                                crate::render::FontWeight::Normal,
+                                INNER_TEXT_W,
+                                DESC_MAX_LINES,
+                            )
+                        })
+                        .unwrap_or_default();
+                    let height =
+                        compute_toast_height(theme, title_lines.len(), description_lines.len());
+                    ToastLayout {
+                        title_lines,
+                        description_lines,
+                        height,
+                    }
+                })
+                .collect();
             Some(
                 ToastStack::new(
                     toasts,
@@ -168,6 +209,8 @@ pub fn build_ui_frame(
                     height,
                     ui_scale,
                     m.status_bar_height,
+                    state.clock_ms,
+                    &layouts,
                 )
                 .build(),
             )

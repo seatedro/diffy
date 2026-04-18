@@ -814,6 +814,7 @@ pub struct Toast {
     pub id: u64,
     pub kind: ToastKind,
     pub message: String,
+    pub description: Option<String>,
     pub created_at_ms: u64,
     pub hovered: bool,
 }
@@ -5275,14 +5276,25 @@ impl AppState {
 
     fn push_error(&mut self, message: &str) {
         self.last_error.set(&self.store, Some(message.to_owned()));
-        self.push_toast(ToastKind::Error, message);
+        self.push_toast(ToastKind::Error, message, None);
     }
 
     fn push_info(&mut self, message: &str) {
-        self.push_toast(ToastKind::Info, message);
+        self.push_toast(ToastKind::Info, message, None);
     }
 
-    fn push_toast(&mut self, kind: ToastKind, message: &str) {
+    #[allow(dead_code)]
+    fn push_error_with_description(&mut self, message: &str, description: &str) {
+        self.last_error.set(&self.store, Some(message.to_owned()));
+        self.push_toast(ToastKind::Error, message, Some(description.to_owned()));
+    }
+
+    #[allow(dead_code)]
+    fn push_info_with_description(&mut self, message: &str, description: &str) {
+        self.push_toast(ToastKind::Info, message, Some(description.to_owned()));
+    }
+
+    fn push_toast(&mut self, kind: ToastKind, message: &str, description: Option<String>) {
         use crate::ui::animation::AnimationKey;
         let id = self.next_toast_id;
         self.next_toast_id = self.next_toast_id.saturating_add(1);
@@ -5298,6 +5310,7 @@ impl AppState {
                 id,
                 kind,
                 message: message.to_owned(),
+                description,
                 created_at_ms: now,
                 hovered: false,
             });

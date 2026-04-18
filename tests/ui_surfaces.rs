@@ -137,8 +137,10 @@ fn toast_layer_registers_one_dismiss_hit_per_toast() {
 
     assert!(scene_contains_text(&frame, "Compare completed in 142ms"));
     assert!(scene_contains_text(&frame, "Failed to resolve ref"));
+    // Each toast registers two DismissToast hit zones — the body and the
+    // dedicated close (X) button in the top-right.
     assert_eq!(
         count_hits(&frame, |action| matches!(action, Action::DismissToast(_))),
-        2
+        4
     );
 }

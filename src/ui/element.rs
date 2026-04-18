@@ -2330,6 +2330,72 @@ pub(crate) fn measure_text_width(
     width.ceil()
 }
 
+/// Word-wrap `text` to fit within `max_width`. Returns the visual lines in
+/// order, each as an owned string (sliced from the source by glyph byte
+/// ranges). Honours `max_lines`: extra content collapses into the final line
+/// so it can be truncated or ellipsised by the caller.
+pub(crate) fn wrap_text_to_lines(
+    font_system: &mut glyphon::FontSystem,
+    text: &str,
+    font_size: f32,
+    font_kind: FontKind,
+    font_weight: FontWeight,
+    max_width: f32,
+    max_lines: usize,
+) -> Vec<String> {
+    if text.is_empty() || max_lines == 0 {
+        return Vec::new();
+    }
+
+    let metrics = glyphon::Metrics::new(font_size, font_size * 1.35);
+    let mut buffer = glyphon::Buffer::new(font_system, metrics);
+
+    let family = match font_kind {
+        FontKind::Ui => glyphon::Family::SansSerif,
+        FontKind::Mono => glyphon::Family::Monospace,
+    };
+    let weight = match font_weight {
+        FontWeight::Normal => glyphon::Weight::NORMAL,
+        FontWeight::Medium => glyphon::Weight(500),
+        FontWeight::Semibold => glyphon::Weight(600),
+        FontWeight::Bold => glyphon::Weight::BOLD,
+    };
+    let attrs = glyphon::Attrs::new().family(family).weight(weight);
+
+    buffer.set_size(font_system, Some(max_width.max(1.0)), None);
+    buffer.set_text(font_system, text, &attrs, glyphon::Shaping::Advanced, None);
+    buffer.shape_until_scroll(font_system, false);
+
+    let mut lines: Vec<String> = Vec::new();
+    let runs: Vec<_> = buffer.layout_runs().collect();
+    for (i, run) in runs.iter().enumerate() {
+        if lines.len() + 1 >= max_lines && i + 1 < runs.len() {
+            // Last allowed line: absorb the remaining runs so the caller can
+            // truncate if desired.
+            let start = run.glyphs.first().map(|g| g.start).unwrap_or(0);
+            let end = runs
+                .last()
+                .and_then(|r| r.glyphs.last())
+                .map(|g| g.end)
+                .unwrap_or(run.text.len());
+            lines.push(run.text[start..end.min(run.text.len())].to_owned());
+            break;
+        }
+        let start = run.glyphs.first().map(|g| g.start).unwrap_or(0);
+        let end = run
+            .glyphs
+            .last()
+            .map(|g| g.end)
+            .unwrap_or_else(|| run.text.len());
+        lines.push(run.text[start..end.min(run.text.len())].to_owned());
+    }
+
+    if lines.is_empty() {
+        lines.push(text.to_owned());
+    }
+    lines
+}
+
 fn truncate_text_to_fit(
     font_system: &mut glyphon::FontSystem,
     text: &str,

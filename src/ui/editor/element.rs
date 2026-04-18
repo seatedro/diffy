@@ -522,42 +522,25 @@ impl EditorElement {
             return None;
         }
 
-        let text_rect = self.action_bar_text_rect_for_hunk(doc, hunk_index, first_idx, last_idx);
+        // The bar floats on the hunk separator row, which spans the full
+        // content width in both split and unified modes. Use the full text span
+        // so the buttons right-align against the editor edge, not a column.
+        let (x, width) = if self.layout.split_mode {
+            let left = self.layout.left_text_rect.x;
+            let right = self.layout.right_text_rect.x + self.layout.right_text_rect.width;
+            (left, right - left)
+        } else {
+            (
+                self.layout.unified_text_rect.x,
+                self.layout.unified_text_rect.width,
+            )
+        };
         Some(Rect {
-            x: text_rect.x,
+            x,
             y,
-            width: text_rect.width,
+            width,
             height: row_h,
         })
-    }
-
-    fn action_bar_text_rect_for_hunk(
-        &self,
-        doc: &RenderDoc,
-        hunk_index: i16,
-        first_idx: usize,
-        last_idx: usize,
-    ) -> Rect {
-        if !self.layout.split_mode {
-            return self.layout.unified_text_rect;
-        }
-        let has_left_content = self.rows[first_idx..=last_idx].iter().any(|r| {
-            if r.is_block() {
-                return false;
-            }
-            let Some(line) = doc.lines.get(r.line_index as usize) else {
-                return false;
-            };
-            if !line.row_kind().is_body() {
-                return false;
-            }
-            line.hunk_index == hunk_index && line.left_text.is_valid()
-        });
-        if has_left_content {
-            self.layout.left_text_rect
-        } else {
-            self.layout.right_text_rect
-        }
     }
 
     pub fn line_selection_bar_rect(&self, doc: &RenderDoc, state: &EditorState) -> Option<Rect> {
@@ -566,79 +549,73 @@ impl EditorElement {
         if state.line_selection.is_empty() {
             return None;
         }
-        tracing::info!(
-            entries = state.line_selection.entries.len(),
-            rows = self.rows.len(),
-            "line_selection_bar_rect: called with non-empty selection"
-        );
 
-        let mut anchor: Option<&DisplayRow> = None;
-        let mut scanned = 0usize;
-        for row in &self.rows {
-            scanned += 1;
+        let is_selected = |row: &DisplayRow| -> bool {
             if row.is_block() {
-                continue;
+                return false;
             }
             let Some(line) = doc.lines.get(row.line_index as usize) else {
-                continue;
+                return false;
             };
-            let kind = line.row_kind();
             if !matches!(
-                kind,
+                line.row_kind(),
                 RenderRowKind::Added | RenderRowKind::Removed | RenderRowKind::Modified
             ) {
-                continue;
+                return false;
             }
-            let selected = (line.old_line_index >= 0
+            (line.old_line_index >= 0
                 && state
                     .line_selection
                     .contains(line.hunk_index, line.old_line_index))
                 || (line.new_line_index >= 0
                     && state
                         .line_selection
-                        .contains(line.hunk_index, line.new_line_index));
-            if selected {
-                anchor = Some(row);
-                break;
-            }
+                        .contains(line.hunk_index, line.new_line_index))
+        };
+
+        let first = self.rows.iter().find(|r| is_selected(r))?;
+        let last = self.rows.iter().rev().find(|r| is_selected(r))?;
+
+        let first_rect = self.row_rect_for(first);
+        let last_rect = self.row_rect_for(last);
+        let last_bottom = last_rect.y + last_rect.height;
+        let viewport_top = self.layout.content_bounds.y;
+        let viewport_bottom = self.layout.content_bounds.bottom();
+
+        // Hide entirely when the selection is fully outside the viewport.
+        if last_bottom <= viewport_top || first_rect.y >= viewport_bottom {
+            return None;
         }
 
-        let Some(row) = anchor else {
-            tracing::warn!(
-                entries = state.line_selection.entries.len(),
-                scanned,
-                rows = self.rows.len(),
-                "line_selection_bar_rect: no anchor found"
-            );
-            return None;
-        };
-        let rr = self.row_rect_for(row);
-        if !self.row_in_viewport(&rr) {
-            tracing::warn!(
-                rr_y = rr.y,
-                rr_h = rr.height,
-                vp_y = self.layout.content_bounds.y,
-                vp_h = self.layout.content_bounds.height,
-                "line_selection_bar_rect: anchor outside viewport"
-            );
+        let bar_h = first_rect.height;
+        // Float the bar above the first selected row. Once the user scrolls
+        // past that row the bar stays pinned to the viewport top, acting like
+        // a sticky header over the selection — no jumps, no disappearing.
+        let above_y = first_rect.y - bar_h;
+        let y = above_y.max(viewport_top);
+        // If even the sticky position would sit past the last selected row,
+        // the selection no longer covers enough area to anchor the bar.
+        if y >= last_bottom {
             return None;
         }
-        let text_rect = if self.layout.split_mode {
-            let anchor_line = doc.lines.get(row.line_index as usize);
-            let has_left = anchor_line.is_some_and(|l| l.left_text.is_valid());
-            if has_left {
-                self.layout.left_text_rect
-            } else {
-                self.layout.right_text_rect
-            }
+
+        // Span the full content width in both modes so the buttons right-align
+        // against the editor edge, never pinned to a narrow column.
+        let (x, width) = if self.layout.split_mode {
+            let left = self.layout.left_text_rect.x;
+            let right = self.layout.right_text_rect.x + self.layout.right_text_rect.width;
+            (left, right - left)
         } else {
-            self.layout.unified_text_rect
+            (
+                self.layout.unified_text_rect.x,
+                self.layout.unified_text_rect.width,
+            )
         };
         Some(Rect {
-            x: text_rect.x,
-            y: rr.y,
-            width: text_rect.width,
-            height: rr.height,
+            x,
+            y,
+            width,
+            height: bar_h,
         })
     }
 

@@ -151,7 +151,6 @@ pub fn rebuild_display_rows(
             wrap_left,
             wrap_right,
             kind: line.kind,
-            _pad: 0,
             block_index: 0,
         });
         y_px = y_px.saturating_add(u32::from(h_px));
@@ -193,7 +192,6 @@ fn push_blocks(
             wrap_left: 1,
             wrap_right: 1,
             kind: RenderRowKind::Block as u8,
-            _pad: 0,
             block_index,
         });
         y_px = y_px.saturating_add(u32::from(h_px));

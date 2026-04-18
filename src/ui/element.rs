@@ -802,23 +802,16 @@ pub fn render_element_at(
     width: f32,
     height: f32,
 ) {
-    let start = scene.len();
     let mut engine = LayoutEngine::new();
     let root_id = root.request_layout(&mut engine, cx);
     engine.compute_layout(root_id, width, height);
-    root.prepaint(&engine, cx);
+    // Thread the offset through the element lifecycle so bounds are resolved
+    // to global coordinates before any hitbox / hit region / scene primitive
+    // is recorded. Running the hit test post-prepaint then sees globally-
+    // positioned hitboxes, matching the global mouse position.
+    root.prepaint_with_offset(&engine, cx, x, y);
     cx.run_hit_test();
-    root.paint(&engine, scene, cx);
-    for prim in &mut scene.primitives[start..] {
-        prim.offset(x, y);
-    }
-    for hit in cx.hits.iter_mut().rev() {
-        if hit.rect.x < width && hit.rect.y < height {
-            hit.rect = hit.rect.offset(x, y);
-        } else {
-            break;
-        }
-    }
+    root.paint_with_offset(&engine, scene, cx, x, y);
 }
 
 // ---------------------------------------------------------------------------
@@ -2530,6 +2523,43 @@ mod tests {
         if let crate::render::Primitive::RoundedRect(rr) = bg_prim.unwrap() {
             assert_eq!(rr.color, blue, "hover bg should be blue");
         }
+    }
+
+    #[test]
+    fn hover_bg_applies_when_rendered_at_offset() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
+        // Global mouse inside a 200x50 div offset by (400, 300).
+        cx.mouse_position = Some((500.0, 325.0));
+
+        let mut scene = Scene::default();
+        let red = Color::rgba(255, 0, 0, 255);
+        let blue = Color::rgba(0, 0, 255, 255);
+
+        let mut root = div()
+            .w(200.0)
+            .h(50.0)
+            .bg(red)
+            .hover_bg(blue)
+            .on_click(Action::Bootstrap)
+            .into_any();
+
+        render_element_at(&mut root, &mut scene, &mut cx, 400.0, 300.0, 200.0, 50.0);
+
+        let bg_prim = scene
+            .primitives
+            .iter()
+            .find(|p| matches!(p, crate::render::Primitive::RoundedRect(_)))
+            .expect("expected a rounded rect");
+        if let crate::render::Primitive::RoundedRect(rr) = bg_prim {
+            assert_eq!(rr.color, blue, "hover bg should apply at offset");
+            assert_eq!(rr.rect.x, 400.0, "rect x should be globally offset");
+            assert_eq!(rr.rect.y, 300.0, "rect y should be globally offset");
+        }
+        let hit = cx.hits.last().expect("click handler registered");
+        assert_eq!(hit.rect.x, 400.0, "hit rect x should be globally offset");
+        assert_eq!(hit.rect.y, 300.0, "hit rect y should be globally offset");
     }
 
     #[test]

@@ -134,7 +134,6 @@ pub struct DisplayRow {
     pub wrap_left: u16,
     pub wrap_right: u16,
     pub kind: u8,
-    pub _pad: u8,
     pub block_index: u16,
 }
 

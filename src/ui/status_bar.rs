@@ -89,5 +89,42 @@ pub(crate) fn renderer_label(renderer: RendererKind) -> &'static str {
 }
 
 pub(crate) fn display_ref(value: &str) -> &str {
-    if value.is_empty() { "?" } else { value }
+    if value.is_empty() {
+        return "?";
+    }
+    if let Some(rest) = value.strip_prefix(crate::core::vcs::git::service::PR_REF_PREFIX)
+        && let Some(idx) = rest.find('/')
+    {
+        return &rest[idx + 1..];
+    }
+    value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_ref;
+
+    #[test]
+    fn strips_pr_prefix_and_number_leaving_branch() {
+        assert_eq!(display_ref("refs/diffy/pr/12/main"), "main");
+    }
+
+    #[test]
+    fn preserves_slashes_in_branch_names() {
+        assert_eq!(
+            display_ref("refs/diffy/pr/77/feat/new-thing"),
+            "feat/new-thing"
+        );
+    }
+
+    #[test]
+    fn passes_through_non_pr_refs() {
+        assert_eq!(display_ref("main"), "main");
+        assert_eq!(display_ref("refs/heads/main"), "refs/heads/main");
+    }
+
+    #[test]
+    fn empty_renders_placeholder() {
+        assert_eq!(display_ref(""), "?");
+    }
 }

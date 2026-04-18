@@ -83,6 +83,44 @@ pub struct CommitInfo {
 
 pub const WORKDIR_REF: &str = "@workdir";
 pub const INDEX_REF: &str = "@index";
+pub const PR_REF_PREFIX: &str = "refs/diffy/pr/";
+
+pub fn pr_ref_path(pr_number: i32, branch: &str) -> String {
+    format!("{PR_REF_PREFIX}{pr_number}/{branch}")
+}
+
+/// Remove stale refs from prior fetches for this PR. Keeps only the targets
+/// the latest fetch wrote, and also cleans up the old `refs/diffy/pull/{N}/*`
+/// scheme we used to use. Uses a prefix filter rather than `references_glob`
+/// because libgit2's glob `*` does not span `/`, which would miss branches
+/// that contain slashes.
+fn prune_stale_pr_refs(
+    repo: &Repository,
+    pr_number: i32,
+    keep_base: &str,
+    keep_head: &str,
+) {
+    let prefixes = [
+        format!("{PR_REF_PREFIX}{pr_number}/"),
+        format!("refs/diffy/pull/{pr_number}/"),
+    ];
+    let Ok(iter) = repo.references() else {
+        return;
+    };
+    let stale: Vec<String> = iter
+        .filter_map(|r| r.ok()?.name().map(str::to_owned))
+        .filter(|name| {
+            name != keep_base
+                && name != keep_head
+                && prefixes.iter().any(|p| name.starts_with(p))
+        })
+        .collect();
+    for name in stale {
+        if let Ok(mut r) = repo.find_reference(&name) {
+            let _ = r.delete();
+        }
+    }
+}
 
 fn split_lines(text: &str) -> Vec<String> {
     if text.is_empty() {
@@ -462,16 +500,8 @@ impl GitService {
         self.diff_between_refs(&left, &right)
     }
 
-    pub fn fetch_and_diff_pr(
-        &self,
-        repo_url: &str,
-        pr_number: i32,
-        base_ref: &str,
-        head_ref: &str,
-    ) -> Result<String> {
+    fn fetch_refspecs(&self, repo_url: &str, refspecs: &[String]) -> Result<()> {
         let repo = self.repo()?;
-        let base_target = format!("refs/diffy/pull/{pr_number}/base");
-        let head_target = format!("refs/diffy/pull/{pr_number}/head");
         let mut remote = repo.remote_anonymous(repo_url)?;
         let mut callbacks = RemoteCallbacks::new();
         let github_token = self.github_token.clone();
@@ -487,15 +517,9 @@ impl GitService {
         });
         let mut fetch_options = FetchOptions::new();
         fetch_options.remote_callbacks(callbacks);
-        remote.fetch(
-            &[
-                &format!("+{base_ref}:{base_target}"),
-                &format!("+{head_ref}:{head_target}"),
-            ],
-            Some(&mut fetch_options),
-            None,
-        )?;
-        self.diff_between_refs(&base_target, &head_target)
+        let specs: Vec<&str> = refspecs.iter().map(String::as_str).collect();
+        remote.fetch(&specs, Some(&mut fetch_options), None)?;
+        Ok(())
     }
 
     pub fn resolve_pull_request_comparison(
@@ -511,20 +535,27 @@ impl GitService {
         } else {
             info.base_repo_url.clone()
         };
-        let base_ref = if info.base_sha.is_empty() {
+        let base_source = if info.base_sha.is_empty() {
             format!("refs/heads/{}", info.base_branch)
         } else {
             info.base_sha.clone()
         };
-        let head_ref = if info.head_sha.is_empty() {
+        let head_source = if info.head_sha.is_empty() {
             format!("refs/heads/{}", info.head_branch)
         } else {
             info.head_sha.clone()
         };
-        let _ = self.fetch_and_diff_pr(&repo_url, parsed.number, &base_ref, &head_ref)?;
-        let left = self.resolve_ref(&format!("refs/diffy/pull/{}/base", parsed.number))?;
-        let right = self.resolve_ref(&format!("refs/diffy/pull/{}/head", parsed.number))?;
-        Ok((left, right))
+        let base_target = pr_ref_path(parsed.number, &info.base_branch);
+        let head_target = pr_ref_path(parsed.number, &info.head_branch);
+        self.fetch_refspecs(
+            &repo_url,
+            &[
+                format!("+{base_source}:{base_target}"),
+                format!("+{head_source}:{head_target}"),
+            ],
+        )?;
+        prune_stale_pr_refs(self.repo()?, parsed.number, &base_target, &head_target);
+        Ok((base_target, head_target))
     }
 
     fn diff_between_refs(&self, left: &str, right: &str) -> Result<String> {
@@ -650,7 +681,10 @@ mod tests {
     use git2::{Repository, Signature, Status, StatusOptions};
     use tempfile::TempDir;
 
-    use super::{INDEX_REF, RemoteCredentialKind, WORKDIR_REF, select_remote_credential};
+    use super::{
+        INDEX_REF, PR_REF_PREFIX, RemoteCredentialKind, WORKDIR_REF, pr_ref_path,
+        select_remote_credential,
+    };
     use crate::core::vcs::git::{GitService, StatusItem, StatusOperation, StatusScope};
 
     fn commit_file(repo: &Repository, relative_path: &str, content: &str, message: &str) -> String {
@@ -699,6 +733,16 @@ mod tests {
             .iter()
             .map(|entry| (entry.path().unwrap_or_default().to_owned(), entry.status()))
             .collect()
+    }
+
+    #[test]
+    fn pr_ref_path_embeds_branch_with_slash() {
+        assert_eq!(pr_ref_path(12, "main"), "refs/diffy/pr/12/main");
+        assert_eq!(
+            pr_ref_path(77, "feat/new-thing"),
+            "refs/diffy/pr/77/feat/new-thing"
+        );
+        assert!(pr_ref_path(1, "x").starts_with(PR_REF_PREFIX));
     }
 
     #[test]

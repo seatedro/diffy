@@ -2098,7 +2098,7 @@ impl AppState {
                         .set(&self.store, None);
                     return self.apply_pr_compare(left_ref, right_ref);
                 }
-                Vec::new()
+                self.rebuild_command_palette_if_open()
             }
             AppEvent::PullRequestLoadFailed { url, message } => {
                 self.github
@@ -2125,7 +2125,7 @@ impl AppState {
                     }
                 }
                 self.push_error(&message);
-                Vec::new()
+                self.rebuild_command_palette_if_open()
             }
             AppEvent::PullRequestPeeked {
                 owner,
@@ -2139,7 +2139,7 @@ impl AppState {
                         entry.meta = PrPeekMeta::Ready(info);
                     }
                 });
-                Vec::new()
+                self.rebuild_command_palette_if_open()
             }
             AppEvent::PullRequestPeekFailed {
                 owner,
@@ -2153,7 +2153,7 @@ impl AppState {
                         entry.meta = PrPeekMeta::Failed(message);
                     }
                 });
-                Vec::new()
+                self.rebuild_command_palette_if_open()
             }
             AppEvent::DeviceFlowStarted(device_flow) => {
                 self.github
@@ -4446,6 +4446,14 @@ impl AppState {
             }
         }
         Vec::new()
+    }
+
+    fn rebuild_command_palette_if_open(&mut self) -> Vec<Effect> {
+        if self.overlays_top() == Some(OverlaySurface::CommandPalette) {
+            self.rebuild_command_palette()
+        } else {
+            Vec::new()
+        }
     }
 
     fn rebuild_command_palette(&mut self) -> Vec<Effect> {

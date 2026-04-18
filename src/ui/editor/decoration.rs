@@ -81,12 +81,11 @@ pub fn decoration_for_kind(kind: RenderRowKind) -> Option<&'static dyn RowDecora
         | RenderRowKind::Context
         | RenderRowKind::Added
         | RenderRowKind::Removed
-        | RenderRowKind::Modified => None,
+        | RenderRowKind::Modified
+        | RenderRowKind::Block => None,
     }
 }
 
-/// Reserved for the future block-injection registry (expandable context, etc).
-/// Not consumed yet — no display-layout pass merges blocks today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockPlacement {
     Above(u32),
@@ -98,6 +97,69 @@ impl BlockPlacement {
         match self {
             Self::Above(idx) | Self::Below(idx) => idx,
         }
+    }
+}
+
+pub struct BlockPaintCtx<'a> {
+    pub scene: &'a mut Scene,
+    pub theme: &'a Theme,
+    pub layout: &'a EditorLayout,
+    pub row_rect: Rect,
+    pub text_y_offset: f32,
+    pub font_size: f32,
+    pub hovered: bool,
+}
+
+pub trait BlockDecoration: std::fmt::Debug {
+    fn height(&self, metrics: &DisplayLayoutMetrics) -> u16;
+
+    fn paint(&self, _ctx: &mut BlockPaintCtx) {}
+
+    fn on_click(&self) -> Option<crate::actions::Action> {
+        None
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct BlockRegistry {
+    blocks: Vec<(BlockPlacement, Box<dyn BlockDecoration>)>,
+}
+
+impl BlockRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn clear(&mut self) {
+        self.blocks.clear();
+    }
+
+    pub fn push(&mut self, placement: BlockPlacement, decoration: Box<dyn BlockDecoration>) {
+        self.blocks.push((placement, decoration));
+    }
+
+    pub fn len(&self) -> usize {
+        self.blocks.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.blocks.is_empty()
+    }
+
+    pub fn get(&self, index: usize) -> Option<&dyn BlockDecoration> {
+        self.blocks.get(index).map(|(_, deco)| deco.as_ref())
+    }
+
+    pub fn placement(&self, index: usize) -> Option<BlockPlacement> {
+        self.blocks.get(index).map(|(p, _)| *p)
+    }
+
+    pub fn indices_at(&self, placement: BlockPlacement) -> impl Iterator<Item = u16> + '_ {
+        self.blocks
+            .iter()
+            .enumerate()
+            .filter(move |(_, (p, _))| *p == placement)
+            .map(|(i, _)| i as u16)
     }
 }
 

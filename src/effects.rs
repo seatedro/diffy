@@ -94,4 +94,17 @@ pub enum Effect {
         url: String,
     },
     SetClipboard(String),
+    FetchContextLines(FetchContextLinesRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchContextLinesRequest {
+    pub repo_path: PathBuf,
+    pub reference: String,
+    pub path: String,
+    pub generation: u64,
+    pub file_index: usize,
+    pub hunk_index: usize,
+    pub direction: crate::events::ContextDirection,
+    pub amount: u32,
 }

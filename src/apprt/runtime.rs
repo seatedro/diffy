@@ -267,6 +267,31 @@ impl EffectRunner {
                     }
                 });
             }
+            Effect::FetchContextLines(request) => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services.fetch_context_lines(&request) {
+                        Ok(lines) => {
+                            AppEvent::ContextLinesReady(crate::events::ContextLinesReady {
+                                generation: request.generation,
+                                file_index: request.file_index,
+                                path: request.path,
+                                hunk_index: request.hunk_index,
+                                direction: request.direction,
+                                amount: request.amount,
+                                lines,
+                            })
+                        }
+                        Err(error) => AppEvent::ContextLinesFailed {
+                            generation: request.generation,
+                            file_index: request.file_index,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
         }
     }
 }

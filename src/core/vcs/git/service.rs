@@ -82,6 +82,26 @@ pub struct CommitInfo {
 }
 
 pub const WORKDIR_REF: &str = "@workdir";
+pub const INDEX_REF: &str = "@index";
+
+fn split_lines(text: &str) -> Vec<String> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(idx) = rest.find('\n') {
+        let (head, tail) = rest.split_at(idx);
+        let line = head.strip_suffix('\r').unwrap_or(head);
+        out.push(line.to_owned());
+        rest = &tail[1..];
+    }
+    if !rest.is_empty() {
+        let line = rest.strip_suffix('\r').unwrap_or(rest);
+        out.push(line.to_owned());
+    }
+    out
+}
 
 #[derive(Default)]
 pub struct GitService {
@@ -246,6 +266,46 @@ impl GitService {
 
     pub fn resolve_ref(&self, reference: &str) -> Result<String> {
         Ok(self.resolve_commit_oid(reference)?.to_string())
+    }
+
+    pub fn read_file_lines_at(&self, reference: &str, path: &str) -> Result<Vec<String>> {
+        let repo = self.repo()?;
+        let bytes: Vec<u8> = if reference == WORKDIR_REF {
+            let full = Path::new(&self.repo_path).join(path);
+            std::fs::read(&full)?
+        } else if reference == INDEX_REF {
+            let index = repo.index()?;
+            let entry = index.get_path(Path::new(path), 0).ok_or_else(|| {
+                DiffyError::General(format!("path {path} is not present in the index"))
+            })?;
+            repo.find_blob(entry.id)?.content().to_vec()
+        } else {
+            let oid = self.resolve_commit_oid(reference)?;
+            let commit = repo.find_commit(oid)?;
+            let tree = commit.tree()?;
+            let entry = tree.get_path(Path::new(path)).map_err(|_| {
+                DiffyError::General(format!("path {path} is not present at {reference}"))
+            })?;
+            let object = entry.to_object(repo)?;
+            let blob = object.as_blob().ok_or_else(|| {
+                DiffyError::General(format!("path {path} at {reference} is not a blob"))
+            })?;
+            blob.content().to_vec()
+        };
+
+        if bytes.contains(&0u8) {
+            return Err(DiffyError::General(format!(
+                "path {path} is binary at {reference}",
+            )));
+        }
+
+        let text = std::str::from_utf8(&bytes).map_err(|e| {
+            DiffyError::General(format!(
+                "path {path} at {reference} is not valid UTF-8: {e}"
+            ))
+        })?;
+
+        Ok(split_lines(text))
     }
 
     pub fn diff_status_item(&self, item: &StatusItem) -> Result<CompareOutput> {
@@ -590,7 +650,7 @@ mod tests {
     use git2::{Repository, Signature, Status, StatusOptions};
     use tempfile::TempDir;
 
-    use super::{RemoteCredentialKind, select_remote_credential};
+    use super::{INDEX_REF, RemoteCredentialKind, WORKDIR_REF, select_remote_credential};
     use crate::core::vcs::git::{GitService, StatusItem, StatusOperation, StatusScope};
 
     fn commit_file(repo: &Repository, relative_path: &str, content: &str, message: &str) -> String {
@@ -780,6 +840,88 @@ mod tests {
 
         let st = statuses(&repo);
         assert!(st[0].1.contains(Status::INDEX_MODIFIED));
+    }
+
+    #[test]
+    fn read_file_lines_at_reads_commit_blob() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        let head = commit_file(&repo, "src/lib.rs", "one\ntwo\nthree\n", "initial");
+
+        let mut git = GitService::new();
+        git.open(repo_dir.path().to_str().unwrap()).unwrap();
+        let lines = git.read_file_lines_at(&head, "src/lib.rs").unwrap();
+        assert_eq!(lines, vec!["one", "two", "three"]);
+    }
+
+    #[test]
+    fn read_file_lines_at_reads_workdir() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        commit_file(&repo, "src/lib.rs", "old\n", "initial");
+        fs::write(repo_dir.path().join("src/lib.rs"), "a\nb\nc").unwrap();
+
+        let mut git = GitService::new();
+        git.open(repo_dir.path().to_str().unwrap()).unwrap();
+        let lines = git.read_file_lines_at(WORKDIR_REF, "src/lib.rs").unwrap();
+        assert_eq!(lines, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn read_file_lines_at_reads_index() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        commit_file(&repo, "src/lib.rs", "a\nb\n", "initial");
+        fs::write(repo_dir.path().join("src/lib.rs"), "a\nb\nc\n").unwrap();
+
+        let mut git = GitService::new();
+        git.open(repo_dir.path().to_str().unwrap()).unwrap();
+        git.stage_path("src/lib.rs").unwrap();
+
+        let lines = git.read_file_lines_at(INDEX_REF, "src/lib.rs").unwrap();
+        assert_eq!(lines, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn read_file_lines_at_handles_crlf_and_missing_trailing_newline() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        commit_file(&repo, "src/lib.rs", "old\n", "initial");
+        fs::write(repo_dir.path().join("src/lib.rs"), "a\r\nb\r\nc").unwrap();
+
+        let mut git = GitService::new();
+        git.open(repo_dir.path().to_str().unwrap()).unwrap();
+        let lines = git.read_file_lines_at(WORKDIR_REF, "src/lib.rs").unwrap();
+        assert_eq!(lines, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn read_file_lines_at_rejects_binary_file() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        commit_file(&repo, "src/lib.rs", "old\n", "initial");
+        fs::write(repo_dir.path().join("img.bin"), [0u8, 1, 2, 0, 3]).unwrap();
+
+        let mut git = GitService::new();
+        git.open(repo_dir.path().to_str().unwrap()).unwrap();
+        let err = git
+            .read_file_lines_at(WORKDIR_REF, "img.bin")
+            .expect_err("binary file should fail");
+        assert!(err.to_string().contains("binary"));
+    }
+
+    #[test]
+    fn read_file_lines_at_returns_error_when_path_missing_at_ref() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        let head = commit_file(&repo, "src/lib.rs", "x\n", "initial");
+
+        let mut git = GitService::new();
+        git.open(repo_dir.path().to_str().unwrap()).unwrap();
+        let err = git
+            .read_file_lines_at(&head, "src/nope.rs")
+            .expect_err("missing path should fail");
+        assert!(err.to_string().contains("not present"));
     }
 
     #[test]

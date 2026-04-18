@@ -9,7 +9,7 @@ use crate::render::{
 use crate::ui::design::{Alpha, Sz};
 use crate::ui::theme::{Color, Theme};
 
-use super::decoration::{RowPaintCtx, decoration_for_kind};
+use super::decoration::{BlockPaintCtx, BlockRegistry, RowPaintCtx, decoration_for_kind};
 use super::display_layout::{
     DisplayLayoutConfig, DisplayLayoutMetrics, DisplayLayoutSummary, compute_gutter_digits,
     rebuild_display_rows,
@@ -220,7 +220,7 @@ impl CachedTextLayout {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct EditorElement {
     layout_key: Option<EditorLayoutKey>,
     pub layout: EditorLayout,
@@ -229,6 +229,8 @@ pub struct EditorElement {
     summary: DisplayLayoutSummary,
     rows: Vec<DisplayRow>,
     strips: Vec<StripLayout>,
+    blocks: BlockRegistry,
+    hunk_expand_caps: Vec<super::expansion::HunkGapBudget>,
     theme_cache_key: Option<EditorThemeKey>,
     wrapped_text_cache: HashMap<WrappedTextCacheKey, Arc<[RichTextSpan]>>,
     text_layout_cache: HashMap<TextLayoutCacheKey, Arc<CachedTextLayout>>,
@@ -246,6 +248,8 @@ impl Default for EditorElement {
             summary: DisplayLayoutSummary::default(),
             rows: Vec::new(),
             strips: Vec::new(),
+            blocks: BlockRegistry::new(),
+            hunk_expand_caps: Vec::new(),
             theme_cache_key: None,
             wrapped_text_cache: HashMap::new(),
             text_layout_cache: HashMap::new(),
@@ -367,13 +371,111 @@ impl EditorElement {
         }
     }
 
+    pub fn blocks_mut(&mut self) -> &mut BlockRegistry {
+        &mut self.blocks
+    }
+
+    pub fn set_hunk_expand_caps(&mut self, caps: Vec<super::expansion::HunkGapBudget>) {
+        self.hunk_expand_caps = caps;
+    }
+
+    fn row_gutter_rect(&self, row_rect: Rect) -> Rect {
+        let gutter = if self.layout.split_mode {
+            self.layout.left_gutter_rect
+        } else {
+            self.layout.unified_gutter_rect
+        };
+        Rect {
+            x: gutter.x,
+            y: row_rect.y,
+            width: gutter.width,
+            height: row_rect.height,
+        }
+    }
+
+    fn paint_hunk_expand_icon(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        row_rect: Rect,
+        display_row_index: usize,
+    ) {
+        use crate::render::scene::{IconPrimitive, Primitive};
+        let gutter = self.row_gutter_rect(row_rect);
+        let hovered = self.layout.highlighted_row == Some(display_row_index);
+        if hovered {
+            scene.rect(RectPrimitive {
+                rect: gutter,
+                color: theme.colors.element_hover,
+            });
+        }
+        let color = if hovered {
+            theme.colors.text_strong
+        } else {
+            theme.colors.text_muted
+        };
+        let icon_size = self.layout.line_height.min(gutter.width).max(8.0) * 0.75;
+        let icon_x = gutter.x + (gutter.width - icon_size) * 0.5;
+        let icon_y = gutter.y + (gutter.height - icon_size) * 0.5;
+        scene.push(Primitive::Icon(IconPrimitive {
+            rect: Rect {
+                x: icon_x.round(),
+                y: icon_y.round(),
+                width: icon_size.round(),
+                height: icon_size.round(),
+            },
+            name: crate::ui::icons::lucide::CHEVRON_UP.to_owned(),
+            color,
+        }));
+    }
+
+    pub fn hunk_expand_action_for_row(
+        &self,
+        display_row_index: usize,
+        doc: &RenderDoc,
+    ) -> Option<crate::actions::Action> {
+        let row = self.rows.get(display_row_index)?;
+        if row.kind != RenderRowKind::HunkSeparator as u8 {
+            return None;
+        }
+        let line = doc.lines.get(row.line_index as usize)?;
+        let hunk_index = usize::try_from(line.hunk_index).ok()?;
+        let cap = self.hunk_expand_caps.get(hunk_index)?;
+        if cap.above_cap == 0 {
+            return None;
+        }
+        let step = cap.above_cap.min(20).max(1);
+        Some(crate::actions::Action::ExpandContextAbove(hunk_index, step))
+    }
+
     pub fn render_line_index_for_row(&self, display_row_index: usize) -> Option<u32> {
-        self.rows.get(display_row_index).map(|row| row.line_index)
+        let row = self.rows.get(display_row_index)?;
+        if row.is_block() {
+            return None;
+        }
+        Some(row.line_index)
+    }
+
+    pub fn is_block_row(&self, display_row_index: usize) -> bool {
+        self.rows
+            .get(display_row_index)
+            .is_some_and(|row| row.is_block())
+    }
+
+    pub fn block_action_for_row(&self, display_row_index: usize) -> Option<crate::actions::Action> {
+        let row = self.rows.get(display_row_index)?;
+        if !row.is_block() {
+            return None;
+        }
+        self.blocks.get(row.block_index as usize)?.on_click()
     }
 
     pub fn hunk_action_bar_rect(&self, doc: &RenderDoc) -> Option<Rect> {
         let idx = self.layout.highlighted_row?;
         let display_row = self.rows.get(idx)?;
+        if display_row.is_block() {
+            return None;
+        }
         let line = doc.lines.get(display_row.line_index as usize)?;
         if line.hunk_index < 0 {
             return None;
@@ -383,6 +485,9 @@ impl EditorElement {
         let mut first_idx = idx;
         while first_idx > 0 {
             let prev = self.rows.get(first_idx - 1)?;
+            if prev.is_block() {
+                break;
+            }
             let prev_line = doc.lines.get(prev.line_index as usize)?;
             if prev_line.hunk_index != hunk_index {
                 break;
@@ -393,6 +498,9 @@ impl EditorElement {
         let mut last_idx = idx;
         while last_idx + 1 < self.rows.len() {
             let next = &self.rows[last_idx + 1];
+            if next.is_block() {
+                break;
+            }
             let Some(next_line) = doc.lines.get(next.line_index as usize) else {
                 break;
             };
@@ -414,15 +522,23 @@ impl EditorElement {
             return None;
         }
 
-        let text_rect = if self.layout.split_mode {
-            self.layout.left_text_rect
+        // The bar floats on the hunk separator row, which spans the full
+        // content width in both split and unified modes. Use the full text span
+        // so the buttons right-align against the editor edge, not a column.
+        let (x, width) = if self.layout.split_mode {
+            let left = self.layout.left_text_rect.x;
+            let right = self.layout.right_text_rect.x + self.layout.right_text_rect.width;
+            (left, right - left)
         } else {
-            self.layout.unified_text_rect
+            (
+                self.layout.unified_text_rect.x,
+                self.layout.unified_text_rect.width,
+            )
         };
         Some(Rect {
-            x: text_rect.x,
+            x,
             y,
-            width: text_rect.width,
+            width,
             height: row_h,
         })
     }
@@ -433,70 +549,73 @@ impl EditorElement {
         if state.line_selection.is_empty() {
             return None;
         }
-        tracing::info!(
-            entries = state.line_selection.entries.len(),
-            rows = self.rows.len(),
-            "line_selection_bar_rect: called with non-empty selection"
-        );
 
-        let mut anchor: Option<&DisplayRow> = None;
-        let mut scanned = 0usize;
-        for row in &self.rows {
-            scanned += 1;
+        let is_selected = |row: &DisplayRow| -> bool {
+            if row.is_block() {
+                return false;
+            }
             let Some(line) = doc.lines.get(row.line_index as usize) else {
-                continue;
+                return false;
             };
-            let kind = line.row_kind();
             if !matches!(
-                kind,
+                line.row_kind(),
                 RenderRowKind::Added | RenderRowKind::Removed | RenderRowKind::Modified
             ) {
-                continue;
+                return false;
             }
-            let selected = (line.old_line_index >= 0
+            (line.old_line_index >= 0
                 && state
                     .line_selection
                     .contains(line.hunk_index, line.old_line_index))
                 || (line.new_line_index >= 0
                     && state
                         .line_selection
-                        .contains(line.hunk_index, line.new_line_index));
-            if selected {
-                anchor = Some(row);
-                break;
-            }
+                        .contains(line.hunk_index, line.new_line_index))
+        };
+
+        let first = self.rows.iter().find(|r| is_selected(r))?;
+        let last = self.rows.iter().rev().find(|r| is_selected(r))?;
+
+        let first_rect = self.row_rect_for(first);
+        let last_rect = self.row_rect_for(last);
+        let last_bottom = last_rect.y + last_rect.height;
+        let viewport_top = self.layout.content_bounds.y;
+        let viewport_bottom = self.layout.content_bounds.bottom();
+
+        // Hide entirely when the selection is fully outside the viewport.
+        if last_bottom <= viewport_top || first_rect.y >= viewport_bottom {
+            return None;
         }
 
-        let Some(row) = anchor else {
-            tracing::warn!(
-                entries = state.line_selection.entries.len(),
-                scanned,
-                rows = self.rows.len(),
-                "line_selection_bar_rect: no anchor found"
-            );
-            return None;
-        };
-        let rr = self.row_rect_for(row);
-        if !self.row_in_viewport(&rr) {
-            tracing::warn!(
-                rr_y = rr.y,
-                rr_h = rr.height,
-                vp_y = self.layout.content_bounds.y,
-                vp_h = self.layout.content_bounds.height,
-                "line_selection_bar_rect: anchor outside viewport"
-            );
+        let bar_h = first_rect.height;
+        // Float the bar above the first selected row. Once the user scrolls
+        // past that row the bar stays pinned to the viewport top, acting like
+        // a sticky header over the selection — no jumps, no disappearing.
+        let above_y = first_rect.y - bar_h;
+        let y = above_y.max(viewport_top);
+        // If even the sticky position would sit past the last selected row,
+        // the selection no longer covers enough area to anchor the bar.
+        if y >= last_bottom {
             return None;
         }
-        let text_rect = if self.layout.split_mode {
-            self.layout.left_text_rect
+
+        // Span the full content width in both modes so the buttons right-align
+        // against the editor edge, never pinned to a narrow column.
+        let (x, width) = if self.layout.split_mode {
+            let left = self.layout.left_text_rect.x;
+            let right = self.layout.right_text_rect.x + self.layout.right_text_rect.width;
+            (left, right - left)
         } else {
-            self.layout.unified_text_rect
+            (
+                self.layout.unified_text_rect.x,
+                self.layout.unified_text_rect.width,
+            )
         };
         Some(Rect {
-            x: text_rect.x,
-            y: rr.y,
-            width: text_rect.width,
-            height: rr.height,
+            x,
+            y,
+            width,
+            height: bar_h,
         })
     }
 
@@ -515,7 +634,8 @@ impl EditorElement {
             unified_text_width_px: self.layout.unified_text_rect.width as f64,
             split_text_width_px: self.layout.left_text_rect.width as f64,
         };
-        self.summary = rebuild_display_rows(doc, self.config, self.metrics, &mut self.rows);
+        self.summary =
+            rebuild_display_rows(doc, self.config, self.metrics, &self.blocks, &mut self.rows);
         build_strip_layouts(&self.rows, STRIP_TARGET_HEIGHT_PX, &mut self.strips);
     }
 
@@ -536,7 +656,7 @@ impl EditorElement {
                 let y = self
                     .rows
                     .iter()
-                    .find(|r| r.line_index == m.line_index)
+                    .find(|r| !r.is_block() && r.line_index == m.line_index)
                     .map(|r| r.y_px)
                     .unwrap_or(0);
                 state.search_match_y_positions.push(y);
@@ -695,6 +815,9 @@ impl EditorElement {
             let Some(display_row) = self.rows.get(row_index).copied() else {
                 continue;
             };
+            if display_row.is_block() {
+                continue;
+            }
             let Some(line) = doc.lines.get(display_row.line_index as usize) else {
                 continue;
             };
@@ -816,6 +939,9 @@ impl EditorElement {
             let Some(display_row) = self.rows.get(row_index).copied() else {
                 continue;
             };
+            if display_row.is_block() {
+                continue;
+            }
             let Some(line) = doc.lines.get(display_row.line_index as usize).copied() else {
                 continue;
             };
@@ -1018,6 +1144,9 @@ impl EditorElement {
             let Some(display_row) = self.rows.get(row_idx).copied() else {
                 continue;
             };
+            if display_row.is_block() {
+                continue;
+            }
             let Some(line) = doc.lines.get(display_row.line_index as usize) else {
                 continue;
             };
@@ -1113,6 +1242,9 @@ impl EditorElement {
                 let Some(display_row) = self.rows.get(row_index).copied() else {
                     continue;
                 };
+                if display_row.is_block() {
+                    continue;
+                }
                 if display_row.line_index as usize != line_idx {
                     continue;
                 }
@@ -1239,6 +1371,9 @@ impl EditorElement {
             let Some(display_row) = self.rows.get(row_index).copied() else {
                 continue;
             };
+            if display_row.is_block() {
+                continue;
+            }
             let Some(line) = doc.lines.get(display_row.line_index as usize).copied() else {
                 continue;
             };
@@ -1364,6 +1499,9 @@ impl EditorElement {
             let Some(display_row) = self.rows.get(row_index).copied() else {
                 continue;
             };
+            if display_row.is_block() {
+                continue;
+            }
             let Some(line) = doc.lines.get(display_row.line_index as usize).copied() else {
                 continue;
             };
@@ -1491,13 +1629,29 @@ impl EditorElement {
             let Some(display_row) = self.rows.get(row_index).copied() else {
                 continue;
             };
-            let Some(line) = doc.lines.get(display_row.line_index as usize).copied() else {
-                continue;
-            };
             let rr = self.row_rect_for(&display_row);
             if !self.row_in_viewport(&rr) {
                 continue;
             }
+            if display_row.is_block() {
+                if let Some(block) = self.blocks.get(display_row.block_index as usize) {
+                    let hovered = self.layout.highlighted_row == Some(row_index);
+                    let mut ctx = BlockPaintCtx {
+                        scene,
+                        theme,
+                        layout: &self.layout,
+                        row_rect: rr,
+                        text_y_offset: ty,
+                        font_size,
+                        hovered,
+                    };
+                    block.paint(&mut ctx);
+                }
+                continue;
+            }
+            let Some(line) = doc.lines.get(display_row.line_index as usize).copied() else {
+                continue;
+            };
 
             let kind = line.row_kind();
             if let Some(deco) = decoration_for_kind(kind) {
@@ -1513,6 +1667,15 @@ impl EditorElement {
                     path,
                 };
                 deco.paint_content(&mut ctx);
+                if kind == RenderRowKind::HunkSeparator
+                    && let Ok(hunk_index) = usize::try_from(line.hunk_index)
+                    && self
+                        .hunk_expand_caps
+                        .get(hunk_index)
+                        .is_some_and(|c| c.above_cap > 0)
+                {
+                    self.paint_hunk_expand_icon(scene, theme, rr, row_index);
+                }
                 continue;
             }
 
@@ -2051,7 +2214,7 @@ fn paint_row_background(scene: &mut Scene, theme: &Theme, row_rect: Rect, kind: 
         RenderRowKind::Added => dim_bg(theme.colors.line_add),
         RenderRowKind::Removed => dim_bg(theme.colors.line_del),
         RenderRowKind::Modified => dim_bg(theme.colors.line_modified),
-        RenderRowKind::FileHeader | RenderRowKind::HunkSeparator => return,
+        RenderRowKind::FileHeader | RenderRowKind::HunkSeparator | RenderRowKind::Block => return,
     };
     scene.rect(RectPrimitive {
         rect: row_rect,
@@ -2480,6 +2643,88 @@ mod tests {
             runtime.hit_test_row(&state, body.x + 20.0, body.y + 5.0),
             Some(0)
         );
+    }
+
+    #[test]
+    fn block_paint_emits_primitive_for_registered_decoration() {
+        use super::super::decoration::{BlockDecoration, BlockPaintCtx, BlockPlacement};
+        use crate::render::{Primitive, RectPrimitive, Scene};
+        use crate::ui::theme::Color;
+
+        #[derive(Debug)]
+        struct StubBlock {
+            color: Color,
+        }
+
+        impl BlockDecoration for StubBlock {
+            fn height(&self, _metrics: &super::super::display_layout::DisplayLayoutMetrics) -> u16 {
+                20
+            }
+
+            fn paint(&self, ctx: &mut BlockPaintCtx) {
+                let _ = ctx.hovered;
+                ctx.scene.rect(RectPrimitive {
+                    rect: ctx.row_rect,
+                    color: self.color,
+                });
+            }
+        }
+
+        let mut state = EditorState {
+            layout: LayoutMode::Unified,
+            ..EditorState::default()
+        };
+        let doc = RenderDoc {
+            text_bytes: b"@@ hdr @@".to_vec(),
+            style_runs: Vec::new(),
+            lines: vec![RenderLine {
+                kind: RenderRowKind::HunkSeparator as u8,
+                left_text: ByteRange { start: 0, len: 9 },
+                left_cols: 9,
+                ..RenderLine::default()
+            }],
+        };
+
+        let marker = Color {
+            r: 11,
+            g: 22,
+            b: 33,
+            a: 255,
+        };
+
+        let mut runtime = EditorElement::default();
+        runtime.blocks_mut().push(
+            BlockPlacement::Above(0),
+            Box::new(StubBlock { color: marker }),
+        );
+
+        let document = EditorDocument::Text {
+            compare_generation: 7,
+            file_index: 0,
+            path: "demo.txt",
+            doc: &doc,
+        };
+        runtime.prepare(
+            &mut state,
+            document,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 600.0,
+            },
+            TextMetrics::default(),
+        );
+
+        let theme = Theme::default_dark();
+        let mut scene = Scene::default();
+        runtime.paint(&mut scene, &theme, &state, document);
+
+        let has_marker = scene.primitives.iter().any(|p| match p {
+            Primitive::Rect(r) => r.color == marker,
+            _ => false,
+        });
+        assert!(has_marker, "block paint() should emit its own primitives");
     }
 
     #[test]

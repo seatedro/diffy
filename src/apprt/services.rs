@@ -151,6 +151,15 @@ impl AppServices {
         Ok((short_oid, summary))
     }
 
+    pub fn fetch_context_lines(
+        &self,
+        request: &crate::effects::FetchContextLinesRequest,
+    ) -> Result<Vec<String>> {
+        let mut git = GitService::new();
+        git.open(request.repo_path.to_string_lossy().as_ref())?;
+        git.read_file_lines_at(&request.reference, &request.path)
+    }
+
     pub fn open_browser(&self, url: &str) -> Result<()> {
         webbrowser::open(url)
             .map(|_| ())

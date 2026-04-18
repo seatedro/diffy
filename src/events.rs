@@ -116,4 +116,28 @@ pub enum AppEvent {
     BrowserOpenFailed {
         message: String,
     },
+    ContextLinesReady(ContextLinesReady),
+    ContextLinesFailed {
+        generation: u64,
+        file_index: usize,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct ContextLinesReady {
+    pub generation: u64,
+    pub file_index: usize,
+    pub path: String,
+    pub hunk_index: usize,
+    pub direction: ContextDirection,
+    pub amount: u32,
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextDirection {
+    Above,
+    Below,
+    All,
 }

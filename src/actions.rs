@@ -142,5 +142,8 @@ pub enum Action {
     EditorClick(i32, i32),
     EditorDrag(i32, i32),
     EditorScrollPx(i32),
+    ExpandContextAbove(usize, u32),
+    ExpandContextBelow(usize, u32),
+    ExpandAllContext,
     Noop,
 }

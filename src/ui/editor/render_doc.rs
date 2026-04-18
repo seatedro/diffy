@@ -55,6 +55,7 @@ pub enum RenderRowKind {
     Added = 3,
     Removed = 4,
     Modified = 5,
+    Block = 6,
 }
 
 impl RenderRowKind {
@@ -74,6 +75,10 @@ impl RenderRowKind {
             self,
             Self::Context | Self::Added | Self::Removed | Self::Modified
         )
+    }
+
+    pub const fn is_block(self) -> bool {
+        matches!(self, Self::Block)
     }
 }
 
@@ -106,6 +111,7 @@ impl RenderLine {
             3 => RenderRowKind::Added,
             4 => RenderRowKind::Removed,
             5 => RenderRowKind::Modified,
+            6 => RenderRowKind::Block,
             _ => RenderRowKind::Context,
         }
     }
@@ -128,14 +134,16 @@ pub struct DisplayRow {
     pub wrap_left: u16,
     pub wrap_right: u16,
     pub kind: u8,
-    pub reserved0: u8,
-    pub reserved1: u8,
-    pub reserved2: u8,
+    pub block_index: u16,
 }
 
 impl DisplayRow {
     pub fn bottom_px(&self) -> u32 {
         self.y_px.saturating_add(u32::from(self.h_px))
+    }
+
+    pub fn is_block(&self) -> bool {
+        self.kind == RenderRowKind::Block as u8
     }
 }
 

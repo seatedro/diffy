@@ -850,6 +850,7 @@ dependencies = [
  "glyphon",
  "halogen",
  "heed",
+ "image",
  "neo_frizbee",
  "notify",
  "parking_lot",
@@ -1711,6 +1712,8 @@ dependencies = [
  "num-traits",
  "png 0.18.1",
  "tiff",
+ "zune-core 0.5.1",
+ "zune-jpeg 0.5.15",
 ]
 
 [[package]]

@@ -1,13 +1,27 @@
+use std::sync::Arc;
+
 use halogen::view;
 
-use crate::ui::element::{AnyElement, ElementContext, IntoAnyElement, RenderOnce, div, text};
+use crate::ui::element::{
+    AnyElement, ElementContext, IntoAnyElement, RenderOnce, div, raster_image, text,
+};
 use crate::ui::style::Styled;
 use crate::ui::theme::Color;
+
+/// RGBA bitmap input for an avatar. Already circular-masked on the CPU side.
+#[derive(Debug, Clone)]
+pub struct AvatarImage {
+    pub rgba: Arc<Vec<u8>>,
+    pub width: u32,
+    pub height: u32,
+    pub cache_key: u64,
+}
 
 pub struct Avatar {
     name: String,
     size: f32,
     bg_color: Option<Color>,
+    image: Option<AvatarImage>,
 }
 
 pub fn avatar(name: impl Into<String>) -> Avatar {
@@ -15,6 +29,7 @@ pub fn avatar(name: impl Into<String>) -> Avatar {
         name: name.into(),
         size: 32.0,
         bg_color: None,
+        image: None,
     }
 }
 
@@ -26,6 +41,11 @@ impl Avatar {
 
     pub fn bg(mut self, c: Color) -> Self {
         self.bg_color = Some(c);
+        self
+    }
+
+    pub fn image(mut self, image: Option<AvatarImage>) -> Self {
+        self.image = image;
         self
     }
 }
@@ -58,6 +78,11 @@ fn name_to_color(name: &str) -> Color {
 
 impl RenderOnce for Avatar {
     fn render(self, _cx: &ElementContext) -> AnyElement {
+        if let Some(img) = self.image {
+            return raster_image(img.rgba, img.width, img.height, img.cache_key, self.size)
+                .into_any();
+        }
+
         let bg = self.bg_color.unwrap_or_else(|| name_to_color(&self.name));
         let inits = initials(&self.name);
         let font_size = (self.size * 0.4).round();

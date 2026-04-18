@@ -2,14 +2,13 @@ use halogen::view;
 
 use crate::actions::Action;
 use crate::core::compare::CompareMode;
-use crate::ui::components::Button;
+use crate::ui::components::avatar::AvatarImage;
+use crate::ui::components::{Button, avatar};
 use crate::ui::design::{Ico, Rad, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
-use crate::ui::state::{
-    AppState, AsyncStatus, CompareField, OverlaySurface, WorkspaceMode, WorkspaceSource,
-};
+use crate::ui::state::{AppState, AsyncStatus, CompareField, WorkspaceMode, WorkspaceSource};
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
 
@@ -66,7 +65,16 @@ pub(crate) fn title_bar(
         ),
     };
 
-    let pr_active = state.overlays_top() == Some(OverlaySurface::PullRequestModal);
+    let auth_user = state.github.auth.user.get(&state.store);
+    let auth_loading = state.github.auth.status.get(&state.store) == AsyncStatus::Loading;
+    let auth_avatar = state.github.auth.avatar.with(&state.store, |a| {
+        a.as_ref().map(|b| AvatarImage {
+            rgba: b.rgba.clone(),
+            width: b.width,
+            height: b.height,
+            cache_key: b.cache_key,
+        })
+    });
     view! { scale,
         <div class="flex-row items-center" min_w={0.0}
              h={theme.metrics.title_bar_height} w_full
@@ -140,12 +148,6 @@ pub(crate) fn title_bar(
 
             // right
             <div class="flex-1 flex-row items-center justify-end" min_w={0.0} gap={Sp::XS}>
-                <Button action={Action::OpenPullRequestModal}
-                        active={pr_active}
-                        tooltip={"Pull request"}>
-                    <Icon>{lucide::GIT_PULL_REQUEST}</Icon>
-                    <Label>{"PR"}</Label>
-                </Button>
                 if is_ready {
                     <Button action={Action::ShowWorkingTree}
                             active={state.workspace.source.get(&state.store) == WorkspaceSource::Status}
@@ -154,8 +156,64 @@ pub(crate) fn title_bar(
                         <Label>{"Working tree"}</Label>
                     </Button>
                 }
+                {account_chip(auth_user.as_ref(), auth_avatar, auth_loading, tc, scale)}
             </div>
         </div>
+    }
+}
+
+fn account_chip(
+    user: Option<&crate::core::vcs::github::GitHubUser>,
+    avatar_image: Option<AvatarImage>,
+    loading: bool,
+    tc: &crate::ui::theme::ThemeColors,
+    scale: f32,
+) -> AnyElement {
+    match user {
+        Some(user) => {
+            let display = format!("@{}", user.login);
+            let tooltip = if user.name.is_empty() || user.name == user.login {
+                format!("Signed in as @{}", user.login)
+            } else {
+                format!("Signed in as {} (@{})", user.name, user.login)
+            };
+            let avatar_name = if user.name.is_empty() {
+                user.login.clone()
+            } else {
+                user.name.clone()
+            };
+            view! { scale,
+                <div class="flex-row items-center"
+                     gap={Sp::XS} px={Sp::SM} py={Sp::XS}
+                     rounded={Rad::MD}
+                     hover_bg={tc.ghost_element_hover}
+                     on_click={Action::OpenAccountMenu}
+                     cursor={CursorHint::Pointer}
+                     tooltip={tooltip}>
+                    {avatar(avatar_name).size(20.0).image(avatar_image)}
+                    <text class="text-sm font-medium" color={tc.text_strong}>{display}</text>
+                </div>
+            }
+        }
+        None => {
+            let (label, tooltip) = if loading {
+                ("Signing in\u{2026}", "GitHub device flow in progress")
+            } else {
+                ("Sign in", "Sign in to GitHub")
+            };
+            view! { scale,
+                <div class="flex-row items-center"
+                     gap={Sp::XS} px={Sp::SM} py={Sp::XS}
+                     rounded={Rad::MD}
+                     hover_bg={tc.ghost_element_hover}
+                     on_click={Action::StartGitHubDeviceFlow}
+                     cursor={CursorHint::Pointer}
+                     tooltip={tooltip}>
+                    <icon svg={lucide::KEY} size={Ico::SM} color={tc.text_muted} />
+                    <text class="text-sm font-medium" color={tc.text_strong}>{label}</text>
+                </div>
+            }
+        }
     }
 }
 

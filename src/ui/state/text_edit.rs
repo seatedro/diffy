@@ -45,7 +45,7 @@ impl AppState {
                 }
                 PickerKind::Theme => self.rebuild_theme_picker(),
             },
-            Some(FocusTarget::CommandPaletteInput) => self.rebuild_command_palette(),
+            Some(FocusTarget::CommandPaletteInput) => return self.rebuild_command_palette(),
             Some(FocusTarget::SearchInput) => self.recompute_search_matches(),
             _ => {}
         }

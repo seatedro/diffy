@@ -2188,6 +2188,99 @@ impl IntoAnyElement for SvgIcon {
 }
 
 // ---------------------------------------------------------------------------
+// Raster image — pre-decoded RGBA bitmap sized to `size` x `size`.
+// ---------------------------------------------------------------------------
+
+pub struct RasterImage {
+    rgba: std::sync::Arc<Vec<u8>>,
+    src_width: u32,
+    src_height: u32,
+    cache_key: u64,
+    size: f32,
+}
+
+pub fn raster_image(
+    rgba: std::sync::Arc<Vec<u8>>,
+    src_width: u32,
+    src_height: u32,
+    cache_key: u64,
+    size: f32,
+) -> RasterImage {
+    RasterImage {
+        rgba,
+        src_width,
+        src_height,
+        cache_key,
+        size,
+    }
+}
+
+impl Element for RasterImage {
+    type LayoutState = ();
+    type PrepaintState = ();
+
+    fn request_layout(
+        &mut self,
+        engine: &mut LayoutEngine,
+        cx: &mut ElementContext,
+    ) -> (LayoutId, ()) {
+        let scale = cx.theme.metrics.ui_scale();
+        let effective = self.size * scale;
+        let id = engine.request_layout(
+            taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::length(effective),
+                    height: taffy::Dimension::length(effective),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+            &[],
+        );
+        (id, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _bounds: Bounds,
+        _layout_state: &mut (),
+        _engine: &LayoutEngine,
+        _cx: &mut ElementContext,
+    ) {
+    }
+
+    fn paint(
+        &mut self,
+        bounds: Bounds,
+        _layout_state: &mut (),
+        _prepaint_state: &mut (),
+        _engine: &LayoutEngine,
+        scene: &mut Scene,
+        _cx: &mut ElementContext,
+    ) {
+        let snapped = Bounds {
+            x: bounds.x.round(),
+            y: bounds.y.round(),
+            width: bounds.width.round(),
+            height: bounds.height.round(),
+        };
+        scene.image(crate::render::ImagePrimitive {
+            rect: snapped,
+            width: self.src_width,
+            height: self.src_height,
+            rgba: (*self.rgba).clone(),
+            cache_key: self.cache_key,
+        });
+    }
+}
+
+impl IntoAnyElement for RasterImage {
+    fn into_any(self) -> AnyElement {
+        element_into_any(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Text measurement
 // ---------------------------------------------------------------------------
 
@@ -2625,8 +2718,8 @@ mod tests {
                             .py(6.0)
                             .rounded(7.0)
                             .hover_bg(theme.colors.ghost_element_hover)
-                            .on_click(Action::OpenPullRequestModal)
-                            .child(text("PR").text_sm().color(theme.colors.text_muted)),
+                            .on_click(Action::StartGitHubDeviceFlow)
+                            .child(text("Sign in").text_sm().color(theme.colors.text_muted)),
                     ),
             )
             .into_any();
@@ -2660,7 +2753,7 @@ mod tests {
         );
         assert_eq!(
             cx.hits[1].on_click.peek_actions(),
-            vec![Action::OpenPullRequestModal]
+            vec![Action::StartGitHubDeviceFlow]
         );
     }
 

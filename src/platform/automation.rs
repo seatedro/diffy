@@ -63,7 +63,7 @@ pub struct ViewportDump {
 #[derive(Debug, Clone, Serialize)]
 pub struct PullRequestDump {
     pub status: &'static str,
-    pub url_input: String,
+    pub cached_count: usize,
     pub title: Option<String>,
     pub number: Option<i32>,
 }
@@ -157,17 +157,26 @@ impl From<&AppState> for StateDump {
                 visible_row_end: state.editor.visible_row_end.get(&state.store),
                 focused: state.editor.focused.get(&state.store),
             },
-            pull_request: PullRequestDump {
-                status: async_status_name(state.github.pull_request.status.get(&state.store)),
-                url_input: state.github.pull_request.url_input.get(&state.store),
-                title: state.github.pull_request.info.with(&state.store, |info| {
-                    info.as_ref().map(|info| info.title.clone())
-                }),
-                number: state
-                    .github
-                    .pull_request
-                    .info
-                    .with(&state.store, |info| info.as_ref().map(|info| info.number)),
+            pull_request: {
+                let (cached_count, title, number) =
+                    state.github.pull_request.cache.with(&state.store, |cache| {
+                        let mut title: Option<String> = None;
+                        let mut number: Option<i32> = None;
+                        for (_, entry) in cache.iter() {
+                            if let crate::ui::state::PrPeekMeta::Ready(info) = &entry.meta {
+                                title = Some(info.title.clone());
+                                number = Some(info.number);
+                                break;
+                            }
+                        }
+                        (cache.len(), title, number)
+                    });
+                PullRequestDump {
+                    status: async_status_name(state.github.pull_request.status.get(&state.store)),
+                    cached_count,
+                    title,
+                    number,
+                }
             },
             auth: AuthDump {
                 status: async_status_name(state.github.auth.status.get(&state.store)),
@@ -303,10 +312,6 @@ fn overlay_dump_fields(state: &AppState) -> (Option<String>, Option<String>) {
                 });
             (Some(query), label)
         }
-        Some("pull-request-modal") => (
-            Some(state.github.pull_request.url_input.get(&state.store)),
-            None,
-        ),
         _ => (None, None),
     }
 }

@@ -6,7 +6,8 @@ use crate::core::compare::{CompareOutput, CompareService, RendererKind};
 use crate::core::error::{DiffyError, Result};
 use crate::core::vcs::git::{GitService, WORKDIR_REF};
 use crate::core::vcs::github::{
-    DeviceFlowState, GitHubApi, PullRequestInfo, parse_pr_url, poll_for_token, start_device_flow,
+    DeviceFlowState, GitHubApi, GitHubUser, PullRequestInfo, parse_pr_url, poll_for_token,
+    start_device_flow,
 };
 use crate::effects::{CompareRequest, StatusDiffRequest};
 use crate::events::{CompareFinished, StatusDiffFinished};
@@ -121,6 +122,45 @@ impl AppServices {
         }
     }
 
+    pub fn peek_pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i32,
+        token: Option<String>,
+    ) -> Result<PullRequestInfo> {
+        let api = match token {
+            Some(t) if !t.is_empty() => GitHubApi::with_token(t),
+            _ => GitHubApi::new(),
+        };
+        api.fetch_pull_request(owner, repo, number)
+    }
+
+    pub fn fetch_github_user(&self, token: &str) -> Result<GitHubUser> {
+        if token.trim().is_empty() {
+            return Err(DiffyError::General(
+                "cannot fetch GitHub user without a token".to_owned(),
+            ));
+        }
+        GitHubApi::with_token(token).fetch_current_user()
+    }
+
+    pub fn fetch_avatar(&self, url: &str) -> Result<(Vec<u8>, u32, u32)> {
+        let bytes = ureq::get(url)
+            .header("User-Agent", "diffy/0.1")
+            .call()?
+            .into_body()
+            .read_to_vec()
+            .map_err(|error| DiffyError::Http(error.to_string()))?;
+        let img = image::load_from_memory(&bytes)
+            .map_err(|error| DiffyError::Parse(format!("avatar decode failed: {error}")))?
+            .to_rgba8();
+        let (w, h) = img.dimensions();
+        let mut rgba = img.into_raw();
+        apply_circular_mask(&mut rgba, w, h);
+        Ok((rgba, w, h))
+    }
+
     pub fn save_settings(&self, settings: &Settings) -> Result<()> {
         self.settings_store.save(settings)
     }
@@ -164,6 +204,28 @@ impl AppServices {
         webbrowser::open(url)
             .map(|_| ())
             .map_err(|error| DiffyError::General(format!("failed to open browser: {error}")))
+    }
+}
+
+/// Apply an anti-aliased circular alpha mask to a square-ish RGBA buffer in-place.
+/// Pixels outside the inscribed circle are transparent; a 1-pixel band at the edge
+/// is feathered by coverage so the circle renders smoothly.
+fn apply_circular_mask(rgba: &mut [u8], width: u32, height: u32) {
+    let cx = (width as f32 - 1.0) / 2.0;
+    let cy = (height as f32 - 1.0) / 2.0;
+    let radius = width.min(height) as f32 / 2.0 - 0.5;
+    for y in 0..height {
+        for x in 0..width {
+            let dx = x as f32 - cx;
+            let dy = y as f32 - cy;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let coverage = (radius - dist + 0.5).clamp(0.0, 1.0);
+            if coverage < 1.0 {
+                let idx = ((y * width + x) * 4 + 3) as usize;
+                let a = rgba[idx] as f32 * coverage;
+                rgba[idx] = a.round().clamp(0.0, 255.0) as u8;
+            }
+        }
     }
 }
 

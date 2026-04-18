@@ -870,7 +870,7 @@ mod tests {
             .set(&state.store, Some("src/file_0.rs".to_owned()));
         state.overlays.stack.update(&state.store, |stack| {
             stack.push(OverlayEntry {
-                surface: OverlaySurface::PullRequestModal,
+                surface: OverlaySurface::GitHubAuthModal,
                 focus_return: Some(FocusTarget::TitleBar),
             });
         });

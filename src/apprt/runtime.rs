@@ -226,6 +226,65 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
+            Effect::FetchGitHubUser { token } => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services.fetch_github_user(&token) {
+                        Ok(user) => AppEvent::GitHubUserFetched { user },
+                        Err(error) => AppEvent::GitHubUserFetchFailed {
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
+            Effect::PeekPullRequest {
+                owner,
+                repo,
+                number,
+                github_token,
+            } => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event =
+                        match services.peek_pull_request(&owner, &repo, number, github_token) {
+                            Ok(info) => AppEvent::PullRequestPeeked {
+                                owner,
+                                repo,
+                                number,
+                                info,
+                            },
+                            Err(error) => AppEvent::PullRequestPeekFailed {
+                                owner,
+                                repo,
+                                number,
+                                message: error.to_string(),
+                            },
+                        };
+                    event_sender.send(event);
+                });
+            }
+            Effect::FetchAvatar { url } => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services.fetch_avatar(&url) {
+                        Ok((rgba, width, height)) => AppEvent::AvatarFetched {
+                            url,
+                            rgba: std::sync::Arc::new(rgba),
+                            width,
+                            height,
+                        },
+                        Err(error) => AppEvent::AvatarFetchFailed {
+                            url,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
             Effect::ResolveRef {
                 repo_path,
                 query,

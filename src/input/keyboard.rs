@@ -378,16 +378,16 @@ fn cycle_focus_target(state: &AppState) -> Option<FocusTarget> {
             Some(FocusTarget::CommandPaletteInput) => Some(FocusTarget::CommandPaletteList),
             _ => Some(FocusTarget::CommandPaletteInput),
         },
-        Some(OverlaySurface::PullRequestModal) => match state.focus.get(&state.store) {
-            Some(FocusTarget::PullRequestInput) => Some(FocusTarget::PullRequestConfirm),
-            _ => Some(FocusTarget::PullRequestInput),
-        },
         Some(OverlaySurface::ThemePicker) => match state.focus.get(&state.store) {
             Some(FocusTarget::PickerInput) => Some(FocusTarget::PickerList),
             _ => Some(FocusTarget::PickerInput),
         },
         Some(OverlaySurface::GitHubAuthModal) => Some(FocusTarget::AuthPrimaryAction),
-        Some(OverlaySurface::KeyboardShortcuts | OverlaySurface::CompareMenu) => None,
+        Some(
+            OverlaySurface::KeyboardShortcuts
+            | OverlaySurface::CompareMenu
+            | OverlaySurface::AccountMenu,
+        ) => None,
         None => match state.focus.get(&state.store) {
             Some(FocusTarget::FileList) => Some(FocusTarget::Editor),
             Some(FocusTarget::Editor) => Some(FocusTarget::FileList),
@@ -409,7 +409,6 @@ fn activate_current_focus_actions(state: &AppState) -> Option<Vec<Action>> {
             | OverlaySurface::CommandPalette
             | OverlaySurface::ThemePicker,
         ) => Some(vec![Action::ConfirmOverlaySelection]),
-        Some(OverlaySurface::PullRequestModal) => Some(vec![Action::SubmitPullRequest]),
         Some(OverlaySurface::GitHubAuthModal) => {
             let has_flow = state
                 .github
@@ -422,7 +421,11 @@ fn activate_current_focus_actions(state: &AppState) -> Option<Vec<Action>> {
                 Action::StartGitHubDeviceFlow
             }])
         }
-        Some(OverlaySurface::KeyboardShortcuts | OverlaySurface::CompareMenu) => Some(Vec::new()),
+        Some(
+            OverlaySurface::KeyboardShortcuts
+            | OverlaySurface::CompareMenu
+            | OverlaySurface::AccountMenu,
+        ) => Some(Vec::new()),
         None => match state.focus.get(&state.store) {
             Some(FocusTarget::WorkspacePrimaryButton) => Some(vec![Action::OpenRepoPicker]),
             Some(FocusTarget::ThemeToggle) => Some(vec![Action::ToggleThemeMode]),

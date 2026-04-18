@@ -84,6 +84,18 @@ pub enum Effect {
         device_code: String,
         interval_seconds: u32,
     },
+    FetchGitHubUser {
+        token: String,
+    },
+    FetchAvatar {
+        url: String,
+    },
+    PeekPullRequest {
+        owner: String,
+        repo: String,
+        number: i32,
+        github_token: Option<String>,
+    },
     ResolveRef {
         repo_path: PathBuf,
         query: String,

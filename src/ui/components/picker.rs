@@ -75,17 +75,23 @@ fn picker_row<T: PickerItem>(
         .detail()
         .filter(|d| !d.is_empty())
         .map(|d| text(d).text_xs().color(tc.text_muted).truncate());
+    let rhs_child = entry
+        .rhs()
+        .filter(|d| !d.is_empty())
+        .map(|d| text(d).text_xs().color(tc.text_muted));
+    let disabled = entry.is_disabled();
     view! { scale,
         <div class="w-full shrink-0 flex-row items-center"
              h={row_h} gap={Sp::SM} px={Sp::MD} rounded={Rad::MD}
              bg={row_bg}
-             @when {!selected} { hover_bg={tc.sidebar_row_hover} }
+             @when {!selected && !disabled} { hover_bg={tc.sidebar_row_hover} }
              on_click={Action::SelectOverlayEntry(i)}
              hit_identity={HitIdentity::OverlayEntry(i)}
              cursor={CursorHint::Pointer}>
             {?icon_child}
             {picker_label(entry.label(), entry.highlight_ranges(), selected, theme)}
             {?detail_child}
+            {?rhs_child}
         </div>
     }
 }

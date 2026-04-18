@@ -1,6 +1,6 @@
 mod text_edit;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -19,7 +19,7 @@ use crate::core::vcs::git::patch;
 use crate::core::vcs::git::{
     BranchInfo, CommitInfo, StatusItem, StatusOperation, StatusScope, TagInfo,
 };
-use crate::core::vcs::github::{DeviceFlowState, PullRequestInfo};
+use crate::core::vcs::github::{DeviceFlowState, GitHubUser, PullRequestInfo};
 use crate::editor::Editor;
 use crate::effects::{
     BatchStatusOperationRequest, CommitRequest, CompareRequest, Effect, PatchOperationRequest,
@@ -41,6 +41,92 @@ const MAX_VISIBLE_TOASTS: usize = 5;
 const TOAST_LIFETIME_MS: u64 = 5_000;
 const TOAST_ANIM_MS: u64 = 150;
 const CURSOR_BLINK_INTERVAL_MS: u64 = 530;
+
+fn build_pr_palette_entry(
+    cache: &HashMap<PrKey, PrCacheEntry>,
+    key: &PrKey,
+    has_repo: bool,
+) -> PaletteEntry {
+    let (owner, repo, number) = key;
+    let fallback_label = format!("#{number} in {owner}/{repo}");
+    let entry = cache.get(key);
+    let (label, rhs, detail, disabled) = match entry.map(|e| (&e.meta, &e.diff)) {
+        None | Some((PrPeekMeta::Loading, _)) => (
+            fallback_label,
+            Some("Resolving\u{2026}".to_owned()),
+            if has_repo {
+                "Fetching PR metadata".to_owned()
+            } else {
+                "Open a repo to view this diff".to_owned()
+            },
+            false,
+        ),
+        Some((PrPeekMeta::Ready(info), diff)) => {
+            let label = format!("#{} {}", info.number, info.title);
+            let rhs = format!(
+                "{} \u{00B7} +{} \u{2212}{} \u{00B7} @{}",
+                info.state, info.additions, info.deletions, info.author_login
+            );
+            let detail = match diff {
+                PrPeekDiff::Ready { .. } => "Ready \u{2014} press Enter to open".to_owned(),
+                PrPeekDiff::Loading => "Preparing diff\u{2026}".to_owned(),
+                PrPeekDiff::Failed(msg) => format!("Diff load failed: {msg}"),
+                PrPeekDiff::Idle => {
+                    if has_repo {
+                        "Queued".to_owned()
+                    } else {
+                        "Open a repo to view this diff".to_owned()
+                    }
+                }
+            };
+            let disabled = !has_repo;
+            (label, Some(rhs), detail, disabled)
+        }
+        Some((PrPeekMeta::Failed(msg), _)) => (
+            fallback_label,
+            Some("error".to_owned()),
+            msg.clone(),
+            true,
+        ),
+    };
+    PaletteEntry {
+        label,
+        detail,
+        kind: PaletteEntryKind::PullRequest(key.clone()),
+        highlights: Vec::new(),
+        rhs,
+        disabled,
+    }
+}
+
+/// Request a fixed-size avatar from GitHub by rewriting (or appending) the `s=` query
+/// parameter. Returns `None` if the input URL is empty.
+pub(crate) fn avatar_url_sized(base: &str, size: u32) -> Option<String> {
+    let base = base.trim();
+    if base.is_empty() {
+        return None;
+    }
+    let (path, query) = match base.split_once('?') {
+        Some((p, q)) => (p, q),
+        None => (base, ""),
+    };
+    let mut parts: Vec<String> = query
+        .split('&')
+        .filter(|part| !part.is_empty() && !part.starts_with("s="))
+        .map(|part| part.to_owned())
+        .collect();
+    parts.push(format!("s={size}"));
+    Some(format!("{path}?{}", parts.join("&")))
+}
+
+/// Deterministic cache key for an avatar URL so the GPU texture cache dedupes it.
+pub(crate) fn avatar_cache_key(url: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    "avatar".hash(&mut h);
+    url.hash(&mut h);
+    h.finish()
+}
 
 const DEFAULT_UI_SCALE_PCT: u16 = 100;
 const MIN_UI_SCALE_PCT: u16 = 70;
@@ -90,8 +176,6 @@ pub enum FocusTarget {
     PickerList,
     CommandPaletteInput,
     CommandPaletteList,
-    PullRequestInput,
-    PullRequestConfirm,
     AuthPrimaryAction,
     SidebarSearch,
     SearchInput,
@@ -104,7 +188,6 @@ impl FocusTarget {
             self,
             Self::PickerInput
                 | Self::CommandPaletteInput
-                | Self::PullRequestInput
                 | Self::SidebarSearch
                 | Self::SearchInput
                 | Self::CommitEditor
@@ -466,6 +549,12 @@ pub trait PickerItem {
     fn is_section_header(&self) -> bool {
         false
     }
+    fn rhs(&self) -> Option<&str> {
+        None
+    }
+    fn is_disabled(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -511,7 +600,6 @@ pub struct PickerState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaletteCommand {
     OpenRepoPicker,
-    OpenPullRequestModal,
     OpenGitHubAuthModal,
     FocusFileList,
     FocusViewport,
@@ -528,6 +616,7 @@ pub enum PaletteEntryKind {
     File(usize),
     Repo(PathBuf),
     Ref(CompareField, String),
+    PullRequest(PrKey),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -536,6 +625,10 @@ pub struct PaletteEntry {
     pub detail: String,
     pub kind: PaletteEntryKind,
     pub highlights: Vec<(usize, usize)>,
+    /// Extra right-aligned summary (e.g. "+12 −3 · open").
+    pub rhs: Option<String>,
+    /// Disables the entry when set; `detail` usually explains why.
+    pub disabled: bool,
 }
 
 impl PickerItem for PaletteEntry {
@@ -548,6 +641,12 @@ impl PickerItem for PaletteEntry {
     fn highlight_ranges(&self) -> &[(usize, usize)] {
         &self.highlights
     }
+    fn rhs(&self) -> Option<&str> {
+        self.rhs.as_deref()
+    }
+    fn is_disabled(&self) -> bool {
+        self.disabled
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
@@ -558,13 +657,49 @@ pub struct CommandPaletteState {
     pub list: OverlayListState,
 }
 
+pub type PrKey = (String, String, i32);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrPeekMeta {
+    Loading,
+    Ready(PullRequestInfo),
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrPeekDiff {
+    Idle,
+    Loading,
+    Ready {
+        url: String,
+        left_ref: String,
+        right_ref: String,
+        info: PullRequestInfo,
+    },
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrCacheEntry {
+    pub meta: PrPeekMeta,
+    pub diff: PrPeekDiff,
+    pub last_peek_ms: u64,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
 pub struct PullRequestState {
     pub status: AsyncStatus,
-    pub url_input: String,
-    pub info: Option<PullRequestInfo>,
-    pub candidate_left_ref: Option<String>,
-    pub candidate_right_ref: Option<String>,
+    pub cache: HashMap<PrKey, PrCacheEntry>,
+    pub pending_confirm: Option<PrKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AvatarBitmap {
+    pub url: String,
+    pub rgba: Arc<Vec<u8>>,
+    pub width: u32,
+    pub height: u32,
+    pub cache_key: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
@@ -572,6 +707,9 @@ pub struct GitHubAuthState {
     pub status: AsyncStatus,
     pub device_flow: Option<DeviceFlowState>,
     pub token_present: bool,
+    pub user: Option<GitHubUser>,
+    pub avatar: Option<AvatarBitmap>,
+    pub avatar_fetching: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
@@ -588,11 +726,11 @@ pub enum OverlaySurface {
     RepoPicker,
     RefPicker(CompareField),
     CommandPalette,
-    PullRequestModal,
     GitHubAuthModal,
     KeyboardShortcuts,
     ThemePicker,
     CompareMenu,
+    AccountMenu,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -878,12 +1016,10 @@ impl AppState {
                 client_id: startup.github_client_id.clone(),
                 auth: GitHubAuthState {
                     token_present: settings.github_token.is_some(),
+                    user: settings.github_user.clone(),
                     ..GitHubAuthState::default()
                 },
-                pull_request: PullRequestState {
-                    url_input: startup.args.open_pr.clone().unwrap_or_default(),
-                    ..PullRequestState::default()
-                },
+                pull_request: PullRequestState::default(),
             },
         );
         let mut state = Self {
@@ -938,6 +1074,17 @@ impl AppState {
             });
             effects.push(Effect::WatchRepository { path: Some(path) });
         }
+        // If we have a token but no cached user (upgrade path), hydrate from GitHub.
+        if let Some(token) = state.settings.github_token.clone() {
+            if state.settings.github_user.is_none() {
+                effects.push(Effect::FetchGitHubUser { token });
+            } else if let Some(user) = state.settings.github_user.as_ref()
+                && let Some(url) = avatar_url_sized(&user.avatar_url, 128)
+            {
+                state.github.auth.avatar_fetching.set(&state.store, true);
+                effects.push(Effect::FetchAvatar { url });
+            }
+        }
         (state, effects)
     }
 
@@ -983,7 +1130,6 @@ impl AppState {
             | OpenThemePicker
             | OpenRefPicker(_)
             | OpenCommandPalette
-            | OpenPullRequestModal
             | OpenGitHubAuthModal
             | CloseOverlay
             | MoveOverlaySelection(_)
@@ -1003,6 +1149,7 @@ impl AppState {
             | SetCompareMode(_)
             | CycleCompareMode
             | OpenCompareMenu
+            | OpenAccountMenu
             | ApplyComparePreset(_)
             | SetLayoutMode(_)
             | SetRenderer(_)
@@ -1072,10 +1219,9 @@ impl AppState {
             }
 
             // GitHub
-            SubmitPullRequest
-            | UsePullRequestCompare
-            | StartGitHubDeviceFlow
-            | OpenDeviceFlowBrowser => self.apply_github_action(action),
+            StartGitHubDeviceFlow | OpenDeviceFlowBrowser | SignOutGitHub => {
+                self.apply_github_action(action)
+            }
 
             // Focus & misc
             SetFocus(target) => {
@@ -1089,6 +1235,10 @@ impl AppState {
                     }
                 });
                 Vec::new()
+            }
+            CopyText(text) => {
+                self.push_info("Copied to clipboard.");
+                vec![Effect::SetClipboard(text)]
             }
             HoverToast(index) => {
                 let mut was_any_hovered = false;
@@ -1287,17 +1437,7 @@ impl AppState {
                 Vec::new()
             }
             Action::OpenRefPicker(field) => self.open_ref_picker(field),
-            Action::OpenCommandPalette => {
-                self.open_command_palette();
-                Vec::new()
-            }
-            Action::OpenPullRequestModal => {
-                self.push_overlay(
-                    OverlaySurface::PullRequestModal,
-                    Some(FocusTarget::PullRequestInput),
-                );
-                Vec::new()
-            }
+            Action::OpenCommandPalette => self.open_command_palette(),
             Action::OpenGitHubAuthModal => {
                 self.push_overlay(
                     OverlaySurface::GitHubAuthModal,
@@ -1385,12 +1525,17 @@ impl AppState {
                 self.push_overlay(OverlaySurface::CompareMenu, None);
                 Vec::new()
             }
+            Action::OpenAccountMenu => {
+                self.push_overlay(OverlaySurface::AccountMenu, None);
+                Vec::new()
+            }
             Action::ApplyComparePreset(preset) => self.apply_compare_preset(&preset),
             Action::SetLayoutMode(layout) => {
                 self.compare.layout.set(&self.store, layout);
                 self.editor.layout.set(&self.store, layout);
-                self.rebuild_command_palette();
-                self.persist_settings_effect()
+                let mut effects = self.rebuild_command_palette();
+                effects.extend(self.persist_settings_effect());
+                effects
             }
             Action::SetRenderer(renderer) => {
                 self.compare.renderer.set(&self.store, renderer);
@@ -1770,13 +1915,20 @@ impl AppState {
 
     fn apply_github_action(&mut self, action: Action) -> Vec<Effect> {
         match action {
-            Action::SubmitPullRequest => self.submit_pull_request(),
-            Action::UsePullRequestCompare => self.use_pull_request_compare(),
             Action::StartGitHubDeviceFlow => {
                 self.github
                     .auth
                     .status
                     .set(&self.store, AsyncStatus::Loading);
+                // Surface the auth modal so the user sees the device code once the
+                // HTTP call returns. Without this the browser opens but the user has
+                // no way to see the code they need to type.
+                if self.overlays_top() != Some(OverlaySurface::GitHubAuthModal) {
+                    self.push_overlay(
+                        OverlaySurface::GitHubAuthModal,
+                        Some(FocusTarget::AuthPrimaryAction),
+                    );
+                }
                 vec![Effect::StartDeviceFlow {
                     client_id: self.github.client_id.get(&self.store),
                 }]
@@ -1790,6 +1942,29 @@ impl AppState {
                 } else {
                     Vec::new()
                 }
+            }
+            Action::SignOutGitHub => {
+                self.github.auth.token_present.set(&self.store, false);
+                self.github.auth.user.set(&self.store, None);
+                self.github.auth.avatar.set(&self.store, None);
+                self.github.auth.avatar_fetching.set(&self.store, false);
+                self.github.auth.device_flow.set(&self.store, None);
+                self.github.auth.status.set(&self.store, AsyncStatus::Idle);
+                // Stale peek/load errors from an unauthenticated session shouldn't
+                // linger across sign-in transitions — drop the cache so the user
+                // re-runs the flow with the new credentials.
+                self.github
+                    .pull_request
+                    .cache
+                    .update(&self.store, |c| c.clear());
+                self.github
+                    .pull_request
+                    .pending_confirm
+                    .set(&self.store, None);
+                self.settings.github_token = None;
+                self.settings.github_user = None;
+                self.push_info("Signed out of GitHub.");
+                self.persist_settings_effect()
             }
             _ => Vec::new(),
         }
@@ -1886,24 +2061,92 @@ impl AppState {
                     .pull_request
                     .status
                     .set(&self.store, AsyncStatus::Ready);
-                self.github.pull_request.url_input.set(&self.store, url);
-                self.github.pull_request.info.set(&self.store, Some(info));
-                self.github
+
+                let key: PrKey = crate::core::vcs::github::parse_pr_url(&url)
+                    .map(|p| (p.owner, p.repo, p.number))
+                    .unwrap_or_else(|| (String::new(), String::new(), info.number));
+                self.github.pull_request.cache.update(&self.store, |c| {
+                    let entry = c.entry(key.clone()).or_insert_with(|| PrCacheEntry {
+                        meta: PrPeekMeta::Ready(info.clone()),
+                        diff: PrPeekDiff::Idle,
+                        last_peek_ms: 0,
+                    });
+                    entry.meta = PrPeekMeta::Ready(info.clone());
+                    entry.diff = PrPeekDiff::Ready {
+                        url: url.clone(),
+                        left_ref: left_ref.clone(),
+                        right_ref: right_ref.clone(),
+                        info: info.clone(),
+                    };
+                });
+
+                let pending_match = self
+                    .github
                     .pull_request
-                    .candidate_left_ref
-                    .set(&self.store, Some(left_ref));
-                self.github
-                    .pull_request
-                    .candidate_right_ref
-                    .set(&self.store, Some(right_ref));
+                    .pending_confirm
+                    .with(&self.store, |p| p.as_ref() == Some(&key));
+                if pending_match {
+                    self.github
+                        .pull_request
+                        .pending_confirm
+                        .set(&self.store, None);
+                    return self.apply_pr_compare(left_ref, right_ref);
+                }
                 Vec::new()
             }
-            AppEvent::PullRequestLoadFailed { message, .. } => {
+            AppEvent::PullRequestLoadFailed { url, message } => {
                 self.github
                     .pull_request
                     .status
                     .set(&self.store, AsyncStatus::Failed);
+                if let Some(parsed) = crate::core::vcs::github::parse_pr_url(&url) {
+                    let key: PrKey = (parsed.owner, parsed.repo, parsed.number);
+                    self.github.pull_request.cache.update(&self.store, |c| {
+                        if let Some(entry) = c.get_mut(&key) {
+                            entry.diff = PrPeekDiff::Failed(message.clone());
+                        }
+                    });
+                    let pending_match = self
+                        .github
+                        .pull_request
+                        .pending_confirm
+                        .with(&self.store, |p| p.as_ref() == Some(&key));
+                    if pending_match {
+                        self.github
+                            .pull_request
+                            .pending_confirm
+                            .set(&self.store, None);
+                    }
+                }
                 self.push_error(&message);
+                Vec::new()
+            }
+            AppEvent::PullRequestPeeked {
+                owner,
+                repo,
+                number,
+                info,
+            } => {
+                let key: PrKey = (owner, repo, number);
+                self.github.pull_request.cache.update(&self.store, |c| {
+                    if let Some(entry) = c.get_mut(&key) {
+                        entry.meta = PrPeekMeta::Ready(info);
+                    }
+                });
+                Vec::new()
+            }
+            AppEvent::PullRequestPeekFailed {
+                owner,
+                repo,
+                number,
+                message,
+            } => {
+                let key: PrKey = (owner, repo, number);
+                self.github.pull_request.cache.update(&self.store, |c| {
+                    if let Some(entry) = c.get_mut(&key) {
+                        entry.meta = PrPeekMeta::Failed(message);
+                    }
+                });
                 Vec::new()
             }
             AppEvent::DeviceFlowStarted(device_flow) => {
@@ -1938,12 +2181,14 @@ impl AppState {
                 self.github.auth.status.set(&self.store, AsyncStatus::Ready);
                 self.github.auth.device_flow.set(&self.store, None);
                 self.github.auth.token_present.set(&self.store, true);
-                self.settings.github_token = Some(token);
+                self.settings.github_token = Some(token.clone());
                 self.push_info("GitHub authentication completed.");
                 if self.overlays_top() == Some(OverlaySurface::GitHubAuthModal) {
                     self.pop_overlay();
                 }
-                self.persist_settings_effect()
+                let mut effects = self.persist_settings_effect();
+                effects.push(Effect::FetchGitHubUser { token });
+                effects
             }
             AppEvent::DeviceFlowFailed { message } => {
                 self.github
@@ -1951,6 +2196,65 @@ impl AppState {
                     .status
                     .set(&self.store, AsyncStatus::Failed);
                 self.push_error(&message);
+                Vec::new()
+            }
+            AppEvent::GitHubUserFetched { user } => {
+                let avatar_src = avatar_url_sized(&user.avatar_url, 128);
+                let previous_login = self
+                    .github
+                    .auth
+                    .user
+                    .with(&self.store, |u| u.as_ref().map(|u| u.login.clone()));
+                self.github.auth.user.set(&self.store, Some(user.clone()));
+                self.settings.github_user = Some(user.clone());
+                // If the identity changed (sign-in after sign-out, or a different
+                // account), drop any previously-cached PR state so we don't show
+                // errors from the prior session.
+                if previous_login.as_deref() != Some(user.login.as_str()) {
+                    self.github
+                        .pull_request
+                        .cache
+                        .update(&self.store, |c| c.clear());
+                }
+                let mut effects = self.persist_settings_effect();
+                if let Some(url) = avatar_src {
+                    let already_have = self.github.auth.avatar.with(&self.store, |a| {
+                        a.as_ref().is_some_and(|b| b.url == url)
+                    });
+                    if !already_have && !self.github.auth.avatar_fetching.get(&self.store) {
+                        self.github.auth.avatar_fetching.set(&self.store, true);
+                        effects.push(Effect::FetchAvatar { url });
+                    }
+                }
+                effects
+            }
+            AppEvent::GitHubUserFetchFailed { message } => {
+                tracing::warn!("failed to fetch GitHub user: {message}");
+                Vec::new()
+            }
+            AppEvent::AvatarFetched {
+                url,
+                rgba,
+                width,
+                height,
+            } => {
+                self.github.auth.avatar_fetching.set(&self.store, false);
+                let cache_key = avatar_cache_key(&url);
+                self.github.auth.avatar.set(
+                    &self.store,
+                    Some(AvatarBitmap {
+                        url,
+                        rgba,
+                        width,
+                        height,
+                        cache_key,
+                    }),
+                );
+                Vec::new()
+            }
+            AppEvent::AvatarFetchFailed { url, message } => {
+                self.github.auth.avatar_fetching.set(&self.store, false);
+                tracing::warn!("failed to fetch avatar {url}: {message}");
                 Vec::new()
             }
             AppEvent::RefResolved {
@@ -2075,14 +2379,12 @@ impl AppState {
         self.editor_clear_document();
         self.editor.focused.set(&self.store, false);
         self.last_error.set(&self.store, None);
-        self.github.pull_request.info.set(&self.store, None);
+        self.github.pull_request.cache.update(&self.store, |c| {
+            c.clear();
+        });
         self.github
             .pull_request
-            .candidate_left_ref
-            .set(&self.store, None);
-        self.github
-            .pull_request
-            .candidate_right_ref
+            .pending_confirm
             .set(&self.store, None);
         self.clear_overlays();
         self.focus.set(&self.store, Some(FocusTarget::TitleBar));
@@ -2152,6 +2454,20 @@ impl AppState {
                         .pull_request
                         .status
                         .set(&self.store, AsyncStatus::Loading);
+                    if let Some(parsed) = crate::core::vcs::github::parse_pr_url(&url) {
+                        let key: PrKey = (parsed.owner, parsed.repo, parsed.number);
+                        self.github.pull_request.cache.update(&self.store, |c| {
+                            c.entry(key.clone()).or_insert_with(|| PrCacheEntry {
+                                meta: PrPeekMeta::Loading,
+                                diff: PrPeekDiff::Loading,
+                                last_peek_ms: 0,
+                            });
+                        });
+                        self.github
+                            .pull_request
+                            .pending_confirm
+                            .set(&self.store, Some(key));
+                    }
                     effects.push(Effect::LoadPullRequest {
                         url,
                         repo_path: payload.path,
@@ -2791,12 +3107,6 @@ impl AppState {
                     .query
                     .with(&self.store, |s| f(s)),
             ),
-            FocusTarget::PullRequestInput => Some(
-                self.github
-                    .pull_request
-                    .url_input
-                    .with(&self.store, |s| f(s)),
-            ),
             FocusTarget::SidebarSearch => Some(self.file_list.filter.with(&self.store, |s| f(s))),
             FocusTarget::SearchInput => Some(self.editor.search.query.with(&self.store, |s| f(s))),
             FocusTarget::CommitEditor => None,
@@ -2840,14 +3150,6 @@ impl AppState {
                 self.overlays
                     .command_palette
                     .query
-                    .update(&self.store, |s| out = Some(f(s)));
-                out
-            }
-            Some(FocusTarget::PullRequestInput) => {
-                let mut out = None;
-                self.github
-                    .pull_request
-                    .url_input
                     .update(&self.store, |s| out = Some(f(s)));
                 out
             }
@@ -2924,13 +3226,13 @@ impl AppState {
             }
         }
         self.auto_select_compare_mode();
-        let effects = if matches!(self.overlays_top(), Some(OverlaySurface::RefPicker(active)) if active == field)
+        let mut effects = if matches!(self.overlays_top(), Some(OverlaySurface::RefPicker(active)) if active == field)
         {
             self.rebuild_ref_picker(field)
         } else {
             Vec::new()
         };
-        self.rebuild_command_palette();
+        effects.extend(self.rebuild_command_palette());
         effects
     }
 
@@ -2952,50 +3254,10 @@ impl AppState {
         }
     }
 
-    fn submit_pull_request(&mut self) -> Vec<Effect> {
-        let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
-            self.push_error("Open a repository before loading a pull request.");
-            return Vec::new();
-        };
-        let url = self
-            .github
-            .pull_request
-            .url_input
-            .with(&self.store, |s| s.trim().to_owned());
-        if url.is_empty() {
-            self.push_error("Paste a GitHub pull request URL first.");
-            return Vec::new();
-        }
-        self.github
-            .pull_request
-            .status
-            .set(&self.store, AsyncStatus::Loading);
-        vec![Effect::LoadPullRequest {
-            url,
-            repo_path,
-            github_token: self.settings.github_token.clone(),
-        }]
-    }
-
-    fn use_pull_request_compare(&mut self) -> Vec<Effect> {
-        let Some(left) = self.github.pull_request.candidate_left_ref.get(&self.store) else {
-            self.push_error("Load a pull request before using its compare.");
-            return Vec::new();
-        };
-        let Some(right) = self
-            .github
-            .pull_request
-            .candidate_right_ref
-            .get(&self.store)
-        else {
-            self.push_error("Load a pull request before using its compare.");
-            return Vec::new();
-        };
-        // Picker won't be open here so resolve effects are empty, but drain them.
+    fn apply_pr_compare(&mut self, left: String, right: String) -> Vec<Effect> {
         let _ = self.update_compare_field(CompareField::Left, left);
         let _ = self.update_compare_field(CompareField::Right, right);
         self.compare.mode.set(&self.store, CompareMode::ThreeDot);
-        self.clear_overlays();
         self.kickoff_compare()
     }
 
@@ -3199,18 +3461,19 @@ impl AppState {
         effects
     }
 
-    fn open_command_palette(&mut self) {
+    fn open_command_palette(&mut self) -> Vec<Effect> {
         let scale = self.ui_scale_factor();
         self.overlays.command_palette.list.update(&self.store, |l| {
             l.row_height_px = (Sz::ROW * scale).round() as u32;
             l.gap_px = (Sp::XS * scale).round() as u32;
             l.scroll_top_px = 0;
         });
-        self.rebuild_command_palette();
+        let effects = self.rebuild_command_palette();
         self.push_overlay(
             OverlaySurface::CommandPalette,
             Some(FocusTarget::CommandPaletteInput),
         );
+        effects
     }
 
     fn push_overlay(&mut self, surface: OverlaySurface, focus_target: Option<FocusTarget>) {
@@ -3432,7 +3695,6 @@ impl AppState {
             Some(OverlaySurface::RepoPicker) => self.confirm_repo_picker(),
             Some(OverlaySurface::RefPicker(field)) => self.confirm_ref_picker(field),
             Some(OverlaySurface::CommandPalette) => self.confirm_command_palette(),
-            Some(OverlaySurface::PullRequestModal) => self.submit_pull_request(),
             Some(OverlaySurface::GitHubAuthModal) => {
                 if self
                     .github
@@ -3445,7 +3707,11 @@ impl AppState {
                     self.apply_action(Action::StartGitHubDeviceFlow)
                 }
             }
-            Some(OverlaySurface::KeyboardShortcuts | OverlaySurface::CompareMenu) => Vec::new(),
+            Some(
+                OverlaySurface::KeyboardShortcuts
+                | OverlaySurface::CompareMenu
+                | OverlaySurface::AccountMenu,
+            ) => Vec::new(),
             None => Vec::new(),
         }
     }
@@ -3640,18 +3906,14 @@ impl AppState {
         else {
             return Vec::new();
         };
+        if entry.disabled {
+            return Vec::new();
+        }
         self.clear_overlays();
         match entry.kind {
             PaletteEntryKind::Command(command) => match command {
                 PaletteCommand::OpenRepoPicker => {
                     self.open_repo_picker();
-                    Vec::new()
-                }
-                PaletteCommand::OpenPullRequestModal => {
-                    self.push_overlay(
-                        OverlaySurface::PullRequestModal,
-                        Some(FocusTarget::PullRequestInput),
-                    );
                     Vec::new()
                 }
                 PaletteCommand::OpenGitHubAuthModal => {
@@ -3682,6 +3944,46 @@ impl AppState {
             PaletteEntryKind::Ref(field, value) => {
                 let _ = self.update_compare_field(field, value);
                 self.persist_settings_effect()
+            }
+            PaletteEntryKind::PullRequest(key) => self.confirm_pr_entry(key),
+        }
+    }
+
+    fn confirm_pr_entry(&mut self, key: PrKey) -> Vec<Effect> {
+        if self.compare.repo_path.with(&self.store, |p| p.is_none()) {
+            self.push_error("Open a repository before loading a pull request.");
+            return Vec::new();
+        }
+        let diff_state = self
+            .github
+            .pull_request
+            .cache
+            .with(&self.store, |c| c.get(&key).map(|e| e.diff.clone()));
+        match diff_state {
+            Some(PrPeekDiff::Ready {
+                left_ref, right_ref, ..
+            }) => {
+                self.github
+                    .pull_request
+                    .pending_confirm
+                    .set(&self.store, None);
+                self.apply_pr_compare(left_ref, right_ref)
+            }
+            Some(PrPeekDiff::Loading) | Some(PrPeekDiff::Idle) => {
+                self.github
+                    .pull_request
+                    .pending_confirm
+                    .set(&self.store, Some(key.clone()));
+                self.push_info(&format!("Preparing PR #{}\u{2026}", key.2));
+                Vec::new()
+            }
+            Some(PrPeekDiff::Failed(message)) => {
+                self.push_error(&message);
+                Vec::new()
+            }
+            None => {
+                self.push_error("Pull request not available.");
+                Vec::new()
             }
         }
     }
@@ -4108,13 +4410,82 @@ impl AppState {
         Vec::new()
     }
 
-    fn rebuild_command_palette(&mut self) {
+    fn rebuild_command_palette(&mut self) -> Vec<Effect> {
         let query_owned = self
             .overlays
             .command_palette
             .query
             .with(&self.store, |q| q.trim().to_owned());
         let query = query_owned.as_str();
+
+        let mut out_effects = Vec::new();
+        let mut pr_entry: Option<PaletteEntry> = None;
+
+        if let Some(parsed) = crate::core::vcs::github::parse_pr_url(query) {
+            let key: PrKey = (
+                parsed.owner.clone(),
+                parsed.repo.clone(),
+                parsed.number,
+            );
+            let token = self.settings.github_token.clone();
+            let repo_path = self.compare.repo_path.get(&self.store);
+
+            let already_cached =
+                self.github.pull_request.cache.with(&self.store, |c| {
+                    c.contains_key(&key)
+                });
+            if !already_cached {
+                self.github.pull_request.cache.update(&self.store, |c| {
+                    c.insert(
+                        key.clone(),
+                        PrCacheEntry {
+                            meta: PrPeekMeta::Loading,
+                            diff: PrPeekDiff::Idle,
+                            last_peek_ms: self.clock_ms,
+                        },
+                    );
+                });
+                out_effects.push(Effect::PeekPullRequest {
+                    owner: parsed.owner.clone(),
+                    repo: parsed.repo.clone(),
+                    number: parsed.number,
+                    github_token: token.clone(),
+                });
+            }
+
+            // Speculative diff load — kick off as soon as we know the key, provided
+            // a repo is open. Dedupe via the cache's diff state.
+            if let Some(repo_path) = repo_path.clone() {
+                let diff_idle = self.github.pull_request.cache.with(&self.store, |c| {
+                    matches!(
+                        c.get(&key).map(|e| &e.diff),
+                        Some(PrPeekDiff::Idle) | None
+                    )
+                });
+                if diff_idle {
+                    self.github.pull_request.cache.update(&self.store, |c| {
+                        if let Some(e) = c.get_mut(&key) {
+                            e.diff = PrPeekDiff::Loading;
+                        }
+                    });
+                    let url = format!(
+                        "https://github.com/{}/{}/pull/{}",
+                        parsed.owner, parsed.repo, parsed.number
+                    );
+                    out_effects.push(Effect::LoadPullRequest {
+                        url,
+                        repo_path,
+                        github_token: token,
+                    });
+                }
+            }
+
+            pr_entry = Some(build_pr_palette_entry(
+                &self.github.pull_request.cache.get(&self.store),
+                &key,
+                repo_path.is_some(),
+            ));
+        }
 
         struct PaletteCandidate {
             search_text: String,
@@ -4130,11 +4501,6 @@ impl AppState {
                 "Choose Repository".to_owned(),
                 "Open repository picker".to_owned(),
                 PaletteCommand::OpenRepoPicker,
-            ),
-            (
-                "Open Pull Request".to_owned(),
-                "Load PR metadata".to_owned(),
-                PaletteCommand::OpenPullRequestModal,
             ),
             (
                 "GitHub Sign In".to_owned(),
@@ -4239,6 +4605,8 @@ impl AppState {
                     detail: c.detail,
                     kind: c.kind,
                     highlights: Vec::new(),
+                    rhs: None,
+                    disabled: false,
                 })
                 .collect();
         } else {
@@ -4265,12 +4633,17 @@ impl AppState {
                             highlights: highlight_ranges_for_visible_match(
                                 query, &c.label, &m.indices, &config,
                             ),
+                            rhs: None,
+                            disabled: false,
                         },
                     )
                 })
                 .collect();
             scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.label.cmp(&b.1.label)));
             entries = scored.into_iter().map(|(_, e)| e).collect();
+        }
+        if let Some(pr) = pr_entry {
+            entries.insert(0, pr);
         }
         entries.truncate(18);
         let entry_count = entries.len();
@@ -4291,6 +4664,7 @@ impl AppState {
             l.viewport_height_px = l.viewport_for_max_rows(Sz::PICKER_MAX_ROWS, entry_count);
             l.clamp_scroll(entry_count);
         });
+        out_effects
     }
 
     fn shift_loaded_file(&mut self, delta: isize) {
@@ -5148,8 +5522,8 @@ fn overlay_name(surface: OverlaySurface) -> &'static str {
         OverlaySurface::RefPicker(CompareField::Left) => "left-ref-picker",
         OverlaySurface::RefPicker(CompareField::Right) => "right-ref-picker",
         OverlaySurface::CommandPalette => "command-palette",
-        OverlaySurface::PullRequestModal => "pull-request-modal",
         OverlaySurface::GitHubAuthModal => "github-auth-modal",
+        OverlaySurface::AccountMenu => "account-menu",
         OverlaySurface::KeyboardShortcuts => "keyboard-shortcuts",
         OverlaySurface::ThemePicker => "theme-picker",
         OverlaySurface::CompareMenu => "compare-menu",
@@ -5725,5 +6099,105 @@ mod tests {
             state.apply_action(Action::DecreaseUiScale);
         }
         assert_eq!(state.settings.ui_scale_pct, 70);
+    }
+
+    #[test]
+    fn avatar_url_sized_appends_or_replaces_s_param() {
+        use super::avatar_url_sized;
+        assert_eq!(
+            avatar_url_sized("https://avatars.githubusercontent.com/u/1?v=4", 128),
+            Some("https://avatars.githubusercontent.com/u/1?v=4&s=128".to_owned())
+        );
+        assert_eq!(
+            avatar_url_sized("https://avatars.githubusercontent.com/u/1", 64),
+            Some("https://avatars.githubusercontent.com/u/1?s=64".to_owned())
+        );
+        assert_eq!(
+            avatar_url_sized("https://avatars.githubusercontent.com/u/1?s=40&v=4", 128),
+            Some("https://avatars.githubusercontent.com/u/1?v=4&s=128".to_owned())
+        );
+        assert_eq!(avatar_url_sized("", 128), None);
+    }
+
+    #[test]
+    fn command_palette_detects_pr_url_and_emits_peek_effect() {
+        let mut state = AppState::default();
+        state
+            .overlays
+            .command_palette
+            .query
+            .set(&state.store, "https://github.com/foo/bar/pull/42".to_owned());
+
+        let effects = state.rebuild_command_palette();
+
+        // A peek effect was fired for the parsed key.
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            crate::effects::Effect::PeekPullRequest {
+                owner, repo, number, ..
+            } if owner == "foo" && repo == "bar" && *number == 42
+        )));
+
+        // Palette has the synthesized PR entry as the top row with key intact.
+        let top = state
+            .overlays
+            .command_palette
+            .entries
+            .with(&state.store, |e| e.first().cloned())
+            .expect("palette has at least one entry");
+        assert!(matches!(
+            top.kind,
+            super::PaletteEntryKind::PullRequest((ref o, ref r, n))
+            if o == "foo" && r == "bar" && n == 42
+        ));
+
+        // Cache entry is initialized to Loading.
+        let cached = state.github.pull_request.cache.with(&state.store, |c| {
+            c.get(&("foo".to_owned(), "bar".to_owned(), 42)).cloned()
+        });
+        let cached = cached.expect("cache entry");
+        assert!(matches!(cached.meta, super::PrPeekMeta::Loading));
+    }
+
+    #[test]
+    fn pr_peeked_event_transitions_cache_meta_to_ready() {
+        use crate::core::vcs::github::PullRequestInfo;
+        use crate::events::AppEvent;
+
+        let mut state = AppState::default();
+        state
+            .overlays
+            .command_palette
+            .query
+            .set(&state.store, "https://github.com/foo/bar/pull/7".to_owned());
+        let _ = state.rebuild_command_palette();
+
+        let info = PullRequestInfo {
+            title: "Fix thing".to_owned(),
+            state: "open".to_owned(),
+            author_login: "alice".to_owned(),
+            number: 7,
+            additions: 12,
+            deletions: 3,
+            changed_files: 1,
+            base_branch: "main".to_owned(),
+            head_branch: "fix".to_owned(),
+            base_sha: "a".to_owned(),
+            head_sha: "b".to_owned(),
+            base_repo_url: String::new(),
+            head_repo_url: String::new(),
+        };
+        state.apply_event(AppEvent::PullRequestPeeked {
+            owner: "foo".to_owned(),
+            repo: "bar".to_owned(),
+            number: 7,
+            info: info.clone(),
+        });
+
+        let meta = state.github.pull_request.cache.with(&state.store, |c| {
+            c.get(&("foo".to_owned(), "bar".to_owned(), 7))
+                .map(|e| e.meta.clone())
+        });
+        assert!(matches!(meta, Some(super::PrPeekMeta::Ready(_))));
     }
 }

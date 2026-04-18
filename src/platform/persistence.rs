@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 use crate::core::error::{DiffyError, Result};
+use crate::core::vcs::github::GitHubUser;
 use crate::ui::theme::ThemeMode;
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
@@ -59,6 +60,7 @@ pub struct Settings {
     pub last_compare: Option<PersistedCompare>,
     pub viewport: PersistedViewport,
     pub github_token: Option<String>,
+    pub github_user: Option<GitHubUser>,
 }
 
 impl Default for Settings {
@@ -71,6 +73,7 @@ impl Default for Settings {
             last_compare: None,
             viewport: PersistedViewport::default(),
             github_token: None,
+            github_user: None,
         }
     }
 }

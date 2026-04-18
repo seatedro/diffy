@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::core::compare::{CompareOutput, CompareSpec};
 use crate::core::vcs::git::{BranchInfo, CommitInfo, StatusItem, TagInfo};
-use crate::core::vcs::github::{DeviceFlowState, PullRequestInfo};
+use crate::core::vcs::github::{DeviceFlowState, GitHubUser, PullRequestInfo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepositorySyncReason {
@@ -90,6 +90,18 @@ pub enum AppEvent {
         url: String,
         message: String,
     },
+    PullRequestPeeked {
+        owner: String,
+        repo: String,
+        number: i32,
+        info: PullRequestInfo,
+    },
+    PullRequestPeekFailed {
+        owner: String,
+        repo: String,
+        number: i32,
+        message: String,
+    },
     DeviceFlowStarted(DeviceFlowState),
     DeviceFlowStartFailed {
         message: String,
@@ -98,6 +110,22 @@ pub enum AppEvent {
         token: String,
     },
     DeviceFlowFailed {
+        message: String,
+    },
+    GitHubUserFetched {
+        user: GitHubUser,
+    },
+    GitHubUserFetchFailed {
+        message: String,
+    },
+    AvatarFetched {
+        url: String,
+        rgba: std::sync::Arc<Vec<u8>>,
+        width: u32,
+        height: u32,
+    },
+    AvatarFetchFailed {
+        url: String,
         message: String,
     },
     RefResolved {

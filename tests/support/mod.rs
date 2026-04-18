@@ -104,6 +104,13 @@ pub fn ready_state_with_files(file_count: usize) -> AppState {
                 file: Default::default(),
                 render_doc: Default::default(),
                 text_buffer: Default::default(),
+                base_file: Default::default(),
+                base_text_buffer: Default::default(),
+                token_buffer: Default::default(),
+                left_ref: String::new(),
+                right_ref: String::new(),
+                file_line_count: None,
+                file_lines: None,
             }),
         );
     }
@@ -199,6 +206,8 @@ pub fn command_palette_state(entry_count: usize) -> AppState {
                     PaletteCommand::FocusViewport
                 }),
                 highlights: Vec::new(),
+                rhs: None,
+                disabled: false,
             })
             .collect(),
         selected_index: entry_count.saturating_sub(1).min(3),
@@ -230,42 +239,6 @@ pub fn command_palette_state(entry_count: usize) -> AppState {
     state
         .focus
         .set(&state.store, Some(FocusTarget::CommandPaletteInput));
-    state
-}
-
-pub fn pull_request_modal_state() -> AppState {
-    let state = ready_state_with_files(3);
-    state.overlays.stack.update(&state.store, |stack| {
-        stack.push(OverlayEntry {
-            surface: OverlaySurface::PullRequestModal,
-            focus_return: Some(FocusTarget::TitleBar),
-        });
-    });
-    state
-        .focus
-        .set(&state.store, Some(FocusTarget::PullRequestInput));
-    state.github.pull_request.url_input.set(
-        &state.store,
-        "https://github.com/owner/repo/pull/42".to_owned(),
-    );
-    state.github.pull_request.info.set(
-        &state.store,
-        Some(PullRequestInfo {
-            title: "Improve scroll plumbing".to_owned(),
-            state: "open".to_owned(),
-            author_login: "ro".to_owned(),
-            number: 42,
-            additions: 12,
-            deletions: 3,
-            changed_files: 2,
-            base_branch: "main".to_owned(),
-            head_branch: "feature/native-ui".to_owned(),
-            base_sha: "abc".to_owned(),
-            head_sha: "def".to_owned(),
-            base_repo_url: "https://github.com/owner/repo.git".to_owned(),
-            head_repo_url: "https://github.com/owner/repo.git".to_owned(),
-        }),
-    );
     state
 }
 

@@ -4,6 +4,13 @@ use serde_json::Value;
 use crate::core::error::{DiffyError, Result};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct GitHubUser {
+    pub login: String,
+    pub name: String,
+    pub avatar_url: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PullRequestInfo {
     pub title: String,
     pub state: String,
@@ -38,6 +45,38 @@ impl GitHubApi {
 
     pub fn set_token(&mut self, token: impl Into<String>) {
         self.token = token.into();
+    }
+
+    pub fn fetch_current_user(&self) -> Result<GitHubUser> {
+        let mut request = ureq::get("https://api.github.com/user")
+            .header("Accept", "application/vnd.github.v3+json")
+            .header("User-Agent", "diffy/0.1");
+        if !self.token.is_empty() {
+            request = request.header("Authorization", &format!("Bearer {}", self.token));
+        }
+
+        let body = request
+            .call()?
+            .into_body()
+            .read_to_string()
+            .map_err(|error| DiffyError::Http(error.to_string()))?;
+        let json: Value = serde_json::from_str(&body)?;
+
+        let login = string_field(&json, "login");
+        if login.is_empty() {
+            return Err(DiffyError::Parse(
+                "missing login in GitHub user response".to_owned(),
+            ));
+        }
+        let name = string_field(&json, "name");
+        let avatar_url = string_field(&json, "avatar_url");
+        let display_name = if name.is_empty() { login.clone() } else { name };
+
+        Ok(GitHubUser {
+            login,
+            name: display_name,
+            avatar_url,
+        })
     }
 
     pub fn fetch_pull_request(

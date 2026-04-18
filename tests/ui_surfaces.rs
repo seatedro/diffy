@@ -6,7 +6,7 @@ use diffy::ui::state::FocusTarget;
 
 use support::{
     auth_modal_state, command_palette_state, count_hits, empty_state_with_recents, has_hit,
-    has_scroll_region, has_text_input_for, pull_request_modal_state, ready_state_with_files,
+    has_scroll_region, has_text_input_for, ready_state_with_files,
     render_frame, repo_picker_state, scene_contains_text, toasts_state,
 };
 
@@ -107,28 +107,10 @@ fn command_palette_exposes_input_entries_and_scroll_surface() {
 }
 
 #[test]
-fn pull_request_modal_exposes_input_and_actions() {
-    let mut state = pull_request_modal_state();
-    let frame = render_frame(&mut state);
-
-    assert!(scene_contains_text(&frame, "GitHub Pull Request"));
-    assert!(scene_contains_text(&frame, "Improve scroll plumbing"));
-    assert!(has_text_input_for(&frame, FocusTarget::PullRequestInput));
-    assert!(has_hit(&frame, |action| matches!(
-        action,
-        Action::SubmitPullRequest
-    )));
-    assert!(has_hit(&frame, |action| matches!(
-        action,
-        Action::UsePullRequestCompare
-    )));
-}
-
-#[test]
 fn auth_modal_switches_primary_action_based_on_device_flow_state() {
     let mut idle_state = auth_modal_state(false);
     let idle_frame = render_frame(&mut idle_state);
-    assert!(scene_contains_text(&idle_frame, "Not authenticated"));
+    assert!(scene_contains_text(&idle_frame, "Sign in to GitHub"));
     assert!(has_hit(&idle_frame, |action| matches!(
         action,
         Action::StartGitHubDeviceFlow
@@ -136,10 +118,15 @@ fn auth_modal_switches_primary_action_based_on_device_flow_state() {
 
     let mut flow_state = auth_modal_state(true);
     let flow_frame = render_frame(&mut flow_state);
-    assert!(scene_contains_text(&flow_frame, "User code: ABCD-EFGH"));
+    // The hero device-code card renders the user code verbatim.
+    assert!(scene_contains_text(&flow_frame, "ABCD-EFGH"));
     assert!(has_hit(&flow_frame, |action| matches!(
         action,
         Action::OpenDeviceFlowBrowser
+    )));
+    assert!(has_hit(&flow_frame, |action| matches!(
+        action,
+        Action::CopyText(_)
     )));
 }
 

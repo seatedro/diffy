@@ -433,10 +433,7 @@ fn apply_commit(
     sync_repository_forced(state, event_sender, path, RepositorySyncReason::Dirty);
 }
 
-fn ensure_open(
-    state: &mut GitWorkerState,
-    path: &PathBuf,
-) -> std::result::Result<(), String> {
+fn ensure_open(state: &mut GitWorkerState, path: &PathBuf) -> std::result::Result<(), String> {
     if state.active_path.as_ref() != Some(path) {
         state.git.close();
         state.snapshot = None;
@@ -470,14 +467,16 @@ fn apply_fetch(
     }
 
     let progress_sender = event_sender.clone();
-    let result = state.git.fetch_remote(&remote, move |received, total, bytes| {
-        progress_sender.send(AppEvent::FetchProgress {
-            toast_id,
-            received_objects: received,
-            total_objects: total,
-            received_bytes: bytes,
+    let result = state
+        .git
+        .fetch_remote(&remote, move |received, total, bytes| {
+            progress_sender.send(AppEvent::FetchProgress {
+                toast_id,
+                received_objects: received,
+                total_objects: total,
+                received_bytes: bytes,
+            });
         });
-    });
 
     match result {
         Ok(()) => {
@@ -600,18 +599,16 @@ fn apply_pull_ff(
     }
 
     let progress_sender = event_sender.clone();
-    let result = state.git.pull_ff(
-        &remote,
-        &branch,
-        move |received, total, bytes| {
+    let result = state
+        .git
+        .pull_ff(&remote, &branch, move |received, total, bytes| {
             progress_sender.send(AppEvent::FetchProgress {
                 toast_id,
                 received_objects: received,
                 total_objects: total,
                 received_bytes: bytes,
             });
-        },
-    );
+        });
 
     match result {
         Ok(outcome) => {

@@ -151,7 +151,9 @@ pub enum Action {
     SubmitCommit,
     FetchRemote(String),
     FetchAllRemotes,
-    PushCurrentBranch { force_with_lease: bool },
+    PushCurrentBranch {
+        force_with_lease: bool,
+    },
     PullCurrentBranch,
     EditorClick(i32, i32),
     EditorDrag(i32, i32),

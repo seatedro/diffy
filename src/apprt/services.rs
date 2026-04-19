@@ -9,10 +9,10 @@ use crate::core::vcs::github::{
     DeviceFlowState, GitHubApi, GitHubUser, PullRequestInfo, parse_pr_url, poll_for_token,
     start_device_flow,
 };
-use crate::platform::secrets;
 use crate::effects::{CompareRequest, StatusDiffRequest};
 use crate::events::{CompareFinished, StatusDiffFinished};
 use crate::platform::persistence::{Settings, SettingsStore};
+use crate::platform::secrets;
 
 #[derive(Debug, Clone)]
 pub struct AppServices {

@@ -383,7 +383,11 @@ pub fn build_ui_frame(
                         );
                     } else if let Some((bar_rect, hunk_index)) = hunk_bar_rect {
                         let (stage_action, stage_label, stage_icon) = if is_staged {
-                            (Action::UnstageHunkAt(hunk_index), "Unstage Hunk", lucide::MINUS)
+                            (
+                                Action::UnstageHunkAt(hunk_index),
+                                "Unstage Hunk",
+                                lucide::MINUS,
+                            )
                         } else {
                             (Action::StageHunkAt(hunk_index), "Stage Hunk", lucide::PLUS)
                         };

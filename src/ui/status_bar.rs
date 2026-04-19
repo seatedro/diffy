@@ -109,8 +109,16 @@ fn sync_chip(
 
     // Halves brighten when their count is non-zero. Using text_strong / text_muted
     // keeps the chip on-theme instead of borrowing diff-body colors.
-    let ahead_color = if ahead > 0 { tc.text_strong } else { tc.text_muted };
-    let behind_color = if behind > 0 { tc.text_strong } else { tc.text_muted };
+    let ahead_color = if ahead > 0 {
+        tc.text_strong
+    } else {
+        tc.text_muted
+    };
+    let behind_color = if behind > 0 {
+        tc.text_strong
+    } else {
+        tc.text_muted
+    };
 
     view! { scale,
         <div class="flex-row items-center"

@@ -154,11 +154,7 @@ fn active_overlay_row_height_px(state: &AppState) -> f32 {
     }
 }
 
-pub fn scroll_delta_to_px(
-    delta: MouseScrollDelta,
-    line_step_px: f32,
-    lines_per_notch: f32,
-) -> f32 {
+pub fn scroll_delta_to_px(delta: MouseScrollDelta, line_step_px: f32, lines_per_notch: f32) -> f32 {
     match delta {
         MouseScrollDelta::LineDelta(_, y) => -y * line_step_px * lines_per_notch,
         MouseScrollDelta::PixelDelta(position) => -(position.y as f32),

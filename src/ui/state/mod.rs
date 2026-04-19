@@ -82,12 +82,9 @@ fn build_pr_palette_entry(
             let disabled = !has_repo;
             (label, Some(rhs), detail, disabled)
         }
-        Some((PrPeekMeta::Failed(msg), _)) => (
-            fallback_label,
-            Some("error".to_owned()),
-            msg.clone(),
-            true,
-        ),
+        Some((PrPeekMeta::Failed(msg), _)) => {
+            (fallback_label, Some("error".to_owned()), msg.clone(), true)
+        }
     };
     PaletteEntry {
         label,
@@ -176,12 +173,7 @@ impl SettingsSection {
         }
     }
 
-    pub const ALL: [Self; 4] = [
-        Self::Appearance,
-        Self::Editor,
-        Self::Behavior,
-        Self::About,
-    ];
+    pub const ALL: [Self; 4] = [Self::Appearance, Self::Editor, Self::Behavior, Self::About];
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1290,9 +1282,18 @@ impl AppState {
             | SearchPrevious => self.apply_navigation_action(action),
 
             // Settings & UI
-            ToggleWrap | SetWrapColumn(_) | SetSidebarWidthPx(_) | IncreaseUiScale
-            | DecreaseUiScale | SetUiScalePct(_) | ToggleThemeMode | SetThemeMode(_)
-            | SetThemeName(_) | SetWheelScrollLines(_) | OpenSettings | CloseSettings
+            ToggleWrap
+            | SetWrapColumn(_)
+            | SetSidebarWidthPx(_)
+            | IncreaseUiScale
+            | DecreaseUiScale
+            | SetUiScalePct(_)
+            | ToggleThemeMode
+            | SetThemeMode(_)
+            | SetThemeName(_)
+            | SetWheelScrollLines(_)
+            | OpenSettings
+            | CloseSettings
             | SetSettingsSection(_) => self.apply_settings_action(action),
 
             // GitHub
@@ -1652,8 +1653,12 @@ impl AppState {
             Action::UnstageHunk => self.apply_hunk_operation(StatusOperation::Unstage, None),
             Action::DiscardHunk => self.apply_hunk_operation(StatusOperation::Discard, None),
             Action::StageHunkAt(i) => self.apply_hunk_operation(StatusOperation::Stage, Some(i)),
-            Action::UnstageHunkAt(i) => self.apply_hunk_operation(StatusOperation::Unstage, Some(i)),
-            Action::DiscardHunkAt(i) => self.apply_hunk_operation(StatusOperation::Discard, Some(i)),
+            Action::UnstageHunkAt(i) => {
+                self.apply_hunk_operation(StatusOperation::Unstage, Some(i))
+            }
+            Action::DiscardHunkAt(i) => {
+                self.apply_hunk_operation(StatusOperation::Discard, Some(i))
+            }
             Action::ToggleLineSelection(row) => {
                 self.toggle_line_selection(row, false);
                 let entries_len = self
@@ -2332,10 +2337,7 @@ impl AppState {
             AppEvent::GitHubTokenLoaded { token } => {
                 self.github_access_token = token.clone();
                 let has_token = token.is_some();
-                self.github
-                    .auth
-                    .token_present
-                    .set(&self.store, has_token);
+                self.github.auth.token_present.set(&self.store, has_token);
                 let mut effects = Vec::new();
                 if let Some(token) = token
                     && self.github.auth.user.with(&self.store, |u| u.is_none())
@@ -2355,9 +2357,7 @@ impl AppState {
                 self.github.auth.token_present.set(&self.store, false);
                 self.github.auth.user.set(&self.store, None);
                 self.settings.github_user = None;
-                self.push_error(&format!(
-                    "Couldn't save GitHub token to keyring: {message}"
-                ));
+                self.push_error(&format!("Couldn't save GitHub token to keyring: {message}"));
                 self.persist_settings_effect()
             }
             AppEvent::GitHubUserFetched { user } => {
@@ -2380,9 +2380,11 @@ impl AppState {
                 }
                 let mut effects = self.persist_settings_effect();
                 if let Some(url) = avatar_src {
-                    let already_have = self.github.auth.avatar.with(&self.store, |a| {
-                        a.as_ref().is_some_and(|b| b.url == url)
-                    });
+                    let already_have = self
+                        .github
+                        .auth
+                        .avatar
+                        .with(&self.store, |a| a.as_ref().is_some_and(|b| b.url == url));
                     if !already_have && !self.github.auth.avatar_fetching.get(&self.store) {
                         self.github.auth.avatar_fetching.set(&self.store, true);
                         effects.push(Effect::FetchAvatar { url });
@@ -2537,11 +2539,7 @@ impl AppState {
                 remote,
                 branch,
             } => {
-                self.finish_progress_toast(
-                    toast_id,
-                    &format!("Pushed {branch} to {remote}"),
-                    None,
-                );
+                self.finish_progress_toast(toast_id, &format!("Pushed {branch} to {remote}"), None);
                 Vec::new()
             }
             AppEvent::PushFailed {
@@ -2999,9 +2997,7 @@ impl AppState {
             }
         });
         self.editor_clear_document();
-        self.editor
-            .scroll_top_px
-            .set(&self.store, preserved_scroll);
+        self.editor.scroll_top_px.set(&self.store, preserved_scroll);
     }
 
     fn handle_compare_finished(&mut self, payload: CompareFinished) -> Vec<Effect> {
@@ -3111,7 +3107,9 @@ impl AppState {
             "handle_status_diff_finished: entered"
         );
         if payload.generation != current_gen {
-            tracing::warn!("handle_status_diff_finished: generation mismatch, discarding (pending NOT cleared)");
+            tracing::warn!(
+                "handle_status_diff_finished: generation mismatch, discarding (pending NOT cleared)"
+            );
             return Vec::new();
         }
         let matches =
@@ -3125,7 +3123,8 @@ impl AppState {
                 });
         if !matches {
             let current_items_at_idx = self.workspace.status_items.with(&self.store, |items| {
-                items.get(payload.index)
+                items
+                    .get(payload.index)
                     .map(|i| format!("{}:{:?}", i.path, i.scope))
                     .unwrap_or_else(|| "<out of range>".to_owned())
             });
@@ -3190,8 +3189,7 @@ impl AppState {
         // same file (e.g. after staging a hunk). Only reset when the path
         // changed (navigating to a different file).
         let same_file = self.workspace.active_file.with(&self.store, |af| {
-            af.as_ref()
-                .is_some_and(|a| a.path == payload.item.path)
+            af.as_ref().is_some_and(|a| a.path == payload.item.path)
         });
         self.workspace.active_file.set(
             &self.store,
@@ -3278,7 +3276,10 @@ impl AppState {
             (!items.is_empty()).then_some(0)
         });
 
-        tracing::info!(?selected_index, "activate_status_view: resolved selected_index");
+        tracing::info!(
+            ?selected_index,
+            "activate_status_view: resolved selected_index"
+        );
         match selected_index {
             Some(index) => self.select_status_item(index, false),
             None => {
@@ -4291,9 +4292,7 @@ impl AppState {
                         force_with_lease: true,
                     })
                 }
-                PaletteCommand::PullCurrentBranch => {
-                    self.apply_action(Action::PullCurrentBranch)
-                }
+                PaletteCommand::PullCurrentBranch => self.apply_action(Action::PullCurrentBranch),
                 PaletteCommand::OpenSettings => self.apply_action(Action::OpenSettings),
             },
             PaletteEntryKind::File(index) => self.select_file(index, true),
@@ -4318,7 +4317,9 @@ impl AppState {
             .with(&self.store, |c| c.get(&key).map(|e| e.diff.clone()));
         match diff_state {
             Some(PrPeekDiff::Ready {
-                left_ref, right_ref, ..
+                left_ref,
+                right_ref,
+                ..
             }) => {
                 self.github
                     .pull_request
@@ -4787,18 +4788,15 @@ impl AppState {
         let mut pr_entry: Option<PaletteEntry> = None;
 
         if let Some(parsed) = crate::core::vcs::github::parse_pr_url(query) {
-            let key: PrKey = (
-                parsed.owner.clone(),
-                parsed.repo.clone(),
-                parsed.number,
-            );
+            let key: PrKey = (parsed.owner.clone(), parsed.repo.clone(), parsed.number);
             let token = self.github_access_token.clone();
             let repo_path = self.compare.repo_path.get(&self.store);
 
-            let already_cached =
-                self.github.pull_request.cache.with(&self.store, |c| {
-                    c.contains_key(&key)
-                });
+            let already_cached = self
+                .github
+                .pull_request
+                .cache
+                .with(&self.store, |c| c.contains_key(&key));
             if !already_cached {
                 self.github.pull_request.cache.update(&self.store, |c| {
                     c.insert(
@@ -4822,10 +4820,7 @@ impl AppState {
             // a repo is open. Dedupe via the cache's diff state.
             if let Some(repo_path) = repo_path.clone() {
                 let diff_idle = self.github.pull_request.cache.with(&self.store, |c| {
-                    matches!(
-                        c.get(&key).map(|e| &e.diff),
-                        Some(PrPeekDiff::Idle) | None
-                    )
+                    matches!(c.get(&key).map(|e| &e.diff), Some(PrPeekDiff::Idle) | None)
                 });
                 if diff_idle {
                     self.github.pull_request.cache.update(&self.store, |c| {
@@ -5198,7 +5193,10 @@ impl AppState {
             .status_items
             .with(&self.store, |items| items.get(index).cloned())
         else {
-            tracing::warn!(index, "select_status_item: index out of range, returning empty");
+            tracing::warn!(
+                index,
+                "select_status_item: index out of range, returning empty"
+            );
             return Vec::new();
         };
         tracing::info!(
@@ -5398,11 +5396,18 @@ impl AppState {
             }
         });
         let Some(patch) = patch_text else {
-            tracing::warn!(hunk_index, "apply_hunk_operation: bail — format_hunk_patch returned None");
+            tracing::warn!(
+                hunk_index,
+                "apply_hunk_operation: bail — format_hunk_patch returned None"
+            );
             return Vec::new();
         };
 
-        tracing::info!(?operation, hunk_index, "apply_hunk_operation: dispatching ApplyPatchOperation");
+        tracing::info!(
+            ?operation,
+            hunk_index,
+            "apply_hunk_operation: dispatching ApplyPatchOperation"
+        );
         self.workspace
             .status_operation_pending
             .set(&self.store, true);
@@ -5692,7 +5697,12 @@ impl AppState {
     #[allow(dead_code)]
     fn push_error_with_description(&mut self, message: &str, description: &str) -> u64 {
         self.last_error.set(&self.store, Some(message.to_owned()));
-        self.push_toast(ToastKind::Error, message, Some(description.to_owned()), None)
+        self.push_toast(
+            ToastKind::Error,
+            message,
+            Some(description.to_owned()),
+            None,
+        )
     }
 
     #[allow(dead_code)]
@@ -5709,12 +5719,7 @@ impl AppState {
 
     /// Convert a pinned progress toast into a normal info toast and let it
     /// auto-dismiss. Also updates its message and description.
-    fn finish_progress_toast(
-        &mut self,
-        toast_id: u64,
-        message: &str,
-        description: Option<String>,
-    ) {
+    fn finish_progress_toast(&mut self, toast_id: u64, message: &str, description: Option<String>) {
         let now = self.clock_ms;
         self.toasts.update(&self.store, |toasts| {
             if let Some(toast) = toasts.iter_mut().find(|t| t.id == toast_id) {
@@ -5728,12 +5733,7 @@ impl AppState {
     }
 
     /// Convert a pinned progress toast into an error toast.
-    fn fail_progress_toast(
-        &mut self,
-        toast_id: u64,
-        message: &str,
-        description: Option<String>,
-    ) {
+    fn fail_progress_toast(&mut self, toast_id: u64, message: &str, description: Option<String>) {
         let now = self.clock_ms;
         self.last_error.set(&self.store, Some(message.to_owned()));
         self.toasts.update(&self.store, |toasts| {
@@ -5902,8 +5902,7 @@ impl AppState {
                 return Vec::new();
             }
         };
-        let toast_id =
-            self.push_progress_toast(&format!("Pulling {branch} from {remote}\u{2026}"));
+        let toast_id = self.push_progress_toast(&format!("Pulling {branch} from {remote}\u{2026}"));
         vec![Effect::PullFf(PullFfRequest {
             repo_path,
             remote,
@@ -6576,11 +6575,7 @@ mod tests {
             state.focus.get(&state.store),
             Some(FocusTarget::WorkspacePrimaryButton)
         );
-        assert!(
-            effects
-                .iter()
-                .all(|e| matches!(e, Effect::LoadGitHubToken))
-        );
+        assert!(effects.iter().all(|e| matches!(e, Effect::LoadGitHubToken)));
     }
 
     #[test]
@@ -7029,11 +7024,10 @@ mod tests {
     #[test]
     fn command_palette_detects_pr_url_and_emits_peek_effect() {
         let mut state = AppState::default();
-        state
-            .overlays
-            .command_palette
-            .query
-            .set(&state.store, "https://github.com/foo/bar/pull/42".to_owned());
+        state.overlays.command_palette.query.set(
+            &state.store,
+            "https://github.com/foo/bar/pull/42".to_owned(),
+        );
 
         let effects = state.rebuild_command_palette();
 

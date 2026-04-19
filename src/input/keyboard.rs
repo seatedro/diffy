@@ -3,7 +3,7 @@ use winit::keyboard::{ModifiersState, NamedKey};
 
 use crate::actions::Action;
 use crate::ui::state::{
-    AppView, AppState, FocusTarget, OverlaySurface, WorkspaceMode, WorkspaceSource,
+    AppState, AppView, FocusTarget, OverlaySurface, WorkspaceMode, WorkspaceSource,
 };
 
 use super::{InputContext, InputOutcome, InputOwner, InputSystem, KeyChord};

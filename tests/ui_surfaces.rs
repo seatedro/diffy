@@ -6,8 +6,8 @@ use diffy::ui::state::FocusTarget;
 
 use support::{
     auth_modal_state, command_palette_state, count_hits, empty_state_with_recents, has_hit,
-    has_scroll_region, has_text_input_for, ready_state_with_files,
-    render_frame, repo_picker_state, scene_contains_text, toasts_state,
+    has_scroll_region, has_text_input_for, ready_state_with_files, render_frame, repo_picker_state,
+    scene_contains_text, toasts_state,
 };
 
 #[test]

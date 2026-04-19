@@ -92,9 +92,16 @@ fn workdir_is_dirty(repo: &Repository) -> Result<bool> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RemoteCredentialKind {
-    CredentialHelper { url: String, username: Option<String> },
-    SshKey { username: String },
-    Username { username: String },
+    CredentialHelper {
+        url: String,
+        username: Option<String>,
+    },
+    SshKey {
+        username: String,
+    },
+    Username {
+        username: String,
+    },
     Default,
 }
 
@@ -106,8 +113,7 @@ fn select_remote_credential(
     username: Option<&str>,
     allowed: git2::CredentialType,
 ) -> RemoteCredentialKind {
-    if remote_url.starts_with("http")
-        && allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT)
+    if remote_url.starts_with("http") && allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT)
     {
         return RemoteCredentialKind::CredentialHelper {
             url: remote_url.to_owned(),
@@ -178,12 +184,7 @@ pub fn pr_ref_path(pr_number: i32, branch: &str) -> String {
 /// scheme we used to use. Uses a prefix filter rather than `references_glob`
 /// because libgit2's glob `*` does not span `/`, which would miss branches
 /// that contain slashes.
-fn prune_stale_pr_refs(
-    repo: &Repository,
-    pr_number: i32,
-    keep_base: &str,
-    keep_head: &str,
-) {
+fn prune_stale_pr_refs(repo: &Repository, pr_number: i32, keep_base: &str, keep_head: &str) {
     let prefixes = [
         format!("{PR_REF_PREFIX}{pr_number}/"),
         format!("refs/diffy/pull/{pr_number}/"),
@@ -194,9 +195,7 @@ fn prune_stale_pr_refs(
     let stale: Vec<String> = iter
         .filter_map(|r| r.ok()?.name().map(str::to_owned))
         .filter(|name| {
-            name != keep_base
-                && name != keep_head
-                && prefixes.iter().any(|p| name.starts_with(p))
+            name != keep_base && name != keep_head && prefixes.iter().any(|p| name.starts_with(p))
         })
         .collect();
     for name in stale {
@@ -317,9 +316,7 @@ impl GitService {
                     .as_ref()
                     .and_then(|u| u.name().ok().flatten().map(str::to_owned));
                 let local_oid = branch.get().target();
-                let upstream_oid = upstream
-                    .as_ref()
-                    .and_then(|u| u.get().target());
+                let upstream_oid = upstream.as_ref().and_then(|u| u.get().target());
                 let counts = match (local_oid, upstream_oid) {
                     (Some(local), Some(up)) => repo.graph_ahead_behind(local, up).ok(),
                     _ => None,
@@ -1106,11 +1103,8 @@ mod tests {
     #[test]
     fn https_remote_uses_credential_helper() {
         let allowed = CredentialType::USER_PASS_PLAINTEXT | CredentialType::USERNAME;
-        let selected = select_remote_credential(
-            "https://github.com/owner/repo.git",
-            Some("git"),
-            allowed,
-        );
+        let selected =
+            select_remote_credential("https://github.com/owner/repo.git", Some("git"), allowed);
         assert_eq!(
             selected,
             RemoteCredentialKind::CredentialHelper {
@@ -1374,11 +1368,8 @@ mod tests {
 
         // Clone into "local" working copy.
         let local_dir = TempDir::new().unwrap();
-        let _local = Repository::clone(
-            remote_dir.path().to_str().unwrap(),
-            local_dir.path(),
-        )
-        .unwrap();
+        let _local =
+            Repository::clone(remote_dir.path().to_str().unwrap(), local_dir.path()).unwrap();
 
         (remote_dir, local_dir)
     }
@@ -1389,11 +1380,8 @@ mod tests {
 
         // Advance the remote via a separate working clone.
         let advance_dir = TempDir::new().unwrap();
-        let advance = Repository::clone(
-            remote_dir.path().to_str().unwrap(),
-            advance_dir.path(),
-        )
-        .unwrap();
+        let advance =
+            Repository::clone(remote_dir.path().to_str().unwrap(), advance_dir.path()).unwrap();
         commit_file(&advance, "README.md", "hello\nworld\n", "second");
         let mut advance_remote = advance.find_remote("origin").unwrap();
         advance_remote
@@ -1419,11 +1407,8 @@ mod tests {
         let (remote_dir, local_dir) = make_remote_and_clone();
 
         let advance_dir = TempDir::new().unwrap();
-        let advance = Repository::clone(
-            remote_dir.path().to_str().unwrap(),
-            advance_dir.path(),
-        )
-        .unwrap();
+        let advance =
+            Repository::clone(remote_dir.path().to_str().unwrap(), advance_dir.path()).unwrap();
         commit_file(&advance, "README.md", "hello\nworld\n", "second");
         advance
             .find_remote("origin")
@@ -1448,11 +1433,8 @@ mod tests {
 
         // Diverge remote.
         let advance_dir = TempDir::new().unwrap();
-        let advance = Repository::clone(
-            remote_dir.path().to_str().unwrap(),
-            advance_dir.path(),
-        )
-        .unwrap();
+        let advance =
+            Repository::clone(remote_dir.path().to_str().unwrap(), advance_dir.path()).unwrap();
         commit_file(&advance, "README.md", "hello\nremote\n", "remote-change");
         advance
             .find_remote("origin")

@@ -30,9 +30,11 @@ pub fn auth_modal(
             verification_uri: flow.verification_uri.clone(),
         }
     } else if status == AsyncStatus::Failed {
-        AuthPhase::Failed(last_error.clone().unwrap_or_else(|| {
-            "Couldn't start the GitHub sign-in flow.".to_owned()
-        }))
+        AuthPhase::Failed(
+            last_error
+                .clone()
+                .unwrap_or_else(|| "Couldn't start the GitHub sign-in flow.".to_owned()),
+        )
     } else if status == AsyncStatus::Loading {
         AuthPhase::Starting
     } else {
@@ -93,11 +95,7 @@ enum AuthPhase {
     Success,
 }
 
-fn render_phase(
-    phase: AuthPhase,
-    tc: &crate::ui::theme::ThemeColors,
-    scale: f32,
-) -> AnyElement {
+fn render_phase(phase: AuthPhase, tc: &crate::ui::theme::ThemeColors, scale: f32) -> AnyElement {
     match phase {
         AuthPhase::Idle => render_idle(tc, scale),
         AuthPhase::Starting => render_starting(tc, scale),
@@ -197,11 +195,7 @@ fn render_awaiting(
     }
 }
 
-fn render_failed(
-    message: String,
-    tc: &crate::ui::theme::ThemeColors,
-    scale: f32,
-) -> AnyElement {
+fn render_failed(message: String, tc: &crate::ui::theme::ThemeColors, scale: f32) -> AnyElement {
     view! { scale,
         <div class="flex-col items-center w-full" gap={Sp::MD}>
             <div class="flex-row items-center w-full" gap={Sp::SM}

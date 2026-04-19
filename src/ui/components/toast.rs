@@ -34,8 +34,7 @@ const DESC_GAP: f32 = 2.0;
 
 /// Horizontal chrome (left pad, badge, gap, gap, close, right pad) — the
 /// remaining width is available for wrapped text.
-pub const CHROME_W: f32 =
-    Sp::MD + BADGE_SIZE + Sp::MD + Sp::MD + CLOSE_SIZE + Sp::MD;
+pub const CHROME_W: f32 = Sp::MD + BADGE_SIZE + Sp::MD + Sp::MD + CLOSE_SIZE + Sp::MD;
 
 /// Inner content width available for wrapped title / description.
 pub const INNER_TEXT_W: f32 = TOAST_WIDTH - CHROME_W;
@@ -308,19 +307,15 @@ impl<'a> ToastStack<'a> {
         for depth in (0..visible).rev() {
             let toast_idx = count - 1 - depth;
             let toast = &self.toasts[toast_idx];
-            let layout = self
-                .layouts
-                .get(toast_idx)
-                .cloned()
-                .unwrap_or(ToastLayout {
-                    title_lines: vec![toast.message.clone()],
-                    description_lines: toast
-                        .description
-                        .clone()
-                        .map(|d| vec![d])
-                        .unwrap_or_default(),
-                    height: Sz::TOAST,
-                });
+            let layout = self.layouts.get(toast_idx).cloned().unwrap_or(ToastLayout {
+                title_lines: vec![toast.message.clone()],
+                description_lines: toast
+                    .description
+                    .clone()
+                    .map(|d| vec![d])
+                    .unwrap_or_default(),
+                height: Sz::TOAST,
+            });
 
             // Fixed width across all depths — matches Sonner. Back toasts
             // only differ by vertical offset (peek when collapsed, cumulative

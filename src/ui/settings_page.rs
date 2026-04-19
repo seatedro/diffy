@@ -70,7 +70,11 @@ fn nav_panel(_state: &AppState, theme: &Theme, active: SettingsSection) -> AnyEl
 fn nav_row(theme: &Theme, section: SettingsSection, selected: bool) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
-    let icon_color = if selected { tc.text_strong } else { tc.text_muted };
+    let icon_color = if selected {
+        tc.text_strong
+    } else {
+        tc.text_muted
+    };
     let label_color = if selected { tc.text_strong } else { tc.text };
 
     view! { scale,
@@ -200,11 +204,7 @@ fn editor_section(state: &AppState, theme: &Theme) -> AnyElement {
         wrap_column_options
             .iter()
             .map(|(value, label)| {
-                SegmentedItem::new(
-                    *label,
-                    Action::SetWrapColumn(*value),
-                    *value == wrap_column,
-                )
+                SegmentedItem::new(*label, Action::SetWrapColumn(*value), *value == wrap_column)
             })
             .collect(),
     )
@@ -276,11 +276,7 @@ fn behavior_section(state: &AppState, theme: &Theme) -> AnyElement {
         options
             .iter()
             .map(|n| {
-                SegmentedItem::new(
-                    n.to_string(),
-                    Action::SetWheelScrollLines(*n),
-                    *n == lines,
-                )
+                SegmentedItem::new(n.to_string(), Action::SetWheelScrollLines(*n), *n == lines)
             })
             .collect(),
     )
@@ -304,18 +300,20 @@ fn about_section(theme: &Theme) -> AnyElement {
 
     section_card(
         theme,
-        vec![view! { scale,
-            <div class="flex-col" gap={Sp::XS}>
-                <text class="text-lg font-semibold" color={tc.text_strong}>{"Diffy"}</text>
-                <text class="text-sm" color={tc.text_muted}>
-                    {format!("Version {version}")}
-                </text>
-                <text class="text-sm" color={tc.text_muted}>
-                    {"Native GPU-accelerated Git diff viewer."}
-                </text>
-            </div>
-        }
-        .into_any()],
+        vec![
+            view! { scale,
+                <div class="flex-col" gap={Sp::XS}>
+                    <text class="text-lg font-semibold" color={tc.text_strong}>{"Diffy"}</text>
+                    <text class="text-sm" color={tc.text_muted}>
+                        {format!("Version {version}")}
+                    </text>
+                    <text class="text-sm" color={tc.text_muted}>
+                        {"Native GPU-accelerated Git diff viewer."}
+                    </text>
+                </div>
+            }
+            .into_any(),
+        ],
     )
 }
 
@@ -335,12 +333,7 @@ fn section_card(theme: &Theme, rows: Vec<AnyElement>) -> AnyElement {
     }
 }
 
-fn setting_row(
-    theme: &Theme,
-    label: &str,
-    description: &str,
-    control: AnyElement,
-) -> AnyElement {
+fn setting_row(theme: &Theme, label: &str, description: &str, control: AnyElement) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
 

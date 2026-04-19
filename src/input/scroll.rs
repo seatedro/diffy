@@ -153,9 +153,11 @@ fn active_overlay_row_height_px(state: &AppState) -> f32 {
     }
 }
 
+const WHEEL_LINES_PER_NOTCH: f32 = 3.0;
+
 pub fn scroll_delta_to_px(delta: MouseScrollDelta, line_step_px: f32) -> f32 {
     match delta {
-        MouseScrollDelta::LineDelta(_, y) => -y * line_step_px,
+        MouseScrollDelta::LineDelta(_, y) => -y * line_step_px * WHEEL_LINES_PER_NOTCH,
         MouseScrollDelta::PixelDelta(position) => -(position.y as f32),
     }
 }

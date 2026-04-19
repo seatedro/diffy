@@ -238,9 +238,19 @@ impl InputSystem {
         let cursor_hint = if let Some(ref capture) = self.pointer_capture {
             capture.cursor()
         } else {
-            hovered_hit
+            let from_hits = hovered_hit
                 .map(|hit| hit.cursor)
-                .unwrap_or(crate::ui::shell::CursorHint::Default)
+                .unwrap_or(crate::ui::shell::CursorHint::Default);
+            if from_hits == crate::ui::shell::CursorHint::Default
+                && ui_frame
+                    .text_input_hit_areas
+                    .iter()
+                    .any(|ha| ha.bounds.contains(x, y))
+            {
+                crate::ui::shell::CursorHint::Text
+            } else {
+                from_hits
+            }
         };
 
         if hovered_file != state.file_list.hovered_index.get(&state.store) {
@@ -277,6 +287,11 @@ impl InputSystem {
             })
         {
             crate::ui::shell::CursorHint::Pointer
+        } else if cursor_hint == crate::ui::shell::CursorHint::Default
+            && hovered_row.is_some()
+            && !editor.is_gutter_hit(x, y)
+        {
+            crate::ui::shell::CursorHint::Text
         } else {
             cursor_hint
         };

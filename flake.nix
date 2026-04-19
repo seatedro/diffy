@@ -82,10 +82,11 @@
               pkgs.strace
             ];
 
-            shellHook = ''
-              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath (
-                [ pkgs.libxkbcommon pkgs.wayland pkgs.libGL pkgs.vulkan-loader ]
-              )}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            shellHook = (pkgs.lib.optionalString isLinux ''
+              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
+                pkgs.libxkbcommon pkgs.wayland pkgs.libGL pkgs.vulkan-loader
+              ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            '') + ''
               echo "Diffy dev shell ready"
               echo "Build: cargo build"
               echo "Test: cargo test"

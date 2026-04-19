@@ -370,6 +370,17 @@ impl NativeApp {
     }
 
     fn dispatch_action(&mut self, action: Action) {
+        if matches!(
+            action,
+            Action::StageHunk
+                | Action::UnstageHunk
+                | Action::DiscardHunk
+                | Action::StageHunkAt(_)
+                | Action::UnstageHunkAt(_)
+                | Action::DiscardHunkAt(_)
+        ) {
+            tracing::info!(?action, "dispatch_action: hunk op");
+        }
         let effects = self.state.apply_action(action);
         if let Some(renderer) = self.renderer.as_mut() {
             self.state.commit_editor.flush(renderer.font_system_mut());
@@ -979,12 +990,62 @@ mod tests {
     }
 }
 
+fn log_dir() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        dirs::home_dir().map(|h| h.join("Library/Logs/diffy"))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        dirs::state_dir()
+            .or_else(dirs::data_local_dir)
+            .map(|base| base.join("diffy"))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        dirs::data_local_dir().map(|base| base.join("diffy").join("logs"))
+    }
+}
+
 fn init_logging(log_debug: bool) {
+    use std::sync::Mutex;
     use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::fmt;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
     let filter = if log_debug {
         EnvFilter::new("debug")
     } else {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
     };
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+
+    let stdout_layer = fmt::layer().with_writer(std::io::stdout);
+
+    let (file_layer, file_path) = log_dir()
+        .and_then(|dir| {
+            std::fs::create_dir_all(&dir).ok()?;
+            let path = dir.join("diffy.log");
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .ok()?;
+            let layer = fmt::layer().with_ansi(false).with_writer(Mutex::new(file));
+            Some((layer, path))
+        })
+        .map(|(l, p)| (Some(l), Some(p)))
+        .unwrap_or((None, None));
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(stdout_layer)
+        .with(file_layer)
+        .init();
+
+    if let Some(path) = file_path {
+        tracing::info!(path = %path.display(), "logging initialized");
+    } else {
+        tracing::warn!("logging: unable to open log file, falling back to stdout only");
+    }
 }

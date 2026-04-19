@@ -52,10 +52,13 @@ fn format_file_header(file: &FileDiff) -> String {
 
 fn append_hunk(patch: &mut String, hunk: &Hunk, text_buffer: &TextBuffer) {
     use std::fmt::Write;
+    // libgit2's apply rejects a single-hunk patch where new_start lags old_start
+    // (as happens when a prior hunk in the original diff shifted it). Anchor both
+    // sides to old_start since this patch contains no preceding deletions.
     let _ = write!(
         patch,
         "@@ -{},{} +{},{} @@\n",
-        hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
+        hunk.old_start, hunk.old_count, hunk.old_start, hunk.new_count
     );
     for line in &hunk.lines {
         let text = text_buffer.view(line.text_range);
@@ -75,7 +78,7 @@ fn append_reversed_hunk(patch: &mut String, hunk: &Hunk, text_buffer: &TextBuffe
     let _ = write!(
         patch,
         "@@ -{},{} +{},{} @@\n",
-        hunk.new_start, hunk.new_count, hunk.old_start, hunk.old_count
+        hunk.new_start, hunk.new_count, hunk.new_start, hunk.old_count
     );
     for line in &hunk.lines {
         let text = text_buffer.view(line.text_range);
@@ -163,17 +166,17 @@ fn rewrite_hunk_for_lines(
         return None;
     }
 
-    let (old_start, new_start) = if reverse {
-        (hunk.new_start, hunk.old_start)
+    let anchor = if reverse {
+        hunk.new_start
     } else {
-        (hunk.old_start, hunk.new_start)
+        hunk.old_start
     };
 
     let mut result = String::new();
     let _ = write!(
         result,
         "@@ -{},{} +{},{} @@\n",
-        old_start, old_count, new_start, new_count
+        anchor, old_count, anchor, new_count
     );
     result.push_str(&body);
     Some(result)

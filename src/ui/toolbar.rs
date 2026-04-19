@@ -24,7 +24,6 @@ pub(crate) fn main_surface(
     viewport_bounds: Rc<Cell<Option<Rect>>>,
 ) -> AnyElement {
     let tc = &theme.colors;
-    let has_overlay = state.active_overlay_name().is_some();
 
     let toolbar = if state.is_workspace_ready() {
         state
@@ -66,8 +65,7 @@ pub(crate) fn main_surface(
             if state
                 .workspace
                 .active_file
-                .with(&state.store, |af| af.is_none())
-                && !has_overlay =>
+                .with(&state.store, |af| af.is_none()) =>
         {
             if state.workspace.source.get(&state.store) == WorkspaceSource::Status {
                 let no_files = state.workspace.files.with(&state.store, |f| f.is_empty());
@@ -78,7 +76,7 @@ pub(crate) fn main_surface(
                 None
             }
         }
-        WorkspaceMode::Empty if !has_overlay => {
+        WorkspaceMode::Empty => {
             if state.compare.repo_path.with(&state.store, |p| p.is_some()) {
                 Some(repo_ready_hint(theme))
             } else {

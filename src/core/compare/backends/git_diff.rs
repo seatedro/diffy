@@ -322,4 +322,5 @@ mod tests {
         assert_eq!(output.text_buffer.view(removed.text_range), "start");
         assert_eq!(output.text_buffer.view(added.text_range), "feature");
     }
+
 }

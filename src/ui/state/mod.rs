@@ -288,6 +288,7 @@ pub struct SidebarWidthCache {
 pub struct WorkspaceState {
     pub source: WorkspaceSource,
     pub status: AsyncStatus,
+    pub status_operation_pending: bool,
     pub compare_generation: u64,
     pub status_generation: u64,
     pub files: Vec<FileListEntry>,
@@ -721,6 +722,12 @@ pub struct GitHubState {
     pub pull_request: PullRequestState,
 }
 
+/// Overlays live as normal elements in the main tree with a z-index above the
+/// viewport. Occluding the viewport is the overlay's own responsibility: modal
+/// surfaces (pickers, auth, shortcuts) render a full-screen `overlay_scrim`
+/// backdrop; anchored dropdowns (AccountMenu, CompareMenu) render a transparent
+/// backdrop and let the viewport show through. Do NOT gate viewport rendering
+/// on overlay presence — let z-index handle layering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlaySurface {
     RepoPicker,
@@ -1169,6 +1176,9 @@ impl AppState {
             | StageHunk
             | UnstageHunk
             | DiscardHunk
+            | StageHunkAt(_)
+            | UnstageHunkAt(_)
+            | DiscardHunkAt(_)
             | ToggleLineSelection(_)
             | ToggleLineSelectionRange(_, _)
             | StageSelectedLines
@@ -1570,9 +1580,12 @@ impl AppState {
             Action::UnstageAllFiles => {
                 self.apply_batch_scope_operation(&[StatusScope::Staged], StatusOperation::Unstage)
             }
-            Action::StageHunk => self.apply_hunk_operation(StatusOperation::Stage),
-            Action::UnstageHunk => self.apply_hunk_operation(StatusOperation::Unstage),
-            Action::DiscardHunk => self.apply_hunk_operation(StatusOperation::Discard),
+            Action::StageHunk => self.apply_hunk_operation(StatusOperation::Stage, None),
+            Action::UnstageHunk => self.apply_hunk_operation(StatusOperation::Unstage, None),
+            Action::DiscardHunk => self.apply_hunk_operation(StatusOperation::Discard, None),
+            Action::StageHunkAt(i) => self.apply_hunk_operation(StatusOperation::Stage, Some(i)),
+            Action::UnstageHunkAt(i) => self.apply_hunk_operation(StatusOperation::Unstage, Some(i)),
+            Action::DiscardHunkAt(i) => self.apply_hunk_operation(StatusOperation::Discard, Some(i)),
             Action::ToggleLineSelection(row) => {
                 self.toggle_line_selection(row, false);
                 let entries_len = self
@@ -1844,6 +1857,9 @@ impl AppState {
             }
             Action::HoverViewportRow(row) => {
                 self.editor.hovered_row.set(&self.store, row);
+                if row.is_none() {
+                    self.editor.hovered_hunk_index.set(&self.store, None);
+                }
                 Vec::new()
             }
             Action::FocusViewport => {
@@ -2033,6 +2049,9 @@ impl AppState {
                     .repo_path
                     .with(&self.store, |p| p.as_ref() == Some(&path))
                 {
+                    self.workspace
+                        .status_operation_pending
+                        .set(&self.store, false);
                     self.push_error(&message);
                 }
                 Vec::new()
@@ -2445,6 +2464,9 @@ impl AppState {
             .source
             .set(&self.store, WorkspaceSource::None);
         self.workspace.status.set(&self.store, AsyncStatus::Idle);
+        self.workspace
+            .status_operation_pending
+            .set(&self.store, false);
         self.workspace.status_generation.set(&self.store, 0);
         self.workspace.files.set(&self.store, Vec::new());
         self.workspace.status_items.set(&self.store, Vec::new());
@@ -2465,11 +2487,20 @@ impl AppState {
     }
 
     fn handle_repository_snapshot(&mut self, payload: RepositorySnapshot) -> Vec<Effect> {
+        tracing::info!(
+            path = %payload.path.display(),
+            reason = ?payload.reason,
+            change_kind = ?payload.change_kind,
+            pending = self.workspace.status_operation_pending.get(&self.store),
+            status_gen = self.workspace.status_generation.get(&self.store),
+            "handle_repository_snapshot: entered"
+        );
         if self
             .compare
             .repo_path
             .with(&self.store, |p| p.as_ref() != Some(&payload.path))
         {
+            tracing::warn!("handle_repository_snapshot: path mismatch, ignored");
             return Vec::new();
         }
 
@@ -2755,6 +2786,9 @@ impl AppState {
         }
 
         self.workspace
+            .status_operation_pending
+            .set(&self.store, false);
+        self.workspace
             .source
             .set(&self.store, WorkspaceSource::Compare);
         self.workspace.status.set(&self.store, AsyncStatus::Ready);
@@ -2843,7 +2877,17 @@ impl AppState {
     }
 
     fn handle_status_diff_finished(&mut self, payload: StatusDiffFinished) -> Vec<Effect> {
-        if payload.generation != self.workspace.status_generation.get(&self.store) {
+        let current_gen = self.workspace.status_generation.get(&self.store);
+        tracing::info!(
+            payload_gen = payload.generation,
+            current_gen,
+            payload_index = payload.index,
+            payload_path = %payload.item.path,
+            payload_scope = ?payload.item.scope,
+            "handle_status_diff_finished: entered"
+        );
+        if payload.generation != current_gen {
+            tracing::warn!("handle_status_diff_finished: generation mismatch, discarding (pending NOT cleared)");
             return Vec::new();
         }
         let matches =
@@ -2856,12 +2900,25 @@ impl AppState {
                     None => false,
                 });
         if !matches {
+            let current_items_at_idx = self.workspace.status_items.with(&self.store, |items| {
+                items.get(payload.index)
+                    .map(|i| format!("{}:{:?}", i.path, i.scope))
+                    .unwrap_or_else(|| "<out of range>".to_owned())
+            });
+            tracing::warn!(
+                current_items_at_idx,
+                "handle_status_diff_finished: item mismatch, discarding (pending NOT cleared)"
+            );
             return Vec::new();
         }
 
+        tracing::info!("handle_status_diff_finished: clearing status_operation_pending");
         self.workspace
             .source
             .set(&self.store, WorkspaceSource::Status);
+        self.workspace
+            .status_operation_pending
+            .set(&self.store, false);
         self.workspace.status.set(&self.store, AsyncStatus::Ready);
         self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
         let mut output = payload.output;
@@ -2905,6 +2962,13 @@ impl AppState {
             .selected_status_scope
             .set(&self.store, Some(payload.item.scope));
         let (left_ref, right_ref) = refs_for_status_scope(payload.item.scope);
+        // Preserve scroll/hover/positional editor state when refreshing the
+        // same file (e.g. after staging a hunk). Only reset when the path
+        // changed (navigating to a different file).
+        let same_file = self.workspace.active_file.with(&self.store, |af| {
+            af.as_ref()
+                .is_some_and(|a| a.path == payload.item.path)
+        });
         self.workspace.active_file.set(
             &self.store,
             Some(ActiveFile {
@@ -2922,10 +2986,12 @@ impl AppState {
                 file_lines: None,
             }),
         );
-        self.editor_clear_document();
-        self.editor
-            .line_selection
-            .update(&self.store, |ls| ls.clear());
+        if !same_file {
+            self.editor_clear_document();
+            self.editor
+                .line_selection
+                .update(&self.store, |ls| ls.clear());
+        }
         if self.editor.search.open.get(&self.store) {
             self.recompute_search_matches();
         }
@@ -2933,6 +2999,13 @@ impl AppState {
     }
 
     fn activate_status_view(&mut self, reset_scroll: bool) -> Vec<Effect> {
+        tracing::info!(
+            reset_scroll,
+            pending = self.workspace.status_operation_pending.get(&self.store),
+            status_gen = self.workspace.status_generation.get(&self.store),
+            status_items_count = self.workspace.status_items.with(&self.store, |i| i.len()),
+            "activate_status_view: entered"
+        );
         self.workspace
             .source
             .set(&self.store, WorkspaceSource::Status);
@@ -2981,9 +3054,14 @@ impl AppState {
             (!items.is_empty()).then_some(0)
         });
 
+        tracing::info!(?selected_index, "activate_status_view: resolved selected_index");
         match selected_index {
             Some(index) => self.select_status_item(index, false),
             None => {
+                tracing::info!("activate_status_view: no selection, clearing pending");
+                self.workspace
+                    .status_operation_pending
+                    .set(&self.store, false);
                 self.workspace.selected_file_index.set(&self.store, None);
                 self.workspace.selected_file_path.set(&self.store, None);
                 self.workspace.selected_status_scope.set(&self.store, None);
@@ -4850,16 +4928,27 @@ impl AppState {
             .status_items
             .with(&self.store, |items| items.get(index).cloned())
         else {
+            tracing::warn!(index, "select_status_item: index out of range, returning empty");
             return Vec::new();
         };
+        tracing::info!(
+            index,
+            path = %item.path,
+            scope = ?item.scope,
+            status_gen = self.workspace.status_generation.get(&self.store),
+            "select_status_item: dispatching LoadStatusDiff"
+        );
         let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
+            tracing::warn!("select_status_item: no repo_path");
             return Vec::new();
         };
 
         self.workspace
             .source
             .set(&self.store, WorkspaceSource::Status);
-        self.workspace.status.set(&self.store, AsyncStatus::Loading);
+        // Keep the current document visible while the new diff loads — no
+        // Loading state, no tear-down. handle_status_diff_finished swaps the
+        // ActiveFile atomically when the fresh diff arrives.
         self.workspace
             .selected_file_index
             .set(&self.store, Some(index));
@@ -4869,8 +4958,6 @@ impl AppState {
         self.workspace
             .selected_status_scope
             .set(&self.store, Some(item.scope));
-        self.workspace.active_file.set(&self.store, None);
-        self.editor_clear_document();
         self.file_list.hovered_index.set(&self.store, Some(index));
         if reveal {
             self.reveal_file_list_row(index);
@@ -4893,6 +4980,9 @@ impl AppState {
         if self.workspace.source.get(&self.store) != WorkspaceSource::Status {
             return Vec::new();
         }
+        if self.workspace.status_operation_pending.get(&self.store) {
+            return Vec::new();
+        }
         let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
             return Vec::new();
         };
@@ -4907,6 +4997,9 @@ impl AppState {
             return Vec::new();
         };
 
+        self.workspace
+            .status_operation_pending
+            .set(&self.store, true);
         vec![Effect::ApplyStatusOperation(StatusOperationRequest {
             repo_path,
             item,
@@ -4922,6 +5015,9 @@ impl AppState {
         if self.workspace.source.get(&self.store) != WorkspaceSource::Status {
             return Vec::new();
         }
+        if self.workspace.status_operation_pending.get(&self.store) {
+            return Vec::new();
+        }
         let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
             return Vec::new();
         };
@@ -4933,6 +5029,9 @@ impl AppState {
             return Vec::new();
         };
 
+        self.workspace
+            .status_operation_pending
+            .set(&self.store, true);
         vec![Effect::ApplyStatusOperation(StatusOperationRequest {
             repo_path,
             item,
@@ -4946,6 +5045,9 @@ impl AppState {
         operation: StatusOperation,
     ) -> Vec<Effect> {
         if self.workspace.source.get(&self.store) != WorkspaceSource::Status {
+            return Vec::new();
+        }
+        if self.workspace.status_operation_pending.get(&self.store) {
             return Vec::new();
         }
         let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
@@ -4962,6 +5064,9 @@ impl AppState {
             return Vec::new();
         }
 
+        self.workspace
+            .status_operation_pending
+            .set(&self.store, true);
         vec![Effect::ApplyBatchStatusOperation(
             BatchStatusOperationRequest {
                 repo_path,
@@ -4972,30 +5077,46 @@ impl AppState {
     }
 
     fn current_hunk_index_from_hover(&self) -> Option<i16> {
-        let hovered = self.editor.hovered_row.get(&self.store)?;
-        self.workspace.active_file.with(&self.store, |af| {
-            let active = af.as_ref()?;
-            let line = active.render_doc.lines.get(hovered)?;
-            if line.hunk_index < 0 {
-                return None;
-            }
-            Some(line.hunk_index)
-        })
+        self.editor.hovered_hunk_index.get(&self.store)
     }
 
-    fn apply_hunk_operation(&mut self, operation: StatusOperation) -> Vec<Effect> {
+    fn apply_hunk_operation(
+        &mut self,
+        operation: StatusOperation,
+        explicit_hunk: Option<i16>,
+    ) -> Vec<Effect> {
+        tracing::info!(
+            ?operation,
+            ?explicit_hunk,
+            source = ?self.workspace.source.get(&self.store),
+            pending = self.workspace.status_operation_pending.get(&self.store),
+            hovered_row = ?self.editor.hovered_row.get(&self.store),
+            hovered_hunk_index = ?self.editor.hovered_hunk_index.get(&self.store),
+            "apply_hunk_operation: entered"
+        );
         if self.workspace.source.get(&self.store) != WorkspaceSource::Status {
+            tracing::warn!("apply_hunk_operation: bail — source != Status");
+            return Vec::new();
+        }
+        if self.workspace.status_operation_pending.get(&self.store) {
+            tracing::warn!("apply_hunk_operation: bail — status_operation_pending=true");
             return Vec::new();
         }
         let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
+            tracing::warn!("apply_hunk_operation: bail — no repo_path");
             return Vec::new();
         };
         let Some(scope) = self.workspace.selected_status_scope.get(&self.store) else {
+            tracing::warn!("apply_hunk_operation: bail — no selected_status_scope");
             return Vec::new();
         };
-        let hunk_index = match self.current_hunk_index_from_hover() {
-            Some(idx) => idx as usize,
-            None => return Vec::new(),
+        let resolved = explicit_hunk.or_else(|| self.current_hunk_index_from_hover());
+        let hunk_index = match resolved {
+            Some(idx) if idx >= 0 => idx as usize,
+            _ => {
+                tracing::warn!(?resolved, "apply_hunk_operation: bail — no hunk_index");
+                return Vec::new();
+            }
         };
 
         let patch_text = self.workspace.active_file.with(&self.store, |af| {
@@ -5007,9 +5128,14 @@ impl AppState {
             }
         });
         let Some(patch) = patch_text else {
+            tracing::warn!(hunk_index, "apply_hunk_operation: bail — format_hunk_patch returned None");
             return Vec::new();
         };
 
+        tracing::info!(?operation, hunk_index, "apply_hunk_operation: dispatching ApplyPatchOperation");
+        self.workspace
+            .status_operation_pending
+            .set(&self.store, true);
         vec![Effect::ApplyPatchOperation(PatchOperationRequest {
             repo_path,
             patch,
@@ -5095,6 +5221,9 @@ impl AppState {
         if self.workspace.source.get(&self.store) != WorkspaceSource::Status {
             return Vec::new();
         }
+        if self.workspace.status_operation_pending.get(&self.store) {
+            return Vec::new();
+        }
         if self
             .editor
             .line_selection
@@ -5146,6 +5275,13 @@ impl AppState {
             .line_selection
             .update(&self.store, |ls| ls.clear());
 
+        if patches.is_empty() {
+            return Vec::new();
+        }
+
+        self.workspace
+            .status_operation_pending
+            .set(&self.store, true);
         patches
             .into_iter()
             .map(|p| {
@@ -5482,6 +5618,7 @@ impl AppState {
         self.editor.scroll_top_px.set(&self.store, 0);
         self.editor.content_height_px.set(&self.store, 0);
         self.editor.hovered_row.set(&self.store, None);
+        self.editor.hovered_hunk_index.set(&self.store, None);
         self.editor.visible_row_start.set(&self.store, None);
         self.editor.visible_row_end.set(&self.store, None);
         self.editor
@@ -5723,18 +5860,183 @@ fn split_browse_query(expanded: &str) -> (String, &str) {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use clap::Parser;
 
     use super::{
-        AppState, CompareField, FileListEntry, FocusTarget, OverlaySurface, WorkspaceMode,
-        WorkspaceSource,
+        ActiveFile, AppState, AsyncStatus, CompareField, FileListEntry, FocusTarget,
+        OverlaySurface, WorkspaceMode, WorkspaceSource, refs_for_status_scope,
     };
     use crate::actions::Action;
     use crate::core::compare::{CompareMode, CompareOutput, LayoutMode, RendererKind};
     use crate::core::diff::{DiffLine, FileDiff, Hunk, LineKind};
+    use crate::core::text::buffer::TextBuffer;
+    use crate::core::text::token::TokenBuffer;
+    use crate::core::vcs::git::{StatusItem, StatusScope};
     use crate::effects::Effect;
+    use crate::events::AppEvent;
     use crate::platform::persistence::Settings;
     use crate::platform::startup::{Args, StartupOptions};
+    use crate::ui::editor::render_doc::{RenderRowKind, build_render_doc};
+
+    fn make_hunk(
+        text_buffer: &mut TextBuffer,
+        old_start: i32,
+        old_count: i32,
+        new_start: i32,
+        new_count: i32,
+        lines: &[(&str, LineKind)],
+    ) -> Hunk {
+        let mut old_line = old_start;
+        let mut new_line = new_start;
+        let diff_lines = lines
+            .iter()
+            .map(|(text, kind)| {
+                let text_range = text_buffer.append(text);
+                let (old_no, new_no) = match kind {
+                    LineKind::Context => {
+                        let o = old_line;
+                        let n = new_line;
+                        old_line += 1;
+                        new_line += 1;
+                        (Some(o), Some(n))
+                    }
+                    LineKind::Removed => {
+                        let o = old_line;
+                        old_line += 1;
+                        (Some(o), None)
+                    }
+                    LineKind::Added => {
+                        let n = new_line;
+                        new_line += 1;
+                        (None, Some(n))
+                    }
+                };
+                DiffLine {
+                    kind: *kind,
+                    old_line_number: old_no,
+                    new_line_number: new_no,
+                    text_range,
+                    ..DiffLine::default()
+                }
+            })
+            .collect();
+
+        Hunk {
+            old_start,
+            old_count,
+            new_start,
+            new_count,
+            header: format!(
+                "@@ -{},{} +{},{} @@",
+                old_start, old_count, new_start, new_count
+            ),
+            lines: diff_lines,
+        }
+    }
+
+    fn status_state_with_two_hunks() -> AppState {
+        let mut state = AppState::default();
+        let repo_path = PathBuf::from("/repo");
+        let path = "src/lib.rs".to_owned();
+        let mut text_buffer = TextBuffer::default();
+        let token_buffer = TokenBuffer::default();
+        let file = FileDiff {
+            path: path.clone(),
+            status: "M".to_owned(),
+            hunks: vec![
+                make_hunk(
+                    &mut text_buffer,
+                    1,
+                    3,
+                    1,
+                    2,
+                    &[
+                        ("fn one() {", LineKind::Context),
+                        ("    old_first();", LineKind::Removed),
+                        ("}", LineKind::Context),
+                    ],
+                ),
+                make_hunk(
+                    &mut text_buffer,
+                    8,
+                    3,
+                    7,
+                    2,
+                    &[
+                        ("fn two() {", LineKind::Context),
+                        ("    old_second();", LineKind::Removed),
+                        ("}", LineKind::Context),
+                    ],
+                ),
+            ],
+            ..FileDiff::default()
+        };
+        let render_doc = build_render_doc(&file, 0, &text_buffer, &token_buffer);
+        let (left_ref, right_ref) = refs_for_status_scope(StatusScope::Unstaged);
+
+        state.compare.repo_path.set(&state.store, Some(repo_path));
+        state
+            .workspace
+            .source
+            .set(&state.store, WorkspaceSource::Status);
+        state.workspace.status.set(&state.store, AsyncStatus::Ready);
+        state
+            .workspace
+            .status_operation_pending
+            .set(&state.store, false);
+        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+        state.workspace.files.set(
+            &state.store,
+            vec![FileListEntry {
+                path: path.clone(),
+                status: "M".to_owned(),
+                additions: 0,
+                deletions: 0,
+                is_binary: false,
+            }],
+        );
+        state.workspace.status_items.set(
+            &state.store,
+            vec![StatusItem {
+                path: path.clone(),
+                scope: StatusScope::Unstaged,
+                status: "M".to_owned(),
+            }],
+        );
+        state
+            .workspace
+            .selected_file_index
+            .set(&state.store, Some(0));
+        state
+            .workspace
+            .selected_file_path
+            .set(&state.store, Some(path.clone()));
+        state
+            .workspace
+            .selected_status_scope
+            .set(&state.store, Some(StatusScope::Unstaged));
+        state.workspace.active_file.set(
+            &state.store,
+            Some(ActiveFile {
+                index: 0,
+                path,
+                file: file.clone(),
+                render_doc,
+                text_buffer: text_buffer.clone(),
+                base_file: file,
+                base_text_buffer: text_buffer,
+                token_buffer,
+                left_ref,
+                right_ref,
+                file_line_count: None,
+                file_lines: None,
+            }),
+        );
+
+        state
+    }
 
     fn loaded_state_with_files(paths: &[&str]) -> AppState {
         let mut state = AppState::default();
@@ -6075,6 +6377,46 @@ mod tests {
                 .with(&state.store, |l| l.scroll_top_px),
             0
         );
+    }
+
+    #[test]
+    fn stage_hunk_at_stages_the_given_index() {
+        let mut state = status_state_with_two_hunks();
+
+        let effects = state.apply_action(Action::StageHunkAt(1));
+
+        let [Effect::ApplyPatchOperation(request)] = effects.as_slice() else {
+            panic!("expected one patch effect, got {:?}", effects);
+        };
+        assert!(request.patch.contains("old_second();"));
+        assert!(!request.patch.contains("old_first();"));
+    }
+
+    #[test]
+    fn stage_hunk_reads_the_hovered_hunk_index() {
+        let mut state = status_state_with_two_hunks();
+        state.editor.hovered_hunk_index.set(&state.store, Some(1));
+
+        let effects = state.apply_action(Action::StageHunk);
+
+        let [Effect::ApplyPatchOperation(request)] = effects.as_slice() else {
+            panic!("expected one patch effect");
+        };
+        assert!(request.patch.contains("old_second();"));
+    }
+
+    #[test]
+    fn status_operation_failure_clears_the_pending_flag() {
+        let mut state = status_state_with_two_hunks();
+        let _ = state.apply_action(Action::StageHunkAt(0));
+        assert!(state.workspace.status_operation_pending.get(&state.store));
+
+        let _ = state.apply_event(AppEvent::StatusOperationFailed {
+            path: PathBuf::from("/repo"),
+            message: "patch failed".to_owned(),
+        });
+
+        assert!(!state.workspace.status_operation_pending.get(&state.store));
     }
 
     #[test]

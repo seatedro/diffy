@@ -122,6 +122,22 @@ fn prune_stale_pr_refs(
     }
 }
 
+/// Stage a path into the index, handling deletions the way `git add` does:
+/// if the workdir file is missing, remove it from the index instead of
+/// calling `add_path` (which requires the file to exist on disk).
+fn stage_path_into_index(repo: &Repository, index: &mut git2::Index, path: &str) -> Result<()> {
+    let exists = repo
+        .workdir()
+        .map(|wd| wd.join(path).exists())
+        .unwrap_or(false);
+    if exists {
+        index.add_path(Path::new(path))?;
+    } else {
+        index.remove_path(Path::new(path))?;
+    }
+    Ok(())
+}
+
 fn split_lines(text: &str) -> Vec<String> {
     if text.is_empty() {
         return Vec::new();
@@ -391,7 +407,7 @@ impl GitService {
                 let repo = self.repo()?;
                 let mut index = repo.index()?;
                 for item in items {
-                    index.add_path(Path::new(&item.path))?;
+                    stage_path_into_index(&repo, &mut index, &item.path)?;
                 }
                 index.write()?;
                 Ok(())
@@ -637,7 +653,7 @@ impl GitService {
     fn stage_path(&self, path: &str) -> Result<()> {
         let repo = self.repo()?;
         let mut index = repo.index()?;
-        index.add_path(Path::new(path))?;
+        stage_path_into_index(&repo, &mut index, path)?;
         index.write()?;
         Ok(())
     }
@@ -668,6 +684,13 @@ impl GitService {
         let repo = self.repo()?;
         let diff = Diff::from_buffer(patch_text.as_bytes())?;
         repo.apply(&diff, location, None)?;
+        // Defensive: older libgit2 builds of git_apply mutate the index only
+        // in-memory; without an explicit write a subsequent apply can reject
+        // patches because a fresh repo handle loads the stale on-disk index.
+        if matches!(location, ApplyLocation::Index | ApplyLocation::Both) {
+            let mut index = repo.index()?;
+            index.write()?;
+        }
         Ok(())
     }
 }

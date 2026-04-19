@@ -470,7 +470,7 @@ impl EditorElement {
         self.blocks.get(row.block_index as usize)?.on_click()
     }
 
-    pub fn hunk_action_bar_rect(&self, doc: &RenderDoc) -> Option<Rect> {
+    pub fn hunk_action_bar_rect(&self, doc: &RenderDoc) -> Option<(Rect, i16)> {
         let idx = self.layout.highlighted_row?;
         let display_row = self.rows.get(idx)?;
         if display_row.is_block() {
@@ -535,12 +535,15 @@ impl EditorElement {
                 self.layout.unified_text_rect.width,
             )
         };
-        Some(Rect {
-            x,
-            y,
-            width,
-            height: row_h,
-        })
+        Some((
+            Rect {
+                x,
+                y,
+                width,
+                height: row_h,
+            },
+            hunk_index,
+        ))
     }
 
     pub fn line_selection_bar_rect(&self, doc: &RenderDoc, state: &EditorState) -> Option<Rect> {

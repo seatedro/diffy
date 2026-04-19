@@ -262,6 +262,14 @@ pub fn build_ui_frame(
                 editor.set_hunk_expand_caps(Vec::new());
             }
             editor.prepare(&mut editor_snap, document, vp_bounds, text_metrics);
+            editor_snap.hovered_hunk_index = match document {
+                EditorDocument::Text { doc, .. } => editor_snap
+                    .hovered_row
+                    .and_then(|row| editor.render_line_index_for_row(row))
+                    .and_then(|line_index| doc.lines.get(line_index as usize))
+                    .and_then(|line| (line.hunk_index >= 0).then_some(line.hunk_index)),
+                _ => None,
+            };
             // Write back every field prepare may have mutated.
             state
                 .editor
@@ -291,6 +299,10 @@ pub fn build_ui_frame(
                 .editor
                 .hovered_row
                 .set_if_changed(&state.store, editor_snap.hovered_row);
+            state
+                .editor
+                .hovered_hunk_index
+                .set_if_changed(&state.store, editor_snap.hovered_hunk_index);
             state
                 .editor
                 .hunk_positions
@@ -361,11 +373,11 @@ pub fn build_ui_frame(
                             bar_rect.width,
                             bar_rect.height,
                         );
-                    } else if let Some(bar_rect) = hunk_bar_rect {
+                    } else if let Some((bar_rect, hunk_index)) = hunk_bar_rect {
                         let (stage_action, stage_label, stage_icon) = if is_staged {
-                            (Action::UnstageHunk, "Unstage Hunk", lucide::MINUS)
+                            (Action::UnstageHunkAt(hunk_index), "Unstage Hunk", lucide::MINUS)
                         } else {
-                            (Action::StageHunk, "Stage Hunk", lucide::PLUS)
+                            (Action::StageHunkAt(hunk_index), "Stage Hunk", lucide::PLUS)
                         };
                         let mut bar = build_staging_bar(
                             theme,
@@ -374,7 +386,7 @@ pub fn build_ui_frame(
                             stage_action,
                             stage_label,
                             stage_icon,
-                            Action::DiscardHunk,
+                            Action::DiscardHunkAt(hunk_index),
                             "Discard Hunk",
                         );
                         render_element_at(

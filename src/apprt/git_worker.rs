@@ -228,7 +228,7 @@ fn apply_status_operation(
         return;
     }
 
-    sync_repository(state, event_sender, path, RepositorySyncReason::Dirty);
+    sync_repository_forced(state, event_sender, path, RepositorySyncReason::Dirty);
 }
 
 fn apply_batch_status_operation(
@@ -262,7 +262,7 @@ fn apply_batch_status_operation(
         return;
     }
 
-    sync_repository(state, event_sender, path, RepositorySyncReason::Dirty);
+    sync_repository_forced(state, event_sender, path, RepositorySyncReason::Dirty);
 }
 
 fn apply_patch_operation(
@@ -309,7 +309,7 @@ fn apply_patch_operation(
         return;
     }
 
-    sync_repository(state, event_sender, path, RepositorySyncReason::Dirty);
+    sync_repository_forced(state, event_sender, path, RepositorySyncReason::Dirty);
 }
 
 fn apply_commit(
@@ -343,7 +343,16 @@ fn apply_commit(
     }
 
     event_sender.send(AppEvent::CommitCreated { path: path.clone() });
-    sync_repository(state, event_sender, path, RepositorySyncReason::Dirty);
+    sync_repository_forced(state, event_sender, path, RepositorySyncReason::Dirty);
+}
+
+fn sync_repository_forced(
+    state: &mut GitWorkerState,
+    event_sender: &RuntimeEventSender,
+    path: PathBuf,
+    reason: RepositorySyncReason,
+) {
+    sync_repository_inner(state, event_sender, path, reason, true);
 }
 
 fn sync_repository(
@@ -351,6 +360,16 @@ fn sync_repository(
     event_sender: &RuntimeEventSender,
     path: PathBuf,
     reason: RepositorySyncReason,
+) {
+    sync_repository_inner(state, event_sender, path, reason, false);
+}
+
+fn sync_repository_inner(
+    state: &mut GitWorkerState,
+    event_sender: &RuntimeEventSender,
+    path: PathBuf,
+    reason: RepositorySyncReason,
+    force_emit: bool,
 ) {
     if state.active_path.as_ref() != Some(&path) {
         state.git.close();
@@ -386,7 +405,16 @@ fn sync_repository(
         .as_ref()
         .and_then(|previous| previous.diff_kind(&bundle.state));
 
-    let should_emit = reason == RepositorySyncReason::Open || change_kind.is_some();
+    let should_emit = force_emit || reason == RepositorySyncReason::Open || change_kind.is_some();
+    tracing::info!(
+        path = %path.display(),
+        ?reason,
+        ?change_kind,
+        force_emit,
+        should_emit,
+        prev_had_snapshot = state.snapshot.is_some(),
+        "sync_repository: computed"
+    );
     state.snapshot = Some(bundle.state);
 
     if should_emit {
@@ -394,9 +422,22 @@ fn sync_repository(
         snapshot.change_kind = if reason == RepositorySyncReason::Open {
             None
         } else {
-            change_kind
+            // Force-emitted user operations may have no detected diff (same
+            // coarse status bits) but still changed the index content, so
+            // report Worktree to drive the UI refresh downstream.
+            change_kind.or(if force_emit {
+                Some(RepositoryChangeKind::Worktree)
+            } else {
+                None
+            })
         };
         event_sender.send(AppEvent::RepositorySnapshotReady(snapshot));
+    } else {
+        tracing::warn!(
+            path = %path.display(),
+            ?reason,
+            "sync_repository: suppressing snapshot (no diff detected)"
+        );
     }
 }
 

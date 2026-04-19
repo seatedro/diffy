@@ -2,7 +2,9 @@ use winit::event::KeyEvent;
 use winit::keyboard::{ModifiersState, NamedKey};
 
 use crate::actions::Action;
-use crate::ui::state::{AppState, FocusTarget, OverlaySurface, WorkspaceMode, WorkspaceSource};
+use crate::ui::state::{
+    AppView, AppState, FocusTarget, OverlaySurface, WorkspaceMode, WorkspaceSource,
+};
 
 use super::{InputContext, InputOutcome, InputOwner, InputSystem, KeyChord};
 
@@ -59,6 +61,7 @@ fn global_shortcut_action(chord: &KeyChord) -> Option<Action> {
         "=" | "+" => Some(Action::IncreaseUiScale),
         "-" | "_" => Some(Action::DecreaseUiScale),
         "b" => Some(Action::ToggleSidebar),
+        "," => Some(Action::OpenSettings),
         _ => None,
     }
 }
@@ -224,6 +227,8 @@ fn workspace_key_actions_inner(
         Some(NamedKey::Escape) => {
             if state.overlays_top().is_some() {
                 Some(vec![Action::CloseOverlay])
+            } else if state.app_view.get(&state.store) == AppView::Settings {
+                Some(vec![Action::CloseSettings])
             } else if state.editor.search.open.get(&state.store) {
                 Some(vec![Action::CloseSearch])
             } else if state.focus.get(&state.store) == Some(FocusTarget::SidebarSearch) {

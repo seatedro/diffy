@@ -11,8 +11,9 @@ use crate::ui::editor::element::{EditorDocument, EditorElement};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::overlays;
+use crate::ui::settings_page;
 use crate::ui::sidebar as sidebar_mod;
-use crate::ui::state::{AppState, WorkspaceSource};
+use crate::ui::state::{AppState, AppView, WorkspaceSource};
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
 use crate::ui::title_bar;
@@ -108,6 +109,43 @@ pub fn build_ui_frame(
     let sidebar_width =
         sidebar_mod::preferred_sidebar_width(state, theme, cx, width) * sidebar_width_factor;
 
+    let in_settings = state.app_view.get(&state.store) == AppView::Settings;
+
+    let body: AnyElement = if in_settings {
+        settings_page::settings_page(state, theme).into_any()
+    } else {
+        div()
+            .flex_row()
+            .flex_1()
+            .min_h(0.0)
+            .when(
+                state.is_workspace_ready()
+                    && sidebar_width_factor > 0.001
+                    && width >= Bp::COMPACT * ui_scale,
+                |d| {
+                    d.child(sidebar_mod::sidebar(
+                        state,
+                        theme,
+                        sidebar_width,
+                        file_list_bounds.clone(),
+                        cx,
+                    ))
+                    .child(sidebar_mod::sidebar_resizer(
+                        theme,
+                        sidebar_resize_bounds.clone(),
+                        sidebar_width,
+                    ))
+                },
+            )
+            .child(toolbar_mod::main_surface(
+                state,
+                theme,
+                text_metrics,
+                viewport_bounds.clone(),
+            ))
+            .into_any()
+    };
+
     let mut root = div()
         .w(width)
         .h(height)
@@ -119,37 +157,7 @@ pub fn build_ui_frame(
             sidebar_width_factor,
             width,
         ))
-        .child(
-            div()
-                .flex_row()
-                .flex_1()
-                .min_h(0.0)
-                .when(
-                    state.is_workspace_ready()
-                        && sidebar_width_factor > 0.001
-                        && width >= Bp::COMPACT * ui_scale,
-                    |d| {
-                        d.child(sidebar_mod::sidebar(
-                            state,
-                            theme,
-                            sidebar_width,
-                            file_list_bounds.clone(),
-                            cx,
-                        ))
-                        .child(sidebar_mod::sidebar_resizer(
-                            theme,
-                            sidebar_resize_bounds.clone(),
-                            sidebar_width,
-                        ))
-                    },
-                )
-                .child(toolbar_mod::main_surface(
-                    state,
-                    theme,
-                    text_metrics,
-                    viewport_bounds.clone(),
-                )),
-        )
+        .child(body)
         .child(crate::ui::status_bar::status_bar(state, theme));
 
     if let Some(overlay) = overlays::render_active_overlay(state, theme, width, height) {

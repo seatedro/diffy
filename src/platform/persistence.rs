@@ -60,6 +60,7 @@ pub struct Settings {
     pub last_compare: Option<PersistedCompare>,
     pub viewport: PersistedViewport,
     pub github_user: Option<GitHubUser>,
+    pub wheel_scroll_lines: u8,
 }
 
 impl Default for Settings {
@@ -72,6 +73,7 @@ impl Default for Settings {
             last_compare: None,
             viewport: PersistedViewport::default(),
             github_user: None,
+            wheel_scroll_lines: 3,
         }
     }
 }

@@ -33,7 +33,8 @@ impl InputSystem {
             return InputOutcome::default();
         };
         let line_step_px = self.scroll_target_line_step_px(state, &target, editor);
-        let delta_px = scroll_delta_to_px(delta, line_step_px);
+        let lines_per_notch = state.settings.wheel_scroll_lines.max(1) as f32;
+        let delta_px = scroll_delta_to_px(delta, line_step_px, lines_per_notch);
         let rounded_delta_px = match &target {
             ScrollTarget::Region(ScrollActionBuilder::FileList) => {
                 quantize_scroll_delta_px(&mut self.file_list_scroll_remainder_px, delta_px)
@@ -153,11 +154,13 @@ fn active_overlay_row_height_px(state: &AppState) -> f32 {
     }
 }
 
-const WHEEL_LINES_PER_NOTCH: f32 = 3.0;
-
-pub fn scroll_delta_to_px(delta: MouseScrollDelta, line_step_px: f32) -> f32 {
+pub fn scroll_delta_to_px(
+    delta: MouseScrollDelta,
+    line_step_px: f32,
+    lines_per_notch: f32,
+) -> f32 {
     match delta {
-        MouseScrollDelta::LineDelta(_, y) => -y * line_step_px * WHEEL_LINES_PER_NOTCH,
+        MouseScrollDelta::LineDelta(_, y) => -y * line_step_px * lines_per_notch,
         MouseScrollDelta::PixelDelta(position) => -(position.y as f32),
     }
 }

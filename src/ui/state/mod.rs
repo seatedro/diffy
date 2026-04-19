@@ -142,6 +142,49 @@ pub enum WorkspaceMode {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AppView {
+    #[default]
+    Workspace,
+    Settings,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SettingsSection {
+    #[default]
+    Appearance,
+    Editor,
+    Behavior,
+    About,
+}
+
+impl SettingsSection {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Appearance => "Appearance",
+            Self::Editor => "Editor",
+            Self::Behavior => "Behavior",
+            Self::About => "About",
+        }
+    }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::Appearance => lucide::SUN,
+            Self::Editor => lucide::FILE_CODE,
+            Self::Behavior => lucide::SETTINGS,
+            Self::About => lucide::INFO,
+        }
+    }
+
+    pub const ALL: [Self; 4] = [
+        Self::Appearance,
+        Self::Editor,
+        Self::Behavior,
+        Self::About,
+    ];
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum WorkspaceSource {
     #[default]
     None,
@@ -614,6 +657,7 @@ pub enum PaletteCommand {
     PushCurrentBranch,
     PushCurrentBranchForceWithLease,
     PullCurrentBranch,
+    OpenSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -862,6 +906,8 @@ pub struct DebugState {
 #[derive(Debug)]
 pub struct AppState {
     pub workspace_mode: Signal<WorkspaceMode>,
+    pub app_view: Signal<AppView>,
+    pub settings_section: Signal<SettingsSection>,
     pub compare: CompareStateStore,
     pub repository: RepositoryStateStore,
     pub workspace: WorkspaceStateStore,
@@ -902,6 +948,8 @@ impl Default for AppState {
         let text_focused =
             store.create_memo(move |s| s.read(focus).is_some_and(|t| t.is_text_field()));
         let workspace_mode = store.create(WorkspaceMode::default());
+        let app_view = store.create(AppView::default());
+        let settings_section = store.create(SettingsSection::default());
         let last_error = store.create(None::<String>);
         let theme_preview_original = store.create(None::<String>);
         let toasts = store.create(Vec::<Toast>::new());
@@ -916,6 +964,8 @@ impl Default for AppState {
         let github = GitHubStateStore::new_default(&store);
         Self {
             workspace_mode,
+            app_view,
+            settings_section,
             compare,
             repository,
             workspace,
@@ -993,6 +1043,8 @@ impl AppState {
         } else {
             WorkspaceMode::Empty
         });
+        let app_view = store.create(AppView::default());
+        let settings_section = store.create(SettingsSection::default());
         let last_error = store.create(None::<String>);
         let theme_preview_original = store.create(None::<String>);
         let toasts = store.create(Vec::<Toast>::new());
@@ -1039,6 +1091,8 @@ impl AppState {
         );
         let mut state = Self {
             workspace_mode,
+            app_view,
+            settings_section,
             compare,
             repository,
             workspace,
@@ -1237,9 +1291,9 @@ impl AppState {
 
             // Settings & UI
             ToggleWrap | SetWrapColumn(_) | SetSidebarWidthPx(_) | IncreaseUiScale
-            | DecreaseUiScale | ToggleThemeMode | SetThemeName(_) => {
-                self.apply_settings_action(action)
-            }
+            | DecreaseUiScale | SetUiScalePct(_) | ToggleThemeMode | SetThemeMode(_)
+            | SetThemeName(_) | SetWheelScrollLines(_) | OpenSettings | CloseSettings
+            | SetSettingsSection(_) => self.apply_settings_action(action),
 
             // GitHub
             StartGitHubDeviceFlow | OpenDeviceFlowBrowser | SignOutGitHub => {
@@ -1933,6 +1987,14 @@ impl AppState {
             }
             Action::IncreaseUiScale => self.adjust_ui_scale(UI_SCALE_STEP_PCT as i16),
             Action::DecreaseUiScale => self.adjust_ui_scale(-(UI_SCALE_STEP_PCT as i16)),
+            Action::SetUiScalePct(pct) => {
+                let clamped = self.clamp_ui_scale_pct(pct);
+                if clamped == self.settings.ui_scale_pct {
+                    return Vec::new();
+                }
+                self.settings.ui_scale_pct = clamped;
+                self.persist_settings_effect()
+            }
             Action::ToggleThemeMode => {
                 self.settings.theme_mode = match self.settings.theme_mode {
                     ThemeMode::Dark => ThemeMode::Light,
@@ -1940,9 +2002,37 @@ impl AppState {
                 };
                 self.persist_settings_effect()
             }
+            Action::SetThemeMode(mode) => {
+                if self.settings.theme_mode == mode {
+                    return Vec::new();
+                }
+                self.settings.theme_mode = mode;
+                self.persist_settings_effect()
+            }
             Action::SetThemeName(name) => {
                 self.settings.theme_name = name;
                 self.persist_settings_effect()
+            }
+            Action::SetWheelScrollLines(lines) => {
+                let clamped = lines.clamp(1, 10);
+                if clamped == self.settings.wheel_scroll_lines {
+                    return Vec::new();
+                }
+                self.settings.wheel_scroll_lines = clamped;
+                self.persist_settings_effect()
+            }
+            Action::OpenSettings => {
+                self.clear_overlays();
+                self.app_view.set(&self.store, AppView::Settings);
+                Vec::new()
+            }
+            Action::CloseSettings => {
+                self.app_view.set(&self.store, AppView::Workspace);
+                Vec::new()
+            }
+            Action::SetSettingsSection(section) => {
+                self.settings_section.set(&self.store, section);
+                Vec::new()
             }
             _ => Vec::new(),
         }
@@ -4204,6 +4294,7 @@ impl AppState {
                 PaletteCommand::PullCurrentBranch => {
                     self.apply_action(Action::PullCurrentBranch)
                 }
+                PaletteCommand::OpenSettings => self.apply_action(Action::OpenSettings),
             },
             PaletteEntryKind::File(index) => self.select_file(index, true),
             PaletteEntryKind::Repo(path) => self.open_repository(path),
@@ -4840,6 +4931,11 @@ impl AppState {
                 "Push current branch (force with lease)".to_owned(),
                 "Force-push the current branch; refuses if upstream moved".to_owned(),
                 PaletteCommand::PushCurrentBranchForceWithLease,
+            ),
+            (
+                "Open Settings".to_owned(),
+                "Configure appearance, editor, and behavior".to_owned(),
+                PaletteCommand::OpenSettings,
             ),
         ] {
             let search_text = format!("{label} {detail}");

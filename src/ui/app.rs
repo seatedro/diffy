@@ -722,12 +722,13 @@ mod tests {
 
     #[test]
     fn scroll_delta_to_px_preserves_magnitude_and_direction() {
-        let line_delta = scroll_delta_to_px(MouseScrollDelta::LineDelta(0.0, 1.5), 20.0);
+        let line_delta = scroll_delta_to_px(MouseScrollDelta::LineDelta(0.0, 1.5), 20.0, 1.0);
         assert_eq!(line_delta, -30.0);
 
         let pixel_delta = scroll_delta_to_px(
             MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -12.5)),
             20.0,
+            1.0,
         );
         assert_eq!(pixel_delta, 12.5);
     }

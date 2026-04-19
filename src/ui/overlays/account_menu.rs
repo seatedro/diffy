@@ -74,7 +74,7 @@ pub fn account_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
                     <div class="w-full" h={Sz::SEPARATOR_W} bg={tc.border_variant} />
                 </div>
 
-                // Sign out
+                {menu_row(lucide::SETTINGS, "Settings", Action::OpenSettings, theme)}
                 {menu_row(lucide::KEY, "Sign out", Action::SignOutGitHub, theme)}
             </div>
         </div>

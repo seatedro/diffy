@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
-use crate::ui::state::{CompareField, FocusTarget, SidebarTab};
+use crate::ui::state::{CompareField, FocusTarget, SettingsSection, SidebarTab};
+use crate::ui::theme::ThemeMode;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -120,9 +121,15 @@ pub enum Action {
     SetSidebarWidthPx(u32),
     IncreaseUiScale,
     DecreaseUiScale,
+    SetUiScalePct(u16),
     ToggleThemeMode,
+    SetThemeMode(ThemeMode),
     SetThemeName(String),
+    SetWheelScrollLines(u8),
     OpenThemePicker,
+    OpenSettings,
+    CloseSettings,
+    SetSettingsSection(SettingsSection),
     ToggleFolder(String),
     ToggleFileViewed(usize),
     SetSidebarFilter(String),

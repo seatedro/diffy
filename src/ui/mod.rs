@@ -8,6 +8,7 @@ pub mod element;
 pub mod icons;
 pub mod overlays;
 pub mod palette;
+pub mod settings_page;
 pub mod shell;
 pub mod sidebar;
 pub mod state;

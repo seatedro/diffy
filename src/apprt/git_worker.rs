@@ -458,7 +458,9 @@ fn apply_fetch(
     remote: String,
     toast_id: u64,
 ) {
+    tracing::debug!(path = %path.display(), %remote, toast_id, "git: fetch requested");
     if let Err(message) = ensure_open(state, &path) {
+        tracing::warn!(path = %path.display(), %message, "git: fetch ensure_open failed");
         event_sender.send(AppEvent::FetchFailed {
             toast_id,
             remote,
@@ -479,6 +481,7 @@ fn apply_fetch(
 
     match result {
         Ok(()) => {
+            tracing::debug!(path = %path.display(), %remote, "git: fetch complete");
             event_sender.send(AppEvent::FetchComplete {
                 toast_id,
                 path: path.clone(),
@@ -487,6 +490,7 @@ fn apply_fetch(
             sync_repository_forced(state, event_sender, path, RepositorySyncReason::Rescan);
         }
         Err(error) => {
+            tracing::warn!(path = %path.display(), %remote, %error, "git: fetch failed");
             event_sender.send(AppEvent::FetchFailed {
                 toast_id,
                 remote,
@@ -505,7 +509,16 @@ fn apply_push(
     force_with_lease: bool,
     toast_id: u64,
 ) {
+    tracing::debug!(
+        path = %path.display(),
+        %remote,
+        %refspec,
+        force_with_lease,
+        toast_id,
+        "git: push requested",
+    );
     if let Err(message) = ensure_open(state, &path) {
+        tracing::warn!(path = %path.display(), %message, "git: push ensure_open failed");
         event_sender.send(AppEvent::PushFailed {
             toast_id,
             remote,
@@ -540,6 +553,7 @@ fn apply_push(
 
     match result {
         Ok(()) => {
+            tracing::debug!(path = %path.display(), %remote, %branch, "git: push complete");
             event_sender.send(AppEvent::PushComplete {
                 toast_id,
                 path: path.clone(),
@@ -549,6 +563,7 @@ fn apply_push(
             sync_repository_forced(state, event_sender, path, RepositorySyncReason::Rescan);
         }
         Err(error) => {
+            tracing::warn!(path = %path.display(), %remote, %error, "git: push failed");
             event_sender.send(AppEvent::PushFailed {
                 toast_id,
                 remote,
@@ -566,7 +581,15 @@ fn apply_pull_ff(
     branch: String,
     toast_id: u64,
 ) {
+    tracing::debug!(
+        path = %path.display(),
+        %remote,
+        %branch,
+        toast_id,
+        "git: pull-ff requested",
+    );
     if let Err(message) = ensure_open(state, &path) {
+        tracing::warn!(path = %path.display(), %message, "git: pull-ff ensure_open failed");
         event_sender.send(AppEvent::PullFailed {
             toast_id,
             remote,
@@ -596,6 +619,14 @@ fn apply_pull_ff(
                 crate::core::vcs::git::PullOutcome::AlreadyUpToDate => (true, 0),
                 crate::core::vcs::git::PullOutcome::FastForwarded { behind } => (false, behind),
             };
+            tracing::debug!(
+                path = %path.display(),
+                %remote,
+                %branch,
+                already_up_to_date,
+                behind,
+                "git: pull-ff complete",
+            );
             event_sender.send(AppEvent::PullComplete {
                 toast_id,
                 path: path.clone(),
@@ -607,6 +638,13 @@ fn apply_pull_ff(
             sync_repository_forced(state, event_sender, path, RepositorySyncReason::Rescan);
         }
         Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                %remote,
+                %branch,
+                %error,
+                "git: pull-ff failed",
+            );
             event_sender.send(AppEvent::PullFailed {
                 toast_id,
                 remote,
@@ -677,7 +715,7 @@ fn sync_repository_inner(
         .and_then(|previous| previous.diff_kind(&bundle.state));
 
     let should_emit = force_emit || reason == RepositorySyncReason::Open || change_kind.is_some();
-    tracing::info!(
+    tracing::debug!(
         path = %path.display(),
         ?reason,
         ?change_kind,

@@ -46,6 +46,40 @@ pub enum PullOutcome {
     FastForwarded { behind: usize },
 }
 
+/// Walks through SSH credential sources in order: ssh-agent (step 0),
+/// then each standard identity file that exists on disk. libgit2 calls the
+/// credentials callback repeatedly when auth fails, so we advance one step
+/// per invocation and return `Err` once exhausted.
+fn ssh_credential_for_step(username: &str, step: u8) -> std::result::Result<Cred, git2::Error> {
+    if step == 0 {
+        return Cred::ssh_key_from_agent(username);
+    }
+
+    let Some(home) = dirs::home_dir() else {
+        return Err(git2::Error::from_str(
+            "cannot locate home directory for SSH identity lookup",
+        ));
+    };
+    let ssh_dir = home.join(".ssh");
+    let candidates = ["id_ed25519", "id_ecdsa", "id_rsa"];
+    let idx = (step - 1) as usize;
+    if idx >= candidates.len() {
+        return Err(git2::Error::from_str(
+            "ssh: all credential sources exhausted (ssh-agent + ~/.ssh/id_{ed25519,ecdsa,rsa})",
+        ));
+    }
+    let name = candidates[idx];
+    let private = ssh_dir.join(name);
+    let public = ssh_dir.join(format!("{name}.pub"));
+    if !private.exists() {
+        // Skip straight to the next candidate without consuming a libgit2 retry.
+        return ssh_credential_for_step(username, step + 1);
+    }
+    tracing::debug!(identity = %private.display(), "git cred: trying ssh identity");
+    let public_opt = public.exists().then(|| public.as_path());
+    Cred::ssh_key(username, public_opt, &private, None)
+}
+
 fn workdir_is_dirty(repo: &Repository) -> Result<bool> {
     let mut options = git2::StatusOptions::new();
     options
@@ -58,25 +92,26 @@ fn workdir_is_dirty(repo: &Repository) -> Result<bool> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RemoteCredentialKind {
-    UserPassPlaintext { username: String, password: String },
+    CredentialHelper { url: String, username: Option<String> },
     SshKey { username: String },
     Username { username: String },
     Default,
 }
 
+/// Pick a credential strategy that matches what `git` itself would do on the
+/// CLI: `credential.helper` for HTTPS, ssh-agent for SSH. No GitHub-specific
+/// path — PR fetches hit the same code path as any other HTTPS remote.
 fn select_remote_credential(
     remote_url: &str,
     username: Option<&str>,
     allowed: git2::CredentialType,
-    github_token: &str,
 ) -> RemoteCredentialKind {
     if remote_url.starts_with("http")
-        && !github_token.is_empty()
         && allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT)
     {
-        return RemoteCredentialKind::UserPassPlaintext {
-            username: username.unwrap_or("x-access-token").to_owned(),
-            password: github_token.to_owned(),
+        return RemoteCredentialKind::CredentialHelper {
+            url: remote_url.to_owned(),
+            username: username.map(str::to_owned),
         };
     }
 
@@ -210,7 +245,6 @@ fn split_lines(text: &str) -> Vec<String> {
 pub struct GitService {
     repo: Option<Repository>,
     repo_path: String,
-    github_token: String,
 }
 
 impl std::fmt::Debug for GitService {
@@ -231,10 +265,6 @@ impl GitService {
         let mut git = Self::default();
         git.open(path.to_string_lossy().as_ref())?;
         Ok(git)
-    }
-
-    pub fn set_github_token(&mut self, token: impl Into<String>) {
-        self.github_token = token.into();
     }
 
     pub fn open(&mut self, path: &str) -> Result<()> {
@@ -592,19 +622,55 @@ impl GitService {
         self.diff_between_refs(&left, &right)
     }
 
-    /// Build `RemoteCallbacks` with credentials sourced from our keyring token
-    /// and ssh-agent, matching the policy in `select_remote_credential`.
+    /// Build `RemoteCallbacks` that resolve credentials via the system
+    /// `git credential` helper (HTTPS) and SSH (ssh-agent first, then
+    /// standard identity files in `~/.ssh/`) — mirroring what `git` itself
+    /// does from the CLI.
+    ///
+    /// libgit2 invokes the credentials callback repeatedly when auth fails,
+    /// expecting a different credential each time. We walk through an ordered
+    /// list of strategies (agent → id_ed25519 → id_rsa → id_ecdsa) and return
+    /// an error once all have been tried, so libgit2 surfaces the auth
+    /// failure to the caller instead of hammering the remote.
     fn build_remote_callbacks(&self) -> RemoteCallbacks<'static> {
+        use std::cell::Cell;
         let mut callbacks = RemoteCallbacks::new();
-        let github_token = self.github_token.clone();
+        let tried_helper = Cell::new(false);
+        let ssh_step = Cell::new(0u8);
+        let tried_default = Cell::new(false);
+
+        if std::env::var_os("SSH_AUTH_SOCK").is_none() {
+            tracing::warn!(
+                "git cred: SSH_AUTH_SOCK not set — falling back to ~/.ssh identity files",
+            );
+        }
+
         callbacks.credentials(move |url, username, allowed| {
-            match select_remote_credential(url, username, allowed, &github_token) {
-                RemoteCredentialKind::UserPassPlaintext { username, password } => {
-                    Cred::userpass_plaintext(&username, &password)
+            match select_remote_credential(url, username, allowed) {
+                RemoteCredentialKind::CredentialHelper { url, username } => {
+                    if tried_helper.replace(true) {
+                        Err(git2::Error::from_str(
+                            "git credential helper did not produce valid credentials",
+                        ))
+                    } else {
+                        let config = git2::Config::open_default()?;
+                        Cred::credential_helper(&config, &url, username.as_deref())
+                    }
                 }
-                RemoteCredentialKind::SshKey { username } => Cred::ssh_key_from_agent(&username),
+                RemoteCredentialKind::SshKey { username } => {
+                    let step = ssh_step.get();
+                    ssh_step.set(step.saturating_add(1));
+                    ssh_credential_for_step(&username, step)
+                }
+                // libgit2 preflight step — probe remote with username only.
                 RemoteCredentialKind::Username { username } => Cred::username(&username),
-                RemoteCredentialKind::Default => Cred::default(),
+                RemoteCredentialKind::Default => {
+                    if tried_default.replace(true) {
+                        Err(git2::Error::from_str("no credentials available"))
+                    } else {
+                        Cred::default()
+                    }
+                }
             }
         });
         callbacks
@@ -809,10 +875,11 @@ impl GitService {
     pub fn resolve_pull_request_comparison(
         &self,
         pull_request_url: &str,
+        github_token: &str,
     ) -> Result<(String, String)> {
         let parsed = parse_pr_url(pull_request_url)
             .ok_or_else(|| DiffyError::Parse("not a valid GitHub pull request URL".to_owned()))?;
-        let api = GitHubApi::with_token(self.github_token.clone());
+        let api = GitHubApi::with_token(github_token.to_owned());
         let info = api.fetch_pull_request(&parsed.owner, &parsed.repo, parsed.number)?;
         let repo_url = if info.base_repo_url.is_empty() {
             format!("https://github.com/{}/{}.git", parsed.owner, parsed.repo)
@@ -1037,19 +1104,18 @@ mod tests {
     }
 
     #[test]
-    fn prefers_https_token_for_github_remotes() {
+    fn https_remote_uses_credential_helper() {
         let allowed = CredentialType::USER_PASS_PLAINTEXT | CredentialType::USERNAME;
         let selected = select_remote_credential(
             "https://github.com/owner/repo.git",
             Some("git"),
             allowed,
-            "secret",
         );
         assert_eq!(
             selected,
-            RemoteCredentialKind::UserPassPlaintext {
-                username: "git".to_owned(),
-                password: "secret".to_owned(),
+            RemoteCredentialKind::CredentialHelper {
+                url: "https://github.com/owner/repo.git".to_owned(),
+                username: Some("git".to_owned()),
             }
         );
     }
@@ -1060,7 +1126,6 @@ mod tests {
             "git@github.com:owner/repo.git",
             Some("git"),
             CredentialType::SSH_KEY,
-            "secret",
         );
         assert_eq!(
             selected,

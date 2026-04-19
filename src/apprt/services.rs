@@ -27,9 +27,6 @@ impl AppServices {
     pub fn run_compare(&self, generation: u64, request: CompareRequest) -> Result<CompareFinished> {
         let mut git = GitService::new();
         git.open(request.repo_path.to_string_lossy().as_ref())?;
-        if let Some(token) = request.github_token.clone() {
-            git.set_github_token(token);
-        }
         let (resolved_left, resolved_right) = git.resolve_comparison(
             &request.spec.left_ref,
             &request.spec.right_ref,
@@ -94,9 +91,8 @@ impl AppServices {
         )?;
 
         let mut git = GitService::new();
-        git.set_github_token(token);
         git.open(repo_path.to_string_lossy().as_ref())?;
-        let (left_ref, right_ref) = git.resolve_pull_request_comparison(url)?;
+        let (left_ref, right_ref) = git.resolve_pull_request_comparison(url, &token)?;
         Ok((info, left_ref, right_ref))
     }
 

@@ -404,6 +404,42 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
+            Effect::LoadAiKeys => {
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match crate::apprt::services::load_ai_keys() {
+                        Ok((openai, anthropic)) => AppEvent::AiKeysLoaded { openai, anthropic },
+                        Err(error) => AppEvent::AiKeysLoadFailed {
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
+            Effect::SaveAiKey { kind, value } => {
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    if let Err(error) = crate::platform::secrets::save_ai_key(kind, &value) {
+                        event_sender.send(AppEvent::AiKeySaveFailed {
+                            message: error.to_string(),
+                        });
+                    }
+                });
+            }
+            Effect::ClearAiKey { kind } => {
+                thread::spawn(move || {
+                    if let Err(error) = crate::platform::secrets::clear_ai_key(kind) {
+                        tracing::warn!("failed to clear AI key from keyring: {error}");
+                    }
+                });
+            }
+            Effect::GenerateCommitMessage(request) => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    services.run_commit_message_generation(request, event_sender);
+                });
+            }
         }
     }
 }

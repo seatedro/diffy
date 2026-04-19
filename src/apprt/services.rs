@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
+use crate::ai::{self, GenerateRequest, StreamMessage};
+use crate::apprt::runtime::RuntimeEventSender;
 use crate::core::compare::{CompareOutput, CompareService, RendererKind};
 use crate::core::error::{DiffyError, Result};
 use crate::core::vcs::git::{GitService, WORKDIR_REF};
@@ -9,10 +11,10 @@ use crate::core::vcs::github::{
     DeviceFlowState, GitHubApi, GitHubUser, PullRequestInfo, parse_pr_url, poll_for_token,
     start_device_flow,
 };
-use crate::effects::{CompareRequest, StatusDiffRequest};
-use crate::events::{CompareFinished, StatusDiffFinished};
+use crate::effects::{CompareRequest, GenerateCommitMessageRequest, StatusDiffRequest};
+use crate::events::{AppEvent, CompareFinished, StatusDiffFinished};
 use crate::platform::persistence::{Settings, SettingsStore};
-use crate::platform::secrets;
+use crate::platform::secrets::{self, AiKeyKind};
 
 #[derive(Debug, Clone)]
 pub struct AppServices {
@@ -214,6 +216,130 @@ impl AppServices {
             .map(|_| ())
             .map_err(|error| DiffyError::General(format!("failed to open browser: {error}")))
     }
+
+    pub(crate) fn run_commit_message_generation(
+        &self,
+        request: GenerateCommitMessageRequest,
+        event_sender: RuntimeEventSender,
+    ) {
+        let GenerateCommitMessageRequest {
+            repo_path,
+            has_staged,
+            provider,
+            api_key,
+            steering_prompt,
+            subject_override,
+            generation,
+        } = request;
+
+        let started = std::time::Instant::now();
+        tracing::info!(
+            generation,
+            repo = %repo_path.display(),
+            has_staged,
+            provider = provider.label(),
+            "ai: dispatch"
+        );
+
+        let diff_text = match read_commit_diff(&repo_path, has_staged) {
+            Ok(text) => text,
+            Err(error) => {
+                tracing::error!(generation, %error, "ai: diff read failed");
+                event_sender.send(AppEvent::CommitMessageGenerationFailed {
+                    generation,
+                    message: format!("failed to read diff: {error}"),
+                });
+                return;
+            }
+        };
+
+        let raw_bytes = diff_text.len();
+        let compressed = ai::diff_compress::compress_commit_diff(&diff_text, ai::MAX_DIFF_BYTES);
+        tracing::debug!(
+            generation,
+            raw_bytes,
+            compressed_bytes = compressed.len(),
+            max_bytes = ai::MAX_DIFF_BYTES,
+            "ai: diff compressed"
+        );
+
+        let user_message = ai::build_user_message(
+            &steering_prompt,
+            subject_override.as_deref(),
+            &compressed,
+        );
+        tracing::debug!(
+            generation,
+            user_message_bytes = user_message.len(),
+            "ai: prompt built"
+        );
+
+        let rx = ai::run_streaming(GenerateRequest {
+            provider,
+            api_key,
+            user_message,
+        });
+
+        let mut chunk_count: usize = 0;
+        let mut byte_count: usize = 0;
+        loop {
+            match rx.recv() {
+                Ok(StreamMessage::Chunk(chunk)) => {
+                    chunk_count += 1;
+                    byte_count += chunk.len();
+                    event_sender.send(AppEvent::CommitMessageChunk {
+                        generation,
+                        chunk,
+                    });
+                }
+                Ok(StreamMessage::Finished) => {
+                    tracing::info!(
+                        generation,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        chunks = chunk_count,
+                        bytes = byte_count,
+                        "ai: stream finished"
+                    );
+                    event_sender.send(AppEvent::CommitMessageGenerationFinished { generation });
+                    return;
+                }
+                Ok(StreamMessage::Failed(message)) => {
+                    tracing::error!(
+                        generation,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        chunks = chunk_count,
+                        %message,
+                        "ai: stream failed"
+                    );
+                    event_sender.send(AppEvent::CommitMessageGenerationFailed {
+                        generation,
+                        message,
+                    });
+                    return;
+                }
+                Err(_) => {
+                    tracing::error!(generation, "ai: worker channel disconnected");
+                    event_sender.send(AppEvent::CommitMessageGenerationFailed {
+                        generation,
+                        message: "llm worker exited unexpectedly".to_owned(),
+                    });
+                    return;
+                }
+            }
+        }
+    }
+}
+
+pub fn load_ai_keys() -> Result<(Option<String>, Option<String>)> {
+    let openai = secrets::load_ai_key(AiKeyKind::OpenAi)?;
+    let anthropic = secrets::load_ai_key(AiKeyKind::Anthropic)?;
+    Ok((openai, anthropic))
+}
+
+fn read_commit_diff(repo_path: &Path, has_staged: bool) -> Result<String> {
+    let mut git = GitService::new();
+    git.open(repo_path.to_string_lossy().as_ref())?;
+    git.diff_for_commit(has_staged)
 }
 
 /// Apply an anti-aliased circular alpha mask to a square-ish RGBA buffer in-place.

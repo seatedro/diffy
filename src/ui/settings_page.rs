@@ -1,15 +1,18 @@
 use halogen::view;
 
 use crate::actions::Action;
+use crate::ai::stream::{ANTHROPIC_MODEL, OPENAI_MODEL};
 use crate::core::compare::{LayoutMode, RendererKind};
+use crate::platform::secrets::AiKeyKind;
 use crate::ui::components::{
     Button, ButtonSize, ButtonStyle, SegmentedControl, SegmentedItem, toggle,
 };
-use crate::ui::design::{Ico, Rad, Sp};
+use crate::ui::design::{Ico, Rad, Sp, Sz};
+use crate::ui::editor_element::{CursorSnapshot, text_editor_element};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
-use crate::ui::state::{AppState, SettingsSection};
+use crate::ui::state::{AppState, FocusTarget, SettingsSection};
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme, ThemeMode};
 
@@ -112,6 +115,11 @@ fn section_content(state: &AppState, theme: &Theme, section: SettingsSection) ->
             "Behavior",
             "Input and interaction.",
             behavior_section(state, theme),
+        ),
+        SettingsSection::Clankers => (
+            "Clankers",
+            "AI assistance. Keys stay in your OS keyring; no telemetry.",
+            clankers_section(state, theme),
         ),
         SettingsSection::About => ("About", "Diffy build information.", about_section(theme)),
     };
@@ -291,6 +299,208 @@ fn behavior_section(state: &AppState, theme: &Theme) -> AnyElement {
             control,
         )],
     )
+}
+
+fn clankers_section(state: &AppState, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = theme.metrics.ui_scale();
+
+    let openai_focused = state
+        .focus
+        .get(&state.store)
+        .is_some_and(|t| t == FocusTarget::SettingsOpenAiKey);
+    let anthropic_focused = state
+        .focus
+        .get(&state.store)
+        .is_some_and(|t| t == FocusTarget::SettingsAnthropicKey);
+    let prompt_focused = state
+        .focus
+        .get(&state.store)
+        .is_some_and(|t| t == FocusTarget::SettingsSteeringPrompt);
+
+    let cursor = state.text_edit.cursor.get(&state.store);
+    let anchor = state.text_edit.anchor.get(&state.store);
+    let cursor_moved_at_ms = state.text_edit.cursor_moved_at_ms.get(&state.store);
+    let input_h = (Sz::INPUT_LABELED * scale).round();
+
+    let openai_row = ai_key_row(
+        theme,
+        scale,
+        AiKeyKind::OpenAi,
+        FocusTarget::SettingsOpenAiKey,
+        format!("OpenAI API key  \u{2022}  {OPENAI_MODEL}"),
+        "sk-\u{2026}",
+        &state.ai_openai_key,
+        state.ai_openai_editing,
+        openai_focused,
+        cursor,
+        anchor,
+        cursor_moved_at_ms,
+        input_h,
+    );
+    let anthropic_row = ai_key_row(
+        theme,
+        scale,
+        AiKeyKind::Anthropic,
+        FocusTarget::SettingsAnthropicKey,
+        format!("Anthropic API key  \u{2022}  {ANTHROPIC_MODEL}"),
+        "sk-ant-\u{2026}",
+        &state.ai_anthropic_key,
+        state.ai_anthropic_editing,
+        anthropic_focused,
+        cursor,
+        anchor,
+        cursor_moved_at_ms,
+        input_h,
+    );
+
+    let keys_card = view! { scale,
+        <div class="flex-col"
+             bg={tc.surface}
+             border={tc.border_variant}
+             rounded={Rad::XL}
+             p={Sp::LG}
+             gap={Sp::MD}>
+            <div class="flex-col" gap={Sp::XXS}>
+                <text class="text-sm font-medium" color={tc.text_strong}>{"API keys"}</text>
+                <text class="text-xs" color={tc.text_muted}>
+                    {"Anthropic is preferred when both are set. Leave blank to disable."}
+                </text>
+            </div>
+            <div class="flex-col w-full" gap={Sp::SM}>
+                {openai_row}
+                {anthropic_row}
+            </div>
+        </div>
+    }.into_any();
+
+    let prompt_cursor = CursorSnapshot {
+        x: state.steering_prompt_editor.cursor_pos.x,
+        y: state.steering_prompt_editor.cursor_pos.y,
+        moved_at_ms: state.steering_prompt_editor.cursor_moved_at_ms,
+    };
+    let prompt_selection = state.steering_prompt_editor.selection_rects();
+    let prompt_box_h = (160.0 * scale).round();
+
+    let prompt_editor = text_editor_element()
+        .placeholder("Custom steering for commit messages (optional)\u{2026}")
+        .is_empty(state.steering_prompt_editor.is_empty())
+        .focused(prompt_focused)
+        .focus_target(FocusTarget::SettingsSteeringPrompt)
+        .editor_id(1)
+        .font_size(theme.metrics.ui_small_font_size)
+        .text_color(tc.text)
+        .cursor(prompt_cursor)
+        .selection(prompt_selection)
+        .content_height(state.steering_prompt_editor.content_height())
+        .scroll_y(state.steering_prompt_editor.scroll_y)
+        .w_full()
+        .flex_1();
+
+    let prompt_card = view! { scale,
+        <div class="flex-col"
+             bg={tc.surface}
+             border={tc.border_variant}
+             rounded={Rad::XL}
+             p={Sp::LG}
+             gap={Sp::SM}>
+            <div class="flex-col" gap={Sp::XXS}>
+                <text class="text-sm font-medium" color={tc.text_strong}>{"Steering prompt"}</text>
+                <text class="text-xs" color={tc.text_muted}>
+                    {"Overrides the built-in commit-message prompt. Leave empty for the default."}
+                </text>
+            </div>
+            <div class="flex-col w-full"
+                 h={prompt_box_h}
+                 rounded={Rad::LG}
+                 border={tc.border_variant}
+                 @when { prompt_focused } { border={tc.accent} }>
+                <div class="flex-1 w-full" min_h={0.0} px={Sp::SM} py={Sp::XS}>
+                    {prompt_editor}
+                </div>
+            </div>
+        </div>
+    }.into_any();
+
+    view! { scale,
+        <div class="flex-col" gap={Sp::LG}>
+            {keys_card}
+            {prompt_card}
+        </div>
+    }.into_any()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ai_key_row(
+    _theme: &Theme,
+    scale: f32,
+    kind: AiKeyKind,
+    target: FocusTarget,
+    label: String,
+    placeholder: &'static str,
+    value: &str,
+    editing: bool,
+    focused: bool,
+    cursor: usize,
+    anchor: usize,
+    cursor_moved_at_ms: u64,
+    input_h: f32,
+) -> AnyElement {
+    let key_set = !value.is_empty();
+    let editable = !key_set || editing;
+
+    let mut input = text_input(label, value.to_owned())
+        .placeholder(placeholder)
+        .focused(focused && editable)
+        .cursor_moved_at(cursor_moved_at_ms)
+        .masked(true)
+        .flex_1()
+        .h(input_h);
+    if editable {
+        input = input
+            .focus_target(target)
+            .cursor(if focused { cursor } else { 0 })
+            .anchor(if focused { anchor } else { 0 })
+            .on_click(Action::SetFocus(Some(target)));
+    } else {
+        input = input.on_click(Action::SetAiKeyEditing { kind, editing: true });
+    }
+
+    let trailing: Option<AnyElement> = if !key_set {
+        None
+    } else if editing {
+        Some(
+            Button::new(Action::SetAiKeyEditing {
+                kind,
+                editing: false,
+            })
+            .icon(lucide::CHECK)
+            .tooltip("Save")
+            .style(ButtonStyle::Subtle)
+            .size(ButtonSize::Compact)
+            .into_any(),
+        )
+    } else {
+        Some(
+            Button::new(Action::SetAiKeyEditing {
+                kind,
+                editing: true,
+            })
+            .icon(lucide::PENCIL)
+            .tooltip("Edit")
+            .style(ButtonStyle::Ghost)
+            .size(ButtonSize::Compact)
+            .into_any(),
+        )
+    };
+
+    view! { scale,
+        <div class="flex-row items-center w-full" gap={Sp::SM}>
+            {input.into_any()}
+            {?trailing}
+        </div>
+    }
+    .into_any()
 }
 
 fn about_section(theme: &Theme) -> AnyElement {

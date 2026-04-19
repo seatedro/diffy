@@ -146,6 +146,8 @@ pub struct EditorTextSlot {
     pub color: Color,
     pub font_size: f32,
     pub scroll_y: f32,
+    /// Index into the caller-supplied editor slice for rendering. 0 by default.
+    pub editor_id: u8,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]

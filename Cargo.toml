@@ -45,6 +45,9 @@ tungstenite = { version = "0.29", optional = true }
 notify = "8.2.0"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+llm = { version = "1.3", default-features = false, features = ["openai", "anthropic", "rustls-tls"] }
+tokio = { version = "1", default-features = false, features = ["rt", "sync", "macros"] }
+futures = { version = "0.3", default-features = false, features = ["std"] }
 
 [[bin]]
 name = "diffy"

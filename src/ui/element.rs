@@ -1712,6 +1712,7 @@ pub struct TextInput {
     cursor_moved_at_ms: u64,
     focus_target: Option<crate::ui::state::FocusTarget>,
     bare: bool,
+    masked: bool,
 }
 
 pub fn text_input(label: impl Into<String>, value: impl Into<String>) -> TextInput {
@@ -1727,6 +1728,7 @@ pub fn text_input(label: impl Into<String>, value: impl Into<String>) -> TextInp
         cursor_moved_at_ms: 0,
         focus_target: None,
         bare: false,
+        masked: false,
     }
 }
 
@@ -1768,6 +1770,11 @@ impl TextInput {
 
     pub fn bare(mut self) -> Self {
         self.bare = true;
+        self
+    }
+
+    pub fn masked(mut self, masked: bool) -> Self {
+        self.masked = masked;
         self
     }
 }
@@ -1885,8 +1892,29 @@ impl Element for TextInput {
         }
 
         let is_placeholder = self.value.is_empty();
+        let bullet_str = if self.masked {
+            let chars = self.value.chars().count();
+            "\u{2022}".repeat(chars)
+        } else {
+            String::new()
+        };
+        let measure_text: &str = if self.masked {
+            bullet_str.as_str()
+        } else {
+            self.value.as_str()
+        };
+        let byte_to_measure_byte = |offset: usize| -> usize {
+            if !self.masked {
+                return offset.min(self.value.len());
+            }
+            let char_index = self.value[..offset.min(self.value.len())].chars().count();
+            char_index * "\u{2022}".len()
+        };
+
         let display = if is_placeholder {
             std::mem::take(&mut self.placeholder)
+        } else if self.masked {
+            bullet_str.clone()
         } else {
             self.value.clone()
         };
@@ -1901,16 +1929,18 @@ impl Element for TextInput {
             let sel_start = self.cursor.min(self.anchor);
             let sel_end = self.cursor.max(self.anchor);
             if sel_start != sel_end && sel_end <= self.value.len() {
+                let measure_start = byte_to_measure_byte(sel_start);
+                let measure_end = byte_to_measure_byte(sel_end);
                 let x_start = measure_text_width(
                     cx.font_system,
-                    &self.value[..sel_start],
+                    &measure_text[..measure_start],
                     value_size,
                     FontKind::Ui,
                     FontWeight::Normal,
                 );
                 let x_end = measure_text_width(
                     cx.font_system,
-                    &self.value[..sel_end],
+                    &measure_text[..measure_end],
                     value_size,
                     FontKind::Ui,
                     FontWeight::Normal,
@@ -1949,10 +1979,10 @@ impl Element for TextInput {
             let cursor_visible = elapsed < 530 || (elapsed / 530) % 2 == 0;
             if cursor_visible {
                 let cursor_x = if self.cursor > 0 && !self.value.is_empty() {
-                    let offset = self.cursor.min(self.value.len());
+                    let measure_byte = byte_to_measure_byte(self.cursor);
                     measure_text_width(
                         cx.font_system,
-                        &self.value[..offset],
+                        &measure_text[..measure_byte],
                         value_size,
                         FontKind::Ui,
                         FontWeight::Normal,

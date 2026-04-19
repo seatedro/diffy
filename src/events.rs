@@ -206,6 +206,27 @@ pub enum AppEvent {
         branch: String,
         message: String,
     },
+    AiKeysLoaded {
+        openai: Option<String>,
+        anthropic: Option<String>,
+    },
+    AiKeysLoadFailed {
+        message: String,
+    },
+    AiKeySaveFailed {
+        message: String,
+    },
+    CommitMessageChunk {
+        generation: u64,
+        chunk: String,
+    },
+    CommitMessageGenerationFinished {
+        generation: u64,
+    },
+    CommitMessageGenerationFailed {
+        generation: u64,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone)]

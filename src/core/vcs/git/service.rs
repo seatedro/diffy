@@ -465,6 +465,39 @@ impl GitService {
         Ok(split_lines(text))
     }
 
+    /// Unified-diff patch text against HEAD suitable for feeding to an LLM
+    /// (staged index when `has_staged` is true, else the worktree).
+    pub fn diff_for_commit(&self, has_staged: bool) -> Result<String> {
+        let repo = self.repo()?;
+        let mut options = DiffOptions::new();
+        options.context_lines(3);
+
+        let diff = if has_staged {
+            let mut index = repo.index()?;
+            let head_tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
+            repo.diff_tree_to_index(head_tree.as_ref(), Some(&mut index), Some(&mut options))?
+        } else {
+            options.include_untracked(true);
+            options.recurse_untracked_dirs(true);
+            let mut index = repo.index()?;
+            repo.diff_index_to_workdir(Some(&mut index), Some(&mut options))?
+        };
+
+        let mut patch = String::new();
+        diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
+            let prefix = match line.origin() {
+                '+' | '-' | ' ' => Some(line.origin()),
+                _ => None,
+            };
+            if let Some(p) = prefix {
+                patch.push(p);
+            }
+            patch.push_str(std::str::from_utf8(line.content()).unwrap_or_default());
+            true
+        })?;
+        Ok(patch)
+    }
+
     pub fn diff_status_item(&self, item: &StatusItem) -> Result<CompareOutput> {
         let repo = self.repo()?;
         let mut options = DiffOptions::new();

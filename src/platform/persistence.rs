@@ -61,6 +61,7 @@ pub struct Settings {
     pub viewport: PersistedViewport,
     pub github_user: Option<GitHubUser>,
     pub wheel_scroll_lines: u8,
+    pub ai_steering_prompt: String,
 }
 
 impl Default for Settings {
@@ -74,6 +75,7 @@ impl Default for Settings {
             viewport: PersistedViewport::default(),
             github_user: None,
             wheel_scroll_lines: 3,
+            ai_steering_prompt: String::new(),
         }
     }
 }

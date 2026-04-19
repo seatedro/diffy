@@ -437,6 +437,29 @@ impl Editor {
         self.note_cursor_activity();
     }
 
+    pub fn set_text(&mut self, value: &str) {
+        self.text.clear();
+        self.text.push_str(value);
+        self.cursor = self.text.len();
+        self.anchor = self.cursor;
+        self.scroll_y = 0.0;
+        self.desired_x = None;
+        self.dirty = true;
+        self.note_cursor_activity();
+    }
+
+    pub fn append(&mut self, value: &str) {
+        let at_end = self.cursor == self.text.len() && self.anchor == self.cursor;
+        self.text.push_str(value);
+        if at_end {
+            self.cursor = self.text.len();
+            self.anchor = self.cursor;
+        }
+        self.reveal_cursor_on_flush = true;
+        self.dirty = true;
+        self.desired_x = None;
+    }
+
     pub fn sync_size(&mut self, font_system: &mut glyphon::FontSystem, width: f32, height: f32) {
         let size_changed =
             (self.last_width - width).abs() > 0.5 || (self.last_height - height).abs() > 0.5;

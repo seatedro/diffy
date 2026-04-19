@@ -681,7 +681,7 @@ impl Renderer {
         &mut self,
         scene: &Scene,
         time_seconds: f32,
-        commit_editor: Option<&crate::editor::Editor>,
+        editors: &[Option<&crate::editor::Editor>],
     ) -> Result<FrameStats, RenderError> {
         if self.surface_config.width == 0 || self.surface_config.height == 0 {
             return Ok(FrameStats::default());
@@ -841,7 +841,7 @@ impl Renderer {
                 &zl.rich_texts,
                 self.scale_factor,
             );
-            append_editor_text_areas(&mut text_areas, &zl.editor_slots, commit_editor);
+            append_editor_text_areas(&mut text_areas, &zl.editor_slots, editors);
 
             self.text_renderer.prepare(
                 &self.device,
@@ -913,7 +913,7 @@ impl Renderer {
                     &zl.rich_texts,
                     self.scale_factor,
                 );
-                append_editor_text_areas(&mut text_areas, &zl.editor_slots, commit_editor);
+                append_editor_text_areas(&mut text_areas, &zl.editor_slots, editors);
 
                 self.text_renderer.prepare(
                     &self.device,
@@ -1166,7 +1166,7 @@ impl Renderer {
                     &all_rich,
                     self.scale_factor,
                 );
-                append_editor_text_areas(&mut text_areas, &all_editor_slots, commit_editor);
+                append_editor_text_areas(&mut text_areas, &all_editor_slots, editors);
 
                 // Full-screen blit of scene_tex.
                 let scene_blit = BlitInstance {
@@ -2011,13 +2011,15 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
 fn append_editor_text_areas<'a>(
     text_areas: &mut Vec<glyphon::TextArea<'a>>,
     slots: &[ClippedEditorSlot],
-    commit_editor: Option<&'a crate::editor::Editor>,
+    editors: &[Option<&'a crate::editor::Editor>],
 ) {
-    let Some(editor) = commit_editor else { return };
-    let Some(buffer) = editor.buffer() else {
-        return;
-    };
     for es in slots {
+        let Some(Some(editor)) = editors.get(es.slot.editor_id as usize) else {
+            continue;
+        };
+        let Some(buffer) = editor.buffer() else {
+            continue;
+        };
         let color = es.slot.color;
         text_areas.push(glyphon::TextArea {
             buffer,

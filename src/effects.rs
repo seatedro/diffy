@@ -1,10 +1,12 @@
 use std::path::PathBuf;
 
+use crate::ai::Provider;
 use crate::core::compare::{CompareSpec, RendererKind};
 use crate::core::vcs::git::status::StatusScope;
 use crate::core::vcs::git::{StatusItem, StatusOperation};
 use crate::events::RepositorySyncReason;
 use crate::platform::persistence::Settings;
+use crate::platform::secrets::AiKeyKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompareRequest {
@@ -137,6 +139,26 @@ pub enum Effect {
     },
     SetClipboard(String),
     FetchContextLines(FetchContextLinesRequest),
+    LoadAiKeys,
+    SaveAiKey {
+        kind: AiKeyKind,
+        value: String,
+    },
+    ClearAiKey {
+        kind: AiKeyKind,
+    },
+    GenerateCommitMessage(GenerateCommitMessageRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenerateCommitMessageRequest {
+    pub repo_path: PathBuf,
+    pub has_staged: bool,
+    pub provider: Provider,
+    pub api_key: String,
+    pub steering_prompt: String,
+    pub subject_override: Option<String>,
+    pub generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

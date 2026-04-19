@@ -138,12 +138,28 @@ impl RenderOnce for Button {
             ),
         };
 
+        let disabled = self.disabled;
+        let (bg, icon_color, text_color) = if disabled {
+            (
+                bg,
+                icon_color.with_alpha(Alpha::MUTED),
+                text_color.with_alpha(Alpha::MUTED),
+            )
+        } else {
+            (bg, icon_color, text_color)
+        };
+
         let icon_only = self.icon.is_some() && self.label.is_none();
         let actual_px = if icon_only { unscaled_py } else { unscaled_px };
         let fixed = self.fixed_size.map(|s| (s * scale).round());
         let icon = self.icon;
-        let action = self.action;
+        let action = if disabled { Action::Noop } else { self.action };
         let tooltip_text = self.tooltip_text;
+        let cursor = if disabled {
+            CursorHint::Default
+        } else {
+            CursorHint::Pointer
+        };
 
         let label_el = self.label.map(|label| {
             let mut txt = text(label).medium().color(text_color);
@@ -156,8 +172,8 @@ impl RenderOnce for Button {
 
         view! { scale,
             <div class="shrink-0" bg={bg}
-                 on_click={action}
-                 cursor={CursorHint::Pointer}
+                 cursor={cursor}
+                 @when { !disabled } { on_click={action} }
                  @when { fixed.is_some() } {
                      items_center justify_center
                      w={fixed.unwrap()} h={fixed.unwrap()}
@@ -168,8 +184,8 @@ impl RenderOnce for Button {
                      gap={Sp::SM} px={actual_px} py={unscaled_py}
                      rounded={Rad::XL}
                  }
-                 @when { icon_only } { hover_icon_color={tc.text} }
-                 @when { !icon_only } { hover_bg={hover_bg} }
+                 @when { !disabled && icon_only } { hover_icon_color={tc.text} }
+                 @when { !disabled && !icon_only } { hover_bg={hover_bg} }
                  @when { tooltip_text.is_some() } {
                      tooltip={tooltip_text.as_deref().unwrap_or_default()}
                  }>

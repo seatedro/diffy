@@ -30,6 +30,7 @@ use crate::events::{
     StatusDiffFinished,
 };
 use crate::platform::persistence::{PersistedCompare, Settings};
+use crate::platform::secrets::AiKeyKind;
 use crate::platform::startup::StartupOptions;
 use crate::ui::design::{Sp, Sz};
 use crate::ui::editor::render_doc::{RenderDoc, build_render_doc};
@@ -151,6 +152,7 @@ pub enum SettingsSection {
     Appearance,
     Editor,
     Behavior,
+    Clankers,
     About,
 }
 
@@ -160,6 +162,7 @@ impl SettingsSection {
             Self::Appearance => "Appearance",
             Self::Editor => "Editor",
             Self::Behavior => "Behavior",
+            Self::Clankers => "Clankers",
             Self::About => "About",
         }
     }
@@ -169,11 +172,18 @@ impl SettingsSection {
             Self::Appearance => lucide::SUN,
             Self::Editor => lucide::FILE_CODE,
             Self::Behavior => lucide::SETTINGS,
+            Self::Clankers => lucide::SPARKLES,
             Self::About => lucide::INFO,
         }
     }
 
-    pub const ALL: [Self; 4] = [Self::Appearance, Self::Editor, Self::Behavior, Self::About];
+    pub const ALL: [Self; 5] = [
+        Self::Appearance,
+        Self::Editor,
+        Self::Behavior,
+        Self::Clankers,
+        Self::About,
+    ];
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -215,6 +225,9 @@ pub enum FocusTarget {
     SidebarSearch,
     SearchInput,
     CommitEditor,
+    SettingsOpenAiKey,
+    SettingsAnthropicKey,
+    SettingsSteeringPrompt,
 }
 
 impl FocusTarget {
@@ -226,6 +239,9 @@ impl FocusTarget {
                 | Self::SidebarSearch
                 | Self::SearchInput
                 | Self::CommitEditor
+                | Self::SettingsOpenAiKey
+                | Self::SettingsAnthropicKey
+                | Self::SettingsSteeringPrompt
         )
     }
 }
@@ -917,6 +933,14 @@ pub struct AppState {
     pub text_focused: Signal<bool>,
     pub animation: crate::ui::animation::AnimationState,
     pub commit_editor: Editor,
+    pub steering_prompt_editor: Editor,
+    pub ai_openai_key: String,
+    pub ai_anthropic_key: String,
+    pub ai_openai_editing: bool,
+    pub ai_anthropic_editing: bool,
+    pub ai_generation_id: u64,
+    pub ai_generation_active: bool,
+    pub ai_generation_error: Option<String>,
     /// Shared reactive store. Signals (like `sidebar_visible`) are handles
     /// into this store. Kept in `AppState` so state methods (apply_action etc.)
     /// can freely read/write signals without threading a store parameter.
@@ -974,6 +998,14 @@ impl Default for AppState {
             text_focused,
             animation: crate::ui::animation::AnimationState::default(),
             commit_editor: Editor::default(),
+            steering_prompt_editor: Editor::default(),
+            ai_openai_key: String::new(),
+            ai_anthropic_key: String::new(),
+            ai_openai_editing: false,
+            ai_anthropic_editing: false,
+            ai_generation_id: 0,
+            ai_generation_active: false,
+            ai_generation_error: None,
             sidebar_visible,
             debug,
             store,
@@ -1111,6 +1143,14 @@ impl AppState {
             text_focused,
             animation: crate::ui::animation::AnimationState::default(),
             commit_editor: Editor::default(),
+            steering_prompt_editor: Editor::default(),
+            ai_openai_key: String::new(),
+            ai_anthropic_key: String::new(),
+            ai_openai_editing: false,
+            ai_anthropic_editing: false,
+            ai_generation_id: 0,
+            ai_generation_active: false,
+            ai_generation_error: None,
             sidebar_visible,
             debug,
             store,
@@ -1122,6 +1162,12 @@ impl AppState {
             theme_preview_original,
             github_access_token: None,
         };
+        let seed_prompt = if state.settings.ai_steering_prompt.trim().is_empty() {
+            crate::ai::DEFAULT_STEERING_PROMPT
+        } else {
+            state.settings.ai_steering_prompt.as_str()
+        };
+        state.steering_prompt_editor.set_text(seed_prompt);
         state.sync_settings_snapshot();
 
         let mut effects = Vec::new();
@@ -1151,6 +1197,8 @@ impl AppState {
             state.github.auth.avatar_fetching.set(&state.store, true);
             effects.push(Effect::FetchAvatar { url });
         }
+
+        effects.push(Effect::LoadAiKeys);
         (state, effects)
     }
 
@@ -1342,15 +1390,27 @@ impl AppState {
                 Vec::new()
             }
             EditorClick(x, y) => {
-                self.commit_editor.click(x, y);
+                if self.focus.get(&self.store) == Some(FocusTarget::SettingsSteeringPrompt) {
+                    self.steering_prompt_editor.click(x, y);
+                } else {
+                    self.commit_editor.click(x, y);
+                }
                 Vec::new()
             }
             EditorDrag(x, y) => {
-                self.commit_editor.drag(x, y);
+                if self.focus.get(&self.store) == Some(FocusTarget::SettingsSteeringPrompt) {
+                    self.steering_prompt_editor.drag(x, y);
+                } else {
+                    self.commit_editor.drag(x, y);
+                }
                 Vec::new()
             }
             EditorScrollPx(delta) => {
-                self.commit_editor.scroll(delta as f32);
+                if self.focus.get(&self.store) == Some(FocusTarget::SettingsSteeringPrompt) {
+                    self.steering_prompt_editor.scroll(delta as f32);
+                } else {
+                    self.commit_editor.scroll(delta as f32);
+                }
                 Vec::new()
             }
             ExpandContextAbove(hunk_index, amount) => self.expand_context(
@@ -1370,6 +1430,10 @@ impl AppState {
                 self.start_push_current_branch(force_with_lease)
             }
             PullCurrentBranch => self.start_pull_current_branch(),
+            SetAiKey { kind, value } => self.set_ai_key(kind, value),
+            ClearAiKey { kind } => self.clear_ai_key(kind),
+            SetAiKeyEditing { kind, editing } => self.set_ai_key_editing(kind, editing),
+            GenerateCommitMessage => self.start_generate_commit_message(),
             Noop => Vec::new(),
         }
     }
@@ -1377,6 +1441,9 @@ impl AppState {
     fn apply_text_edit_action(&mut self, action: Action) -> Vec<Effect> {
         if self.focus.get(&self.store) == Some(FocusTarget::CommitEditor) {
             return self.apply_commit_editor_action(action);
+        }
+        if self.focus.get(&self.store) == Some(FocusTarget::SettingsSteeringPrompt) {
+            return self.apply_steering_prompt_action(action);
         }
         match action {
             Action::InsertText(value) => self.insert_text(value),
@@ -1508,6 +1575,245 @@ impl AppState {
             _ => {}
         }
         Vec::new()
+    }
+
+    fn apply_steering_prompt_action(&mut self, action: Action) -> Vec<Effect> {
+        let mut changed = true;
+        match action {
+            Action::InsertText(value) => self.steering_prompt_editor.insert_text(&value),
+            Action::Backspace => self.steering_prompt_editor.delete_backward(),
+            Action::BackspaceWord => self.steering_prompt_editor.delete_backward_word(),
+            Action::BackspaceLine => self.steering_prompt_editor.delete_backward_line(),
+            Action::DeleteForward => self.steering_prompt_editor.delete_forward(),
+            Action::DeleteForwardWord => self.steering_prompt_editor.delete_forward_word(),
+            Action::CursorLeft => {
+                self.steering_prompt_editor.move_left(false);
+                changed = false;
+            }
+            Action::CursorRight => {
+                self.steering_prompt_editor.move_right(false);
+                changed = false;
+            }
+            Action::CursorUp => {
+                self.steering_prompt_editor.move_up(false);
+                changed = false;
+            }
+            Action::CursorDown => {
+                self.steering_prompt_editor.move_down(false);
+                changed = false;
+            }
+            Action::CursorWordLeft => {
+                self.steering_prompt_editor.move_word_left(false);
+                changed = false;
+            }
+            Action::CursorWordRight => {
+                self.steering_prompt_editor.move_word_right(false);
+                changed = false;
+            }
+            Action::CursorHome => {
+                self.steering_prompt_editor.move_home(false);
+                changed = false;
+            }
+            Action::CursorEnd => {
+                self.steering_prompt_editor.move_end(false);
+                changed = false;
+            }
+            Action::CursorSoftHome => {
+                self.steering_prompt_editor.move_soft_home(false);
+                changed = false;
+            }
+            Action::CursorSoftEnd => {
+                self.steering_prompt_editor.move_soft_end(false);
+                changed = false;
+            }
+            Action::SelectLeft => {
+                self.steering_prompt_editor.move_left(true);
+                changed = false;
+            }
+            Action::SelectRight => {
+                self.steering_prompt_editor.move_right(true);
+                changed = false;
+            }
+            Action::SelectUp => {
+                self.steering_prompt_editor.move_up(true);
+                changed = false;
+            }
+            Action::SelectDown => {
+                self.steering_prompt_editor.move_down(true);
+                changed = false;
+            }
+            Action::SelectWordLeft => {
+                self.steering_prompt_editor.move_word_left(true);
+                changed = false;
+            }
+            Action::SelectWordRight => {
+                self.steering_prompt_editor.move_word_right(true);
+                changed = false;
+            }
+            Action::SelectHome => {
+                self.steering_prompt_editor.move_home(true);
+                changed = false;
+            }
+            Action::SelectEnd => {
+                self.steering_prompt_editor.move_end(true);
+                changed = false;
+            }
+            Action::SelectSoftHome => {
+                self.steering_prompt_editor.move_soft_home(true);
+                changed = false;
+            }
+            Action::SelectSoftEnd => {
+                self.steering_prompt_editor.move_soft_end(true);
+                changed = false;
+            }
+            Action::SelectAll => {
+                self.steering_prompt_editor.select_all();
+                changed = false;
+            }
+            Action::Copy => {
+                changed = false;
+                if let Some(text) = self.steering_prompt_editor.selected_text() {
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        let _ = clipboard.set_text(text);
+                    }
+                }
+            }
+            Action::Cut => {
+                if let Some(text) = self.steering_prompt_editor.selected_text() {
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        let _ = clipboard.set_text(text);
+                    }
+                    self.steering_prompt_editor.delete_backward();
+                }
+            }
+            Action::Paste(value) => self.steering_prompt_editor.insert_text(&value),
+            _ => changed = false,
+        }
+        if changed {
+            let snapshot = self.steering_prompt_editor.text().to_owned();
+            if self.settings.ai_steering_prompt != snapshot {
+                self.settings.ai_steering_prompt = snapshot;
+                return self.persist_settings_effect();
+            }
+        }
+        Vec::new()
+    }
+
+    fn set_ai_key(&mut self, kind: AiKeyKind, value: String) -> Vec<Effect> {
+        match kind {
+            AiKeyKind::OpenAi => self.ai_openai_key = value.clone(),
+            AiKeyKind::Anthropic => self.ai_anthropic_key = value.clone(),
+        }
+        if value.is_empty() {
+            vec![Effect::ClearAiKey { kind }]
+        } else {
+            vec![Effect::SaveAiKey { kind, value }]
+        }
+    }
+
+    fn clear_ai_key(&mut self, kind: AiKeyKind) -> Vec<Effect> {
+        match kind {
+            AiKeyKind::OpenAi => {
+                self.ai_openai_key.clear();
+                self.ai_openai_editing = false;
+            }
+            AiKeyKind::Anthropic => {
+                self.ai_anthropic_key.clear();
+                self.ai_anthropic_editing = false;
+            }
+        }
+        vec![Effect::ClearAiKey { kind }]
+    }
+
+    fn set_ai_key_editing(&mut self, kind: AiKeyKind, editing: bool) -> Vec<Effect> {
+        let target = match kind {
+            AiKeyKind::OpenAi => {
+                self.ai_openai_editing = editing;
+                FocusTarget::SettingsOpenAiKey
+            }
+            AiKeyKind::Anthropic => {
+                self.ai_anthropic_editing = editing;
+                FocusTarget::SettingsAnthropicKey
+            }
+        };
+        if editing {
+            self.set_focus(Some(target));
+        } else if self.focus.get(&self.store) == Some(target) {
+            self.set_focus(None);
+        }
+        Vec::new()
+    }
+
+    fn start_generate_commit_message(&mut self) -> Vec<Effect> {
+        if self.ai_generation_active {
+            return Vec::new();
+        }
+        let Some(repo_path) = self
+            .compare
+            .repo_path
+            .with(&self.store, |p| p.as_ref().cloned())
+        else {
+            self.push_error("Open a repository before generating a commit message.");
+            return Vec::new();
+        };
+        let has_staged = self.workspace.status_items.with(&self.store, |items| {
+            items
+                .iter()
+                .any(|item| item.scope == crate::core::vcs::git::status::StatusScope::Staged)
+        });
+        let (provider, api_key) = if !self.ai_anthropic_key.is_empty() {
+            (crate::ai::Provider::Anthropic, self.ai_anthropic_key.clone())
+        } else if !self.ai_openai_key.is_empty() {
+            (crate::ai::Provider::OpenAi, self.ai_openai_key.clone())
+        } else {
+            self.push_error("Add an AI key under Settings \u{2192} Clankers first.");
+            return Vec::new();
+        };
+        let steering_prompt = if self.settings.ai_steering_prompt.trim().is_empty() {
+            crate::ai::DEFAULT_STEERING_PROMPT.to_owned()
+        } else {
+            self.settings.ai_steering_prompt.clone()
+        };
+        let subject_override = {
+            let first_line = self
+                .commit_editor
+                .text()
+                .lines()
+                .next()
+                .map(ToOwned::to_owned)
+                .unwrap_or_default();
+            if first_line.trim().is_empty() {
+                None
+            } else {
+                Some(first_line)
+            }
+        };
+        if subject_override.is_some() {
+            self.commit_editor.insert_text("\n");
+        }
+        self.ai_generation_id = self.ai_generation_id.wrapping_add(1);
+        self.ai_generation_active = true;
+        self.ai_generation_error = None;
+        tracing::info!(
+            generation = self.ai_generation_id,
+            provider = provider.label(),
+            model = provider.model_id(),
+            has_staged,
+            has_subject = subject_override.is_some(),
+            steering_prompt_chars = steering_prompt.len(),
+            "ai: starting commit message generation"
+        );
+        vec![Effect::GenerateCommitMessage(
+            crate::effects::GenerateCommitMessageRequest {
+                repo_path,
+                has_staged,
+                provider,
+                api_key,
+                steering_prompt,
+                subject_override,
+                generation: self.ai_generation_id,
+            },
+        )]
     }
 
     fn apply_overlay_action(&mut self, action: Action) -> Vec<Effect> {
@@ -2583,6 +2889,58 @@ impl AppState {
                 );
                 Vec::new()
             }
+            AppEvent::AiKeysLoaded { openai, anthropic } => {
+                self.ai_openai_key = openai.unwrap_or_default();
+                self.ai_anthropic_key = anthropic.unwrap_or_default();
+                Vec::new()
+            }
+            AppEvent::AiKeysLoadFailed { message } => {
+                tracing::warn!("failed to load AI keys from keyring: {message}");
+                Vec::new()
+            }
+            AppEvent::AiKeySaveFailed { message } => {
+                self.push_error(&format!("Couldn't save AI key to keyring: {message}"));
+                Vec::new()
+            }
+            AppEvent::CommitMessageChunk { generation, chunk } => {
+                if generation == self.ai_generation_id && self.ai_generation_active {
+                    tracing::trace!(generation, bytes = chunk.len(), "ai: chunk");
+                    self.commit_editor.append(&chunk);
+                } else {
+                    tracing::debug!(
+                        generation,
+                        current = self.ai_generation_id,
+                        active = self.ai_generation_active,
+                        "ai: dropping stale chunk"
+                    );
+                }
+                Vec::new()
+            }
+            AppEvent::CommitMessageGenerationFinished { generation } => {
+                if generation == self.ai_generation_id {
+                    self.ai_generation_active = false;
+                    tracing::info!(generation, "ai: generation finished");
+                } else {
+                    tracing::debug!(
+                        generation,
+                        current = self.ai_generation_id,
+                        "ai: stale finish event"
+                    );
+                }
+                Vec::new()
+            }
+            AppEvent::CommitMessageGenerationFailed {
+                generation,
+                message,
+            } => {
+                if generation == self.ai_generation_id {
+                    self.ai_generation_active = false;
+                    self.ai_generation_error = Some(message.clone());
+                }
+                tracing::error!(generation, %message, "ai: generation failed");
+                self.push_error(&format!("Commit message generation failed: {message}"));
+                Vec::new()
+            }
         }
     }
 
@@ -3452,7 +3810,17 @@ impl AppState {
             FocusTarget::SidebarSearch => Some(self.file_list.filter.with(&self.store, |s| f(s))),
             FocusTarget::SearchInput => Some(self.editor.search.query.with(&self.store, |s| f(s))),
             FocusTarget::CommitEditor => None,
+            FocusTarget::SettingsOpenAiKey => Some(f(&self.ai_openai_key)),
+            FocusTarget::SettingsAnthropicKey => Some(f(&self.ai_anthropic_key)),
+            FocusTarget::SettingsSteeringPrompt => None,
             _ => None,
+        }
+    }
+
+    pub(super) fn ai_key_editable(&self, kind: AiKeyKind) -> bool {
+        match kind {
+            AiKeyKind::OpenAi => self.ai_openai_key.is_empty() || self.ai_openai_editing,
+            AiKeyKind::Anthropic => self.ai_anthropic_key.is_empty() || self.ai_anthropic_editing,
         }
     }
 
@@ -3511,6 +3879,21 @@ impl AppState {
                 out
             }
             Some(FocusTarget::CommitEditor) => None,
+            Some(FocusTarget::SettingsOpenAiKey) => {
+                if !self.ai_key_editable(AiKeyKind::OpenAi) {
+                    return None;
+                }
+                let result = f(&mut self.ai_openai_key);
+                Some(result)
+            }
+            Some(FocusTarget::SettingsAnthropicKey) => {
+                if !self.ai_key_editable(AiKeyKind::Anthropic) {
+                    return None;
+                }
+                let result = f(&mut self.ai_anthropic_key);
+                Some(result)
+            }
+            Some(FocusTarget::SettingsSteeringPrompt) => None,
             _ => None,
         }
     }
@@ -6575,7 +6958,11 @@ mod tests {
             state.focus.get(&state.store),
             Some(FocusTarget::WorkspacePrimaryButton)
         );
-        assert!(effects.iter().all(|e| matches!(e, Effect::LoadGitHubToken)));
+        assert!(
+            effects
+                .iter()
+                .all(|e| matches!(e, Effect::LoadGitHubToken | Effect::LoadAiKeys))
+        );
     }
 
     #[test]

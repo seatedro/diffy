@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
+use crate::platform::secrets::AiKeyKind;
 use crate::ui::state::{CompareField, FocusTarget, SettingsSection, SidebarTab};
 use crate::ui::theme::ThemeMode;
 
@@ -161,5 +162,17 @@ pub enum Action {
     ExpandContextAbove(usize, u32),
     ExpandContextBelow(usize, u32),
     ExpandAllContext,
+    SetAiKey {
+        kind: AiKeyKind,
+        value: String,
+    },
+    ClearAiKey {
+        kind: AiKeyKind,
+    },
+    SetAiKeyEditing {
+        kind: AiKeyKind,
+        editing: bool,
+    },
+    GenerateCommitMessage,
     Noop,
 }

@@ -384,6 +384,9 @@ impl NativeApp {
         let effects = self.state.apply_action(action);
         if let Some(renderer) = self.renderer.as_mut() {
             self.state.commit_editor.flush(renderer.font_system_mut());
+            self.state
+                .steering_prompt_editor
+                .flush(renderer.font_system_mut());
         }
         self.runtime.dispatch_all(effects);
         self.sync_theme();
@@ -493,31 +496,36 @@ impl ApplicationHandler for NativeApp {
                 let frame = self.build_frame();
                 self.ui_frame = frame;
                 self.paint_tooltip();
-                if let Some(ha) = self
-                    .ui_frame
-                    .text_input_hit_areas
-                    .iter()
-                    .find(|ha| ha.focus_target == FocusTarget::CommitEditor)
-                {
-                    let w = ha.text_width;
-                    let h = ha.text_height;
-                    let fs = ha.font_size;
-                    if let Some(renderer) = self.renderer.as_mut() {
-                        self.state
-                            .commit_editor
-                            .set_font_size(renderer.font_system_mut(), fs);
-                        self.state
-                            .commit_editor
-                            .sync_size(renderer.font_system_mut(), w, h);
+                for (target, editor) in [
+                    (FocusTarget::CommitEditor, &mut self.state.commit_editor),
+                    (
+                        FocusTarget::SettingsSteeringPrompt,
+                        &mut self.state.steering_prompt_editor,
+                    ),
+                ] {
+                    if let Some(ha) = self
+                        .ui_frame
+                        .text_input_hit_areas
+                        .iter()
+                        .find(|ha| ha.focus_target == target)
+                    {
+                        let w = ha.text_width;
+                        let h = ha.text_height;
+                        let fs = ha.font_size;
+                        if let Some(renderer) = self.renderer.as_mut() {
+                            editor.set_font_size(renderer.font_system_mut(), fs);
+                            editor.sync_size(renderer.font_system_mut(), w, h);
+                            editor.flush(renderer.font_system_mut());
+                        }
                     }
                 }
                 if let Some(renderer) = self.renderer.as_mut() {
                     let time_seconds = self.launch_at.elapsed().as_secs_f32();
-                    match renderer.render(
-                        &self.ui_frame.scene,
-                        time_seconds,
+                    let editors: [Option<&crate::editor::Editor>; 2] = [
                         Some(&self.state.commit_editor),
-                    ) {
+                        Some(&self.state.steering_prompt_editor),
+                    ];
+                    match renderer.render(&self.ui_frame.scene, time_seconds, &editors) {
                         Ok(frame) => {
                             let store = &self.state.store;
                             store.write(

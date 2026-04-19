@@ -1,6 +1,7 @@
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::effects::Effect;
+use crate::platform::secrets::AiKeyKind;
 
 use super::{AppState, CompareField, FocusTarget, PickerKind};
 
@@ -47,6 +48,18 @@ impl AppState {
             },
             Some(FocusTarget::CommandPaletteInput) => return self.rebuild_command_palette(),
             Some(FocusTarget::SearchInput) => self.recompute_search_matches(),
+            Some(FocusTarget::SettingsOpenAiKey) => {
+                return vec![ai_key_save_effect(
+                    AiKeyKind::OpenAi,
+                    &self.ai_openai_key,
+                )];
+            }
+            Some(FocusTarget::SettingsAnthropicKey) => {
+                return vec![ai_key_save_effect(
+                    AiKeyKind::Anthropic,
+                    &self.ai_anthropic_key,
+                )];
+            }
             _ => {}
         }
         Vec::new()
@@ -344,4 +357,15 @@ pub(super) fn next_word_boundary(text: &str, offset: usize) -> usize {
         pos += 1;
     }
     pos
+}
+
+fn ai_key_save_effect(kind: AiKeyKind, value: &str) -> Effect {
+    if value.is_empty() {
+        Effect::ClearAiKey { kind }
+    } else {
+        Effect::SaveAiKey {
+            kind,
+            value: value.to_owned(),
+        }
+    }
 }

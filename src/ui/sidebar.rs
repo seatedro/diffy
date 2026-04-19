@@ -658,10 +658,28 @@ pub(crate) fn sidebar(
                      border={tc.border_variant}
                      @when { commit_focused } { border={tc.accent} }>
                     <div class="flex-1 w-full" min_h={0.0}
-                         px={Sp::SM} pt={Sp::XS}>
+                         px={Sp::SM} pt={Sp::XS}
+                         on_click={Action::SetFocus(Some(FocusTarget::CommitEditor))}
+                         cursor={CursorHint::Text}>
                         {editor_el}
                     </div>
-                    <div class="flex-row items-center" px={Sp::SM} pb={Sp::SM}>
+                    <div class="flex-row items-center" px={Sp::SM} pb={Sp::SM} gap={Sp::XS}>
+                        {Button::new(Action::GenerateCommitMessage)
+                            .icon(lucide::SPARKLES)
+                            .style(ButtonStyle::Ghost)
+                            .size(ButtonSize::Compact)
+                            .tooltip(if state.ai_generation_active {
+                                "Generating\u{2026}"
+                            } else if state.ai_openai_key.is_empty() && state.ai_anthropic_key.is_empty() {
+                                "Add an AI key in Settings \u{2192} Clankers"
+                            } else {
+                                "Generate commit message with AI"
+                            })
+                            .disabled(
+                                state.ai_generation_active
+                                    || (state.ai_openai_key.is_empty()
+                                        && state.ai_anthropic_key.is_empty())
+                            )}
                         <spacer />
                         {Button::new(Action::SubmitCommit)
                             .label("Commit")

@@ -24,6 +24,7 @@ pub struct TextEditorElement {
     font_size: f32,
     text_color: crate::ui::theme::Color,
     focus_target: FocusTarget,
+    editor_id: u8,
     base_style: ElementStyle,
 }
 
@@ -39,6 +40,7 @@ pub fn text_editor_element() -> TextEditorElement {
         font_size: 14.0,
         text_color: crate::ui::theme::Color::rgba(255, 255, 255, 255),
         focus_target: FocusTarget::FileList,
+        editor_id: 0,
         base_style: ElementStyle::default(),
     }
 }
@@ -91,6 +93,11 @@ impl TextEditorElement {
 
     pub fn focus_target(mut self, target: FocusTarget) -> Self {
         self.focus_target = target;
+        self
+    }
+
+    pub fn editor_id(mut self, id: u8) -> Self {
+        self.editor_id = id;
         self
     }
 }
@@ -190,6 +197,7 @@ impl Element for TextEditorElement {
                 color: self.text_color,
                 font_size,
                 scroll_y: self.scroll_y,
+                editor_id: self.editor_id,
             });
         }
 

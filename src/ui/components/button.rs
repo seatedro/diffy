@@ -103,7 +103,7 @@ impl RenderOnce for Button {
         let (bg, hover_bg, icon_color, text_color) = match self.style {
             ButtonStyle::Filled => (
                 tc.accent,
-                tc.accent.with_alpha(Alpha::HOVER),
+                tc.accent_strong,
                 tc.text_strong,
                 tc.text_strong,
             ),

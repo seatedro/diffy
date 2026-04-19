@@ -20,6 +20,7 @@ pub struct ThemeColors {
     pub border_soft: Color,
     pub text_strong: Color,
     pub accent: Color,
+    pub accent_strong: Color,
     pub selection_bg: Color,
     pub background: Color,
     pub surface: Color,
@@ -302,6 +303,7 @@ fn dark_colors(
 
         // Accent — vibrant blue
         accent: b[Solid],
+        accent_strong: b[TextSubtle],
         selection_bg: b[ElementActive],
 
         // Overlay
@@ -402,6 +404,7 @@ fn light_colors(
 
         // Accent
         accent: b[Solid],
+        accent_strong: b[TextSubtle],
         selection_bg: b[ElementHover],
 
         // Overlay

@@ -2208,7 +2208,10 @@ fn build_spatial_layout(
 }
 
 fn dim_bg(c: Color) -> Color {
-    Color { a: c.a / 2, ..c }
+    Color {
+        a: ((c.a as u16 * 200) / 255) as u8,
+        ..c
+    }
 }
 
 fn paint_row_background(scene: &mut Scene, theme: &Theme, row_rect: Rect, kind: RenderRowKind) {

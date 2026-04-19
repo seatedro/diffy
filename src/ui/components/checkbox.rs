@@ -1,7 +1,7 @@
 use halogen::view;
 
 use crate::actions::Action;
-use crate::ui::design::{Alpha, Shadow, Sp, Sz};
+use crate::ui::design::{Shadow, Sp, Sz};
 use crate::ui::element::{
     AnyElement, ElementContext, IntoAnyElement, RenderOnce, div, svg_icon, text,
 };
@@ -149,7 +149,7 @@ impl RenderOnce for Toggle {
         };
 
         let hover_bg = if self.on {
-            tc.accent.with_alpha(Alpha::HOVER_ALT)
+            tc.accent_strong
         } else {
             tc.element_hover
         };

@@ -232,12 +232,27 @@ impl SemanticPalette {
         let text = ensure_contrast(s.text_base, s.panel, 4.5, d);
         let text_strong = ensure_contrast(s.text_strong, s.panel_strong, 4.5, d);
         let text_muted = ensure_contrast(s.text_muted, s.panel, 3.0, d);
+        let icon = ensure_contrast(s.text_base, s.panel, 4.5, d);
 
-        let element_hover = s.panel.lerp(s.text_base, 0.08);
-        let element_active = s.panel.lerp(s.text_base, 0.14);
+        // element_* are opaque tiers above panel (Radix step 3→4→5 pattern).
+        // Ghost_* use alpha overlays so they work on any surface (sidebar rows,
+        // toolbar slots) — the element renders as the parent bg + overlay.
+        // Dark themes brighten with white, light themes darken with black.
+        let overlay = if d {
+            Color::rgba(255, 255, 255, 255)
+        } else {
+            Color::rgba(0, 0, 0, 255)
+        };
 
-        let ghost_hover = s.panel.lerp(s.accent_soft, 0.3);
-        let ghost_active = s.panel.lerp(s.accent_soft, 0.5);
+        let element_hover = s.panel.lerp(overlay, if d { 0.12 } else { 0.08 });
+        let element_active = s.panel.lerp(overlay, if d { 0.20 } else { 0.14 });
+        let ghost_hover = overlay.with_alpha(if d { 18 } else { 22 });
+        let ghost_active = overlay.with_alpha(if d { 32 } else { 40 });
+
+        // Accent-tinted hover for "primary" slots (sidebar rows, selected
+        // items). Alpha so it tints whatever surface it sits on.
+        let accent_tint_hover = s.accent.with_alpha(if d { 38 } else { 48 });
+        let accent_tint_selected = s.accent.with_alpha(if d { 66 } else { 76 });
 
         ThemeColors {
             app_bg: s.app_bg,
@@ -263,14 +278,14 @@ impl SemanticPalette {
             element_background: s.panel,
             element_hover,
             element_active,
-            element_selected: s.accent_soft,
+            element_selected: accent_tint_selected,
             ghost_element_hover: ghost_hover,
             ghost_element_active: ghost_active,
-            ghost_element_selected: s.accent_soft,
-            hover_overlay: s.panel.lerp(s.accent_soft, 0.5),
+            ghost_element_selected: accent_tint_selected,
+            hover_overlay: accent_tint_hover,
 
-            sidebar_row_hover: s.panel.lerp(s.accent_soft, 0.5),
-            sidebar_row_selected: s.accent_soft,
+            sidebar_row_hover: accent_tint_hover,
+            sidebar_row_selected: accent_tint_selected,
 
             border: s.border_strong,
             border_variant: s.border_soft,
@@ -281,10 +296,11 @@ impl SemanticPalette {
             text,
             text_muted,
             text_accent: s.accent,
-            icon: s.text_muted,
+            icon,
             gutter_text: s.text_faint,
 
             accent: s.accent,
+            accent_strong: s.accent_strong,
             selection_bg: s.selection_bg,
 
             overlay_scrim: if d {

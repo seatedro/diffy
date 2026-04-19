@@ -159,6 +159,53 @@ pub enum AppEvent {
         file_index: usize,
         message: String,
     },
+    FetchProgress {
+        toast_id: u64,
+        received_objects: usize,
+        total_objects: usize,
+        received_bytes: usize,
+    },
+    FetchComplete {
+        toast_id: u64,
+        path: PathBuf,
+        remote: String,
+    },
+    FetchFailed {
+        toast_id: u64,
+        remote: String,
+        message: String,
+    },
+    PushProgress {
+        toast_id: u64,
+        current: usize,
+        total: usize,
+        bytes: usize,
+    },
+    PushComplete {
+        toast_id: u64,
+        path: PathBuf,
+        remote: String,
+        branch: String,
+    },
+    PushFailed {
+        toast_id: u64,
+        remote: String,
+        message: String,
+    },
+    PullComplete {
+        toast_id: u64,
+        path: PathBuf,
+        remote: String,
+        branch: String,
+        already_up_to_date: bool,
+        behind: usize,
+    },
+    PullFailed {
+        toast_id: u64,
+        remote: String,
+        branch: String,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone)]

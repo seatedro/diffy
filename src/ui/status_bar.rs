@@ -1,7 +1,9 @@
+use crate::actions::Action;
 use crate::core::compare::{CompareMode, RendererKind};
-use crate::ui::design::{Ico, Sp};
+use crate::ui::design::{Ico, Rad, Sp};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
+use crate::ui::shell::CursorHint;
 use crate::ui::state::WorkspaceSource;
 use crate::ui::state::{AppState, AsyncStatus};
 use crate::ui::style::Styled;
@@ -18,16 +20,26 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
         AsyncStatus::Idle => (lucide::INFO, tc.text_muted, "idle"),
     };
 
-    let head_branch = state.repository.branches.with(&state.store, |branches| {
-        branches.iter().find(|b| b.is_head).map(|b| b.name.clone())
+    let head_branch_info = state.repository.branches.with(&state.store, |branches| {
+        branches
+            .iter()
+            .find(|b| b.is_head)
+            .map(|b| (b.name.clone(), b.upstream.clone(), b.ahead_behind))
     });
 
-    let branch_children = head_branch.map(|branch| {
+    let branch_children = head_branch_info.map(|(branch, upstream, ahead_behind)| {
+        let sync_chip = ahead_behind.and_then(|counts| {
+            let remote = upstream
+                .as_deref()
+                .and_then(|u| u.split_once('/').map(|(r, _)| r.to_owned()));
+            remote.map(|remote| sync_chip(tc, scale, counts, remote))
+        });
         view! { scale,
             <div class="flex-row items-center" gap={Sp::SM}>
                 <text class="text-xs" color={tc.text_muted}>{"\u{00b7}"}</text>
                 <icon svg={lucide::GIT_BRANCH} size={Ico::XS} color={tc.text_muted} />
                 <text class="text-xs truncate" color={tc.text_muted}>{branch}</text>
+                {?sync_chip}
             </div>
         }
     });
@@ -71,6 +83,52 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
             <text class="text-xs" color={tc.text_muted}>{right_text}</text>
         </div>
     }
+}
+
+/// Clickable ahead/behind indicator next to the branch name. Colors the
+/// ahead/behind halves independently and dispatches the "obvious" action on
+/// click:
+/// - ahead only → push
+/// - behind only → fast-forward pull
+/// - both zero or both non-zero → fetch (safe refresh)
+fn sync_chip(
+    tc: &crate::ui::theme::ThemeColors,
+    scale: f32,
+    counts: (usize, usize),
+    remote: String,
+) -> AnyElement {
+    let (ahead, behind) = counts;
+
+    let action = match (ahead, behind) {
+        (a, 0) if a > 0 => Action::PushCurrentBranch {
+            force_with_lease: false,
+        },
+        (0, b) if b > 0 => Action::PullCurrentBranch,
+        _ => Action::FetchRemote(remote),
+    };
+
+    // Halves brighten when their count is non-zero. Using text_strong / text_muted
+    // keeps the chip on-theme instead of borrowing diff-body colors.
+    let ahead_color = if ahead > 0 { tc.text_strong } else { tc.text_muted };
+    let behind_color = if behind > 0 { tc.text_strong } else { tc.text_muted };
+
+    view! { scale,
+        <div class="flex-row items-center"
+            gap={Sp::XS}
+            px={Sp::SM}
+            py={2.0}
+            rounded={Rad::SM}
+            hover_bg={tc.ghost_element_hover}
+            cursor={CursorHint::Pointer}
+            on_click={action}
+        >
+            <icon svg={lucide::ARROW_UP} size={Ico::XS} color={ahead_color} />
+            <text class="text-xs" color={ahead_color}>{ahead.to_string()}</text>
+            <icon svg={lucide::ARROW_DOWN} size={Ico::XS} color={behind_color} />
+            <text class="text-xs" color={behind_color}>{behind.to_string()}</text>
+        </div>
+    }
+    .into_any()
 }
 
 pub(crate) fn compare_mode_label(mode: CompareMode) -> &'static str {

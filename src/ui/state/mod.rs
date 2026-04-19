@@ -22,8 +22,8 @@ use crate::core::vcs::git::{
 use crate::core::vcs::github::{DeviceFlowState, GitHubUser, PullRequestInfo};
 use crate::editor::Editor;
 use crate::effects::{
-    BatchStatusOperationRequest, CommitRequest, CompareRequest, Effect, PatchOperationRequest,
-    StatusDiffRequest, StatusOperationRequest,
+    BatchStatusOperationRequest, CommitRequest, CompareRequest, Effect, FetchRemoteRequest,
+    PatchOperationRequest, PullFfRequest, PushRequest, StatusDiffRequest, StatusOperationRequest,
 };
 use crate::events::{
     AppEvent, CompareFinished, RepositoryChangeKind, RepositorySnapshot, RepositorySyncReason,
@@ -609,6 +609,11 @@ pub enum PaletteCommand {
     ChangeTheme,
     SetLayout(LayoutMode),
     SetTheme(String),
+    FetchOrigin,
+    FetchAllRemotes,
+    PushCurrentBranch,
+    PushCurrentBranchForceWithLease,
+    PullCurrentBranch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -824,6 +829,9 @@ pub struct Toast {
     pub description: Option<String>,
     pub created_at_ms: u64,
     pub hovered: bool,
+    /// When `Some`, the toast renders an externally-driven progress bar in
+    /// place of the time-based one and is pinned (not auto-dismissed).
+    pub progress: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1301,6 +1309,12 @@ impl AppState {
                 amount,
             ),
             ExpandAllContext => self.expand_all_context(),
+            FetchRemote(remote) => self.start_fetch_remote(remote),
+            FetchAllRemotes => self.start_fetch_all_remotes(),
+            PushCurrentBranch { force_with_lease } => {
+                self.start_push_current_branch(force_with_lease)
+            }
+            PullCurrentBranch => self.start_pull_current_branch(),
             Noop => Vec::new(),
         }
     }
@@ -2363,6 +2377,124 @@ impl AppState {
                 self.push_error(&message);
                 Vec::new()
             }
+            AppEvent::FetchProgress {
+                toast_id,
+                received_objects,
+                total_objects,
+                received_bytes,
+            } => {
+                let fraction = if total_objects > 0 {
+                    received_objects as f32 / total_objects as f32
+                } else {
+                    0.0
+                };
+                self.update_toast_progress(toast_id, fraction);
+                if total_objects > 0 {
+                    let kib = received_bytes / 1024;
+                    self.update_toast_message(
+                        toast_id,
+                        &format!(
+                            "Fetching {received_objects}/{total_objects} objects ({kib} KiB)\u{2026}"
+                        ),
+                    );
+                }
+                Vec::new()
+            }
+            AppEvent::FetchComplete {
+                toast_id,
+                path: _,
+                remote,
+            } => {
+                self.finish_progress_toast(toast_id, &format!("Fetched {remote}"), None);
+                Vec::new()
+            }
+            AppEvent::FetchFailed {
+                toast_id,
+                remote,
+                message,
+            } => {
+                self.fail_progress_toast(
+                    toast_id,
+                    &format!("Fetch from {remote} failed"),
+                    Some(message),
+                );
+                Vec::new()
+            }
+            AppEvent::PushProgress {
+                toast_id,
+                current,
+                total,
+                bytes,
+            } => {
+                let fraction = if total > 0 {
+                    current as f32 / total as f32
+                } else {
+                    0.0
+                };
+                self.update_toast_progress(toast_id, fraction);
+                if total > 0 {
+                    let kib = bytes / 1024;
+                    self.update_toast_message(
+                        toast_id,
+                        &format!("Pushing {current}/{total} objects ({kib} KiB)\u{2026}"),
+                    );
+                }
+                Vec::new()
+            }
+            AppEvent::PushComplete {
+                toast_id,
+                path: _,
+                remote,
+                branch,
+            } => {
+                self.finish_progress_toast(
+                    toast_id,
+                    &format!("Pushed {branch} to {remote}"),
+                    None,
+                );
+                Vec::new()
+            }
+            AppEvent::PushFailed {
+                toast_id,
+                remote,
+                message,
+            } => {
+                self.fail_progress_toast(
+                    toast_id,
+                    &format!("Push to {remote} failed"),
+                    Some(message),
+                );
+                Vec::new()
+            }
+            AppEvent::PullComplete {
+                toast_id,
+                path: _,
+                remote,
+                branch,
+                already_up_to_date,
+                behind,
+            } => {
+                let message = if already_up_to_date {
+                    format!("{branch} is already up to date with {remote}")
+                } else {
+                    format!("Fast-forwarded {branch} by {behind} commit(s) from {remote}")
+                };
+                self.finish_progress_toast(toast_id, &message, None);
+                Vec::new()
+            }
+            AppEvent::PullFailed {
+                toast_id,
+                remote: _,
+                branch,
+                message,
+            } => {
+                self.fail_progress_toast(
+                    toast_id,
+                    &format!("Pull into {branch} failed"),
+                    Some(message),
+                );
+                Vec::new()
+            }
         }
     }
 
@@ -2388,7 +2520,9 @@ impl AppState {
         self.animation.tick(now_ms);
         self.toasts.update(&self.store, |toasts| {
             toasts.retain(|toast| {
-                toast.hovered || now_ms.saturating_sub(toast.created_at_ms) < TOAST_LIFETIME_MS
+                toast.hovered
+                    || toast.progress.is_some()
+                    || now_ms.saturating_sub(toast.created_at_ms) < TOAST_LIFETIME_MS
             });
         });
     }
@@ -2414,7 +2548,7 @@ impl AppState {
         self.toasts.with(&self.store, |toasts| {
             toasts
                 .iter()
-                .filter(|toast| !toast.hovered)
+                .filter(|toast| !toast.hovered && toast.progress.is_none())
                 .map(|toast| toast.created_at_ms.saturating_add(TOAST_LIFETIME_MS))
                 .min()
         })
@@ -4055,6 +4189,21 @@ impl AppState {
                 }
                 PaletteCommand::ChangeTheme => self.apply_action(Action::OpenThemePicker),
                 PaletteCommand::SetTheme(name) => self.apply_action(Action::SetThemeName(name)),
+                PaletteCommand::FetchOrigin => {
+                    self.apply_action(Action::FetchRemote("origin".to_owned()))
+                }
+                PaletteCommand::FetchAllRemotes => self.apply_action(Action::FetchAllRemotes),
+                PaletteCommand::PushCurrentBranch => self.apply_action(Action::PushCurrentBranch {
+                    force_with_lease: false,
+                }),
+                PaletteCommand::PushCurrentBranchForceWithLease => {
+                    self.apply_action(Action::PushCurrentBranch {
+                        force_with_lease: true,
+                    })
+                }
+                PaletteCommand::PullCurrentBranch => {
+                    self.apply_action(Action::PullCurrentBranch)
+                }
             },
             PaletteEntryKind::File(index) => self.select_file(index, true),
             PaletteEntryKind::Repo(path) => self.open_repository(path),
@@ -4666,6 +4815,31 @@ impl AppState {
                 "Use Split Layout".to_owned(),
                 "Set side-by-side diff mode".to_owned(),
                 PaletteCommand::SetLayout(LayoutMode::Split),
+            ),
+            (
+                "Fetch origin".to_owned(),
+                "Update tracking branches from origin".to_owned(),
+                PaletteCommand::FetchOrigin,
+            ),
+            (
+                "Fetch all remotes".to_owned(),
+                "Update tracking branches from every configured remote".to_owned(),
+                PaletteCommand::FetchAllRemotes,
+            ),
+            (
+                "Pull current branch".to_owned(),
+                "Fast-forward the current branch from its upstream".to_owned(),
+                PaletteCommand::PullCurrentBranch,
+            ),
+            (
+                "Push current branch".to_owned(),
+                "Push the current branch to its upstream".to_owned(),
+                PaletteCommand::PushCurrentBranch,
+            ),
+            (
+                "Push current branch (force with lease)".to_owned(),
+                "Force-push the current branch; refuses if upstream moved".to_owned(),
+                PaletteCommand::PushCurrentBranchForceWithLease,
             ),
         ] {
             let search_text = format!("{label} {detail}");
@@ -5410,27 +5584,245 @@ impl AppState {
         }
     }
 
-    fn push_error(&mut self, message: &str) {
+    fn push_error(&mut self, message: &str) -> u64 {
         self.last_error.set(&self.store, Some(message.to_owned()));
-        self.push_toast(ToastKind::Error, message, None);
+        self.push_toast(ToastKind::Error, message, None, None)
     }
 
-    fn push_info(&mut self, message: &str) {
-        self.push_toast(ToastKind::Info, message, None);
+    fn push_info(&mut self, message: &str) -> u64 {
+        self.push_toast(ToastKind::Info, message, None, None)
     }
 
     #[allow(dead_code)]
-    fn push_error_with_description(&mut self, message: &str, description: &str) {
+    fn push_error_with_description(&mut self, message: &str, description: &str) -> u64 {
         self.last_error.set(&self.store, Some(message.to_owned()));
-        self.push_toast(ToastKind::Error, message, Some(description.to_owned()));
+        self.push_toast(ToastKind::Error, message, Some(description.to_owned()), None)
     }
 
     #[allow(dead_code)]
-    fn push_info_with_description(&mut self, message: &str, description: &str) {
-        self.push_toast(ToastKind::Info, message, Some(description.to_owned()));
+    fn push_info_with_description(&mut self, message: &str, description: &str) -> u64 {
+        self.push_toast(ToastKind::Info, message, Some(description.to_owned()), None)
     }
 
-    fn push_toast(&mut self, kind: ToastKind, message: &str, description: Option<String>) {
+    /// Create an info toast with an externally-driven progress bar (0.0-1.0).
+    /// The toast is pinned until `finish_progress_toast` or `fail_progress_toast`
+    /// is called — it does not auto-dismiss based on time.
+    fn push_progress_toast(&mut self, message: &str) -> u64 {
+        self.push_toast(ToastKind::Info, message, None, Some(0.0))
+    }
+
+    /// Convert a pinned progress toast into a normal info toast and let it
+    /// auto-dismiss. Also updates its message and description.
+    fn finish_progress_toast(
+        &mut self,
+        toast_id: u64,
+        message: &str,
+        description: Option<String>,
+    ) {
+        let now = self.clock_ms;
+        self.toasts.update(&self.store, |toasts| {
+            if let Some(toast) = toasts.iter_mut().find(|t| t.id == toast_id) {
+                toast.kind = ToastKind::Info;
+                toast.message = message.to_owned();
+                toast.description = description;
+                toast.created_at_ms = now;
+                toast.progress = None;
+            }
+        });
+    }
+
+    /// Convert a pinned progress toast into an error toast.
+    fn fail_progress_toast(
+        &mut self,
+        toast_id: u64,
+        message: &str,
+        description: Option<String>,
+    ) {
+        let now = self.clock_ms;
+        self.last_error.set(&self.store, Some(message.to_owned()));
+        self.toasts.update(&self.store, |toasts| {
+            if let Some(toast) = toasts.iter_mut().find(|t| t.id == toast_id) {
+                toast.kind = ToastKind::Error;
+                toast.message = message.to_owned();
+                toast.description = description;
+                toast.created_at_ms = now;
+                toast.progress = None;
+            }
+        });
+    }
+
+    fn update_toast_progress(&mut self, toast_id: u64, fraction: f32) {
+        let clamped = fraction.clamp(0.0, 1.0);
+        self.toasts.update(&self.store, |toasts| {
+            if let Some(toast) = toasts.iter_mut().find(|t| t.id == toast_id) {
+                toast.progress = Some(clamped);
+            }
+        });
+    }
+
+    fn update_toast_message(&mut self, toast_id: u64, message: &str) {
+        self.toasts.update(&self.store, |toasts| {
+            if let Some(toast) = toasts.iter_mut().find(|t| t.id == toast_id) {
+                toast.message = message.to_owned();
+            }
+        });
+    }
+
+    fn start_fetch_remote(&mut self, remote: String) -> Vec<Effect> {
+        let Some(repo_path) = self.compare.repo_path.with(&self.store, |p| p.clone()) else {
+            self.push_error("Open a repository before fetching.");
+            return Vec::new();
+        };
+        let toast_id = self.push_progress_toast(&format!("Fetching {remote}\u{2026}"));
+        vec![Effect::FetchRemote(FetchRemoteRequest {
+            repo_path,
+            remote,
+            toast_id,
+        })]
+    }
+
+    fn start_fetch_all_remotes(&mut self) -> Vec<Effect> {
+        let Some(repo_path) = self.compare.repo_path.with(&self.store, |p| p.clone()) else {
+            self.push_error("Open a repository before fetching.");
+            return Vec::new();
+        };
+        let remotes = match crate::core::vcs::git::GitService::new_with_open(&repo_path)
+            .and_then(|git| git.remote_names())
+        {
+            Ok(names) if !names.is_empty() => names,
+            Ok(_) => {
+                self.push_error("No remotes are configured for this repository.");
+                return Vec::new();
+            }
+            Err(error) => {
+                self.push_error(&error.to_string());
+                return Vec::new();
+            }
+        };
+        remotes
+            .into_iter()
+            .flat_map(|remote| {
+                let toast_id = self.push_progress_toast(&format!("Fetching {remote}\u{2026}"));
+                std::iter::once(Effect::FetchRemote(FetchRemoteRequest {
+                    repo_path: repo_path.clone(),
+                    remote,
+                    toast_id,
+                }))
+            })
+            .collect()
+    }
+
+    fn start_push_current_branch(&mut self, force_with_lease: bool) -> Vec<Effect> {
+        let Some(repo_path) = self.compare.repo_path.with(&self.store, |p| p.clone()) else {
+            self.push_error("Open a repository before pushing.");
+            return Vec::new();
+        };
+        let git = match crate::core::vcs::git::GitService::new_with_open(&repo_path) {
+            Ok(git) => git,
+            Err(error) => {
+                self.push_error(&error.to_string());
+                return Vec::new();
+            }
+        };
+        let branch = match git.head_branch_name() {
+            Ok(Some(name)) => name,
+            Ok(None) => {
+                self.push_error("HEAD is detached; no branch to push.");
+                return Vec::new();
+            }
+            Err(error) => {
+                self.push_error(&error.to_string());
+                return Vec::new();
+            }
+        };
+        let upstream = git.upstream_for(&branch).ok().flatten();
+        let (remote, refspec) = match upstream {
+            Some((remote, upstream_branch)) => (
+                remote,
+                format!("refs/heads/{branch}:refs/heads/{upstream_branch}"),
+            ),
+            None => {
+                // No upstream configured yet — default to `origin/<branch>`.
+                let remotes = git.remote_names().unwrap_or_default();
+                let remote = if remotes.iter().any(|n| n == "origin") {
+                    "origin".to_owned()
+                } else if let Some(first) = remotes.first() {
+                    first.clone()
+                } else {
+                    self.push_error("No remotes are configured for this repository.");
+                    return Vec::new();
+                };
+                (remote, format!("refs/heads/{branch}:refs/heads/{branch}"))
+            }
+        };
+        let label = if force_with_lease {
+            format!("Force-pushing {branch} to {remote}\u{2026}")
+        } else {
+            format!("Pushing {branch} to {remote}\u{2026}")
+        };
+        let toast_id = self.push_progress_toast(&label);
+        vec![Effect::Push(PushRequest {
+            repo_path,
+            remote,
+            refspec,
+            force_with_lease,
+            toast_id,
+        })]
+    }
+
+    fn start_pull_current_branch(&mut self) -> Vec<Effect> {
+        let Some(repo_path) = self.compare.repo_path.with(&self.store, |p| p.clone()) else {
+            self.push_error("Open a repository before pulling.");
+            return Vec::new();
+        };
+        let git = match crate::core::vcs::git::GitService::new_with_open(&repo_path) {
+            Ok(git) => git,
+            Err(error) => {
+                self.push_error(&error.to_string());
+                return Vec::new();
+            }
+        };
+        let branch = match git.head_branch_name() {
+            Ok(Some(name)) => name,
+            Ok(None) => {
+                self.push_error("HEAD is detached; no branch to pull into.");
+                return Vec::new();
+            }
+            Err(error) => {
+                self.push_error(&error.to_string());
+                return Vec::new();
+            }
+        };
+        let (remote, upstream_branch) = match git.upstream_for(&branch) {
+            Ok(Some(pair)) => pair,
+            Ok(None) => {
+                self.push_error(&format!(
+                    "No upstream configured for {branch}. Push once to set one."
+                ));
+                return Vec::new();
+            }
+            Err(error) => {
+                self.push_error(&error.to_string());
+                return Vec::new();
+            }
+        };
+        let toast_id =
+            self.push_progress_toast(&format!("Pulling {branch} from {remote}\u{2026}"));
+        vec![Effect::PullFf(PullFfRequest {
+            repo_path,
+            remote,
+            branch: upstream_branch,
+            toast_id,
+        })]
+    }
+
+    fn push_toast(
+        &mut self,
+        kind: ToastKind,
+        message: &str,
+        description: Option<String>,
+        progress: Option<f32>,
+    ) -> u64 {
         use crate::ui::animation::AnimationKey;
         let id = self.next_toast_id;
         self.next_toast_id = self.next_toast_id.saturating_add(1);
@@ -5449,11 +5841,13 @@ impl AppState {
                 description,
                 created_at_ms: now,
                 hovered: false,
+                progress,
             });
             if toasts.len() > MAX_VISIBLE_TOASTS {
                 toasts.remove(0);
             }
         });
+        id
     }
 
     fn open_search(&mut self) {
@@ -6428,6 +6822,8 @@ mod tests {
                 name: "main".to_owned(),
                 is_remote: false,
                 is_head: true,
+                upstream: None,
+                ahead_behind: None,
             }],
         );
 

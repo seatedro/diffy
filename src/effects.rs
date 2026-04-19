@@ -49,6 +49,30 @@ pub struct CommitRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchRemoteRequest {
+    pub repo_path: PathBuf,
+    pub remote: String,
+    pub toast_id: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushRequest {
+    pub repo_path: PathBuf,
+    pub remote: String,
+    pub refspec: String,
+    pub force_with_lease: bool,
+    pub toast_id: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullFfRequest {
+    pub repo_path: PathBuf,
+    pub remote: String,
+    pub branch: String,
+    pub toast_id: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     OpenRepositoryDialog,
     WatchRepository {
@@ -58,6 +82,9 @@ pub enum Effect {
         path: PathBuf,
         reason: RepositorySyncReason,
     },
+    FetchRemote(FetchRemoteRequest),
+    Push(PushRequest),
+    PullFf(PullFfRequest),
     RunCompare {
         generation: u64,
         request: CompareRequest,

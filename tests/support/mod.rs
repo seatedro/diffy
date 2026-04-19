@@ -278,6 +278,7 @@ pub fn toasts_state() -> AppState {
                 description: None,
                 created_at_ms: 0,
                 hovered: false,
+                progress: None,
             },
             Toast {
                 id: 2,
@@ -286,6 +287,7 @@ pub fn toasts_state() -> AppState {
                 description: Some("Check the ref name or network connection.".to_owned()),
                 created_at_ms: 0,
                 hovered: false,
+                progress: None,
             },
         ],
     );

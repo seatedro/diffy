@@ -6,7 +6,6 @@ pub mod editor;
 pub mod editor_element;
 pub mod element;
 pub mod icons;
-pub mod nonicons;
 pub mod overlays;
 pub mod palette;
 pub mod shell;

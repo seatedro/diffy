@@ -68,6 +68,40 @@ impl GitWorker {
         let _ = self.sender.send(GitWorkerCommand::Commit { path, message });
     }
 
+    pub fn dispatch_fetch(&self, path: PathBuf, remote: String, toast_id: u64) {
+        let _ = self.sender.send(GitWorkerCommand::Fetch {
+            path,
+            remote,
+            toast_id,
+        });
+    }
+
+    pub fn dispatch_push(
+        &self,
+        path: PathBuf,
+        remote: String,
+        refspec: String,
+        force_with_lease: bool,
+        toast_id: u64,
+    ) {
+        let _ = self.sender.send(GitWorkerCommand::Push {
+            path,
+            remote,
+            refspec,
+            force_with_lease,
+            toast_id,
+        });
+    }
+
+    pub fn dispatch_pull_ff(&self, path: PathBuf, remote: String, branch: String, toast_id: u64) {
+        let _ = self.sender.send(GitWorkerCommand::PullFf {
+            path,
+            remote,
+            branch,
+            toast_id,
+        });
+    }
+
     pub(crate) fn sender(&self) -> Sender<GitWorkerCommand> {
         self.sender.clone()
     }
@@ -98,6 +132,24 @@ pub(crate) enum GitWorkerCommand {
     Commit {
         path: PathBuf,
         message: String,
+    },
+    Fetch {
+        path: PathBuf,
+        remote: String,
+        toast_id: u64,
+    },
+    Push {
+        path: PathBuf,
+        remote: String,
+        refspec: String,
+        force_with_lease: bool,
+        toast_id: u64,
+    },
+    PullFf {
+        path: PathBuf,
+        remote: String,
+        branch: String,
+        toast_id: u64,
     },
     Dirty {
         path: PathBuf,
@@ -183,6 +235,41 @@ fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorke
             Some(GitWorkerCommand::Commit { path, message }) => {
                 pending_dirty = None;
                 apply_commit(&mut state, &event_sender, path, &message);
+            }
+            Some(GitWorkerCommand::Fetch {
+                path,
+                remote,
+                toast_id,
+            }) => {
+                pending_dirty = None;
+                apply_fetch(&mut state, &event_sender, path, remote, toast_id);
+            }
+            Some(GitWorkerCommand::Push {
+                path,
+                remote,
+                refspec,
+                force_with_lease,
+                toast_id,
+            }) => {
+                pending_dirty = None;
+                apply_push(
+                    &mut state,
+                    &event_sender,
+                    path,
+                    remote,
+                    refspec,
+                    force_with_lease,
+                    toast_id,
+                );
+            }
+            Some(GitWorkerCommand::PullFf {
+                path,
+                remote,
+                branch,
+                toast_id,
+            }) => {
+                pending_dirty = None;
+                apply_pull_ff(&mut state, &event_sender, path, remote, branch, toast_id);
             }
             Some(GitWorkerCommand::Dirty { path }) => {
                 pending_dirty = Some(path);
@@ -344,6 +431,190 @@ fn apply_commit(
 
     event_sender.send(AppEvent::CommitCreated { path: path.clone() });
     sync_repository_forced(state, event_sender, path, RepositorySyncReason::Dirty);
+}
+
+fn ensure_open(
+    state: &mut GitWorkerState,
+    path: &PathBuf,
+) -> std::result::Result<(), String> {
+    if state.active_path.as_ref() != Some(path) {
+        state.git.close();
+        state.snapshot = None;
+        state.active_path = Some(path.clone());
+    }
+    if !state.git.is_open() {
+        state
+            .git
+            .open(path.to_string_lossy().as_ref())
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn apply_fetch(
+    state: &mut GitWorkerState,
+    event_sender: &RuntimeEventSender,
+    path: PathBuf,
+    remote: String,
+    toast_id: u64,
+) {
+    if let Err(message) = ensure_open(state, &path) {
+        event_sender.send(AppEvent::FetchFailed {
+            toast_id,
+            remote,
+            message,
+        });
+        return;
+    }
+
+    let progress_sender = event_sender.clone();
+    let result = state.git.fetch_remote(&remote, move |received, total, bytes| {
+        progress_sender.send(AppEvent::FetchProgress {
+            toast_id,
+            received_objects: received,
+            total_objects: total,
+            received_bytes: bytes,
+        });
+    });
+
+    match result {
+        Ok(()) => {
+            event_sender.send(AppEvent::FetchComplete {
+                toast_id,
+                path: path.clone(),
+                remote,
+            });
+            sync_repository_forced(state, event_sender, path, RepositorySyncReason::Rescan);
+        }
+        Err(error) => {
+            event_sender.send(AppEvent::FetchFailed {
+                toast_id,
+                remote,
+                message: error.to_string(),
+            });
+        }
+    }
+}
+
+fn apply_push(
+    state: &mut GitWorkerState,
+    event_sender: &RuntimeEventSender,
+    path: PathBuf,
+    remote: String,
+    refspec: String,
+    force_with_lease: bool,
+    toast_id: u64,
+) {
+    if let Err(message) = ensure_open(state, &path) {
+        event_sender.send(AppEvent::PushFailed {
+            toast_id,
+            remote,
+            message,
+        });
+        return;
+    }
+
+    // Parse the branch out of the refspec for the completion event, e.g.
+    // `refs/heads/foo:refs/heads/foo` → `foo`.
+    let branch = refspec
+        .rsplit(':')
+        .next()
+        .and_then(|dst| dst.rsplit('/').next())
+        .unwrap_or("")
+        .to_owned();
+
+    let progress_sender = event_sender.clone();
+    let result = state.git.push(
+        &remote,
+        &refspec,
+        force_with_lease,
+        move |current, total, bytes| {
+            progress_sender.send(AppEvent::PushProgress {
+                toast_id,
+                current,
+                total,
+                bytes,
+            });
+        },
+    );
+
+    match result {
+        Ok(()) => {
+            event_sender.send(AppEvent::PushComplete {
+                toast_id,
+                path: path.clone(),
+                remote,
+                branch,
+            });
+            sync_repository_forced(state, event_sender, path, RepositorySyncReason::Rescan);
+        }
+        Err(error) => {
+            event_sender.send(AppEvent::PushFailed {
+                toast_id,
+                remote,
+                message: error.to_string(),
+            });
+        }
+    }
+}
+
+fn apply_pull_ff(
+    state: &mut GitWorkerState,
+    event_sender: &RuntimeEventSender,
+    path: PathBuf,
+    remote: String,
+    branch: String,
+    toast_id: u64,
+) {
+    if let Err(message) = ensure_open(state, &path) {
+        event_sender.send(AppEvent::PullFailed {
+            toast_id,
+            remote,
+            branch,
+            message,
+        });
+        return;
+    }
+
+    let progress_sender = event_sender.clone();
+    let result = state.git.pull_ff(
+        &remote,
+        &branch,
+        move |received, total, bytes| {
+            progress_sender.send(AppEvent::FetchProgress {
+                toast_id,
+                received_objects: received,
+                total_objects: total,
+                received_bytes: bytes,
+            });
+        },
+    );
+
+    match result {
+        Ok(outcome) => {
+            let (already_up_to_date, behind) = match outcome {
+                crate::core::vcs::git::PullOutcome::AlreadyUpToDate => (true, 0),
+                crate::core::vcs::git::PullOutcome::FastForwarded { behind } => (false, behind),
+            };
+            event_sender.send(AppEvent::PullComplete {
+                toast_id,
+                path: path.clone(),
+                remote,
+                branch,
+                already_up_to_date,
+                behind,
+            });
+            sync_repository_forced(state, event_sender, path, RepositorySyncReason::Rescan);
+        }
+        Err(error) => {
+            event_sender.send(AppEvent::PullFailed {
+                toast_id,
+                remote,
+                branch,
+                message: error.to_string(),
+            });
+        }
+    }
 }
 
 fn sync_repository_forced(

@@ -3,7 +3,7 @@ use std::path::Path;
 
 use git2::{
     ApplyLocation, BranchType, Cred, Diff, DiffFormat, DiffOptions, FetchOptions, ObjectType, Oid,
-    RemoteCallbacks, Repository, build::CheckoutBuilder,
+    PushOptions, RemoteCallbacks, Repository, build::CheckoutBuilder,
 };
 use serde::Serialize;
 
@@ -13,6 +13,48 @@ use crate::core::compare::spec::CompareMode;
 use crate::core::error::{DiffyError, Result};
 use crate::core::vcs::git::status::{StatusItem, StatusOperation, StatusScope};
 use crate::core::vcs::github::{GitHubApi, parse_pr_url};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PullError {
+    NoUpstream,
+    NonFastForward { ahead: usize, behind: usize },
+    DirtyWorkdir,
+    Other(String),
+}
+
+impl std::fmt::Display for PullError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PullError::NoUpstream => f.write_str("branch has no upstream configured"),
+            PullError::NonFastForward { ahead, behind } => write!(
+                f,
+                "branch has diverged from upstream ({ahead} ahead, {behind} behind); merge/rebase not yet supported",
+            ),
+            PullError::DirtyWorkdir => {
+                f.write_str("working tree has uncommitted changes; commit or stash first")
+            }
+            PullError::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for PullError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullOutcome {
+    AlreadyUpToDate,
+    FastForwarded { behind: usize },
+}
+
+fn workdir_is_dirty(repo: &Repository) -> Result<bool> {
+    let mut options = git2::StatusOptions::new();
+    options
+        .include_untracked(false)
+        .recurse_untracked_dirs(false)
+        .include_ignored(false);
+    let statuses = repo.statuses(Some(&mut options))?;
+    Ok(!statuses.is_empty())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RemoteCredentialKind {
@@ -64,6 +106,13 @@ pub struct BranchInfo {
     pub name: String,
     pub is_remote: bool,
     pub is_head: bool,
+    /// Shorthand name of the upstream tracking branch (e.g. `origin/main`) for
+    /// local branches that have one configured. `None` for remote branches and
+    /// for local branches without an upstream.
+    pub upstream: Option<String>,
+    /// `(ahead, behind)` commits for local branches relative to their upstream.
+    /// `None` when no upstream is configured or the counts could not be computed.
+    pub ahead_behind: Option<(usize, usize)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -178,6 +227,12 @@ impl GitService {
         Self::default()
     }
 
+    pub fn new_with_open(path: &Path) -> Result<Self> {
+        let mut git = Self::default();
+        git.open(path.to_string_lossy().as_ref())?;
+        Ok(git)
+    }
+
     pub fn set_github_token(&mut self, token: impl Into<String>) {
         self.github_token = token.into();
     }
@@ -216,16 +271,37 @@ impl GitService {
     }
 
     pub fn branches(&self) -> Result<Vec<BranchInfo>> {
+        let repo = self.repo()?;
         let mut branches = Vec::new();
-        for branch in self.repo()?.branches(None)? {
+        for branch in repo.branches(None)? {
             let (branch, branch_type) = branch?;
             let Some(name) = branch.name()?.map(str::to_owned) else {
                 continue;
             };
+            let is_remote = branch_type == BranchType::Remote;
+            let (upstream, ahead_behind) = if is_remote {
+                (None, None)
+            } else {
+                let upstream = branch.upstream().ok();
+                let upstream_name = upstream
+                    .as_ref()
+                    .and_then(|u| u.name().ok().flatten().map(str::to_owned));
+                let local_oid = branch.get().target();
+                let upstream_oid = upstream
+                    .as_ref()
+                    .and_then(|u| u.get().target());
+                let counts = match (local_oid, upstream_oid) {
+                    (Some(local), Some(up)) => repo.graph_ahead_behind(local, up).ok(),
+                    _ => None,
+                };
+                (upstream_name, counts)
+            };
             branches.push(BranchInfo {
                 name,
-                is_remote: branch_type == BranchType::Remote,
+                is_remote,
                 is_head: branch.is_head(),
+                upstream,
+                ahead_behind,
             });
         }
         branches.sort_by(|left, right| match right.is_head.cmp(&left.is_head) {
@@ -516,9 +592,9 @@ impl GitService {
         self.diff_between_refs(&left, &right)
     }
 
-    fn fetch_refspecs(&self, repo_url: &str, refspecs: &[String]) -> Result<()> {
-        let repo = self.repo()?;
-        let mut remote = repo.remote_anonymous(repo_url)?;
+    /// Build `RemoteCallbacks` with credentials sourced from our keyring token
+    /// and ssh-agent, matching the policy in `select_remote_credential`.
+    fn build_remote_callbacks(&self) -> RemoteCallbacks<'static> {
         let mut callbacks = RemoteCallbacks::new();
         let github_token = self.github_token.clone();
         callbacks.credentials(move |url, username, allowed| {
@@ -531,11 +607,203 @@ impl GitService {
                 RemoteCredentialKind::Default => Cred::default(),
             }
         });
+        callbacks
+    }
+
+    fn fetch_refspecs(&self, repo_url: &str, refspecs: &[String]) -> Result<()> {
+        let repo = self.repo()?;
+        let mut remote = repo.remote_anonymous(repo_url)?;
+        let callbacks = self.build_remote_callbacks();
         let mut fetch_options = FetchOptions::new();
         fetch_options.remote_callbacks(callbacks);
         let specs: Vec<&str> = refspecs.iter().map(String::as_str).collect();
         remote.fetch(&specs, Some(&mut fetch_options), None)?;
         Ok(())
+    }
+
+    /// Fetch a named remote using the remote's configured refspecs.
+    ///
+    /// `progress` is invoked with `(received_objects, total_objects, received_bytes)`
+    /// during the download. Callbacks fire on a worker thread.
+    pub fn fetch_remote<F>(&self, remote_name: &str, mut progress: F) -> Result<()>
+    where
+        F: FnMut(usize, usize, usize) + Send + 'static,
+    {
+        let repo = self.repo()?;
+        let mut remote = repo.find_remote(remote_name)?;
+        let mut callbacks = self.build_remote_callbacks();
+        callbacks.transfer_progress(move |stats| {
+            progress(
+                stats.received_objects(),
+                stats.total_objects(),
+                stats.received_bytes(),
+            );
+            true
+        });
+        let mut fetch_options = FetchOptions::new();
+        fetch_options.remote_callbacks(callbacks);
+        let refspecs = remote.fetch_refspecs()?;
+        let specs: Vec<&str> = refspecs.iter().flatten().collect();
+        remote.fetch(&specs, Some(&mut fetch_options), None)?;
+        Ok(())
+    }
+
+    /// List the names of configured remotes (e.g. `["origin"]`).
+    pub fn remote_names(&self) -> Result<Vec<String>> {
+        let repo = self.repo()?;
+        let names = repo.remotes()?;
+        Ok(names.iter().flatten().map(str::to_owned).collect())
+    }
+
+    /// Name of the current HEAD branch (no `refs/heads/` prefix), if HEAD is on
+    /// a branch (not detached).
+    pub fn head_branch_name(&self) -> Result<Option<String>> {
+        let repo = self.repo()?;
+        let head = match repo.head() {
+            Ok(head) => head,
+            Err(_) => return Ok(None),
+        };
+        if !head.is_branch() {
+            return Ok(None);
+        }
+        Ok(head.shorthand().map(str::to_owned))
+    }
+
+    /// Returns `(upstream_remote, upstream_branch)` for a local branch if
+    /// configured. e.g. `("origin", "main")`.
+    pub fn upstream_for(&self, local_branch: &str) -> Result<Option<(String, String)>> {
+        let repo = self.repo()?;
+        let branch = match repo.find_branch(local_branch, BranchType::Local) {
+            Ok(branch) => branch,
+            Err(_) => return Ok(None),
+        };
+        let upstream = match branch.upstream() {
+            Ok(upstream) => upstream,
+            Err(_) => return Ok(None),
+        };
+        let Some(upstream_name) = upstream.name()?.map(str::to_owned) else {
+            return Ok(None);
+        };
+        // Upstream shorthand is `<remote>/<branch>`. Split on first `/`.
+        let Some((remote, branch)) = upstream_name.split_once('/') else {
+            return Ok(None);
+        };
+        Ok(Some((remote.to_owned(), branch.to_owned())))
+    }
+
+    /// Push a refspec to a remote. When `force_with_lease` is set, the push
+    /// is forced but still respects the standard libgit2 failure modes
+    /// (libgit2 does not natively support `--force-with-lease`; callers should
+    /// fetch immediately before calling to narrow the race window).
+    ///
+    /// `progress` fires during the upload with
+    /// `(current_objects, total_objects, bytes_pushed)`.
+    pub fn push<F>(
+        &self,
+        remote_name: &str,
+        refspec: &str,
+        force_with_lease: bool,
+        mut progress: F,
+    ) -> Result<()>
+    where
+        F: FnMut(usize, usize, usize) + Send + 'static,
+    {
+        let repo = self.repo()?;
+        let mut remote = repo.find_remote(remote_name)?;
+        let mut callbacks = self.build_remote_callbacks();
+        callbacks.push_transfer_progress(move |current, total, bytes| {
+            progress(current, total, bytes);
+        });
+        let mut push_options = PushOptions::new();
+        push_options.remote_callbacks(callbacks);
+        let effective = if force_with_lease && !refspec.starts_with('+') {
+            format!("+{refspec}")
+        } else {
+            refspec.to_owned()
+        };
+        remote.push(&[effective.as_str()], Some(&mut push_options))?;
+        Ok(())
+    }
+
+    /// Fast-forward the named local branch to match its upstream on the given
+    /// remote. Fetches first, then updates the ref and checks out the new tip
+    /// when HEAD is on that branch.
+    ///
+    /// Errors:
+    /// - `PullError::NoUpstream` — branch has no upstream configured.
+    /// - `PullError::NonFastForward` — local has diverged from upstream.
+    /// - `PullError::DirtyWorkdir` — uncommitted changes block fast-forward.
+    /// - `PullError::AlreadyUpToDate` — no-op signal (not strictly an error).
+    pub fn pull_ff<F>(
+        &self,
+        remote_name: &str,
+        local_branch: &str,
+        progress: F,
+    ) -> std::result::Result<PullOutcome, PullError>
+    where
+        F: FnMut(usize, usize, usize) + Send + 'static,
+    {
+        self.fetch_remote(remote_name, progress)
+            .map_err(|e| PullError::Other(e.to_string()))?;
+        let repo = self.repo().map_err(|e| PullError::Other(e.to_string()))?;
+        let upstream_shorthand = format!("{remote_name}/{local_branch}");
+        let upstream = repo
+            .find_branch(&upstream_shorthand, BranchType::Remote)
+            .map_err(|_| PullError::NoUpstream)?;
+        let upstream_oid = upstream.get().target().ok_or(PullError::NoUpstream)?;
+
+        let mut local_branch_ref = repo
+            .find_branch(local_branch, BranchType::Local)
+            .map_err(|e| PullError::Other(e.to_string()))?;
+        let local_oid = local_branch_ref
+            .get()
+            .target()
+            .ok_or_else(|| PullError::Other("local branch has no target".to_owned()))?;
+
+        if local_oid == upstream_oid {
+            return Ok(PullOutcome::AlreadyUpToDate);
+        }
+
+        let (ahead, behind) = repo
+            .graph_ahead_behind(local_oid, upstream_oid)
+            .map_err(|e| PullError::Other(e.to_string()))?;
+        if ahead > 0 {
+            return Err(PullError::NonFastForward { ahead, behind });
+        }
+
+        let head_is_this_branch = repo
+            .head()
+            .ok()
+            .and_then(|h| h.shorthand().map(str::to_owned))
+            .as_deref()
+            == Some(local_branch);
+
+        if head_is_this_branch {
+            let dirty = workdir_is_dirty(repo).map_err(|e| PullError::Other(e.to_string()))?;
+            if dirty {
+                return Err(PullError::DirtyWorkdir);
+            }
+            let target_commit = repo
+                .find_object(upstream_oid, Some(ObjectType::Commit))
+                .map_err(|e| PullError::Other(e.to_string()))?;
+            let mut checkout = CheckoutBuilder::new();
+            checkout.safe();
+            repo.checkout_tree(&target_commit, Some(&mut checkout))
+                .map_err(|e| PullError::Other(e.to_string()))?;
+        }
+
+        let reflog_msg = format!("diffy: fast-forward to {upstream_shorthand}");
+        local_branch_ref
+            .get_mut()
+            .set_target(upstream_oid, &reflog_msg)
+            .map_err(|e| PullError::Other(e.to_string()))?;
+
+        if head_is_this_branch {
+            repo.set_head(&format!("refs/heads/{local_branch}"))
+                .map_err(|e| PullError::Other(e.to_string()))?;
+        }
+
+        Ok(PullOutcome::FastForwarded { behind })
     }
 
     pub fn resolve_pull_request_comparison(
@@ -701,7 +969,7 @@ mod tests {
     use std::path::Path;
 
     use git2::CredentialType;
-    use git2::{Repository, Signature, Status, StatusOptions};
+    use git2::{BranchType, Repository, Signature, Status, StatusOptions};
     use tempfile::TempDir;
 
     use super::{
@@ -1020,5 +1288,153 @@ mod tests {
         let st2 = statuses(&repo);
         assert!(st2[0].1.contains(Status::WT_MODIFIED));
         assert!(!st2[0].1.contains(Status::INDEX_MODIFIED));
+    }
+
+    /// Build two repos: a bare "remote" and a local clone with a tracking
+    /// branch. Used to exercise fetch/push/pull-ff end-to-end.
+    fn make_remote_and_clone() -> (TempDir, TempDir) {
+        let remote_dir = TempDir::new().unwrap();
+        let remote = Repository::init_bare(remote_dir.path()).unwrap();
+
+        let seed_dir = TempDir::new().unwrap();
+        {
+            let seed = Repository::init(seed_dir.path()).unwrap();
+            commit_file(&seed, "README.md", "hello\n", "initial");
+            seed.remote("origin", remote_dir.path().to_str().unwrap())
+                .unwrap()
+                .push::<&str>(&["+HEAD:refs/heads/main"], None)
+                .unwrap();
+        }
+        let _ = remote.set_head("refs/heads/main");
+
+        // Clone into "local" working copy.
+        let local_dir = TempDir::new().unwrap();
+        let _local = Repository::clone(
+            remote_dir.path().to_str().unwrap(),
+            local_dir.path(),
+        )
+        .unwrap();
+
+        (remote_dir, local_dir)
+    }
+
+    #[test]
+    fn fetch_remote_updates_tracking_branch() {
+        let (remote_dir, local_dir) = make_remote_and_clone();
+
+        // Advance the remote via a separate working clone.
+        let advance_dir = TempDir::new().unwrap();
+        let advance = Repository::clone(
+            remote_dir.path().to_str().unwrap(),
+            advance_dir.path(),
+        )
+        .unwrap();
+        commit_file(&advance, "README.md", "hello\nworld\n", "second");
+        let mut advance_remote = advance.find_remote("origin").unwrap();
+        advance_remote
+            .push::<&str>(&["refs/heads/main:refs/heads/main"], None)
+            .unwrap();
+
+        let mut git = GitService::new();
+        git.open(local_dir.path().to_str().unwrap()).unwrap();
+
+        let before = git.branches().unwrap();
+        let main_before = before.iter().find(|b| b.is_head).unwrap();
+        assert_eq!(main_before.ahead_behind, Some((0, 0)));
+
+        git.fetch_remote("origin", |_, _, _| {}).unwrap();
+
+        let after = git.branches().unwrap();
+        let main_after = after.iter().find(|b| b.is_head).unwrap();
+        assert_eq!(main_after.ahead_behind, Some((0, 1)));
+    }
+
+    #[test]
+    fn pull_ff_fast_forwards_when_possible() {
+        let (remote_dir, local_dir) = make_remote_and_clone();
+
+        let advance_dir = TempDir::new().unwrap();
+        let advance = Repository::clone(
+            remote_dir.path().to_str().unwrap(),
+            advance_dir.path(),
+        )
+        .unwrap();
+        commit_file(&advance, "README.md", "hello\nworld\n", "second");
+        advance
+            .find_remote("origin")
+            .unwrap()
+            .push::<&str>(&["refs/heads/main:refs/heads/main"], None)
+            .unwrap();
+
+        let mut git = GitService::new();
+        git.open(local_dir.path().to_str().unwrap()).unwrap();
+
+        let outcome = git.pull_ff("origin", "main", |_, _, _| {}).unwrap();
+        assert_eq!(outcome, super::PullOutcome::FastForwarded { behind: 1 });
+
+        let branches = git.branches().unwrap();
+        let main = branches.iter().find(|b| b.is_head).unwrap();
+        assert_eq!(main.ahead_behind, Some((0, 0)));
+    }
+
+    #[test]
+    fn pull_ff_refuses_when_diverged() {
+        let (remote_dir, local_dir) = make_remote_and_clone();
+
+        // Diverge remote.
+        let advance_dir = TempDir::new().unwrap();
+        let advance = Repository::clone(
+            remote_dir.path().to_str().unwrap(),
+            advance_dir.path(),
+        )
+        .unwrap();
+        commit_file(&advance, "README.md", "hello\nremote\n", "remote-change");
+        advance
+            .find_remote("origin")
+            .unwrap()
+            .push::<&str>(&["refs/heads/main:refs/heads/main"], None)
+            .unwrap();
+
+        // Diverge local.
+        let local = Repository::open(local_dir.path()).unwrap();
+        commit_file(&local, "NOTES.md", "local\n", "local-change");
+
+        let mut git = GitService::new();
+        git.open(local_dir.path().to_str().unwrap()).unwrap();
+
+        let err = git
+            .pull_ff("origin", "main", |_, _, _| {})
+            .expect_err("diverged branch must refuse");
+        assert!(matches!(err, super::PullError::NonFastForward { .. }));
+    }
+
+    #[test]
+    fn push_updates_remote_ref() {
+        let (remote_dir, local_dir) = make_remote_and_clone();
+
+        let local = Repository::open(local_dir.path()).unwrap();
+        commit_file(&local, "NOTES.md", "local\n", "local-change");
+
+        let mut git = GitService::new();
+        git.open(local_dir.path().to_str().unwrap()).unwrap();
+
+        git.push(
+            "origin",
+            "refs/heads/main:refs/heads/main",
+            false,
+            |_, _, _| {},
+        )
+        .unwrap();
+
+        // Reopen the bare remote and confirm HEAD advanced.
+        let remote = Repository::open(remote_dir.path()).unwrap();
+        let remote_main = remote
+            .find_branch("main", BranchType::Local)
+            .unwrap()
+            .get()
+            .target()
+            .unwrap();
+        let local_head = local.head().unwrap().target().unwrap();
+        assert_eq!(remote_main, local_head);
     }
 }

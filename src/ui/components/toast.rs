@@ -88,8 +88,12 @@ struct ToastVisuals {
     kind: ToastKind,
     title_lines: Vec<String>,
     description_lines: Vec<String>,
-    /// Fraction of lifetime consumed (0.0 = fresh, 1.0 = about to dismiss).
+    /// Fraction of lifetime consumed (0.0 = fresh, 1.0 = about to dismiss) —
+    /// used when `external_progress` is `None`.
     time_progress: f32,
+    /// When set, renders as an actual progress bar instead of a lifetime bar.
+    /// The bar fills left-to-right as `external_progress` climbs from 0 to 1.
+    external_progress: Option<f32>,
     bottom: f32,
     left: f32,
     width: f32,
@@ -104,10 +108,13 @@ impl RenderOnce for ToastVisuals {
         let accent = severity_color(self.kind, tc);
         let icon_svg = severity_icon(self.kind);
 
-        let elapsed = self.time_progress.clamp(0.0, 1.0);
         let progress_inset = CORNER_RADIUS;
         let progress_track_w = (self.width - progress_inset * 2.0).max(0.0);
-        let progress_fill_w = progress_track_w * elapsed;
+        let fill_fraction = self
+            .external_progress
+            .map(|p| p.clamp(0.0, 1.0))
+            .unwrap_or_else(|| self.time_progress.clamp(0.0, 1.0));
+        let progress_fill_w = progress_track_w * fill_fraction;
 
         let badge_bg = accent.with_alpha(Alpha::TINT);
         let track_bg = tc.border.with_alpha(Alpha::SOFT);
@@ -349,6 +356,7 @@ impl<'a> ToastStack<'a> {
                 title_lines: layout.title_lines,
                 description_lines: layout.description_lines,
                 time_progress,
+                external_progress: toast.progress,
                 bottom,
                 left,
                 width,

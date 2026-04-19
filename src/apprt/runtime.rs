@@ -135,6 +135,27 @@ impl EffectRunner {
                 self.git_worker
                     .dispatch_commit(request.repo_path, request.message);
             }
+            Effect::FetchRemote(request) => {
+                self.git_worker
+                    .dispatch_fetch(request.repo_path, request.remote, request.toast_id);
+            }
+            Effect::Push(request) => {
+                self.git_worker.dispatch_push(
+                    request.repo_path,
+                    request.remote,
+                    request.refspec,
+                    request.force_with_lease,
+                    request.toast_id,
+                );
+            }
+            Effect::PullFf(request) => {
+                self.git_worker.dispatch_pull_ff(
+                    request.repo_path,
+                    request.remote,
+                    request.branch,
+                    request.toast_id,
+                );
+            }
             Effect::RunCompare {
                 generation,
                 request,

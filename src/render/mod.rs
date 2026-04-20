@@ -1,5 +1,3 @@
-#[cfg(feature = "capture")]
-pub mod capture;
 pub mod renderer;
 pub mod scene;
 mod shaders;

@@ -9,7 +9,6 @@ edition = "2024"
 rust-version = "1.92"
 
 [features]
-capture = ["dep:tiny-skia", "dep:png", "dep:fontdue"]
 hot-reload = ["dep:tungstenite", "dep:subsecond"]
 
 [dependencies]
@@ -52,18 +51,6 @@ futures = { version = "0.3", default-features = false, features = ["std"] }
 [[bin]]
 name = "diffy"
 path = "src/main.rs"
-
-[dependencies.tiny-skia]
-version = "0.11"
-optional = true
-
-[dependencies.png]
-version = "0.17"
-optional = true
-
-[dependencies.fontdue]
-version = "0.9"
-optional = true
 
 [profile.dev]
 opt-level = 1

@@ -309,7 +309,7 @@ pub fn populate_expand_blocks(
 
 #[cfg(test)]
 mod tests {
-    use super::{FileExpansion, HunkExpansion, apply_expansion, gap_budgets};
+    use super::{FileExpansion, apply_expansion, gap_budgets};
     use crate::core::diff::types::{DiffLine, FileDiff, Hunk, LineKind};
     use crate::core::text::TextBuffer;
 

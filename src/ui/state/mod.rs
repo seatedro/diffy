@@ -4,7 +4,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
 
 use halogen::Store;
 use halogen::reactive::{Signal, SignalStore};
@@ -898,11 +897,6 @@ pub struct StartupState {
     pub pending_pr_url: Option<String>,
     pub preferred_file_index: Option<usize>,
     pub preferred_file_path: Option<String>,
-    pub hidden_window: bool,
-    pub exit_after: Option<Duration>,
-    pub dump_state_json: Option<PathBuf>,
-    pub dump_files_json: Option<PathBuf>,
-    pub dump_errors_json: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
@@ -1132,11 +1126,6 @@ impl AppState {
                 pending_pr_url: startup.args.open_pr.clone(),
                 preferred_file_index: startup.args.file_index,
                 preferred_file_path: startup.args.file_path.clone(),
-                hidden_window: startup.hidden_window(),
-                exit_after: startup.exit_after(),
-                dump_state_json: startup.args.dump_state_json.clone(),
-                dump_files_json: startup.args.dump_files_json.clone(),
-                dump_errors_json: startup.args.dump_errors_json.clone(),
             },
             last_error,
             toasts,
@@ -1762,7 +1751,10 @@ impl AppState {
                 .any(|item| item.scope == crate::core::vcs::git::status::StatusScope::Staged)
         });
         let (provider, api_key) = if !self.ai_anthropic_key.is_empty() {
-            (crate::ai::Provider::Anthropic, self.ai_anthropic_key.clone())
+            (
+                crate::ai::Provider::Anthropic,
+                self.ai_anthropic_key.clone(),
+            )
         } else if !self.ai_openai_key.is_empty() {
             (crate::ai::Provider::OpenAi, self.ai_openai_key.clone())
         } else {
@@ -6750,7 +6742,7 @@ mod tests {
     use crate::events::AppEvent;
     use crate::platform::persistence::Settings;
     use crate::platform::startup::{Args, StartupOptions};
-    use crate::ui::editor::render_doc::{RenderRowKind, build_render_doc};
+    use crate::ui::editor::render_doc::build_render_doc;
 
     fn make_hunk(
         text_buffer: &mut TextBuffer,
@@ -6809,7 +6801,7 @@ mod tests {
     }
 
     fn status_state_with_two_hunks() -> AppState {
-        let mut state = AppState::default();
+        let state = AppState::default();
         let repo_path = PathBuf::from("/repo");
         let path = "src/lib.rs".to_owned();
         let mut text_buffer = TextBuffer::default();
@@ -6911,7 +6903,7 @@ mod tests {
     }
 
     fn loaded_state_with_files(paths: &[&str]) -> AppState {
-        let mut state = AppState::default();
+        let state = AppState::default();
         let files: Vec<FileDiff> = paths
             .iter()
             .map(|path| FileDiff {
@@ -6978,11 +6970,6 @@ mod tests {
                 file_index: None,
                 file_path: None,
                 open_pr: None,
-                exit_after_ms: None,
-                hidden_window: false,
-                dump_state_json: None,
-                dump_files_json: None,
-                dump_errors_json: None,
             },
             None,
             "client".to_owned(),

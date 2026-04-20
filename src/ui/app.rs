@@ -14,7 +14,6 @@ use crate::core::themes::ThemeRegistry;
 use crate::effects::Effect;
 use crate::events::RepositorySyncReason;
 use crate::input::InputSystem;
-use crate::platform::automation::{ErrorDump, FilesDump, StateDump, write_json};
 use crate::platform::persistence::SettingsStore;
 use crate::platform::startup::StartupOptions;
 use crate::render::Renderer;
@@ -27,14 +26,9 @@ use crate::ui::theme::Theme;
 pub fn run() -> Result<(), Box<dyn Error>> {
     let startup = StartupOptions::load();
     init_logging(startup.log_debug);
-    let should_poll = startup.exit_after().is_some();
 
     let event_loop = EventLoop::new()?;
-    event_loop.set_control_flow(if should_poll {
-        ControlFlow::Poll
-    } else {
-        ControlFlow::Wait
-    });
+    event_loop.set_control_flow(ControlFlow::Wait);
 
     let settings_store = SettingsStore::new_default();
     let settings = settings_store.load()?;
@@ -79,9 +73,6 @@ struct NativeApp {
     editor: EditorElement,
     input: InputSystem,
     launch_at: Instant,
-    dumps_dirty: bool,
-    #[cfg(feature = "capture")]
-    capture_pending: Option<std::path::PathBuf>,
     needs_redraw: bool,
     tooltip_state: TooltipState,
     #[cfg(feature = "hot-reload")]
@@ -96,10 +87,6 @@ impl NativeApp {
             &theme_registry,
         )
         .with_ui_scale(state.ui_scale_factor());
-        #[cfg(feature = "capture")]
-        let capture_pending = std::env::var("DIFFY_CAPTURE_PATH")
-            .ok()
-            .map(std::path::PathBuf::from);
         Self {
             state,
             theme,
@@ -111,9 +98,6 @@ impl NativeApp {
             input: InputSystem::default(),
             editor: EditorElement::default(),
             launch_at: Instant::now(),
-            dumps_dirty: true,
-            #[cfg(feature = "capture")]
-            capture_pending,
             needs_redraw: true,
             tooltip_state: TooltipState::default(),
             #[cfg(feature = "hot-reload")]
@@ -122,7 +106,6 @@ impl NativeApp {
     }
 
     fn mark_dirty(&mut self) {
-        self.dumps_dirty = true;
         self.needs_redraw = true;
     }
 
@@ -227,7 +210,6 @@ impl NativeApp {
     fn window_attributes(&self) -> WindowAttributes {
         Window::default_attributes()
             .with_title(self.state.window_title())
-            .with_visible(!self.state.startup.hidden_window)
             .with_inner_size(LogicalSize::new(1320.0, 840.0))
             .with_min_inner_size(LogicalSize::new(640.0, 480.0))
     }
@@ -264,39 +246,6 @@ impl NativeApp {
         self.refresh_window_title();
         self.sync_window_text_input();
         self.mark_dirty();
-    }
-
-    fn write_dumps_if_needed(&mut self) {
-        if !self.dumps_dirty {
-            return;
-        }
-
-        if self.state.startup.hidden_window {
-            let frame = self.build_frame();
-            self.state.store.write(
-                self.state.debug.last_scene_primitive_count,
-                frame.scene.len(),
-            );
-            self.ui_frame = frame;
-        }
-
-        if let Some(path) = self.state.startup.dump_state_json.as_deref()
-            && let Err(error) = write_json(path, &StateDump::from(&self.state))
-        {
-            eprintln!("failed to write state dump: {error}");
-        }
-        if let Some(path) = self.state.startup.dump_files_json.as_deref()
-            && let Err(error) = write_json(path, &FilesDump::from(&self.state))
-        {
-            eprintln!("failed to write files dump: {error}");
-        }
-        if let Some(path) = self.state.startup.dump_errors_json.as_deref()
-            && let Err(error) = write_json(path, &ErrorDump::from(&self.state))
-        {
-            eprintln!("failed to write errors dump: {error}");
-        }
-
-        self.dumps_dirty = false;
     }
 
     fn build_frame(&mut self) -> UiFrame {
@@ -405,13 +354,6 @@ impl NativeApp {
             self.mark_dirty();
         }
     }
-
-    fn should_exit(&self) -> bool {
-        self.state
-            .startup
-            .exit_after
-            .is_some_and(|exit_after| self.launch_at.elapsed() >= exit_after)
-    }
 }
 
 impl ApplicationHandler for NativeApp {
@@ -447,7 +389,6 @@ impl ApplicationHandler for NativeApp {
                 self.sync_theme();
                 self.refresh_window_title();
                 self.sync_window_text_input();
-                self.write_dumps_if_needed();
             }
             Err(error) => {
                 eprintln!("failed to create native window: {error}");
@@ -468,7 +409,6 @@ impl ApplicationHandler for NativeApp {
 
         match event {
             WindowEvent::CloseRequested => {
-                self.write_dumps_if_needed();
                 event_loop.exit();
             }
             WindowEvent::Focused(true) => {
@@ -549,16 +489,6 @@ impl ApplicationHandler for NativeApp {
                         }
                     }
                 }
-                // Capture scene to PNG if DIFFY_CAPTURE_PATH is set.
-                #[cfg(feature = "capture")]
-                if let Some(path) = self.capture_pending.take() {
-                    let size = self.window.as_ref().map(|w| w.inner_size());
-                    let (w, h) = size.map(|s| (s.width, s.height)).unwrap_or((1320, 840));
-                    crate::render::capture::scene_to_png(&self.ui_frame.scene, w, h, &path);
-                    eprintln!("captured: {}", path.display());
-                }
-
-                self.dumps_dirty = true;
                 self.needs_redraw = false;
                 self.state.store.clear_dirty();
             }
@@ -598,16 +528,6 @@ impl ApplicationHandler for NativeApp {
             }
         }
 
-        self.write_dumps_if_needed();
-
-        if self.should_exit() {
-            if let Some(window) = self.window.as_ref() {
-                window.set_visible(false);
-            }
-            event_loop.exit();
-            return;
-        }
-
         let tooltip_was_visible = self.tooltip_state.visible;
         let now_ms = self
             .launch_at
@@ -619,7 +539,6 @@ impl ApplicationHandler for NativeApp {
 
         let animating = self.state.animation.has_active();
         let cursor_blink_changed = self.state.cursor_blink_epoch() != prior_cursor_blink_epoch;
-        let should_poll = self.state.startup.exit_after.is_some();
         let next_wake = if animating {
             Some(std::time::Instant::now() + std::time::Duration::from_millis(16))
         } else {
@@ -646,9 +565,7 @@ impl ApplicationHandler for NativeApp {
                 .min()
         };
 
-        if should_poll {
-            event_loop.set_control_flow(ControlFlow::Poll);
-        } else if let Some(next) = next_wake {
+        if let Some(next) = next_wake {
             event_loop.set_control_flow(ControlFlow::WaitUntil(next));
         } else {
             event_loop.set_control_flow(ControlFlow::Wait);
@@ -689,7 +606,6 @@ mod tests {
     use winit::keyboard::ModifiersState;
 
     use super::NativeApp;
-    use crate::actions::Action;
     use crate::apprt::{AppRuntime, AppServices};
     use crate::input::{
         InputEvent, KeyChord, KeyKind, quantize_scroll_delta_px, scroll_delta_to_px,
@@ -760,7 +676,7 @@ mod tests {
 
     #[test]
     fn file_list_scroll_region_wins_over_viewport_fallback() {
-        let mut state = AppState::default();
+        let state = AppState::default();
         state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
         state.workspace.files.set(
             &state.store,
@@ -815,7 +731,7 @@ mod tests {
 
     #[test]
     fn file_list_wheel_scroll_moves_sidebar_contents() {
-        let mut state = AppState::default();
+        let state = AppState::default();
         state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
         state.workspace.files.set(
             &state.store,
@@ -868,7 +784,7 @@ mod tests {
 
     #[test]
     fn overlay_blocks_viewport_scroll_fallback() {
-        let mut state = AppState::default();
+        let state = AppState::default();
         state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
         state.workspace.files.set(
             &state.store,

@@ -1,6 +1,5 @@
 use std::env;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use clap::Parser;
 
@@ -37,21 +36,6 @@ pub struct Args {
 
     #[arg(long = "open-pr")]
     pub open_pr: Option<String>,
-
-    #[arg(long = "exit-after-ms")]
-    pub exit_after_ms: Option<u64>,
-
-    #[arg(long = "hidden-window", default_value_t = false)]
-    pub hidden_window: bool,
-
-    #[arg(long = "dump-state-json", value_name = "PATH")]
-    pub dump_state_json: Option<PathBuf>,
-
-    #[arg(long = "dump-files-json", value_name = "PATH")]
-    pub dump_files_json: Option<PathBuf>,
-
-    #[arg(long = "dump-errors-json", value_name = "PATH")]
-    pub dump_errors_json: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,7 +57,6 @@ struct StartupEnvDefaults {
     file_index: Option<usize>,
     file_path: Option<String>,
     open_pr: Option<String>,
-    exit_after_ms: Option<u64>,
 }
 
 impl StartupEnvDefaults {
@@ -91,7 +74,6 @@ impl StartupEnvDefaults {
             file_index: parse_env_with(&get_env, "DIFFY_START_FILE_INDEX", parse_file_index),
             file_path: get_env("DIFFY_START_FILE_PATH"),
             open_pr: get_env("DIFFY_START_OPEN_PR"),
-            exit_after_ms: parse_env_with(&get_env, "DIFFY_EXIT_AFTER_MS", parse_exit_after_ms),
         }
     }
 
@@ -122,9 +104,6 @@ impl StartupEnvDefaults {
         }
         if args.open_pr.is_none() {
             args.open_pr = self.open_pr;
-        }
-        if args.exit_after_ms.is_none() {
-            args.exit_after_ms = self.exit_after_ms;
         }
         args
     }
@@ -157,14 +136,6 @@ impl StartupOptions {
         }
     }
 
-    pub fn exit_after(&self) -> Option<Duration> {
-        self.args.exit_after_ms.map(Duration::from_millis)
-    }
-
-    pub fn hidden_window(&self) -> bool {
-        self.args.hidden_window
-    }
-
     pub fn wants_compare(&self, mode: CompareMode, left_ref: &str, right_ref: &str) -> bool {
         if self.args.open_pr.is_some() {
             return true;
@@ -195,12 +166,6 @@ fn parse_file_index(value: &str) -> Result<usize, String> {
     value
         .parse::<usize>()
         .map_err(|_| "invalid file index".to_owned())
-}
-
-fn parse_exit_after_ms(value: &str) -> Result<u64, String> {
-    value
-        .parse::<u64>()
-        .map_err(|_| "invalid exit duration".to_owned())
 }
 
 fn parse_env_with<T, FEnv, FParse>(get_env: &FEnv, name: &str, parser: FParse) -> Option<T>
@@ -266,15 +231,6 @@ mod tests {
             "src/main.rs",
             "--open-pr",
             "https://github.com/owner/repo/pull/42",
-            "--exit-after-ms",
-            "25",
-            "--hidden-window",
-            "--dump-state-json",
-            "state.json",
-            "--dump-files-json",
-            "files.json",
-            "--dump-errors-json",
-            "errors.json",
         ]);
 
         assert_eq!(args.repo.unwrap(), PathBuf::from("C:\\work\\demo"));
@@ -284,7 +240,6 @@ mod tests {
         assert_eq!(args.layout, Some(LayoutMode::Split));
         assert_eq!(args.renderer, Some(RendererKind::Difftastic));
         assert_eq!(args.file_index, Some(3));
-        assert!(args.hidden_window);
     }
 
     #[test]
@@ -316,7 +271,6 @@ mod tests {
                 "DIFFY_START_OPEN_PR",
                 "https://github.com/owner/repo/pull/42",
             ),
-            ("DIFFY_EXIT_AFTER_MS", "25"),
         ]);
         let args = StartupEnvDefaults::load(|name| env.get(name).map(|value| (*value).to_owned()))
             .apply(Args::parse_from(["diffy"]));
@@ -333,7 +287,6 @@ mod tests {
             args.open_pr.as_deref(),
             Some("https://github.com/owner/repo/pull/42")
         );
-        assert_eq!(args.exit_after_ms, Some(25));
     }
 
     #[test]
@@ -351,7 +304,6 @@ mod tests {
                 "DIFFY_START_OPEN_PR",
                 "https://github.com/owner/repo/pull/7",
             ),
-            ("DIFFY_EXIT_AFTER_MS", "99"),
         ]);
         let args = StartupEnvDefaults::load(|name| env.get(name).map(|value| (*value).to_owned()))
             .apply(Args::parse_from([
@@ -374,8 +326,6 @@ mod tests {
                 "cli.rs",
                 "--open-pr",
                 "https://github.com/owner/repo/pull/2",
-                "--exit-after-ms",
-                "10",
             ]));
 
         assert_eq!(args.repo, Some(PathBuf::from("C:\\work\\cli")));
@@ -390,6 +340,5 @@ mod tests {
             args.open_pr.as_deref(),
             Some("https://github.com/owner/repo/pull/2")
         );
-        assert_eq!(args.exit_after_ms, Some(10));
     }
 }

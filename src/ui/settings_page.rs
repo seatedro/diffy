@@ -372,7 +372,8 @@ fn clankers_section(state: &AppState, theme: &Theme) -> AnyElement {
                 {anthropic_row}
             </div>
         </div>
-    }.into_any();
+    }
+    .into_any();
 
     let prompt_cursor = CursorSnapshot {
         x: state.steering_prompt_editor.cursor_pos.x,
@@ -420,14 +421,16 @@ fn clankers_section(state: &AppState, theme: &Theme) -> AnyElement {
                 </div>
             </div>
         </div>
-    }.into_any();
+    }
+    .into_any();
 
     view! { scale,
         <div class="flex-col" gap={Sp::LG}>
             {keys_card}
             {prompt_card}
         </div>
-    }.into_any()
+    }
+    .into_any()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -463,7 +466,10 @@ fn ai_key_row(
             .anchor(if focused { anchor } else { 0 })
             .on_click(Action::SetFocus(Some(target)));
     } else {
-        input = input.on_click(Action::SetAiKeyEditing { kind, editing: true });
+        input = input.on_click(Action::SetAiKeyEditing {
+            kind,
+            editing: true,
+        });
     }
 
     let trailing: Option<AnyElement> = if !key_set {

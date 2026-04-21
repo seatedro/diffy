@@ -136,13 +136,12 @@ async fn drive_stream(request: GenerateRequest, tx: Sender<StreamMessage>) {
         }
     };
 
-    let messages = vec![
-        ChatMessage::user()
-            .content(user_message)
-            .build(),
-    ];
+    let messages = vec![ChatMessage::user().content(user_message).build()];
 
-    tracing::debug!(provider = provider.label(), "ai.stream: opening chat stream");
+    tracing::debug!(
+        provider = provider.label(),
+        "ai.stream: opening chat stream"
+    );
     let stream = match llm.chat_stream(&messages).await {
         Ok(stream) => stream,
         Err(error) => {
@@ -151,7 +150,9 @@ async fn drive_stream(request: GenerateRequest, tx: Sender<StreamMessage>) {
                 %error,
                 "ai.stream: chat_stream failed"
             );
-            let _ = tx.send(StreamMessage::Failed(format!("chat request failed: {error}")));
+            let _ = tx.send(StreamMessage::Failed(format!(
+                "chat request failed: {error}"
+            )));
             return;
         }
     };

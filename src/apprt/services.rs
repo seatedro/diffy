@@ -263,11 +263,8 @@ impl AppServices {
             "ai: diff compressed"
         );
 
-        let user_message = ai::build_user_message(
-            &steering_prompt,
-            subject_override.as_deref(),
-            &compressed,
-        );
+        let user_message =
+            ai::build_user_message(&steering_prompt, subject_override.as_deref(), &compressed);
         tracing::debug!(
             generation,
             user_message_bytes = user_message.len(),
@@ -287,10 +284,7 @@ impl AppServices {
                 Ok(StreamMessage::Chunk(chunk)) => {
                     chunk_count += 1;
                     byte_count += chunk.len();
-                    event_sender.send(AppEvent::CommitMessageChunk {
-                        generation,
-                        chunk,
-                    });
+                    event_sender.send(AppEvent::CommitMessageChunk { generation, chunk });
                 }
                 Ok(StreamMessage::Finished) => {
                     tracing::info!(

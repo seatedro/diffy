@@ -49,10 +49,7 @@ impl AppState {
             Some(FocusTarget::CommandPaletteInput) => return self.rebuild_command_palette(),
             Some(FocusTarget::SearchInput) => self.recompute_search_matches(),
             Some(FocusTarget::SettingsOpenAiKey) => {
-                return vec![ai_key_save_effect(
-                    AiKeyKind::OpenAi,
-                    &self.ai_openai_key,
-                )];
+                return vec![ai_key_save_effect(AiKeyKind::OpenAi, &self.ai_openai_key)];
             }
             Some(FocusTarget::SettingsAnthropicKey) => {
                 return vec![ai_key_save_effect(

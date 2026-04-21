@@ -12,11 +12,7 @@ pub const MAX_DIFF_BYTES: usize = 20_000;
 
 /// Assemble the single user-role message sent to the model: steering prompt,
 /// optional subject hint the user has already typed, then the diff.
-pub fn build_user_message(
-    prompt: &str,
-    subject_override: Option<&str>,
-    diff_text: &str,
-) -> String {
+pub fn build_user_message(prompt: &str, subject_override: Option<&str>, diff_text: &str) -> String {
     let subject_section = match subject_override.map(str::trim).filter(|s| !s.is_empty()) {
         Some(subject) => format!("\nHere is the user's subject line:\n{subject}"),
         None => String::new(),

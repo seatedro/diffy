@@ -1064,6 +1064,7 @@ dependencies = [
  "neo_frizbee",
  "notify",
  "parking_lot",
+ "phosphor",
  "pollster",
  "rayon",
  "resvg",
@@ -3409,6 +3410,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67eabc2ef2a60eb7faa00097bd1ffdb5bd28e62bf39990626a582201b7a754e5"
 dependencies = [
  "siphasher",
+]
+
+[[package]]
+name = "phosphor"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "tree-sitter",
+ "tree-sitter-bash",
+ "tree-sitter-c",
+ "tree-sitter-cpp",
+ "tree-sitter-go",
+ "tree-sitter-javascript",
+ "tree-sitter-json",
+ "tree-sitter-language",
+ "tree-sitter-nix",
+ "tree-sitter-python",
+ "tree-sitter-rust-orchard",
+ "tree-sitter-toml-ng",
+ "tree-sitter-typescript",
+ "tree-sitter-zig",
 ]
 
 [[package]]

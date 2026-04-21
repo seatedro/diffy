@@ -2,10 +2,15 @@ use std::path::Path;
 
 use crate::core::error::{DiffyError, Result};
 use crate::core::text::{DiffTokenSpan, SyntaxTokenKind};
-use vendored_difftastic::{HighlightKind, HighlightSpan};
+use phosphor::{
+    HighlightKind, HighlightSpan, Highlighter as PhosphorHighlighter,
+    LanguageId as PhosphorLanguageId,
+};
 
 #[derive(Debug)]
-pub struct Highlighter;
+pub struct Highlighter {
+    inner: PhosphorHighlighter,
+}
 
 impl Default for Highlighter {
     fn default() -> Self {
@@ -15,11 +20,30 @@ impl Default for Highlighter {
 
 impl Highlighter {
     pub fn new() -> Self {
-        Self
+        Self {
+            inner: PhosphorHighlighter::new(),
+        }
     }
 
     pub fn highlight(&self, path: &str, source: &str) -> Result<Vec<DiffTokenSpan>> {
-        vendored_difftastic::highlight_ranges_for_path(Path::new(path), source)
+        let language = self.resolve_language(path);
+        self.highlight_resolved(language, source)
+    }
+
+    pub fn resolve_language(&self, path: &str) -> Option<PhosphorLanguageId> {
+        self.inner.guess_language(Path::new(path))
+    }
+
+    pub fn highlight_resolved(
+        &self,
+        language: Option<PhosphorLanguageId>,
+        source: &str,
+    ) -> Result<Vec<DiffTokenSpan>> {
+        let Some(language) = language else {
+            return Ok(Vec::new());
+        };
+        self.inner
+            .highlight_language(language, source)
             .map(|spans| spans.into_iter().map(map_span).collect())
             .map_err(|error| DiffyError::Syntax(error.to_string()))
     }

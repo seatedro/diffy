@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/halogen", "crates/halogen-macros"]
+members = [".", "crates/halogen", "crates/halogen-macros", "crates/phosphor"]
 exclude = ["crates/difftastic"]
 
 [package]
@@ -33,6 +33,7 @@ rayon = "1.10"
 tempfile = "3.14"
 webbrowser = "1.0"
 halogen = { path = "crates/halogen" }
+phosphor = { path = "crates/phosphor" }
 vendored_difftastic = { package = "difftastic", path = "crates/difftastic" }
 resvg = "0.45"
 wgpu = "28.0.0"

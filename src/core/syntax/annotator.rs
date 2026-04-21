@@ -40,14 +40,15 @@ impl DiffSyntaxAnnotator {
 
         let (old_content, new_content, old_refs, new_refs) =
             build_line_refs(&file_diff.hunks, text_buffer);
+        let language = self.highlighter.resolve_language(&file_diff.path);
 
         let old_tokens = self
             .highlighter
-            .highlight(&file_diff.path, &old_content)
+            .highlight_resolved(language, &old_content)
             .unwrap_or_default();
         let new_tokens = self
             .highlighter
-            .highlight(&file_diff.path, &new_content)
+            .highlight_resolved(language, &new_content)
             .unwrap_or_default();
         distribute_tokens(&mut file_diff.hunks, token_buffer, &old_tokens, &old_refs);
         distribute_tokens(&mut file_diff.hunks, token_buffer, &new_tokens, &new_refs);
@@ -194,7 +195,7 @@ mod tests {
     }
 
     #[test]
-    fn annotator_supports_typescript_via_vendored_difftastic() {
+    fn annotator_supports_typescript_via_phosphor() {
         let patch = concat!(
             "diff --git a/test.ts b/test.ts\n",
             "--- a/test.ts\n",

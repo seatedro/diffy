@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
+use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -214,6 +214,14 @@ impl NativeApp {
             .with_min_inner_size(LogicalSize::new(640.0, 480.0))
     }
 
+    fn sync_window_metrics(&mut self, size: PhysicalSize<u32>, scale_factor: f64) {
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.resize(size.width, size.height, scale_factor);
+        }
+        self.sync_theme();
+        self.mark_dirty();
+    }
+
     fn window_id(&self) -> Option<WindowId> {
         self.window.as_ref().map(|window| window.id())
     }
@@ -421,13 +429,20 @@ impl ApplicationHandler for NativeApp {
                 self.mark_dirty();
             }
             WindowEvent::Resized(size) => {
-                if let (Some(renderer), Some(window)) =
-                    (self.renderer.as_mut(), self.window.as_ref())
-                {
-                    renderer.resize(size.width, size.height, window.scale_factor());
-                }
-                self.sync_theme();
-                self.mark_dirty();
+                let scale_factor = self
+                    .window
+                    .as_ref()
+                    .map(|window| window.scale_factor())
+                    .unwrap_or(1.0);
+                self.sync_window_metrics(size, scale_factor);
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                let size = self
+                    .window
+                    .as_ref()
+                    .map(|window| window.inner_size())
+                    .unwrap_or_else(|| PhysicalSize::new(0, 0));
+                self.sync_window_metrics(size, scale_factor);
             }
             WindowEvent::RedrawRequested => {
                 let frame_started_at = Instant::now();

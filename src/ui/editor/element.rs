@@ -16,7 +16,7 @@ use super::display_layout::{
 };
 use super::render_doc::{
     ByteRange, DisplayRow, INVALID_U32, RenderDoc, RenderLine, RenderRowKind, RunRange,
-    STYLE_FLAG_NOVEL_WORD, StyleRun,
+    STYLE_FLAG_NOVEL_WORD, StyleRun, advance_display_col,
 };
 use super::state::EditorState;
 use super::strip_layout::{StripLayout, build_strip_layouts, visible_strip_range};
@@ -164,18 +164,25 @@ struct TextLayoutCacheKey {
 #[derive(Debug, Clone)]
 struct CachedTextLayout {
     char_boundaries: Arc<[u32]>,
+    col_boundaries: Arc<[u32]>,
 }
 
 impl CachedTextLayout {
     fn new(text: &str) -> Self {
         let mut char_boundaries = Vec::with_capacity(text.chars().count().saturating_add(1));
-        char_boundaries.push(0);
-        if !text.is_empty() {
-            char_boundaries.extend(text.char_indices().skip(1).map(|(idx, _)| idx as u32));
-            char_boundaries.push(text.len() as u32);
+        let mut col_boundaries = Vec::with_capacity(text.chars().count().saturating_add(1));
+        let mut cols = 0_u32;
+
+        for (idx, ch) in text.char_indices() {
+            char_boundaries.push(idx as u32);
+            col_boundaries.push(cols);
+            cols = advance_display_col(cols, ch);
         }
+        char_boundaries.push(text.len() as u32);
+        col_boundaries.push(cols);
         Self {
             char_boundaries: Arc::from(char_boundaries),
+            col_boundaries: Arc::from(col_boundaries),
         }
     }
 
@@ -183,40 +190,43 @@ impl CachedTextLayout {
         self.char_boundaries.len().saturating_sub(1) as u32
     }
 
+    fn total_cols(&self) -> u32 {
+        self.col_boundaries.last().copied().unwrap_or(0)
+    }
+
+    fn char_range_for_cols(&self, start_col: u32, end_col: u32) -> (usize, usize) {
+        let total_cols = self.total_cols();
+        let start_col = start_col.min(total_cols);
+        let end_col = end_col.min(total_cols).max(start_col);
+        let char_count = self.char_count() as usize;
+        let start = self
+            .col_boundaries
+            .partition_point(|boundary| *boundary <= start_col)
+            .saturating_sub(1)
+            .min(char_count);
+        let end = self
+            .col_boundaries
+            .partition_point(|boundary| *boundary < end_col)
+            .min(char_count);
+        (start, end.max(start))
+    }
+
+    #[cfg(test)]
     fn byte_range_for_cols(&self, start_col: u32, end_col: u32) -> (usize, usize) {
-        let char_count = self.char_count();
-        let start = start_col.min(char_count) as usize;
-        let end = end_col.min(char_count) as usize;
+        let (start, end) = self.char_range_for_cols(start_col, end_col);
         (
             self.char_boundaries[start] as usize,
             self.char_boundaries[end] as usize,
         )
     }
 
-    fn byte_range_for_segment(
-        &self,
-        segment_index: u16,
-        segment_cols: u16,
-    ) -> Option<(usize, usize)> {
-        if segment_cols == u16::MAX {
-            return (segment_index == 0).then(|| self.byte_range_for_cols(0, self.char_count()));
-        }
-
-        let char_count = self.char_count();
-        let segment_cols = u32::from(segment_cols.max(1));
-        let start_col = u32::from(segment_index).saturating_mul(segment_cols);
-        if start_col >= char_count {
-            return None;
-        }
-        let end_col = start_col.saturating_add(segment_cols).min(char_count);
-        Some(self.byte_range_for_cols(start_col, end_col))
-    }
-
     fn col_for_byte(&self, byte: usize) -> u32 {
         let byte = (byte as u32).min(self.char_boundaries.last().copied().unwrap_or(0));
-        self.char_boundaries
+        let idx = self
+            .char_boundaries
             .partition_point(|boundary| *boundary <= byte)
-            .saturating_sub(1) as u32
+            .saturating_sub(1);
+        self.col_boundaries.get(idx).copied().unwrap_or(0)
     }
 }
 
@@ -2386,11 +2396,12 @@ fn build_wrapped_rich_text(
     let spans: Arc<[RichTextSpan]> = if full_text.is_empty() {
         Arc::from(Vec::new())
     } else {
-        let (start, end) = wrapped_byte_slice(text_layout, wrap_cols, segment_index)?;
+        let (start_col, end_col) = wrapped_col_slice(text_layout, wrap_cols, segment_index)?;
         Arc::from(build_segment_spans(
             full_text,
-            start,
-            end,
+            text_layout,
+            start_col,
+            end_col,
             doc.line_runs(runs),
             tone,
             theme,
@@ -2399,66 +2410,112 @@ fn build_wrapped_rich_text(
     Some(spans)
 }
 
+fn wrapped_col_slice(
+    text_layout: &CachedTextLayout,
+    wrap_cols: u16,
+    segment_index: u16,
+) -> Option<(u32, u32)> {
+    if wrap_cols == u16::MAX {
+        return (segment_index == 0).then(|| (0, text_layout.total_cols()));
+    }
+
+    let total_cols = text_layout.total_cols();
+    let segment_cols = u32::from(wrap_cols.max(1));
+    let start_col = u32::from(segment_index).saturating_mul(segment_cols);
+    if start_col >= total_cols {
+        return None;
+    }
+    let end_col = start_col.saturating_add(segment_cols).min(total_cols);
+    Some((start_col, end_col))
+}
+
+#[cfg(test)]
 fn wrapped_byte_slice(
     text_layout: &CachedTextLayout,
     wrap_cols: u16,
     segment_index: u16,
 ) -> Option<(usize, usize)> {
-    text_layout.byte_range_for_segment(segment_index, wrap_cols)
+    let (start_col, end_col) = wrapped_col_slice(text_layout, wrap_cols, segment_index)?;
+    Some(text_layout.byte_range_for_cols(start_col, end_col))
 }
 
 fn build_segment_spans(
     full_text: &str,
-    segment_start: usize,
-    segment_end: usize,
+    text_layout: &CachedTextLayout,
+    segment_start_col: u32,
+    segment_end_col: u32,
     runs: &[StyleRun],
     tone: RowTone,
     theme: &Theme,
 ) -> Vec<RichTextSpan> {
     let mut spans = Vec::new();
-    let mut cursor = segment_start;
-    let run_start_index = runs.partition_point(|run| {
+    let (char_start, char_end) =
+        text_layout.char_range_for_cols(segment_start_col, segment_end_col);
+    if char_start >= char_end {
+        return spans;
+    }
+
+    let mut current_text = String::new();
+    let mut current_color = None;
+    let mut run_index = runs.partition_point(|run| {
         let run_end = run.byte_start.saturating_add(run.byte_len);
-        run_end as usize <= segment_start
+        run_end as usize <= text_layout.char_boundaries[char_start] as usize
     });
 
-    for run in &runs[run_start_index..] {
-        let run_start = run.byte_start as usize;
-        if run_start >= segment_end {
-            break;
-        }
-        let run_end = run_start.saturating_add(run.byte_len as usize);
-        let start = run_start.max(segment_start);
-        let end = run_end.min(segment_end);
+    for char_index in char_start..char_end {
+        let start = text_layout.char_boundaries[char_index] as usize;
+        let end = text_layout.char_boundaries[char_index + 1] as usize;
         if end <= start {
             continue;
         }
 
-        if cursor < start {
-            spans.push(RichTextSpan {
-                text: full_text[cursor..start].into(),
-                color: tone.default_text(theme),
-            });
+        while let Some(run) = runs.get(run_index) {
+            let run_end = run.byte_start.saturating_add(run.byte_len) as usize;
+            if start < run_end {
+                break;
+            }
+            run_index += 1;
         }
 
-        spans.push(RichTextSpan {
-            text: full_text[start..end].into(),
-            color: style_run_color(*run, tone, theme),
-        });
-        cursor = end;
+        let col_start = text_layout.col_boundaries[char_index];
+        let col_end = text_layout.col_boundaries[char_index + 1];
+        let visible_start = segment_start_col.max(col_start);
+        let visible_end = segment_end_col.min(col_end);
+        if visible_end <= visible_start {
+            continue;
+        }
+
+        let color = runs
+            .get(run_index)
+            .map(|run| style_run_color(*run, tone, theme))
+            .unwrap_or_else(|| tone.default_text(theme));
+        let text = if &full_text[start..end] == "\t" {
+            " ".repeat((visible_end - visible_start) as usize)
+        } else {
+            full_text[start..end].to_owned()
+        };
+
+        if current_color == Some(color) {
+            current_text.push_str(&text);
+            continue;
+        }
+
+        if !current_text.is_empty() {
+            spans.push(RichTextSpan {
+                text: current_text.into(),
+                color: current_color.unwrap_or_else(|| tone.default_text(theme)),
+            });
+            current_text = String::new();
+        }
+
+        current_color = Some(color);
+        current_text.push_str(&text);
     }
 
-    if cursor < segment_end {
+    if !current_text.is_empty() {
         spans.push(RichTextSpan {
-            text: full_text[cursor..segment_end].into(),
-            color: tone.default_text(theme),
-        });
-    }
-
-    if spans.is_empty() {
-        spans.push(RichTextSpan {
-            text: full_text[segment_start..segment_end].into(),
-            color: tone.default_text(theme),
+            text: current_text.into(),
+            color: current_color.unwrap_or_else(|| tone.default_text(theme)),
         });
     }
 
@@ -2531,6 +2588,16 @@ mod tests {
     }
 
     #[test]
+    fn cached_text_layout_tracks_visual_columns_for_tabs() {
+        let layout = CachedTextLayout::new("\ta\t");
+        assert_eq!(layout.total_cols(), 16);
+        assert_eq!(layout.col_for_byte(0), 0);
+        assert_eq!(layout.col_for_byte(1), 8);
+        assert_eq!(layout.col_for_byte(2), 9);
+        assert_eq!(layout.col_for_byte(3), 16);
+    }
+
+    #[test]
     fn rich_text_builder_returns_spans_for_requested_segment() {
         let doc = RenderDoc {
             text_bytes: b"keyword value".to_vec(),
@@ -2569,6 +2636,82 @@ mod tests {
                 .map(|span| span.text.as_ref())
                 .collect::<String>(),
             "keyword value"
+        );
+    }
+
+    #[test]
+    fn rich_text_builder_expands_tabs_across_wrapped_segments() {
+        let doc = RenderDoc {
+            text_bytes: b"\tabc".to_vec(),
+            style_runs: vec![crate::ui::editor::render_doc::StyleRun {
+                byte_start: 0,
+                byte_len: 4,
+                style_id: 0,
+                flags: 0,
+            }],
+            lines: vec![RenderLine {
+                kind: RenderRowKind::Context as u8,
+                right_text: ByteRange { start: 0, len: 4 },
+                right_runs: RunRange { start: 0, len: 1 },
+                right_cols: 11,
+                ..RenderLine::default()
+            }],
+        };
+
+        let text_layout = CachedTextLayout::new("\tabc");
+        let theme = Theme::default_dark();
+
+        let seg0 = build_wrapped_rich_text(
+            &doc,
+            &text_layout,
+            doc.lines[0].right_text,
+            doc.lines[0].right_runs,
+            0,
+            4,
+            super::RowTone::Neutral,
+            &theme,
+        )
+        .expect("segment 0");
+        let seg1 = build_wrapped_rich_text(
+            &doc,
+            &text_layout,
+            doc.lines[0].right_text,
+            doc.lines[0].right_runs,
+            1,
+            4,
+            super::RowTone::Neutral,
+            &theme,
+        )
+        .expect("segment 1");
+        let seg2 = build_wrapped_rich_text(
+            &doc,
+            &text_layout,
+            doc.lines[0].right_text,
+            doc.lines[0].right_runs,
+            2,
+            4,
+            super::RowTone::Neutral,
+            &theme,
+        )
+        .expect("segment 2");
+
+        assert_eq!(
+            seg0.iter()
+                .map(|span| span.text.as_ref())
+                .collect::<String>(),
+            "    "
+        );
+        assert_eq!(
+            seg1.iter()
+                .map(|span| span.text.as_ref())
+                .collect::<String>(),
+            "    "
+        );
+        assert_eq!(
+            seg2.iter()
+                .map(|span| span.text.as_ref())
+                .collect::<String>(),
+            "abc"
         );
     }
 

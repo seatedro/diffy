@@ -8,6 +8,26 @@ pub const INVALID_U32: u32 = u32::MAX;
 pub const STYLE_FLAG_CHANGE: u16 = 0x1;
 pub const STYLE_FLAG_NOVEL_WORD: u16 = 0x2;
 pub const STYLE_FLAG_UNCHANGED_CTX: u16 = 0x4;
+pub const DIFF_TAB_WIDTH: u16 = 8;
+
+pub(crate) fn advance_display_col(col: u32, ch: char) -> u32 {
+    if ch == '\t' {
+        let tab_width = u32::from(DIFF_TAB_WIDTH.max(1));
+        let remainder = col % tab_width;
+        let advance = if remainder == 0 {
+            tab_width
+        } else {
+            tab_width - remainder
+        };
+        col.saturating_add(advance)
+    } else {
+        col.saturating_add(1)
+    }
+}
+
+pub(crate) fn display_cols(text: &str) -> u32 {
+    text.chars().fold(0, advance_display_col)
+}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -225,7 +245,7 @@ fn build_render_line(
             let left_text = append_text(text_bytes, &file.path);
             RenderLine {
                 kind: kind as u8,
-                left_cols: file.path.chars().count() as u32,
+                left_cols: display_cols(&file.path),
                 left_text,
                 right_text: ByteRange::invalid(),
                 left_runs: append_style_runs(style_runs, &file.path, &[], &[]),
@@ -243,7 +263,7 @@ fn build_render_line(
             RenderLine {
                 kind: kind as u8,
                 hunk_index: source.hunk_index,
-                left_cols: header.chars().count() as u32,
+                left_cols: display_cols(header),
                 left_text,
                 right_text: ByteRange::invalid(),
                 left_runs: append_style_runs(style_runs, header, &[], &[]),
@@ -402,7 +422,7 @@ fn build_line_side(
     (
         range,
         runs,
-        text.chars().count() as u32,
+        display_cols(text),
         if line_no > 0 {
             line_no as u32
         } else {
@@ -671,5 +691,30 @@ mod tests {
         let runs = doc.line_runs(doc.lines[2].left_runs);
         assert_eq!(runs[1].style_id, SyntaxTokenKind::Keyword as u16);
         assert_eq!(runs[1].flags, STYLE_FLAG_CHANGE);
+    }
+
+    #[test]
+    fn render_doc_counts_tabs_as_visual_columns() {
+        let mut text_buffer = TextBuffer::default();
+        let token_buffer = TokenBuffer::default();
+        let line_text = text_buffer.append("\tab");
+
+        let file = FileDiff {
+            path: "src/lib.rs".to_owned(),
+            hunks: vec![Hunk {
+                header: "@@ -1 +1 @@".to_owned(),
+                lines: vec![DiffLine {
+                    kind: LineKind::Removed,
+                    old_line_number: Some(1),
+                    text_range: line_text,
+                    ..DiffLine::default()
+                }],
+                ..Hunk::default()
+            }],
+            ..FileDiff::default()
+        };
+
+        let doc = build_render_doc(&file, 0, &text_buffer, &token_buffer);
+        assert_eq!(doc.lines[2].left_cols, 10);
     }
 }

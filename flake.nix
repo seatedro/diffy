@@ -73,6 +73,7 @@
               pkgs.git
               pkgs.jq
               pkgs.lldb
+              pkgs.lld
               pkgs.watchexec
               (mkDevCommand pkgs)
             ] ++ pkgs.lib.optionals isLinux [

@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use crate::ai::{self, GenerateRequest, StreamMessage};
 use crate::apprt::runtime::RuntimeEventSender;
+use crate::core::compare::backends::{DifftasticBackend, GitDiffBackend};
 use crate::core::compare::{CompareOutput, CompareService, RendererKind};
 use crate::core::error::{DiffyError, Result};
 use crate::core::vcs::git::{GitService, WORKDIR_REF};
@@ -11,10 +12,13 @@ use crate::core::vcs::github::{
     DeviceFlowState, GitHubApi, GitHubUser, PullRequestInfo, parse_pr_url, poll_for_token,
     start_device_flow,
 };
-use crate::effects::{CompareRequest, GenerateCommitMessageRequest, StatusDiffRequest};
-use crate::events::{AppEvent, CompareFinished, StatusDiffFinished};
+use crate::effects::{
+    CompareFileRequest, CompareRequest, GenerateCommitMessageRequest, StatusDiffRequest,
+};
+use crate::events::{AppEvent, CompareFileFinished, CompareFinished, StatusDiffFinished};
 use crate::platform::persistence::{Settings, SettingsStore};
 use crate::platform::secrets::{self, AiKeyKind};
+use crate::ui::state::prepare_active_file;
 
 #[derive(Debug, Clone)]
 pub struct AppServices {
@@ -74,6 +78,47 @@ impl AppServices {
             index,
             item: request.item,
             output,
+        })
+    }
+
+    pub fn load_compare_file(
+        &self,
+        generation: u64,
+        request: CompareFileRequest,
+    ) -> Result<CompareFileFinished> {
+        let mut git = GitService::new();
+        git.open(request.repo_path.to_string_lossy().as_ref())?;
+        let mut output: CompareOutput = match request.spec.renderer {
+            RendererKind::Builtin => GitDiffBackend
+                .compare_path(&request.spec, &request.path, &git)?
+                .ok_or_else(|| DiffyError::General("compare file returned no result".to_owned()))?,
+            RendererKind::Difftastic => DifftasticBackend
+                .compare_path(&request.spec, &request.path, &git)?
+                .ok_or_else(|| DiffyError::General("compare file returned no result".to_owned()))?,
+        };
+
+        let Some(mut file) = output.files.pop() else {
+            return Err(DiffyError::General(
+                "compare file returned no file".to_owned(),
+            ));
+        };
+        crate::core::syntax::DiffSyntaxAnnotator::new().annotate(
+            &mut file,
+            &mut output.text_buffer,
+            &mut output.token_buffer,
+        );
+        file.syntax_annotated = true;
+
+        Ok(CompareFileFinished {
+            generation,
+            index: request.index,
+            path: request.path,
+            prepared: prepare_active_file(
+                request.index,
+                file,
+                &output.text_buffer,
+                &output.token_buffer,
+            ),
         })
     }
 

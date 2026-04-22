@@ -32,6 +32,34 @@ impl DifftasticBackend {
         let changed = changed_path_for_status_item(repo, item)?;
         compare_changed_paths(vec![changed])
     }
+
+    pub fn compare_path(
+        &self,
+        spec: &CompareSpec,
+        path: &str,
+        git: &GitService,
+    ) -> Result<Option<CompareOutput>> {
+        let (left, right) = match spec.mode {
+            CompareMode::TwoDot => {
+                if spec.right_ref == WORKDIR_REF {
+                    (git.resolve_ref(&spec.left_ref)?, WORKDIR_REF.to_owned())
+                } else {
+                    (
+                        git.resolve_ref(&spec.left_ref)?,
+                        git.resolve_ref(&spec.right_ref)?,
+                    )
+                }
+            }
+            CompareMode::ThreeDot | CompareMode::SingleCommit => {
+                git.resolve_comparison(&spec.left_ref, &spec.right_ref, spec.mode)?
+            }
+        };
+
+        let repo = git.repo()?;
+        let changed_paths = collect_changed_paths(repo, &left, &right, Some(path))?;
+
+        Ok(Some(compare_changed_paths(changed_paths)?))
+    }
 }
 
 impl DiffBackend for DifftasticBackend {
@@ -53,7 +81,7 @@ impl DiffBackend for DifftasticBackend {
         };
 
         let repo = git.repo()?;
-        let changed_paths = collect_changed_paths(repo, &left, &right)?;
+        let changed_paths = collect_changed_paths(repo, &left, &right, None)?;
 
         Ok(Some(compare_changed_paths(changed_paths)?))
     }
@@ -320,7 +348,12 @@ struct ChangedPath {
     is_binary: bool,
 }
 
-fn collect_changed_paths(repo: &Repository, left: &str, right: &str) -> Result<Vec<ChangedPath>> {
+fn collect_changed_paths(
+    repo: &Repository,
+    left: &str,
+    right: &str,
+    only_path: Option<&str>,
+) -> Result<Vec<ChangedPath>> {
     let left_tree = repo
         .revparse_single(left)?
         .peel(ObjectType::Commit)?
@@ -332,6 +365,9 @@ fn collect_changed_paths(repo: &Repository, left: &str, right: &str) -> Result<V
         .and_then(|object| object.peel_to_tree().ok());
     let mut options = DiffOptions::new();
     options.context_lines(3);
+    if let Some(path) = only_path {
+        options.pathspec(path);
+    }
     let is_workdir = right == WORKDIR_REF;
     let workdir = if is_workdir {
         Some(
@@ -814,13 +850,28 @@ mod tests {
         )
         .unwrap();
 
-        let changed = collect_changed_paths(&repo, &head, WORKDIR_REF).unwrap();
+        let changed = collect_changed_paths(&repo, &head, WORKDIR_REF, None).unwrap();
         assert_eq!(changed.len(), 1);
         assert_eq!(changed[0].new_path.as_deref(), Some("src/lib.rs"));
         assert_eq!(
             String::from_utf8_lossy(&changed[0].new_content),
             "fn answer() {\n    new();\n}\n"
         );
+    }
+
+    #[test]
+    fn collect_changed_paths_can_filter_to_one_path() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        let head = commit_file(&repo, "src/lib.rs", "before\n", "initial");
+        commit_file(&repo, "src/other.rs", "stay\n", "add other");
+        fs::write(repo_dir.path().join("src/lib.rs"), "after\n").unwrap();
+        fs::write(repo_dir.path().join("src/other.rs"), "changed\n").unwrap();
+
+        let changed = collect_changed_paths(&repo, &head, WORKDIR_REF, Some("src/lib.rs")).unwrap();
+
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].new_path.as_deref(), Some("src/lib.rs"));
     }
 
     #[test]

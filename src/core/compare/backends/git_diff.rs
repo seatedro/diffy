@@ -11,6 +11,52 @@ use crate::core::vcs::git::{GitService, WORKDIR_REF};
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GitDiffBackend;
 
+impl GitDiffBackend {
+    pub fn compare_path(
+        &self,
+        spec: &CompareSpec,
+        path: &str,
+        git: &GitService,
+    ) -> Result<Option<CompareOutput>> {
+        let repo = match git.repo() {
+            Ok(r) => r,
+            Err(_) => return Ok(None),
+        };
+        let (left, right) = match spec.mode {
+            crate::core::compare::spec::CompareMode::TwoDot => {
+                if spec.right_ref == WORKDIR_REF {
+                    (git.resolve_ref(&spec.left_ref)?, WORKDIR_REF.to_owned())
+                } else {
+                    (
+                        git.resolve_ref(&spec.left_ref)?,
+                        git.resolve_ref(&spec.right_ref)?,
+                    )
+                }
+            }
+            crate::core::compare::spec::CompareMode::ThreeDot
+            | crate::core::compare::spec::CompareMode::SingleCommit => {
+                git.resolve_comparison(&spec.left_ref, &spec.right_ref, spec.mode)?
+            }
+        };
+
+        let left_commit = repo.find_commit(git2::Oid::from_str(&left)?)?;
+        let left_tree = left_commit.tree()?;
+
+        let mut options = DiffOptions::new();
+        options.context_lines(3);
+        options.pathspec(path);
+        let is_workdir = right == WORKDIR_REF;
+        let mut diff = if is_workdir {
+            repo.diff_tree_to_workdir_with_index(Some(&left_tree), Some(&mut options))?
+        } else {
+            let right_commit = repo.find_commit(git2::Oid::from_str(&right)?)?;
+            let right_tree = right_commit.tree()?;
+            repo.diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(&mut options))?
+        };
+        Ok(Some(compare_output_from_diff(&mut diff)?))
+    }
+}
+
 impl DiffBackend for GitDiffBackend {
     fn compare(&self, spec: &CompareSpec, git: &GitService) -> Result<Option<CompareOutput>> {
         let repo = match git.repo() {
@@ -321,5 +367,36 @@ mod tests {
 
         assert_eq!(output.text_buffer.view(removed.text_range), "start");
         assert_eq!(output.text_buffer.view(added.text_range), "feature");
+    }
+
+    #[test]
+    fn builtin_backend_can_compare_single_path() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        let first = commit_file(&repo, "src/a.rs", "before\n", "initial a");
+        let _ = commit_file(&repo, "src/b.rs", "before\n", "initial b");
+        let second = commit_file(&repo, "src/a.rs", "after\n", "update a");
+        let _ = commit_file(&repo, "src/b.rs", "after\n", "update b");
+
+        let mut git = GitService::new();
+        git.open(repo_dir.path().to_str().unwrap()).unwrap();
+
+        let output = GitDiffBackend
+            .compare_path(
+                &CompareSpec {
+                    mode: CompareMode::TwoDot,
+                    left_ref: first,
+                    right_ref: second,
+                    renderer: RendererKind::Builtin,
+                    layout: LayoutMode::Unified,
+                },
+                "src/a.rs",
+                &git,
+            )
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(output.files.len(), 1);
+        assert_eq!(output.files[0].path, "src/a.rs");
     }
 }

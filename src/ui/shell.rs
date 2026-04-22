@@ -237,6 +237,7 @@ pub fn build_ui_frame(
     if state.is_workspace_ready() {
         if let Some(vp_bounds) = viewport_bounds.get() {
             let active_file_snapshot = state.workspace.active_file.get(&state.store);
+            let active_file_loading = state.workspace.active_file_loading.get(&state.store);
             let compare_generation = state.workspace.compare_generation.get(&state.store);
             let document = match active_file_snapshot.as_ref() {
                 Some(active_file) if active_file.file.is_binary => EditorDocument::Binary {
@@ -247,6 +248,9 @@ pub fn build_ui_frame(
                     file_index: active_file.index,
                     path: &active_file.path,
                     doc: &active_file.render_doc,
+                },
+                None if active_file_loading.is_some() => EditorDocument::Loading {
+                    path: &active_file_loading.as_ref().expect("loading file").path,
                 },
                 None => EditorDocument::Empty,
             };

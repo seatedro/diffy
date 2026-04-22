@@ -173,6 +173,25 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
+            Effect::LoadCompareFile {
+                generation,
+                request,
+            } => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let path = request.path.clone();
+                    let event = match services.load_compare_file(generation, request) {
+                        Ok(payload) => AppEvent::CompareFileFinished(payload),
+                        Err(error) => AppEvent::CompareFileFailed {
+                            generation,
+                            path,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
             Effect::LoadStatusDiff {
                 generation,
                 index,

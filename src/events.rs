@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use crate::core::compare::{CompareOutput, CompareSpec};
 use crate::core::vcs::git::{BranchInfo, CommitInfo, StatusItem, TagInfo};
 use crate::core::vcs::github::{DeviceFlowState, GitHubUser, PullRequestInfo};
+use crate::ui::state::PreparedActiveFile;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepositorySyncReason {
@@ -48,6 +49,14 @@ pub struct StatusDiffFinished {
 }
 
 #[derive(Debug, Clone)]
+pub struct CompareFileFinished {
+    pub generation: u64,
+    pub index: usize,
+    pub path: String,
+    pub prepared: PreparedActiveFile,
+}
+
+#[derive(Debug, Clone)]
 pub enum AppEvent {
     RepositoryDialogClosed {
         path: Option<PathBuf>,
@@ -61,6 +70,12 @@ pub enum AppEvent {
     CompareFinished(CompareFinished),
     CompareFailed {
         generation: u64,
+        message: String,
+    },
+    CompareFileFinished(CompareFileFinished),
+    CompareFileFailed {
+        generation: u64,
+        path: String,
         message: String,
     },
     StatusDiffFinished(StatusDiffFinished),

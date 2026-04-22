@@ -31,9 +31,6 @@ Hot reload is still supported through Dioxus/Subsecond when the `hot-reload` fea
 dx serve --hot-patch --features hot-reload
 ```
 
-Contributor guidance lives in [AGENTS.md](AGENTS.md), and the performance tooling boundary is
-documented in [PERF.md](PERF.md).
-
 ## License
 
 GPL-3.0

@@ -93,6 +93,9 @@ pub struct ScrollbarLayout {
 #[derive(Debug, Clone, Copy)]
 pub enum EditorDocument<'a> {
     Empty,
+    Loading {
+        path: &'a str,
+    },
     Binary {
         path: &'a str,
     },
@@ -727,6 +730,9 @@ impl EditorElement {
 
         match document {
             EditorDocument::Empty => {}
+            EditorDocument::Loading { path } => {
+                self.paint_placeholder(scene, theme, path, "Loading diff...");
+            }
             EditorDocument::Binary { path } => {
                 self.paint_placeholder(
                     scene,

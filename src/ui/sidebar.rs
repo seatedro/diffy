@@ -1,10 +1,11 @@
 use std::cell::Cell;
+use std::ops::Range;
 use std::rc::Rc;
 
 use halogen::view;
 
 use crate::actions::Action;
-use crate::core::vcs::git::{CommitInfo, StatusScope};
+use crate::core::vcs::git::{CommitInfo, StatusItem, StatusScope};
 use crate::effects::Effect;
 use crate::render::{Rect, RectPrimitive, RoundedRectPrimitive};
 use crate::ui::components::{
@@ -16,7 +17,8 @@ use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
 use crate::ui::state::{
-    AppState, FocusTarget, SidebarMode, SidebarTab, SidebarWidthCache, WorkspaceSource,
+    AppState, FileListEntry, FocusTarget, SidebarMode, SidebarTab, SidebarWidthCache,
+    WorkspaceSource,
 };
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme};
@@ -24,6 +26,18 @@ use crate::ui::theme::{Color, Theme};
 pub(crate) struct SidebarResizeDrag {
     origin_x: f32,
     starting_width: f32,
+}
+
+const SIDEBAR_OVERSCAN_ROWS: usize = 8;
+const EXACT_SIDEBAR_WIDTH_MAX_FILES: usize = 200;
+
+#[derive(Debug, Clone, Copy)]
+enum SidebarRow<'a> {
+    Section(StatusScope),
+    File {
+        index: usize,
+        entry: &'a FileListEntry,
+    },
 }
 
 impl SidebarResizeDrag {
@@ -53,6 +67,91 @@ impl DragHandler for SidebarResizeDrag {
     }
 }
 
+fn visible_sidebar_window(
+    scroll_px: f32,
+    viewport_px: f32,
+    stride: f32,
+    len: usize,
+) -> Range<usize> {
+    if len == 0 || stride <= 0.0 {
+        return 0..0;
+    }
+
+    let first = (scroll_px / stride).floor().max(0.0) as usize;
+    let visible = (viewport_px / stride).ceil().max(1.0) as usize;
+    let start = first.saturating_sub(SIDEBAR_OVERSCAN_ROWS);
+    let end = (first + visible + SIDEBAR_OVERSCAN_ROWS).min(len);
+    start..end
+}
+
+fn virtual_sidebar_spacer_heights(
+    total_rows: usize,
+    window: &Range<usize>,
+    stride: f32,
+    gap: f32,
+) -> (f32, f32) {
+    let top = window.start as f32 * stride;
+    let remaining = total_rows.saturating_sub(window.end);
+    let bottom = if remaining == 0 {
+        0.0
+    } else {
+        remaining as f32 * stride - gap
+    };
+    (top, bottom)
+}
+
+fn build_sidebar_rows<'a>(
+    all_files: &'a [FileListEntry],
+    filtered_indices: &[usize],
+    status_items: Option<&[StatusItem]>,
+) -> Vec<SidebarRow<'a>> {
+    let mut rows = Vec::with_capacity(filtered_indices.len());
+    let mut last_scope = None;
+
+    for &index in filtered_indices {
+        let Some(entry) = all_files.get(index) else {
+            continue;
+        };
+        let scope = status_items.and_then(|items| items.get(index).map(|item| item.scope));
+        if scope != last_scope {
+            if let Some(scope) = scope {
+                rows.push(SidebarRow::Section(scope));
+            }
+            last_scope = scope;
+        }
+        rows.push(SidebarRow::File { index, entry });
+    }
+
+    rows
+}
+
+fn sidebar_row_wrapper_height(
+    global_index: usize,
+    total_rows: usize,
+    row_height: f32,
+    stride: f32,
+) -> f32 {
+    if global_index + 1 == total_rows {
+        row_height
+    } else {
+        stride
+    }
+}
+
+fn render_sidebar_row(
+    row: SidebarRow<'_>,
+    state: &AppState,
+    tc: &crate::ui::theme::ThemeColors,
+    scale: f32,
+    row_h: f32,
+) -> AnyElement {
+    match row {
+        SidebarRow::Section(scope) => status_section_row(scope, tc, scale, row_h),
+        SidebarRow::File { index, entry } => file_row(entry, index, state, tc, scale),
+    }
+}
+
+#[profiling::function]
 pub(crate) fn preferred_sidebar_width(
     state: &mut AppState,
     theme: &Theme,
@@ -132,55 +231,73 @@ pub(crate) fn preferred_sidebar_width(
         };
         let header_width = header_side_padding + header_label_width + header_badge_width;
 
-        let widest_row = state.workspace.files.with(&state.store, |files| {
-            files
-                .iter()
-                .map(|file| {
-                    let path_width = measure_text_width(
-                        cx.font_system,
-                        &file.path,
-                        theme.metrics.ui_small_font_size,
-                        crate::render::FontKind::Ui,
-                        crate::render::FontWeight::Normal,
-                    );
-
-                    let stats_width = if file.additions > 0 || file.deletions > 0 {
-                        let additions_width = measure_text_width(
+        let widest_row = if file_count <= EXACT_SIDEBAR_WIDTH_MAX_FILES {
+            state.workspace.files.with(&state.store, |files| {
+                files
+                    .iter()
+                    .map(|file| {
+                        let path_width = measure_text_width(
                             cx.font_system,
-                            &format!("+{}", file.additions),
-                            theme.metrics.ui_small_font_size - 1.0,
+                            &file.path,
+                            theme.metrics.ui_small_font_size,
                             crate::render::FontKind::Ui,
                             crate::render::FontWeight::Normal,
                         );
-                        let deletions_width = measure_text_width(
-                            cx.font_system,
-                            &format!("\u{2212}{}", file.deletions),
-                            theme.metrics.ui_small_font_size - 1.0,
-                            crate::render::FontKind::Ui,
-                            crate::render::FontWeight::Normal,
-                        );
-                        row_gap + additions_width + stats_gap + deletions_width
-                    } else {
-                        0.0
-                    };
 
-                    let status_badge_width = if !file.status.is_empty() {
-                        row_gap + (theme.metrics.ui_small_font_size + Sp::XS).round()
-                    } else {
-                        0.0
-                    };
+                        let stats_width = if file.additions > 0 || file.deletions > 0 {
+                            let additions_width = measure_text_width(
+                                cx.font_system,
+                                &format!("+{}", file.additions),
+                                theme.metrics.ui_small_font_size - 1.0,
+                                crate::render::FontKind::Ui,
+                                crate::render::FontWeight::Normal,
+                            );
+                            let deletions_width = measure_text_width(
+                                cx.font_system,
+                                &format!("\u{2212}{}", file.deletions),
+                                theme.metrics.ui_small_font_size - 1.0,
+                                crate::render::FontKind::Ui,
+                                crate::render::FontWeight::Normal,
+                            );
+                            row_gap + additions_width + stats_gap + deletions_width
+                        } else {
+                            0.0
+                        };
 
-                    list_side_padding
-                        + row_side_padding
-                        + file_icon_width
-                        + row_gap
-                        + path_width
-                        + stats_width
-                        + status_badge_width
-                        + scrollbar_gutter
-                })
-                .fold(0.0_f32, f32::max)
-        });
+                        let status_badge_width = if !file.status.is_empty() {
+                            row_gap + (theme.metrics.ui_small_font_size + Sp::XS).round()
+                        } else {
+                            0.0
+                        };
+
+                        list_side_padding
+                            + row_side_padding
+                            + file_icon_width
+                            + row_gap
+                            + path_width
+                            + stats_width
+                            + status_badge_width
+                            + scrollbar_gutter
+                    })
+                    .fold(0.0_f32, f32::max)
+            })
+        } else {
+            let longest_chars = state.workspace.files.with(&state.store, |files| {
+                files
+                    .iter()
+                    .map(|file| file.path.chars().count())
+                    .max()
+                    .unwrap_or(0)
+            }) as f32;
+            let avg_char_width = theme.metrics.ui_small_font_size * 0.56;
+            list_side_padding
+                + row_side_padding
+                + file_icon_width
+                + row_gap
+                + longest_chars.min(120.0) * avg_char_width
+                + scrollbar_gutter
+                + 56.0
+        };
 
         let intrinsic_width = widest_row.max(header_width);
         state.workspace.sidebar_auto_width.set(
@@ -578,48 +695,46 @@ pub(crate) fn sidebar(
         })
     } else {
         let grouped_status = workspace_source == WorkspaceSource::Status && !has_filter;
-        let total_height = state.file_list_total_content_height(if grouped_status {
-            state.sidebar_row_count()
-        } else {
-            visible_count
-        });
+        let status_rows = grouped_status.then(|| state.workspace.status_items.get(&state.store));
+        let rows = build_sidebar_rows(&all_files, &filtered_indices, status_rows.as_deref());
+        let total_height = state.file_list_total_content_height(rows.len());
         let scroll_px = state.file_list.scroll_offset_px.get(&state.store);
+        let stride = state.file_list_row_stride();
+        let viewport_height = state.file_list.viewport_height.get(&state.store);
+        let window = visible_sidebar_window(scroll_px, viewport_height, stride, rows.len());
+        let gap = state.file_list.gap.get(&state.store);
+        let (top_pad, bottom_pad) =
+            virtual_sidebar_spacer_heights(rows.len(), &window, stride, gap);
 
-        let rows: Vec<AnyElement> = if grouped_status {
-            let scopes_by_index: Vec<Option<StatusScope>> =
-                state.workspace.status_items.with(&state.store, |items| {
-                    filtered_indices
-                        .iter()
-                        .map(|&index| items.get(index).map(|item| item.scope))
-                        .collect()
-                });
-            let mut rows = Vec::new();
-            let mut last_scope = None;
-            for (pos, &index) in filtered_indices.iter().enumerate() {
-                let scope = scopes_by_index[pos];
-                if scope != last_scope {
-                    if let Some(scope) = scope {
-                        rows.push(status_section_row(scope, tc, scale, row_h));
-                    }
-                    last_scope = scope;
+        let rendered_rows: Vec<AnyElement> = rows[window.clone()]
+            .iter()
+            .enumerate()
+            .map(|(offset, row)| {
+                let global_index = window.start + offset;
+                let wrapper_height =
+                    sidebar_row_wrapper_height(global_index, rows.len(), row_h, stride);
+                view! { scale,
+                    <div class="w-full shrink-0 overflow-hidden" h={wrapper_height}>
+                        {render_sidebar_row(*row, state, tc, scale, row_h)}
+                    </div>
                 }
-                rows.push(file_row(&all_files[index], index, state, tc, scale));
-            }
-            rows
-        } else {
-            filtered_indices
-                .iter()
-                .map(|&index| file_row(&all_files[index], index, state, tc, scale))
-                .collect()
-        };
+                .into_any()
+            })
+            .collect();
 
         Some(view! { scale,
             <div class="flex-1 flex-col" min_h={0.0}
-                 px={Rad::LG} pt={Sp::XXS} gap={Sp::XS}
+                 px={Rad::LG} pt={Sp::XXS}
                  clip scroll_y={scroll_px}
                  scroll_total={total_height}
                  on_scroll={ScrollActionBuilder::FileList}>
-                {...rows}
+                if top_pad > 0.0 {
+                    <div class="w-full shrink-0" h={top_pad} />
+                }
+                {...rendered_rows}
+                if bottom_pad > 0.0 {
+                    <div class="w-full shrink-0" h={bottom_pad} />
+                }
             </div>
         })
     };
@@ -874,5 +989,28 @@ fn commit_row(
                 <text class="text-xs font-mono" color={tc.text_muted}>{&commit.short_oid}</text>
             </div>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{virtual_sidebar_spacer_heights, visible_sidebar_window};
+
+    #[test]
+    fn visible_sidebar_window_overscans_and_clamps() {
+        let window = visible_sidebar_window(120.0, 80.0, 40.0, 100);
+        assert_eq!(window, 0..13);
+
+        let near_end = visible_sidebar_window(3_760.0, 80.0, 40.0, 100);
+        assert_eq!(near_end, 86..100);
+    }
+
+    #[test]
+    fn virtual_sidebar_spacers_preserve_total_height() {
+        let window = 10..15;
+        let (top, bottom) = virtual_sidebar_spacer_heights(30, &window, 40.0, 4.0);
+
+        assert_eq!(top, 400.0);
+        assert_eq!(bottom, 596.0);
     }
 }

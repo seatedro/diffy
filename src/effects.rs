@@ -16,6 +16,14 @@ pub struct CompareRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompareFileRequest {
+    pub repo_path: PathBuf,
+    pub spec: CompareSpec,
+    pub path: String,
+    pub index: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusDiffRequest {
     pub repo_path: PathBuf,
     pub item: StatusItem,
@@ -90,6 +98,10 @@ pub enum Effect {
     RunCompare {
         generation: u64,
         request: CompareRequest,
+    },
+    LoadCompareFile {
+        generation: u64,
+        request: CompareFileRequest,
     },
     LoadStatusDiff {
         generation: u64,

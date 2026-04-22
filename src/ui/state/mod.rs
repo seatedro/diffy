@@ -21,12 +21,13 @@ use crate::core::vcs::git::{
 use crate::core::vcs::github::{DeviceFlowState, GitHubUser, PullRequestInfo};
 use crate::editor::Editor;
 use crate::effects::{
-    BatchStatusOperationRequest, CommitRequest, CompareRequest, Effect, FetchRemoteRequest,
-    PatchOperationRequest, PullFfRequest, PushRequest, StatusDiffRequest, StatusOperationRequest,
+    BatchStatusOperationRequest, CommitRequest, CompareFileRequest, CompareRequest, Effect,
+    FetchRemoteRequest, PatchOperationRequest, PullFfRequest, PushRequest, StatusDiffRequest,
+    StatusOperationRequest,
 };
 use crate::events::{
-    AppEvent, CompareFinished, RepositoryChangeKind, RepositorySnapshot, RepositorySyncReason,
-    StatusDiffFinished,
+    AppEvent, CompareFileFinished, CompareFinished, RepositoryChangeKind, RepositorySnapshot,
+    RepositorySyncReason, StatusDiffFinished,
 };
 use crate::platform::persistence::{PersistedCompare, Settings};
 use crate::platform::secrets::AiKeyKind;
@@ -41,6 +42,7 @@ const MAX_VISIBLE_TOASTS: usize = 5;
 const TOAST_LIFETIME_MS: u64 = 5_000;
 const TOAST_ANIM_MS: u64 = 150;
 const CURSOR_BLINK_INTERVAL_MS: u64 = 530;
+const LARGE_COMPARE_FILE_LINES: i32 = 1_500;
 
 fn build_pr_palette_entry(
     cache: &HashMap<PrKey, PrCacheEntry>,
@@ -302,6 +304,20 @@ pub struct FileListEntry {
     pub is_binary: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveFileLoading {
+    pub index: usize,
+    pub path: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedActiveFile {
+    pub file: FileDiff,
+    pub render_doc: RenderDoc,
+    pub text_buffer: TextBuffer,
+    pub token_buffer: TokenBuffer,
+}
+
 fn refs_for_status_scope(scope: StatusScope) -> (String, String) {
     use crate::core::vcs::git::{INDEX_REF, WORKDIR_REF};
     match scope {
@@ -327,6 +343,44 @@ pub struct ActiveFile {
     pub file_lines: Option<Arc<Vec<String>>>,
 }
 
+pub(crate) fn prepare_active_file(
+    file_index: usize,
+    mut file: FileDiff,
+    src_text: &TextBuffer,
+    src_tokens: &TokenBuffer,
+) -> PreparedActiveFile {
+    let mut text_buffer = TextBuffer::default();
+    let mut token_buffer = TokenBuffer::default();
+
+    for hunk in &mut file.hunks {
+        for line in &mut hunk.lines {
+            line.text_range = text_buffer.append(src_text.view(line.text_range));
+
+            if line.change_tokens.is_empty() {
+                line.change_tokens = Default::default();
+            } else {
+                let change_tokens = src_tokens.view(line.change_tokens).to_vec();
+                line.change_tokens = token_buffer.append(&change_tokens);
+            }
+
+            if line.syntax_tokens.is_empty() {
+                line.syntax_tokens = Default::default();
+            } else {
+                let syntax_tokens = src_tokens.view(line.syntax_tokens).to_vec();
+                line.syntax_tokens = token_buffer.append(&syntax_tokens);
+            }
+        }
+    }
+
+    let render_doc = build_render_doc(&file, file_index, &text_buffer, &token_buffer);
+    PreparedActiveFile {
+        file,
+        render_doc,
+        text_buffer,
+        token_buffer,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SidebarWidthCache {
     pub compare_generation: u64,
@@ -348,6 +402,7 @@ pub struct WorkspaceState {
     pub selected_status_scope: Option<StatusScope>,
     pub compare_output: Option<CompareOutput>,
     pub active_file: Option<ActiveFile>,
+    pub active_file_loading: Option<ActiveFileLoading>,
     pub raw_diff_len: usize,
     pub used_fallback: bool,
     pub fallback_message: String,
@@ -500,6 +555,71 @@ impl AppState {
                 .workspace
                 .status_items
                 .with(&self.store, |s| status_section_count_before(s, index + 1))
+    }
+
+    fn compare_file_is_large(&self, index: usize) -> bool {
+        self.workspace.files.with(&self.store, |files| {
+            files.get(index).is_some_and(|file| {
+                !file.is_binary
+                    && file.additions.saturating_add(file.deletions) >= LARGE_COMPARE_FILE_LINES
+            })
+        })
+    }
+
+    fn build_active_file(
+        &self,
+        index: usize,
+        path: String,
+        prepared: PreparedActiveFile,
+        left_ref: String,
+        right_ref: String,
+    ) -> ActiveFile {
+        ActiveFile {
+            index,
+            path,
+            file: prepared.file.clone(),
+            render_doc: prepared.render_doc,
+            text_buffer: prepared.text_buffer.clone(),
+            base_file: prepared.file,
+            base_text_buffer: prepared.text_buffer,
+            token_buffer: prepared.token_buffer,
+            left_ref,
+            right_ref,
+            file_line_count: None,
+            file_lines: None,
+        }
+    }
+
+    fn install_compare_active_file(
+        &mut self,
+        index: usize,
+        path: String,
+        prepared: PreparedActiveFile,
+    ) {
+        let left_ref = self.compare.left_ref.get(&self.store);
+        let right_ref = self.compare.right_ref.get(&self.store);
+        let active_file =
+            self.build_active_file(index, path.clone(), prepared, left_ref, right_ref);
+
+        self.workspace
+            .selected_file_index
+            .set(&self.store, Some(index));
+        self.workspace
+            .selected_file_path
+            .set(&self.store, Some(path));
+        self.workspace.selected_status_scope.set(&self.store, None);
+        self.workspace.active_file_loading.set(&self.store, None);
+        self.workspace
+            .active_file
+            .set(&self.store, Some(active_file));
+        self.editor_clear_document();
+        self.editor
+            .line_selection
+            .update(&self.store, |ls| ls.clear());
+        if self.editor.search.open.get(&self.store) {
+            self.recompute_search_matches();
+        }
+        self.file_list.hovered_index.set(&self.store, Some(index));
     }
 }
 
@@ -2064,14 +2184,8 @@ impl AppState {
                 }
                 Vec::new()
             }
-            Action::SelectNextFile => {
-                self.shift_loaded_file(1);
-                Vec::new()
-            }
-            Action::SelectPreviousFile => {
-                self.shift_loaded_file(-1);
-                Vec::new()
-            }
+            Action::SelectNextFile => self.shift_loaded_file(1),
+            Action::SelectPreviousFile => self.shift_loaded_file(-1),
             Action::ScrollFileList(delta) => {
                 self.file_list_scroll_rows(delta, self.sidebar_row_count());
                 Vec::new()
@@ -2435,6 +2549,26 @@ impl AppState {
                     self.workspace.status.set(&self.store, AsyncStatus::Failed);
                     self.workspace_mode.set(&self.store, WorkspaceMode::Empty);
                     self.push_error(&message);
+                }
+                Vec::new()
+            }
+            AppEvent::CompareFileFinished(payload) => self.handle_compare_file_finished(payload),
+            AppEvent::CompareFileFailed {
+                generation,
+                path,
+                message,
+            } => {
+                if generation == self.workspace.compare_generation.get(&self.store) {
+                    let matches_loading = self
+                        .workspace
+                        .active_file_loading
+                        .with(&self.store, |loading| {
+                            loading.as_ref().is_some_and(|loading| loading.path == path)
+                        });
+                    if matches_loading {
+                        self.workspace.active_file_loading.set(&self.store, None);
+                        self.push_error(&message);
+                    }
                 }
                 Vec::new()
             }
@@ -3047,6 +3181,7 @@ impl AppState {
         self.workspace.selected_status_scope.set(&self.store, None);
         self.workspace.compare_output.set(&self.store, None);
         self.workspace.active_file.set(&self.store, None);
+        self.workspace.active_file_loading.set(&self.store, None);
         self.workspace.raw_diff_len.set(&self.store, 0);
         self.workspace.used_fallback.set(&self.store, false);
         self.workspace
@@ -3350,6 +3485,7 @@ impl AppState {
         self.editor.scroll_top_px.set(&self.store, preserved_scroll);
     }
 
+    #[profiling::function]
     fn handle_compare_finished(&mut self, payload: CompareFinished) -> Vec<Effect> {
         if payload.generation != self.workspace.compare_generation.get(&self.store) {
             return Vec::new();
@@ -3388,6 +3524,7 @@ impl AppState {
         self.workspace
             .compare_output
             .set(&self.store, Some(payload.output));
+        self.workspace.active_file_loading.set(&self.store, None);
         self.workspace.sidebar_auto_width.set(&self.store, None);
         if self
             .workspace
@@ -3423,16 +3560,18 @@ impl AppState {
             (files.len(), idx)
         });
 
+        let mut effects = Vec::new();
         if let Some(index) = index_for_path
             .or(preferred_index.filter(|index| *index < file_count))
             .or_else(|| (file_count > 0).then_some(0))
         {
-            let _ = self.select_file(index, true);
+            effects.extend(self.select_file(index, true));
         } else {
             self.workspace.selected_file_index.set(&self.store, None);
             self.workspace.selected_file_path.set(&self.store, None);
             self.workspace.selected_status_scope.set(&self.store, None);
             self.workspace.active_file.set(&self.store, None);
+            self.workspace.active_file_loading.set(&self.store, None);
             self.editor_clear_document();
         }
 
@@ -3443,7 +3582,7 @@ impl AppState {
         if used_fallback && !fallback_message.is_empty() {
             self.push_info(&fallback_message);
         }
-        Vec::new()
+        effects
     }
 
     fn handle_status_diff_finished(&mut self, payload: StatusDiffFinished) -> Vec<Effect> {
@@ -3505,6 +3644,7 @@ impl AppState {
             .raw_diff_len
             .set(&self.store, output.raw_diff.len());
         self.workspace.compare_output.set(&self.store, None);
+        self.workspace.active_file_loading.set(&self.store, None);
 
         let Some(mut file) = output.files.into_iter().next() else {
             self.workspace.active_file.set(&self.store, None);
@@ -3518,9 +3658,9 @@ impl AppState {
             &mut output.token_buffer,
         );
         file.syntax_annotated = true;
-        let render_doc = build_render_doc(
-            &file,
+        let prepared = prepare_active_file(
             payload.index,
+            file,
             &output.text_buffer,
             &output.token_buffer,
         );
@@ -3541,23 +3681,16 @@ impl AppState {
         let same_file = self.workspace.active_file.with(&self.store, |af| {
             af.as_ref().is_some_and(|a| a.path == payload.item.path)
         });
-        self.workspace.active_file.set(
-            &self.store,
-            Some(ActiveFile {
-                index: payload.index,
-                path: payload.item.path.clone(),
-                file: file.clone(),
-                render_doc,
-                text_buffer: output.text_buffer.clone(),
-                base_file: file,
-                base_text_buffer: output.text_buffer,
-                token_buffer: output.token_buffer,
-                left_ref,
-                right_ref,
-                file_line_count: None,
-                file_lines: None,
-            }),
+        let active_file = self.build_active_file(
+            payload.index,
+            payload.item.path.clone(),
+            prepared,
+            left_ref,
+            right_ref,
         );
+        self.workspace
+            .active_file
+            .set(&self.store, Some(active_file));
         if !same_file {
             self.editor_clear_document();
             self.editor
@@ -3567,6 +3700,34 @@ impl AppState {
         if self.editor.search.open.get(&self.store) {
             self.recompute_search_matches();
         }
+        Vec::new()
+    }
+
+    #[profiling::function]
+    fn handle_compare_file_finished(&mut self, payload: CompareFileFinished) -> Vec<Effect> {
+        if payload.generation != self.workspace.compare_generation.get(&self.store) {
+            return Vec::new();
+        }
+
+        let matches_selected = self
+            .workspace
+            .selected_file_path
+            .get(&self.store)
+            .as_deref()
+            == Some(payload.path.as_str());
+        let matches_loading = self
+            .workspace
+            .active_file_loading
+            .with(&self.store, |loading| {
+                loading.as_ref().is_some_and(|loading| {
+                    loading.index == payload.index && loading.path == payload.path
+                })
+            });
+        if !matches_selected || !matches_loading {
+            return Vec::new();
+        }
+
+        self.install_compare_active_file(payload.index, payload.path, payload.prepared);
         Vec::new()
     }
 
@@ -3584,6 +3745,7 @@ impl AppState {
         self.workspace.status.set(&self.store, AsyncStatus::Ready);
         self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
         self.workspace.compare_output.set(&self.store, None);
+        self.workspace.active_file_loading.set(&self.store, None);
         let new_files = self
             .workspace
             .status_items
@@ -3641,6 +3803,7 @@ impl AppState {
                 self.workspace.selected_file_path.set(&self.store, None);
                 self.workspace.selected_status_scope.set(&self.store, None);
                 self.workspace.active_file.set(&self.store, None);
+                self.workspace.active_file_loading.set(&self.store, None);
                 self.editor_clear_document();
                 Vec::new()
             }
@@ -5432,10 +5595,10 @@ impl AppState {
         out_effects
     }
 
-    fn shift_loaded_file(&mut self, delta: isize) {
+    fn shift_loaded_file(&mut self, delta: isize) -> Vec<Effect> {
         let file_count = self.workspace.files.with(&self.store, |f| f.len());
         if file_count == 0 {
-            return;
+            return Vec::new();
         }
         let current = self
             .workspace
@@ -5450,22 +5613,15 @@ impl AppState {
                 .min(file_count.saturating_sub(1))
         };
         match self.workspace.source.get(&self.store) {
-            WorkspaceSource::Compare => {
-                self.select_loaded_compare_file(next, true);
-            }
-            WorkspaceSource::Status => {
-                let _ = self.select_status_item(next, true);
-            }
-            WorkspaceSource::None => {}
+            WorkspaceSource::Compare => self.select_compare_file(next, true),
+            WorkspaceSource::Status => self.select_status_item(next, true),
+            WorkspaceSource::None => Vec::new(),
         }
     }
 
     fn select_file(&mut self, index: usize, reveal: bool) -> Vec<Effect> {
         match self.workspace.source.get(&self.store) {
-            WorkspaceSource::Compare => {
-                self.select_loaded_compare_file(index, reveal);
-                Vec::new()
-            }
+            WorkspaceSource::Compare => self.select_compare_file(index, reveal),
             WorkspaceSource::Status => self.select_status_item(index, reveal),
             WorkspaceSource::None => {
                 self.startup.preferred_file_index = Some(index);
@@ -5474,8 +5630,68 @@ impl AppState {
         }
     }
 
+    fn select_compare_file(&mut self, index: usize, reveal: bool) -> Vec<Effect> {
+        let Some(entry) = self
+            .workspace
+            .files
+            .with(&self.store, |files| files.get(index).cloned())
+        else {
+            self.push_error("Selected file index is out of range.");
+            return Vec::new();
+        };
+
+        if !self.compare_file_is_large(index) {
+            self.select_loaded_compare_file(index, reveal);
+            return Vec::new();
+        }
+
+        let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
+            self.push_error("Open a repository before selecting a compare file.");
+            return Vec::new();
+        };
+
+        self.workspace
+            .selected_file_index
+            .set(&self.store, Some(index));
+        self.workspace
+            .selected_file_path
+            .set(&self.store, Some(entry.path.clone()));
+        self.workspace.selected_status_scope.set(&self.store, None);
+        self.workspace.active_file.set(&self.store, None);
+        self.workspace.active_file_loading.set(
+            &self.store,
+            Some(ActiveFileLoading {
+                index,
+                path: entry.path.clone(),
+            }),
+        );
+        self.editor_clear_document();
+        self.file_list.hovered_index.set(&self.store, Some(index));
+        if reveal {
+            self.reveal_file_list_row(index);
+        }
+
+        vec![Effect::LoadCompareFile {
+            generation: self.workspace.compare_generation.get(&self.store),
+            request: CompareFileRequest {
+                repo_path,
+                spec: CompareSpec {
+                    mode: self.compare.mode.get(&self.store),
+                    left_ref: self.compare.left_ref.get(&self.store),
+                    right_ref: self.compare.right_ref.get(&self.store),
+                    renderer: self.compare.renderer.get(&self.store),
+                    layout: self.compare.layout.get(&self.store),
+                },
+                path: entry.path,
+                index,
+            },
+        }]
+    }
+
+    #[profiling::function]
     fn select_loaded_compare_file(&mut self, index: usize, reveal: bool) {
-        let mut out: Option<(FileDiff, CompareOutput)> = None;
+        let mut selected_path = None;
+        let mut prepared = None;
         let mut oob = false;
         self.workspace
             .compare_output
@@ -5487,6 +5703,7 @@ impl AppState {
                     oob = true;
                     return;
                 };
+                selected_path = Some(file.path.clone());
                 if !file.syntax_annotated {
                     DiffSyntaxAnnotator::new().annotate(
                         file,
@@ -5495,53 +5712,29 @@ impl AppState {
                     );
                     file.syntax_annotated = true;
                 }
-                out = Some((file.clone(), output.clone()));
+                prepared = Some(prepare_active_file(
+                    index,
+                    file.clone(),
+                    &output.text_buffer,
+                    &output.token_buffer,
+                ));
             });
 
-        if out.is_none() {
+        let Some(prepared) = prepared else {
             if oob {
                 self.push_error("Selected file index is out of range.");
                 return;
             }
             self.startup.preferred_file_index = Some(index);
             return;
-        }
-        let (file, output) = out.unwrap();
+        };
 
-        self.workspace
-            .selected_file_index
-            .set(&self.store, Some(index));
-        self.workspace
-            .selected_file_path
-            .set(&self.store, Some(file.path.clone()));
-        let left_ref = self.compare.left_ref.get(&self.store);
-        let right_ref = self.compare.right_ref.get(&self.store);
-        let render_doc = build_render_doc(&file, index, &output.text_buffer, &output.token_buffer);
-        self.workspace.active_file.set(
-            &self.store,
-            Some(ActiveFile {
-                index,
-                path: file.path.clone(),
-                file: file.clone(),
-                render_doc,
-                text_buffer: output.text_buffer.clone(),
-                base_file: file,
-                base_text_buffer: output.text_buffer,
-                token_buffer: output.token_buffer,
-                left_ref,
-                right_ref,
-                file_line_count: None,
-                file_lines: None,
-            }),
-        );
-        self.editor_clear_document();
-        self.editor
-            .line_selection
-            .update(&self.store, |ls| ls.clear());
-        if self.editor.search.open.get(&self.store) {
-            self.recompute_search_matches();
-        }
-        self.file_list.hovered_index.set(&self.store, Some(index));
+        let Some(path) = selected_path else {
+            self.startup.preferred_file_index = Some(index);
+            return;
+        };
+
+        self.install_compare_active_file(index, path, prepared);
         if reveal {
             self.reveal_file_list_row(index);
         }
@@ -6729,20 +6922,22 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        ActiveFile, AppState, AsyncStatus, CompareField, FileListEntry, FocusTarget,
-        OverlaySurface, WorkspaceMode, WorkspaceSource, refs_for_status_scope,
+        ActiveFile, ActiveFileLoading, AppState, AsyncStatus, CompareField, FileListEntry,
+        FocusTarget, OverlaySurface, PreparedActiveFile, WorkspaceMode, WorkspaceSource,
+        prepare_active_file, refs_for_status_scope,
     };
     use crate::actions::Action;
     use crate::core::compare::{CompareMode, CompareOutput, LayoutMode, RendererKind};
     use crate::core::diff::{DiffLine, FileDiff, Hunk, LineKind};
     use crate::core::text::buffer::TextBuffer;
-    use crate::core::text::token::TokenBuffer;
+    use crate::core::text::token::{DiffTokenSpan, TokenBuffer};
+    use crate::core::text::{ChangeIntensity, SyntaxTokenKind};
     use crate::core::vcs::git::{StatusItem, StatusScope};
     use crate::effects::Effect;
-    use crate::events::AppEvent;
+    use crate::events::{AppEvent, CompareFileFinished};
     use crate::platform::persistence::Settings;
     use crate::platform::startup::{Args, StartupOptions};
-    use crate::ui::editor::render_doc::build_render_doc;
+    use crate::ui::editor::render_doc::{RenderDoc, build_render_doc};
 
     fn make_hunk(
         text_buffer: &mut TextBuffer,
@@ -7175,6 +7370,228 @@ mod tests {
                 previous_tokens
             );
         });
+    }
+
+    #[test]
+    fn prepare_active_file_creates_file_local_buffers() {
+        let mut source_text = TextBuffer::default();
+        let mut source_tokens = TokenBuffer::default();
+        let _ = source_text.append("ignored before");
+        let text_range = source_text.append("fn answer() -> i32 { 42 }");
+        let _ = source_text.append("ignored after");
+        let syntax_tokens = source_tokens.append(&[DiffTokenSpan {
+            offset: 0,
+            length: 2,
+            kind: SyntaxTokenKind::Keyword,
+            intensity: ChangeIntensity::Novel,
+        }]);
+        let change_tokens = source_tokens.append(&[DiffTokenSpan {
+            offset: 3,
+            length: 6,
+            kind: SyntaxTokenKind::Normal,
+            intensity: ChangeIntensity::NovelWord,
+        }]);
+
+        let prepared = prepare_active_file(
+            0,
+            FileDiff {
+                path: "src/lib.rs".to_owned(),
+                hunks: vec![Hunk {
+                    header: "@@ -1 +1 @@".to_owned(),
+                    lines: vec![DiffLine {
+                        kind: LineKind::Context,
+                        old_line_number: Some(1),
+                        new_line_number: Some(1),
+                        text_range,
+                        syntax_tokens,
+                        change_tokens,
+                        ..DiffLine::default()
+                    }],
+                    ..Hunk::default()
+                }],
+                ..FileDiff::default()
+            },
+            &source_text,
+            &source_tokens,
+        );
+
+        let line = &prepared.file.hunks[0].lines[0];
+        assert_eq!(line.text_range.offset, 0);
+        assert_eq!(
+            prepared.text_buffer.view(line.text_range),
+            "fn answer() -> i32 { 42 }"
+        );
+        assert_eq!(
+            prepared.text_buffer.size(),
+            "fn answer() -> i32 { 42 }".len()
+        );
+        assert_eq!(
+            prepared.token_buffer.view(line.syntax_tokens),
+            source_tokens.view(syntax_tokens)
+        );
+        assert_eq!(
+            prepared.token_buffer.view(line.change_tokens),
+            source_tokens.view(change_tokens)
+        );
+        assert!(prepared.render_doc.lines.iter().any(|render_line| {
+            prepared.render_doc.line_text(render_line.left_text) == "fn answer() -> i32 { 42 }"
+                || prepared.render_doc.line_text(render_line.right_text)
+                    == "fn answer() -> i32 { 42 }"
+        }));
+    }
+
+    #[test]
+    fn small_compare_file_selection_stays_synchronous() {
+        let mut state = AppState::default();
+        let mut output = CompareOutput::default();
+        let text_range = output.text_buffer.append("fn answer() -> i32 { 42 }");
+        output.files = vec![FileDiff {
+            path: "src/lib.rs".to_owned(),
+            status: "M".to_owned(),
+            hunks: vec![Hunk {
+                header: "@@ -1 +1 @@".to_owned(),
+                lines: vec![DiffLine {
+                    kind: LineKind::Context,
+                    old_line_number: Some(1),
+                    new_line_number: Some(1),
+                    text_range,
+                    ..DiffLine::default()
+                }],
+                ..Hunk::default()
+            }],
+            additions: 10,
+            deletions: 5,
+            ..FileDiff::default()
+        }];
+
+        state
+            .workspace
+            .compare_output
+            .set(&state.store, Some(output));
+        state
+            .workspace
+            .source
+            .set(&state.store, WorkspaceSource::Compare);
+        state.workspace.files.set(
+            &state.store,
+            vec![FileListEntry {
+                path: "src/lib.rs".to_owned(),
+                status: "M".to_owned(),
+                additions: 10,
+                deletions: 5,
+                is_binary: false,
+            }],
+        );
+        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+        state
+            .compare
+            .repo_path
+            .set(&state.store, Some(PathBuf::from("/repo")));
+
+        let effects = state.apply_action(Action::SelectFile(0));
+
+        assert!(effects.is_empty());
+        assert!(
+            state
+                .workspace
+                .active_file_loading
+                .get(&state.store)
+                .is_none()
+        );
+        assert_eq!(
+            state
+                .workspace
+                .active_file
+                .get(&state.store)
+                .as_ref()
+                .map(|file| file.path.as_str()),
+            Some("src/lib.rs")
+        );
+    }
+
+    #[test]
+    fn selecting_large_compare_file_dispatches_async_load() {
+        let mut state = loaded_state_with_files(&["src/big.rs"]);
+        state.workspace.files.set(
+            &state.store,
+            vec![FileListEntry {
+                path: "src/big.rs".to_owned(),
+                status: "M".to_owned(),
+                additions: 1_500,
+                deletions: 0,
+                is_binary: false,
+            }],
+        );
+        state
+            .compare
+            .repo_path
+            .set(&state.store, Some(PathBuf::from("/repo")));
+        state.compare.left_ref.set(&state.store, "v5.5".to_owned());
+        state.compare.right_ref.set(&state.store, "v5.6".to_owned());
+        state
+            .compare
+            .renderer
+            .set(&state.store, RendererKind::Builtin);
+        state.compare.layout.set(&state.store, LayoutMode::Unified);
+        state.compare.mode.set(&state.store, CompareMode::TwoDot);
+
+        let effects = state.apply_action(Action::SelectFile(0));
+
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::LoadCompareFile { request, .. }]
+                if request.index == 0 && request.path == "src/big.rs"
+        ));
+        assert_eq!(
+            state.workspace.active_file_loading.get(&state.store),
+            Some(ActiveFileLoading {
+                index: 0,
+                path: "src/big.rs".to_owned(),
+            })
+        );
+        assert!(state.workspace.active_file.get(&state.store).is_none());
+    }
+
+    #[test]
+    fn compare_file_finished_ignores_stale_path() {
+        let mut state = loaded_state_with_files(&["src/lib.rs"]);
+        state.workspace.compare_generation.set(&state.store, 7);
+        state
+            .workspace
+            .selected_file_index
+            .set(&state.store, Some(0));
+        state
+            .workspace
+            .selected_file_path
+            .set(&state.store, Some("src/lib.rs".to_owned()));
+        state.workspace.active_file_loading.set(
+            &state.store,
+            Some(ActiveFileLoading {
+                index: 0,
+                path: "src/lib.rs".to_owned(),
+            }),
+        );
+
+        state.apply_event(AppEvent::CompareFileFinished(CompareFileFinished {
+            generation: 7,
+            index: 0,
+            path: "src/other.rs".to_owned(),
+            prepared: PreparedActiveFile {
+                file: FileDiff::default(),
+                render_doc: RenderDoc::default(),
+                text_buffer: TextBuffer::default(),
+                token_buffer: TokenBuffer::default(),
+            },
+        }));
+
+        assert!(state.workspace.active_file.get(&state.store).is_none());
+        assert_eq!(
+            state.workspace.active_file_loading.get(&state.store),
+            Some(ActiveFileLoading {
+                index: 0,
+                path: "src/lib.rs".to_owned(),
+            })
+        );
     }
 
     #[test]

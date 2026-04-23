@@ -40,7 +40,7 @@ cargo run
 
 ## Development
 
-Hot reload is still supported through Dioxus/Subsecond when the `hot-reload` feature is enabled:
+Hot reload is supported through [Dioxus/Subsecond](https://lib.rs/crates/dioxus-cli) when the `hot-reload` feature is enabled:
 
 ```bash
 dx serve --hot-patch --features hot-reload

@@ -44,6 +44,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Use stable Rust
         run: rustup default stable
@@ -74,6 +76,7 @@ jobs:
             pkg-config
 
       - name: Install cargo-packager
+        shell: bash
         run: cargo install cargo-packager --locked --version "${CARGO_PACKAGER_VERSION}"
 
       - name: Package ${{ matrix.format_one }}

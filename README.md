@@ -1,6 +1,10 @@
-# diffy
+<p align="center">
+  <img width="256" height="256" alt="image" src="https://github.com/user-attachments/assets/7f67d543-fcd5-4156-affe-f741c781a803" />
+</p>
 
-A native GPU-accelerated Git diff viewer built in Rust.
+<h1 align="center">Diffy</h1>
+
+<p align="center">A native GPU-accelerated Git diff viewer built in Rust.</p>
 
 ## Features
 

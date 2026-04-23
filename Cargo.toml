@@ -7,6 +7,10 @@ name = "diffy"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
+description = "A native GPU-accelerated Git diff viewer built in Rust."
+license = "GPL-3.0-only"
+repository = "https://github.com/seatedro/diffy"
+homepage = "https://github.com/seatedro/diffy"
 
 [features]
 hot-reload = ["dep:tungstenite", "dep:subsecond"]

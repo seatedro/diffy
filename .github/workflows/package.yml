@@ -1,0 +1,188 @@
+name: Package
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PACKAGER_VERSION: 0.11.8
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            os: macos-26
+            format_one: dmg
+            format_two: ""
+          - name: macos-x64
+            os: macos-26-intel
+            format_one: dmg
+            format_two: ""
+          - name: windows-x64
+            os: windows-2025
+            format_one: nsis
+            format_two: ""
+          - name: linux-x64
+            os: ubuntu-24.04
+            format_one: appimage
+            format_two: deb
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use stable Rust
+        run: rustup default stable
+
+      - name: Select full Xcode toolchain
+        if: runner.os == 'macOS'
+        run: |
+          if [ -d /Applications/Xcode.app/Contents/Developer ]; then
+            echo "DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer" >> "$GITHUB_ENV"
+          fi
+          xcrun --find actool
+          xcrun --find SetFile
+
+      - name: Install Linux packaging dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libdbus-1-dev \
+            libgl1-mesa-dev \
+            libssl-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libxrandr-dev \
+            pkg-config
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked --version "${CARGO_PACKAGER_VERSION}"
+
+      - name: Package ${{ matrix.format_one }}
+        run: cargo packager --release --formats ${{ matrix.format_one }}
+
+      - name: Package ${{ matrix.format_two }}
+        if: matrix.format_two != ''
+        run: cargo packager --release --formats ${{ matrix.format_two }}
+
+      - name: Collect distributable artifacts
+        shell: bash
+        run: |
+          mkdir -p dist/release
+          # Copy only the final shipping artifacts — skip the .app bundle
+          # (already inside the DMG), the rw.* intermediate DMG, and the
+          # cargo-packager cache dir.
+          find dist/packages -maxdepth 1 -type f \
+            \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' \
+               -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) \
+            ! -name 'rw.*' \
+            -exec cp {} dist/release/ \;
+          ls -la dist/release
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: diffy-${{ matrix.name }}
+          path: dist/release/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts and generate checksums
+        shell: bash
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          cd release
+          shasum -a 256 * > SHA256SUMS
+          ls -la
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            > Diffy is unsigned during dev — the steps below strip the macOS
+            > quarantine bit so Gatekeeper lets it run. Proper notarization
+            > is coming later.
+
+            ### macOS / Linux
+
+            ```
+            curl -fsSL https://raw.githubusercontent.com/seatedro/diffy/master/scripts/install.sh | bash
+            ```
+
+            Detects your OS + arch, downloads the right artifact, verifies
+            the SHA256, and installs:
+            - **macOS** → `/Applications/Diffy.app` (quarantine flag cleared
+              so Gatekeeper doesn't block it)
+            - **Linux** → `~/.local/share/diffy/diffy.AppImage` with a
+              `~/.local/bin/diffy` symlink
+
+            ### Windows
+
+            ```
+            powershell -c "irm https://raw.githubusercontent.com/seatedro/diffy/master/scripts/install.ps1 | iex"
+            ```
+
+            Downloads the NSIS installer, verifies the SHA256, runs it.
+
+            ### Manual install
+
+            Grab the asset that matches your platform from the list below:
+
+            | platform        | asset                              |
+            |-----------------|------------------------------------|
+            | macOS Apple Silicon | `Diffy_*_aarch64.dmg`          |
+            | macOS Intel     | `Diffy_*_x64.dmg`                  |
+            | Windows         | `Diffy_*_x64-setup.exe`            |
+            | Linux AppImage  | `diffy_*_x64.AppImage`             |
+            | Linux Debian    | `diffy_*_amd64.deb`                |
+
+            On macOS, after dragging to Applications run once to bypass
+            Gatekeeper (Diffy is unsigned during dev):
+            ```
+            xattr -cr /Applications/Diffy.app
+            ```
+
+            ### Verify downloads
+
+            `SHA256SUMS` is attached. Verify with:
+            ```
+            shasum -a 256 -c SHA256SUMS
+            ```

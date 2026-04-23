@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- ± pattern texture. Transparent background; sits over the background layer.
+       Opacity is higher than in the composited icon because Icon Composer lets
+       the designer set per-layer opacity/blur/translucency — keep source assets
+       flat and let the tool tune material properties. -->
+  <defs>
+    <pattern id="pm" x="0" y="0" width="56" height="56" patternUnits="userSpaceOnUse">
+      <g fill="#e8d9b8" fill-opacity="0.14">
+        <rect x="8"  y="22" width="12"  height="2.2" rx="1.1"/>
+        <rect x="36" y="22" width="12"  height="2.2" rx="1.1"/>
+        <rect x="41" y="17" width="2.2" height="12"  rx="1.1"/>
+      </g>
+    </pattern>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#pm)"/>
+</svg>

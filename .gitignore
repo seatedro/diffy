@@ -17,9 +17,11 @@ vendor/grammars/*/src/
 
 # Build output
 build/
+dist/
 result
 target/
 .perf-runs/
+assets/packaging/macos/generated/
 
 # Editor/system
 .DS_Store

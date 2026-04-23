@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Diff-blocks glyph. No glow, no shadow, no stroke — Icon Composer
+       applies specular, translucency, and shadow per-layer.
+       Positioned identically to the composited icon (center 512,512, scale 1.5). -->
+  <g transform="translate(512 512) scale(1.5)">
+    <!-- Red (minus), shifted up -->
+    <rect x="-196" y="-224" width="172" height="416" rx="16" fill="#c24a3a"/>
+    <g fill="#7a2518">
+      <rect x="-176" y="-174" width="132" height="16" rx="8"/>
+      <rect x="-176" y="-98"  width="132" height="16" rx="8"/>
+      <rect x="-176" y="-22"  width="132" height="16" rx="8"/>
+      <rect x="-176" y="54"   width="132" height="16" rx="8"/>
+      <rect x="-176" y="130"  width="132" height="16" rx="8"/>
+    </g>
+    <!-- Green (plus), shifted down -->
+    <rect x="24" y="-184" width="172" height="416" rx="16" fill="#8a9a54"/>
+    <g fill="#3f4e1f">
+      <rect x="44" y="-135" width="132" height="16" rx="8"/>
+      <rect x="44" y="-59"  width="132" height="16" rx="8"/>
+      <rect x="44" y="17"   width="132" height="16" rx="8"/>
+      <rect x="44" y="93"   width="132" height="16" rx="8"/>
+      <rect x="44" y="169"  width="132" height="16" rx="8"/>
+    </g>
+  </g>
+</svg>

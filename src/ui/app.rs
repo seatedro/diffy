@@ -6,7 +6,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::window::{Window, WindowAttributes, WindowId};
+use winit::window::{Icon, Window, WindowAttributes, WindowId};
 
 use crate::actions::Action;
 use crate::apprt::{AppRuntime, AppServices};
@@ -212,6 +212,7 @@ impl NativeApp {
             .with_title(self.state.window_title())
             .with_inner_size(LogicalSize::new(1320.0, 840.0))
             .with_min_inner_size(LogicalSize::new(640.0, 480.0))
+            .with_window_icon(app_window_icon())
     }
 
     fn sync_window_metrics(&mut self, size: PhysicalSize<u32>, scale_factor: f64) {
@@ -361,6 +362,21 @@ impl NativeApp {
         if outcome.dirty {
             self.mark_dirty();
         }
+    }
+}
+
+fn app_window_icon() -> Option<Icon> {
+    #[cfg(target_os = "macos")]
+    {
+        None
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        const WINDOW_ICON: &[u8] = include_bytes!("../../assets/packaging/png/diffy-256.png");
+        let image = image::load_from_memory(WINDOW_ICON).ok()?.into_rgba8();
+        let (width, height) = image.dimensions();
+        let rgba = image.into_raw();
+        Icon::from_rgba(rgba, width, height).ok()
     }
 }
 

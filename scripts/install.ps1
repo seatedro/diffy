@@ -31,12 +31,19 @@ switch ($Arch) {
 
 if ($Version -eq "latest") {
   Write-Info "resolving latest release"
+  $headers = @{ "User-Agent" = "diffy-installer" }
   try {
-    $latest = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" `
-                                -Headers @{ "User-Agent" = "diffy-installer" }
+    $latest = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers $headers
     $Version = $latest.tag_name
   } catch {
-    Write-Err "could not determine latest release: $_"
+    # /releases/latest excludes prereleases — fall back to /releases[0].
+    try {
+      $all = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=1" -Headers $headers
+      if ($all.Count -gt 0) { $Version = $all[0].tag_name }
+    } catch {}
+  }
+  if (-not $Version -or $Version -eq "latest") {
+    Write-Err "could not determine latest release"
   }
 }
 

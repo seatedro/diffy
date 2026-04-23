@@ -85,10 +85,18 @@ done
 
 if [[ -z "$VERSION" ]]; then
   info "resolving latest release"
+  # /releases/latest excludes prereleases — fall back to /releases[0] which
+  # returns the most recent tag regardless of prerelease state.
   VERSION="$(
-    curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+    curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
       | awk -F'"' '/"tag_name":/ {print $4; exit}'
   )"
+  if [[ -z "$VERSION" ]]; then
+    VERSION="$(
+      curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=1" \
+        | awk -F'"' '/"tag_name":/ {print $4; exit}'
+    )"
+  fi
   [[ -n "$VERSION" ]] || error "could not determine latest release tag"
 fi
 NUMERIC_VERSION="${VERSION#v}"

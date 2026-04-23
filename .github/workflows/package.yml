@@ -59,11 +59,16 @@ jobs:
           xcrun --find actool
           xcrun --find SetFile
 
+      - name: Install lld (macOS)
+        if: runner.os == 'macOS'
+        run: brew install lld
+
       - name: Install Linux packaging dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            lld \
             libdbus-1-dev \
             libgl1-mesa-dev \
             libssl-dev \

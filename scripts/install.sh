@@ -105,7 +105,7 @@ case "$OS" in
 esac
 ASSET_URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}"
 
-TMP_DIR="$(mktemp -d -t diffy-install)"
+TMP_DIR="$(mktemp -d -t diffy-install.XXXXXXXX)"
 MOUNT_POINT=""
 cleanup() {
   if [[ -n "$MOUNT_POINT" && -d "$MOUNT_POINT" ]]; then

@@ -86,16 +86,14 @@ done
 if [[ -z "$VERSION" ]]; then
   info "resolving latest release"
   # /releases/latest excludes prereleases — fall back to /releases[0] which
-  # returns the most recent tag regardless of prerelease state.
-  VERSION="$(
-    curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
-      | awk -F'"' '/"tag_name":/ {print $4; exit}'
-  )"
+  # returns the most recent tag regardless of prerelease state. `|| true`
+  # is required: under `set -eo pipefail` the 404 would kill the script
+  # before we reach the fallback.
+  VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+    | awk -F'"' '/"tag_name":/ {print $4; exit}' || true)"
   if [[ -z "$VERSION" ]]; then
-    VERSION="$(
-      curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=1" \
-        | awk -F'"' '/"tag_name":/ {print $4; exit}'
-    )"
+    VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=1" 2>/dev/null \
+      | awk -F'"' '/"tag_name":/ {print $4; exit}' || true)"
   fi
   [[ -n "$VERSION" ]] || error "could not determine latest release tag"
 fi

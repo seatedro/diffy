@@ -40,9 +40,6 @@ cargo run
 
 ## Development
 
-Diffy keeps developer tooling separate from the normal app binary. Capture, hidden automation,
-and in-binary perf harness flags are intentionally not part of the CLI surface.
-
 Hot reload is still supported through Dioxus/Subsecond when the `hot-reload` feature is enabled:
 
 ```bash

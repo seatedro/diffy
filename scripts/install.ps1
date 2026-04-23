@@ -49,8 +49,11 @@ if ($Version -eq "latest") {
 
 if ($Version -notmatch '^v\d') { $Version = "v$Version" }
 $NumericVersion = $Version.TrimStart('v')
+# cargo-packager uses the Packager.toml version in asset filenames, not
+# the git tag — strip any prerelease suffix ("0.1.0-rc.5" → "0.1.0").
+$PackageVersion = $NumericVersion -replace '-.*$',''
 
-$AssetName = "${AppName}_${NumericVersion}_${Target}-setup.exe"
+$AssetName = "diffy_${PackageVersion}_${Target}-setup.exe"
 $AssetUrl  = "https://github.com/$Repo/releases/download/$Version/$AssetName"
 $SumsUrl   = "https://github.com/$Repo/releases/download/$Version/SHA256SUMS"
 

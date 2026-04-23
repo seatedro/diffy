@@ -98,10 +98,22 @@ if [[ -z "$VERSION" ]]; then
   [[ -n "$VERSION" ]] || error "could not determine latest release tag"
 fi
 NUMERIC_VERSION="${VERSION#v}"
+# cargo-packager uses the Packager.toml version in asset filenames, not
+# the git tag — strip any prerelease suffix ("0.1.0-rc.5" → "0.1.0").
+PACKAGE_VERSION="${NUMERIC_VERSION%%-*}"
 
+# Linux asset names use arch strings that differ from darwin.
 case "$OS" in
-  darwin) ASSET="${APP_NAME}_${NUMERIC_VERSION}_${ARCH}.dmg" ;;
-  linux)  ASSET="${BIN_NAME}_${NUMERIC_VERSION}_${ARCH}.AppImage" ;;
+  darwin)
+    ASSET="${APP_NAME}_${PACKAGE_VERSION}_${ARCH}.dmg"
+    ;;
+  linux)
+    case "$ARCH" in
+      x64)     LINUX_ARCH=x86_64 ;;
+      aarch64) LINUX_ARCH=aarch64 ;;
+    esac
+    ASSET="${BIN_NAME}_${PACKAGE_VERSION}_${LINUX_ARCH}.AppImage"
+    ;;
 esac
 ASSET_URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}"
 

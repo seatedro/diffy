@@ -11,6 +11,20 @@
 - Fast
 - Good
 
+## Install
+
+### macOS / Linux
+
+```bash
+curl -fsSL https://diffygui.com/install | bash
+```
+
+### Windows
+
+```powershell
+powershell -c "irm https://diffygui.com/install.ps1 | iex"
+```
+
 ## Build
 
 Clone repo with submodules

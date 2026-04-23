@@ -99,9 +99,11 @@ try {
   }
 
   Write-Info "running installer"
-  $args = @()
-  if ($Silent) { $args += "/S" }
-  $proc = Start-Process -FilePath $SetupPath -ArgumentList $args -Wait -PassThru
+  # Start-Process rejects an empty -ArgumentList, and $args shadows a PS
+  # automatic variable — splat conditionally instead.
+  $startArgs = @{ FilePath = $SetupPath; Wait = $true; PassThru = $true }
+  if ($Silent) { $startArgs.ArgumentList = @("/S") }
+  $proc = Start-Process @startArgs
   if ($proc.ExitCode -ne 0) {
     Write-Err "installer exited with code $($proc.ExitCode)"
   }

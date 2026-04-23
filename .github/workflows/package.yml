@@ -45,11 +45,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Non-recursive: crates/difftastic has stale nested gitlinks
-          # (e.g. vendored_parsers/tree-sitter-commonlisp/test/Petalisp)
-          # with no .gitmodules, which break `recursive`. Nothing at build
-          # time references them — only the *-src directories are used.
-          submodules: true
+          submodules: recursive
 
       - name: Use stable Rust
         run: rustup default stable

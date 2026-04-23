@@ -14,6 +14,7 @@ git_diff_output.txt
 .claude/
 .codex
 vendor/grammars/*/src/
+skills-lock.json
 
 # Build output
 build/

@@ -506,7 +506,10 @@ async function generateParser(parserDir, srcDir) {
     throw new Error(`missing parser.c in ${srcDir}`);
   }
   console.log(`Generating parser.c in ${parserDir}`);
-  await run(treeSitterCli, ["generate"], { cwd: parserDir });
+  await run(treeSitterCli, ["generate"], {
+    cwd: parserDir,
+    shell: process.platform === "win32",
+  });
 }
 
 function cCompiler() {
@@ -670,6 +673,7 @@ function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
+      shell: options.shell ?? false,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";

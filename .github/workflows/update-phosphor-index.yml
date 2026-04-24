@@ -2,6 +2,18 @@ name: Update Phosphor Index
 
 on:
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to build
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - macos-aarch64
+          - macos-x86_64
+          - linux-x86_64
+          - windows-x86_64
   schedule:
     - cron: "17 9 * * 1"
 
@@ -28,6 +40,7 @@ jobs:
             os: windows-2025
 
     runs-on: ${{ matrix.os }}
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.platform
     timeout-minutes: 360
     env:
       PHOSPHOR_PACK_BASE_URL: https://blob.diffygui.com/phosphor-packs

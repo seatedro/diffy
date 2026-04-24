@@ -125,16 +125,20 @@ async fn stream_openai(
 ) -> Result<(), String> {
     let body = json!({
         "model": OPENAI_MODEL,
-        "messages": [
-            { "role": "user", "content": user_message }
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    { "type": "input_text", "text": user_message }
+                ]
+            }
         ],
-        "max_completion_tokens": 1024,
-        "stream": true,
-        "stream_options": { "include_usage": true }
+        "max_output_tokens": 1024,
+        "stream": true
     });
 
     let response = client
-        .post("https://api.openai.com/v1/chat/completions")
+        .post("https://api.openai.com/v1/responses")
         .header("Authorization", &format!("Bearer {api_key}"))
         .header("Content-Type", "application/json")
         .header("Accept", "text/event-stream")
@@ -269,23 +273,40 @@ fn parse_openai_event(event: &str) -> Result<Option<String>, String> {
         let Some(data) = line.strip_prefix("data: ") else {
             continue;
         };
-        if data == "[DONE]" {
-            return Ok(None);
-        }
         let value: Value = serde_json::from_str(data)
             .map_err(|error| format!("failed to decode OpenAI stream event: {error}"))?;
-        let content = value
-            .get("choices")
-            .and_then(Value::as_array)
-            .and_then(|choices| choices.first())
-            .and_then(|choice| choice.get("delta"))
-            .and_then(|delta| delta.get("content"))
-            .and_then(Value::as_str);
-        if let Some(content) = content.filter(|content| !content.is_empty()) {
-            return Ok(Some(content.to_owned()));
+        let event_type = value.get("type").and_then(Value::as_str);
+        match event_type {
+            Some("response.output_text.delta") | Some("response.refusal.delta") => {
+                let content = value.get("delta").and_then(Value::as_str);
+                if let Some(content) = content.filter(|content| !content.is_empty()) {
+                    return Ok(Some(content.to_owned()));
+                }
+            }
+            Some("error") => {
+                return Err(openai_error_message(&value));
+            }
+            Some("response.failed") => {
+                let response = value.get("response").unwrap_or(&value);
+                return Err(openai_error_message(response));
+            }
+            _ => {}
         }
     }
     Ok(None)
+}
+
+fn openai_error_message(value: &Value) -> String {
+    let error = value.get("error").unwrap_or(value);
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("OpenAI response stream failed");
+    let code = error.get("code").and_then(Value::as_str);
+    match code {
+        Some(code) if !code.is_empty() => format!("OpenAI API returned {code}: {message}"),
+        _ => format!("OpenAI API returned an error: {message}"),
+    }
 }
 
 fn parse_anthropic_event(event: &str) -> Result<Option<String>, String> {
@@ -316,8 +337,29 @@ mod tests {
 
     #[test]
     fn parses_openai_text_delta() {
-        let event = r#"data: {"choices":[{"delta":{"content":"hello"}}]}"#;
+        let event = r#"event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"hello"}
+"#;
         assert_eq!(parse_openai_event(event).unwrap().as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn ignores_openai_lifecycle_events() {
+        let event = r#"event: response.created
+data: {"type":"response.created","response":{"id":"resp_123"}}
+"#;
+        assert_eq!(parse_openai_event(event).unwrap(), None);
+    }
+
+    #[test]
+    fn reports_openai_stream_errors() {
+        let event = r#"event: error
+data: {"type":"error","code":"rate_limit_exceeded","message":"slow down"}
+"#;
+        assert_eq!(
+            parse_openai_event(event).unwrap_err(),
+            "OpenAI API returned rate_limit_exceeded: slow down"
+        );
     }
 
     #[test]

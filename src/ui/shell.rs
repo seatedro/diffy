@@ -111,6 +111,9 @@ pub fn build_ui_frame(
 
     let in_settings = state.app_view.get(&state.store) == AppView::Settings;
 
+    let compare_progress_active = state.compare_progress.with(&state.store, |p| p.is_some());
+    let sidebar_slot_visible = sidebar_width_factor > 0.001 && width >= Bp::COMPACT * ui_scale;
+
     let body: AnyElement = if in_settings {
         settings_page::settings_page(state, theme).into_any()
     } else {
@@ -118,23 +121,34 @@ pub fn build_ui_frame(
             .flex_row()
             .flex_1()
             .min_h(0.0)
+            .when(state.is_workspace_ready() && sidebar_slot_visible, |d| {
+                d.child(sidebar_mod::sidebar(
+                    state,
+                    theme,
+                    sidebar_width,
+                    file_list_bounds.clone(),
+                    cx,
+                ))
+                .child(sidebar_mod::sidebar_resizer(
+                    theme,
+                    sidebar_resize_bounds.clone(),
+                    sidebar_width,
+                ))
+            })
+            // Shimmer placeholder while the compare is still running so
+            // the destination UI is visible as scaffolding. Hidden once
+            // the real sidebar takes over (Ready + files populated).
             .when(
-                state.is_workspace_ready()
-                    && sidebar_width_factor > 0.001
-                    && width >= Bp::COMPACT * ui_scale,
+                compare_progress_active && !state.is_workspace_ready() && sidebar_slot_visible,
                 |d| {
-                    d.child(sidebar_mod::sidebar(
-                        state,
-                        theme,
-                        sidebar_width,
-                        file_list_bounds.clone(),
-                        cx,
-                    ))
-                    .child(sidebar_mod::sidebar_resizer(
-                        theme,
-                        sidebar_resize_bounds.clone(),
-                        sidebar_width,
-                    ))
+                    d.child(
+                        div()
+                            .w(sidebar_width)
+                            .h_full()
+                            .bg(theme.colors.sidebar_background)
+                            .border_r(theme.colors.border_variant)
+                            .child(crate::ui::components::sidebar_skeleton(theme)),
+                    )
                 },
             )
             .child(toolbar_mod::main_surface(

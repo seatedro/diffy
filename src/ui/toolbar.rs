@@ -59,31 +59,41 @@ pub(crate) fn main_surface(
         None
     };
 
-    let content = match state.workspace_mode.get(&state.store) {
-        WorkspaceMode::Loading => Some(loading_card(state, theme)),
-        WorkspaceMode::Ready
-            if state
-                .workspace
-                .active_file
-                .with(&state.store, |af| af.is_none()) =>
-        {
-            if state.workspace.source.get(&state.store) == WorkspaceSource::Status {
-                let no_files = state.workspace.files.with(&state.store, |f| f.is_empty());
-                Some(status_ready_hint(theme, no_files))
-            } else if state.compare.repo_path.with(&state.store, |p| p.is_some()) {
-                Some(repo_ready_hint(theme))
-            } else {
-                None
+    // Prefer the compare progress panel whenever a compare is in flight —
+    // overrides both the Loading fallback and the post-Ready interim while
+    // the first file is mounting.
+    let compare_progress_snapshot = state.compare_progress.with(&state.store, |p| p.clone());
+    let content = if let Some(progress) = compare_progress_snapshot {
+        Some(crate::ui::components::compare_progress_panel(
+            &progress, state, theme,
+        ))
+    } else {
+        match state.workspace_mode.get(&state.store) {
+            WorkspaceMode::Loading => Some(loading_card(state, theme)),
+            WorkspaceMode::Ready
+                if state
+                    .workspace
+                    .active_file
+                    .with(&state.store, |af| af.is_none()) =>
+            {
+                if state.workspace.source.get(&state.store) == WorkspaceSource::Status {
+                    let no_files = state.workspace.files.with(&state.store, |f| f.is_empty());
+                    Some(status_ready_hint(theme, no_files))
+                } else if state.compare.repo_path.with(&state.store, |p| p.is_some()) {
+                    Some(repo_ready_hint(theme))
+                } else {
+                    None
+                }
             }
-        }
-        WorkspaceMode::Empty => {
-            if state.compare.repo_path.with(&state.store, |p| p.is_some()) {
-                Some(repo_ready_hint(theme))
-            } else {
-                Some(empty_state(state, theme))
+            WorkspaceMode::Empty => {
+                if state.compare.repo_path.with(&state.store, |p| p.is_some()) {
+                    Some(repo_ready_hint(theme))
+                } else {
+                    Some(empty_state(state, theme))
+                }
             }
+            _ => None,
         }
-        _ => None,
     };
 
     view! { scale,

@@ -3,6 +3,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::ai::{self, GenerateRequest, StreamMessage};
+use crate::apprt::ProgressReporter;
 use crate::apprt::runtime::RuntimeEventSender;
 use crate::core::compare::backends::{DifftasticBackend, GitDiffBackend};
 use crate::core::compare::{CompareOutput, CompareService, RendererKind};
@@ -19,6 +20,7 @@ use crate::effects::{
 use crate::events::{AppEvent, CompareFileFinished, CompareFinished, StatusDiffFinished};
 use crate::platform::persistence::{Settings, SettingsStore};
 use crate::platform::secrets::{self, AiKeyKind};
+use crate::ui::state::ComparePhase;
 use crate::ui::state::prepare_active_file;
 
 #[derive(Debug, Clone)]
@@ -31,14 +33,30 @@ impl AppServices {
         Self { settings_store }
     }
 
-    pub fn run_compare(&self, generation: u64, request: CompareRequest) -> Result<CompareFinished> {
+    pub fn run_compare(
+        &self,
+        generation: u64,
+        request: CompareRequest,
+        reporter: Option<&ProgressReporter>,
+    ) -> Result<CompareFinished> {
+        if let Some(r) = reporter {
+            r.phase(ComparePhase::OpeningRepo);
+        }
         let mut git = GitService::new();
         git.open(request.repo_path.to_string_lossy().as_ref())?;
+
+        if let Some(r) = reporter {
+            r.phase(ComparePhase::ResolvingRefs);
+        }
         let (resolved_left, resolved_right) = git.resolve_comparison(
             &request.spec.left_ref,
             &request.spec.right_ref,
             request.spec.mode,
         )?;
+
+        if let Some(r) = reporter {
+            r.phase(ComparePhase::ComputingDiff);
+        }
         let output = CompareService::default().compare(&request.spec, &git)?;
 
         let range_right = if resolved_right == WORKDIR_REF {
@@ -540,6 +558,7 @@ mod tests {
                     },
                     github_token: None,
                 },
+                None,
             )
             .unwrap();
 

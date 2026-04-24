@@ -73,6 +73,7 @@ pub enum Action {
     SelectOverlayEntry(usize),
     HoverOverlayEntry(Option<usize>),
     StartCompare,
+    CancelCompare,
     StageSelectedFile,
     UnstageSelectedFile,
     DiscardSelectedFile,

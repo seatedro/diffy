@@ -138,7 +138,18 @@ pub(crate) fn title_bar(
                         ref_picker_open,
                     )}
                 } else if state.workspace_mode.get(&state.store) == WorkspaceMode::Loading {
-                    <text class="text-sm" color={tc.text_muted}>{"Comparing\u{2026}"}</text>
+                    // Fall back to the live compare phase when one is in flight
+                    // (e.g. during bootstrap auto-compare before repo is marked
+                    // loaded); otherwise the generic "Comparing…" label.
+                    <text class="text-sm" color={tc.text_muted}>
+                        {state
+                            .compare_progress
+                            .with(&state.store, |p| {
+                                p.as_ref()
+                                    .map(|p| p.phase.label().to_owned())
+                                    .unwrap_or_else(|| "Comparing\u{2026}".to_owned())
+                            })}
+                    </text>
                 }
             </div>
 

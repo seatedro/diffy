@@ -163,7 +163,9 @@ impl EffectRunner {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
-                    let event = match services.run_compare(generation, request) {
+                    let reporter =
+                        crate::apprt::ProgressReporter::new(generation, event_sender.clone());
+                    let event = match services.run_compare(generation, request, Some(&reporter)) {
                         Ok(payload) => AppEvent::CompareFinished(payload),
                         Err(error) => AppEvent::CompareFailed {
                             generation,

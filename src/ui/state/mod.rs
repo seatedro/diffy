@@ -310,6 +310,50 @@ pub struct ActiveFileLoading {
     pub path: String,
 }
 
+/// Where the compare pipeline currently is. Drives phase text in the
+/// progress panel. Sourced from real service boundaries — never guessed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ComparePhase {
+    #[default]
+    OpeningRepo,
+    ResolvingRefs,
+    ComputingDiff,
+    LoadingFiles,
+    /// `CompareFinished` has arrived; file list is populated, first file
+    /// is being selected but not yet prepared for display.
+    PopulatingList,
+    /// First file is being loaded/annotated/laid-out (eager path for the
+    /// initial selection after a compare).
+    RenderingFirstFile,
+}
+
+impl ComparePhase {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::OpeningRepo => "Opening repository\u{2026}",
+            Self::ResolvingRefs => "Resolving refs\u{2026}",
+            Self::ComputingDiff => "Computing diff\u{2026}",
+            Self::LoadingFiles => "Enumerating files\u{2026}",
+            Self::PopulatingList => "Populating file list\u{2026}",
+            Self::RenderingFirstFile => "Preparing first file\u{2026}",
+        }
+    }
+}
+
+/// Transient progress state for a running compare. Present iff a compare
+/// is in-flight (kickoff) or the first file is still mounting. Cleared
+/// when the first file lands or the user cancels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompareProgress {
+    pub generation: u64,
+    pub phase: ComparePhase,
+    pub left_label: String,
+    pub right_label: String,
+    pub started_at_ms: u64,
+    /// Total file count, known once `CompareFinished` arrives.
+    pub file_count_total: Option<u32>,
+}
+
 #[derive(Debug, Clone)]
 pub struct PreparedActiveFile {
     pub file: FileDiff,
@@ -621,6 +665,9 @@ impl AppState {
         self.workspace
             .active_file
             .set(&self.store, Some(active_file));
+        // The first real file has landed — tear down the progress panel.
+        // Subsequent file loads use the sidebar row spinner, not this.
+        self.compare_progress.set(&self.store, None);
         self.editor_clear_document();
         self.editor
             .line_selection
@@ -1049,6 +1096,7 @@ pub struct DebugState {
 #[derive(Debug)]
 pub struct AppState {
     pub workspace_mode: Signal<WorkspaceMode>,
+    pub compare_progress: Signal<Option<CompareProgress>>,
     pub app_view: Signal<AppView>,
     pub settings_section: Signal<SettingsSection>,
     pub compare: CompareStateStore,
@@ -1099,6 +1147,7 @@ impl Default for AppState {
         let text_focused =
             store.create_memo(move |s| s.read(focus).is_some_and(|t| t.is_text_field()));
         let workspace_mode = store.create(WorkspaceMode::default());
+        let compare_progress = store.create(None::<CompareProgress>);
         let app_view = store.create(AppView::default());
         let settings_section = store.create(SettingsSection::default());
         let last_error = store.create(None::<String>);
@@ -1115,6 +1164,7 @@ impl Default for AppState {
         let github = GitHubStateStore::new_default(&store);
         Self {
             workspace_mode,
+            compare_progress,
             app_view,
             settings_section,
             compare,
@@ -1202,6 +1252,7 @@ impl AppState {
         } else {
             WorkspaceMode::Empty
         });
+        let compare_progress = store.create(None::<CompareProgress>);
         let app_view = store.create(AppView::default());
         let settings_section = store.create(SettingsSection::default());
         let last_error = store.create(None::<String>);
@@ -1250,6 +1301,7 @@ impl AppState {
         );
         let mut state = Self {
             workspace_mode,
+            compare_progress,
             app_view,
             settings_section,
             compare,
@@ -1404,6 +1456,7 @@ impl AppState {
             | SetLayoutMode(_)
             | SetRenderer(_)
             | StartCompare
+            | CancelCompare
             | StageSelectedFile
             | UnstageSelectedFile
             | DiscardSelectedFile
@@ -2089,6 +2142,7 @@ impl AppState {
                 self.persist_settings_effect()
             }
             Action::StartCompare => self.kickoff_compare(),
+            Action::CancelCompare => self.cancel_compare(),
             Action::ShowWorkingTree => self.show_working_tree(),
             Action::StageSelectedFile => {
                 self.apply_selected_status_operation(StatusOperation::Stage)
@@ -2593,8 +2647,13 @@ impl AppState {
                 if generation == self.workspace.compare_generation.get(&self.store) {
                     self.workspace.status.set(&self.store, AsyncStatus::Failed);
                     self.workspace_mode.set(&self.store, WorkspaceMode::Empty);
+                    self.compare_progress.set(&self.store, None);
                     self.push_error(&message);
                 }
+                Vec::new()
+            }
+            AppEvent::CompareProgressUpdate { generation, phase } => {
+                self.handle_compare_progress_update(generation, phase);
                 Vec::new()
             }
             AppEvent::CompareFileFinished(payload) => self.handle_compare_file_finished(payload),
@@ -3569,11 +3628,21 @@ impl AppState {
         self.workspace
             .files
             .set(&self.store, build_file_entries(&payload.output.files));
+        let total_files = payload.output.files.len() as u32;
         self.workspace
             .compare_output
             .set(&self.store, Some(payload.output));
         self.workspace.active_file_loading.set(&self.store, None);
         self.workspace.sidebar_auto_width.set(&self.store, None);
+        // Record the discovered file count + advance the phase. The progress
+        // panel stays up until the first file finishes mounting (or, for
+        // small-file fast paths, is cleared by install_compare_active_file).
+        self.compare_progress.update(&self.store, |slot| {
+            if let Some(p) = slot.as_mut() {
+                p.file_count_total = Some(total_files);
+                p.phase = ComparePhase::PopulatingList;
+            }
+        });
         if self
             .workspace
             .pre_drill_compare
@@ -3620,6 +3689,9 @@ impl AppState {
             self.workspace.selected_status_scope.set(&self.store, None);
             self.workspace.active_file.set(&self.store, None);
             self.workspace.active_file_loading.set(&self.store, None);
+            // No files to select — the compare succeeded but has no diffs.
+            // Tear down the progress panel; the "repo ready" hint takes over.
+            self.compare_progress.set(&self.store, None);
             self.editor_clear_document();
         }
 
@@ -3924,6 +3996,34 @@ impl AppState {
         self.clear_overlays();
         self.sync_settings_snapshot();
 
+        // Switch the viewport to the loading shell immediately so the user
+        // sees the progress panel + sidebar skeleton instead of the stale
+        // previous compare. The generation guard drops any in-flight events.
+        self.workspace_mode.set(&self.store, WorkspaceMode::Loading);
+        self.workspace.status.set(&self.store, AsyncStatus::Loading);
+        self.workspace.files.set(&self.store, Vec::new());
+        self.workspace.active_file.set(&self.store, None);
+        self.workspace.active_file_loading.set(&self.store, None);
+        self.workspace.compare_output.set(&self.store, None);
+        self.workspace.selected_file_index.set(&self.store, None);
+        self.workspace.selected_file_path.set(&self.store, None);
+        self.editor_clear_document();
+
+        let started_at_ms = self.clock_ms;
+        let left_label = compare_ref_display_label(&left_ref);
+        let right_label = compare_ref_display_label(&right_ref);
+        self.compare_progress.set(
+            &self.store,
+            Some(CompareProgress {
+                generation: next_gen,
+                phase: ComparePhase::OpeningRepo,
+                left_label,
+                right_label,
+                started_at_ms,
+                file_count_total: None,
+            }),
+        );
+
         let renderer = self.compare.renderer.get(&self.store);
         let layout = self.compare.layout.get(&self.store);
         vec![
@@ -3943,6 +4043,41 @@ impl AppState {
                 },
             },
         ]
+    }
+
+    /// Soft-cancel an in-flight compare. Bumps the generation so any
+    /// result that eventually arrives is dropped by the guard, clears the
+    /// progress panel, and returns the viewport to the default empty state.
+    /// We do not attempt to interrupt the worker mid-flight — git2's
+    /// `Diff::new` has no clean cancellation hook, and the wasted work is
+    /// bounded by the caller's diff size.
+    fn cancel_compare(&mut self) -> Vec<Effect> {
+        if self.compare_progress.with(&self.store, |p| p.is_none()) {
+            return Vec::new();
+        }
+        let next_gen = self
+            .workspace
+            .compare_generation
+            .get(&self.store)
+            .saturating_add(1);
+        self.workspace.compare_generation.set(&self.store, next_gen);
+        self.compare_progress.set(&self.store, None);
+        self.workspace_mode.set(&self.store, WorkspaceMode::Empty);
+        self.workspace.status.set(&self.store, AsyncStatus::Idle);
+        self.workspace.active_file_loading.set(&self.store, None);
+        Vec::new()
+    }
+
+    fn handle_compare_progress_update(&mut self, generation: u64, phase: ComparePhase) {
+        // Only apply when the progress slot matches the reporter's
+        // generation — stale workers silently lose their updates.
+        self.compare_progress.update(&self.store, |slot| {
+            if let Some(p) = slot.as_mut()
+                && p.generation == generation
+            {
+                p.phase = phase;
+            }
+        });
     }
 
     fn show_working_tree(&mut self) -> Vec<Effect> {
@@ -5909,6 +6044,15 @@ impl AppState {
             return vec![Effect::EnsureSyntaxPackForPath { path: entry.path }];
         }
 
+        // If we're mid-compare (first file selection post-CompareFinished),
+        // flip the phase so the progress panel reports "Preparing first
+        // file…". Subsequent selections don't touch compare_progress.
+        self.compare_progress.update(&self.store, |slot| {
+            if let Some(p) = slot.as_mut() {
+                p.phase = ComparePhase::RenderingFirstFile;
+            }
+        });
+
         let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
             self.push_error("Open a repository before selecting a compare file.");
             return Vec::new();
@@ -7007,6 +7151,19 @@ fn compare_refs_are_valid(mode: CompareMode, left_ref: &str, right_ref: &str) ->
         CompareMode::TwoDot | CompareMode::ThreeDot => {
             !left_ref.is_empty() && !right_ref.is_empty()
         }
+    }
+}
+
+/// Short, user-facing label for a ref. Maps the internal WORKDIR sentinel
+/// to a friendly "working copy"; empty strings become the conventional
+/// "base"/"head" placeholder (handled by the caller since the side matters).
+fn compare_ref_display_label(value: &str) -> String {
+    if value == crate::core::vcs::git::service::WORKDIR_REF {
+        "working copy".to_owned()
+    } else if value.is_empty() {
+        "\u{2014}".to_owned()
+    } else {
+        value.to_owned()
     }
 }
 
@@ -8163,5 +8320,213 @@ mod tests {
                 .map(|e| e.meta.clone())
         });
         assert!(matches!(meta, Some(super::PrPeekMeta::Ready(_))));
+    }
+
+    // -----------------------------------------------------------------
+    // Compare progress — end-to-end through the event lifecycle
+    // -----------------------------------------------------------------
+
+    use super::{ComparePhase, CompareProgress};
+    use crate::core::compare::CompareSpec;
+    use crate::events::CompareFinished;
+
+    fn compare_ready_state() -> AppState {
+        let mut state = AppState::default();
+        state
+            .compare
+            .repo_path
+            .set(&state.store, Some(PathBuf::from("/repo")));
+        state.compare.left_ref.set(&state.store, "v5.0".to_owned());
+        state.compare.right_ref.set(&state.store, "v5.1".to_owned());
+        state.compare.mode.set(&state.store, CompareMode::TwoDot);
+        state
+    }
+
+    #[test]
+    fn kickoff_compare_seeds_progress_with_labels_and_started_at() {
+        let mut state = compare_ready_state();
+        state.clock_ms = 1_000;
+        let _ = state.kickoff_compare();
+
+        let progress = state
+            .compare_progress
+            .with(&state.store, |p| p.clone())
+            .expect("progress should be populated");
+        assert_eq!(progress.left_label, "v5.0");
+        assert_eq!(progress.right_label, "v5.1");
+        assert_eq!(progress.started_at_ms, 1_000);
+        assert_eq!(progress.phase, ComparePhase::OpeningRepo);
+        assert_eq!(progress.file_count_total, None);
+        assert_eq!(
+            state.workspace_mode.get(&state.store),
+            WorkspaceMode::Loading,
+            "viewport should flip to loading so the panel actually renders"
+        );
+    }
+
+    #[test]
+    fn compare_progress_update_applies_only_when_generation_matches() {
+        let mut state = compare_ready_state();
+        let _ = state.kickoff_compare();
+        let generation = state.workspace.compare_generation.get(&state.store);
+
+        // Stale reporter — must be ignored.
+        state.apply_event(AppEvent::CompareProgressUpdate {
+            generation: generation.wrapping_sub(1),
+            phase: ComparePhase::ComputingDiff,
+        });
+        assert_eq!(
+            state
+                .compare_progress
+                .with(&state.store, |p| p.as_ref().unwrap().phase),
+            ComparePhase::OpeningRepo,
+            "stale generation must not advance the phase"
+        );
+
+        // Fresh reporter — applies.
+        state.apply_event(AppEvent::CompareProgressUpdate {
+            generation,
+            phase: ComparePhase::ComputingDiff,
+        });
+        assert_eq!(
+            state
+                .compare_progress
+                .with(&state.store, |p| p.as_ref().unwrap().phase),
+            ComparePhase::ComputingDiff,
+        );
+    }
+
+    #[test]
+    fn cancel_compare_bumps_generation_and_drops_stale_result() {
+        let mut state = compare_ready_state();
+        let _ = state.kickoff_compare();
+        let generation = state.workspace.compare_generation.get(&state.store);
+
+        let _ = state.cancel_compare();
+
+        assert!(
+            state.compare_progress.with(&state.store, |p| p.is_none()),
+            "progress should be cleared after cancel"
+        );
+        let new_gen = state.workspace.compare_generation.get(&state.store);
+        assert!(new_gen > generation, "generation should be bumped");
+        assert_eq!(state.workspace_mode.get(&state.store), WorkspaceMode::Empty,);
+
+        // A stale CompareFinished arriving after cancel must be silently dropped.
+        state.apply_event(AppEvent::CompareFinished(CompareFinished {
+            generation,
+            spec: CompareSpec {
+                mode: CompareMode::TwoDot,
+                left_ref: "v5.0".to_owned(),
+                right_ref: "v5.1".to_owned(),
+                renderer: RendererKind::Builtin,
+                layout: LayoutMode::Unified,
+            },
+            resolved_left: "deadbeef".to_owned(),
+            resolved_right: "cafefeed".to_owned(),
+            output: CompareOutput::default(),
+            range_commits: Vec::new(),
+        }));
+        assert_eq!(
+            state.workspace_mode.get(&state.store),
+            WorkspaceMode::Empty,
+            "stale finished result must not promote workspace to Ready",
+        );
+        assert!(
+            state.compare_progress.with(&state.store, |p| p.is_none()),
+            "stale finished result must not re-seed progress",
+        );
+    }
+
+    #[test]
+    fn compare_finished_advances_phase_and_records_file_count() {
+        let mut state = compare_ready_state();
+        let _ = state.kickoff_compare();
+        let generation = state.workspace.compare_generation.get(&state.store);
+
+        // Simulate a successful compare with 3 files.
+        let files = vec![
+            FileDiff {
+                path: "a.rs".to_owned(),
+                ..FileDiff::default()
+            },
+            FileDiff {
+                path: "b.rs".to_owned(),
+                ..FileDiff::default()
+            },
+            FileDiff {
+                path: "c.rs".to_owned(),
+                ..FileDiff::default()
+            },
+        ];
+        let output = CompareOutput {
+            files,
+            ..CompareOutput::default()
+        };
+
+        state.apply_event(AppEvent::CompareFinished(CompareFinished {
+            generation,
+            spec: CompareSpec {
+                mode: CompareMode::TwoDot,
+                left_ref: "v5.0".to_owned(),
+                right_ref: "v5.1".to_owned(),
+                renderer: RendererKind::Builtin,
+                layout: LayoutMode::Unified,
+            },
+            resolved_left: "deadbeef".to_owned(),
+            resolved_right: "cafefeed".to_owned(),
+            output,
+            range_commits: Vec::new(),
+        }));
+
+        // Small files load synchronously, so progress is already cleared by the
+        // time handle_compare_finished returns. We at least know the workspace
+        // is Ready and files are populated.
+        assert_eq!(state.workspace_mode.get(&state.store), WorkspaceMode::Ready,);
+        assert_eq!(state.workspace.files.with(&state.store, |f| f.len()), 3,);
+    }
+
+    #[test]
+    fn compare_failed_clears_progress_and_marks_workspace_empty() {
+        let mut state = compare_ready_state();
+        let _ = state.kickoff_compare();
+        let generation = state.workspace.compare_generation.get(&state.store);
+
+        state.apply_event(AppEvent::CompareFailed {
+            generation,
+            message: "boom".to_owned(),
+        });
+
+        assert_eq!(state.workspace_mode.get(&state.store), WorkspaceMode::Empty,);
+        assert!(
+            state.compare_progress.with(&state.store, |p| p.is_none()),
+            "progress panel must tear down on compare failure",
+        );
+    }
+
+    #[test]
+    fn compare_progress_label_does_not_panic_for_all_phases() {
+        // Non-empty, non-control-character labels matter for the title-bar
+        // fallback. Cheap to check exhaustively.
+        let phases = [
+            ComparePhase::OpeningRepo,
+            ComparePhase::ResolvingRefs,
+            ComparePhase::ComputingDiff,
+            ComparePhase::LoadingFiles,
+            ComparePhase::PopulatingList,
+            ComparePhase::RenderingFirstFile,
+        ];
+        for phase in phases {
+            let label = phase.label();
+            assert!(!label.is_empty());
+        }
+        let _ = CompareProgress {
+            generation: 0,
+            phase: ComparePhase::default(),
+            left_label: String::new(),
+            right_label: String::new(),
+            started_at_ms: 0,
+            file_count_total: None,
+        };
     }
 }

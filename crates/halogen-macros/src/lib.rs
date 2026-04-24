@@ -616,6 +616,17 @@ impl EmitCtx {
     }
 
     fn emit_if_chain(&self, chain: &IfChainNode) -> ChildMode {
+        // If any branch body holds multiple children, emit a Spread so they
+        // flow into the parent inline. Wrapping them in a bare `div()` (the
+        // old path) inserted an unstyled flex item, which broke percentage
+        // sizing (`h_full` / `w_full`) for descendants whose layout was
+        // supposed to resolve against an ancestor further up the tree.
+        let then_multi = chain.then_children.len() > 1;
+        let else_multi = chain.else_children.as_ref().is_some_and(|c| c.len() > 1);
+        if then_multi || else_multi {
+            return self.emit_if_chain_spread(chain);
+        }
+
         let cond = &chain.cond;
         let then_body = self.emit_children_fragment(&chain.then_children);
 
@@ -645,6 +656,46 @@ impl EmitCtx {
                 if #cond { #then_body } #else_branch
             })
         }
+    }
+
+    /// Emit an if/else-if/else chain whose bodies can contain multiple
+    /// children. Produces a `Spread` whose underlying expression iterates
+    /// over `AnyElement` values — no wrapping `div()`, so descendants with
+    /// `h_full`/`w_full` continue to resolve against the real ancestor.
+    ///
+    /// We normalize each branch to a `Vec<AnyElement>` (what
+    /// `emit_children_spread` already produces) so the if/else is a single
+    /// well-typed expression. The no-else path uses `Option<Vec>` + `flatten`
+    /// to get the empty-branch type for free.
+    fn emit_if_chain_spread(&self, chain: &IfChainNode) -> ChildMode {
+        let cond = &chain.cond;
+        let then_body = self.emit_children_spread(&chain.then_children);
+
+        if chain.else_if.is_none() && chain.else_children.is_none() {
+            return ChildMode::Spread(quote! {
+                (if #cond { Some(#then_body) } else { None })
+                    .into_iter()
+                    .flatten()
+            });
+        }
+
+        let else_body = if let Some(else_if) = &chain.else_if {
+            match self.emit_if_chain(else_if) {
+                ChildMode::Spread(t) => quote! { (#t).into_iter().collect::<Vec<_>>() },
+                ChildMode::Child(t) => quote! { vec![#t] },
+                ChildMode::Optional(t) => {
+                    quote! { (#t).into_iter().collect::<Vec<_>>() }
+                }
+            }
+        } else if let Some(else_children) = &chain.else_children {
+            self.emit_children_spread(else_children)
+        } else {
+            unreachable!()
+        };
+
+        ChildMode::Spread(quote! {
+            if #cond { #then_body } else { #else_body }
+        })
     }
 
     fn emit_for_loop(&self, fl: &ForLoopNode) -> TokenStream2 {
@@ -709,7 +760,7 @@ impl EmitCtx {
             Tag::Div => self.emit_div(el),
             Tag::Text => self.emit_text(el),
             Tag::Icon => self.emit_icon(el),
-            Tag::Spacer => quote! { spacer() },
+            Tag::Spacer => quote! { spacer().into_any() },
             Tag::Fragment => unreachable!("fragments are handled in emit_node"),
             Tag::Component(path) => self.emit_component(path, el),
         }
@@ -1449,6 +1500,47 @@ mod tests {
                             __halogen_children
                         })
                         .collect::<Vec<_>>()
+                )
+                .into_any()
+        }
+        .to_string();
+
+        assert_eq!(actual, expected);
+    }
+
+    // Regression: an `if` whose body holds multiple children used to be
+    // wrapped in a bare `div()`, which became an unstyled flex item in the
+    // parent and broke percentage sizing (e.g. `h_full`) for descendants.
+    // The fix emits a `Spread` instead so the branch's children flow into
+    // the parent inline.
+    #[test]
+    fn multi_child_if_body_spreads_instead_of_wrapping_in_div() {
+        let actual = emit(
+            r#"
+            <div>
+                if picker_open {
+                    <text>{"divider"}</text>
+                    <text>{"compare"}</text>
+                }
+            </div>
+            "#,
+        );
+
+        let expected = quote! {
+            div()
+                .children(
+                    (if picker_open {
+                        Some({
+                            let mut __halogen_children = Vec::new();
+                            __halogen_children.push(text("divider").into_any());
+                            __halogen_children.push(text("compare").into_any());
+                            __halogen_children
+                        })
+                    } else {
+                        None
+                    })
+                        .into_iter()
+                        .flatten()
                 )
                 .into_any()
         }

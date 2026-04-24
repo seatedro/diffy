@@ -174,6 +174,9 @@ pub enum AppEvent {
         file_index: usize,
         message: String,
     },
+    SyntaxPackInstalled {
+        language: String,
+    },
     FetchProgress {
         toast_id: u64,
         received_objects: usize,

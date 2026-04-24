@@ -9,6 +9,13 @@ pub enum PhosphorError {
         language: LanguageId,
         message: String,
     },
+    #[error("Failed to load parser pack for {language}: {message}")]
+    LoadParserPack {
+        language: LanguageId,
+        message: String,
+    },
+    #[error("No installed tree-sitter parser for {language}")]
+    MissingParser { language: LanguageId },
     #[error("Tree-sitter parse failed for {language}")]
     ParseFailed { language: LanguageId },
 }

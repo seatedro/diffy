@@ -271,6 +271,35 @@ impl AppServices {
         git.read_file_lines_at(&request.reference, &request.path)
     }
 
+    pub fn install_common_syntax_packs(&self) -> Result<Vec<String>> {
+        let installer = phosphor::PackInstaller::new()
+            .map_err(|error| DiffyError::General(error.to_string()))?;
+        http::block_on(async {
+            installer
+                .install_common_packs()
+                .await
+                .map(|languages| {
+                    languages
+                        .into_iter()
+                        .map(|language| language.name().to_owned())
+                        .collect()
+                })
+                .map_err(|error| DiffyError::General(error.to_string()))
+        })
+    }
+
+    pub fn ensure_syntax_pack_for_path(&self, path: &str) -> Result<Option<String>> {
+        let installer = phosphor::PackInstaller::new()
+            .map_err(|error| DiffyError::General(error.to_string()))?;
+        http::block_on(async {
+            installer
+                .ensure_pack_for_path(Path::new(path))
+                .await
+                .map(|language| language.map(|language| language.name().to_owned()))
+                .map_err(|error| DiffyError::General(error.to_string()))
+        })
+    }
+
     pub fn open_browser(&self, url: &str) -> Result<()> {
         webbrowser::open(url)
             .map(|_| ())

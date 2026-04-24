@@ -423,6 +423,33 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
+            Effect::InstallCommonSyntaxPacks => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || match services.install_common_syntax_packs() {
+                    Ok(languages) => {
+                        for language in languages {
+                            event_sender.send(AppEvent::SyntaxPackInstalled { language });
+                        }
+                    }
+                    Err(error) => {
+                        tracing::debug!("syntax pack background install skipped: {error}");
+                    }
+                });
+            }
+            Effect::EnsureSyntaxPackForPath { path } => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || match services.ensure_syntax_pack_for_path(&path) {
+                    Ok(Some(language)) => {
+                        event_sender.send(AppEvent::SyntaxPackInstalled { language });
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::debug!(path = %path, "syntax pack install skipped: {error}");
+                    }
+                });
+            }
             Effect::LoadAiKeys => {
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {

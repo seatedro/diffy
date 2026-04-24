@@ -37,7 +37,7 @@ rayon = "1.10"
 tempfile = "3.14"
 webbrowser = "1.0"
 halogen = { path = "crates/halogen" }
-phosphor = { path = "crates/phosphor" }
+phosphor = { path = "crates/phosphor", default-features = false }
 vendored_difftastic = { package = "difftastic", path = "crates/difftastic", optional = true }
 resvg = { version = "0.45", default-features = false }
 wgpu = "28.0.0"

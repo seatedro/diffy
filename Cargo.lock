@@ -3229,21 +3229,16 @@ dependencies = [
 name = "phosphor"
 version = "0.1.0"
 dependencies = [
+ "dirs",
+ "libloading",
+ "reqwest",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tree-sitter",
- "tree-sitter-bash",
- "tree-sitter-c",
- "tree-sitter-cpp",
- "tree-sitter-go",
- "tree-sitter-javascript",
- "tree-sitter-json",
  "tree-sitter-language",
- "tree-sitter-nix",
- "tree-sitter-python",
- "tree-sitter-rust-orchard",
- "tree-sitter-toml-ng",
- "tree-sitter-typescript",
- "tree-sitter-zig",
 ]
 
 [[package]]

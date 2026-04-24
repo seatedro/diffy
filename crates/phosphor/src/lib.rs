@@ -2,12 +2,14 @@
 
 mod error;
 mod language;
+pub mod pack;
 mod types;
 
 use std::path::Path;
 
 pub use error::{PhosphorError, Result};
-pub use types::{HighlightKind, HighlightSpan, LanguageId};
+pub use pack::PackInstaller;
+pub use types::{HighlightKind, HighlightSpan, LanguageId, LanguageMetadata};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Highlighter;
@@ -19,6 +21,18 @@ impl Highlighter {
 
     pub fn guess_language(&self, path: &Path) -> Option<LanguageId> {
         language::guess_language(path)
+    }
+
+    pub fn languages(&self) -> &'static [LanguageMetadata] {
+        language::languages()
+    }
+
+    pub fn common_languages(&self) -> impl Iterator<Item = LanguageId> + 'static {
+        language::common_languages()
+    }
+
+    pub fn is_parser_available(&self, language: LanguageId) -> bool {
+        language::is_parser_available(language)
     }
 
     pub fn highlight_language(
@@ -33,34 +47,48 @@ impl Highlighter {
         let Some(language) = self.guess_language(path) else {
             return Ok(Vec::new());
         };
+        if !self.is_parser_available(language) {
+            return Ok(Vec::new());
+        }
         self.highlight_language(language, source)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{HighlightKind, Highlighter};
+    use super::Highlighter;
 
     #[test]
-    fn rust_highlighting_returns_semantic_tokens() {
+    fn known_paths_without_installed_packs_return_no_tokens() {
         let highlighter = Highlighter::new();
         let spans = highlighter
             .highlight_path(
-                std::path::Path::new("src/lib.rs"),
-                "pub fn greet(name: &str) -> usize { name.len() }\n",
+                std::path::Path::new("data.json"),
+                "{ \"name\": \"Diffy\", \"fast\": true }\n",
             )
             .unwrap();
 
-        assert!(spans.iter().any(|span| span.kind == HighlightKind::Keyword));
-        assert!(
-            spans
-                .iter()
-                .any(|span| span.kind == HighlightKind::Function)
-        );
+        assert!(spans.is_empty());
     }
 
     #[test]
-    fn typescript_highlighting_returns_string_tokens() {
+    fn common_registry_includes_unbundled_languages() {
+        let highlighter = Highlighter::new();
+
+        assert_eq!(
+            highlighter.guess_language(std::path::Path::new("src/app.ts")),
+            Some(super::LanguageId::TypeScript)
+        );
+        assert!(
+            highlighter
+                .common_languages()
+                .any(|language| language == super::LanguageId::TypeScript)
+        );
+        assert!(!highlighter.is_parser_available(super::LanguageId::TypeScript));
+    }
+
+    #[test]
+    fn missing_packs_return_no_tokens() {
         let highlighter = Highlighter::new();
         let spans = highlighter
             .highlight_path(
@@ -69,8 +97,7 @@ mod tests {
             )
             .unwrap();
 
-        assert!(spans.iter().any(|span| span.kind == HighlightKind::Keyword));
-        assert!(spans.iter().any(|span| span.kind == HighlightKind::String));
+        assert!(spans.is_empty());
     }
 
     #[test]

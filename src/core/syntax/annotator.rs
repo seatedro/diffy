@@ -153,56 +153,20 @@ fn distribute_tokens(
 #[cfg(test)]
 mod tests {
     use crate::core::diff::unified_parser::parse_into;
-    use crate::core::syntax::{DiffSyntaxAnnotator, SyntaxTokenKind};
+    use crate::core::syntax::DiffSyntaxAnnotator;
     use crate::core::text::{TextBuffer, TokenBuffer};
 
     #[test]
-    fn unified_diff_to_syntax_tokens_pipeline() {
+    fn annotator_degrades_missing_packs_to_plain_text() {
         let patch = concat!(
-            "diff --git a/test.py b/test.py\n",
-            "--- a/test.py\n",
-            "+++ b/test.py\n",
+            "diff --git a/test.json b/test.json\n",
+            "--- a/test.json\n",
+            "+++ b/test.json\n",
             "@@ -1,2 +1,3 @@\n",
-            " def greet(name):\n",
-            "-    return \"hi\"\n",
-            "+    value = \"hello\"\n",
-            "+    return value\n",
-        );
-        let mut text_buffer = TextBuffer::default();
-        let mut token_buffer = TokenBuffer::default();
-        let mut document = parse_into(patch, &mut text_buffer);
-
-        let annotator = DiffSyntaxAnnotator::new();
-        annotator.annotate(&mut document.files[0], &mut text_buffer, &mut token_buffer);
-
-        let file = &document.files[0];
-        let token_kinds = file
-            .hunks
-            .iter()
-            .flat_map(|hunk| hunk.lines.iter())
-            .flat_map(|line| {
-                token_buffer
-                    .view(line.syntax_tokens)
-                    .iter()
-                    .map(|span| span.kind)
-            })
-            .collect::<Vec<_>>();
-        assert!(
-            token_kinds.contains(&SyntaxTokenKind::Function)
-                || token_kinds.contains(&SyntaxTokenKind::Keyword)
-        );
-        assert!(token_kinds.contains(&SyntaxTokenKind::String));
-    }
-
-    #[test]
-    fn annotator_supports_typescript_via_phosphor() {
-        let patch = concat!(
-            "diff --git a/test.ts b/test.ts\n",
-            "--- a/test.ts\n",
-            "+++ b/test.ts\n",
-            "@@ -1 +1 @@\n",
-            "-const greeting = \"old\";\n",
-            "+export const greeting = \"new\";\n",
+            " {\n",
+            "-  \"name\": \"old\"\n",
+            "+  \"name\": \"new\",\n",
+            "+  \"fast\": true\n",
         );
         let mut text_buffer = TextBuffer::default();
         let mut token_buffer = TokenBuffer::default();
@@ -222,7 +186,37 @@ mod tests {
                     .map(|span| span.kind)
             })
             .collect::<Vec<_>>();
-        assert!(token_kinds.contains(&SyntaxTokenKind::Keyword));
-        assert!(token_kinds.contains(&SyntaxTokenKind::String));
+        assert!(token_kinds.is_empty());
+    }
+
+    #[test]
+    fn annotator_degrades_unsupported_languages_to_plain_text() {
+        let patch = concat!(
+            "diff --git a/test.unknown b/test.unknown\n",
+            "--- a/test.unknown\n",
+            "+++ b/test.unknown\n",
+            "@@ -1 +1 @@\n",
+            "-old plain text\n",
+            "+new plain text\n",
+        );
+        let mut text_buffer = TextBuffer::default();
+        let mut token_buffer = TokenBuffer::default();
+        let mut document = parse_into(patch, &mut text_buffer);
+
+        let annotator = DiffSyntaxAnnotator::new();
+        annotator.annotate(&mut document.files[0], &mut text_buffer, &mut token_buffer);
+
+        let token_kinds = document.files[0]
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter())
+            .flat_map(|line| {
+                token_buffer
+                    .view(line.syntax_tokens)
+                    .iter()
+                    .map(|span| span.kind)
+            })
+            .collect::<Vec<_>>();
+        assert!(token_kinds.is_empty());
     }
 }

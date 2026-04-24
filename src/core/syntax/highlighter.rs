@@ -42,6 +42,9 @@ impl Highlighter {
         let Some(language) = language else {
             return Ok(Vec::new());
         };
+        if !self.inner.is_parser_available(language) {
+            return Ok(Vec::new());
+        }
         self.inner
             .highlight_language(language, source)
             .map(|spans| spans.into_iter().map(map_span).collect())

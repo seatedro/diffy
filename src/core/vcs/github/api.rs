@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::core::error::{DiffyError, Result};
+use crate::core::http;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct GitHubUser {
@@ -48,18 +49,20 @@ impl GitHubApi {
     }
 
     pub fn fetch_current_user(&self) -> Result<GitHubUser> {
-        let mut request = ureq::get("https://api.github.com/user")
-            .header("Accept", "application/vnd.github.v3+json")
-            .header("User-Agent", "diffy/0.1");
-        if !self.token.is_empty() {
-            request = request.header("Authorization", &format!("Bearer {}", self.token));
-        }
-
-        let body = request
-            .call()?
-            .into_body()
-            .read_to_string()
-            .map_err(|error| DiffyError::Http(error.to_string()))?;
+        let body = http::block_on(async {
+            let mut request = reqwest::Client::new()
+                .get("https://api.github.com/user")
+                .header("Accept", "application/vnd.github.v3+json")
+                .header("User-Agent", "diffy/0.1");
+            if !self.token.is_empty() {
+                request = request.header("Authorization", &format!("Bearer {}", self.token));
+            }
+            let response = request
+                .send()
+                .await
+                .map_err(|error| DiffyError::Http(format!("GitHub user fetch failed: {error}")))?;
+            http::response_text(response, "GitHub user fetch").await
+        })?;
         let json: Value = serde_json::from_str(&body)?;
 
         let login = string_field(&json, "login");
@@ -86,18 +89,19 @@ impl GitHubApi {
         number: i32,
     ) -> Result<PullRequestInfo> {
         let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls/{number}");
-        let mut request = ureq::get(&url)
-            .header("Accept", "application/vnd.github.v3+json")
-            .header("User-Agent", "diffy/0.1");
-        if !self.token.is_empty() {
-            request = request.header("Authorization", &format!("Bearer {}", self.token));
-        }
-
-        let body = request
-            .call()?
-            .into_body()
-            .read_to_string()
-            .map_err(|error| DiffyError::Http(error.to_string()))?;
+        let body = http::block_on(async {
+            let mut request = reqwest::Client::new()
+                .get(&url)
+                .header("Accept", "application/vnd.github.v3+json")
+                .header("User-Agent", "diffy/0.1");
+            if !self.token.is_empty() {
+                request = request.header("Authorization", &format!("Bearer {}", self.token));
+            }
+            let response = request.send().await.map_err(|error| {
+                DiffyError::Http(format!("GitHub pull request fetch failed: {error}"))
+            })?;
+            http::response_text(response, "GitHub pull request fetch").await
+        })?;
         let json: Value = serde_json::from_str(&body)?;
         let base = json.get("base").cloned().unwrap_or(Value::Null);
         let head = json.get("head").cloned().unwrap_or(Value::Null);

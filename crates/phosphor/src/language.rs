@@ -4,20 +4,12 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::rc::Rc;
 
+use libloading::Library;
 use tree_sitter as ts;
 use tree_sitter::StreamingIterator;
-use tree_sitter_language::LanguageFn;
 
 use crate::error::{PhosphorError, Result};
-use crate::{HighlightKind, HighlightSpan, LanguageId};
-
-#[derive(Clone, Copy)]
-struct LanguageSpec {
-    id: LanguageId,
-    extensions: &'static [&'static str],
-    language_fn: LanguageFn,
-    query_fragments: &'static [&'static str],
-}
+use crate::{HighlightKind, HighlightSpan, LanguageId, LanguageMetadata};
 
 #[derive(Debug)]
 struct CompiledLanguage {
@@ -25,6 +17,7 @@ struct CompiledLanguage {
     language: ts::Language,
     query: ts::Query,
     capture_kinds: Vec<HighlightKind>,
+    _pack_library: Option<Rc<Library>>,
 }
 
 thread_local! {
@@ -33,103 +26,100 @@ thread_local! {
     static PARSERS: RefCell<HashMap<LanguageId, ts::Parser>> = RefCell::new(HashMap::new());
 }
 
-const LANGUAGE_SPECS: &[LanguageSpec] = &[
-    LanguageSpec {
+pub(crate) const LANGUAGE_REGISTRY: &[LanguageMetadata] = &[
+    LanguageMetadata {
         id: LanguageId::Bash,
         extensions: &["bash", "sh", "zsh"],
-        language_fn: tree_sitter_bash::LANGUAGE,
-        query_fragments: &[tree_sitter_bash::HIGHLIGHT_QUERY],
+        common: true,
     },
-    LanguageSpec {
+    LanguageMetadata {
         id: LanguageId::C,
         extensions: &["c", "h"],
-        language_fn: tree_sitter_c::LANGUAGE,
-        query_fragments: &[tree_sitter_c::HIGHLIGHT_QUERY],
+        common: true,
     },
-    LanguageSpec {
+    LanguageMetadata {
         id: LanguageId::Cpp,
         extensions: &["cc", "cpp", "cxx", "hh", "hpp", "hxx"],
-        language_fn: tree_sitter_cpp::LANGUAGE,
-        query_fragments: &[tree_sitter_cpp::HIGHLIGHT_QUERY],
+        common: true,
     },
-    LanguageSpec {
+    LanguageMetadata {
         id: LanguageId::Go,
         extensions: &["go"],
-        language_fn: tree_sitter_go::LANGUAGE,
-        query_fragments: &[tree_sitter_go::HIGHLIGHTS_QUERY],
+        common: true,
     },
-    LanguageSpec {
+    LanguageMetadata {
         id: LanguageId::JavaScript,
         extensions: &["js", "jsx", "mjs"],
-        language_fn: tree_sitter_javascript::LANGUAGE,
-        query_fragments: &[tree_sitter_javascript::HIGHLIGHT_QUERY],
+        common: true,
     },
-    LanguageSpec {
+    LanguageMetadata {
         id: LanguageId::Json,
         extensions: &["json"],
-        language_fn: tree_sitter_json::LANGUAGE,
-        query_fragments: &[tree_sitter_json::HIGHLIGHTS_QUERY],
+        common: true,
     },
-    LanguageSpec {
+    LanguageMetadata {
         id: LanguageId::Nix,
         extensions: &["nix"],
-        language_fn: tree_sitter_nix::LANGUAGE,
-        query_fragments: &[tree_sitter_nix::HIGHLIGHTS_QUERY],
+        common: false,
     },
-    LanguageSpec {
+    LanguageMetadata {
         id: LanguageId::Python,
         extensions: &["py", "pyi"],
-        language_fn: tree_sitter_python::LANGUAGE,
-        query_fragments: &[tree_sitter_python::HIGHLIGHTS_QUERY],
+        common: true,
     },
-    LanguageSpec {
+    LanguageMetadata {
         id: LanguageId::Rust,
         extensions: &["rs"],
-        language_fn: tree_sitter_rust_orchard::LANGUAGE,
-        query_fragments: &[tree_sitter_rust_orchard::HIGHLIGHTS_QUERY],
+        common: true,
     },
-    LanguageSpec {
+    LanguageMetadata {
         id: LanguageId::Toml,
         extensions: &["toml"],
-        language_fn: tree_sitter_toml_ng::LANGUAGE,
-        query_fragments: &[tree_sitter_toml_ng::HIGHLIGHTS_QUERY],
+        common: true,
     },
-    LanguageSpec {
+    LanguageMetadata {
         id: LanguageId::TypeScript,
         extensions: &["ts"],
-        language_fn: tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
-        query_fragments: &[
-            tree_sitter_javascript::HIGHLIGHT_QUERY,
-            tree_sitter_typescript::HIGHLIGHTS_QUERY,
-        ],
+        common: true,
     },
-    LanguageSpec {
+    LanguageMetadata {
         id: LanguageId::TypeScriptTsx,
         extensions: &["tsx"],
-        language_fn: tree_sitter_typescript::LANGUAGE_TSX,
-        query_fragments: &[
-            tree_sitter_javascript::HIGHLIGHT_QUERY,
-            tree_sitter_typescript::HIGHLIGHTS_QUERY,
-        ],
+        common: true,
     },
-    LanguageSpec {
+    LanguageMetadata {
         id: LanguageId::Zig,
         extensions: &["zig"],
-        language_fn: tree_sitter_zig::LANGUAGE,
-        query_fragments: &[tree_sitter_zig::HIGHLIGHTS_QUERY],
+        common: false,
     },
 ];
 
+pub(crate) fn languages() -> &'static [LanguageMetadata] {
+    LANGUAGE_REGISTRY
+}
+
+pub(crate) fn common_languages() -> impl Iterator<Item = LanguageId> + 'static {
+    LANGUAGE_REGISTRY
+        .iter()
+        .filter(|language| language.common)
+        .map(|language| language.id)
+}
+
+pub(crate) fn is_parser_available(language: LanguageId) -> bool {
+    crate::pack::is_pack_installed(language)
+}
+
 pub(crate) fn guess_language(path: &Path) -> Option<LanguageId> {
     let extension = path.extension().and_then(OsStr::to_str)?;
-    LANGUAGE_SPECS
+    LANGUAGE_REGISTRY
         .iter()
-        .find(|spec| {
-            spec.extensions
+        .find(|language| {
+            language
+                .extensions
                 .iter()
                 .any(|candidate| extension.eq_ignore_ascii_case(candidate))
         })
-        .map(|spec| spec.id)
+        .map(|language| language.id)
 }
 
 pub(crate) fn highlight(language: LanguageId, source: &str) -> Result<Vec<HighlightSpan>> {
@@ -137,44 +127,61 @@ pub(crate) fn highlight(language: LanguageId, source: &str) -> Result<Vec<Highli
         return Ok(Vec::new());
     }
 
-    let compiled = compiled_language(language);
+    if !is_parser_available(language) {
+        return Err(PhosphorError::MissingParser { language });
+    }
+
+    let compiled = compiled_language(language)?;
     let tree = parse_source(&compiled, source)?;
     let raw_spans = collect_spans(&compiled, &tree, source);
     compact_spans(language, raw_spans)
 }
 
-fn compiled_language(language: LanguageId) -> Rc<CompiledLanguage> {
+fn compiled_language(language: LanguageId) -> Result<Rc<CompiledLanguage>> {
     COMPILED_LANGUAGES.with(|cache| {
         let mut cache = cache.borrow_mut();
-        cache
-            .entry(language)
-            .or_insert_with(|| Rc::new(compile_language(language)))
-            .clone()
+        if let Some(compiled) = cache.get(&language) {
+            return Ok(compiled.clone());
+        }
+
+        let compiled = Rc::new(compile_language(language)?);
+        cache.insert(language, compiled.clone());
+        Ok(compiled)
     })
 }
 
-fn compile_language(language: LanguageId) -> CompiledLanguage {
-    let spec = language_spec(language);
-    let tree_sitter_language = ts::Language::new(spec.language_fn);
-    let query_source = spec.query_fragments.concat();
-    let query = ts::Query::new(&tree_sitter_language, &query_source).unwrap_or_else(|error| {
-        panic!(
-            "invalid phosphor highlight query for {}: {error}",
-            language.name()
-        )
-    });
+fn compile_language(language: LanguageId) -> Result<CompiledLanguage> {
+    let Some(pack) =
+        crate::pack::load_pack(language).map_err(|error| PhosphorError::LoadParserPack {
+            language,
+            message: error.to_string(),
+        })?
+    else {
+        return Err(PhosphorError::MissingParser { language });
+    };
+    let tree_sitter_language = pack.language;
+    let query_source = pack.query_fragments.concat();
+    let pack_library = Some(pack._library);
+
+    let query = ts::Query::new(&tree_sitter_language, &query_source).map_err(|error| {
+        PhosphorError::InvalidHighlightQuery {
+            language,
+            message: error.to_string(),
+        }
+    })?;
     let capture_kinds = query
         .capture_names()
         .iter()
         .map(|name| capture_name_to_highlight_kind(name))
         .collect();
 
-    CompiledLanguage {
+    Ok(CompiledLanguage {
         language_id: language,
         language: tree_sitter_language,
         query,
         capture_kinds,
-    }
+        _pack_library: pack_library,
+    })
 }
 
 fn parse_source(compiled: &CompiledLanguage, source: &str) -> Result<ts::Tree> {
@@ -257,13 +264,6 @@ fn compact_spans(
     }
 
     Ok(spans)
-}
-
-fn language_spec(language: LanguageId) -> &'static LanguageSpec {
-    LANGUAGE_SPECS
-        .iter()
-        .find(|spec| spec.id == language)
-        .unwrap_or_else(|| panic!("missing phosphor language spec for {}", language.name()))
 }
 
 fn capture_name_to_highlight_kind(name: &str) -> HighlightKind {

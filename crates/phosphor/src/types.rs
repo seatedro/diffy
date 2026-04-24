@@ -46,6 +46,13 @@ pub enum LanguageId {
     Zig,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LanguageMetadata {
+    pub id: LanguageId,
+    pub extensions: &'static [&'static str],
+    pub common: bool,
+}
+
 impl LanguageId {
     pub const fn name(self) -> &'static str {
         match self {
@@ -62,6 +69,25 @@ impl LanguageId {
             Self::TypeScript => "typescript",
             Self::TypeScriptTsx => "tsx",
             Self::Zig => "zig",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "bash" => Some(Self::Bash),
+            "c" => Some(Self::C),
+            "cpp" => Some(Self::Cpp),
+            "go" => Some(Self::Go),
+            "javascript" => Some(Self::JavaScript),
+            "json" => Some(Self::Json),
+            "nix" => Some(Self::Nix),
+            "python" => Some(Self::Python),
+            "rust" => Some(Self::Rust),
+            "toml" => Some(Self::Toml),
+            "typescript" => Some(Self::TypeScript),
+            "tsx" => Some(Self::TypeScriptTsx),
+            "zig" => Some(Self::Zig),
+            _ => None,
         }
     }
 }

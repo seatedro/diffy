@@ -13,6 +13,10 @@ git_diff_output.txt
 .agents/
 .claude/
 .codex
+.secrets/
+.phosphor-index/
+.phosphor-pack-out/
+.phosphor-pack-work/
 vendor/grammars/*/src/
 skills-lock.json
 

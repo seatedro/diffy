@@ -12,7 +12,7 @@ use crate::actions::Action;
 use crate::core::compare::{CompareMode, CompareOutput, CompareSpec, LayoutMode, RendererKind};
 use crate::core::diff::FileDiff;
 use crate::core::frecency::FrecencyStore;
-use crate::core::syntax::DiffSyntaxAnnotator;
+use crate::core::syntax::{DiffSyntaxAnnotator, Highlighter};
 use crate::core::text::{TextBuffer, TokenBuffer};
 use crate::core::vcs::git::patch;
 use crate::core::vcs::git::{
@@ -324,6 +324,15 @@ fn refs_for_status_scope(scope: StatusScope) -> (String, String) {
         StatusScope::Staged => ("HEAD".to_owned(), INDEX_REF.to_owned()),
         StatusScope::Unstaged => (INDEX_REF.to_owned(), WORKDIR_REF.to_owned()),
         StatusScope::Untracked => (String::new(), WORKDIR_REF.to_owned()),
+    }
+}
+
+fn clear_syntax_tokens(file: &mut FileDiff) {
+    file.syntax_annotated = false;
+    for hunk in &mut file.hunks {
+        for line in &mut hunk.lines {
+            line.syntax_tokens = Default::default();
+        }
     }
 }
 
@@ -1307,6 +1316,7 @@ impl AppState {
             effects.push(Effect::FetchAvatar { url });
         }
 
+        effects.push(Effect::InstallCommonSyntaxPacks);
         effects.push(Effect::LoadAiKeys);
         (state, effects)
     }
@@ -2901,6 +2911,9 @@ impl AppState {
                 self.push_error(&message);
                 Vec::new()
             }
+            AppEvent::SyntaxPackInstalled { language } => {
+                self.handle_syntax_pack_installed(&language)
+            }
             AppEvent::FetchProgress {
                 toast_id,
                 received_objects,
@@ -3729,6 +3742,45 @@ impl AppState {
 
         self.install_compare_active_file(payload.index, payload.path, payload.prepared);
         Vec::new()
+    }
+
+    fn handle_syntax_pack_installed(&mut self, language: &str) -> Vec<Effect> {
+        let Some(path) = self.workspace.selected_file_path.get(&self.store) else {
+            return Vec::new();
+        };
+        let matches_language = Highlighter::new()
+            .resolve_language(&path)
+            .is_some_and(|resolved| resolved.name() == language);
+        if !matches_language {
+            return Vec::new();
+        }
+
+        match self.workspace.source.get(&self.store) {
+            WorkspaceSource::Compare => {
+                let Some(index) = self.workspace.selected_file_index.get(&self.store) else {
+                    return Vec::new();
+                };
+                self.workspace
+                    .compare_output
+                    .update(&self.store, |maybe_output| {
+                        if let Some(file) = maybe_output
+                            .as_mut()
+                            .and_then(|output| output.files.get_mut(index))
+                        {
+                            clear_syntax_tokens(file);
+                        }
+                    });
+                self.select_loaded_compare_file(index, false);
+                Vec::new()
+            }
+            WorkspaceSource::Status => {
+                let Some(index) = self.workspace.selected_file_index.get(&self.store) else {
+                    return Vec::new();
+                };
+                self.select_status_item(index, false)
+            }
+            WorkspaceSource::None => Vec::new(),
+        }
     }
 
     fn activate_status_view(&mut self, reset_scroll: bool) -> Vec<Effect> {
@@ -5642,7 +5694,7 @@ impl AppState {
 
         if !self.compare_file_is_large(index) {
             self.select_loaded_compare_file(index, reveal);
-            return Vec::new();
+            return vec![Effect::EnsureSyntaxPackForPath { path: entry.path }];
         }
 
         let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
@@ -5671,21 +5723,26 @@ impl AppState {
             self.reveal_file_list_row(index);
         }
 
-        vec![Effect::LoadCompareFile {
-            generation: self.workspace.compare_generation.get(&self.store),
-            request: CompareFileRequest {
-                repo_path,
-                spec: CompareSpec {
-                    mode: self.compare.mode.get(&self.store),
-                    left_ref: self.compare.left_ref.get(&self.store),
-                    right_ref: self.compare.right_ref.get(&self.store),
-                    renderer: self.compare.renderer.get(&self.store),
-                    layout: self.compare.layout.get(&self.store),
-                },
-                path: entry.path,
-                index,
+        vec![
+            Effect::EnsureSyntaxPackForPath {
+                path: entry.path.clone(),
             },
-        }]
+            Effect::LoadCompareFile {
+                generation: self.workspace.compare_generation.get(&self.store),
+                request: CompareFileRequest {
+                    repo_path,
+                    spec: CompareSpec {
+                        mode: self.compare.mode.get(&self.store),
+                        left_ref: self.compare.left_ref.get(&self.store),
+                        right_ref: self.compare.right_ref.get(&self.store),
+                        renderer: self.compare.renderer.get(&self.store),
+                        layout: self.compare.layout.get(&self.store),
+                    },
+                    path: entry.path,
+                    index,
+                },
+            },
+        ]
     }
 
     #[profiling::function]
@@ -5801,15 +5858,20 @@ impl AppState {
 
         let generation = self.workspace.status_generation.get(&self.store);
         let renderer = self.compare.renderer.get(&self.store);
-        vec![Effect::LoadStatusDiff {
-            generation,
-            index,
-            request: StatusDiffRequest {
-                repo_path,
-                item,
-                renderer,
+        vec![
+            Effect::EnsureSyntaxPackForPath {
+                path: item.path.clone(),
             },
-        }]
+            Effect::LoadStatusDiff {
+                generation,
+                index,
+                request: StatusDiffRequest {
+                    repo_path,
+                    item,
+                    renderer,
+                },
+            },
+        ]
     }
 
     fn apply_selected_status_operation(&mut self, operation: StatusOperation) -> Vec<Effect> {
@@ -7145,11 +7207,10 @@ mod tests {
             state.focus.get(&state.store),
             Some(FocusTarget::WorkspacePrimaryButton)
         );
-        assert!(
-            effects
-                .iter()
-                .all(|e| matches!(e, Effect::LoadGitHubToken | Effect::LoadAiKeys))
-        );
+        assert!(effects.iter().all(|e| matches!(
+            e,
+            Effect::LoadGitHubToken | Effect::LoadAiKeys | Effect::InstallCommonSyntaxPacks
+        )));
     }
 
     #[test]
@@ -7354,12 +7415,6 @@ mod tests {
         let previous_tokens = state.workspace.compare_output.with(&state.store, |co| {
             let output = co.as_ref().expect("compare output");
             assert!(output.files[0].syntax_annotated);
-            assert!(
-                !output
-                    .token_buffer
-                    .view(output.files[0].hunks[0].lines[0].syntax_tokens)
-                    .is_empty()
-            );
             output.files[0].hunks[0].lines[0].syntax_tokens
         });
         state.apply_action(Action::SelectFile(0));
@@ -7490,7 +7545,10 @@ mod tests {
 
         let effects = state.apply_action(Action::SelectFile(0));
 
-        assert!(effects.is_empty());
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::EnsureSyntaxPackForPath { path }] if path == "src/lib.rs"
+        ));
         assert!(
             state
                 .workspace
@@ -7539,8 +7597,11 @@ mod tests {
 
         assert!(matches!(
             effects.as_slice(),
-            [Effect::LoadCompareFile { request, .. }]
-                if request.index == 0 && request.path == "src/big.rs"
+            [
+                Effect::EnsureSyntaxPackForPath { path },
+                Effect::LoadCompareFile { request, .. }
+            ]
+                if path == "src/big.rs" && request.index == 0 && request.path == "src/big.rs"
         ));
         assert_eq!(
             state.workspace.active_file_loading.get(&state.store),

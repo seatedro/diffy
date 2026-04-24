@@ -18,10 +18,4 @@ pub enum DiffyError {
     General(String),
 }
 
-impl From<ureq::Error> for DiffyError {
-    fn from(value: ureq::Error) -> Self {
-        Self::Http(value.to_string())
-    }
-}
-
 pub type Result<T> = std::result::Result<T, DiffyError>;

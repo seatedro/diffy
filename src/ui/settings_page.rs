@@ -2,6 +2,7 @@ use halogen::view;
 
 use crate::actions::Action;
 use crate::ai::stream::{ANTHROPIC_MODEL, OPENAI_MODEL};
+use crate::core::compare::backends::DifftasticBackend;
 use crate::core::compare::{LayoutMode, RendererKind};
 use crate::platform::secrets::AiKeyKind;
 use crate::ui::components::{
@@ -232,19 +233,25 @@ fn editor_section(state: &AppState, theme: &Theme) -> AnyElement {
     ])
     .into_any();
 
-    let renderer_control = SegmentedControl::new(vec![
-        SegmentedItem::new(
-            "Git",
-            Action::SetRenderer(RendererKind::Builtin),
-            renderer == RendererKind::Builtin,
-        ),
-        SegmentedItem::new(
+    let mut renderer_items = vec![SegmentedItem::new(
+        "Git",
+        Action::SetRenderer(RendererKind::Builtin),
+        renderer == RendererKind::Builtin,
+    )];
+    if DifftasticBackend::is_available() {
+        renderer_items.push(SegmentedItem::new(
             "Difftastic",
             Action::SetRenderer(RendererKind::Difftastic),
             renderer == RendererKind::Difftastic,
-        ),
-    ])
-    .into_any();
+        ));
+    }
+    let renderer_control = SegmentedControl::new(renderer_items).into_any();
+
+    let renderer_description = if DifftasticBackend::is_available() {
+        "Git's line-based diff or Difftastic's syntax-aware diff."
+    } else {
+        "Git's line-based diff."
+    };
 
     section_card(
         theme,
@@ -252,7 +259,7 @@ fn editor_section(state: &AppState, theme: &Theme) -> AnyElement {
             setting_row(
                 theme,
                 "Diff algorithm",
-                "Git's line-based diff or Difftastic's syntax-aware diff.",
+                renderer_description,
                 renderer_control,
             ),
             setting_row(

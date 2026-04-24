@@ -151,6 +151,10 @@ pub enum Effect {
     },
     SetClipboard(String),
     FetchContextLines(FetchContextLinesRequest),
+    InstallCommonSyntaxPacks,
+    EnsureSyntaxPackForPath {
+        path: String,
+    },
     LoadAiKeys,
     SaveAiKey {
         kind: AiKeyKind,

@@ -7,6 +7,7 @@ use crate::apprt::runtime::RuntimeEventSender;
 use crate::core::compare::backends::{DifftasticBackend, GitDiffBackend};
 use crate::core::compare::{CompareOutput, CompareService, RendererKind};
 use crate::core::error::{DiffyError, Result};
+use crate::core::http;
 use crate::core::vcs::git::{GitService, WORKDIR_REF};
 use crate::core::vcs::github::{
     DeviceFlowState, GitHubApi, GitHubUser, PullRequestInfo, parse_pr_url, poll_for_token,
@@ -67,11 +68,16 @@ impl AppServices {
     ) -> Result<StatusDiffFinished> {
         let mut git = GitService::new();
         git.open(request.repo_path.to_string_lossy().as_ref())?;
-        let output: CompareOutput = match request.renderer {
+        let mut output: CompareOutput = match request.renderer {
             RendererKind::Builtin => git.diff_status_item(&request.item)?,
-            RendererKind::Difftastic => crate::core::compare::backends::DifftasticBackend
-                .compare_status_item(&request.item, &git)?,
+            RendererKind::Difftastic if DifftasticBackend::is_available() => {
+                compare_status_item_with_difftastic(&request.item, &git)?
+            }
+            RendererKind::Difftastic => git.diff_status_item(&request.item)?,
         };
+        if request.renderer == RendererKind::Difftastic && !DifftasticBackend::is_available() {
+            mark_difftastic_fallback(&mut output);
+        }
 
         Ok(StatusDiffFinished {
             generation,
@@ -92,10 +98,16 @@ impl AppServices {
             RendererKind::Builtin => GitDiffBackend
                 .compare_path(&request.spec, &request.path, &git)?
                 .ok_or_else(|| DiffyError::General("compare file returned no result".to_owned()))?,
-            RendererKind::Difftastic => DifftasticBackend
+            RendererKind::Difftastic if DifftasticBackend::is_available() => DifftasticBackend
+                .compare_path(&request.spec, &request.path, &git)?
+                .ok_or_else(|| DiffyError::General("compare file returned no result".to_owned()))?,
+            RendererKind::Difftastic => GitDiffBackend
                 .compare_path(&request.spec, &request.path, &git)?
                 .ok_or_else(|| DiffyError::General("compare file returned no result".to_owned()))?,
         };
+        if request.spec.renderer == RendererKind::Difftastic && !DifftasticBackend::is_available() {
+            mark_difftastic_fallback(&mut output);
+        }
 
         let Some(mut file) = output.files.pop() else {
             return Err(DiffyError::General(
@@ -202,12 +214,15 @@ impl AppServices {
     }
 
     pub fn fetch_avatar(&self, url: &str) -> Result<(Vec<u8>, u32, u32)> {
-        let bytes = ureq::get(url)
-            .header("User-Agent", "diffy/0.1")
-            .call()?
-            .into_body()
-            .read_to_vec()
-            .map_err(|error| DiffyError::Http(error.to_string()))?;
+        let bytes = http::block_on(async {
+            let response = reqwest::Client::new()
+                .get(url)
+                .header("User-Agent", "diffy/0.1")
+                .send()
+                .await
+                .map_err(|error| DiffyError::Http(format!("avatar fetch failed: {error}")))?;
+            http::response_bytes(response, "avatar fetch").await
+        })?;
         let img = image::load_from_memory(&bytes)
             .map_err(|error| DiffyError::Parse(format!("avatar decode failed: {error}")))?
             .to_rgba8();
@@ -254,6 +269,35 @@ impl AppServices {
         let mut git = GitService::new();
         git.open(request.repo_path.to_string_lossy().as_ref())?;
         git.read_file_lines_at(&request.reference, &request.path)
+    }
+
+    pub fn install_common_syntax_packs(&self) -> Result<Vec<String>> {
+        let installer = phosphor::PackInstaller::new()
+            .map_err(|error| DiffyError::General(error.to_string()))?;
+        http::block_on(async {
+            installer
+                .install_common_packs()
+                .await
+                .map(|languages| {
+                    languages
+                        .into_iter()
+                        .map(|language| language.name().to_owned())
+                        .collect()
+                })
+                .map_err(|error| DiffyError::General(error.to_string()))
+        })
+    }
+
+    pub fn ensure_syntax_pack_for_path(&self, path: &str) -> Result<Option<String>> {
+        let installer = phosphor::PackInstaller::new()
+            .map_err(|error| DiffyError::General(error.to_string()))?;
+        http::block_on(async {
+            installer
+                .ensure_pack_for_path(Path::new(path))
+                .await
+                .map(|language| language.map(|language| language.name().to_owned()))
+                .map_err(|error| DiffyError::General(error.to_string()))
+        })
     }
 
     pub fn open_browser(&self, url: &str) -> Result<()> {
@@ -360,13 +404,34 @@ impl AppServices {
                     tracing::error!(generation, "ai: worker channel disconnected");
                     event_sender.send(AppEvent::CommitMessageGenerationFailed {
                         generation,
-                        message: "llm worker exited unexpectedly".to_owned(),
+                        message: "AI worker exited unexpectedly".to_owned(),
                     });
                     return;
                 }
             }
         }
     }
+}
+
+#[cfg(feature = "difftastic")]
+fn compare_status_item_with_difftastic(
+    item: &crate::core::vcs::git::StatusItem,
+    git: &GitService,
+) -> Result<CompareOutput> {
+    DifftasticBackend.compare_status_item(item, git)
+}
+
+#[cfg(not(feature = "difftastic"))]
+fn compare_status_item_with_difftastic(
+    _item: &crate::core::vcs::git::StatusItem,
+    _git: &GitService,
+) -> Result<CompareOutput> {
+    unreachable!("difftastic status compare is gated by DifftasticBackend::is_available()")
+}
+
+fn mark_difftastic_fallback(output: &mut CompareOutput) {
+    output.used_fallback = true;
+    output.fallback_message = "difftastic not compiled in, used built-in backend".to_owned();
 }
 
 pub fn load_ai_keys() -> Result<(Option<String>, Option<String>)> {

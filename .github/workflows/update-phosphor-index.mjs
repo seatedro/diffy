@@ -306,10 +306,12 @@ async function buildPack(packLanguage, registryEntry, registryRevision, workDir,
   const highlightsSource = await findQueryFile(queryRepoDir, "highlights.scm");
   const injectionsSource = await findOptionalQueryFile(queryRepoDir, "injections.scm");
   const packDir = path.join(packRoot, packLanguage.language, version);
+  const buildDir = path.join(languageWorkDir, "build");
   await mkdir(packDir, { recursive: true });
+  await mkdir(buildDir, { recursive: true });
 
   const parserPath = parserFileName();
-  await compileParser(parserDir, path.join(packDir, parserPath));
+  await compileParser(parserDir, path.join(packDir, parserPath), buildDir);
 
   const highlightsPath = "highlights.scm";
   await cp(highlightsSource, path.join(packDir, highlightsPath));
@@ -402,7 +404,7 @@ async function gitRevParse(cwd) {
   return (await run("git", ["rev-parse", "HEAD"], { cwd })).stdout.trim();
 }
 
-async function compileParser(parserDir, outputPath) {
+async function compileParser(parserDir, outputPath, buildDir) {
   const srcDir = path.join(parserDir, "src");
   const sources = [
     path.join(srcDir, "parser.c"),
@@ -432,7 +434,7 @@ async function compileParser(parserDir, outputPath) {
   const arch = platform === "macos-x86_64" ? "x86_64" : "arm64";
   const objects = [];
   for (const [index, source] of sources.entries()) {
-    const objectPath = `${outputPath}.${index}.o`;
+    const objectPath = path.join(buildDir, `${path.basename(outputPath)}.${index}.o`);
     const sourceCompiler = source.endsWith(".cc") ? "clang++" : "clang";
     await run(sourceCompiler, [
       "-O2",

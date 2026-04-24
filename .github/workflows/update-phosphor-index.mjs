@@ -451,10 +451,13 @@ async function compileParser(parserDir, outputPath, buildDir) {
       "/LD",
       "/O2",
       `/I${srcDir}`,
+      `/Fo:${buildDir}${path.sep}`,
       `/Fe:${outputPath}`,
       ...sources,
       "/link",
       "/NOLOGO",
+      `/IMPLIB:${path.join(buildDir, "parser.lib")}`,
+      `/PDB:${path.join(buildDir, "parser.pdb")}`,
     ]);
     return;
   }

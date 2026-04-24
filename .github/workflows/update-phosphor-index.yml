@@ -40,7 +40,6 @@ jobs:
             os: windows-2025
 
     runs-on: ${{ matrix.os }}
-    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.platform
     timeout-minutes: 360
     env:
       PHOSPHOR_PACK_BASE_URL: https://blob.diffygui.com/phosphor-packs
@@ -50,29 +49,35 @@ jobs:
       PHOSPHOR_TREE_SITTER_CLI_VERSION: 0.26.8
     steps:
       - uses: actions/checkout@v4
+        if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.platform
 
       - uses: actions/setup-node@v4
+        if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.platform
         with:
           node-version: "22"
 
       - name: Install tree-sitter CLI
+        if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.platform
         run: npm install --global "tree-sitter-cli@${{ env.PHOSPHOR_TREE_SITTER_CLI_VERSION }}"
 
       - uses: ilammy/msvc-dev-cmd@v1
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && (github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.platform)
 
       - name: Generate index
+        if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.platform
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node .github/workflows/update-phosphor-index.mjs
 
       - name: Sign index
+        if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.platform
         env:
           PHOSPHOR_SIGN_INDEX_ONLY: "1"
           PHOSPHOR_PACK_INDEX_PRIVATE_KEY: ${{ secrets.PHOSPHOR_PACK_INDEX_PRIVATE_KEY }}
         run: node .github/workflows/update-phosphor-index.mjs
 
       - name: Upload packs to R2
+        if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.platform
         shell: bash
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}

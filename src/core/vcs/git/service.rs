@@ -1077,6 +1077,16 @@ mod tests {
     use crate::core::vcs::git::{GitService, StatusItem, StatusOperation, StatusScope};
 
     fn commit_file(repo: &Repository, relative_path: &str, content: &str, message: &str) -> String {
+        // Pin `core.autocrlf=false` on the test repo so LF content written
+        // from these tests survives index → workdir round-trips unchanged.
+        // On Windows, the default global `core.autocrlf=true` causes git to
+        // normalize LF in the index but emit CRLF on checkout, which breaks
+        // byte-exact assertions in the Discard path. Idempotent: safe to
+        // call once per commit_file invocation.
+        repo.config()
+            .and_then(|mut cfg| cfg.set_bool("core.autocrlf", false))
+            .expect("disable autocrlf on test repo");
+
         let workdir = repo.workdir().expect("repo workdir");
         let full_path = workdir.join(relative_path);
         if let Some(parent) = full_path.parent() {

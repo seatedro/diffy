@@ -44,7 +44,12 @@ impl DifftasticBackend {
 
 #[cfg(not(feature = "difftastic"))]
 impl DiffBackend for DifftasticBackend {
-    fn compare(&self, _spec: &CompareSpec, _git: &GitService) -> Result<Option<CompareOutput>> {
+    fn compare(
+        &self,
+        _spec: &CompareSpec,
+        _git: &GitService,
+        _reporter: Option<&dyn ProgressSink>,
+    ) -> Result<Option<CompareOutput>> {
         Ok(None)
     }
 }

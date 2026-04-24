@@ -51,8 +51,8 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
     });
     let syntax_pack_child = state
         .syntax_pack_installs
-        .with(&state.store, |active| active.last().cloned())
-        .map(|language| syntax_pack_chip(&language, state.clock_ms, theme, scale));
+        .with(&state.store, |active| !active.is_empty())
+        .then(|| syntax_pack_status(state.clock_ms, theme, scale));
 
     let right_text = match state.workspace.source.get(&state.store) {
         WorkspaceSource::Status => state
@@ -80,28 +80,24 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
                 {?branch_children}
             </div>
             <spacer />
-            <div class="flex-row items-center" gap={Sp::SM}>
-                {?syntax_pack_child}
+            <div class="flex-row shrink-0 items-center" gap={Sp::MD}>
                 {?hunk_child}
+                <text class="text-xs" color={tc.text_muted}>{right_text}</text>
+                {?syntax_pack_child}
             </div>
-            <spacer />
-            <text class="text-xs" color={tc.text_muted}>{right_text}</text>
         </div>
     }
 }
 
-fn syntax_pack_chip(language: &str, clock_ms: u64, theme: &Theme, scale: f32) -> AnyElement {
+fn syntax_pack_status(clock_ms: u64, theme: &Theme, scale: f32) -> AnyElement {
     let tc = &theme.colors;
     view! { scale,
-        <div class="flex-row items-center"
+        <div class="flex-row shrink-0 items-center"
              gap={Sp::XS}
              px={Sp::SM}
-             py={2.0}
-             max_w={220.0}
-             rounded={Rad::SM}
-             bg={tc.element_background}>
+             py={2.0}>
             {circular_loader(clock_ms, tc.accent)}
-            <text class="text-xs truncate" color={tc.text_muted}>{format!("Installing syntax: {language}")}</text>
+            <text class="text-xs" color={tc.text_muted}>{"Installing Tree-sitter languages"}</text>
         </div>
     }
     .into_any()

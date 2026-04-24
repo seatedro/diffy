@@ -4,7 +4,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/seatedro/diffy/master/scripts/install.sh | bash
 #
 # Flags (env or args):
-#   --version v0.1.0      install a specific tag (default: latest)
+#   --version v1.2.3      install a specific tag (default: latest)
 #   --prefix /path        install root (default: /Applications on macOS,
 #                         $XDG_DATA_HOME/diffy or ~/.local/share/diffy on Linux)
 #   --no-path             skip PATH hint on Linux
@@ -98,8 +98,8 @@ if [[ -z "$VERSION" ]]; then
   [[ -n "$VERSION" ]] || error "could not determine latest release tag"
 fi
 NUMERIC_VERSION="${VERSION#v}"
-# cargo-packager uses the Packager.toml version in asset filenames, not
-# the git tag — strip any prerelease suffix ("0.1.0-rc.5" → "0.1.0").
+# cargo-packager uses the Cargo.toml package version in asset filenames, not
+# the git tag; strip any prerelease suffix ("1.2.3-rc.5" -> "1.2.3").
 PACKAGE_VERSION="${NUMERIC_VERSION%%-*}"
 
 # Linux asset names use arch strings that differ from darwin.

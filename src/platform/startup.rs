@@ -8,7 +8,7 @@ use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 const DEFAULT_GITHUB_CLIENT_ID: &str = "Ov23lijXMwtY1XmHedUM";
 
 #[derive(Debug, Clone, Parser, PartialEq, Eq)]
-#[command(name = "diffy", about = "Native desktop diff viewer")]
+#[command(name = "diffy", version = crate::APP_VERSION, about = "Native desktop diff viewer")]
 pub struct Args {
     #[arg(long, value_name = "PATH")]
     pub repo: Option<PathBuf>,

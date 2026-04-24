@@ -2,15 +2,52 @@
 members = [".", "crates/halogen", "crates/halogen-macros", "crates/phosphor"]
 exclude = ["crates/difftastic"]
 
+[workspace.package]
+version = "0.1.1"
+
 [package]
 name = "diffy"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 rust-version = "1.92"
 description = "A native GPU-accelerated Git diff viewer built in Rust."
 license = "GPL-3.0-only"
 repository = "https://github.com/seatedro/diffy"
 homepage = "https://github.com/seatedro/diffy"
+
+[package.metadata.packager]
+product-name = "Diffy"
+identifier = "io.github.seatedro.diffy"
+publisher = "seatedro"
+out-dir = "dist/packages"
+binaries-dir = "target/release"
+before-packaging-command = "bash scripts/prepare-macos-icon-assets.sh && cargo build --release"
+icons = [
+  "assets/packaging/macos/generated/*.icns",
+  "assets/packaging/diffy.ico",
+  "assets/packaging/png/*.png",
+]
+resources = [
+  "LICENSE",
+  "assets/packaging/macos/generated/Assets.car*",
+]
+
+[[package.metadata.packager.binaries]]
+main = true
+path = "diffy"
+
+[package.metadata.packager.macos]
+info-plist-path = "assets/packaging/macos/generated/Info.plist"
+
+[package.metadata.packager.windows]
+allow-downgrades = false
+
+[package.metadata.packager.linux]
+generate-desktop-entry = true
+
+[package.metadata.packager.nsis]
+installer-mode = "currentUser"
+appdata-paths = ["$LOCALAPPDATA/$PUBLISHER/$PRODUCTNAME"]
 
 [features]
 hot-reload = ["dep:tungstenite", "dep:subsecond"]

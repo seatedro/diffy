@@ -519,7 +519,7 @@ fn ai_key_row(
 fn about_section(theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
-    let version = env!("CARGO_PKG_VERSION");
+    let version = crate::APP_VERSION;
 
     section_card(
         theme,

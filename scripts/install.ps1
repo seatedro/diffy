@@ -4,7 +4,7 @@
 #   powershell -c "irm https://raw.githubusercontent.com/seatedro/diffy/master/scripts/install.ps1 | iex"
 #
 # Parameters:
-#   -Version v0.1.0     install a specific tag (default: latest)
+#   -Version v1.2.3     install a specific tag (default: latest)
 #   -Silent             run the NSIS installer in silent mode
 
 param(
@@ -49,8 +49,8 @@ if ($Version -eq "latest") {
 
 if ($Version -notmatch '^v\d') { $Version = "v$Version" }
 $NumericVersion = $Version.TrimStart('v')
-# cargo-packager uses the Packager.toml version in asset filenames, not
-# the git tag — strip any prerelease suffix ("0.1.0-rc.5" → "0.1.0").
+# cargo-packager uses the Cargo.toml package version in asset filenames, not
+# the git tag; strip any prerelease suffix ("1.2.3-rc.5" -> "1.2.3").
 $PackageVersion = $NumericVersion -replace '-.*$',''
 
 $AssetName = "diffy_${PackageVersion}_${Target}-setup.exe"

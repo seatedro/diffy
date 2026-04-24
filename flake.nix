@@ -9,6 +9,7 @@
       supportedSystems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
       pkgsFor = system: import nixpkgs { inherit system; };
+      cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
       mkDevCommand = pkgs: pkgs.writeShellScriptBin "dev" ''
         set -euo pipefail
         repo_root="''${DIFFY_REPO_ROOT:-$PWD}"
@@ -28,7 +29,7 @@
         {
           default = pkgs.rustPlatform.buildRustPackage {
             pname = "diffy";
-            version = "0.1.0";
+            version = cargoToml.workspace.package.version;
             src = self;
             cargoLock = {
               lockFile = ./Cargo.lock;

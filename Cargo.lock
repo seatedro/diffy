@@ -989,7 +989,7 @@ dependencies = [
 
 [[package]]
 name = "diffy"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arboard",
  "bytemuck",
@@ -1646,7 +1646,7 @@ dependencies = [
 
 [[package]]
 name = "halogen"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "halogen-macros",
  "serde",
@@ -1655,7 +1655,7 @@ dependencies = [
 
 [[package]]
 name = "halogen-macros"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3227,7 +3227,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dirs",
  "libloading",

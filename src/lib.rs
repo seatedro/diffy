@@ -1,5 +1,7 @@
 #![recursion_limit = "4096"]
 
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub mod actions;
 pub mod ai;
 pub mod apprt;

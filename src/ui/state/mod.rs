@@ -15,7 +15,7 @@ use crate::core::frecency::FrecencyStore;
 use crate::core::syntax::Highlighter;
 use crate::core::syntax::annotator::{SyntaxLineTokens, SyntaxRowWindow};
 use crate::core::text::{TextBuffer, TokenBuffer};
-use crate::core::update::AvailableUpdate;
+use crate::core::update::{AvailableUpdate, StagedUpdate};
 use crate::core::vcs::git::patch;
 use crate::core::vcs::git::{
     BranchInfo, CommitInfo, StatusItem, StatusOperation, StatusScope, TagInfo,
@@ -1144,7 +1144,9 @@ pub enum UpdateState {
     Idle,
     Checking,
     Available(AvailableUpdate),
-    Installing(AvailableUpdate),
+    Downloading(AvailableUpdate),
+    ReadyToRestart(StagedUpdate),
+    Restarting(StagedUpdate),
     Failed(String),
 }
 
@@ -1495,7 +1497,7 @@ impl AppState {
 
         effects.push(Effect::InstallCommonSyntaxPacks);
         effects.push(Effect::LoadAiKeys);
-        if crate::core::update::updates_configured() && !cfg!(debug_assertions) {
+        if state.update_polling_enabled() {
             effects.push(Effect::CheckForUpdates { silent: true });
         }
         (state, effects)
@@ -1647,8 +1649,10 @@ impl AppState {
             | SetWheelScrollLines(_)
             | OpenSettings
             | CloseSettings
+            | ToggleAutoUpdate
             | CheckForUpdates
             | InstallUpdate
+            | RestartToUpdate
             | SetSettingsSection(_) => self.apply_settings_action(action),
 
             // GitHub
@@ -2682,6 +2686,14 @@ impl AppState {
                 self.app_view.set(&self.store, AppView::Workspace);
                 Vec::new()
             }
+            Action::ToggleAutoUpdate => {
+                self.settings.auto_update = !self.settings.auto_update;
+                let mut effects = vec![Effect::SaveSettings(self.settings.clone())];
+                if self.update_polling_enabled() {
+                    effects.push(Effect::CheckForUpdates { silent: true });
+                }
+                effects
+            }
             Action::CheckForUpdates => {
                 self.update.set(&self.store, UpdateState::Checking);
                 vec![Effect::CheckForUpdates { silent: false }]
@@ -2690,8 +2702,21 @@ impl AppState {
                 let update = self.update.get(&self.store);
                 if let UpdateState::Available(update) = update {
                     self.update
-                        .set(&self.store, UpdateState::Installing(update.clone()));
-                    vec![Effect::InstallUpdate(update)]
+                        .set(&self.store, UpdateState::Downloading(update.clone()));
+                    vec![Effect::StageUpdate {
+                        update,
+                        silent: false,
+                    }]
+                } else {
+                    Vec::new()
+                }
+            }
+            Action::RestartToUpdate => {
+                let update = self.update.get(&self.store);
+                if let UpdateState::ReadyToRestart(staged) = update {
+                    self.update
+                        .set(&self.store, UpdateState::Restarting(staged.clone()));
+                    vec![Effect::ApplyStagedUpdate(staged)]
                 } else {
                     Vec::new()
                 }
@@ -3151,11 +3176,13 @@ impl AppState {
                 self.push_error(&message);
                 Vec::new()
             }
-            AppEvent::UpdateAvailable(update) => {
+            AppEvent::UpdateAvailable { update, silent } => {
                 self.update
-                    .set(&self.store, UpdateState::Available(update.clone()));
-                self.push_info(&format!("Diffy {} is available.", update.version));
-                Vec::new()
+                    .set(&self.store, UpdateState::Downloading(update.clone()));
+                if !silent {
+                    self.push_info(&format!("Downloading Diffy {}.", update.version));
+                }
+                vec![Effect::StageUpdate { update, silent }]
             }
             AppEvent::UpdateNotAvailable { silent } => {
                 self.update.set(&self.store, UpdateState::Idle);
@@ -3172,14 +3199,23 @@ impl AppState {
                 }
                 Vec::new()
             }
-            AppEvent::UpdateInstallStarted => {
-                self.push_info("Installing update. Diffy will restart.");
+            AppEvent::UpdateStaged { staged, silent } => {
+                let version = staged.update.version.clone();
+                self.update
+                    .set(&self.store, UpdateState::ReadyToRestart(staged));
+                if !silent {
+                    self.push_info(&format!("Diffy {version} is ready. Restart to update."));
+                }
                 Vec::new()
             }
-            AppEvent::UpdateInstallFailed { message } => {
-                self.update
-                    .set(&self.store, UpdateState::Failed(message.clone()));
-                self.push_error(&message);
+            AppEvent::UpdateInstallFailed { message, silent } => {
+                if silent {
+                    self.update.set(&self.store, UpdateState::Idle);
+                } else {
+                    self.update
+                        .set(&self.store, UpdateState::Failed(message.clone()));
+                    self.push_error(&message);
+                }
                 Vec::new()
             }
             AppEvent::BrowserOpenFailed { message } => {
@@ -3403,6 +3439,18 @@ impl AppState {
                     || now_ms.saturating_sub(toast.created_at_ms) < TOAST_LIFETIME_MS
             });
         });
+    }
+
+    pub fn update_polling_enabled(&self) -> bool {
+        self.settings.auto_update
+            && crate::core::update::updates_configured()
+            && !cfg!(debug_assertions)
+            && !matches!(
+                self.update.get(&self.store),
+                UpdateState::Downloading(_)
+                    | UpdateState::ReadyToRestart(_)
+                    | UpdateState::Restarting(_)
+            )
     }
 
     pub fn cursor_blink_epoch(&self) -> Option<u64> {

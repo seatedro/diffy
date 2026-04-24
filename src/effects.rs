@@ -4,7 +4,7 @@ use crate::ai::Provider;
 use crate::core::compare::{CompareSpec, RendererKind};
 use crate::core::diff::FileDiff;
 use crate::core::syntax::annotator::SyntaxRowWindow;
-use crate::core::update::AvailableUpdate;
+use crate::core::update::{AvailableUpdate, StagedUpdate};
 use crate::core::vcs::git::status::StatusScope;
 use crate::core::vcs::git::{StatusItem, StatusOperation};
 use crate::events::RepositorySyncReason;
@@ -174,7 +174,11 @@ pub enum Effect {
     CheckForUpdates {
         silent: bool,
     },
-    InstallUpdate(AvailableUpdate),
+    StageUpdate {
+        update: AvailableUpdate,
+        silent: bool,
+    },
+    ApplyStagedUpdate(StagedUpdate),
     OpenBrowser {
         url: String,
     },

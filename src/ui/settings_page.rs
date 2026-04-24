@@ -525,6 +525,9 @@ fn about_section(state: &AppState, theme: &Theme) -> AnyElement {
     let scale = theme.metrics.ui_scale();
     let version = crate::APP_VERSION;
     let update_state = state.update.get(&state.store);
+    let auto_update_toggle = toggle(state.settings.auto_update)
+        .on_toggle(Action::ToggleAutoUpdate)
+        .into_any();
 
     let update_control = match &update_state {
         UpdateState::Checking => Button::new(Action::Noop)
@@ -539,9 +542,21 @@ fn about_section(state: &AppState, theme: &Theme) -> AnyElement {
             .style(ButtonStyle::Filled)
             .size(ButtonSize::Default)
             .into_any(),
-        UpdateState::Installing(_) => Button::new(Action::Noop)
+        UpdateState::Downloading(_) => Button::new(Action::Noop)
             .icon(lucide::ARROW_DOWN)
-            .label("Installing")
+            .label("Downloading")
+            .style(ButtonStyle::Subtle)
+            .size(ButtonSize::Default)
+            .into_any(),
+        UpdateState::ReadyToRestart(update) => Button::new(Action::RestartToUpdate)
+            .icon(lucide::REFRESH)
+            .label(format!("Restart to update {}", update.update.version))
+            .style(ButtonStyle::Filled)
+            .size(ButtonSize::Default)
+            .into_any(),
+        UpdateState::Restarting(_) => Button::new(Action::Noop)
+            .icon(lucide::REFRESH)
+            .label("Restarting")
             .style(ButtonStyle::Subtle)
             .size(ButtonSize::Default)
             .into_any(),
@@ -560,8 +575,17 @@ fn about_section(state: &AppState, theme: &Theme) -> AnyElement {
                 update.version, update.platform
             )
         }
-        UpdateState::Installing(update) => {
-            format!("Installing version {}. Diffy will restart.", update.version)
+        UpdateState::Downloading(update) => {
+            format!("Downloading and verifying version {}.", update.version)
+        }
+        UpdateState::ReadyToRestart(update) => {
+            format!(
+                "Version {} is ready. Restart to update.",
+                update.update.version
+            )
+        }
+        UpdateState::Restarting(update) => {
+            format!("Restarting to install version {}.", update.update.version)
         }
         UpdateState::Failed(message) => format!("Update failed: {message}"),
         _ => "Signed cross-platform updates from Diffy's release channel.".to_owned(),
@@ -582,6 +606,12 @@ fn about_section(state: &AppState, theme: &Theme) -> AnyElement {
                 </div>
             }
             .into_any(),
+            setting_row(
+                theme,
+                "Automatic updates",
+                "Check quietly every hour.",
+                auto_update_toggle,
+            ),
             setting_row(theme, "Updates", &update_description, update_control),
         ],
     )

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::core::compare::{CompareOutput, CompareSpec};
 use crate::core::syntax::annotator::{SyntaxLineTokens, SyntaxRowWindow};
-use crate::core::update::AvailableUpdate;
+use crate::core::update::{AvailableUpdate, StagedUpdate};
 use crate::core::vcs::git::{BranchInfo, CommitInfo, StatusItem, TagInfo};
 use crate::core::vcs::github::{DeviceFlowState, GitHubUser, PullRequestInfo};
 use crate::ui::state::{ComparePhase, PreparedActiveFile};
@@ -172,7 +172,10 @@ pub enum AppEvent {
     SettingsSaveFailed {
         message: String,
     },
-    UpdateAvailable(AvailableUpdate),
+    UpdateAvailable {
+        update: AvailableUpdate,
+        silent: bool,
+    },
     UpdateNotAvailable {
         silent: bool,
     },
@@ -180,9 +183,13 @@ pub enum AppEvent {
         message: String,
         silent: bool,
     },
-    UpdateInstallStarted,
+    UpdateStaged {
+        staged: StagedUpdate,
+        silent: bool,
+    },
     UpdateInstallFailed {
         message: String,
+        silent: bool,
     },
     BrowserOpenFailed {
         message: String,

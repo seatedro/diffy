@@ -67,6 +67,12 @@ pub struct AvailableUpdate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedUpdate {
+    pub update: AvailableUpdate,
+    pub artifact_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateCheck {
     Available(AvailableUpdate),
     NotAvailable,
@@ -107,15 +113,21 @@ pub fn updates_configured() -> bool {
             .unwrap_or(false)
 }
 
-pub fn download_and_install(update: &AvailableUpdate) -> Result<()> {
+pub fn download_and_stage(update: &AvailableUpdate) -> Result<StagedUpdate> {
     let tmp = tempfile::Builder::new().prefix("diffy-update.").tempdir()?;
     let artifact_path = tmp.path().join(artifact_file_name(update));
     download_file(&update.artifact.url, &artifact_path)?;
     verify_artifact_signature(&artifact_path, &update.artifact.signature)?;
     verify_sha256(&artifact_path, &update.artifact.sha256)?;
 
-    let persist_path = persist_update_artifact(&artifact_path)?;
-    launch_platform_installer(update, &persist_path)?;
+    Ok(StagedUpdate {
+        update: update.clone(),
+        artifact_path: persist_update_artifact(&artifact_path)?,
+    })
+}
+
+pub fn apply_staged_update(staged: &StagedUpdate) -> Result<()> {
+    launch_platform_installer(&staged.update, &staged.artifact_path)?;
     Ok(())
 }
 

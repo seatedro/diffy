@@ -312,8 +312,15 @@ impl AppServices {
         crate::core::update::check_for_update(current_version)
     }
 
-    pub fn install_update(&self, update: &crate::core::update::AvailableUpdate) -> Result<()> {
-        crate::core::update::download_and_install(update)
+    pub fn stage_update(
+        &self,
+        update: &crate::core::update::AvailableUpdate,
+    ) -> Result<crate::core::update::StagedUpdate> {
+        crate::core::update::download_and_stage(update)
+    }
+
+    pub fn apply_staged_update(&self, staged: &crate::core::update::StagedUpdate) -> Result<()> {
+        crate::core::update::apply_staged_update(staged)
     }
 
     pub fn peek_pull_request(

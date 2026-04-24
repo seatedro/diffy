@@ -3,13 +3,14 @@ use halogen::view;
 use crate::actions::Action;
 use crate::core::compare::CompareMode;
 use crate::ui::components::avatar::AvatarImage;
-use crate::ui::components::{Button, avatar};
+use crate::ui::components::{Button, ButtonSize, ButtonStyle, avatar};
 use crate::ui::design::{Ico, Rad, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
 use crate::ui::state::{
-    AppState, AsyncStatus, CompareField, OverlaySurface, WorkspaceMode, WorkspaceSource,
+    AppState, AsyncStatus, CompareField, OverlaySurface, UpdateState, WorkspaceMode,
+    WorkspaceSource,
 };
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme, ThemeColors};
@@ -163,9 +164,60 @@ pub(crate) fn title_bar(
                         <Label>{"Working tree"}</Label>
                     </Button>
                 }
+                if let Some(update_chip) = update_chip(state) {
+                    {update_chip}
+                }
                 {account_chip(auth_user.as_ref(), auth_avatar, auth_loading, tc, scale)}
             </div>
         </div>
+    }
+}
+
+fn update_chip(state: &AppState) -> Option<AnyElement> {
+    match state.update.get(&state.store) {
+        UpdateState::Available(update) => Some(
+            Button::new(Action::InstallUpdate)
+                .icon(lucide::ARROW_DOWN)
+                .label("Update")
+                .tooltip(format!("Install Diffy {}", update.version))
+                .style(ButtonStyle::Filled)
+                .size(ButtonSize::Compact)
+                .into_any(),
+        ),
+        UpdateState::Downloading(update) => Some(
+            Button::new(Action::Noop)
+                .icon(lucide::ARROW_DOWN)
+                .label("Updating")
+                .tooltip(format!("Downloading Diffy {}", update.version))
+                .style(ButtonStyle::Subtle)
+                .size(ButtonSize::Compact)
+                .into_any(),
+        ),
+        UpdateState::ReadyToRestart(update) => Some(
+            Button::new(Action::RestartToUpdate)
+                .icon(lucide::REFRESH)
+                .label("Restart")
+                .tooltip(format!(
+                    "Restart Diffy to update to {}",
+                    update.update.version
+                ))
+                .style(ButtonStyle::Filled)
+                .size(ButtonSize::Compact)
+                .into_any(),
+        ),
+        UpdateState::Restarting(update) => Some(
+            Button::new(Action::Noop)
+                .icon(lucide::REFRESH)
+                .label("Restarting")
+                .tooltip(format!(
+                    "Restarting to install Diffy {}",
+                    update.update.version
+                ))
+                .style(ButtonStyle::Subtle)
+                .size(ButtonSize::Compact)
+                .into_any(),
+        ),
+        _ => None,
     }
 }
 

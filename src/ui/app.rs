@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
@@ -22,6 +22,8 @@ use crate::ui::editor::element::EditorElement;
 use crate::ui::shell::{UiFrame, build_ui_frame};
 use crate::ui::state::{AppState, FocusTarget};
 use crate::ui::theme::Theme;
+
+const UPDATE_POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 pub fn run() -> Result<(), Box<dyn Error>> {
     let startup = StartupOptions::load();
@@ -73,6 +75,7 @@ struct NativeApp {
     editor: EditorElement,
     input: InputSystem,
     launch_at: Instant,
+    next_update_check_at: Option<Instant>,
     needs_redraw: bool,
     tooltip_state: TooltipState,
     #[cfg(feature = "hot-reload")]
@@ -87,6 +90,7 @@ impl NativeApp {
             &theme_registry,
         )
         .with_ui_scale(state.ui_scale_factor());
+        let update_polling_enabled = state.update_polling_enabled();
         Self {
             state,
             theme,
@@ -98,6 +102,8 @@ impl NativeApp {
             input: InputSystem::default(),
             editor: EditorElement::default(),
             launch_at: Instant::now(),
+            next_update_check_at: update_polling_enabled
+                .then(|| Instant::now() + UPDATE_POLL_INTERVAL),
             needs_redraw: true,
             tooltip_state: TooltipState::default(),
             #[cfg(feature = "hot-reload")]
@@ -255,6 +261,25 @@ impl NativeApp {
         self.refresh_window_title();
         self.sync_window_text_input();
         self.mark_dirty();
+    }
+
+    fn tick_update_polling(&mut self, now: Instant) {
+        if !self.state.update_polling_enabled() {
+            self.next_update_check_at = None;
+            return;
+        }
+
+        match self.next_update_check_at {
+            Some(next) if now >= next => {
+                self.runtime
+                    .dispatch_all(vec![Effect::CheckForUpdates { silent: true }]);
+                self.next_update_check_at = Some(now + UPDATE_POLL_INTERVAL);
+            }
+            Some(_) => {}
+            None => {
+                self.next_update_check_at = Some(now + UPDATE_POLL_INTERVAL);
+            }
+        }
     }
 
     fn build_frame(&mut self) -> UiFrame {
@@ -543,6 +568,8 @@ impl ApplicationHandler for NativeApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+        self.tick_update_polling(now);
         let prior_cursor_blink_epoch = self.state.cursor_blink_epoch();
         self.state.update_time(
             self.launch_at
@@ -573,7 +600,7 @@ impl ApplicationHandler for NativeApp {
         let syntax_pack_installing = self.state.syntax_pack_install_active();
         let cursor_blink_changed = self.state.cursor_blink_epoch() != prior_cursor_blink_epoch;
         let next_wake = if animating || syntax_pack_installing {
-            Some(std::time::Instant::now() + std::time::Duration::from_millis(16))
+            Some(now + Duration::from_millis(16))
         } else {
             let next_cursor_blink = self
                 .state
@@ -592,10 +619,15 @@ impl ApplicationHandler for NativeApp {
             } else {
                 None
             };
-            [next_cursor_blink, next_toast_expiry, next_tooltip]
-                .into_iter()
-                .flatten()
-                .min()
+            [
+                next_cursor_blink,
+                next_toast_expiry,
+                next_tooltip,
+                self.next_update_check_at,
+            ]
+            .into_iter()
+            .flatten()
+            .min()
         };
 
         if let Some(next) = next_wake {

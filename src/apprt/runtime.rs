@@ -412,7 +412,7 @@ impl EffectRunner {
                 thread::spawn(move || {
                     let event = match services.check_for_updates(crate::APP_VERSION) {
                         Ok(crate::core::update::UpdateCheck::Available(update)) => {
-                            AppEvent::UpdateAvailable(update)
+                            AppEvent::UpdateAvailable { update, silent }
                         }
                         Ok(crate::core::update::UpdateCheck::NotAvailable) => {
                             AppEvent::UpdateNotAvailable { silent }
@@ -425,14 +425,27 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
-            Effect::InstallUpdate(update) => {
+            Effect::StageUpdate { update, silent } => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
-                thread::spawn(move || match services.install_update(&update) {
-                    Ok(()) => event_sender.send(AppEvent::UpdateInstallStarted),
+                thread::spawn(move || match services.stage_update(&update) {
+                    Ok(staged) => event_sender.send(AppEvent::UpdateStaged { staged, silent }),
                     Err(error) => event_sender.send(AppEvent::UpdateInstallFailed {
                         message: error.to_string(),
+                        silent,
                     }),
+                });
+            }
+            Effect::ApplyStagedUpdate(staged) => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    if let Err(error) = services.apply_staged_update(&staged) {
+                        event_sender.send(AppEvent::UpdateInstallFailed {
+                            message: error.to_string(),
+                            silent: false,
+                        });
+                    }
                 });
             }
             Effect::OpenBrowser { url } => {

@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   update:
-    runs-on: windows-2025
+    runs-on: macos-26
     timeout-minutes: 360
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -23,16 +23,15 @@ jobs:
       R2_ENDPOINT_URL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
       R2_BUCKET: diffy
       PHOSPHOR_PACK_BASE_URL: https://blob.diffygui.com/phosphor-packs
-      PHOSPHOR_PACK_PLATFORM: windows-x86_64
-      PHOSPHOR_INDEX_OUTPUT: .phosphor-index/windows-x86_64.json
+      PHOSPHOR_PACK_PLATFORM: macos-aarch64
+      PHOSPHOR_INDEX_OUTPUT: .phosphor-index/macos-aarch64.json
+      PHOSPHOR_PACK_CONCURRENCY: 4
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-
-      - uses: ilammy/msvc-dev-cmd@v1
 
       - name: Generate index
         env:
@@ -41,6 +40,7 @@ jobs:
         run: node .github/workflows/update-phosphor-index.mjs
 
       - name: Upload packs to R2
+        shell: bash
         run: |
-          aws s3 sync .phosphor-pack-out/windows-x86_64 s3://$env:R2_BUCKET/phosphor-packs/windows-x86_64 --endpoint-url $env:R2_ENDPOINT_URL --delete
-          aws s3 cp .phosphor-index/windows-x86_64.json s3://$env:R2_BUCKET/phosphor-index/windows-x86_64.json --endpoint-url $env:R2_ENDPOINT_URL
+          aws s3 sync .phosphor-pack-out/macos-aarch64 "s3://${R2_BUCKET}/phosphor-packs/macos-aarch64" --endpoint-url "${R2_ENDPOINT_URL}" --delete
+          aws s3 cp .phosphor-index/macos-aarch64.json "s3://${R2_BUCKET}/phosphor-index/macos-aarch64.json" --endpoint-url "${R2_ENDPOINT_URL}"

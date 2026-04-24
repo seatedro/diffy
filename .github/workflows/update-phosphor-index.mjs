@@ -1,6 +1,6 @@
 import { createPrivateKey, sign } from "node:crypto";
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -20,6 +20,8 @@ const indexOutputPath =
   process.env.PHOSPHOR_INDEX_OUTPUT ??
   `.phosphor-index/${platform}.json`;
 const shouldBuildPacks = process.env.PHOSPHOR_SKIP_PACK_BUILD !== "1";
+const packConcurrency = positiveIntegerEnv("PHOSPHOR_PACK_CONCURRENCY", 4);
+const packLanguageFilter = languageFilterEnv("PHOSPHOR_PACK_LANGUAGES");
 
 const headers = {
   Accept: "application/vnd.github+json",
@@ -205,7 +207,7 @@ class BinaryReader {
 }
 
 async function buildPacks(registry, upstreamLanguages, registryRevision, buildErrors) {
-  if (platform !== "windows-x86_64") {
+  if (!["macos-aarch64", "macos-x86_64", "windows-x86_64"].includes(platform)) {
     throw new Error(`pack builder does not support ${platform} yet`);
   }
 
@@ -215,8 +217,7 @@ async function buildPacks(registry, upstreamLanguages, registryRevision, buildEr
   await rm(packRoot, { recursive: true, force: true });
   await mkdir(workDir, { recursive: true });
 
-  const built = [];
-  const packLanguages = upstreamLanguages
+  let packLanguages = upstreamLanguages
     .filter((entry) => entry.source)
     .map((entry) => ({
       language: entry.language,
@@ -224,22 +225,65 @@ async function buildPacks(registry, upstreamLanguages, registryRevision, buildEr
       symbol: `tree_sitter_${entry.language}`,
       common: commonLanguageNames.has(entry.language),
     }));
-
-  for (const packLanguage of packLanguages) {
-    const registryEntry = registry[packLanguage.language];
-    if (!registryEntry?.source) {
-      throw new Error(`registry is missing ${packLanguage.language}`);
-    }
-    try {
-      built.push(await buildPack(packLanguage, registryEntry, registryRevision, workDir, packRoot));
-    } catch (error) {
-      buildErrors.push({
-        language: packLanguage.language,
-        message: error.message,
-      });
-      console.warn(`::warning title=Skipped ${packLanguage.language}::${error.message}`);
+  if (packLanguageFilter) {
+    packLanguages = packLanguages.filter((entry) => packLanguageFilter.has(entry.language));
+    const found = new Set(packLanguages.map((entry) => entry.language));
+    const missing = [...packLanguageFilter].filter((language) => !found.has(language)).sort();
+    if (missing.length > 0) {
+      throw new Error(`PHOSPHOR_PACK_LANGUAGES did not match: ${missing.join(", ")}`);
     }
   }
+
+  console.log(
+    `Building ${packLanguages.length} ${platform} syntax packs with concurrency ${packConcurrency}`,
+  );
+
+  const built = [];
+  let started = 0;
+  let finished = 0;
+  const active = new Map();
+  const progressTimer = setInterval(() => {
+    const activeLanguages = [...active.keys()].sort().join(", ") || "none";
+    console.log(
+      `Progress: ${finished}/${packLanguages.length} finished, ${active.size} active (${activeLanguages})`,
+    );
+  }, 60_000);
+
+  try {
+    await runPool(packLanguages, packConcurrency, async (packLanguage) => {
+      const ordinal = ++started;
+      const startedAt = Date.now();
+      active.set(packLanguage.language, startedAt);
+      console.log(`[${ordinal}/${packLanguages.length}] start ${packLanguage.language}`);
+      try {
+        const registryEntry = registry[packLanguage.language];
+        if (!registryEntry?.source) {
+          throw new Error(`registry is missing ${packLanguage.language}`);
+        }
+        built.push(
+          await buildPack(packLanguage, registryEntry, registryRevision, workDir, packRoot),
+        );
+        const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+        console.log(
+          `[${ordinal}/${packLanguages.length}] done ${packLanguage.language} in ${seconds}s`,
+        );
+      } catch (error) {
+        buildErrors.push({
+          language: packLanguage.language,
+          message: error.message,
+        });
+        console.warn(`::warning title=Skipped ${packLanguage.language}::${error.message}`);
+      } finally {
+        active.delete(packLanguage.language);
+        finished += 1;
+      }
+    });
+  } finally {
+    clearInterval(progressTimer);
+  }
+  console.log(
+    `Finished ${built.length}/${packLanguages.length} ${platform} packs; ${buildErrors.length} failed`,
+  );
 
   await rm(workDir, { recursive: true, force: true });
   return built.sort((left, right) => left.language.localeCompare(right.language));
@@ -252,11 +296,11 @@ async function buildPack(packLanguage, registryEntry, registryRevision, workDir,
   const queryRepoDir = path.join(languageWorkDir, "queries");
   await mkdir(languageWorkDir, { recursive: true });
 
-  cloneRepo(source.parserUrl, parserRepoDir);
-  cloneRepo(source.queryUrl ?? source.parserUrl, queryRepoDir);
+  await cloneRepo(source.parserUrl, parserRepoDir);
+  await cloneRepo(source.queryUrl ?? source.parserUrl, queryRepoDir);
 
-  const parserRevision = gitRevParse(parserRepoDir);
-  const queryRevision = gitRevParse(queryRepoDir);
+  const parserRevision = await gitRevParse(parserRepoDir);
+  const queryRevision = await gitRevParse(queryRepoDir);
   const version = `${parserRevision.slice(0, 12)}-${queryRevision.slice(0, 12)}`;
   const parserDir = path.join(parserRepoDir, source.parserLocation ?? "");
   const highlightsSource = await findQueryFile(queryRepoDir, "highlights.scm");
@@ -264,8 +308,8 @@ async function buildPack(packLanguage, registryEntry, registryRevision, workDir,
   const packDir = path.join(packRoot, packLanguage.language, version);
   await mkdir(packDir, { recursive: true });
 
-  const parserPath = "parser.dll";
-  await compileWindowsParser(parserDir, path.join(packDir, parserPath));
+  const parserPath = parserFileName();
+  await compileParser(parserDir, path.join(packDir, parserPath));
 
   const highlightsPath = "highlights.scm";
   await cp(highlightsSource, path.join(packDir, highlightsPath));
@@ -347,18 +391,18 @@ function normalizeSource(source) {
   };
 }
 
-function cloneRepo(url, destination) {
+async function cloneRepo(url, destination) {
   if (!url) {
     throw new Error("missing repository URL");
   }
-  run("git", ["clone", "--depth", "1", url, destination]);
+  await run("git", ["clone", "--depth", "1", url, destination]);
 }
 
-function gitRevParse(cwd) {
-  return run("git", ["rev-parse", "HEAD"], { cwd }).stdout.trim();
+async function gitRevParse(cwd) {
+  return (await run("git", ["rev-parse", "HEAD"], { cwd })).stdout.trim();
 }
 
-async function compileWindowsParser(parserDir, outputPath) {
+async function compileParser(parserDir, outputPath) {
   const srcDir = path.join(parserDir, "src");
   const sources = [
     path.join(srcDir, "parser.c"),
@@ -370,16 +414,51 @@ async function compileWindowsParser(parserDir, outputPath) {
     throw new Error(`missing parser.c in ${srcDir}`);
   }
 
-  run("cl", [
-    "/nologo",
-    "/LD",
-    "/O2",
-    `/I${srcDir}`,
-    `/Fe:${outputPath}`,
-    ...sources,
-    "/link",
-    "/NOLOGO",
-  ]);
+  if (platform === "windows-x86_64") {
+    await run("cl", [
+      "/nologo",
+      "/LD",
+      "/O2",
+      `/I${srcDir}`,
+      `/Fe:${outputPath}`,
+      ...sources,
+      "/link",
+      "/NOLOGO",
+    ]);
+    return;
+  }
+
+  const compiler = sources.some((file) => file.endsWith(".cc")) ? "clang++" : "clang";
+  const arch = platform === "macos-x86_64" ? "x86_64" : "arm64";
+  const objects = [];
+  for (const [index, source] of sources.entries()) {
+    const objectPath = `${outputPath}.${index}.o`;
+    const sourceCompiler = source.endsWith(".cc") ? "clang++" : "clang";
+    await run(sourceCompiler, [
+      "-O2",
+      "-fPIC",
+      "-arch",
+      arch,
+      "-I",
+      srcDir,
+      "-c",
+      source,
+      "-o",
+      objectPath,
+    ]);
+    objects.push(objectPath);
+  }
+  await run(compiler, ["-dynamiclib", "-arch", arch, "-o", outputPath, ...objects]);
+}
+
+function parserFileName() {
+  if (platform === "windows-x86_64") {
+    return "parser.dll";
+  }
+  if (platform === "macos-aarch64" || platform === "macos-x86_64") {
+    return "parser.dylib";
+  }
+  throw new Error(`pack builder does not support ${platform} yet`);
 }
 
 async function findQueryFile(root, filename) {
@@ -436,18 +515,75 @@ async function sha256File(file) {
   return createHash("sha256").update(await readFile(file)).digest("hex");
 }
 
-function run(command, args, options = {}) {
-  const result = spawnSync(command, args, {
-    cwd: options.cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  if (result.status !== 0) {
-    throw new Error(
-      `${command} ${args.join(" ")} failed\n${result.stdout}\n${result.stderr}`,
-    );
+async function runPool(items, concurrency, worker) {
+  let next = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (next < items.length) {
+        const item = items[next++];
+        await worker(item);
+      }
+    }),
+  );
+}
+
+function positiveIntegerEnv(name, fallback) {
+  const raw = process.env[name];
+  if (!raw) {
+    return fallback;
   }
-  return result;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return value;
+}
+
+function languageFilterEnv(name) {
+  const raw = process.env[name];
+  if (!raw) {
+    return null;
+  }
+  const languages = raw
+    .split(",")
+    .map((language) => language.trim())
+    .filter(Boolean);
+  if (languages.length === 0) {
+    throw new Error(`${name} must include at least one language`);
+  }
+  return new Set(languages);
+}
+
+function run(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (status) => {
+      if (status === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+      reject(
+        new Error(
+          `${command} ${args.join(" ")} failed with exit code ${status}\n${stdout}\n${stderr}`,
+        ),
+      );
+    });
+  });
 }
 
 if (process.env.PHOSPHOR_PACK_INDEX_PRIVATE_KEY) {

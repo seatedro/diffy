@@ -877,6 +877,8 @@ impl Renderer {
                 &self.effect_quad_pipeline,
                 &self.quad_pipeline,
                 &self.viewport_bind_group,
+                self.surface_config.width,
+                self.surface_config.height,
             );
 
             draw_images(
@@ -957,6 +959,8 @@ impl Renderer {
                         &self.effect_quad_pipeline,
                         &self.quad_pipeline,
                         &self.viewport_bind_group,
+                        sw,
+                        sh,
                     );
 
                     draw_images(
@@ -1069,6 +1073,8 @@ impl Renderer {
                     &self.effect_quad_pipeline,
                     &self.quad_pipeline,
                     &self.viewport_bind_group,
+                    sw,
+                    sh,
                 );
             }
 
@@ -1228,6 +1234,8 @@ impl Renderer {
                     &self.effect_quad_pipeline,
                     &self.quad_pipeline,
                     &self.viewport_bind_group,
+                    sw,
+                    sh,
                 );
 
                 self.text_renderer.prepare(
@@ -1281,6 +1289,8 @@ fn draw_layers<'pass>(
     effect_quad_pipeline: &'pass wgpu::RenderPipeline,
     quad_pipeline: &'pass wgpu::RenderPipeline,
     viewport_bind_group: &'pass wgpu::BindGroup,
+    viewport_w: u32,
+    viewport_h: u32,
 ) {
     for lb in layers {
         if let Some(ref shadow_buf) = lb.shadow_buffer {
@@ -1288,15 +1298,11 @@ fn draw_layers<'pass>(
             pass.set_bind_group(0, viewport_bind_group, &[]);
             pass.set_vertex_buffer(0, shadow_buf.slice(..));
             for command in &lb.shadow_commands {
-                if command.clip.width <= 0.0 || command.clip.height <= 0.0 {
+                let Some((sx, sy, sw, sh)) = scissor_rect(command.clip, viewport_w, viewport_h)
+                else {
                     continue;
-                }
-                pass.set_scissor_rect(
-                    command.clip.x.max(0.0).round() as u32,
-                    command.clip.y.max(0.0).round() as u32,
-                    command.clip.width.max(1.0).round() as u32,
-                    command.clip.height.max(1.0).round() as u32,
-                );
+                };
+                pass.set_scissor_rect(sx, sy, sw, sh);
                 pass.draw(0..4, command.instance_range.clone());
             }
         }
@@ -1306,15 +1312,11 @@ fn draw_layers<'pass>(
             pass.set_bind_group(0, viewport_bind_group, &[]);
             pass.set_vertex_buffer(0, effect_buf.slice(..));
             for command in &lb.effect_commands {
-                if command.clip.width <= 0.0 || command.clip.height <= 0.0 {
+                let Some((sx, sy, sw, sh)) = scissor_rect(command.clip, viewport_w, viewport_h)
+                else {
                     continue;
-                }
-                pass.set_scissor_rect(
-                    command.clip.x.max(0.0).round() as u32,
-                    command.clip.y.max(0.0).round() as u32,
-                    command.clip.width.max(1.0).round() as u32,
-                    command.clip.height.max(1.0).round() as u32,
-                );
+                };
+                pass.set_scissor_rect(sx, sy, sw, sh);
                 pass.draw(0..4, command.instance_range.clone());
             }
         }
@@ -1324,15 +1326,11 @@ fn draw_layers<'pass>(
             pass.set_bind_group(0, viewport_bind_group, &[]);
             pass.set_vertex_buffer(0, quad_buf.slice(..));
             for command in &lb.quad_commands {
-                if command.clip.width <= 0.0 || command.clip.height <= 0.0 {
+                let Some((sx, sy, sw, sh)) = scissor_rect(command.clip, viewport_w, viewport_h)
+                else {
                     continue;
-                }
-                pass.set_scissor_rect(
-                    command.clip.x.max(0.0).round() as u32,
-                    command.clip.y.max(0.0).round() as u32,
-                    command.clip.width.max(1.0).round() as u32,
-                    command.clip.height.max(1.0).round() as u32,
-                );
+                };
+                pass.set_scissor_rect(sx, sy, sw, sh);
                 pass.draw(0..4, command.instance_range.clone());
             }
         }
@@ -1371,19 +1369,49 @@ fn draw_images<'pass>(
             continue;
         };
 
-        let clip = img.clip;
-        let sx = (clip.x as u32).min(viewport_w);
-        let sy = (clip.y as u32).min(viewport_h);
-        let sw = (clip.width as u32).min(viewport_w.saturating_sub(sx));
-        let sh = (clip.height as u32).min(viewport_h.saturating_sub(sy));
+        let Some((sx, sy, sw, sh)) = scissor_rect(img.clip, viewport_w, viewport_h) else {
+            continue;
+        };
 
         pass.set_pipeline(blit_pipeline);
         pass.set_bind_group(0, viewport_bind_group, &[]);
         pass.set_bind_group(1, bind_group, &[]);
         pass.set_vertex_buffer(0, buf.slice(..));
-        pass.set_scissor_rect(sx, sy, sw.max(1), sh.max(1));
+        pass.set_scissor_rect(sx, sy, sw, sh);
         pass.draw(0..4, 0..1);
     }
+}
+
+fn scissor_rect(clip: Rect, viewport_w: u32, viewport_h: u32) -> Option<(u32, u32, u32, u32)> {
+    if viewport_w == 0
+        || viewport_h == 0
+        || clip.width <= 0.0
+        || clip.height <= 0.0
+        || !clip.x.is_finite()
+        || !clip.y.is_finite()
+        || !clip.width.is_finite()
+        || !clip.height.is_finite()
+    {
+        return None;
+    }
+
+    let viewport_w = viewport_w as f32;
+    let viewport_h = viewport_h as f32;
+    let left = clip.x.max(0.0).floor().min(viewport_w);
+    let top = clip.y.max(0.0).floor().min(viewport_h);
+    let right = (clip.x + clip.width).ceil().clamp(0.0, viewport_w);
+    let bottom = (clip.y + clip.height).ceil().clamp(0.0, viewport_h);
+
+    if right <= left || bottom <= top {
+        return None;
+    }
+
+    let sx = left as u32;
+    let sy = top as u32;
+    let sw = (right as u32).saturating_sub(sx);
+    let sh = (bottom as u32).saturating_sub(sy);
+
+    (sw > 0 && sh > 0).then_some((sx, sy, sw, sh))
 }
 
 fn create_texture_bind_group(
@@ -1420,6 +1448,10 @@ struct QuadInstance {
     border_color: [f32; 4],
     corner_radii: [f32; 4],
     border_widths: [f32; 4],
+    /// Rounded-clip rect [x, y, w, h] — the rect whose radii apply to the SDF clip test.
+    clip_bounds: [f32; 4],
+    /// Rounded-clip corner radii [tl, tr, br, bl]. All zero = no rounded clip.
+    clip_radii: [f32; 4],
 }
 
 impl QuadInstance {
@@ -1453,6 +1485,16 @@ impl QuadInstance {
                     shader_location: 4,
                     format: wgpu::VertexFormat::Float32x4,
                 },
+                wgpu::VertexAttribute {
+                    offset: 80,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 96,
+                    shader_location: 6,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
             ],
         }
     }
@@ -1469,6 +1511,10 @@ struct ShadowInstance {
     color: [f32; 4],
     /// [blur_sigma, corner_radius, 0, 0]
     params: [f32; 4],
+    /// Rounded-clip rect [x, y, w, h] — the rect whose radii apply for the SDF clip test.
+    clip_bounds: [f32; 4],
+    /// Rounded-clip corner radii [tl, tr, br, bl]. All zero = no rounded clip.
+    clip_radii: [f32; 4],
 }
 
 impl ShadowInstance {
@@ -1497,6 +1543,16 @@ impl ShadowInstance {
                     shader_location: 3,
                     format: wgpu::VertexFormat::Float32x4,
                 },
+                wgpu::VertexAttribute {
+                    offset: 64,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 80,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
             ],
         }
     }
@@ -1513,6 +1569,10 @@ struct EffectQuadInstance {
     color_b: [f32; 4],
     /// [effect_type, param1, param2, corner_radius].
     params: [f32; 4],
+    /// Rounded-clip rect [x, y, w, h] — the rect whose radii apply for the SDF clip test.
+    clip_bounds: [f32; 4],
+    /// Rounded-clip corner radii [tl, tr, br, bl]. All zero = no rounded clip.
+    clip_radii: [f32; 4],
 }
 
 impl EffectQuadInstance {
@@ -1539,6 +1599,16 @@ impl EffectQuadInstance {
                 wgpu::VertexAttribute {
                     offset: 48,
                     shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 64,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 80,
+                    shader_location: 5,
                     format: wgpu::VertexFormat::Float32x4,
                 },
             ],
@@ -1739,10 +1809,79 @@ pub(super) struct CachedTextBuffer {
     pub(super) last_used_frame: u64,
 }
 
+/// Active clip state carried on the flatten_scene stack.
+///
+/// `scissor` is the intersection of every rect clip active at this point — it
+/// maps directly to `set_scissor_rect` for rectangular culling. The rounded
+/// clip is tracked separately: `rounded_rect` and `corner_radii` describe the
+/// innermost rounded clip ancestor (if any). When a non-rounded clip is
+/// pushed, we inherit the parent's rounded clip so that descendants of a
+/// rounded container are still clipped to its rounded boundary. This drops
+/// information for nested rounded clips (inner wins) — good enough in
+/// practice since nested rounded clips are rare.
+#[derive(Debug, Clone, Copy)]
+struct ActiveClip {
+    scissor: Rect,
+    rounded_rect: Rect,
+    corner_radii: [f32; 4],
+}
+
+impl ActiveClip {
+    fn root(viewport: Rect) -> Self {
+        Self {
+            scissor: viewport,
+            rounded_rect: viewport,
+            corner_radii: [0.0; 4],
+        }
+    }
+
+    fn has_rounded(&self) -> bool {
+        self.corner_radii[0] > 0.0
+            || self.corner_radii[1] > 0.0
+            || self.corner_radii[2] > 0.0
+            || self.corner_radii[3] > 0.0
+    }
+
+    fn push(&self, rect: Rect, corner_radii: [f32; 4]) -> Option<Self> {
+        let scissor = self.scissor.intersection(rect)?;
+        let is_rounded = corner_radii[0] > 0.0
+            || corner_radii[1] > 0.0
+            || corner_radii[2] > 0.0
+            || corner_radii[3] > 0.0;
+        let (rounded_rect, radii) = if is_rounded {
+            (rect, corner_radii)
+        } else {
+            (self.rounded_rect, self.corner_radii)
+        };
+        Some(Self {
+            scissor,
+            rounded_rect,
+            corner_radii: radii,
+        })
+    }
+
+    fn clip_bounds_attr(&self) -> [f32; 4] {
+        if self.has_rounded() {
+            [
+                self.rounded_rect.x,
+                self.rounded_rect.y,
+                self.rounded_rect.width,
+                self.rounded_rect.height,
+            ]
+        } else {
+            [0.0; 4]
+        }
+    }
+
+    fn clip_radii_attr(&self) -> [f32; 4] {
+        self.corner_radii
+    }
+}
+
 fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
     use std::collections::BTreeMap;
 
-    let mut clips = vec![viewport];
+    let mut clips = vec![ActiveClip::root(viewport)];
     let mut z_index_stack = vec![0i32];
     let mut z_map: BTreeMap<i32, ZLayer> = BTreeMap::new();
 
@@ -1833,7 +1972,7 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                     height: shadow.rect.height + expansion * 2.0,
                 };
                 if let Some(clip) = clips.last().copied() {
-                    if expanded.intersection(clip).is_some() {
+                    if expanded.intersection(clip.scissor).is_some() {
                         let color = color_to_linear(shadow.color);
                         zl.draw_layers
                             .last_mut()
@@ -1855,15 +1994,17 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                                     ],
                                     color,
                                     params: [sigma, shadow.corner_radius, 0.0, 0.0],
+                                    clip_bounds: clip.clip_bounds_attr(),
+                                    clip_radii: clip.clip_radii_attr(),
                                 },
-                                clip,
+                                clip: clip.scissor,
                             });
                     }
                 }
             }
             Primitive::TextRun(text) => {
                 if let Some(clip) = clips.last().copied()
-                    && let Some(intersection) = text.rect.intersection(clip)
+                    && let Some(intersection) = text.rect.intersection(clip.scissor)
                 {
                     let zl = current_z!();
                     zl.texts.push(ClippedText {
@@ -1874,7 +2015,7 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
             }
             Primitive::RichTextRun(text) => {
                 if let Some(clip) = clips.last().copied()
-                    && let Some(intersection) = text.rect.intersection(clip)
+                    && let Some(intersection) = text.rect.intersection(clip.scissor)
                 {
                     let zl = current_z!();
                     zl.rich_texts.push(ClippedRichText {
@@ -1885,7 +2026,7 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
             }
             Primitive::BlurRegion(blur) => {
                 if let Some(clip) = clips.last().copied() {
-                    if blur.rect.intersection(clip).is_some() {
+                    if blur.rect.intersection(clip.scissor).is_some() {
                         let zl = current_z!();
                         ensure_draw_layer!(zl);
                         zl.draw_layers.push(DrawLayer::default());
@@ -1899,7 +2040,7 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
             }
             Primitive::EffectQuad(effect) => {
                 if let Some(clip) = clips.last().copied() {
-                    if effect.rect.intersection(clip).is_some() {
+                    if effect.rect.intersection(clip.scissor).is_some() {
                         let color_a = color_to_linear(effect.color_a);
                         let color_b = color_to_linear(effect.color_b);
                         let zl = current_z!();
@@ -1924,26 +2065,28 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                                         effect.params[1],
                                         effect.corner_radius,
                                     ],
+                                    clip_bounds: clip.clip_bounds_attr(),
+                                    clip_radii: clip.clip_radii_attr(),
                                 },
-                                clip,
+                                clip: clip.scissor,
                             });
                     }
                 }
             }
             Primitive::Image(img) => {
                 if let Some(clip) = clips.last().copied() {
-                    if img.rect.intersection(clip).is_some() {
+                    if img.rect.intersection(clip.scissor).is_some() {
                         let zl = current_z!();
                         zl.images.push(ClippedImage {
                             primitive: img.clone(),
-                            clip,
+                            clip: clip.scissor,
                         });
                     }
                 }
             }
             Primitive::EditorText(slot) => {
                 if let Some(clip) = clips.last().copied()
-                    && let Some(intersection) = slot.rect.intersection(clip)
+                    && let Some(intersection) = slot.rect.intersection(clip.scissor)
                 {
                     let zl = current_z!();
                     zl.editor_slots.push(ClippedEditorSlot {
@@ -1954,7 +2097,7 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
             }
             Primitive::Icon(icon) => {
                 if let Some(clip) = clips.last().copied() {
-                    if icon.rect.intersection(clip).is_some() {
+                    if icon.rect.intersection(clip.scissor).is_some() {
                         let px_size = icon.rect.width.max(icon.rect.height).ceil() as u32;
                         let cache_key =
                             crate::ui::icons::cache_key(&icon.name, px_size, icon.color);
@@ -1974,16 +2117,20 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                                 rgba,
                                 cache_key,
                             },
-                            clip,
+                            clip: clip.scissor,
                         });
                     }
                 }
             }
-            Primitive::ClipStart(ClipPrimitive { rect }) => {
+            Primitive::ClipStart(ClipPrimitive { rect, corner_radii }) => {
                 let next = clips
                     .last()
-                    .and_then(|clip| clip.intersection(*rect))
-                    .unwrap_or_default();
+                    .and_then(|clip| clip.push(*rect, *corner_radii))
+                    .unwrap_or_else(|| ActiveClip {
+                        scissor: Rect::default(),
+                        rounded_rect: Rect::default(),
+                        corner_radii: [0.0; 4],
+                    });
                 clips.push(next);
             }
             Primitive::ClipEnd => {
@@ -2044,11 +2191,11 @@ fn push_quad(
     border_color: [f32; 4],
     corner_radii: [f32; 4],
     border_widths: [f32; 4],
-    clips: &[Rect],
+    clips: &[ActiveClip],
     out: &mut Vec<ClippedQuad>,
 ) {
     if let Some(clip) = clips.last().copied() {
-        if rect.intersection(clip).is_some() {
+        if rect.intersection(clip.scissor).is_some() {
             out.push(ClippedQuad {
                 instance: QuadInstance {
                     bounds: [rect.x, rect.y, rect.width, rect.height],
@@ -2056,8 +2203,10 @@ fn push_quad(
                     border_color,
                     corner_radii,
                     border_widths,
+                    clip_bounds: clip.clip_bounds_attr(),
+                    clip_radii: clip.clip_radii_attr(),
                 },
-                clip,
+                clip: clip.scissor,
             });
         }
     }
@@ -2148,6 +2297,114 @@ fn build_effect_quad_instances(
 
 fn rects_equal(a: Rect, b: Rect) -> bool {
     a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scissor_rect_clamps_to_render_target() {
+        let clip = Rect {
+            x: 807.0,
+            y: 118.0,
+            width: 844.0,
+            height: 865.0,
+        };
+
+        assert_eq!(scissor_rect(clip, 1650, 1050), Some((807, 118, 843, 865)));
+    }
+
+    #[test]
+    fn scissor_rect_skips_clips_outside_render_target() {
+        let clip = Rect {
+            x: 1650.0,
+            y: 118.0,
+            width: 10.0,
+            height: 865.0,
+        };
+
+        assert_eq!(scissor_rect(clip, 1650, 1050), None);
+    }
+
+    #[test]
+    fn child_quad_inherits_rounded_clip_from_parent() {
+        use crate::render::scene::{ClipPrimitive, Primitive, RoundedRectPrimitive, Scene};
+        use crate::ui::theme::Color;
+
+        let viewport = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 36.0,
+        };
+        let cluster = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 36.0,
+        };
+        let child = Rect {
+            x: 300.0,
+            y: 0.0,
+            width: 100.0,
+            height: 36.0,
+        };
+
+        let mut scene = Scene::default();
+        // Parent bg (self-rounded, not clipped by anything)
+        scene.push(Primitive::RoundedRect(RoundedRectPrimitive {
+            rect: cluster,
+            corner_radii: [6.0; 4],
+            color: Color::rgba(100, 100, 100, 255),
+        }));
+        // Parent's rounded clip
+        scene.push(Primitive::ClipStart(ClipPrimitive {
+            rect: cluster,
+            corner_radii: [6.0; 4],
+        }));
+        // Child bg (square corners, should inherit rounded clip)
+        scene.push(Primitive::RoundedRect(RoundedRectPrimitive {
+            rect: child,
+            corner_radii: [0.0; 4],
+            color: Color::rgba(200, 200, 0, 255),
+        }));
+        scene.push(Primitive::ClipEnd);
+
+        let flat = flatten_scene(&scene, viewport);
+        let quads: Vec<&QuadInstance> = flat
+            .z_layers
+            .iter()
+            .flat_map(|z| z.draw_layers.iter())
+            .flat_map(|dl| dl.quads.iter().map(|q| &q.instance))
+            .collect();
+
+        // Expect 2 quads: the parent bg and the child bg.
+        assert_eq!(quads.len(), 2, "expected 2 quads, got {}", quads.len());
+
+        // Parent's own rect is drawn before the clip is pushed — should have
+        // no rounded-clip attribution (clip_radii all zero).
+        let parent_quad = quads[0];
+        assert_eq!(
+            parent_quad.clip_radii, [0.0; 4],
+            "parent bg (before ClipStart) should have no rounded clip: {:?}",
+            parent_quad.clip_radii,
+        );
+
+        // Child is inside the rounded clip — should inherit clip_bounds =
+        // cluster rect and clip_radii = [6; 4].
+        let child_quad = quads[1];
+        assert_eq!(
+            child_quad.clip_radii,
+            [6.0, 6.0, 6.0, 6.0],
+            "child bg should inherit rounded clip radii from parent",
+        );
+        assert_eq!(
+            child_quad.clip_bounds,
+            [cluster.x, cluster.y, cluster.width, cluster.height],
+            "child bg should inherit rounded clip bounds from parent",
+        );
+    }
 }
 
 // Text preparation, caching, and color helpers are in text.rs

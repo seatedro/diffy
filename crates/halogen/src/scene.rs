@@ -75,7 +75,14 @@ impl Scene {
     }
 
     pub fn clip(&mut self, rect: Rect) {
-        self.push(Primitive::ClipStart(ClipPrimitive { rect }));
+        self.push(Primitive::ClipStart(ClipPrimitive {
+            rect,
+            corner_radii: [0.0; 4],
+        }));
+    }
+
+    pub fn clip_rounded(&mut self, rect: Rect, corner_radii: [f32; 4]) {
+        self.push(Primitive::ClipStart(ClipPrimitive { rect, corner_radii }));
     }
 
     pub fn pop_clip(&mut self) {
@@ -241,6 +248,9 @@ pub struct IconPrimitive {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ClipPrimitive {
     pub rect: Rect,
+    /// Per-corner radii: [top-left, top-right, bottom-right, bottom-left].
+    /// All zero = plain rectangular clip.
+    pub corner_radii: [f32; 4],
 }
 
 #[derive(Debug, Clone, PartialEq)]

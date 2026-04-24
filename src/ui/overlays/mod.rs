@@ -82,12 +82,24 @@ pub fn render_active_overlay(
                 height,
             )
         }
-        OverlaySurface::RefPicker(field) => {
+        OverlaySurface::RefPicker => {
+            let field = state.overlays.ref_picker.active_field.get(&state.store);
             let query = match field {
                 CompareField::Left => state.compare.left_ref.get(&state.store),
                 CompareField::Right => state.compare.right_ref.get(&state.store),
             };
-            picker(
+            // Panel flush with the title bar: the title-bar segmented control
+            // is the header; scrim begins below the title bar so those chips
+            // stay interactive.
+            let top_offset = theme.metrics.title_bar_height / theme.metrics.ui_scale();
+            let layout = picker::PickerLayout {
+                top_offset: Some(top_offset),
+                // Square corners so the panel looks continuous with the title
+                // bar. Halogen has uniform corner rounding only, so bottom
+                // corners are square too — the shadow carries the silhouette.
+                panel_radius: Some(0.0),
+            };
+            picker::picker_with_header(
                 &query,
                 "Search branches, tags, commits",
                 &picker_entries,
@@ -99,6 +111,8 @@ pub fn render_active_overlay(
                 theme,
                 width,
                 height,
+                None,
+                layout,
             )
         }
         OverlaySurface::CommandPalette => picker(

@@ -843,6 +843,16 @@ pub struct CommandPaletteState {
     pub list: OverlayListState,
 }
 
+/// Ephemeral ref-picker overlay state. `active_field` tracks which chip the
+/// search input currently drives; `original_*` snapshots the refs at the moment
+/// the picker opened so we can revert cleanly on cancel/backdrop.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
+pub struct RefPickerState {
+    pub active_field: CompareField,
+    pub original_left: String,
+    pub original_right: String,
+}
+
 pub type PrKey = (String, String, i32);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -916,7 +926,7 @@ pub struct GitHubState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlaySurface {
     RepoPicker,
-    RefPicker(CompareField),
+    RefPicker,
     CommandPalette,
     GitHubAuthModal,
     KeyboardShortcuts,
@@ -938,6 +948,8 @@ pub struct OverlayStackState {
     pub picker: PickerState,
     #[store(flatten)]
     pub command_palette: CommandPaletteState,
+    #[store(flatten)]
+    pub ref_picker: RefPickerState,
 }
 
 impl AppState {
@@ -1371,7 +1383,11 @@ impl AppState {
             | SelectOverlayEntry(_)
             | HoverOverlayEntry(_)
             | ScrollActiveOverlayListPx(_)
-            | ShowKeyboardShortcuts => self.apply_overlay_action(action),
+            | ShowKeyboardShortcuts
+            | SetActiveRefField(_)
+            | SwapDraftRefs
+            | CommitRefPicker
+            | CancelRefPicker => self.apply_overlay_action(action),
 
             // Compare & repository
             Bootstrap
@@ -1379,6 +1395,7 @@ impl AppState {
             | OpenRepository(_)
             | SetLeftRef(_)
             | SetRightRef(_)
+            | SwapRefs
             | SetCompareMode(_)
             | CycleCompareMode
             | OpenCompareMenu
@@ -1958,8 +1975,25 @@ impl AppState {
                 Vec::new()
             }
             Action::CloseOverlay => {
+                if self.overlays_top() == Some(OverlaySurface::RefPicker) {
+                    return self.cancel_ref_picker();
+                }
                 self.pop_overlay();
                 Vec::new()
+            }
+            Action::SetActiveRefField(field) => self.set_active_ref_field(field),
+            Action::SwapDraftRefs => self.swap_draft_refs(),
+            Action::CommitRefPicker => {
+                if self.overlays_top() != Some(OverlaySurface::RefPicker) {
+                    return Vec::new();
+                }
+                self.commit_ref_picker()
+            }
+            Action::CancelRefPicker => {
+                if self.overlays_top() != Some(OverlaySurface::RefPicker) {
+                    return Vec::new();
+                }
+                self.cancel_ref_picker()
             }
             Action::MoveOverlaySelection(delta) => {
                 self.move_overlay_selection(delta);
@@ -2017,6 +2051,7 @@ impl AppState {
                 effects.extend(self.persist_settings_effect());
                 effects
             }
+            Action::SwapRefs => self.swap_refs(),
             Action::SetCompareMode(mode) => {
                 self.compare.mode.set(&self.store, mode);
                 if self.overlays_top() == Some(OverlaySurface::CompareMenu) {
@@ -3922,6 +3957,37 @@ impl AppState {
         effects
     }
 
+    fn swap_refs(&mut self) -> Vec<Effect> {
+        let left = self.compare.left_ref.get(&self.store);
+        let right = self.compare.right_ref.get(&self.store);
+        if left.trim().is_empty()
+            || right.trim().is_empty()
+            || right == crate::core::vcs::git::service::WORKDIR_REF
+            || left == crate::core::vcs::git::service::WORKDIR_REF
+        {
+            return Vec::new();
+        }
+        let resolved_left = self.compare.resolved_left.get(&self.store);
+        let resolved_right = self.compare.resolved_right.get(&self.store);
+        self.compare.left_ref.set(&self.store, right);
+        self.compare.right_ref.set(&self.store, left);
+        self.compare.resolved_left.set(&self.store, resolved_right);
+        self.compare.resolved_right.set(&self.store, resolved_left);
+        self.workspace.pre_drill_compare.set(&self.store, None);
+        let mut effects = self.persist_settings_effect();
+        let has_repo = self.compare.repo_path.with(&self.store, |p| p.is_some());
+        let not_loading = self.workspace.status.get(&self.store) != AsyncStatus::Loading;
+        let refs_valid = compare_refs_are_valid(
+            self.compare.mode.get(&self.store),
+            &self.compare.left_ref.get(&self.store),
+            &self.compare.right_ref.get(&self.store),
+        );
+        if has_repo && not_loading && refs_valid {
+            effects.extend(self.kickoff_compare());
+        }
+        effects
+    }
+
     fn persist_settings_effect(&mut self) -> Vec<Effect> {
         self.sync_settings_snapshot();
         vec![Effect::SaveSettings(self.settings.clone())]
@@ -4158,7 +4224,9 @@ impl AppState {
             }
         }
         self.auto_select_compare_mode();
-        let mut effects = if matches!(self.overlays_top(), Some(OverlaySurface::RefPicker(active)) if active == field)
+        let active_field = self.overlays.ref_picker.active_field.get(&self.store);
+        let mut effects = if matches!(self.overlays_top(), Some(OverlaySurface::RefPicker))
+            && active_field == field
         {
             self.rebuild_ref_picker(field)
         } else {
@@ -4372,6 +4440,25 @@ impl AppState {
 
     fn open_ref_picker(&mut self, field: CompareField) -> Vec<Effect> {
         let scale = self.ui_scale_factor();
+        let already_open = self.overlays_top() == Some(OverlaySurface::RefPicker);
+        // Snapshot originals only on first open; switching chips shouldn't
+        // refresh the revert baseline.
+        if !already_open {
+            let left = self.compare.left_ref.get(&self.store);
+            let right = self.compare.right_ref.get(&self.store);
+            self.overlays
+                .ref_picker
+                .original_left
+                .set(&self.store, left);
+            self.overlays
+                .ref_picker
+                .original_right
+                .set(&self.store, right);
+        }
+        self.overlays
+            .ref_picker
+            .active_field
+            .set(&self.store, field);
         self.overlays.picker.kind.set(
             &self.store,
             match field {
@@ -4386,10 +4473,14 @@ impl AppState {
             l.gap_px = (Sp::XS * scale).round() as u32;
         });
         let effects = self.rebuild_ref_picker(field);
-        self.push_overlay(
-            OverlaySurface::RefPicker(field),
-            Some(FocusTarget::PickerInput),
-        );
+        self.push_overlay(OverlaySurface::RefPicker, Some(FocusTarget::PickerInput));
+        // Move cursor to end of the active field's current value so typing
+        // continues from where the label ends.
+        let len = match field {
+            CompareField::Left => self.compare.left_ref.with(&self.store, |s| s.len()),
+            CompareField::Right => self.compare.right_ref.with(&self.store, |s| s.len()),
+        };
+        self.reset_text_edit(len);
         effects
     }
 
@@ -4440,7 +4531,7 @@ impl AppState {
                 }
                 self.reset_picker();
             }
-            OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_) => {
+            OverlaySurface::RepoPicker | OverlaySurface::RefPicker => {
                 self.reset_picker();
             }
             OverlaySurface::CommandPalette => {
@@ -4491,7 +4582,7 @@ impl AppState {
                     self.settings.theme_name = value;
                 }
             }
-            Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_)) => {
+            Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker) => {
                 let current = self.overlays.picker.selected_index.get(&self.store);
                 let (idx, len) = self.overlays.picker.entries.with(&self.store, |entries| {
                     let len = entries.len();
@@ -4569,7 +4660,7 @@ impl AppState {
                     .list
                     .update(&self.store, |l| l.reveal_index(clamped, len));
             }
-            Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_)) => {
+            Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker) => {
                 let (clamped, len, is_header) =
                     self.overlays.picker.entries.with(&self.store, |entries| {
                         let len = entries.len();
@@ -4625,7 +4716,10 @@ impl AppState {
                 self.persist_settings_effect()
             }
             Some(OverlaySurface::RepoPicker) => self.confirm_repo_picker(),
-            Some(OverlaySurface::RefPicker(field)) => self.confirm_ref_picker(field),
+            Some(OverlaySurface::RefPicker) => {
+                let field = self.overlays.ref_picker.active_field.get(&self.store);
+                self.confirm_ref_picker(field)
+            }
             Some(OverlaySurface::CommandPalette) => self.confirm_command_palette(),
             Some(OverlaySurface::GitHubAuthModal) => {
                 if self
@@ -4777,6 +4871,7 @@ impl AppState {
         let Some(entry) = entry else {
             return Vec::new();
         };
+        // Presets apply both refs at once; treat them as an explicit commit.
         if let Some(rest) = entry.value.strip_prefix("@preset:") {
             return self.apply_compare_preset(rest);
         }
@@ -4784,19 +4879,136 @@ impl AppState {
             store.record_access(&format!("ref:{}", entry.value));
         }
         let _ = self.update_compare_field(field, entry.value);
+        // Auto-advance to the other chip if it's still at its snapshot — the
+        // user is likely changing both refs. Only commit when both chips have
+        // diverged from their snapshots (or neither, which is a no-op).
+        let other = match field {
+            CompareField::Left => CompareField::Right,
+            CompareField::Right => CompareField::Left,
+        };
+        let other_current = match other {
+            CompareField::Left => self.compare.left_ref.get(&self.store),
+            CompareField::Right => self.compare.right_ref.get(&self.store),
+        };
+        let other_original = match other {
+            CompareField::Left => self.overlays.ref_picker.original_left.get(&self.store),
+            CompareField::Right => self.overlays.ref_picker.original_right.get(&self.store),
+        };
+        if other_current == other_original {
+            let scale = self.ui_scale_factor();
+            self.overlays
+                .ref_picker
+                .active_field
+                .set(&self.store, other);
+            self.overlays.picker.kind.set(
+                &self.store,
+                match other {
+                    CompareField::Left => PickerKind::LeftRef,
+                    CompareField::Right => PickerKind::RightRef,
+                },
+            );
+            self.overlays.picker.selected_index.set(&self.store, 0);
+            self.overlays.picker.list.update(&self.store, |l| {
+                l.scroll_top_px = 0;
+                l.row_height_px = (Sz::ROW * scale).round() as u32;
+                l.gap_px = (Sp::XS * scale).round() as u32;
+            });
+            let effects = self.rebuild_ref_picker(other);
+            let len = match other {
+                CompareField::Left => self.compare.left_ref.with(&self.store, |s| s.len()),
+                CompareField::Right => self.compare.right_ref.with(&self.store, |s| s.len()),
+            };
+            self.reset_text_edit(len);
+            return effects;
+        }
+        // Both chips changed — commit.
+        self.commit_ref_picker()
+    }
+
+    fn commit_ref_picker(&mut self) -> Vec<Effect> {
+        let original_left = self.overlays.ref_picker.original_left.get(&self.store);
+        let original_right = self.overlays.ref_picker.original_right.get(&self.store);
+        let current_left = self.compare.left_ref.get(&self.store);
+        let current_right = self.compare.right_ref.get(&self.store);
+        let changed = current_left != original_left || current_right != original_right;
         self.pop_overlay();
         let mut effects = self.persist_settings_effect();
+        if !changed {
+            return effects;
+        }
         let has_repo = self.compare.repo_path.with(&self.store, |p| p.is_some());
         let not_loading = self.workspace.status.get(&self.store) != AsyncStatus::Loading;
         let refs_valid = compare_refs_are_valid(
             self.compare.mode.get(&self.store),
-            &self.compare.left_ref.get(&self.store),
-            &self.compare.right_ref.get(&self.store),
+            &current_left,
+            &current_right,
         );
         if has_repo && not_loading && refs_valid {
             effects.extend(self.kickoff_compare());
         }
         effects
+    }
+
+    fn cancel_ref_picker(&mut self) -> Vec<Effect> {
+        let left = self.overlays.ref_picker.original_left.get(&self.store);
+        let right = self.overlays.ref_picker.original_right.get(&self.store);
+        self.compare.left_ref.set(&self.store, left);
+        self.compare.right_ref.set(&self.store, right);
+        self.compare.resolved_left.set(&self.store, None);
+        self.compare.resolved_right.set(&self.store, None);
+        self.pop_overlay();
+        Vec::new()
+    }
+
+    fn set_active_ref_field(&mut self, field: CompareField) -> Vec<Effect> {
+        if self.overlays_top() != Some(OverlaySurface::RefPicker) {
+            return Vec::new();
+        }
+        let scale = self.ui_scale_factor();
+        self.overlays
+            .ref_picker
+            .active_field
+            .set(&self.store, field);
+        self.overlays.picker.kind.set(
+            &self.store,
+            match field {
+                CompareField::Left => PickerKind::LeftRef,
+                CompareField::Right => PickerKind::RightRef,
+            },
+        );
+        self.overlays.picker.selected_index.set(&self.store, 0);
+        self.overlays.picker.list.update(&self.store, |l| {
+            l.scroll_top_px = 0;
+            l.row_height_px = (Sz::ROW * scale).round() as u32;
+            l.gap_px = (Sp::XS * scale).round() as u32;
+        });
+        let effects = self.rebuild_ref_picker(field);
+        let len = match field {
+            CompareField::Left => self.compare.left_ref.with(&self.store, |s| s.len()),
+            CompareField::Right => self.compare.right_ref.with(&self.store, |s| s.len()),
+        };
+        self.reset_text_edit(len);
+        effects
+    }
+
+    fn swap_draft_refs(&mut self) -> Vec<Effect> {
+        if self.overlays_top() != Some(OverlaySurface::RefPicker) {
+            return Vec::new();
+        }
+        let left = self.compare.left_ref.get(&self.store);
+        let right = self.compare.right_ref.get(&self.store);
+        self.compare.left_ref.set(&self.store, right);
+        self.compare.right_ref.set(&self.store, left);
+        self.compare.resolved_left.set(&self.store, None);
+        self.compare.resolved_right.set(&self.store, None);
+        // Re-sync the search input to the active chip's new value.
+        let field = self.overlays.ref_picker.active_field.get(&self.store);
+        let len = match field {
+            CompareField::Left => self.compare.left_ref.with(&self.store, |s| s.len()),
+            CompareField::Right => self.compare.right_ref.with(&self.store, |s| s.len()),
+        };
+        self.reset_text_edit(len);
+        self.rebuild_ref_picker(field)
     }
 
     fn apply_compare_preset(&mut self, preset: &str) -> Vec<Effect> {
@@ -6210,7 +6422,7 @@ impl AppState {
         match self.overlays_top() {
             Some(
                 OverlaySurface::RepoPicker
-                | OverlaySurface::RefPicker(_)
+                | OverlaySurface::RefPicker
                 | OverlaySurface::ThemePicker,
             ) => {
                 let count = self.overlays.picker.entries.with(&self.store, |e| e.len());
@@ -6834,8 +7046,7 @@ fn status_section_count_before(items: &[StatusItem], len: usize) -> usize {
 fn overlay_name(surface: OverlaySurface) -> &'static str {
     match surface {
         OverlaySurface::RepoPicker => "repo-picker",
-        OverlaySurface::RefPicker(CompareField::Left) => "left-ref-picker",
-        OverlaySurface::RefPicker(CompareField::Right) => "right-ref-picker",
+        OverlaySurface::RefPicker => "ref-picker",
         OverlaySurface::CommandPalette => "command-palette",
         OverlaySurface::GitHubAuthModal => "github-auth-modal",
         OverlaySurface::AccountMenu => "account-menu",

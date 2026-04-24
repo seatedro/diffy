@@ -14,6 +14,8 @@ struct VertexInput {
     @location(1) shadow_bounds: vec4<f32>,
     @location(2) color: vec4<f32>,
     @location(3) params: vec4<f32>,
+    @location(4) clip_bounds: vec4<f32>,
+    @location(5) clip_radii: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -21,6 +23,8 @@ struct VertexOutput {
     @location(0) @interpolate(flat) shadow_bounds: vec4<f32>,
     @location(1) @interpolate(flat) color: vec4<f32>,
     @location(2) @interpolate(flat) params: vec4<f32>,
+    @location(3) @interpolate(flat) clip_bounds: vec4<f32>,
+    @location(4) @interpolate(flat) clip_radii: vec4<f32>,
 };
 
 @vertex
@@ -37,6 +41,8 @@ fn vs_shadow(input: VertexInput) -> VertexOutput {
     out.shadow_bounds = input.shadow_bounds;
     out.color = input.color;
     out.params = input.params;
+    out.clip_bounds = input.clip_bounds;
+    out.clip_radii = input.clip_radii;
     return out;
 }
 
@@ -66,6 +72,30 @@ fn gauss_integral(x: f32, sigma: f32) -> f32 {
 fn rounded_rect_sdf(p: vec2<f32>, half_size: vec2<f32>, radius: f32) -> f32 {
     let q = abs(p) - half_size + vec2<f32>(radius);
     return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - radius;
+}
+
+fn shadow_pick_corner_radius(p: vec2<f32>, radii: vec4<f32>) -> f32 {
+    if (p.x < 0.0) {
+        return select(radii.w, radii.x, p.y < 0.0);
+    } else {
+        return select(radii.z, radii.y, p.y < 0.0);
+    }
+}
+
+fn shadow_clip_alpha(
+    pixel_pos: vec2<f32>,
+    clip_bounds: vec4<f32>,
+    clip_radii: vec4<f32>,
+) -> f32 {
+    if (clip_radii.x <= 0.0 && clip_radii.y <= 0.0 && clip_radii.z <= 0.0 && clip_radii.w <= 0.0) {
+        return 1.0;
+    }
+    let clip_half = clip_bounds.zw * 0.5;
+    let clip_center = clip_bounds.xy + clip_half;
+    let cp = pixel_pos - clip_center;
+    let cr = shadow_pick_corner_radius(cp, clip_radii);
+    let clip_sdf = rounded_rect_sdf(cp, clip_half, cr);
+    return saturate(0.5 - clip_sdf);
 }
 
 @fragment
@@ -99,6 +129,8 @@ fn fs_shadow(input: VertexOutput) -> @location(0) vec4<f32> {
         alpha = alpha * corner_fade;
     }
 
+    alpha = alpha * shadow_clip_alpha(input.position.xy, input.clip_bounds, input.clip_radii);
+
     let final_alpha = input.color.a * alpha;
     if (final_alpha < 0.001) {
         discard;
@@ -128,6 +160,8 @@ struct VertexInput {
     @location(2) border_color: vec4<f32>,
     @location(3) corner_radii: vec4<f32>,
     @location(4) border_widths: vec4<f32>,
+    @location(5) clip_bounds: vec4<f32>,
+    @location(6) clip_radii: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -137,6 +171,8 @@ struct VertexOutput {
     @location(2) @interpolate(flat) border_color: vec4<f32>,
     @location(3) @interpolate(flat) corner_radii: vec4<f32>,
     @location(4) @interpolate(flat) border_widths: vec4<f32>,
+    @location(5) @interpolate(flat) clip_bounds: vec4<f32>,
+    @location(6) @interpolate(flat) clip_radii: vec4<f32>,
 };
 
 @vertex
@@ -155,6 +191,8 @@ fn vs_quad(input: VertexInput) -> VertexOutput {
     out.border_color = input.border_color;
     out.corner_radii = input.corner_radii;
     out.border_widths = input.border_widths;
+    out.clip_bounds = input.clip_bounds;
+    out.clip_radii = input.clip_radii;
     return out;
 }
 
@@ -181,6 +219,24 @@ fn over(below: vec4<f32>, above: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(c, a);
 }
 
+// Anti-aliased rounded-clip alpha. Returns 1.0 when no rounded clip is
+// active (all radii zero), otherwise fades with the clip-rect SDF.
+fn rounded_clip_alpha(
+    pixel_pos: vec2<f32>,
+    clip_bounds: vec4<f32>,
+    clip_radii: vec4<f32>,
+) -> f32 {
+    if (clip_radii.x <= 0.0 && clip_radii.y <= 0.0 && clip_radii.z <= 0.0 && clip_radii.w <= 0.0) {
+        return 1.0;
+    }
+    let clip_half = clip_bounds.zw * 0.5;
+    let clip_center = clip_bounds.xy + clip_half;
+    let cp = pixel_pos - clip_center;
+    let cr = pick_corner_radius(cp, clip_radii);
+    let clip_sdf = quad_sdf(cp, clip_half, cr);
+    return saturate(0.5 - clip_sdf);
+}
+
 @fragment
 fn fs_quad(input: VertexOutput) -> @location(0) vec4<f32> {
     let half_size = input.bounds.zw * 0.5;
@@ -193,6 +249,11 @@ fn fs_quad(input: VertexOutput) -> @location(0) vec4<f32> {
     let aa = 0.5;
     let outer_alpha = saturate(aa - outer_sdf);
     if (outer_alpha <= 0.0) {
+        discard;
+    }
+
+    let clip_alpha = rounded_clip_alpha(input.position.xy, input.clip_bounds, input.clip_radii);
+    if (clip_alpha <= 0.0) {
         discard;
     }
 
@@ -214,7 +275,7 @@ fn fs_quad(input: VertexOutput) -> @location(0) vec4<f32> {
         color = input.background;
     }
 
-    let final_alpha = color.a * outer_alpha;
+    let final_alpha = color.a * outer_alpha * clip_alpha;
     return vec4<f32>(color.rgb * final_alpha, final_alpha);
 }
 "#;
@@ -239,6 +300,8 @@ struct VertexInput {
     @location(1) color_a: vec4<f32>,
     @location(2) color_b: vec4<f32>,
     @location(3) params: vec4<f32>,   // [effect_type, param1, param2, corner_radius]
+    @location(4) clip_bounds: vec4<f32>,
+    @location(5) clip_radii: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -247,6 +310,8 @@ struct VertexOutput {
     @location(1) @interpolate(flat) color_a: vec4<f32>,
     @location(2) @interpolate(flat) color_b: vec4<f32>,
     @location(3) @interpolate(flat) params: vec4<f32>,
+    @location(4) @interpolate(flat) clip_bounds: vec4<f32>,
+    @location(5) @interpolate(flat) clip_radii: vec4<f32>,
 };
 
 @vertex
@@ -264,6 +329,8 @@ fn vs_effect(input: VertexInput) -> VertexOutput {
     out.color_a = input.color_a;
     out.color_b = input.color_b;
     out.params = input.params;
+    out.clip_bounds = input.clip_bounds;
+    out.clip_radii = input.clip_radii;
     return out;
 }
 
@@ -338,6 +405,30 @@ fn effect_sdf(p: vec2<f32>, half_size: vec2<f32>, radius: f32) -> f32 {
     return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - radius;
 }
 
+fn effect_pick_corner_radius(p: vec2<f32>, radii: vec4<f32>) -> f32 {
+    if (p.x < 0.0) {
+        return select(radii.w, radii.x, p.y < 0.0);
+    } else {
+        return select(radii.z, radii.y, p.y < 0.0);
+    }
+}
+
+fn effect_clip_alpha(
+    pixel_pos: vec2<f32>,
+    clip_bounds: vec4<f32>,
+    clip_radii: vec4<f32>,
+) -> f32 {
+    if (clip_radii.x <= 0.0 && clip_radii.y <= 0.0 && clip_radii.z <= 0.0 && clip_radii.w <= 0.0) {
+        return 1.0;
+    }
+    let clip_half = clip_bounds.zw * 0.5;
+    let clip_center = clip_bounds.xy + clip_half;
+    let cp = pixel_pos - clip_center;
+    let cr = effect_pick_corner_radius(cp, clip_radii);
+    let clip_sdf = effect_sdf(cp, clip_half, cr);
+    return saturate(0.5 - clip_sdf);
+}
+
 // ---- Fragment shader ----
 
 @fragment
@@ -349,7 +440,9 @@ fn fs_effect(input: VertexOutput) -> @location(0) vec4<f32> {
 
     // Rounded-rect mask.
     let sdf = effect_sdf(p, half_size, corner_radius);
-    let mask = saturate(0.5 - sdf);
+    let mask_self = saturate(0.5 - sdf);
+    let mask_clip = effect_clip_alpha(input.position.xy, input.clip_bounds, input.clip_radii);
+    let mask = mask_self * mask_clip;
     if (mask <= 0.0) {
         discard;
     }

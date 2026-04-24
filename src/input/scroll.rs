@@ -138,7 +138,7 @@ fn active_overlay_row_height_px(state: &AppState) -> f32 {
     use crate::ui::state::OverlaySurface;
     match state.overlays_top() {
         Some(
-            OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_) | OverlaySurface::ThemePicker,
+            OverlaySurface::RepoPicker | OverlaySurface::RefPicker | OverlaySurface::ThemePicker,
         ) => state
             .overlays
             .picker

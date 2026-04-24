@@ -373,7 +373,7 @@ fn workspace_key_actions_inner(
 
 fn cycle_focus_target(state: &AppState) -> Option<FocusTarget> {
     match state.overlays_top() {
-        Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker(_)) => {
+        Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker) => {
             match state.focus.get(&state.store) {
                 Some(FocusTarget::PickerInput) => Some(FocusTarget::PickerList),
                 _ => Some(FocusTarget::PickerInput),
@@ -410,7 +410,7 @@ fn activate_current_focus_actions(state: &AppState) -> Option<Vec<Action>> {
     match state.overlays_top() {
         Some(
             OverlaySurface::RepoPicker
-            | OverlaySurface::RefPicker(_)
+            | OverlaySurface::RefPicker
             | OverlaySurface::CommandPalette
             | OverlaySurface::ThemePicker,
         ) => Some(vec![Action::ConfirmOverlaySelection]),

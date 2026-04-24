@@ -1240,7 +1240,11 @@ impl Element for Div {
             || style.layout.overflow.y != taffy::Overflow::Visible;
 
         if should_clip {
-            scene.clip(bounds);
+            if r > 0.0 {
+                scene.clip_rounded(bounds, [r; 4]);
+            } else {
+                scene.clip(bounds);
+            }
         }
 
         let pushed_text_color = if hovered {
@@ -3198,6 +3202,43 @@ mod tests {
 
         assert_eq!(clip_starts, 1, "overflow-hidden should push a clip region");
         assert_eq!(clip_ends, 1, "overflow-hidden should pop its clip region");
+    }
+
+    #[test]
+    fn rounded_overflow_hidden_emits_rounded_clip() {
+        let mut font_system = glyphon::FontSystem::new();
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
+        let mut scene = Scene::default();
+
+        let red = Color::rgba(255, 0, 0, 255);
+
+        // Outer: rounded + overflow-hidden. Inner: square bg that extends to
+        // the outer's right edge. Mirrors the compare-cluster layout.
+        let mut root = div()
+            .w(200.0)
+            .h(40.0)
+            .overflow_hidden()
+            .rounded(8.0)
+            .child(div().w(200.0).h(40.0).bg(red))
+            .into_any();
+
+        render_element(&mut root, &mut scene, &mut cx, 200.0, 40.0);
+
+        // The outer's clip primitive should carry the rounded corner radii.
+        let clip_start = scene
+            .primitives
+            .iter()
+            .find_map(|p| match p {
+                crate::render::Primitive::ClipStart(c) => Some(*c),
+                _ => None,
+            })
+            .expect("should emit a ClipStart");
+
+        assert_eq!(
+            clip_start.corner_radii, [8.0; 4],
+            "overflow-hidden on a rounded div should emit a rounded clip",
+        );
     }
 
     // -- New tests --

@@ -1,9 +1,11 @@
 use std::cmp::Ordering;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use git2::{
-    ApplyLocation, BranchType, Cred, Diff, DiffFormat, DiffOptions, FetchOptions, ObjectType, Oid,
-    PushOptions, RemoteCallbacks, Repository, build::CheckoutBuilder,
+    ApplyLocation, BranchType, Diff, DiffFormat, DiffOptions, ObjectType, Oid, Repository,
+    build::CheckoutBuilder,
 };
 use serde::Serialize;
 
@@ -46,30 +48,6 @@ pub enum PullOutcome {
     FastForwarded { behind: usize },
 }
 
-const OPENSSH_DEFAULT_IDENTITIES: &[&str] = &[
-    "id_rsa",
-    "id_ecdsa",
-    "id_ecdsa_sk",
-    "id_ed25519",
-    "id_ed25519_sk",
-    "id_xmss",
-    "id_dsa",
-];
-
-#[derive(Debug, Default)]
-struct SshConfig {
-    identity_files: Vec<PathBuf>,
-    identity_file_none: bool,
-    identities_only: Option<bool>,
-    user: Option<String>,
-}
-
-impl SshConfig {
-    fn identities_only(&self) -> bool {
-        self.identities_only.unwrap_or(false)
-    }
-}
-
 fn workdir_is_dirty(repo: &Repository) -> Result<bool> {
     let mut options = git2::StatusOptions::new();
     options
@@ -78,304 +56,6 @@ fn workdir_is_dirty(repo: &Repository) -> Result<bool> {
         .include_ignored(false);
     let statuses = repo.statuses(Some(&mut options))?;
     Ok(!statuses.is_empty())
-}
-
-fn ssh_host_from_url(url: &str) -> Option<String> {
-    if let Some(rest) = url.strip_prefix("ssh://") {
-        let authority = rest.split('/').next().unwrap_or(rest);
-        let host_port = authority.rsplit('@').next().unwrap_or(authority);
-        let host = host_port
-            .strip_prefix('[')
-            .and_then(|value| value.split_once(']').map(|(host, _)| host))
-            .unwrap_or_else(|| host_port.split(':').next().unwrap_or(host_port));
-        return (!host.is_empty()).then(|| host.to_owned());
-    }
-
-    if !url.contains("://") {
-        let before_path = url.split(':').next().unwrap_or(url);
-        let host = before_path.rsplit('@').next().unwrap_or(before_path);
-        return (!host.is_empty()).then(|| host.to_owned());
-    }
-
-    None
-}
-
-fn strip_inline_comment(line: &str) -> &str {
-    let mut escaped = false;
-    let mut quote = None;
-    for (index, ch) in line.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match ch {
-            '\\' => escaped = true,
-            '"' | '\'' if quote == Some(ch) => quote = None,
-            '"' | '\'' if quote.is_none() => quote = Some(ch),
-            '#' if quote.is_none() => return &line[..index],
-            _ => {}
-        }
-    }
-    line
-}
-
-fn wildcard_match(pattern: &str, value: &str) -> bool {
-    fn inner(pattern: &[u8], value: &[u8]) -> bool {
-        match pattern {
-            [] => value.is_empty(),
-            [b'*', rest @ ..] => {
-                inner(rest, value) || (!value.is_empty() && inner(pattern, &value[1..]))
-            }
-            [b'?', rest @ ..] => !value.is_empty() && inner(rest, &value[1..]),
-            [head, rest @ ..] => {
-                value
-                    .first()
-                    .is_some_and(|ch| head.eq_ignore_ascii_case(ch))
-                    && inner(rest, &value[1..])
-            }
-        }
-    }
-
-    inner(pattern.as_bytes(), value.as_bytes())
-}
-
-fn host_patterns_match(patterns: &[&str], host: &str) -> bool {
-    let mut matched = false;
-    for pattern in patterns {
-        if let Some(negated) = pattern.strip_prefix('!') {
-            if wildcard_match(negated, host) {
-                return false;
-            }
-        } else if wildcard_match(pattern, host) {
-            matched = true;
-        }
-    }
-    matched
-}
-
-fn expand_ssh_identity_path(value: &str, host: &str, username: &str) -> Option<PathBuf> {
-    if value.eq_ignore_ascii_case("none") {
-        return None;
-    }
-    let home = dirs::home_dir()?;
-    let local_user = std::env::var("USERNAME")
-        .or_else(|_| std::env::var("USER"))
-        .unwrap_or_default();
-    let local_host = std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_default();
-    let mut expanded = String::new();
-    let mut chars = value.chars();
-    if let Some(first) = chars.next() {
-        if first == '~' {
-            expanded.push_str(&home.to_string_lossy());
-        } else {
-            expanded.push(first);
-        }
-    }
-    while let Some(ch) = chars.next() {
-        if ch != '%' {
-            expanded.push(ch);
-            continue;
-        }
-        match chars.next() {
-            Some('d') => expanded.push_str(&home.to_string_lossy()),
-            Some('u') => expanded.push_str(&local_user),
-            Some('l') => expanded.push_str(&local_host),
-            Some('h') => expanded.push_str(host),
-            Some('r') => expanded.push_str(username),
-            Some('%') => expanded.push('%'),
-            Some(other) => {
-                expanded.push('%');
-                expanded.push(other);
-            }
-            None => expanded.push('%'),
-        }
-    }
-    Some(PathBuf::from(expanded))
-}
-
-fn read_ssh_config(host: &str, username: &str) -> SshConfig {
-    let Some(home) = dirs::home_dir() else {
-        return SshConfig::default();
-    };
-    let path = home.join(".ssh").join("config");
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return SshConfig::default();
-    };
-
-    let mut config = SshConfig::default();
-    let mut active = true;
-    for raw_line in text.lines() {
-        let line = strip_inline_comment(raw_line).trim();
-        if line.is_empty() {
-            continue;
-        }
-        let mut parts = line.split_whitespace();
-        let Some(keyword) = parts.next() else {
-            continue;
-        };
-        if keyword.eq_ignore_ascii_case("host") {
-            let patterns = parts.collect::<Vec<_>>();
-            active = host_patterns_match(&patterns, host);
-            continue;
-        }
-        if !active {
-            continue;
-        }
-        if keyword.eq_ignore_ascii_case("identityfile") {
-            for value in parts {
-                if value.eq_ignore_ascii_case("none") {
-                    config.identity_file_none = true;
-                    config.identity_files.clear();
-                } else if !config.identity_file_none
-                    && let Some(path) = expand_ssh_identity_path(value, host, username)
-                {
-                    config.identity_files.push(path);
-                }
-            }
-        } else if keyword.eq_ignore_ascii_case("identitiesonly") {
-            if config.identities_only.is_none() {
-                config.identities_only = parts.next().map(|value| {
-                    matches!(
-                        value.to_ascii_lowercase().as_str(),
-                        "yes" | "true" | "on" | "1"
-                    )
-                });
-            }
-        } else if keyword.eq_ignore_ascii_case("user") && config.user.is_none() {
-            config.user = parts.next().map(str::to_owned);
-        }
-    }
-
-    config
-}
-
-fn ssh_config_user_for_url(url: &str) -> Option<String> {
-    let host = ssh_host_from_url(url)?;
-    read_ssh_config(&host, "git").user
-}
-
-fn openssh_identity_candidates(url: &str, username: &str) -> (Vec<PathBuf>, bool) {
-    let Some(home) = dirs::home_dir() else {
-        return (Vec::new(), false);
-    };
-    let host = ssh_host_from_url(url).unwrap_or_default();
-    let config = read_ssh_config(&host, username);
-    let identities_only = config.identities_only();
-    let mut candidates = config.identity_files;
-    if !config.identity_file_none {
-        let ssh_dir = home.join(".ssh");
-        candidates.extend(
-            OPENSSH_DEFAULT_IDENTITIES
-                .iter()
-                .map(|name| ssh_dir.join(name)),
-        );
-    }
-    candidates.dedup();
-    (candidates, identities_only)
-}
-
-/// Walks through SSH credential sources in OpenSSH's broad order: agent
-/// identities first (unless IdentitiesOnly is set), then configured
-/// IdentityFile entries plus OpenSSH's default identity filenames. libgit2
-/// calls the credentials callback repeatedly when auth fails, so this advances
-/// one credential per invocation and returns `Err` once exhausted.
-fn ssh_credential_for_step(
-    url: &str,
-    username: &str,
-    step: u8,
-) -> std::result::Result<Cred, git2::Error> {
-    let (candidates, identities_only) = openssh_identity_candidates(url, username);
-    if !identities_only && step == 0 {
-        return Cred::ssh_key_from_agent(username);
-    }
-
-    let key_step = if identities_only {
-        step as usize
-    } else {
-        step.saturating_sub(1) as usize
-    };
-    let identity_index = key_step / 2;
-    if identity_index >= candidates.len() {
-        return Err(git2::Error::from_str(
-            "ssh: all libgit2 credential sources exhausted (ssh-agent + OpenSSH IdentityFile candidates)",
-        ));
-    }
-    let private = &candidates[identity_index];
-    let use_public_key = key_step % 2 == 0;
-    let public = private.with_file_name(format!(
-        "{}.pub",
-        private
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default()
-    ));
-    if !private.exists() || (use_public_key && !public.exists()) {
-        return ssh_credential_for_step(url, username, step + 1);
-    }
-    tracing::debug!(
-        identity = %private.display(),
-        public = use_public_key,
-        "git cred: trying ssh identity",
-    );
-    let public_opt = use_public_key.then_some(public.as_path());
-    Cred::ssh_key(username, public_opt, private, None)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum RemoteCredentialKind {
-    CredentialHelper {
-        url: String,
-        username: Option<String>,
-    },
-    SshKey {
-        username: String,
-    },
-    Username {
-        username: String,
-    },
-    Default,
-}
-
-/// Pick a credential strategy that matches what `git` itself would do on the
-/// CLI: `credential.helper` for HTTPS, ssh-agent for SSH. No GitHub-specific
-/// path — PR fetches hit the same code path as any other HTTPS remote.
-fn select_remote_credential(
-    remote_url: &str,
-    username: Option<&str>,
-    allowed: git2::CredentialType,
-) -> RemoteCredentialKind {
-    if remote_url.starts_with("http") && allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT)
-    {
-        return RemoteCredentialKind::CredentialHelper {
-            url: remote_url.to_owned(),
-            username: username.map(str::to_owned),
-        };
-    }
-
-    if allowed.contains(git2::CredentialType::SSH_KEY) {
-        return RemoteCredentialKind::SshKey {
-            username: username
-                .map(str::to_owned)
-                .or_else(|| ssh_config_user_for_url(remote_url))
-                .unwrap_or_else(|| "git".to_owned()),
-        };
-    }
-
-    if allowed.contains(git2::CredentialType::USERNAME) {
-        return RemoteCredentialKind::Username {
-            username: username.map(str::to_owned).unwrap_or_else(|| {
-                if remote_url.starts_with("http") {
-                    "x-access-token".to_owned()
-                } else {
-                    ssh_config_user_for_url(remote_url).unwrap_or_else(|| "git".to_owned())
-                }
-            }),
-        };
-    }
-
-    RemoteCredentialKind::Default
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -474,6 +154,44 @@ fn split_lines(text: &str) -> Vec<String> {
         out.push(line.to_owned());
     }
     out
+}
+
+fn git_workdir(repo: &Repository) -> Result<PathBuf> {
+    repo.workdir()
+        .map(Path::to_path_buf)
+        .or_else(|| repo.path().parent().map(Path::to_path_buf))
+        .ok_or_else(|| DiffyError::General("repository has no working directory".to_owned()))
+}
+
+fn run_system_git(repo: &Repository, args: &[OsString]) -> Result<()> {
+    let workdir = git_workdir(repo)?;
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(&workdir)
+        .output()
+        .map_err(|e| DiffyError::General(format!("failed to run git: {e}")))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = stderr
+        .trim()
+        .lines()
+        .last()
+        .or_else(|| stdout.trim().lines().last())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("git exited with {}", output.status));
+    let command = args
+        .iter()
+        .map(|arg| arg.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ");
+    Err(DiffyError::General(format!(
+        "git {command} failed: {detail}"
+    )))
 }
 
 #[derive(Default)]
@@ -889,98 +607,25 @@ impl GitService {
         self.diff_between_refs(&left, &right)
     }
 
-    /// Build `RemoteCallbacks` that resolve credentials via the system
-    /// `git credential` helper (HTTPS) and SSH (ssh-agent first, then
-    /// standard identity files in `~/.ssh/`) — mirroring what `git` itself
-    /// does from the CLI.
-    ///
-    /// libgit2 invokes the credentials callback repeatedly when auth fails,
-    /// expecting a different credential each time. We walk through an ordered
-    /// list of strategies (agent → id_ed25519 → id_rsa → id_ecdsa) and return
-    /// an error once all have been tried, so libgit2 surfaces the auth
-    /// failure to the caller instead of hammering the remote.
-    fn build_remote_callbacks(&self) -> RemoteCallbacks<'static> {
-        use std::cell::Cell;
-        let mut callbacks = RemoteCallbacks::new();
-        let tried_helper = Cell::new(false);
-        let ssh_step = Cell::new(0u8);
-        let tried_default = Cell::new(false);
-
-        if std::env::var_os("SSH_AUTH_SOCK").is_none() && !cfg!(target_os = "windows") {
-            tracing::warn!(
-                "git cred: SSH_AUTH_SOCK not set — falling back to ~/.ssh identity files",
-            );
-        }
-
-        callbacks.credentials(move |url, username, allowed| {
-            match select_remote_credential(url, username, allowed) {
-                RemoteCredentialKind::CredentialHelper { url, username } => {
-                    if tried_helper.replace(true) {
-                        Err(git2::Error::from_str(
-                            "git credential helper did not produce valid credentials",
-                        ))
-                    } else {
-                        let config = git2::Config::open_default()?;
-                        Cred::credential_helper(&config, &url, username.as_deref())
-                    }
-                }
-                RemoteCredentialKind::SshKey { username } => {
-                    let step = ssh_step.get();
-                    ssh_step.set(step.saturating_add(1));
-                    ssh_credential_for_step(url, &username, step).inspect_err(|error| {
-                        tracing::debug!(step, %error, "git cred: ssh credential source failed");
-                    })
-                }
-                // libgit2 preflight step — probe remote with username only.
-                RemoteCredentialKind::Username { username } => Cred::username(&username),
-                RemoteCredentialKind::Default => {
-                    if tried_default.replace(true) {
-                        Err(git2::Error::from_str("no credentials available"))
-                    } else {
-                        Cred::default()
-                    }
-                }
-            }
-        });
-        callbacks
-    }
-
     fn fetch_refspecs(&self, repo_url: &str, refspecs: &[String]) -> Result<()> {
         let repo = self.repo()?;
-        let mut remote = repo.remote_anonymous(repo_url)?;
-        let callbacks = self.build_remote_callbacks();
-        let mut fetch_options = FetchOptions::new();
-        fetch_options.remote_callbacks(callbacks);
-        let specs: Vec<&str> = refspecs.iter().map(String::as_str).collect();
-        remote.fetch(&specs, Some(&mut fetch_options), None)?;
-        Ok(())
+        let mut args = Vec::with_capacity(refspecs.len() + 2);
+        args.push(OsString::from("fetch"));
+        args.push(OsString::from(repo_url));
+        args.extend(refspecs.iter().map(OsString::from));
+        run_system_git(repo, &args)
     }
 
     /// Fetch a named remote using the remote's configured refspecs.
-    ///
-    /// `progress` is invoked with `(received_objects, total_objects, received_bytes)`
-    /// during the download. Callbacks fire on a worker thread.
-    pub fn fetch_remote<F>(&self, remote_name: &str, mut progress: F) -> Result<()>
+    pub fn fetch_remote<F>(&self, remote_name: &str, _progress: F) -> Result<()>
     where
         F: FnMut(usize, usize, usize) + Send + 'static,
     {
         let repo = self.repo()?;
-        let mut remote = repo.find_remote(remote_name)?;
-        let mut callbacks = self.build_remote_callbacks();
-        callbacks.transfer_progress(move |stats| {
-            progress(
-                stats.received_objects(),
-                stats.total_objects(),
-                stats.received_bytes(),
-            );
-            true
-        });
-        let mut fetch_options = FetchOptions::new();
-        fetch_options.remote_callbacks(callbacks);
-        let refspecs = remote.fetch_refspecs()?;
-        let specs: Vec<&str> = refspecs.iter().flatten().collect();
-        remote.fetch(&specs, Some(&mut fetch_options), None)?;
-        Ok(())
+        run_system_git(
+            repo,
+            &[OsString::from("fetch"), OsString::from(remote_name)],
+        )
     }
 
     /// List the names of configured remotes (e.g. `["origin"]`).
@@ -1026,38 +671,27 @@ impl GitService {
         Ok(Some((remote.to_owned(), branch.to_owned())))
     }
 
-    /// Push a refspec to a remote. When `force_with_lease` is set, the push
-    /// is forced but still respects the standard libgit2 failure modes
-    /// (libgit2 does not natively support `--force-with-lease`; callers should
-    /// fetch immediately before calling to narrow the race window).
-    ///
-    /// `progress` fires during the upload with
-    /// `(current_objects, total_objects, bytes_pushed)`.
+    /// Push a refspec to a remote using system Git so SSH and credential
+    /// handling match the user's CLI setup.
     pub fn push<F>(
         &self,
         remote_name: &str,
         refspec: &str,
         force_with_lease: bool,
-        mut progress: F,
+        _progress: F,
     ) -> Result<()>
     where
         F: FnMut(usize, usize, usize) + Send + 'static,
     {
         let repo = self.repo()?;
-        let mut remote = repo.find_remote(remote_name)?;
-        let mut callbacks = self.build_remote_callbacks();
-        callbacks.push_transfer_progress(move |current, total, bytes| {
-            progress(current, total, bytes);
-        });
-        let mut push_options = PushOptions::new();
-        push_options.remote_callbacks(callbacks);
-        let effective = if force_with_lease && !refspec.starts_with('+') {
-            format!("+{refspec}")
-        } else {
-            refspec.to_owned()
-        };
-        remote.push(&[effective.as_str()], Some(&mut push_options))?;
-        Ok(())
+        let mut args = Vec::with_capacity(4);
+        args.push(OsString::from("push"));
+        if force_with_lease {
+            args.push(OsString::from("--force-with-lease"));
+        }
+        args.push(OsString::from(remote_name));
+        args.push(OsString::from(refspec));
+        run_system_git(repo, &args)
     }
 
     /// Fast-forward the named local branch to match its upstream on the given
@@ -1304,15 +938,10 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    use git2::CredentialType;
     use git2::{BranchType, Repository, Signature, Status, StatusOptions};
     use tempfile::TempDir;
 
-    use super::{
-        INDEX_REF, OPENSSH_DEFAULT_IDENTITIES, PR_REF_PREFIX, RemoteCredentialKind, WORKDIR_REF,
-        host_patterns_match, pr_ref_path, select_remote_credential, ssh_host_from_url,
-        wildcard_match,
-    };
+    use super::{INDEX_REF, PR_REF_PREFIX, WORKDIR_REF, pr_ref_path};
     use crate::core::vcs::git::{GitService, StatusItem, StatusOperation, StatusScope};
 
     fn commit_file(repo: &Repository, relative_path: &str, content: &str, message: &str) -> String {
@@ -1381,74 +1010,6 @@ mod tests {
             "refs/diffy/pr/77/feat/new-thing"
         );
         assert!(pr_ref_path(1, "x").starts_with(PR_REF_PREFIX));
-    }
-
-    #[test]
-    fn https_remote_uses_credential_helper() {
-        let allowed = CredentialType::USER_PASS_PLAINTEXT | CredentialType::USERNAME;
-        let selected =
-            select_remote_credential("https://github.com/owner/repo.git", Some("git"), allowed);
-        assert_eq!(
-            selected,
-            RemoteCredentialKind::CredentialHelper {
-                url: "https://github.com/owner/repo.git".to_owned(),
-                username: Some("git".to_owned()),
-            }
-        );
-    }
-
-    #[test]
-    fn falls_back_to_ssh_for_non_http_remotes() {
-        let selected = select_remote_credential(
-            "git@github.com:owner/repo.git",
-            Some("git"),
-            CredentialType::SSH_KEY,
-        );
-        assert_eq!(
-            selected,
-            RemoteCredentialKind::SshKey {
-                username: "git".to_owned(),
-            }
-        );
-    }
-
-    #[test]
-    fn parses_ssh_hosts_from_common_git_urls() {
-        assert_eq!(
-            ssh_host_from_url("git@github.com:owner/repo.git").as_deref(),
-            Some("github.com")
-        );
-        assert_eq!(
-            ssh_host_from_url("ssh://git@example.com:2222/owner/repo.git").as_deref(),
-            Some("example.com")
-        );
-        assert_eq!(ssh_host_from_url("https://github.com/owner/repo.git"), None);
-    }
-
-    #[test]
-    fn matches_openssh_host_patterns() {
-        assert!(wildcard_match("*.github.com", "ssh.github.com"));
-        assert!(host_patterns_match(&["*", "!banned.example"], "github.com"));
-        assert!(!host_patterns_match(
-            &["*", "!banned.example"],
-            "banned.example"
-        ));
-    }
-
-    #[test]
-    fn openssh_default_identity_order_matches_cli() {
-        assert_eq!(
-            OPENSSH_DEFAULT_IDENTITIES,
-            &[
-                "id_rsa",
-                "id_ecdsa",
-                "id_ecdsa_sk",
-                "id_ed25519",
-                "id_ed25519_sk",
-                "id_xmss",
-                "id_dsa",
-            ]
-        );
     }
 
     #[test]

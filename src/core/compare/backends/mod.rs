@@ -2,6 +2,7 @@
 mod difftastic;
 mod git_diff;
 
+use crate::core::compare::progress::ProgressSink;
 use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::CompareSpec;
 use crate::core::error::Result;
@@ -13,7 +14,12 @@ pub use git_diff::GitDiffBackend;
 pub(crate) use git_diff::compare_output_from_diff;
 
 pub trait DiffBackend: Send + Sync {
-    fn compare(&self, spec: &CompareSpec, git: &GitService) -> Result<Option<CompareOutput>>;
+    fn compare(
+        &self,
+        spec: &CompareSpec,
+        git: &GitService,
+        reporter: Option<&dyn ProgressSink>,
+    ) -> Result<Option<CompareOutput>>;
 }
 
 #[cfg(not(feature = "difftastic"))]

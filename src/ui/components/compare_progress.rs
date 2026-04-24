@@ -13,7 +13,7 @@ use crate::ui::components::{Button, ButtonStyle};
 use crate::ui::design::{Alpha, Ico, Rad, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
-use crate::ui::state::{AppState, ComparePhase, CompareProgress};
+use crate::ui::state::{AppState, ComparePhase, CompareProgress, LoadingSubject};
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme};
 
@@ -27,18 +27,34 @@ pub fn compare_progress_panel(
 
     let phase_label = progress.phase.label();
     let elapsed = elapsed_text(progress.started_at_ms, state.clock_ms);
-    let count_text = file_count_line(progress);
+    // Only show the standalone "N files changed" line once we've finished
+    // counting — otherwise the phase label already contains "N of M".
+    let count_text = match progress.phase {
+        ComparePhase::LoadingFiles { .. } => None,
+        _ => file_count_line(progress),
+    };
 
-    // Ref chips mirror the title-bar segmented compare control so the
-    // progress panel reads as an extension of that surface.
-    let chips = view! { scale,
-        <div class="flex-row items-center" gap={Sp::MD}>
-            {ref_chip(&progress.left_label, tc, scale)}
-            <icon svg={lucide::ARROW_LEFT_RIGHT}
-                  size={Ico::SM}
-                  color={tc.text_muted} />
-            {ref_chip(&progress.right_label, tc, scale)}
-        </div>
+    // Subject chips — ref pair for compare, folder chip for repo open.
+    // Mirror the title-bar look so the panel reads as an extension of
+    // whatever surface initiated the op.
+    let chips = match &progress.subject {
+        LoadingSubject::Compare {
+            left_label,
+            right_label,
+        } => view! { scale,
+            <div class="flex-row items-center" gap={Sp::MD}>
+                {ref_chip(left_label, tc, scale)}
+                <icon svg={lucide::ARROW_LEFT_RIGHT}
+                      size={Ico::SM}
+                      color={tc.text_muted} />
+                {ref_chip(right_label, tc, scale)}
+            </div>
+        },
+        LoadingSubject::RepoOpen { name } => view! { scale,
+            <div class="flex-row items-center" gap={Sp::MD}>
+                {repo_chip(name, tc, scale)}
+            </div>
+        },
     };
 
     // Progress bar: determinate rail once we know the file count and the
@@ -62,7 +78,7 @@ pub fn compare_progress_panel(
                     <icon svg={lucide::LOADER} size={Ico::SM} color={tc.text_muted} />
                     <div class="flex-1" min_w={0.0}>
                         <text class="text-sm font-medium truncate" color={tc.text_strong}>
-                            {phase_label.to_owned()}
+                            {phase_label}
                         </text>
                     </div>
                     <text class="text-xs font-mono" color={tc.text_muted}>{elapsed}</text>
@@ -99,26 +115,51 @@ fn ref_chip(label: &str, tc: &crate::ui::theme::ThemeColors, scale: f32) -> AnyE
     }
 }
 
+fn repo_chip(name: &str, tc: &crate::ui::theme::ThemeColors, scale: f32) -> AnyElement {
+    view! { scale,
+        <div class="flex-row items-center"
+             gap={Sp::XS}
+             px={Sp::MD} py={Sp::XS}
+             rounded={Rad::MD}
+             bg={tc.element_background}
+             border={tc.border_variant}>
+            <icon svg={lucide::FOLDER} size={Ico::SM} color={tc.text_muted} />
+            <text class="text-sm font-medium" color={tc.text_strong}>
+                {name.to_owned()}
+            </text>
+        </div>
+    }
+}
+
 fn progress_rail(
     progress: &CompareProgress,
     tc: &crate::ui::theme::ThemeColors,
     scale: f32,
 ) -> AnyElement {
     let h = Sz::PROGRESS_H;
-    let show_determinate = matches!(
-        progress.phase,
-        ComparePhase::PopulatingList | ComparePhase::RenderingFirstFile
-    );
 
-    if show_determinate && progress.file_count_total.is_some() {
-        // Split the determinate phases 50/50 — PopulatingList fills half,
-        // RenderingFirstFile fills the rest. Meaningful visual progress
-        // without pretending we have finer granularity than we do.
-        let fill = match progress.phase {
-            ComparePhase::PopulatingList => 0.5,
-            ComparePhase::RenderingFirstFile => 0.9,
-            _ => 0.0,
-        };
+    // Determinate fill only when we have something real to report. Repo
+    // opens have three coarse phases with no denominator, so they always
+    // shimmer — showing the bar at 92% the moment the panel reveals would
+    // read as "almost done" even though work is still happening.
+    let determinate_fill = match &progress.subject {
+        LoadingSubject::RepoOpen { .. } => None,
+        LoadingSubject::Compare { .. } => match progress.phase {
+            ComparePhase::LoadingFiles { .. } => progress.file_count_total.and_then(|total| {
+                (total > 0).then(|| {
+                    (progress.files_loaded as f32 / total as f32).clamp(0.0, 1.0)
+                })
+            }),
+            // After backend work is done, freeze the bar near full. These
+            // phases are quick; a solid cap reads better than a jump.
+            ComparePhase::FetchingHistory => Some(0.92),
+            ComparePhase::PopulatingList => Some(0.96),
+            ComparePhase::RenderingFirstFile => Some(0.99),
+            _ => None,
+        },
+    };
+
+    if let Some(fill) = determinate_fill {
         crate::ui::components::progress_bar(fill)
             .height(h)
             .into_any()

@@ -139,7 +139,7 @@ fn sync_chip(
     .into_any()
 }
 
-pub(crate) fn compare_mode_label(mode: CompareMode) -> &'static str {
+fn compare_mode_label(mode: CompareMode) -> &'static str {
     match mode {
         CompareMode::SingleCommit => "commit",
         CompareMode::TwoDot => "diff",
@@ -154,6 +154,7 @@ pub(crate) fn renderer_label(renderer: RendererKind) -> &'static str {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn display_ref(value: &str) -> &str {
     if value.is_empty() {
         return "?";

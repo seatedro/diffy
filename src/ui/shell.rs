@@ -111,8 +111,17 @@ pub fn build_ui_frame(
 
     let in_settings = state.app_view.get(&state.store) == AppView::Settings;
 
-    let compare_progress_active = state.compare_progress.with(&state.store, |p| p.is_some());
+    // Once the reveal delay has elapsed we want the skeleton to take the
+    // sidebar slot even if `workspace_mode` is still Ready — a re-compare
+    // keeps the old file list around as scaffolding during the grace
+    // window, but after the grace window we're committed to showing the
+    // loading view, so blow the old sidebar away.
+    let progress_visible = state.compare_progress.with(&state.store, |p| {
+        p.as_ref().is_some_and(|p| state.clock_ms >= p.reveal_at_ms)
+    });
     let sidebar_slot_visible = sidebar_width_factor > 0.001 && width >= Bp::COMPACT * ui_scale;
+    let show_real_sidebar = state.is_workspace_ready() && !progress_visible;
+    let show_skeleton_sidebar = progress_visible;
 
     let body: AnyElement = if in_settings {
         settings_page::settings_page(state, theme).into_any()
@@ -121,7 +130,7 @@ pub fn build_ui_frame(
             .flex_row()
             .flex_1()
             .min_h(0.0)
-            .when(state.is_workspace_ready() && sidebar_slot_visible, |d| {
+            .when(show_real_sidebar && sidebar_slot_visible, |d| {
                 d.child(sidebar_mod::sidebar(
                     state,
                     theme,
@@ -135,22 +144,19 @@ pub fn build_ui_frame(
                     sidebar_width,
                 ))
             })
-            // Shimmer placeholder while the compare is still running so
-            // the destination UI is visible as scaffolding. Hidden once
-            // the real sidebar takes over (Ready + files populated).
-            .when(
-                compare_progress_active && !state.is_workspace_ready() && sidebar_slot_visible,
-                |d| {
-                    d.child(
-                        div()
-                            .w(sidebar_width)
-                            .h_full()
-                            .bg(theme.colors.sidebar_background)
-                            .border_r(theme.colors.border_variant)
-                            .child(crate::ui::components::sidebar_skeleton(theme)),
-                    )
-                },
-            )
+            // Shimmer placeholder: renders in the sidebar slot while the
+            // progress panel is up, giving the user a preview of the
+            // destination UI as the data fills in.
+            .when(show_skeleton_sidebar && sidebar_slot_visible, |d| {
+                d.child(
+                    div()
+                        .w(sidebar_width)
+                        .h_full()
+                        .bg(theme.colors.sidebar_background)
+                        .border_r(theme.colors.border_variant)
+                        .child(crate::ui::components::sidebar_skeleton(theme)),
+                )
+            })
             .child(toolbar_mod::main_surface(
                 state,
                 theme,

@@ -106,8 +106,13 @@ impl EffectRunner {
             Effect::WatchRepository { path } => {
                 self.repo_watch_worker.dispatch(path);
             }
-            Effect::SyncRepository { path, reason } => {
-                self.git_worker.dispatch_sync(path, reason);
+            Effect::SyncRepository {
+                path,
+                reason,
+                reporter_generation,
+            } => {
+                self.git_worker
+                    .dispatch_sync(path, reason, reporter_generation);
             }
             Effect::ApplyStatusOperation(request) => {
                 self.git_worker.dispatch_operation(

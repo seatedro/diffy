@@ -91,6 +91,11 @@ pub enum Effect {
     SyncRepository {
         path: PathBuf,
         reason: RepositorySyncReason,
+        /// When `Some`, the git worker emits `CompareProgressUpdate` events
+        /// tagged with this generation so the loading panel tracks repo
+        /// open phases (OpeningRepo → ResolvingRefs → FetchingHistory).
+        /// `None` for background resyncs where no progress UI is up.
+        reporter_generation: Option<u64>,
     },
     FetchRemote(FetchRemoteRequest),
     Push(PushRequest),

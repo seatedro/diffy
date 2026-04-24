@@ -518,7 +518,8 @@ impl GitService {
             }
         };
 
-        compare_output_from_diff(&mut diff)
+        // Status-item diff is a single file; no progress UI hook needed.
+        compare_output_from_diff(&mut diff, None)
     }
 
     pub fn apply_status_operation(

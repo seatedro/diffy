@@ -1,12 +1,17 @@
 use git2::{Delta, DiffOptions};
 
 use crate::core::compare::backends::DiffBackend;
+use crate::core::compare::progress::{ComparePhase, ProgressSink};
 use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::CompareSpec;
 use crate::core::diff::{DiffLine, FileDiff, Hunk, LineKind};
 use crate::core::error::Result;
 use crate::core::text::{ChangeIntensity, DiffTokenSpan, SyntaxTokenKind, TextBuffer, TokenBuffer};
 use crate::core::vcs::git::{GitService, WORKDIR_REF};
+
+/// Throttle file-progress emits so a 3,000-file diff doesn't post 3,000
+/// mpsc sends + winit wakes. Emits on every Nth file plus the final one.
+const LOADING_FILE_EMIT_STRIDE: usize = 16;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GitDiffBackend;
@@ -53,12 +58,19 @@ impl GitDiffBackend {
             let right_tree = right_commit.tree()?;
             repo.diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(&mut options))?
         };
-        Ok(Some(compare_output_from_diff(&mut diff)?))
+        // Per-file path reloads: no progress UI wired for these yet and
+        // they're expected to be fast (one file), so pass None.
+        Ok(Some(compare_output_from_diff(&mut diff, None)?))
     }
 }
 
 impl DiffBackend for GitDiffBackend {
-    fn compare(&self, spec: &CompareSpec, git: &GitService) -> Result<Option<CompareOutput>> {
+    fn compare(
+        &self,
+        spec: &CompareSpec,
+        git: &GitService,
+        reporter: Option<&dyn ProgressSink>,
+    ) -> Result<Option<CompareOutput>> {
         let repo = match git.repo() {
             Ok(r) => r,
             Err(_) => return Ok(None),
@@ -80,6 +92,14 @@ impl DiffBackend for GitDiffBackend {
             }
         };
 
+        // The expensive piece before file enumeration: walking trees and
+        // running rename detection (`find_similar` inside
+        // `compare_output_from_diff`). Announce the phase so the user
+        // stops seeing the generic "Opening repository…" label.
+        if let Some(r) = reporter {
+            r.phase(ComparePhase::EnumeratingChanges);
+        }
+
         let left_commit = repo.find_commit(git2::Oid::from_str(&left)?)?;
         let left_tree = left_commit.tree()?;
 
@@ -93,11 +113,17 @@ impl DiffBackend for GitDiffBackend {
             let right_tree = right_commit.tree()?;
             repo.diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(&mut options))?
         };
-        Ok(Some(compare_output_from_diff(&mut diff)?))
+        Ok(Some(compare_output_from_diff(&mut diff, reporter)?))
     }
 }
 
-pub(crate) fn compare_output_from_diff(diff: &mut git2::Diff<'_>) -> Result<CompareOutput> {
+pub(crate) fn compare_output_from_diff(
+    diff: &mut git2::Diff<'_>,
+    reporter: Option<&dyn ProgressSink>,
+) -> Result<CompareOutput> {
+    // `find_similar` does rename detection — the hottest path after
+    // tree-walk on kernel-scale diffs. The user is still under the
+    // "Enumerating changes…" label until we finish this.
     diff.find_similar(None)?;
 
     let mut output = CompareOutput::default();
@@ -105,7 +131,29 @@ pub(crate) fn compare_output_from_diff(diff: &mut git2::Diff<'_>) -> Result<Comp
     let mut token_buffer = TokenBuffer::default();
 
     let deltas: Vec<_> = diff.deltas().collect();
+    let files_total = deltas.len() as u32;
+
+    // Kick off the per-file phase with a zero count so the UI can flip to
+    // the determinate bar even before the first delta is parsed.
+    if let Some(r) = reporter {
+        r.phase(ComparePhase::LoadingFiles {
+            files_seen: 0,
+            files_total,
+        });
+    }
+
     for (delta_idx, delta) in deltas.iter().enumerate() {
+        // Heartbeat: throttled to 1-in-N deltas + always the final one,
+        // to avoid flooding the event channel on big diffs.
+        if let Some(r) = reporter {
+            let is_last = delta_idx + 1 == deltas.len();
+            if delta_idx % LOADING_FILE_EMIT_STRIDE == 0 || is_last {
+                r.phase(ComparePhase::LoadingFiles {
+                    files_seen: (delta_idx + 1) as u32,
+                    files_total,
+                });
+            }
+        }
         let mut file = FileDiff {
             path: delta
                 .new_file()
@@ -292,7 +340,7 @@ mod tests {
     fn compare(repo_dir: &TempDir, spec: CompareSpec) -> CompareOutput {
         let mut git = GitService::new();
         git.open(repo_dir.path().to_str().unwrap()).unwrap();
-        GitDiffBackend.compare(&spec, &git).unwrap().unwrap()
+        GitDiffBackend.compare(&spec, &git, None).unwrap().unwrap()
     }
 
     use crate::core::compare::service::CompareOutput;

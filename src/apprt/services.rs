@@ -6,7 +6,9 @@ use crate::ai::{self, GenerateRequest, StreamMessage};
 use crate::apprt::ProgressReporter;
 use crate::apprt::runtime::RuntimeEventSender;
 use crate::core::compare::backends::{DifftasticBackend, GitDiffBackend};
-use crate::core::compare::{CompareOutput, CompareService, RendererKind};
+use crate::core::compare::{
+    CompareOutput, ComparePhase, CompareService, ProgressSink, RendererKind,
+};
 use crate::core::error::{DiffyError, Result};
 use crate::core::http;
 use crate::core::vcs::git::{GitService, WORKDIR_REF};
@@ -20,7 +22,6 @@ use crate::effects::{
 use crate::events::{AppEvent, CompareFileFinished, CompareFinished, StatusDiffFinished};
 use crate::platform::persistence::{Settings, SettingsStore};
 use crate::platform::secrets::{self, AiKeyKind};
-use crate::ui::state::ComparePhase;
 use crate::ui::state::prepare_active_file;
 
 #[derive(Debug, Clone)]
@@ -54,11 +55,18 @@ impl AppServices {
             request.spec.mode,
         )?;
 
-        if let Some(r) = reporter {
-            r.phase(ComparePhase::ComputingDiff);
-        }
-        let output = CompareService::default().compare(&request.spec, &git)?;
+        // Phase labels are now driven from inside the backend (see
+        // `EnumeratingChanges` + per-file `LoadingFiles`), so we just pass
+        // the reporter through and let it speak for itself.
+        let output = CompareService::default().compare(
+            &request.spec,
+            &git,
+            reporter.map(|r| r as &dyn ProgressSink),
+        )?;
 
+        if let Some(r) = reporter {
+            r.phase(ComparePhase::FetchingHistory);
+        }
         let range_right = if resolved_right == WORKDIR_REF {
             "HEAD"
         } else {

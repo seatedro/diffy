@@ -1,4 +1,5 @@
 use crate::core::compare::backends::{DiffBackend, DifftasticBackend, GitDiffBackend};
+use crate::core::compare::progress::ProgressSink;
 use crate::core::compare::spec::{CompareSpec, RendererKind};
 use crate::core::diff::FileDiff;
 use crate::core::error::{DiffyError, Result};
@@ -30,19 +31,25 @@ impl Default for CompareService {
 }
 
 impl CompareService {
-    pub fn compare(&self, spec: &CompareSpec, git: &GitService) -> Result<CompareOutput> {
+    pub fn compare(
+        &self,
+        spec: &CompareSpec,
+        git: &GitService,
+        reporter: Option<&dyn ProgressSink>,
+    ) -> Result<CompareOutput> {
         if spec.renderer == RendererKind::Builtin {
-            return self.fallback.compare(spec, git)?.ok_or_else(|| {
+            return self.fallback.compare(spec, git, reporter)?.ok_or_else(|| {
                 DiffyError::General("built-in backend returned no result".to_owned())
             });
         }
 
-        match self.primary.compare(spec, git)? {
+        match self.primary.compare(spec, git, reporter)? {
             Some(output) => Ok(output),
             None => {
-                let mut fallback = self.fallback.compare(spec, git)?.ok_or_else(|| {
-                    DiffyError::General("fallback backend returned no result".to_owned())
-                })?;
+                let mut fallback =
+                    self.fallback.compare(spec, git, reporter)?.ok_or_else(|| {
+                        DiffyError::General("fallback backend returned no result".to_owned())
+                    })?;
                 fallback.used_fallback = true;
                 fallback.fallback_message =
                     "difftastic unavailable, fell back to built-in backend".to_owned();
@@ -129,6 +136,7 @@ mod tests {
                     layout: LayoutMode::Unified,
                 },
                 &git,
+                None,
             )
             .unwrap();
 

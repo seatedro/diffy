@@ -310,49 +310,50 @@ pub struct ActiveFileLoading {
     pub path: String,
 }
 
-/// Where the compare pipeline currently is. Drives phase text in the
-/// progress panel. Sourced from real service boundaries — never guessed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ComparePhase {
-    #[default]
-    OpeningRepo,
-    ResolvingRefs,
-    ComputingDiff,
-    LoadingFiles,
-    /// `CompareFinished` has arrived; file list is populated, first file
-    /// is being selected but not yet prepared for display.
-    PopulatingList,
-    /// First file is being loaded/annotated/laid-out (eager path for the
-    /// initial selection after a compare).
-    RenderingFirstFile,
+pub use crate::core::compare::ComparePhase;
+
+/// What the progress panel is about. Drives chip rendering: compare
+/// shows a left⇄right ref pair, repo-open shows a single folder chip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoadingSubject {
+    Compare {
+        left_label: String,
+        right_label: String,
+    },
+    RepoOpen {
+        name: String,
+    },
 }
 
-impl ComparePhase {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::OpeningRepo => "Opening repository\u{2026}",
-            Self::ResolvingRefs => "Resolving refs\u{2026}",
-            Self::ComputingDiff => "Computing diff\u{2026}",
-            Self::LoadingFiles => "Enumerating files\u{2026}",
-            Self::PopulatingList => "Populating file list\u{2026}",
-            Self::RenderingFirstFile => "Preparing first file\u{2026}",
-        }
-    }
-}
-
-/// Transient progress state for a running compare. Present iff a compare
-/// is in-flight (kickoff) or the first file is still mounting. Cleared
-/// when the first file lands or the user cancels.
+/// Transient progress state for a long-running workspace operation
+/// (compare or repo open). Present iff something is in flight and the
+/// reveal delay has either elapsed or was set to zero. Cleared when the
+/// operation lands or the user cancels.
+///
+/// `reveal_at_ms` implements the "don't flash on fast ops" rule: the
+/// panel is only rendered once `clock_ms >= reveal_at_ms`. For fresh
+/// bootstraps this equals `started_at_ms` (show immediately); for
+/// re-opens / re-compares over an already-loaded workspace it is pushed
+/// out by `COMPARE_REVEAL_DELAY_MS` so a sub-half-second op never flashes
+/// loading UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompareProgress {
     pub generation: u64,
     pub phase: ComparePhase,
-    pub left_label: String,
-    pub right_label: String,
+    pub subject: LoadingSubject,
     pub started_at_ms: u64,
-    /// Total file count, known once `CompareFinished` arrives.
+    pub reveal_at_ms: u64,
+    /// Total file count — first known from a backend `LoadingFiles`
+    /// emission, re-confirmed by `CompareFinished`. Unused for RepoOpen.
     pub file_count_total: Option<u32>,
+    /// Files read so far during `LoadingFiles`. Zero before, frozen
+    /// after.
+    pub files_loaded: u32,
 }
+
+/// Delay between kicking off an op and revealing the loading UI —
+/// fast ops under this threshold show no loading flash at all.
+pub const COMPARE_REVEAL_DELAY_MS: u64 = 500;
 
 #[derive(Debug, Clone)]
 pub struct PreparedActiveFile {
@@ -1358,9 +1359,43 @@ impl AppState {
                 .repository
                 .status
                 .set(&state.store, AsyncStatus::Loading);
+
+            // Bootstrap: seed the loading panel so a slow cold-boot open
+            // shows staged progress. Reveal is gated by the same 500ms
+            // threshold as user-initiated opens — if the whole bootstrap
+            // open completes within the threshold the panel never appears
+            // and the user lands straight in the ready UI.
+            let boot_gen = state
+                .workspace
+                .compare_generation
+                .get(&state.store)
+                .saturating_add(1);
+            state
+                .workspace
+                .compare_generation
+                .set(&state.store, boot_gen);
+            let repo_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("repository")
+                .to_owned();
+            state.compare_progress.set(
+                &state.store,
+                Some(CompareProgress {
+                    generation: boot_gen,
+                    phase: ComparePhase::OpeningRepo,
+                    subject: LoadingSubject::RepoOpen { name: repo_name },
+                    started_at_ms: 0,
+                    reveal_at_ms: COMPARE_REVEAL_DELAY_MS,
+                    file_count_total: None,
+                    files_loaded: 0,
+                }),
+            );
+
             effects.push(Effect::SyncRepository {
                 path: path.clone(),
                 reason: RepositorySyncReason::Open,
+                reporter_generation: Some(boot_gen),
             });
             effects.push(Effect::WatchRepository { path: Some(path) });
         }
@@ -2632,6 +2667,14 @@ impl AppState {
                     if reason == RepositorySyncReason::Open {
                         self.repository.status.set(&self.store, AsyncStatus::Failed);
                         self.workspace_mode.set(&self.store, WorkspaceMode::Empty);
+                        // Repo open failed — tear down the loading panel.
+                        self.compare_progress.update(&self.store, |slot| {
+                            if let Some(p) = slot.as_ref()
+                                && matches!(p.subject, LoadingSubject::RepoOpen { .. })
+                            {
+                                *slot = None;
+                            }
+                        });
                         self.push_error(&message);
                     } else {
                         self.last_error.set(&self.store, Some(message));
@@ -3260,11 +3303,50 @@ impl AppState {
         self.clear_overlays();
         self.focus.set(&self.store, Some(FocusTarget::TitleBar));
         self.sync_settings_snapshot();
+
+        // Seed the progress panel with a repo-open subject. We piggy-back
+        // on `compare_generation` as the loading generation — any in-flight
+        // compare is invalidated when the user opens a new repo anyway,
+        // and `handle_compare_progress_update` just matches on whatever
+        // generation the panel records.
+        let next_gen = self
+            .workspace
+            .compare_generation
+            .get(&self.store)
+            .saturating_add(1);
+        self.workspace.compare_generation.set(&self.store, next_gen);
+        let repo_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("repository")
+            .to_owned();
+        // Always delay the panel reveal — a tiny repo that opens in under
+        // the threshold should finish without ever flashing a loading UI.
+        // Unlike re-compare (which can preserve the old diff during the
+        // grace window), repo-open has nothing to fall back to visually;
+        // the empty background / previous workspace is what the user sees
+        // for 500ms, which is a cheap price for zero flash on fast ops.
+        let started_at_ms = self.clock_ms;
+        let reveal_at_ms = started_at_ms.saturating_add(COMPARE_REVEAL_DELAY_MS);
+        self.compare_progress.set(
+            &self.store,
+            Some(CompareProgress {
+                generation: next_gen,
+                phase: ComparePhase::OpeningRepo,
+                subject: LoadingSubject::RepoOpen { name: repo_name },
+                started_at_ms,
+                reveal_at_ms,
+                file_count_total: None,
+                files_loaded: 0,
+            }),
+        );
+
         vec![
             Effect::SaveSettings(self.settings.clone()),
             Effect::SyncRepository {
                 path: path.clone(),
                 reason: RepositorySyncReason::Open,
+                reporter_generation: Some(next_gen),
             },
             Effect::WatchRepository { path: Some(path) },
         ]
@@ -3325,6 +3407,17 @@ impl AppState {
         self.workspace
             .status_items
             .set(&self.store, payload.status_items);
+
+        // Tear down a repo-open progress panel. Compare-subject progress
+        // survives — a kickoff_compare may be queued below and will
+        // replace it atomically via its own seeding path.
+        self.compare_progress.update(&self.store, |slot| {
+            if let Some(p) = slot.as_ref()
+                && matches!(p.subject, LoadingSubject::RepoOpen { .. })
+            {
+                *slot = None;
+            }
+        });
 
         match payload.reason {
             RepositorySyncReason::Open => {
@@ -3996,20 +4089,34 @@ impl AppState {
         self.clear_overlays();
         self.sync_settings_snapshot();
 
-        // Switch the viewport to the loading shell immediately so the user
-        // sees the progress panel + sidebar skeleton instead of the stale
-        // previous compare. The generation guard drops any in-flight events.
-        self.workspace_mode.set(&self.store, WorkspaceMode::Loading);
-        self.workspace.status.set(&self.store, AsyncStatus::Loading);
-        self.workspace.files.set(&self.store, Vec::new());
-        self.workspace.active_file.set(&self.store, None);
-        self.workspace.active_file_loading.set(&self.store, None);
-        self.workspace.compare_output.set(&self.store, None);
-        self.workspace.selected_file_index.set(&self.store, None);
-        self.workspace.selected_file_path.set(&self.store, None);
-        self.editor_clear_document();
-
+        // Always delay the reveal — a compare that completes within the
+        // threshold should never flash a loading UI, whether or not there
+        // was a prior diff on screen. When there IS a prior diff it stays
+        // visible during the grace window; when there isn't, the existing
+        // workspace state (empty state, ready hint) stays put until the
+        // panel reveals.
         let started_at_ms = self.clock_ms;
+        let reveal_at_ms = started_at_ms.saturating_add(COMPARE_REVEAL_DELAY_MS);
+        let has_prior_state = self
+            .workspace
+            .files
+            .with(&self.store, |files| !files.is_empty())
+            || self
+                .workspace
+                .active_file
+                .with(&self.store, |af| af.is_some());
+
+        // If there's no prior diff to preserve, flip workspace_mode to
+        // Loading up front so `main_surface` stops rendering the editor /
+        // ready-hint — the loading panel will take over at `reveal_at_ms`.
+        // When there IS prior state, defer clearing it; the UI gate holds
+        // the old diff on screen until the delay elapses or `CompareFinished`
+        // replaces it atomically.
+        if !has_prior_state {
+            self.workspace_mode.set(&self.store, WorkspaceMode::Loading);
+            self.workspace.status.set(&self.store, AsyncStatus::Loading);
+        }
+
         let left_label = compare_ref_display_label(&left_ref);
         let right_label = compare_ref_display_label(&right_ref);
         self.compare_progress.set(
@@ -4017,10 +4124,14 @@ impl AppState {
             Some(CompareProgress {
                 generation: next_gen,
                 phase: ComparePhase::OpeningRepo,
-                left_label,
-                right_label,
+                subject: LoadingSubject::Compare {
+                    left_label,
+                    right_label,
+                },
                 started_at_ms,
+                reveal_at_ms,
                 file_count_total: None,
+                files_loaded: 0,
             }),
         );
 
@@ -4062,9 +4173,14 @@ impl AppState {
             .saturating_add(1);
         self.workspace.compare_generation.set(&self.store, next_gen);
         self.compare_progress.set(&self.store, None);
-        self.workspace_mode.set(&self.store, WorkspaceMode::Empty);
-        self.workspace.status.set(&self.store, AsyncStatus::Idle);
         self.workspace.active_file_loading.set(&self.store, None);
+        // Only revert the workspace mode if kickoff flipped it to Loading
+        // (i.e. no prior state was preserved). When the user cancels a
+        // re-compare, the old diff is still mounted and should stay visible.
+        if self.workspace_mode.get(&self.store) == WorkspaceMode::Loading {
+            self.workspace_mode.set(&self.store, WorkspaceMode::Empty);
+            self.workspace.status.set(&self.store, AsyncStatus::Idle);
+        }
         Vec::new()
     }
 
@@ -4075,6 +4191,20 @@ impl AppState {
             if let Some(p) = slot.as_mut()
                 && p.generation == generation
             {
+                // Pull counts out of LoadingFiles so the determinate bar
+                // reads directly from durable struct fields (cheaper than
+                // pattern-matching in the render path, and lets the total
+                // survive the phase transition to PopulatingList).
+                if let ComparePhase::LoadingFiles {
+                    files_seen,
+                    files_total,
+                } = phase
+                {
+                    p.files_loaded = files_seen;
+                    if files_total > 0 {
+                        p.file_count_total = Some(files_total);
+                    }
+                }
                 p.phase = phase;
             }
         });
@@ -8326,12 +8456,12 @@ mod tests {
     // Compare progress — end-to-end through the event lifecycle
     // -----------------------------------------------------------------
 
-    use super::{ComparePhase, CompareProgress};
+    use super::{ComparePhase, CompareProgress, LoadingSubject};
     use crate::core::compare::CompareSpec;
-    use crate::events::CompareFinished;
+    use crate::events::{CompareFinished, RepositorySyncReason};
 
     fn compare_ready_state() -> AppState {
-        let mut state = AppState::default();
+        let state = AppState::default();
         state
             .compare
             .repo_path
@@ -8352,8 +8482,16 @@ mod tests {
             .compare_progress
             .with(&state.store, |p| p.clone())
             .expect("progress should be populated");
-        assert_eq!(progress.left_label, "v5.0");
-        assert_eq!(progress.right_label, "v5.1");
+        match &progress.subject {
+            LoadingSubject::Compare {
+                left_label,
+                right_label,
+            } => {
+                assert_eq!(left_label, "v5.0");
+                assert_eq!(right_label, "v5.1");
+            }
+            other => panic!("expected Compare subject, got {other:?}"),
+        }
         assert_eq!(progress.started_at_ms, 1_000);
         assert_eq!(progress.phase, ComparePhase::OpeningRepo);
         assert_eq!(progress.file_count_total, None);
@@ -8373,7 +8511,7 @@ mod tests {
         // Stale reporter — must be ignored.
         state.apply_event(AppEvent::CompareProgressUpdate {
             generation: generation.wrapping_sub(1),
-            phase: ComparePhase::ComputingDiff,
+            phase: ComparePhase::EnumeratingChanges,
         });
         assert_eq!(
             state
@@ -8386,13 +8524,184 @@ mod tests {
         // Fresh reporter — applies.
         state.apply_event(AppEvent::CompareProgressUpdate {
             generation,
-            phase: ComparePhase::ComputingDiff,
+            phase: ComparePhase::EnumeratingChanges,
         });
         assert_eq!(
             state
                 .compare_progress
                 .with(&state.store, |p| p.as_ref().unwrap().phase),
-            ComparePhase::ComputingDiff,
+            ComparePhase::EnumeratingChanges,
+        );
+    }
+
+    #[test]
+    fn loading_files_phase_updates_counts_on_struct() {
+        let mut state = compare_ready_state();
+        let _ = state.kickoff_compare();
+        let generation = state.workspace.compare_generation.get(&state.store);
+
+        state.apply_event(AppEvent::CompareProgressUpdate {
+            generation,
+            phase: ComparePhase::LoadingFiles {
+                files_seen: 142,
+                files_total: 3_891,
+            },
+        });
+
+        let progress = state
+            .compare_progress
+            .with(&state.store, |p| p.clone())
+            .expect("progress exists");
+        assert_eq!(progress.files_loaded, 142);
+        assert_eq!(progress.file_count_total, Some(3_891));
+        assert!(matches!(progress.phase, ComparePhase::LoadingFiles { .. }));
+    }
+
+    #[test]
+    fn kickoff_with_prior_state_delays_reveal_by_500ms() {
+        let mut state = compare_ready_state();
+        // Simulate a previously loaded compare (files present).
+        state.workspace.files.set(
+            &state.store,
+            vec![FileListEntry {
+                path: "old.rs".into(),
+                status: "M".into(),
+                additions: 0,
+                deletions: 0,
+                is_binary: false,
+            }],
+        );
+        state.clock_ms = 10_000;
+
+        let _ = state.kickoff_compare();
+        let progress = state
+            .compare_progress
+            .with(&state.store, |p| p.clone())
+            .expect("progress populated");
+        assert_eq!(progress.started_at_ms, 10_000);
+        assert_eq!(
+            progress.reveal_at_ms, 10_500,
+            "re-compare with prior state delays reveal by COMPARE_REVEAL_DELAY_MS"
+        );
+        // Workspace mode stays as-is so the old diff remains visible during
+        // the grace period.
+        assert_ne!(
+            state.workspace_mode.get(&state.store),
+            WorkspaceMode::Loading
+        );
+        // Prior files are preserved so fast compares don't cause a flash.
+        assert_eq!(state.workspace.files.with(&state.store, |f| f.len()), 1);
+    }
+
+    #[test]
+    fn open_repository_seeds_repo_subject_progress() {
+        let mut state = AppState::default();
+        state.clock_ms = 500;
+
+        let effects = state.open_repository(PathBuf::from("/tmp/linux"));
+
+        let progress = state
+            .compare_progress
+            .with(&state.store, |p| p.clone())
+            .expect("progress seeded for repo open");
+        match progress.subject {
+            LoadingSubject::RepoOpen { ref name } => {
+                assert_eq!(name, "linux");
+            }
+            other => panic!("expected RepoOpen subject, got {other:?}"),
+        }
+        assert_eq!(progress.phase, ComparePhase::OpeningRepo);
+        assert_eq!(
+            progress.reveal_at_ms,
+            500 + super::COMPARE_REVEAL_DELAY_MS,
+            "every repo open delays reveal so sub-threshold opens don't flash"
+        );
+        // Reporter generation is threaded through the SyncRepository effect
+        // so the worker's phase events stamp the matching generation.
+        let sync_gen = effects.iter().find_map(|eff| match eff {
+            Effect::SyncRepository {
+                reporter_generation,
+                ..
+            } => *reporter_generation,
+            _ => None,
+        });
+        assert_eq!(sync_gen, Some(progress.generation));
+    }
+
+    #[test]
+    fn open_repository_with_prior_diff_delays_reveal() {
+        let mut state = AppState::default();
+        state.workspace.files.set(
+            &state.store,
+            vec![FileListEntry {
+                path: "old.rs".into(),
+                status: "M".into(),
+                additions: 0,
+                deletions: 0,
+                is_binary: false,
+            }],
+        );
+        state.clock_ms = 10_000;
+
+        let _ = state.open_repository(PathBuf::from("/tmp/other"));
+
+        let progress = state
+            .compare_progress
+            .with(&state.store, |p| p.clone())
+            .expect("progress seeded");
+        assert_eq!(
+            progress.reveal_at_ms, 10_500,
+            "re-open with prior diff delays reveal by COMPARE_REVEAL_DELAY_MS"
+        );
+    }
+
+    #[test]
+    fn repository_snapshot_ready_clears_repo_open_progress() {
+        use super::StatusItem;
+        let mut state = AppState::default();
+        let path = PathBuf::from("/tmp/linux");
+        let _ = state.open_repository(path.clone());
+        assert!(state.compare_progress.with(&state.store, |p| p.is_some()));
+
+        state.apply_event(AppEvent::RepositorySnapshotReady(
+            crate::events::RepositorySnapshot {
+                path,
+                reason: RepositorySyncReason::Open,
+                change_kind: None,
+                branches: Vec::new(),
+                tags: Vec::new(),
+                commits: Vec::new(),
+                status_items: Vec::<StatusItem>::new(),
+            },
+        ));
+
+        assert!(
+            state.compare_progress.with(&state.store, |p| p.is_none()),
+            "snapshot-ready must tear down the repo-open progress panel"
+        );
+    }
+
+    #[test]
+    fn kickoff_without_prior_state_also_delays_reveal() {
+        let mut state = compare_ready_state();
+        state.clock_ms = 5_000;
+
+        let _ = state.kickoff_compare();
+        let progress = state
+            .compare_progress
+            .with(&state.store, |p| p.clone())
+            .expect("progress populated");
+        assert_eq!(progress.started_at_ms, 5_000);
+        assert_eq!(
+            progress.reveal_at_ms,
+            5_000 + super::COMPARE_REVEAL_DELAY_MS,
+            "every compare delays reveal so fast ops skip the loading flash"
+        );
+        // With no prior state to preserve, workspace_mode flips to Loading
+        // up front so the editor/ready-hint stops rendering in the background.
+        assert_eq!(
+            state.workspace_mode.get(&state.store),
+            WorkspaceMode::Loading
         );
     }
 
@@ -8410,7 +8719,11 @@ mod tests {
         );
         let new_gen = state.workspace.compare_generation.get(&state.store);
         assert!(new_gen > generation, "generation should be bumped");
-        assert_eq!(state.workspace_mode.get(&state.store), WorkspaceMode::Empty,);
+        assert_eq!(
+            state.workspace_mode.get(&state.store),
+            WorkspaceMode::Empty,
+            "fresh-state cancel should revert the Loading flip"
+        );
 
         // A stale CompareFinished arriving after cancel must be silently dropped.
         state.apply_event(AppEvent::CompareFinished(CompareFinished {
@@ -8435,6 +8748,41 @@ mod tests {
         assert!(
             state.compare_progress.with(&state.store, |p| p.is_none()),
             "stale finished result must not re-seed progress",
+        );
+    }
+
+    #[test]
+    fn cancel_compare_preserves_previous_diff_on_recompare() {
+        let mut state = compare_ready_state();
+        // Prior state: an existing file in the workspace.
+        state.workspace.files.set(
+            &state.store,
+            vec![FileListEntry {
+                path: "old.rs".into(),
+                status: "M".into(),
+                additions: 0,
+                deletions: 0,
+                is_binary: false,
+            }],
+        );
+        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+
+        let _ = state.kickoff_compare();
+        let _ = state.cancel_compare();
+
+        assert!(
+            state.compare_progress.with(&state.store, |p| p.is_none()),
+            "progress cleared on cancel"
+        );
+        assert_eq!(
+            state.workspace_mode.get(&state.store),
+            WorkspaceMode::Ready,
+            "previous workspace state is preserved on cancel — no blanking"
+        );
+        assert_eq!(
+            state.workspace.files.with(&state.store, |f| f.len()),
+            1,
+            "prior file list must not be wiped by cancel"
         );
     }
 
@@ -8506,13 +8854,17 @@ mod tests {
 
     #[test]
     fn compare_progress_label_does_not_panic_for_all_phases() {
-        // Non-empty, non-control-character labels matter for the title-bar
-        // fallback. Cheap to check exhaustively.
+        // Non-empty labels matter for the title-bar fallback. Cheap to
+        // check exhaustively.
         let phases = [
             ComparePhase::OpeningRepo,
             ComparePhase::ResolvingRefs,
-            ComparePhase::ComputingDiff,
-            ComparePhase::LoadingFiles,
+            ComparePhase::EnumeratingChanges,
+            ComparePhase::LoadingFiles {
+                files_seen: 142,
+                files_total: 3_891,
+            },
+            ComparePhase::FetchingHistory,
             ComparePhase::PopulatingList,
             ComparePhase::RenderingFirstFile,
         ];
@@ -8520,13 +8872,28 @@ mod tests {
             let label = phase.label();
             assert!(!label.is_empty());
         }
+        // LoadingFiles label should interpolate counts.
+        assert!(
+            ComparePhase::LoadingFiles {
+                files_seen: 142,
+                files_total: 3_891,
+            }
+            .label()
+            .contains("142"),
+            "file counts must appear in the label"
+        );
+
         let _ = CompareProgress {
             generation: 0,
             phase: ComparePhase::default(),
-            left_label: String::new(),
-            right_label: String::new(),
+            subject: LoadingSubject::Compare {
+                left_label: String::new(),
+                right_label: String::new(),
+            },
             started_at_ms: 0,
+            reveal_at_ms: 0,
             file_count_total: None,
+            files_loaded: 0,
         };
     }
 }

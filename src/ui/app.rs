@@ -440,6 +440,7 @@ impl ApplicationHandler for NativeApp {
                     self.runtime.dispatch_all(vec![Effect::SyncRepository {
                         path,
                         reason: RepositorySyncReason::Rescan,
+                        reporter_generation: None,
                     }]);
                 }
                 self.mark_dirty();

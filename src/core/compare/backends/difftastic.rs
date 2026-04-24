@@ -8,12 +8,17 @@ use vendored_difftastic::{
 };
 
 use crate::core::compare::backends::DiffBackend;
+use crate::core::compare::progress::{ComparePhase, ProgressSink};
 use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::{CompareMode, CompareSpec};
 use crate::core::diff::{DiffLine, FileDiff, Hunk, LineKind};
 use crate::core::error::{DiffyError, Result};
 use crate::core::text::{ChangeIntensity, DiffTokenSpan, SyntaxTokenKind, TextBuffer, TokenBuffer};
 use crate::core::vcs::git::{GitService, StatusItem, StatusScope, WORKDIR_REF};
+
+/// Match git_diff.rs — throttle per-file emits so a 3k-file diff doesn't
+/// flood the event channel.
+const LOADING_FILE_EMIT_STRIDE: usize = 16;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DifftasticBackend;
@@ -30,7 +35,7 @@ impl DifftasticBackend {
     ) -> Result<CompareOutput> {
         let repo = git.repo()?;
         let changed = changed_path_for_status_item(repo, item)?;
-        compare_changed_paths(vec![changed])
+        compare_changed_paths(vec![changed], None)
     }
 
     pub fn compare_path(
@@ -58,12 +63,17 @@ impl DifftasticBackend {
         let repo = git.repo()?;
         let changed_paths = collect_changed_paths(repo, &left, &right, Some(path))?;
 
-        Ok(Some(compare_changed_paths(changed_paths)?))
+        Ok(Some(compare_changed_paths(changed_paths, None)?))
     }
 }
 
 impl DiffBackend for DifftasticBackend {
-    fn compare(&self, spec: &CompareSpec, git: &GitService) -> Result<Option<CompareOutput>> {
+    fn compare(
+        &self,
+        spec: &CompareSpec,
+        git: &GitService,
+        reporter: Option<&dyn ProgressSink>,
+    ) -> Result<Option<CompareOutput>> {
         let (left, right) = match spec.mode {
             CompareMode::TwoDot => {
                 if spec.right_ref == WORKDIR_REF {
@@ -80,19 +90,51 @@ impl DiffBackend for DifftasticBackend {
             }
         };
 
+        // Git enumeration phase — covers `collect_changed_paths` which
+        // runs `diff_tree_to_tree` + rename detection + per-path blob
+        // loads. Distinguished from the per-file semantic diff that
+        // follows, which is the dominant cost for difftastic on large
+        // repos.
+        if let Some(r) = reporter {
+            r.phase(ComparePhase::EnumeratingChanges);
+        }
+
         let repo = git.repo()?;
         let changed_paths = collect_changed_paths(repo, &left, &right, None)?;
 
-        Ok(Some(compare_changed_paths(changed_paths)?))
+        Ok(Some(compare_changed_paths(changed_paths, reporter)?))
     }
 }
 
-fn compare_changed_paths(changed_paths: Vec<ChangedPath>) -> Result<CompareOutput> {
+fn compare_changed_paths(
+    changed_paths: Vec<ChangedPath>,
+    reporter: Option<&dyn ProgressSink>,
+) -> Result<CompareOutput> {
     let mut output = CompareOutput::default();
     let mut text_buffer = TextBuffer::default();
     let mut token_buffer = TokenBuffer::default();
+    let files_total = changed_paths.len() as u32;
 
-    for changed in changed_paths {
+    // Seed the determinate bar with a zero count so the UI swaps off the
+    // shimmer immediately, before the first semantic diff blocks the
+    // loop.
+    if let Some(r) = reporter {
+        r.phase(ComparePhase::LoadingFiles {
+            files_seen: 0,
+            files_total,
+        });
+    }
+
+    for (idx, changed) in changed_paths.into_iter().enumerate() {
+        if let Some(r) = reporter {
+            let is_last = (idx as u32) + 1 == files_total;
+            if idx % LOADING_FILE_EMIT_STRIDE == 0 || is_last {
+                r.phase(ComparePhase::LoadingFiles {
+                    files_seen: (idx + 1) as u32,
+                    files_total,
+                });
+            }
+        }
         let display_path = changed
             .new_path
             .as_deref()
@@ -903,6 +945,7 @@ mod tests {
                     layout: LayoutMode::Unified,
                 },
                 &git,
+                None,
             )
             .unwrap()
             .expect("difftastic result");

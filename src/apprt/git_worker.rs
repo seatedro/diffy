@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use git2::{BranchType, Status, StatusOptions};
 
+use crate::apprt::ProgressReporter;
 use crate::apprt::runtime::RuntimeEventSender;
+use crate::core::compare::{ComparePhase, ProgressSink};
 use crate::core::vcs::git::{
     GitService, StatusItem, StatusOperation, StatusScope, status::status_items_from_entry,
 };
@@ -24,8 +26,17 @@ impl GitWorker {
         Self { sender }
     }
 
-    pub fn dispatch_sync(&self, path: PathBuf, reason: RepositorySyncReason) {
-        let _ = self.sender.send(GitWorkerCommand::Sync { path, reason });
+    pub fn dispatch_sync(
+        &self,
+        path: PathBuf,
+        reason: RepositorySyncReason,
+        reporter_generation: Option<u64>,
+    ) {
+        let _ = self.sender.send(GitWorkerCommand::Sync {
+            path,
+            reason,
+            reporter_generation,
+        });
     }
 
     pub fn dispatch_operation(&self, path: PathBuf, item: StatusItem, operation: StatusOperation) {
@@ -112,6 +123,10 @@ pub(crate) enum GitWorkerCommand {
     Sync {
         path: PathBuf,
         reason: RepositorySyncReason,
+        /// When `Some`, the worker emits `CompareProgressUpdate` events
+        /// tagged with this generation so the loading panel follows the
+        /// repo-open phases. `None` for background resyncs.
+        reporter_generation: Option<u64>,
     },
     ApplyOperation {
         path: PathBuf,
@@ -203,9 +218,13 @@ fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorke
         };
 
         match command {
-            Some(GitWorkerCommand::Sync { path, reason }) => {
+            Some(GitWorkerCommand::Sync {
+                path,
+                reason,
+                reporter_generation,
+            }) => {
                 pending_dirty = None;
-                sync_repository(&mut state, &event_sender, path, reason);
+                sync_repository(&mut state, &event_sender, path, reason, reporter_generation);
             }
             Some(GitWorkerCommand::ApplyOperation {
                 path,
@@ -278,7 +297,13 @@ fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorke
                 let Some(path) = pending_dirty.take() else {
                     continue;
                 };
-                sync_repository(&mut state, &event_sender, path, RepositorySyncReason::Dirty);
+                sync_repository(
+                    &mut state,
+                    &event_sender,
+                    path,
+                    RepositorySyncReason::Dirty,
+                    None,
+                );
             }
         }
     }
@@ -658,7 +683,7 @@ fn sync_repository_forced(
     path: PathBuf,
     reason: RepositorySyncReason,
 ) {
-    sync_repository_inner(state, event_sender, path, reason, true);
+    sync_repository_inner(state, event_sender, path, reason, true, None);
 }
 
 fn sync_repository(
@@ -666,8 +691,16 @@ fn sync_repository(
     event_sender: &RuntimeEventSender,
     path: PathBuf,
     reason: RepositorySyncReason,
+    reporter_generation: Option<u64>,
 ) {
-    sync_repository_inner(state, event_sender, path, reason, false);
+    sync_repository_inner(
+        state,
+        event_sender,
+        path,
+        reason,
+        false,
+        reporter_generation,
+    );
 }
 
 fn sync_repository_inner(
@@ -676,7 +709,15 @@ fn sync_repository_inner(
     path: PathBuf,
     reason: RepositorySyncReason,
     force_emit: bool,
+    reporter_generation: Option<u64>,
 ) {
+    let reporter = reporter_generation
+        .map(|generation| ProgressReporter::new(generation, event_sender.clone()));
+    let reporter_ref: Option<&dyn ProgressSink> = reporter.as_ref().map(|r| r as &dyn ProgressSink);
+
+    if let Some(r) = reporter_ref {
+        r.phase(ComparePhase::OpeningRepo);
+    }
     if state.active_path.as_ref() != Some(&path) {
         state.git.close();
         state.snapshot = None;
@@ -694,7 +735,7 @@ fn sync_repository_inner(
         }
     }
 
-    let bundle = match collect_snapshot(&state.git, path.clone(), reason) {
+    let bundle = match collect_snapshot(&state.git, path.clone(), reason, reporter_ref) {
         Ok(bundle) => bundle,
         Err(error) => {
             event_sender.send(AppEvent::RepositorySnapshotFailed {
@@ -751,9 +792,20 @@ fn collect_snapshot(
     git: &GitService,
     path: PathBuf,
     reason: RepositorySyncReason,
+    reporter: Option<&dyn ProgressSink>,
 ) -> crate::core::error::Result<SnapshotBundle> {
+    // Phase boundaries roughly track the I/O cost: branch/tag enumeration
+    // first, then commit walk, then status. The repository open itself
+    // was already reported before we got here.
+    if let Some(r) = reporter {
+        r.phase(ComparePhase::ResolvingRefs);
+    }
     let branches = git.branches()?;
     let tags = git.tags()?;
+
+    if let Some(r) = reporter {
+        r.phase(ComparePhase::FetchingHistory);
+    }
     let commits = git.commits("HEAD", 200).unwrap_or_default();
     let repo = git.repo()?;
 
@@ -920,7 +972,7 @@ mod tests {
     fn load_state(path: &Path) -> RepositorySnapshotState {
         let mut git = GitService::new();
         git.open(path.to_string_lossy().as_ref()).unwrap();
-        collect_snapshot(&git, path.to_path_buf(), RepositorySyncReason::Open)
+        collect_snapshot(&git, path.to_path_buf(), RepositorySyncReason::Open, None)
             .unwrap()
             .state
     }

@@ -11,7 +11,6 @@ use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
 use crate::ui::state::{AppState, FocusTarget, WorkspaceMode, WorkspaceSource};
-use crate::ui::status_bar::{compare_mode_label, display_ref};
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
 
@@ -25,7 +24,16 @@ pub(crate) fn main_surface(
 ) -> AnyElement {
     let tc = &theme.colors;
 
-    let toolbar = if state.is_workspace_ready() {
+    // Prefer the compare progress panel whenever a compare is in flight
+    // AND the reveal delay has elapsed — sub-half-second diffs never
+    // flash a loading state. Before reveal, fall through to whatever the
+    // workspace was showing (old diff, empty state, etc.).
+    let compare_progress_snapshot = state.compare_progress.with(&state.store, |p| p.clone());
+    let progress_visible = compare_progress_snapshot
+        .as_ref()
+        .is_some_and(|p| state.clock_ms >= p.reveal_at_ms);
+
+    let toolbar = if !progress_visible && state.is_workspace_ready() {
         state
             .workspace
             .selected_file_path
@@ -35,14 +43,18 @@ pub(crate) fn main_surface(
         None
     };
 
-    let search = if state.is_workspace_ready() && state.editor.search.open.get(&state.store) {
+    let search = if !progress_visible
+        && state.is_workspace_ready()
+        && state.editor.search.open.get(&state.store)
+    {
         Some(search_bar(state, theme))
     } else {
         None
     };
 
     let vb = viewport_bounds.clone();
-    let viewport_canvas = if state.is_workspace_ready()
+    let viewport_canvas = if !progress_visible
+        && state.is_workspace_ready()
         && state
             .workspace
             .active_file
@@ -59,17 +71,18 @@ pub(crate) fn main_surface(
         None
     };
 
-    // Prefer the compare progress panel whenever a compare is in flight —
-    // overrides both the Loading fallback and the post-Ready interim while
-    // the first file is mounting.
-    let compare_progress_snapshot = state.compare_progress.with(&state.store, |p| p.clone());
-    let content = if let Some(progress) = compare_progress_snapshot {
+    let content = if progress_visible {
+        let progress = compare_progress_snapshot.as_ref().unwrap();
         Some(crate::ui::components::compare_progress_panel(
-            &progress, state, theme,
+            progress, state, theme,
         ))
     } else {
         match state.workspace_mode.get(&state.store) {
-            WorkspaceMode::Loading => Some(loading_card(state, theme)),
+            // Loading mode is now always accompanied by a `compare_progress`
+            // entry (either compare or repo-open). Reaching this arm means
+            // the reveal delay hasn't elapsed — preserve the current view
+            // instead of showing a placeholder.
+            WorkspaceMode::Loading => None,
             WorkspaceMode::Ready
                 if state
                     .workspace
@@ -321,56 +334,6 @@ fn repo_ready_hint(theme: &Theme) -> AnyElement {
                 <text class="text-sm" color={tc.text_muted}>
                     {"Select refs to compare"}
                 </text>
-            </div>
-        </div>
-    }
-}
-
-fn loading_card(state: &AppState, theme: &Theme) -> AnyElement {
-    let tc = &theme.colors;
-    let scale = theme.metrics.ui_scale();
-
-    let (title, detail) = if state.workspace.source.get(&state.store) == WorkspaceSource::Status {
-        (
-            "Loading diff\u{2026}",
-            state
-                .workspace
-                .selected_file_path
-                .get(&state.store)
-                .unwrap_or_else(|| "Working tree".to_owned()),
-        )
-    } else {
-        let left = state.compare.left_ref.get(&state.store);
-        let right = state.compare.right_ref.get(&state.store);
-        (
-            "Comparing repository\u{2026}",
-            format!(
-                "{} \u{2022} {} \u{2192} {}",
-                compare_mode_label(state.compare.mode.get(&state.store)),
-                display_ref(&left),
-                display_ref(&right)
-            ),
-        )
-    };
-
-    view! { scale,
-        <div class="flex-1 items-center justify-center" p={Sp::XL}>
-            <div class="w-full flex-col items-center rounded-xl"
-                 max_w={Sz::CARD_SM} p={Sp::XL} gap={Sp::MD}
-                bg={tc.elevated_surface}
-                border_b={tc.border}
-                shadow_preset={Shadow::PANEL}>
-                <icon svg={lucide::LOADER} size={Ico::XXL} color={tc.text_muted} />
-                <div class="w-full" min_w={0.0}>
-                    <text class="font-semibold text-center truncate" color={tc.text_strong}>
-                        {title}
-                    </text>
-                </div>
-                <div class="w-full" min_w={0.0}>
-                    <text class="text-sm text-center truncate" color={tc.text_muted}>
-                        {detail}
-                    </text>
-                </div>
             </div>
         </div>
     }

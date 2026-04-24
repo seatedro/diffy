@@ -18,7 +18,7 @@ const packOutputRoot =
   process.env.PHOSPHOR_PACK_OUTPUT_DIR ?? ".phosphor-pack-out";
 const indexOutputPath =
   process.env.PHOSPHOR_INDEX_OUTPUT ??
-  `assets/phosphor-index.${platform}.json`;
+  `.phosphor-index/${platform}.json`;
 const shouldBuildPacks = process.env.PHOSPHOR_SKIP_PACK_BUILD !== "1";
 
 const headers = {

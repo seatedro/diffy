@@ -14,6 +14,7 @@ git_diff_output.txt
 .claude/
 .codex
 .secrets/
+.phosphor-index/
 .phosphor-pack-out/
 .phosphor-pack-work/
 vendor/grammars/*/src/

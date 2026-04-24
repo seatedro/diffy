@@ -6,7 +6,7 @@ on:
     - cron: "17 9 * * 1"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: update-phosphor-index
@@ -24,7 +24,7 @@ jobs:
       R2_BUCKET: diffy
       PHOSPHOR_PACK_BASE_URL: https://blob.diffygui.com/phosphor-packs
       PHOSPHOR_PACK_PLATFORM: windows-x86_64
-      PHOSPHOR_INDEX_OUTPUT: assets/phosphor-index.windows-x86_64.json
+      PHOSPHOR_INDEX_OUTPUT: .phosphor-index/windows-x86_64.json
     steps:
       - uses: actions/checkout@v4
 
@@ -43,21 +43,4 @@ jobs:
       - name: Upload packs to R2
         run: |
           aws s3 sync .phosphor-pack-out/windows-x86_64 s3://$env:R2_BUCKET/phosphor-packs/windows-x86_64 --endpoint-url $env:R2_ENDPOINT_URL --delete
-          aws s3 cp assets/phosphor-index.windows-x86_64.json s3://$env:R2_BUCKET/phosphor-index/windows-x86_64.json --endpoint-url $env:R2_ENDPOINT_URL
-
-      - name: Update default checked-in index
-        run: Copy-Item assets/phosphor-index.windows-x86_64.json assets/phosphor-index.json
-
-      - name: Commit index
-        run: |
-          git diff --quiet -- assets/phosphor-index.json assets/phosphor-index.windows-x86_64.json
-          if ($LASTEXITCODE -eq 0) {
-            Write-Output "phosphor indexes are already up to date"
-            exit 0
-          }
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add assets/phosphor-index.json assets/phosphor-index.windows-x86_64.json
-          git commit -m "Update phosphor parser index"
-          git push
+          aws s3 cp .phosphor-index/windows-x86_64.json s3://$env:R2_BUCKET/phosphor-index/windows-x86_64.json --endpoint-url $env:R2_ENDPOINT_URL

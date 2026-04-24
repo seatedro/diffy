@@ -707,17 +707,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn generated_index_signature_verifies_when_public_key_is_available() {
-        let Some(public_key) = option_env!("PHOSPHOR_TEST_PACK_INDEX_PUBLIC_KEY") else {
-            return;
-        };
-        let signed: SignedPackIndex =
-            serde_json::from_str(include_str!("../../../assets/phosphor-index.json")).unwrap();
-
-        verify_index_signature_with_keys(&signed, [public_key]).unwrap();
-    }
-
     fn hex(bytes: &[u8]) -> String {
         let mut out = String::with_capacity(bytes.len() * 2);
         for byte in bytes {

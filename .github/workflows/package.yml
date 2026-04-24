@@ -16,6 +16,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_PACKAGER_VERSION: 0.11.8
+  DIFFY_UPDATE_PUBLIC_KEY: ${{ vars.DIFFY_UPDATE_PUBLIC_KEY }}
   PHOSPHOR_PACK_INDEX_PUBLIC_KEY: ${{ vars.PHOSPHOR_PACK_INDEX_PUBLIC_KEY }}
 
 jobs:
@@ -121,16 +122,28 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Flatten artifacts and generate checksums
+      - name: Flatten artifacts
         shell: bash
         run: |
           mkdir -p release
           find artifacts -type f -exec cp {} release/ \;
+
+      - name: Generate update manifest
+        env:
+          DIFFY_UPDATE_PRIVATE_KEY: ${{ secrets.DIFFY_UPDATE_PRIVATE_KEY }}
+          DIFFY_RELEASE_DIR: release
+        run: node .github/workflows/generate-update-manifest.mjs
+
+      - name: Generate checksums
+        shell: bash
+        run: |
           cd release
           shasum -a 256 * > SHA256SUMS
           ls -la

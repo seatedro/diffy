@@ -15,6 +15,7 @@ use crate::core::frecency::FrecencyStore;
 use crate::core::syntax::Highlighter;
 use crate::core::syntax::annotator::{SyntaxLineTokens, SyntaxRowWindow};
 use crate::core::text::{TextBuffer, TokenBuffer};
+use crate::core::update::AvailableUpdate;
 use crate::core::vcs::git::patch;
 use crate::core::vcs::git::{
     BranchInfo, CommitInfo, StatusItem, StatusOperation, StatusScope, TagInfo,
@@ -1138,6 +1139,16 @@ pub enum ToastKind {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum UpdateState {
+    #[default]
+    Idle,
+    Checking,
+    Available(AvailableUpdate),
+    Installing(AvailableUpdate),
+    Failed(String),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StartupState {
     pub auto_compare_pending: bool,
     pub pending_pr_url: Option<String>,
@@ -1171,6 +1182,7 @@ pub struct AppState {
     pub last_error: Signal<Option<String>>,
     pub toasts: Signal<Vec<Toast>>,
     pub syntax_pack_installs: Signal<Vec<String>>,
+    pub update: Signal<UpdateState>,
     /// Memoized: `true` when `focus` targets a text-editing field.
     pub text_focused: Signal<bool>,
     pub animation: crate::ui::animation::AnimationState,
@@ -1213,6 +1225,7 @@ impl Default for AppState {
         let theme_preview_original = store.create(None::<String>);
         let toasts = store.create(Vec::<Toast>::new());
         let syntax_pack_installs = store.create(Vec::<String>::new());
+        let update = store.create(UpdateState::default());
         let debug = DebugStateStore::new(&store, DebugState::default());
         let file_list = FileListStateStore::new_default(&store);
         let editor = EditorStateStore::new_default(&store);
@@ -1241,6 +1254,7 @@ impl Default for AppState {
             last_error,
             toasts,
             syntax_pack_installs,
+            update,
             text_focused,
             animation: crate::ui::animation::AnimationState::default(),
             commit_editor: Editor::default(),
@@ -1320,6 +1334,7 @@ impl AppState {
         let theme_preview_original = store.create(None::<String>);
         let toasts = store.create(Vec::<Toast>::new());
         let syntax_pack_installs = store.create(Vec::<String>::new());
+        let update = store.create(UpdateState::default());
         let debug = DebugStateStore::new(&store, DebugState::default());
         let file_list = FileListStateStore::new_default(&store);
         let editor = EditorStateStore::new(
@@ -1385,6 +1400,7 @@ impl AppState {
             last_error,
             toasts,
             syntax_pack_installs,
+            update,
             text_focused,
             animation: crate::ui::animation::AnimationState::default(),
             commit_editor: Editor::default(),
@@ -1479,6 +1495,9 @@ impl AppState {
 
         effects.push(Effect::InstallCommonSyntaxPacks);
         effects.push(Effect::LoadAiKeys);
+        if crate::core::update::updates_configured() && !cfg!(debug_assertions) {
+            effects.push(Effect::CheckForUpdates { silent: true });
+        }
         (state, effects)
     }
 
@@ -1628,6 +1647,8 @@ impl AppState {
             | SetWheelScrollLines(_)
             | OpenSettings
             | CloseSettings
+            | CheckForUpdates
+            | InstallUpdate
             | SetSettingsSection(_) => self.apply_settings_action(action),
 
             // GitHub
@@ -2661,6 +2682,20 @@ impl AppState {
                 self.app_view.set(&self.store, AppView::Workspace);
                 Vec::new()
             }
+            Action::CheckForUpdates => {
+                self.update.set(&self.store, UpdateState::Checking);
+                vec![Effect::CheckForUpdates { silent: false }]
+            }
+            Action::InstallUpdate => {
+                let update = self.update.get(&self.store);
+                if let UpdateState::Available(update) = update {
+                    self.update
+                        .set(&self.store, UpdateState::Installing(update.clone()));
+                    vec![Effect::InstallUpdate(update)]
+                } else {
+                    Vec::new()
+                }
+            }
             Action::SetSettingsSection(section) => {
                 self.settings_section.set(&self.store, section);
                 Vec::new()
@@ -3113,6 +3148,37 @@ impl AppState {
             }
             AppEvent::SettingsSaved => Vec::new(),
             AppEvent::SettingsSaveFailed { message } => {
+                self.push_error(&message);
+                Vec::new()
+            }
+            AppEvent::UpdateAvailable(update) => {
+                self.update
+                    .set(&self.store, UpdateState::Available(update.clone()));
+                self.push_info(&format!("Diffy {} is available.", update.version));
+                Vec::new()
+            }
+            AppEvent::UpdateNotAvailable { silent } => {
+                self.update.set(&self.store, UpdateState::Idle);
+                if !silent {
+                    self.push_info("Diffy is up to date.");
+                }
+                Vec::new()
+            }
+            AppEvent::UpdateCheckFailed { message, silent } => {
+                if !silent {
+                    self.update
+                        .set(&self.store, UpdateState::Failed(message.clone()));
+                    self.push_error(&message);
+                }
+                Vec::new()
+            }
+            AppEvent::UpdateInstallStarted => {
+                self.push_info("Installing update. Diffy will restart.");
+                Vec::new()
+            }
+            AppEvent::UpdateInstallFailed { message } => {
+                self.update
+                    .set(&self.store, UpdateState::Failed(message.clone()));
                 self.push_error(&message);
                 Vec::new()
             }

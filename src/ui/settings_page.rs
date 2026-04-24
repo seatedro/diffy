@@ -13,7 +13,7 @@ use crate::ui::editor_element::{CursorSnapshot, text_editor_element};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
-use crate::ui::state::{AppState, FocusTarget, SettingsSection};
+use crate::ui::state::{AppState, FocusTarget, SettingsSection, UpdateState};
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme, ThemeMode};
 
@@ -122,7 +122,11 @@ fn section_content(state: &AppState, theme: &Theme, section: SettingsSection) ->
             "AI assistance. Keys stay in your OS keyring; no telemetry.",
             clankers_section(state, theme),
         ),
-        SettingsSection::About => ("About", "Diffy build information.", about_section(theme)),
+        SettingsSection::About => (
+            "About",
+            "Diffy build information.",
+            about_section(state, theme),
+        ),
     };
 
     view! { scale,
@@ -516,10 +520,52 @@ fn ai_key_row(
     .into_any()
 }
 
-fn about_section(theme: &Theme) -> AnyElement {
+fn about_section(state: &AppState, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let version = crate::APP_VERSION;
+    let update_state = state.update.get(&state.store);
+
+    let update_control = match &update_state {
+        UpdateState::Checking => Button::new(Action::Noop)
+            .icon(lucide::REFRESH)
+            .label("Checking")
+            .style(ButtonStyle::Subtle)
+            .size(ButtonSize::Default)
+            .into_any(),
+        UpdateState::Available(update) => Button::new(Action::InstallUpdate)
+            .icon(lucide::ARROW_DOWN)
+            .label(format!("Install {}", update.version))
+            .style(ButtonStyle::Filled)
+            .size(ButtonSize::Default)
+            .into_any(),
+        UpdateState::Installing(_) => Button::new(Action::Noop)
+            .icon(lucide::ARROW_DOWN)
+            .label("Installing")
+            .style(ButtonStyle::Subtle)
+            .size(ButtonSize::Default)
+            .into_any(),
+        _ => Button::new(Action::CheckForUpdates)
+            .icon(lucide::REFRESH)
+            .label("Check for updates")
+            .style(ButtonStyle::Subtle)
+            .size(ButtonSize::Default)
+            .into_any(),
+    };
+
+    let update_description = match &update_state {
+        UpdateState::Available(update) => {
+            format!(
+                "Version {} is ready for {}.",
+                update.version, update.platform
+            )
+        }
+        UpdateState::Installing(update) => {
+            format!("Installing version {}. Diffy will restart.", update.version)
+        }
+        UpdateState::Failed(message) => format!("Update failed: {message}"),
+        _ => "Signed cross-platform updates from Diffy's release channel.".to_owned(),
+    };
 
     section_card(
         theme,
@@ -536,6 +582,7 @@ fn about_section(theme: &Theme) -> AnyElement {
                 </div>
             }
             .into_any(),
+            setting_row(theme, "Updates", &update_description, update_control),
         ],
     )
 }

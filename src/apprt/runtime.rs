@@ -406,6 +406,35 @@ impl EffectRunner {
             Effect::SaveSettings(settings) => {
                 self.save_worker.dispatch(settings);
             }
+            Effect::CheckForUpdates { silent } => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services.check_for_updates(crate::APP_VERSION) {
+                        Ok(crate::core::update::UpdateCheck::Available(update)) => {
+                            AppEvent::UpdateAvailable(update)
+                        }
+                        Ok(crate::core::update::UpdateCheck::NotAvailable) => {
+                            AppEvent::UpdateNotAvailable { silent }
+                        }
+                        Err(error) => AppEvent::UpdateCheckFailed {
+                            message: error.to_string(),
+                            silent,
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
+            Effect::InstallUpdate(update) => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || match services.install_update(&update) {
+                    Ok(()) => event_sender.send(AppEvent::UpdateInstallStarted),
+                    Err(error) => event_sender.send(AppEvent::UpdateInstallFailed {
+                        message: error.to_string(),
+                    }),
+                });
+            }
             Effect::OpenBrowser { url } => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();

@@ -89,6 +89,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tokio = { version = "1", default-features = false, features = ["rt"] }
+ring = "0.17"
 
 [[bin]]
 name = "diffy"

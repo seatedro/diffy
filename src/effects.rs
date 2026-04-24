@@ -4,6 +4,7 @@ use crate::ai::Provider;
 use crate::core::compare::{CompareSpec, RendererKind};
 use crate::core::diff::FileDiff;
 use crate::core::syntax::annotator::SyntaxRowWindow;
+use crate::core::update::AvailableUpdate;
 use crate::core::vcs::git::status::StatusScope;
 use crate::core::vcs::git::{StatusItem, StatusOperation};
 use crate::events::RepositorySyncReason;
@@ -170,6 +171,10 @@ pub enum Effect {
         generation: u64,
     },
     SaveSettings(Settings),
+    CheckForUpdates {
+        silent: bool,
+    },
+    InstallUpdate(AvailableUpdate),
     OpenBrowser {
         url: String,
     },

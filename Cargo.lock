@@ -1012,6 +1012,7 @@ dependencies = [
  "reqwest",
  "resvg",
  "rfd",
+ "ring",
  "serde",
  "serde_json",
  "subsecond",

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -192,6 +193,40 @@ impl PackInstaller {
         } else {
             Ok(None)
         }
+    }
+
+    pub async fn ensure_packs_for_paths<I, P>(&self, paths: I) -> Result<Vec<LanguageId>>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        let mut seen = HashSet::new();
+        let mut missing = Vec::new();
+        for path in paths {
+            let Some(language) = crate::language::guess_language(path.as_ref()) else {
+                continue;
+            };
+            if seen.insert(language) && !is_pack_installed_at(&self.storage_dir, language) {
+                missing.push(language);
+            }
+        }
+        if missing.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let index = self.fetch_index().await?;
+        let mut installed = Vec::new();
+        for language in missing {
+            let entry = index
+                .packs
+                .iter()
+                .find(|entry| entry.language == language.name())
+                .ok_or(PackError::MissingLanguage(language))?;
+            if self.install_entry(entry, language).await? {
+                installed.push(language);
+            }
+        }
+        Ok(installed)
     }
 
     async fn fetch_index(&self) -> Result<PackIndex> {

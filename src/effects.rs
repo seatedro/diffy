@@ -160,6 +160,9 @@ pub enum Effect {
     EnsureSyntaxPackForPath {
         path: String,
     },
+    EnsureSyntaxPacksForPaths {
+        paths: Vec<String>,
+    },
     LoadAiKeys,
     SaveAiKey {
         kind: AiKeyKind,

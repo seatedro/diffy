@@ -3705,6 +3705,12 @@ impl AppState {
             return Vec::new();
         }
 
+        let syntax_warmup_paths = payload
+            .output
+            .files
+            .iter()
+            .map(|file| file.path.clone())
+            .collect::<Vec<_>>();
         self.workspace
             .status_operation_pending
             .set(&self.store, false);
@@ -3785,10 +3791,14 @@ impl AppState {
         });
 
         let mut effects = Vec::new();
+        let mut selected_syntax_paths = Vec::new();
         if let Some(index) = index_for_path
             .or(preferred_index.filter(|index| *index < file_count))
             .or_else(|| (file_count > 0).then_some(0))
         {
+            if let Some(path) = syntax_warmup_paths.get(index) {
+                selected_syntax_paths.push(path.clone());
+            }
             effects.extend(self.select_file(index, true));
         } else {
             self.workspace.selected_file_index.set(&self.store, None);
@@ -3800,6 +3810,11 @@ impl AppState {
             // Tear down the progress panel; the "repo ready" hint takes over.
             self.compare_progress.set(&self.store, None);
             self.editor_clear_document();
+        }
+        if let Some(effect) =
+            self.syntax_pack_warmup_effect_for_paths(&syntax_warmup_paths, &selected_syntax_paths)
+        {
+            effects.insert(0, effect);
         }
 
         let (used_fallback, fallback_message) = (
@@ -3976,6 +3991,42 @@ impl AppState {
             .with(&self.store, |active| !active.is_empty())
     }
 
+    fn syntax_pack_warmup_effect_for_paths(
+        &self,
+        paths: &[String],
+        exclude_paths: &[String],
+    ) -> Option<Effect> {
+        let highlighter = phosphor::Highlighter::new();
+        let excluded_languages = exclude_paths
+            .iter()
+            .filter_map(|path| highlighter.guess_language(Path::new(path)))
+            .collect::<HashSet<_>>();
+        let active_languages = self.syntax_pack_installs.with(&self.store, |active| {
+            active.iter().cloned().collect::<HashSet<_>>()
+        });
+
+        let mut seen = HashSet::new();
+        let mut warmup_paths = Vec::new();
+        for path in paths {
+            let Some(language) = highlighter.guess_language(Path::new(path)) else {
+                continue;
+            };
+            if excluded_languages.contains(&language)
+                || active_languages.contains(language.name())
+                || highlighter.is_parser_available(language)
+            {
+                continue;
+            }
+            if seen.insert(language) {
+                warmup_paths.push(path.clone());
+            }
+        }
+
+        (!warmup_paths.is_empty()).then_some(Effect::EnsureSyntaxPacksForPaths {
+            paths: warmup_paths,
+        })
+    }
+
     fn handle_syntax_pack_installed(&mut self, language: &str) -> Vec<Effect> {
         let Some(path) = self.workspace.selected_file_path.get(&self.store) else {
             return Vec::new();
@@ -4055,29 +4106,48 @@ impl AppState {
 
         let current_path = self.workspace.selected_file_path.get(&self.store);
         let current_scope = self.workspace.selected_status_scope.get(&self.store);
-        let selected_index = self.workspace.status_items.with(&self.store, |items| {
-            if let Some((path, scope)) = current_path.clone().zip(current_scope) {
-                if let Some(idx) = items
+        let (status_syntax_paths, selected_index) =
+            self.workspace.status_items.with(&self.store, |items| {
+                let paths = items
                     .iter()
-                    .position(|item| item.path == path && item.scope == scope)
-                {
-                    return Some(idx);
+                    .map(|item| item.path.clone())
+                    .collect::<Vec<_>>();
+                if let Some((path, scope)) = current_path.clone().zip(current_scope) {
+                    if let Some(idx) = items
+                        .iter()
+                        .position(|item| item.path == path && item.scope == scope)
+                    {
+                        return (paths, Some(idx));
+                    }
                 }
-            }
-            if let Some(path) = current_path.as_deref() {
-                if let Some(idx) = items.iter().position(|item| item.path == path) {
-                    return Some(idx);
+                if let Some(path) = current_path.as_deref() {
+                    if let Some(idx) = items.iter().position(|item| item.path == path) {
+                        return (paths, Some(idx));
+                    }
                 }
-            }
-            (!items.is_empty()).then_some(0)
-        });
+                (paths, (!items.is_empty()).then_some(0))
+            });
 
         tracing::debug!(
             ?selected_index,
             "activate_status_view: resolved selected_index"
         );
         match selected_index {
-            Some(index) => self.select_status_item(index, false),
+            Some(index) => {
+                let selected_syntax_paths = status_syntax_paths
+                    .get(index)
+                    .cloned()
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                let mut effects = self.select_status_item(index, false);
+                if let Some(effect) = self.syntax_pack_warmup_effect_for_paths(
+                    &status_syntax_paths,
+                    &selected_syntax_paths,
+                ) {
+                    effects.insert(0, effect);
+                }
+                effects
+            }
             None => {
                 tracing::debug!("activate_status_view: no selection, clearing pending");
                 self.workspace

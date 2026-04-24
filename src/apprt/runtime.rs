@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::Duration;
@@ -488,6 +489,58 @@ impl EffectRunner {
                         Err(error) => {
                             tracing::warn!(path = %path, %error, "syntax pack install failed");
                             if let Some(language) = language {
+                                event_sender.send(AppEvent::SyntaxPackInstallFailed { language });
+                            }
+                        }
+                    }
+                });
+            }
+            Effect::EnsureSyntaxPacksForPaths { paths } => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let highlighter = phosphor::Highlighter::new();
+                    let mut seen = HashSet::new();
+                    let mut languages = Vec::new();
+                    for path in &paths {
+                        let Some(language) = highlighter
+                            .guess_language(std::path::Path::new(path))
+                            .filter(|language| !highlighter.is_parser_available(*language))
+                        else {
+                            continue;
+                        };
+                        if seen.insert(language) {
+                            languages.push(language.name().to_owned());
+                        }
+                    }
+                    if languages.is_empty() {
+                        return;
+                    }
+
+                    tracing::info!(
+                        languages = ?languages,
+                        path_count = paths.len(),
+                        "syntax pack batch install started"
+                    );
+                    for language in &languages {
+                        event_sender.send(AppEvent::SyntaxPackInstallStarted {
+                            language: language.clone(),
+                        });
+                    }
+                    match services.ensure_syntax_packs_for_paths(&paths) {
+                        Ok(installed) => {
+                            let installed_count = installed.len();
+                            for language in installed {
+                                event_sender.send(AppEvent::SyntaxPackInstalled { language });
+                            }
+                            tracing::info!(installed_count, "syntax pack batch install finished");
+                            for language in languages {
+                                event_sender.send(AppEvent::SyntaxPackInstallFinished { language });
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "syntax pack batch install failed");
+                            for language in languages {
                                 event_sender.send(AppEvent::SyntaxPackInstallFailed { language });
                             }
                         }

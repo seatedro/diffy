@@ -326,6 +326,23 @@ impl AppServices {
         })
     }
 
+    pub fn ensure_syntax_packs_for_paths(&self, paths: &[String]) -> Result<Vec<String>> {
+        let installer = phosphor::PackInstaller::new()
+            .map_err(|error| DiffyError::General(error.to_string()))?;
+        http::block_on(async {
+            installer
+                .ensure_packs_for_paths(paths.iter().map(|path| Path::new(path.as_str())))
+                .await
+                .map(|languages| {
+                    languages
+                        .into_iter()
+                        .map(|language| language.name().to_owned())
+                        .collect()
+                })
+                .map_err(|error| DiffyError::General(error.to_string()))
+        })
+    }
+
     pub fn open_browser(&self, url: &str) -> Result<()> {
         webbrowser::open(url)
             .map(|_| ())

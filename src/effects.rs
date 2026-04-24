@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use crate::ai::Provider;
 use crate::core::compare::{CompareSpec, RendererKind};
+use crate::core::diff::FileDiff;
+use crate::core::syntax::annotator::SyntaxRowWindow;
 use crate::core::vcs::git::status::StatusScope;
 use crate::core::vcs::git::{StatusItem, StatusOperation};
 use crate::events::RepositorySyncReason;
@@ -28,6 +30,19 @@ pub struct StatusDiffRequest {
     pub repo_path: PathBuf,
     pub item: StatusItem,
     pub renderer: RendererKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadFileSyntaxRequest {
+    pub repo_path: PathBuf,
+    pub file_index: usize,
+    pub path: String,
+    pub file: FileDiff,
+    pub left_ref: String,
+    pub right_ref: String,
+    pub window: SyntaxRowWindow,
+    pub request_id: u64,
+    pub cache_generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +127,10 @@ pub enum Effect {
         generation: u64,
         index: usize,
         request: StatusDiffRequest,
+    },
+    LoadFileSyntax {
+        generation: u64,
+        request: LoadFileSyntaxRequest,
     },
     ApplyStatusOperation(StatusOperationRequest),
     ApplyBatchStatusOperation(BatchStatusOperationRequest),

@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -11,13 +13,15 @@ use crate::core::compare::{
 };
 use crate::core::error::{DiffyError, Result};
 use crate::core::http;
+use crate::core::syntax::annotator::FullFileSyntax;
 use crate::core::vcs::git::{GitService, WORKDIR_REF};
 use crate::core::vcs::github::{
     DeviceFlowState, GitHubApi, GitHubUser, PullRequestInfo, parse_pr_url, poll_for_token,
     start_device_flow,
 };
 use crate::effects::{
-    CompareFileRequest, CompareRequest, GenerateCommitMessageRequest, StatusDiffRequest,
+    CompareFileRequest, CompareRequest, GenerateCommitMessageRequest, LoadFileSyntaxRequest,
+    StatusDiffRequest,
 };
 use crate::events::{AppEvent, CompareFileFinished, CompareFinished, StatusDiffFinished};
 use crate::platform::persistence::{Settings, SettingsStore};
@@ -27,11 +31,41 @@ use crate::ui::state::prepare_active_file;
 #[derive(Debug, Clone)]
 pub struct AppServices {
     settings_store: SettingsStore,
+    syntax_cache: Arc<Mutex<FileSyntaxCache>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FileSyntaxCacheKey {
+    repo_path: String,
+    reference: String,
+    path: String,
+    generation: u64,
+}
+
+#[derive(Debug, Default)]
+struct FileSyntaxCache {
+    entries: HashMap<FileSyntaxCacheKey, Arc<FullFileSyntax>>,
+}
+
+impl FileSyntaxCache {
+    fn insert(&mut self, key: FileSyntaxCacheKey, syntax: Arc<FullFileSyntax>) {
+        const MAX_ENTRIES: usize = 8;
+        if self.entries.len() >= MAX_ENTRIES
+            && !self.entries.contains_key(&key)
+            && let Some(first_key) = self.entries.keys().next().cloned()
+        {
+            self.entries.remove(&first_key);
+        }
+        self.entries.insert(key, syntax);
+    }
 }
 
 impl AppServices {
     pub fn new(settings_store: SettingsStore) -> Self {
-        Self { settings_store }
+        Self {
+            settings_store,
+            syntax_cache: Arc::new(Mutex::new(FileSyntaxCache::default())),
+        }
     }
 
     pub fn run_compare(
@@ -135,17 +169,11 @@ impl AppServices {
             mark_difftastic_fallback(&mut output);
         }
 
-        let Some(mut file) = output.files.pop() else {
+        let Some(file) = output.files.pop() else {
             return Err(DiffyError::General(
                 "compare file returned no file".to_owned(),
             ));
         };
-        crate::core::syntax::DiffSyntaxAnnotator::new().annotate(
-            &mut file,
-            &mut output.text_buffer,
-            &mut output.token_buffer,
-        );
-        file.syntax_annotated = true;
 
         Ok(CompareFileFinished {
             generation,
@@ -158,6 +186,67 @@ impl AppServices {
                 &output.token_buffer,
             ),
         })
+    }
+
+    pub fn load_file_syntax(
+        &self,
+        request: &LoadFileSyntaxRequest,
+    ) -> Vec<crate::core::syntax::annotator::SyntaxLineTokens> {
+        let mut git = GitService::new();
+        if git
+            .open(request.repo_path.to_string_lossy().as_ref())
+            .is_err()
+        {
+            return Vec::new();
+        }
+
+        let annotator = crate::core::syntax::DiffSyntaxAnnotator::new();
+        let old_syntax = self.cached_file_syntax(&git, request, &request.left_ref, &annotator);
+        let new_syntax = self.cached_file_syntax(&git, request, &request.right_ref, &annotator);
+
+        annotator.annotate_full_file_window_from_cache(
+            &request.file,
+            request.file_index,
+            old_syntax.as_deref(),
+            new_syntax.as_deref(),
+            request.window,
+        )
+    }
+
+    fn cached_file_syntax(
+        &self,
+        git: &GitService,
+        request: &LoadFileSyntaxRequest,
+        reference: &str,
+        annotator: &crate::core::syntax::DiffSyntaxAnnotator,
+    ) -> Option<Arc<FullFileSyntax>> {
+        if reference.is_empty() {
+            return None;
+        }
+        let key = FileSyntaxCacheKey {
+            repo_path: request.repo_path.to_string_lossy().into_owned(),
+            reference: reference.to_owned(),
+            path: request.path.clone(),
+            generation: request.cache_generation,
+        };
+
+        if let Some(cached) = self
+            .syntax_cache
+            .lock()
+            .ok()
+            .and_then(|cache| cache.entries.get(&key).cloned())
+        {
+            return Some(cached);
+        }
+
+        let lines = git.read_file_lines_at(reference, &request.path).ok()?;
+        let syntax = Arc::new(annotator.highlight_full_lines(&request.path, &lines));
+        if syntax.has_tokens()
+            && let Ok(mut cache) = self.syntax_cache.lock()
+        {
+            cache.insert(key, syntax.clone());
+        }
+        Some(syntax)
     }
 
     pub fn load_pull_request(

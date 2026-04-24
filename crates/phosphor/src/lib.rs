@@ -5,6 +5,7 @@ mod language;
 pub mod pack;
 mod types;
 
+use std::ops::Range;
 use std::path::Path;
 
 pub use error::{PhosphorError, Result};
@@ -41,6 +42,15 @@ impl Highlighter {
         source: &str,
     ) -> Result<Vec<HighlightSpan>> {
         language::highlight(language, source)
+    }
+
+    pub fn highlight_language_ranges(
+        &self,
+        language: LanguageId,
+        source: &str,
+        byte_ranges: &[Range<usize>],
+    ) -> Result<Vec<HighlightSpan>> {
+        language::highlight_ranges(language, source, byte_ranges)
     }
 
     pub fn highlight_path(&self, path: &Path, source: &str) -> Result<Vec<HighlightSpan>> {

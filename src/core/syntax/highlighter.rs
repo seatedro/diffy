@@ -1,3 +1,4 @@
+use std::ops::Range;
 use std::path::Path;
 
 use crate::core::error::{DiffyError, Result};
@@ -47,6 +48,24 @@ impl Highlighter {
         }
         self.inner
             .highlight_language(language, source)
+            .map(|spans| spans.into_iter().map(map_span).collect())
+            .map_err(|error| DiffyError::Syntax(error.to_string()))
+    }
+
+    pub fn highlight_resolved_ranges(
+        &self,
+        language: Option<PhosphorLanguageId>,
+        source: &str,
+        byte_ranges: &[Range<usize>],
+    ) -> Result<Vec<DiffTokenSpan>> {
+        let Some(language) = language else {
+            return Ok(Vec::new());
+        };
+        if !self.inner.is_parser_available(language) {
+            return Ok(Vec::new());
+        }
+        self.inner
+            .highlight_language_ranges(language, source, byte_ranges)
             .map(|spans| spans.into_iter().map(map_span).collect())
             .map_err(|error| DiffyError::Syntax(error.to_string()))
     }

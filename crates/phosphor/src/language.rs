@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::OsStr;
+use std::ops::Range;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -137,6 +138,29 @@ pub(crate) fn highlight(language: LanguageId, source: &str) -> Result<Vec<Highli
     compact_spans(language, raw_spans)
 }
 
+pub(crate) fn highlight_ranges(
+    language: LanguageId,
+    source: &str,
+    byte_ranges: &[Range<usize>],
+) -> Result<Vec<HighlightSpan>> {
+    if source.is_empty() || byte_ranges.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    if !is_parser_available(language) {
+        return Err(PhosphorError::MissingParser { language });
+    }
+
+    let compiled = compiled_language(language)?;
+    let tree = parse_source(&compiled, source)?;
+    let ranges = merged_ranges(byte_ranges, source.len());
+    if ranges.is_empty() {
+        return Ok(Vec::new());
+    }
+    let raw_spans = collect_spans_in_ranges(&compiled, &tree, source, &ranges);
+    compact_spans(language, raw_spans)
+}
+
 fn compiled_language(language: LanguageId) -> Result<Rc<CompiledLanguage>> {
     COMPILED_LANGUAGES.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -239,6 +263,65 @@ fn collect_spans(
     }
 
     raw_spans
+}
+
+fn collect_spans_in_ranges(
+    compiled: &CompiledLanguage,
+    tree: &ts::Tree,
+    source: &str,
+    byte_ranges: &[Range<usize>],
+) -> Vec<(usize, usize, HighlightKind, usize)> {
+    let mut raw_spans = Vec::new();
+    for range in byte_ranges {
+        let mut cursor = ts::QueryCursor::new();
+        cursor.set_byte_range(range.clone());
+        let mut captures = cursor.captures(&compiled.query, tree.root_node(), source.as_bytes());
+
+        while let Some((query_match, capture_index)) = captures.next() {
+            let capture = query_match.captures[*capture_index];
+            let kind = compiled
+                .capture_kinds
+                .get(capture.index as usize)
+                .copied()
+                .unwrap_or(HighlightKind::Normal);
+            if kind == HighlightKind::Normal {
+                continue;
+            }
+
+            let node = capture.node;
+            let start = node.start_byte();
+            let end = node.end_byte();
+            if end > start && end > range.start && start < range.end {
+                raw_spans.push((start, end, kind, query_match.pattern_index));
+            }
+        }
+    }
+
+    raw_spans
+}
+
+fn merged_ranges(ranges: &[Range<usize>], source_len: usize) -> Vec<Range<usize>> {
+    let mut ranges = ranges
+        .iter()
+        .filter_map(|range| {
+            let start = range.start.min(source_len);
+            let end = range.end.min(source_len);
+            (end > start).then_some(start..end)
+        })
+        .collect::<Vec<_>>();
+    ranges.sort_by_key(|range| range.start);
+
+    let mut merged: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        if let Some(last) = merged.last_mut()
+            && range.start <= last.end
+        {
+            last.end = last.end.max(range.end);
+            continue;
+        }
+        merged.push(range);
+    }
+    merged
 }
 
 fn compact_spans(

@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::core::compare::{CompareOutput, CompareSpec};
+use crate::core::syntax::annotator::{SyntaxLineTokens, SyntaxRowWindow};
 use crate::core::vcs::git::{BranchInfo, CommitInfo, StatusItem, TagInfo};
 use crate::core::vcs::github::{DeviceFlowState, GitHubUser, PullRequestInfo};
 use crate::ui::state::{ComparePhase, PreparedActiveFile};
@@ -88,6 +89,7 @@ pub enum AppEvent {
         index: usize,
         message: String,
     },
+    FileSyntaxReady(FileSyntaxReady),
     StatusOperationFailed {
         path: PathBuf,
         message: String,
@@ -276,4 +278,14 @@ pub enum ContextDirection {
     Above,
     Below,
     All,
+}
+
+#[derive(Debug, Clone)]
+pub struct FileSyntaxReady {
+    pub generation: u64,
+    pub request_id: u64,
+    pub file_index: usize,
+    pub path: String,
+    pub window: SyntaxRowWindow,
+    pub tokens: Vec<SyntaxLineTokens>,
 }

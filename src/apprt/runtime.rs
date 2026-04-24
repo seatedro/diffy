@@ -219,6 +219,24 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
+            Effect::LoadFileSyntax {
+                generation,
+                request,
+            } => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let tokens = services.load_file_syntax(&request);
+                    event_sender.send(AppEvent::FileSyntaxReady(crate::events::FileSyntaxReady {
+                        generation,
+                        request_id: request.request_id,
+                        file_index: request.file_index,
+                        path: request.path,
+                        window: request.window,
+                        tokens,
+                    }));
+                });
+            }
             Effect::LoadPullRequest {
                 url,
                 repo_path,

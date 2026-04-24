@@ -12,7 +12,8 @@ use crate::actions::Action;
 use crate::core::compare::{CompareMode, CompareOutput, CompareSpec, LayoutMode, RendererKind};
 use crate::core::diff::FileDiff;
 use crate::core::frecency::FrecencyStore;
-use crate::core::syntax::{DiffSyntaxAnnotator, Highlighter};
+use crate::core::syntax::Highlighter;
+use crate::core::syntax::annotator::{SyntaxLineTokens, SyntaxRowWindow};
 use crate::core::text::{TextBuffer, TokenBuffer};
 use crate::core::vcs::git::patch;
 use crate::core::vcs::git::{
@@ -22,12 +23,12 @@ use crate::core::vcs::github::{DeviceFlowState, GitHubUser, PullRequestInfo};
 use crate::editor::Editor;
 use crate::effects::{
     BatchStatusOperationRequest, CommitRequest, CompareFileRequest, CompareRequest, Effect,
-    FetchRemoteRequest, PatchOperationRequest, PullFfRequest, PushRequest, StatusDiffRequest,
-    StatusOperationRequest,
+    FetchRemoteRequest, LoadFileSyntaxRequest, PatchOperationRequest, PullFfRequest, PushRequest,
+    StatusDiffRequest, StatusOperationRequest,
 };
 use crate::events::{
-    AppEvent, CompareFileFinished, CompareFinished, RepositoryChangeKind, RepositorySnapshot,
-    RepositorySyncReason, StatusDiffFinished,
+    AppEvent, CompareFileFinished, CompareFinished, FileSyntaxReady, RepositoryChangeKind,
+    RepositorySnapshot, RepositorySyncReason, StatusDiffFinished,
 };
 use crate::platform::persistence::{PersistedCompare, Settings};
 use crate::platform::secrets::AiKeyKind;
@@ -43,6 +44,8 @@ const TOAST_LIFETIME_MS: u64 = 5_000;
 const TOAST_ANIM_MS: u64 = 150;
 const CURSOR_BLINK_INTERVAL_MS: u64 = 530;
 const LARGE_COMPARE_FILE_LINES: i32 = 1_500;
+const SYNTAX_INITIAL_ROWS: usize = 200;
+const SYNTAX_OVERSCAN_ROWS: usize = 160;
 
 fn build_pr_palette_entry(
     cache: &HashMap<PrKey, PrCacheEntry>,
@@ -381,6 +384,46 @@ fn clear_syntax_tokens(file: &mut FileDiff) {
     }
 }
 
+fn apply_syntax_tokens_to_file(
+    file: &mut FileDiff,
+    token_buffer: &mut TokenBuffer,
+    updates: &[SyntaxLineTokens],
+) {
+    for update in updates {
+        let Some(line) = file
+            .hunks
+            .get_mut(update.hunk_index)
+            .and_then(|hunk| hunk.lines.get_mut(update.line_index))
+        else {
+            continue;
+        };
+        line.syntax_tokens = if update.tokens.is_empty() {
+            Default::default()
+        } else {
+            token_buffer.append(&update.tokens)
+        };
+    }
+}
+
+fn push_syntax_covered_window(windows: &mut Vec<SyntaxRowWindow>, window: SyntaxRowWindow) {
+    if window.end <= window.start {
+        return;
+    }
+    windows.push(window);
+    windows.sort_by_key(|window| window.start);
+    let mut merged: Vec<SyntaxRowWindow> = Vec::with_capacity(windows.len());
+    for window in windows.drain(..) {
+        if let Some(last) = merged.last_mut()
+            && window.start <= last.end
+        {
+            last.end = last.end.max(window.end);
+            continue;
+        }
+        merged.push(window);
+    }
+    *windows = merged;
+}
+
 #[derive(Debug, Clone)]
 pub struct ActiveFile {
     pub index: usize,
@@ -395,6 +438,9 @@ pub struct ActiveFile {
     pub right_ref: String,
     pub file_line_count: Option<u32>,
     pub file_lines: Option<Arc<Vec<String>>>,
+    pub syntax_request_id: u64,
+    pub syntax_pending: Option<SyntaxRowWindow>,
+    pub syntax_covered: Vec<SyntaxRowWindow>,
 }
 
 pub(crate) fn prepare_active_file(
@@ -641,6 +687,9 @@ impl AppState {
             right_ref,
             file_line_count: None,
             file_lines: None,
+            syntax_request_id: 0,
+            syntax_pending: None,
+            syntax_covered: Vec::new(),
         }
     }
 
@@ -650,8 +699,16 @@ impl AppState {
         path: String,
         prepared: PreparedActiveFile,
     ) {
-        let left_ref = self.compare.left_ref.get(&self.store);
-        let right_ref = self.compare.right_ref.get(&self.store);
+        let left_ref = self
+            .compare
+            .resolved_left
+            .get(&self.store)
+            .unwrap_or_else(|| self.compare.left_ref.get(&self.store));
+        let right_ref = self
+            .compare
+            .resolved_right
+            .get(&self.store)
+            .unwrap_or_else(|| self.compare.right_ref.get(&self.store));
         let active_file =
             self.build_active_file(index, path.clone(), prepared, left_ref, right_ref);
 
@@ -2460,24 +2517,34 @@ impl AppState {
         match action {
             Action::ScrollViewportLines(delta) => {
                 self.scroll_viewport_lines(delta);
-                Vec::new()
+                self.request_active_file_syntax_effect()
+                    .into_iter()
+                    .collect()
             }
             Action::ScrollViewportPx(delta_px) => {
                 self.scroll_viewport_px(delta_px);
-                Vec::new()
+                self.request_active_file_syntax_effect()
+                    .into_iter()
+                    .collect()
             }
             Action::ScrollViewportPages(delta) => {
                 self.scroll_viewport_pages(delta);
-                Vec::new()
+                self.request_active_file_syntax_effect()
+                    .into_iter()
+                    .collect()
             }
             Action::ScrollViewportTo(px) => {
                 self.editor.scroll_top_px.set(&self.store, px);
                 self.editor_clamp_scroll();
-                Vec::new()
+                self.request_active_file_syntax_effect()
+                    .into_iter()
+                    .collect()
             }
             Action::ScrollViewportHalfPage(dir) => {
                 self.scroll_viewport_half_page(dir);
-                Vec::new()
+                self.request_active_file_syntax_effect()
+                    .into_iter()
+                    .collect()
             }
             Action::HoverViewportRow(row) => {
                 self.editor.hovered_row.set(&self.store, row);
@@ -2492,19 +2559,27 @@ impl AppState {
             }
             Action::GoToNextHunk => {
                 self.navigate_to_hunk(true);
-                Vec::new()
+                self.request_active_file_syntax_effect()
+                    .into_iter()
+                    .collect()
             }
             Action::GoToPreviousHunk => {
                 self.navigate_to_hunk(false);
-                Vec::new()
+                self.request_active_file_syntax_effect()
+                    .into_iter()
+                    .collect()
             }
             Action::GoToNextFile => {
                 self.navigate_to_file(true);
-                Vec::new()
+                self.request_active_file_syntax_effect()
+                    .into_iter()
+                    .collect()
             }
             Action::GoToPreviousFile => {
                 self.navigate_to_file(false);
-                Vec::new()
+                self.request_active_file_syntax_effect()
+                    .into_iter()
+                    .collect()
             }
             Action::OpenSearch => {
                 self.open_search();
@@ -2736,6 +2811,7 @@ impl AppState {
                 }
                 Vec::new()
             }
+            AppEvent::FileSyntaxReady(payload) => self.handle_file_syntax_ready(payload),
             AppEvent::StatusOperationFailed { path, message } => {
                 if self
                     .compare
@@ -3579,7 +3655,10 @@ impl AppState {
 
         if let Some(lines) = cached_lines {
             self.apply_context_expansion(direction, hunk_index, amount, lines);
-            return Vec::new();
+            return self
+                .request_active_file_syntax_effect()
+                .into_iter()
+                .collect();
         }
 
         vec![Effect::FetchContextLines(
@@ -3614,7 +3693,9 @@ impl AppState {
 
         let lines = Arc::new(payload.lines);
         self.apply_context_expansion(payload.direction, payload.hunk_index, payload.amount, lines);
-        Vec::new()
+        self.request_active_file_syntax_effect()
+            .into_iter()
+            .collect()
     }
 
     fn apply_context_expansion(
@@ -3875,7 +3956,7 @@ impl AppState {
             .set(&self.store, false);
         self.workspace.status.set(&self.store, AsyncStatus::Ready);
         self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
-        let mut output = payload.output;
+        let output = payload.output;
         self.workspace
             .used_fallback
             .set(&self.store, output.used_fallback);
@@ -3888,18 +3969,12 @@ impl AppState {
         self.workspace.compare_output.set(&self.store, None);
         self.workspace.active_file_loading.set(&self.store, None);
 
-        let Some(mut file) = output.files.into_iter().next() else {
+        let Some(file) = output.files.into_iter().next() else {
             self.workspace.active_file.set(&self.store, None);
             self.editor_clear_document();
             return Vec::new();
         };
 
-        DiffSyntaxAnnotator::new().annotate(
-            &mut file,
-            &mut output.text_buffer,
-            &mut output.token_buffer,
-        );
-        file.syntax_annotated = true;
         let prepared = prepare_active_file(
             payload.index,
             file,
@@ -3942,7 +4017,9 @@ impl AppState {
         if self.editor.search.open.get(&self.store) {
             self.recompute_search_matches();
         }
-        Vec::new()
+        self.request_active_file_syntax_effect()
+            .into_iter()
+            .collect()
     }
 
     #[profiling::function]
@@ -3970,7 +4047,51 @@ impl AppState {
         }
 
         self.install_compare_active_file(payload.index, payload.path, payload.prepared);
-        Vec::new()
+        self.request_active_file_syntax_effect()
+            .into_iter()
+            .collect()
+    }
+
+    fn handle_file_syntax_ready(&mut self, payload: FileSyntaxReady) -> Vec<Effect> {
+        if payload.generation != self.active_syntax_generation() {
+            return Vec::new();
+        }
+
+        let mut applied = false;
+        self.workspace.active_file.update(&self.store, |slot| {
+            let Some(active) = slot.as_mut() else {
+                return;
+            };
+            if active.index != payload.file_index
+                || active.path != payload.path
+                || active.syntax_request_id != payload.request_id
+            {
+                return;
+            }
+
+            active.syntax_pending = None;
+            push_syntax_covered_window(&mut active.syntax_covered, payload.window);
+            apply_syntax_tokens_to_file(
+                &mut active.file,
+                &mut active.token_buffer,
+                &payload.tokens,
+            );
+            active.render_doc = build_render_doc(
+                &active.file,
+                active.index,
+                &active.text_buffer,
+                &active.token_buffer,
+            );
+            applied = true;
+        });
+
+        if !applied {
+            return Vec::new();
+        }
+
+        self.request_active_file_syntax_effect()
+            .into_iter()
+            .collect()
     }
 
     fn handle_syntax_pack_install_started(&mut self, language: &str) {
@@ -4053,8 +4174,7 @@ impl AppState {
                             clear_syntax_tokens(file);
                         }
                     });
-                self.select_loaded_compare_file(index, false);
-                Vec::new()
+                self.select_loaded_compare_file(index, false)
             }
             WorkspaceSource::Status => {
                 let Some(index) = self.workspace.selected_file_index.get(&self.store) else {
@@ -6272,8 +6392,9 @@ impl AppState {
         };
 
         if !self.compare_file_is_large(index) {
-            self.select_loaded_compare_file(index, reveal);
-            return vec![Effect::EnsureSyntaxPackForPath { path: entry.path }];
+            let mut effects = vec![Effect::EnsureSyntaxPackForPath { path: entry.path }];
+            effects.extend(self.select_loaded_compare_file(index, reveal));
+            return effects;
         }
 
         // If we're mid-compare (first file selection post-CompareFinished),
@@ -6334,7 +6455,7 @@ impl AppState {
     }
 
     #[profiling::function]
-    fn select_loaded_compare_file(&mut self, index: usize, reveal: bool) {
+    fn select_loaded_compare_file(&mut self, index: usize, reveal: bool) -> Vec<Effect> {
         let mut selected_path = None;
         let mut prepared = None;
         let mut oob = false;
@@ -6349,14 +6470,6 @@ impl AppState {
                     return;
                 };
                 selected_path = Some(file.path.clone());
-                if !file.syntax_annotated {
-                    DiffSyntaxAnnotator::new().annotate(
-                        file,
-                        &mut output.text_buffer,
-                        &mut output.token_buffer,
-                    );
-                    file.syntax_annotated = true;
-                }
                 prepared = Some(prepare_active_file(
                     index,
                     file.clone(),
@@ -6368,21 +6481,24 @@ impl AppState {
         let Some(prepared) = prepared else {
             if oob {
                 self.push_error("Selected file index is out of range.");
-                return;
+                return Vec::new();
             }
             self.startup.preferred_file_index = Some(index);
-            return;
+            return Vec::new();
         };
 
         let Some(path) = selected_path else {
             self.startup.preferred_file_index = Some(index);
-            return;
+            return Vec::new();
         };
 
         self.install_compare_active_file(index, path, prepared);
         if reveal {
             self.reveal_file_list_row(index);
         }
+        self.request_active_file_syntax_effect()
+            .into_iter()
+            .collect()
     }
 
     fn reveal_file_list_row(&mut self, index: usize) {
@@ -6847,6 +6963,85 @@ impl AppState {
         let max = self.editor_max_scroll_top_px();
         let next = apply_scroll_delta_px(current, delta_px, max);
         self.editor.scroll_top_px.set(&self.store, next);
+    }
+
+    fn request_active_file_syntax_effect(&mut self) -> Option<Effect> {
+        let repo_path = self.compare.repo_path.get(&self.store)?;
+        let window = self.desired_syntax_window()?;
+        let generation = self.active_syntax_generation();
+        let mut request = None;
+
+        self.workspace.active_file.update(&self.store, |active| {
+            let Some(active) = active.as_mut() else {
+                return;
+            };
+            if active
+                .syntax_pending
+                .is_some_and(|pending| pending.contains(window))
+                || active
+                    .syntax_covered
+                    .iter()
+                    .any(|covered| covered.contains(window))
+            {
+                return;
+            }
+
+            active.syntax_request_id = active.syntax_request_id.saturating_add(1);
+            active.syntax_pending = Some(window);
+            request = Some(LoadFileSyntaxRequest {
+                repo_path,
+                file_index: active.index,
+                path: active.path.clone(),
+                file: active.file.clone(),
+                left_ref: active.left_ref.clone(),
+                right_ref: active.right_ref.clone(),
+                window,
+                request_id: active.syntax_request_id,
+                cache_generation: generation,
+            });
+        });
+
+        request.map(|request| Effect::LoadFileSyntax {
+            generation,
+            request,
+        })
+    }
+
+    fn active_syntax_generation(&self) -> u64 {
+        match self.workspace.source.get(&self.store) {
+            WorkspaceSource::Status => self.workspace.status_generation.get(&self.store),
+            _ => self.workspace.compare_generation.get(&self.store),
+        }
+    }
+
+    fn desired_syntax_window(&self) -> Option<SyntaxRowWindow> {
+        let line_count = self.workspace.active_file.with(&self.store, |active| {
+            active.as_ref().map(|active| active.render_doc.lines.len())
+        })?;
+        if line_count == 0 {
+            return None;
+        }
+
+        if let (Some(start), Some(end)) = (
+            self.editor.visible_row_start.get(&self.store),
+            self.editor.visible_row_end.get(&self.store),
+        ) && end > start
+        {
+            return Some(SyntaxRowWindow {
+                start: start.saturating_sub(SYNTAX_OVERSCAN_ROWS),
+                end: end.saturating_add(SYNTAX_OVERSCAN_ROWS).min(line_count),
+            });
+        }
+
+        let scroll = self.editor.scroll_top_px.get(&self.store) as usize;
+        let viewport = self.editor.viewport_height_px.get(&self.store) as usize;
+        let approx_row_height = 20usize;
+        let start = scroll / approx_row_height;
+        let visible = (viewport / approx_row_height).saturating_add(SYNTAX_INITIAL_ROWS);
+        Some(SyntaxRowWindow {
+            start: start.saturating_sub(SYNTAX_OVERSCAN_ROWS),
+            end: start.saturating_add(visible).min(line_count),
+        })
     }
 
     fn navigate_to_hunk(&mut self, forward: bool) {
@@ -7753,6 +7948,9 @@ mod tests {
                 right_ref,
                 file_line_count: None,
                 file_lines: None,
+                syntax_request_id: 0,
+                syntax_pending: None,
+                syntax_covered: Vec::new(),
             }),
         );
 
@@ -7970,7 +8168,7 @@ mod tests {
     }
 
     #[test]
-    fn selecting_a_file_lazily_annotates_syntax_once() {
+    fn selecting_a_file_requests_async_syntax_without_mutating_compare_output() {
         let mut state = AppState::default();
         let mut output = CompareOutput::default();
         let text_range = output.text_buffer.append("fn answer() -> i32 { 42 }");
@@ -8008,22 +8206,29 @@ mod tests {
                 is_binary: false,
             }],
         );
+        state
+            .compare
+            .repo_path
+            .set(&state.store, Some(PathBuf::from("/tmp/repo")));
         state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
 
-        state.apply_action(Action::SelectFile(0));
+        let effects = state.apply_action(Action::SelectFile(0));
 
-        let previous_tokens = state.workspace.compare_output.with(&state.store, |co| {
-            let output = co.as_ref().expect("compare output");
-            assert!(output.files[0].syntax_annotated);
-            output.files[0].hunks[0].lines[0].syntax_tokens
-        });
-        state.apply_action(Action::SelectFile(0));
+        assert!(effects.iter().any(|effect| {
+            matches!(
+                effect,
+                Effect::LoadFileSyntax {
+                    request,
+                    ..
+                } if request.path == "src/lib.rs"
+                    && request.window.start == 0
+                    && request.window.end > 0
+            )
+        }));
         state.workspace.compare_output.with(&state.store, |co| {
             let output = co.as_ref().expect("compare output");
-            assert_eq!(
-                output.files[0].hunks[0].lines[0].syntax_tokens,
-                previous_tokens
-            );
+            assert!(!output.files[0].syntax_annotated);
+            assert!(output.files[0].hunks[0].lines[0].syntax_tokens.is_empty());
         });
     }
 

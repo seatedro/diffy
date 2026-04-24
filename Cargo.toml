@@ -28,7 +28,6 @@ git2 = "0.20"
 pollster = "0.4.0"
 taffy = "0.9.2"
 rfd = "0.17.2"
-ureq = { version = "3.3", default-features = false, features = ["gzip", "rustls"] }
 unicode-segmentation = "1.12"
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 neo_frizbee = { version = "0.8", features = ["match_end_col"] }

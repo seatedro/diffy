@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 use crate::core::error::{DiffyError, Result};
+use crate::core::http;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeviceFlowState {
@@ -11,13 +12,17 @@ pub struct DeviceFlowState {
 }
 
 pub fn start_device_flow(client_id: &str) -> Result<DeviceFlowState> {
-    let body = ureq::post("https://github.com/login/device/code")
-        .header("Accept", "application/x-www-form-urlencoded")
-        .header("User-Agent", "diffy/0.1")
-        .send_form([("client_id", client_id), ("scope", "repo")])?
-        .into_body()
-        .read_to_string()
-        .map_err(|error| DiffyError::Http(error.to_string()))?;
+    let body = http::block_on(async {
+        let response = reqwest::Client::new()
+            .post("https://github.com/login/device/code")
+            .header("Accept", "application/x-www-form-urlencoded")
+            .header("User-Agent", "diffy/0.1")
+            .form(&[("client_id", client_id), ("scope", "repo")])
+            .send()
+            .await
+            .map_err(|error| DiffyError::Http(format!("GitHub device flow failed: {error}")))?;
+        http::response_text(response, "GitHub device flow").await
+    })?;
 
     let state = DeviceFlowState {
         device_code: form_value(&body, "device_code")
@@ -45,17 +50,21 @@ pub fn start_device_flow(client_id: &str) -> Result<DeviceFlowState> {
 }
 
 pub fn poll_for_token(client_id: &str, device_code: &str) -> Result<Option<String>> {
-    let body = ureq::post("https://github.com/login/oauth/access_token")
-        .header("Accept", "application/x-www-form-urlencoded")
-        .header("User-Agent", "diffy/0.1")
-        .send_form([
-            ("client_id", client_id),
-            ("device_code", device_code),
-            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-        ])?
-        .into_body()
-        .read_to_string()
-        .map_err(|error| DiffyError::Http(error.to_string()))?;
+    let body = http::block_on(async {
+        let response = reqwest::Client::new()
+            .post("https://github.com/login/oauth/access_token")
+            .header("Accept", "application/x-www-form-urlencoded")
+            .header("User-Agent", "diffy/0.1")
+            .form(&[
+                ("client_id", client_id),
+                ("device_code", device_code),
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+            ])
+            .send()
+            .await
+            .map_err(|error| DiffyError::Http(format!("GitHub token poll failed: {error}")))?;
+        http::response_text(response, "GitHub token poll").await
+    })?;
 
     match form_value(&body, "error") {
         Some("authorization_pending") | Some("slow_down") => Ok(None),

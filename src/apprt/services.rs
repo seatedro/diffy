@@ -7,6 +7,7 @@ use crate::apprt::runtime::RuntimeEventSender;
 use crate::core::compare::backends::{DifftasticBackend, GitDiffBackend};
 use crate::core::compare::{CompareOutput, CompareService, RendererKind};
 use crate::core::error::{DiffyError, Result};
+use crate::core::http;
 use crate::core::vcs::git::{GitService, WORKDIR_REF};
 use crate::core::vcs::github::{
     DeviceFlowState, GitHubApi, GitHubUser, PullRequestInfo, parse_pr_url, poll_for_token,
@@ -213,12 +214,15 @@ impl AppServices {
     }
 
     pub fn fetch_avatar(&self, url: &str) -> Result<(Vec<u8>, u32, u32)> {
-        let bytes = ureq::get(url)
-            .header("User-Agent", "diffy/0.1")
-            .call()?
-            .into_body()
-            .read_to_vec()
-            .map_err(|error| DiffyError::Http(error.to_string()))?;
+        let bytes = http::block_on(async {
+            let response = reqwest::Client::new()
+                .get(url)
+                .header("User-Agent", "diffy/0.1")
+                .send()
+                .await
+                .map_err(|error| DiffyError::Http(format!("avatar fetch failed: {error}")))?;
+            http::response_bytes(response, "avatar fetch").await
+        })?;
         let img = image::load_from_memory(&bytes)
             .map_err(|error| DiffyError::Parse(format!("avatar decode failed: {error}")))?
             .to_rgba8();

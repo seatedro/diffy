@@ -163,12 +163,12 @@ fn compile_language(language: LanguageId) -> Result<CompiledLanguage> {
     let query_source = pack.query_fragments.concat();
     let pack_library = Some(pack._library);
 
-    let query = ts::Query::new(&tree_sitter_language, &query_source).unwrap_or_else(|error| {
-        panic!(
-            "invalid phosphor highlight query for {}: {error}",
-            language.name()
-        )
-    });
+    let query = ts::Query::new(&tree_sitter_language, &query_source).map_err(|error| {
+        PhosphorError::InvalidHighlightQuery {
+            language,
+            message: error.to_string(),
+        }
+    })?;
     let capture_kinds = query
         .capture_names()
         .iter()

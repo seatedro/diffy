@@ -344,7 +344,30 @@ fn latest_manifest(
 }
 
 fn is_pack_installed_at(storage_dir: &Path, language: LanguageId) -> bool {
-    load_pack_at(storage_dir, language).is_ok_and(|pack| pack.is_some())
+    latest_manifest_path(storage_dir, language).is_some()
+}
+
+fn latest_manifest_path(storage_dir: &Path, language: LanguageId) -> Option<PathBuf> {
+    let language_dir = storage_dir.join(language.name());
+    if !language_dir.exists() {
+        return None;
+    }
+
+    let mut candidates = Vec::new();
+    let versions = fs::read_dir(language_dir).ok()?;
+    for version in versions {
+        let version = version.ok()?;
+        if !version.file_type().ok()?.is_dir() {
+            continue;
+        }
+        let pack_dir = version.path().join(platform_triple());
+        let manifest_path = pack_dir.join("manifest.json");
+        if manifest_path.exists() {
+            candidates.push((version.file_name(), manifest_path));
+        }
+    }
+    candidates.sort_by(|left, right| left.0.cmp(&right.0));
+    candidates.pop().map(|(_, manifest_path)| manifest_path)
 }
 
 fn build_manifest(entry: &PackIndexEntry) -> PackManifest {

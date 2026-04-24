@@ -52,6 +52,19 @@ jobs:
       - name: Use stable Rust
         run: rustup default stable
 
+      - name: Validate update public key
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          if [[ -z "${DIFFY_UPDATE_PUBLIC_KEY:-}" ]]; then
+            echo "DIFFY_UPDATE_PUBLIC_KEY repository variable is required for release builds" >&2
+            exit 1
+          fi
+          if ! [[ "$DIFFY_UPDATE_PUBLIC_KEY" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            echo "DIFFY_UPDATE_PUBLIC_KEY must be a 32-byte Ed25519 public key encoded as hex" >&2
+            exit 1
+          fi
+
       - name: Select full Xcode toolchain
         if: runner.os == 'macOS'
         run: |
@@ -123,6 +136,31 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate update release config
+        env:
+          DIFFY_UPDATE_PRIVATE_KEY: ${{ secrets.DIFFY_UPDATE_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          if [[ -z "${DIFFY_UPDATE_PUBLIC_KEY:-}" ]]; then
+            echo "DIFFY_UPDATE_PUBLIC_KEY repository variable is required for release builds" >&2
+            exit 1
+          fi
+          if ! [[ "$DIFFY_UPDATE_PUBLIC_KEY" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            echo "DIFFY_UPDATE_PUBLIC_KEY must be a 32-byte Ed25519 public key encoded as hex" >&2
+            exit 1
+          fi
+          if [[ -z "${DIFFY_UPDATE_PRIVATE_KEY:-}" ]]; then
+            echo "DIFFY_UPDATE_PRIVATE_KEY repository secret is required to sign update manifests" >&2
+            exit 1
+          fi
+
+          package_version="$(node -e 'const fs=require("fs"); const toml=fs.readFileSync("Cargo.toml","utf8"); const match=toml.match(/\[workspace\.package\][\s\S]*?\nversion\s*=\s*"([^"]+)"/); if (!match) process.exit(1); console.log(match[1]);')"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [[ "$package_version" != "$tag_version" ]]; then
+            echo "tag version $tag_version does not match Cargo.toml workspace package version $package_version" >&2
+            exit 1
+          fi
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4

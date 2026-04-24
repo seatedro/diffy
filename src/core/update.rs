@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -85,6 +86,9 @@ pub fn check_for_update(current_version: &str) -> Result<UpdateCheck> {
             "no update artifact published for {platform}"
         )));
     };
+    if !artifact_can_update_current_install(artifact.format) {
+        return Ok(UpdateCheck::NotAvailable);
+    }
 
     Ok(UpdateCheck::Available(AvailableUpdate {
         version: manifest.payload.version,
@@ -97,7 +101,10 @@ pub fn check_for_update(current_version: &str) -> Result<UpdateCheck> {
 }
 
 pub fn updates_configured() -> bool {
-    option_env!("DIFFY_UPDATE_PUBLIC_KEY").is_some() || env::var_os(UPDATE_PUBLIC_KEY_ENV).is_some()
+    env::var_os(ALLOW_UNSIGNED_ENV).is_some()
+        || trusted_update_public_keys()
+            .map(|keys| !keys.is_empty())
+            .unwrap_or(false)
 }
 
 pub fn download_and_install(update: &AvailableUpdate) -> Result<()> {
@@ -141,13 +148,8 @@ fn verify_manifest_signature(manifest: &SignedUpdateManifest) -> Result<()> {
 
     let signature = decode_hex(&manifest.signature)?;
     let payload = canonical_json_bytes(&serde_json::to_value(&manifest.payload)?)?;
-    let mut saw_key = false;
-    for key_hex in trusted_update_public_key_hexes() {
-        saw_key = true;
-        let key = decode_hex(&key_hex)?;
-        if key.len() != 32 {
-            continue;
-        }
+    let keys = trusted_update_public_keys()?;
+    for key in &keys {
         if UnparsedPublicKey::new(&ED25519, key)
             .verify(&payload, &signature)
             .is_ok()
@@ -156,14 +158,14 @@ fn verify_manifest_signature(manifest: &SignedUpdateManifest) -> Result<()> {
         }
     }
 
-    if saw_key {
-        Err(DiffyError::General(
-            "update manifest signature is invalid".to_owned(),
-        ))
-    } else {
+    if keys.is_empty() {
         Err(DiffyError::General(format!(
             "updates are not configured; set {UPDATE_PUBLIC_KEY_ENV} at build time"
         )))
+    } else {
+        Err(DiffyError::General(
+            "update manifest signature is invalid".to_owned(),
+        ))
     }
 }
 
@@ -187,13 +189,8 @@ fn verify_artifact_signature(path: &Path, signature_hex: &str) -> Result<()> {
 
     let bytes = fs::read(path)?;
     let signature = decode_hex(signature_hex)?;
-    let mut saw_key = false;
-    for key_hex in trusted_update_public_key_hexes() {
-        saw_key = true;
-        let key = decode_hex(&key_hex)?;
-        if key.len() != 32 {
-            continue;
-        }
+    let keys = trusted_update_public_keys()?;
+    for key in &keys {
         if UnparsedPublicKey::new(&ED25519, key)
             .verify(&bytes, &signature)
             .is_ok()
@@ -202,14 +199,14 @@ fn verify_artifact_signature(path: &Path, signature_hex: &str) -> Result<()> {
         }
     }
 
-    if saw_key {
+    if keys.is_empty() {
         Err(DiffyError::General(format!(
-            "update artifact signature is invalid for {}",
-            path.display()
+            "updates are not configured; set {UPDATE_PUBLIC_KEY_ENV} at build time"
         )))
     } else {
         Err(DiffyError::General(format!(
-            "updates are not configured; set {UPDATE_PUBLIC_KEY_ENV} at build time"
+            "update artifact signature is invalid for {}",
+            path.display()
         )))
     }
 }
@@ -280,9 +277,9 @@ fn launch_macos_installer(_dmg_path: &Path) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn launch_linux_appimage_installer(appimage_path: &Path) -> Result<()> {
-    let dest = env::var_os("APPIMAGE")
-        .map(PathBuf::from)
-        .unwrap_or(env::current_exe()?);
+    let dest = env::var_os("APPIMAGE").map(PathBuf::from).ok_or_else(|| {
+        DiffyError::General("AppImage updates require running Diffy from an AppImage".to_owned())
+    })?;
     let script = format!(
         r#"set -eu
 DEST={dest:?}
@@ -447,17 +444,46 @@ fn manifest_url() -> String {
     }
 }
 
-fn trusted_update_public_key_hexes() -> Vec<String> {
+fn configured_update_public_key_hexes() -> Vec<String> {
     let mut keys = Vec::new();
     if let Some(key) = option_env!("DIFFY_UPDATE_PUBLIC_KEY") {
-        keys.push(key.to_owned());
+        let key = key.trim();
+        if !key.is_empty() {
+            keys.push(key.to_owned());
+        }
     }
     if let Ok(key) = env::var(UPDATE_PUBLIC_KEY_ENV)
-        && !keys.iter().any(|embedded| embedded == &key)
+        && !key.trim().is_empty()
     {
-        keys.push(key);
+        let key = key.trim().to_owned();
+        if !keys.iter().any(|embedded| embedded == &key) {
+            keys.push(key);
+        }
     }
     keys
+}
+
+fn trusted_update_public_keys() -> Result<Vec<Vec<u8>>> {
+    configured_update_public_key_hexes()
+        .into_iter()
+        .map(|key_hex| {
+            let key = decode_hex(&key_hex)?;
+            if key.len() == 32 {
+                Ok(key)
+            } else {
+                Err(DiffyError::General(format!(
+                    "{UPDATE_PUBLIC_KEY_ENV} must contain 32-byte Ed25519 public keys as hex"
+                )))
+            }
+        })
+        .collect()
+}
+
+fn artifact_can_update_current_install(format: UpdateFormat) -> bool {
+    match (std::env::consts::OS, format) {
+        ("linux", UpdateFormat::AppImage) => env::var_os("APPIMAGE").is_some(),
+        _ => true,
+    }
 }
 
 pub fn platform_key() -> &'static str {

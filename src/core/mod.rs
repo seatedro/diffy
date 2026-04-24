@@ -8,4 +8,5 @@ pub mod search;
 pub mod syntax;
 pub mod text;
 pub mod themes;
+pub mod update;
 pub mod vcs;

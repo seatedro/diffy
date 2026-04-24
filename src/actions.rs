@@ -136,6 +136,8 @@ pub enum Action {
     OpenThemePicker,
     OpenSettings,
     CloseSettings,
+    CheckForUpdates,
+    InstallUpdate,
     SetSettingsSection(SettingsSection),
     ToggleFolder(String),
     ToggleFileViewed(usize),

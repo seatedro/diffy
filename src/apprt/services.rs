@@ -305,6 +305,17 @@ impl AppServices {
         secrets::clear_github_token()
     }
 
+    pub fn check_for_updates(
+        &self,
+        current_version: &str,
+    ) -> Result<crate::core::update::UpdateCheck> {
+        crate::core::update::check_for_update(current_version)
+    }
+
+    pub fn install_update(&self, update: &crate::core::update::AvailableUpdate) -> Result<()> {
+        crate::core::update::download_and_install(update)
+    }
+
     pub fn peek_pull_request(
         &self,
         owner: &str,

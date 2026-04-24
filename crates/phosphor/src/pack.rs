@@ -44,6 +44,8 @@ pub enum PackError {
     ManifestLanguageMismatch { expected: String, actual: String },
     #[error("syntax pack manifest is incomplete for {0}")]
     IncompleteManifest(LanguageId),
+    #[error("syntax pack metadata field {field} contains unsafe filesystem segment {value:?}")]
+    UnsafePackMetadata { field: &'static str, value: String },
     #[error("syntax pack network request failed: {0}")]
     Network(#[from] reqwest::Error),
     #[error("syntax pack I/O failed: {0}")]
@@ -212,6 +214,7 @@ impl PackInstaller {
     }
 
     async fn install_entry(&self, entry: &PackIndexEntry, language: LanguageId) -> Result<bool> {
+        validate_index_entry(language, entry)?;
         if is_pack_installed_at(&self.storage_dir, language) {
             return Ok(false);
         }
@@ -395,6 +398,23 @@ fn build_manifest(entry: &PackIndexEntry) -> PackManifest {
     }
 }
 
+fn validate_index_entry(language: LanguageId, entry: &PackIndexEntry) -> Result<()> {
+    if entry.language != language.name() {
+        return Err(PackError::ManifestLanguageMismatch {
+            expected: language.name().to_owned(),
+            actual: entry.language.clone(),
+        });
+    }
+    validate_safe_segment("version", &entry.version)?;
+    validate_remote_file_path("manifest.path", &entry.manifest)?;
+    validate_remote_file_path("parser.path", &entry.parser)?;
+    validate_remote_file_path("highlights.path", &entry.highlights)?;
+    if let Some(injections) = &entry.injections {
+        validate_remote_file_path("injections.path", injections)?;
+    }
+    Ok(())
+}
+
 fn validate_manifest(language: LanguageId, manifest: &PackManifest) -> Result<()> {
     if manifest.language != language.name() {
         return Err(PackError::ManifestLanguageMismatch {
@@ -420,7 +440,36 @@ fn validate_manifest(language: LanguageId, manifest: &PackManifest) -> Result<()
     {
         return Err(PackError::IncompleteManifest(language));
     }
+    validate_safe_segment("version", &manifest.version)?;
+    validate_local_file_path("parser.path", &manifest.parser)?;
+    validate_local_file_path("highlights.path", &manifest.highlights)?;
+    if let Some(injections) = &manifest.injections {
+        validate_local_file_path("injections.path", injections)?;
+    }
     Ok(())
+}
+
+fn validate_remote_file_path(field: &'static str, file: &RemotePackFile) -> Result<()> {
+    validate_safe_segment(field, &file.path)
+}
+
+fn validate_local_file_path(field: &'static str, file: &LocalPackFile) -> Result<()> {
+    validate_safe_segment(field, &file.path)
+}
+
+fn validate_safe_segment(field: &'static str, value: &str) -> Result<()> {
+    let invalid = || PackError::UnsafePackMetadata {
+        field,
+        value: value.to_owned(),
+    };
+    if value.is_empty() || value.contains('/') || value.contains('\\') || value.contains(':') {
+        return Err(invalid());
+    }
+    let mut components = Path::new(value).components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(_)), None) => Ok(()),
+        _ => Err(invalid()),
+    }
 }
 
 fn verify_index_compatibility(index: &PackIndex) -> Result<()> {
@@ -650,9 +699,12 @@ mod tests {
     use ring::signature::{Ed25519KeyPair, KeyPair};
     use serde_json::json;
 
+    use crate::LanguageId;
+
     use super::{
-        PackError, SignedPackIndex, canonical_json_bytes, decode_hex, normalize_hex, sha256_hex,
-        verify_index_signature_with_keys,
+        PackError, PackIndexEntry, PackSource, RemotePackFile, SignedPackIndex,
+        canonical_json_bytes, decode_hex, normalize_hex, sha256_hex, validate_index_entry,
+        validate_safe_segment, verify_index_signature_with_keys,
     };
 
     #[test]
@@ -728,6 +780,88 @@ mod tests {
             verify_index_signature_with_keys(&signed, [public_key.as_str()]),
             Err(PackError::InvalidSignature)
         ));
+    }
+
+    #[test]
+    fn pack_segments_reject_traversal_and_absolute_paths() {
+        for value in [
+            "",
+            ".",
+            "..",
+            "../parser.dll",
+            "parser/grammar.dll",
+            r"parser\grammar.dll",
+            "/tmp/parser.dll",
+            r"C:\tmp\parser.dll",
+            "C:parser.dll",
+        ] {
+            assert!(
+                matches!(
+                    validate_safe_segment("parser.path", value),
+                    Err(PackError::UnsafePackMetadata { .. })
+                ),
+                "{value:?} should be rejected"
+            );
+        }
+
+        assert!(validate_safe_segment("parser.path", "parser.dll").is_ok());
+        assert!(validate_safe_segment("version", "rust-0.21.2").is_ok());
+    }
+
+    #[test]
+    fn pack_index_rejects_unsafe_file_and_version_fields() {
+        let mut entry = pack_entry();
+        entry.version = "../v1".to_owned();
+        assert!(matches!(
+            validate_index_entry(LanguageId::Rust, &entry),
+            Err(PackError::UnsafePackMetadata {
+                field: "version",
+                ..
+            })
+        ));
+
+        let mut entry = pack_entry();
+        entry.parser.path = "../parser.dll".to_owned();
+        assert!(matches!(
+            validate_index_entry(LanguageId::Rust, &entry),
+            Err(PackError::UnsafePackMetadata {
+                field: "parser.path",
+                ..
+            })
+        ));
+
+        let mut entry = pack_entry();
+        entry.highlights.path = "queries/highlights.scm".to_owned();
+        assert!(matches!(
+            validate_index_entry(LanguageId::Rust, &entry),
+            Err(PackError::UnsafePackMetadata {
+                field: "highlights.path",
+                ..
+            })
+        ));
+    }
+
+    fn pack_entry() -> PackIndexEntry {
+        PackIndexEntry {
+            language: "rust".to_owned(),
+            version: "rust-0.21.2".to_owned(),
+            common: true,
+            extensions: vec!["rs".to_owned()],
+            symbol: "tree_sitter_rust".to_owned(),
+            manifest: remote_file("manifest.json"),
+            parser: remote_file("parser.dll"),
+            highlights: remote_file("highlights.scm"),
+            injections: Some(remote_file("injections.scm")),
+            source: PackSource::default(),
+        }
+    }
+
+    fn remote_file(path: &str) -> RemotePackFile {
+        RemotePackFile {
+            url: format!("https://example.com/{path}"),
+            path: path.to_owned(),
+            sha256: "00".repeat(32),
+        }
     }
 
     fn hex(bytes: &[u8]) -> String {

@@ -1113,6 +1113,7 @@ pub struct AppState {
     pub startup: StartupState,
     pub last_error: Signal<Option<String>>,
     pub toasts: Signal<Vec<Toast>>,
+    pub syntax_pack_installs: Signal<Vec<String>>,
     /// Memoized: `true` when `focus` targets a text-editing field.
     pub text_focused: Signal<bool>,
     pub animation: crate::ui::animation::AnimationState,
@@ -1154,6 +1155,7 @@ impl Default for AppState {
         let last_error = store.create(None::<String>);
         let theme_preview_original = store.create(None::<String>);
         let toasts = store.create(Vec::<Toast>::new());
+        let syntax_pack_installs = store.create(Vec::<String>::new());
         let debug = DebugStateStore::new(&store, DebugState::default());
         let file_list = FileListStateStore::new_default(&store);
         let editor = EditorStateStore::new_default(&store);
@@ -1181,6 +1183,7 @@ impl Default for AppState {
             startup: StartupState::default(),
             last_error,
             toasts,
+            syntax_pack_installs,
             text_focused,
             animation: crate::ui::animation::AnimationState::default(),
             commit_editor: Editor::default(),
@@ -1259,6 +1262,7 @@ impl AppState {
         let last_error = store.create(None::<String>);
         let theme_preview_original = store.create(None::<String>);
         let toasts = store.create(Vec::<Toast>::new());
+        let syntax_pack_installs = store.create(Vec::<String>::new());
         let debug = DebugStateStore::new(&store, DebugState::default());
         let file_list = FileListStateStore::new_default(&store);
         let editor = EditorStateStore::new(
@@ -1323,6 +1327,7 @@ impl AppState {
             },
             last_error,
             toasts,
+            syntax_pack_installs,
             text_focused,
             animation: crate::ui::animation::AnimationState::default(),
             commit_editor: Editor::default(),
@@ -3048,8 +3053,17 @@ impl AppState {
                 self.push_error(&message);
                 Vec::new()
             }
+            AppEvent::SyntaxPackInstallStarted { language } => {
+                self.handle_syntax_pack_install_started(&language);
+                Vec::new()
+            }
             AppEvent::SyntaxPackInstalled { language } => {
                 self.handle_syntax_pack_installed(&language)
+            }
+            AppEvent::SyntaxPackInstallFinished { language }
+            | AppEvent::SyntaxPackInstallFailed { language } => {
+                self.handle_syntax_pack_install_finished(&language);
+                Vec::new()
             }
             AppEvent::FetchProgress {
                 toast_id,
@@ -3383,7 +3397,7 @@ impl AppState {
     }
 
     fn handle_repository_snapshot(&mut self, payload: RepositorySnapshot) -> Vec<Effect> {
-        tracing::info!(
+        tracing::debug!(
             path = %payload.path.display(),
             reason = ?payload.reason,
             change_kind = ?payload.change_kind,
@@ -3800,7 +3814,7 @@ impl AppState {
 
     fn handle_status_diff_finished(&mut self, payload: StatusDiffFinished) -> Vec<Effect> {
         let current_gen = self.workspace.status_generation.get(&self.store);
-        tracing::info!(
+        tracing::debug!(
             payload_gen = payload.generation,
             current_gen,
             payload_index = payload.index,
@@ -3809,7 +3823,7 @@ impl AppState {
             "handle_status_diff_finished: entered"
         );
         if payload.generation != current_gen {
-            tracing::warn!(
+            tracing::debug!(
                 "handle_status_diff_finished: generation mismatch, discarding (pending NOT cleared)"
             );
             return Vec::new();
@@ -3830,14 +3844,14 @@ impl AppState {
                     .map(|i| format!("{}:{:?}", i.path, i.scope))
                     .unwrap_or_else(|| "<out of range>".to_owned())
             });
-            tracing::warn!(
+            tracing::debug!(
                 current_items_at_idx,
                 "handle_status_diff_finished: item mismatch, discarding (pending NOT cleared)"
             );
             return Vec::new();
         }
 
-        tracing::info!("handle_status_diff_finished: clearing status_operation_pending");
+        tracing::debug!("handle_status_diff_finished: clearing status_operation_pending");
         self.workspace
             .source
             .set(&self.store, WorkspaceSource::Status);
@@ -3944,6 +3958,24 @@ impl AppState {
         Vec::new()
     }
 
+    fn handle_syntax_pack_install_started(&mut self, language: &str) {
+        self.syntax_pack_installs.update(&self.store, |active| {
+            if !active.iter().any(|item| item == language) {
+                active.push(language.to_owned());
+            }
+        });
+    }
+
+    fn handle_syntax_pack_install_finished(&mut self, language: &str) {
+        self.syntax_pack_installs
+            .update(&self.store, |active| active.retain(|item| item != language));
+    }
+
+    pub fn syntax_pack_install_active(&self) -> bool {
+        self.syntax_pack_installs
+            .with(&self.store, |active| !active.is_empty())
+    }
+
     fn handle_syntax_pack_installed(&mut self, language: &str) -> Vec<Effect> {
         let Some(path) = self.workspace.selected_file_path.get(&self.store) else {
             return Vec::new();
@@ -3984,7 +4016,7 @@ impl AppState {
     }
 
     fn activate_status_view(&mut self, reset_scroll: bool) -> Vec<Effect> {
-        tracing::info!(
+        tracing::debug!(
             reset_scroll,
             pending = self.workspace.status_operation_pending.get(&self.store),
             status_gen = self.workspace.status_generation.get(&self.store),
@@ -4040,14 +4072,14 @@ impl AppState {
             (!items.is_empty()).then_some(0)
         });
 
-        tracing::info!(
+        tracing::debug!(
             ?selected_index,
             "activate_status_view: resolved selected_index"
         );
         match selected_index {
             Some(index) => self.select_status_item(index, false),
             None => {
-                tracing::info!("activate_status_view: no selection, clearing pending");
+                tracing::debug!("activate_status_view: no selection, clearing pending");
                 self.workspace
                     .status_operation_pending
                     .set(&self.store, false);
@@ -6310,7 +6342,7 @@ impl AppState {
             );
             return Vec::new();
         };
-        tracing::info!(
+        tracing::debug!(
             index,
             path = %item.path,
             scope = ?item.scope,
@@ -6469,7 +6501,7 @@ impl AppState {
         operation: StatusOperation,
         explicit_hunk: Option<i16>,
     ) -> Vec<Effect> {
-        tracing::info!(
+        tracing::debug!(
             ?operation,
             ?explicit_hunk,
             source = ?self.workspace.source.get(&self.store),
@@ -6479,26 +6511,26 @@ impl AppState {
             "apply_hunk_operation: entered"
         );
         if self.workspace.source.get(&self.store) != WorkspaceSource::Status {
-            tracing::warn!("apply_hunk_operation: bail — source != Status");
+            tracing::debug!("apply_hunk_operation: bail: source != Status");
             return Vec::new();
         }
         if self.workspace.status_operation_pending.get(&self.store) {
-            tracing::warn!("apply_hunk_operation: bail — status_operation_pending=true");
+            tracing::debug!("apply_hunk_operation: bail: status_operation_pending=true");
             return Vec::new();
         }
         let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
-            tracing::warn!("apply_hunk_operation: bail — no repo_path");
+            tracing::debug!("apply_hunk_operation: bail: no repo_path");
             return Vec::new();
         };
         let Some(scope) = self.workspace.selected_status_scope.get(&self.store) else {
-            tracing::warn!("apply_hunk_operation: bail — no selected_status_scope");
+            tracing::debug!("apply_hunk_operation: bail: no selected_status_scope");
             return Vec::new();
         };
         let resolved = explicit_hunk.or_else(|| self.current_hunk_index_from_hover());
         let hunk_index = match resolved {
             Some(idx) if idx >= 0 => idx as usize,
             _ => {
-                tracing::warn!(?resolved, "apply_hunk_operation: bail — no hunk_index");
+                tracing::debug!(?resolved, "apply_hunk_operation: bail: no hunk_index");
                 return Vec::new();
             }
         };
@@ -6512,14 +6544,14 @@ impl AppState {
             }
         });
         let Some(patch) = patch_text else {
-            tracing::warn!(
+            tracing::debug!(
                 hunk_index,
-                "apply_hunk_operation: bail — format_hunk_patch returned None"
+                "apply_hunk_operation: bail: format_hunk_patch returned None"
             );
             return Vec::new();
         };
 
-        tracing::info!(
+        tracing::debug!(
             ?operation,
             hunk_index,
             "apply_hunk_operation: dispatching ApplyPatchOperation"

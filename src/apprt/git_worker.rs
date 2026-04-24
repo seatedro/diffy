@@ -780,7 +780,7 @@ fn sync_repository_inner(
         };
         event_sender.send(AppEvent::RepositorySnapshotReady(snapshot));
     } else {
-        tracing::warn!(
+        tracing::debug!(
             path = %path.display(),
             ?reason,
             "sync_repository: suppressing snapshot (no diff detected)"

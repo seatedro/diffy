@@ -146,9 +146,7 @@ fn progress_rail(
         LoadingSubject::RepoOpen { .. } => None,
         LoadingSubject::Compare { .. } => match progress.phase {
             ComparePhase::LoadingFiles { .. } => progress.file_count_total.and_then(|total| {
-                (total > 0).then(|| {
-                    (progress.files_loaded as f32 / total as f32).clamp(0.0, 1.0)
-                })
+                (total > 0).then(|| (progress.files_loaded as f32 / total as f32).clamp(0.0, 1.0))
             }),
             // After backend work is done, freeze the bar near full. These
             // phases are quick; a solid cap reads better than a jump.

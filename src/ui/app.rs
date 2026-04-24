@@ -570,8 +570,9 @@ impl ApplicationHandler for NativeApp {
         let tooltip_changed = self.tooltip_state.visible != tooltip_was_visible;
 
         let animating = self.state.animation.has_active();
+        let syntax_pack_installing = self.state.syntax_pack_install_active();
         let cursor_blink_changed = self.state.cursor_blink_epoch() != prior_cursor_blink_epoch;
-        let next_wake = if animating {
+        let next_wake = if animating || syntax_pack_installing {
             Some(std::time::Instant::now() + std::time::Duration::from_millis(16))
         } else {
             let next_cursor_blink = self
@@ -607,6 +608,7 @@ impl ApplicationHandler for NativeApp {
             && (self.needs_redraw
                 || self.state.store.any_dirty()
                 || animating
+                || syntax_pack_installing
                 || cursor_blink_changed
                 || tooltip_changed)
         {

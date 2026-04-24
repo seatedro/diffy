@@ -178,7 +178,16 @@ pub enum AppEvent {
         file_index: usize,
         message: String,
     },
+    SyntaxPackInstallStarted {
+        language: String,
+    },
     SyntaxPackInstalled {
+        language: String,
+    },
+    SyntaxPackInstallFinished {
+        language: String,
+    },
+    SyntaxPackInstallFailed {
         language: String,
     },
     FetchProgress {

@@ -433,27 +433,64 @@ impl EffectRunner {
             Effect::InstallCommonSyntaxPacks => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
-                thread::spawn(move || match services.install_common_syntax_packs() {
-                    Ok(languages) => {
-                        for language in languages {
-                            event_sender.send(AppEvent::SyntaxPackInstalled { language });
+                thread::spawn(move || {
+                    let language = "common syntax".to_owned();
+                    tracing::info!("syntax pack install started");
+                    event_sender.send(AppEvent::SyntaxPackInstallStarted {
+                        language: language.clone(),
+                    });
+                    match services.install_common_syntax_packs() {
+                        Ok(languages) => {
+                            let installed_count = languages.len();
+                            for language in languages {
+                                event_sender.send(AppEvent::SyntaxPackInstalled { language });
+                            }
+                            tracing::info!(installed_count, "syntax pack install finished");
+                            event_sender.send(AppEvent::SyntaxPackInstallFinished { language });
                         }
-                    }
-                    Err(error) => {
-                        tracing::debug!("syntax pack background install skipped: {error}");
+                        Err(error) => {
+                            tracing::warn!(%error, "syntax pack install failed");
+                            event_sender.send(AppEvent::SyntaxPackInstallFailed { language });
+                        }
                     }
                 });
             }
             Effect::EnsureSyntaxPackForPath { path } => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
-                thread::spawn(move || match services.ensure_syntax_pack_for_path(&path) {
-                    Ok(Some(language)) => {
-                        event_sender.send(AppEvent::SyntaxPackInstalled { language });
+                thread::spawn(move || {
+                    let highlighter = phosphor::Highlighter::new();
+                    let language = highlighter
+                        .guess_language(std::path::Path::new(&path))
+                        .filter(|language| !highlighter.is_parser_available(*language))
+                        .map(|language| language.name().to_owned());
+                    if let Some(language) = &language {
+                        tracing::info!(language, path = %path, "syntax pack install started");
+                        event_sender.send(AppEvent::SyntaxPackInstallStarted {
+                            language: language.clone(),
+                        });
                     }
-                    Ok(None) => {}
-                    Err(error) => {
-                        tracing::debug!(path = %path, "syntax pack install skipped: {error}");
+                    match services.ensure_syntax_pack_for_path(&path) {
+                        Ok(Some(installed)) => {
+                            tracing::info!(language = %installed, path = %path, "syntax pack installed");
+                            event_sender.send(AppEvent::SyntaxPackInstalled {
+                                language: installed,
+                            });
+                            if let Some(language) = language {
+                                event_sender.send(AppEvent::SyntaxPackInstallFinished { language });
+                            }
+                        }
+                        Ok(None) => {
+                            if let Some(language) = language {
+                                event_sender.send(AppEvent::SyntaxPackInstallFinished { language });
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(path = %path, %error, "syntax pack install failed");
+                            if let Some(language) = language {
+                                event_sender.send(AppEvent::SyntaxPackInstallFailed { language });
+                            }
+                        }
                     }
                 });
             }

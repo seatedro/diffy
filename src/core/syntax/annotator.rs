@@ -42,14 +42,30 @@ impl DiffSyntaxAnnotator {
             build_line_refs(&file_diff.hunks, text_buffer);
         let language = self.highlighter.resolve_language(&file_diff.path);
 
-        let old_tokens = self
-            .highlighter
-            .highlight_resolved(language, &old_content)
-            .unwrap_or_default();
-        let new_tokens = self
-            .highlighter
-            .highlight_resolved(language, &new_content)
-            .unwrap_or_default();
+        let old_tokens = match self.highlighter.highlight_resolved(language, &old_content) {
+            Ok(tokens) => tokens,
+            Err(error) => {
+                tracing::warn!(
+                    path = %file_diff.path,
+                    ?language,
+                    %error,
+                    "syntax highlight failed"
+                );
+                Vec::new()
+            }
+        };
+        let new_tokens = match self.highlighter.highlight_resolved(language, &new_content) {
+            Ok(tokens) => tokens,
+            Err(error) => {
+                tracing::warn!(
+                    path = %file_diff.path,
+                    ?language,
+                    %error,
+                    "syntax highlight failed"
+                );
+                Vec::new()
+            }
+        };
         distribute_tokens(&mut file_diff.hunks, token_buffer, &old_tokens, &old_refs);
         distribute_tokens(&mut file_diff.hunks, token_buffer, &new_tokens, &new_refs);
     }

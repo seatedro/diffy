@@ -1,6 +1,6 @@
 use crate::actions::Action;
 use crate::core::compare::{CompareMode, RendererKind};
-use crate::ui::design::{Ico, Rad, Sp};
+use crate::ui::design::{Alpha, Ico, Rad, Sp};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
@@ -49,6 +49,10 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
             <text class="text-xs" color={tc.text_muted}>{format!("Hunk {}/{}", idx + 1, total)}</text>
         }
     });
+    let syntax_pack_child = state
+        .syntax_pack_installs
+        .with(&state.store, |active| active.last().cloned())
+        .map(|language| syntax_pack_chip(&language, state.clock_ms, theme, scale));
 
     let right_text = match state.workspace.source.get(&state.store) {
         WorkspaceSource::Status => state
@@ -77,12 +81,73 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
             </div>
             <spacer />
             <div class="flex-row items-center" gap={Sp::SM}>
+                {?syntax_pack_child}
                 {?hunk_child}
             </div>
             <spacer />
             <text class="text-xs" color={tc.text_muted}>{right_text}</text>
         </div>
     }
+}
+
+fn syntax_pack_chip(language: &str, clock_ms: u64, theme: &Theme, scale: f32) -> AnyElement {
+    let tc = &theme.colors;
+    view! { scale,
+        <div class="flex-row items-center"
+             gap={Sp::XS}
+             px={Sp::SM}
+             py={2.0}
+             max_w={220.0}
+             rounded={Rad::SM}
+             bg={tc.element_background}>
+            {circular_loader(clock_ms, tc.accent)}
+            <text class="text-xs truncate" color={tc.text_muted}>{format!("Installing syntax: {language}")}</text>
+        </div>
+    }
+    .into_any()
+}
+
+fn circular_loader(clock_ms: u64, color: crate::ui::theme::Color) -> AnyElement {
+    let size = Ico::SM;
+    let dot = 2.5;
+    let positions = [
+        (5.75, 0.0),
+        (9.75, 1.5),
+        (11.5, 5.75),
+        (9.75, 9.75),
+        (5.75, 11.5),
+        (1.5, 9.75),
+        (0.0, 5.75),
+        (1.5, 1.5),
+    ];
+    let dot_count = positions.len();
+    let head = ((clock_ms / 100) % dot_count as u64) as usize;
+    let alphas = [
+        Alpha::STRONG,
+        Alpha::PLACEHOLDER,
+        Alpha::MEDIUM,
+        Alpha::MUTED,
+        Alpha::SOFT,
+        Alpha::DIM,
+        Alpha::FAINT,
+        Alpha::TINT,
+    ];
+
+    let mut loader = div().relative().w(size).h(size).flex_shrink_0();
+    for (index, (left, top)) in positions.iter().copied().enumerate() {
+        let age = (index + dot_count - head) % dot_count;
+        loader = loader.child(
+            div()
+                .absolute()
+                .left(left)
+                .top(top)
+                .w(dot)
+                .h(dot)
+                .rounded_full()
+                .bg(color.with_alpha(alphas[age])),
+        );
+    }
+    loader.into_any()
 }
 
 /// Clickable ahead/behind indicator next to the branch name. Colors the

@@ -22,6 +22,44 @@ const indexOutputPath =
 const shouldBuildPacks = process.env.PHOSPHOR_SKIP_PACK_BUILD !== "1";
 const packConcurrency = positiveIntegerEnv("PHOSPHOR_PACK_CONCURRENCY", 4);
 const packLanguageFilter = languageFilterEnv("PHOSPHOR_PACK_LANGUAGES");
+const treeSitterCli = process.env.PHOSPHOR_TREE_SITTER_CLI ?? "tree-sitter";
+
+class BinaryReader {
+  constructor(bytes) {
+    this.bytes = bytes;
+    this.offset = 0;
+  }
+
+  readUInt32() {
+    this.#require(4);
+    const value = this.bytes.readUInt32BE(this.offset);
+    this.offset += 4;
+    return value;
+  }
+
+  readString() {
+    const length = this.readUInt32();
+    return this.readBytes(length);
+  }
+
+  readBytes(length) {
+    this.#require(length);
+    const value = this.bytes.subarray(this.offset, this.offset + length);
+    this.offset += length;
+    return value;
+  }
+
+  #require(length) {
+    if (this.offset + length > this.bytes.length) {
+      throw new Error("unexpected end of OpenSSH key data");
+    }
+  }
+}
+
+if (process.env.PHOSPHOR_SIGN_INDEX_ONLY === "1") {
+  await signExistingIndex();
+  process.exit(0);
+}
 
 const headers = {
   Accept: "application/vnd.github+json",
@@ -84,6 +122,13 @@ if (languageCount === 0) {
 const languageNames = upstreamLanguages
   .map((entry) => entry.language)
   .sort();
+const skippedPackLanguages = upstreamLanguages
+  .filter((entry) => !hasBuildableSource(entry.source))
+  .map((entry) => ({
+    language: entry.language,
+    reason: entry.source?.type === "queries_only" ? "queries_only" : "missing_parser_source",
+  }))
+  .sort((left, right) => left.language.localeCompare(right.language));
 
 const buildErrors = [];
 const packs = shouldBuildPacks
@@ -99,6 +144,8 @@ const index = {
     tree_sitter_abi: treeSitterAbi,
     packs,
     pack_build_error_count: buildErrors.length,
+    pack_skipped_languages: skippedPackLanguages,
+    pack_skipped_language_count: skippedPackLanguages.length,
     upstream_language_count: languageCount,
     upstream_languages: languageNames,
     upstream_registry: upstreamLanguages,
@@ -174,40 +221,8 @@ function openSshEd25519PrivateKeyToPkcs8(privateKey) {
   ]);
 }
 
-class BinaryReader {
-  constructor(bytes) {
-    this.bytes = bytes;
-    this.offset = 0;
-  }
-
-  readUInt32() {
-    this.#require(4);
-    const value = this.bytes.readUInt32BE(this.offset);
-    this.offset += 4;
-    return value;
-  }
-
-  readString() {
-    const length = this.readUInt32();
-    return this.readBytes(length);
-  }
-
-  readBytes(length) {
-    this.#require(length);
-    const value = this.bytes.subarray(this.offset, this.offset + length);
-    this.offset += length;
-    return value;
-  }
-
-  #require(length) {
-    if (this.offset + length > this.bytes.length) {
-      throw new Error("unexpected end of OpenSSH key data");
-    }
-  }
-}
-
 async function buildPacks(registry, upstreamLanguages, registryRevision, buildErrors) {
-  if (!["macos-aarch64", "macos-x86_64", "windows-x86_64"].includes(platform)) {
+  if (!["linux-x86_64", "macos-aarch64", "macos-x86_64", "windows-x86_64"].includes(platform)) {
     throw new Error(`pack builder does not support ${platform} yet`);
   }
 
@@ -217,8 +232,18 @@ async function buildPacks(registry, upstreamLanguages, registryRevision, buildEr
   await rm(packRoot, { recursive: true, force: true });
   await mkdir(workDir, { recursive: true });
 
+  const skippedPackLanguages = upstreamLanguages
+    .filter((entry) => !hasBuildableSource(entry.source))
+    .map((entry) => entry.language)
+    .sort();
+  if (skippedPackLanguages.length > 0) {
+    console.log(
+      `Skipping ${skippedPackLanguages.length} languages without parser sources: ${skippedPackLanguages.join(", ")}`,
+    );
+  }
+
   let packLanguages = upstreamLanguages
-    .filter((entry) => entry.source)
+    .filter((entry) => hasBuildableSource(entry.source))
     .map((entry) => ({
       language: entry.language,
       extensions: entry.filetypes,
@@ -393,6 +418,10 @@ function normalizeSource(source) {
   };
 }
 
+function hasBuildableSource(source) {
+  return source?.type !== "queries_only" && Boolean(source?.parser_url || source?.url);
+}
+
 async function cloneRepo(url, destination) {
   if (!url) {
     throw new Error("missing repository URL");
@@ -406,14 +435,14 @@ async function gitRevParse(cwd) {
 
 async function compileParser(parserDir, outputPath, buildDir) {
   const srcDir = path.join(parserDir, "src");
-  const sources = [
-    path.join(srcDir, "parser.c"),
-    path.join(srcDir, "scanner.c"),
-    path.join(srcDir, "scanner.cc"),
-  ].filter((file) => existsSync(file));
+  let sources = parserSources(srcDir);
 
   if (!sources.some((file) => file.endsWith("parser.c"))) {
-    throw new Error(`missing parser.c in ${srcDir}`);
+    await generateParser(parserDir, srcDir);
+    sources = parserSources(srcDir);
+    if (!sources.some((file) => file.endsWith("parser.c"))) {
+      throw new Error(`missing parser.c in ${srcDir}`);
+    }
   }
 
   if (platform === "windows-x86_64") {
@@ -430,27 +459,81 @@ async function compileParser(parserDir, outputPath, buildDir) {
     return;
   }
 
-  const compiler = sources.some((file) => file.endsWith(".cc")) ? "clang++" : "clang";
-  const arch = platform === "macos-x86_64" ? "x86_64" : "arm64";
+  const compiler = sources.some((file) => file.endsWith(".cc")) ? cxxCompiler() : cCompiler();
+  const arch = macosArch();
   const objects = [];
   for (const [index, source] of sources.entries()) {
     const objectPath = path.join(buildDir, `${path.basename(outputPath)}.${index}.o`);
-    const sourceCompiler = source.endsWith(".cc") ? "clang++" : "clang";
-    await run(sourceCompiler, [
+    const sourceCompiler = source.endsWith(".cc") ? cxxCompiler() : cCompiler();
+    const compileArgs = [
       "-O2",
       "-fPIC",
-      "-arch",
-      arch,
       "-I",
       srcDir,
       "-c",
       source,
       "-o",
       objectPath,
-    ]);
+    ];
+    if (arch) {
+      compileArgs.splice(2, 0, "-arch", arch);
+    }
+    await run(sourceCompiler, compileArgs);
     objects.push(objectPath);
   }
-  await run(compiler, ["-dynamiclib", "-arch", arch, "-o", outputPath, ...objects]);
+  if (platform.startsWith("macos-")) {
+    await run(compiler, ["-dynamiclib", "-arch", arch, "-o", outputPath, ...objects]);
+  } else if (platform === "linux-x86_64") {
+    await run(compiler, ["-shared", "-o", outputPath, ...objects]);
+  } else {
+    throw new Error(`pack builder does not support ${platform} yet`);
+  }
+}
+
+function parserSources(srcDir) {
+  return [
+    path.join(srcDir, "parser.c"),
+    path.join(srcDir, "scanner.c"),
+    path.join(srcDir, "scanner.cc"),
+  ].filter((file) => existsSync(file));
+}
+
+async function generateParser(parserDir, srcDir) {
+  if (!existsSync(path.join(parserDir, "grammar.js"))) {
+    throw new Error(`missing parser.c in ${srcDir}`);
+  }
+  console.log(`Generating parser.c in ${parserDir}`);
+  await run(treeSitterCli, ["generate"], { cwd: parserDir });
+}
+
+function cCompiler() {
+  if (platform.startsWith("macos-")) {
+    return "clang";
+  }
+  if (platform === "linux-x86_64") {
+    return "cc";
+  }
+  throw new Error(`pack builder does not support ${platform} yet`);
+}
+
+function cxxCompiler() {
+  if (platform.startsWith("macos-")) {
+    return "clang++";
+  }
+  if (platform === "linux-x86_64") {
+    return "c++";
+  }
+  throw new Error(`pack builder does not support ${platform} yet`);
+}
+
+function macosArch() {
+  if (platform === "macos-aarch64") {
+    return "arm64";
+  }
+  if (platform === "macos-x86_64") {
+    return "x86_64";
+  }
+  return null;
 }
 
 function parserFileName() {
@@ -459,6 +542,9 @@ function parserFileName() {
   }
   if (platform === "macos-aarch64" || platform === "macos-x86_64") {
     return "parser.dylib";
+  }
+  if (platform === "linux-x86_64") {
+    return "parser.so";
   }
   throw new Error(`pack builder does not support ${platform} yet`);
 }
@@ -557,6 +643,26 @@ function languageFilterEnv(name) {
   return new Set(languages);
 }
 
+async function signExistingIndex() {
+  const index = JSON.parse(await readFile(indexOutputPath, "utf8"));
+  index.signature = signPayload(index.payload);
+  await writeFile(indexOutputPath, `${JSON.stringify(index, null, 2)}\n`);
+  console.log(`Signed ${indexOutputPath}`);
+}
+
+function signPayload(payload) {
+  const privateKeyValue = process.env.PHOSPHOR_PACK_INDEX_PRIVATE_KEY;
+  if (!privateKeyValue) {
+    throw new Error("PHOSPHOR_PACK_INDEX_PRIVATE_KEY is required to sign index");
+  }
+  const privateKey = createPrivateKey({
+    key: openSshEd25519PrivateKeyToPkcs8(privateKeyValue),
+    format: "der",
+    type: "pkcs8",
+  });
+  return sign(null, Buffer.from(canonicalJson(payload)), privateKey).toString("hex");
+}
+
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -586,19 +692,6 @@ function run(command, args, options = {}) {
       );
     });
   });
-}
-
-if (process.env.PHOSPHOR_PACK_INDEX_PRIVATE_KEY) {
-  const privateKey = createPrivateKey({
-    key: openSshEd25519PrivateKeyToPkcs8(
-      process.env.PHOSPHOR_PACK_INDEX_PRIVATE_KEY,
-    ),
-    format: "der",
-    type: "pkcs8",
-  });
-  index.signature = sign(null, Buffer.from(canonicalJson(index.payload)), privateKey).toString(
-    "hex",
-  );
 }
 
 await mkdir(path.dirname(indexOutputPath), { recursive: true });

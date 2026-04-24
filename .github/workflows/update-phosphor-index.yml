@@ -14,18 +14,27 @@ concurrency:
 
 jobs:
   update:
-    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-aarch64
+            os: macos-26
+          - platform: macos-x86_64
+            os: macos-26-intel
+          - platform: linux-x86_64
+            os: ubuntu-24.04
+          - platform: windows-x86_64
+            os: windows-2025
+
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 360
     env:
-      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-      AWS_DEFAULT_REGION: auto
-      R2_ENDPOINT_URL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
-      R2_BUCKET: diffy
       PHOSPHOR_PACK_BASE_URL: https://blob.diffygui.com/phosphor-packs
-      PHOSPHOR_PACK_PLATFORM: macos-aarch64
-      PHOSPHOR_INDEX_OUTPUT: .phosphor-index/macos-aarch64.json
+      PHOSPHOR_PACK_PLATFORM: ${{ matrix.platform }}
+      PHOSPHOR_INDEX_OUTPUT: .phosphor-index/${{ matrix.platform }}.json
       PHOSPHOR_PACK_CONCURRENCY: 4
+      PHOSPHOR_TREE_SITTER_CLI_VERSION: 0.26.8
     steps:
       - uses: actions/checkout@v4
 
@@ -33,14 +42,31 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Install tree-sitter CLI
+        run: npm install --global "tree-sitter-cli@${{ env.PHOSPHOR_TREE_SITTER_CLI_VERSION }}"
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+
       - name: Generate index
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/workflows/update-phosphor-index.mjs
+
+      - name: Sign index
+        env:
+          PHOSPHOR_SIGN_INDEX_ONLY: "1"
           PHOSPHOR_PACK_INDEX_PRIVATE_KEY: ${{ secrets.PHOSPHOR_PACK_INDEX_PRIVATE_KEY }}
         run: node .github/workflows/update-phosphor-index.mjs
 
       - name: Upload packs to R2
         shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT_URL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          R2_BUCKET: diffy
         run: |
-          aws s3 sync .phosphor-pack-out/macos-aarch64 "s3://${R2_BUCKET}/phosphor-packs/macos-aarch64" --endpoint-url "${R2_ENDPOINT_URL}" --delete
-          aws s3 cp .phosphor-index/macos-aarch64.json "s3://${R2_BUCKET}/phosphor-index/macos-aarch64.json" --endpoint-url "${R2_ENDPOINT_URL}"
+          aws s3 sync ".phosphor-pack-out/${PHOSPHOR_PACK_PLATFORM}" "s3://${R2_BUCKET}/phosphor-packs/${PHOSPHOR_PACK_PLATFORM}" --endpoint-url "${R2_ENDPOINT_URL}" --delete
+          aws s3 cp "${PHOSPHOR_INDEX_OUTPUT}" "s3://${R2_BUCKET}/phosphor-index/${PHOSPHOR_PACK_PLATFORM}.json" --endpoint-url "${R2_ENDPOINT_URL}"

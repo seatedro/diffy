@@ -67,11 +67,16 @@ impl AppServices {
     ) -> Result<StatusDiffFinished> {
         let mut git = GitService::new();
         git.open(request.repo_path.to_string_lossy().as_ref())?;
-        let output: CompareOutput = match request.renderer {
+        let mut output: CompareOutput = match request.renderer {
             RendererKind::Builtin => git.diff_status_item(&request.item)?,
-            RendererKind::Difftastic => crate::core::compare::backends::DifftasticBackend
-                .compare_status_item(&request.item, &git)?,
+            RendererKind::Difftastic if DifftasticBackend::is_available() => {
+                compare_status_item_with_difftastic(&request.item, &git)?
+            }
+            RendererKind::Difftastic => git.diff_status_item(&request.item)?,
         };
+        if request.renderer == RendererKind::Difftastic && !DifftasticBackend::is_available() {
+            mark_difftastic_fallback(&mut output);
+        }
 
         Ok(StatusDiffFinished {
             generation,
@@ -92,10 +97,16 @@ impl AppServices {
             RendererKind::Builtin => GitDiffBackend
                 .compare_path(&request.spec, &request.path, &git)?
                 .ok_or_else(|| DiffyError::General("compare file returned no result".to_owned()))?,
-            RendererKind::Difftastic => DifftasticBackend
+            RendererKind::Difftastic if DifftasticBackend::is_available() => DifftasticBackend
+                .compare_path(&request.spec, &request.path, &git)?
+                .ok_or_else(|| DiffyError::General("compare file returned no result".to_owned()))?,
+            RendererKind::Difftastic => GitDiffBackend
                 .compare_path(&request.spec, &request.path, &git)?
                 .ok_or_else(|| DiffyError::General("compare file returned no result".to_owned()))?,
         };
+        if request.spec.renderer == RendererKind::Difftastic && !DifftasticBackend::is_available() {
+            mark_difftastic_fallback(&mut output);
+        }
 
         let Some(mut file) = output.files.pop() else {
             return Err(DiffyError::General(
@@ -360,13 +371,34 @@ impl AppServices {
                     tracing::error!(generation, "ai: worker channel disconnected");
                     event_sender.send(AppEvent::CommitMessageGenerationFailed {
                         generation,
-                        message: "llm worker exited unexpectedly".to_owned(),
+                        message: "AI worker exited unexpectedly".to_owned(),
                     });
                     return;
                 }
             }
         }
     }
+}
+
+#[cfg(feature = "difftastic")]
+fn compare_status_item_with_difftastic(
+    item: &crate::core::vcs::git::StatusItem,
+    git: &GitService,
+) -> Result<CompareOutput> {
+    DifftasticBackend.compare_status_item(item, git)
+}
+
+#[cfg(not(feature = "difftastic"))]
+fn compare_status_item_with_difftastic(
+    _item: &crate::core::vcs::git::StatusItem,
+    _git: &GitService,
+) -> Result<CompareOutput> {
+    unreachable!("difftastic status compare is gated by DifftasticBackend::is_available()")
+}
+
+fn mark_difftastic_fallback(output: &mut CompareOutput) {
+    output.used_fallback = true;
+    output.fallback_message = "difftastic not compiled in, used built-in backend".to_owned();
 }
 
 pub fn load_ai_keys() -> Result<(Option<String>, Option<String>)> {

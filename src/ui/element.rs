@@ -1531,7 +1531,7 @@ impl TextElement {
 
     fn resolve_font_size(&self, theme: &Theme) -> f32 {
         match self.font_size.to_bits() {
-            x if self.font_size > 0.0 => self.font_size,
+            _ if self.font_size > 0.0 => self.font_size,
             _ if self.font_size == -1.0 => theme.metrics.ui_small_font_size,
             _ if self.font_size == -2.0 => theme.metrics.ui_small_font_size - 1.0,
             _ if self.font_size == -3.0 => theme.metrics.heading_font_size,

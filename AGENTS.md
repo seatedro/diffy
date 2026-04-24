@@ -127,3 +127,5 @@ response and explain what was not verified.
 - Do not log secrets, tokens, API keys, or raw credential material.
 - Preserve user work in the tree. Never revert unrelated changes without an
   explicit request.
+- For routine checks or small edits, skip progress chatter; when an update is
+  necessary, keep it direct and avoid forced whimsy or joke phrasing.

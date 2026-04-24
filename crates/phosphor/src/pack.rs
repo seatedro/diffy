@@ -5,14 +5,14 @@ use std::rc::Rc;
 use libloading::Library;
 use ring::signature::{ED25519, UnparsedPublicKey};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tree_sitter as ts;
 use tree_sitter_language::LanguageFn;
 
 use crate::LanguageId;
 
-pub const DEFAULT_INDEX_URL: &str =
-    "https://github.com/seatedro/diffy/releases/latest/download/phosphor-index.json";
+const DEFAULT_INDEX_BASE_URL: &str = "https://blob.diffygui.com/phosphor-index";
 
 const INDEX_PUBLIC_KEY_ENV: &str = "PHOSPHOR_PACK_INDEX_PUBLIC_KEY";
 const ALLOW_UNSIGNED_ENV: &str = "DIFFY_PHOSPHOR_ALLOW_UNSIGNED_PACKS";
@@ -58,7 +58,7 @@ pub enum PackError {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SignedPackIndex {
-    pub payload: PackIndex,
+    pub payload: Value,
     pub signature: String,
 }
 
@@ -137,14 +137,14 @@ pub struct PackInstaller {
 impl PackInstaller {
     pub fn new() -> Result<Self> {
         Ok(Self {
-            index_url: DEFAULT_INDEX_URL.to_owned(),
+            index_url: default_index_url(),
             storage_dir: default_storage_dir()?,
         })
     }
 
     pub fn with_storage_dir(storage_dir: PathBuf) -> Self {
         Self {
-            index_url: DEFAULT_INDEX_URL.to_owned(),
+            index_url: default_index_url(),
             storage_dir,
         }
     }
@@ -206,8 +206,9 @@ impl PackInstaller {
             .await?;
         let signed: SignedPackIndex = serde_json::from_slice(&body)?;
         verify_index_signature(&signed)?;
-        verify_index_compatibility(&signed.payload)?;
-        Ok(signed.payload)
+        let payload = serde_json::from_value(signed.payload)?;
+        verify_index_compatibility(&payload)?;
+        Ok(payload)
     }
 
     async fn install_entry(&self, entry: &PackIndexEntry, language: LanguageId) -> Result<bool> {
@@ -463,10 +464,17 @@ fn verify_index_signature(index: &SignedPackIndex) -> Result<()> {
         return Ok(());
     }
 
+    verify_index_signature_with_keys(index, trusted_public_key_hexes())
+}
+
+fn verify_index_signature_with_keys<'a>(
+    index: &SignedPackIndex,
+    trusted_keys: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
     let signature = decode_hex(&index.signature)?;
-    let payload = serde_json::to_vec(&index.payload)?;
+    let payload = canonical_json_bytes(&index.payload)?;
     let mut saw_key = false;
-    for key_hex in trusted_public_key_hexes() {
+    for key_hex in trusted_keys {
         saw_key = true;
         let key = decode_hex(key_hex)?;
         if key.len() != 32 {
@@ -485,6 +493,46 @@ fn verify_index_signature(index: &SignedPackIndex) -> Result<()> {
     }
 }
 
+fn canonical_json_bytes(value: &Value) -> Result<Vec<u8>> {
+    let mut out = String::new();
+    write_canonical_json(value, &mut out)?;
+    Ok(out.into_bytes())
+}
+
+fn write_canonical_json(value: &Value, out: &mut String) -> Result<()> {
+    match value {
+        Value::Null => out.push_str("null"),
+        Value::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
+        Value::Number(value) => out.push_str(&value.to_string()),
+        Value::String(value) => out.push_str(&serde_json::to_string(value)?),
+        Value::Array(values) => {
+            out.push('[');
+            for (index, value) in values.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                write_canonical_json(value, out)?;
+            }
+            out.push(']');
+        }
+        Value::Object(values) => {
+            out.push('{');
+            let mut keys = values.keys().collect::<Vec<_>>();
+            keys.sort();
+            for (index, key) in keys.into_iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push_str(&serde_json::to_string(key)?);
+                out.push(':');
+                write_canonical_json(&values[key], out)?;
+            }
+            out.push('}');
+        }
+    }
+    Ok(())
+}
+
 fn trusted_public_key_hexes() -> impl Iterator<Item = &'static str> {
     option_env!("PHOSPHOR_PACK_INDEX_PUBLIC_KEY").into_iter()
 }
@@ -497,6 +545,10 @@ fn default_storage_dir() -> Result<PathBuf> {
     dirs::data_local_dir()
         .map(|base| base.join("diffy").join("phosphor").join("languages"))
         .ok_or(PackError::MissingStorageDir)
+}
+
+fn default_index_url() -> String {
+    format!("{DEFAULT_INDEX_BASE_URL}/{}.json", platform_triple())
 }
 
 fn platform_triple() -> &'static str {
@@ -572,7 +624,13 @@ fn hex_value(byte: u8) -> Result<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_hex, normalize_hex, sha256_hex};
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+    use serde_json::json;
+
+    use super::{
+        PackError, SignedPackIndex, canonical_json_bytes, decode_hex, normalize_hex, sha256_hex,
+        verify_index_signature_with_keys,
+    };
 
     #[test]
     fn sha256_is_hex_encoded() {
@@ -587,5 +645,85 @@ mod tests {
         assert!(normalize_hex("abc").is_err());
         assert!(decode_hex("zz").is_err());
         assert_eq!(decode_hex("0A").unwrap(), vec![10]);
+    }
+
+    #[test]
+    fn canonical_json_sorts_object_keys() {
+        let payload = json!({
+            "z": true,
+            "a": ["x", { "b": 1, "a": 2 }],
+        });
+
+        assert_eq!(
+            String::from_utf8(canonical_json_bytes(&payload).unwrap()).unwrap(),
+            r#"{"a":["x",{"a":2,"b":1}],"z":true}"#
+        );
+    }
+
+    #[test]
+    fn signed_index_verifies_canonical_payload() {
+        let key_pair = Ed25519KeyPair::from_seed_unchecked(&[7; 32]).unwrap();
+        let payload = json!({
+            "schema_version": 1,
+            "generated_from": "test",
+            "generated_at": "2026-04-24T00:00:00Z",
+            "platform": "windows-x86_64",
+            "tree_sitter_abi": 15,
+            "packs": [],
+            "upstream_languages": ["rust"],
+        });
+        let signature = key_pair.sign(&canonical_json_bytes(&payload).unwrap());
+        let signed = SignedPackIndex {
+            payload,
+            signature: hex(signature.as_ref()),
+        };
+        let public_key = hex(key_pair.public_key().as_ref());
+
+        assert!(verify_index_signature_with_keys(&signed, [public_key.as_str()]).is_ok());
+    }
+
+    #[test]
+    fn signed_index_rejects_tampered_payload() {
+        let key_pair = Ed25519KeyPair::from_seed_unchecked(&[7; 32]).unwrap();
+        let payload = json!({
+            "schema_version": 1,
+            "generated_from": "test",
+            "generated_at": "2026-04-24T00:00:00Z",
+            "platform": "windows-x86_64",
+            "tree_sitter_abi": 15,
+            "packs": [],
+        });
+        let signature = key_pair.sign(&canonical_json_bytes(&payload).unwrap());
+        let mut signed = SignedPackIndex {
+            payload,
+            signature: hex(signature.as_ref()),
+        };
+        let public_key = hex(key_pair.public_key().as_ref());
+        signed.payload["generated_from"] = json!("tampered");
+
+        assert!(matches!(
+            verify_index_signature_with_keys(&signed, [public_key.as_str()]),
+            Err(PackError::InvalidSignature)
+        ));
+    }
+
+    #[test]
+    fn generated_index_signature_verifies_when_public_key_is_available() {
+        let Some(public_key) = option_env!("PHOSPHOR_TEST_PACK_INDEX_PUBLIC_KEY") else {
+            return;
+        };
+        let signed: SignedPackIndex =
+            serde_json::from_str(include_str!("../../../assets/phosphor-index.json")).unwrap();
+
+        verify_index_signature_with_keys(&signed, [public_key]).unwrap();
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            use std::fmt::Write as _;
+            let _ = write!(&mut out, "{byte:02x}");
+        }
+        out
     }
 }

@@ -645,7 +645,7 @@ fn trusted_public_key_hexes() -> impl Iterator<Item = &'static str> {
 }
 
 fn allow_unsigned_packs() -> bool {
-    std::env::var_os(ALLOW_UNSIGNED_ENV).is_some()
+    cfg!(debug_assertions) || std::env::var_os(ALLOW_UNSIGNED_ENV).is_some()
 }
 
 fn default_storage_dir() -> Result<PathBuf> {

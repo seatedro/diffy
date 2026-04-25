@@ -1,5 +1,7 @@
 use crate::core::diff::types::{DiffLine, FileDiff, Hunk};
-use crate::core::rendering::{DiffRowType, FlatDiffRow, flatten_file_diff};
+use crate::core::rendering::{
+    DiffRowType, FlatDiffRow, flatten_carbon_file_diff, flatten_file_diff,
+};
 use crate::core::text::{
     ChangeIntensity, DiffTokenSpan, SyntaxTokenKind, TextBuffer, TextRange, TokenBuffer,
 };
@@ -202,6 +204,26 @@ pub fn build_render_doc(
     token_buffer: &TokenBuffer,
 ) -> RenderDoc {
     let rows = flatten_file_diff(file, file_index);
+    build_render_doc_from_rows(file, rows, text_buffer, token_buffer)
+}
+
+pub fn build_render_doc_from_carbon(
+    file: &FileDiff,
+    carbon_file: &carbon::FileDiff,
+    file_index: usize,
+    text_buffer: &TextBuffer,
+    token_buffer: &TokenBuffer,
+) -> RenderDoc {
+    let rows = flatten_carbon_file_diff(file, carbon_file, file_index);
+    build_render_doc_from_rows(file, rows, text_buffer, token_buffer)
+}
+
+fn build_render_doc_from_rows(
+    file: &FileDiff,
+    rows: Vec<FlatDiffRow>,
+    text_buffer: &TextBuffer,
+    token_buffer: &TokenBuffer,
+) -> RenderDoc {
     let mut doc = RenderDoc {
         text_bytes: Vec::with_capacity(
             file.path.len()

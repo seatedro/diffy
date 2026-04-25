@@ -191,6 +191,7 @@ impl AppServices {
                 "compare file returned no file".to_owned(),
             ));
         };
+        let carbon_file = output.carbon.files.pop();
 
         Ok(CompareFileFinished {
             generation,
@@ -199,6 +200,7 @@ impl AppServices {
             prepared: prepare_active_file(
                 request.index,
                 file,
+                carbon_file.as_ref(),
                 &output.text_buffer,
                 &output.token_buffer,
             ),

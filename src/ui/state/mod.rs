@@ -50,7 +50,7 @@ use crate::platform::persistence::{PersistedCompare, Settings};
 use crate::platform::secrets::AiKeyKind;
 use crate::platform::startup::StartupOptions;
 use crate::ui::design::{Sp, Sz};
-use crate::ui::editor::render_doc::{RenderDoc, build_render_doc};
+use crate::ui::editor::render_doc::{RenderDoc, build_render_doc, build_render_doc_from_carbon};
 use crate::ui::editor::state::{EditorState, EditorStateStore, SearchMatch};
 use crate::ui::icons::lucide;
 use crate::ui::theme::ThemeMode;
@@ -463,6 +463,7 @@ pub struct ActiveFile {
 pub(crate) fn prepare_active_file(
     file_index: usize,
     mut file: FileDiff,
+    carbon_file: Option<&carbon::FileDiff>,
     src_text: &TextBuffer,
     src_tokens: &TokenBuffer,
 ) -> PreparedActiveFile {
@@ -489,7 +490,18 @@ pub(crate) fn prepare_active_file(
         }
     }
 
-    let render_doc = build_render_doc(&file, file_index, &text_buffer, &token_buffer);
+    let render_doc = carbon_file.map_or_else(
+        || build_render_doc(&file, file_index, &text_buffer, &token_buffer),
+        |carbon_file| {
+            build_render_doc_from_carbon(
+                &file,
+                carbon_file,
+                file_index,
+                &text_buffer,
+                &token_buffer,
+            )
+        },
+    );
     PreparedActiveFile {
         file,
         render_doc,
@@ -2320,6 +2332,7 @@ impl AppState {
         let prepared = prepare_active_file(
             payload.index,
             file,
+            output.carbon.files.first(),
             &output.text_buffer,
             &output.token_buffer,
         );
@@ -5045,9 +5058,11 @@ impl AppState {
                     return;
                 };
                 selected_path = Some(file.path.clone());
+                let carbon_file = output.carbon.files.get(index);
                 prepared = Some(prepare_active_file(
                     index,
                     file.clone(),
+                    carbon_file,
                     &output.text_buffer,
                     &output.token_buffer,
                 ));
@@ -6882,6 +6897,7 @@ mod tests {
                 }],
                 ..FileDiff::default()
             },
+            None,
             &source_text,
             &source_tokens,
         );

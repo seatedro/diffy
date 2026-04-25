@@ -23,6 +23,8 @@ pub enum PhosphorError {
     MissingParser { language: LanguageId },
     #[error("Tree-sitter parse failed for {language}")]
     ParseFailed { language: LanguageId },
+    #[error("Carbon text store is not valid UTF-8")]
+    InvalidUtf8,
 }
 
 pub type Result<T> = std::result::Result<T, PhosphorError>;

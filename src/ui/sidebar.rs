@@ -538,7 +538,7 @@ pub(crate) fn sidebar(
         && state.workspace.compare_output.with(&state.store, |output| {
             output
                 .as_ref()
-                .is_some_and(|output| output.files.iter().any(|file| file.stats_deferred))
+                .is_some_and(|output| output.carbon.files.iter().any(|file| file.stats_deferred))
         })
         && state
             .workspace

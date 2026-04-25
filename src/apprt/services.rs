@@ -186,22 +186,15 @@ impl AppServices {
             mark_difftastic_fallback(&mut output);
         }
 
-        let Some(file) = output.files.pop() else {
-            return Err(DiffyError::General(
-                "compare file returned no file".to_owned(),
-            ));
-        };
+        let carbon_file = output.carbon.files.pop().ok_or_else(|| {
+            DiffyError::General("compare file returned no Carbon file".to_owned())
+        })?;
 
         Ok(CompareFileFinished {
             generation,
             index: request.index,
             path: request.path,
-            prepared: prepare_active_file(
-                request.index,
-                file,
-                &output.text_buffer,
-                &output.token_buffer,
-            ),
+            prepared: prepare_active_file(request.index, &carbon_file),
         })
     }
 
@@ -253,10 +246,13 @@ impl AppServices {
             let (additions, deletions) = GitDiffBackend
                 .deferred_file_line_stats(&item.file, &git)
                 .unwrap_or(None)
-                .unwrap_or((item.file.additions, item.file.deletions));
+                .unwrap_or((
+                    u32_to_i32_saturating(item.file.additions),
+                    u32_to_i32_saturating(item.file.deletions),
+                ));
             stats.push(CompareFileStat {
                 index: item.index,
-                path: item.file.path,
+                path: item.file.path().to_owned(),
                 additions,
                 deletions,
             });
@@ -281,8 +277,8 @@ impl AppServices {
         let old_syntax = self.cached_file_syntax(&git, request, &request.left_ref, &annotator);
         let new_syntax = self.cached_file_syntax(&git, request, &request.right_ref, &annotator);
 
-        annotator.annotate_full_file_window_from_cache(
-            &request.file,
+        annotator.annotate_carbon_full_file_window_from_cache(
+            &request.carbon_file,
             request.file_index,
             old_syntax.as_deref(),
             new_syntax.as_deref(),
@@ -475,10 +471,22 @@ impl AppServices {
     pub fn fetch_context_lines(
         &self,
         request: &crate::effects::FetchContextLinesRequest,
-    ) -> Result<Vec<String>> {
+    ) -> Result<(Vec<String>, Vec<String>)> {
         let mut git = GitService::new();
         git.open(request.repo_path.to_string_lossy().as_ref())?;
-        git.read_file_lines_at(&request.reference, &request.path)
+        let old_lines = if request.old_reference.is_empty() {
+            Vec::new()
+        } else {
+            git.read_file_lines_at(&request.old_reference, &request.path)
+                .unwrap_or_default()
+        };
+        let new_lines = if request.new_reference.is_empty() {
+            Vec::new()
+        } else {
+            git.read_file_lines_at(&request.new_reference, &request.path)
+                .unwrap_or_default()
+        };
+        Ok((old_lines, new_lines))
     }
 
     pub fn install_common_syntax_packs(&self) -> Result<Vec<String>> {
@@ -661,6 +669,10 @@ fn mark_difftastic_fallback(output: &mut CompareOutput) {
     output.fallback_message = "difftastic not compiled in, used built-in backend".to_owned();
 }
 
+fn u32_to_i32_saturating(value: u32) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
+}
+
 pub fn load_ai_keys() -> Result<(Option<String>, Option<String>)> {
     let openai = secrets::load_ai_key(AiKeyKind::OpenAi)?;
     let anthropic = secrets::load_ai_key(AiKeyKind::Anthropic)?;
@@ -772,7 +784,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(finished.generation, 1);
-        assert_eq!(finished.output.files.len(), 1);
-        assert_eq!(finished.output.files[0].path, "src/lib.rs");
+        assert_eq!(finished.output.carbon.files.len(), 1);
+        assert_eq!(finished.output.carbon.files[0].path(), "src/lib.rs");
     }
 }

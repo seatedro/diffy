@@ -22,11 +22,10 @@ use halogen::reactive::{Signal, SignalStore};
 
 use crate::actions::Action;
 use crate::core::compare::{CompareMode, CompareOutput, CompareSpec, LayoutMode, RendererKind};
-use crate::core::diff::FileDiff;
 use crate::core::frecency::FrecencyStore;
 use crate::core::syntax::Highlighter;
 use crate::core::syntax::annotator::{SyntaxLineTokens, SyntaxRowWindow};
-use crate::core::text::{TextBuffer, TokenBuffer};
+use crate::core::text::TokenBuffer;
 use crate::core::update::{AvailableUpdate, StagedUpdate};
 use crate::core::vcs::git::patch;
 use crate::core::vcs::git::{
@@ -50,7 +49,7 @@ use crate::platform::persistence::{PersistedCompare, Settings};
 use crate::platform::secrets::AiKeyKind;
 use crate::platform::startup::StartupOptions;
 use crate::ui::design::{Sp, Sz};
-use crate::ui::editor::render_doc::{RenderDoc, build_render_doc};
+use crate::ui::editor::render_doc::{CarbonStyleOverlays, RenderDoc, build_render_doc_from_carbon};
 use crate::ui::editor::state::{EditorState, EditorStateStore, SearchMatch};
 use crate::ui::icons::lucide;
 use crate::ui::theme::ThemeMode;
@@ -377,9 +376,10 @@ pub const COMPARE_REVEAL_DELAY_MS: u64 = 500;
 
 #[derive(Debug, Clone)]
 pub struct PreparedActiveFile {
-    pub file: FileDiff,
+    pub carbon_file: carbon::FileDiff,
+    pub carbon_expansion: carbon::ExpansionState,
+    pub carbon_overlays: CarbonStyleOverlays,
     pub render_doc: RenderDoc,
-    pub text_buffer: TextBuffer,
     pub token_buffer: TokenBuffer,
 }
 
@@ -392,33 +392,19 @@ fn refs_for_status_scope(scope: StatusScope) -> (String, String) {
     }
 }
 
-fn clear_syntax_tokens(file: &mut FileDiff) {
-    file.syntax_annotated = false;
-    for hunk in &mut file.hunks {
-        for line in &mut hunk.lines {
-            line.syntax_tokens = Default::default();
-        }
-    }
-}
-
 fn apply_syntax_tokens_to_file(
-    file: &mut FileDiff,
+    carbon_overlays: &mut CarbonStyleOverlays,
     token_buffer: &mut TokenBuffer,
     updates: &[SyntaxLineTokens],
 ) {
     for update in updates {
-        let Some(line) = file
-            .hunks
-            .get_mut(update.hunk_index)
-            .and_then(|hunk| hunk.lines.get_mut(update.line_index))
-        else {
-            continue;
-        };
-        line.syntax_tokens = if update.tokens.is_empty() {
-            Default::default()
-        } else {
-            token_buffer.append(&update.tokens)
-        };
+        if let (Some(side), Some(source_index)) = (update.side, update.source_index) {
+            if update.tokens.is_empty() {
+                continue;
+            }
+            let range = token_buffer.append(&update.tokens);
+            carbon_overlays.insert_syntax(update.hunk_index as u32, side, source_index, range);
+        }
     }
 }
 
@@ -441,19 +427,55 @@ fn push_syntax_covered_window(windows: &mut Vec<SyntaxRowWindow>, window: Syntax
     *windows = merged;
 }
 
+fn hydrate_carbon_full_text(
+    file: &mut carbon::FileDiff,
+    old_lines: &[String],
+    new_lines: &[String],
+) {
+    if !old_lines.is_empty() {
+        file.old_text = Some(carbon::TextStore::from_text(lines_to_text(old_lines)));
+    }
+    if !new_lines.is_empty() {
+        file.new_text = Some(carbon::TextStore::from_text(lines_to_text(new_lines)));
+    }
+    for block in &mut file.blocks {
+        block.old.start = block.old_line_start.saturating_sub(1);
+        block.new.start = block.new_line_start.saturating_sub(1);
+    }
+    file.is_partial = false;
+}
+
+fn lines_to_text(lines: &[String]) -> String {
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut text =
+        String::with_capacity(lines.iter().map(|line| line.len().saturating_add(1)).sum());
+    for line in lines {
+        text.push_str(line);
+        text.push('\n');
+    }
+    text
+}
+
+fn i32_to_u32_nonnegative(value: i32) -> u32 {
+    u32::try_from(value).unwrap_or_default()
+}
+
 #[derive(Debug, Clone)]
 pub struct ActiveFile {
     pub index: usize,
     pub path: String,
-    pub file: FileDiff,
+    pub carbon_file: carbon::FileDiff,
+    pub carbon_expansion: carbon::ExpansionState,
+    pub carbon_overlays: CarbonStyleOverlays,
     pub render_doc: RenderDoc,
-    pub text_buffer: TextBuffer,
-    pub base_file: FileDiff,
-    pub base_text_buffer: TextBuffer,
+    pub base_carbon_file: carbon::FileDiff,
     pub token_buffer: TokenBuffer,
     pub left_ref: String,
     pub right_ref: String,
     pub file_line_count: Option<u32>,
+    pub old_file_lines: Option<Arc<Vec<String>>>,
     pub file_lines: Option<Arc<Vec<String>>>,
     pub syntax_request_id: u64,
     pub syntax_pending: Option<SyntaxRowWindow>,
@@ -462,38 +484,24 @@ pub struct ActiveFile {
 
 pub(crate) fn prepare_active_file(
     file_index: usize,
-    mut file: FileDiff,
-    src_text: &TextBuffer,
-    src_tokens: &TokenBuffer,
+    carbon_file: &carbon::FileDiff,
 ) -> PreparedActiveFile {
-    let mut text_buffer = TextBuffer::default();
-    let mut token_buffer = TokenBuffer::default();
+    let token_buffer = TokenBuffer::default();
+    let carbon_overlays = CarbonStyleOverlays::default();
 
-    for hunk in &mut file.hunks {
-        for line in &mut hunk.lines {
-            line.text_range = text_buffer.append(src_text.view(line.text_range));
-
-            if line.change_tokens.is_empty() {
-                line.change_tokens = Default::default();
-            } else {
-                let change_tokens = src_tokens.view(line.change_tokens).to_vec();
-                line.change_tokens = token_buffer.append(&change_tokens);
-            }
-
-            if line.syntax_tokens.is_empty() {
-                line.syntax_tokens = Default::default();
-            } else {
-                let syntax_tokens = src_tokens.view(line.syntax_tokens).to_vec();
-                line.syntax_tokens = token_buffer.append(&syntax_tokens);
-            }
-        }
-    }
-
-    let render_doc = build_render_doc(&file, file_index, &text_buffer, &token_buffer);
+    let carbon_expansion = carbon::ExpansionState::default();
+    let render_doc = build_render_doc_from_carbon(
+        carbon_file,
+        file_index,
+        &carbon_expansion,
+        &carbon_overlays,
+        &token_buffer,
+    );
     PreparedActiveFile {
-        file,
+        carbon_file: carbon_file.clone(),
+        carbon_expansion,
+        carbon_overlays,
         render_doc,
-        text_buffer,
         token_buffer,
     }
 }
@@ -529,7 +537,7 @@ pub struct WorkspaceState {
     pub sidebar_auto_width: Option<SidebarWidthCache>,
     pub range_commits: Vec<CommitInfo>,
     pub pre_drill_compare: Option<(String, String, CompareMode)>,
-    pub expansions: crate::ui::editor::expansion::FileExpansionMap,
+    pub expansions: HashMap<String, carbon::ExpansionState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -681,8 +689,8 @@ impl AppState {
         if self.workspace.compare_output.with(&self.store, |output| {
             output
                 .as_ref()
-                .and_then(|output| output.files.get(index))
-                .is_some_and(|file| file.hunks_deferred)
+                .and_then(|output| output.carbon.files.get(index))
+                .is_some_and(|file| file.is_partial && file.hunks.is_empty())
         }) {
             return true;
         }
@@ -706,15 +714,16 @@ impl AppState {
         ActiveFile {
             index,
             path,
-            file: prepared.file.clone(),
+            carbon_file: prepared.carbon_file.clone(),
+            carbon_expansion: prepared.carbon_expansion.clone(),
+            carbon_overlays: prepared.carbon_overlays,
             render_doc: prepared.render_doc,
-            text_buffer: prepared.text_buffer.clone(),
-            base_file: prepared.file,
-            base_text_buffer: prepared.text_buffer,
+            base_carbon_file: prepared.carbon_file,
             token_buffer: prepared.token_buffer,
             left_ref,
             right_ref,
             file_line_count: None,
+            old_file_lines: None,
             file_lines: None,
             syntax_request_id: 0,
             syntax_pending: None,
@@ -743,8 +752,8 @@ impl AppState {
         let stats = CompareFileStat {
             index,
             path: path.clone(),
-            additions: active_file.file.additions,
-            deletions: active_file.file.deletions,
+            additions: u32_to_i32_saturating(active_file.carbon_file.additions),
+            deletions: u32_to_i32_saturating(active_file.carbon_file.deletions),
         };
 
         self.workspace
@@ -1917,31 +1926,39 @@ impl AppState {
             return Vec::new();
         };
 
-        let Some((file_index, path, reference, generation, cached_lines)) =
-            self.workspace.active_file.with(&self.store, |af| {
-                let active = af.as_ref()?;
-                if active.base_file.hunks.is_empty() {
-                    return None;
-                }
-                let reference = if active.right_ref.is_empty() {
+        let Some((
+            file_index,
+            path,
+            old_reference,
+            new_reference,
+            generation,
+            cached_old_lines,
+            cached_new_lines,
+        )) = self.workspace.active_file.with(&self.store, |af| {
+            let active = af.as_ref()?;
+            if active.base_carbon_file.hunks.is_empty() {
+                return None;
+            }
+            Some((
+                active.index,
+                active.path.clone(),
+                active.left_ref.clone(),
+                if active.right_ref.is_empty() {
                     active.left_ref.clone()
                 } else {
                     active.right_ref.clone()
-                };
-                Some((
-                    active.index,
-                    active.path.clone(),
-                    reference,
-                    self.workspace.compare_generation.get(&self.store),
-                    active.file_lines.clone(),
-                ))
-            })
+                },
+                self.workspace.compare_generation.get(&self.store),
+                active.old_file_lines.clone(),
+                active.file_lines.clone(),
+            ))
+        })
         else {
             return Vec::new();
         };
 
-        if let Some(lines) = cached_lines {
-            self.apply_context_expansion(direction, hunk_index, amount, lines);
+        if let (Some(old_lines), Some(new_lines)) = (cached_old_lines, cached_new_lines) {
+            self.apply_context_expansion(direction, hunk_index, amount, old_lines, new_lines);
             return self
                 .request_active_file_syntax_effect()
                 .into_iter()
@@ -1951,7 +1968,8 @@ impl AppState {
         vec![
             RepositoryEffect::FetchContextLines(crate::effects::FetchContextLinesRequest {
                 repo_path,
-                reference,
+                old_reference,
+                new_reference,
                 path,
                 generation,
                 file_index,
@@ -1979,8 +1997,15 @@ impl AppState {
             return Vec::new();
         }
 
-        let lines = Arc::new(payload.lines);
-        self.apply_context_expansion(payload.direction, payload.hunk_index, payload.amount, lines);
+        let old_lines = Arc::new(payload.old_lines);
+        let new_lines = Arc::new(payload.new_lines);
+        self.apply_context_expansion(
+            payload.direction,
+            payload.hunk_index,
+            payload.amount,
+            old_lines,
+            new_lines,
+        );
         self.request_active_file_syntax_effect()
             .into_iter()
             .collect()
@@ -1991,77 +2016,102 @@ impl AppState {
         direction: crate::events::ContextDirection,
         hunk_index: usize,
         amount: u32,
-        lines: Arc<Vec<String>>,
+        old_lines: Arc<Vec<String>>,
+        new_lines: Arc<Vec<String>>,
     ) {
         use crate::events::ContextDirection;
-        use crate::ui::editor::expansion::{apply_expansion, gap_budgets};
 
-        let Some((active_index, active_path, base_file, base_text_buffer, token_buffer)) =
-            self.workspace.active_file.with(&self.store, |af| {
-                af.as_ref().map(|a| {
-                    (
-                        a.index,
-                        a.path.clone(),
-                        a.base_file.clone(),
-                        a.base_text_buffer.clone(),
-                        a.token_buffer.clone(),
-                    )
-                })
+        let Some((
+            active_index,
+            active_path,
+            mut carbon_file,
+            mut expansion,
+            carbon_overlays,
+            token_buffer,
+        )) = self.workspace.active_file.with(&self.store, |af| {
+            af.as_ref().map(|a| {
+                (
+                    a.index,
+                    a.path.clone(),
+                    a.base_carbon_file.clone(),
+                    a.carbon_expansion.clone(),
+                    a.carbon_overlays.clone(),
+                    a.token_buffer.clone(),
+                )
             })
+        })
         else {
             return;
         };
 
-        let hunk_count = base_file.hunks.len();
-        let total_lines = lines.len() as u32;
-        self.workspace.expansions.update(&self.store, |map| {
-            let entry = map.entry(active_path.clone()).or_default();
-            entry.ensure_hunk_count(hunk_count);
-            let budgets = gap_budgets(&base_file, entry, Some(total_lines));
-            match direction {
-                ContextDirection::Above => {
-                    if let (Some(h), Some(b)) =
-                        (entry.hunks.get_mut(hunk_index), budgets.get(hunk_index))
-                    {
-                        h.above = h.above.saturating_add(amount.min(b.above_cap));
-                    }
-                }
-                ContextDirection::Below => {
-                    if let (Some(h), Some(b)) =
-                        (entry.hunks.get_mut(hunk_index), budgets.get(hunk_index))
-                    {
-                        h.below = h.below.saturating_add(amount.min(b.below_cap));
-                    }
-                }
-                ContextDirection::All => {
-                    for (idx, h) in entry.hunks.iter_mut().enumerate() {
-                        if let Some(b) = budgets.get(idx) {
-                            h.above = h.above.saturating_add(b.above_cap);
-                            h.below = h.below.saturating_add(b.below_cap);
-                        }
-                    }
+        hydrate_carbon_full_text(&mut carbon_file, &old_lines, &new_lines);
+        match direction {
+            ContextDirection::Above => {
+                carbon::expand_context(
+                    &carbon_file,
+                    &mut expansion,
+                    carbon::HunkId(hunk_index as u32),
+                    carbon::ExpansionDirection::Above,
+                    amount,
+                );
+            }
+            ContextDirection::Below => {
+                carbon::expand_context(
+                    &carbon_file,
+                    &mut expansion,
+                    carbon::HunkId(hunk_index as u32),
+                    carbon::ExpansionDirection::Below,
+                    amount,
+                );
+            }
+            ContextDirection::All => {
+                let hunk_ids = carbon_file
+                    .hunks
+                    .iter()
+                    .map(|hunk| hunk.id)
+                    .collect::<Vec<_>>();
+                for hunk_id in hunk_ids {
+                    let caps = carbon::expansion_caps(&carbon_file, hunk_id);
+                    carbon::expand_context(
+                        &carbon_file,
+                        &mut expansion,
+                        hunk_id,
+                        carbon::ExpansionDirection::Above,
+                        caps.above,
+                    );
+                    carbon::expand_context(
+                        &carbon_file,
+                        &mut expansion,
+                        hunk_id,
+                        carbon::ExpansionDirection::Below,
+                        caps.below,
+                    );
                 }
             }
+        }
+        self.workspace.expansions.update(&self.store, |map| {
+            map.insert(active_path.clone(), expansion.clone());
         });
 
-        let expansion = self
-            .workspace
-            .expansions
-            .with(&self.store, |m| m.get(&active_path).cloned())
-            .unwrap_or_default();
-        let (new_file, new_text_buffer) =
-            apply_expansion(&base_file, &base_text_buffer, &expansion, &lines);
-        let render_doc = build_render_doc(&new_file, active_index, &new_text_buffer, &token_buffer);
+        let render_doc = build_render_doc_from_carbon(
+            &carbon_file,
+            active_index,
+            &expansion,
+            &carbon_overlays,
+            &token_buffer,
+        );
+        let total_lines = new_lines.len() as u32;
 
         let preserved_scroll = self.editor.scroll_top_px.get(&self.store);
 
         self.workspace.active_file.update(&self.store, |af| {
             if let Some(active) = af.as_mut() {
-                active.file = new_file;
-                active.text_buffer = new_text_buffer;
+                active.carbon_file = carbon_file;
+                active.carbon_expansion = expansion;
                 active.render_doc = render_doc;
                 active.file_line_count = Some(total_lines);
-                active.file_lines = Some(lines);
+                active.old_file_lines = Some(old_lines);
+                active.file_lines = Some(new_lines);
             }
         });
         self.editor_clear_document();
@@ -2083,9 +2133,10 @@ impl AppState {
         };
         let syntax_warmup_paths = payload
             .output
+            .carbon
             .files
             .iter()
-            .map(|file| file.path.clone())
+            .map(|file| file.path().to_owned())
             .collect::<Vec<_>>();
         self.workspace
             .status_operation_pending
@@ -2114,16 +2165,27 @@ impl AppState {
         self.workspace
             .fallback_message
             .set(&self.store, payload.output.fallback_message.clone());
-        self.workspace
+        self.workspace.files.set(
+            &self.store,
+            build_carbon_file_entries(&payload.output.carbon.files),
+        );
+        let total_files = payload.output.carbon.files.len() as u32;
+        let has_deferred_stats = payload
+            .output
+            .carbon
             .files
-            .set(&self.store, build_file_entries(&payload.output.files));
-        let total_files = payload.output.files.len() as u32;
-        let has_deferred_stats = payload.output.files.iter().any(|file| file.stats_deferred);
+            .iter()
+            .any(|file| file.stats_deferred);
         let eager_total_stats = (!has_deferred_stats).then(|| {
-            (
-                payload.output.files.iter().map(|file| file.additions).sum(),
-                payload.output.files.iter().map(|file| file.deletions).sum(),
-            )
+            payload
+                .output
+                .carbon
+                .files
+                .iter()
+                .map(carbon_file_stats)
+                .fold((0_i32, 0_i32), |acc, next| {
+                    (acc.0.saturating_add(next.0), acc.1.saturating_add(next.1))
+                })
         });
         self.workspace
             .compare_output
@@ -2311,18 +2373,12 @@ impl AppState {
         self.workspace.compare_output.set(&self.store, None);
         self.workspace.active_file_loading.set(&self.store, None);
 
-        let Some(file) = output.files.into_iter().next() else {
+        let Some(carbon_file) = output.carbon.files.first() else {
             self.workspace.active_file.set(&self.store, None);
             self.editor_clear_document();
             return Vec::new();
         };
-
-        let prepared = prepare_active_file(
-            payload.index,
-            file,
-            &output.text_buffer,
-            &output.token_buffer,
-        );
+        let prepared = prepare_active_file(payload.index, carbon_file);
 
         self.workspace
             .selected_file_index
@@ -2462,7 +2518,7 @@ impl AppState {
         let has_deferred_stats = self.workspace.compare_output.with(&self.store, |output| {
             output
                 .as_ref()
-                .is_some_and(|output| output.files.iter().any(|file| file.stats_deferred))
+                .is_some_and(|output| output.carbon.files.iter().any(|file| file.stats_deferred))
         });
         if !has_deferred_stats {
             return None;
@@ -2500,6 +2556,7 @@ impl AppState {
                     .as_ref()
                     .map(|output| {
                         output
+                            .carbon
                             .files
                             .iter()
                             .enumerate()
@@ -2538,14 +2595,14 @@ impl AppState {
                     return;
                 };
                 for stat in stats {
-                    let Some(file) = output.files.get_mut(stat.index) else {
+                    let Some(file) = output.carbon.files.get_mut(stat.index) else {
                         continue;
                     };
-                    if file.path != stat.path {
+                    if file.path() != stat.path {
                         continue;
                     }
-                    file.additions = stat.additions;
-                    file.deletions = stat.deletions;
+                    file.additions = i32_to_u32_nonnegative(stat.additions);
+                    file.deletions = i32_to_u32_nonnegative(stat.deletions);
                     file.stats_deferred = false;
                 }
             });
@@ -2571,10 +2628,10 @@ impl AppState {
                 if active.index != stat.index || active.path != stat.path {
                     continue;
                 }
-                active.file.additions = stat.additions;
-                active.file.deletions = stat.deletions;
-                active.base_file.additions = stat.additions;
-                active.base_file.deletions = stat.deletions;
+                active.carbon_file.additions = i32_to_u32_nonnegative(stat.additions);
+                active.carbon_file.deletions = i32_to_u32_nonnegative(stat.deletions);
+                active.base_carbon_file.additions = i32_to_u32_nonnegative(stat.additions);
+                active.base_carbon_file.deletions = i32_to_u32_nonnegative(stat.deletions);
                 break;
             }
         });
@@ -2600,14 +2657,15 @@ impl AppState {
             active.syntax_pending = None;
             push_syntax_covered_window(&mut active.syntax_covered, payload.window);
             apply_syntax_tokens_to_file(
-                &mut active.file,
+                &mut active.carbon_overlays,
                 &mut active.token_buffer,
                 &payload.tokens,
             );
-            active.render_doc = build_render_doc(
-                &active.file,
+            active.render_doc = build_render_doc_from_carbon(
+                &active.carbon_file,
                 active.index,
-                &active.text_buffer,
+                &active.carbon_expansion,
+                &active.carbon_overlays,
                 &active.token_buffer,
             );
             applied = true;
@@ -2695,16 +2753,6 @@ impl AppState {
                 let Some(index) = self.workspace.selected_file_index.get(&self.store) else {
                     return Vec::new();
                 };
-                self.workspace
-                    .compare_output
-                    .update(&self.store, |maybe_output| {
-                        if let Some(file) = maybe_output
-                            .as_mut()
-                            .and_then(|output| output.files.get_mut(index))
-                        {
-                            clear_syntax_tokens(file);
-                        }
-                    });
                 self.select_loaded_compare_file(index, false)
             }
             WorkspaceSource::Status => {
@@ -4978,8 +5026,8 @@ impl AppState {
         let deferred_file = self.workspace.compare_output.with(&self.store, |output| {
             output
                 .as_ref()
-                .and_then(|output| output.files.get(index))
-                .filter(|file| file.hunks_deferred)
+                .and_then(|output| output.carbon.files.get(index))
+                .filter(|file| file.is_partial && file.hunks.is_empty())
                 .cloned()
         });
 
@@ -5040,17 +5088,12 @@ impl AppState {
                 let Some(output) = maybe_output.as_mut() else {
                     return;
                 };
-                let Some(file) = output.files.get_mut(index) else {
+                let Some(carbon_file) = output.carbon.files.get(index) else {
                     oob = true;
                     return;
                 };
-                selected_path = Some(file.path.clone());
-                prepared = Some(prepare_active_file(
-                    index,
-                    file.clone(),
-                    &output.text_buffer,
-                    &output.token_buffer,
-                ));
+                selected_path = Some(carbon_file.path().to_owned());
+                prepared = Some(prepare_active_file(index, carbon_file));
             });
 
         let Some(prepared) = prepared else {
@@ -5309,11 +5352,11 @@ impl AppState {
 
         let patch_text = self.workspace.active_file.with(&self.store, |af| {
             let active = af.as_ref()?;
-            if operation == StatusOperation::Stage {
-                patch::format_hunk_patch(&active.file, hunk_index, &active.text_buffer)
-            } else {
-                patch::format_reverse_hunk_patch(&active.file, hunk_index, &active.text_buffer)
-            }
+            patch::format_carbon_hunk_patch(
+                &active.carbon_file,
+                hunk_index,
+                operation != StatusOperation::Stage,
+            )
         });
         let Some(patch) = patch_text else {
             tracing::debug!(
@@ -5362,12 +5405,13 @@ impl AppState {
         if line.hunk_index < 0 {
             return;
         }
+        let hunk_id = line.hunk_index as u32;
         self.editor.line_selection.update(&self.store, |ls| {
             if line.old_line_index >= 0 {
-                ls.toggle(line.hunk_index, line.old_line_index);
+                ls.toggle(hunk_id, carbon::DiffSide::Old, line.old_line_index as u32);
             }
             if line.new_line_index >= 0 {
-                ls.toggle(line.hunk_index, line.new_line_index);
+                ls.toggle(hunk_id, carbon::DiffSide::New, line.new_line_index as u32);
             }
             ls.last_toggled_row = Some(row);
         });
@@ -5404,11 +5448,22 @@ impl AppState {
                 if line.hunk_index < 0 {
                     continue;
                 }
+                let hunk_id = line.hunk_index as u32;
                 if line.old_line_index >= 0 {
-                    ls.entries.insert((line.hunk_index, line.old_line_index));
+                    ls.entries
+                        .insert(crate::ui::editor::state::LineSelectionKey {
+                            hunk_id,
+                            side: carbon::DiffSide::Old,
+                            source_index: line.old_line_index as u32,
+                        });
                 }
                 if line.new_line_index >= 0 {
-                    ls.entries.insert((line.hunk_index, line.new_line_index));
+                    ls.entries
+                        .insert(crate::ui::editor::state::LineSelectionKey {
+                            hunk_id,
+                            side: carbon::DiffSide::New,
+                            source_index: line.new_line_index as u32,
+                        });
                 }
             }
             ls.last_toggled_row = Some(row);
@@ -5439,10 +5494,10 @@ impl AppState {
 
         let (hunk_indices, selection_snapshot) =
             self.editor.line_selection.with(&self.store, |ls| {
-                let indices: Vec<i16> = ls
+                let indices: Vec<u32> = ls
                     .entries
                     .iter()
-                    .map(|(h, _)| *h)
+                    .map(|key| key.hunk_id)
                     .collect::<std::collections::BTreeSet<_>>()
                     .into_iter()
                     .collect();
@@ -5455,14 +5510,21 @@ impl AppState {
             };
             let mut patches = Vec::new();
             for hunk_idx in hunk_indices {
-                let selected = selection_snapshot.selected_lines_for_hunk(hunk_idx);
-                if let Some(p) = patch::format_lines_patch(
-                    &active.file,
-                    hunk_idx as usize,
+                let selected = selection_snapshot
+                    .selected_lines_for_hunk(hunk_idx)
+                    .into_iter()
+                    .map(|key| patch::CarbonLineSelection {
+                        side: key.side,
+                        source_index: key.source_index,
+                    })
+                    .collect::<Vec<_>>();
+                let patch = patch::format_carbon_lines_patch(
+                    &active.carbon_file,
+                    carbon::u32_to_usize_saturating(hunk_idx),
                     &selected,
-                    &active.text_buffer,
                     reverse,
-                ) {
+                );
+                if let Some(p) = patch {
                     patches.push(p);
                 }
             }
@@ -5582,7 +5644,7 @@ impl AppState {
                 repo_path,
                 file_index: active.index,
                 path: active.path.clone(),
-                file: active.file.clone(),
+                carbon_file: active.carbon_file.clone(),
                 left_ref: active.left_ref.clone(),
                 right_ref: active.right_ref.clone(),
                 window,
@@ -6208,8 +6270,51 @@ fn apply_scroll_delta_px(current: u32, delta: i32, max: u32) -> u32 {
     next.min(max)
 }
 
-fn build_file_entries(files: &[FileDiff]) -> Vec<FileListEntry> {
-    files.iter().map(FileListEntry::from).collect()
+fn build_carbon_file_entries(files: &[carbon::FileDiff]) -> Vec<FileListEntry> {
+    files.iter().map(carbon_file_entry).collect()
+}
+
+fn carbon_file_entry(file: &carbon::FileDiff) -> FileListEntry {
+    let (additions, deletions) = carbon_file_stats(file);
+    FileListEntry {
+        path: file.path().to_owned(),
+        status: carbon_status_label(file.status).to_owned(),
+        additions,
+        deletions,
+        is_binary: file.is_binary,
+    }
+}
+
+fn carbon_file_stats(file: &carbon::FileDiff) -> (i32, i32) {
+    if file.additions > 0 || file.deletions > 0 || file.stats_deferred {
+        return (
+            u32_to_i32_saturating(file.additions),
+            u32_to_i32_saturating(file.deletions),
+        );
+    }
+    let mut additions = 0_i32;
+    let mut deletions = 0_i32;
+    for block in &file.blocks {
+        if block.kind == carbon::BlockKind::Change {
+            additions = additions.saturating_add(block.new.len.min(i32::MAX as u32) as i32);
+            deletions = deletions.saturating_add(block.old.len.min(i32::MAX as u32) as i32);
+        }
+    }
+    (additions, deletions)
+}
+
+fn u32_to_i32_saturating(value: u32) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
+}
+
+fn carbon_status_label(status: carbon::FileStatus) -> &'static str {
+    match status {
+        carbon::FileStatus::Added => "A",
+        carbon::FileStatus::Deleted => "D",
+        carbon::FileStatus::Renamed | carbon::FileStatus::RenamedModified => "R",
+        carbon::FileStatus::Binary => "B",
+        carbon::FileStatus::ModeChanged | carbon::FileStatus::Modified => "M",
+    }
 }
 
 fn build_status_file_entries(items: &[StatusItem]) -> Vec<FileListEntry> {
@@ -6250,18 +6355,6 @@ pub fn workspace_mode_name(mode: WorkspaceMode) -> &'static str {
         WorkspaceMode::Empty => "empty",
         WorkspaceMode::Loading => "loading",
         WorkspaceMode::Ready => "ready",
-    }
-}
-
-impl From<&FileDiff> for FileListEntry {
-    fn from(value: &FileDiff) -> Self {
-        Self {
-            path: value.path.clone(),
-            status: value.status.clone(),
-            additions: value.additions,
-            deletions: value.deletions,
-            is_binary: value.is_binary,
-        }
     }
 }
 
@@ -6384,15 +6477,12 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        ActiveFile, ActiveFileLoading, AppState, AsyncStatus, CompareField, FileListEntry,
-        FocusTarget, OverlaySurface, PreparedActiveFile, WorkspaceMode, WorkspaceSource,
-        prepare_active_file, refs_for_status_scope,
+        ActiveFile, ActiveFileLoading, AppState, AsyncStatus, CarbonStyleOverlays, CompareField,
+        FileListEntry, FocusTarget, OverlaySurface, PreparedActiveFile, WorkspaceMode,
+        WorkspaceSource, prepare_active_file, refs_for_status_scope,
     };
     use crate::core::compare::{CompareMode, CompareOutput, LayoutMode, RendererKind};
-    use crate::core::diff::{DiffLine, FileDiff, Hunk, LineKind};
-    use crate::core::text::buffer::TextBuffer;
-    use crate::core::text::token::{DiffTokenSpan, TokenBuffer};
-    use crate::core::text::{ChangeIntensity, SyntaxTokenKind};
+    use crate::core::text::TokenBuffer;
     use crate::core::vcs::git::{StatusItem, StatusScope};
     use crate::effects::{
         AiEffect, CompareEffect, Effect, GitHubEffect, RepositoryEffect, SyntaxEffect,
@@ -6402,102 +6492,66 @@ mod tests {
     };
     use crate::platform::persistence::Settings;
     use crate::platform::startup::{Args, StartupOptions};
-    use crate::ui::editor::render_doc::{RenderDoc, build_render_doc};
+    use crate::ui::editor::render_doc::{RenderDoc, build_render_doc_from_carbon};
 
-    fn make_hunk(
-        text_buffer: &mut TextBuffer,
-        old_start: i32,
-        old_count: i32,
-        new_start: i32,
-        new_count: i32,
-        lines: &[(&str, LineKind)],
-    ) -> Hunk {
-        let mut old_line = old_start;
-        let mut new_line = new_start;
-        let diff_lines = lines
-            .iter()
-            .map(|(text, kind)| {
-                let text_range = text_buffer.append(text);
-                let (old_no, new_no) = match kind {
-                    LineKind::Context => {
-                        let o = old_line;
-                        let n = new_line;
-                        old_line += 1;
-                        new_line += 1;
-                        (Some(o), Some(n))
-                    }
-                    LineKind::Removed => {
-                        let o = old_line;
-                        old_line += 1;
-                        (Some(o), None)
-                    }
-                    LineKind::Added => {
-                        let n = new_line;
-                        new_line += 1;
-                        (None, Some(n))
-                    }
-                };
-                DiffLine {
-                    kind: *kind,
-                    old_line_number: old_no,
-                    new_line_number: new_no,
-                    text_range,
-                    ..DiffLine::default()
-                }
-            })
-            .collect();
-
-        Hunk {
-            old_start,
-            old_count,
-            new_start,
-            new_count,
-            header: format!(
-                "@@ -{},{} +{},{} @@",
-                old_start, old_count, new_start, new_count
-            ),
-            lines: diff_lines,
+    fn carbon_summary_for_path(index: usize, path: &str) -> carbon::FileDiff {
+        carbon::FileDiff {
+            id: carbon::FileId(index as u32),
+            old_path: Some(path.to_owned()),
+            new_path: Some(path.to_owned()),
+            is_partial: true,
+            ..carbon::FileDiff::default()
         }
+    }
+
+    fn carbon_context_file(index: usize, path: &str, text: &str) -> carbon::FileDiff {
+        carbon::parse_unified_patch(&format!(
+            "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n {text}\n"
+        ))
+        .unwrap()
+        .files
+        .into_iter()
+        .next()
+        .map(|mut file| {
+            file.id = carbon::FileId(index as u32);
+            file
+        })
+        .unwrap()
     }
 
     fn status_state_with_two_hunks() -> AppState {
         let state = AppState::default();
         let repo_path = PathBuf::from("/repo");
         let path = "src/lib.rs".to_owned();
-        let mut text_buffer = TextBuffer::default();
         let token_buffer = TokenBuffer::default();
-        let file = FileDiff {
-            path: path.clone(),
-            status: "M".to_owned(),
-            hunks: vec![
-                make_hunk(
-                    &mut text_buffer,
-                    1,
-                    3,
-                    1,
-                    2,
-                    &[
-                        ("fn one() {", LineKind::Context),
-                        ("    old_first();", LineKind::Removed),
-                        ("}", LineKind::Context),
-                    ],
-                ),
-                make_hunk(
-                    &mut text_buffer,
-                    8,
-                    3,
-                    7,
-                    2,
-                    &[
-                        ("fn two() {", LineKind::Context),
-                        ("    old_second();", LineKind::Removed),
-                        ("}", LineKind::Context),
-                    ],
-                ),
-            ],
-            ..FileDiff::default()
-        };
-        let render_doc = build_render_doc(&file, 0, &text_buffer, &token_buffer);
+        let carbon_file = carbon::parse_unified_patch(
+            "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,3 +1,2 @@
+ fn one() {
+-    old_first();
+ }
+@@ -8,3 +7,2 @@
+ fn two() {
+-    old_second();
+ }
+",
+        )
+        .unwrap()
+        .files
+        .into_iter()
+        .next()
+        .unwrap();
+        let carbon_expansion = carbon::ExpansionState::default();
+        let render_doc = build_render_doc_from_carbon(
+            &carbon_file,
+            0,
+            &carbon_expansion,
+            &CarbonStyleOverlays::default(),
+            &token_buffer,
+        );
         let (left_ref, right_ref) = refs_for_status_scope(StatusScope::Unstaged);
 
         state.compare.repo_path.set(&state.store, Some(repo_path));
@@ -6546,15 +6600,16 @@ mod tests {
             Some(ActiveFile {
                 index: 0,
                 path,
-                file: file.clone(),
+                carbon_file: carbon_file.clone(),
+                carbon_expansion,
+                carbon_overlays: CarbonStyleOverlays::default(),
                 render_doc,
-                text_buffer: text_buffer.clone(),
-                base_file: file,
-                base_text_buffer: text_buffer,
+                base_carbon_file: carbon_file,
                 token_buffer,
                 left_ref,
                 right_ref,
                 file_line_count: None,
+                old_file_lines: None,
                 file_lines: None,
                 syntax_request_id: 0,
                 syntax_pending: None,
@@ -6567,19 +6622,28 @@ mod tests {
 
     fn loaded_state_with_files(paths: &[&str]) -> AppState {
         let state = AppState::default();
-        let files: Vec<FileDiff> = paths
+        let carbon_files: Vec<carbon::FileDiff> = paths
             .iter()
-            .map(|path| FileDiff {
-                path: (*path).to_owned(),
+            .enumerate()
+            .map(|(index, path)| carbon_context_file(index, path, "loaded"))
+            .collect();
+        let entries: Vec<FileListEntry> = carbon_files
+            .iter()
+            .map(|file| FileListEntry {
+                path: file.path().to_owned(),
                 status: "M".to_owned(),
-                ..FileDiff::default()
+                additions: 0,
+                deletions: 0,
+                is_binary: false,
             })
             .collect();
 
         state.workspace.compare_output.set(
             &state.store,
             Some(CompareOutput {
-                files: files.clone(),
+                carbon: carbon::DiffDocument {
+                    files: carbon_files,
+                },
                 ..CompareOutput::default()
             }),
         );
@@ -6587,10 +6651,7 @@ mod tests {
             .workspace
             .source
             .set(&state.store, WorkspaceSource::Compare);
-        state.workspace.files.set(
-            &state.store,
-            files.iter().map(FileListEntry::from).collect(),
-        );
+        state.workspace.files.set(&state.store, entries);
         state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
         state.file_list.row_height.set(&state.store, 36.0);
         state.file_list.gap.set(&state.store, 4.0);
@@ -6784,23 +6845,11 @@ mod tests {
     fn selecting_a_file_requests_async_syntax_without_mutating_compare_output() {
         let mut state = AppState::default();
         let mut output = CompareOutput::default();
-        let text_range = output.text_buffer.append("fn answer() -> i32 { 42 }");
-        output.files = vec![FileDiff {
-            path: "src/lib.rs".to_owned(),
-            status: "M".to_owned(),
-            hunks: vec![Hunk {
-                header: "@@ -1 +1 @@".to_owned(),
-                lines: vec![DiffLine {
-                    kind: LineKind::Context,
-                    old_line_number: Some(1),
-                    new_line_number: Some(1),
-                    text_range,
-                    ..DiffLine::default()
-                }],
-                ..Hunk::default()
-            }],
-            ..FileDiff::default()
-        }];
+        output.carbon.files = vec![carbon_context_file(
+            0,
+            "src/lib.rs",
+            "fn answer() -> i32 { 42 }",
+        )];
         state
             .workspace
             .compare_output
@@ -6838,72 +6887,31 @@ mod tests {
         }));
         state.workspace.compare_output.with(&state.store, |co| {
             let output = co.as_ref().expect("compare output");
-            assert!(!output.files[0].syntax_annotated);
-            assert!(output.files[0].hunks[0].lines[0].syntax_tokens.is_empty());
+            assert_eq!(output.carbon.files[0].path(), "src/lib.rs");
+            assert_eq!(output.carbon.files[0].hunks.len(), 1);
         });
     }
 
     #[test]
-    fn prepare_active_file_creates_file_local_buffers() {
-        let mut source_text = TextBuffer::default();
-        let mut source_tokens = TokenBuffer::default();
-        let _ = source_text.append("ignored before");
-        let text_range = source_text.append("fn answer() -> i32 { 42 }");
-        let _ = source_text.append("ignored after");
-        let syntax_tokens = source_tokens.append(&[DiffTokenSpan {
-            offset: 0,
-            length: 2,
-            kind: SyntaxTokenKind::Keyword,
-            intensity: ChangeIntensity::Novel,
-        }]);
-        let change_tokens = source_tokens.append(&[DiffTokenSpan {
-            offset: 3,
-            length: 6,
-            kind: SyntaxTokenKind::Normal,
-            intensity: ChangeIntensity::NovelWord,
-        }]);
+    fn prepare_active_file_builds_from_carbon_text() {
+        let carbon_file = carbon::parse_unified_patch(
+            "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +1 @@
+ fn answer() -> i32 { 42 }
+",
+        )
+        .unwrap()
+        .files
+        .into_iter()
+        .next()
+        .unwrap();
 
-        let prepared = prepare_active_file(
-            0,
-            FileDiff {
-                path: "src/lib.rs".to_owned(),
-                hunks: vec![Hunk {
-                    header: "@@ -1 +1 @@".to_owned(),
-                    lines: vec![DiffLine {
-                        kind: LineKind::Context,
-                        old_line_number: Some(1),
-                        new_line_number: Some(1),
-                        text_range,
-                        syntax_tokens,
-                        change_tokens,
-                        ..DiffLine::default()
-                    }],
-                    ..Hunk::default()
-                }],
-                ..FileDiff::default()
-            },
-            &source_text,
-            &source_tokens,
-        );
+        let prepared = prepare_active_file(0, &carbon_file);
 
-        let line = &prepared.file.hunks[0].lines[0];
-        assert_eq!(line.text_range.offset, 0);
-        assert_eq!(
-            prepared.text_buffer.view(line.text_range),
-            "fn answer() -> i32 { 42 }"
-        );
-        assert_eq!(
-            prepared.text_buffer.size(),
-            "fn answer() -> i32 { 42 }".len()
-        );
-        assert_eq!(
-            prepared.token_buffer.view(line.syntax_tokens),
-            source_tokens.view(syntax_tokens)
-        );
-        assert_eq!(
-            prepared.token_buffer.view(line.change_tokens),
-            source_tokens.view(change_tokens)
-        );
+        assert_eq!(prepared.carbon_file.path(), "src/lib.rs");
         assert!(prepared.render_doc.lines.iter().any(|render_line| {
             prepared.render_doc.line_text(render_line.left_text) == "fn answer() -> i32 { 42 }"
                 || prepared.render_doc.line_text(render_line.right_text)
@@ -6915,25 +6923,10 @@ mod tests {
     fn small_compare_file_selection_stays_synchronous() {
         let mut state = AppState::default();
         let mut output = CompareOutput::default();
-        let text_range = output.text_buffer.append("fn answer() -> i32 { 42 }");
-        output.files = vec![FileDiff {
-            path: "src/lib.rs".to_owned(),
-            status: "M".to_owned(),
-            hunks: vec![Hunk {
-                header: "@@ -1 +1 @@".to_owned(),
-                lines: vec![DiffLine {
-                    kind: LineKind::Context,
-                    old_line_number: Some(1),
-                    new_line_number: Some(1),
-                    text_range,
-                    ..DiffLine::default()
-                }],
-                ..Hunk::default()
-            }],
-            additions: 10,
-            deletions: 5,
-            ..FileDiff::default()
-        }];
+        let mut carbon_file = carbon_context_file(0, "src/lib.rs", "fn answer() -> i32 { 42 }");
+        carbon_file.additions = 10;
+        carbon_file.deletions = 5;
+        output.carbon.files = vec![carbon_file];
 
         state
             .workspace
@@ -7042,7 +7035,10 @@ mod tests {
             .workspace
             .compare_output
             .update(&state.store, |output| {
-                output.as_mut().expect("compare output").files[0].hunks_deferred = true;
+                let file = &mut output.as_mut().expect("compare output").carbon.files[0];
+                file.is_partial = true;
+                file.hunks.clear();
+                file.blocks.clear();
             });
         state
             .compare
@@ -7057,7 +7053,7 @@ mod tests {
                 Effect::Compare(CompareEffect::LoadFile(task))
                     if task.request.index == 0
                         && task.request.path == "src/kernel.c"
-                        && task.request.deferred_file.as_ref().is_some_and(|file| file.hunks_deferred)
+                        && task.request.deferred_file.as_ref().is_some_and(|file| file.is_partial && file.hunks.is_empty())
             )
         }));
         assert_eq!(
@@ -7096,9 +7092,10 @@ mod tests {
                 index: 0,
                 path: "src/other.rs".to_owned(),
                 prepared: PreparedActiveFile {
-                    file: FileDiff::default(),
+                    carbon_file: carbon::FileDiff::default(),
+                    carbon_expansion: carbon::ExpansionState::default(),
+                    carbon_overlays: CarbonStyleOverlays::default(),
                     render_doc: RenderDoc::default(),
-                    text_buffer: TextBuffer::default(),
                     token_buffer: TokenBuffer::default(),
                 },
             },
@@ -7766,22 +7763,15 @@ mod tests {
         let generation = state.workspace.compare_generation.get(&state.store);
 
         // Simulate a successful compare with 3 files.
-        let files = vec![
-            FileDiff {
-                path: "a.rs".to_owned(),
-                ..FileDiff::default()
-            },
-            FileDiff {
-                path: "b.rs".to_owned(),
-                ..FileDiff::default()
-            },
-            FileDiff {
-                path: "c.rs".to_owned(),
-                ..FileDiff::default()
-            },
-        ];
+        let files = ["a.rs", "b.rs", "c.rs"];
         let output = CompareOutput {
-            files,
+            carbon: carbon::DiffDocument {
+                files: files
+                    .iter()
+                    .enumerate()
+                    .map(|(index, path)| carbon_summary_for_path(index, path))
+                    .collect(),
+            },
             ..CompareOutput::default()
         };
 

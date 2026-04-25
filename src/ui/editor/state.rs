@@ -61,8 +61,15 @@ pub struct EditorState {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LineSelection {
-    pub entries: BTreeSet<(i16, i16)>,
+    pub entries: BTreeSet<LineSelectionKey>,
     pub last_toggled_row: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LineSelectionKey {
+    pub hunk_id: u32,
+    pub side: carbon::DiffSide,
+    pub source_index: u32,
 }
 
 impl LineSelection {
@@ -75,22 +82,30 @@ impl LineSelection {
         self.entries.is_empty()
     }
 
-    pub fn contains(&self, hunk_index: i16, line_index: i16) -> bool {
-        self.entries.contains(&(hunk_index, line_index))
+    pub fn contains(&self, hunk_id: u32, side: carbon::DiffSide, source_index: u32) -> bool {
+        self.entries.contains(&LineSelectionKey {
+            hunk_id,
+            side,
+            source_index,
+        })
     }
 
-    pub fn toggle(&mut self, hunk_index: i16, line_index: i16) {
-        let key = (hunk_index, line_index);
+    pub fn toggle(&mut self, hunk_id: u32, side: carbon::DiffSide, source_index: u32) {
+        let key = LineSelectionKey {
+            hunk_id,
+            side,
+            source_index,
+        };
         if !self.entries.remove(&key) {
             self.entries.insert(key);
         }
     }
 
-    pub fn selected_lines_for_hunk(&self, hunk_index: i16) -> Vec<usize> {
+    pub fn selected_lines_for_hunk(&self, hunk_id: u32) -> Vec<LineSelectionKey> {
         self.entries
             .iter()
-            .filter(|(h, _)| *h == hunk_index)
-            .map(|(_, l)| *l as usize)
+            .filter(|key| key.hunk_id == hunk_id)
+            .copied()
             .collect()
     }
 }

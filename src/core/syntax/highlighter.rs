@@ -1,11 +1,10 @@
-use std::ops::Range;
 use std::path::Path;
 
 use crate::core::error::{DiffyError, Result};
 use crate::core::text::{DiffTokenSpan, SyntaxTokenKind};
 use phosphor::{
     HighlightKind, HighlightSpan, Highlighter as PhosphorHighlighter,
-    LanguageId as PhosphorLanguageId,
+    LanguageId as PhosphorLanguageId, TextByteRange,
 };
 
 #[derive(Debug)]
@@ -56,7 +55,7 @@ impl Highlighter {
         &self,
         language: Option<PhosphorLanguageId>,
         source: &str,
-        byte_ranges: &[Range<usize>],
+        byte_ranges: &[TextByteRange],
     ) -> Result<Vec<DiffTokenSpan>> {
         let Some(language) = language else {
             return Ok(Vec::new());

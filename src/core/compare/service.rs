@@ -1,17 +1,13 @@
 use crate::core::compare::backends::{DiffBackend, DifftasticBackend, GitDiffBackend};
 use crate::core::compare::progress::ProgressSink;
 use crate::core::compare::spec::{CompareSpec, RendererKind};
-use crate::core::diff::FileDiff;
 use crate::core::error::{DiffyError, Result};
-use crate::core::text::{TextBuffer, TokenBuffer};
 use crate::core::vcs::git::GitService;
 
 #[derive(Debug, Clone, Default)]
 pub struct CompareOutput {
-    pub files: Vec<FileDiff>,
+    pub carbon: carbon::DiffDocument,
     pub raw_diff: String,
-    pub text_buffer: TextBuffer,
-    pub token_buffer: TokenBuffer,
     pub used_fallback: bool,
     pub fallback_message: String,
 }
@@ -140,13 +136,11 @@ mod tests {
             )
             .unwrap();
 
-        let has_syntax_tokens = output
-            .files
-            .iter()
-            .flat_map(|file| file.hunks.iter())
-            .flat_map(|hunk| hunk.lines.iter())
-            .any(|line| !output.token_buffer.view(line.syntax_tokens).is_empty());
-
-        assert!(!has_syntax_tokens);
+        assert!(
+            output.carbon.files[0]
+                .blocks
+                .iter()
+                .all(|block| { block.old_inline.is_empty() && block.new_inline.is_empty() })
+        );
     }
 }

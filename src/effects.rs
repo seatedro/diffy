@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use crate::ai::Provider;
 use crate::core::compare::{CompareSpec, RendererKind};
-use crate::core::diff::FileDiff;
 use crate::core::syntax::annotator::SyntaxRowWindow;
 use crate::core::update::{AvailableUpdate, StagedUpdate};
 use crate::core::vcs::git::status::StatusScope;
@@ -37,13 +36,13 @@ pub struct CompareFileRequest {
     pub spec: CompareSpec,
     pub path: String,
     pub index: usize,
-    pub deferred_file: Option<FileDiff>,
+    pub deferred_file: Option<carbon::FileDiff>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompareFileStatsItem {
     pub index: usize,
-    pub file: FileDiff,
+    pub file: carbon::FileDiff,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,7 +63,7 @@ pub struct LoadFileSyntaxRequest {
     pub repo_path: PathBuf,
     pub file_index: usize,
     pub path: String,
-    pub file: FileDiff,
+    pub carbon_file: carbon::FileDiff,
     pub left_ref: String,
     pub right_ref: String,
     pub window: SyntaxRowWindow,
@@ -314,7 +313,8 @@ pub struct GenerateCommitMessageRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchContextLinesRequest {
     pub repo_path: PathBuf,
-    pub reference: String,
+    pub old_reference: String,
+    pub new_reference: String,
     pub path: String,
     pub generation: u64,
     pub file_index: usize,

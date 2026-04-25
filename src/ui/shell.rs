@@ -260,7 +260,7 @@ pub fn build_ui_frame(
             let active_file_loading = state.workspace.active_file_loading.get(&state.store);
             let compare_generation = state.workspace.compare_generation.get(&state.store);
             let document = match active_file_snapshot.as_ref() {
-                Some(active_file) if active_file.file.is_binary => EditorDocument::Binary {
+                Some(active_file) if active_file.carbon_file.is_binary => EditorDocument::Binary {
                     path: &active_file.path,
                 },
                 Some(active_file) => EditorDocument::Text {
@@ -283,10 +283,9 @@ pub fn build_ui_frame(
                     .unwrap_or_default();
                 let caps = crate::ui::editor::expansion::populate_expand_blocks(
                     editor.blocks_mut(),
-                    &active_file.base_file,
+                    &active_file.carbon_file,
                     &active_file.render_doc,
                     &expansion,
-                    active_file.file_line_count,
                 );
                 editor.set_hunk_expand_caps(caps);
             } else {

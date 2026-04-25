@@ -406,7 +406,8 @@ pub struct ContextLinesReady {
     pub hunk_index: usize,
     pub direction: ContextDirection,
     pub amount: u32,
-    pub lines: Vec<String>,
+    pub old_lines: Vec<String>,
+    pub new_lines: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

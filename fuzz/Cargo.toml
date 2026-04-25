@@ -1,0 +1,35 @@
+[package]
+name = "carbon-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+carbon = { path = "../crates/carbon" }
+libfuzzer-sys = "0.4"
+
+[[bin]]
+name = "text_store"
+path = "fuzz_targets/text_store.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "patch_projection"
+path = "fuzz_targets/patch_projection.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "inline_diff"
+path = "fuzz_targets/inline_diff.rs"
+test = false
+doc = false
+bench = false

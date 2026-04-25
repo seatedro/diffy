@@ -18,6 +18,7 @@ pub use model::{
     Block, BlockId, BlockKind, BlockRange, DiffDocument, DiffSide, FileDiff, FileId, FileMode,
     FileStatus, Hunk, HunkId, ObjectId, SourceRange,
 };
+pub use patch::{PatchError, parse_unified_patch};
 pub use projection::{
     ExpansionDirection, ExpansionState, HunkExpansion, ProjectionMode, ProjectionOptions,
     ProjectionRow, ProjectionRowKind, ProjectionWindow, expand_context, map_anchor_to_projection,

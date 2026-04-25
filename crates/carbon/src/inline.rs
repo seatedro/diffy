@@ -92,32 +92,44 @@ impl Token<'_> {
 }
 
 fn tokenize_words(text: &str) -> Vec<Token<'_>> {
-    let bytes = text.as_bytes();
     let mut tokens = Vec::new();
-    let mut index = 0;
-    while index < bytes.len() {
-        let start = index;
-        let byte = bytes[index];
-        if byte.is_ascii_alphanumeric() || byte == b'_' {
-            while index < bytes.len()
-                && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
-            {
-                index += 1;
+    let mut chars = text.char_indices().peekable();
+    while let Some((start, ch)) = chars.next() {
+        let kind = WordTokenKind::for_char(ch);
+        let mut end = start + ch.len_utf8();
+        while let Some(&(next_start, next_ch)) = chars.peek() {
+            if kind == WordTokenKind::Other || WordTokenKind::for_char(next_ch) != kind {
+                break;
             }
-        } else if byte.is_ascii_whitespace() {
-            while index < bytes.len() && bytes[index].is_ascii_whitespace() {
-                index += 1;
-            }
-        } else {
-            index += 1;
+            chars.next();
+            end = next_start + next_ch.len_utf8();
         }
         tokens.push(Token {
             offset: start,
-            len: index - start,
-            text: &text[start..index],
+            len: end - start,
+            text: &text[start..end],
         });
     }
     tokens
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WordTokenKind {
+    Word,
+    Whitespace,
+    Other,
+}
+
+impl WordTokenKind {
+    fn for_char(ch: char) -> Self {
+        if ch == '_' || ch.is_ascii_alphanumeric() {
+            Self::Word
+        } else if ch.is_whitespace() {
+            Self::Whitespace
+        } else {
+            Self::Other
+        }
+    }
 }
 
 fn tokenize_chars(text: &str) -> Vec<Token<'_>> {

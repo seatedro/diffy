@@ -283,13 +283,23 @@ impl AppServices {
         let old_syntax = self.cached_file_syntax(&git, request, &request.left_ref, &annotator);
         let new_syntax = self.cached_file_syntax(&git, request, &request.right_ref, &annotator);
 
-        annotator.annotate_full_file_window_from_cache(
-            &request.file,
-            request.file_index,
-            old_syntax.as_deref(),
-            new_syntax.as_deref(),
-            request.window,
-        )
+        if let Some(carbon_file) = request.carbon_file.as_ref() {
+            annotator.annotate_carbon_full_file_window_from_cache(
+                carbon_file,
+                request.file_index,
+                old_syntax.as_deref(),
+                new_syntax.as_deref(),
+                request.window,
+            )
+        } else {
+            annotator.annotate_full_file_window_from_cache(
+                &request.file,
+                request.file_index,
+                old_syntax.as_deref(),
+                new_syntax.as_deref(),
+                request.window,
+            )
+        }
     }
 
     fn cached_file_syntax(

@@ -65,6 +65,7 @@ pub struct LoadFileSyntaxRequest {
     pub file_index: usize,
     pub path: String,
     pub file: FileDiff,
+    pub carbon_file: Option<carbon::FileDiff>,
     pub left_ref: String,
     pub right_ref: String,
     pub window: SyntaxRowWindow,

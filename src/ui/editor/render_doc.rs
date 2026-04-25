@@ -1,9 +1,9 @@
+use std::collections::HashMap;
+
 use crate::core::diff::types::{DiffLine, FileDiff, Hunk};
-use crate::core::rendering::{
-    DiffRowType, FlatDiffRow, flatten_carbon_file_diff, flatten_file_diff,
-};
+use crate::core::rendering::{DiffRowType, FlatDiffRow, flatten_file_diff};
 use crate::core::text::{
-    ChangeIntensity, DiffTokenSpan, SyntaxTokenKind, TextBuffer, TextRange, TokenBuffer,
+    ChangeIntensity, DiffTokenSpan, SyntaxTokenKind, TextBuffer, TextRange, TokenBuffer, TokenRange,
 };
 
 pub const INVALID_U32: u32 = u32::MAX;
@@ -176,6 +176,94 @@ pub struct RenderDoc {
     pub lines: Vec<RenderLine>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CarbonLineKey {
+    pub hunk_id: u32,
+    pub side: carbon::DiffSide,
+    pub source_index: u32,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CarbonStyleOverlays {
+    syntax: HashMap<CarbonLineKey, TokenRange>,
+    change: HashMap<CarbonLineKey, TokenRange>,
+}
+
+impl CarbonStyleOverlays {
+    pub fn clear(&mut self) {
+        self.syntax.clear();
+        self.change.clear();
+    }
+
+    pub fn insert_syntax(
+        &mut self,
+        hunk_id: u32,
+        side: carbon::DiffSide,
+        source_index: u32,
+        tokens: TokenRange,
+    ) {
+        self.syntax.insert(
+            CarbonLineKey {
+                hunk_id,
+                side,
+                source_index,
+            },
+            tokens,
+        );
+    }
+
+    pub fn insert_change(
+        &mut self,
+        hunk_id: u32,
+        side: carbon::DiffSide,
+        source_index: u32,
+        tokens: TokenRange,
+    ) {
+        self.change.insert(
+            CarbonLineKey {
+                hunk_id,
+                side,
+                source_index,
+            },
+            tokens,
+        );
+    }
+
+    fn syntax_tokens<'a>(
+        &self,
+        token_buffer: &'a TokenBuffer,
+        hunk_id: u32,
+        side: carbon::DiffSide,
+        source_index: u32,
+    ) -> &'a [DiffTokenSpan] {
+        self.syntax
+            .get(&CarbonLineKey {
+                hunk_id,
+                side,
+                source_index,
+            })
+            .map(|range| token_buffer.view(*range))
+            .unwrap_or(&[])
+    }
+
+    fn change_tokens<'a>(
+        &self,
+        token_buffer: &'a TokenBuffer,
+        hunk_id: u32,
+        side: carbon::DiffSide,
+        source_index: u32,
+    ) -> &'a [DiffTokenSpan] {
+        self.change
+            .get(&CarbonLineKey {
+                hunk_id,
+                side,
+                source_index,
+            })
+            .map(|range| token_buffer.view(*range))
+            .unwrap_or(&[])
+    }
+}
+
 impl RenderDoc {
     pub fn line_count(&self) -> usize {
         self.lines.len()
@@ -208,14 +296,12 @@ pub fn build_render_doc(
 }
 
 pub fn build_render_doc_from_carbon(
-    file: &FileDiff,
     carbon_file: &carbon::FileDiff,
     file_index: usize,
-    _text_buffer: &TextBuffer,
+    overlays: &CarbonStyleOverlays,
     token_buffer: &TokenBuffer,
 ) -> RenderDoc {
-    let rows = flatten_carbon_file_diff(file, carbon_file, file_index);
-    build_render_doc_from_carbon_rows(file, carbon_file, rows, token_buffer)
+    build_render_doc_from_carbon_rows(carbon_file, file_index, overlays, token_buffer)
 }
 
 fn build_render_doc_from_rows(
@@ -253,13 +339,13 @@ fn build_render_doc_from_rows(
 }
 
 fn build_render_doc_from_carbon_rows(
-    file: &FileDiff,
     carbon_file: &carbon::FileDiff,
-    rows: Vec<FlatDiffRow>,
+    file_index: usize,
+    overlays: &CarbonStyleOverlays,
     token_buffer: &TokenBuffer,
 ) -> RenderDoc {
-    let text_capacity = file.path.len()
-        + file
+    let text_capacity = carbon_file.path().len()
+        + carbon_file
             .hunks
             .iter()
             .map(|hunk| hunk.header.len())
@@ -279,19 +365,34 @@ fn build_render_doc_from_carbon_rows(
     let mut doc = RenderDoc {
         text_bytes: Vec::with_capacity(text_capacity),
         style_runs: Vec::with_capacity(token_buffer.len().saturating_mul(2).max(16)),
-        lines: Vec::with_capacity(rows.len()),
+        lines: Vec::with_capacity(carbon_projection_capacity(carbon_file)),
     };
 
-    for row in rows {
-        doc.lines.push(build_render_line_from_carbon(
-            file,
-            carbon_file,
-            &row,
-            &mut doc.text_bytes,
-            &mut doc.style_runs,
-            token_buffer,
-        ));
-    }
+    doc.lines.push(carbon_file_header_line(
+        carbon_file,
+        &mut doc.text_bytes,
+        &mut doc.style_runs,
+    ));
+    carbon::project_file(
+        carbon_file,
+        carbon::ProjectionOptions {
+            mode: carbon::ProjectionMode::Unified,
+            collapsed_context_threshold: 0,
+            include_hunk_headers: true,
+        },
+        &carbon::ExpansionState::default(),
+        |row| {
+            doc.lines.push(build_render_line_from_carbon(
+                carbon_file,
+                file_index,
+                row,
+                overlays,
+                &mut doc.text_bytes,
+                &mut doc.style_runs,
+                token_buffer,
+            ));
+        },
+    );
 
     doc
 }
@@ -399,39 +500,46 @@ fn build_render_line(
     }
 }
 
-fn build_render_line_from_carbon(
-    file: &FileDiff,
+fn carbon_file_header_line(
     carbon_file: &carbon::FileDiff,
-    row: &FlatDiffRow,
+    text_bytes: &mut Vec<u8>,
+    style_runs: &mut Vec<StyleRun>,
+) -> RenderLine {
+    let path = carbon_file.path();
+    let left_text = append_text(text_bytes, path);
+    RenderLine {
+        kind: RenderRowKind::FileHeader as u8,
+        left_cols: display_cols(path),
+        left_text,
+        right_text: ByteRange::invalid(),
+        left_runs: append_style_runs(style_runs, path, &[], &[]),
+        right_runs: RunRange::default(),
+        old_line_no: INVALID_U32,
+        new_line_no: INVALID_U32,
+        ..RenderLine::default()
+    }
+}
+
+fn build_render_line_from_carbon(
+    carbon_file: &carbon::FileDiff,
+    file_index: usize,
+    row: carbon::ProjectionRow,
+    overlays: &CarbonStyleOverlays,
     text_bytes: &mut Vec<u8>,
     style_runs: &mut Vec<StyleRun>,
     token_buffer: &TokenBuffer,
 ) -> RenderLine {
-    let kind = RenderRowKind::from_diff_row(row.row_type);
-    let source = SourceIndices::from_row(row);
-    match row.row_type {
-        DiffRowType::FileHeader => {
-            let path = carbon_file.path();
-            let left_text = append_text(text_bytes, path);
-            RenderLine {
-                kind: kind as u8,
-                left_cols: display_cols(path),
-                left_text,
-                right_text: ByteRange::invalid(),
-                left_runs: append_style_runs(style_runs, path, &[], &[]),
-                right_runs: RunRange::default(),
-                old_line_no: INVALID_U32,
-                new_line_no: INVALID_U32,
-                ..RenderLine::default()
-            }
-        }
-        DiffRowType::HunkSeparator => {
-            let header = hunk_for_row(file, row)
+    let source = SourceIndices::from_carbon_row(row);
+    match row.kind {
+        carbon::ProjectionRowKind::HunkHeader => {
+            let header = row
+                .hunk_id
+                .and_then(|hunk_id| carbon_file.hunk(hunk_id))
                 .map(|hunk| hunk.header.as_str())
                 .unwrap_or("");
             let left_text = append_text(text_bytes, header);
             RenderLine {
-                kind: kind as u8,
+                kind: RenderRowKind::HunkSeparator as u8,
                 hunk_index: source.hunk_index,
                 left_cols: display_cols(header),
                 left_text,
@@ -443,89 +551,95 @@ fn build_render_line_from_carbon(
                 ..RenderLine::default()
             }
         }
-        DiffRowType::Context => {
-            let old_line = main_line_for_row(file, row);
-            let new_line = old_line;
+        carbon::ProjectionRowKind::Context => {
             let mut rl = build_dual_sided_line_with_text(
-                kind,
-                carbon_line_source(
+                RenderRowKind::Context,
+                carbon_line_source_from_row(
                     carbon_file,
+                    row,
                     carbon::DiffSide::Old,
-                    row.old_source_index,
-                    old_line,
+                    overlays,
+                    token_buffer,
                 ),
-                carbon_line_source(
+                carbon_line_source_from_row(
                     carbon_file,
+                    row,
                     carbon::DiffSide::New,
-                    row.new_source_index,
-                    new_line,
+                    overlays,
+                    token_buffer,
                 ),
                 text_bytes,
                 style_runs,
-                token_buffer,
             );
             source.apply(&mut rl);
             rl
         }
-        DiffRowType::Added => {
-            let line = new_line_for_row(file, row);
+        carbon::ProjectionRowKind::Added => {
             let mut rl = build_dual_sided_line_with_text(
-                kind,
+                RenderRowKind::Added,
                 None,
-                carbon_line_source(
+                carbon_line_source_from_row(
                     carbon_file,
+                    row,
                     carbon::DiffSide::New,
-                    row.new_source_index,
-                    line,
+                    overlays,
+                    token_buffer,
                 ),
                 text_bytes,
                 style_runs,
-                token_buffer,
             );
             source.apply(&mut rl);
             rl
         }
-        DiffRowType::Removed => {
-            let line = old_line_for_row(file, row);
+        carbon::ProjectionRowKind::Removed => {
             let mut rl = build_dual_sided_line_with_text(
-                kind,
-                carbon_line_source(
+                RenderRowKind::Removed,
+                carbon_line_source_from_row(
                     carbon_file,
+                    row,
                     carbon::DiffSide::Old,
-                    row.old_source_index,
-                    line,
+                    overlays,
+                    token_buffer,
                 ),
                 None,
                 text_bytes,
                 style_runs,
-                token_buffer,
             );
             source.apply(&mut rl);
             rl
         }
-        DiffRowType::Modified => {
-            let old_line = old_line_for_row(file, row);
-            let new_line = new_line_for_row(file, row);
+        carbon::ProjectionRowKind::Modified => {
             let mut rl = build_dual_sided_line_with_text(
-                kind,
-                carbon_line_source(
+                RenderRowKind::Modified,
+                carbon_line_source_from_row(
                     carbon_file,
+                    row,
                     carbon::DiffSide::Old,
-                    row.old_source_index,
-                    old_line,
+                    overlays,
+                    token_buffer,
                 ),
-                carbon_line_source(
+                carbon_line_source_from_row(
                     carbon_file,
+                    row,
                     carbon::DiffSide::New,
-                    row.new_source_index,
-                    new_line,
+                    overlays,
+                    token_buffer,
                 ),
                 text_bytes,
                 style_runs,
-                token_buffer,
             );
             source.apply(&mut rl);
             rl
+        }
+        carbon::ProjectionRowKind::ContextExpanded | carbon::ProjectionRowKind::ContextGap => {
+            RenderLine {
+                kind: RenderRowKind::Context as u8,
+                hunk_index: source.hunk_index,
+                line_index: i16::try_from(file_index).unwrap_or(i16::MAX),
+                old_line_no: INVALID_U32,
+                new_line_no: INVALID_U32,
+                ..RenderLine::default()
+            }
         }
     }
 }
@@ -547,6 +661,31 @@ impl SourceIndices {
         }
     }
 
+    fn from_carbon_row(row: carbon::ProjectionRow) -> Self {
+        let hunk_index = row
+            .hunk_id
+            .map(|hunk_id| i16::try_from(hunk_id.0).unwrap_or(i16::MAX))
+            .unwrap_or(-1);
+        let old_line_index = row
+            .old_index
+            .map(|index| i16::try_from(index).unwrap_or(i16::MAX))
+            .unwrap_or(-1);
+        let new_line_index = row
+            .new_index
+            .map(|index| i16::try_from(index).unwrap_or(i16::MAX))
+            .unwrap_or(-1);
+        Self {
+            hunk_index,
+            line_index: if old_line_index >= 0 {
+                old_line_index
+            } else {
+                new_line_index
+            },
+            old_line_index,
+            new_line_index,
+        }
+    }
+
     fn apply(&self, line: &mut RenderLine) {
         line.hunk_index = self.hunk_index;
         line.line_index = self.line_index;
@@ -564,23 +703,42 @@ fn build_dual_sided_line(
     text_buffer: &TextBuffer,
     token_buffer: &TokenBuffer,
 ) -> RenderLine {
-    let left = left_line.map(|line| (line, text_buffer.view(line.text_range)));
-    let right = right_line.map(|line| (line, text_buffer.view(line.text_range)));
-    build_dual_sided_line_with_text(kind, left, right, text_bytes, style_runs, token_buffer)
+    let left = left_line.map(|line| LineSideSource {
+        text: text_buffer.view(line.text_range),
+        syntax: token_buffer.view(line.syntax_tokens),
+        core_change: token_buffer.view(line.change_tokens),
+        carbon_change: &[],
+        line_no: line.old_line_number.and_then(i32_to_u32_positive),
+    });
+    let right = right_line.map(|line| LineSideSource {
+        text: text_buffer.view(line.text_range),
+        syntax: token_buffer.view(line.syntax_tokens),
+        core_change: token_buffer.view(line.change_tokens),
+        carbon_change: &[],
+        line_no: line.new_line_number.and_then(i32_to_u32_positive),
+    });
+    build_dual_sided_line_with_text(kind, left, right, text_bytes, style_runs)
+}
+
+struct LineSideSource<'a> {
+    text: &'a str,
+    syntax: &'a [DiffTokenSpan],
+    core_change: &'a [DiffTokenSpan],
+    carbon_change: &'a [carbon::InlineSpan],
+    line_no: Option<u32>,
 }
 
 fn build_dual_sided_line_with_text(
     kind: RenderRowKind,
-    left_line: Option<(&DiffLine, &str)>,
-    right_line: Option<(&DiffLine, &str)>,
+    left_line: Option<LineSideSource<'_>>,
+    right_line: Option<LineSideSource<'_>>,
     text_bytes: &mut Vec<u8>,
     style_runs: &mut Vec<StyleRun>,
-    token_buffer: &TokenBuffer,
 ) -> RenderLine {
     let (left_text, left_runs, left_cols, old_line_no) =
-        build_line_side(left_line, text_bytes, style_runs, token_buffer, true);
+        build_line_side(left_line, text_bytes, style_runs);
     let (right_text, right_runs, right_cols, new_line_no) =
-        build_line_side(right_line, text_bytes, style_runs, token_buffer, false);
+        build_line_side(right_line, text_bytes, style_runs);
 
     RenderLine {
         kind: kind as u8,
@@ -597,45 +755,54 @@ fn build_dual_sided_line_with_text(
 }
 
 fn build_line_side(
-    line: Option<(&DiffLine, &str)>,
+    line: Option<LineSideSource<'_>>,
     text_bytes: &mut Vec<u8>,
     style_runs: &mut Vec<StyleRun>,
-    token_buffer: &TokenBuffer,
-    use_old_number: bool,
 ) -> (ByteRange, RunRange, u32, u32) {
-    let Some((line, text)) = line else {
+    let Some(line) = line else {
         return (ByteRange::invalid(), RunRange::default(), 0, INVALID_U32);
     };
+    let text = line.text;
     let range = append_text(text_bytes, text);
-    let syntax = token_buffer.view(line.syntax_tokens);
-    let change = token_buffer.view(line.change_tokens);
-    let runs = append_style_runs(style_runs, text, syntax, change);
-    let line_no = if use_old_number {
-        line.old_line_number.unwrap_or_default()
-    } else {
-        line.new_line_number.unwrap_or_default()
-    };
+    let runs = append_style_runs_with_carbon(
+        style_runs,
+        text,
+        line.syntax,
+        line.core_change,
+        line.carbon_change,
+    );
     (
         range,
         runs,
         display_cols(text),
-        if line_no > 0 {
-            line_no as u32
-        } else {
-            INVALID_U32
-        },
+        line.line_no.unwrap_or(INVALID_U32),
     )
 }
 
-fn carbon_line_source<'a>(
+fn carbon_line_source_from_row<'a>(
     file: &'a carbon::FileDiff,
+    row: carbon::ProjectionRow,
     side: carbon::DiffSide,
-    source_index: i32,
-    line: Option<&'a DiffLine>,
-) -> Option<(&'a DiffLine, &'a str)> {
-    let index = u32::try_from(source_index).ok()?;
+    overlays: &'a CarbonStyleOverlays,
+    token_buffer: &'a TokenBuffer,
+) -> Option<LineSideSource<'a>> {
+    let index = match side {
+        carbon::DiffSide::Old => row.old_index?,
+        carbon::DiffSide::New => row.new_index?,
+    };
+    let line_no = match side {
+        carbon::DiffSide::Old => row.old_line,
+        carbon::DiffSide::New => row.new_line,
+    };
     let text = file.side_text(side)?.line_str(carbon::LineId(index))?;
-    Some((line?, text))
+    let hunk_id = row.hunk_id.map(|id| id.0).unwrap_or(u32::MAX);
+    Some(LineSideSource {
+        text,
+        syntax: overlays.syntax_tokens(token_buffer, hunk_id, side, index),
+        core_change: overlays.change_tokens(token_buffer, hunk_id, side, index),
+        carbon_change: carbon_inline_for_row(file, row, side),
+        line_no,
+    })
 }
 
 fn append_text(storage: &mut Vec<u8>, text: &str) -> ByteRange {
@@ -653,18 +820,31 @@ fn append_style_runs(
     syntax_tokens: &[DiffTokenSpan],
     change_tokens: &[DiffTokenSpan],
 ) -> RunRange {
+    append_style_runs_with_carbon(storage, text, syntax_tokens, change_tokens, &[])
+}
+
+fn append_style_runs_with_carbon(
+    storage: &mut Vec<StyleRun>,
+    text: &str,
+    syntax_tokens: &[DiffTokenSpan],
+    change_tokens: &[DiffTokenSpan],
+    carbon_change: &[carbon::InlineSpan],
+) -> RunRange {
     let start = storage.len() as u32;
     if text.is_empty() {
         return RunRange { start, len: 0 };
     }
 
     let mut boundaries = Vec::with_capacity(
-        2 + syntax_tokens.len().saturating_mul(2) + change_tokens.len().saturating_mul(2),
+        2 + syntax_tokens.len().saturating_mul(2)
+            + change_tokens.len().saturating_mul(2)
+            + carbon_change.len().saturating_mul(2),
     );
     boundaries.push(0_u32);
     boundaries.push(text.len() as u32);
     collect_boundaries(&mut boundaries, syntax_tokens, text.len() as u32);
     collect_boundaries(&mut boundaries, change_tokens, text.len() as u32);
+    collect_carbon_boundaries(&mut boundaries, carbon_change, text.len() as u32);
     boundaries.sort_unstable();
     boundaries.dedup();
 
@@ -678,7 +858,8 @@ fn append_style_runs(
             SyntaxTokenKind::Normal => token_kind_at(change_tokens, start_byte),
             kind => kind,
         };
-        let flags = change_flags_at(change_tokens, start_byte);
+        let flags = change_flags_at(change_tokens, start_byte)
+            | carbon_change_flags_at(carbon_change, start_byte);
         storage.push(StyleRun {
             byte_start: start_byte,
             byte_len: end_byte - start_byte,
@@ -697,6 +878,19 @@ fn collect_boundaries(boundaries: &mut Vec<u32>, tokens: &[DiffTokenSpan], text_
     for token in tokens {
         let start = token.offset.min(text_len);
         let end = token.offset.saturating_add(token.length).min(text_len);
+        boundaries.push(start);
+        boundaries.push(end);
+    }
+}
+
+fn collect_carbon_boundaries(
+    boundaries: &mut Vec<u32>,
+    tokens: &[carbon::InlineSpan],
+    text_len: u32,
+) {
+    for token in tokens {
+        let start = token.offset.min(text_len);
+        let end = token.offset.saturating_add(token.len).min(text_len);
         boundaries.push(start);
         boundaries.push(end);
     }
@@ -726,6 +920,39 @@ fn change_flags_at(tokens: &[DiffTokenSpan], offset: u32) -> u16 {
     0
 }
 
+fn carbon_change_flags_at(tokens: &[carbon::InlineSpan], offset: u32) -> u16 {
+    for token in tokens {
+        let end = token.offset.saturating_add(token.len);
+        if offset >= token.offset && offset < end {
+            return match token.intensity {
+                carbon::ChangeIntensity::NovelWord => STYLE_FLAG_CHANGE | STYLE_FLAG_NOVEL_WORD,
+                carbon::ChangeIntensity::UnchangedContext => {
+                    STYLE_FLAG_CHANGE | STYLE_FLAG_UNCHANGED_CTX
+                }
+                carbon::ChangeIntensity::Novel => STYLE_FLAG_CHANGE,
+            };
+        }
+    }
+    0
+}
+
+fn carbon_inline_for_row(
+    file: &carbon::FileDiff,
+    row: carbon::ProjectionRow,
+    side: carbon::DiffSide,
+) -> &[carbon::InlineSpan] {
+    let Some(block_id) = row.block_id else {
+        return &[];
+    };
+    let Some(block) = file.block(block_id) else {
+        return &[];
+    };
+    match side {
+        carbon::DiffSide::Old => &block.old_inline,
+        carbon::DiffSide::New => &block.new_inline,
+    }
+}
+
 fn hunk_for_row<'a>(file: &'a FileDiff, row: &FlatDiffRow) -> Option<&'a Hunk> {
     usize::try_from(row.hunk_index)
         .ok()
@@ -753,6 +980,20 @@ fn line_for_range(file: &FileDiff, hunk_index: i32, line_index: i32) -> Option<&
         .and_then(|idx| hunk.lines.get(idx))
 }
 
+fn carbon_projection_capacity(file: &carbon::FileDiff) -> usize {
+    file.hunks
+        .iter()
+        .fold(1usize.saturating_add(file.hunks.len()), |acc, hunk| {
+            acc.saturating_add(carbon::u32_to_usize_saturating(
+                hunk.old_count.max(hunk.new_count),
+            ))
+        })
+}
+
+fn i32_to_u32_positive(value: i32) -> Option<u32> {
+    (value > 0).then(|| u32::try_from(value).ok()).flatten()
+}
+
 pub fn range_len(text: TextRange) -> usize {
     text.len
 }
@@ -760,11 +1001,10 @@ pub fn range_len(text: TextRange) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        INVALID_U32, RenderRowKind, STYLE_FLAG_CHANGE, build_render_doc,
+        CarbonStyleOverlays, INVALID_U32, RenderRowKind, STYLE_FLAG_CHANGE, build_render_doc,
         build_render_doc_from_carbon,
     };
     use crate::core::diff::types::{DiffLine, FileDiff, Hunk, LineKind};
-    use crate::core::diff::unified_parser::lower_carbon_document;
     use crate::core::text::{DiffTokenSpan, SyntaxTokenKind, TextBuffer, TokenBuffer};
 
     #[test]
@@ -940,16 +1180,12 @@ diff --git a/src/lib.rs b/src/lib.rs
 ",
         )
         .unwrap();
-        let mut legacy_text = TextBuffer::default();
-        let legacy = lower_carbon_document(&carbon, &mut legacy_text, None);
-        let poisoned_text = TextBuffer::default();
         let token_buffer = TokenBuffer::default();
 
         let doc = build_render_doc_from_carbon(
-            &legacy.files[0],
             &carbon.files[0],
             0,
-            &poisoned_text,
+            &CarbonStyleOverlays::default(),
             &token_buffer,
         );
 

@@ -10,6 +10,8 @@ use phosphor::TextByteRange;
 struct LineRef {
     hunk_index: usize,
     line_index: usize,
+    side: Option<carbon::DiffSide>,
+    source_index: Option<u32>,
     content_offset: usize,
     content_len: usize,
 }
@@ -30,6 +32,8 @@ impl SyntaxRowWindow {
 pub struct SyntaxLineTokens {
     pub hunk_index: usize,
     pub line_index: usize,
+    pub side: Option<carbon::DiffSide>,
+    pub source_index: Option<u32>,
     pub tokens: Vec<DiffTokenSpan>,
 }
 
@@ -228,6 +232,31 @@ impl DiffSyntaxAnnotator {
         }
         out
     }
+
+    pub fn annotate_carbon_full_file_window_from_cache(
+        &self,
+        file: &carbon::FileDiff,
+        file_index: usize,
+        old_syntax: Option<&FullFileSyntax>,
+        new_syntax: Option<&FullFileSyntax>,
+        window: SyntaxRowWindow,
+    ) -> Vec<SyntaxLineTokens> {
+        if file.is_binary || window.end <= window.start {
+            return Vec::new();
+        }
+
+        let (old_refs, new_refs) = build_carbon_full_file_refs(file, file_index, window);
+        let mut out = Vec::new();
+        if let Some(syntax) = old_syntax {
+            let byte_refs = byte_refs_for_cached_refs(&old_refs, syntax);
+            out.extend(collect_line_tokens(&syntax.tokens, &byte_refs));
+        }
+        if let Some(syntax) = new_syntax {
+            let byte_refs = byte_refs_for_cached_refs(&new_refs, syntax);
+            out.extend(collect_line_tokens(&syntax.tokens, &byte_refs));
+        }
+        out
+    }
 }
 
 fn build_line_refs(
@@ -249,6 +278,8 @@ fn build_line_refs(
                 old_refs.push(LineRef {
                     hunk_index,
                     line_index,
+                    side: None,
+                    source_index: None,
                     content_offset: offset,
                     content_len: text.len(),
                 });
@@ -260,6 +291,8 @@ fn build_line_refs(
                 new_refs.push(LineRef {
                     hunk_index,
                     line_index,
+                    side: None,
+                    source_index: None,
                     content_offset: offset,
                     content_len: text.len(),
                 });
@@ -432,9 +465,64 @@ fn push_full_file_ref(
     refs.push(LineRef {
         hunk_index,
         line_index,
+        side: None,
+        source_index: None,
         content_offset: i32_to_usize_nonnegative(line_number - 1).unwrap_or(usize::MAX),
         content_len: 0,
     });
+}
+
+fn build_carbon_full_file_refs(
+    file: &carbon::FileDiff,
+    _file_index: usize,
+    window: SyntaxRowWindow,
+) -> (Vec<LineRef>, Vec<LineRef>) {
+    let mut old_refs = Vec::new();
+    let mut new_refs = Vec::new();
+    let mut projected_index = 1usize;
+
+    carbon::project_file(
+        file,
+        carbon::ProjectionOptions {
+            mode: carbon::ProjectionMode::Unified,
+            collapsed_context_threshold: 0,
+            include_hunk_headers: true,
+        },
+        &carbon::ExpansionState::default(),
+        |row| {
+            let in_window = projected_index >= window.start && projected_index < window.end;
+            projected_index = projected_index.saturating_add(1);
+            if !in_window {
+                return;
+            }
+            let hunk_index = row
+                .hunk_id
+                .map(|id| carbon::u32_to_usize_saturating(id.0))
+                .unwrap_or_default();
+            if let (Some(source_index), Some(line_no)) = (row.old_index, row.old_line) {
+                old_refs.push(LineRef {
+                    hunk_index,
+                    line_index: carbon::u32_to_usize_saturating(source_index),
+                    side: Some(carbon::DiffSide::Old),
+                    source_index: Some(source_index),
+                    content_offset: carbon::u32_to_usize_saturating(line_no.saturating_sub(1)),
+                    content_len: 0,
+                });
+            }
+            if let (Some(source_index), Some(line_no)) = (row.new_index, row.new_line) {
+                new_refs.push(LineRef {
+                    hunk_index,
+                    line_index: carbon::u32_to_usize_saturating(source_index),
+                    side: Some(carbon::DiffSide::New),
+                    source_index: Some(source_index),
+                    content_offset: carbon::u32_to_usize_saturating(line_no.saturating_sub(1)),
+                    content_len: 0,
+                });
+            }
+        },
+    );
+
+    (old_refs, new_refs)
 }
 
 fn source_from_lines(lines: &[String]) -> (String, Vec<usize>) {
@@ -459,6 +547,8 @@ fn byte_refs_for_refs(refs: &[LineRef], line_offsets: &[usize], lines: &[String]
             Some(LineRef {
                 hunk_index: reference.hunk_index,
                 line_index: reference.line_index,
+                side: reference.side,
+                source_index: reference.source_index,
                 content_offset: start,
                 content_len: len,
             })
@@ -487,6 +577,8 @@ fn byte_refs_for_cached_refs(refs: &[LineRef], syntax: &FullFileSyntax) -> Vec<L
             Some(LineRef {
                 hunk_index: reference.hunk_index,
                 line_index: reference.line_index,
+                side: reference.side,
+                source_index: reference.source_index,
                 content_offset: *syntax.line_offsets.get(line_index)?,
                 content_len: *syntax.line_lengths.get(line_index)?,
             })
@@ -543,6 +635,8 @@ fn collect_line_tokens(tokens: &[DiffTokenSpan], refs: &[LineRef]) -> Vec<Syntax
         out.push(SyntaxLineTokens {
             hunk_index: reference.hunk_index,
             line_index: reference.line_index,
+            side: reference.side,
+            source_index: reference.source_index,
             tokens: line_tokens,
         });
     }

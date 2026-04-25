@@ -50,7 +50,9 @@ use crate::platform::persistence::{PersistedCompare, Settings};
 use crate::platform::secrets::AiKeyKind;
 use crate::platform::startup::StartupOptions;
 use crate::ui::design::{Sp, Sz};
-use crate::ui::editor::render_doc::{RenderDoc, build_render_doc, build_render_doc_from_carbon};
+use crate::ui::editor::render_doc::{
+    CarbonStyleOverlays, RenderDoc, build_render_doc, build_render_doc_from_carbon,
+};
 use crate::ui::editor::state::{EditorState, EditorStateStore, SearchMatch};
 use crate::ui::icons::lucide;
 use crate::ui::theme::ThemeMode;
@@ -379,6 +381,7 @@ pub const COMPARE_REVEAL_DELAY_MS: u64 = 500;
 pub struct PreparedActiveFile {
     pub file: FileDiff,
     pub carbon_file: Option<carbon::FileDiff>,
+    pub carbon_overlays: CarbonStyleOverlays,
     pub render_doc: RenderDoc,
     pub text_buffer: TextBuffer,
     pub token_buffer: TokenBuffer,
@@ -404,10 +407,19 @@ fn clear_syntax_tokens(file: &mut FileDiff) {
 
 fn apply_syntax_tokens_to_file(
     file: &mut FileDiff,
+    carbon_overlays: &mut CarbonStyleOverlays,
     token_buffer: &mut TokenBuffer,
     updates: &[SyntaxLineTokens],
 ) {
     for update in updates {
+        if let (Some(side), Some(source_index)) = (update.side, update.source_index) {
+            if update.tokens.is_empty() {
+                continue;
+            }
+            let range = token_buffer.append(&update.tokens);
+            carbon_overlays.insert_syntax(update.hunk_index as u32, side, source_index, range);
+            continue;
+        }
         let Some(line) = file
             .hunks
             .get_mut(update.hunk_index)
@@ -448,6 +460,7 @@ pub struct ActiveFile {
     pub path: String,
     pub file: FileDiff,
     pub carbon_file: Option<carbon::FileDiff>,
+    pub carbon_overlays: CarbonStyleOverlays,
     pub render_doc: RenderDoc,
     pub text_buffer: TextBuffer,
     pub base_file: FileDiff,
@@ -472,8 +485,12 @@ pub(crate) fn prepare_active_file(
 ) -> PreparedActiveFile {
     let mut text_buffer = TextBuffer::default();
     let mut token_buffer = TokenBuffer::default();
+    let mut carbon_overlays = CarbonStyleOverlays::default();
+    let use_carbon = carbon_file.is_some();
+    let mut old_source_index = 0u32;
+    let mut new_source_index = 0u32;
 
-    for hunk in &mut file.hunks {
+    for (hunk_index, hunk) in file.hunks.iter_mut().enumerate() {
         for line in &mut hunk.lines {
             line.text_range = text_buffer.append(src_text.view(line.text_range));
 
@@ -490,24 +507,95 @@ pub(crate) fn prepare_active_file(
                 let syntax_tokens = src_tokens.view(line.syntax_tokens).to_vec();
                 line.syntax_tokens = token_buffer.append(&syntax_tokens);
             }
+
+            if use_carbon {
+                let hunk_id = hunk_index as u32;
+                match line.kind {
+                    crate::core::diff::LineKind::Context => {
+                        if !line.change_tokens.is_empty() {
+                            carbon_overlays.insert_change(
+                                hunk_id,
+                                carbon::DiffSide::Old,
+                                old_source_index,
+                                line.change_tokens,
+                            );
+                            carbon_overlays.insert_change(
+                                hunk_id,
+                                carbon::DiffSide::New,
+                                new_source_index,
+                                line.change_tokens,
+                            );
+                        }
+                        if !line.syntax_tokens.is_empty() {
+                            carbon_overlays.insert_syntax(
+                                hunk_id,
+                                carbon::DiffSide::Old,
+                                old_source_index,
+                                line.syntax_tokens,
+                            );
+                            carbon_overlays.insert_syntax(
+                                hunk_id,
+                                carbon::DiffSide::New,
+                                new_source_index,
+                                line.syntax_tokens,
+                            );
+                        }
+                        old_source_index = old_source_index.saturating_add(1);
+                        new_source_index = new_source_index.saturating_add(1);
+                    }
+                    crate::core::diff::LineKind::Removed => {
+                        if !line.change_tokens.is_empty() {
+                            carbon_overlays.insert_change(
+                                hunk_id,
+                                carbon::DiffSide::Old,
+                                old_source_index,
+                                line.change_tokens,
+                            );
+                        }
+                        if !line.syntax_tokens.is_empty() {
+                            carbon_overlays.insert_syntax(
+                                hunk_id,
+                                carbon::DiffSide::Old,
+                                old_source_index,
+                                line.syntax_tokens,
+                            );
+                        }
+                        old_source_index = old_source_index.saturating_add(1);
+                    }
+                    crate::core::diff::LineKind::Added => {
+                        if !line.change_tokens.is_empty() {
+                            carbon_overlays.insert_change(
+                                hunk_id,
+                                carbon::DiffSide::New,
+                                new_source_index,
+                                line.change_tokens,
+                            );
+                        }
+                        if !line.syntax_tokens.is_empty() {
+                            carbon_overlays.insert_syntax(
+                                hunk_id,
+                                carbon::DiffSide::New,
+                                new_source_index,
+                                line.syntax_tokens,
+                            );
+                        }
+                        new_source_index = new_source_index.saturating_add(1);
+                    }
+                }
+            }
         }
     }
 
     let render_doc = carbon_file.map_or_else(
         || build_render_doc(&file, file_index, &text_buffer, &token_buffer),
         |carbon_file| {
-            build_render_doc_from_carbon(
-                &file,
-                carbon_file,
-                file_index,
-                &text_buffer,
-                &token_buffer,
-            )
+            build_render_doc_from_carbon(carbon_file, file_index, &carbon_overlays, &token_buffer)
         },
     );
     PreparedActiveFile {
         file,
         carbon_file: carbon_file.cloned(),
+        carbon_overlays,
         render_doc,
         text_buffer,
         token_buffer,
@@ -723,6 +811,7 @@ impl AppState {
             index,
             path,
             carbon_file: prepared.carbon_file.clone(),
+            carbon_overlays: prepared.carbon_overlays,
             file: prepared.file.clone(),
             render_doc: prepared.render_doc,
             text_buffer: prepared.text_buffer.clone(),
@@ -2621,6 +2710,7 @@ impl AppState {
             push_syntax_covered_window(&mut active.syntax_covered, payload.window);
             apply_syntax_tokens_to_file(
                 &mut active.file,
+                &mut active.carbon_overlays,
                 &mut active.token_buffer,
                 &payload.tokens,
             );
@@ -2635,10 +2725,9 @@ impl AppState {
                 },
                 |carbon_file| {
                     build_render_doc_from_carbon(
-                        &active.file,
                         carbon_file,
                         active.index,
-                        &active.text_buffer,
+                        &active.carbon_overlays,
                         &active.token_buffer,
                     )
                 },
@@ -5346,7 +5435,6 @@ impl AppState {
             let active = af.as_ref()?;
             if let Some(carbon_file) = active.carbon_file.as_ref() {
                 return patch::format_carbon_hunk_patch(
-                    &active.file,
                     carbon_file,
                     hunk_index,
                     operation != StatusOperation::Stage,
@@ -5501,7 +5589,6 @@ impl AppState {
                 let selected = selection_snapshot.selected_lines_for_hunk(hunk_idx);
                 let patch = active.carbon_file.as_ref().and_then(|carbon_file| {
                     patch::format_carbon_lines_patch(
-                        &active.file,
                         carbon_file,
                         hunk_idx as usize,
                         &selected,
@@ -5638,6 +5725,7 @@ impl AppState {
                 file_index: active.index,
                 path: active.path.clone(),
                 file: active.file.clone(),
+                carbon_file: active.carbon_file.clone(),
                 left_ref: active.left_ref.clone(),
                 right_ref: active.right_ref.clone(),
                 window,
@@ -6439,9 +6527,9 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        ActiveFile, ActiveFileLoading, AppState, AsyncStatus, CompareField, FileListEntry,
-        FocusTarget, OverlaySurface, PreparedActiveFile, WorkspaceMode, WorkspaceSource,
-        prepare_active_file, refs_for_status_scope,
+        ActiveFile, ActiveFileLoading, AppState, AsyncStatus, CarbonStyleOverlays, CompareField,
+        FileListEntry, FocusTarget, OverlaySurface, PreparedActiveFile, WorkspaceMode,
+        WorkspaceSource, prepare_active_file, refs_for_status_scope,
     };
     use crate::core::compare::{CompareMode, CompareOutput, LayoutMode, RendererKind};
     use crate::core::diff::{DiffLine, FileDiff, Hunk, LineKind};
@@ -6603,6 +6691,7 @@ mod tests {
                 path,
                 file: file.clone(),
                 carbon_file: None,
+                carbon_overlays: CarbonStyleOverlays::default(),
                 render_doc,
                 text_buffer: text_buffer.clone(),
                 base_file: file,
@@ -7156,6 +7245,7 @@ mod tests {
                 prepared: PreparedActiveFile {
                     file: FileDiff::default(),
                     carbon_file: None,
+                    carbon_overlays: CarbonStyleOverlays::default(),
                     render_doc: RenderDoc::default(),
                     text_buffer: TextBuffer::default(),
                     token_buffer: TokenBuffer::default(),

@@ -47,53 +47,17 @@ pub fn flatten_file_diff(file: &FileDiff, file_index: usize) -> Vec<FlatDiffRow>
     rows
 }
 
-pub fn flatten_carbon_file_diff(
-    file: &FileDiff,
-    carbon_file: &carbon::FileDiff,
-    file_index: usize,
-) -> Vec<FlatDiffRow> {
-    let projected = ProjectedFileRows::from_carbon(file, carbon_file, file_index);
-    let mut rows = Vec::with_capacity(projected.capacity());
-    rows.push(FlatDiffRow {
-        row_type: DiffRowType::FileHeader,
-        file_index: usize_to_i32_saturating(file_index),
-        hunk_index: -1,
-        line_index: -1,
-        old_line_index: -1,
-        new_line_index: -1,
-        old_source_index: -1,
-        new_source_index: -1,
-    });
-    projected.project_into(&mut rows);
-    rows
-}
-
 #[derive(Debug)]
-struct ProjectedFileRows<'a> {
-    file: ProjectedCarbonFile<'a>,
+struct ProjectedFileRows {
+    file: carbon::FileDiff,
     file_index: i32,
     old_lines: Vec<i32>,
     new_lines: Vec<i32>,
     capacity: usize,
 }
 
-#[derive(Debug)]
-enum ProjectedCarbonFile<'a> {
-    Borrowed(&'a carbon::FileDiff),
-    Owned(carbon::FileDiff),
-}
-
-impl ProjectedCarbonFile<'_> {
-    fn as_ref(&self) -> &carbon::FileDiff {
-        match self {
-            Self::Borrowed(file) => file,
-            Self::Owned(file) => file,
-        }
-    }
-}
-
-impl ProjectedFileRows<'_> {
-    fn build(file: &FileDiff, file_index: usize) -> ProjectedFileRows<'static> {
+impl ProjectedFileRows {
+    fn build(file: &FileDiff, file_index: usize) -> ProjectedFileRows {
         let capacity = file
             .hunks
             .iter()
@@ -101,7 +65,7 @@ impl ProjectedFileRows<'_> {
                 acc.saturating_add(hunk.lines.len())
             });
         let mut projected = ProjectedFileRows {
-            file: ProjectedCarbonFile::Owned(carbon::FileDiff {
+            file: carbon::FileDiff {
                 id: FileId(usize_to_u32_saturating(file_index)),
                 old_path: Some(file.path.clone()),
                 new_path: Some(file.path.clone()),
@@ -109,7 +73,7 @@ impl ProjectedFileRows<'_> {
                 is_binary: file.is_binary,
                 is_partial: true,
                 ..carbon::FileDiff::default()
-            }),
+            },
             file_index: usize_to_i32_saturating(file_index),
             old_lines: Vec::new(),
             new_lines: Vec::new(),
@@ -123,59 +87,13 @@ impl ProjectedFileRows<'_> {
         projected
     }
 
-    fn from_carbon<'a>(
-        file: &FileDiff,
-        carbon_file: &'a carbon::FileDiff,
-        file_index: usize,
-    ) -> ProjectedFileRows<'a> {
-        let mut projected = ProjectedFileRows {
-            file: ProjectedCarbonFile::Borrowed(carbon_file),
-            file_index: usize_to_i32_saturating(file_index),
-            old_lines: Vec::new(),
-            new_lines: Vec::new(),
-            capacity: file
-                .hunks
-                .iter()
-                .fold(1usize.saturating_add(file.hunks.len()), |acc, hunk| {
-                    acc.saturating_add(hunk.lines.len())
-                }),
-        };
-
-        for hunk in &file.hunks {
-            for (line_index, line) in hunk.lines.iter().enumerate() {
-                match line.kind {
-                    LineKind::Context => {
-                        projected
-                            .old_lines
-                            .push(usize_to_i32_saturating(line_index));
-                        projected
-                            .new_lines
-                            .push(usize_to_i32_saturating(line_index));
-                    }
-                    LineKind::Removed => {
-                        projected
-                            .old_lines
-                            .push(usize_to_i32_saturating(line_index));
-                    }
-                    LineKind::Added => {
-                        projected
-                            .new_lines
-                            .push(usize_to_i32_saturating(line_index));
-                    }
-                }
-            }
-        }
-
-        projected
-    }
-
     fn capacity(&self) -> usize {
         self.capacity
     }
 
     fn project_into(&self, rows: &mut Vec<FlatDiffRow>) {
         project_file(
-            self.file.as_ref(),
+            &self.file,
             ProjectionOptions {
                 mode: ProjectionMode::Unified,
                 collapsed_context_threshold: 0,
@@ -205,7 +123,7 @@ impl ProjectedFileRows<'_> {
             match hunk.lines[line_index].kind {
                 LineKind::Context => {
                     let block_id = BlockId(usize_to_u32_saturating(
-                        self.file.as_ref().blocks.len().saturating_add(blocks.len()),
+                        self.file.blocks.len().saturating_add(blocks.len()),
                     ));
                     let old_start_index = usize_to_u32_saturating(self.old_lines.len());
                     let new_start_index = usize_to_u32_saturating(self.new_lines.len());
@@ -237,7 +155,7 @@ impl ProjectedFileRows<'_> {
                 }
                 LineKind::Added | LineKind::Removed => {
                     let block_id = BlockId(usize_to_u32_saturating(
-                        self.file.as_ref().blocks.len().saturating_add(blocks.len()),
+                        self.file.blocks.len().saturating_add(blocks.len()),
                     ));
                     let old_start_index = usize_to_u32_saturating(self.old_lines.len());
                     let new_start_index = usize_to_u32_saturating(self.new_lines.len());
@@ -300,10 +218,7 @@ impl ProjectedFileRows<'_> {
             BlockRange::default(),
         );
         carbon_hunk.header.clone_from(&hunk.header);
-        match &mut self.file {
-            ProjectedCarbonFile::Owned(file) => file.add_hunk(carbon_hunk, blocks),
-            ProjectedCarbonFile::Borrowed(_) => {}
-        }
+        self.file.add_hunk(carbon_hunk, blocks);
     }
 
     fn flat_row(&self, row: ProjectionRow) -> Option<FlatDiffRow> {
@@ -448,10 +363,8 @@ fn usize_to_i32_saturating(value: usize) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{DiffRowType, FlatDiffRow, flatten_carbon_file_diff, flatten_file_diff};
+    use super::{DiffRowType, FlatDiffRow, flatten_file_diff};
     use crate::core::diff::types::{DiffLine, FileDiff, Hunk, LineKind};
-    use crate::core::diff::unified_parser::lower_carbon_document;
-    use crate::core::text::TextBuffer;
 
     fn row_types(rows: &[FlatDiffRow]) -> Vec<DiffRowType> {
         rows.iter().map(|row| row.row_type).collect()
@@ -612,27 +525,5 @@ mod tests {
         assert_eq!(rows[2].old_line_index, 0);
         assert_eq!(rows[3].old_line_index, 2);
         assert_eq!(rows[4].new_line_index, 1);
-    }
-
-    #[test]
-    fn flatten_carbon_file_diff_uses_existing_carbon_projection() {
-        let carbon = carbon::parse_unified_patch(
-            "\
-diff --git a/src/lib.rs b/src/lib.rs
-@@ -1,2 +1,3 @@
- context
--old
-+new
-+added
-",
-        )
-        .unwrap();
-        let mut text_buffer = TextBuffer::default();
-        let legacy = lower_carbon_document(&carbon, &mut text_buffer, None);
-
-        let carbon_rows = flatten_carbon_file_diff(&legacy.files[0], &carbon.files[0], 0);
-        let legacy_rows = flatten_file_diff(&legacy.files[0], 0);
-
-        assert_eq!(carbon_rows, legacy_rows);
     }
 }

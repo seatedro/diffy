@@ -3332,6 +3332,7 @@ dependencies = [
 name = "phosphor"
 version = "0.1.4"
 dependencies = [
+ "carbon",
  "dirs",
  "libloading",
  "reqwest",

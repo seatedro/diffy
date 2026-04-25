@@ -9,6 +9,16 @@ pub struct TextByteRange {
     pub len: u32,
 }
 
+impl TextByteRange {
+    pub const fn end(self) -> u32 {
+        self.start.saturating_add(self.len)
+    }
+
+    pub fn as_usize_range(self) -> std::ops::Range<usize> {
+        self.start as usize..self.end() as usize
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextStore {
     bytes: Arc<[u8]>,

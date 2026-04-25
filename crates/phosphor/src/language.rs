@@ -9,6 +9,8 @@ use libloading::Library;
 use tree_sitter as ts;
 use tree_sitter::StreamingIterator;
 
+use carbon::TextByteRange;
+
 use crate::error::{PhosphorError, Result};
 use crate::{HighlightKind, HighlightSpan, LanguageId, LanguageMetadata};
 
@@ -146,6 +148,10 @@ pub(crate) fn highlight_ranges(
     if source.is_empty() || byte_ranges.is_empty() {
         return Ok(Vec::new());
     }
+    let ranges = merged_ranges(byte_ranges, source.len());
+    if ranges.is_empty() {
+        return Ok(Vec::new());
+    }
 
     if !is_parser_available(language) {
         return Err(PhosphorError::MissingParser { language });
@@ -153,10 +159,29 @@ pub(crate) fn highlight_ranges(
 
     let compiled = compiled_language(language)?;
     let tree = parse_source(&compiled, source)?;
-    let ranges = merged_ranges(byte_ranges, source.len());
+    let raw_spans = collect_spans_in_ranges(&compiled, &tree, source, &ranges);
+    compact_spans(language, raw_spans)
+}
+
+pub(crate) fn highlight_text_ranges(
+    language: LanguageId,
+    source: &str,
+    byte_ranges: &[TextByteRange],
+) -> Result<Vec<HighlightSpan>> {
+    if source.is_empty() || byte_ranges.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ranges = merged_text_ranges(byte_ranges, source.len());
     if ranges.is_empty() {
         return Ok(Vec::new());
     }
+
+    if !is_parser_available(language) {
+        return Err(PhosphorError::MissingParser { language });
+    }
+
+    let compiled = compiled_language(language)?;
+    let tree = parse_source(&compiled, source)?;
     let raw_spans = collect_spans_in_ranges(&compiled, &tree, source, &ranges);
     compact_spans(language, raw_spans)
 }
@@ -310,18 +335,40 @@ fn merged_ranges(ranges: &[Range<usize>], source_len: usize) -> Vec<Range<usize>
         })
         .collect::<Vec<_>>();
     ranges.sort_by_key(|range| range.start);
+    merge_sorted_ranges(ranges)
+}
 
-    let mut merged: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
+fn merged_text_ranges(ranges: &[TextByteRange], source_len: usize) -> Vec<Range<usize>> {
+    let mut merged_input = Vec::with_capacity(ranges.len());
     for range in ranges {
-        if let Some(last) = merged.last_mut()
-            && range.start <= last.end
-        {
-            last.end = last.end.max(range.end);
+        let start = (range.start as usize).min(source_len);
+        let end = (range.end() as usize).min(source_len);
+        if end > start {
+            merged_input.push(start..end);
+        }
+    }
+    merged_input.sort_by_key(|range| range.start);
+    merge_sorted_ranges(merged_input)
+}
+
+fn merge_sorted_ranges(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
+    if ranges.len() < 2 {
+        return ranges;
+    }
+
+    let mut write = 0;
+    for read in 1..ranges.len() {
+        let start = ranges[read].start;
+        let end = ranges[read].end;
+        if start <= ranges[write].end {
+            ranges[write].end = ranges[write].end.max(end);
             continue;
         }
-        merged.push(range);
+        write += 1;
+        ranges[write] = start..end;
     }
-    merged
+    ranges.truncate(write + 1);
+    ranges
 }
 
 fn compact_spans(

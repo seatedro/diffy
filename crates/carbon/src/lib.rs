@@ -22,10 +22,10 @@ pub use patch::{PatchError, parse_unified_patch};
 pub use projection::{
     ExpansionDirection, ExpansionState, HunkExpansion, ProjectionBuffer, ProjectionMode,
     ProjectionOptions, ProjectionRow, ProjectionRowKind, ProjectionWindow, expand_context,
-    map_anchor_to_projection, project_file, project_window,
+    map_anchor_to_projection, project_file, project_window, projected_row_byte_range,
 };
 pub use review::{
     Anchor, Annotation, AnnotationId, AnnotationKind, AnnotationSet, ByteRange, ConflictResolution,
     DiagnosticSeverity, LineRange, SuggestedChange,
 };
-pub use text::{LineId, TextStore};
+pub use text::{LineId, TextByteRange, TextStore};

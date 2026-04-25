@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
-use crate::model::{Block, BlockId, BlockKind, FileDiff, FileId, Hunk, HunkId};
+use crate::model::{Block, BlockId, BlockKind, DiffSide, FileDiff, FileId, Hunk, HunkId};
 use crate::review::Anchor;
+use crate::text::{LineId, TextByteRange};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum ProjectionMode {
@@ -228,6 +229,18 @@ pub fn map_anchor_to_projection<'a>(
         .copied()
         .filter(|row| anchor.touches_row(row))
         .collect()
+}
+
+pub fn projected_row_byte_range(
+    file: &FileDiff,
+    row: &ProjectionRow,
+    side: DiffSide,
+) -> Option<TextByteRange> {
+    let line_index = match side {
+        DiffSide::Old => row.old_index,
+        DiffSide::New => row.new_index,
+    }?;
+    file.side_text(side)?.line_range(LineId(line_index))
 }
 
 fn project_file_inner(
@@ -461,8 +474,11 @@ mod tests {
     use super::{
         ExpansionDirection, ExpansionState, ProjectionBuffer, ProjectionMode, ProjectionOptions,
         ProjectionRowKind, ProjectionWindow, expand_context, project_file, project_window,
+        projected_row_byte_range,
     };
-    use crate::model::{Block, BlockId, BlockRange, FileDiff, FileId, Hunk, HunkId, SourceRange};
+    use crate::model::{
+        Block, BlockId, BlockRange, DiffSide, FileDiff, FileId, Hunk, HunkId, SourceRange,
+    };
     use crate::text::TextStore;
 
     fn sample_file() -> FileDiff {
@@ -571,5 +587,50 @@ mod tests {
 
         assert_eq!(buffer.len(), 2);
         assert_eq!(buffer.capacity(), capacity);
+    }
+
+    #[test]
+    fn projected_rows_map_to_side_specific_text_ranges() {
+        let file = sample_file();
+        let mut rows = Vec::new();
+        project_file(
+            &file,
+            ProjectionOptions {
+                collapsed_context_threshold: 0,
+                ..ProjectionOptions::default()
+            },
+            &ExpansionState::default(),
+            |row| rows.push(row),
+        );
+
+        let removed = rows
+            .iter()
+            .find(|row| row.kind == ProjectionRowKind::Removed)
+            .unwrap();
+        let added = rows
+            .iter()
+            .find(|row| row.kind == ProjectionRowKind::Added)
+            .unwrap();
+        let old_range = projected_row_byte_range(&file, removed, DiffSide::Old).unwrap();
+        let new_range = projected_row_byte_range(&file, added, DiffSide::New).unwrap();
+
+        assert_eq!(
+            file.old_text
+                .as_ref()
+                .unwrap()
+                .as_bytes()
+                .get(old_range.as_usize_range()),
+            Some(&b"old"[..])
+        );
+        assert_eq!(
+            file.new_text
+                .as_ref()
+                .unwrap()
+                .as_bytes()
+                .get(new_range.as_usize_range()),
+            Some(&b"new"[..])
+        );
+        assert!(projected_row_byte_range(&file, removed, DiffSide::New).is_none());
+        assert!(projected_row_byte_range(&file, added, DiffSide::Old).is_none());
     }
 }

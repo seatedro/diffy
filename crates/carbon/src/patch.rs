@@ -1,0 +1,530 @@
+use crate::model::{
+    Block, BlockId, BlockKind, BlockRange, DiffDocument, DiffSide, FileDiff, FileId, FileMode,
+    FileStatus, Hunk, HunkId, ObjectId, SourceRange,
+};
+use crate::text::TextStore;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PatchError {
+    Empty,
+    InvalidHunkHeader(String),
+}
+
+impl std::fmt::Display for PatchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PatchError::Empty => formatter.write_str("patch contains no file diffs"),
+            PatchError::InvalidHunkHeader(header) => {
+                write!(formatter, "invalid hunk header: {header}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PatchError {}
+
+pub fn parse_unified_patch(input: &str) -> Result<DiffDocument, PatchError> {
+    let mut parser = PatchParser::default();
+
+    for line in input.lines() {
+        parser.push_line(line)?;
+    }
+
+    let document = parser.finish();
+    if document.files.is_empty() {
+        return Err(PatchError::Empty);
+    }
+    Ok(document)
+}
+
+#[derive(Default)]
+struct PatchParser {
+    files: Vec<FileDiff>,
+    current: Option<FileBuilder>,
+}
+
+impl PatchParser {
+    fn push_line(&mut self, line: &str) -> Result<(), PatchError> {
+        if line.starts_with("diff --git ") {
+            self.finish_current_file();
+            self.current = Some(FileBuilder::from_diff_git(self.files.len() as u32, line));
+            return Ok(());
+        }
+
+        let file = self.current.get_or_insert_with(|| {
+            FileBuilder::new(self.files.len().min(u32::MAX as usize) as u32)
+        });
+
+        if line.starts_with("@@ ") {
+            file.start_hunk(line)?;
+        } else if file.in_hunk() {
+            file.push_hunk_line(line);
+        } else {
+            file.push_metadata_line(line);
+        }
+
+        Ok(())
+    }
+
+    fn finish_current_file(&mut self) {
+        if let Some(file) = self.current.take() {
+            self.files.push(file.finish());
+        }
+    }
+
+    fn finish(mut self) -> DiffDocument {
+        self.finish_current_file();
+        DiffDocument { files: self.files }
+    }
+}
+
+struct FileBuilder {
+    file: FileDiff,
+    old_lines: Vec<String>,
+    new_lines: Vec<String>,
+    old_no_newline_at_eof: bool,
+    new_no_newline_at_eof: bool,
+    hunk: Option<HunkBuilder>,
+}
+
+impl FileBuilder {
+    fn new(file_id: u32) -> Self {
+        Self {
+            file: FileDiff {
+                id: FileId(file_id),
+                is_partial: true,
+                ..FileDiff::default()
+            },
+            old_lines: Vec::new(),
+            new_lines: Vec::new(),
+            old_no_newline_at_eof: false,
+            new_no_newline_at_eof: false,
+            hunk: None,
+        }
+    }
+
+    fn from_diff_git(file_id: u32, line: &str) -> Self {
+        let mut builder = Self::new(file_id);
+        let mut parts = line.split_whitespace().skip(2);
+        builder.file.old_path = parts.next().and_then(strip_patch_path).map(str::to_owned);
+        builder.file.new_path = parts.next().and_then(strip_patch_path).map(str::to_owned);
+        builder
+    }
+
+    fn in_hunk(&self) -> bool {
+        self.hunk.is_some()
+    }
+
+    fn push_metadata_line(&mut self, line: &str) {
+        if let Some(mode) = line.strip_prefix("new file mode ") {
+            self.file.status = FileStatus::Added;
+            self.file.new_mode = Some(FileMode(mode.to_owned()));
+        } else if let Some(mode) = line.strip_prefix("deleted file mode ") {
+            self.file.status = FileStatus::Deleted;
+            self.file.old_mode = Some(FileMode(mode.to_owned()));
+        } else if let Some(mode) = line.strip_prefix("old mode ") {
+            self.file.old_mode = Some(FileMode(mode.to_owned()));
+            if self.file.status == FileStatus::Modified {
+                self.file.status = FileStatus::ModeChanged;
+            }
+        } else if let Some(mode) = line.strip_prefix("new mode ") {
+            self.file.new_mode = Some(FileMode(mode.to_owned()));
+            if self.file.status == FileStatus::Modified {
+                self.file.status = FileStatus::ModeChanged;
+            }
+        } else if let Some(path) = line.strip_prefix("rename from ") {
+            self.file.old_path = Some(path.to_owned());
+            self.file.status = FileStatus::Renamed;
+        } else if let Some(path) = line.strip_prefix("rename to ") {
+            self.file.new_path = Some(path.to_owned());
+            self.file.status = FileStatus::Renamed;
+        } else if let Some(rest) = line.strip_prefix("index ") {
+            self.parse_index_line(rest);
+        } else if let Some(path) = line.strip_prefix("--- ") {
+            if let Some(path) = strip_patch_path(path) {
+                self.file.old_path = Some(path.to_owned());
+            }
+        } else if let Some(path) = line.strip_prefix("+++ ") {
+            if let Some(path) = strip_patch_path(path) {
+                self.file.new_path = Some(path.to_owned());
+            }
+        } else if line.starts_with("Binary files ") || line.starts_with("GIT binary patch") {
+            self.file.status = FileStatus::Binary;
+            self.file.is_binary = true;
+        }
+    }
+
+    fn parse_index_line(&mut self, rest: &str) {
+        let Some((oids, mode)) = rest.split_once(' ') else {
+            self.parse_index_oids(rest);
+            return;
+        };
+        self.parse_index_oids(oids);
+        self.file.old_mode = Some(FileMode(mode.to_owned()));
+        self.file.new_mode = Some(FileMode(mode.to_owned()));
+    }
+
+    fn parse_index_oids(&mut self, oids: &str) {
+        let Some((old_oid, new_oid)) = oids.split_once("..") else {
+            return;
+        };
+        self.file.old_oid = Some(ObjectId(old_oid.to_owned()));
+        self.file.new_oid = Some(ObjectId(new_oid.to_owned()));
+    }
+
+    fn start_hunk(&mut self, line: &str) -> Result<(), PatchError> {
+        self.finish_hunk();
+        let (old_start, old_count, new_start, new_count) = parse_hunk_header(line)?;
+        self.hunk = Some(HunkBuilder::new(
+            HunkId(self.file.hunks.len().min(u32::MAX as usize) as u32),
+            line.to_owned(),
+            old_start,
+            old_count,
+            new_start,
+            new_count,
+            self.file.blocks.len().min(u32::MAX as usize) as u32,
+            self.old_lines.len().min(u32::MAX as usize) as u32,
+            self.new_lines.len().min(u32::MAX as usize) as u32,
+        ));
+        Ok(())
+    }
+
+    fn push_hunk_line(&mut self, line: &str) {
+        let Some(hunk) = self.hunk.as_mut() else {
+            return;
+        };
+
+        if line == r"\ No newline at end of file" {
+            match hunk.last_side {
+                Some(DiffSide::Old) => {
+                    hunk.mark_old_no_newline();
+                    self.old_no_newline_at_eof = true;
+                }
+                Some(DiffSide::New) => {
+                    hunk.mark_new_no_newline();
+                    self.new_no_newline_at_eof = true;
+                }
+                None => {}
+            }
+            return;
+        }
+
+        let (kind, content) = match line.as_bytes().first().copied() {
+            Some(b' ') => (PatchLineKind::Context, &line[1..]),
+            Some(b'-') => (PatchLineKind::Old, &line[1..]),
+            Some(b'+') => (PatchLineKind::New, &line[1..]),
+            _ => (PatchLineKind::Context, line),
+        };
+
+        match kind {
+            PatchLineKind::Context => {
+                hunk.push_context(content, &mut self.old_lines, &mut self.new_lines)
+            }
+            PatchLineKind::Old => hunk.push_old(content, &mut self.old_lines),
+            PatchLineKind::New => hunk.push_new(content, &mut self.new_lines),
+        }
+    }
+
+    fn finish_hunk(&mut self) {
+        let Some(mut builder) = self.hunk.take() else {
+            return;
+        };
+        builder.finish_block();
+        let blocks = builder.blocks;
+        let mut hunk = Hunk::new(
+            builder.id,
+            builder.old_start,
+            builder.old_count,
+            builder.new_start,
+            builder.new_count,
+            BlockRange::default(),
+        );
+        hunk.header = builder.header;
+        self.file.add_hunk(hunk, blocks);
+    }
+
+    fn finish(mut self) -> FileDiff {
+        self.finish_hunk();
+        if self.file.status == FileStatus::Renamed && !self.file.hunks.is_empty() {
+            self.file.status = FileStatus::RenamedModified;
+        }
+        self.file.old_text = (!self.old_lines.is_empty())
+            .then(|| TextStore::from_text(join_lines(&self.old_lines, self.old_no_newline_at_eof)));
+        self.file.new_text = (!self.new_lines.is_empty())
+            .then(|| TextStore::from_text(join_lines(&self.new_lines, self.new_no_newline_at_eof)));
+        self.file
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PatchLineKind {
+    Context,
+    Old,
+    New,
+}
+
+struct HunkBuilder {
+    id: HunkId,
+    header: String,
+    old_start: u32,
+    old_count: u32,
+    new_start: u32,
+    new_count: u32,
+    old_cursor: u32,
+    new_cursor: u32,
+    old_store_cursor: u32,
+    new_store_cursor: u32,
+    next_block_id: u32,
+    current: Option<BlockBuilder>,
+    blocks: Vec<Block>,
+    last_side: Option<DiffSide>,
+}
+
+impl HunkBuilder {
+    fn new(
+        id: HunkId,
+        header: String,
+        old_start: u32,
+        old_count: u32,
+        new_start: u32,
+        new_count: u32,
+        next_block_id: u32,
+        old_store_cursor: u32,
+        new_store_cursor: u32,
+    ) -> Self {
+        Self {
+            id,
+            header,
+            old_start,
+            old_count,
+            new_start,
+            new_count,
+            old_cursor: old_start,
+            new_cursor: new_start,
+            old_store_cursor,
+            new_store_cursor,
+            next_block_id,
+            current: None,
+            blocks: Vec::new(),
+            last_side: None,
+        }
+    }
+
+    fn push_context(
+        &mut self,
+        content: &str,
+        old_lines: &mut Vec<String>,
+        new_lines: &mut Vec<String>,
+    ) {
+        self.ensure_block(BlockKind::Context);
+        old_lines.push(content.to_owned());
+        new_lines.push(content.to_owned());
+        if let Some(block) = self.current.as_mut() {
+            block.old.len = block.old.len.saturating_add(1);
+            block.new.len = block.new.len.saturating_add(1);
+        }
+        self.old_cursor = self.old_cursor.saturating_add(1);
+        self.new_cursor = self.new_cursor.saturating_add(1);
+        self.old_store_cursor = self.old_store_cursor.saturating_add(1);
+        self.new_store_cursor = self.new_store_cursor.saturating_add(1);
+        self.last_side = Some(DiffSide::New);
+    }
+
+    fn push_old(&mut self, content: &str, old_lines: &mut Vec<String>) {
+        self.ensure_block(BlockKind::Change);
+        old_lines.push(content.to_owned());
+        if let Some(block) = self.current.as_mut() {
+            block.old.len = block.old.len.saturating_add(1);
+        }
+        self.old_cursor = self.old_cursor.saturating_add(1);
+        self.old_store_cursor = self.old_store_cursor.saturating_add(1);
+        self.last_side = Some(DiffSide::Old);
+    }
+
+    fn push_new(&mut self, content: &str, new_lines: &mut Vec<String>) {
+        self.ensure_block(BlockKind::Change);
+        new_lines.push(content.to_owned());
+        if let Some(block) = self.current.as_mut() {
+            block.new.len = block.new.len.saturating_add(1);
+        }
+        self.new_cursor = self.new_cursor.saturating_add(1);
+        self.new_store_cursor = self.new_store_cursor.saturating_add(1);
+        self.last_side = Some(DiffSide::New);
+    }
+
+    fn ensure_block(&mut self, kind: BlockKind) {
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|block| block.kind == kind)
+        {
+            return;
+        }
+        self.finish_block();
+        self.current = Some(BlockBuilder {
+            id: BlockId(self.next_block_id),
+            kind,
+            old_line_start: self.old_cursor,
+            new_line_start: self.new_cursor,
+            old: SourceRange::new(self.old_store_cursor, 0),
+            new: SourceRange::new(self.new_store_cursor, 0),
+            old_no_newline_at_end: false,
+            new_no_newline_at_end: false,
+        });
+        self.next_block_id = self.next_block_id.saturating_add(1);
+    }
+
+    fn mark_old_no_newline(&mut self) {
+        if let Some(block) = self.current.as_mut() {
+            block.old_no_newline_at_end = true;
+        }
+    }
+
+    fn mark_new_no_newline(&mut self) {
+        if let Some(block) = self.current.as_mut() {
+            block.new_no_newline_at_end = true;
+        }
+    }
+
+    fn finish_block(&mut self) {
+        let Some(block) = self.current.take() else {
+            return;
+        };
+        self.blocks.push(block.finish());
+    }
+}
+
+struct BlockBuilder {
+    id: BlockId,
+    kind: BlockKind,
+    old_line_start: u32,
+    new_line_start: u32,
+    old: SourceRange,
+    new: SourceRange,
+    old_no_newline_at_end: bool,
+    new_no_newline_at_end: bool,
+}
+
+impl BlockBuilder {
+    fn finish(self) -> Block {
+        let mut block = match self.kind {
+            BlockKind::Context => Block::context(self.id, self.old, self.new),
+            BlockKind::Change => Block::change(self.id, self.old, self.new),
+        }
+        .with_source_lines(self.old_line_start, self.new_line_start);
+        block.old_no_newline_at_end = self.old_no_newline_at_end;
+        block.new_no_newline_at_end = self.new_no_newline_at_end;
+        block
+    }
+}
+
+fn parse_hunk_header(line: &str) -> Result<(u32, u32, u32, u32), PatchError> {
+    let mut parts = line.split_whitespace();
+    if parts.next() != Some("@@") {
+        return Err(PatchError::InvalidHunkHeader(line.to_owned()));
+    }
+    let Some(old_range) = parts.next() else {
+        return Err(PatchError::InvalidHunkHeader(line.to_owned()));
+    };
+    let Some(new_range) = parts.next() else {
+        return Err(PatchError::InvalidHunkHeader(line.to_owned()));
+    };
+    let Some("@@") = parts.next() else {
+        return Err(PatchError::InvalidHunkHeader(line.to_owned()));
+    };
+    let (old_start, old_count) = parse_signed_range(old_range, '-')
+        .ok_or_else(|| PatchError::InvalidHunkHeader(line.to_owned()))?;
+    let (new_start, new_count) = parse_signed_range(new_range, '+')
+        .ok_or_else(|| PatchError::InvalidHunkHeader(line.to_owned()))?;
+    Ok((old_start, old_count, new_start, new_count))
+}
+
+fn parse_signed_range(range: &str, sign: char) -> Option<(u32, u32)> {
+    let range = range.strip_prefix(sign)?;
+    let (start, count) = range.split_once(',').unwrap_or((range, "1"));
+    Some((start.parse().ok()?, count.parse().ok()?))
+}
+
+fn strip_patch_path(path: &str) -> Option<&str> {
+    let path = path.trim();
+    if path == "/dev/null" {
+        return None;
+    }
+    path.strip_prefix("a/")
+        .or_else(|| path.strip_prefix("b/"))
+        .or(Some(path))
+}
+
+fn join_lines(lines: &[String], no_newline_at_eof: bool) -> String {
+    let mut text = lines.join("\n");
+    if !no_newline_at_eof {
+        text.push('\n');
+    }
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_unified_patch;
+    use crate::model::FileStatus;
+    use crate::projection::{ExpansionState, ProjectionOptions, ProjectionRowKind, project_file};
+
+    #[test]
+    fn parses_git_patch_metadata_and_hunk_rows() {
+        let patch = "\
+diff --git a/src/lib.rs b/src/lib.rs
+index 1111111..2222222 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -10,3 +10,3 @@
+ context
+-old
++new
+ tail
+";
+        let document = parse_unified_patch(patch).unwrap();
+        let file = &document.files[0];
+
+        assert_eq!(file.path(), "src/lib.rs");
+        assert_eq!(file.status, FileStatus::Modified);
+        assert_eq!(file.old_oid.as_ref().unwrap().0, "1111111");
+        assert_eq!(file.new_oid.as_ref().unwrap().0, "2222222");
+
+        let mut rows = Vec::new();
+        project_file(
+            file,
+            ProjectionOptions::default(),
+            &ExpansionState::default(),
+            |row| rows.push(row),
+        );
+
+        assert_eq!(rows[1].kind, ProjectionRowKind::Context);
+        assert_eq!(rows[1].old_line, Some(10));
+        assert_eq!(rows[2].kind, ProjectionRowKind::Removed);
+        assert_eq!(rows[2].old_line, Some(11));
+        assert_eq!(rows[3].kind, ProjectionRowKind::Added);
+        assert_eq!(rows[3].new_line, Some(11));
+    }
+
+    #[test]
+    fn parses_no_newline_marker() {
+        let patch = "\
+diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1 +1 @@
+-old
+\\ No newline at end of file
++new
+\\ No newline at end of file
+";
+        let document = parse_unified_patch(patch).unwrap();
+        let file = &document.files[0];
+        let block = &file.blocks[0];
+
+        assert!(block.old_no_newline_at_end);
+        assert!(block.new_no_newline_at_end);
+        assert!(file.old_text.as_ref().unwrap().no_newline_at_eof());
+        assert!(file.new_text.as_ref().unwrap().no_newline_at_eof());
+    }
+}

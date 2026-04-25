@@ -1,7 +1,7 @@
 use carbon::{
     Block, BlockId, BlockRange, ExpansionDirection, ExpansionState, FileDiff, FileId, Hunk, HunkId,
-    InlineOptions, ProjectionOptions, SourceRange, TextStore, compute_inline_diff, expand_context,
-    parse_unified_patch, project_file, project_window,
+    InlineOptions, ProjectionBuffer, ProjectionOptions, SourceRange, TextStore,
+    compute_inline_diff, expand_context, parse_unified_patch, project_file, project_window,
 };
 use criterion::{BatchSize, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
@@ -119,6 +119,40 @@ fn large_patch(file_count: usize, lines_per_file: usize) -> String {
         }
     }
     patch
+}
+
+struct PatchFixture {
+    name: &'static str,
+    patch: &'static str,
+}
+
+fn patch_fixtures() -> [PatchFixture; 6] {
+    [
+        PatchFixture {
+            name: "many_small_files",
+            patch: include_str!("../fixtures/patches/many_small_files.patch"),
+        },
+        PatchFixture {
+            name: "rename_mode",
+            patch: include_str!("../fixtures/patches/rename_mode.patch"),
+        },
+        PatchFixture {
+            name: "binary_mode",
+            patch: include_str!("../fixtures/patches/binary_mode.patch"),
+        },
+        PatchFixture {
+            name: "long_line",
+            patch: include_str!("../fixtures/patches/long_line.patch"),
+        },
+        PatchFixture {
+            name: "no_newline",
+            patch: include_str!("../fixtures/patches/no_newline.patch"),
+        },
+        PatchFixture {
+            name: "mode_only",
+            patch: include_str!("../fixtures/patches/mode_only.patch"),
+        },
+    ]
 }
 
 fn bench_text_store(c: &mut Criterion) {
@@ -244,6 +278,21 @@ fn bench_projection(c: &mut Criterion) {
             black_box(rows);
         })
     });
+    let many_buffer_name = format!("projection/many_hunks_buffer/{many_rows}_rows");
+    c.bench_function(&many_buffer_name, |b| {
+        let mut buffer = ProjectionBuffer::with_capacity(many_rows);
+        b.iter(|| {
+            buffer.rebuild_file(
+                black_box(&many),
+                ProjectionOptions {
+                    collapsed_context_threshold: 0,
+                    ..ProjectionOptions::default()
+                },
+                &ExpansionState::default(),
+            );
+            black_box(buffer.rows());
+        })
+    });
     let many_count_name = format!("projection/many_hunks_count/{many_rows}_rows");
     c.bench_function(&many_count_name, |b| {
         b.iter(|| {
@@ -286,6 +335,47 @@ fn bench_patch(c: &mut Criterion) {
     c.bench_function("patch/parse_git_unified", |b| {
         b.iter(|| black_box(parse_unified_patch(black_box(&patch)).unwrap()))
     });
+
+    let mut fixture_group = c.benchmark_group("patch_fixture");
+    for fixture in patch_fixtures() {
+        fixture_group.throughput(Throughput::Bytes(fixture.patch.len() as u64));
+        fixture_group.bench_function(fixture.name, |b| {
+            b.iter(|| black_box(parse_unified_patch(black_box(fixture.patch)).unwrap()))
+        });
+    }
+    fixture_group.finish();
+
+    let mut projection_group = c.benchmark_group("patch_fixture_projection");
+    for fixture in patch_fixtures() {
+        let document = parse_unified_patch(fixture.patch).unwrap();
+        let row_count = document
+            .files
+            .iter()
+            .map(|file| {
+                count_project_file(
+                    file,
+                    ProjectionOptions::default(),
+                    &ExpansionState::default(),
+                )
+            })
+            .sum::<usize>();
+        let bench_name = format!("{}/{}_rows", fixture.name, row_count);
+        projection_group.bench_function(&bench_name, |b| {
+            let mut buffer = ProjectionBuffer::with_capacity(row_count);
+            b.iter(|| {
+                buffer.clear();
+                for file in &document.files {
+                    buffer.append_file(
+                        black_box(file),
+                        ProjectionOptions::default(),
+                        &ExpansionState::default(),
+                    );
+                }
+                black_box(buffer.rows());
+            })
+        });
+    }
+    projection_group.finish();
 }
 
 fn bench_inline(c: &mut Criterion) {

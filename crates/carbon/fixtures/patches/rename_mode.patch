@@ -1,0 +1,15 @@
+diff --git a/src/old_name.rs b/src/new_name.rs
+similarity index 82%
+rename from src/old_name.rs
+rename to src/new_name.rs
+old mode 100644
+new mode 100755
+index aaaaaaa..bbbbbbb
+--- a/src/old_name.rs
++++ b/src/new_name.rs
+@@ -1,5 +1,5 @@
+ pub fn renamed() {
+-    let label = "old";
++    let label = "new";
+     println!("{label}");
+ }

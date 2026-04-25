@@ -20,9 +20,9 @@ pub use model::{
 };
 pub use patch::{PatchError, parse_unified_patch};
 pub use projection::{
-    ExpansionDirection, ExpansionState, HunkExpansion, ProjectionMode, ProjectionOptions,
-    ProjectionRow, ProjectionRowKind, ProjectionWindow, expand_context, map_anchor_to_projection,
-    project_file, project_window,
+    ExpansionDirection, ExpansionState, HunkExpansion, ProjectionBuffer, ProjectionMode,
+    ProjectionOptions, ProjectionRow, ProjectionRowKind, ProjectionWindow, expand_context,
+    map_anchor_to_projection, project_file, project_window,
 };
 pub use review::{
     Anchor, Annotation, AnnotationId, AnnotationKind, AnnotationSet, ByteRange, ConflictResolution,

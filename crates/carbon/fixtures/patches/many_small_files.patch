@@ -1,0 +1,28 @@
+diff --git a/src/a.rs b/src/a.rs
+index 1111111..2222222 100644
+--- a/src/a.rs
++++ b/src/a.rs
+@@ -1,3 +1,3 @@
+ pub fn a() {
+-    1
++    2
+ }
+diff --git a/src/b.rs b/src/b.rs
+index 3333333..4444444 100644
+--- a/src/b.rs
++++ b/src/b.rs
+@@ -1,4 +1,4 @@
+ pub fn b() {
+     let value = 10;
+-    value
++    value + 1
+ }
+diff --git a/src/c.rs b/src/c.rs
+index 5555555..6666666 100644
+--- a/src/c.rs
++++ b/src/c.rs
+@@ -1,3 +1,4 @@
+ pub fn c() {
+     println!("c");
++    println!("done");
+ }

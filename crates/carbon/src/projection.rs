@@ -69,6 +69,87 @@ pub struct ProjectionRow {
     pub collapsed_count: u32,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectionBuffer {
+    rows: Vec<ProjectionRow>,
+}
+
+impl ProjectionBuffer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            rows: Vec::with_capacity(capacity),
+        }
+    }
+
+    pub fn rows(&self) -> &[ProjectionRow] {
+        &self.rows
+    }
+
+    pub fn clear(&mut self) {
+        self.rows.clear();
+    }
+
+    pub fn reserve(&mut self, additional: usize) {
+        self.rows.reserve(additional);
+    }
+
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.rows.capacity()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    pub fn rebuild_file(
+        &mut self,
+        file: &FileDiff,
+        options: ProjectionOptions,
+        expansion: &ExpansionState,
+    ) {
+        self.rows.clear();
+        self.append_file(file, options, expansion);
+    }
+
+    pub fn append_file(
+        &mut self,
+        file: &FileDiff,
+        options: ProjectionOptions,
+        expansion: &ExpansionState,
+    ) {
+        project_file(file, options, expansion, |row| self.rows.push(row));
+    }
+
+    pub fn rebuild_window(
+        &mut self,
+        file: &FileDiff,
+        options: ProjectionOptions,
+        expansion: &ExpansionState,
+        window: ProjectionWindow,
+    ) {
+        self.rows.clear();
+        self.append_window(file, options, expansion, window);
+    }
+
+    pub fn append_window(
+        &mut self,
+        file: &FileDiff,
+        options: ProjectionOptions,
+        expansion: &ExpansionState,
+        window: ProjectionWindow,
+    ) {
+        project_window(file, options, expansion, window, |row| self.rows.push(row));
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HunkExpansion {
     pub above: u32,
@@ -378,8 +459,8 @@ fn expansion_caps(file: &FileDiff, hunk_id: HunkId) -> HunkExpansion {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExpansionDirection, ExpansionState, ProjectionMode, ProjectionOptions, ProjectionRowKind,
-        ProjectionWindow, expand_context, project_file, project_window,
+        ExpansionDirection, ExpansionState, ProjectionBuffer, ProjectionMode, ProjectionOptions,
+        ProjectionRowKind, ProjectionWindow, expand_context, project_file, project_window,
     };
     use crate::model::{Block, BlockId, BlockRange, FileDiff, FileId, Hunk, HunkId, SourceRange};
     use crate::text::TextStore;
@@ -468,5 +549,27 @@ mod tests {
         assert_eq!(rows[0].kind, ProjectionRowKind::ContextExpanded);
         assert_eq!(rows[0].new_line, Some(3));
         assert_eq!(file.hunks[0].new_count, 1);
+    }
+
+    #[test]
+    fn projection_buffer_reuses_capacity_for_materialized_rows() {
+        let file = sample_file();
+        let mut buffer = ProjectionBuffer::with_capacity(8);
+        buffer.rebuild_file(
+            &file,
+            ProjectionOptions::default(),
+            &ExpansionState::default(),
+        );
+        let capacity = buffer.capacity();
+
+        buffer.rebuild_window(
+            &file,
+            ProjectionOptions::default(),
+            &ExpansionState::default(),
+            ProjectionWindow { start: 1, len: 2 },
+        );
+
+        assert_eq!(buffer.len(), 2);
+        assert_eq!(buffer.capacity(), capacity);
     }
 }

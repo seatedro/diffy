@@ -1,5 +1,6 @@
 use crate::core::diff::types::{DiffDocument, DiffLine, FileDiff, Hunk, LineKind};
 use crate::core::text::buffer::TextBuffer;
+use crate::core::text::{ChangeIntensity, DiffTokenSpan, SyntaxTokenKind, TokenBuffer};
 
 pub fn parse(input: &str) -> DiffDocument {
     let mut text_buffer = TextBuffer::default();
@@ -7,170 +8,154 @@ pub fn parse(input: &str) -> DiffDocument {
 }
 
 pub fn parse_into(input: &str, text_buffer: &mut TextBuffer) -> DiffDocument {
-    let mut document = DiffDocument::default();
-    let mut current_file_index: Option<usize> = None;
-    let mut current_hunk_index: Option<usize> = None;
-    let mut old_line = 0_i32;
-    let mut new_line = 0_i32;
-
-    for raw_line in input.lines() {
-        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
-
-        if let Some(path) = parse_diff_git_header(line) {
-            document.files.push(FileDiff {
-                path,
-                status: "M".to_owned(),
-                ..FileDiff::default()
-            });
-            current_file_index = Some(document.files.len() - 1);
-            current_hunk_index = None;
-            continue;
-        }
-
-        let Some(file_index) = current_file_index else {
-            continue;
-        };
-        let file = &mut document.files[file_index];
-
-        if line.starts_with("new file mode ") {
-            file.status = "A".to_owned();
-            continue;
-        }
-        if line.starts_with("deleted file mode ") {
-            file.status = "D".to_owned();
-            continue;
-        }
-        if line.starts_with("Binary files ") || line.starts_with("GIT binary patch") {
-            file.is_binary = true;
-            continue;
-        }
-        if line.starts_with("rename from ") || line.starts_with("rename to ") {
-            file.status = "R".to_owned();
-            continue;
-        }
-        if let Some(path) = parse_file_marker(line) {
-            if !path.is_empty() {
-                file.path = path;
-            }
-            continue;
-        }
-
-        if let Some((old_start, old_count, new_start, new_count)) = parse_hunk_header(line) {
-            file.hunks.push(Hunk {
-                old_start,
-                old_count,
-                new_start,
-                new_count,
-                header: line.to_owned(),
-                ..Hunk::default()
-            });
-            current_hunk_index = Some(file.hunks.len() - 1);
-            old_line = old_start;
-            new_line = new_start;
-            continue;
-        }
-
-        if line.starts_with(r"\ No newline at end of file") {
-            continue;
-        }
-
-        let Some(hunk_index) = current_hunk_index else {
-            continue;
-        };
-        let hunk = &mut file.hunks[hunk_index];
-
-        let (kind, text, old_number, new_number) = match line.as_bytes().first().copied() {
-            Some(b'+') => {
-                let text = &line[1..];
-                let line_no = new_line;
-                new_line += 1;
-                file.additions += 1;
-                (LineKind::Added, text, None, Some(line_no))
-            }
-            Some(b'-') => {
-                let text = &line[1..];
-                let line_no = old_line;
-                old_line += 1;
-                file.deletions += 1;
-                (LineKind::Removed, text, Some(line_no), None)
-            }
-            Some(b' ') => {
-                let text = &line[1..];
-                let old_number = old_line;
-                let new_number = new_line;
-                old_line += 1;
-                new_line += 1;
-                (LineKind::Context, text, Some(old_number), Some(new_number))
-            }
-            _ => {
-                let old_number = old_line;
-                let new_number = new_line;
-                old_line += 1;
-                new_line += 1;
-                (LineKind::Context, line, Some(old_number), Some(new_number))
-            }
-        };
-
-        let text_range = text_buffer.append(text);
-        hunk.lines.push(DiffLine {
-            kind,
-            old_line_number: old_number,
-            new_line_number: new_number,
-            text_range,
-            ..DiffLine::default()
-        });
+    match carbon::parse_unified_patch(input) {
+        Ok(document) => lower_carbon_document(&document, text_buffer, None),
+        Err(_) => DiffDocument::default(),
     }
-
-    document
 }
 
-fn parse_diff_git_header(line: &str) -> Option<String> {
-    let mut parts = line.split_whitespace();
-    if parts.next()? != "diff" || parts.next()? != "--git" {
-        return None;
+pub fn lower_carbon_document(
+    document: &carbon::DiffDocument,
+    text_buffer: &mut TextBuffer,
+    token_buffer: Option<&mut TokenBuffer>,
+) -> DiffDocument {
+    let mut token_buffer = token_buffer;
+    DiffDocument {
+        files: document
+            .files
+            .iter()
+            .map(|file| lower_carbon_file(file, text_buffer, token_buffer.as_deref_mut()))
+            .collect(),
     }
-    let _old_path = parts.next()?;
-    let new_path = parts.next()?;
-    Some(strip_diff_path_prefix(new_path).to_owned())
 }
 
-fn parse_file_marker(line: &str) -> Option<String> {
-    let marker = if line.starts_with("--- ") || line.starts_with("+++ ") {
-        &line[4..]
-    } else {
-        return None;
+pub fn lower_carbon_file(
+    file: &carbon::FileDiff,
+    text_buffer: &mut TextBuffer,
+    mut token_buffer: Option<&mut TokenBuffer>,
+) -> FileDiff {
+    let mut lowered = FileDiff {
+        path: file.path().to_owned(),
+        status: legacy_status(file.status),
+        is_binary: file.is_binary,
+        ..FileDiff::default()
     };
-    if marker == "/dev/null" {
-        return Some(String::new());
+
+    for hunk in &file.hunks {
+        let mut lowered_hunk = Hunk {
+            old_start: u32_to_i32_saturating(hunk.old_start),
+            old_count: u32_to_i32_saturating(hunk.old_count),
+            new_start: u32_to_i32_saturating(hunk.new_start),
+            new_count: u32_to_i32_saturating(hunk.new_count),
+            header: hunk.header.clone(),
+            ..Hunk::default()
+        };
+
+        for block in file.hunk_blocks(hunk) {
+            match block.kind {
+                carbon::BlockKind::Context => {
+                    let count = block.old.len.min(block.new.len);
+                    for offset in 0..count {
+                        let text = line_text(file, carbon::DiffSide::Old, block.old.start + offset)
+                            .or_else(|| {
+                                line_text(file, carbon::DiffSide::New, block.new.start + offset)
+                            })
+                            .unwrap_or_default();
+                        let text_range = text_buffer.append(text);
+                        lowered_hunk.lines.push(DiffLine {
+                            kind: LineKind::Context,
+                            old_line_number: Some(u32_to_i32_saturating(
+                                block.old_line_start + offset,
+                            )),
+                            new_line_number: Some(u32_to_i32_saturating(
+                                block.new_line_start + offset,
+                            )),
+                            text_range,
+                            ..DiffLine::default()
+                        });
+                    }
+                }
+                carbon::BlockKind::Change => {
+                    for offset in 0..block.old.len {
+                        let text = line_text(file, carbon::DiffSide::Old, block.old.start + offset)
+                            .unwrap_or_default();
+                        let text_range = text_buffer.append(text);
+                        let change_tokens =
+                            append_whole_line_change_token(token_buffer.as_deref_mut(), text);
+                        lowered_hunk.lines.push(DiffLine {
+                            kind: LineKind::Removed,
+                            old_line_number: Some(u32_to_i32_saturating(
+                                block.old_line_start + offset,
+                            )),
+                            text_range,
+                            change_tokens,
+                            ..DiffLine::default()
+                        });
+                        lowered.deletions = lowered.deletions.saturating_add(1);
+                    }
+                    for offset in 0..block.new.len {
+                        let text = line_text(file, carbon::DiffSide::New, block.new.start + offset)
+                            .unwrap_or_default();
+                        let text_range = text_buffer.append(text);
+                        let change_tokens =
+                            append_whole_line_change_token(token_buffer.as_deref_mut(), text);
+                        lowered_hunk.lines.push(DiffLine {
+                            kind: LineKind::Added,
+                            new_line_number: Some(u32_to_i32_saturating(
+                                block.new_line_start + offset,
+                            )),
+                            text_range,
+                            change_tokens,
+                            ..DiffLine::default()
+                        });
+                        lowered.additions = lowered.additions.saturating_add(1);
+                    }
+                }
+            }
+        }
+
+        lowered.hunks.push(lowered_hunk);
     }
-    Some(strip_diff_path_prefix(marker).to_owned())
+
+    lowered
 }
 
-fn strip_diff_path_prefix(path: &str) -> &str {
-    path.strip_prefix("a/")
-        .or_else(|| path.strip_prefix("b/"))
-        .unwrap_or(path)
+fn line_text(file: &carbon::FileDiff, side: carbon::DiffSide, index: u32) -> Option<&str> {
+    file.side_text(side)?.line_str(carbon::LineId(index))
 }
 
-fn parse_hunk_header(line: &str) -> Option<(i32, i32, i32, i32)> {
-    if !line.starts_with("@@ ") {
-        return None;
+fn append_whole_line_change_token(
+    token_buffer: Option<&mut TokenBuffer>,
+    text: &str,
+) -> crate::core::text::TokenRange {
+    let Some(token_buffer) = token_buffer else {
+        return Default::default();
+    };
+    token_buffer.append(&[DiffTokenSpan {
+        offset: 0,
+        length: usize_to_u32_saturating(text.len()),
+        kind: SyntaxTokenKind::Normal,
+        intensity: ChangeIntensity::NovelWord,
+    }])
+}
+
+fn legacy_status(status: carbon::FileStatus) -> String {
+    match status {
+        carbon::FileStatus::Added => "A",
+        carbon::FileStatus::Deleted => "D",
+        carbon::FileStatus::Renamed | carbon::FileStatus::RenamedModified => "R",
+        carbon::FileStatus::Binary => "B",
+        carbon::FileStatus::Modified | carbon::FileStatus::ModeChanged => "M",
     }
-    let mut parts = line.split_whitespace();
-    let _ = parts.next()?;
-    let old_part = parts.next()?;
-    let new_part = parts.next()?;
-    let (old_start, old_count) = parse_hunk_range(old_part, '-')?;
-    let (new_start, new_count) = parse_hunk_range(new_part, '+')?;
-    Some((old_start, old_count, new_start, new_count))
+    .to_owned()
 }
 
-fn parse_hunk_range(part: &str, prefix: char) -> Option<(i32, i32)> {
-    let value = part.strip_prefix(prefix)?;
-    let (start, count) = value
-        .split_once(',')
-        .map_or((value, "1"), |(start, count)| (start, count));
-    Some((start.parse().ok()?, count.parse().ok()?))
+fn u32_to_i32_saturating(value: u32) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
+}
+
+fn usize_to_u32_saturating(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
 }
 
 #[cfg(test)]
@@ -246,5 +231,23 @@ mod tests {
         let added = &document.files[0].hunks[0].lines[1];
         assert_eq!(text_buffer.view(removed.text_range), "print(\"old\")");
         assert_eq!(text_buffer.view(added.text_range), "print(\"new\")");
+    }
+
+    #[test]
+    fn parse_into_accepts_crlf_patch_text() {
+        let patch = "diff --git a/a.txt b/a.txt\r\n@@ -1 +1 @@\r\n-old\r\n+new\r\n";
+        let mut text_buffer = TextBuffer::default();
+        let document = parse_into(patch, &mut text_buffer);
+
+        assert_eq!(document.files.len(), 1);
+        assert_eq!(document.files[0].hunks[0].lines.len(), 2);
+        assert_eq!(
+            text_buffer.view(document.files[0].hunks[0].lines[0].text_range),
+            "old"
+        );
+        assert_eq!(
+            text_buffer.view(document.files[0].hunks[0].lines[1].text_range),
+            "new"
+        );
     }
 }

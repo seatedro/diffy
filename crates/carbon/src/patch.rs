@@ -26,8 +26,8 @@ impl std::error::Error for PatchError {}
 pub fn parse_unified_patch(input: &str) -> Result<DiffDocument, PatchError> {
     let mut parser = PatchParser::default();
 
-    for line in input.lines() {
-        parser.push_line(line)?;
+    for raw_line in input.lines() {
+        parser.push_line(raw_line.strip_suffix('\r').unwrap_or(raw_line))?;
     }
 
     let document = parser.finish();

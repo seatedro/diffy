@@ -6,9 +6,10 @@ use crate::core::compare::backends::{DiffBackend, find_similar_bounded};
 use crate::core::compare::progress::{ComparePhase, ProgressSink};
 use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::CompareSpec;
-use crate::core::diff::{DeferredHunkSource, DiffLine, FileDiff, Hunk, LineKind};
-use crate::core::error::Result;
-use crate::core::text::{ChangeIntensity, DiffTokenSpan, SyntaxTokenKind, TextBuffer, TokenBuffer};
+use crate::core::diff::unified_parser::lower_carbon_file;
+use crate::core::diff::{DeferredHunkSource, FileDiff};
+use crate::core::error::{DiffyError, Result};
+use crate::core::text::{TextBuffer, TokenBuffer};
 use crate::core::vcs::git::{GitService, WORKDIR_REF};
 
 /// Throttle file-progress emits so a 3,000-file diff doesn't post 3,000
@@ -71,6 +72,9 @@ impl GitDiffBackend {
             file.hunks_deferred = false;
             file.deferred_hunk_source = None;
             return Ok(Some(CompareOutput {
+                carbon: carbon::DiffDocument {
+                    files: vec![carbon_summary_from_legacy(&file, 0)],
+                },
                 files: vec![file],
                 ..CompareOutput::default()
             }));
@@ -85,7 +89,7 @@ impl GitDiffBackend {
         let new_path = source.new_path.as_deref().map(Path::new);
         let mut options = DiffOptions::new();
         options.context_lines(3);
-        let patch = git2::Patch::from_buffers(
+        let mut patch = git2::Patch::from_buffers(
             &old_content,
             old_path,
             &new_content,
@@ -100,12 +104,17 @@ impl GitDiffBackend {
         loaded.hunks.clear();
         loaded.additions = 0;
         loaded.deletions = 0;
-        append_patch_hunks(
-            &mut loaded,
-            &patch,
+        let (raw_diff, carbon_file) =
+            carbon_file_from_patch(&mut patch, output.carbon.files.len(), Some(&loaded))?;
+        output.raw_diff.push_str(&raw_diff);
+        loaded = lower_carbon_file(
+            &carbon_file,
             &mut output.text_buffer,
-            &mut output.token_buffer,
-        )?;
+            Some(&mut output.token_buffer),
+        );
+        loaded.hunks_deferred = false;
+        loaded.deferred_hunk_source = None;
+        output.carbon.files.push(carbon_file);
         output.files.push(loaded);
         Ok(Some(output))
     }
@@ -250,6 +259,12 @@ pub(crate) fn compare_output_from_diff(
     let deltas: Vec<_> = diff.deltas().collect();
     if deltas.len() > DEFER_HUNKS_FILE_LIMIT {
         output.files = deltas.iter().map(file_summary_from_delta).collect();
+        output.carbon.files = output
+            .files
+            .iter()
+            .enumerate()
+            .map(|(index, file)| carbon_summary_from_legacy(file, index))
+            .collect();
         return Ok(output);
     }
 
@@ -286,12 +301,23 @@ pub(crate) fn compare_output_from_diff(
         file.deferred_hunk_source = None;
 
         if file.is_binary {
+            output
+                .carbon
+                .files
+                .push(carbon_summary_from_legacy(&file, output.carbon.files.len()));
             output.files.push(file);
             continue;
         }
 
-        if let Ok(Some(patch)) = git2::Patch::from_diff(diff, delta_idx) {
-            append_patch_hunks(&mut file, &patch, &mut text_buffer, &mut token_buffer)?;
+        if let Ok(Some(mut patch)) = git2::Patch::from_diff(diff, delta_idx) {
+            let (raw_diff, carbon_file) =
+                carbon_file_from_patch(&mut patch, output.carbon.files.len(), Some(&file))?;
+            output.raw_diff.push_str(&raw_diff);
+            file = lower_carbon_file(&carbon_file, &mut text_buffer, Some(&mut token_buffer));
+            file.hunks_deferred = false;
+            file.stats_deferred = false;
+            file.deferred_hunk_source = None;
+            output.carbon.files.push(carbon_file);
         }
 
         output.files.push(file);
@@ -310,108 +336,75 @@ fn load_blob_content(repo: &Repository, oid: Option<&str>) -> Result<Vec<u8>> {
     Ok(repo.find_blob(oid)?.content().to_vec())
 }
 
-fn append_patch_hunks(
-    file: &mut FileDiff,
-    patch: &git2::Patch<'_>,
-    text_buffer: &mut TextBuffer,
-    token_buffer: &mut TokenBuffer,
-) -> Result<()> {
-    for hunk_idx in 0..patch.num_hunks() {
-        let (hunk, _) = match patch.hunk(hunk_idx) {
-            Ok(h) => h,
-            Err(_) => continue,
-        };
-        let mut current_hunk = Hunk {
-            old_start: hunk.old_start() as i32,
-            new_start: hunk.new_start() as i32,
-            header: String::new(),
-            ..Hunk::default()
-        };
-
-        let mut old_line = hunk.old_start() as i32;
-        let mut new_line = hunk.new_start() as i32;
-
-        for line_idx in 0..patch.num_lines_in_hunk(hunk_idx)? {
-            let line = match patch.line_in_hunk(hunk_idx, line_idx) {
-                Ok(l) => l,
-                Err(_) => continue,
-            };
-            let content = std::str::from_utf8(line.content())
-                .unwrap_or_default()
-                .trim_end_matches('\n');
-            let text_range = text_buffer.append(content);
-
-            let origin = line.origin();
-            let (kind, old_num, new_num, tokens) = if origin == '-' {
-                let removed = vec![DiffTokenSpan {
-                    offset: 0,
-                    length: content.len() as u32,
-                    kind: SyntaxTokenKind::Normal,
-                    intensity: ChangeIntensity::NovelWord,
-                }];
-                let range = token_buffer.append(&removed);
-                let old = old_line;
-                old_line += 1;
-                (LineKind::Removed, Some(old), None, range)
-            } else if origin == '+' {
-                let added = vec![DiffTokenSpan {
-                    offset: 0,
-                    length: content.len() as u32,
-                    kind: SyntaxTokenKind::Normal,
-                    intensity: ChangeIntensity::NovelWord,
-                }];
-                let range = token_buffer.append(&added);
-                let new = new_line;
-                new_line += 1;
-                (LineKind::Added, None, Some(new), range)
-            } else if origin == ' ' || origin == '=' {
-                let old = old_line;
-                let new = new_line;
-                old_line += 1;
-                new_line += 1;
-                (LineKind::Context, Some(old), Some(new), Default::default())
-            } else {
-                continue;
-            };
-
-            current_hunk.lines.push(DiffLine {
-                kind,
-                old_line_number: old_num,
-                new_line_number: new_num,
-                text_range,
-                change_tokens: tokens,
-                ..DiffLine::default()
-            });
-
-            if kind == LineKind::Added {
-                file.additions += 1;
-            } else if kind == LineKind::Removed {
-                file.deletions += 1;
-            }
+fn carbon_file_from_patch(
+    patch: &mut git2::Patch<'_>,
+    file_id: usize,
+    summary: Option<&FileDiff>,
+) -> Result<(String, carbon::FileDiff)> {
+    let raw = patch.to_buf()?;
+    let raw_diff = String::from_utf8_lossy(raw.as_ref()).into_owned();
+    let mut document = carbon::parse_unified_patch(&raw_diff)
+        .map_err(|error| DiffyError::Parse(error.to_string()))?;
+    let Some(mut file) = document.files.pop() else {
+        return Err(DiffyError::Parse("patch contained no file diff".to_owned()));
+    };
+    file.id = carbon::FileId(usize_to_u32_saturating(file_id));
+    if let Some(summary) = summary {
+        if file.old_path.is_none() && !summary.path.is_empty() {
+            file.old_path = Some(summary.path.clone());
         }
-
-        if !current_hunk.lines.is_empty() {
-            current_hunk.old_count = current_hunk
-                .lines
-                .iter()
-                .filter(|l| l.kind != LineKind::Added)
-                .count() as i32;
-            current_hunk.new_count = current_hunk
-                .lines
-                .iter()
-                .filter(|l| l.kind != LineKind::Removed)
-                .count() as i32;
-            current_hunk.header = format!(
-                "@@ -{},{} +{},{} @@",
-                current_hunk.old_start,
-                current_hunk.old_count,
-                current_hunk.new_start,
-                current_hunk.new_count,
-            );
-            file.hunks.push(current_hunk);
+        if file.new_path.is_none() && !summary.path.is_empty() {
+            file.new_path = Some(summary.path.clone());
+        }
+        if summary.is_binary {
+            file.is_binary = true;
+            file.status = carbon::FileStatus::Binary;
         }
     }
-    Ok(())
+    Ok((raw_diff, file))
+}
+
+fn carbon_summary_from_legacy(file: &FileDiff, file_id: usize) -> carbon::FileDiff {
+    let source = file.deferred_hunk_source.as_ref();
+    let path = (!file.path.is_empty()).then(|| file.path.clone());
+    let (old_path, new_path) = match file.status.as_str() {
+        "A" => (
+            None,
+            source.and_then(|source| source.new_path.clone()).or(path),
+        ),
+        "D" => (
+            source.and_then(|source| source.old_path.clone()).or(path),
+            None,
+        ),
+        _ => (
+            source
+                .and_then(|source| source.old_path.clone())
+                .or_else(|| path.clone()),
+            source.and_then(|source| source.new_path.clone()).or(path),
+        ),
+    };
+    carbon::FileDiff {
+        id: carbon::FileId(usize_to_u32_saturating(file_id)),
+        old_path,
+        new_path,
+        status: carbon_status_from_legacy(file),
+        is_binary: file.is_binary,
+        is_partial: true,
+        ..carbon::FileDiff::default()
+    }
+}
+
+fn carbon_status_from_legacy(file: &FileDiff) -> carbon::FileStatus {
+    if file.is_binary {
+        carbon::FileStatus::Binary
+    } else {
+        match file.status.as_str() {
+            "A" => carbon::FileStatus::Added,
+            "D" => carbon::FileStatus::Deleted,
+            "R" => carbon::FileStatus::Renamed,
+            _ => carbon::FileStatus::Modified,
+        }
+    }
 }
 
 fn file_summary_from_delta(delta: &git2::DiffDelta<'_>) -> FileDiff {
@@ -462,6 +455,10 @@ fn can_diff_deferred_source(file: &FileDiff, source: &DeferredHunkSource) -> boo
 
 fn usize_to_i32_saturating(value: usize) -> i32 {
     value.min(i32::MAX as usize) as i32
+}
+
+fn usize_to_u32_saturating(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
 }
 
 #[cfg(test)]
@@ -548,6 +545,9 @@ mod tests {
 
         let file = output.files.first().expect("single file diff");
         assert_eq!(file.path, "src/example.rs");
+        assert_eq!(output.carbon.files.len(), 1);
+        assert_eq!(output.carbon.files[0].path(), "src/example.rs");
+        assert!(output.raw_diff.contains("diff --git"));
         let removed = file
             .hunks
             .iter()
@@ -671,6 +671,8 @@ mod tests {
             .unwrap();
 
         let file = output.files.first().expect("single file diff");
+        assert_eq!(output.carbon.files.len(), 1);
+        assert_eq!(output.carbon.files[0].path(), "src/a.rs");
         assert!(!file.hunks_deferred);
         let removed = file
             .hunks

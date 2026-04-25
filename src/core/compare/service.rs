@@ -8,6 +8,7 @@ use crate::core::vcs::git::GitService;
 
 #[derive(Debug, Clone, Default)]
 pub struct CompareOutput {
+    pub carbon: carbon::DiffDocument,
     pub files: Vec<FileDiff>,
     pub raw_diff: String,
     pub text_buffer: TextBuffer,

@@ -37,6 +37,39 @@ pub fn format_reverse_hunk_patch(
     Some(patch)
 }
 
+pub fn format_carbon_hunk_patch(
+    file: &FileDiff,
+    carbon_file: &carbon::FileDiff,
+    hunk_index: usize,
+    reverse: bool,
+) -> Option<String> {
+    let hunk = file.hunks.get(hunk_index)?;
+    let mut patch = format_file_header(file);
+    let mut cursor = CarbonHunkCursor::new(file, hunk_index);
+    if reverse {
+        append_reversed_carbon_hunk(&mut patch, hunk, carbon_file, &mut cursor);
+    } else {
+        append_carbon_hunk(&mut patch, hunk, carbon_file, &mut cursor);
+    }
+    Some(patch)
+}
+
+pub fn format_carbon_lines_patch(
+    file: &FileDiff,
+    carbon_file: &carbon::FileDiff,
+    hunk_index: usize,
+    selected_lines: &[usize],
+    reverse: bool,
+) -> Option<String> {
+    let hunk = file.hunks.get(hunk_index)?;
+    let mut patch = format_file_header(file);
+    let mut cursor = CarbonHunkCursor::new(file, hunk_index);
+    let rewritten =
+        rewrite_carbon_hunk_for_lines(hunk, selected_lines, carbon_file, &mut cursor, reverse)?;
+    patch.push_str(&rewritten);
+    Some(patch)
+}
+
 fn format_file_header(file: &FileDiff) -> String {
     let path = &file.path;
     match file.status.as_str() {
@@ -47,6 +80,31 @@ fn format_file_header(file: &FileDiff) -> String {
             "diff --git a/{path} b/{path}\ndeleted file mode 100644\n--- a/{path}\n+++ /dev/null\n"
         ),
         _ => format!("diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n"),
+    }
+}
+
+fn append_carbon_hunk(
+    patch: &mut String,
+    hunk: &Hunk,
+    carbon_file: &carbon::FileDiff,
+    cursor: &mut CarbonHunkCursor,
+) {
+    use std::fmt::Write;
+    let _ = write!(
+        patch,
+        "@@ -{},{} +{},{} @@\n",
+        hunk.old_start, hunk.old_count, hunk.old_start, hunk.new_count
+    );
+    for line in &hunk.lines {
+        let (prefix, side) = match line.kind {
+            LineKind::Context => (' ', carbon::DiffSide::Old),
+            LineKind::Added => ('+', carbon::DiffSide::New),
+            LineKind::Removed => ('-', carbon::DiffSide::Old),
+        };
+        let text = cursor.line_text(carbon_file, line.kind, side);
+        patch.push(prefix);
+        patch.push_str(text);
+        patch.push('\n');
     }
 }
 
@@ -73,6 +131,31 @@ fn append_hunk(patch: &mut String, hunk: &Hunk, text_buffer: &TextBuffer) {
     }
 }
 
+fn append_reversed_carbon_hunk(
+    patch: &mut String,
+    hunk: &Hunk,
+    carbon_file: &carbon::FileDiff,
+    cursor: &mut CarbonHunkCursor,
+) {
+    use std::fmt::Write;
+    let _ = write!(
+        patch,
+        "@@ -{},{} +{},{} @@\n",
+        hunk.new_start, hunk.new_count, hunk.new_start, hunk.old_count
+    );
+    for line in &hunk.lines {
+        let (prefix, side) = match line.kind {
+            LineKind::Context => (' ', carbon::DiffSide::New),
+            LineKind::Added => ('-', carbon::DiffSide::New),
+            LineKind::Removed => ('+', carbon::DiffSide::Old),
+        };
+        let text = cursor.line_text(carbon_file, line.kind, side);
+        patch.push(prefix);
+        patch.push_str(text);
+        patch.push('\n');
+    }
+}
+
 fn append_reversed_hunk(patch: &mut String, hunk: &Hunk, text_buffer: &TextBuffer) {
     use std::fmt::Write;
     let _ = write!(
@@ -91,6 +174,107 @@ fn append_reversed_hunk(patch: &mut String, hunk: &Hunk, text_buffer: &TextBuffe
         patch.push_str(text);
         patch.push('\n');
     }
+}
+
+fn rewrite_carbon_hunk_for_lines(
+    hunk: &Hunk,
+    selected_lines: &[usize],
+    carbon_file: &carbon::FileDiff,
+    cursor: &mut CarbonHunkCursor,
+    reverse: bool,
+) -> Option<String> {
+    use std::fmt::Write;
+
+    let selected: std::collections::HashSet<usize> = selected_lines.iter().copied().collect();
+    let mut old_count: i32 = 0;
+    let mut new_count: i32 = 0;
+    let mut body = String::new();
+    let mut has_change = false;
+
+    for (i, line) in hunk.lines.iter().enumerate() {
+        let side = match line.kind {
+            LineKind::Context => {
+                if reverse {
+                    carbon::DiffSide::New
+                } else {
+                    carbon::DiffSide::Old
+                }
+            }
+            LineKind::Added => carbon::DiffSide::New,
+            LineKind::Removed => carbon::DiffSide::Old,
+        };
+        let text = cursor.line_text(carbon_file, line.kind, side);
+        let is_selected = selected.contains(&i);
+
+        match line.kind {
+            LineKind::Context => {
+                old_count += 1;
+                new_count += 1;
+                body.push(' ');
+                body.push_str(text);
+                body.push('\n');
+            }
+            LineKind::Removed => {
+                if is_selected {
+                    has_change = true;
+                    if reverse {
+                        new_count += 1;
+                        body.push('+');
+                    } else {
+                        old_count += 1;
+                        body.push('-');
+                    }
+                    body.push_str(text);
+                    body.push('\n');
+                } else if !reverse {
+                    old_count += 1;
+                    new_count += 1;
+                    body.push(' ');
+                    body.push_str(text);
+                    body.push('\n');
+                }
+            }
+            LineKind::Added => {
+                if is_selected {
+                    has_change = true;
+                    if reverse {
+                        old_count += 1;
+                        body.push('-');
+                    } else {
+                        new_count += 1;
+                        body.push('+');
+                    }
+                    body.push_str(text);
+                    body.push('\n');
+                } else if reverse {
+                    old_count += 1;
+                    new_count += 1;
+                    body.push(' ');
+                    body.push_str(text);
+                    body.push('\n');
+                }
+            }
+        }
+    }
+
+    if !has_change {
+        return None;
+    }
+
+    let anchor = if reverse {
+        hunk.new_start
+    } else {
+        hunk.old_start
+    };
+
+    let mut result = String::new();
+    let _ = write!(
+        result,
+        "@@ -{},{} +{},{} @@\n",
+        anchor, old_count, anchor, new_count
+    );
+    result.push_str(&body);
+    Some(result)
 }
 
 fn rewrite_hunk_for_lines(
@@ -182,10 +366,61 @@ fn rewrite_hunk_for_lines(
     Some(result)
 }
 
+struct CarbonHunkCursor {
+    old: u32,
+    new: u32,
+}
+
+impl CarbonHunkCursor {
+    fn new(file: &FileDiff, hunk_index: usize) -> Self {
+        let mut old = 0u32;
+        let mut new = 0u32;
+        for hunk in file.hunks.iter().take(hunk_index) {
+            for line in &hunk.lines {
+                match line.kind {
+                    LineKind::Context => {
+                        old = old.saturating_add(1);
+                        new = new.saturating_add(1);
+                    }
+                    LineKind::Removed => old = old.saturating_add(1),
+                    LineKind::Added => new = new.saturating_add(1),
+                }
+            }
+        }
+        Self { old, new }
+    }
+
+    fn line_text<'a>(
+        &mut self,
+        file: &'a carbon::FileDiff,
+        kind: LineKind,
+        side: carbon::DiffSide,
+    ) -> &'a str {
+        let old_index = self.old;
+        let new_index = self.new;
+        match kind {
+            LineKind::Context => {
+                self.old = self.old.saturating_add(1);
+                self.new = self.new.saturating_add(1);
+            }
+            LineKind::Removed => self.old = self.old.saturating_add(1),
+            LineKind::Added => self.new = self.new.saturating_add(1),
+        }
+        let index = match side {
+            carbon::DiffSide::Old => old_index,
+            carbon::DiffSide::New => new_index,
+        };
+        file.side_text(side)
+            .and_then(|text| text.line_str(carbon::LineId(index)))
+            .unwrap_or_default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::diff::types::{DiffLine, FileDiff, Hunk, LineKind};
+    use crate::core::diff::unified_parser::lower_carbon_document;
     use crate::core::text::buffer::TextBuffer;
 
     fn make_file(hunks: Vec<Hunk>) -> FileDiff {
@@ -515,5 +750,31 @@ mod tests {
         assert!(patch.contains("+remove_a\n"));
         assert!(!patch.contains("remove_b"));
         assert!(patch.contains("@@ -1,1 +1,2 @@\n"));
+    }
+
+    #[test]
+    fn carbon_patch_formatting_reads_from_text_store() {
+        let carbon = carbon::parse_unified_patch(
+            "\
+diff --git a/src/lib.rs b/src/lib.rs
+@@ -1,2 +1,2 @@
+ ctx
+-old
++new
+",
+        )
+        .unwrap();
+        let mut legacy_text = TextBuffer::default();
+        let legacy = lower_carbon_document(&carbon, &mut legacy_text, None);
+        let poisoned = TextBuffer::default();
+
+        let legacy_patch = format_hunk_patch(&legacy.files[0], 0, &poisoned).unwrap();
+        let carbon_patch =
+            format_carbon_hunk_patch(&legacy.files[0], &carbon.files[0], 0, false).unwrap();
+
+        assert!(legacy_patch.contains("-\n"));
+        assert!(carbon_patch.contains(" ctx\n"));
+        assert!(carbon_patch.contains("-old\n"));
+        assert!(carbon_patch.contains("+new\n"));
     }
 }

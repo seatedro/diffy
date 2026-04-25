@@ -25,6 +25,8 @@ pub struct FlatDiffRow {
     pub line_index: i32,
     pub old_line_index: i32,
     pub new_line_index: i32,
+    pub old_source_index: i32,
+    pub new_source_index: i32,
 }
 
 pub fn flatten_file_diff(file: &FileDiff, file_index: usize) -> Vec<FlatDiffRow> {
@@ -37,6 +39,8 @@ pub fn flatten_file_diff(file: &FileDiff, file_index: usize) -> Vec<FlatDiffRow>
         line_index: -1,
         old_line_index: -1,
         new_line_index: -1,
+        old_source_index: -1,
+        new_source_index: -1,
     });
     projected.project_into(&mut rows);
 
@@ -57,6 +61,8 @@ pub fn flatten_carbon_file_diff(
         line_index: -1,
         old_line_index: -1,
         new_line_index: -1,
+        old_source_index: -1,
+        new_source_index: -1,
     });
     projected.project_into(&mut rows);
     rows
@@ -308,6 +314,8 @@ impl ProjectedFileRows<'_> {
         let base = FlatDiffRow {
             file_index: self.file_index,
             hunk_index,
+            old_source_index: option_u32_to_i32(row.old_index),
+            new_source_index: option_u32_to_i32(row.new_index),
             ..FlatDiffRow::default()
         };
 
@@ -317,6 +325,8 @@ impl ProjectedFileRows<'_> {
                 line_index: -1,
                 old_line_index: -1,
                 new_line_index: -1,
+                old_source_index: -1,
+                new_source_index: -1,
                 ..base
             }),
             ProjectionRowKind::Context => {
@@ -426,6 +436,10 @@ fn usize_to_u32_saturating(value: usize) -> u32 {
 
 fn u32_to_i32_saturating(value: u32) -> i32 {
     i32::try_from(value).unwrap_or(i32::MAX)
+}
+
+fn option_u32_to_i32(value: Option<u32>) -> i32 {
+    value.map(u32_to_i32_saturating).unwrap_or(-1)
 }
 
 fn usize_to_i32_saturating(value: usize) -> i32 {

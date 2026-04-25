@@ -378,6 +378,7 @@ pub const COMPARE_REVEAL_DELAY_MS: u64 = 500;
 #[derive(Debug, Clone)]
 pub struct PreparedActiveFile {
     pub file: FileDiff,
+    pub carbon_file: Option<carbon::FileDiff>,
     pub render_doc: RenderDoc,
     pub text_buffer: TextBuffer,
     pub token_buffer: TokenBuffer,
@@ -446,9 +447,11 @@ pub struct ActiveFile {
     pub index: usize,
     pub path: String,
     pub file: FileDiff,
+    pub carbon_file: Option<carbon::FileDiff>,
     pub render_doc: RenderDoc,
     pub text_buffer: TextBuffer,
     pub base_file: FileDiff,
+    pub base_carbon_file: Option<carbon::FileDiff>,
     pub base_text_buffer: TextBuffer,
     pub token_buffer: TokenBuffer,
     pub left_ref: String,
@@ -504,6 +507,7 @@ pub(crate) fn prepare_active_file(
     );
     PreparedActiveFile {
         file,
+        carbon_file: carbon_file.cloned(),
         render_doc,
         text_buffer,
         token_buffer,
@@ -718,9 +722,11 @@ impl AppState {
         ActiveFile {
             index,
             path,
+            carbon_file: prepared.carbon_file.clone(),
             file: prepared.file.clone(),
             render_doc: prepared.render_doc,
             text_buffer: prepared.text_buffer.clone(),
+            base_carbon_file: prepared.carbon_file,
             base_file: prepared.file,
             base_text_buffer: prepared.text_buffer,
             token_buffer: prepared.token_buffer,
@@ -2070,6 +2076,7 @@ impl AppState {
         self.workspace.active_file.update(&self.store, |af| {
             if let Some(active) = af.as_mut() {
                 active.file = new_file;
+                active.carbon_file = None;
                 active.text_buffer = new_text_buffer;
                 active.render_doc = render_doc;
                 active.file_line_count = Some(total_lines);
@@ -2617,11 +2624,24 @@ impl AppState {
                 &mut active.token_buffer,
                 &payload.tokens,
             );
-            active.render_doc = build_render_doc(
-                &active.file,
-                active.index,
-                &active.text_buffer,
-                &active.token_buffer,
+            active.render_doc = active.carbon_file.as_ref().map_or_else(
+                || {
+                    build_render_doc(
+                        &active.file,
+                        active.index,
+                        &active.text_buffer,
+                        &active.token_buffer,
+                    )
+                },
+                |carbon_file| {
+                    build_render_doc_from_carbon(
+                        &active.file,
+                        carbon_file,
+                        active.index,
+                        &active.text_buffer,
+                        &active.token_buffer,
+                    )
+                },
             );
             applied = true;
         });
@@ -5324,6 +5344,14 @@ impl AppState {
 
         let patch_text = self.workspace.active_file.with(&self.store, |af| {
             let active = af.as_ref()?;
+            if let Some(carbon_file) = active.carbon_file.as_ref() {
+                return patch::format_carbon_hunk_patch(
+                    &active.file,
+                    carbon_file,
+                    hunk_index,
+                    operation != StatusOperation::Stage,
+                );
+            }
             if operation == StatusOperation::Stage {
                 patch::format_hunk_patch(&active.file, hunk_index, &active.text_buffer)
             } else {
@@ -5471,13 +5499,25 @@ impl AppState {
             let mut patches = Vec::new();
             for hunk_idx in hunk_indices {
                 let selected = selection_snapshot.selected_lines_for_hunk(hunk_idx);
-                if let Some(p) = patch::format_lines_patch(
-                    &active.file,
-                    hunk_idx as usize,
-                    &selected,
-                    &active.text_buffer,
-                    reverse,
-                ) {
+                let patch = active.carbon_file.as_ref().and_then(|carbon_file| {
+                    patch::format_carbon_lines_patch(
+                        &active.file,
+                        carbon_file,
+                        hunk_idx as usize,
+                        &selected,
+                        reverse,
+                    )
+                });
+                let patch = patch.or_else(|| {
+                    patch::format_lines_patch(
+                        &active.file,
+                        hunk_idx as usize,
+                        &selected,
+                        &active.text_buffer,
+                        reverse,
+                    )
+                });
+                if let Some(p) = patch {
                     patches.push(p);
                 }
             }
@@ -6562,9 +6602,11 @@ mod tests {
                 index: 0,
                 path,
                 file: file.clone(),
+                carbon_file: None,
                 render_doc,
                 text_buffer: text_buffer.clone(),
                 base_file: file,
+                base_carbon_file: None,
                 base_text_buffer: text_buffer,
                 token_buffer,
                 left_ref,
@@ -7113,6 +7155,7 @@ mod tests {
                 path: "src/other.rs".to_owned(),
                 prepared: PreparedActiveFile {
                     file: FileDiff::default(),
+                    carbon_file: None,
                     render_doc: RenderDoc::default(),
                     text_buffer: TextBuffer::default(),
                     token_buffer: TokenBuffer::default(),

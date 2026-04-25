@@ -141,12 +141,17 @@ fn compare_changed_paths(
             .or(changed.old_path.as_deref())
             .unwrap_or_default();
         if changed.is_binary {
-            output.files.push(FileDiff {
+            let file = FileDiff {
                 path: display_path.to_owned(),
                 status: changed.status,
                 is_binary: true,
                 ..FileDiff::default()
-            });
+            };
+            output
+                .carbon
+                .files
+                .push(carbon_file_from_semantic_file(&file, &text_buffer, idx));
+            output.files.push(file);
             continue;
         }
 
@@ -169,6 +174,10 @@ fn compare_changed_paths(
             &mut text_buffer,
             &mut token_buffer,
         );
+        output
+            .carbon
+            .files
+            .push(carbon_file_from_semantic_file(&file, &text_buffer, idx));
         output.files.push(file);
     }
 
@@ -334,6 +343,161 @@ fn convert_semantic_result(
     }
 
     file
+}
+
+fn carbon_file_from_semantic_file(
+    file: &FileDiff,
+    text_buffer: &TextBuffer,
+    file_id: usize,
+) -> carbon::FileDiff {
+    let mut carbon_file = carbon::FileDiff {
+        id: carbon::FileId(usize_to_u32_saturating(file_id)),
+        old_path: (file.status != "A").then(|| file.path.clone()),
+        new_path: (file.status != "D").then(|| file.path.clone()),
+        status: carbon_status(file),
+        is_binary: file.is_binary,
+        is_partial: true,
+        ..carbon::FileDiff::default()
+    };
+    if file.is_binary {
+        return carbon_file;
+    }
+
+    let mut old_text = String::new();
+    let mut new_text = String::new();
+    let mut old_count = 0u32;
+    let mut new_count = 0u32;
+
+    for (hunk_index, hunk) in file.hunks.iter().enumerate() {
+        let mut blocks = Vec::new();
+        let mut line_index = 0usize;
+
+        while line_index < hunk.lines.len() {
+            match hunk.lines[line_index].kind {
+                LineKind::Context => {
+                    let old_start = old_count;
+                    let new_start = new_count;
+                    let old_line_start = hunk.lines[line_index]
+                        .old_line_number
+                        .map(i32_to_u32_nonnegative)
+                        .unwrap_or_else(|| old_start.saturating_add(1));
+                    let new_line_start = hunk.lines[line_index]
+                        .new_line_number
+                        .map(i32_to_u32_nonnegative)
+                        .unwrap_or_else(|| new_start.saturating_add(1));
+                    let mut count = 0u32;
+                    while line_index < hunk.lines.len()
+                        && hunk.lines[line_index].kind == LineKind::Context
+                    {
+                        let text = text_buffer.view(hunk.lines[line_index].text_range);
+                        push_carbon_text_line(&mut old_text, text);
+                        push_carbon_text_line(&mut new_text, text);
+                        old_count = old_count.saturating_add(1);
+                        new_count = new_count.saturating_add(1);
+                        count = count.saturating_add(1);
+                        line_index += 1;
+                    }
+                    blocks.push(
+                        carbon::Block::context(
+                            carbon::BlockId(usize_to_u32_saturating(
+                                carbon_file.blocks.len().saturating_add(blocks.len()),
+                            )),
+                            carbon::SourceRange::new(old_start, count),
+                            carbon::SourceRange::new(new_start, count),
+                        )
+                        .with_source_lines(old_line_start, new_line_start),
+                    );
+                }
+                LineKind::Added | LineKind::Removed => {
+                    let old_start = old_count;
+                    let new_start = new_count;
+                    let mut old_line_start = old_start.saturating_add(1);
+                    let mut new_line_start = new_start.saturating_add(1);
+                    let mut old_block_count = 0u32;
+                    let mut new_block_count = 0u32;
+                    let mut saw_old = false;
+                    let mut saw_new = false;
+                    while line_index < hunk.lines.len()
+                        && hunk.lines[line_index].kind != LineKind::Context
+                    {
+                        let line = &hunk.lines[line_index];
+                        let text = text_buffer.view(line.text_range);
+                        match line.kind {
+                            LineKind::Removed => {
+                                if !saw_old {
+                                    old_line_start = line
+                                        .old_line_number
+                                        .map(i32_to_u32_nonnegative)
+                                        .unwrap_or_else(|| old_count.saturating_add(1));
+                                    saw_old = true;
+                                }
+                                push_carbon_text_line(&mut old_text, text);
+                                old_count = old_count.saturating_add(1);
+                                old_block_count = old_block_count.saturating_add(1);
+                            }
+                            LineKind::Added => {
+                                if !saw_new {
+                                    new_line_start = line
+                                        .new_line_number
+                                        .map(i32_to_u32_nonnegative)
+                                        .unwrap_or_else(|| new_count.saturating_add(1));
+                                    saw_new = true;
+                                }
+                                push_carbon_text_line(&mut new_text, text);
+                                new_count = new_count.saturating_add(1);
+                                new_block_count = new_block_count.saturating_add(1);
+                            }
+                            LineKind::Context => {}
+                        }
+                        line_index += 1;
+                    }
+                    blocks.push(
+                        carbon::Block::change(
+                            carbon::BlockId(usize_to_u32_saturating(
+                                carbon_file.blocks.len().saturating_add(blocks.len()),
+                            )),
+                            carbon::SourceRange::new(old_start, old_block_count),
+                            carbon::SourceRange::new(new_start, new_block_count),
+                        )
+                        .with_source_lines(old_line_start, new_line_start),
+                    );
+                }
+            }
+        }
+
+        let mut carbon_hunk = carbon::Hunk::new(
+            carbon::HunkId(usize_to_u32_saturating(hunk_index)),
+            i32_to_u32_nonnegative(hunk.old_start),
+            i32_to_u32_nonnegative(hunk.old_count),
+            i32_to_u32_nonnegative(hunk.new_start),
+            i32_to_u32_nonnegative(hunk.new_count),
+            carbon::BlockRange::default(),
+        );
+        carbon_hunk.header.clone_from(&hunk.header);
+        carbon_file.add_hunk(carbon_hunk, blocks);
+    }
+
+    carbon_file.old_text = (old_count > 0).then(|| carbon::TextStore::from_text(old_text));
+    carbon_file.new_text = (new_count > 0).then(|| carbon::TextStore::from_text(new_text));
+    carbon_file
+}
+
+fn carbon_status(file: &FileDiff) -> carbon::FileStatus {
+    if file.is_binary {
+        carbon::FileStatus::Binary
+    } else {
+        match file.status.as_str() {
+            "A" => carbon::FileStatus::Added,
+            "D" => carbon::FileStatus::Deleted,
+            "R" => carbon::FileStatus::Renamed,
+            _ => carbon::FileStatus::Modified,
+        }
+    }
+}
+
+fn push_carbon_text_line(text: &mut String, line: &str) {
+    text.push_str(line);
+    text.push('\n');
 }
 
 fn convert_change_spans(spans: &[vendored_difftastic::ChangeSpan]) -> Vec<DiffTokenSpan> {
@@ -561,6 +725,14 @@ fn load_workdir_content(
     }
 }
 
+fn i32_to_u32_nonnegative(value: i32) -> u32 {
+    u32::try_from(value.max(0)).unwrap_or(u32::MAX)
+}
+
+fn usize_to_u32_saturating(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -573,8 +745,8 @@ mod tests {
     };
 
     use super::{
-        DifftasticBackend, collect_changed_paths, convert_semantic_result, map_highlight,
-        map_intensity,
+        DifftasticBackend, carbon_file_from_semantic_file, collect_changed_paths,
+        convert_semantic_result, map_highlight, map_intensity,
     };
     use crate::core::compare::backends::DiffBackend;
     use crate::core::compare::spec::{CompareMode, CompareSpec, LayoutMode, RendererKind};
@@ -668,6 +840,62 @@ mod tests {
         assert_eq!(
             text_buffer.view(file.hunks[0].lines[1].text_range),
             "    new();"
+        );
+    }
+
+    #[test]
+    fn carbon_file_from_semantic_file_uses_text_store_content() {
+        let result = SemanticDiffResult {
+            status: DiffStatus::Changed,
+            language: "Rust".to_owned(),
+            aligned_lines: vec![(Some(0), Some(0))],
+            chunks: vec![SemanticChunk {
+                lines: vec![SemanticLine {
+                    lhs_line: Some(0),
+                    rhs_line: Some(0),
+                    lhs_changes: vec![ChangeSpan {
+                        start_col: 4,
+                        end_col: 7,
+                        highlight: HighlightKind::Normal,
+                        intensity: DftIntensity::Novel,
+                    }],
+                    rhs_changes: vec![ChangeSpan {
+                        start_col: 4,
+                        end_col: 7,
+                        highlight: HighlightKind::Normal,
+                        intensity: DftIntensity::Novel,
+                    }],
+                }],
+            }],
+        };
+        let mut text_buffer = TextBuffer::default();
+        let mut token_buffer = TokenBuffer::default();
+        let file = convert_semantic_result(
+            &result,
+            "src/lib.rs",
+            "M",
+            "let old = 1;\n",
+            "let new = 1;\n",
+            &mut text_buffer,
+            &mut token_buffer,
+        );
+
+        let carbon_file = carbon_file_from_semantic_file(&file, &text_buffer, 9);
+
+        assert_eq!(carbon_file.id, carbon::FileId(9));
+        assert_eq!(
+            carbon_file
+                .old_text
+                .as_ref()
+                .and_then(|text| text.line_str(carbon::LineId(0))),
+            Some("let old = 1;")
+        );
+        assert_eq!(
+            carbon_file
+                .new_text
+                .as_ref()
+                .and_then(|text| text.line_str(carbon::LineId(0))),
+            Some("let new = 1;")
         );
     }
 
@@ -954,6 +1182,22 @@ mod tests {
         let file = &output.files[0];
         assert_eq!(file.path, "src/lib.rs");
         assert_eq!(file.hunks.len(), 1);
+        assert_eq!(output.carbon.files.len(), 1);
+        assert_eq!(output.carbon.files[0].path(), "src/lib.rs");
+        assert_eq!(
+            output.carbon.files[0]
+                .old_text
+                .as_ref()
+                .and_then(|text| text.line_str(carbon::LineId(0))),
+            Some("    old();")
+        );
+        assert_eq!(
+            output.carbon.files[0]
+                .new_text
+                .as_ref()
+                .and_then(|text| text.line_str(carbon::LineId(0))),
+            Some("    new();")
+        );
         let removed = &file.hunks[0].lines[0];
         let added = &file.hunks[0].lines[1];
         assert_eq!(output.text_buffer.view(removed.text_range), "    old();");

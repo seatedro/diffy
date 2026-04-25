@@ -1,10 +1,6 @@
-use std::collections::HashSet;
-
 use crate::core::diff::{FileDiff, Hunk, LineKind};
-use crate::core::rendering::{DiffRowType, flatten_file_diff};
 use crate::core::syntax::Highlighter;
 use crate::core::text::{DiffTokenSpan, TextBuffer, TokenBuffer};
-use phosphor::TextByteRange;
 
 #[derive(Debug, Clone, Copy)]
 struct LineRef {
@@ -121,69 +117,6 @@ impl DiffSyntaxAnnotator {
         }
     }
 
-    pub fn annotate_full_file_window(
-        &self,
-        file_diff: &FileDiff,
-        file_index: usize,
-        old_lines: Option<&[String]>,
-        new_lines: Option<&[String]>,
-        window: SyntaxRowWindow,
-    ) -> Vec<SyntaxLineTokens> {
-        if file_diff.is_binary || window.end <= window.start {
-            return Vec::new();
-        }
-
-        let (old_refs, new_refs) = build_full_file_refs(file_diff, file_index, window);
-        let language = self.highlighter.resolve_language(&file_diff.path);
-        let mut out = Vec::new();
-
-        if let Some(lines) = old_lines {
-            let (source, line_offsets) = source_from_lines(lines);
-            let byte_refs = byte_refs_for_refs(&old_refs, &line_offsets, lines);
-            let ranges = byte_ranges_for_refs(&byte_refs);
-            let tokens = match self
-                .highlighter
-                .highlight_resolved_ranges(language, &source, &ranges)
-            {
-                Ok(tokens) => tokens,
-                Err(error) => {
-                    tracing::warn!(
-                        path = %file_diff.path,
-                        ?language,
-                        %error,
-                        "syntax highlight failed"
-                    );
-                    Vec::new()
-                }
-            };
-            out.extend(collect_line_tokens(&tokens, &byte_refs));
-        }
-
-        if let Some(lines) = new_lines {
-            let (source, line_offsets) = source_from_lines(lines);
-            let byte_refs = byte_refs_for_refs(&new_refs, &line_offsets, lines);
-            let ranges = byte_ranges_for_refs(&byte_refs);
-            let tokens = match self
-                .highlighter
-                .highlight_resolved_ranges(language, &source, &ranges)
-            {
-                Ok(tokens) => tokens,
-                Err(error) => {
-                    tracing::warn!(
-                        path = %file_diff.path,
-                        ?language,
-                        %error,
-                        "syntax highlight failed"
-                    );
-                    Vec::new()
-                }
-            };
-            out.extend(collect_line_tokens(&tokens, &byte_refs));
-        }
-
-        out
-    }
-
     pub fn highlight_full_lines(&self, path: &str, lines: &[String]) -> FullFileSyntax {
         let (source, line_offsets) = source_from_lines(lines);
         let line_lengths = lines.iter().map(|line| line.len()).collect::<Vec<_>>();
@@ -206,31 +139,6 @@ impl DiffSyntaxAnnotator {
             line_lengths,
             tokens,
         }
-    }
-
-    pub fn annotate_full_file_window_from_cache(
-        &self,
-        file_diff: &FileDiff,
-        file_index: usize,
-        old_syntax: Option<&FullFileSyntax>,
-        new_syntax: Option<&FullFileSyntax>,
-        window: SyntaxRowWindow,
-    ) -> Vec<SyntaxLineTokens> {
-        if file_diff.is_binary || window.end <= window.start {
-            return Vec::new();
-        }
-
-        let (old_refs, new_refs) = build_full_file_refs(file_diff, file_index, window);
-        let mut out = Vec::new();
-        if let Some(syntax) = old_syntax {
-            let byte_refs = byte_refs_for_cached_refs(&old_refs, syntax);
-            out.extend(collect_line_tokens(&syntax.tokens, &byte_refs));
-        }
-        if let Some(syntax) = new_syntax {
-            let byte_refs = byte_refs_for_cached_refs(&new_refs, syntax);
-            out.extend(collect_line_tokens(&syntax.tokens, &byte_refs));
-        }
-        out
     }
 
     pub fn annotate_carbon_full_file_window_from_cache(
@@ -344,134 +252,6 @@ fn distribute_tokens(
     }
 }
 
-fn build_full_file_refs(
-    file_diff: &FileDiff,
-    file_index: usize,
-    window: SyntaxRowWindow,
-) -> (Vec<LineRef>, Vec<LineRef>) {
-    let rows = flatten_file_diff(file_diff, file_index);
-    let end = window.end.min(rows.len());
-    let mut old_refs = Vec::new();
-    let mut new_refs = Vec::new();
-    let mut old_seen = HashSet::new();
-    let mut new_seen = HashSet::new();
-
-    for row in rows
-        .iter()
-        .skip(window.start)
-        .take(end.saturating_sub(window.start))
-    {
-        match row.row_type {
-            DiffRowType::Context => {
-                push_full_file_ref(
-                    file_diff,
-                    row.hunk_index,
-                    row.line_index,
-                    true,
-                    &mut old_seen,
-                    &mut old_refs,
-                );
-                push_full_file_ref(
-                    file_diff,
-                    row.hunk_index,
-                    row.line_index,
-                    false,
-                    &mut new_seen,
-                    &mut new_refs,
-                );
-            }
-            DiffRowType::Removed => {
-                push_full_file_ref(
-                    file_diff,
-                    row.hunk_index,
-                    row.old_line_index,
-                    true,
-                    &mut old_seen,
-                    &mut old_refs,
-                );
-            }
-            DiffRowType::Added => {
-                push_full_file_ref(
-                    file_diff,
-                    row.hunk_index,
-                    row.new_line_index,
-                    false,
-                    &mut new_seen,
-                    &mut new_refs,
-                );
-            }
-            DiffRowType::Modified => {
-                push_full_file_ref(
-                    file_diff,
-                    row.hunk_index,
-                    row.old_line_index,
-                    true,
-                    &mut old_seen,
-                    &mut old_refs,
-                );
-                push_full_file_ref(
-                    file_diff,
-                    row.hunk_index,
-                    row.new_line_index,
-                    false,
-                    &mut new_seen,
-                    &mut new_refs,
-                );
-            }
-            DiffRowType::FileHeader | DiffRowType::HunkSeparator => {}
-        }
-    }
-
-    (old_refs, new_refs)
-}
-
-fn push_full_file_ref(
-    file_diff: &FileDiff,
-    hunk_index: i32,
-    line_index: i32,
-    old_side: bool,
-    seen: &mut HashSet<(usize, usize)>,
-    refs: &mut Vec<LineRef>,
-) {
-    if hunk_index < 0 || line_index < 0 {
-        return;
-    }
-    let Some(hunk_index) = i32_to_usize_nonnegative(hunk_index) else {
-        return;
-    };
-    let Some(line_index) = i32_to_usize_nonnegative(line_index) else {
-        return;
-    };
-    if !seen.insert((hunk_index, line_index)) {
-        return;
-    }
-    let Some(line) = file_diff
-        .hunks
-        .get(hunk_index)
-        .and_then(|hunk| hunk.lines.get(line_index))
-    else {
-        return;
-    };
-    let Some(line_number) = (if old_side {
-        line.old_line_number
-    } else {
-        line.new_line_number
-    }) else {
-        return;
-    };
-    if line_number <= 0 {
-        return;
-    }
-    refs.push(LineRef {
-        hunk_index,
-        line_index,
-        side: None,
-        source_index: None,
-        content_offset: i32_to_usize_nonnegative(line_number - 1).unwrap_or(usize::MAX),
-        content_len: 0,
-    });
-}
-
 fn build_carbon_full_file_refs(
     file: &carbon::FileDiff,
     _file_index: usize,
@@ -538,38 +318,6 @@ fn source_from_lines(lines: &[String]) -> (String, Vec<usize>) {
     (source, offsets)
 }
 
-fn byte_refs_for_refs(refs: &[LineRef], line_offsets: &[usize], lines: &[String]) -> Vec<LineRef> {
-    refs.iter()
-        .filter_map(|reference| {
-            let line_index = reference.content_offset;
-            let start = *line_offsets.get(line_index)?;
-            let len = lines.get(line_index)?.len();
-            Some(LineRef {
-                hunk_index: reference.hunk_index,
-                line_index: reference.line_index,
-                side: reference.side,
-                source_index: reference.source_index,
-                content_offset: start,
-                content_len: len,
-            })
-        })
-        .collect()
-}
-
-fn byte_ranges_for_refs(refs: &[LineRef]) -> Vec<TextByteRange> {
-    let mut ranges = refs
-        .iter()
-        .filter_map(|reference| {
-            (reference.content_len > 0).then_some(TextByteRange {
-                start: usize_to_u32_saturating(reference.content_offset),
-                len: usize_to_u32_saturating(reference.content_len),
-            })
-        })
-        .collect::<Vec<_>>();
-    ranges.sort_by_key(|range| range.start);
-    ranges
-}
-
 fn byte_refs_for_cached_refs(refs: &[LineRef], syntax: &FullFileSyntax) -> Vec<LineRef> {
     refs.iter()
         .filter_map(|reference| {
@@ -592,10 +340,6 @@ fn usize_to_u32_saturating(value: usize) -> u32 {
 
 fn u32_to_usize_saturating(value: u32) -> usize {
     usize::try_from(value).unwrap_or(usize::MAX)
-}
-
-fn i32_to_usize_nonnegative(value: i32) -> Option<usize> {
-    usize::try_from(value).ok()
 }
 
 fn token_end_usize(token: DiffTokenSpan) -> usize {
@@ -645,9 +389,50 @@ fn collect_line_tokens(tokens: &[DiffTokenSpan], refs: &[LineRef]) -> Vec<Syntax
 
 #[cfg(test)]
 mod tests {
-    use crate::core::diff::unified_parser::parse_into;
+    use crate::core::diff::{DiffDocument, DiffLine, FileDiff, Hunk, LineKind};
     use crate::core::syntax::DiffSyntaxAnnotator;
     use crate::core::text::{TextBuffer, TokenBuffer};
+
+    fn test_document(
+        path: &str,
+        lines: &[(&str, LineKind, Option<i32>, Option<i32>)],
+        text_buffer: &mut TextBuffer,
+    ) -> DiffDocument {
+        DiffDocument {
+            files: vec![FileDiff {
+                path: path.to_owned(),
+                status: "M".to_owned(),
+                hunks: vec![Hunk {
+                    old_start: 1,
+                    old_count: lines
+                        .iter()
+                        .filter(|(_, kind, _, _)| {
+                            matches!(kind, LineKind::Context | LineKind::Removed)
+                        })
+                        .count() as i32,
+                    new_start: 1,
+                    new_count: lines
+                        .iter()
+                        .filter(|(_, kind, _, _)| {
+                            matches!(kind, LineKind::Context | LineKind::Added)
+                        })
+                        .count() as i32,
+                    header: "@@".to_owned(),
+                    lines: lines
+                        .iter()
+                        .map(|(text, kind, old_line_number, new_line_number)| DiffLine {
+                            kind: *kind,
+                            old_line_number: *old_line_number,
+                            new_line_number: *new_line_number,
+                            text_range: text_buffer.append(text),
+                            ..DiffLine::default()
+                        })
+                        .collect(),
+                }],
+                ..FileDiff::default()
+            }],
+        }
+    }
 
     #[test]
     fn annotator_degrades_missing_packs_to_plain_text() {
@@ -656,19 +441,18 @@ mod tests {
             return;
         }
 
-        let patch = concat!(
-            "diff --git a/test.json b/test.json\n",
-            "--- a/test.json\n",
-            "+++ b/test.json\n",
-            "@@ -1,2 +1,3 @@\n",
-            " {\n",
-            "-  \"name\": \"old\"\n",
-            "+  \"name\": \"new\",\n",
-            "+  \"fast\": true\n",
-        );
         let mut text_buffer = TextBuffer::default();
         let mut token_buffer = TokenBuffer::default();
-        let mut document = parse_into(patch, &mut text_buffer);
+        let mut document = test_document(
+            "test.json",
+            &[
+                ("{", LineKind::Context, Some(1), Some(1)),
+                ("  \"name\": \"old\"", LineKind::Removed, Some(2), None),
+                ("  \"name\": \"new\",", LineKind::Added, None, Some(2)),
+                ("  \"fast\": true", LineKind::Added, None, Some(3)),
+            ],
+            &mut text_buffer,
+        );
 
         let annotator = DiffSyntaxAnnotator::new();
         annotator.annotate(&mut document.files[0], &mut text_buffer, &mut token_buffer);
@@ -689,17 +473,16 @@ mod tests {
 
     #[test]
     fn annotator_degrades_unsupported_languages_to_plain_text() {
-        let patch = concat!(
-            "diff --git a/test.unknown b/test.unknown\n",
-            "--- a/test.unknown\n",
-            "+++ b/test.unknown\n",
-            "@@ -1 +1 @@\n",
-            "-old plain text\n",
-            "+new plain text\n",
-        );
         let mut text_buffer = TextBuffer::default();
         let mut token_buffer = TokenBuffer::default();
-        let mut document = parse_into(patch, &mut text_buffer);
+        let mut document = test_document(
+            "test.unknown",
+            &[
+                ("old plain text", LineKind::Removed, Some(1), None),
+                ("new plain text", LineKind::Added, None, Some(1)),
+            ],
+            &mut text_buffer,
+        );
 
         let annotator = DiffSyntaxAnnotator::new();
         annotator.annotate(&mut document.files[0], &mut text_buffer, &mut token_buffer);

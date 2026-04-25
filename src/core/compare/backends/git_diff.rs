@@ -71,7 +71,7 @@ impl GitDiffBackend {
             file.deferred_hunk_source = None;
             return Ok(Some(CompareOutput {
                 carbon: carbon::DiffDocument {
-                    files: vec![carbon_summary_from_legacy(&file, 0)],
+                    files: vec![carbon_summary_from_deferred_file(&file, 0)],
                 },
                 files: vec![file],
                 ..CompareOutput::default()
@@ -252,7 +252,7 @@ pub(crate) fn compare_output_from_diff(
             .files
             .iter()
             .enumerate()
-            .map(|(index, file)| carbon_summary_from_legacy(file, index))
+            .map(|(index, file)| carbon_summary_from_deferred_file(file, index))
             .collect();
         return Ok(output);
     }
@@ -293,7 +293,7 @@ pub(crate) fn compare_output_from_diff(
             output
                 .carbon
                 .files
-                .push(carbon_summary_from_legacy(&file, output.carbon.files.len()));
+                .push(carbon_summary_from_delta(delta, output.carbon.files.len()));
             output.files.push(file);
             continue;
         }
@@ -350,7 +350,25 @@ fn carbon_file_from_patch(
     Ok((raw_diff, file))
 }
 
-fn carbon_summary_from_legacy(file: &FileDiff, file_id: usize) -> carbon::FileDiff {
+fn carbon_summary_from_delta(delta: &git2::DiffDelta<'_>, file_id: usize) -> carbon::FileDiff {
+    carbon::FileDiff {
+        id: carbon::FileId(usize_to_u32_saturating(file_id)),
+        old_path: delta
+            .old_file()
+            .path()
+            .map(|path| path.to_string_lossy().into_owned()),
+        new_path: delta
+            .new_file()
+            .path()
+            .map(|path| path.to_string_lossy().into_owned()),
+        status: carbon_status_from_delta(delta),
+        is_binary: delta.new_file().is_binary() || delta.old_file().is_binary(),
+        is_partial: true,
+        ..carbon::FileDiff::default()
+    }
+}
+
+fn carbon_summary_from_deferred_file(file: &FileDiff, file_id: usize) -> carbon::FileDiff {
     let source = file.deferred_hunk_source.as_ref();
     let path = (!file.path.is_empty()).then(|| file.path.clone());
     let (old_path, new_path) = match file.status.as_str() {
@@ -373,18 +391,32 @@ fn carbon_summary_from_legacy(file: &FileDiff, file_id: usize) -> carbon::FileDi
         id: carbon::FileId(usize_to_u32_saturating(file_id)),
         old_path,
         new_path,
-        status: carbon_status_from_legacy(file),
+        status: carbon_status_from_file_status(&file.status, file.is_binary),
         is_binary: file.is_binary,
         is_partial: true,
         ..carbon::FileDiff::default()
     }
 }
 
-fn carbon_status_from_legacy(file: &FileDiff) -> carbon::FileStatus {
-    if file.is_binary {
+fn carbon_status_from_delta(delta: &git2::DiffDelta<'_>) -> carbon::FileStatus {
+    let is_binary = delta.new_file().is_binary() || delta.old_file().is_binary();
+    if is_binary {
         carbon::FileStatus::Binary
     } else {
-        match file.status.as_str() {
+        match delta.status() {
+            Delta::Added => carbon::FileStatus::Added,
+            Delta::Deleted => carbon::FileStatus::Deleted,
+            Delta::Renamed => carbon::FileStatus::Renamed,
+            _ => carbon::FileStatus::Modified,
+        }
+    }
+}
+
+fn carbon_status_from_file_status(status: &str, is_binary: bool) -> carbon::FileStatus {
+    if is_binary {
+        carbon::FileStatus::Binary
+    } else {
+        match status {
             "A" => carbon::FileStatus::Added,
             "D" => carbon::FileStatus::Deleted,
             "R" => carbon::FileStatus::Renamed,

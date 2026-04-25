@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 
-use crate::core::diff::types::{DiffLine, FileDiff, Hunk};
-use crate::core::rendering::{DiffRowType, FlatDiffRow, flatten_file_diff};
 use crate::core::text::{
-    ChangeIntensity, DiffTokenSpan, SyntaxTokenKind, TextBuffer, TextRange, TokenBuffer, TokenRange,
+    ChangeIntensity, DiffTokenSpan, SyntaxTokenKind, TextRange, TokenBuffer, TokenRange,
 };
 
 pub const INVALID_U32: u32 = u32::MAX;
@@ -81,17 +79,6 @@ pub enum RenderRowKind {
 }
 
 impl RenderRowKind {
-    pub const fn from_diff_row(row_type: DiffRowType) -> Self {
-        match row_type {
-            DiffRowType::FileHeader => Self::FileHeader,
-            DiffRowType::HunkSeparator => Self::HunkSeparator,
-            DiffRowType::Context => Self::Context,
-            DiffRowType::Added => Self::Added,
-            DiffRowType::Removed => Self::Removed,
-            DiffRowType::Modified => Self::Modified,
-        }
-    }
-
     pub const fn is_body(self) -> bool {
         matches!(
             self,
@@ -284,16 +271,6 @@ impl RenderDoc {
     }
 }
 
-pub fn build_render_doc(
-    file: &FileDiff,
-    file_index: usize,
-    text_buffer: &TextBuffer,
-    token_buffer: &TokenBuffer,
-) -> RenderDoc {
-    let rows = flatten_file_diff(file, file_index);
-    build_render_doc_from_rows(file, rows, text_buffer, token_buffer)
-}
-
 pub fn build_render_doc_from_carbon(
     carbon_file: &carbon::FileDiff,
     file_index: usize,
@@ -302,40 +279,6 @@ pub fn build_render_doc_from_carbon(
     token_buffer: &TokenBuffer,
 ) -> RenderDoc {
     build_render_doc_from_carbon_rows(carbon_file, file_index, expansion, overlays, token_buffer)
-}
-
-fn build_render_doc_from_rows(
-    file: &FileDiff,
-    rows: Vec<FlatDiffRow>,
-    text_buffer: &TextBuffer,
-    token_buffer: &TokenBuffer,
-) -> RenderDoc {
-    let mut doc = RenderDoc {
-        text_bytes: Vec::with_capacity(
-            file.path.len()
-                + file
-                    .hunks
-                    .iter()
-                    .map(|hunk| hunk.header.len())
-                    .sum::<usize>()
-                + text_buffer.size().min(32 * 1024),
-        ),
-        style_runs: Vec::with_capacity(token_buffer.len().saturating_mul(2).max(16)),
-        lines: Vec::with_capacity(rows.len()),
-    };
-
-    for row in rows {
-        doc.lines.push(build_render_line(
-            file,
-            &row,
-            &mut doc.text_bytes,
-            &mut doc.style_runs,
-            text_buffer,
-            token_buffer,
-        ));
-    }
-
-    doc
 }
 
 fn build_render_doc_from_carbon_rows(
@@ -396,109 +339,6 @@ fn build_render_doc_from_carbon_rows(
     );
 
     doc
-}
-
-fn build_render_line(
-    file: &FileDiff,
-    row: &FlatDiffRow,
-    text_bytes: &mut Vec<u8>,
-    style_runs: &mut Vec<StyleRun>,
-    text_buffer: &TextBuffer,
-    token_buffer: &TokenBuffer,
-) -> RenderLine {
-    let kind = RenderRowKind::from_diff_row(row.row_type);
-    let source = SourceIndices::from_row(row);
-    match row.row_type {
-        DiffRowType::FileHeader => {
-            let left_text = append_text(text_bytes, &file.path);
-            RenderLine {
-                kind: kind as u8,
-                left_cols: display_cols(&file.path),
-                left_text,
-                right_text: ByteRange::invalid(),
-                left_runs: append_style_runs(style_runs, &file.path, &[], &[]),
-                right_runs: RunRange::default(),
-                old_line_no: INVALID_U32,
-                new_line_no: INVALID_U32,
-                ..RenderLine::default()
-            }
-        }
-        DiffRowType::HunkSeparator => {
-            let header = hunk_for_row(file, row)
-                .map(|hunk| hunk.header.as_str())
-                .unwrap_or("");
-            let left_text = append_text(text_bytes, header);
-            RenderLine {
-                kind: kind as u8,
-                hunk_index: source.hunk_index,
-                left_cols: display_cols(header),
-                left_text,
-                right_text: ByteRange::invalid(),
-                left_runs: append_style_runs(style_runs, header, &[], &[]),
-                right_runs: RunRange::default(),
-                old_line_no: INVALID_U32,
-                new_line_no: INVALID_U32,
-                ..RenderLine::default()
-            }
-        }
-        DiffRowType::Context => {
-            let line = main_line_for_row(file, row);
-            let mut rl = build_dual_sided_line(
-                kind,
-                line,
-                line,
-                text_bytes,
-                style_runs,
-                text_buffer,
-                token_buffer,
-            );
-            source.apply(&mut rl);
-            rl
-        }
-        DiffRowType::Added => {
-            let line = new_line_for_row(file, row);
-            let mut rl = build_dual_sided_line(
-                kind,
-                None,
-                line,
-                text_bytes,
-                style_runs,
-                text_buffer,
-                token_buffer,
-            );
-            source.apply(&mut rl);
-            rl
-        }
-        DiffRowType::Removed => {
-            let line = old_line_for_row(file, row);
-            let mut rl = build_dual_sided_line(
-                kind,
-                line,
-                None,
-                text_bytes,
-                style_runs,
-                text_buffer,
-                token_buffer,
-            );
-            source.apply(&mut rl);
-            rl
-        }
-        DiffRowType::Modified => {
-            let old_line = old_line_for_row(file, row);
-            let new_line = new_line_for_row(file, row);
-            let mut rl = build_dual_sided_line(
-                kind,
-                old_line,
-                new_line,
-                text_bytes,
-                style_runs,
-                text_buffer,
-                token_buffer,
-            );
-            source.apply(&mut rl);
-            rl
-        }
-    }
 }
 
 fn carbon_file_header_line(
@@ -653,15 +493,6 @@ struct SourceIndices {
 }
 
 impl SourceIndices {
-    fn from_row(row: &FlatDiffRow) -> Self {
-        Self {
-            hunk_index: row.hunk_index as i16,
-            line_index: row.line_index,
-            old_line_index: row.old_line_index,
-            new_line_index: row.new_line_index,
-        }
-    }
-
     fn from_carbon_row(row: carbon::ProjectionRow) -> Self {
         let hunk_index = row
             .hunk_id
@@ -693,32 +524,6 @@ impl SourceIndices {
         line.old_line_index = self.old_line_index;
         line.new_line_index = self.new_line_index;
     }
-}
-
-fn build_dual_sided_line(
-    kind: RenderRowKind,
-    left_line: Option<&DiffLine>,
-    right_line: Option<&DiffLine>,
-    text_bytes: &mut Vec<u8>,
-    style_runs: &mut Vec<StyleRun>,
-    text_buffer: &TextBuffer,
-    token_buffer: &TokenBuffer,
-) -> RenderLine {
-    let left = left_line.map(|line| LineSideSource {
-        text: text_buffer.view(line.text_range),
-        syntax: token_buffer.view(line.syntax_tokens),
-        core_change: token_buffer.view(line.change_tokens),
-        carbon_change: &[],
-        line_no: line.old_line_number.and_then(i32_to_u32_positive),
-    });
-    let right = right_line.map(|line| LineSideSource {
-        text: text_buffer.view(line.text_range),
-        syntax: token_buffer.view(line.syntax_tokens),
-        core_change: token_buffer.view(line.change_tokens),
-        carbon_change: &[],
-        line_no: line.new_line_number.and_then(i32_to_u32_positive),
-    });
-    build_dual_sided_line_with_text(kind, left, right, text_bytes, style_runs)
 }
 
 struct LineSideSource<'a> {
@@ -954,33 +759,6 @@ fn carbon_inline_for_row(
     }
 }
 
-fn hunk_for_row<'a>(file: &'a FileDiff, row: &FlatDiffRow) -> Option<&'a Hunk> {
-    usize::try_from(row.hunk_index)
-        .ok()
-        .and_then(|index| file.hunks.get(index))
-}
-
-fn main_line_for_row<'a>(file: &'a FileDiff, row: &FlatDiffRow) -> Option<&'a DiffLine> {
-    line_for_range(file, row.hunk_index, row.line_index)
-}
-
-fn old_line_for_row<'a>(file: &'a FileDiff, row: &FlatDiffRow) -> Option<&'a DiffLine> {
-    line_for_range(file, row.hunk_index, row.old_line_index)
-}
-
-fn new_line_for_row<'a>(file: &'a FileDiff, row: &FlatDiffRow) -> Option<&'a DiffLine> {
-    line_for_range(file, row.hunk_index, row.new_line_index)
-}
-
-fn line_for_range(file: &FileDiff, hunk_index: i32, line_index: i32) -> Option<&DiffLine> {
-    let hunk = usize::try_from(hunk_index)
-        .ok()
-        .and_then(|idx| file.hunks.get(idx))?;
-    usize::try_from(line_index)
-        .ok()
-        .and_then(|idx| hunk.lines.get(idx))
-}
-
 fn carbon_projection_capacity(file: &carbon::FileDiff) -> usize {
     file.hunks
         .iter()
@@ -991,10 +769,6 @@ fn carbon_projection_capacity(file: &carbon::FileDiff) -> usize {
         })
 }
 
-fn i32_to_u32_positive(value: i32) -> Option<u32> {
-    (value > 0).then(|| u32::try_from(value).ok()).flatten()
-}
-
 pub fn range_len(text: TextRange) -> usize {
     text.len
 }
@@ -1002,19 +776,28 @@ pub fn range_len(text: TextRange) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        CarbonStyleOverlays, INVALID_U32, RenderRowKind, STYLE_FLAG_CHANGE, build_render_doc,
+        CarbonStyleOverlays, INVALID_U32, RenderDoc, RenderRowKind, STYLE_FLAG_CHANGE,
         build_render_doc_from_carbon,
     };
-    use crate::core::diff::types::{DiffLine, FileDiff, Hunk, LineKind};
-    use crate::core::text::{DiffTokenSpan, SyntaxTokenKind, TextBuffer, TokenBuffer};
+    use crate::core::text::{DiffTokenSpan, SyntaxTokenKind, TokenBuffer};
+
+    fn carbon_doc(
+        file: &carbon::FileDiff,
+        overlays: &CarbonStyleOverlays,
+        tokens: &TokenBuffer,
+    ) -> RenderDoc {
+        build_render_doc_from_carbon(
+            file,
+            0,
+            &carbon::ExpansionState::default(),
+            overlays,
+            tokens,
+        )
+    }
 
     #[test]
     fn render_doc_keeps_headers_and_emits_block_style_changes() {
-        let mut text_buffer = TextBuffer::default();
         let mut token_buffer = TokenBuffer::default();
-
-        let removed_text = text_buffer.append("old value");
-        let added_text = text_buffer.append("new value");
         let removed_change = token_buffer.append(&[DiffTokenSpan {
             offset: 4,
             length: 5,
@@ -1027,33 +810,26 @@ mod tests {
             kind: SyntaxTokenKind::Keyword,
             ..DiffTokenSpan::default()
         }]);
+        let file = carbon::parse_unified_patch(
+            "\
+diff --git a/src/app/controller.rs b/src/app/controller.rs
+--- a/src/app/controller.rs
++++ b/src/app/controller.rs
+@@ -1 +1 @@
+-old value
++new value
+",
+        )
+        .unwrap()
+        .files
+        .into_iter()
+        .next()
+        .unwrap();
+        let mut overlays = CarbonStyleOverlays::default();
+        overlays.insert_change(0, carbon::DiffSide::Old, 0, removed_change);
+        overlays.insert_syntax(0, carbon::DiffSide::New, 0, added_syntax);
 
-        let file = FileDiff {
-            path: "src/app/controller.rs".to_owned(),
-            hunks: vec![Hunk {
-                header: "@@ -1 +1 @@".to_owned(),
-                lines: vec![
-                    DiffLine {
-                        kind: LineKind::Removed,
-                        old_line_number: Some(1),
-                        text_range: removed_text,
-                        change_tokens: removed_change,
-                        ..DiffLine::default()
-                    },
-                    DiffLine {
-                        kind: LineKind::Added,
-                        new_line_number: Some(1),
-                        text_range: added_text,
-                        syntax_tokens: added_syntax,
-                        ..DiffLine::default()
-                    },
-                ],
-                ..Hunk::default()
-            }],
-            ..FileDiff::default()
-        };
-
-        let doc = build_render_doc(&file, 0, &text_buffer, &token_buffer);
+        let doc = carbon_doc(&file, &overlays, &token_buffer);
 
         assert_eq!(doc.lines.len(), 4);
         assert_eq!(doc.lines[0].row_kind(), RenderRowKind::FileHeader);
@@ -1084,26 +860,23 @@ mod tests {
 
     #[test]
     fn missing_side_uses_invalid_sentinel() {
-        let mut text_buffer = TextBuffer::default();
         let token_buffer = TokenBuffer::default();
-        let line_text = text_buffer.append("only added");
+        let file = carbon::parse_unified_patch(
+            "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- /dev/null
++++ b/src/lib.rs
+@@ -0,0 +1 @@
++only added
+",
+        )
+        .unwrap()
+        .files
+        .into_iter()
+        .next()
+        .unwrap();
 
-        let file = FileDiff {
-            path: "src/lib.rs".to_owned(),
-            hunks: vec![Hunk {
-                header: "@@ -0,0 +1 @@".to_owned(),
-                lines: vec![DiffLine {
-                    kind: LineKind::Added,
-                    new_line_number: Some(1),
-                    text_range: line_text,
-                    ..DiffLine::default()
-                }],
-                ..Hunk::default()
-            }],
-            ..FileDiff::default()
-        };
-
-        let doc = build_render_doc(&file, 0, &text_buffer, &token_buffer);
+        let doc = carbon_doc(&file, &CarbonStyleOverlays::default(), &token_buffer);
         let line = &doc.lines[2];
         assert_eq!(line.row_kind(), RenderRowKind::Added);
         assert_eq!(line.old_line_no, INVALID_U32);
@@ -1113,33 +886,31 @@ mod tests {
 
     #[test]
     fn change_tokens_can_supply_semantic_style_when_syntax_tokens_are_absent() {
-        let mut text_buffer = TextBuffer::default();
         let mut token_buffer = TokenBuffer::default();
-        let line_text = text_buffer.append("fn old_call();");
         let semantic_change = token_buffer.append(&[DiffTokenSpan {
             offset: 3,
             length: 3,
             kind: SyntaxTokenKind::Keyword,
             ..DiffTokenSpan::default()
         }]);
+        let file = carbon::parse_unified_patch(
+            "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +0,0 @@
+-fn old_call();
+",
+        )
+        .unwrap()
+        .files
+        .into_iter()
+        .next()
+        .unwrap();
+        let mut overlays = CarbonStyleOverlays::default();
+        overlays.insert_change(0, carbon::DiffSide::Old, 0, semantic_change);
 
-        let file = FileDiff {
-            path: "src/lib.rs".to_owned(),
-            hunks: vec![Hunk {
-                header: "@@ -1 +1 @@".to_owned(),
-                lines: vec![DiffLine {
-                    kind: LineKind::Removed,
-                    old_line_number: Some(1),
-                    text_range: line_text,
-                    change_tokens: semantic_change,
-                    ..DiffLine::default()
-                }],
-                ..Hunk::default()
-            }],
-            ..FileDiff::default()
-        };
-
-        let doc = build_render_doc(&file, 0, &text_buffer, &token_buffer);
+        let doc = carbon_doc(&file, &overlays, &token_buffer);
         let runs = doc.line_runs(doc.lines[2].left_runs);
         assert_eq!(runs[1].style_id, SyntaxTokenKind::Keyword as u16);
         assert_eq!(runs[1].flags, STYLE_FLAG_CHANGE);
@@ -1147,26 +918,23 @@ mod tests {
 
     #[test]
     fn render_doc_counts_tabs_as_visual_columns() {
-        let mut text_buffer = TextBuffer::default();
         let token_buffer = TokenBuffer::default();
-        let line_text = text_buffer.append("\tab");
+        let file = carbon::parse_unified_patch(
+            "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +0,0 @@
+-\tab
+",
+        )
+        .unwrap()
+        .files
+        .into_iter()
+        .next()
+        .unwrap();
 
-        let file = FileDiff {
-            path: "src/lib.rs".to_owned(),
-            hunks: vec![Hunk {
-                header: "@@ -1 +1 @@".to_owned(),
-                lines: vec![DiffLine {
-                    kind: LineKind::Removed,
-                    old_line_number: Some(1),
-                    text_range: line_text,
-                    ..DiffLine::default()
-                }],
-                ..Hunk::default()
-            }],
-            ..FileDiff::default()
-        };
-
-        let doc = build_render_doc(&file, 0, &text_buffer, &token_buffer);
+        let doc = carbon_doc(&file, &CarbonStyleOverlays::default(), &token_buffer);
         assert_eq!(doc.lines[2].left_cols, 10);
     }
 

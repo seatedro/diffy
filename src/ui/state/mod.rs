@@ -6434,27 +6434,27 @@ fn apply_scroll_delta_px(current: u32, delta: i32, max: u32) -> u32 {
 
 fn build_carbon_file_entries(
     files: &[carbon::FileDiff],
-    legacy: &[FileDiff],
+    deferred_stats: &[FileDiff],
 ) -> Vec<FileListEntry> {
     files
         .iter()
         .enumerate()
-        .map(|(index, file)| carbon_file_entry(file, legacy.get(index)))
+        .map(|(index, file)| carbon_file_entry(file, deferred_stats.get(index)))
         .collect()
 }
 
-fn carbon_file_entry(file: &carbon::FileDiff, legacy: Option<&FileDiff>) -> FileListEntry {
+fn carbon_file_entry(file: &carbon::FileDiff, deferred_stats: Option<&FileDiff>) -> FileListEntry {
     let (additions, deletions) = carbon_file_stats(file);
     FileListEntry {
         path: file.path().to_owned(),
         status: carbon_status_label(file.status).to_owned(),
-        additions: legacy
-            .filter(|legacy| legacy.stats_deferred)
-            .map(|legacy| legacy.additions)
+        additions: deferred_stats
+            .filter(|file| file.stats_deferred)
+            .map(|file| file.additions)
             .unwrap_or(additions),
-        deletions: legacy
-            .filter(|legacy| legacy.stats_deferred)
-            .map(|legacy| legacy.deletions)
+        deletions: deferred_stats
+            .filter(|file| file.stats_deferred)
+            .map(|file| file.deletions)
             .unwrap_or(deletions),
         is_binary: file.is_binary,
     }

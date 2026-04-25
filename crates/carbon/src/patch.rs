@@ -80,10 +80,10 @@ impl PatchParser {
 
 struct FileBuilder {
     file: FileDiff,
-    old_lines: Vec<String>,
-    new_lines: Vec<String>,
-    old_no_newline_at_eof: bool,
-    new_no_newline_at_eof: bool,
+    old_text: String,
+    new_text: String,
+    old_line_count: u32,
+    new_line_count: u32,
     hunk: Option<HunkBuilder>,
 }
 
@@ -95,10 +95,10 @@ impl FileBuilder {
                 is_partial: true,
                 ..FileDiff::default()
             },
-            old_lines: Vec::new(),
-            new_lines: Vec::new(),
-            old_no_newline_at_eof: false,
-            new_no_newline_at_eof: false,
+            old_text: String::new(),
+            new_text: String::new(),
+            old_line_count: 0,
+            new_line_count: 0,
             hunk: None,
         }
     }
@@ -175,6 +175,12 @@ impl FileBuilder {
     fn start_hunk(&mut self, line: &str) -> Result<(), PatchError> {
         self.finish_hunk();
         let (old_start, old_count, new_start, new_count) = parse_hunk_header(line)?;
+        self.old_text
+            .reserve((old_count as usize).saturating_mul(32));
+        self.new_text
+            .reserve((new_count as usize).saturating_mul(32));
+        self.file.hunks.reserve(1);
+        self.file.blocks.reserve(3);
         self.hunk = Some(HunkBuilder::new(
             HunkId(self.file.hunks.len().min(u32::MAX as usize) as u32),
             line.to_owned(),
@@ -183,8 +189,8 @@ impl FileBuilder {
             new_start,
             new_count,
             self.file.blocks.len().min(u32::MAX as usize) as u32,
-            self.old_lines.len().min(u32::MAX as usize) as u32,
-            self.new_lines.len().min(u32::MAX as usize) as u32,
+            self.old_line_count,
+            self.new_line_count,
         ));
         Ok(())
     }
@@ -198,11 +204,11 @@ impl FileBuilder {
             match hunk.last_side {
                 Some(DiffSide::Old) => {
                     hunk.mark_old_no_newline();
-                    self.old_no_newline_at_eof = true;
+                    trim_trailing_newline(&mut self.old_text);
                 }
                 Some(DiffSide::New) => {
                     hunk.mark_new_no_newline();
-                    self.new_no_newline_at_eof = true;
+                    trim_trailing_newline(&mut self.new_text);
                 }
                 None => {}
             }
@@ -217,11 +223,19 @@ impl FileBuilder {
         };
 
         match kind {
-            PatchLineKind::Context => {
-                hunk.push_context(content, &mut self.old_lines, &mut self.new_lines)
+            PatchLineKind::Context => hunk.push_context(
+                content,
+                &mut self.old_text,
+                &mut self.new_text,
+                &mut self.old_line_count,
+                &mut self.new_line_count,
+            ),
+            PatchLineKind::Old => {
+                hunk.push_old(content, &mut self.old_text, &mut self.old_line_count)
             }
-            PatchLineKind::Old => hunk.push_old(content, &mut self.old_lines),
-            PatchLineKind::New => hunk.push_new(content, &mut self.new_lines),
+            PatchLineKind::New => {
+                hunk.push_new(content, &mut self.new_text, &mut self.new_line_count)
+            }
         }
     }
 
@@ -248,10 +262,8 @@ impl FileBuilder {
         if self.file.status == FileStatus::Renamed && !self.file.hunks.is_empty() {
             self.file.status = FileStatus::RenamedModified;
         }
-        self.file.old_text = (!self.old_lines.is_empty())
-            .then(|| TextStore::from_text(join_lines(&self.old_lines, self.old_no_newline_at_eof)));
-        self.file.new_text = (!self.new_lines.is_empty())
-            .then(|| TextStore::from_text(join_lines(&self.new_lines, self.new_no_newline_at_eof)));
+        self.file.old_text = (self.old_line_count > 0).then(|| TextStore::from_text(self.old_text));
+        self.file.new_text = (self.new_line_count > 0).then(|| TextStore::from_text(self.new_text));
         self.file
     }
 }
@@ -305,7 +317,7 @@ impl HunkBuilder {
             new_store_cursor,
             next_block_id,
             current: None,
-            blocks: Vec::new(),
+            blocks: Vec::with_capacity(3),
             last_side: None,
         }
     }
@@ -313,12 +325,16 @@ impl HunkBuilder {
     fn push_context(
         &mut self,
         content: &str,
-        old_lines: &mut Vec<String>,
-        new_lines: &mut Vec<String>,
+        old_text: &mut String,
+        new_text: &mut String,
+        old_line_count: &mut u32,
+        new_line_count: &mut u32,
     ) {
         self.ensure_block(BlockKind::Context);
-        old_lines.push(content.to_owned());
-        new_lines.push(content.to_owned());
+        push_text_line(old_text, content);
+        push_text_line(new_text, content);
+        *old_line_count = old_line_count.saturating_add(1);
+        *new_line_count = new_line_count.saturating_add(1);
         if let Some(block) = self.current.as_mut() {
             block.old.len = block.old.len.saturating_add(1);
             block.new.len = block.new.len.saturating_add(1);
@@ -330,9 +346,10 @@ impl HunkBuilder {
         self.last_side = Some(DiffSide::New);
     }
 
-    fn push_old(&mut self, content: &str, old_lines: &mut Vec<String>) {
+    fn push_old(&mut self, content: &str, old_text: &mut String, old_line_count: &mut u32) {
         self.ensure_block(BlockKind::Change);
-        old_lines.push(content.to_owned());
+        push_text_line(old_text, content);
+        *old_line_count = old_line_count.saturating_add(1);
         if let Some(block) = self.current.as_mut() {
             block.old.len = block.old.len.saturating_add(1);
         }
@@ -341,9 +358,10 @@ impl HunkBuilder {
         self.last_side = Some(DiffSide::Old);
     }
 
-    fn push_new(&mut self, content: &str, new_lines: &mut Vec<String>) {
+    fn push_new(&mut self, content: &str, new_text: &mut String, new_line_count: &mut u32) {
         self.ensure_block(BlockKind::Change);
-        new_lines.push(content.to_owned());
+        push_text_line(new_text, content);
+        *new_line_count = new_line_count.saturating_add(1);
         if let Some(block) = self.current.as_mut() {
             block.new.len = block.new.len.saturating_add(1);
         }
@@ -455,12 +473,15 @@ fn strip_patch_path(path: &str) -> Option<&str> {
         .or(Some(path))
 }
 
-fn join_lines(lines: &[String], no_newline_at_eof: bool) -> String {
-    let mut text = lines.join("\n");
-    if !no_newline_at_eof {
-        text.push('\n');
+fn push_text_line(text: &mut String, content: &str) {
+    text.push_str(content);
+    text.push('\n');
+}
+
+fn trim_trailing_newline(text: &mut String) {
+    if text.ends_with('\n') {
+        text.pop();
     }
-    text
 }
 
 #[cfg(test)]

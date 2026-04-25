@@ -86,16 +86,87 @@ pub struct CompareStatsReady {
 }
 
 #[derive(Debug, Clone)]
-pub enum AppEvent {
-    RepositoryDialogClosed {
-        path: Option<PathBuf>,
-    },
+pub enum UiEvent {
+    RepositoryDialogClosed { path: Option<PathBuf> },
+    BrowserOpenFailed { message: String },
+}
+
+#[derive(Debug, Clone)]
+pub enum RepositoryEvent {
     RepositorySnapshotReady(RepositorySnapshot),
     RepositorySnapshotFailed {
         path: PathBuf,
         reason: RepositorySyncReason,
         message: String,
     },
+    StatusOperationFailed {
+        path: PathBuf,
+        message: String,
+    },
+    CommitCreated {
+        path: PathBuf,
+    },
+    CommitFailed {
+        path: PathBuf,
+        message: String,
+    },
+    ContextLinesReady(ContextLinesReady),
+    ContextLinesFailed {
+        generation: u64,
+        file_index: usize,
+        message: String,
+    },
+    FetchProgress {
+        toast_id: u64,
+        received_objects: usize,
+        total_objects: usize,
+        received_bytes: usize,
+    },
+    FetchComplete {
+        toast_id: u64,
+        path: PathBuf,
+        remote: String,
+    },
+    FetchFailed {
+        toast_id: u64,
+        remote: String,
+        message: String,
+    },
+    PushProgress {
+        toast_id: u64,
+        current: usize,
+        total: usize,
+        bytes: usize,
+    },
+    PushComplete {
+        toast_id: u64,
+        path: PathBuf,
+        remote: String,
+        branch: String,
+    },
+    PushFailed {
+        toast_id: u64,
+        remote: String,
+        message: String,
+    },
+    PullComplete {
+        toast_id: u64,
+        path: PathBuf,
+        remote: String,
+        branch: String,
+        already_up_to_date: bool,
+        behind: usize,
+    },
+    PullFailed {
+        toast_id: u64,
+        remote: String,
+        branch: String,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum CompareEvent {
     CompareFinished(CompareFinished),
     CompareHistoryReady(CompareHistoryReady),
     CompareHistoryFailed {
@@ -132,18 +203,19 @@ pub enum AppEvent {
         index: usize,
         message: String,
     },
-    FileSyntaxReady(FileSyntaxReady),
-    StatusOperationFailed {
-        path: PathBuf,
-        message: String,
+    RefResolved {
+        query: String,
+        generation: u64,
+        short_oid: String,
+        summary: String,
     },
-    CommitCreated {
-        path: PathBuf,
+    RefResolveFailed {
+        generation: u64,
     },
-    CommitFailed {
-        path: PathBuf,
-        message: String,
-    },
+}
+
+#[derive(Debug, Clone)]
+pub enum GitHubEvent {
     PullRequestLoaded {
         url: String,
         info: PullRequestInfo,
@@ -201,19 +273,16 @@ pub enum AppEvent {
         url: String,
         message: String,
     },
-    RefResolved {
-        query: String,
-        generation: u64,
-        short_oid: String,
-        summary: String,
-    },
-    RefResolveFailed {
-        generation: u64,
-    },
+}
+
+#[derive(Debug, Clone)]
+pub enum SettingsEvent {
     SettingsSaved,
-    SettingsSaveFailed {
-        message: String,
-    },
+    SettingsSaveFailed { message: String },
+}
+
+#[derive(Debug, Clone)]
+pub enum UpdateEvent {
     UpdateAvailable {
         update: AvailableUpdate,
         silent: bool,
@@ -233,74 +302,19 @@ pub enum AppEvent {
         message: String,
         silent: bool,
     },
-    BrowserOpenFailed {
-        message: String,
-    },
-    ContextLinesReady(ContextLinesReady),
-    ContextLinesFailed {
-        generation: u64,
-        file_index: usize,
-        message: String,
-    },
-    SyntaxPackInstallStarted {
-        language: String,
-    },
-    SyntaxPackInstalled {
-        language: String,
-    },
-    SyntaxPackInstallFinished {
-        language: String,
-    },
-    SyntaxPackInstallFailed {
-        language: String,
-    },
-    FetchProgress {
-        toast_id: u64,
-        received_objects: usize,
-        total_objects: usize,
-        received_bytes: usize,
-    },
-    FetchComplete {
-        toast_id: u64,
-        path: PathBuf,
-        remote: String,
-    },
-    FetchFailed {
-        toast_id: u64,
-        remote: String,
-        message: String,
-    },
-    PushProgress {
-        toast_id: u64,
-        current: usize,
-        total: usize,
-        bytes: usize,
-    },
-    PushComplete {
-        toast_id: u64,
-        path: PathBuf,
-        remote: String,
-        branch: String,
-    },
-    PushFailed {
-        toast_id: u64,
-        remote: String,
-        message: String,
-    },
-    PullComplete {
-        toast_id: u64,
-        path: PathBuf,
-        remote: String,
-        branch: String,
-        already_up_to_date: bool,
-        behind: usize,
-    },
-    PullFailed {
-        toast_id: u64,
-        remote: String,
-        branch: String,
-        message: String,
-    },
+}
+
+#[derive(Debug, Clone)]
+pub enum SyntaxEvent {
+    FileSyntaxReady(FileSyntaxReady),
+    SyntaxPackInstallStarted { language: String },
+    SyntaxPackInstalled { language: String },
+    SyntaxPackInstallFinished { language: String },
+    SyntaxPackInstallFailed { language: String },
+}
+
+#[derive(Debug, Clone)]
+pub enum AiEvent {
     AiKeysLoaded {
         openai: Option<String>,
         anthropic: Option<String>,
@@ -322,6 +336,66 @@ pub enum AppEvent {
         generation: u64,
         message: String,
     },
+}
+
+#[derive(Debug, Clone)]
+pub enum AppEvent {
+    Ui(UiEvent),
+    Repository(RepositoryEvent),
+    Compare(CompareEvent),
+    GitHub(GitHubEvent),
+    Settings(SettingsEvent),
+    Update(UpdateEvent),
+    Syntax(SyntaxEvent),
+    Ai(AiEvent),
+}
+
+impl From<UiEvent> for AppEvent {
+    fn from(event: UiEvent) -> Self {
+        Self::Ui(event)
+    }
+}
+
+impl From<RepositoryEvent> for AppEvent {
+    fn from(event: RepositoryEvent) -> Self {
+        Self::Repository(event)
+    }
+}
+
+impl From<CompareEvent> for AppEvent {
+    fn from(event: CompareEvent) -> Self {
+        Self::Compare(event)
+    }
+}
+
+impl From<GitHubEvent> for AppEvent {
+    fn from(event: GitHubEvent) -> Self {
+        Self::GitHub(event)
+    }
+}
+
+impl From<SettingsEvent> for AppEvent {
+    fn from(event: SettingsEvent) -> Self {
+        Self::Settings(event)
+    }
+}
+
+impl From<UpdateEvent> for AppEvent {
+    fn from(event: UpdateEvent) -> Self {
+        Self::Update(event)
+    }
+}
+
+impl From<SyntaxEvent> for AppEvent {
+    fn from(event: SyntaxEvent) -> Self {
+        Self::Syntax(event)
+    }
+}
+
+impl From<AiEvent> for AppEvent {
+    fn from(event: AiEvent) -> Self {
+        Self::Ai(event)
+    }
 }
 
 #[derive(Debug, Clone)]

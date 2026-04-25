@@ -1,9 +1,14 @@
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::effects::Effect;
+use crate::actions::TextEditAction;
+use crate::effects::{AiEffect, Effect, UiEffect};
 use crate::platform::secrets::AiKeyKind;
 
 use super::{AppState, CompareField, FocusTarget, PickerKind};
+
+pub(super) fn reduce_action(state: &mut AppState, action: TextEditAction) -> Vec<Effect> {
+    state.apply_text_edit_action(action)
+}
 
 impl AppState {
     pub(super) fn selection_range(&self) -> Option<(usize, usize)> {
@@ -248,7 +253,7 @@ impl AppState {
     pub(super) fn copy_selection(&self) -> (Vec<Effect>, Option<String>) {
         if let Some((start, end)) = self.selection_range() {
             if let Some(selected) = self.with_focused_text(|text| text[start..end].to_string()) {
-                return (vec![Effect::SetClipboard(selected)], None);
+                return (vec![UiEffect::SetClipboard(selected).into()], None);
             }
         }
         // No text selection — copy the selected picker/palette entry's value.
@@ -258,7 +263,10 @@ impl AppState {
                 entries.get(selected).map(|e| e.value.clone())
             });
             if let Some(value) = value {
-                return (vec![Effect::SetClipboard(value.clone())], Some(value));
+                return (
+                    vec![UiEffect::SetClipboard(value.clone()).into()],
+                    Some(value),
+                );
             }
         }
         if matches!(
@@ -278,7 +286,10 @@ impl AppState {
                     entries.get(selected).map(|e| e.label.clone())
                 });
             if let Some(label) = label {
-                return (vec![Effect::SetClipboard(label.clone())], Some(label));
+                return (
+                    vec![UiEffect::SetClipboard(label.clone()).into()],
+                    Some(label),
+                );
             }
         }
         (Vec::new(), None)
@@ -358,11 +369,278 @@ pub(super) fn next_word_boundary(text: &str, offset: usize) -> usize {
 
 fn ai_key_save_effect(kind: AiKeyKind, value: &str) -> Effect {
     if value.is_empty() {
-        Effect::ClearAiKey { kind }
+        AiEffect::ClearAiKey { kind }.into()
     } else {
-        Effect::SaveAiKey {
+        AiEffect::SaveAiKey {
             kind,
             value: value.to_owned(),
         }
+        .into()
+    }
+}
+
+impl AppState {
+    pub(super) fn apply_text_edit_action(&mut self, action: TextEditAction) -> Vec<Effect> {
+        use TextEditAction::*;
+        if self.focus.get(&self.store) == Some(FocusTarget::CommitEditor) {
+            return self.apply_commit_editor_action(action);
+        }
+        if self.focus.get(&self.store) == Some(FocusTarget::SettingsSteeringPrompt) {
+            return self.apply_steering_prompt_action(action);
+        }
+        match action {
+            InsertText(value) => self.insert_text(value),
+            Backspace => self.backspace(),
+            DeleteForward => self.delete_forward(),
+            CursorLeft => {
+                self.cursor_left(false);
+                Vec::new()
+            }
+            CursorRight => {
+                self.cursor_right(false);
+                Vec::new()
+            }
+            CursorWordLeft => {
+                self.cursor_word_left(false);
+                Vec::new()
+            }
+            CursorWordRight => {
+                self.cursor_word_right(false);
+                Vec::new()
+            }
+            CursorHome => {
+                self.cursor_home(false);
+                Vec::new()
+            }
+            CursorEnd => {
+                self.cursor_end(false);
+                Vec::new()
+            }
+            SelectLeft => {
+                self.cursor_left(true);
+                Vec::new()
+            }
+            SelectRight => {
+                self.cursor_right(true);
+                Vec::new()
+            }
+            SelectWordLeft => {
+                self.cursor_word_left(true);
+                Vec::new()
+            }
+            SelectWordRight => {
+                self.cursor_word_right(true);
+                Vec::new()
+            }
+            SelectHome => {
+                self.cursor_home(true);
+                Vec::new()
+            }
+            SelectEnd => {
+                self.cursor_end(true);
+                Vec::new()
+            }
+            SelectAll => {
+                self.select_all();
+                Vec::new()
+            }
+            Copy => {
+                let (effects, copied) = self.copy_selection();
+                if let Some(value) = copied {
+                    let truncated = if value.len() > 32 {
+                        format!("{}…", &value[..32])
+                    } else {
+                        value
+                    };
+                    self.push_info(&format!("Copied {truncated}"));
+                }
+                effects
+            }
+            Cut => self.cut_selection(),
+            Paste(value) => self.paste(value),
+            SetTextCursor(offset) => {
+                self.move_cursor(offset, false);
+                Vec::new()
+            }
+            ExtendTextSelection(offset) => {
+                self.move_cursor(offset, true);
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn apply_commit_editor_action(&mut self, action: TextEditAction) -> Vec<Effect> {
+        use TextEditAction::*;
+        match action {
+            InsertText(value) => self.commit_editor.insert_text(&value),
+            Backspace => self.commit_editor.delete_backward(),
+            BackspaceWord => self.commit_editor.delete_backward_word(),
+            BackspaceLine => self.commit_editor.delete_backward_line(),
+            DeleteForward => self.commit_editor.delete_forward(),
+            DeleteForwardWord => self.commit_editor.delete_forward_word(),
+            CursorLeft => self.commit_editor.move_left(false),
+            CursorRight => self.commit_editor.move_right(false),
+            CursorUp => self.commit_editor.move_up(false),
+            CursorDown => self.commit_editor.move_down(false),
+            CursorWordLeft => self.commit_editor.move_word_left(false),
+            CursorWordRight => self.commit_editor.move_word_right(false),
+            CursorHome => self.commit_editor.move_home(false),
+            CursorEnd => self.commit_editor.move_end(false),
+            CursorSoftHome => self.commit_editor.move_soft_home(false),
+            CursorSoftEnd => self.commit_editor.move_soft_end(false),
+            SelectLeft => self.commit_editor.move_left(true),
+            SelectRight => self.commit_editor.move_right(true),
+            SelectUp => self.commit_editor.move_up(true),
+            SelectDown => self.commit_editor.move_down(true),
+            SelectWordLeft => self.commit_editor.move_word_left(true),
+            SelectWordRight => self.commit_editor.move_word_right(true),
+            SelectHome => self.commit_editor.move_home(true),
+            SelectEnd => self.commit_editor.move_end(true),
+            SelectSoftHome => self.commit_editor.move_soft_home(true),
+            SelectSoftEnd => self.commit_editor.move_soft_end(true),
+            SelectAll => self.commit_editor.select_all(),
+            Copy => {
+                if let Some(text) = self.commit_editor.selected_text() {
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        let _ = clipboard.set_text(text);
+                    }
+                }
+            }
+            Cut => {
+                if let Some(text) = self.commit_editor.selected_text() {
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        let _ = clipboard.set_text(text);
+                    }
+                    self.commit_editor.delete_backward();
+                }
+            }
+            Paste(value) => self.commit_editor.insert_text(&value),
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    fn apply_steering_prompt_action(&mut self, action: TextEditAction) -> Vec<Effect> {
+        use TextEditAction::*;
+        let mut changed = true;
+        match action {
+            InsertText(value) => self.steering_prompt_editor.insert_text(&value),
+            Backspace => self.steering_prompt_editor.delete_backward(),
+            BackspaceWord => self.steering_prompt_editor.delete_backward_word(),
+            BackspaceLine => self.steering_prompt_editor.delete_backward_line(),
+            DeleteForward => self.steering_prompt_editor.delete_forward(),
+            DeleteForwardWord => self.steering_prompt_editor.delete_forward_word(),
+            CursorLeft => {
+                self.steering_prompt_editor.move_left(false);
+                changed = false;
+            }
+            CursorRight => {
+                self.steering_prompt_editor.move_right(false);
+                changed = false;
+            }
+            CursorUp => {
+                self.steering_prompt_editor.move_up(false);
+                changed = false;
+            }
+            CursorDown => {
+                self.steering_prompt_editor.move_down(false);
+                changed = false;
+            }
+            CursorWordLeft => {
+                self.steering_prompt_editor.move_word_left(false);
+                changed = false;
+            }
+            CursorWordRight => {
+                self.steering_prompt_editor.move_word_right(false);
+                changed = false;
+            }
+            CursorHome => {
+                self.steering_prompt_editor.move_home(false);
+                changed = false;
+            }
+            CursorEnd => {
+                self.steering_prompt_editor.move_end(false);
+                changed = false;
+            }
+            CursorSoftHome => {
+                self.steering_prompt_editor.move_soft_home(false);
+                changed = false;
+            }
+            CursorSoftEnd => {
+                self.steering_prompt_editor.move_soft_end(false);
+                changed = false;
+            }
+            SelectLeft => {
+                self.steering_prompt_editor.move_left(true);
+                changed = false;
+            }
+            SelectRight => {
+                self.steering_prompt_editor.move_right(true);
+                changed = false;
+            }
+            SelectUp => {
+                self.steering_prompt_editor.move_up(true);
+                changed = false;
+            }
+            SelectDown => {
+                self.steering_prompt_editor.move_down(true);
+                changed = false;
+            }
+            SelectWordLeft => {
+                self.steering_prompt_editor.move_word_left(true);
+                changed = false;
+            }
+            SelectWordRight => {
+                self.steering_prompt_editor.move_word_right(true);
+                changed = false;
+            }
+            SelectHome => {
+                self.steering_prompt_editor.move_home(true);
+                changed = false;
+            }
+            SelectEnd => {
+                self.steering_prompt_editor.move_end(true);
+                changed = false;
+            }
+            SelectSoftHome => {
+                self.steering_prompt_editor.move_soft_home(true);
+                changed = false;
+            }
+            SelectSoftEnd => {
+                self.steering_prompt_editor.move_soft_end(true);
+                changed = false;
+            }
+            SelectAll => {
+                self.steering_prompt_editor.select_all();
+                changed = false;
+            }
+            Copy => {
+                changed = false;
+                if let Some(text) = self.steering_prompt_editor.selected_text() {
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        let _ = clipboard.set_text(text);
+                    }
+                }
+            }
+            Cut => {
+                if let Some(text) = self.steering_prompt_editor.selected_text() {
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        let _ = clipboard.set_text(text);
+                    }
+                    self.steering_prompt_editor.delete_backward();
+                }
+            }
+            Paste(value) => self.steering_prompt_editor.insert_text(&value),
+            _ => changed = false,
+        }
+        if changed {
+            let snapshot = self.steering_prompt_editor.text().to_owned();
+            if self.settings.ai_steering_prompt != snapshot {
+                self.settings.ai_steering_prompt = snapshot;
+                return self.persist_settings_effect();
+            }
+        }
+        Vec::new()
     }
 }

@@ -52,7 +52,7 @@ pub fn compare_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
         <div class="absolute" left={0.0} top={0.0} w={width} h={height}
              z_index={200}
              bg={Color::TRANSPARENT}
-             on_click={Action::CloseOverlay}
+             on_click={crate::actions::OverlayAction::CloseOverlay.into()}
              hit_identity={HitIdentity::OverlayBackdrop}>
             <div class="absolute flex-col overflow-hidden"
                  left={menu_x} top={menu_y}
@@ -75,9 +75,9 @@ pub fn compare_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
                     {preset_row(
                         &format!("{} vs {}", head_branch.as_deref().unwrap(), trunk.as_deref().unwrap()),
                         "Changes since fork",
-                        Action::ApplyComparePreset(
+                        crate::actions::CompareAction::ApplyComparePreset(
                             format!("{}:{}:merge", trunk.as_deref().unwrap(), head_branch.as_deref().unwrap())
-                        ),
+                        ).into(),
                         theme,
                     )}
                 }
@@ -85,9 +85,9 @@ pub fn compare_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
                     {preset_row(
                         &format!("HEAD ({})", commit.short_oid),
                         &commit.summary,
-                        Action::ApplyComparePreset(
+                        crate::actions::CompareAction::ApplyComparePreset(
                             format!("{}::commit", commit.oid)
-                        ),
+                        ).into(),
                         theme,
                     )}
                 }
@@ -113,7 +113,7 @@ fn mode_row(
              px={Sp::MD} py={Sp::XS + Sp::XXS}
              rounded={Rad::MD}
              hover_bg={tc.sidebar_row_hover}
-             on_click={Action::SetCompareMode(mode)}
+             on_click={crate::actions::CompareAction::SetCompareMode(mode).into()}
              cursor={CursorHint::Pointer}>
             <div class="flex-col flex-1 overflow-hidden" min_w={0.0}>
                 <text class="text-sm truncate" color={if selected { tc.text_strong } else { tc.text }}>{label}</text>

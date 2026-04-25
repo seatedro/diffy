@@ -28,11 +28,15 @@ pub struct FileTree {
 }
 
 pub fn file_tree(entries: Vec<FileTreeEntry>) -> FileTree {
+    fn select_file(index: usize) -> Action {
+        crate::actions::FileListAction::SelectFile(index).into()
+    }
+
     FileTree {
         entries,
         expanded_folders: HashSet::new(),
         selected: None,
-        on_select_file: Action::SelectFile,
+        on_select_file: select_file,
         on_toggle_folder: None,
     }
 }

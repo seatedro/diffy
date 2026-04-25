@@ -130,7 +130,7 @@ impl RenderOnce for Modal {
                  w={self.window_width} h={self.window_height}
                  z_index={100}
                  bg={tc.overlay_scrim}
-                 on_click={Action::CloseOverlay}
+                 on_click={crate::actions::OverlayAction::CloseOverlay.into()}
                  hit_identity={HitIdentity::OverlayBackdrop}
                  @when {self.align == ModalAlign::Center} { justify_center }
                  @when {self.align == ModalAlign::Top} { pt={Sz::MODAL_TOP_OFFSET} }>

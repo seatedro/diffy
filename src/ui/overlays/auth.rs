@@ -51,7 +51,7 @@ pub fn auth_modal(
 
             // Close affordance
             <div class="flex-row w-full justify-end" h={20.0}>
-                <Button action={Action::CloseOverlay}
+                <Button action={crate::actions::OverlayAction::CloseOverlay.into()}
                         style={ButtonStyle::Ghost}
                         size={ButtonSize::Compact}>
                     <Icon>{lucide::X}</Icon>
@@ -77,7 +77,7 @@ pub fn auth_modal(
              w={width} h={height}
              z_index={100}
              bg={tc.overlay_scrim}
-             on_click={Action::CloseOverlay}
+             on_click={crate::actions::OverlayAction::CloseOverlay.into()}
              hit_identity={HitIdentity::OverlayBackdrop}>
             {panel}
         </div>
@@ -112,7 +112,7 @@ fn render_idle(tc: &crate::ui::theme::ThemeColors, scale: f32) -> AnyElement {
     view! { scale,
         <div class="flex-col items-center w-full" gap={Sp::LG}>
             <div class="flex-row w-full justify-center">
-                <Button action={Action::StartGitHubDeviceFlow}
+                <Button action={crate::actions::GitHubAction::StartGitHubDeviceFlow.into()}
                         tooltip={"Start GitHub device flow"}
                         style={ButtonStyle::Filled}>
                     <Icon>{lucide::KEY}</Icon>
@@ -166,7 +166,7 @@ fn render_awaiting(
                 <text class="mono bold text-center" size={28.0} color={tc.text_strong}>
                     {&user_code}
                 </text>
-                <Button action={Action::CopyText(code_for_copy)}
+                <Button action={crate::actions::AppAction::CopyText(code_for_copy).into()}
                         tooltip={"Copy code"}
                         style={ButtonStyle::Subtle}
                         size={ButtonSize::Compact}>
@@ -177,7 +177,7 @@ fn render_awaiting(
             // Primary CTA — open the browser (we already auto-open once, but
             // give users an explicit way to reopen).
             <div class="flex-row w-full justify-center">
-                <Button action={Action::OpenDeviceFlowBrowser}
+                <Button action={crate::actions::GitHubAction::OpenDeviceFlowBrowser.into()}
                         tooltip={"Open github.com in your browser"}
                         style={ButtonStyle::Filled}>
                     <Icon>{lucide::EXTERNAL_LINK}</Icon>
@@ -206,7 +206,7 @@ fn render_failed(message: String, tc: &crate::ui::theme::ThemeColors, scale: f32
                 <text class="text-sm" color={tc.status_error}>{&message}</text>
             </div>
             <div class="flex-row w-full justify-center">
-                <Button action={Action::StartGitHubDeviceFlow}
+                <Button action={crate::actions::GitHubAction::StartGitHubDeviceFlow.into()}
                         tooltip={"Retry device flow"}
                         style={ButtonStyle::Filled}>
                     <Icon>{lucide::REFRESH}</Icon>

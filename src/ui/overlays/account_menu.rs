@@ -45,7 +45,7 @@ pub fn account_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
         <div class="absolute" left={0.0} top={0.0} w={width} h={height}
              z_index={200}
              bg={Color::TRANSPARENT}
-             on_click={Action::CloseOverlay}
+             on_click={crate::actions::OverlayAction::CloseOverlay.into()}
              hit_identity={HitIdentity::OverlayBackdrop}>
             <div class="absolute flex-col overflow-hidden"
                  left={menu_x} top={menu_y}
@@ -74,8 +74,8 @@ pub fn account_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
                     <div class="w-full" h={Sz::SEPARATOR_W} bg={tc.border_variant} />
                 </div>
 
-                {menu_row(lucide::SETTINGS, "Settings", Action::OpenSettings, theme)}
-                {menu_row(lucide::KEY, "Sign out", Action::SignOutGitHub, theme)}
+                {menu_row(lucide::SETTINGS, "Settings", crate::actions::SettingsAction::OpenSettings.into(), theme)}
+                {menu_row(lucide::KEY, "Sign out", crate::actions::GitHubAction::SignOutGitHub.into(), theme)}
             </div>
         </div>
     }

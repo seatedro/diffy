@@ -382,9 +382,17 @@ pub fn build_ui_frame(
 
                     if let Some(bar_rect) = line_bar_rect {
                         let (stage_action, stage_label, stage_icon) = if is_staged {
-                            (Action::UnstageSelectedLines, "Unstage Lines", lucide::MINUS)
+                            (
+                                crate::actions::RepositoryAction::UnstageSelectedLines.into(),
+                                "Unstage Lines",
+                                lucide::MINUS,
+                            )
                         } else {
-                            (Action::StageSelectedLines, "Stage Lines", lucide::PLUS)
+                            (
+                                crate::actions::RepositoryAction::StageSelectedLines.into(),
+                                "Stage Lines",
+                                lucide::PLUS,
+                            )
                         };
                         let mut bar = build_staging_bar(
                             theme,
@@ -393,7 +401,7 @@ pub fn build_ui_frame(
                             stage_action,
                             stage_label,
                             stage_icon,
-                            Action::DiscardSelectedLines,
+                            crate::actions::RepositoryAction::DiscardSelectedLines.into(),
                             "Discard Lines",
                         );
                         render_element_at(
@@ -408,12 +416,16 @@ pub fn build_ui_frame(
                     } else if let Some((bar_rect, hunk_index)) = hunk_bar_rect {
                         let (stage_action, stage_label, stage_icon) = if is_staged {
                             (
-                                Action::UnstageHunkAt(hunk_index),
+                                crate::actions::RepositoryAction::UnstageHunkAt(hunk_index).into(),
                                 "Unstage Hunk",
                                 lucide::MINUS,
                             )
                         } else {
-                            (Action::StageHunkAt(hunk_index), "Stage Hunk", lucide::PLUS)
+                            (
+                                crate::actions::RepositoryAction::StageHunkAt(hunk_index).into(),
+                                "Stage Hunk",
+                                lucide::PLUS,
+                            )
                         };
                         let mut bar = build_staging_bar(
                             theme,
@@ -422,7 +434,7 @@ pub fn build_ui_frame(
                             stage_action,
                             stage_label,
                             stage_icon,
-                            Action::DiscardHunkAt(hunk_index),
+                            crate::actions::RepositoryAction::DiscardHunkAt(hunk_index).into(),
                             "Discard Hunk",
                         );
                         render_element_at(

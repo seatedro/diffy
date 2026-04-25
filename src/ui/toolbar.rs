@@ -3,7 +3,6 @@ use std::rc::Rc;
 
 use halogen::view;
 
-use crate::actions::Action;
 use crate::render::{Rect, TextMetrics};
 use crate::ui::components::{self, Button, ButtonStyle, SegmentedControl, SegmentedItem};
 use crate::ui::design::{Alpha, Ico, Rad, Shadow, Sp, Sz};
@@ -157,18 +156,18 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                     {SegmentedControl::new(vec![
                         SegmentedItem::new(
                             "Split",
-                            Action::SetLayoutMode(LayoutMode::Split),
+                            crate::actions::CompareAction::SetLayoutMode(LayoutMode::Split).into(),
                             compare_layout == LayoutMode::Split,
                         ).tooltip("Side-by-side view"),
                         SegmentedItem::new(
                             "Unified",
-                            Action::SetLayoutMode(LayoutMode::Unified),
+                            crate::actions::CompareAction::SetLayoutMode(LayoutMode::Unified).into(),
                             compare_layout == LayoutMode::Unified,
                         ).tooltip("Inline view"),
                     ])}
                 }
                 if has_active_diff {
-                    <Button action={Action::ToggleWrap}
+                    <Button action={crate::actions::SettingsAction::ToggleWrap.into()}
                             active={@state.editor.wrap_enabled}
                             tooltip={"Toggle line wrapping (w)"}>
                         <Icon>{lucide::WRAP_TEXT}</Icon>
@@ -179,7 +178,7 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                     && state.editor.line_selection.with(&state.store, |ls| ls.is_empty())
                     && show_stage
                 {
-                    <Button action={Action::StageSelectedFile}
+                    <Button action={crate::actions::RepositoryAction::StageSelectedFile.into()}
                             style={ButtonStyle::Subtle}
                             tooltip={"Stage selected file"}>
                         <Icon>{lucide::PLUS}</Icon>
@@ -190,7 +189,7 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                     && state.editor.line_selection.with(&state.store, |ls| ls.is_empty())
                     && show_unstage
                 {
-                    <Button action={Action::UnstageSelectedFile}
+                    <Button action={crate::actions::RepositoryAction::UnstageSelectedFile.into()}
                             style={ButtonStyle::Subtle}
                             tooltip={"Unstage selected file"}>
                         <Icon>{lucide::MINUS}</Icon>
@@ -201,7 +200,7 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                     && state.editor.line_selection.with(&state.store, |ls| ls.is_empty())
                     && show_discard
                 {
-                    <Button action={Action::DiscardSelectedFile}
+                    <Button action={crate::actions::RepositoryAction::DiscardSelectedFile.into()}
                             style={ButtonStyle::Danger}
                             tooltip={"Discard selected file changes"}>
                         <Icon>{lucide::CORNER_UP_LEFT}</Icon>
@@ -212,7 +211,7 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                     && !state.editor.line_selection.with(&state.store, |ls| ls.is_empty())
                     && show_stage
                 {
-                    <Button action={Action::StageSelectedLines}
+                    <Button action={crate::actions::RepositoryAction::StageSelectedLines.into()}
                             style={ButtonStyle::Subtle}
                             tooltip={"Stage selected lines (s)"}>
                         <Icon>{lucide::PLUS}</Icon>
@@ -223,7 +222,7 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                     && !state.editor.line_selection.with(&state.store, |ls| ls.is_empty())
                     && show_unstage
                 {
-                    <Button action={Action::UnstageSelectedLines}
+                    <Button action={crate::actions::RepositoryAction::UnstageSelectedLines.into()}
                             style={ButtonStyle::Subtle}
                             tooltip={"Unstage selected lines (S)"}>
                         <Icon>{lucide::MINUS}</Icon>
@@ -234,7 +233,7 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                     && !state.editor.line_selection.with(&state.store, |ls| ls.is_empty())
                     && show_discard
                 {
-                    <Button action={Action::DiscardSelectedLines}
+                    <Button action={crate::actions::RepositoryAction::DiscardSelectedLines.into()}
                             style={ButtonStyle::Danger}
                             tooltip={"Discard selected lines (x)"}>
                         <Icon>{lucide::CORNER_UP_LEFT}</Icon>
@@ -244,7 +243,7 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                 if state.workspace.source.get(&state.store) == WorkspaceSource::Status
                     && !state.editor.line_selection.with(&state.store, |ls| ls.is_empty())
                 {
-                    <Button action={Action::ClearLineSelection}
+                    <Button action={crate::actions::RepositoryAction::ClearLineSelection.into()}
                             tooltip={"Clear line selection"}>
                         <Icon>{lucide::X}</Icon>
                     </Button>
@@ -269,7 +268,9 @@ fn search_bar(state: &AppState, theme: &Theme) -> AnyElement {
         .cursor(state.text_edit.cursor.get(&state.store))
         .anchor(state.text_edit.anchor.get(&state.store))
         .cursor_moved_at(state.text_edit.cursor_moved_at_ms.get(&state.store))
-        .on_click(Action::SetFocus(Some(FocusTarget::SearchInput)))
+        .on_click(crate::actions::Action::from(
+            crate::actions::AppAction::SetFocus(Some(FocusTarget::SearchInput)),
+        ))
         .bare()
         .w_full()
         .h(theme.metrics.ui_row_height.round());
@@ -290,17 +291,17 @@ fn search_bar(state: &AppState, theme: &Theme) -> AnyElement {
             <div class="shrink-0">
                 <text class="text-xs font-mono" color={tc.text_muted}>{&count_label}</text>
             </div>
-            <Button action={Action::SearchPrevious}
+            <Button action={crate::actions::EditorAction::SearchPrevious.into()}
                     tooltip={"Previous match"}
                     fixed_size={Sz::ROW}>
                 <Icon>{lucide::CHEVRON_UP}</Icon>
             </Button>
-            <Button action={Action::SearchNext}
+            <Button action={crate::actions::EditorAction::SearchNext.into()}
                     tooltip={"Next match"}
                     fixed_size={Sz::ROW}>
                 <Icon>{lucide::CHEVRON_DOWN}</Icon>
             </Button>
-            <Button action={Action::CloseSearch}
+            <Button action={crate::actions::EditorAction::CloseSearch.into()}
                     tooltip={"Close search (Esc)"}
                     fixed_size={Sz::ROW}>
                 <Icon>{lucide::X}</Icon>
@@ -394,7 +395,7 @@ fn empty_state(state: &AppState, theme: &Theme) -> AnyElement {
                 </div>
                 {?recent_section}
                 <div pt={Sp::XS}>
-                    <Button action={Action::OpenRepoPicker}
+                    <Button action={crate::actions::OverlayAction::OpenRepoPicker.into()}
                             tooltip={"Open a repository folder"}
                             style={ButtonStyle::Subtle}>
                         <Icon>{lucide::FOLDER_OPEN}</Icon>
@@ -418,7 +419,7 @@ fn repo_row(repo: &std::path::Path, tc: &crate::ui::theme::ThemeColors, scale: f
              py={Sp::SM} px={Sp::SM}
              rounded={Rad::MD} gap={Sp::SM}
              hover_bg={tc.sidebar_row_hover}
-             on_click={Action::OpenRepository(repo.to_path_buf())}
+             on_click={crate::actions::WorkspaceAction::OpenRepository(repo.to_path_buf()).into()}
              cursor={CursorHint::Pointer}>
             <icon svg={lucide::FOLDER} size={Ico::SM} color={tc.text_muted} />
             <div class="flex-col flex-1" min_w={0.0}>

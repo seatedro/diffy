@@ -1,4 +1,3 @@
-use crate::actions::Action;
 use crate::core::compare::{CompareMode, RendererKind};
 use crate::ui::design::{Alpha, Ico, Rad, Sp};
 use crate::ui::element::*;
@@ -161,11 +160,12 @@ fn sync_chip(
     let (ahead, behind) = counts;
 
     let action = match (ahead, behind) {
-        (a, 0) if a > 0 => Action::PushCurrentBranch {
+        (a, 0) if a > 0 => crate::actions::RepositoryAction::PushCurrentBranch {
             force_with_lease: false,
-        },
-        (0, b) if b > 0 => Action::PullCurrentBranch,
-        _ => Action::FetchRemote(remote),
+        }
+        .into(),
+        (0, b) if b > 0 => crate::actions::RepositoryAction::PullCurrentBranch.into(),
+        _ => crate::actions::RepositoryAction::FetchRemote(remote).into(),
     };
 
     // Halves brighten when their count is non-zero. Using text_strong / text_muted

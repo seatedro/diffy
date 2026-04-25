@@ -11,7 +11,9 @@ use crate::core::compare::{ComparePhase, ProgressSink};
 use crate::core::vcs::git::{
     GitService, StatusItem, StatusOperation, StatusScope, status::status_items_from_entry,
 };
-use crate::events::{AppEvent, RepositoryChangeKind, RepositorySnapshot, RepositorySyncReason};
+use crate::events::{
+    RepositoryChangeKind, RepositoryEvent, RepositorySnapshot, RepositorySyncReason,
+};
 
 const GIT_DIRTY_DEBOUNCE: Duration = Duration::from_millis(150);
 
@@ -324,7 +326,7 @@ fn apply_status_operation(
 
     if !state.git.is_open() {
         if let Err(error) = state.git.open(path.to_string_lossy().as_ref()) {
-            event_sender.send(AppEvent::StatusOperationFailed {
+            event_sender.send(RepositoryEvent::StatusOperationFailed {
                 path,
                 message: error.to_string(),
             });
@@ -333,7 +335,7 @@ fn apply_status_operation(
     }
 
     if let Err(error) = state.git.apply_status_operation(&item, operation) {
-        event_sender.send(AppEvent::StatusOperationFailed {
+        event_sender.send(RepositoryEvent::StatusOperationFailed {
             path: path.clone(),
             message: error.to_string(),
         });
@@ -358,7 +360,7 @@ fn apply_batch_status_operation(
 
     if !state.git.is_open() {
         if let Err(error) = state.git.open(path.to_string_lossy().as_ref()) {
-            event_sender.send(AppEvent::StatusOperationFailed {
+            event_sender.send(RepositoryEvent::StatusOperationFailed {
                 path,
                 message: error.to_string(),
             });
@@ -367,7 +369,7 @@ fn apply_batch_status_operation(
     }
 
     if let Err(error) = state.git.apply_batch_status_operation(&items, operation) {
-        event_sender.send(AppEvent::StatusOperationFailed {
+        event_sender.send(RepositoryEvent::StatusOperationFailed {
             path: path.clone(),
             message: error.to_string(),
         });
@@ -393,7 +395,7 @@ fn apply_patch_operation(
 
     if !state.git.is_open() {
         if let Err(error) = state.git.open(path.to_string_lossy().as_ref()) {
-            event_sender.send(AppEvent::StatusOperationFailed {
+            event_sender.send(RepositoryEvent::StatusOperationFailed {
                 path,
                 message: error.to_string(),
             });
@@ -414,7 +416,7 @@ fn apply_patch_operation(
             patch = %patch,
             "patch apply failed"
         );
-        event_sender.send(AppEvent::StatusOperationFailed {
+        event_sender.send(RepositoryEvent::StatusOperationFailed {
             path: path.clone(),
             message: format!("{} failed: {}", operation.label(), error),
         });
@@ -438,7 +440,7 @@ fn apply_commit(
 
     if !state.git.is_open() {
         if let Err(error) = state.git.open(path.to_string_lossy().as_ref()) {
-            event_sender.send(AppEvent::CommitFailed {
+            event_sender.send(RepositoryEvent::CommitFailed {
                 path,
                 message: error.to_string(),
             });
@@ -447,14 +449,14 @@ fn apply_commit(
     }
 
     if let Err(error) = state.git.commit(message) {
-        event_sender.send(AppEvent::CommitFailed {
+        event_sender.send(RepositoryEvent::CommitFailed {
             path,
             message: error.to_string(),
         });
         return;
     }
 
-    event_sender.send(AppEvent::CommitCreated { path: path.clone() });
+    event_sender.send(RepositoryEvent::CommitCreated { path: path.clone() });
     sync_repository_forced(state, event_sender, path, RepositorySyncReason::Dirty);
 }
 
@@ -483,7 +485,7 @@ fn apply_fetch(
     tracing::debug!(path = %path.display(), %remote, toast_id, "git: fetch requested");
     if let Err(message) = ensure_open(state, &path) {
         tracing::warn!(path = %path.display(), %message, "git: fetch ensure_open failed");
-        event_sender.send(AppEvent::FetchFailed {
+        event_sender.send(RepositoryEvent::FetchFailed {
             toast_id,
             remote,
             message,
@@ -495,7 +497,7 @@ fn apply_fetch(
     let result = state
         .git
         .fetch_remote(&remote, move |received, total, bytes| {
-            progress_sender.send(AppEvent::FetchProgress {
+            progress_sender.send(RepositoryEvent::FetchProgress {
                 toast_id,
                 received_objects: received,
                 total_objects: total,
@@ -506,7 +508,7 @@ fn apply_fetch(
     match result {
         Ok(()) => {
             tracing::debug!(path = %path.display(), %remote, "git: fetch complete");
-            event_sender.send(AppEvent::FetchComplete {
+            event_sender.send(RepositoryEvent::FetchComplete {
                 toast_id,
                 path: path.clone(),
                 remote,
@@ -515,7 +517,7 @@ fn apply_fetch(
         }
         Err(error) => {
             tracing::warn!(path = %path.display(), %remote, %error, "git: fetch failed");
-            event_sender.send(AppEvent::FetchFailed {
+            event_sender.send(RepositoryEvent::FetchFailed {
                 toast_id,
                 remote,
                 message: error.to_string(),
@@ -543,7 +545,7 @@ fn apply_push(
     );
     if let Err(message) = ensure_open(state, &path) {
         tracing::warn!(path = %path.display(), %message, "git: push ensure_open failed");
-        event_sender.send(AppEvent::PushFailed {
+        event_sender.send(RepositoryEvent::PushFailed {
             toast_id,
             remote,
             message,
@@ -566,7 +568,7 @@ fn apply_push(
         &refspec,
         force_with_lease,
         move |current, total, bytes| {
-            progress_sender.send(AppEvent::PushProgress {
+            progress_sender.send(RepositoryEvent::PushProgress {
                 toast_id,
                 current,
                 total,
@@ -578,7 +580,7 @@ fn apply_push(
     match result {
         Ok(()) => {
             tracing::debug!(path = %path.display(), %remote, %branch, "git: push complete");
-            event_sender.send(AppEvent::PushComplete {
+            event_sender.send(RepositoryEvent::PushComplete {
                 toast_id,
                 path: path.clone(),
                 remote,
@@ -588,7 +590,7 @@ fn apply_push(
         }
         Err(error) => {
             tracing::warn!(path = %path.display(), %remote, %error, "git: push failed");
-            event_sender.send(AppEvent::PushFailed {
+            event_sender.send(RepositoryEvent::PushFailed {
                 toast_id,
                 remote,
                 message: error.to_string(),
@@ -614,7 +616,7 @@ fn apply_pull_ff(
     );
     if let Err(message) = ensure_open(state, &path) {
         tracing::warn!(path = %path.display(), %message, "git: pull-ff ensure_open failed");
-        event_sender.send(AppEvent::PullFailed {
+        event_sender.send(RepositoryEvent::PullFailed {
             toast_id,
             remote,
             branch,
@@ -627,7 +629,7 @@ fn apply_pull_ff(
     let result = state
         .git
         .pull_ff(&remote, &branch, move |received, total, bytes| {
-            progress_sender.send(AppEvent::FetchProgress {
+            progress_sender.send(RepositoryEvent::FetchProgress {
                 toast_id,
                 received_objects: received,
                 total_objects: total,
@@ -649,7 +651,7 @@ fn apply_pull_ff(
                 behind,
                 "git: pull-ff complete",
             );
-            event_sender.send(AppEvent::PullComplete {
+            event_sender.send(RepositoryEvent::PullComplete {
                 toast_id,
                 path: path.clone(),
                 remote,
@@ -667,7 +669,7 @@ fn apply_pull_ff(
                 %error,
                 "git: pull-ff failed",
             );
-            event_sender.send(AppEvent::PullFailed {
+            event_sender.send(RepositoryEvent::PullFailed {
                 toast_id,
                 remote,
                 branch,
@@ -726,7 +728,7 @@ fn sync_repository_inner(
 
     if !state.git.is_open() {
         if let Err(error) = state.git.open(path.to_string_lossy().as_ref()) {
-            event_sender.send(AppEvent::RepositorySnapshotFailed {
+            event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
                 path,
                 reason,
                 message: error.to_string(),
@@ -738,7 +740,7 @@ fn sync_repository_inner(
     let bundle = match collect_snapshot(&state.git, path.clone(), reason, reporter_ref) {
         Ok(bundle) => bundle,
         Err(error) => {
-            event_sender.send(AppEvent::RepositorySnapshotFailed {
+            event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
                 path,
                 reason,
                 message: error.to_string(),
@@ -778,7 +780,7 @@ fn sync_repository_inner(
                 None
             })
         };
-        event_sender.send(AppEvent::RepositorySnapshotReady(snapshot));
+        event_sender.send(RepositoryEvent::RepositorySnapshotReady(snapshot));
     } else {
         tracing::debug!(
             path = %path.display(),

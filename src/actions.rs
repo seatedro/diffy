@@ -6,16 +6,24 @@ use crate::ui::state::{CompareField, FocusTarget, SettingsSection, SidebarTab};
 use crate::ui::theme::ThemeMode;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Action {
+pub enum AppAction {
     Bootstrap,
     OpenRepositoryDialog,
+    SetFocus(Option<FocusTarget>),
+    CopyText(String),
+    DismissToast(usize),
+    HoverToast(Option<usize>),
+    Noop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceAction {
     OpenRepository(PathBuf),
-    OpenRepoPicker,
-    OpenRefPicker(CompareField),
-    OpenCommandPalette,
     ShowWorkingTree,
-    OpenGitHubAuthModal,
-    CloseOverlay,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompareAction {
     SetLeftRef(String),
     SetRightRef(String),
     SwapRefs,
@@ -29,51 +37,14 @@ pub enum Action {
     ApplyComparePreset(String),
     SetLayoutMode(LayoutMode),
     SetRenderer(RendererKind),
-    SetFocus(Option<FocusTarget>),
-    InsertText(String),
-    Backspace,
-    BackspaceWord,
-    BackspaceLine,
-    DeleteForward,
-    DeleteForwardWord,
-    // Cursor movement
-    CursorLeft,
-    CursorRight,
-    CursorUp,
-    CursorDown,
-    CursorWordLeft,
-    CursorWordRight,
-    CursorHome,
-    CursorEnd,
-    CursorSoftHome,
-    CursorSoftEnd,
-    // Selection
-    SelectLeft,
-    SelectRight,
-    SelectUp,
-    SelectDown,
-    SelectWordLeft,
-    SelectWordRight,
-    SelectHome,
-    SelectEnd,
-    SelectSoftHome,
-    SelectSoftEnd,
-    SelectAll,
-    // Clipboard
-    Copy,
-    Cut,
-    Paste(String),
-    /// Set cursor and anchor to a specific byte offset (from click-to-position).
-    SetTextCursor(usize),
-    /// Set cursor to a specific byte offset while keeping anchor (drag selection).
-    ExtendTextSelection(usize),
-    MoveOverlaySelection(i32),
-    ConfirmOverlaySelection,
-    TabCompletePickerDir,
-    SelectOverlayEntry(usize),
-    HoverOverlayEntry(Option<usize>),
     StartCompare,
     CancelCompare,
+    SelectSidebarCommit(String),
+    ClearSidebarCommit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepositoryAction {
     StageSelectedFile,
     UnstageSelectedFile,
     DiscardSelectedFile,
@@ -93,19 +64,54 @@ pub enum Action {
     UnstageSelectedLines,
     DiscardSelectedLines,
     ClearLineSelection,
+    SubmitCommit,
+    FetchRemote(String),
+    FetchAllRemotes,
+    PushCurrentBranch { force_with_lease: bool },
+    PullCurrentBranch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileListAction {
     SelectFile(usize),
     SelectFilePath(String),
     SelectNextFile,
     SelectPreviousFile,
     ScrollFileList(i32),
-    /// Scroll the file list by a pixel delta.
     ScrollFileListPx(i32),
-    /// Set file list scroll to an absolute pixel position.
     ScrollFileListToPx(u32),
-    /// Scroll the active overlay list (picker / command palette) by a pixel delta.
+    HoverFile(Option<usize>),
+    ToggleFolder(String),
+    ToggleFileViewed(usize),
+    SetSidebarFilter(String),
+    ClearSidebarFilter,
+    ToggleSidebarMode,
+    ToggleSidebar,
+    SetSidebarTab(SidebarTab),
+    ScrollCommitListPx(i32),
+    ExpandAllFolders,
+    CollapseAllFolders,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OverlayAction {
+    OpenRepoPicker,
+    OpenRefPicker(CompareField),
+    OpenCommandPalette,
+    OpenGitHubAuthModal,
+    CloseOverlay,
+    MoveOverlaySelection(i32),
+    ConfirmOverlaySelection,
+    TabCompletePickerDir,
+    SelectOverlayEntry(usize),
+    HoverOverlayEntry(Option<usize>),
     ScrollActiveOverlayListPx(i32),
+    ShowKeyboardShortcuts,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditorAction {
     ScrollViewportLines(i32),
-    /// Scroll the viewport by a pixel delta.
     ScrollViewportPx(i32),
     ScrollViewportPages(i32),
     ScrollViewportTo(u32),
@@ -115,14 +121,57 @@ pub enum Action {
     GoToNextFile,
     GoToPreviousFile,
     FocusViewport,
-    HoverFile(Option<usize>),
-    StartGitHubDeviceFlow,
-    OpenDeviceFlowBrowser,
-    OpenAccountMenu,
-    CopyText(String),
-    SignOutGitHub,
-    DismissToast(usize),
-    HoverToast(Option<usize>),
+    OpenSearch,
+    CloseSearch,
+    SearchNext,
+    SearchPrevious,
+    ScrollViewportHalfPage(i32),
+    EditorClick(i32, i32),
+    EditorDrag(i32, i32),
+    EditorScrollPx(i32),
+    ExpandContextAbove(usize, u32),
+    ExpandContextBelow(usize, u32),
+    ExpandAllContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextEditAction {
+    InsertText(String),
+    Backspace,
+    BackspaceWord,
+    BackspaceLine,
+    DeleteForward,
+    DeleteForwardWord,
+    CursorLeft,
+    CursorRight,
+    CursorUp,
+    CursorDown,
+    CursorWordLeft,
+    CursorWordRight,
+    CursorHome,
+    CursorEnd,
+    CursorSoftHome,
+    CursorSoftEnd,
+    SelectLeft,
+    SelectRight,
+    SelectUp,
+    SelectDown,
+    SelectWordLeft,
+    SelectWordRight,
+    SelectHome,
+    SelectEnd,
+    SelectSoftHome,
+    SelectSoftEnd,
+    SelectAll,
+    Copy,
+    Cut,
+    Paste(String),
+    SetTextCursor(usize),
+    ExtendTextSelection(usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettingsAction {
     ToggleWrap,
     SetWrapColumn(u32),
     SetSidebarWidthPx(u32),
@@ -137,52 +186,147 @@ pub enum Action {
     OpenSettings,
     CloseSettings,
     ToggleAutoUpdate,
+    SetSettingsSection(SettingsSection),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitHubAction {
+    StartGitHubDeviceFlow,
+    OpenDeviceFlowBrowser,
+    OpenAccountMenu,
+    SignOutGitHub,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateAction {
     CheckForUpdates,
     InstallUpdate,
     RestartToUpdate,
-    SetSettingsSection(SettingsSection),
-    ToggleFolder(String),
-    ToggleFileViewed(usize),
-    SetSidebarFilter(String),
-    ClearSidebarFilter,
-    ToggleSidebarMode,
-    ToggleSidebar,
-    SetSidebarTab(SidebarTab),
-    SelectSidebarCommit(String),
-    ClearSidebarCommit,
-    ScrollCommitListPx(i32),
-    ExpandAllFolders,
-    CollapseAllFolders,
-    OpenSearch,
-    CloseSearch,
-    SearchNext,
-    SearchPrevious,
-    ShowKeyboardShortcuts,
-    ScrollViewportHalfPage(i32),
-    SubmitCommit,
-    FetchRemote(String),
-    FetchAllRemotes,
-    PushCurrentBranch {
-        force_with_lease: bool,
-    },
-    PullCurrentBranch,
-    EditorClick(i32, i32),
-    EditorDrag(i32, i32),
-    EditorScrollPx(i32),
-    ExpandContextAbove(usize, u32),
-    ExpandContextBelow(usize, u32),
-    ExpandAllContext,
-    SetAiKey {
-        kind: AiKeyKind,
-        value: String,
-    },
-    ClearAiKey {
-        kind: AiKeyKind,
-    },
-    SetAiKeyEditing {
-        kind: AiKeyKind,
-        editing: bool,
-    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyntaxAction {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AiAction {
+    SetAiKey { kind: AiKeyKind, value: String },
+    ClearAiKey { kind: AiKeyKind },
+    SetAiKeyEditing { kind: AiKeyKind, editing: bool },
     GenerateCommitMessage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
+    App(AppAction),
+    Workspace(WorkspaceAction),
+    Compare(CompareAction),
+    Repository(RepositoryAction),
+    FileList(FileListAction),
+    Overlay(OverlayAction),
+    Editor(EditorAction),
+    TextEdit(TextEditAction),
+    Settings(SettingsAction),
+    GitHub(GitHubAction),
+    Update(UpdateAction),
+    Syntax(SyntaxAction),
+    Ai(AiAction),
     Noop,
+}
+
+impl From<AppAction> for Action {
+    fn from(action: AppAction) -> Self {
+        Self::App(action)
+    }
+}
+
+impl From<WorkspaceAction> for Action {
+    fn from(action: WorkspaceAction) -> Self {
+        Self::Workspace(action)
+    }
+}
+
+impl From<CompareAction> for Action {
+    fn from(action: CompareAction) -> Self {
+        Self::Compare(action)
+    }
+}
+
+impl From<RepositoryAction> for Action {
+    fn from(action: RepositoryAction) -> Self {
+        Self::Repository(action)
+    }
+}
+
+impl From<FileListAction> for Action {
+    fn from(action: FileListAction) -> Self {
+        Self::FileList(action)
+    }
+}
+
+impl From<OverlayAction> for Action {
+    fn from(action: OverlayAction) -> Self {
+        Self::Overlay(action)
+    }
+}
+
+impl From<EditorAction> for Action {
+    fn from(action: EditorAction) -> Self {
+        Self::Editor(action)
+    }
+}
+
+impl From<TextEditAction> for Action {
+    fn from(action: TextEditAction) -> Self {
+        Self::TextEdit(action)
+    }
+}
+
+impl From<SettingsAction> for Action {
+    fn from(action: SettingsAction) -> Self {
+        Self::Settings(action)
+    }
+}
+
+impl From<GitHubAction> for Action {
+    fn from(action: GitHubAction) -> Self {
+        Self::GitHub(action)
+    }
+}
+
+impl From<UpdateAction> for Action {
+    fn from(action: UpdateAction) -> Self {
+        Self::Update(action)
+    }
+}
+
+impl From<SyntaxAction> for Action {
+    fn from(action: SyntaxAction) -> Self {
+        Self::Syntax(action)
+    }
+}
+
+impl From<AiAction> for Action {
+    fn from(action: AiAction) -> Self {
+        Self::Ai(action)
+    }
+}
+
+pub fn editor_scroll_px(delta: i32) -> Action {
+    EditorAction::EditorScrollPx(delta).into()
+}
+
+pub fn scroll_active_overlay_list_px(delta: i32) -> Action {
+    OverlayAction::ScrollActiveOverlayListPx(delta).into()
+}
+
+pub fn scroll_commit_list_px(delta: i32) -> Action {
+    FileListAction::ScrollCommitListPx(delta).into()
+}
+
+pub fn select_file(index: usize) -> Action {
+    FileListAction::SelectFile(index).into()
+}
+
+pub fn toggle_folder(path: String) -> Action {
+    FileListAction::ToggleFolder(path).into()
 }

@@ -458,7 +458,7 @@ impl EditorElement {
             return None;
         }
         let step = cap.above_cap.min(20).max(1);
-        Some(crate::actions::Action::ExpandContextAbove(hunk_index, step))
+        Some(crate::actions::EditorAction::ExpandContextAbove(hunk_index, step).into()).into()
     }
 
     pub fn render_line_index_for_row(&self, display_row_index: usize) -> Option<u32> {

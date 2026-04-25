@@ -125,56 +125,58 @@ pub struct PullFfRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Effect {
+pub struct Task<T> {
+    pub generation: u64,
+    pub request: T,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UiEffect {
     OpenRepositoryDialog,
+    OpenBrowser { url: String },
+    SetClipboard(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepositoryEffect {
     WatchRepository {
         path: Option<PathBuf>,
     },
     SyncRepository {
         path: PathBuf,
         reason: RepositorySyncReason,
-        /// When `Some`, the git worker emits `CompareProgressUpdate` events
-        /// tagged with this generation so the loading panel tracks repo
-        /// open phases (OpeningRepo → ResolvingRefs → FetchingHistory).
-        /// `None` for background resyncs where no progress UI is up.
         reporter_generation: Option<u64>,
     },
     FetchRemote(FetchRemoteRequest),
     Push(PushRequest),
     PullFf(PullFfRequest),
-    RunCompare {
-        generation: u64,
-        request: CompareRequest,
-    },
-    LoadCompareStats {
-        generation: u64,
-        request: CompareStatsRequest,
-    },
-    LoadCompareHistory {
-        generation: u64,
-        request: CompareHistoryRequest,
-    },
-    LoadCompareFile {
-        generation: u64,
-        request: CompareFileRequest,
-    },
-    LoadCompareFileStats {
-        generation: u64,
-        request: CompareFileStatsRequest,
-    },
     LoadStatusDiff {
-        generation: u64,
+        task: Task<StatusDiffRequest>,
         index: usize,
-        request: StatusDiffRequest,
-    },
-    LoadFileSyntax {
-        generation: u64,
-        request: LoadFileSyntaxRequest,
     },
     ApplyStatusOperation(StatusOperationRequest),
     ApplyBatchStatusOperation(BatchStatusOperationRequest),
     ApplyPatchOperation(PatchOperationRequest),
     CreateCommit(CommitRequest),
+    FetchContextLines(FetchContextLinesRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompareEffect {
+    Run(Task<CompareRequest>),
+    LoadStats(Task<CompareStatsRequest>),
+    LoadHistory(Task<CompareHistoryRequest>),
+    LoadFile(Task<CompareFileRequest>),
+    LoadFileStats(Task<CompareFileStatsRequest>),
+    ResolveRef {
+        repo_path: PathBuf,
+        query: String,
+        generation: u64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitHubEffect {
     LoadPullRequest {
         url: String,
         repo_path: PathBuf,
@@ -203,12 +205,15 @@ pub enum Effect {
     LoadGitHubToken,
     SaveGitHubToken(String),
     ClearGitHubToken,
-    ResolveRef {
-        repo_path: PathBuf,
-        query: String,
-        generation: u64,
-    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettingsEffect {
     SaveSettings(Settings),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateEffect {
     CheckForUpdates {
         silent: bool,
     },
@@ -217,27 +222,82 @@ pub enum Effect {
         silent: bool,
     },
     ApplyStagedUpdate(StagedUpdate),
-    OpenBrowser {
-        url: String,
-    },
-    SetClipboard(String),
-    FetchContextLines(FetchContextLinesRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyntaxEffect {
+    LoadFileSyntax(Task<LoadFileSyntaxRequest>),
     InstallCommonSyntaxPacks,
-    EnsureSyntaxPackForPath {
-        path: String,
-    },
-    EnsureSyntaxPacksForPaths {
-        paths: Vec<String>,
-    },
+    EnsureSyntaxPackForPath { path: String },
+    EnsureSyntaxPacksForPaths { paths: Vec<String> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AiEffect {
     LoadAiKeys,
-    SaveAiKey {
-        kind: AiKeyKind,
-        value: String,
-    },
-    ClearAiKey {
-        kind: AiKeyKind,
-    },
+    SaveAiKey { kind: AiKeyKind, value: String },
+    ClearAiKey { kind: AiKeyKind },
     GenerateCommitMessage(GenerateCommitMessageRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Effect {
+    Ui(UiEffect),
+    Repository(RepositoryEffect),
+    Compare(CompareEffect),
+    GitHub(GitHubEffect),
+    Settings(SettingsEffect),
+    Update(UpdateEffect),
+    Syntax(SyntaxEffect),
+    Ai(AiEffect),
+}
+
+impl From<UiEffect> for Effect {
+    fn from(effect: UiEffect) -> Self {
+        Self::Ui(effect)
+    }
+}
+
+impl From<RepositoryEffect> for Effect {
+    fn from(effect: RepositoryEffect) -> Self {
+        Self::Repository(effect)
+    }
+}
+
+impl From<CompareEffect> for Effect {
+    fn from(effect: CompareEffect) -> Self {
+        Self::Compare(effect)
+    }
+}
+
+impl From<GitHubEffect> for Effect {
+    fn from(effect: GitHubEffect) -> Self {
+        Self::GitHub(effect)
+    }
+}
+
+impl From<SettingsEffect> for Effect {
+    fn from(effect: SettingsEffect) -> Self {
+        Self::Settings(effect)
+    }
+}
+
+impl From<UpdateEffect> for Effect {
+    fn from(effect: UpdateEffect) -> Self {
+        Self::Update(effect)
+    }
+}
+
+impl From<SyntaxEffect> for Effect {
+    fn from(effect: SyntaxEffect) -> Self {
+        Self::Syntax(effect)
+    }
+}
+
+impl From<AiEffect> for Effect {
+    fn from(effect: AiEffect) -> Self {
+        Self::Ai(effect)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

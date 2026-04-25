@@ -264,8 +264,12 @@ impl BlockDecoration for ExpandChipBlock {
     fn on_click(&self) -> Option<Action> {
         let step = self.step.min(self.remaining_lines).max(1);
         Some(match self.direction {
-            ExpandDirection::Above => Action::ExpandContextAbove(self.hunk_index, step),
-            ExpandDirection::Below => Action::ExpandContextBelow(self.hunk_index, step),
+            ExpandDirection::Above => {
+                crate::actions::EditorAction::ExpandContextAbove(self.hunk_index, step).into()
+            }
+            ExpandDirection::Below => {
+                crate::actions::EditorAction::ExpandContextBelow(self.hunk_index, step).into()
+            }
         })
     }
 }

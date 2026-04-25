@@ -1,0 +1,101 @@
+use crate::actions::SettingsAction;
+use crate::effects::Effect;
+use crate::events::SettingsEvent;
+
+use super::*;
+
+pub(super) fn reduce_action(state: &mut AppState, action: SettingsAction) -> Vec<Effect> {
+    state.apply_settings_action(action)
+}
+
+pub(super) fn reduce_event(state: &mut AppState, event: SettingsEvent) -> Vec<Effect> {
+    match event {
+        SettingsEvent::SettingsSaved => Vec::new(),
+        SettingsEvent::SettingsSaveFailed { message } => {
+            state.push_error(&message);
+            Vec::new()
+        }
+    }
+}
+
+impl AppState {
+    pub(super) fn apply_settings_action(&mut self, action: SettingsAction) -> Vec<Effect> {
+        use SettingsAction::*;
+        match action {
+            ToggleWrap => {
+                let current = self.editor.wrap_enabled.get(&self.store);
+                self.editor.wrap_enabled.set(&self.store, !current);
+                self.persist_settings_effect()
+            }
+            SetWrapColumn(column) => {
+                self.editor.wrap_column.set(&self.store, column);
+                self.persist_settings_effect()
+            }
+            SetSidebarWidthPx(width) => {
+                self.settings.sidebar_width_px = Some(self.clamp_sidebar_width_px(width));
+                Vec::new()
+            }
+            IncreaseUiScale => self.adjust_ui_scale(UI_SCALE_STEP_PCT as i16),
+            DecreaseUiScale => self.adjust_ui_scale(-(UI_SCALE_STEP_PCT as i16)),
+            SetUiScalePct(pct) => {
+                let clamped = self.clamp_ui_scale_pct(pct);
+                if clamped == self.settings.ui_scale_pct {
+                    return Vec::new();
+                }
+                self.settings.ui_scale_pct = clamped;
+                self.persist_settings_effect()
+            }
+            ToggleThemeMode => {
+                self.settings.theme_mode = match self.settings.theme_mode {
+                    ThemeMode::Dark => ThemeMode::Light,
+                    ThemeMode::Light => ThemeMode::Dark,
+                };
+                self.persist_settings_effect()
+            }
+            SetThemeMode(mode) => {
+                if self.settings.theme_mode == mode {
+                    return Vec::new();
+                }
+                self.settings.theme_mode = mode;
+                self.persist_settings_effect()
+            }
+            SetThemeName(name) => {
+                self.settings.theme_name = name;
+                self.persist_settings_effect()
+            }
+            SetWheelScrollLines(lines) => {
+                let clamped = lines.clamp(1, 10);
+                if clamped == self.settings.wheel_scroll_lines {
+                    return Vec::new();
+                }
+                self.settings.wheel_scroll_lines = clamped;
+                self.persist_settings_effect()
+            }
+            OpenThemePicker => {
+                self.open_theme_picker();
+                Vec::new()
+            }
+            OpenSettings => {
+                self.clear_overlays();
+                self.app_view.set(&self.store, AppView::Settings);
+                Vec::new()
+            }
+            CloseSettings => {
+                self.app_view.set(&self.store, AppView::Workspace);
+                Vec::new()
+            }
+            ToggleAutoUpdate => {
+                self.settings.auto_update = !self.settings.auto_update;
+                let mut effects = vec![SettingsEffect::SaveSettings(self.settings.clone()).into()];
+                if self.update_polling_enabled() {
+                    effects.push(UpdateEffect::CheckForUpdates { silent: true }.into());
+                }
+                effects
+            }
+            SetSettingsSection(section) => {
+                self.settings_section.set(&self.store, section);
+                Vec::new()
+            }
+        }
+    }
+}

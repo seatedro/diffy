@@ -58,7 +58,7 @@ fn nav_panel(_state: &AppState, theme: &Theme, active: SettingsSection) -> AnyEl
                  gap={Sp::SM}>
                 <text class="text-xs font-semibold" color={tc.text_muted}>{"SETTINGS"}</text>
                 <spacer />
-                {Button::new(Action::CloseSettings)
+                {Button::new(crate::actions::SettingsAction::CloseSettings.into())
                     .icon(lucide::X)
                     .style(ButtonStyle::Ghost)
                     .size(ButtonSize::Compact)
@@ -88,7 +88,7 @@ fn nav_row(theme: &Theme, section: SettingsSection, selected: bool) -> AnyElemen
              rounded={Rad::MD}
              bg={if selected { tc.element_selected } else { Color::TRANSPARENT }}
              hover_bg={if !selected { tc.ghost_element_hover }}
-             on_click={Action::SetSettingsSection(section)}
+             on_click={crate::actions::SettingsAction::SetSettingsSection(section).into()}
              cursor={CursorHint::Pointer}>
             <icon svg={section.icon()} size={Ico::SM * scale} color={icon_color} />
             <text class="text-sm font-medium" color={label_color}>{section.label()}</text>
@@ -154,12 +154,12 @@ fn appearance_section(state: &AppState, theme: &Theme) -> AnyElement {
     let mode_control = SegmentedControl::new(vec![
         SegmentedItem::new(
             "Dark",
-            Action::SetThemeMode(ThemeMode::Dark),
+            crate::actions::SettingsAction::SetThemeMode(ThemeMode::Dark).into(),
             theme_mode == ThemeMode::Dark,
         ),
         SegmentedItem::new(
             "Light",
-            Action::SetThemeMode(ThemeMode::Light),
+            crate::actions::SettingsAction::SetThemeMode(ThemeMode::Light).into(),
             theme_mode == ThemeMode::Light,
         ),
     ])
@@ -172,7 +172,7 @@ fn appearance_section(state: &AppState, theme: &Theme) -> AnyElement {
             .map(|pct| {
                 SegmentedItem::new(
                     format!("{pct}%"),
-                    Action::SetUiScalePct(*pct),
+                    crate::actions::SettingsAction::SetUiScalePct(*pct).into(),
                     *pct == scale_pct,
                 )
             })
@@ -180,7 +180,7 @@ fn appearance_section(state: &AppState, theme: &Theme) -> AnyElement {
     )
     .into_any();
 
-    let theme_browse = Button::new(Action::OpenThemePicker)
+    let theme_browse = Button::new(crate::actions::SettingsAction::OpenThemePicker.into())
         .icon(lucide::SUN)
         .label(if theme_name.is_empty() {
             "Browse themes\u{2026}".to_owned()
@@ -208,7 +208,7 @@ fn editor_section(state: &AppState, theme: &Theme) -> AnyElement {
     let renderer = state.compare.renderer.get(&state.store);
 
     let wrap_toggle: AnyElement = toggle(wrap_enabled)
-        .on_toggle(Action::ToggleWrap)
+        .on_toggle(crate::actions::SettingsAction::ToggleWrap.into())
         .into_any();
 
     let wrap_column_options: [(u32, &'static str); 4] =
@@ -217,7 +217,12 @@ fn editor_section(state: &AppState, theme: &Theme) -> AnyElement {
         wrap_column_options
             .iter()
             .map(|(value, label)| {
-                SegmentedItem::new(*label, Action::SetWrapColumn(*value), *value == wrap_column)
+                SegmentedItem::new(
+                    *label,
+                    crate::actions::SettingsAction::SetWrapColumn(*value).into(),
+                    *value == wrap_column,
+                )
+                .into()
             })
             .collect(),
     )
@@ -226,12 +231,12 @@ fn editor_section(state: &AppState, theme: &Theme) -> AnyElement {
     let layout_control = SegmentedControl::new(vec![
         SegmentedItem::new(
             "Unified",
-            Action::SetLayoutMode(LayoutMode::Unified),
+            crate::actions::CompareAction::SetLayoutMode(LayoutMode::Unified).into(),
             layout == LayoutMode::Unified,
         ),
         SegmentedItem::new(
             "Split",
-            Action::SetLayoutMode(LayoutMode::Split),
+            crate::actions::CompareAction::SetLayoutMode(LayoutMode::Split).into(),
             layout == LayoutMode::Split,
         ),
     ])
@@ -239,13 +244,13 @@ fn editor_section(state: &AppState, theme: &Theme) -> AnyElement {
 
     let mut renderer_items = vec![SegmentedItem::new(
         "Git",
-        Action::SetRenderer(RendererKind::Builtin),
+        crate::actions::CompareAction::SetRenderer(RendererKind::Builtin).into(),
         renderer == RendererKind::Builtin,
     )];
     if DifftasticBackend::is_available() {
         renderer_items.push(SegmentedItem::new(
             "Difftastic",
-            Action::SetRenderer(RendererKind::Difftastic),
+            crate::actions::CompareAction::SetRenderer(RendererKind::Difftastic).into(),
             renderer == RendererKind::Difftastic,
         ));
     }
@@ -295,7 +300,12 @@ fn behavior_section(state: &AppState, theme: &Theme) -> AnyElement {
         options
             .iter()
             .map(|n| {
-                SegmentedItem::new(n.to_string(), Action::SetWheelScrollLines(*n), *n == lines)
+                SegmentedItem::new(
+                    n.to_string(),
+                    crate::actions::SettingsAction::SetWheelScrollLines(*n).into(),
+                    *n == lines,
+                )
+                .into()
             })
             .collect(),
     )
@@ -475,22 +485,28 @@ fn ai_key_row(
             .focus_target(target)
             .cursor(if focused { cursor } else { 0 })
             .anchor(if focused { anchor } else { 0 })
-            .on_click(Action::SetFocus(Some(target)));
+            .on_click(crate::actions::AppAction::SetFocus(Some(target)).into());
     } else {
-        input = input.on_click(Action::SetAiKeyEditing {
-            kind,
-            editing: true,
-        });
+        input = input.on_click(
+            crate::actions::AiAction::SetAiKeyEditing {
+                kind,
+                editing: true,
+            }
+            .into(),
+        );
     }
 
     let trailing: Option<AnyElement> = if !key_set {
         None
     } else if editing {
         Some(
-            Button::new(Action::SetAiKeyEditing {
-                kind,
-                editing: false,
-            })
+            Button::new(
+                crate::actions::AiAction::SetAiKeyEditing {
+                    kind,
+                    editing: false,
+                }
+                .into(),
+            )
             .icon(lucide::CHECK)
             .tooltip("Save")
             .style(ButtonStyle::Subtle)
@@ -499,10 +515,13 @@ fn ai_key_row(
         )
     } else {
         Some(
-            Button::new(Action::SetAiKeyEditing {
-                kind,
-                editing: true,
-            })
+            Button::new(
+                crate::actions::AiAction::SetAiKeyEditing {
+                    kind,
+                    editing: true,
+                }
+                .into(),
+            )
             .icon(lucide::PENCIL)
             .tooltip("Edit")
             .style(ButtonStyle::Ghost)
@@ -526,7 +545,7 @@ fn about_section(state: &AppState, theme: &Theme) -> AnyElement {
     let version = crate::APP_VERSION;
     let update_state = state.update.get(&state.store);
     let auto_update_toggle = toggle(state.settings.auto_update)
-        .on_toggle(Action::ToggleAutoUpdate)
+        .on_toggle(crate::actions::SettingsAction::ToggleAutoUpdate.into())
         .into_any();
 
     let update_control = match &update_state {
@@ -536,31 +555,35 @@ fn about_section(state: &AppState, theme: &Theme) -> AnyElement {
             .style(ButtonStyle::Subtle)
             .size(ButtonSize::Default)
             .into_any(),
-        UpdateState::Available(update) => Button::new(Action::InstallUpdate)
-            .icon(lucide::ARROW_DOWN)
-            .label(format!("Install {}", update.version))
-            .style(ButtonStyle::Filled)
-            .size(ButtonSize::Default)
-            .into_any(),
+        UpdateState::Available(update) => {
+            Button::new(crate::actions::UpdateAction::InstallUpdate.into())
+                .icon(lucide::ARROW_DOWN)
+                .label(format!("Install {}", update.version))
+                .style(ButtonStyle::Filled)
+                .size(ButtonSize::Default)
+                .into_any()
+        }
         UpdateState::Downloading(_) => Button::new(Action::Noop)
             .icon(lucide::ARROW_DOWN)
             .label("Downloading")
             .style(ButtonStyle::Subtle)
             .size(ButtonSize::Default)
             .into_any(),
-        UpdateState::ReadyToRestart(update) => Button::new(Action::RestartToUpdate)
-            .icon(lucide::REFRESH)
-            .label(format!("Restart to update {}", update.update.version))
-            .style(ButtonStyle::Filled)
-            .size(ButtonSize::Default)
-            .into_any(),
+        UpdateState::ReadyToRestart(update) => {
+            Button::new(crate::actions::UpdateAction::RestartToUpdate.into())
+                .icon(lucide::REFRESH)
+                .label(format!("Restart to update {}", update.update.version))
+                .style(ButtonStyle::Filled)
+                .size(ButtonSize::Default)
+                .into_any()
+        }
         UpdateState::Restarting(_) => Button::new(Action::Noop)
             .icon(lucide::REFRESH)
             .label("Restarting")
             .style(ButtonStyle::Subtle)
             .size(ButtonSize::Default)
             .into_any(),
-        _ => Button::new(Action::CheckForUpdates)
+        _ => Button::new(crate::actions::UpdateAction::CheckForUpdates.into())
             .icon(lucide::REFRESH)
             .label("Check for updates")
             .style(ButtonStyle::Subtle)

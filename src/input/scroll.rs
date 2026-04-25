@@ -1,6 +1,6 @@
 use winit::event::{MouseScrollDelta, TouchPhase};
 
-use crate::actions::Action;
+use crate::actions::{Action, EditorAction, FileListAction};
 use crate::ui::editor::element::EditorElement;
 use crate::ui::element::ScrollActionBuilder;
 use crate::ui::shell::UiFrame;
@@ -9,7 +9,7 @@ use crate::ui::state::AppState;
 use super::{InputOutcome, InputSystem, ScrollTarget};
 
 fn custom_scroll_is_editor(build: fn(i32) -> Action) -> bool {
-    matches!(build(0), Action::EditorScrollPx(_))
+    matches!(build(0), Action::Editor(EditorAction::EditorScrollPx(_)))
 }
 
 impl InputSystem {
@@ -56,14 +56,14 @@ impl InputSystem {
         if rounded_delta_px != 0 {
             match target {
                 ScrollTarget::Region(ScrollActionBuilder::FileList) => {
-                    actions.push(Action::ScrollFileListPx(rounded_delta_px));
+                    actions.push(FileListAction::ScrollFileListPx(rounded_delta_px).into());
                 }
                 ScrollTarget::Region(ScrollActionBuilder::Custom(build)) => {
                     actions.push(build(rounded_delta_px));
                 }
                 ScrollTarget::Region(ScrollActionBuilder::ViewportLines)
                 | ScrollTarget::ViewportFallback => {
-                    actions.push(Action::ScrollViewportPx(rounded_delta_px));
+                    actions.push(EditorAction::ScrollViewportPx(rounded_delta_px).into());
                 }
             }
         }
@@ -178,7 +178,11 @@ mod tests {
         let input = InputSystem::default();
         let state = AppState::default();
         let editor = EditorElement::default();
-        let target = ScrollTarget::Region(ScrollActionBuilder::Custom(Action::EditorScrollPx));
+        fn editor_scroll(delta: i32) -> Action {
+            EditorAction::EditorScrollPx(delta).into()
+        }
+
+        let target = ScrollTarget::Region(ScrollActionBuilder::Custom(editor_scroll));
 
         let line_step = input.scroll_target_line_step_px(&state, &target, &editor);
 

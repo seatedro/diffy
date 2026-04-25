@@ -1,1 +1,13 @@
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.otf binary
+*.ttf binary
+*.woff binary
+*.woff2 binary
+
 crates/difftastic/** linguist-vendored

@@ -1,7 +1,10 @@
 use winit::event::KeyEvent;
 use winit::keyboard::{ModifiersState, NamedKey};
 
-use crate::actions::Action;
+use crate::actions::{
+    Action, AppAction, CompareAction, EditorAction, FileListAction, GitHubAction, OverlayAction,
+    RepositoryAction, SettingsAction, TextEditAction,
+};
 use crate::ui::state::{
     AppState, AppView, FocusTarget, OverlaySurface, WorkspaceMode, WorkspaceSource,
 };
@@ -13,7 +16,7 @@ impl InputSystem {
         let ctx = super::resolve_input_context(state, self.ime_composing);
         match ctx.owner {
             InputOwner::TextField(_) if !text.is_empty() => {
-                InputOutcome::action(Action::InsertText(text))
+                InputOutcome::action(TextEditAction::InsertText(text).into())
             }
             _ => InputOutcome::default(),
         }
@@ -56,12 +59,12 @@ fn global_shortcut_action(chord: &KeyChord) -> Option<Action> {
         return None;
     }
     match chord.logical_char()?.to_ascii_lowercase().as_str() {
-        "f" => Some(Action::OpenSearch),
-        "p" => Some(Action::OpenCommandPalette),
-        "=" | "+" => Some(Action::IncreaseUiScale),
-        "-" | "_" => Some(Action::DecreaseUiScale),
-        "b" => Some(Action::ToggleSidebar),
-        "," => Some(Action::OpenSettings),
+        "f" => Some(EditorAction::OpenSearch.into()),
+        "p" => Some(OverlayAction::OpenCommandPalette.into()),
+        "=" | "+" => Some(SettingsAction::IncreaseUiScale.into()),
+        "-" | "_" => Some(SettingsAction::DecreaseUiScale.into()),
+        "b" => Some(FileListAction::ToggleSidebar.into()),
+        "," => Some(SettingsAction::OpenSettings.into()),
         _ => None,
     }
 }
@@ -71,13 +74,13 @@ fn clipboard_shortcut_action(chord: &KeyChord) -> Option<Action> {
         return None;
     }
     match chord.logical_char()?.to_ascii_lowercase().as_str() {
-        "a" => Some(Action::SelectAll),
-        "c" => Some(Action::Copy),
-        "x" => Some(Action::Cut),
+        "a" => Some(TextEditAction::SelectAll.into()),
+        "c" => Some(TextEditAction::Copy.into()),
+        "x" => Some(TextEditAction::Cut.into()),
         "v" => arboard::Clipboard::new()
             .ok()
             .and_then(|mut clipboard| clipboard.get_text().ok())
-            .map(Action::Paste),
+            .map(|text| TextEditAction::Paste(text).into()),
         _ => None,
     }
 }
@@ -90,44 +93,44 @@ fn text_field_key_actions(
     match chord.named() {
         Some(NamedKey::Enter) if target == FocusTarget::CommitEditor => {
             if chord.ctrl_or_super() {
-                Some(vec![Action::SubmitCommit])
+                Some(vec![RepositoryAction::SubmitCommit.into()])
             } else {
-                Some(vec![Action::InsertText("\n".to_owned())])
+                Some(vec![TextEditAction::InsertText("\n".to_owned()).into()])
             }
         }
         Some(NamedKey::Enter) if target == FocusTarget::SearchInput => {
             Some(vec![if chord.shift() {
-                Action::SearchPrevious
+                EditorAction::SearchPrevious.into()
             } else {
-                Action::SearchNext
+                EditorAction::SearchNext.into()
             }])
         }
         Some(NamedKey::ArrowUp) if target == FocusTarget::CommitEditor => {
             Some(vec![if chord.shift() {
-                Action::SelectUp
+                TextEditAction::SelectUp.into()
             } else {
-                Action::CursorUp
+                TextEditAction::CursorUp.into()
             }])
         }
         Some(NamedKey::ArrowDown) if target == FocusTarget::CommitEditor => {
             Some(vec![if chord.shift() {
-                Action::SelectDown
+                TextEditAction::SelectDown.into()
             } else {
-                Action::CursorDown
+                TextEditAction::CursorDown.into()
             }])
         }
         Some(NamedKey::ArrowLeft) => {
             let is_mac = cfg!(target_os = "macos");
             Some(vec![
                 match (chord.ctrl_or_super(), chord.alt(), chord.shift()) {
-                    (true, _, true) if is_mac => Action::SelectSoftHome,
-                    (true, _, false) if is_mac => Action::CursorSoftHome,
-                    (_, true, true) if is_mac => Action::SelectWordLeft,
-                    (_, true, false) if is_mac => Action::CursorWordLeft,
-                    (true, _, true) => Action::SelectWordLeft,
-                    (true, _, false) => Action::CursorWordLeft,
-                    (_, _, true) => Action::SelectLeft,
-                    (_, _, false) => Action::CursorLeft,
+                    (true, _, true) if is_mac => TextEditAction::SelectSoftHome.into(),
+                    (true, _, false) if is_mac => TextEditAction::CursorSoftHome.into(),
+                    (_, true, true) if is_mac => TextEditAction::SelectWordLeft.into(),
+                    (_, true, false) if is_mac => TextEditAction::CursorWordLeft.into(),
+                    (true, _, true) => TextEditAction::SelectWordLeft.into(),
+                    (true, _, false) => TextEditAction::CursorWordLeft.into(),
+                    (_, _, true) => TextEditAction::SelectLeft.into(),
+                    (_, _, false) => TextEditAction::CursorLeft.into(),
                 },
             ])
         }
@@ -135,48 +138,50 @@ fn text_field_key_actions(
             let is_mac = cfg!(target_os = "macos");
             Some(vec![
                 match (chord.ctrl_or_super(), chord.alt(), chord.shift()) {
-                    (true, _, true) if is_mac => Action::SelectSoftEnd,
-                    (true, _, false) if is_mac => Action::CursorSoftEnd,
-                    (_, true, true) if is_mac => Action::SelectWordRight,
-                    (_, true, false) if is_mac => Action::CursorWordRight,
-                    (true, _, true) => Action::SelectWordRight,
-                    (true, _, false) => Action::CursorWordRight,
-                    (_, _, true) => Action::SelectRight,
-                    (_, _, false) => Action::CursorRight,
+                    (true, _, true) if is_mac => TextEditAction::SelectSoftEnd.into(),
+                    (true, _, false) if is_mac => TextEditAction::CursorSoftEnd.into(),
+                    (_, true, true) if is_mac => TextEditAction::SelectWordRight.into(),
+                    (_, true, false) if is_mac => TextEditAction::CursorWordRight.into(),
+                    (true, _, true) => TextEditAction::SelectWordRight.into(),
+                    (true, _, false) => TextEditAction::CursorWordRight.into(),
+                    (_, _, true) => TextEditAction::SelectRight.into(),
+                    (_, _, false) => TextEditAction::CursorRight.into(),
                 },
             ])
         }
         Some(NamedKey::Home) => Some(vec![if chord.shift() {
-            Action::SelectHome
+            TextEditAction::SelectHome.into()
         } else {
-            Action::CursorHome
+            TextEditAction::CursorHome.into()
         }]),
         Some(NamedKey::End) => Some(vec![if chord.shift() {
-            Action::SelectEnd
+            TextEditAction::SelectEnd.into()
         } else {
-            Action::CursorEnd
+            TextEditAction::CursorEnd.into()
         }]),
         Some(NamedKey::Backspace) => {
             let is_mac = cfg!(target_os = "macos");
             Some(vec![if chord.ctrl_or_super() && is_mac {
-                Action::BackspaceLine
+                TextEditAction::BackspaceLine.into()
             } else if chord.alt() && is_mac || chord.ctrl_or_super() && !is_mac {
-                Action::BackspaceWord
+                TextEditAction::BackspaceWord.into()
             } else {
-                Action::Backspace
+                TextEditAction::Backspace.into()
             }])
         }
         Some(NamedKey::Delete) => {
             let is_mac = cfg!(target_os = "macos");
             Some(vec![
                 if chord.alt() && is_mac || chord.ctrl_or_super() && !is_mac {
-                    Action::DeleteForwardWord
+                    TextEditAction::DeleteForwardWord.into()
                 } else {
-                    Action::DeleteForward
+                    TextEditAction::DeleteForward.into()
                 },
             ])
         }
-        Some(NamedKey::Escape) if ctx.overlay.is_some() => Some(vec![Action::CloseOverlay]),
+        Some(NamedKey::Escape) if ctx.overlay.is_some() => {
+            Some(vec![OverlayAction::CloseOverlay.into()])
+        }
         _ => None,
     }
 }
@@ -187,17 +192,17 @@ fn overlay_key_actions(
     chord: &KeyChord,
 ) -> Option<Vec<Action>> {
     match chord.named() {
-        Some(NamedKey::Escape) => Some(vec![Action::CloseOverlay]),
+        Some(NamedKey::Escape) => Some(vec![OverlayAction::CloseOverlay.into()]),
         Some(NamedKey::Tab) => {
             if surface == OverlaySurface::RepoPicker {
-                Some(vec![Action::TabCompletePickerDir])
+                Some(vec![OverlayAction::TabCompletePickerDir.into()])
             } else {
-                Some(vec![Action::SetFocus(cycle_focus_target(state))])
+                Some(vec![AppAction::SetFocus(cycle_focus_target(state)).into()])
             }
         }
         Some(NamedKey::Enter) => activate_current_focus_actions(state),
-        Some(NamedKey::ArrowDown) => Some(vec![Action::MoveOverlaySelection(1)]),
-        Some(NamedKey::ArrowUp) => Some(vec![Action::MoveOverlaySelection(-1)]),
+        Some(NamedKey::ArrowDown) => Some(vec![OverlayAction::MoveOverlaySelection(1).into()]),
+        Some(NamedKey::ArrowUp) => Some(vec![OverlayAction::MoveOverlaySelection(-1).into()]),
         _ => None,
     }
 }
@@ -226,24 +231,27 @@ fn workspace_key_actions_inner(
     match chord.named() {
         Some(NamedKey::Escape) => {
             if state.overlays_top().is_some() {
-                Some(vec![Action::CloseOverlay])
+                Some(vec![OverlayAction::CloseOverlay.into()])
             } else if state.app_view.get(&state.store) == AppView::Settings {
-                Some(vec![Action::CloseSettings])
+                Some(vec![SettingsAction::CloseSettings.into()])
             } else if state.editor.search.open.get(&state.store) {
-                Some(vec![Action::CloseSearch])
+                Some(vec![EditorAction::CloseSearch.into()])
             } else if state.focus.get(&state.store) == Some(FocusTarget::SidebarSearch) {
-                Some(vec![Action::ClearSidebarFilter, Action::SetFocus(None)])
+                Some(vec![
+                    FileListAction::ClearSidebarFilter.into(),
+                    AppAction::SetFocus(None).into(),
+                ])
             } else {
                 None
             }
         }
-        Some(NamedKey::Tab) => Some(vec![Action::SetFocus(cycle_focus_target(state))]),
+        Some(NamedKey::Tab) => Some(vec![AppAction::SetFocus(cycle_focus_target(state)).into()]),
         Some(NamedKey::Enter) => {
             if state.focus.get(&state.store) == Some(FocusTarget::SearchInput) {
                 Some(vec![if chord.shift() {
-                    Action::SearchPrevious
+                    EditorAction::SearchPrevious.into()
                 } else {
-                    Action::SearchNext
+                    EditorAction::SearchNext.into()
                 }])
             } else {
                 activate_current_focus_actions(state)
@@ -251,46 +259,46 @@ fn workspace_key_actions_inner(
         }
         Some(NamedKey::ArrowDown) => {
             if state.focus.get(&state.store) == Some(FocusTarget::Editor) {
-                Some(vec![Action::ScrollViewportLines(1)])
+                Some(vec![EditorAction::ScrollViewportLines(1).into()])
             } else if state.is_workspace_ready() {
-                Some(vec![Action::SelectNextFile])
+                Some(vec![FileListAction::SelectNextFile.into()])
             } else {
                 None
             }
         }
         Some(NamedKey::ArrowUp) => {
             if state.focus.get(&state.store) == Some(FocusTarget::Editor) {
-                Some(vec![Action::ScrollViewportLines(-1)])
+                Some(vec![EditorAction::ScrollViewportLines(-1).into()])
             } else if state.is_workspace_ready() {
-                Some(vec![Action::SelectPreviousFile])
+                Some(vec![FileListAction::SelectPreviousFile.into()])
             } else {
                 None
             }
         }
         Some(NamedKey::PageDown) if state.is_workspace_ready() => {
             if state.focus.get(&state.store) == Some(FocusTarget::Editor) {
-                Some(vec![Action::ScrollViewportPages(1)])
+                Some(vec![EditorAction::ScrollViewportPages(1).into()])
             } else {
-                Some(vec![Action::ScrollFileList(10)])
+                Some(vec![FileListAction::ScrollFileList(10).into()])
             }
         }
         Some(NamedKey::PageUp) if state.is_workspace_ready() => {
             if state.focus.get(&state.store) == Some(FocusTarget::Editor) {
-                Some(vec![Action::ScrollViewportPages(-1)])
+                Some(vec![EditorAction::ScrollViewportPages(-1).into()])
             } else {
-                Some(vec![Action::ScrollFileList(-10)])
+                Some(vec![FileListAction::ScrollFileList(-10).into()])
             }
         }
         Some(NamedKey::Home) if state.is_workspace_ready() => {
-            Some(vec![Action::ScrollViewportTo(0)])
+            Some(vec![EditorAction::ScrollViewportTo(0).into()])
         }
-        Some(NamedKey::End) if state.is_workspace_ready() => Some(vec![Action::ScrollViewportTo(
-            state.editor_max_scroll_top_px(),
-        )]),
+        Some(NamedKey::End) if state.is_workspace_ready() => Some(vec![
+            EditorAction::ScrollViewportTo(state.editor_max_scroll_top_px()).into(),
+        ]),
         _ => {
             let ch = chord.logical_char()?;
             if ch == "?" {
-                return Some(vec![Action::ShowKeyboardShortcuts]);
+                return Some(vec![OverlayAction::ShowKeyboardShortcuts.into()]);
             }
             if state.overlays_top().is_some()
                 || state.workspace_mode.get(&state.store) != WorkspaceMode::Ready
@@ -298,44 +306,46 @@ fn workspace_key_actions_inner(
                 return None;
             }
             match ch {
-                "/" => Some(vec![Action::SetFocus(Some(FocusTarget::SidebarSearch))]),
-                "]" => Some(vec![Action::GoToNextHunk]),
-                "[" => Some(vec![Action::GoToPreviousHunk]),
-                "n" => Some(vec![Action::GoToNextFile]),
-                "N" => Some(vec![Action::GoToPreviousFile]),
-                "j" => Some(vec![Action::ScrollViewportLines(1)]),
-                "k" => Some(vec![Action::ScrollViewportLines(-1)]),
-                "d" => Some(vec![Action::ScrollViewportHalfPage(1)]),
-                "u" => Some(vec![Action::ScrollViewportHalfPage(-1)]),
-                "G" => Some(vec![Action::ScrollViewportTo(
-                    state.editor_max_scroll_top_px(),
-                )]),
+                "/" => Some(vec![
+                    AppAction::SetFocus(Some(FocusTarget::SidebarSearch)).into(),
+                ]),
+                "]" => Some(vec![EditorAction::GoToNextHunk.into()]),
+                "[" => Some(vec![EditorAction::GoToPreviousHunk.into()]),
+                "n" => Some(vec![EditorAction::GoToNextFile.into()]),
+                "N" => Some(vec![EditorAction::GoToPreviousFile.into()]),
+                "j" => Some(vec![EditorAction::ScrollViewportLines(1).into()]),
+                "k" => Some(vec![EditorAction::ScrollViewportLines(-1).into()]),
+                "d" => Some(vec![EditorAction::ScrollViewportHalfPage(1).into()]),
+                "u" => Some(vec![EditorAction::ScrollViewportHalfPage(-1).into()]),
+                "G" => Some(vec![
+                    EditorAction::ScrollViewportTo(state.editor_max_scroll_top_px()).into(),
+                ]),
                 "g" => {
                     let input = input.as_mut()?;
                     if input.pending_g {
                         input.pending_g = false;
-                        Some(vec![Action::ScrollViewportTo(0)])
+                        Some(vec![EditorAction::ScrollViewportTo(0).into()])
                     } else {
                         input.pending_g = true;
                         Some(Vec::new())
                     }
                 }
-                "1" => Some(vec![Action::SetLayoutMode(
-                    crate::core::compare::LayoutMode::Unified,
-                )]),
-                "2" => Some(vec![Action::SetLayoutMode(
-                    crate::core::compare::LayoutMode::Split,
-                )]),
-                "w" => Some(vec![Action::ToggleWrap]),
+                "1" => Some(vec![
+                    CompareAction::SetLayoutMode(crate::core::compare::LayoutMode::Unified).into(),
+                ]),
+                "2" => Some(vec![
+                    CompareAction::SetLayoutMode(crate::core::compare::LayoutMode::Split).into(),
+                ]),
+                "w" => Some(vec![SettingsAction::ToggleWrap.into()]),
                 "s" if state.workspace.source.get(&state.store) == WorkspaceSource::Status => {
                     if state
                         .editor
                         .line_selection
                         .with(&state.store, |ls| ls.is_empty())
                     {
-                        Some(vec![Action::StageHunk])
+                        Some(vec![RepositoryAction::StageHunk.into()])
                     } else {
-                        Some(vec![Action::StageSelectedLines])
+                        Some(vec![RepositoryAction::StageSelectedLines.into()])
                     }
                 }
                 "S" if state.workspace.source.get(&state.store) == WorkspaceSource::Status => {
@@ -344,9 +354,9 @@ fn workspace_key_actions_inner(
                         .line_selection
                         .with(&state.store, |ls| ls.is_empty())
                     {
-                        Some(vec![Action::UnstageHunk])
+                        Some(vec![RepositoryAction::UnstageHunk.into()])
                     } else {
-                        Some(vec![Action::UnstageSelectedLines])
+                        Some(vec![RepositoryAction::UnstageSelectedLines.into()])
                     }
                 }
                 "x" if state.workspace.source.get(&state.store) == WorkspaceSource::Status => {
@@ -355,15 +365,15 @@ fn workspace_key_actions_inner(
                         .line_selection
                         .with(&state.store, |ls| ls.is_empty())
                     {
-                        Some(vec![Action::DiscardHunk])
+                        Some(vec![RepositoryAction::DiscardHunk.into()])
                     } else {
-                        Some(vec![Action::DiscardSelectedLines])
+                        Some(vec![RepositoryAction::DiscardSelectedLines.into()])
                     }
                 }
                 " " => Some(vec![if chord.shift() {
-                    Action::ScrollViewportPages(-1)
+                    EditorAction::ScrollViewportPages(-1).into()
                 } else {
-                    Action::ScrollViewportPages(1)
+                    EditorAction::ScrollViewportPages(1).into()
                 }]),
                 _ => None,
             }
@@ -413,7 +423,7 @@ fn activate_current_focus_actions(state: &AppState) -> Option<Vec<Action>> {
             | OverlaySurface::RefPicker
             | OverlaySurface::CommandPalette
             | OverlaySurface::ThemePicker,
-        ) => Some(vec![Action::ConfirmOverlaySelection]),
+        ) => Some(vec![OverlayAction::ConfirmOverlaySelection.into()]),
         Some(OverlaySurface::GitHubAuthModal) => {
             let has_flow = state
                 .github
@@ -421,9 +431,9 @@ fn activate_current_focus_actions(state: &AppState) -> Option<Vec<Action>> {
                 .device_flow
                 .with(&state.store, |opt| opt.is_some());
             Some(vec![if has_flow {
-                Action::OpenDeviceFlowBrowser
+                GitHubAction::OpenDeviceFlowBrowser.into()
             } else {
-                Action::StartGitHubDeviceFlow
+                GitHubAction::StartGitHubDeviceFlow.into()
             }])
         }
         Some(
@@ -432,8 +442,10 @@ fn activate_current_focus_actions(state: &AppState) -> Option<Vec<Action>> {
             | OverlaySurface::AccountMenu,
         ) => Some(Vec::new()),
         None => match state.focus.get(&state.store) {
-            Some(FocusTarget::WorkspacePrimaryButton) => Some(vec![Action::OpenRepoPicker]),
-            Some(FocusTarget::ThemeToggle) => Some(vec![Action::ToggleThemeMode]),
+            Some(FocusTarget::WorkspacePrimaryButton) => {
+                Some(vec![OverlayAction::OpenRepoPicker.into()])
+            }
+            Some(FocusTarget::ThemeToggle) => Some(vec![SettingsAction::ToggleThemeMode.into()]),
             _ => None,
         },
     }

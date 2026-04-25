@@ -11,7 +11,7 @@ use winit::window::{Icon, Window, WindowAttributes, WindowId};
 use crate::actions::Action;
 use crate::apprt::{AppRuntime, AppServices};
 use crate::core::themes::ThemeRegistry;
-use crate::effects::Effect;
+use crate::effects::{RepositoryEffect, UpdateEffect};
 use crate::events::RepositorySyncReason;
 use crate::input::InputSystem;
 use crate::platform::persistence::SettingsStore;
@@ -272,7 +272,7 @@ impl NativeApp {
         match self.next_update_check_at {
             Some(next) if now >= next => {
                 self.runtime
-                    .dispatch_all(vec![Effect::CheckForUpdates { silent: true }]);
+                    .dispatch_all(vec![UpdateEffect::CheckForUpdates { silent: true }.into()]);
                 self.next_update_check_at = Some(now + UPDATE_POLL_INTERVAL);
             }
             Some(_) => {}
@@ -355,12 +355,12 @@ impl NativeApp {
     fn dispatch_action(&mut self, action: Action) {
         if matches!(
             action,
-            Action::StageHunk
-                | Action::UnstageHunk
-                | Action::DiscardHunk
-                | Action::StageHunkAt(_)
-                | Action::UnstageHunkAt(_)
-                | Action::DiscardHunkAt(_)
+            Action::Repository(crate::actions::RepositoryAction::StageHunk)
+                | Action::Repository(crate::actions::RepositoryAction::UnstageHunk)
+                | Action::Repository(crate::actions::RepositoryAction::DiscardHunk)
+                | Action::Repository(crate::actions::RepositoryAction::StageHunkAt(_))
+                | Action::Repository(crate::actions::RepositoryAction::UnstageHunkAt(_))
+                | Action::Repository(crate::actions::RepositoryAction::DiscardHunkAt(_))
         ) {
             tracing::info!(?action, "dispatch_action: hunk op");
         }
@@ -462,11 +462,14 @@ impl ApplicationHandler for NativeApp {
             }
             WindowEvent::Focused(true) => {
                 if let Some(path) = self.state.compare.repo_path.get(&self.state.store) {
-                    self.runtime.dispatch_all(vec![Effect::SyncRepository {
-                        path,
-                        reason: RepositorySyncReason::Rescan,
-                        reporter_generation: None,
-                    }]);
+                    self.runtime.dispatch_all(vec![
+                        RepositoryEffect::SyncRepository {
+                            path,
+                            reason: RepositorySyncReason::Rescan,
+                            reporter_generation: None,
+                        }
+                        .into(),
+                    ]);
                 }
                 self.mark_dirty();
             }
@@ -923,7 +926,7 @@ mod tests {
     #[test]
     fn space_in_picker_input_inserts_text() {
         let mut state = AppState::default();
-        state.apply_action(crate::actions::Action::OpenRepoPicker);
+        state.apply_action(crate::actions::OverlayAction::OpenRepoPicker);
         let mut app = test_app(state);
         let before = app
             .state
@@ -947,7 +950,7 @@ mod tests {
     #[test]
     fn command_palette_shortcut_still_works_while_text_focused() {
         let mut state = AppState::default();
-        state.apply_action(crate::actions::Action::OpenSearch);
+        state.apply_action(crate::actions::EditorAction::OpenSearch);
         let mut app = test_app(state);
 
         dispatch_input_event(&mut app, keypress("p", ModifiersState::SUPER));
@@ -961,7 +964,7 @@ mod tests {
     #[test]
     fn ime_commit_inserts_once_into_text_field() {
         let mut state = AppState::default();
-        state.apply_action(crate::actions::Action::OpenSearch);
+        state.apply_action(crate::actions::EditorAction::OpenSearch);
         let mut app = test_app(state);
 
         dispatch_input_event(

@@ -23,12 +23,14 @@ use crate::core::vcs::git::{
 use crate::core::vcs::github::{DeviceFlowState, GitHubUser, PullRequestInfo};
 use crate::editor::Editor;
 use crate::effects::{
-    BatchStatusOperationRequest, CommitRequest, CompareFileRequest, CompareRequest, Effect,
+    BatchStatusOperationRequest, CommitRequest, CompareFileRequest, CompareFileStatsItem,
+    CompareFileStatsRequest, CompareHistoryRequest, CompareRequest, CompareStatsRequest, Effect,
     FetchRemoteRequest, LoadFileSyntaxRequest, PatchOperationRequest, PullFfRequest, PushRequest,
     StatusDiffRequest, StatusOperationRequest,
 };
 use crate::events::{
-    AppEvent, CompareFileFinished, CompareFinished, FileSyntaxReady, RepositoryChangeKind,
+    AppEvent, CompareFileFinished, CompareFileStat, CompareFileStatsReady, CompareFinished,
+    CompareHistoryReady, CompareStatsReady, FileSyntaxReady, RepositoryChangeKind,
     RepositorySnapshot, RepositorySyncReason, StatusDiffFinished,
 };
 use crate::platform::persistence::{PersistedCompare, Settings};
@@ -45,6 +47,7 @@ const TOAST_LIFETIME_MS: u64 = 5_000;
 const TOAST_ANIM_MS: u64 = 150;
 const CURSOR_BLINK_INTERVAL_MS: u64 = 530;
 const LARGE_COMPARE_FILE_LINES: i32 = 1_500;
+const COMPARE_STATS_CHUNK_SIZE: usize = 64;
 const SYNTAX_INITIAL_ROWS: usize = 200;
 const SYNTAX_OVERSCAN_ROWS: usize = 160;
 
@@ -502,6 +505,9 @@ pub struct WorkspaceState {
     pub selected_file_path: Option<String>,
     pub selected_status_scope: Option<StatusScope>,
     pub compare_output: Option<CompareOutput>,
+    pub compare_total_stats: Option<(i32, i32)>,
+    pub compare_total_stats_loading: bool,
+    pub compare_stats_hydration_active: bool,
     pub active_file: Option<ActiveFile>,
     pub active_file_loading: Option<ActiveFileLoading>,
     pub raw_diff_len: usize,
@@ -659,6 +665,15 @@ impl AppState {
     }
 
     fn compare_file_is_large(&self, index: usize) -> bool {
+        if self.workspace.compare_output.with(&self.store, |output| {
+            output
+                .as_ref()
+                .and_then(|output| output.files.get(index))
+                .is_some_and(|file| file.hunks_deferred)
+        }) {
+            return true;
+        }
+
         self.workspace.files.with(&self.store, |files| {
             files.get(index).is_some_and(|file| {
                 !file.is_binary
@@ -712,6 +727,12 @@ impl AppState {
             .unwrap_or_else(|| self.compare.right_ref.get(&self.store));
         let active_file =
             self.build_active_file(index, path.clone(), prepared, left_ref, right_ref);
+        let stats = CompareFileStat {
+            index,
+            path: path.clone(),
+            additions: active_file.file.additions,
+            deletions: active_file.file.deletions,
+        };
 
         self.workspace
             .selected_file_index
@@ -724,6 +745,7 @@ impl AppState {
         self.workspace
             .active_file
             .set(&self.store, Some(active_file));
+        self.apply_compare_file_stats(&[stats]);
         // The first real file has landed — tear down the progress panel.
         // Subsequent file loads use the sidebar row spinner, not this.
         self.compare_progress.set(&self.store, None);
@@ -2794,6 +2816,11 @@ impl AppState {
                 path.map_or_else(Vec::new, |path| self.open_repository(path))
             }
             AppEvent::RepositorySnapshotReady(payload) => self.handle_repository_snapshot(payload),
+            AppEvent::CompareHistoryReady(payload) => self.handle_compare_history_ready(payload),
+            AppEvent::CompareHistoryFailed {
+                generation: _,
+                message: _,
+            } => Vec::new(),
             AppEvent::RepositorySnapshotFailed {
                 path,
                 reason,
@@ -2839,7 +2866,36 @@ impl AppState {
                 self.handle_compare_progress_update(generation, phase);
                 Vec::new()
             }
+            AppEvent::CompareStatsReady(payload) => self.handle_compare_stats_ready(payload),
+            AppEvent::CompareStatsFailed {
+                generation,
+                message: _,
+            } => {
+                if generation == self.workspace.compare_generation.get(&self.store) {
+                    self.workspace
+                        .compare_total_stats_loading
+                        .set(&self.store, false);
+                    if let Some(effect) = self.start_compare_stats_hydration_if_idle() {
+                        return vec![effect];
+                    }
+                }
+                Vec::new()
+            }
             AppEvent::CompareFileFinished(payload) => self.handle_compare_file_finished(payload),
+            AppEvent::CompareFileStatsReady(payload) => {
+                self.handle_compare_file_stats_ready(payload)
+            }
+            AppEvent::CompareFileStatsFailed {
+                generation,
+                message: _,
+            } => {
+                if generation == self.workspace.compare_generation.get(&self.store) {
+                    self.workspace
+                        .compare_stats_hydration_active
+                        .set(&self.store, false);
+                }
+                Vec::new()
+            }
             AppEvent::CompareFileFailed {
                 generation,
                 path,
@@ -3573,6 +3629,13 @@ impl AppState {
         self.workspace.selected_file_path.set(&self.store, None);
         self.workspace.selected_status_scope.set(&self.store, None);
         self.workspace.compare_output.set(&self.store, None);
+        self.workspace.compare_total_stats.set(&self.store, None);
+        self.workspace
+            .compare_total_stats_loading
+            .set(&self.store, false);
+        self.workspace
+            .compare_stats_hydration_active
+            .set(&self.store, false);
         self.workspace.active_file.set(&self.store, None);
         self.workspace.active_file_loading.set(&self.store, None);
         self.workspace.raw_diff_len.set(&self.store, 0);
@@ -3900,6 +3963,13 @@ impl AppState {
             return Vec::new();
         }
 
+        let generation = payload.generation;
+        let history_left = payload.resolved_left.clone();
+        let history_right = if payload.resolved_right == crate::core::vcs::git::WORKDIR_REF {
+            "HEAD".to_owned()
+        } else {
+            payload.resolved_right.clone()
+        };
         let syntax_warmup_paths = payload
             .output
             .files
@@ -3937,9 +4007,25 @@ impl AppState {
             .files
             .set(&self.store, build_file_entries(&payload.output.files));
         let total_files = payload.output.files.len() as u32;
+        let has_deferred_stats = payload.output.files.iter().any(|file| file.stats_deferred);
+        let eager_total_stats = (!has_deferred_stats).then(|| {
+            (
+                payload.output.files.iter().map(|file| file.additions).sum(),
+                payload.output.files.iter().map(|file| file.deletions).sum(),
+            )
+        });
         self.workspace
             .compare_output
             .set(&self.store, Some(payload.output));
+        self.workspace
+            .compare_total_stats
+            .set(&self.store, eager_total_stats);
+        self.workspace
+            .compare_total_stats_loading
+            .set(&self.store, false);
+        self.workspace
+            .compare_stats_hydration_active
+            .set(&self.store, false);
         self.workspace.active_file_loading.set(&self.store, None);
         self.workspace.sidebar_auto_width.set(&self.store, None);
         // Record the discovered file count + advance the phase. The progress
@@ -3987,6 +4073,18 @@ impl AppState {
 
         let mut effects = Vec::new();
         let mut selected_syntax_paths = Vec::new();
+        let history_effect =
+            self.compare
+                .repo_path
+                .get(&self.store)
+                .map(|repo_path| Effect::LoadCompareHistory {
+                    generation,
+                    request: CompareHistoryRequest {
+                        repo_path,
+                        left_ref: history_left,
+                        right_ref: history_right,
+                    },
+                });
         if let Some(index) = index_for_path
             .or(preferred_index.filter(|index| *index < file_count))
             .or_else(|| (file_count > 0).then_some(0))
@@ -4011,6 +4109,9 @@ impl AppState {
         {
             effects.insert(0, effect);
         }
+        if let Some(effect) = history_effect {
+            effects.push(effect);
+        }
 
         let (used_fallback, fallback_message) = (
             self.workspace.used_fallback.get(&self.store),
@@ -4020,6 +4121,23 @@ impl AppState {
             self.push_info(&fallback_message);
         }
         effects
+    }
+
+    fn handle_compare_history_ready(&mut self, payload: CompareHistoryReady) -> Vec<Effect> {
+        if payload.generation != self.workspace.compare_generation.get(&self.store) {
+            return Vec::new();
+        }
+        if self
+            .workspace
+            .pre_drill_compare
+            .with(&self.store, |p| p.is_some())
+        {
+            return Vec::new();
+        }
+        self.workspace
+            .range_commits
+            .set(&self.store, payload.range_commits);
+        Vec::new()
     }
 
     fn handle_status_diff_finished(&mut self, payload: StatusDiffFinished) -> Vec<Effect> {
@@ -4161,9 +4279,189 @@ impl AppState {
         }
 
         self.install_compare_active_file(payload.index, payload.path, payload.prepared);
-        self.request_active_file_syntax_effect()
+        let mut effects: Vec<_> = self
+            .request_active_file_syntax_effect()
+            .into_iter()
+            .collect();
+        if let Some(effect) = self.start_compare_total_stats_if_needed() {
+            effects.push(effect);
+        } else if let Some(effect) = self.start_compare_stats_hydration_if_idle() {
+            effects.push(effect);
+        }
+        effects
+    }
+
+    fn handle_compare_stats_ready(&mut self, payload: CompareStatsReady) -> Vec<Effect> {
+        if payload.generation != self.workspace.compare_generation.get(&self.store) {
+            return Vec::new();
+        }
+
+        self.workspace
+            .compare_total_stats
+            .set(&self.store, Some((payload.additions, payload.deletions)));
+        self.workspace
+            .compare_total_stats_loading
+            .set(&self.store, false);
+        self.start_compare_stats_hydration_if_idle()
             .into_iter()
             .collect()
+    }
+
+    fn handle_compare_file_stats_ready(&mut self, payload: CompareFileStatsReady) -> Vec<Effect> {
+        if payload.generation != self.workspace.compare_generation.get(&self.store) {
+            return Vec::new();
+        }
+
+        self.apply_compare_file_stats(&payload.stats);
+        if let Some(effect) = self.next_compare_stats_hydration_effect() {
+            vec![effect]
+        } else {
+            self.workspace
+                .compare_stats_hydration_active
+                .set(&self.store, false);
+            Vec::new()
+        }
+    }
+
+    fn start_compare_stats_hydration_if_idle(&mut self) -> Option<Effect> {
+        if self
+            .workspace
+            .compare_stats_hydration_active
+            .get(&self.store)
+        {
+            return None;
+        }
+
+        let effect = self.next_compare_stats_hydration_effect()?;
+        self.workspace
+            .compare_stats_hydration_active
+            .set(&self.store, true);
+        Some(effect)
+    }
+
+    fn start_compare_total_stats_if_needed(&mut self) -> Option<Effect> {
+        if self
+            .workspace
+            .compare_total_stats
+            .get(&self.store)
+            .is_some()
+            || self.workspace.compare_total_stats_loading.get(&self.store)
+        {
+            return None;
+        }
+        let has_deferred_stats = self.workspace.compare_output.with(&self.store, |output| {
+            output
+                .as_ref()
+                .is_some_and(|output| output.files.iter().any(|file| file.stats_deferred))
+        });
+        if !has_deferred_stats {
+            return None;
+        }
+        let repo_path = self.compare.repo_path.get(&self.store)?;
+        self.workspace
+            .compare_total_stats_loading
+            .set(&self.store, true);
+
+        Some(Effect::LoadCompareStats {
+            generation: self.workspace.compare_generation.get(&self.store),
+            request: CompareStatsRequest {
+                repo_path,
+                spec: CompareSpec {
+                    mode: self.compare.mode.get(&self.store),
+                    left_ref: self.compare.left_ref.get(&self.store),
+                    right_ref: self.compare.right_ref.get(&self.store),
+                    renderer: self.compare.renderer.get(&self.store),
+                    layout: self.compare.layout.get(&self.store),
+                },
+            },
+        })
+    }
+
+    fn next_compare_stats_hydration_effect(&self) -> Option<Effect> {
+        let repo_path = self.compare.repo_path.get(&self.store)?;
+        let files = self
+            .workspace
+            .compare_output
+            .with(&self.store, |maybe_output| {
+                maybe_output
+                    .as_ref()
+                    .map(|output| {
+                        output
+                            .files
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, file)| file.stats_deferred)
+                            .take(COMPARE_STATS_CHUNK_SIZE)
+                            .map(|(index, file)| CompareFileStatsItem {
+                                index,
+                                file: file.clone(),
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            });
+        if files.is_empty() {
+            return None;
+        }
+
+        Some(Effect::LoadCompareFileStats {
+            generation: self.workspace.compare_generation.get(&self.store),
+            request: CompareFileStatsRequest { repo_path, files },
+        })
+    }
+
+    fn apply_compare_file_stats(&mut self, stats: &[CompareFileStat]) {
+        if stats.is_empty() {
+            return;
+        }
+
+        self.workspace
+            .compare_output
+            .update(&self.store, |maybe_output| {
+                let Some(output) = maybe_output.as_mut() else {
+                    return;
+                };
+                for stat in stats {
+                    let Some(file) = output.files.get_mut(stat.index) else {
+                        continue;
+                    };
+                    if file.path != stat.path {
+                        continue;
+                    }
+                    file.additions = stat.additions;
+                    file.deletions = stat.deletions;
+                    file.stats_deferred = false;
+                }
+            });
+
+        self.workspace.files.update(&self.store, |files| {
+            for stat in stats {
+                let Some(file) = files.get_mut(stat.index) else {
+                    continue;
+                };
+                if file.path != stat.path {
+                    continue;
+                }
+                file.additions = stat.additions;
+                file.deletions = stat.deletions;
+            }
+        });
+
+        self.workspace.active_file.update(&self.store, |slot| {
+            let Some(active) = slot.as_mut() else {
+                return;
+            };
+            for stat in stats {
+                if active.index != stat.index || active.path != stat.path {
+                    continue;
+                }
+                active.file.additions = stat.additions;
+                active.file.deletions = stat.deletions;
+                active.base_file.additions = stat.additions;
+                active.base_file.deletions = stat.deletions;
+                break;
+            }
+        });
     }
 
     fn handle_file_syntax_ready(&mut self, payload: FileSyntaxReady) -> Vec<Effect> {
@@ -4421,6 +4719,13 @@ impl AppState {
             .get(&self.store)
             .saturating_add(1);
         self.workspace.compare_generation.set(&self.store, next_gen);
+        self.workspace.compare_total_stats.set(&self.store, None);
+        self.workspace
+            .compare_total_stats_loading
+            .set(&self.store, false);
+        self.workspace
+            .compare_stats_hydration_active
+            .set(&self.store, false);
         self.workspace.expansions.update(&self.store, |m| m.clear());
         self.clear_overlays();
         self.sync_settings_snapshot();
@@ -6524,6 +6829,13 @@ impl AppState {
             self.push_error("Open a repository before selecting a compare file.");
             return Vec::new();
         };
+        let deferred_file = self.workspace.compare_output.with(&self.store, |output| {
+            output
+                .as_ref()
+                .and_then(|output| output.files.get(index))
+                .filter(|file| file.hunks_deferred)
+                .cloned()
+        });
 
         self.workspace
             .selected_file_index
@@ -6563,6 +6875,7 @@ impl AppState {
                     },
                     path: entry.path,
                     index,
+                    deferred_file,
                 },
             },
         ]
@@ -8464,10 +8777,14 @@ mod tests {
 
         let effects = state.apply_action(Action::SelectFile(0));
 
-        assert!(matches!(
-            effects.as_slice(),
-            [Effect::EnsureSyntaxPackForPath { path }] if path == "src/lib.rs"
-        ));
+        assert!(effects.iter().any(|effect| {
+            matches!(effect, Effect::EnsureSyntaxPackForPath { path } if path == "src/lib.rs")
+        }));
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::LoadCompareFile { .. }))
+        );
         assert!(
             state
                 .workspace
@@ -8527,6 +8844,41 @@ mod tests {
             Some(ActiveFileLoading {
                 index: 0,
                 path: "src/big.rs".to_owned(),
+            })
+        );
+        assert!(state.workspace.active_file.get(&state.store).is_none());
+    }
+
+    #[test]
+    fn selecting_deferred_compare_file_dispatches_async_load() {
+        let mut state = loaded_state_with_files(&["src/kernel.c"]);
+        state
+            .workspace
+            .compare_output
+            .update(&state.store, |output| {
+                output.as_mut().expect("compare output").files[0].hunks_deferred = true;
+            });
+        state
+            .compare
+            .repo_path
+            .set(&state.store, Some(PathBuf::from("/repo")));
+
+        let effects = state.apply_action(Action::SelectFile(0));
+
+        assert!(effects.iter().any(|effect| {
+            matches!(
+                effect,
+                Effect::LoadCompareFile { request, .. }
+                    if request.index == 0
+                        && request.path == "src/kernel.c"
+                        && request.deferred_file.as_ref().is_some_and(|file| file.hunks_deferred)
+            )
+        }));
+        assert_eq!(
+            state.workspace.active_file_loading.get(&state.store),
+            Some(ActiveFileLoading {
+                index: 0,
+                path: "src/kernel.c".to_owned(),
             })
         );
         assert!(state.workspace.active_file.get(&state.store).is_none());

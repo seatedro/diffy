@@ -8,6 +8,12 @@ use crate::core::compare::spec::CompareSpec;
 use crate::core::error::Result;
 use crate::core::vcs::git::GitService;
 
+/// Keep rename detection bounded on monorepo-scale diffs. This mirrors Git's
+/// `diff.renameLimit` behavior closely enough for UI use: preserve rename
+/// detection for ordinary diffs, but skip exhaustive similarity scans when a
+/// range touches thousands of files.
+const RENAME_DETECTION_LIMIT: usize = 1000;
+
 #[cfg(feature = "difftastic")]
 pub use difftastic::DifftasticBackend;
 pub use git_diff::GitDiffBackend;
@@ -20,6 +26,13 @@ pub trait DiffBackend: Send + Sync {
         git: &GitService,
         reporter: Option<&dyn ProgressSink>,
     ) -> Result<Option<CompareOutput>>;
+}
+
+pub(crate) fn find_similar_bounded(diff: &mut git2::Diff<'_>) -> Result<()> {
+    let mut options = git2::DiffFindOptions::new();
+    options.renames(true).rename_limit(RENAME_DETECTION_LIMIT);
+    diff.find_similar(Some(&mut options))?;
+    Ok(())
 }
 
 #[cfg(not(feature = "difftastic"))]

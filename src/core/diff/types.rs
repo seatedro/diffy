@@ -33,6 +33,14 @@ pub struct Hunk {
     pub lines: Vec<DiffLine>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeferredHunkSource {
+    pub old_path: Option<String>,
+    pub new_path: Option<String>,
+    pub old_oid: Option<String>,
+    pub new_oid: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct FileDiff {
     pub path: String,
@@ -41,6 +49,12 @@ pub struct FileDiff {
     pub additions: i32,
     pub deletions: i32,
     pub hunks: Vec<Hunk>,
+    #[serde(skip)]
+    pub hunks_deferred: bool,
+    #[serde(skip)]
+    pub stats_deferred: bool,
+    #[serde(skip)]
+    pub deferred_hunk_source: Option<DeferredHunkSource>,
     #[serde(skip)]
     pub syntax_annotated: bool,
 }

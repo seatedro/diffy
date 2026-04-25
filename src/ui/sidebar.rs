@@ -525,8 +525,24 @@ pub(crate) fn sidebar(
     };
     let visible_count = filtered_indices.len();
 
-    let total_adds: i32 = all_files.iter().map(|f| f.additions).sum();
-    let total_dels: i32 = all_files.iter().map(|f| f.deletions).sum();
+    let entry_total_adds: i32 = all_files.iter().map(|f| f.additions).sum();
+    let entry_total_dels: i32 = all_files.iter().map(|f| f.deletions).sum();
+    let (total_adds, total_dels) = state
+        .workspace
+        .compare_total_stats
+        .get(&state.store)
+        .unwrap_or((entry_total_adds, entry_total_dels));
+    let stats_pending = workspace_source == WorkspaceSource::Compare
+        && state.workspace.compare_output.with(&state.store, |output| {
+            output
+                .as_ref()
+                .is_some_and(|output| output.files.iter().any(|file| file.stats_deferred))
+        })
+        && state
+            .workspace
+            .compare_total_stats
+            .get(&state.store)
+            .is_none();
 
     let mode_icon = if is_tree {
         lucide::ROWS
@@ -557,7 +573,7 @@ pub(crate) fn sidebar(
                         </Button>
                     }
                 </div>
-                if file_count > 0 {
+                if file_count > 0 && !stats_pending {
                     <div class="flex-row items-center" h={row_h} gap={Sp::XS}>
                         {components::stat_summary(
                             file_count,
@@ -574,7 +590,7 @@ pub(crate) fn sidebar(
         Some(view! { scale,
             <div class="flex-col" px={Sp::MD}>
                 <div class="flex-row items-center" h={row_h} gap={Sp::SM}>
-                    if file_count > 0 {
+                    if file_count > 0 && !stats_pending {
                         {components::stat_summary(
                             file_count,
                             total_adds.unsigned_abs(),

@@ -849,9 +849,10 @@ impl GitService {
 
     fn commit_info(&self, repo: &Repository, oid: Oid) -> Result<CommitInfo> {
         let commit = repo.find_commit(oid)?;
+        let oid = oid.to_string();
         Ok(CommitInfo {
-            oid: oid.to_string(),
-            short_oid: self.abbreviate_oid(&oid.to_string())?,
+            short_oid: fixed_short_oid(&oid).to_owned(),
+            oid,
             summary: commit.summary().unwrap_or_default().to_owned(),
             author_name: commit.author().name().unwrap_or_default().to_owned(),
             timestamp: commit.time().seconds(),
@@ -931,6 +932,10 @@ impl GitService {
         }
         Ok(())
     }
+}
+
+fn fixed_short_oid(oid: &str) -> &str {
+    oid.get(..8).unwrap_or(oid)
 }
 
 #[cfg(test)]

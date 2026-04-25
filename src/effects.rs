@@ -19,11 +19,37 @@ pub struct CompareRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompareStatsRequest {
+    pub repo_path: PathBuf,
+    pub spec: CompareSpec,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompareHistoryRequest {
+    pub repo_path: PathBuf,
+    pub left_ref: String,
+    pub right_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompareFileRequest {
     pub repo_path: PathBuf,
     pub spec: CompareSpec,
     pub path: String,
     pub index: usize,
+    pub deferred_file: Option<FileDiff>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompareFileStatsItem {
+    pub index: usize,
+    pub file: FileDiff,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompareFileStatsRequest {
+    pub repo_path: PathBuf,
+    pub files: Vec<CompareFileStatsItem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,9 +146,21 @@ pub enum Effect {
         generation: u64,
         request: CompareRequest,
     },
+    LoadCompareStats {
+        generation: u64,
+        request: CompareStatsRequest,
+    },
+    LoadCompareHistory {
+        generation: u64,
+        request: CompareHistoryRequest,
+    },
     LoadCompareFile {
         generation: u64,
         request: CompareFileRequest,
+    },
+    LoadCompareFileStats {
+        generation: u64,
+        request: CompareFileStatsRequest,
     },
     LoadStatusDiff {
         generation: u64,

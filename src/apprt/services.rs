@@ -14,16 +14,19 @@ use crate::core::compare::{
 use crate::core::error::{DiffyError, Result};
 use crate::core::http;
 use crate::core::syntax::annotator::FullFileSyntax;
-use crate::core::vcs::git::{GitService, WORKDIR_REF};
+use crate::core::vcs::git::GitService;
 use crate::core::vcs::github::{
     DeviceFlowState, GitHubApi, GitHubUser, PullRequestInfo, parse_pr_url, poll_for_token,
     start_device_flow,
 };
 use crate::effects::{
-    CompareFileRequest, CompareRequest, GenerateCommitMessageRequest, LoadFileSyntaxRequest,
-    StatusDiffRequest,
+    CompareFileRequest, CompareFileStatsRequest, CompareHistoryRequest, CompareRequest,
+    CompareStatsRequest, GenerateCommitMessageRequest, LoadFileSyntaxRequest, StatusDiffRequest,
 };
-use crate::events::{AppEvent, CompareFileFinished, CompareFinished, StatusDiffFinished};
+use crate::events::{
+    AppEvent, CompareFileFinished, CompareFileStat, CompareFileStatsReady, CompareFinished,
+    CompareHistoryReady, CompareStatsReady, StatusDiffFinished,
+};
 use crate::platform::persistence::{Settings, SettingsStore};
 use crate::platform::secrets::{self, AiKeyKind};
 use crate::ui::state::prepare_active_file;
@@ -98,25 +101,13 @@ impl AppServices {
             reporter.map(|r| r as &dyn ProgressSink),
         )?;
 
-        if let Some(r) = reporter {
-            r.phase(ComparePhase::FetchingHistory);
-        }
-        let range_right = if resolved_right == WORKDIR_REF {
-            "HEAD"
-        } else {
-            &resolved_right
-        };
-        let range_commits = git
-            .commits_in_range(&resolved_left, range_right, 500)
-            .unwrap_or_default();
-
         Ok(CompareFinished {
             generation,
             spec: request.spec,
             resolved_left,
             resolved_right,
             output,
-            range_commits,
+            range_commits: Vec::new(),
         })
     }
 
@@ -155,15 +146,41 @@ impl AppServices {
         let mut git = GitService::new();
         git.open(request.repo_path.to_string_lossy().as_ref())?;
         let mut output: CompareOutput = match request.spec.renderer {
-            RendererKind::Builtin => GitDiffBackend
-                .compare_path(&request.spec, &request.path, &git)?
-                .ok_or_else(|| DiffyError::General("compare file returned no result".to_owned()))?,
+            RendererKind::Builtin => {
+                let output = request
+                    .deferred_file
+                    .as_ref()
+                    .map(|file| GitDiffBackend.compare_deferred_file(file, &git))
+                    .transpose()?
+                    .flatten();
+                match output {
+                    Some(output) => output,
+                    None => GitDiffBackend
+                        .compare_path(&request.spec, &request.path, &git)?
+                        .ok_or_else(|| {
+                            DiffyError::General("compare file returned no result".to_owned())
+                        })?,
+                }
+            }
             RendererKind::Difftastic if DifftasticBackend::is_available() => DifftasticBackend
                 .compare_path(&request.spec, &request.path, &git)?
                 .ok_or_else(|| DiffyError::General("compare file returned no result".to_owned()))?,
-            RendererKind::Difftastic => GitDiffBackend
-                .compare_path(&request.spec, &request.path, &git)?
-                .ok_or_else(|| DiffyError::General("compare file returned no result".to_owned()))?,
+            RendererKind::Difftastic => {
+                let output = request
+                    .deferred_file
+                    .as_ref()
+                    .map(|file| GitDiffBackend.compare_deferred_file(file, &git))
+                    .transpose()?
+                    .flatten();
+                match output {
+                    Some(output) => output,
+                    None => GitDiffBackend
+                        .compare_path(&request.spec, &request.path, &git)?
+                        .ok_or_else(|| {
+                            DiffyError::General("compare file returned no result".to_owned())
+                        })?,
+                }
+            }
         };
         if request.spec.renderer == RendererKind::Difftastic && !DifftasticBackend::is_available() {
             mark_difftastic_fallback(&mut output);
@@ -186,6 +203,66 @@ impl AppServices {
                 &output.token_buffer,
             ),
         })
+    }
+
+    pub fn load_compare_stats(
+        &self,
+        generation: u64,
+        request: CompareStatsRequest,
+    ) -> Result<CompareStatsReady> {
+        let mut git = GitService::new();
+        git.open(request.repo_path.to_string_lossy().as_ref())?;
+        let (additions, deletions) = GitDiffBackend
+            .compare_stats(&request.spec, &git)?
+            .ok_or_else(|| DiffyError::General("compare stats returned no result".to_owned()))?;
+
+        Ok(CompareStatsReady {
+            generation,
+            additions,
+            deletions,
+        })
+    }
+
+    pub fn load_compare_history(
+        &self,
+        generation: u64,
+        request: CompareHistoryRequest,
+    ) -> Result<CompareHistoryReady> {
+        let mut git = GitService::new();
+        git.open(request.repo_path.to_string_lossy().as_ref())?;
+        let range_commits = git
+            .commits_in_range(&request.left_ref, &request.right_ref, 500)
+            .unwrap_or_default();
+
+        Ok(CompareHistoryReady {
+            generation,
+            range_commits,
+        })
+    }
+
+    pub fn load_compare_file_stats(
+        &self,
+        generation: u64,
+        request: CompareFileStatsRequest,
+    ) -> Result<CompareFileStatsReady> {
+        let mut git = GitService::new();
+        git.open(request.repo_path.to_string_lossy().as_ref())?;
+
+        let mut stats = Vec::with_capacity(request.files.len());
+        for item in request.files {
+            let (additions, deletions) = GitDiffBackend
+                .deferred_file_line_stats(&item.file, &git)
+                .unwrap_or(None)
+                .unwrap_or((item.file.additions, item.file.deletions));
+            stats.push(CompareFileStat {
+                index: item.index,
+                path: item.file.path,
+                additions,
+                deletions,
+            });
+        }
+
+        Ok(CompareFileStatsReady { generation, stats })
     }
 
     pub fn load_file_syntax(

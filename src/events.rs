@@ -43,6 +43,12 @@ pub struct CompareFinished {
 }
 
 #[derive(Debug, Clone)]
+pub struct CompareHistoryReady {
+    pub generation: u64,
+    pub range_commits: Vec<CommitInfo>,
+}
+
+#[derive(Debug, Clone)]
 pub struct StatusDiffFinished {
     pub generation: u64,
     pub index: usize,
@@ -59,6 +65,27 @@ pub struct CompareFileFinished {
 }
 
 #[derive(Debug, Clone)]
+pub struct CompareFileStat {
+    pub index: usize,
+    pub path: String,
+    pub additions: i32,
+    pub deletions: i32,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompareFileStatsReady {
+    pub generation: u64,
+    pub stats: Vec<CompareFileStat>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompareStatsReady {
+    pub generation: u64,
+    pub additions: i32,
+    pub deletions: i32,
+}
+
+#[derive(Debug, Clone)]
 pub enum AppEvent {
     RepositoryDialogClosed {
         path: Option<PathBuf>,
@@ -70,6 +97,11 @@ pub enum AppEvent {
         message: String,
     },
     CompareFinished(CompareFinished),
+    CompareHistoryReady(CompareHistoryReady),
+    CompareHistoryFailed {
+        generation: u64,
+        message: String,
+    },
     CompareFailed {
         generation: u64,
         message: String,
@@ -78,7 +110,17 @@ pub enum AppEvent {
         generation: u64,
         phase: ComparePhase,
     },
+    CompareStatsReady(CompareStatsReady),
+    CompareStatsFailed {
+        generation: u64,
+        message: String,
+    },
     CompareFileFinished(CompareFileFinished),
+    CompareFileStatsReady(CompareFileStatsReady),
+    CompareFileStatsFailed {
+        generation: u64,
+        message: String,
+    },
     CompareFileFailed {
         generation: u64,
         path: String,

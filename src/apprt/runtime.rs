@@ -181,6 +181,40 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
+            Effect::LoadCompareStats {
+                generation,
+                request,
+            } => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services.load_compare_stats(generation, request) {
+                        Ok(payload) => AppEvent::CompareStatsReady(payload),
+                        Err(error) => AppEvent::CompareStatsFailed {
+                            generation,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
+            Effect::LoadCompareHistory {
+                generation,
+                request,
+            } => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services.load_compare_history(generation, request) {
+                        Ok(payload) => AppEvent::CompareHistoryReady(payload),
+                        Err(error) => AppEvent::CompareHistoryFailed {
+                            generation,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
             Effect::LoadCompareFile {
                 generation,
                 request,
@@ -194,6 +228,23 @@ impl EffectRunner {
                         Err(error) => AppEvent::CompareFileFailed {
                             generation,
                             path,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
+            Effect::LoadCompareFileStats {
+                generation,
+                request,
+            } => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services.load_compare_file_stats(generation, request) {
+                        Ok(payload) => AppEvent::CompareFileStatsReady(payload),
+                        Err(error) => AppEvent::CompareFileStatsFailed {
+                            generation,
                             message: error.to_string(),
                         },
                     };

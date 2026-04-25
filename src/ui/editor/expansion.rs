@@ -276,17 +276,27 @@ impl BlockDecoration for ExpandChipBlock {
 
 pub fn populate_expand_blocks(
     blocks: &mut BlockRegistry,
-    base_file: &FileDiff,
+    base_file: &carbon::FileDiff,
     render_doc: &RenderDoc,
-    expansion: &FileExpansion,
-    total_lines: Option<u32>,
+    expansion: &carbon::ExpansionState,
 ) -> Vec<HunkGapBudget> {
     blocks.clear();
     if base_file.hunks.is_empty() || base_file.is_binary {
         return Vec::new();
     }
 
-    let budgets = gap_budgets(base_file, expansion, total_lines);
+    let budgets = base_file
+        .hunks
+        .iter()
+        .map(|hunk| {
+            let caps = carbon::expansion_caps(base_file, hunk.id);
+            let used = expansion.hunk(hunk.id);
+            HunkGapBudget {
+                above_cap: caps.above.saturating_sub(used.above),
+                below_cap: caps.below.saturating_sub(used.below),
+            }
+        })
+        .collect::<Vec<_>>();
 
     if let Some((last_idx, last_budget)) = budgets.iter().enumerate().last()
         && last_budget.below_cap > 0

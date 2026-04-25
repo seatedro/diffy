@@ -191,7 +191,9 @@ impl AppServices {
                 "compare file returned no file".to_owned(),
             ));
         };
-        let carbon_file = output.carbon.files.pop();
+        let carbon_file = output.carbon.files.pop().ok_or_else(|| {
+            DiffyError::General("compare file returned no Carbon file".to_owned())
+        })?;
 
         Ok(CompareFileFinished {
             generation,
@@ -200,7 +202,7 @@ impl AppServices {
             prepared: prepare_active_file(
                 request.index,
                 file,
-                carbon_file.as_ref(),
+                &carbon_file,
                 &output.text_buffer,
                 &output.token_buffer,
             ),
@@ -283,23 +285,13 @@ impl AppServices {
         let old_syntax = self.cached_file_syntax(&git, request, &request.left_ref, &annotator);
         let new_syntax = self.cached_file_syntax(&git, request, &request.right_ref, &annotator);
 
-        if let Some(carbon_file) = request.carbon_file.as_ref() {
-            annotator.annotate_carbon_full_file_window_from_cache(
-                carbon_file,
-                request.file_index,
-                old_syntax.as_deref(),
-                new_syntax.as_deref(),
-                request.window,
-            )
-        } else {
-            annotator.annotate_full_file_window_from_cache(
-                &request.file,
-                request.file_index,
-                old_syntax.as_deref(),
-                new_syntax.as_deref(),
-                request.window,
-            )
-        }
+        annotator.annotate_carbon_full_file_window_from_cache(
+            &request.carbon_file,
+            request.file_index,
+            old_syntax.as_deref(),
+            new_syntax.as_deref(),
+            request.window,
+        )
     }
 
     fn cached_file_syntax(
@@ -487,10 +479,22 @@ impl AppServices {
     pub fn fetch_context_lines(
         &self,
         request: &crate::effects::FetchContextLinesRequest,
-    ) -> Result<Vec<String>> {
+    ) -> Result<(Vec<String>, Vec<String>)> {
         let mut git = GitService::new();
         git.open(request.repo_path.to_string_lossy().as_ref())?;
-        git.read_file_lines_at(&request.reference, &request.path)
+        let old_lines = if request.old_reference.is_empty() {
+            Vec::new()
+        } else {
+            git.read_file_lines_at(&request.old_reference, &request.path)
+                .unwrap_or_default()
+        };
+        let new_lines = if request.new_reference.is_empty() {
+            Vec::new()
+        } else {
+            git.read_file_lines_at(&request.new_reference, &request.path)
+                .unwrap_or_default()
+        };
+        Ok((old_lines, new_lines))
     }
 
     pub fn install_common_syntax_packs(&self) -> Result<Vec<String>> {

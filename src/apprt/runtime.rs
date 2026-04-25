@@ -523,7 +523,7 @@ impl EffectRunner {
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event = match services.fetch_context_lines(&request) {
-                        Ok(lines) => {
+                        Ok((old_lines, new_lines)) => {
                             RepositoryEvent::ContextLinesReady(crate::events::ContextLinesReady {
                                 generation: request.generation,
                                 file_index: request.file_index,
@@ -531,7 +531,8 @@ impl EffectRunner {
                                 hunk_index: request.hunk_index,
                                 direction: request.direction,
                                 amount: request.amount,
-                                lines,
+                                old_lines,
+                                new_lines,
                             })
                         }
                         Err(error) => RepositoryEvent::ContextLinesFailed {

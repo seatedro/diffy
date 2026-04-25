@@ -118,10 +118,9 @@ pub struct RenderLine {
     pub right_text: ByteRange,
     pub left_runs: RunRange,
     pub right_runs: RunRange,
-    pub line_index: i16,
-    pub old_line_index: i16,
-    pub new_line_index: i16,
-    pub _pad: i16,
+    pub line_index: i32,
+    pub old_line_index: i32,
+    pub new_line_index: i32,
 }
 
 impl RenderLine {
@@ -298,10 +297,11 @@ pub fn build_render_doc(
 pub fn build_render_doc_from_carbon(
     carbon_file: &carbon::FileDiff,
     file_index: usize,
+    expansion: &carbon::ExpansionState,
     overlays: &CarbonStyleOverlays,
     token_buffer: &TokenBuffer,
 ) -> RenderDoc {
-    build_render_doc_from_carbon_rows(carbon_file, file_index, overlays, token_buffer)
+    build_render_doc_from_carbon_rows(carbon_file, file_index, expansion, overlays, token_buffer)
 }
 
 fn build_render_doc_from_rows(
@@ -341,6 +341,7 @@ fn build_render_doc_from_rows(
 fn build_render_doc_from_carbon_rows(
     carbon_file: &carbon::FileDiff,
     file_index: usize,
+    expansion: &carbon::ExpansionState,
     overlays: &CarbonStyleOverlays,
     token_buffer: &TokenBuffer,
 ) -> RenderDoc {
@@ -380,7 +381,7 @@ fn build_render_doc_from_carbon_rows(
             collapsed_context_threshold: 0,
             include_hunk_headers: true,
         },
-        &carbon::ExpansionState::default(),
+        expansion,
         |row| {
             doc.lines.push(build_render_line_from_carbon(
                 carbon_file,
@@ -635,7 +636,7 @@ fn build_render_line_from_carbon(
             RenderLine {
                 kind: RenderRowKind::Context as u8,
                 hunk_index: source.hunk_index,
-                line_index: i16::try_from(file_index).unwrap_or(i16::MAX),
+                line_index: i32::try_from(file_index).unwrap_or(i32::MAX),
                 old_line_no: INVALID_U32,
                 new_line_no: INVALID_U32,
                 ..RenderLine::default()
@@ -646,18 +647,18 @@ fn build_render_line_from_carbon(
 
 struct SourceIndices {
     hunk_index: i16,
-    line_index: i16,
-    old_line_index: i16,
-    new_line_index: i16,
+    line_index: i32,
+    old_line_index: i32,
+    new_line_index: i32,
 }
 
 impl SourceIndices {
     fn from_row(row: &FlatDiffRow) -> Self {
         Self {
             hunk_index: row.hunk_index as i16,
-            line_index: row.line_index as i16,
-            old_line_index: row.old_line_index as i16,
-            new_line_index: row.new_line_index as i16,
+            line_index: row.line_index,
+            old_line_index: row.old_line_index,
+            new_line_index: row.new_line_index,
         }
     }
 
@@ -668,11 +669,11 @@ impl SourceIndices {
             .unwrap_or(-1);
         let old_line_index = row
             .old_index
-            .map(|index| i16::try_from(index).unwrap_or(i16::MAX))
+            .map(|index| i32::try_from(index).unwrap_or(i32::MAX))
             .unwrap_or(-1);
         let new_line_index = row
             .new_index
-            .map(|index| i16::try_from(index).unwrap_or(i16::MAX))
+            .map(|index| i32::try_from(index).unwrap_or(i32::MAX))
             .unwrap_or(-1);
         Self {
             hunk_index,
@@ -1185,6 +1186,7 @@ diff --git a/src/lib.rs b/src/lib.rs
         let doc = build_render_doc_from_carbon(
             &carbon.files[0],
             0,
+            &carbon::ExpansionState::default(),
             &CarbonStyleOverlays::default(),
             &token_buffer,
         );

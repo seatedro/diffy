@@ -202,6 +202,22 @@ pub fn expand_context(
     state.set_hunk(hunk_id, expansion);
 }
 
+pub fn expansion_caps(file: &FileDiff, hunk_id: HunkId) -> HunkExpansion {
+    let Some(index) = file.hunks.iter().position(|hunk| hunk.id == hunk_id) else {
+        return HunkExpansion::default();
+    };
+    let hunk = &file.hunks[index];
+    let above = hunk.new_start_index();
+    let below = file
+        .hunks
+        .get(index + 1)
+        .map(Hunk::new_start_index)
+        .or_else(|| file.new_text.as_ref().map(|text| text.line_count()))
+        .unwrap_or(hunk.new_end_index())
+        .saturating_sub(hunk.new_end_index());
+    HunkExpansion { above, below }
+}
+
 pub fn project_file(
     file: &FileDiff,
     options: ProjectionOptions,
@@ -261,11 +277,14 @@ fn project_file_inner(
 
     for (hunk_index, hunk) in file.hunks.iter().enumerate() {
         if hunk_index == 0 {
-            let gap_len = hunk.new_start_index();
+            let old_gap_start = 0;
+            let new_gap_start = 0;
+            let gap_len = hunk.old_start_index().min(hunk.new_start_index());
             emit_gap(
                 file,
                 hunk.id,
-                0,
+                old_gap_start,
+                new_gap_start,
                 gap_len,
                 expansion.hunk(hunk.id).above,
                 0,
@@ -293,18 +312,26 @@ fn project_file_inner(
         }
 
         let next = file.hunks.get(hunk_index + 1);
-        let gap_start = hunk.new_end_index();
-        let gap_end = next
+        let old_gap_start = hunk.old_end_index();
+        let new_gap_start = hunk.new_end_index();
+        let old_gap_end = next
+            .map(Hunk::old_start_index)
+            .or_else(|| file.old_text.as_ref().map(|text| text.line_count()))
+            .unwrap_or(old_gap_start);
+        let new_gap_end = next
             .map(Hunk::new_start_index)
             .or_else(|| file.new_text.as_ref().map(|text| text.line_count()))
-            .unwrap_or(gap_start);
-        let gap_len = gap_end.saturating_sub(gap_start);
+            .unwrap_or(new_gap_start);
+        let gap_len = old_gap_end
+            .saturating_sub(old_gap_start)
+            .min(new_gap_end.saturating_sub(new_gap_start));
         let this_expansion = expansion.hunk(hunk.id);
         let next_above = next.map(|hunk| expansion.hunk(hunk.id).above).unwrap_or(0);
         emit_gap(
             file,
             hunk.id,
-            gap_start,
+            old_gap_start,
+            new_gap_start,
             gap_len,
             next_above,
             this_expansion.below,
@@ -391,7 +418,8 @@ fn emit_change(
 fn emit_gap(
     file: &FileDiff,
     hunk_id: HunkId,
-    gap_start: u32,
+    old_gap_start: u32,
+    new_gap_start: u32,
     gap_len: u32,
     expand_from_end: u32,
     expand_from_start: u32,
@@ -403,7 +431,13 @@ fn emit_gap(
     }
     if gap_len <= collapsed_context_threshold {
         for offset in 0..gap_len {
-            emit_expanded_gap_line(file.id, hunk_id, gap_start + offset, emit);
+            emit_expanded_gap_line(
+                file.id,
+                hunk_id,
+                old_gap_start + offset,
+                new_gap_start + offset,
+                emit,
+            );
         }
         return;
     }
@@ -413,11 +447,23 @@ fn emit_gap(
     let collapsed = gap_len.saturating_sub(from_start + from_end);
 
     for offset in 0..from_start {
-        emit_expanded_gap_line(file.id, hunk_id, gap_start + offset, emit);
+        emit_expanded_gap_line(
+            file.id,
+            hunk_id,
+            old_gap_start + offset,
+            new_gap_start + offset,
+            emit,
+        );
     }
     if collapsed <= collapsed_context_threshold {
         for offset in from_start..gap_len.saturating_sub(from_end) {
-            emit_expanded_gap_line(file.id, hunk_id, gap_start + offset, emit);
+            emit_expanded_gap_line(
+                file.id,
+                hunk_id,
+                old_gap_start + offset,
+                new_gap_start + offset,
+                emit,
+            );
         }
     } else if collapsed > 0 {
         emit(ProjectionRow {
@@ -428,45 +474,37 @@ fn emit_gap(
             ..ProjectionRow::default()
         });
     }
-    let end_start = gap_start + gap_len - from_end;
+    let old_end_start = old_gap_start + gap_len - from_end;
+    let new_end_start = new_gap_start + gap_len - from_end;
     for offset in 0..from_end {
-        emit_expanded_gap_line(file.id, hunk_id, end_start + offset, emit);
+        emit_expanded_gap_line(
+            file.id,
+            hunk_id,
+            old_end_start + offset,
+            new_end_start + offset,
+            emit,
+        );
     }
 }
 
 fn emit_expanded_gap_line(
     file_id: FileId,
     hunk_id: HunkId,
-    line_index: u32,
+    old_index: u32,
+    new_index: u32,
     emit: &mut impl FnMut(ProjectionRow),
 ) {
     emit(ProjectionRow {
         file_id,
         kind: ProjectionRowKind::ContextExpanded,
         hunk_id: Some(hunk_id),
-        old_line: Some(line_index + 1),
-        new_line: Some(line_index + 1),
-        old_index: Some(line_index),
-        new_index: Some(line_index),
+        old_line: Some(old_index + 1),
+        new_line: Some(new_index + 1),
+        old_index: Some(old_index),
+        new_index: Some(new_index),
         collapsed_count: 0,
         block_id: None,
     });
-}
-
-fn expansion_caps(file: &FileDiff, hunk_id: HunkId) -> HunkExpansion {
-    let Some(index) = file.hunks.iter().position(|hunk| hunk.id == hunk_id) else {
-        return HunkExpansion::default();
-    };
-    let hunk = &file.hunks[index];
-    let above = hunk.new_start_index();
-    let below = file
-        .hunks
-        .get(index + 1)
-        .map(|next| next.new_start_index())
-        .or_else(|| file.new_text.as_ref().map(|text| text.line_count()))
-        .unwrap_or(hunk.new_end_index())
-        .saturating_sub(hunk.new_end_index());
-    HunkExpansion { above, below }
 }
 
 #[cfg(test)]

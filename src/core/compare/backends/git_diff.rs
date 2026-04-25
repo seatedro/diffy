@@ -6,10 +6,8 @@ use crate::core::compare::backends::{DiffBackend, find_similar_bounded};
 use crate::core::compare::progress::{ComparePhase, ProgressSink};
 use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::CompareSpec;
-use crate::core::diff::unified_parser::lower_carbon_file;
 use crate::core::diff::{DeferredHunkSource, FileDiff};
 use crate::core::error::{DiffyError, Result};
-use crate::core::text::{TextBuffer, TokenBuffer};
 use crate::core::vcs::git::{GitService, WORKDIR_REF};
 
 /// Throttle file-progress emits so a 3,000-file diff doesn't post 3,000
@@ -107,13 +105,7 @@ impl GitDiffBackend {
         let (raw_diff, carbon_file) =
             carbon_file_from_patch(&mut patch, output.carbon.files.len(), Some(&loaded))?;
         output.raw_diff.push_str(&raw_diff);
-        loaded = lower_carbon_file(
-            &carbon_file,
-            &mut output.text_buffer,
-            Some(&mut output.token_buffer),
-        );
-        loaded.hunks_deferred = false;
-        loaded.deferred_hunk_source = None;
+        loaded = file_summary_from_carbon(&carbon_file);
         output.carbon.files.push(carbon_file);
         output.files.push(loaded);
         Ok(Some(output))
@@ -253,9 +245,6 @@ pub(crate) fn compare_output_from_diff(
     // tree-walk on kernel-scale diffs. The user is still under the
     // "Enumerating changes…" label until we finish this.
     let mut output = CompareOutput::default();
-    let mut text_buffer = TextBuffer::default();
-    let mut token_buffer = TokenBuffer::default();
-
     let deltas: Vec<_> = diff.deltas().collect();
     if deltas.len() > DEFER_HUNKS_FILE_LIMIT {
         output.files = deltas.iter().map(file_summary_from_delta).collect();
@@ -313,7 +302,7 @@ pub(crate) fn compare_output_from_diff(
             let (raw_diff, carbon_file) =
                 carbon_file_from_patch(&mut patch, output.carbon.files.len(), Some(&file))?;
             output.raw_diff.push_str(&raw_diff);
-            file = lower_carbon_file(&carbon_file, &mut text_buffer, Some(&mut token_buffer));
+            file = file_summary_from_carbon(&carbon_file);
             file.hunks_deferred = false;
             file.stats_deferred = false;
             file.deferred_hunk_source = None;
@@ -322,9 +311,6 @@ pub(crate) fn compare_output_from_diff(
 
         output.files.push(file);
     }
-
-    output.text_buffer = text_buffer;
-    output.token_buffer = token_buffer;
     Ok(output)
 }
 
@@ -407,6 +393,39 @@ fn carbon_status_from_legacy(file: &FileDiff) -> carbon::FileStatus {
     }
 }
 
+fn file_summary_from_carbon(file: &carbon::FileDiff) -> FileDiff {
+    let (additions, deletions) = carbon_stats(file);
+    FileDiff {
+        path: file.path().to_owned(),
+        status: match file.status {
+            carbon::FileStatus::Added => "A",
+            carbon::FileStatus::Deleted => "D",
+            carbon::FileStatus::Renamed | carbon::FileStatus::RenamedModified => "R",
+            carbon::FileStatus::Binary => "B",
+            carbon::FileStatus::ModeChanged | carbon::FileStatus::Modified => "M",
+        }
+        .to_owned(),
+        is_binary: file.is_binary,
+        additions,
+        deletions,
+        hunks_deferred: false,
+        stats_deferred: false,
+        ..FileDiff::default()
+    }
+}
+
+fn carbon_stats(file: &carbon::FileDiff) -> (i32, i32) {
+    let mut additions = 0_i32;
+    let mut deletions = 0_i32;
+    for block in &file.blocks {
+        if block.kind == carbon::BlockKind::Change {
+            additions = additions.saturating_add(block.new.len.min(i32::MAX as u32) as i32);
+            deletions = deletions.saturating_add(block.old.len.min(i32::MAX as u32) as i32);
+        }
+    }
+    (additions, deletions)
+}
+
 fn file_summary_from_delta(delta: &git2::DiffDelta<'_>) -> FileDiff {
     let is_binary = delta.new_file().is_binary() || delta.old_file().is_binary();
     FileDiff {
@@ -472,7 +491,7 @@ mod tests {
     use super::GitDiffBackend;
     use crate::core::compare::backends::DiffBackend;
     use crate::core::compare::spec::{CompareMode, CompareSpec, LayoutMode, RendererKind};
-    use crate::core::diff::{DeferredHunkSource, FileDiff, LineKind};
+    use crate::core::diff::{DeferredHunkSource, FileDiff};
     use crate::core::vcs::git::GitService;
 
     fn commit_file(repo: &Repository, relative_path: &str, content: &str, message: &str) -> String {
@@ -543,18 +562,23 @@ mod tests {
             },
         );
 
-        let file = output.files.first().expect("single file diff");
-        assert_eq!(file.path, "src/example.rs");
+        assert_eq!(output.files.len(), 1);
+        assert_eq!(output.files[0].path, "src/example.rs");
         assert_eq!(output.carbon.files.len(), 1);
         assert_eq!(output.carbon.files[0].path(), "src/example.rs");
         assert!(output.raw_diff.contains("diff --git"));
-        let removed = file
-            .hunks
+        let removed = output.carbon.files[0]
+            .blocks
             .iter()
-            .flat_map(|hunk| &hunk.lines)
-            .find(|line| line.kind == LineKind::Removed)
+            .find(|block| block.kind == carbon::BlockKind::Change)
+            .and_then(|block| {
+                output.carbon.files[0]
+                    .old_text
+                    .as_ref()
+                    .and_then(|text| text.line_str(carbon::LineId(block.old.start)))
+            })
             .expect("removed line");
-        assert_eq!(output.text_buffer.view(removed.text_range), "before");
+        assert_eq!(removed, "before");
     }
 
     #[test]
@@ -582,22 +606,25 @@ mod tests {
             },
         );
 
-        let file = output.files.first().expect("single file diff");
-        let removed = file
-            .hunks
+        assert_eq!(output.files.len(), 1);
+        let change = output.carbon.files[0]
+            .blocks
             .iter()
-            .flat_map(|hunk| &hunk.lines)
-            .find(|line| line.kind == LineKind::Removed)
+            .find(|block| block.kind == carbon::BlockKind::Change)
+            .expect("change block");
+        let removed = output.carbon.files[0]
+            .old_text
+            .as_ref()
+            .and_then(|text| text.line_str(carbon::LineId(change.old.start)))
             .expect("removed line");
-        let added = file
-            .hunks
-            .iter()
-            .flat_map(|hunk| &hunk.lines)
-            .find(|line| line.kind == LineKind::Added)
+        let added = output.carbon.files[0]
+            .new_text
+            .as_ref()
+            .and_then(|text| text.line_str(carbon::LineId(change.new.start)))
             .expect("added line");
 
-        assert_eq!(output.text_buffer.view(removed.text_range), "start");
-        assert_eq!(output.text_buffer.view(added.text_range), "feature");
+        assert_eq!(removed, "start");
+        assert_eq!(added, "feature");
     }
 
     #[test]
@@ -674,19 +701,22 @@ mod tests {
         assert_eq!(output.carbon.files.len(), 1);
         assert_eq!(output.carbon.files[0].path(), "src/a.rs");
         assert!(!file.hunks_deferred);
-        let removed = file
-            .hunks
+        let change = output.carbon.files[0]
+            .blocks
             .iter()
-            .flat_map(|hunk| &hunk.lines)
-            .find(|line| line.kind == LineKind::Removed)
+            .find(|block| block.kind == carbon::BlockKind::Change)
+            .expect("change block");
+        let removed = output.carbon.files[0]
+            .old_text
+            .as_ref()
+            .and_then(|text| text.line_str(carbon::LineId(change.old.start)))
             .expect("removed line");
-        let added = file
-            .hunks
-            .iter()
-            .flat_map(|hunk| &hunk.lines)
-            .find(|line| line.kind == LineKind::Added)
+        let added = output.carbon.files[0]
+            .new_text
+            .as_ref()
+            .and_then(|text| text.line_str(carbon::LineId(change.new.start)))
             .expect("added line");
-        assert_eq!(output.text_buffer.view(removed.text_range), "before");
-        assert_eq!(output.text_buffer.view(added.text_range), "after");
+        assert_eq!(removed, "before");
+        assert_eq!(added, "after");
     }
 }

@@ -141,13 +141,12 @@ mod tests {
             )
             .unwrap();
 
-        let has_syntax_tokens = output
-            .files
-            .iter()
-            .flat_map(|file| file.hunks.iter())
-            .flat_map(|hunk| hunk.lines.iter())
-            .any(|line| !output.token_buffer.view(line.syntax_tokens).is_empty());
-
-        assert!(!has_syntax_tokens);
+        assert_eq!(output.token_buffer.len(), 0);
+        assert!(
+            output.carbon.files[0]
+                .blocks
+                .iter()
+                .all(|block| { block.old_inline.is_empty() && block.new_inline.is_empty() })
+        );
     }
 }

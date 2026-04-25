@@ -55,7 +55,7 @@ pub fn format_carbon_hunk_patch(
 pub fn format_carbon_lines_patch(
     carbon_file: &carbon::FileDiff,
     hunk_index: usize,
-    selected_lines: &[usize],
+    selected_lines: &[CarbonLineSelection],
     reverse: bool,
 ) -> Option<String> {
     let hunk = carbon_file.hunks.get(hunk_index)?;
@@ -63,6 +63,12 @@ pub fn format_carbon_lines_patch(
     let rewritten = rewrite_carbon_hunk_for_lines(hunk, selected_lines, carbon_file, reverse)?;
     patch.push_str(&rewritten);
     Some(patch)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CarbonLineSelection {
+    pub side: carbon::DiffSide,
+    pub source_index: u32,
 }
 
 fn format_carbon_file_header(file: &carbon::FileDiff) -> String {
@@ -228,13 +234,14 @@ fn append_reversed_hunk(patch: &mut String, hunk: &Hunk, text_buffer: &TextBuffe
 
 fn rewrite_carbon_hunk_for_lines(
     hunk: &carbon::Hunk,
-    selected_lines: &[usize],
+    selected_lines: &[CarbonLineSelection],
     carbon_file: &carbon::FileDiff,
     reverse: bool,
 ) -> Option<String> {
     use std::fmt::Write;
 
-    let selected: std::collections::HashSet<usize> = selected_lines.iter().copied().collect();
+    let selected: std::collections::HashSet<CarbonLineSelection> =
+        selected_lines.iter().copied().collect();
     let mut old_count: i32 = 0;
     let mut new_count: i32 = 0;
     let mut body = String::new();
@@ -267,8 +274,10 @@ fn rewrite_carbon_hunk_for_lines(
             carbon::BlockKind::Change => {
                 for offset in 0..block.old.len {
                     let source_index = block.old.start.saturating_add(offset);
-                    let is_selected =
-                        selected.contains(&carbon::u32_to_usize_saturating(source_index));
+                    let is_selected = selected.contains(&CarbonLineSelection {
+                        side: carbon::DiffSide::Old,
+                        source_index,
+                    });
                     if is_selected {
                         has_change = true;
                         if reverse {
@@ -304,8 +313,10 @@ fn rewrite_carbon_hunk_for_lines(
                 }
                 for offset in 0..block.new.len {
                     let source_index = block.new.start.saturating_add(offset);
-                    let is_selected =
-                        selected.contains(&carbon::u32_to_usize_saturating(source_index));
+                    let is_selected = selected.contains(&CarbonLineSelection {
+                        side: carbon::DiffSide::New,
+                        source_index,
+                    });
                     if is_selected {
                         has_change = true;
                         if reverse {

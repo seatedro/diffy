@@ -65,7 +65,7 @@ pub struct LoadFileSyntaxRequest {
     pub file_index: usize,
     pub path: String,
     pub file: FileDiff,
-    pub carbon_file: Option<carbon::FileDiff>,
+    pub carbon_file: carbon::FileDiff,
     pub left_ref: String,
     pub right_ref: String,
     pub window: SyntaxRowWindow,
@@ -315,7 +315,8 @@ pub struct GenerateCommitMessageRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchContextLinesRequest {
     pub repo_path: PathBuf,
-    pub reference: String,
+    pub old_reference: String,
+    pub new_reference: String,
     pub path: String,
     pub generation: u64,
     pub file_index: usize,

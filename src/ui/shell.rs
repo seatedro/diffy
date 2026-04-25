@@ -283,10 +283,9 @@ pub fn build_ui_frame(
                     .unwrap_or_default();
                 let caps = crate::ui::editor::expansion::populate_expand_blocks(
                     editor.blocks_mut(),
-                    &active_file.base_file,
+                    &active_file.carbon_file,
                     &active_file.render_doc,
                     &expansion,
-                    active_file.file_line_count,
                 );
                 editor.set_hunk_expand_caps(caps);
             } else {

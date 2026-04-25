@@ -579,14 +579,7 @@ impl EditorElement {
             ) {
                 return false;
             }
-            (line.old_line_index >= 0
-                && state
-                    .line_selection
-                    .contains(line.hunk_index, line.old_line_index))
-                || (line.new_line_index >= 0
-                    && state
-                        .line_selection
-                        .contains(line.hunk_index, line.new_line_index))
+            line_selection_contains_line(&state.line_selection, line)
         };
 
         let first = self.rows.iter().find(|r| is_selected(r))?;
@@ -1176,14 +1169,7 @@ impl EditorElement {
             ) {
                 continue;
             }
-            let selected = (line.old_line_index >= 0
-                && state
-                    .line_selection
-                    .contains(line.hunk_index, line.old_line_index))
-                || (line.new_line_index >= 0
-                    && state
-                        .line_selection
-                        .contains(line.hunk_index, line.new_line_index));
+            let selected = line_selection_contains_line(&state.line_selection, line);
             if !selected {
                 continue;
             }
@@ -2077,6 +2063,19 @@ impl EditorElement {
             self.layout.content_bounds.bottom(),
         )
     }
+}
+
+fn line_selection_contains_line(
+    selection: &super::state::LineSelection,
+    line: &RenderLine,
+) -> bool {
+    let Ok(hunk_id) = u32::try_from(line.hunk_index) else {
+        return false;
+    };
+    (line.old_line_index >= 0
+        && selection.contains(hunk_id, carbon::DiffSide::Old, line.old_line_index as u32))
+        || (line.new_line_index >= 0
+            && selection.contains(hunk_id, carbon::DiffSide::New, line.new_line_index as u32))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

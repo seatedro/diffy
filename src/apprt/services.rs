@@ -186,11 +186,6 @@ impl AppServices {
             mark_difftastic_fallback(&mut output);
         }
 
-        let Some(file) = output.files.pop() else {
-            return Err(DiffyError::General(
-                "compare file returned no file".to_owned(),
-            ));
-        };
         let carbon_file = output.carbon.files.pop().ok_or_else(|| {
             DiffyError::General("compare file returned no Carbon file".to_owned())
         })?;
@@ -199,13 +194,7 @@ impl AppServices {
             generation,
             index: request.index,
             path: request.path,
-            prepared: prepare_active_file(
-                request.index,
-                file,
-                &carbon_file,
-                &output.text_buffer,
-                &output.token_buffer,
-            ),
+            prepared: prepare_active_file(request.index, &carbon_file),
         })
     }
 
@@ -257,10 +246,13 @@ impl AppServices {
             let (additions, deletions) = GitDiffBackend
                 .deferred_file_line_stats(&item.file, &git)
                 .unwrap_or(None)
-                .unwrap_or((item.file.additions, item.file.deletions));
+                .unwrap_or((
+                    u32_to_i32_saturating(item.file.additions),
+                    u32_to_i32_saturating(item.file.deletions),
+                ));
             stats.push(CompareFileStat {
                 index: item.index,
-                path: item.file.path,
+                path: item.file.path().to_owned(),
                 additions,
                 deletions,
             });
@@ -677,6 +669,10 @@ fn mark_difftastic_fallback(output: &mut CompareOutput) {
     output.fallback_message = "difftastic not compiled in, used built-in backend".to_owned();
 }
 
+fn u32_to_i32_saturating(value: u32) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
+}
+
 pub fn load_ai_keys() -> Result<(Option<String>, Option<String>)> {
     let openai = secrets::load_ai_key(AiKeyKind::OpenAi)?;
     let anthropic = secrets::load_ai_key(AiKeyKind::Anthropic)?;
@@ -788,7 +784,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(finished.generation, 1);
-        assert_eq!(finished.output.files.len(), 1);
-        assert_eq!(finished.output.files[0].path, "src/lib.rs");
+        assert_eq!(finished.output.carbon.files.len(), 1);
+        assert_eq!(finished.output.carbon.files[0].path(), "src/lib.rs");
     }
 }

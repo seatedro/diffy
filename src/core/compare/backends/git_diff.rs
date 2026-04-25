@@ -6,7 +6,6 @@ use crate::core::compare::backends::{DiffBackend, find_similar_bounded};
 use crate::core::compare::progress::{ComparePhase, ProgressSink};
 use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::CompareSpec;
-use crate::core::diff::{DeferredHunkSource, FileDiff};
 use crate::core::error::{DiffyError, Result};
 use crate::core::vcs::git::{GitService, WORKDIR_REF};
 
@@ -55,36 +54,29 @@ impl GitDiffBackend {
 
     pub fn compare_deferred_file(
         &self,
-        file: &FileDiff,
+        file: &carbon::FileDiff,
         git: &GitService,
     ) -> Result<Option<CompareOutput>> {
         let repo = match git.repo() {
             Ok(r) => r,
             Err(_) => return Ok(None),
         };
-        let Some(source) = file.deferred_hunk_source.as_ref() else {
-            return Ok(None);
-        };
         if file.is_binary {
             let mut file = file.clone();
-            file.hunks_deferred = false;
-            file.deferred_hunk_source = None;
+            file.is_partial = false;
             return Ok(Some(CompareOutput {
-                carbon: carbon::DiffDocument {
-                    files: vec![carbon_summary_from_deferred_file(&file, 0)],
-                },
-                files: vec![file],
+                carbon: carbon::DiffDocument { files: vec![file] },
                 ..CompareOutput::default()
             }));
         }
-        if !can_diff_deferred_source(file, source) {
+        if !can_diff_deferred_file(file) {
             return Ok(None);
         }
 
-        let old_content = load_blob_content(repo, source.old_oid.as_deref())?;
-        let new_content = load_blob_content(repo, source.new_oid.as_deref())?;
-        let old_path = source.old_path.as_deref().map(Path::new);
-        let new_path = source.new_path.as_deref().map(Path::new);
+        let old_content = load_blob_content(repo, file.old_oid.as_ref())?;
+        let new_content = load_blob_content(repo, file.new_oid.as_ref())?;
+        let old_path = file.old_path.as_deref().map(Path::new);
+        let new_path = file.new_path.as_deref().map(Path::new);
         let mut options = DiffOptions::new();
         options.context_lines(3);
         let mut patch = git2::Patch::from_buffers(
@@ -96,18 +88,10 @@ impl GitDiffBackend {
         )?;
 
         let mut output = CompareOutput::default();
-        let mut loaded = file.clone();
-        loaded.hunks_deferred = false;
-        loaded.deferred_hunk_source = None;
-        loaded.hunks.clear();
-        loaded.additions = 0;
-        loaded.deletions = 0;
         let (raw_diff, carbon_file) =
-            carbon_file_from_patch(&mut patch, output.carbon.files.len(), Some(&loaded))?;
+            carbon_file_from_patch(&mut patch, output.carbon.files.len(), Some(file))?;
         output.raw_diff.push_str(&raw_diff);
-        loaded = file_summary_from_carbon(&carbon_file);
         output.carbon.files.push(carbon_file);
-        output.files.push(loaded);
         Ok(Some(output))
     }
 
@@ -143,7 +127,7 @@ impl GitDiffBackend {
 
     pub fn deferred_file_line_stats(
         &self,
-        file: &FileDiff,
+        file: &carbon::FileDiff,
         git: &GitService,
     ) -> Result<Option<(i32, i32)>> {
         if file.is_binary {
@@ -153,17 +137,14 @@ impl GitDiffBackend {
             Ok(r) => r,
             Err(_) => return Ok(None),
         };
-        let Some(source) = file.deferred_hunk_source.as_ref() else {
-            return Ok(None);
-        };
-        if !can_diff_deferred_source(file, source) {
+        if !can_diff_deferred_file(file) {
             return Ok(None);
         }
 
-        let old_content = load_blob_content(repo, source.old_oid.as_deref())?;
-        let new_content = load_blob_content(repo, source.new_oid.as_deref())?;
-        let old_path = source.old_path.as_deref().map(Path::new);
-        let new_path = source.new_path.as_deref().map(Path::new);
+        let old_content = load_blob_content(repo, file.old_oid.as_ref())?;
+        let new_content = load_blob_content(repo, file.new_oid.as_ref())?;
+        let old_path = file.old_path.as_deref().map(Path::new);
+        let new_path = file.new_path.as_deref().map(Path::new);
         let mut options = DiffOptions::new();
         options.context_lines(0);
         let patch = git2::Patch::from_buffers(
@@ -247,12 +228,10 @@ pub(crate) fn compare_output_from_diff(
     let mut output = CompareOutput::default();
     let deltas: Vec<_> = diff.deltas().collect();
     if deltas.len() > DEFER_HUNKS_FILE_LIMIT {
-        output.files = deltas.iter().map(file_summary_from_delta).collect();
-        output.carbon.files = output
-            .files
+        output.carbon.files = deltas
             .iter()
             .enumerate()
-            .map(|(index, file)| carbon_summary_from_deferred_file(file, index))
+            .map(|(index, delta)| carbon_summary_from_delta(delta, index, true))
             .collect();
         return Ok(output);
     }
@@ -284,48 +263,37 @@ pub(crate) fn compare_output_from_diff(
                 });
             }
         }
-        let mut file = file_summary_from_delta(delta);
-        file.hunks_deferred = false;
-        file.stats_deferred = false;
-        file.deferred_hunk_source = None;
-
-        if file.is_binary {
-            output
-                .carbon
-                .files
-                .push(carbon_summary_from_delta(delta, output.carbon.files.len()));
-            output.files.push(file);
+        if delta.new_file().is_binary() || delta.old_file().is_binary() {
+            output.carbon.files.push(carbon_summary_from_delta(
+                delta,
+                output.carbon.files.len(),
+                false,
+            ));
             continue;
         }
 
         if let Ok(Some(mut patch)) = git2::Patch::from_diff(diff, delta_idx) {
             let (raw_diff, carbon_file) =
-                carbon_file_from_patch(&mut patch, output.carbon.files.len(), Some(&file))?;
+                carbon_file_from_patch(&mut patch, output.carbon.files.len(), None)?;
             output.raw_diff.push_str(&raw_diff);
-            file = file_summary_from_carbon(&carbon_file);
-            file.hunks_deferred = false;
-            file.stats_deferred = false;
-            file.deferred_hunk_source = None;
             output.carbon.files.push(carbon_file);
         }
-
-        output.files.push(file);
     }
     Ok(output)
 }
 
-fn load_blob_content(repo: &Repository, oid: Option<&str>) -> Result<Vec<u8>> {
+fn load_blob_content(repo: &Repository, oid: Option<&carbon::ObjectId>) -> Result<Vec<u8>> {
     let Some(oid) = oid else {
         return Ok(Vec::new());
     };
-    let oid = Oid::from_str(oid)?;
+    let oid = Oid::from_str(&oid.0)?;
     Ok(repo.find_blob(oid)?.content().to_vec())
 }
 
 fn carbon_file_from_patch(
     patch: &mut git2::Patch<'_>,
     file_id: usize,
-    summary: Option<&FileDiff>,
+    summary: Option<&carbon::FileDiff>,
 ) -> Result<(String, carbon::FileDiff)> {
     let raw = patch.to_buf()?;
     let raw_diff = String::from_utf8_lossy(raw.as_ref()).into_owned();
@@ -335,12 +303,13 @@ fn carbon_file_from_patch(
         return Err(DiffyError::Parse("patch contained no file diff".to_owned()));
     };
     file.id = carbon::FileId(usize_to_u32_saturating(file_id));
+    file.is_partial = false;
     if let Some(summary) = summary {
-        if file.old_path.is_none() && !summary.path.is_empty() {
-            file.old_path = Some(summary.path.clone());
+        if file.old_path.is_none() {
+            file.old_path.clone_from(&summary.old_path);
         }
-        if file.new_path.is_none() && !summary.path.is_empty() {
-            file.new_path = Some(summary.path.clone());
+        if file.new_path.is_none() {
+            file.new_path.clone_from(&summary.new_path);
         }
         if summary.is_binary {
             file.is_binary = true;
@@ -350,7 +319,11 @@ fn carbon_file_from_patch(
     Ok((raw_diff, file))
 }
 
-fn carbon_summary_from_delta(delta: &git2::DiffDelta<'_>, file_id: usize) -> carbon::FileDiff {
+fn carbon_summary_from_delta(
+    delta: &git2::DiffDelta<'_>,
+    file_id: usize,
+    stats_deferred: bool,
+) -> carbon::FileDiff {
     carbon::FileDiff {
         id: carbon::FileId(usize_to_u32_saturating(file_id)),
         old_path: delta
@@ -361,39 +334,12 @@ fn carbon_summary_from_delta(delta: &git2::DiffDelta<'_>, file_id: usize) -> car
             .new_file()
             .path()
             .map(|path| path.to_string_lossy().into_owned()),
+        old_oid: object_id_from_git(delta.old_file().id()),
+        new_oid: object_id_from_git(delta.new_file().id()),
         status: carbon_status_from_delta(delta),
         is_binary: delta.new_file().is_binary() || delta.old_file().is_binary(),
-        is_partial: true,
-        ..carbon::FileDiff::default()
-    }
-}
-
-fn carbon_summary_from_deferred_file(file: &FileDiff, file_id: usize) -> carbon::FileDiff {
-    let source = file.deferred_hunk_source.as_ref();
-    let path = (!file.path.is_empty()).then(|| file.path.clone());
-    let (old_path, new_path) = match file.status.as_str() {
-        "A" => (
-            None,
-            source.and_then(|source| source.new_path.clone()).or(path),
-        ),
-        "D" => (
-            source.and_then(|source| source.old_path.clone()).or(path),
-            None,
-        ),
-        _ => (
-            source
-                .and_then(|source| source.old_path.clone())
-                .or_else(|| path.clone()),
-            source.and_then(|source| source.new_path.clone()).or(path),
-        ),
-    };
-    carbon::FileDiff {
-        id: carbon::FileId(usize_to_u32_saturating(file_id)),
-        old_path,
-        new_path,
-        status: carbon_status_from_file_status(&file.status, file.is_binary),
-        is_binary: file.is_binary,
-        is_partial: true,
+        is_partial: stats_deferred,
+        stats_deferred,
         ..carbon::FileDiff::default()
     }
 }
@@ -412,95 +358,15 @@ fn carbon_status_from_delta(delta: &git2::DiffDelta<'_>) -> carbon::FileStatus {
     }
 }
 
-fn carbon_status_from_file_status(status: &str, is_binary: bool) -> carbon::FileStatus {
-    if is_binary {
-        carbon::FileStatus::Binary
-    } else {
-        match status {
-            "A" => carbon::FileStatus::Added,
-            "D" => carbon::FileStatus::Deleted,
-            "R" => carbon::FileStatus::Renamed,
-            _ => carbon::FileStatus::Modified,
-        }
-    }
+fn object_id_from_git(oid: Oid) -> Option<carbon::ObjectId> {
+    (oid != Oid::zero()).then(|| carbon::ObjectId(oid.to_string()))
 }
 
-fn file_summary_from_carbon(file: &carbon::FileDiff) -> FileDiff {
-    let (additions, deletions) = carbon_stats(file);
-    FileDiff {
-        path: file.path().to_owned(),
-        status: match file.status {
-            carbon::FileStatus::Added => "A",
-            carbon::FileStatus::Deleted => "D",
-            carbon::FileStatus::Renamed | carbon::FileStatus::RenamedModified => "R",
-            carbon::FileStatus::Binary => "B",
-            carbon::FileStatus::ModeChanged | carbon::FileStatus::Modified => "M",
-        }
-        .to_owned(),
-        is_binary: file.is_binary,
-        additions,
-        deletions,
-        hunks_deferred: false,
-        stats_deferred: false,
-        ..FileDiff::default()
-    }
-}
-
-fn carbon_stats(file: &carbon::FileDiff) -> (i32, i32) {
-    let mut additions = 0_i32;
-    let mut deletions = 0_i32;
-    for block in &file.blocks {
-        if block.kind == carbon::BlockKind::Change {
-            additions = additions.saturating_add(block.new.len.min(i32::MAX as u32) as i32);
-            deletions = deletions.saturating_add(block.old.len.min(i32::MAX as u32) as i32);
-        }
-    }
-    (additions, deletions)
-}
-
-fn file_summary_from_delta(delta: &git2::DiffDelta<'_>) -> FileDiff {
-    let is_binary = delta.new_file().is_binary() || delta.old_file().is_binary();
-    FileDiff {
-        path: delta
-            .new_file()
-            .path()
-            .or_else(|| delta.old_file().path())
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        status: match delta.status() {
-            Delta::Added => "A".to_owned(),
-            Delta::Deleted => "D".to_owned(),
-            Delta::Renamed => "R".to_owned(),
-            _ => "M".to_owned(),
-        },
-        is_binary,
-        hunks_deferred: !is_binary,
-        stats_deferred: !is_binary,
-        deferred_hunk_source: (!is_binary).then(|| DeferredHunkSource {
-            old_path: delta
-                .old_file()
-                .path()
-                .map(|p| p.to_string_lossy().into_owned()),
-            new_path: delta
-                .new_file()
-                .path()
-                .map(|p| p.to_string_lossy().into_owned()),
-            old_oid: oid_string(delta.old_file().id()),
-            new_oid: oid_string(delta.new_file().id()),
-        }),
-        ..FileDiff::default()
-    }
-}
-
-fn oid_string(oid: Oid) -> Option<String> {
-    (oid != Oid::zero()).then(|| oid.to_string())
-}
-
-fn can_diff_deferred_source(file: &FileDiff, source: &DeferredHunkSource) -> bool {
-    match file.status.as_str() {
-        "A" => source.new_oid.is_some(),
-        "D" => source.old_oid.is_some(),
-        _ => source.old_oid.is_some() && source.new_oid.is_some(),
+fn can_diff_deferred_file(file: &carbon::FileDiff) -> bool {
+    match file.status {
+        carbon::FileStatus::Added => file.new_oid.is_some(),
+        carbon::FileStatus::Deleted => file.old_oid.is_some(),
+        _ => file.old_oid.is_some() && file.new_oid.is_some(),
     }
 }
 
@@ -523,7 +389,6 @@ mod tests {
     use super::GitDiffBackend;
     use crate::core::compare::backends::DiffBackend;
     use crate::core::compare::spec::{CompareMode, CompareSpec, LayoutMode, RendererKind};
-    use crate::core::diff::{DeferredHunkSource, FileDiff};
     use crate::core::vcs::git::GitService;
 
     fn commit_file(repo: &Repository, relative_path: &str, content: &str, message: &str) -> String {
@@ -594,8 +459,6 @@ mod tests {
             },
         );
 
-        assert_eq!(output.files.len(), 1);
-        assert_eq!(output.files[0].path, "src/example.rs");
         assert_eq!(output.carbon.files.len(), 1);
         assert_eq!(output.carbon.files[0].path(), "src/example.rs");
         assert!(output.raw_diff.contains("diff --git"));
@@ -638,7 +501,7 @@ mod tests {
             },
         );
 
-        assert_eq!(output.files.len(), 1);
+        assert_eq!(output.carbon.files.len(), 1);
         let change = output.carbon.files[0]
             .blocks
             .iter()
@@ -686,8 +549,8 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(output.files.len(), 1);
-        assert_eq!(output.files[0].path, "src/a.rs");
+        assert_eq!(output.carbon.files.len(), 1);
+        assert_eq!(output.carbon.files[0].path(), "src/a.rs");
     }
 
     #[test]
@@ -712,27 +575,22 @@ mod tests {
 
         let output = GitDiffBackend
             .compare_deferred_file(
-                &FileDiff {
-                    path: "src/a.rs".to_owned(),
-                    status: "M".to_owned(),
-                    hunks_deferred: true,
-                    deferred_hunk_source: Some(DeferredHunkSource {
-                        old_path: Some("src/a.rs".to_owned()),
-                        new_path: Some("src/a.rs".to_owned()),
-                        old_oid: Some(old_oid),
-                        new_oid: Some(new_oid),
-                    }),
-                    ..FileDiff::default()
+                &carbon::FileDiff {
+                    old_path: Some("src/a.rs".to_owned()),
+                    new_path: Some("src/a.rs".to_owned()),
+                    old_oid: Some(carbon::ObjectId(old_oid)),
+                    new_oid: Some(carbon::ObjectId(new_oid)),
+                    is_partial: true,
+                    ..carbon::FileDiff::default()
                 },
                 &git,
             )
             .unwrap()
             .unwrap();
 
-        let file = output.files.first().expect("single file diff");
         assert_eq!(output.carbon.files.len(), 1);
         assert_eq!(output.carbon.files[0].path(), "src/a.rs");
-        assert!(!file.hunks_deferred);
+        assert!(!output.carbon.files[0].is_partial);
         let change = output.carbon.files[0]
             .blocks
             .iter()

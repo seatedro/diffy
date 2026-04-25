@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
-use crate::core::text::{
-    ChangeIntensity, DiffTokenSpan, SyntaxTokenKind, TextRange, TokenBuffer, TokenRange,
-};
+use crate::core::text::{ChangeIntensity, DiffTokenSpan, SyntaxTokenKind, TokenBuffer, TokenRange};
 
 pub const INVALID_U32: u32 = u32::MAX;
 pub const STYLE_FLAG_CHANGE: u16 = 0x1;
@@ -767,10 +765,6 @@ fn carbon_projection_capacity(file: &carbon::FileDiff) -> usize {
                 hunk.old_count.max(hunk.new_count),
             ))
         })
-}
-
-pub fn range_len(text: TextRange) -> usize {
-    text.len
 }
 
 #[cfg(test)]

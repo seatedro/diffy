@@ -1,18 +1,13 @@
 use crate::core::compare::backends::{DiffBackend, DifftasticBackend, GitDiffBackend};
 use crate::core::compare::progress::ProgressSink;
 use crate::core::compare::spec::{CompareSpec, RendererKind};
-use crate::core::diff::FileDiff;
 use crate::core::error::{DiffyError, Result};
-use crate::core::text::{TextBuffer, TokenBuffer};
 use crate::core::vcs::git::GitService;
 
 #[derive(Debug, Clone, Default)]
 pub struct CompareOutput {
     pub carbon: carbon::DiffDocument,
-    pub files: Vec<FileDiff>,
     pub raw_diff: String,
-    pub text_buffer: TextBuffer,
-    pub token_buffer: TokenBuffer,
     pub used_fallback: bool,
     pub fallback_message: String,
 }
@@ -141,7 +136,6 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(output.token_buffer.len(), 0);
         assert!(
             output.carbon.files[0]
                 .blocks

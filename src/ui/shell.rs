@@ -260,7 +260,7 @@ pub fn build_ui_frame(
             let active_file_loading = state.workspace.active_file_loading.get(&state.store);
             let compare_generation = state.workspace.compare_generation.get(&state.store);
             let document = match active_file_snapshot.as_ref() {
-                Some(active_file) if active_file.file.is_binary => EditorDocument::Binary {
+                Some(active_file) if active_file.carbon_file.is_binary => EditorDocument::Binary {
                     path: &active_file.path,
                 },
                 Some(active_file) => EditorDocument::Text {

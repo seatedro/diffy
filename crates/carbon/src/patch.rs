@@ -267,6 +267,12 @@ impl FileBuilder {
         }
         self.file.old_text = (self.old_line_count > 0).then(|| TextStore::from_text(self.old_text));
         self.file.new_text = (self.new_line_count > 0).then(|| TextStore::from_text(self.new_text));
+        for block in &self.file.blocks {
+            if block.kind == BlockKind::Change {
+                self.file.additions = self.file.additions.saturating_add(block.new.len);
+                self.file.deletions = self.file.deletions.saturating_add(block.old.len);
+            }
+        }
         self.file
     }
 }

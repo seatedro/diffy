@@ -2,10 +2,7 @@ use crate::actions::GitHubAction;
 use crate::effects::{Effect, GitHubEffect, UiEffect};
 use crate::events::GitHubEvent;
 
-use super::{
-    AppState, AsyncStatus, AvatarBitmap, OverlaySurface, PrCacheEntry, PrKey, PrPeekDiff,
-    PrPeekMeta, avatar_cache_key, avatar_url_sized,
-};
+use super::*;
 
 pub(super) fn reduce_action(state: &mut AppState, action: GitHubAction) -> Vec<Effect> {
     state.apply_github_action(action)
@@ -259,6 +256,73 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
             state.github.auth.avatar_fetching.set(&state.store, false);
             tracing::warn!("failed to fetch avatar {url}: {message}");
             Vec::new()
+        }
+    }
+}
+
+impl AppState {
+    pub(super) fn apply_github_action(&mut self, action: GitHubAction) -> Vec<Effect> {
+        match action {
+            GitHubAction::StartGitHubDeviceFlow => {
+                self.github
+                    .auth
+                    .status
+                    .set(&self.store, AsyncStatus::Loading);
+                // Surface the auth modal so the user sees the device code once the
+                // HTTP call returns. Without this the browser opens but the user has
+                // no way to see the code they need to type.
+                if self.overlays_top() != Some(OverlaySurface::GitHubAuthModal) {
+                    self.push_overlay(
+                        OverlaySurface::GitHubAuthModal,
+                        Some(FocusTarget::AuthPrimaryAction),
+                    );
+                }
+                vec![
+                    GitHubEffect::StartDeviceFlow {
+                        client_id: self.github.client_id.get(&self.store),
+                    }
+                    .into(),
+                ]
+            }
+            GitHubAction::OpenDeviceFlowBrowser => {
+                let verification_uri = self.github.auth.device_flow.with(&self.store, |opt| {
+                    opt.as_ref().map(|df| df.verification_uri.clone())
+                });
+                if let Some(url) = verification_uri {
+                    vec![UiEffect::OpenBrowser { url }.into()]
+                } else {
+                    Vec::new()
+                }
+            }
+            GitHubAction::OpenAccountMenu => {
+                self.push_overlay(OverlaySurface::AccountMenu, None);
+                Vec::new()
+            }
+            GitHubAction::SignOutGitHub => {
+                self.github.auth.token_present.set(&self.store, false);
+                self.github.auth.user.set(&self.store, None);
+                self.github.auth.avatar.set(&self.store, None);
+                self.github.auth.avatar_fetching.set(&self.store, false);
+                self.github.auth.device_flow.set(&self.store, None);
+                self.github.auth.status.set(&self.store, AsyncStatus::Idle);
+                // Stale peek/load errors from an unauthenticated session shouldn't
+                // linger across sign-in transitions — drop the cache so the user
+                // re-runs the flow with the new credentials.
+                self.github
+                    .pull_request
+                    .cache
+                    .update(&self.store, |c| c.clear());
+                self.github
+                    .pull_request
+                    .pending_confirm
+                    .set(&self.store, None);
+                self.github_access_token = None;
+                self.settings.github_user = None;
+                self.push_info("Signed out of GitHub.");
+                let mut effects = self.persist_settings_effect();
+                effects.push(GitHubEffect::ClearGitHubToken.into());
+                effects
+            }
         }
     }
 }

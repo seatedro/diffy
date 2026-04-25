@@ -2,7 +2,7 @@ use crate::actions::RepositoryAction;
 use crate::effects::Effect;
 use crate::events::{RepositoryEvent, RepositorySyncReason};
 
-use super::{AppState, AsyncStatus, LoadingSubject, WorkspaceMode};
+use super::*;
 
 pub(super) fn reduce_action(state: &mut AppState, action: RepositoryAction) -> Vec<Effect> {
     state.apply_repository_action(action)
@@ -197,5 +197,77 @@ pub(super) fn reduce_event(state: &mut AppState, event: RepositoryEvent) -> Vec<
             );
             Vec::new()
         }
+    }
+}
+
+impl AppState {
+    pub(super) fn apply_repository_action(&mut self, action: RepositoryAction) -> Vec<Effect> {
+        use RepositoryAction::*;
+        match action {
+            StageSelectedFile => self.apply_selected_status_operation(StatusOperation::Stage),
+            UnstageSelectedFile => self.apply_selected_status_operation(StatusOperation::Unstage),
+            DiscardSelectedFile => self.apply_selected_status_operation(StatusOperation::Discard),
+            StageFile(index) => self.apply_file_status_operation(index, StatusOperation::Stage),
+            UnstageFile(index) => self.apply_file_status_operation(index, StatusOperation::Unstage),
+            StageAllFiles => self.apply_batch_scope_operation(
+                &[StatusScope::Unstaged, StatusScope::Untracked],
+                StatusOperation::Stage,
+            ),
+            UnstageAllFiles => {
+                self.apply_batch_scope_operation(&[StatusScope::Staged], StatusOperation::Unstage)
+            }
+            StageHunk => self.apply_hunk_operation(StatusOperation::Stage, None),
+            UnstageHunk => self.apply_hunk_operation(StatusOperation::Unstage, None),
+            DiscardHunk => self.apply_hunk_operation(StatusOperation::Discard, None),
+            StageHunkAt(i) => self.apply_hunk_operation(StatusOperation::Stage, Some(i)),
+            UnstageHunkAt(i) => self.apply_hunk_operation(StatusOperation::Unstage, Some(i)),
+            DiscardHunkAt(i) => self.apply_hunk_operation(StatusOperation::Discard, Some(i)),
+            ToggleLineSelection(row) => {
+                self.toggle_line_selection(row, false);
+                let entries_len = self
+                    .editor
+                    .line_selection
+                    .with(&self.store, |ls| ls.entries.len());
+                tracing::info!(row, entries = entries_len, "ToggleLineSelection");
+                Vec::new()
+            }
+            ToggleLineSelectionRange(row, anchor) => {
+                self.toggle_line_selection_range(row, anchor);
+                Vec::new()
+            }
+            StageSelectedLines => self.apply_line_selection_operation(StatusOperation::Stage),
+            UnstageSelectedLines => self.apply_line_selection_operation(StatusOperation::Unstage),
+            DiscardSelectedLines => self.apply_line_selection_operation(StatusOperation::Discard),
+            ClearLineSelection => {
+                self.editor
+                    .line_selection
+                    .update(&self.store, |ls| ls.clear());
+                Vec::new()
+            }
+            SubmitCommit => self.submit_commit(),
+            FetchRemote(remote) => self.start_fetch_remote(remote),
+            FetchAllRemotes => self.start_fetch_all_remotes(),
+            PushCurrentBranch { force_with_lease } => {
+                self.start_push_current_branch(force_with_lease)
+            }
+            PullCurrentBranch => self.start_pull_current_branch(),
+        }
+    }
+
+    fn submit_commit(&mut self) -> Vec<Effect> {
+        let message = self.commit_editor.text().trim().to_owned();
+        if message.is_empty() {
+            return Vec::new();
+        }
+        let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
+            return Vec::new();
+        };
+        let has_staged = self.workspace.status_items.with(&self.store, |items| {
+            items.iter().any(|item| item.scope == StatusScope::Staged)
+        });
+        if !has_staged {
+            return Vec::new();
+        }
+        vec![RepositoryEffect::CreateCommit(CommitRequest { repo_path, message }).into()]
     }
 }

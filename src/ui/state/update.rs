@@ -2,7 +2,7 @@ use crate::actions::UpdateAction;
 use crate::effects::{Effect, UpdateEffect};
 use crate::events::UpdateEvent;
 
-use super::{AppState, UpdateState};
+use super::*;
 
 pub(super) fn reduce_action(state: &mut AppState, action: UpdateAction) -> Vec<Effect> {
     state.apply_update_action(action)
@@ -55,6 +55,43 @@ pub(super) fn reduce_event(state: &mut AppState, event: UpdateEvent) -> Vec<Effe
                 state.push_error(&message);
             }
             Vec::new()
+        }
+    }
+}
+
+impl AppState {
+    pub(super) fn apply_update_action(&mut self, action: UpdateAction) -> Vec<Effect> {
+        match action {
+            UpdateAction::CheckForUpdates => {
+                self.update.set(&self.store, UpdateState::Checking);
+                vec![UpdateEffect::CheckForUpdates { silent: false }.into()]
+            }
+            UpdateAction::InstallUpdate => {
+                let update = self.update.get(&self.store);
+                if let UpdateState::Available(update) = update {
+                    self.update
+                        .set(&self.store, UpdateState::Downloading(update.clone()));
+                    vec![
+                        UpdateEffect::StageUpdate {
+                            update,
+                            silent: false,
+                        }
+                        .into(),
+                    ]
+                } else {
+                    Vec::new()
+                }
+            }
+            UpdateAction::RestartToUpdate => {
+                let update = self.update.get(&self.store);
+                if let UpdateState::ReadyToRestart(staged) = update {
+                    self.update
+                        .set(&self.store, UpdateState::Restarting(staged.clone()));
+                    vec![UpdateEffect::ApplyStagedUpdate(staged).into()]
+                } else {
+                    Vec::new()
+                }
+            }
         }
     }
 }

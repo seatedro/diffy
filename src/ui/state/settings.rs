@@ -1,6 +1,6 @@
 use crate::actions::SettingsAction;
 use crate::effects::Effect;
-use crate::events::{AppEvent, SettingsEvent};
+use crate::events::SettingsEvent;
 
 use super::AppState;
 
@@ -9,5 +9,11 @@ pub(super) fn reduce_action(state: &mut AppState, action: SettingsAction) -> Vec
 }
 
 pub(super) fn reduce_event(state: &mut AppState, event: SettingsEvent) -> Vec<Effect> {
-    state.apply_domain_event(AppEvent::from(event))
+    match event {
+        SettingsEvent::SettingsSaved => Vec::new(),
+        SettingsEvent::SettingsSaveFailed { message } => {
+            state.push_error(&message);
+            Vec::new()
+        }
+    }
 }

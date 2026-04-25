@@ -13,10 +13,6 @@ impl TextByteRange {
     pub const fn end(self) -> u32 {
         self.start.saturating_add(self.len)
     }
-
-    pub fn as_usize_range(self) -> std::ops::Range<usize> {
-        self.start as usize..self.end() as usize
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,7 +53,7 @@ impl TextStore {
     }
 
     pub fn len(&self) -> u32 {
-        self.bytes.len().min(u32::MAX as usize) as u32
+        usize_to_u32_saturating(self.bytes.len())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -68,7 +64,7 @@ impl TextStore {
         if self.bytes.is_empty() {
             0
         } else {
-            self.line_starts.len().min(u32::MAX as usize) as u32
+            usize_to_u32_saturating(self.line_starts.len())
         }
     }
 
@@ -81,19 +77,21 @@ impl TextStore {
     }
 
     pub fn line_start(&self, line: LineId) -> Option<u32> {
-        self.line_starts.get(line.0 as usize).copied()
+        self.line_starts
+            .get(u32_to_usize_saturating(line.0))
+            .copied()
     }
 
     pub fn line_range(&self, line: LineId) -> Option<TextByteRange> {
         if line.0 >= self.line_count() {
             return None;
         }
-        let start = self.line_start(line)? as usize;
+        let start = u32_to_usize_saturating(self.line_start(line)?);
         let next_start = self
             .line_starts
-            .get(line.0 as usize + 1)
+            .get(u32_to_usize_saturating(line.0).saturating_add(1))
             .copied()
-            .map(|n| n as usize)
+            .map(u32_to_usize_saturating)
             .unwrap_or(self.bytes.len());
         let mut end = next_start;
         if end > start && self.bytes.get(end - 1) == Some(&b'\n') {
@@ -103,15 +101,19 @@ impl TextStore {
             end -= 1;
         }
         Some(TextByteRange {
-            start: start.min(u32::MAX as usize) as u32,
-            len: end.saturating_sub(start).min(u32::MAX as usize) as u32,
+            start: usize_to_u32_saturating(start),
+            len: usize_to_u32_saturating(end.saturating_sub(start)),
         })
     }
 
     pub fn line_bytes(&self, line: LineId) -> Option<&[u8]> {
         let range = self.line_range(line)?;
+        self.bytes_in_range(range)
+    }
+
+    pub fn bytes_in_range(&self, range: TextByteRange) -> Option<&[u8]> {
         self.bytes
-            .get(range.start as usize..range.start.saturating_add(range.len) as usize)
+            .get(u32_to_usize_saturating(range.start)..u32_to_usize_saturating(range.end()))
     }
 
     pub fn line_str(&self, line: LineId) -> Option<&str> {
@@ -143,10 +145,18 @@ pub fn index_line_starts_scalar(bytes: &[u8]) -> Vec<u32> {
     starts.push(0);
     for (idx, byte) in bytes.iter().enumerate() {
         if *byte == b'\n' && idx + 1 < bytes.len() {
-            starts.push((idx + 1).min(u32::MAX as usize) as u32);
+            starts.push(usize_to_u32_saturating(idx + 1));
         }
     }
     starts
+}
+
+pub fn u32_to_usize_saturating(value: u32) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
+}
+
+pub fn usize_to_u32_saturating(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@ use crate::model::{
     Block, BlockId, BlockKind, BlockRange, DiffDocument, DiffSide, FileDiff, FileId, FileMode,
     FileStatus, Hunk, HunkId, ObjectId, SourceRange,
 };
-use crate::text::TextStore;
+use crate::text::{TextStore, u32_to_usize_saturating, usize_to_u32_saturating};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PatchError {
@@ -47,13 +47,16 @@ impl PatchParser {
     fn push_line(&mut self, line: &str) -> Result<(), PatchError> {
         if line.starts_with("diff --git ") {
             self.finish_current_file();
-            self.current = Some(FileBuilder::from_diff_git(self.files.len() as u32, line));
+            self.current = Some(FileBuilder::from_diff_git(
+                usize_to_u32_saturating(self.files.len()),
+                line,
+            ));
             return Ok(());
         }
 
-        let file = self.current.get_or_insert_with(|| {
-            FileBuilder::new(self.files.len().min(u32::MAX as usize) as u32)
-        });
+        let file = self
+            .current
+            .get_or_insert_with(|| FileBuilder::new(usize_to_u32_saturating(self.files.len())));
 
         if line.starts_with("@@ ") {
             file.start_hunk(line)?;
@@ -176,19 +179,19 @@ impl FileBuilder {
         self.finish_hunk();
         let (old_start, old_count, new_start, new_count) = parse_hunk_header(line)?;
         self.old_text
-            .reserve((old_count as usize).saturating_mul(32));
+            .reserve(u32_to_usize_saturating(old_count).saturating_mul(32));
         self.new_text
-            .reserve((new_count as usize).saturating_mul(32));
+            .reserve(u32_to_usize_saturating(new_count).saturating_mul(32));
         self.file.hunks.reserve(1);
         self.file.blocks.reserve(3);
         self.hunk = Some(HunkBuilder::new(
-            HunkId(self.file.hunks.len().min(u32::MAX as usize) as u32),
+            HunkId(usize_to_u32_saturating(self.file.hunks.len())),
             line.to_owned(),
             old_start,
             old_count,
             new_start,
             new_count,
-            self.file.blocks.len().min(u32::MAX as usize) as u32,
+            usize_to_u32_saturating(self.file.blocks.len()),
             self.old_line_count,
             self.new_line_count,
         ));

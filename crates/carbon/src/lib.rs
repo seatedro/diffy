@@ -28,4 +28,6 @@ pub use review::{
     Anchor, Annotation, AnnotationId, AnnotationKind, AnnotationSet, ByteRange, ConflictResolution,
     DiagnosticSeverity, LineRange, SuggestedChange,
 };
-pub use text::{LineId, TextByteRange, TextStore};
+pub use text::{
+    LineId, TextByteRange, TextStore, u32_to_usize_saturating, usize_to_u32_saturating,
+};

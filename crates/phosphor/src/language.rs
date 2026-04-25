@@ -9,10 +9,10 @@ use libloading::Library;
 use tree_sitter as ts;
 use tree_sitter::StreamingIterator;
 
-use carbon::TextByteRange;
+use carbon::{TextByteRange, u32_to_usize_saturating, usize_to_u32_saturating};
 
 use crate::error::{PhosphorError, Result};
-use crate::{HighlightKind, HighlightSpan, LanguageId, LanguageMetadata};
+use crate::{HighlightKind, HighlightLineBuffer, HighlightSpan, LanguageId, LanguageMetadata};
 
 #[derive(Debug)]
 struct CompiledLanguage {
@@ -140,29 +140,6 @@ pub(crate) fn highlight(language: LanguageId, source: &str) -> Result<Vec<Highli
     compact_spans(language, raw_spans)
 }
 
-pub(crate) fn highlight_ranges(
-    language: LanguageId,
-    source: &str,
-    byte_ranges: &[Range<usize>],
-) -> Result<Vec<HighlightSpan>> {
-    if source.is_empty() || byte_ranges.is_empty() {
-        return Ok(Vec::new());
-    }
-    let ranges = merged_ranges(byte_ranges, source.len());
-    if ranges.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    if !is_parser_available(language) {
-        return Err(PhosphorError::MissingParser { language });
-    }
-
-    let compiled = compiled_language(language)?;
-    let tree = parse_source(&compiled, source)?;
-    let raw_spans = collect_spans_in_ranges(&compiled, &tree, source, &ranges);
-    compact_spans(language, raw_spans)
-}
-
 pub(crate) fn highlight_text_ranges(
     language: LanguageId,
     source: &str,
@@ -184,6 +161,30 @@ pub(crate) fn highlight_text_ranges(
     let tree = parse_source(&compiled, source)?;
     let raw_spans = collect_spans_in_ranges(&compiled, &tree, source, &ranges);
     compact_spans(language, raw_spans)
+}
+
+pub(crate) fn highlight_text_lines(
+    language: LanguageId,
+    source: &str,
+    byte_ranges: &[TextByteRange],
+) -> Result<HighlightLineBuffer> {
+    if source.is_empty() || byte_ranges.is_empty() {
+        return Ok(HighlightLineBuffer::new());
+    }
+    let ranges = normalized_text_ranges(byte_ranges, source.len());
+    if ranges.is_empty() {
+        return Ok(HighlightLineBuffer::new());
+    }
+
+    if !is_parser_available(language) {
+        return Err(PhosphorError::MissingParser { language });
+    }
+
+    let compiled = compiled_language(language)?;
+    let tree = parse_source(&compiled, source)?;
+    let raw_spans = collect_spans_in_ranges(&compiled, &tree, source, &ranges);
+    let spans = compact_spans(language, raw_spans)?;
+    Ok(collect_line_highlights(&spans, &ranges))
 }
 
 fn compiled_language(language: LanguageId) -> Result<Rc<CompiledLanguage>> {
@@ -272,7 +273,7 @@ fn collect_spans(
         let capture = query_match.captures[*capture_index];
         let kind = compiled
             .capture_kinds
-            .get(capture.index as usize)
+            .get(u32_to_usize_saturating(capture.index))
             .copied()
             .unwrap_or(HighlightKind::Normal);
         if kind == HighlightKind::Normal {
@@ -306,7 +307,7 @@ fn collect_spans_in_ranges(
             let capture = query_match.captures[*capture_index];
             let kind = compiled
                 .capture_kinds
-                .get(capture.index as usize)
+                .get(u32_to_usize_saturating(capture.index))
                 .copied()
                 .unwrap_or(HighlightKind::Normal);
             if kind == HighlightKind::Normal {
@@ -325,30 +326,22 @@ fn collect_spans_in_ranges(
     raw_spans
 }
 
-fn merged_ranges(ranges: &[Range<usize>], source_len: usize) -> Vec<Range<usize>> {
-    let mut ranges = ranges
-        .iter()
-        .filter_map(|range| {
-            let start = range.start.min(source_len);
-            let end = range.end.min(source_len);
-            (end > start).then_some(start..end)
-        })
-        .collect::<Vec<_>>();
-    ranges.sort_by_key(|range| range.start);
-    merge_sorted_ranges(ranges)
+fn merged_text_ranges(ranges: &[TextByteRange], source_len: usize) -> Vec<Range<usize>> {
+    let merged_input = normalized_text_ranges(ranges, source_len);
+    merge_sorted_ranges(merged_input)
 }
 
-fn merged_text_ranges(ranges: &[TextByteRange], source_len: usize) -> Vec<Range<usize>> {
-    let mut merged_input = Vec::with_capacity(ranges.len());
+fn normalized_text_ranges(ranges: &[TextByteRange], source_len: usize) -> Vec<Range<usize>> {
+    let mut normalized = Vec::with_capacity(ranges.len());
     for range in ranges {
-        let start = (range.start as usize).min(source_len);
-        let end = (range.end() as usize).min(source_len);
+        let start = u32_to_usize_saturating(range.start).min(source_len);
+        let end = u32_to_usize_saturating(range.end()).min(source_len);
         if end > start {
-            merged_input.push(start..end);
+            normalized.push(start..end);
         }
     }
-    merged_input.sort_by_key(|range| range.start);
-    merge_sorted_ranges(merged_input)
+    normalized.sort_by_key(|range| range.start);
+    normalized
 }
 
 fn merge_sorted_ranges(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
@@ -371,6 +364,54 @@ fn merge_sorted_ranges(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
     ranges
 }
 
+fn collect_line_highlights(
+    spans: &[HighlightSpan],
+    ranges: &[Range<usize>],
+) -> HighlightLineBuffer {
+    let mut buffer = HighlightLineBuffer::with_capacity(ranges.len(), spans.len());
+    let mut token_index = 0usize;
+    for range in ranges {
+        while token_index < spans.len()
+            && highlight_span_end_usize(spans[token_index]) <= range.start
+        {
+            token_index += 1;
+        }
+
+        let span_offset = buffer.span_count();
+        for span in spans.iter().skip(token_index) {
+            let start = u32_to_usize_saturating(span.offset);
+            if start >= range.end {
+                break;
+            }
+            let end = start.saturating_add(u32_to_usize_saturating(span.length));
+            let clipped_start = start.max(range.start);
+            let clipped_end = end.min(range.end);
+            if clipped_end <= clipped_start {
+                continue;
+            }
+            buffer.push_span(HighlightSpan {
+                offset: usize_to_u32_saturating(clipped_start - range.start),
+                length: usize_to_u32_saturating(clipped_end.saturating_sub(clipped_start)),
+                kind: span.kind,
+            });
+        }
+        let span_count = buffer.span_count().saturating_sub(span_offset);
+        buffer.push_line_range(
+            TextByteRange {
+                start: usize_to_u32_saturating(range.start),
+                len: usize_to_u32_saturating(range.end.saturating_sub(range.start)),
+            },
+            span_offset,
+            span_count,
+        );
+    }
+    buffer
+}
+
+fn highlight_span_end_usize(span: HighlightSpan) -> usize {
+    u32_to_usize_saturating(span.offset.saturating_add(span.length))
+}
+
 fn compact_spans(
     language: LanguageId,
     mut raw_spans: Vec<(usize, usize, HighlightKind, usize)>,
@@ -386,8 +427,8 @@ fn compact_spans(
             continue;
         }
         spans.push(HighlightSpan {
-            offset: start as u32,
-            length: (end - start) as u32,
+            offset: usize_to_u32_saturating(start),
+            length: usize_to_u32_saturating(end - start),
             kind,
         });
         covered = end;
@@ -433,5 +474,53 @@ fn capture_name_to_highlight_kind(name: &str) -> HighlightKind {
         HighlightKind::Preprocessor
     } else {
         HighlightKind::Normal
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_line_highlights;
+    use crate::{HighlightKind, HighlightSpan};
+
+    #[test]
+    fn collect_line_highlights_clips_global_spans_to_line_local_offsets() {
+        let spans = [
+            HighlightSpan {
+                offset: 2,
+                length: 5,
+                kind: HighlightKind::Keyword,
+            },
+            HighlightSpan {
+                offset: 8,
+                length: 3,
+                kind: HighlightKind::String,
+            },
+        ];
+        let buffer = collect_line_highlights(&spans, &[0..4, 4..10]);
+
+        assert_eq!(buffer.lines().len(), 2);
+        assert_eq!(
+            buffer.spans_for_line(buffer.lines()[0]),
+            &[HighlightSpan {
+                offset: 2,
+                length: 2,
+                kind: HighlightKind::Keyword,
+            }]
+        );
+        assert_eq!(
+            buffer.spans_for_line(buffer.lines()[1]),
+            &[
+                HighlightSpan {
+                    offset: 0,
+                    length: 3,
+                    kind: HighlightKind::Keyword,
+                },
+                HighlightSpan {
+                    offset: 4,
+                    length: 2,
+                    kind: HighlightKind::String,
+                },
+            ]
+        );
     }
 }

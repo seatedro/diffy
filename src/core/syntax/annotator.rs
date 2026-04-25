@@ -1,10 +1,10 @@
 use std::collections::HashSet;
-use std::ops::Range;
 
 use crate::core::diff::{FileDiff, Hunk, LineKind};
 use crate::core::rendering::{DiffRowType, flatten_file_diff};
 use crate::core::syntax::Highlighter;
 use crate::core::text::{DiffTokenSpan, TextBuffer, TokenBuffer};
+use phosphor::TextByteRange;
 
 #[derive(Debug, Clone, Copy)]
 struct LineRef {
@@ -280,28 +280,25 @@ fn distribute_tokens(
     for reference in line_refs {
         let line_start = reference.content_offset;
         let line_end = line_start + reference.content_len;
-        while token_index < tokens.len()
-            && (tokens[token_index].offset as usize + tokens[token_index].length as usize)
-                <= line_start
-        {
+        while token_index < tokens.len() && token_end_usize(tokens[token_index]) <= line_start {
             token_index += 1;
         }
 
         let mut line_tokens = Vec::new();
         for token in tokens.iter().skip(token_index) {
-            let start = token.offset as usize;
+            let start = u32_to_usize_saturating(token.offset);
             if start >= line_end {
                 break;
             }
-            let end = start + token.length as usize;
+            let end = start.saturating_add(u32_to_usize_saturating(token.length));
             let clipped_start = start.max(line_start);
             let clipped_end = end.min(line_end);
             if clipped_end <= clipped_start {
                 continue;
             }
             line_tokens.push(DiffTokenSpan {
-                offset: (clipped_start - line_start) as u32,
-                length: (clipped_end - clipped_start) as u32,
+                offset: usize_to_u32_saturating(clipped_start - line_start),
+                length: usize_to_u32_saturating(clipped_end - clipped_start),
                 kind: token.kind,
                 ..DiffTokenSpan::default()
             });
@@ -406,8 +403,12 @@ fn push_full_file_ref(
     if hunk_index < 0 || line_index < 0 {
         return;
     }
-    let hunk_index = hunk_index as usize;
-    let line_index = line_index as usize;
+    let Some(hunk_index) = i32_to_usize_nonnegative(hunk_index) else {
+        return;
+    };
+    let Some(line_index) = i32_to_usize_nonnegative(line_index) else {
+        return;
+    };
     if !seen.insert((hunk_index, line_index)) {
         return;
     }
@@ -431,7 +432,7 @@ fn push_full_file_ref(
     refs.push(LineRef {
         hunk_index,
         line_index,
-        content_offset: (line_number - 1) as usize,
+        content_offset: i32_to_usize_nonnegative(line_number - 1).unwrap_or(usize::MAX),
         content_len: 0,
     });
 }
@@ -465,13 +466,14 @@ fn byte_refs_for_refs(refs: &[LineRef], line_offsets: &[usize], lines: &[String]
         .collect()
 }
 
-fn byte_ranges_for_refs(refs: &[LineRef]) -> Vec<Range<usize>> {
+fn byte_ranges_for_refs(refs: &[LineRef]) -> Vec<TextByteRange> {
     let mut ranges = refs
         .iter()
         .filter_map(|reference| {
-            (reference.content_len > 0).then_some(
-                reference.content_offset..reference.content_offset + reference.content_len,
-            )
+            (reference.content_len > 0).then_some(TextByteRange {
+                start: usize_to_u32_saturating(reference.content_offset),
+                len: usize_to_u32_saturating(reference.content_len),
+            })
         })
         .collect::<Vec<_>>();
     ranges.sort_by_key(|range| range.start);
@@ -492,34 +494,47 @@ fn byte_refs_for_cached_refs(refs: &[LineRef], syntax: &FullFileSyntax) -> Vec<L
         .collect()
 }
 
+fn usize_to_u32_saturating(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
+fn u32_to_usize_saturating(value: u32) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
+}
+
+fn i32_to_usize_nonnegative(value: i32) -> Option<usize> {
+    usize::try_from(value).ok()
+}
+
+fn token_end_usize(token: DiffTokenSpan) -> usize {
+    u32_to_usize_saturating(token.offset.saturating_add(token.length))
+}
+
 fn collect_line_tokens(tokens: &[DiffTokenSpan], refs: &[LineRef]) -> Vec<SyntaxLineTokens> {
     let mut token_index = 0usize;
     let mut out = Vec::new();
     for reference in refs {
         let line_start = reference.content_offset;
         let line_end = line_start + reference.content_len;
-        while token_index < tokens.len()
-            && (tokens[token_index].offset as usize + tokens[token_index].length as usize)
-                <= line_start
-        {
+        while token_index < tokens.len() && token_end_usize(tokens[token_index]) <= line_start {
             token_index += 1;
         }
 
         let mut line_tokens = Vec::new();
         for token in tokens.iter().skip(token_index) {
-            let start = token.offset as usize;
+            let start = u32_to_usize_saturating(token.offset);
             if start >= line_end {
                 break;
             }
-            let end = start + token.length as usize;
+            let end = start.saturating_add(u32_to_usize_saturating(token.length));
             let clipped_start = start.max(line_start);
             let clipped_end = end.min(line_end);
             if clipped_end <= clipped_start {
                 continue;
             }
             line_tokens.push(DiffTokenSpan {
-                offset: (clipped_start - line_start) as u32,
-                length: (clipped_end - clipped_start) as u32,
+                offset: usize_to_u32_saturating(clipped_start - line_start),
+                length: usize_to_u32_saturating(clipped_end - clipped_start),
                 kind: token.kind,
                 ..DiffTokenSpan::default()
             });

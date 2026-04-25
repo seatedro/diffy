@@ -1,3 +1,5 @@
+use carbon::{TextByteRange, u32_to_usize_saturating, usize_to_u32_saturating};
+
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum HighlightKind {
@@ -27,6 +29,85 @@ pub struct HighlightSpan {
     pub offset: u32,
     pub length: u32,
     pub kind: HighlightKind,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HighlightSpanRange {
+    pub offset: u32,
+    pub count: u32,
+}
+
+impl HighlightSpanRange {
+    pub const fn is_empty(self) -> bool {
+        self.count == 0
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HighlightLine {
+    pub byte_range: TextByteRange,
+    pub spans: HighlightSpanRange,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HighlightLineBuffer {
+    lines: Vec<HighlightLine>,
+    spans: Vec<HighlightSpan>,
+}
+
+impl HighlightLineBuffer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_capacity(line_capacity: usize, span_capacity: usize) -> Self {
+        Self {
+            lines: Vec::with_capacity(line_capacity),
+            spans: Vec::with_capacity(span_capacity),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.lines.clear();
+        self.spans.clear();
+    }
+
+    pub fn lines(&self) -> &[HighlightLine] {
+        &self.lines
+    }
+
+    pub fn spans(&self) -> &[HighlightSpan] {
+        &self.spans
+    }
+
+    pub fn spans_for_line(&self, line: HighlightLine) -> &[HighlightSpan] {
+        let start = u32_to_usize_saturating(line.spans.offset);
+        let end = start.saturating_add(u32_to_usize_saturating(line.spans.count));
+        self.spans.get(start..end).unwrap_or(&[])
+    }
+
+    pub(crate) fn span_count(&self) -> usize {
+        self.spans.len()
+    }
+
+    pub(crate) fn push_span(&mut self, span: HighlightSpan) {
+        self.spans.push(span);
+    }
+
+    pub(crate) fn push_line_range(
+        &mut self,
+        byte_range: TextByteRange,
+        offset: usize,
+        count: usize,
+    ) {
+        self.lines.push(HighlightLine {
+            byte_range,
+            spans: HighlightSpanRange {
+                offset: usize_to_u32_saturating(offset),
+                count: usize_to_u32_saturating(count),
+            },
+        });
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

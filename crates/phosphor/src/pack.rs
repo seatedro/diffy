@@ -687,7 +687,7 @@ fn platform_triple() -> &'static str {
 }
 
 fn expected_tree_sitter_abi() -> u32 {
-    tree_sitter::LANGUAGE_VERSION as u32
+    u32::try_from(tree_sitter::LANGUAGE_VERSION).unwrap_or(u32::MAX)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

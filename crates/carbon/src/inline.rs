@@ -1,3 +1,5 @@
+use crate::text::usize_to_u32_saturating;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum ChangeIntensity {
     #[default]
@@ -84,8 +86,8 @@ struct Token<'a> {
 impl Token<'_> {
     fn span(self) -> InlineSpan {
         InlineSpan {
-            offset: self.offset.min(u32::MAX as usize) as u32,
-            len: self.len.min(u32::MAX as usize) as u32,
+            offset: usize_to_u32_saturating(self.offset),
+            len: usize_to_u32_saturating(self.len),
             intensity: ChangeIntensity::NovelWord,
         }
     }

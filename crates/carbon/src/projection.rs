@@ -615,19 +615,11 @@ mod tests {
         let new_range = projected_row_byte_range(&file, added, DiffSide::New).unwrap();
 
         assert_eq!(
-            file.old_text
-                .as_ref()
-                .unwrap()
-                .as_bytes()
-                .get(old_range.as_usize_range()),
+            file.old_text.as_ref().unwrap().bytes_in_range(old_range),
             Some(&b"old"[..])
         );
         assert_eq!(
-            file.new_text
-                .as_ref()
-                .unwrap()
-                .as_bytes()
-                .get(new_range.as_usize_range()),
+            file.new_text.as_ref().unwrap().bytes_in_range(new_range),
             Some(&b"new"[..])
         );
         assert!(projected_row_byte_range(&file, removed, DiffSide::New).is_none());

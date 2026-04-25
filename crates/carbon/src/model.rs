@@ -1,5 +1,5 @@
 use crate::inline::InlineSpan;
-use crate::text::TextStore;
+use crate::text::{TextStore, u32_to_usize_saturating, usize_to_u32_saturating};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct FileId(pub u32);
@@ -216,24 +216,26 @@ impl FileDiff {
 
     pub fn block(&self, id: BlockId) -> Option<&Block> {
         self.blocks
-            .get(id.0 as usize)
+            .get(u32_to_usize_saturating(id.0))
             .filter(|block| block.id == id)
     }
 
     pub fn hunk(&self, id: HunkId) -> Option<&Hunk> {
-        self.hunks.get(id.0 as usize).filter(|hunk| hunk.id == id)
+        self.hunks
+            .get(u32_to_usize_saturating(id.0))
+            .filter(|hunk| hunk.id == id)
     }
 
     pub fn hunk_blocks(&self, hunk: &Hunk) -> &[Block] {
-        let start = hunk.blocks.start as usize;
-        let end = hunk.blocks.end() as usize;
+        let start = u32_to_usize_saturating(hunk.blocks.start);
+        let end = u32_to_usize_saturating(hunk.blocks.end());
         self.blocks.get(start..end).unwrap_or(&[])
     }
 
     pub fn add_hunk(&mut self, mut hunk: Hunk, blocks: impl IntoIterator<Item = Block>) {
-        let start = self.blocks.len().min(u32::MAX as usize) as u32;
+        let start = usize_to_u32_saturating(self.blocks.len());
         self.blocks.extend(blocks);
-        let end = self.blocks.len().min(u32::MAX as usize) as u32;
+        let end = usize_to_u32_saturating(self.blocks.len());
         hunk.blocks = BlockRange {
             start,
             len: end.saturating_sub(start),

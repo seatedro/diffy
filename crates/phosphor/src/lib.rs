@@ -5,14 +5,17 @@ mod language;
 pub mod pack;
 mod types;
 
-use std::ops::Range;
 use std::path::Path;
 
-use carbon::{TextByteRange, TextStore};
+pub use carbon::TextByteRange;
+use carbon::TextStore;
 
 pub use error::{PhosphorError, Result};
 pub use pack::PackInstaller;
-pub use types::{HighlightKind, HighlightSpan, LanguageId, LanguageMetadata};
+pub use types::{
+    HighlightKind, HighlightLine, HighlightLineBuffer, HighlightSpan, HighlightSpanRange,
+    LanguageId, LanguageMetadata,
+};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Highlighter;
@@ -50,9 +53,9 @@ impl Highlighter {
         &self,
         language: LanguageId,
         source: &str,
-        byte_ranges: &[Range<usize>],
+        byte_ranges: &[TextByteRange],
     ) -> Result<Vec<HighlightSpan>> {
-        language::highlight_ranges(language, source, byte_ranges)
+        language::highlight_text_ranges(language, source, byte_ranges)
     }
 
     pub fn highlight_text_store_language(
@@ -72,6 +75,16 @@ impl Highlighter {
     ) -> Result<Vec<HighlightSpan>> {
         let source = text.as_str().ok_or(PhosphorError::InvalidUtf8)?;
         language::highlight_text_ranges(language, source, byte_ranges)
+    }
+
+    pub fn highlight_text_store_language_lines(
+        &self,
+        language: LanguageId,
+        text: &TextStore,
+        byte_ranges: &[TextByteRange],
+    ) -> Result<HighlightLineBuffer> {
+        let source = text.as_str().ok_or(PhosphorError::InvalidUtf8)?;
+        language::highlight_text_lines(language, source, byte_ranges)
     }
 
     pub fn highlight_path(&self, path: &Path, source: &str) -> Result<Vec<HighlightSpan>> {
@@ -111,6 +124,21 @@ impl Highlighter {
             return Ok(Vec::new());
         }
         self.highlight_text_store_language_ranges(language, text, byte_ranges)
+    }
+
+    pub fn highlight_text_store_path_lines(
+        &self,
+        path: &Path,
+        text: &TextStore,
+        byte_ranges: &[TextByteRange],
+    ) -> Result<HighlightLineBuffer> {
+        let Some(language) = self.guess_language(path) else {
+            return Ok(HighlightLineBuffer::new());
+        };
+        if !self.is_parser_available(language) {
+            return Ok(HighlightLineBuffer::new());
+        }
+        self.highlight_text_store_language_lines(language, text, byte_ranges)
     }
 }
 
@@ -255,7 +283,7 @@ index 1111111..2222222 100644
 
         assert_eq!(ranges.len(), 3);
         assert_eq!(
-            new_text.as_bytes().get(ranges[1].as_usize_range()).unwrap(),
+            new_text.bytes_in_range(ranges[1]).unwrap(),
             b"    println!(\"new\");"
         );
 
@@ -263,5 +291,22 @@ index 1111111..2222222 100644
             .highlight_text_store_path_ranges(std::path::Path::new("src/app.rs"), new_text, &ranges)
             .unwrap();
         assert!(spans.is_empty());
+    }
+
+    #[test]
+    fn text_store_line_highlighting_returns_flat_line_buffer() {
+        let highlighter = Highlighter::new();
+        let text = TextStore::from_text("one\ntwo\n");
+        let ranges = [
+            text.line_range(LineId(0)).unwrap(),
+            text.line_range(LineId(1)).unwrap(),
+        ];
+
+        let lines = highlighter
+            .highlight_text_store_path_lines(std::path::Path::new("README.unknown"), &text, &ranges)
+            .unwrap();
+
+        assert_eq!(lines.lines().len(), 0);
+        assert!(lines.spans().is_empty());
     }
 }

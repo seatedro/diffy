@@ -42,9 +42,23 @@ pub struct Anchor {
 }
 
 impl Anchor {
+    pub fn file(file_id: FileId) -> Self {
+        Self {
+            file_id,
+            side: None,
+            line_range: LineRange::default(),
+            byte_range: None,
+            old_oid: None,
+            new_oid: None,
+        }
+    }
+
     pub fn touches_row(&self, row: &ProjectionRow) -> bool {
         if self.file_id != row.file_id {
             return false;
+        }
+        if self.side.is_none() && self.line_range.len == 0 {
+            return true;
         }
         match self.side {
             Some(DiffSide::Old) => row

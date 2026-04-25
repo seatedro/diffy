@@ -11,7 +11,7 @@
 
 use crate::apprt::runtime::RuntimeEventSender;
 use crate::core::compare::{ComparePhase, ProgressSink};
-use crate::events::AppEvent;
+use crate::events::CompareEvent;
 
 #[derive(Clone)]
 pub struct ProgressReporter {
@@ -27,7 +27,7 @@ impl ProgressReporter {
 
 impl ProgressSink for ProgressReporter {
     fn phase(&self, phase: ComparePhase) {
-        self.sender.send(AppEvent::CompareProgressUpdate {
+        self.sender.send(CompareEvent::CompareProgressUpdate {
             generation: self.generation,
             phase,
         });

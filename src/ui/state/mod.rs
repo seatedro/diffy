@@ -1,4 +1,16 @@
+mod ai;
+mod app;
+mod compare;
+mod editor;
+mod file_list;
+mod github;
+mod overlay;
+mod repository;
+mod settings;
+mod syntax;
 mod text_edit;
+mod update;
+mod workspace;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -8,7 +20,10 @@ use std::sync::Arc;
 use halogen::Store;
 use halogen::reactive::{Signal, SignalStore};
 
-use crate::actions::Action;
+use crate::actions::{
+    Action, AppAction, CompareAction, EditorAction, FileListAction, GitHubAction, OverlayAction,
+    RepositoryAction, SettingsAction, TextEditAction, UpdateAction, WorkspaceAction,
+};
 use crate::core::compare::{CompareMode, CompareOutput, CompareSpec, LayoutMode, RendererKind};
 use crate::core::diff::FileDiff;
 use crate::core::frecency::FrecencyStore;
@@ -23,15 +38,17 @@ use crate::core::vcs::git::{
 use crate::core::vcs::github::{DeviceFlowState, GitHubUser, PullRequestInfo};
 use crate::editor::Editor;
 use crate::effects::{
-    BatchStatusOperationRequest, CommitRequest, CompareFileRequest, CompareFileStatsItem,
-    CompareFileStatsRequest, CompareHistoryRequest, CompareRequest, CompareStatsRequest, Effect,
-    FetchRemoteRequest, LoadFileSyntaxRequest, PatchOperationRequest, PullFfRequest, PushRequest,
-    StatusDiffRequest, StatusOperationRequest,
+    AiEffect, BatchStatusOperationRequest, CommitRequest, CompareEffect, CompareFileRequest,
+    CompareFileStatsItem, CompareFileStatsRequest, CompareHistoryRequest, CompareRequest,
+    CompareStatsRequest, Effect, FetchRemoteRequest, GitHubEffect, LoadFileSyntaxRequest,
+    PatchOperationRequest, PullFfRequest, PushRequest, RepositoryEffect, SettingsEffect,
+    StatusDiffRequest, StatusOperationRequest, SyntaxEffect, Task, UiEffect, UpdateEffect,
 };
 use crate::events::{
-    AppEvent, CompareFileFinished, CompareFileStat, CompareFileStatsReady, CompareFinished,
-    CompareHistoryReady, CompareStatsReady, FileSyntaxReady, RepositoryChangeKind,
-    RepositorySnapshot, RepositorySyncReason, StatusDiffFinished,
+    AiEvent, AppEvent, CompareEvent, CompareFileFinished, CompareFileStat, CompareFileStatsReady,
+    CompareFinished, CompareHistoryReady, CompareStatsReady, FileSyntaxReady, GitHubEvent,
+    RepositoryChangeKind, RepositoryEvent, RepositorySnapshot, RepositorySyncReason, SettingsEvent,
+    StatusDiffFinished, SyntaxEvent, UiEvent, UpdateEvent,
 };
 use crate::platform::persistence::{PersistedCompare, Settings};
 use crate::platform::secrets::AiKeyKind;
@@ -1494,19 +1511,22 @@ impl AppState {
                 }),
             );
 
-            effects.push(Effect::SyncRepository {
-                path: path.clone(),
-                reason: RepositorySyncReason::Open,
-                reporter_generation: Some(boot_gen),
-            });
-            effects.push(Effect::WatchRepository { path: Some(path) });
+            effects.push(
+                RepositoryEffect::SyncRepository {
+                    path: path.clone(),
+                    reason: RepositorySyncReason::Open,
+                    reporter_generation: Some(boot_gen),
+                }
+                .into(),
+            );
+            effects.push(RepositoryEffect::WatchRepository { path: Some(path) }.into());
         }
         if let Some(token) = startup.github_token.clone() {
             state.github_access_token = Some(token.clone());
             state.github.auth.token_present.set(&state.store, true);
-            effects.push(Effect::SaveGitHubToken(token));
+            effects.push(GitHubEffect::SaveGitHubToken(token).into());
         } else {
-            effects.push(Effect::LoadGitHubToken);
+            effects.push(GitHubEffect::LoadGitHubToken.into());
         }
 
         // Show the cached user + avatar optimistically while the token loads.
@@ -1514,180 +1534,50 @@ impl AppState {
             && let Some(url) = avatar_url_sized(&user.avatar_url, 128)
         {
             state.github.auth.avatar_fetching.set(&state.store, true);
-            effects.push(Effect::FetchAvatar { url });
+            effects.push(GitHubEffect::FetchAvatar { url }.into());
         }
 
-        effects.push(Effect::InstallCommonSyntaxPacks);
-        effects.push(Effect::LoadAiKeys);
+        effects.push(SyntaxEffect::InstallCommonSyntaxPacks.into());
+        effects.push(AiEffect::LoadAiKeys.into());
         if state.update_polling_enabled() {
-            effects.push(Effect::CheckForUpdates { silent: true });
+            effects.push(UpdateEffect::CheckForUpdates { silent: true }.into());
         }
         (state, effects)
     }
 
-    pub fn apply_action(&mut self, action: Action) -> Vec<Effect> {
-        use Action::*;
+    pub fn apply_action<A: Into<Action>>(&mut self, action: A) -> Vec<Effect> {
+        let action = action.into();
         match action {
-            // Text editing
-            InsertText(_)
-            | Backspace
-            | BackspaceWord
-            | BackspaceLine
-            | DeleteForward
-            | DeleteForwardWord
-            | CursorLeft
-            | CursorRight
-            | CursorUp
-            | CursorDown
-            | CursorWordLeft
-            | CursorWordRight
-            | CursorHome
-            | CursorEnd
-            | CursorSoftHome
-            | CursorSoftEnd
-            | SelectLeft
-            | SelectRight
-            | SelectUp
-            | SelectDown
-            | SelectWordLeft
-            | SelectWordRight
-            | SelectHome
-            | SelectEnd
-            | SelectSoftHome
-            | SelectSoftEnd
-            | SelectAll
-            | Copy
-            | Cut
-            | Paste(_)
-            | SetTextCursor(_)
-            | ExtendTextSelection(_) => self.apply_text_edit_action(action),
+            Action::App(action) => app::reduce_action(self, action),
+            Action::Workspace(action) => workspace::reduce_action(self, action),
+            Action::Compare(action) => compare::reduce_action(self, action),
+            Action::Repository(action) => repository::reduce_action(self, action),
+            Action::FileList(action) => file_list::reduce_action(self, action),
+            Action::Overlay(action) => overlay::reduce_action(self, action),
+            Action::Editor(action) => editor::reduce_action(self, action),
+            Action::TextEdit(action) => text_edit::reduce_action(self, action),
+            Action::Settings(action) => settings::reduce_action(self, action),
+            Action::GitHub(action) => github::reduce_action(self, action),
+            Action::Update(action) => update::reduce_action(self, action),
+            Action::Syntax(action) => syntax::reduce_action(self, action),
+            Action::Ai(action) => ai::reduce_action(self, action),
+            Action::Noop => Vec::new(),
+        }
+    }
 
-            // Overlay management
-            OpenRepoPicker
-            | OpenThemePicker
-            | OpenRefPicker(_)
-            | OpenCommandPalette
-            | OpenGitHubAuthModal
-            | CloseOverlay
-            | MoveOverlaySelection(_)
-            | ConfirmOverlaySelection
-            | TabCompletePickerDir
-            | SelectOverlayEntry(_)
-            | HoverOverlayEntry(_)
-            | ScrollActiveOverlayListPx(_)
-            | ShowKeyboardShortcuts
-            | SetActiveRefField(_)
-            | SwapDraftRefs
-            | CommitRefPicker
-            | CancelRefPicker => self.apply_overlay_action(action),
-
-            // Compare & repository
-            Bootstrap
-            | OpenRepositoryDialog
-            | OpenRepository(_)
-            | SetLeftRef(_)
-            | SetRightRef(_)
-            | SwapRefs
-            | SetCompareMode(_)
-            | CycleCompareMode
-            | OpenCompareMenu
-            | OpenAccountMenu
-            | ApplyComparePreset(_)
-            | SetLayoutMode(_)
-            | SetRenderer(_)
-            | StartCompare
-            | CancelCompare
-            | StageSelectedFile
-            | UnstageSelectedFile
-            | DiscardSelectedFile
-            | StageFile(_)
-            | UnstageFile(_)
-            | StageAllFiles
-            | UnstageAllFiles
-            | StageHunk
-            | UnstageHunk
-            | DiscardHunk
-            | StageHunkAt(_)
-            | UnstageHunkAt(_)
-            | DiscardHunkAt(_)
-            | ToggleLineSelection(_)
-            | ToggleLineSelectionRange(_, _)
-            | StageSelectedLines
-            | UnstageSelectedLines
-            | DiscardSelectedLines
-            | ClearLineSelection
-            | ShowWorkingTree
-            | SubmitCommit => self.apply_compare_action(action),
-
-            // File list & sidebar
-            SelectFile(_)
-            | SelectFilePath(_)
-            | SelectNextFile
-            | SelectPreviousFile
-            | ScrollFileList(_)
-            | ScrollFileListPx(_)
-            | ScrollFileListToPx(_)
-            | HoverFile(_)
-            | ToggleFolder(_)
-            | ToggleFileViewed(_)
-            | SetSidebarFilter(_)
-            | ClearSidebarFilter
-            | ToggleSidebarMode
-            | ToggleSidebar
-            | SetSidebarTab(_)
-            | ScrollCommitListPx(_)
-            | ExpandAllFolders
-            | CollapseAllFolders => self.apply_file_list_action(action),
-
-            SelectSidebarCommit(_) | ClearSidebarCommit => self.apply_compare_action(action),
-
-            // Viewport & editor navigation
-            ScrollViewportLines(_)
-            | ScrollViewportPx(_)
-            | ScrollViewportPages(_)
-            | ScrollViewportTo(_)
-            | ScrollViewportHalfPage(_)
-            | HoverViewportRow(_)
-            | FocusViewport
-            | GoToNextHunk
-            | GoToPreviousHunk
-            | GoToNextFile
-            | GoToPreviousFile
-            | OpenSearch
-            | CloseSearch
-            | SearchNext
-            | SearchPrevious => self.apply_navigation_action(action),
-
-            // Settings & UI
-            ToggleWrap
-            | SetWrapColumn(_)
-            | SetSidebarWidthPx(_)
-            | IncreaseUiScale
-            | DecreaseUiScale
-            | SetUiScalePct(_)
-            | ToggleThemeMode
-            | SetThemeMode(_)
-            | SetThemeName(_)
-            | SetWheelScrollLines(_)
-            | OpenSettings
-            | CloseSettings
-            | ToggleAutoUpdate
-            | CheckForUpdates
-            | InstallUpdate
-            | RestartToUpdate
-            | SetSettingsSection(_) => self.apply_settings_action(action),
-
-            // GitHub
-            StartGitHubDeviceFlow | OpenDeviceFlowBrowser | SignOutGitHub => {
-                self.apply_github_action(action)
-            }
-
-            // Focus & misc
-            SetFocus(target) => {
+    pub(super) fn apply_app_action(&mut self, action: AppAction) -> Vec<Effect> {
+        match action {
+            AppAction::Bootstrap => Vec::new(),
+            AppAction::OpenRepositoryDialog => vec![UiEffect::OpenRepositoryDialog.into()],
+            AppAction::SetFocus(target) => {
                 self.set_focus(target);
                 Vec::new()
             }
-            DismissToast(index) => {
+            AppAction::CopyText(text) => {
+                self.push_info("Copied to clipboard.");
+                vec![UiEffect::SetClipboard(text).into()]
+            }
+            AppAction::DismissToast(index) => {
                 self.toasts.update(&self.store, |toasts| {
                     if index < toasts.len() {
                         toasts.remove(index);
@@ -1695,11 +1585,7 @@ impl AppState {
                 });
                 Vec::new()
             }
-            CopyText(text) => {
-                self.push_info("Copied to clipboard.");
-                vec![Effect::SetClipboard(text)]
-            }
-            HoverToast(index) => {
+            AppAction::HoverToast(index) => {
                 let mut was_any_hovered = false;
                 let mut is_any_hovered = false;
                 self.toasts.update(&self.store, |toasts| {
@@ -1722,56 +1608,19 @@ impl AppState {
                 }
                 Vec::new()
             }
-            EditorClick(x, y) => {
-                if self.focus.get(&self.store) == Some(FocusTarget::SettingsSteeringPrompt) {
-                    self.steering_prompt_editor.click(x, y);
-                } else {
-                    self.commit_editor.click(x, y);
-                }
-                Vec::new()
-            }
-            EditorDrag(x, y) => {
-                if self.focus.get(&self.store) == Some(FocusTarget::SettingsSteeringPrompt) {
-                    self.steering_prompt_editor.drag(x, y);
-                } else {
-                    self.commit_editor.drag(x, y);
-                }
-                Vec::new()
-            }
-            EditorScrollPx(delta) => {
-                if self.focus.get(&self.store) == Some(FocusTarget::SettingsSteeringPrompt) {
-                    self.steering_prompt_editor.scroll(delta as f32);
-                } else {
-                    self.commit_editor.scroll(delta as f32);
-                }
-                Vec::new()
-            }
-            ExpandContextAbove(hunk_index, amount) => self.expand_context(
-                hunk_index,
-                crate::ui::editor::expansion::ExpandDirection::Above,
-                amount,
-            ),
-            ExpandContextBelow(hunk_index, amount) => self.expand_context(
-                hunk_index,
-                crate::ui::editor::expansion::ExpandDirection::Below,
-                amount,
-            ),
-            ExpandAllContext => self.expand_all_context(),
-            FetchRemote(remote) => self.start_fetch_remote(remote),
-            FetchAllRemotes => self.start_fetch_all_remotes(),
-            PushCurrentBranch { force_with_lease } => {
-                self.start_push_current_branch(force_with_lease)
-            }
-            PullCurrentBranch => self.start_pull_current_branch(),
-            SetAiKey { kind, value } => self.set_ai_key(kind, value),
-            ClearAiKey { kind } => self.clear_ai_key(kind),
-            SetAiKeyEditing { kind, editing } => self.set_ai_key_editing(kind, editing),
-            GenerateCommitMessage => self.start_generate_commit_message(),
-            Noop => Vec::new(),
+            AppAction::Noop => Vec::new(),
         }
     }
 
-    fn apply_text_edit_action(&mut self, action: Action) -> Vec<Effect> {
+    pub(super) fn apply_workspace_action(&mut self, action: WorkspaceAction) -> Vec<Effect> {
+        match action {
+            WorkspaceAction::OpenRepository(path) => self.open_repository(path),
+            WorkspaceAction::ShowWorkingTree => self.show_working_tree(),
+        }
+    }
+
+    pub(super) fn apply_text_edit_action(&mut self, action: TextEditAction) -> Vec<Effect> {
+        use TextEditAction::*;
         if self.focus.get(&self.store) == Some(FocusTarget::CommitEditor) {
             return self.apply_commit_editor_action(action);
         }
@@ -1779,62 +1628,62 @@ impl AppState {
             return self.apply_steering_prompt_action(action);
         }
         match action {
-            Action::InsertText(value) => self.insert_text(value),
-            Action::Backspace => self.backspace(),
-            Action::DeleteForward => self.delete_forward(),
-            Action::CursorLeft => {
+            InsertText(value) => self.insert_text(value),
+            Backspace => self.backspace(),
+            DeleteForward => self.delete_forward(),
+            CursorLeft => {
                 self.cursor_left(false);
                 Vec::new()
             }
-            Action::CursorRight => {
+            CursorRight => {
                 self.cursor_right(false);
                 Vec::new()
             }
-            Action::CursorWordLeft => {
+            CursorWordLeft => {
                 self.cursor_word_left(false);
                 Vec::new()
             }
-            Action::CursorWordRight => {
+            CursorWordRight => {
                 self.cursor_word_right(false);
                 Vec::new()
             }
-            Action::CursorHome => {
+            CursorHome => {
                 self.cursor_home(false);
                 Vec::new()
             }
-            Action::CursorEnd => {
+            CursorEnd => {
                 self.cursor_end(false);
                 Vec::new()
             }
-            Action::SelectLeft => {
+            SelectLeft => {
                 self.cursor_left(true);
                 Vec::new()
             }
-            Action::SelectRight => {
+            SelectRight => {
                 self.cursor_right(true);
                 Vec::new()
             }
-            Action::SelectWordLeft => {
+            SelectWordLeft => {
                 self.cursor_word_left(true);
                 Vec::new()
             }
-            Action::SelectWordRight => {
+            SelectWordRight => {
                 self.cursor_word_right(true);
                 Vec::new()
             }
-            Action::SelectHome => {
+            SelectHome => {
                 self.cursor_home(true);
                 Vec::new()
             }
-            Action::SelectEnd => {
+            SelectEnd => {
                 self.cursor_end(true);
                 Vec::new()
             }
-            Action::SelectAll => {
+            SelectAll => {
                 self.select_all();
                 Vec::new()
             }
-            Action::Copy => {
+            Copy => {
                 let (effects, copied) = self.copy_selection();
                 if let Some(value) = copied {
                     let truncated = if value.len() > 32 {
@@ -1846,13 +1695,13 @@ impl AppState {
                 }
                 effects
             }
-            Action::Cut => self.cut_selection(),
-            Action::Paste(value) => self.paste(value),
-            Action::SetTextCursor(offset) => {
+            Cut => self.cut_selection(),
+            Paste(value) => self.paste(value),
+            SetTextCursor(offset) => {
                 self.move_cursor(offset, false);
                 Vec::new()
             }
-            Action::ExtendTextSelection(offset) => {
+            ExtendTextSelection(offset) => {
                 self.move_cursor(offset, true);
                 Vec::new()
             }
@@ -1860,43 +1709,44 @@ impl AppState {
         }
     }
 
-    fn apply_commit_editor_action(&mut self, action: Action) -> Vec<Effect> {
+    fn apply_commit_editor_action(&mut self, action: TextEditAction) -> Vec<Effect> {
+        use TextEditAction::*;
         match action {
-            Action::InsertText(value) => self.commit_editor.insert_text(&value),
-            Action::Backspace => self.commit_editor.delete_backward(),
-            Action::BackspaceWord => self.commit_editor.delete_backward_word(),
-            Action::BackspaceLine => self.commit_editor.delete_backward_line(),
-            Action::DeleteForward => self.commit_editor.delete_forward(),
-            Action::DeleteForwardWord => self.commit_editor.delete_forward_word(),
-            Action::CursorLeft => self.commit_editor.move_left(false),
-            Action::CursorRight => self.commit_editor.move_right(false),
-            Action::CursorUp => self.commit_editor.move_up(false),
-            Action::CursorDown => self.commit_editor.move_down(false),
-            Action::CursorWordLeft => self.commit_editor.move_word_left(false),
-            Action::CursorWordRight => self.commit_editor.move_word_right(false),
-            Action::CursorHome => self.commit_editor.move_home(false),
-            Action::CursorEnd => self.commit_editor.move_end(false),
-            Action::CursorSoftHome => self.commit_editor.move_soft_home(false),
-            Action::CursorSoftEnd => self.commit_editor.move_soft_end(false),
-            Action::SelectLeft => self.commit_editor.move_left(true),
-            Action::SelectRight => self.commit_editor.move_right(true),
-            Action::SelectUp => self.commit_editor.move_up(true),
-            Action::SelectDown => self.commit_editor.move_down(true),
-            Action::SelectWordLeft => self.commit_editor.move_word_left(true),
-            Action::SelectWordRight => self.commit_editor.move_word_right(true),
-            Action::SelectHome => self.commit_editor.move_home(true),
-            Action::SelectEnd => self.commit_editor.move_end(true),
-            Action::SelectSoftHome => self.commit_editor.move_soft_home(true),
-            Action::SelectSoftEnd => self.commit_editor.move_soft_end(true),
-            Action::SelectAll => self.commit_editor.select_all(),
-            Action::Copy => {
+            InsertText(value) => self.commit_editor.insert_text(&value),
+            Backspace => self.commit_editor.delete_backward(),
+            BackspaceWord => self.commit_editor.delete_backward_word(),
+            BackspaceLine => self.commit_editor.delete_backward_line(),
+            DeleteForward => self.commit_editor.delete_forward(),
+            DeleteForwardWord => self.commit_editor.delete_forward_word(),
+            CursorLeft => self.commit_editor.move_left(false),
+            CursorRight => self.commit_editor.move_right(false),
+            CursorUp => self.commit_editor.move_up(false),
+            CursorDown => self.commit_editor.move_down(false),
+            CursorWordLeft => self.commit_editor.move_word_left(false),
+            CursorWordRight => self.commit_editor.move_word_right(false),
+            CursorHome => self.commit_editor.move_home(false),
+            CursorEnd => self.commit_editor.move_end(false),
+            CursorSoftHome => self.commit_editor.move_soft_home(false),
+            CursorSoftEnd => self.commit_editor.move_soft_end(false),
+            SelectLeft => self.commit_editor.move_left(true),
+            SelectRight => self.commit_editor.move_right(true),
+            SelectUp => self.commit_editor.move_up(true),
+            SelectDown => self.commit_editor.move_down(true),
+            SelectWordLeft => self.commit_editor.move_word_left(true),
+            SelectWordRight => self.commit_editor.move_word_right(true),
+            SelectHome => self.commit_editor.move_home(true),
+            SelectEnd => self.commit_editor.move_end(true),
+            SelectSoftHome => self.commit_editor.move_soft_home(true),
+            SelectSoftEnd => self.commit_editor.move_soft_end(true),
+            SelectAll => self.commit_editor.select_all(),
+            Copy => {
                 if let Some(text) = self.commit_editor.selected_text() {
                     if let Ok(mut clipboard) = arboard::Clipboard::new() {
                         let _ = clipboard.set_text(text);
                     }
                 }
             }
-            Action::Cut => {
+            Cut => {
                 if let Some(text) = self.commit_editor.selected_text() {
                     if let Ok(mut clipboard) = arboard::Clipboard::new() {
                         let _ = clipboard.set_text(text);
@@ -1904,106 +1754,107 @@ impl AppState {
                     self.commit_editor.delete_backward();
                 }
             }
-            Action::Paste(value) => self.commit_editor.insert_text(&value),
+            Paste(value) => self.commit_editor.insert_text(&value),
             _ => {}
         }
         Vec::new()
     }
 
-    fn apply_steering_prompt_action(&mut self, action: Action) -> Vec<Effect> {
+    fn apply_steering_prompt_action(&mut self, action: TextEditAction) -> Vec<Effect> {
+        use TextEditAction::*;
         let mut changed = true;
         match action {
-            Action::InsertText(value) => self.steering_prompt_editor.insert_text(&value),
-            Action::Backspace => self.steering_prompt_editor.delete_backward(),
-            Action::BackspaceWord => self.steering_prompt_editor.delete_backward_word(),
-            Action::BackspaceLine => self.steering_prompt_editor.delete_backward_line(),
-            Action::DeleteForward => self.steering_prompt_editor.delete_forward(),
-            Action::DeleteForwardWord => self.steering_prompt_editor.delete_forward_word(),
-            Action::CursorLeft => {
+            InsertText(value) => self.steering_prompt_editor.insert_text(&value),
+            Backspace => self.steering_prompt_editor.delete_backward(),
+            BackspaceWord => self.steering_prompt_editor.delete_backward_word(),
+            BackspaceLine => self.steering_prompt_editor.delete_backward_line(),
+            DeleteForward => self.steering_prompt_editor.delete_forward(),
+            DeleteForwardWord => self.steering_prompt_editor.delete_forward_word(),
+            CursorLeft => {
                 self.steering_prompt_editor.move_left(false);
                 changed = false;
             }
-            Action::CursorRight => {
+            CursorRight => {
                 self.steering_prompt_editor.move_right(false);
                 changed = false;
             }
-            Action::CursorUp => {
+            CursorUp => {
                 self.steering_prompt_editor.move_up(false);
                 changed = false;
             }
-            Action::CursorDown => {
+            CursorDown => {
                 self.steering_prompt_editor.move_down(false);
                 changed = false;
             }
-            Action::CursorWordLeft => {
+            CursorWordLeft => {
                 self.steering_prompt_editor.move_word_left(false);
                 changed = false;
             }
-            Action::CursorWordRight => {
+            CursorWordRight => {
                 self.steering_prompt_editor.move_word_right(false);
                 changed = false;
             }
-            Action::CursorHome => {
+            CursorHome => {
                 self.steering_prompt_editor.move_home(false);
                 changed = false;
             }
-            Action::CursorEnd => {
+            CursorEnd => {
                 self.steering_prompt_editor.move_end(false);
                 changed = false;
             }
-            Action::CursorSoftHome => {
+            CursorSoftHome => {
                 self.steering_prompt_editor.move_soft_home(false);
                 changed = false;
             }
-            Action::CursorSoftEnd => {
+            CursorSoftEnd => {
                 self.steering_prompt_editor.move_soft_end(false);
                 changed = false;
             }
-            Action::SelectLeft => {
+            SelectLeft => {
                 self.steering_prompt_editor.move_left(true);
                 changed = false;
             }
-            Action::SelectRight => {
+            SelectRight => {
                 self.steering_prompt_editor.move_right(true);
                 changed = false;
             }
-            Action::SelectUp => {
+            SelectUp => {
                 self.steering_prompt_editor.move_up(true);
                 changed = false;
             }
-            Action::SelectDown => {
+            SelectDown => {
                 self.steering_prompt_editor.move_down(true);
                 changed = false;
             }
-            Action::SelectWordLeft => {
+            SelectWordLeft => {
                 self.steering_prompt_editor.move_word_left(true);
                 changed = false;
             }
-            Action::SelectWordRight => {
+            SelectWordRight => {
                 self.steering_prompt_editor.move_word_right(true);
                 changed = false;
             }
-            Action::SelectHome => {
+            SelectHome => {
                 self.steering_prompt_editor.move_home(true);
                 changed = false;
             }
-            Action::SelectEnd => {
+            SelectEnd => {
                 self.steering_prompt_editor.move_end(true);
                 changed = false;
             }
-            Action::SelectSoftHome => {
+            SelectSoftHome => {
                 self.steering_prompt_editor.move_soft_home(true);
                 changed = false;
             }
-            Action::SelectSoftEnd => {
+            SelectSoftEnd => {
                 self.steering_prompt_editor.move_soft_end(true);
                 changed = false;
             }
-            Action::SelectAll => {
+            SelectAll => {
                 self.steering_prompt_editor.select_all();
                 changed = false;
             }
-            Action::Copy => {
+            Copy => {
                 changed = false;
                 if let Some(text) = self.steering_prompt_editor.selected_text() {
                     if let Ok(mut clipboard) = arboard::Clipboard::new() {
@@ -2011,7 +1862,7 @@ impl AppState {
                     }
                 }
             }
-            Action::Cut => {
+            Cut => {
                 if let Some(text) = self.steering_prompt_editor.selected_text() {
                     if let Ok(mut clipboard) = arboard::Clipboard::new() {
                         let _ = clipboard.set_text(text);
@@ -2019,7 +1870,7 @@ impl AppState {
                     self.steering_prompt_editor.delete_backward();
                 }
             }
-            Action::Paste(value) => self.steering_prompt_editor.insert_text(&value),
+            Paste(value) => self.steering_prompt_editor.insert_text(&value),
             _ => changed = false,
         }
         if changed {
@@ -2038,9 +1889,9 @@ impl AppState {
             AiKeyKind::Anthropic => self.ai_anthropic_key = value.clone(),
         }
         if value.is_empty() {
-            vec![Effect::ClearAiKey { kind }]
+            vec![AiEffect::ClearAiKey { kind }.into()]
         } else {
-            vec![Effect::SaveAiKey { kind, value }]
+            vec![AiEffect::SaveAiKey { kind, value }.into()]
         }
     }
 
@@ -2055,7 +1906,7 @@ impl AppState {
                 self.ai_anthropic_editing = false;
             }
         }
-        vec![Effect::ClearAiKey { kind }]
+        vec![AiEffect::ClearAiKey { kind }.into()]
     }
 
     fn set_ai_key_editing(&mut self, kind: AiKeyKind, editing: bool) -> Vec<Effect> {
@@ -2075,6 +1926,17 @@ impl AppState {
             self.set_focus(None);
         }
         Vec::new()
+    }
+
+    pub(super) fn apply_ai_action(&mut self, action: crate::actions::AiAction) -> Vec<Effect> {
+        match action {
+            crate::actions::AiAction::SetAiKey { kind, value } => self.set_ai_key(kind, value),
+            crate::actions::AiAction::ClearAiKey { kind } => self.clear_ai_key(kind),
+            crate::actions::AiAction::SetAiKeyEditing { kind, editing } => {
+                self.set_ai_key_editing(kind, editing)
+            }
+            crate::actions::AiAction::GenerateCommitMessage => self.start_generate_commit_message(),
+        }
     }
 
     fn start_generate_commit_message(&mut self) -> Vec<Effect> {
@@ -2139,8 +2001,8 @@ impl AppState {
             steering_prompt_chars = steering_prompt.len(),
             "ai: starting commit message generation"
         );
-        vec![Effect::GenerateCommitMessage(
-            crate::effects::GenerateCommitMessageRequest {
+        vec![
+            AiEffect::GenerateCommitMessage(crate::effects::GenerateCommitMessageRequest {
                 repo_path,
                 has_staged,
                 provider,
@@ -2148,64 +2010,48 @@ impl AppState {
                 steering_prompt,
                 subject_override,
                 generation: self.ai_generation_id,
-            },
-        )]
+            })
+            .into(),
+        ]
     }
 
-    fn apply_overlay_action(&mut self, action: Action) -> Vec<Effect> {
+    pub(super) fn apply_overlay_action(&mut self, action: OverlayAction) -> Vec<Effect> {
+        use OverlayAction::*;
         match action {
-            Action::OpenRepoPicker => {
+            OpenRepoPicker => {
                 self.open_repo_picker();
                 Vec::new()
             }
-            Action::OpenThemePicker => {
-                self.open_theme_picker();
-                Vec::new()
-            }
-            Action::OpenRefPicker(field) => self.open_ref_picker(field),
-            Action::OpenCommandPalette => self.open_command_palette(),
-            Action::OpenGitHubAuthModal => {
+            OpenRefPicker(field) => self.open_ref_picker(field),
+            OpenCommandPalette => self.open_command_palette(),
+            OpenGitHubAuthModal => {
                 self.push_overlay(
                     OverlaySurface::GitHubAuthModal,
                     Some(FocusTarget::AuthPrimaryAction),
                 );
                 Vec::new()
             }
-            Action::CloseOverlay => {
+            CloseOverlay => {
                 if self.overlays_top() == Some(OverlaySurface::RefPicker) {
                     return self.cancel_ref_picker();
                 }
                 self.pop_overlay();
                 Vec::new()
             }
-            Action::SetActiveRefField(field) => self.set_active_ref_field(field),
-            Action::SwapDraftRefs => self.swap_draft_refs(),
-            Action::CommitRefPicker => {
-                if self.overlays_top() != Some(OverlaySurface::RefPicker) {
-                    return Vec::new();
-                }
-                self.commit_ref_picker()
-            }
-            Action::CancelRefPicker => {
-                if self.overlays_top() != Some(OverlaySurface::RefPicker) {
-                    return Vec::new();
-                }
-                self.cancel_ref_picker()
-            }
-            Action::MoveOverlaySelection(delta) => {
+            MoveOverlaySelection(delta) => {
                 self.move_overlay_selection(delta);
                 Vec::new()
             }
-            Action::ConfirmOverlaySelection => self.confirm_overlay_selection(),
-            Action::TabCompletePickerDir => {
+            ConfirmOverlaySelection => self.confirm_overlay_selection(),
+            TabCompletePickerDir => {
                 self.tab_complete_picker_dir();
                 Vec::new()
             }
-            Action::SelectOverlayEntry(index) => {
+            SelectOverlayEntry(index) => {
                 self.select_overlay_entry(index);
                 self.confirm_overlay_selection()
             }
-            Action::HoverOverlayEntry(Some(index)) => {
+            HoverOverlayEntry(Some(index)) => {
                 self.overlays
                     .picker
                     .hovered_index
@@ -2213,15 +2059,15 @@ impl AppState {
                 self.select_overlay_entry(index);
                 Vec::new()
             }
-            Action::HoverOverlayEntry(None) => {
+            HoverOverlayEntry(None) => {
                 self.overlays.picker.hovered_index.set(&self.store, None);
                 Vec::new()
             }
-            Action::ScrollActiveOverlayListPx(delta_px) => {
+            ScrollActiveOverlayListPx(delta_px) => {
                 self.scroll_active_overlay_list_px(delta_px);
                 Vec::new()
             }
-            Action::ShowKeyboardShortcuts => {
+            ShowKeyboardShortcuts => {
                 if self.overlays_top() == Some(OverlaySurface::KeyboardShortcuts) {
                     self.pop_overlay();
                 } else {
@@ -2229,34 +2075,45 @@ impl AppState {
                 }
                 Vec::new()
             }
-            _ => Vec::new(),
         }
     }
 
-    fn apply_compare_action(&mut self, action: Action) -> Vec<Effect> {
+    pub(super) fn apply_compare_action(&mut self, action: CompareAction) -> Vec<Effect> {
+        use CompareAction::*;
         match action {
-            Action::Bootstrap => Vec::new(),
-            Action::OpenRepositoryDialog => vec![Effect::OpenRepositoryDialog],
-            Action::OpenRepository(path) => self.open_repository(path),
-            Action::SetLeftRef(value) => {
+            SetLeftRef(value) => {
                 let mut effects = self.update_compare_field(CompareField::Left, value);
                 effects.extend(self.persist_settings_effect());
                 effects
             }
-            Action::SetRightRef(value) => {
+            SetRightRef(value) => {
                 let mut effects = self.update_compare_field(CompareField::Right, value);
                 effects.extend(self.persist_settings_effect());
                 effects
             }
-            Action::SwapRefs => self.swap_refs(),
-            Action::SetCompareMode(mode) => {
+            SwapRefs => self.swap_refs(),
+            SetActiveRefField(field) => self.set_active_ref_field(field),
+            SwapDraftRefs => self.swap_draft_refs(),
+            CommitRefPicker => {
+                if self.overlays_top() != Some(OverlaySurface::RefPicker) {
+                    return Vec::new();
+                }
+                self.commit_ref_picker()
+            }
+            CancelRefPicker => {
+                if self.overlays_top() != Some(OverlaySurface::RefPicker) {
+                    return Vec::new();
+                }
+                self.cancel_ref_picker()
+            }
+            SetCompareMode(mode) => {
                 self.compare.mode.set(&self.store, mode);
                 if self.overlays_top() == Some(OverlaySurface::CompareMenu) {
                     self.pop_overlay();
                 }
                 self.persist_settings_effect()
             }
-            Action::CycleCompareMode => {
+            CycleCompareMode => {
                 let next = match self.compare.mode.get(&self.store) {
                     CompareMode::SingleCommit => CompareMode::TwoDot,
                     CompareMode::TwoDot => CompareMode::ThreeDot,
@@ -2265,62 +2122,51 @@ impl AppState {
                 self.compare.mode.set(&self.store, next);
                 self.persist_settings_effect()
             }
-            Action::OpenCompareMenu => {
+            OpenCompareMenu => {
                 self.push_overlay(OverlaySurface::CompareMenu, None);
                 Vec::new()
             }
-            Action::OpenAccountMenu => {
-                self.push_overlay(OverlaySurface::AccountMenu, None);
-                Vec::new()
-            }
-            Action::ApplyComparePreset(preset) => self.apply_compare_preset(&preset),
-            Action::SetLayoutMode(layout) => {
+            ApplyComparePreset(preset) => self.apply_compare_preset(&preset),
+            SetLayoutMode(layout) => {
                 self.compare.layout.set(&self.store, layout);
                 self.editor.layout.set(&self.store, layout);
                 let mut effects = self.rebuild_command_palette();
                 effects.extend(self.persist_settings_effect());
                 effects
             }
-            Action::SetRenderer(renderer) => {
+            SetRenderer(renderer) => {
                 self.compare.renderer.set(&self.store, renderer);
                 self.persist_settings_effect()
             }
-            Action::StartCompare => self.kickoff_compare(),
-            Action::CancelCompare => self.cancel_compare(),
-            Action::ShowWorkingTree => self.show_working_tree(),
-            Action::StageSelectedFile => {
-                self.apply_selected_status_operation(StatusOperation::Stage)
-            }
-            Action::UnstageSelectedFile => {
-                self.apply_selected_status_operation(StatusOperation::Unstage)
-            }
-            Action::DiscardSelectedFile => {
-                self.apply_selected_status_operation(StatusOperation::Discard)
-            }
-            Action::StageFile(index) => {
-                self.apply_file_status_operation(index, StatusOperation::Stage)
-            }
-            Action::UnstageFile(index) => {
-                self.apply_file_status_operation(index, StatusOperation::Unstage)
-            }
-            Action::StageAllFiles => self.apply_batch_scope_operation(
+            StartCompare => self.kickoff_compare(),
+            CancelCompare => self.cancel_compare(),
+            SelectSidebarCommit(oid) => self.drill_into_commit(&oid),
+            ClearSidebarCommit => self.restore_pre_drill_compare(),
+        }
+    }
+
+    pub(super) fn apply_repository_action(&mut self, action: RepositoryAction) -> Vec<Effect> {
+        use RepositoryAction::*;
+        match action {
+            StageSelectedFile => self.apply_selected_status_operation(StatusOperation::Stage),
+            UnstageSelectedFile => self.apply_selected_status_operation(StatusOperation::Unstage),
+            DiscardSelectedFile => self.apply_selected_status_operation(StatusOperation::Discard),
+            StageFile(index) => self.apply_file_status_operation(index, StatusOperation::Stage),
+            UnstageFile(index) => self.apply_file_status_operation(index, StatusOperation::Unstage),
+            StageAllFiles => self.apply_batch_scope_operation(
                 &[StatusScope::Unstaged, StatusScope::Untracked],
                 StatusOperation::Stage,
             ),
-            Action::UnstageAllFiles => {
+            UnstageAllFiles => {
                 self.apply_batch_scope_operation(&[StatusScope::Staged], StatusOperation::Unstage)
             }
-            Action::StageHunk => self.apply_hunk_operation(StatusOperation::Stage, None),
-            Action::UnstageHunk => self.apply_hunk_operation(StatusOperation::Unstage, None),
-            Action::DiscardHunk => self.apply_hunk_operation(StatusOperation::Discard, None),
-            Action::StageHunkAt(i) => self.apply_hunk_operation(StatusOperation::Stage, Some(i)),
-            Action::UnstageHunkAt(i) => {
-                self.apply_hunk_operation(StatusOperation::Unstage, Some(i))
-            }
-            Action::DiscardHunkAt(i) => {
-                self.apply_hunk_operation(StatusOperation::Discard, Some(i))
-            }
-            Action::ToggleLineSelection(row) => {
+            StageHunk => self.apply_hunk_operation(StatusOperation::Stage, None),
+            UnstageHunk => self.apply_hunk_operation(StatusOperation::Unstage, None),
+            DiscardHunk => self.apply_hunk_operation(StatusOperation::Discard, None),
+            StageHunkAt(i) => self.apply_hunk_operation(StatusOperation::Stage, Some(i)),
+            UnstageHunkAt(i) => self.apply_hunk_operation(StatusOperation::Unstage, Some(i)),
+            DiscardHunkAt(i) => self.apply_hunk_operation(StatusOperation::Discard, Some(i)),
+            ToggleLineSelection(row) => {
                 self.toggle_line_selection(row, false);
                 let entries_len = self
                     .editor
@@ -2329,29 +2175,26 @@ impl AppState {
                 tracing::info!(row, entries = entries_len, "ToggleLineSelection");
                 Vec::new()
             }
-            Action::ToggleLineSelectionRange(row, anchor) => {
+            ToggleLineSelectionRange(row, anchor) => {
                 self.toggle_line_selection_range(row, anchor);
                 Vec::new()
             }
-            Action::StageSelectedLines => {
-                self.apply_line_selection_operation(StatusOperation::Stage)
-            }
-            Action::UnstageSelectedLines => {
-                self.apply_line_selection_operation(StatusOperation::Unstage)
-            }
-            Action::DiscardSelectedLines => {
-                self.apply_line_selection_operation(StatusOperation::Discard)
-            }
-            Action::ClearLineSelection => {
+            StageSelectedLines => self.apply_line_selection_operation(StatusOperation::Stage),
+            UnstageSelectedLines => self.apply_line_selection_operation(StatusOperation::Unstage),
+            DiscardSelectedLines => self.apply_line_selection_operation(StatusOperation::Discard),
+            ClearLineSelection => {
                 self.editor
                     .line_selection
                     .update(&self.store, |ls| ls.clear());
                 Vec::new()
             }
-            Action::SubmitCommit => self.submit_commit(),
-            Action::SelectSidebarCommit(oid) => self.drill_into_commit(&oid),
-            Action::ClearSidebarCommit => self.restore_pre_drill_compare(),
-            _ => Vec::new(),
+            SubmitCommit => self.submit_commit(),
+            FetchRemote(remote) => self.start_fetch_remote(remote),
+            FetchAllRemotes => self.start_fetch_all_remotes(),
+            PushCurrentBranch { force_with_lease } => {
+                self.start_push_current_branch(force_with_lease)
+            }
+            PullCurrentBranch => self.start_pull_current_branch(),
         }
     }
 
@@ -2369,7 +2212,7 @@ impl AppState {
         if !has_staged {
             return Vec::new();
         }
-        vec![Effect::CreateCommit(CommitRequest { repo_path, message })]
+        vec![RepositoryEffect::CreateCommit(CommitRequest { repo_path, message }).into()]
     }
 
     fn drill_into_commit(&mut self, oid: &str) -> Vec<Effect> {
@@ -2413,10 +2256,11 @@ impl AppState {
         self.kickoff_compare()
     }
 
-    fn apply_file_list_action(&mut self, action: Action) -> Vec<Effect> {
+    pub(super) fn apply_file_list_action(&mut self, action: FileListAction) -> Vec<Effect> {
+        use FileListAction::*;
         match action {
-            Action::SelectFile(index) => self.select_file(index, false),
-            Action::SelectFilePath(path) => {
+            SelectFile(index) => self.select_file(index, false),
+            SelectFilePath(path) => {
                 let idx = self.workspace.files.with(&self.store, |files| {
                     files.iter().position(|file| file.path == path)
                 });
@@ -2427,22 +2271,22 @@ impl AppState {
                 }
                 Vec::new()
             }
-            Action::SelectNextFile => self.shift_loaded_file(1),
-            Action::SelectPreviousFile => self.shift_loaded_file(-1),
-            Action::ScrollFileList(delta) => {
+            SelectNextFile => self.shift_loaded_file(1),
+            SelectPreviousFile => self.shift_loaded_file(-1),
+            ScrollFileList(delta) => {
                 self.file_list_scroll_rows(delta, self.sidebar_row_count());
                 Vec::new()
             }
-            Action::ScrollFileListPx(delta_px) => {
+            ScrollFileListPx(delta_px) => {
                 self.file_list_scroll_px(delta_px as f32, self.sidebar_row_count());
                 Vec::new()
             }
-            Action::ScrollFileListToPx(px) => {
+            ScrollFileListToPx(px) => {
                 self.file_list.scroll_offset_px.set(&self.store, px as f32);
                 self.file_list_clamp_scroll(self.sidebar_row_count());
                 Vec::new()
             }
-            Action::HoverFile(index) => {
+            HoverFile(index) => {
                 use crate::ui::animation::AnimationKey;
                 if let Some(prev) = self.file_list.hovered_index.get(&self.store) {
                     self.animation.set_target(
@@ -2463,7 +2307,7 @@ impl AppState {
                 self.file_list.hovered_index.set(&self.store, index);
                 Vec::new()
             }
-            Action::ToggleFolder(path) => {
+            ToggleFolder(path) => {
                 self.file_list.expanded_folders.update(&self.store, |set| {
                     if set.contains(&path) {
                         set.remove(&path);
@@ -2473,7 +2317,7 @@ impl AppState {
                 });
                 Vec::new()
             }
-            Action::ToggleFileViewed(index) => {
+            ToggleFileViewed(index) => {
                 self.file_list.viewed_files.update(&self.store, |set| {
                     if set.contains(&index) {
                         set.remove(&index);
@@ -2483,7 +2327,7 @@ impl AppState {
                 });
                 Vec::new()
             }
-            Action::SetSidebarFilter(query) => {
+            SetSidebarFilter(query) => {
                 self.file_list.filter.set(&self.store, query);
                 if self.file_list.tab.get(&self.store) == SidebarTab::Commits {
                     self.file_list
@@ -2494,7 +2338,7 @@ impl AppState {
                 }
                 Vec::new()
             }
-            Action::ClearSidebarFilter => {
+            ClearSidebarFilter => {
                 self.file_list.filter.update(&self.store, |s| s.clear());
                 if self.file_list.tab.get(&self.store) == SidebarTab::Commits {
                     self.file_list
@@ -2505,11 +2349,11 @@ impl AppState {
                 }
                 Vec::new()
             }
-            Action::ToggleSidebar => {
+            ToggleSidebar => {
                 self.store.update(self.sidebar_visible, |v| *v = !*v);
                 Vec::new()
             }
-            Action::ToggleSidebarMode => {
+            ToggleSidebarMode => {
                 let next = match self.file_list.mode.get(&self.store) {
                     SidebarMode::FlatList => SidebarMode::TreeView,
                     SidebarMode::TreeView => SidebarMode::FlatList,
@@ -2518,7 +2362,7 @@ impl AppState {
                 self.file_list.scroll_offset_px.set(&self.store, 0.0);
                 Vec::new()
             }
-            Action::ExpandAllFolders => {
+            ExpandAllFolders => {
                 let paths = self.workspace.files.with(&self.store, |files| {
                     files.iter().map(|f| f.path.clone()).collect::<Vec<_>>()
                 });
@@ -2533,18 +2377,18 @@ impl AppState {
                 });
                 Vec::new()
             }
-            Action::CollapseAllFolders => {
+            CollapseAllFolders => {
                 self.file_list
                     .expanded_folders
                     .update(&self.store, |s| s.clear());
                 Vec::new()
             }
-            Action::SetSidebarTab(tab) => {
+            SetSidebarTab(tab) => {
                 self.file_list.tab.set(&self.store, tab);
                 self.file_list.filter.update(&self.store, |s| s.clear());
                 Vec::new()
             }
-            Action::ScrollCommitListPx(delta) => {
+            ScrollCommitListPx(delta) => {
                 let stride = self.file_list_row_stride();
                 let commit_count = self.workspace.range_commits.with(&self.store, |c| c.len());
                 let total = self.file_list_total_content_height(commit_count);
@@ -2556,116 +2400,151 @@ impl AppState {
                 );
                 Vec::new()
             }
-            _ => Vec::new(),
         }
     }
 
-    fn apply_navigation_action(&mut self, action: Action) -> Vec<Effect> {
+    pub(super) fn apply_editor_action(&mut self, action: EditorAction) -> Vec<Effect> {
+        use EditorAction::*;
         match action {
-            Action::ScrollViewportLines(delta) => {
+            ScrollViewportLines(delta) => {
                 self.scroll_viewport_lines(delta);
                 self.request_active_file_syntax_effect()
                     .into_iter()
                     .collect()
             }
-            Action::ScrollViewportPx(delta_px) => {
+            ScrollViewportPx(delta_px) => {
                 self.scroll_viewport_px(delta_px);
                 self.request_active_file_syntax_effect()
                     .into_iter()
                     .collect()
             }
-            Action::ScrollViewportPages(delta) => {
+            ScrollViewportPages(delta) => {
                 self.scroll_viewport_pages(delta);
                 self.request_active_file_syntax_effect()
                     .into_iter()
                     .collect()
             }
-            Action::ScrollViewportTo(px) => {
+            ScrollViewportTo(px) => {
                 self.editor.scroll_top_px.set(&self.store, px);
                 self.editor_clamp_scroll();
                 self.request_active_file_syntax_effect()
                     .into_iter()
                     .collect()
             }
-            Action::ScrollViewportHalfPage(dir) => {
+            ScrollViewportHalfPage(dir) => {
                 self.scroll_viewport_half_page(dir);
                 self.request_active_file_syntax_effect()
                     .into_iter()
                     .collect()
             }
-            Action::HoverViewportRow(row) => {
+            HoverViewportRow(row) => {
                 self.editor.hovered_row.set(&self.store, row);
                 if row.is_none() {
                     self.editor.hovered_hunk_index.set(&self.store, None);
                 }
                 Vec::new()
             }
-            Action::FocusViewport => {
+            FocusViewport => {
                 self.set_focus(Some(FocusTarget::Editor));
                 Vec::new()
             }
-            Action::GoToNextHunk => {
+            GoToNextHunk => {
                 self.navigate_to_hunk(true);
                 self.request_active_file_syntax_effect()
                     .into_iter()
                     .collect()
             }
-            Action::GoToPreviousHunk => {
+            GoToPreviousHunk => {
                 self.navigate_to_hunk(false);
                 self.request_active_file_syntax_effect()
                     .into_iter()
                     .collect()
             }
-            Action::GoToNextFile => {
+            GoToNextFile => {
                 self.navigate_to_file(true);
                 self.request_active_file_syntax_effect()
                     .into_iter()
                     .collect()
             }
-            Action::GoToPreviousFile => {
+            GoToPreviousFile => {
                 self.navigate_to_file(false);
                 self.request_active_file_syntax_effect()
                     .into_iter()
                     .collect()
             }
-            Action::OpenSearch => {
+            OpenSearch => {
                 self.open_search();
                 Vec::new()
             }
-            Action::CloseSearch => {
+            CloseSearch => {
                 self.close_search();
                 Vec::new()
             }
-            Action::SearchNext => {
+            SearchNext => {
                 self.search_navigate(1);
                 Vec::new()
             }
-            Action::SearchPrevious => {
+            SearchPrevious => {
                 self.search_navigate(-1);
                 Vec::new()
             }
-            _ => Vec::new(),
+            EditorClick(x, y) => {
+                if self.focus.get(&self.store) == Some(FocusTarget::SettingsSteeringPrompt) {
+                    self.steering_prompt_editor.click(x, y);
+                } else {
+                    self.commit_editor.click(x, y);
+                }
+                Vec::new()
+            }
+            EditorDrag(x, y) => {
+                if self.focus.get(&self.store) == Some(FocusTarget::SettingsSteeringPrompt) {
+                    self.steering_prompt_editor.drag(x, y);
+                } else {
+                    self.commit_editor.drag(x, y);
+                }
+                Vec::new()
+            }
+            EditorScrollPx(delta) => {
+                if self.focus.get(&self.store) == Some(FocusTarget::SettingsSteeringPrompt) {
+                    self.steering_prompt_editor.scroll(delta as f32);
+                } else {
+                    self.commit_editor.scroll(delta as f32);
+                }
+                Vec::new()
+            }
+            ExpandContextAbove(hunk_index, amount) => self.expand_context(
+                hunk_index,
+                crate::ui::editor::expansion::ExpandDirection::Above,
+                amount,
+            ),
+            ExpandContextBelow(hunk_index, amount) => self.expand_context(
+                hunk_index,
+                crate::ui::editor::expansion::ExpandDirection::Below,
+                amount,
+            ),
+            ExpandAllContext => self.expand_all_context(),
         }
     }
 
-    fn apply_settings_action(&mut self, action: Action) -> Vec<Effect> {
+    pub(super) fn apply_settings_action(&mut self, action: SettingsAction) -> Vec<Effect> {
+        use SettingsAction::*;
         match action {
-            Action::ToggleWrap => {
+            ToggleWrap => {
                 let current = self.editor.wrap_enabled.get(&self.store);
                 self.editor.wrap_enabled.set(&self.store, !current);
                 self.persist_settings_effect()
             }
-            Action::SetWrapColumn(column) => {
+            SetWrapColumn(column) => {
                 self.editor.wrap_column.set(&self.store, column);
                 self.persist_settings_effect()
             }
-            Action::SetSidebarWidthPx(width) => {
+            SetSidebarWidthPx(width) => {
                 self.settings.sidebar_width_px = Some(self.clamp_sidebar_width_px(width));
                 Vec::new()
             }
-            Action::IncreaseUiScale => self.adjust_ui_scale(UI_SCALE_STEP_PCT as i16),
-            Action::DecreaseUiScale => self.adjust_ui_scale(-(UI_SCALE_STEP_PCT as i16)),
-            Action::SetUiScalePct(pct) => {
+            IncreaseUiScale => self.adjust_ui_scale(UI_SCALE_STEP_PCT as i16),
+            DecreaseUiScale => self.adjust_ui_scale(-(UI_SCALE_STEP_PCT as i16)),
+            SetUiScalePct(pct) => {
                 let clamped = self.clamp_ui_scale_pct(pct);
                 if clamped == self.settings.ui_scale_pct {
                     return Vec::new();
@@ -2673,25 +2552,25 @@ impl AppState {
                 self.settings.ui_scale_pct = clamped;
                 self.persist_settings_effect()
             }
-            Action::ToggleThemeMode => {
+            ToggleThemeMode => {
                 self.settings.theme_mode = match self.settings.theme_mode {
                     ThemeMode::Dark => ThemeMode::Light,
                     ThemeMode::Light => ThemeMode::Dark,
                 };
                 self.persist_settings_effect()
             }
-            Action::SetThemeMode(mode) => {
+            SetThemeMode(mode) => {
                 if self.settings.theme_mode == mode {
                     return Vec::new();
                 }
                 self.settings.theme_mode = mode;
                 self.persist_settings_effect()
             }
-            Action::SetThemeName(name) => {
+            SetThemeName(name) => {
                 self.settings.theme_name = name;
                 self.persist_settings_effect()
             }
-            Action::SetWheelScrollLines(lines) => {
+            SetWheelScrollLines(lines) => {
                 let clamped = lines.clamp(1, 10);
                 if clamped == self.settings.wheel_scroll_lines {
                     return Vec::new();
@@ -2699,61 +2578,72 @@ impl AppState {
                 self.settings.wheel_scroll_lines = clamped;
                 self.persist_settings_effect()
             }
-            Action::OpenSettings => {
+            OpenThemePicker => {
+                self.open_theme_picker();
+                Vec::new()
+            }
+            OpenSettings => {
                 self.clear_overlays();
                 self.app_view.set(&self.store, AppView::Settings);
                 Vec::new()
             }
-            Action::CloseSettings => {
+            CloseSettings => {
                 self.app_view.set(&self.store, AppView::Workspace);
                 Vec::new()
             }
-            Action::ToggleAutoUpdate => {
+            ToggleAutoUpdate => {
                 self.settings.auto_update = !self.settings.auto_update;
-                let mut effects = vec![Effect::SaveSettings(self.settings.clone())];
+                let mut effects = vec![SettingsEffect::SaveSettings(self.settings.clone()).into()];
                 if self.update_polling_enabled() {
-                    effects.push(Effect::CheckForUpdates { silent: true });
+                    effects.push(UpdateEffect::CheckForUpdates { silent: true }.into());
                 }
                 effects
             }
-            Action::CheckForUpdates => {
-                self.update.set(&self.store, UpdateState::Checking);
-                vec![Effect::CheckForUpdates { silent: false }]
+            SetSettingsSection(section) => {
+                self.settings_section.set(&self.store, section);
+                Vec::new()
             }
-            Action::InstallUpdate => {
+        }
+    }
+
+    pub(super) fn apply_update_action(&mut self, action: UpdateAction) -> Vec<Effect> {
+        match action {
+            UpdateAction::CheckForUpdates => {
+                self.update.set(&self.store, UpdateState::Checking);
+                vec![UpdateEffect::CheckForUpdates { silent: false }.into()]
+            }
+            UpdateAction::InstallUpdate => {
                 let update = self.update.get(&self.store);
                 if let UpdateState::Available(update) = update {
                     self.update
                         .set(&self.store, UpdateState::Downloading(update.clone()));
-                    vec![Effect::StageUpdate {
-                        update,
-                        silent: false,
-                    }]
+                    vec![
+                        UpdateEffect::StageUpdate {
+                            update,
+                            silent: false,
+                        }
+                        .into(),
+                    ]
                 } else {
                     Vec::new()
                 }
             }
-            Action::RestartToUpdate => {
+            UpdateAction::RestartToUpdate => {
                 let update = self.update.get(&self.store);
                 if let UpdateState::ReadyToRestart(staged) = update {
                     self.update
                         .set(&self.store, UpdateState::Restarting(staged.clone()));
-                    vec![Effect::ApplyStagedUpdate(staged)]
+                    vec![UpdateEffect::ApplyStagedUpdate(staged).into()]
                 } else {
                     Vec::new()
                 }
             }
-            Action::SetSettingsSection(section) => {
-                self.settings_section.set(&self.store, section);
-                Vec::new()
-            }
-            _ => Vec::new(),
         }
     }
 
-    fn apply_github_action(&mut self, action: Action) -> Vec<Effect> {
+    pub(super) fn apply_github_action(&mut self, action: GitHubAction) -> Vec<Effect> {
         match action {
-            Action::StartGitHubDeviceFlow => {
+            GitHubAction::StartGitHubDeviceFlow => {
                 self.github
                     .auth
                     .status
@@ -2767,21 +2657,28 @@ impl AppState {
                         Some(FocusTarget::AuthPrimaryAction),
                     );
                 }
-                vec![Effect::StartDeviceFlow {
-                    client_id: self.github.client_id.get(&self.store),
-                }]
+                vec![
+                    GitHubEffect::StartDeviceFlow {
+                        client_id: self.github.client_id.get(&self.store),
+                    }
+                    .into(),
+                ]
             }
-            Action::OpenDeviceFlowBrowser => {
+            GitHubAction::OpenDeviceFlowBrowser => {
                 let verification_uri = self.github.auth.device_flow.with(&self.store, |opt| {
                     opt.as_ref().map(|df| df.verification_uri.clone())
                 });
                 if let Some(url) = verification_uri {
-                    vec![Effect::OpenBrowser { url }]
+                    vec![UiEffect::OpenBrowser { url }.into()]
                 } else {
                     Vec::new()
                 }
             }
-            Action::SignOutGitHub => {
+            GitHubAction::OpenAccountMenu => {
+                self.push_overlay(OverlaySurface::AccountMenu, None);
+                Vec::new()
+            }
+            GitHubAction::SignOutGitHub => {
                 self.github.auth.token_present.set(&self.store, false);
                 self.github.auth.user.set(&self.store, None);
                 self.github.auth.avatar.set(&self.store, None);
@@ -2803,29 +2700,45 @@ impl AppState {
                 self.settings.github_user = None;
                 self.push_info("Signed out of GitHub.");
                 let mut effects = self.persist_settings_effect();
-                effects.push(Effect::ClearGitHubToken);
+                effects.push(GitHubEffect::ClearGitHubToken.into());
                 effects
             }
-            _ => Vec::new(),
         }
     }
 
     pub fn apply_event(&mut self, event: AppEvent) -> Vec<Effect> {
         match event {
-            AppEvent::RepositoryDialogClosed { path } => {
+            AppEvent::Ui(event) => app::reduce_event(self, event),
+            AppEvent::Repository(event) => repository::reduce_event(self, event),
+            AppEvent::Compare(event) => compare::reduce_event(self, event),
+            AppEvent::GitHub(event) => github::reduce_event(self, event),
+            AppEvent::Settings(event) => settings::reduce_event(self, event),
+            AppEvent::Update(event) => update::reduce_event(self, event),
+            AppEvent::Syntax(event) => syntax::reduce_event(self, event),
+            AppEvent::Ai(event) => ai::reduce_event(self, event),
+        }
+    }
+
+    pub(super) fn apply_domain_event(&mut self, event: AppEvent) -> Vec<Effect> {
+        match event {
+            AppEvent::Ui(UiEvent::RepositoryDialogClosed { path }) => {
                 path.map_or_else(Vec::new, |path| self.open_repository(path))
             }
-            AppEvent::RepositorySnapshotReady(payload) => self.handle_repository_snapshot(payload),
-            AppEvent::CompareHistoryReady(payload) => self.handle_compare_history_ready(payload),
-            AppEvent::CompareHistoryFailed {
+            AppEvent::Repository(RepositoryEvent::RepositorySnapshotReady(payload)) => {
+                self.handle_repository_snapshot(payload)
+            }
+            AppEvent::Compare(CompareEvent::CompareHistoryReady(payload)) => {
+                self.handle_compare_history_ready(payload)
+            }
+            AppEvent::Compare(CompareEvent::CompareHistoryFailed {
                 generation: _,
                 message: _,
-            } => Vec::new(),
-            AppEvent::RepositorySnapshotFailed {
+            }) => Vec::new(),
+            AppEvent::Repository(RepositoryEvent::RepositorySnapshotFailed {
                 path,
                 reason,
                 message,
-            } => {
+            }) => {
                 if self
                     .compare
                     .repo_path
@@ -2849,11 +2762,13 @@ impl AppState {
                 }
                 Vec::new()
             }
-            AppEvent::CompareFinished(payload) => self.handle_compare_finished(payload),
-            AppEvent::CompareFailed {
+            AppEvent::Compare(CompareEvent::CompareFinished(payload)) => {
+                self.handle_compare_finished(payload)
+            }
+            AppEvent::Compare(CompareEvent::CompareFailed {
                 generation,
                 message,
-            } => {
+            }) => {
                 if generation == self.workspace.compare_generation.get(&self.store) {
                     self.workspace.status.set(&self.store, AsyncStatus::Failed);
                     self.workspace_mode.set(&self.store, WorkspaceMode::Empty);
@@ -2862,15 +2777,17 @@ impl AppState {
                 }
                 Vec::new()
             }
-            AppEvent::CompareProgressUpdate { generation, phase } => {
+            AppEvent::Compare(CompareEvent::CompareProgressUpdate { generation, phase }) => {
                 self.handle_compare_progress_update(generation, phase);
                 Vec::new()
             }
-            AppEvent::CompareStatsReady(payload) => self.handle_compare_stats_ready(payload),
-            AppEvent::CompareStatsFailed {
+            AppEvent::Compare(CompareEvent::CompareStatsReady(payload)) => {
+                self.handle_compare_stats_ready(payload)
+            }
+            AppEvent::Compare(CompareEvent::CompareStatsFailed {
                 generation,
                 message: _,
-            } => {
+            }) => {
                 if generation == self.workspace.compare_generation.get(&self.store) {
                     self.workspace
                         .compare_total_stats_loading
@@ -2881,14 +2798,16 @@ impl AppState {
                 }
                 Vec::new()
             }
-            AppEvent::CompareFileFinished(payload) => self.handle_compare_file_finished(payload),
-            AppEvent::CompareFileStatsReady(payload) => {
+            AppEvent::Compare(CompareEvent::CompareFileFinished(payload)) => {
+                self.handle_compare_file_finished(payload)
+            }
+            AppEvent::Compare(CompareEvent::CompareFileStatsReady(payload)) => {
                 self.handle_compare_file_stats_ready(payload)
             }
-            AppEvent::CompareFileStatsFailed {
+            AppEvent::Compare(CompareEvent::CompareFileStatsFailed {
                 generation,
                 message: _,
-            } => {
+            }) => {
                 if generation == self.workspace.compare_generation.get(&self.store) {
                     self.workspace
                         .compare_stats_hydration_active
@@ -2896,11 +2815,11 @@ impl AppState {
                 }
                 Vec::new()
             }
-            AppEvent::CompareFileFailed {
+            AppEvent::Compare(CompareEvent::CompareFileFailed {
                 generation,
                 path,
                 message,
-            } => {
+            }) => {
                 if generation == self.workspace.compare_generation.get(&self.store) {
                     let matches_loading = self
                         .workspace
@@ -2915,20 +2834,24 @@ impl AppState {
                 }
                 Vec::new()
             }
-            AppEvent::StatusDiffFinished(payload) => self.handle_status_diff_finished(payload),
-            AppEvent::StatusDiffFailed {
+            AppEvent::Compare(CompareEvent::StatusDiffFinished(payload)) => {
+                self.handle_status_diff_finished(payload)
+            }
+            AppEvent::Compare(CompareEvent::StatusDiffFailed {
                 generation,
                 index: _,
                 message,
-            } => {
+            }) => {
                 if generation == self.workspace.status_generation.get(&self.store) {
                     self.workspace.status.set(&self.store, AsyncStatus::Failed);
                     self.push_error(&message);
                 }
                 Vec::new()
             }
-            AppEvent::FileSyntaxReady(payload) => self.handle_file_syntax_ready(payload),
-            AppEvent::StatusOperationFailed { path, message } => {
+            AppEvent::Syntax(SyntaxEvent::FileSyntaxReady(payload)) => {
+                self.handle_file_syntax_ready(payload)
+            }
+            AppEvent::Repository(RepositoryEvent::StatusOperationFailed { path, message }) => {
                 if self
                     .compare
                     .repo_path
@@ -2941,7 +2864,7 @@ impl AppState {
                 }
                 Vec::new()
             }
-            AppEvent::CommitCreated { path } => {
+            AppEvent::Repository(RepositoryEvent::CommitCreated { path }) => {
                 if self
                     .compare
                     .repo_path
@@ -2952,7 +2875,7 @@ impl AppState {
                 }
                 Vec::new()
             }
-            AppEvent::CommitFailed { path, message } => {
+            AppEvent::Repository(RepositoryEvent::CommitFailed { path, message }) => {
                 if self
                     .compare
                     .repo_path
@@ -2962,12 +2885,12 @@ impl AppState {
                 }
                 Vec::new()
             }
-            AppEvent::PullRequestLoaded {
+            AppEvent::GitHub(GitHubEvent::PullRequestLoaded {
                 url,
                 info,
                 left_ref,
                 right_ref,
-            } => {
+            }) => {
                 self.github
                     .pull_request
                     .status
@@ -3005,7 +2928,7 @@ impl AppState {
                 }
                 self.rebuild_command_palette_if_open()
             }
-            AppEvent::PullRequestLoadFailed { url, message } => {
+            AppEvent::GitHub(GitHubEvent::PullRequestLoadFailed { url, message }) => {
                 self.github
                     .pull_request
                     .status
@@ -3032,12 +2955,12 @@ impl AppState {
                 self.push_error(&message);
                 self.rebuild_command_palette_if_open()
             }
-            AppEvent::PullRequestPeeked {
+            AppEvent::GitHub(GitHubEvent::PullRequestPeeked {
                 owner,
                 repo,
                 number,
                 info,
-            } => {
+            }) => {
                 let key: PrKey = (owner, repo, number);
                 self.github.pull_request.cache.update(&self.store, |c| {
                     if let Some(entry) = c.get_mut(&key) {
@@ -3046,12 +2969,12 @@ impl AppState {
                 });
                 self.rebuild_command_palette_if_open()
             }
-            AppEvent::PullRequestPeekFailed {
+            AppEvent::GitHub(GitHubEvent::PullRequestPeekFailed {
                 owner,
                 repo,
                 number,
                 message,
-            } => {
+            }) => {
                 let key: PrKey = (owner, repo, number);
                 self.github.pull_request.cache.update(&self.store, |c| {
                     if let Some(entry) = c.get_mut(&key) {
@@ -3060,7 +2983,7 @@ impl AppState {
                 });
                 self.rebuild_command_palette_if_open()
             }
-            AppEvent::DeviceFlowStarted(device_flow) => {
+            AppEvent::GitHub(GitHubEvent::DeviceFlowStarted(device_flow)) => {
                 self.github
                     .auth
                     .status
@@ -3070,17 +2993,19 @@ impl AppState {
                     .device_flow
                     .set(&self.store, Some(device_flow.clone()));
                 vec![
-                    Effect::OpenBrowser {
+                    UiEffect::OpenBrowser {
                         url: device_flow.verification_uri.clone(),
-                    },
-                    Effect::PollDeviceFlow {
+                    }
+                    .into(),
+                    GitHubEffect::PollDeviceFlow {
                         client_id: self.github.client_id.get(&self.store),
                         device_code: device_flow.device_code,
                         interval_seconds: device_flow.interval,
-                    },
+                    }
+                    .into(),
                 ]
             }
-            AppEvent::DeviceFlowStartFailed { message } => {
+            AppEvent::GitHub(GitHubEvent::DeviceFlowStartFailed { message }) => {
                 self.github
                     .auth
                     .status
@@ -3088,7 +3013,7 @@ impl AppState {
                 self.push_error(&message);
                 Vec::new()
             }
-            AppEvent::DeviceFlowCompleted { token } => {
+            AppEvent::GitHub(GitHubEvent::DeviceFlowCompleted { token }) => {
                 self.github.auth.status.set(&self.store, AsyncStatus::Ready);
                 self.github.auth.device_flow.set(&self.store, None);
                 self.github.auth.token_present.set(&self.store, true);
@@ -3098,11 +3023,11 @@ impl AppState {
                     self.pop_overlay();
                 }
                 let mut effects = self.persist_settings_effect();
-                effects.push(Effect::SaveGitHubToken(token.clone()));
-                effects.push(Effect::FetchGitHubUser { token });
+                effects.push(GitHubEffect::SaveGitHubToken(token.clone()).into());
+                effects.push(GitHubEffect::FetchGitHubUser { token }.into());
                 effects
             }
-            AppEvent::DeviceFlowFailed { message } => {
+            AppEvent::GitHub(GitHubEvent::DeviceFlowFailed { message }) => {
                 self.github
                     .auth
                     .status
@@ -3110,7 +3035,7 @@ impl AppState {
                 self.push_error(&message);
                 Vec::new()
             }
-            AppEvent::GitHubTokenLoaded { token } => {
+            AppEvent::GitHub(GitHubEvent::GitHubTokenLoaded { token }) => {
                 self.github_access_token = token.clone();
                 let has_token = token.is_some();
                 self.github.auth.token_present.set(&self.store, has_token);
@@ -3118,17 +3043,17 @@ impl AppState {
                 if let Some(token) = token
                     && self.github.auth.user.with(&self.store, |u| u.is_none())
                 {
-                    effects.push(Effect::FetchGitHubUser { token });
+                    effects.push(GitHubEffect::FetchGitHubUser { token }.into());
                 }
                 effects
             }
-            AppEvent::GitHubTokenLoadFailed { message } => {
+            AppEvent::GitHub(GitHubEvent::GitHubTokenLoadFailed { message }) => {
                 self.github_access_token = None;
                 self.github.auth.token_present.set(&self.store, false);
                 self.push_error(&format!("Keyring unavailable: {message}"));
                 Vec::new()
             }
-            AppEvent::GitHubTokenSaveFailed { message } => {
+            AppEvent::GitHub(GitHubEvent::GitHubTokenSaveFailed { message }) => {
                 self.github_access_token = None;
                 self.github.auth.token_present.set(&self.store, false);
                 self.github.auth.user.set(&self.store, None);
@@ -3136,7 +3061,7 @@ impl AppState {
                 self.push_error(&format!("Couldn't save GitHub token to keyring: {message}"));
                 self.persist_settings_effect()
             }
-            AppEvent::GitHubUserFetched { user } => {
+            AppEvent::GitHub(GitHubEvent::GitHubUserFetched { user }) => {
                 let avatar_src = avatar_url_sized(&user.avatar_url, 128);
                 let previous_login = self
                     .github
@@ -3163,21 +3088,21 @@ impl AppState {
                         .with(&self.store, |a| a.as_ref().is_some_and(|b| b.url == url));
                     if !already_have && !self.github.auth.avatar_fetching.get(&self.store) {
                         self.github.auth.avatar_fetching.set(&self.store, true);
-                        effects.push(Effect::FetchAvatar { url });
+                        effects.push(GitHubEffect::FetchAvatar { url }.into());
                     }
                 }
                 effects
             }
-            AppEvent::GitHubUserFetchFailed { message } => {
+            AppEvent::GitHub(GitHubEvent::GitHubUserFetchFailed { message }) => {
                 tracing::warn!("failed to fetch GitHub user: {message}");
                 Vec::new()
             }
-            AppEvent::AvatarFetched {
+            AppEvent::GitHub(GitHubEvent::AvatarFetched {
                 url,
                 rgba,
                 width,
                 height,
-            } => {
+            }) => {
                 self.github.auth.avatar_fetching.set(&self.store, false);
                 let cache_key = avatar_cache_key(&url);
                 self.github.auth.avatar.set(
@@ -3192,17 +3117,17 @@ impl AppState {
                 );
                 Vec::new()
             }
-            AppEvent::AvatarFetchFailed { url, message } => {
+            AppEvent::GitHub(GitHubEvent::AvatarFetchFailed { url, message }) => {
                 self.github.auth.avatar_fetching.set(&self.store, false);
                 tracing::warn!("failed to fetch avatar {url}: {message}");
                 Vec::new()
             }
-            AppEvent::RefResolved {
+            AppEvent::Compare(CompareEvent::RefResolved {
                 query,
                 generation,
                 short_oid,
                 summary,
-            } => {
+            }) => {
                 if generation == self.overlays.picker.ref_resolve_generation.get(&self.store) {
                     self.overlays.picker.entries.update(&self.store, |entries| {
                         if let Some(entry) = entries
@@ -3215,7 +3140,7 @@ impl AppState {
                 }
                 Vec::new()
             }
-            AppEvent::RefResolveFailed { generation } => {
+            AppEvent::Compare(CompareEvent::RefResolveFailed { generation }) => {
                 if generation == self.overlays.picker.ref_resolve_generation.get(&self.store) {
                     self.overlays.picker.entries.update(&self.store, |entries| {
                         if let Some(entry) =
@@ -3227,27 +3152,27 @@ impl AppState {
                 }
                 Vec::new()
             }
-            AppEvent::SettingsSaved => Vec::new(),
-            AppEvent::SettingsSaveFailed { message } => {
+            AppEvent::Settings(SettingsEvent::SettingsSaved) => Vec::new(),
+            AppEvent::Settings(SettingsEvent::SettingsSaveFailed { message }) => {
                 self.push_error(&message);
                 Vec::new()
             }
-            AppEvent::UpdateAvailable { update, silent } => {
+            AppEvent::Update(UpdateEvent::UpdateAvailable { update, silent }) => {
                 self.update
                     .set(&self.store, UpdateState::Downloading(update.clone()));
                 if !silent {
                     self.push_info(&format!("Downloading Diffy {}.", update.version));
                 }
-                vec![Effect::StageUpdate { update, silent }]
+                vec![UpdateEffect::StageUpdate { update, silent }.into()]
             }
-            AppEvent::UpdateNotAvailable { silent } => {
+            AppEvent::Update(UpdateEvent::UpdateNotAvailable { silent }) => {
                 self.update.set(&self.store, UpdateState::Idle);
                 if !silent {
                     self.push_info("Diffy is up to date.");
                 }
                 Vec::new()
             }
-            AppEvent::UpdateCheckFailed { message, silent } => {
+            AppEvent::Update(UpdateEvent::UpdateCheckFailed { message, silent }) => {
                 if !silent {
                     self.update
                         .set(&self.store, UpdateState::Failed(message.clone()));
@@ -3255,7 +3180,7 @@ impl AppState {
                 }
                 Vec::new()
             }
-            AppEvent::UpdateStaged { staged, silent } => {
+            AppEvent::Update(UpdateEvent::UpdateStaged { staged, silent }) => {
                 let version = staged.update.version.clone();
                 self.update
                     .set(&self.store, UpdateState::ReadyToRestart(staged));
@@ -3264,7 +3189,7 @@ impl AppState {
                 }
                 Vec::new()
             }
-            AppEvent::UpdateInstallFailed { message, silent } => {
+            AppEvent::Update(UpdateEvent::UpdateInstallFailed { message, silent }) => {
                 if silent {
                     self.update.set(&self.store, UpdateState::Idle);
                 } else {
@@ -3274,37 +3199,39 @@ impl AppState {
                 }
                 Vec::new()
             }
-            AppEvent::BrowserOpenFailed { message } => {
+            AppEvent::Ui(UiEvent::BrowserOpenFailed { message }) => {
                 self.push_error(&message);
                 Vec::new()
             }
-            AppEvent::ContextLinesReady(payload) => self.handle_context_lines_ready(payload),
-            AppEvent::ContextLinesFailed {
+            AppEvent::Repository(RepositoryEvent::ContextLinesReady(payload)) => {
+                self.handle_context_lines_ready(payload)
+            }
+            AppEvent::Repository(RepositoryEvent::ContextLinesFailed {
                 generation: _,
                 file_index: _,
                 message,
-            } => {
+            }) => {
                 self.push_error(&message);
                 Vec::new()
             }
-            AppEvent::SyntaxPackInstallStarted { language } => {
+            AppEvent::Syntax(SyntaxEvent::SyntaxPackInstallStarted { language }) => {
                 self.handle_syntax_pack_install_started(&language);
                 Vec::new()
             }
-            AppEvent::SyntaxPackInstalled { language } => {
+            AppEvent::Syntax(SyntaxEvent::SyntaxPackInstalled { language }) => {
                 self.handle_syntax_pack_installed(&language)
             }
-            AppEvent::SyntaxPackInstallFinished { language }
-            | AppEvent::SyntaxPackInstallFailed { language } => {
+            AppEvent::Syntax(SyntaxEvent::SyntaxPackInstallFinished { language })
+            | AppEvent::Syntax(SyntaxEvent::SyntaxPackInstallFailed { language }) => {
                 self.handle_syntax_pack_install_finished(&language);
                 Vec::new()
             }
-            AppEvent::FetchProgress {
+            AppEvent::Repository(RepositoryEvent::FetchProgress {
                 toast_id,
                 received_objects,
                 total_objects,
                 received_bytes,
-            } => {
+            }) => {
                 let fraction = if total_objects > 0 {
                     received_objects as f32 / total_objects as f32
                 } else {
@@ -3322,19 +3249,19 @@ impl AppState {
                 }
                 Vec::new()
             }
-            AppEvent::FetchComplete {
+            AppEvent::Repository(RepositoryEvent::FetchComplete {
                 toast_id,
                 path: _,
                 remote,
-            } => {
+            }) => {
                 self.finish_progress_toast(toast_id, &format!("Fetched {remote}"), None);
                 Vec::new()
             }
-            AppEvent::FetchFailed {
+            AppEvent::Repository(RepositoryEvent::FetchFailed {
                 toast_id,
                 remote,
                 message,
-            } => {
+            }) => {
                 self.fail_progress_toast(
                     toast_id,
                     &format!("Fetch from {remote} failed"),
@@ -3342,12 +3269,12 @@ impl AppState {
                 );
                 Vec::new()
             }
-            AppEvent::PushProgress {
+            AppEvent::Repository(RepositoryEvent::PushProgress {
                 toast_id,
                 current,
                 total,
                 bytes,
-            } => {
+            }) => {
                 let fraction = if total > 0 {
                     current as f32 / total as f32
                 } else {
@@ -3363,20 +3290,20 @@ impl AppState {
                 }
                 Vec::new()
             }
-            AppEvent::PushComplete {
+            AppEvent::Repository(RepositoryEvent::PushComplete {
                 toast_id,
                 path: _,
                 remote,
                 branch,
-            } => {
+            }) => {
                 self.finish_progress_toast(toast_id, &format!("Pushed {branch} to {remote}"), None);
                 Vec::new()
             }
-            AppEvent::PushFailed {
+            AppEvent::Repository(RepositoryEvent::PushFailed {
                 toast_id,
                 remote,
                 message,
-            } => {
+            }) => {
                 self.fail_progress_toast(
                     toast_id,
                     &format!("Push to {remote} failed"),
@@ -3384,14 +3311,14 @@ impl AppState {
                 );
                 Vec::new()
             }
-            AppEvent::PullComplete {
+            AppEvent::Repository(RepositoryEvent::PullComplete {
                 toast_id,
                 path: _,
                 remote,
                 branch,
                 already_up_to_date,
                 behind,
-            } => {
+            }) => {
                 let message = if already_up_to_date {
                     format!("{branch} is already up to date with {remote}")
                 } else {
@@ -3400,12 +3327,12 @@ impl AppState {
                 self.finish_progress_toast(toast_id, &message, None);
                 Vec::new()
             }
-            AppEvent::PullFailed {
+            AppEvent::Repository(RepositoryEvent::PullFailed {
                 toast_id,
                 remote: _,
                 branch,
                 message,
-            } => {
+            }) => {
                 self.fail_progress_toast(
                     toast_id,
                     &format!("Pull into {branch} failed"),
@@ -3413,20 +3340,20 @@ impl AppState {
                 );
                 Vec::new()
             }
-            AppEvent::AiKeysLoaded { openai, anthropic } => {
+            AppEvent::Ai(AiEvent::AiKeysLoaded { openai, anthropic }) => {
                 self.ai_openai_key = openai.unwrap_or_default();
                 self.ai_anthropic_key = anthropic.unwrap_or_default();
                 Vec::new()
             }
-            AppEvent::AiKeysLoadFailed { message } => {
+            AppEvent::Ai(AiEvent::AiKeysLoadFailed { message }) => {
                 tracing::warn!("failed to load AI keys from keyring: {message}");
                 Vec::new()
             }
-            AppEvent::AiKeySaveFailed { message } => {
+            AppEvent::Ai(AiEvent::AiKeySaveFailed { message }) => {
                 self.push_error(&format!("Couldn't save AI key to keyring: {message}"));
                 Vec::new()
             }
-            AppEvent::CommitMessageChunk { generation, chunk } => {
+            AppEvent::Ai(AiEvent::CommitMessageChunk { generation, chunk }) => {
                 if generation == self.ai_generation_id && self.ai_generation_active {
                     tracing::trace!(generation, bytes = chunk.len(), "ai: chunk");
                     self.commit_editor.append(&chunk);
@@ -3440,7 +3367,7 @@ impl AppState {
                 }
                 Vec::new()
             }
-            AppEvent::CommitMessageGenerationFinished { generation } => {
+            AppEvent::Ai(AiEvent::CommitMessageGenerationFinished { generation }) => {
                 if generation == self.ai_generation_id {
                     self.ai_generation_active = false;
                     tracing::info!(generation, "ai: generation finished");
@@ -3453,10 +3380,10 @@ impl AppState {
                 }
                 Vec::new()
             }
-            AppEvent::CommitMessageGenerationFailed {
+            AppEvent::Ai(AiEvent::CommitMessageGenerationFailed {
                 generation,
                 message,
-            } => {
+            }) => {
                 if generation == self.ai_generation_id {
                     self.ai_generation_active = false;
                     self.ai_generation_error = Some(message.clone());
@@ -3602,13 +3529,14 @@ impl AppState {
         );
 
         vec![
-            Effect::SaveSettings(self.settings.clone()),
-            Effect::SyncRepository {
+            SettingsEffect::SaveSettings(self.settings.clone()).into(),
+            RepositoryEffect::SyncRepository {
                 path: path.clone(),
                 reason: RepositorySyncReason::Open,
                 reporter_generation: Some(next_gen),
-            },
-            Effect::WatchRepository { path: Some(path) },
+            }
+            .into(),
+            RepositoryEffect::WatchRepository { path: Some(path) }.into(),
         ]
     }
 
@@ -3712,11 +3640,14 @@ impl AppState {
                             .pending_confirm
                             .set(&self.store, Some(key));
                     }
-                    effects.push(Effect::LoadPullRequest {
-                        url,
-                        repo_path: payload.path,
-                        github_token: self.github_access_token.clone(),
-                    });
+                    effects.push(
+                        GitHubEffect::LoadPullRequest {
+                            url,
+                            repo_path: payload.path,
+                            github_token: self.github_access_token.clone(),
+                        }
+                        .into(),
+                    );
                 } else if self.startup.auto_compare_pending {
                     self.startup.auto_compare_pending = false;
                     effects.extend(self.kickoff_compare());
@@ -3838,8 +3769,8 @@ impl AppState {
                 .collect();
         }
 
-        vec![Effect::FetchContextLines(
-            crate::effects::FetchContextLinesRequest {
+        vec![
+            RepositoryEffect::FetchContextLines(crate::effects::FetchContextLinesRequest {
                 repo_path,
                 reference,
                 path,
@@ -3848,8 +3779,9 @@ impl AppState {
                 hunk_index,
                 direction,
                 amount,
-            },
-        )]
+            })
+            .into(),
+        ]
     }
 
     fn handle_context_lines_ready(
@@ -4073,18 +4005,17 @@ impl AppState {
 
         let mut effects = Vec::new();
         let mut selected_syntax_paths = Vec::new();
-        let history_effect =
-            self.compare
-                .repo_path
-                .get(&self.store)
-                .map(|repo_path| Effect::LoadCompareHistory {
-                    generation,
-                    request: CompareHistoryRequest {
-                        repo_path,
-                        left_ref: history_left,
-                        right_ref: history_right,
-                    },
-                });
+        let history_effect = self.compare.repo_path.get(&self.store).map(|repo_path| {
+            CompareEffect::LoadHistory(Task {
+                generation,
+                request: CompareHistoryRequest {
+                    repo_path,
+                    left_ref: history_left,
+                    right_ref: history_right,
+                },
+            })
+            .into()
+        });
         if let Some(index) = index_for_path
             .or(preferred_index.filter(|index| *index < file_count))
             .or_else(|| (file_count > 0).then_some(0))
@@ -4362,19 +4293,22 @@ impl AppState {
             .compare_total_stats_loading
             .set(&self.store, true);
 
-        Some(Effect::LoadCompareStats {
-            generation: self.workspace.compare_generation.get(&self.store),
-            request: CompareStatsRequest {
-                repo_path,
-                spec: CompareSpec {
-                    mode: self.compare.mode.get(&self.store),
-                    left_ref: self.compare.left_ref.get(&self.store),
-                    right_ref: self.compare.right_ref.get(&self.store),
-                    renderer: self.compare.renderer.get(&self.store),
-                    layout: self.compare.layout.get(&self.store),
+        Some(
+            CompareEffect::LoadStats(Task {
+                generation: self.workspace.compare_generation.get(&self.store),
+                request: CompareStatsRequest {
+                    repo_path,
+                    spec: CompareSpec {
+                        mode: self.compare.mode.get(&self.store),
+                        left_ref: self.compare.left_ref.get(&self.store),
+                        right_ref: self.compare.right_ref.get(&self.store),
+                        renderer: self.compare.renderer.get(&self.store),
+                        layout: self.compare.layout.get(&self.store),
+                    },
                 },
-            },
-        })
+            })
+            .into(),
+        )
     }
 
     fn next_compare_stats_hydration_effect(&self) -> Option<Effect> {
@@ -4404,10 +4338,13 @@ impl AppState {
             return None;
         }
 
-        Some(Effect::LoadCompareFileStats {
-            generation: self.workspace.compare_generation.get(&self.store),
-            request: CompareFileStatsRequest { repo_path, files },
-        })
+        Some(
+            CompareEffect::LoadFileStats(Task {
+                generation: self.workspace.compare_generation.get(&self.store),
+                request: CompareFileStatsRequest { repo_path, files },
+            })
+            .into(),
+        )
     }
 
     fn apply_compare_file_stats(&mut self, stats: &[CompareFileStat]) {
@@ -4555,9 +4492,12 @@ impl AppState {
             }
         }
 
-        (!warmup_paths.is_empty()).then_some(Effect::EnsureSyntaxPacksForPaths {
-            paths: warmup_paths,
-        })
+        (!warmup_paths.is_empty()).then_some(
+            SyntaxEffect::EnsureSyntaxPacksForPaths {
+                paths: warmup_paths,
+            }
+            .into(),
+        )
     }
 
     fn handle_syntax_pack_installed(&mut self, language: &str) -> Vec<Effect> {
@@ -4779,8 +4719,8 @@ impl AppState {
         let renderer = self.compare.renderer.get(&self.store);
         let layout = self.compare.layout.get(&self.store);
         vec![
-            Effect::SaveSettings(self.settings.clone()),
-            Effect::RunCompare {
+            SettingsEffect::SaveSettings(self.settings.clone()).into(),
+            CompareEffect::Run(Task {
                 generation: next_gen,
                 request: CompareRequest {
                     repo_path,
@@ -4793,7 +4733,8 @@ impl AppState {
                     },
                     github_token: self.github_access_token.clone(),
                 },
-            },
+            })
+            .into(),
         ]
     }
 
@@ -4896,7 +4837,7 @@ impl AppState {
 
     fn persist_settings_effect(&mut self) -> Vec<Effect> {
         self.sync_settings_snapshot();
-        vec![Effect::SaveSettings(self.settings.clone())]
+        vec![SettingsEffect::SaveSettings(self.settings.clone()).into()]
     }
 
     fn sync_settings_snapshot(&mut self) {
@@ -5634,9 +5575,9 @@ impl AppState {
                     .device_flow
                     .with(&self.store, |opt| opt.is_some())
                 {
-                    self.apply_action(Action::OpenDeviceFlowBrowser)
+                    self.apply_action(crate::actions::GitHubAction::OpenDeviceFlowBrowser)
                 } else {
-                    self.apply_action(Action::StartGitHubDeviceFlow)
+                    self.apply_action(crate::actions::GitHubAction::StartGitHubDeviceFlow)
                 }
             }
             Some(
@@ -5981,27 +5922,43 @@ impl AppState {
                     self.set_focus(Some(FocusTarget::Editor));
                     Vec::new()
                 }
-                PaletteCommand::ToggleWrap => self.apply_action(Action::ToggleWrap),
-                PaletteCommand::ToggleThemeMode => self.apply_action(Action::ToggleThemeMode),
+                PaletteCommand::ToggleWrap => {
+                    self.apply_action(crate::actions::SettingsAction::ToggleWrap)
+                }
+                PaletteCommand::ToggleThemeMode => {
+                    self.apply_action(crate::actions::SettingsAction::ToggleThemeMode)
+                }
                 PaletteCommand::SetLayout(layout) => {
-                    self.apply_action(Action::SetLayoutMode(layout))
+                    self.apply_action(crate::actions::CompareAction::SetLayoutMode(layout))
                 }
-                PaletteCommand::ChangeTheme => self.apply_action(Action::OpenThemePicker),
-                PaletteCommand::SetTheme(name) => self.apply_action(Action::SetThemeName(name)),
-                PaletteCommand::FetchOrigin => {
-                    self.apply_action(Action::FetchRemote("origin".to_owned()))
+                PaletteCommand::ChangeTheme => {
+                    self.apply_action(crate::actions::SettingsAction::OpenThemePicker)
                 }
-                PaletteCommand::FetchAllRemotes => self.apply_action(Action::FetchAllRemotes),
-                PaletteCommand::PushCurrentBranch => self.apply_action(Action::PushCurrentBranch {
-                    force_with_lease: false,
-                }),
+                PaletteCommand::SetTheme(name) => {
+                    self.apply_action(crate::actions::SettingsAction::SetThemeName(name))
+                }
+                PaletteCommand::FetchOrigin => self.apply_action(
+                    crate::actions::RepositoryAction::FetchRemote("origin".to_owned()),
+                ),
+                PaletteCommand::FetchAllRemotes => {
+                    self.apply_action(crate::actions::RepositoryAction::FetchAllRemotes)
+                }
+                PaletteCommand::PushCurrentBranch => {
+                    self.apply_action(crate::actions::RepositoryAction::PushCurrentBranch {
+                        force_with_lease: false,
+                    })
+                }
                 PaletteCommand::PushCurrentBranchForceWithLease => {
-                    self.apply_action(Action::PushCurrentBranch {
+                    self.apply_action(crate::actions::RepositoryAction::PushCurrentBranch {
                         force_with_lease: true,
                     })
                 }
-                PaletteCommand::PullCurrentBranch => self.apply_action(Action::PullCurrentBranch),
-                PaletteCommand::OpenSettings => self.apply_action(Action::OpenSettings),
+                PaletteCommand::PullCurrentBranch => {
+                    self.apply_action(crate::actions::RepositoryAction::PullCurrentBranch)
+                }
+                PaletteCommand::OpenSettings => {
+                    self.apply_action(crate::actions::SettingsAction::OpenSettings)
+                }
             },
             PaletteEntryKind::File(index) => self.select_file(index, true),
             PaletteEntryKind::Repo(path) => self.open_repository(path),
@@ -6466,11 +6423,14 @@ impl AppState {
                     .picker
                     .ref_resolve_generation
                     .set(&self.store, new_gen);
-                return vec![Effect::ResolveRef {
-                    repo_path,
-                    query: query.to_owned(),
-                    generation: new_gen,
-                }];
+                return vec![
+                    CompareEffect::ResolveRef {
+                        repo_path,
+                        query: query.to_owned(),
+                        generation: new_gen,
+                    }
+                    .into(),
+                ];
             }
         }
         Vec::new()
@@ -6516,12 +6476,15 @@ impl AppState {
                         },
                     );
                 });
-                out_effects.push(Effect::PeekPullRequest {
-                    owner: parsed.owner.clone(),
-                    repo: parsed.repo.clone(),
-                    number: parsed.number,
-                    github_token: token.clone(),
-                });
+                out_effects.push(
+                    GitHubEffect::PeekPullRequest {
+                        owner: parsed.owner.clone(),
+                        repo: parsed.repo.clone(),
+                        number: parsed.number,
+                        github_token: token.clone(),
+                    }
+                    .into(),
+                );
             }
 
             // Speculative diff load — kick off as soon as we know the key, provided
@@ -6540,11 +6503,14 @@ impl AppState {
                         "https://github.com/{}/{}/pull/{}",
                         parsed.owner, parsed.repo, parsed.number
                     );
-                    out_effects.push(Effect::LoadPullRequest {
-                        url,
-                        repo_path,
-                        github_token: token,
-                    });
+                    out_effects.push(
+                        GitHubEffect::LoadPullRequest {
+                            url,
+                            repo_path,
+                            github_token: token,
+                        }
+                        .into(),
+                    );
                 }
             }
 
@@ -6811,7 +6777,8 @@ impl AppState {
         };
 
         if !self.compare_file_is_large(index) {
-            let mut effects = vec![Effect::EnsureSyntaxPackForPath { path: entry.path }];
+            let mut effects =
+                vec![SyntaxEffect::EnsureSyntaxPackForPath { path: entry.path }.into()];
             effects.extend(self.select_loaded_compare_file(index, reveal));
             return effects;
         }
@@ -6859,10 +6826,11 @@ impl AppState {
         }
 
         vec![
-            Effect::EnsureSyntaxPackForPath {
+            SyntaxEffect::EnsureSyntaxPackForPath {
                 path: entry.path.clone(),
-            },
-            Effect::LoadCompareFile {
+            }
+            .into(),
+            CompareEffect::LoadFile(Task {
                 generation: self.workspace.compare_generation.get(&self.store),
                 request: CompareFileRequest {
                     repo_path,
@@ -6877,7 +6845,8 @@ impl AppState {
                     index,
                     deferred_file,
                 },
-            },
+            })
+            .into(),
         ]
     }
 
@@ -6990,18 +6959,22 @@ impl AppState {
         let generation = self.workspace.status_generation.get(&self.store);
         let renderer = self.compare.renderer.get(&self.store);
         vec![
-            Effect::EnsureSyntaxPackForPath {
+            SyntaxEffect::EnsureSyntaxPackForPath {
                 path: item.path.clone(),
-            },
-            Effect::LoadStatusDiff {
-                generation,
-                index,
-                request: StatusDiffRequest {
-                    repo_path,
-                    item,
-                    renderer,
+            }
+            .into(),
+            RepositoryEffect::LoadStatusDiff {
+                task: Task {
+                    generation,
+                    request: StatusDiffRequest {
+                        repo_path,
+                        item,
+                        renderer,
+                    },
                 },
-            },
+                index,
+            }
+            .into(),
         ]
     }
 
@@ -7029,11 +7002,14 @@ impl AppState {
         self.workspace
             .status_operation_pending
             .set(&self.store, true);
-        vec![Effect::ApplyStatusOperation(StatusOperationRequest {
-            repo_path,
-            item,
-            operation,
-        })]
+        vec![
+            RepositoryEffect::ApplyStatusOperation(StatusOperationRequest {
+                repo_path,
+                item,
+                operation,
+            })
+            .into(),
+        ]
     }
 
     fn apply_file_status_operation(
@@ -7061,11 +7037,14 @@ impl AppState {
         self.workspace
             .status_operation_pending
             .set(&self.store, true);
-        vec![Effect::ApplyStatusOperation(StatusOperationRequest {
-            repo_path,
-            item,
-            operation,
-        })]
+        vec![
+            RepositoryEffect::ApplyStatusOperation(StatusOperationRequest {
+                repo_path,
+                item,
+                operation,
+            })
+            .into(),
+        ]
     }
 
     fn apply_batch_scope_operation(
@@ -7096,13 +7075,14 @@ impl AppState {
         self.workspace
             .status_operation_pending
             .set(&self.store, true);
-        vec![Effect::ApplyBatchStatusOperation(
-            BatchStatusOperationRequest {
+        vec![
+            RepositoryEffect::ApplyBatchStatusOperation(BatchStatusOperationRequest {
                 repo_path,
                 items,
                 operation,
-            },
-        )]
+            })
+            .into(),
+        ]
     }
 
     fn current_hunk_index_from_hover(&self) -> Option<i16> {
@@ -7172,12 +7152,15 @@ impl AppState {
         self.workspace
             .status_operation_pending
             .set(&self.store, true);
-        vec![Effect::ApplyPatchOperation(PatchOperationRequest {
-            repo_path,
-            patch,
-            scope,
-            operation,
-        })]
+        vec![
+            RepositoryEffect::ApplyPatchOperation(PatchOperationRequest {
+                repo_path,
+                patch,
+                scope,
+                operation,
+            })
+            .into(),
+        ]
     }
 
     fn toggle_line_selection(&mut self, row: usize, _extend: bool) {
@@ -7321,12 +7304,13 @@ impl AppState {
         patches
             .into_iter()
             .map(|p| {
-                Effect::ApplyPatchOperation(PatchOperationRequest {
+                RepositoryEffect::ApplyPatchOperation(PatchOperationRequest {
                     repo_path: repo_path.clone(),
                     patch: p,
                     scope,
                     operation,
                 })
+                .into()
             })
             .collect()
     }
@@ -7428,9 +7412,12 @@ impl AppState {
             });
         });
 
-        request.map(|request| Effect::LoadFileSyntax {
-            generation,
-            request,
+        request.map(|request| {
+            SyntaxEffect::LoadFileSyntax(Task {
+                generation,
+                request,
+            })
+            .into()
         })
     }
 
@@ -7610,11 +7597,14 @@ impl AppState {
             return Vec::new();
         };
         let toast_id = self.push_progress_toast(&format!("Fetching {remote}\u{2026}"));
-        vec![Effect::FetchRemote(FetchRemoteRequest {
-            repo_path,
-            remote,
-            toast_id,
-        })]
+        vec![
+            RepositoryEffect::FetchRemote(FetchRemoteRequest {
+                repo_path,
+                remote,
+                toast_id,
+            })
+            .into(),
+        ]
     }
 
     fn start_fetch_all_remotes(&mut self) -> Vec<Effect> {
@@ -7639,11 +7629,14 @@ impl AppState {
             .into_iter()
             .flat_map(|remote| {
                 let toast_id = self.push_progress_toast(&format!("Fetching {remote}\u{2026}"));
-                std::iter::once(Effect::FetchRemote(FetchRemoteRequest {
-                    repo_path: repo_path.clone(),
-                    remote,
-                    toast_id,
-                }))
+                std::iter::once(
+                    RepositoryEffect::FetchRemote(FetchRemoteRequest {
+                        repo_path: repo_path.clone(),
+                        remote,
+                        toast_id,
+                    })
+                    .into(),
+                )
             })
             .collect()
     }
@@ -7697,13 +7690,16 @@ impl AppState {
             format!("Pushing {branch} to {remote}\u{2026}")
         };
         let toast_id = self.push_progress_toast(&label);
-        vec![Effect::Push(PushRequest {
-            repo_path,
-            remote,
-            refspec,
-            force_with_lease,
-            toast_id,
-        })]
+        vec![
+            RepositoryEffect::Push(PushRequest {
+                repo_path,
+                remote,
+                refspec,
+                force_with_lease,
+                toast_id,
+            })
+            .into(),
+        ]
     }
 
     fn start_pull_current_branch(&mut self) -> Vec<Effect> {
@@ -7743,12 +7739,15 @@ impl AppState {
             }
         };
         let toast_id = self.push_progress_toast(&format!("Pulling {branch} from {remote}\u{2026}"));
-        vec![Effect::PullFf(PullFfRequest {
-            repo_path,
-            remote,
-            branch: upstream_branch,
-            toast_id,
-        })]
+        vec![
+            RepositoryEffect::PullFf(PullFfRequest {
+                repo_path,
+                remote,
+                branch: upstream_branch,
+                toast_id,
+            })
+            .into(),
+        ]
     }
 
     fn push_toast(
@@ -8210,15 +8209,18 @@ mod tests {
         FocusTarget, OverlaySurface, PreparedActiveFile, WorkspaceMode, WorkspaceSource,
         prepare_active_file, refs_for_status_scope,
     };
-    use crate::actions::Action;
     use crate::core::compare::{CompareMode, CompareOutput, LayoutMode, RendererKind};
     use crate::core::diff::{DiffLine, FileDiff, Hunk, LineKind};
     use crate::core::text::buffer::TextBuffer;
     use crate::core::text::token::{DiffTokenSpan, TokenBuffer};
     use crate::core::text::{ChangeIntensity, SyntaxTokenKind};
     use crate::core::vcs::git::{StatusItem, StatusScope};
-    use crate::effects::Effect;
-    use crate::events::{AppEvent, CompareFileFinished};
+    use crate::effects::{
+        AiEffect, CompareEffect, Effect, GitHubEffect, RepositoryEffect, SyntaxEffect,
+    };
+    use crate::events::{
+        AppEvent, CompareEvent, CompareFileFinished, GitHubEvent, RepositoryEvent,
+    };
     use crate::platform::persistence::Settings;
     use crate::platform::startup::{Args, StartupOptions};
     use crate::ui::editor::render_doc::{RenderDoc, build_render_doc};
@@ -8434,7 +8436,9 @@ mod tests {
         );
         assert!(effects.iter().all(|e| matches!(
             e,
-            Effect::LoadGitHubToken | Effect::LoadAiKeys | Effect::InstallCommonSyntaxPacks
+            Effect::GitHub(GitHubEffect::LoadGitHubToken)
+                | Effect::Ai(AiEffect::LoadAiKeys)
+                | Effect::Syntax(SyntaxEffect::InstallCommonSyntaxPacks)
         )));
     }
 
@@ -8465,7 +8469,8 @@ mod tests {
                 .iter()
                 .filter(|e| matches!(
                     e,
-                    Effect::SyncRepository { .. } | Effect::WatchRepository { .. }
+                    Effect::Repository(RepositoryEffect::SyncRepository { .. })
+                        | Effect::Repository(RepositoryEffect::WatchRepository { .. })
                 ))
                 .count(),
             2
@@ -8481,10 +8486,12 @@ mod tests {
             false,
         );
         let (mut state, _) = AppState::bootstrap(startup, Settings::default());
-        state.apply_action(Action::SetFocus(Some(FocusTarget::TitleBar)));
-        state.apply_action(Action::OpenCommandPalette);
+        state.apply_action(crate::actions::AppAction::SetFocus(Some(
+            FocusTarget::TitleBar,
+        )));
+        state.apply_action(crate::actions::OverlayAction::OpenCommandPalette);
         assert_eq!(state.overlays_top(), Some(OverlaySurface::CommandPalette));
-        state.apply_action(Action::CloseOverlay);
+        state.apply_action(crate::actions::OverlayAction::CloseOverlay);
         assert_eq!(state.focus.get(&state.store), Some(FocusTarget::TitleBar));
     }
 
@@ -8536,25 +8543,25 @@ mod tests {
         state.file_list.gap.set(&state.store, 4.0);
         state.file_list.viewport_height.set(&state.store, 80.0);
 
-        state.apply_action(Action::ScrollFileListPx(50));
+        state.apply_action(crate::actions::FileListAction::ScrollFileListPx(50));
         assert_eq!(state.file_list.scroll_offset_px.get(&state.store), 50.0);
 
-        state.apply_action(Action::ScrollFileListPx(500));
+        state.apply_action(crate::actions::FileListAction::ScrollFileListPx(500));
         assert_eq!(state.file_list.scroll_offset_px.get(&state.store), 116.0);
 
-        state.apply_action(Action::ScrollFileListPx(-500));
+        state.apply_action(crate::actions::FileListAction::ScrollFileListPx(-500));
         assert_eq!(state.file_list.scroll_offset_px.get(&state.store), 0.0);
 
         state.editor.content_height_px.set(&state.store, 600);
         state.editor.viewport_height_px.set(&state.store, 200);
 
-        state.apply_action(Action::ScrollViewportPx(75));
+        state.apply_action(crate::actions::EditorAction::ScrollViewportPx(75));
         assert_eq!(state.editor.scroll_top_px.get(&state.store), 75);
 
-        state.apply_action(Action::ScrollViewportPx(500));
+        state.apply_action(crate::actions::EditorAction::ScrollViewportPx(500));
         assert_eq!(state.editor.scroll_top_px.get(&state.store), 400);
 
-        state.apply_action(Action::ScrollViewportPx(-500));
+        state.apply_action(crate::actions::EditorAction::ScrollViewportPx(-500));
         assert_eq!(state.editor.scroll_top_px.get(&state.store), 0);
     }
 
@@ -8563,7 +8570,7 @@ mod tests {
         let mut state = loaded_state_with_files(&["a.rs", "b.rs", "c.rs"]);
         state.file_list.scroll_offset_px.set(&state.store, 10.0);
 
-        state.apply_action(Action::SelectFile(0));
+        state.apply_action(crate::actions::FileListAction::SelectFile(0));
 
         assert_eq!(
             state.workspace.selected_file_index.get(&state.store),
@@ -8585,7 +8592,7 @@ mod tests {
             .set(&state.store, Some("a.rs".into()));
         state.file_list.scroll_offset_px.set(&state.store, 50.0);
 
-        state.apply_action(Action::SelectNextFile);
+        state.apply_action(crate::actions::FileListAction::SelectNextFile);
 
         assert_eq!(
             state.workspace.selected_file_index.get(&state.store),
@@ -8639,17 +8646,15 @@ mod tests {
             .set(&state.store, Some(PathBuf::from("/tmp/repo")));
         state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
 
-        let effects = state.apply_action(Action::SelectFile(0));
+        let effects = state.apply_action(crate::actions::FileListAction::SelectFile(0));
 
         assert!(effects.iter().any(|effect| {
             matches!(
                 effect,
-                Effect::LoadFileSyntax {
-                    request,
-                    ..
-                } if request.path == "src/lib.rs"
-                    && request.window.start == 0
-                    && request.window.end > 0
+                Effect::Syntax(SyntaxEffect::LoadFileSyntax(task))
+                    if task.request.path == "src/lib.rs"
+                        && task.request.window.start == 0
+                        && task.request.window.end > 0
             )
         }));
         state.workspace.compare_output.with(&state.store, |co| {
@@ -8775,15 +8780,15 @@ mod tests {
             .repo_path
             .set(&state.store, Some(PathBuf::from("/repo")));
 
-        let effects = state.apply_action(Action::SelectFile(0));
+        let effects = state.apply_action(crate::actions::FileListAction::SelectFile(0));
 
         assert!(effects.iter().any(|effect| {
-            matches!(effect, Effect::EnsureSyntaxPackForPath { path } if path == "src/lib.rs")
+            matches!(effect, Effect::Syntax(SyntaxEffect::EnsureSyntaxPackForPath { path }) if path == "src/lib.rs")
         }));
         assert!(
             !effects
                 .iter()
-                .any(|effect| matches!(effect, Effect::LoadCompareFile { .. }))
+                .any(|effect| matches!(effect, Effect::Compare(CompareEffect::LoadFile(_))))
         );
         assert!(
             state
@@ -8829,15 +8834,17 @@ mod tests {
         state.compare.layout.set(&state.store, LayoutMode::Unified);
         state.compare.mode.set(&state.store, CompareMode::TwoDot);
 
-        let effects = state.apply_action(Action::SelectFile(0));
+        let effects = state.apply_action(crate::actions::FileListAction::SelectFile(0));
 
         assert!(matches!(
             effects.as_slice(),
             [
-                Effect::EnsureSyntaxPackForPath { path },
-                Effect::LoadCompareFile { request, .. }
+                Effect::Syntax(SyntaxEffect::EnsureSyntaxPackForPath { path }),
+                Effect::Compare(CompareEffect::LoadFile(task))
             ]
-                if path == "src/big.rs" && request.index == 0 && request.path == "src/big.rs"
+                if path == "src/big.rs"
+                    && task.request.index == 0
+                    && task.request.path == "src/big.rs"
         ));
         assert_eq!(
             state.workspace.active_file_loading.get(&state.store),
@@ -8863,15 +8870,15 @@ mod tests {
             .repo_path
             .set(&state.store, Some(PathBuf::from("/repo")));
 
-        let effects = state.apply_action(Action::SelectFile(0));
+        let effects = state.apply_action(crate::actions::FileListAction::SelectFile(0));
 
         assert!(effects.iter().any(|effect| {
             matches!(
                 effect,
-                Effect::LoadCompareFile { request, .. }
-                    if request.index == 0
-                        && request.path == "src/kernel.c"
-                        && request.deferred_file.as_ref().is_some_and(|file| file.hunks_deferred)
+                Effect::Compare(CompareEffect::LoadFile(task))
+                    if task.request.index == 0
+                        && task.request.path == "src/kernel.c"
+                        && task.request.deferred_file.as_ref().is_some_and(|file| file.hunks_deferred)
             )
         }));
         assert_eq!(
@@ -8904,17 +8911,19 @@ mod tests {
             }),
         );
 
-        state.apply_event(AppEvent::CompareFileFinished(CompareFileFinished {
-            generation: 7,
-            index: 0,
-            path: "src/other.rs".to_owned(),
-            prepared: PreparedActiveFile {
-                file: FileDiff::default(),
-                render_doc: RenderDoc::default(),
-                text_buffer: TextBuffer::default(),
-                token_buffer: TokenBuffer::default(),
+        state.apply_event(AppEvent::from(CompareEvent::CompareFileFinished(
+            CompareFileFinished {
+                generation: 7,
+                index: 0,
+                path: "src/other.rs".to_owned(),
+                prepared: PreparedActiveFile {
+                    file: FileDiff::default(),
+                    render_doc: RenderDoc::default(),
+                    text_buffer: TextBuffer::default(),
+                    token_buffer: TokenBuffer::default(),
+                },
             },
-        }));
+        )));
 
         assert!(state.workspace.active_file.get(&state.store).is_none());
         assert_eq!(
@@ -8956,7 +8965,7 @@ mod tests {
             .list
             .update(&state.store, |l| l.viewport_height_px = 120);
 
-        state.apply_action(Action::ScrollActiveOverlayListPx(50));
+        state.apply_action(crate::actions::OverlayAction::ScrollActiveOverlayListPx(50));
         assert_eq!(
             state
                 .overlays
@@ -8966,7 +8975,9 @@ mod tests {
             50
         );
 
-        state.apply_action(Action::ScrollActiveOverlayListPx(1_000));
+        state.apply_action(crate::actions::OverlayAction::ScrollActiveOverlayListPx(
+            1_000,
+        ));
         assert_eq!(
             state
                 .overlays
@@ -8976,7 +8987,9 @@ mod tests {
             312
         );
 
-        state.apply_action(Action::ScrollActiveOverlayListPx(-1_000));
+        state.apply_action(crate::actions::OverlayAction::ScrollActiveOverlayListPx(
+            -1_000,
+        ));
         assert_eq!(
             state
                 .overlays
@@ -8991,9 +9004,11 @@ mod tests {
     fn stage_hunk_at_stages_the_given_index() {
         let mut state = status_state_with_two_hunks();
 
-        let effects = state.apply_action(Action::StageHunkAt(1));
+        let effects = state.apply_action(crate::actions::RepositoryAction::StageHunkAt(1));
 
-        let [Effect::ApplyPatchOperation(request)] = effects.as_slice() else {
+        let [Effect::Repository(RepositoryEffect::ApplyPatchOperation(request))] =
+            effects.as_slice()
+        else {
             panic!("expected one patch effect, got {:?}", effects);
         };
         assert!(request.patch.contains("old_second();"));
@@ -9005,9 +9020,11 @@ mod tests {
         let mut state = status_state_with_two_hunks();
         state.editor.hovered_hunk_index.set(&state.store, Some(1));
 
-        let effects = state.apply_action(Action::StageHunk);
+        let effects = state.apply_action(crate::actions::RepositoryAction::StageHunk);
 
-        let [Effect::ApplyPatchOperation(request)] = effects.as_slice() else {
+        let [Effect::Repository(RepositoryEffect::ApplyPatchOperation(request))] =
+            effects.as_slice()
+        else {
             panic!("expected one patch effect");
         };
         assert!(request.patch.contains("old_second();"));
@@ -9016,13 +9033,13 @@ mod tests {
     #[test]
     fn status_operation_failure_clears_the_pending_flag() {
         let mut state = status_state_with_two_hunks();
-        let _ = state.apply_action(Action::StageHunkAt(0));
+        let _ = state.apply_action(crate::actions::RepositoryAction::StageHunkAt(0));
         assert!(state.workspace.status_operation_pending.get(&state.store));
 
-        let _ = state.apply_event(AppEvent::StatusOperationFailed {
+        let _ = state.apply_event(AppEvent::from(RepositoryEvent::StatusOperationFailed {
             path: PathBuf::from("/repo"),
             message: "patch failed".to_owned(),
-        });
+        }));
 
         assert!(!state.workspace.status_operation_pending.get(&state.store));
     }
@@ -9042,7 +9059,7 @@ mod tests {
         );
 
         state.open_ref_picker(CompareField::Left);
-        state.apply_action(Action::InsertText("mai".to_owned()));
+        state.apply_action(crate::actions::TextEditAction::InsertText("mai".to_owned()));
 
         let branch_highlights = state.overlays.picker.entries.with(&state.store, |entries| {
             entries
@@ -9056,7 +9073,9 @@ mod tests {
 
         let mut state = AppState::default();
         state.open_ref_picker(CompareField::Left);
-        state.apply_action(Action::InsertText("HEAD~2".to_owned()));
+        state.apply_action(crate::actions::TextEditAction::InsertText(
+            "HEAD~2".to_owned(),
+        ));
 
         let (typed_value, typed_highlights) =
             state.overlays.picker.entries.with(&state.store, |entries| {
@@ -9066,7 +9085,7 @@ mod tests {
         assert_eq!(typed_value, "HEAD~2");
         assert_eq!(typed_highlights, vec![(0, "HEAD~2".len())]);
 
-        state.apply_action(Action::ConfirmOverlaySelection);
+        state.apply_action(crate::actions::OverlayAction::ConfirmOverlaySelection);
         assert_eq!(state.compare.left_ref.get(&state.store), "HEAD~2");
     }
 
@@ -9100,10 +9119,10 @@ mod tests {
     fn sidebar_width_action_clamps_and_stores_manual_preference() {
         let mut state = AppState::default();
 
-        state.apply_action(Action::SetSidebarWidthPx(40));
+        state.apply_action(crate::actions::SettingsAction::SetSidebarWidthPx(40));
         assert_eq!(state.settings.sidebar_width_px, Some(179));
 
-        state.apply_action(Action::SetSidebarWidthPx(420));
+        state.apply_action(crate::actions::SettingsAction::SetSidebarWidthPx(420));
         assert_eq!(state.settings.sidebar_width_px, Some(420));
     }
 
@@ -9111,17 +9130,17 @@ mod tests {
     fn ui_scale_actions_step_and_persist_within_bounds() {
         let mut state = AppState::default();
 
-        let effects = state.apply_action(Action::IncreaseUiScale);
+        let effects = state.apply_action(crate::actions::SettingsAction::IncreaseUiScale);
         assert_eq!(state.settings.ui_scale_pct, 110);
         assert_eq!(effects.len(), 1);
 
         for _ in 0..20 {
-            state.apply_action(Action::IncreaseUiScale);
+            state.apply_action(crate::actions::SettingsAction::IncreaseUiScale);
         }
         assert_eq!(state.settings.ui_scale_pct, 180);
 
         for _ in 0..20 {
-            state.apply_action(Action::DecreaseUiScale);
+            state.apply_action(crate::actions::SettingsAction::DecreaseUiScale);
         }
         assert_eq!(state.settings.ui_scale_pct, 70);
     }
@@ -9157,9 +9176,9 @@ mod tests {
         // A peek effect was fired for the parsed key.
         assert!(effects.iter().any(|e| matches!(
             e,
-            crate::effects::Effect::PeekPullRequest {
+            Effect::GitHub(GitHubEffect::PeekPullRequest {
                 owner, repo, number, ..
-            } if owner == "foo" && repo == "bar" && *number == 42
+            }) if owner == "foo" && repo == "bar" && *number == 42
         )));
 
         // Palette has the synthesized PR entry as the top row with key intact.
@@ -9211,12 +9230,12 @@ mod tests {
             base_repo_url: String::new(),
             head_repo_url: String::new(),
         };
-        state.apply_event(AppEvent::PullRequestPeeked {
+        state.apply_event(AppEvent::from(GitHubEvent::PullRequestPeeked {
             owner: "foo".to_owned(),
             repo: "bar".to_owned(),
             number: 7,
             info: info.clone(),
-        });
+        }));
 
         let meta = state.github.pull_request.cache.with(&state.store, |c| {
             c.get(&("foo".to_owned(), "bar".to_owned(), 7))
@@ -9282,10 +9301,10 @@ mod tests {
         let generation = state.workspace.compare_generation.get(&state.store);
 
         // Stale reporter — must be ignored.
-        state.apply_event(AppEvent::CompareProgressUpdate {
+        state.apply_event(AppEvent::from(CompareEvent::CompareProgressUpdate {
             generation: generation.wrapping_sub(1),
             phase: ComparePhase::EnumeratingChanges,
-        });
+        }));
         assert_eq!(
             state
                 .compare_progress
@@ -9295,10 +9314,10 @@ mod tests {
         );
 
         // Fresh reporter — applies.
-        state.apply_event(AppEvent::CompareProgressUpdate {
+        state.apply_event(AppEvent::from(CompareEvent::CompareProgressUpdate {
             generation,
             phase: ComparePhase::EnumeratingChanges,
-        });
+        }));
         assert_eq!(
             state
                 .compare_progress
@@ -9313,13 +9332,13 @@ mod tests {
         let _ = state.kickoff_compare();
         let generation = state.workspace.compare_generation.get(&state.store);
 
-        state.apply_event(AppEvent::CompareProgressUpdate {
+        state.apply_event(AppEvent::from(CompareEvent::CompareProgressUpdate {
             generation,
             phase: ComparePhase::LoadingFiles {
                 files_seen: 142,
                 files_total: 3_891,
             },
-        });
+        }));
 
         let progress = state
             .compare_progress
@@ -9392,10 +9411,10 @@ mod tests {
         // Reporter generation is threaded through the SyncRepository effect
         // so the worker's phase events stamp the matching generation.
         let sync_gen = effects.iter().find_map(|eff| match eff {
-            Effect::SyncRepository {
+            Effect::Repository(RepositoryEffect::SyncRepository {
                 reporter_generation,
                 ..
-            } => *reporter_generation,
+            }) => *reporter_generation,
             _ => None,
         });
         assert_eq!(sync_gen, Some(progress.generation));
@@ -9436,7 +9455,7 @@ mod tests {
         let _ = state.open_repository(path.clone());
         assert!(state.compare_progress.with(&state.store, |p| p.is_some()));
 
-        state.apply_event(AppEvent::RepositorySnapshotReady(
+        state.apply_event(AppEvent::from(RepositoryEvent::RepositorySnapshotReady(
             crate::events::RepositorySnapshot {
                 path,
                 reason: RepositorySyncReason::Open,
@@ -9446,7 +9465,7 @@ mod tests {
                 commits: Vec::new(),
                 status_items: Vec::<StatusItem>::new(),
             },
-        ));
+        )));
 
         assert!(
             state.compare_progress.with(&state.store, |p| p.is_none()),
@@ -9499,20 +9518,22 @@ mod tests {
         );
 
         // A stale CompareFinished arriving after cancel must be silently dropped.
-        state.apply_event(AppEvent::CompareFinished(CompareFinished {
-            generation,
-            spec: CompareSpec {
-                mode: CompareMode::TwoDot,
-                left_ref: "v5.0".to_owned(),
-                right_ref: "v5.1".to_owned(),
-                renderer: RendererKind::Builtin,
-                layout: LayoutMode::Unified,
+        state.apply_event(AppEvent::from(CompareEvent::CompareFinished(
+            CompareFinished {
+                generation,
+                spec: CompareSpec {
+                    mode: CompareMode::TwoDot,
+                    left_ref: "v5.0".to_owned(),
+                    right_ref: "v5.1".to_owned(),
+                    renderer: RendererKind::Builtin,
+                    layout: LayoutMode::Unified,
+                },
+                resolved_left: "deadbeef".to_owned(),
+                resolved_right: "cafefeed".to_owned(),
+                output: CompareOutput::default(),
+                range_commits: Vec::new(),
             },
-            resolved_left: "deadbeef".to_owned(),
-            resolved_right: "cafefeed".to_owned(),
-            output: CompareOutput::default(),
-            range_commits: Vec::new(),
-        }));
+        )));
         assert_eq!(
             state.workspace_mode.get(&state.store),
             WorkspaceMode::Empty,
@@ -9585,20 +9606,22 @@ mod tests {
             ..CompareOutput::default()
         };
 
-        state.apply_event(AppEvent::CompareFinished(CompareFinished {
-            generation,
-            spec: CompareSpec {
-                mode: CompareMode::TwoDot,
-                left_ref: "v5.0".to_owned(),
-                right_ref: "v5.1".to_owned(),
-                renderer: RendererKind::Builtin,
-                layout: LayoutMode::Unified,
+        state.apply_event(AppEvent::from(CompareEvent::CompareFinished(
+            CompareFinished {
+                generation,
+                spec: CompareSpec {
+                    mode: CompareMode::TwoDot,
+                    left_ref: "v5.0".to_owned(),
+                    right_ref: "v5.1".to_owned(),
+                    renderer: RendererKind::Builtin,
+                    layout: LayoutMode::Unified,
+                },
+                resolved_left: "deadbeef".to_owned(),
+                resolved_right: "cafefeed".to_owned(),
+                output,
+                range_commits: Vec::new(),
             },
-            resolved_left: "deadbeef".to_owned(),
-            resolved_right: "cafefeed".to_owned(),
-            output,
-            range_commits: Vec::new(),
-        }));
+        )));
 
         // Small files load synchronously, so progress is already cleared by the
         // time handle_compare_finished returns. We at least know the workspace
@@ -9613,10 +9636,10 @@ mod tests {
         let _ = state.kickoff_compare();
         let generation = state.workspace.compare_generation.get(&state.store);
 
-        state.apply_event(AppEvent::CompareFailed {
+        state.apply_event(AppEvent::from(CompareEvent::CompareFailed {
             generation,
             message: "boom".to_owned(),
-        });
+        }));
 
         assert_eq!(state.workspace_mode.get(&state.store), WorkspaceMode::Empty,);
         assert!(

@@ -1,9 +1,14 @@
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::effects::Effect;
+use crate::actions::TextEditAction;
+use crate::effects::{AiEffect, Effect, UiEffect};
 use crate::platform::secrets::AiKeyKind;
 
 use super::{AppState, CompareField, FocusTarget, PickerKind};
+
+pub(super) fn reduce_action(state: &mut AppState, action: TextEditAction) -> Vec<Effect> {
+    state.apply_text_edit_action(action)
+}
 
 impl AppState {
     pub(super) fn selection_range(&self) -> Option<(usize, usize)> {
@@ -248,7 +253,7 @@ impl AppState {
     pub(super) fn copy_selection(&self) -> (Vec<Effect>, Option<String>) {
         if let Some((start, end)) = self.selection_range() {
             if let Some(selected) = self.with_focused_text(|text| text[start..end].to_string()) {
-                return (vec![Effect::SetClipboard(selected)], None);
+                return (vec![UiEffect::SetClipboard(selected).into()], None);
             }
         }
         // No text selection — copy the selected picker/palette entry's value.
@@ -258,7 +263,10 @@ impl AppState {
                 entries.get(selected).map(|e| e.value.clone())
             });
             if let Some(value) = value {
-                return (vec![Effect::SetClipboard(value.clone())], Some(value));
+                return (
+                    vec![UiEffect::SetClipboard(value.clone()).into()],
+                    Some(value),
+                );
             }
         }
         if matches!(
@@ -278,7 +286,10 @@ impl AppState {
                     entries.get(selected).map(|e| e.label.clone())
                 });
             if let Some(label) = label {
-                return (vec![Effect::SetClipboard(label.clone())], Some(label));
+                return (
+                    vec![UiEffect::SetClipboard(label.clone()).into()],
+                    Some(label),
+                );
             }
         }
         (Vec::new(), None)
@@ -358,11 +369,12 @@ pub(super) fn next_word_boundary(text: &str, offset: usize) -> usize {
 
 fn ai_key_save_effect(kind: AiKeyKind, value: &str) -> Effect {
     if value.is_empty() {
-        Effect::ClearAiKey { kind }
+        AiEffect::ClearAiKey { kind }.into()
     } else {
-        Effect::SaveAiKey {
+        AiEffect::SaveAiKey {
             kind,
             value: value.to_owned(),
         }
+        .into()
     }
 }

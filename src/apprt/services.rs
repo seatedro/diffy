@@ -24,7 +24,7 @@ use crate::effects::{
     CompareStatsRequest, GenerateCommitMessageRequest, LoadFileSyntaxRequest, StatusDiffRequest,
 };
 use crate::events::{
-    AppEvent, CompareFileFinished, CompareFileStat, CompareFileStatsReady, CompareFinished,
+    AiEvent, CompareFileFinished, CompareFileStat, CompareFileStatsReady, CompareFinished,
     CompareHistoryReady, CompareStatsReady, StatusDiffFinished,
 };
 use crate::platform::persistence::{Settings, SettingsStore};
@@ -561,7 +561,7 @@ impl AppServices {
             Ok(text) => text,
             Err(error) => {
                 tracing::error!(generation, %error, "ai: diff read failed");
-                event_sender.send(AppEvent::CommitMessageGenerationFailed {
+                event_sender.send(AiEvent::CommitMessageGenerationFailed {
                     generation,
                     message: format!("failed to read diff: {error}"),
                 });
@@ -600,7 +600,7 @@ impl AppServices {
                 Ok(StreamMessage::Chunk(chunk)) => {
                     chunk_count += 1;
                     byte_count += chunk.len();
-                    event_sender.send(AppEvent::CommitMessageChunk { generation, chunk });
+                    event_sender.send(AiEvent::CommitMessageChunk { generation, chunk });
                 }
                 Ok(StreamMessage::Finished) => {
                     tracing::info!(
@@ -610,7 +610,7 @@ impl AppServices {
                         bytes = byte_count,
                         "ai: stream finished"
                     );
-                    event_sender.send(AppEvent::CommitMessageGenerationFinished { generation });
+                    event_sender.send(AiEvent::CommitMessageGenerationFinished { generation });
                     return;
                 }
                 Ok(StreamMessage::Failed(message)) => {
@@ -621,7 +621,7 @@ impl AppServices {
                         %message,
                         "ai: stream failed"
                     );
-                    event_sender.send(AppEvent::CommitMessageGenerationFailed {
+                    event_sender.send(AiEvent::CommitMessageGenerationFailed {
                         generation,
                         message,
                     });
@@ -629,7 +629,7 @@ impl AppServices {
                 }
                 Err(_) => {
                     tracing::error!(generation, "ai: worker channel disconnected");
-                    event_sender.send(AppEvent::CommitMessageGenerationFailed {
+                    event_sender.send(AiEvent::CommitMessageGenerationFailed {
                         generation,
                         message: "AI worker exited unexpectedly".to_owned(),
                     });

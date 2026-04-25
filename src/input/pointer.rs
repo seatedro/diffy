@@ -3,7 +3,9 @@ use std::time::Instant;
 
 use winit::window::{CursorIcon, Window};
 
-use crate::actions::Action;
+use crate::actions::{
+    AppAction, EditorAction, FileListAction, OverlayAction, RepositoryAction, TextEditAction,
+};
 use crate::render::Renderer;
 use crate::ui::components::{TooltipSide, TooltipState};
 use crate::ui::editor::element::EditorElement;
@@ -51,8 +53,8 @@ impl InputSystem {
                 let click_y = (y - hit_area.text_y) as i32;
                 self.mouse_drag_target = Some(hit_area.focus_target);
                 return InputOutcome::actions(vec![
-                    Action::SetFocus(Some(hit_area.focus_target)),
-                    Action::EditorClick(click_x, click_y),
+                    AppAction::SetFocus(Some(hit_area.focus_target)).into(),
+                    EditorAction::EditorClick(click_x, click_y).into(),
                 ]);
             }
             let byte_offset = hit_test_text_offset(
@@ -63,8 +65,8 @@ impl InputSystem {
             );
             self.mouse_drag_target = Some(hit_area.focus_target);
             return InputOutcome::actions(vec![
-                Action::SetFocus(Some(hit_area.focus_target)),
-                Action::SetTextCursor(byte_offset),
+                AppAction::SetFocus(Some(hit_area.focus_target)).into(),
+                TextEditAction::SetTextCursor(byte_offset).into(),
             ]);
         }
 
@@ -78,7 +80,7 @@ impl InputSystem {
             let hit = &ui_frame.hits[idx];
             let mut actions = Vec::new();
             if matches!(hit.identity, Some(HitIdentity::File(_))) {
-                actions.push(Action::SetFocus(Some(FocusTarget::FileList)));
+                actions.push(AppAction::SetFocus(Some(FocusTarget::FileList)).into());
             }
             match hit.on_click.invoke(ClickEvent { x, y }) {
                 ClickResult::Handled => {}
@@ -101,8 +103,8 @@ impl InputSystem {
                 && let Some(block_action) = editor.block_action_for_row(row)
             {
                 return InputOutcome::actions(vec![
-                    Action::FocusViewport,
-                    Action::HoverViewportRow(hovered),
+                    EditorAction::FocusViewport.into(),
+                    EditorAction::HoverViewportRow(hovered).into(),
                     block_action,
                 ]);
             }
@@ -115,8 +117,8 @@ impl InputSystem {
                 });
                 if let Some(action) = expand_action {
                     return InputOutcome::actions(vec![
-                        Action::FocusViewport,
-                        Action::HoverViewportRow(hovered),
+                        EditorAction::FocusViewport.into(),
+                        EditorAction::HoverViewportRow(hovered).into(),
                         action,
                     ]);
                 }
@@ -127,8 +129,8 @@ impl InputSystem {
                 if let Some(row) = hovered {
                     if editor.is_block_row(row) {
                         return InputOutcome::actions(vec![
-                            Action::FocusViewport,
-                            Action::HoverViewportRow(hovered),
+                            EditorAction::FocusViewport.into(),
+                            EditorAction::HoverViewportRow(hovered).into(),
                         ]);
                     }
                     let line_idx =
@@ -141,17 +143,19 @@ impl InputSystem {
                                     == crate::ui::editor::render_doc::RenderRowKind::HunkSeparator
                             })
                     });
-                    let mut actions =
-                        vec![Action::FocusViewport, Action::HoverViewportRow(hovered)];
+                    let mut actions = vec![
+                        EditorAction::FocusViewport.into(),
+                        EditorAction::HoverViewportRow(hovered).into(),
+                    ];
                     if is_hunk_sep {
                         let is_staged = matches!(
                             state.workspace.selected_status_scope.get(&state.store),
                             Some(crate::core::vcs::git::StatusScope::Staged)
                         );
                         actions.push(if is_staged {
-                            Action::UnstageHunk
+                            RepositoryAction::UnstageHunk.into()
                         } else {
-                            Action::StageHunk
+                            RepositoryAction::StageHunk.into()
                         });
                     } else if self.modifiers.shift_key() {
                         let anchor = state
@@ -159,19 +163,21 @@ impl InputSystem {
                             .line_selection
                             .with(&state.store, |ls| ls.last_toggled_row);
                         if let Some(anchor) = anchor {
-                            actions.push(Action::ToggleLineSelectionRange(line_idx, anchor));
+                            actions.push(
+                                RepositoryAction::ToggleLineSelectionRange(line_idx, anchor).into(),
+                            );
                         } else {
-                            actions.push(Action::ToggleLineSelection(line_idx));
+                            actions.push(RepositoryAction::ToggleLineSelection(line_idx).into());
                         }
                     } else {
-                        actions.push(Action::ToggleLineSelection(line_idx));
+                        actions.push(RepositoryAction::ToggleLineSelection(line_idx).into());
                     }
                     return InputOutcome::actions(actions);
                 }
             }
             return InputOutcome::actions(vec![
-                Action::FocusViewport,
-                Action::HoverViewportRow(hovered),
+                EditorAction::FocusViewport.into(),
+                EditorAction::HoverViewportRow(hovered).into(),
             ]);
         }
 
@@ -206,7 +212,7 @@ impl InputSystem {
             if hit_area.multiline {
                 let drag_x = (x - hit_area.text_x) as i32;
                 let drag_y = (y - hit_area.text_y) as i32;
-                actions.push(Action::EditorDrag(drag_x, drag_y));
+                actions.push(EditorAction::EditorDrag(drag_x, drag_y).into());
             } else {
                 let byte_offset = hit_test_text_offset(
                     renderer.map(Renderer::font_system),
@@ -214,7 +220,7 @@ impl InputSystem {
                     hit_area.font_size,
                     x - hit_area.text_x,
                 );
-                actions.push(Action::ExtendTextSelection(byte_offset));
+                actions.push(TextEditAction::ExtendTextSelection(byte_offset).into());
             }
         }
 
@@ -254,16 +260,16 @@ impl InputSystem {
         };
 
         if hovered_file != state.file_list.hovered_index.get(&state.store) {
-            actions.push(Action::HoverFile(hovered_file));
+            actions.push(FileListAction::HoverFile(hovered_file).into());
         }
         if hovered_overlay_entry != state.overlays.picker.hovered_index.get(&state.store) {
-            actions.push(Action::HoverOverlayEntry(hovered_overlay_entry));
+            actions.push(OverlayAction::HoverOverlayEntry(hovered_overlay_entry).into());
         }
         let current_hovered_toast = state
             .toasts
             .with(&state.store, |toasts| toasts.iter().position(|t| t.hovered));
         if hovered_toast != current_hovered_toast {
-            actions.push(Action::HoverToast(hovered_toast));
+            actions.push(AppAction::HoverToast(hovered_toast).into());
         }
 
         let hovered_row = if input_is_blocked_by_overlay(state, ui_frame, x, y) {
@@ -273,7 +279,7 @@ impl InputSystem {
             editor.hit_test_row(&editor_snap, x, y)
         };
         if hovered_row != state.editor.hovered_row.get(&state.store) {
-            actions.push(Action::HoverViewportRow(hovered_row));
+            actions.push(EditorAction::HoverViewportRow(hovered_row).into());
         }
 
         let cursor_hint = if hovered_row.is_some_and(|row| editor.is_block_row(row)) {

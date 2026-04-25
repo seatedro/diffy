@@ -96,7 +96,7 @@ pub(crate) fn title_bar(
             // left
             <div class="flex-1 flex-row items-center" min_w={0.0} gap={Sp::SM}>
                 if is_ready {
-                    <Button action={Action::ToggleSidebar}
+                    <Button action={crate::actions::FileListAction::ToggleSidebar.into()}
                             tooltip={"Toggle sidebar (\u{2318}B)"}>
                         <Icon>{sidebar_icon}</Icon>
                     </Button>
@@ -106,7 +106,7 @@ pub(crate) fn title_bar(
                         &repo_label,
                         lucide::FOLDER,
                         false,
-                        Action::OpenRepoPicker,
+                        crate::actions::OverlayAction::OpenRepoPicker.into(),
                         "Switch repository",
                         tc,
                         scale,
@@ -157,7 +157,7 @@ pub(crate) fn title_bar(
             // right
             <div class="flex-1 flex-row items-center justify-end" min_w={0.0} gap={Sp::XS}>
                 if is_ready {
-                    <Button action={Action::ShowWorkingTree}
+                    <Button action={crate::actions::WorkspaceAction::ShowWorkingTree.into()}
                             active={state.workspace.source.get(&state.store) == WorkspaceSource::Status}
                             tooltip={"Show working tree changes"}>
                         <Icon>{lucide::FOLDER_GIT}</Icon>
@@ -176,7 +176,7 @@ pub(crate) fn title_bar(
 fn update_chip(state: &AppState) -> Option<AnyElement> {
     match state.update.get(&state.store) {
         UpdateState::Available(update) => Some(
-            Button::new(Action::InstallUpdate)
+            Button::new(crate::actions::UpdateAction::InstallUpdate.into())
                 .icon(lucide::ARROW_DOWN)
                 .label("Update")
                 .tooltip(format!("Install Diffy {}", update.version))
@@ -194,7 +194,7 @@ fn update_chip(state: &AppState) -> Option<AnyElement> {
                 .into_any(),
         ),
         UpdateState::ReadyToRestart(update) => Some(
-            Button::new(Action::RestartToUpdate)
+            Button::new(crate::actions::UpdateAction::RestartToUpdate.into())
                 .icon(lucide::REFRESH)
                 .label("Restart")
                 .tooltip(format!(
@@ -246,7 +246,7 @@ fn account_chip(
                      gap={Sp::XS} px={Sp::SM} py={Sp::XS}
                      rounded={Rad::MD}
                      hover_bg={tc.ghost_element_hover}
-                     on_click={Action::OpenAccountMenu}
+                     on_click={crate::actions::GitHubAction::OpenAccountMenu.into()}
                      cursor={CursorHint::Pointer}
                      tooltip={tooltip}>
                     {avatar(avatar_name).size(20.0).image(avatar_image)}
@@ -265,7 +265,7 @@ fn account_chip(
                      gap={Sp::XS} px={Sp::SM} py={Sp::XS}
                      rounded={Rad::MD}
                      hover_bg={tc.ghost_element_hover}
-                     on_click={Action::StartGitHubDeviceFlow}
+                     on_click={crate::actions::GitHubAction::StartGitHubDeviceFlow.into()}
                      cursor={CursorHint::Pointer}
                      tooltip={tooltip}>
                     <icon svg={lucide::KEY} size={Ico::SM} color={tc.text_muted} />
@@ -339,15 +339,15 @@ fn compare_cluster(
 
     let (left_action, right_action, swap_action) = if picker_open {
         (
-            Action::SetActiveRefField(CompareField::Left),
-            Action::SetActiveRefField(CompareField::Right),
-            Action::SwapDraftRefs,
+            crate::actions::CompareAction::SetActiveRefField(CompareField::Left).into(),
+            crate::actions::CompareAction::SetActiveRefField(CompareField::Right).into(),
+            crate::actions::CompareAction::SwapDraftRefs.into(),
         )
     } else {
         (
-            Action::OpenRefPicker(CompareField::Left),
-            Action::OpenRefPicker(CompareField::Right),
-            Action::SwapRefs,
+            crate::actions::OverlayAction::OpenRefPicker(CompareField::Left).into(),
+            crate::actions::OverlayAction::OpenRefPicker(CompareField::Right).into(),
+            crate::actions::CompareAction::SwapRefs.into(),
         )
     };
 
@@ -384,7 +384,7 @@ fn compare_cluster(
             <div h_full class="flex-row items-center"
                  px={Sp::MD}
                  hover_bg={tc.ghost_element_hover}
-                 on_click={Action::OpenCompareMenu}
+                 on_click={crate::actions::CompareAction::OpenCompareMenu.into()}
                  cursor={CursorHint::Pointer}
                  tooltip={mode_tooltip}>
                 <text class="text-xs font-medium" color={tc.text_muted}>{mode_label}</text>
@@ -435,7 +435,7 @@ fn compare_slot(has_pending: bool, tc: &ThemeColors, scale: f32) -> AnyElement {
             tc.accent_strong,
             tc.text_strong,
             CursorHint::Pointer,
-            Action::CommitRefPicker,
+            crate::actions::CompareAction::CommitRefPicker.into(),
             "Apply changes and compare",
         )
     } else {

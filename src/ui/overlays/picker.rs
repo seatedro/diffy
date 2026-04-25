@@ -85,7 +85,7 @@ pub fn picker_with_header<T: PickerItem>(
         <div class="absolute flex-col items-center" top={scrim_top_px} left={0.0}
              w={width} h={scrim_h_px} z_index={100}
              bg={tc.overlay_scrim}
-             on_click={Action::CloseOverlay}
+             on_click={crate::actions::OverlayAction::CloseOverlay.into()}
              hit_identity={HitIdentity::OverlayBackdrop}
              pt={pt_in_scrim}>
             <div class="flex-col overflow-hidden"
@@ -108,7 +108,9 @@ pub fn picker_with_header<T: PickerItem>(
                     {text_input("", query)
                         .placeholder(placeholder)
                         .focused(state.focus.get(&state.store) == Some(focus_target))
-                        .on_click(Action::SetFocus(Some(focus_target)))
+                        .on_click(
+                            crate::actions::AppAction::SetFocus(Some(focus_target)).into(),
+                        )
                         .cursor(state.text_edit.cursor.get(&state.store))
                         .anchor(state.text_edit.anchor.get(&state.store))
                         .cursor_moved_at(state.text_edit.cursor_moved_at_ms.get(&state.store))

@@ -6,8 +6,14 @@ use std::time::Duration;
 use crate::apprt::git_worker::GitWorker;
 use crate::apprt::services::AppServices;
 use crate::apprt::watcher::RepoWatchWorker;
-use crate::effects::Effect;
-use crate::events::AppEvent;
+use crate::effects::{
+    AiEffect, CompareEffect, Effect, GitHubEffect, RepositoryEffect, SettingsEffect, SyntaxEffect,
+    UiEffect, UpdateEffect,
+};
+use crate::events::{
+    AiEvent, AppEvent, CompareEvent, GitHubEvent, RepositoryEvent, SettingsEvent, SyntaxEvent,
+    UiEvent, UpdateEvent,
+};
 use crate::platform::persistence::Settings;
 use winit::event_loop::EventLoopProxy;
 
@@ -71,7 +77,8 @@ impl RuntimeEventSender {
         Self { sender, wake_proxy }
     }
 
-    pub(crate) fn send(&self, event: AppEvent) {
+    pub(crate) fn send<E: Into<AppEvent>>(&self, event: E) {
+        let event = event.into();
         if self.sender.send(event).is_ok() {
             if let Some(wake_proxy) = &self.wake_proxy {
                 let _ = wake_proxy.send_event(());
@@ -95,41 +102,41 @@ impl SaveWorker {
 impl EffectRunner {
     fn dispatch(&self, effect: Effect) {
         match effect {
-            Effect::OpenRepositoryDialog => {
+            Effect::Ui(UiEffect::OpenRepositoryDialog) => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
-                    event_sender.send(AppEvent::RepositoryDialogClosed {
+                    event_sender.send(UiEvent::RepositoryDialogClosed {
                         path: services.open_repository_dialog(),
                     });
                 });
             }
-            Effect::WatchRepository { path } => {
+            Effect::Repository(RepositoryEffect::WatchRepository { path }) => {
                 self.repo_watch_worker.dispatch(path);
             }
-            Effect::SyncRepository {
+            Effect::Repository(RepositoryEffect::SyncRepository {
                 path,
                 reason,
                 reporter_generation,
-            } => {
+            }) => {
                 self.git_worker
                     .dispatch_sync(path, reason, reporter_generation);
             }
-            Effect::ApplyStatusOperation(request) => {
+            Effect::Repository(RepositoryEffect::ApplyStatusOperation(request)) => {
                 self.git_worker.dispatch_operation(
                     request.repo_path,
                     request.item,
                     request.operation,
                 );
             }
-            Effect::ApplyBatchStatusOperation(request) => {
+            Effect::Repository(RepositoryEffect::ApplyBatchStatusOperation(request)) => {
                 self.git_worker.dispatch_batch_operation(
                     request.repo_path,
                     request.items,
                     request.operation,
                 );
             }
-            Effect::ApplyPatchOperation(request) => {
+            Effect::Repository(RepositoryEffect::ApplyPatchOperation(request)) => {
                 self.git_worker.dispatch_patch_operation(
                     request.repo_path,
                     request.patch,
@@ -137,15 +144,15 @@ impl EffectRunner {
                     request.operation,
                 );
             }
-            Effect::CreateCommit(request) => {
+            Effect::Repository(RepositoryEffect::CreateCommit(request)) => {
                 self.git_worker
                     .dispatch_commit(request.repo_path, request.message);
             }
-            Effect::FetchRemote(request) => {
+            Effect::Repository(RepositoryEffect::FetchRemote(request)) => {
                 self.git_worker
                     .dispatch_fetch(request.repo_path, request.remote, request.toast_id);
             }
-            Effect::Push(request) => {
+            Effect::Repository(RepositoryEffect::Push(request)) => {
                 self.git_worker.dispatch_push(
                     request.repo_path,
                     request.remote,
@@ -154,7 +161,7 @@ impl EffectRunner {
                     request.toast_id,
                 );
             }
-            Effect::PullFf(request) => {
+            Effect::Repository(RepositoryEffect::PullFf(request)) => {
                 self.git_worker.dispatch_pull_ff(
                     request.repo_path,
                     request.remote,
@@ -162,18 +169,17 @@ impl EffectRunner {
                     request.toast_id,
                 );
             }
-            Effect::RunCompare {
-                generation,
-                request,
-            } => {
+            Effect::Compare(CompareEffect::Run(task)) => {
+                let generation = task.generation;
+                let request = task.request;
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let reporter =
                         crate::apprt::ProgressReporter::new(generation, event_sender.clone());
                     let event = match services.run_compare(generation, request, Some(&reporter)) {
-                        Ok(payload) => AppEvent::CompareFinished(payload),
-                        Err(error) => AppEvent::CompareFailed {
+                        Ok(payload) => CompareEvent::CompareFinished(payload),
+                        Err(error) => CompareEvent::CompareFailed {
                             generation,
                             message: error.to_string(),
                         },
@@ -181,16 +187,15 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
-            Effect::LoadCompareStats {
-                generation,
-                request,
-            } => {
+            Effect::Compare(CompareEffect::LoadStats(task)) => {
+                let generation = task.generation;
+                let request = task.request;
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event = match services.load_compare_stats(generation, request) {
-                        Ok(payload) => AppEvent::CompareStatsReady(payload),
-                        Err(error) => AppEvent::CompareStatsFailed {
+                        Ok(payload) => CompareEvent::CompareStatsReady(payload),
+                        Err(error) => CompareEvent::CompareStatsFailed {
                             generation,
                             message: error.to_string(),
                         },
@@ -198,16 +203,15 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
-            Effect::LoadCompareHistory {
-                generation,
-                request,
-            } => {
+            Effect::Compare(CompareEffect::LoadHistory(task)) => {
+                let generation = task.generation;
+                let request = task.request;
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event = match services.load_compare_history(generation, request) {
-                        Ok(payload) => AppEvent::CompareHistoryReady(payload),
-                        Err(error) => AppEvent::CompareHistoryFailed {
+                        Ok(payload) => CompareEvent::CompareHistoryReady(payload),
+                        Err(error) => CompareEvent::CompareHistoryFailed {
                             generation,
                             message: error.to_string(),
                         },
@@ -215,17 +219,16 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
-            Effect::LoadCompareFile {
-                generation,
-                request,
-            } => {
+            Effect::Compare(CompareEffect::LoadFile(task)) => {
+                let generation = task.generation;
+                let request = task.request;
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let path = request.path.clone();
                     let event = match services.load_compare_file(generation, request) {
-                        Ok(payload) => AppEvent::CompareFileFinished(payload),
-                        Err(error) => AppEvent::CompareFileFailed {
+                        Ok(payload) => CompareEvent::CompareFileFinished(payload),
+                        Err(error) => CompareEvent::CompareFileFailed {
                             generation,
                             path,
                             message: error.to_string(),
@@ -234,16 +237,15 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
-            Effect::LoadCompareFileStats {
-                generation,
-                request,
-            } => {
+            Effect::Compare(CompareEffect::LoadFileStats(task)) => {
+                let generation = task.generation;
+                let request = task.request;
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event = match services.load_compare_file_stats(generation, request) {
-                        Ok(payload) => AppEvent::CompareFileStatsReady(payload),
-                        Err(error) => AppEvent::CompareFileStatsFailed {
+                        Ok(payload) => CompareEvent::CompareFileStatsReady(payload),
+                        Err(error) => CompareEvent::CompareFileStatsFailed {
                             generation,
                             message: error.to_string(),
                         },
@@ -251,17 +253,15 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
-            Effect::LoadStatusDiff {
-                generation,
-                index,
-                request,
-            } => {
+            Effect::Repository(RepositoryEffect::LoadStatusDiff { task, index }) => {
+                let generation = task.generation;
+                let request = task.request;
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event = match services.load_status_diff(generation, index, request) {
-                        Ok(payload) => AppEvent::StatusDiffFinished(payload),
-                        Err(error) => AppEvent::StatusDiffFailed {
+                        Ok(payload) => CompareEvent::StatusDiffFinished(payload),
+                        Err(error) => CompareEvent::StatusDiffFailed {
                             generation,
                             index,
                             message: error.to_string(),
@@ -270,40 +270,41 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
-            Effect::LoadFileSyntax {
-                generation,
-                request,
-            } => {
+            Effect::Syntax(SyntaxEffect::LoadFileSyntax(task)) => {
+                let generation = task.generation;
+                let request = task.request;
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let tokens = services.load_file_syntax(&request);
-                    event_sender.send(AppEvent::FileSyntaxReady(crate::events::FileSyntaxReady {
-                        generation,
-                        request_id: request.request_id,
-                        file_index: request.file_index,
-                        path: request.path,
-                        window: request.window,
-                        tokens,
-                    }));
+                    event_sender.send(SyntaxEvent::FileSyntaxReady(
+                        crate::events::FileSyntaxReady {
+                            generation,
+                            request_id: request.request_id,
+                            file_index: request.file_index,
+                            path: request.path,
+                            window: request.window,
+                            tokens,
+                        },
+                    ));
                 });
             }
-            Effect::LoadPullRequest {
+            Effect::GitHub(GitHubEffect::LoadPullRequest {
                 url,
                 repo_path,
                 github_token,
-            } => {
+            }) => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event = match services.load_pull_request(&url, &repo_path, github_token) {
-                        Ok((info, left_ref, right_ref)) => AppEvent::PullRequestLoaded {
+                        Ok((info, left_ref, right_ref)) => GitHubEvent::PullRequestLoaded {
                             url,
                             info,
                             left_ref,
                             right_ref,
                         },
-                        Err(error) => AppEvent::PullRequestLoadFailed {
+                        Err(error) => GitHubEvent::PullRequestLoadFailed {
                             url,
                             message: error.to_string(),
                         },
@@ -311,63 +312,63 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
-            Effect::StartDeviceFlow { client_id } => {
+            Effect::GitHub(GitHubEffect::StartDeviceFlow { client_id }) => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event = match services.start_device_flow(&client_id) {
-                        Ok(state) => AppEvent::DeviceFlowStarted(state),
-                        Err(error) => AppEvent::DeviceFlowStartFailed {
+                        Ok(state) => GitHubEvent::DeviceFlowStarted(state),
+                        Err(error) => GitHubEvent::DeviceFlowStartFailed {
                             message: error.to_string(),
                         },
                     };
                     event_sender.send(event);
                 });
             }
-            Effect::PollDeviceFlow {
+            Effect::GitHub(GitHubEffect::PollDeviceFlow {
                 client_id,
                 device_code,
                 interval_seconds,
-            } => {
+            }) => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event =
                         match services.poll_device_flow(&client_id, &device_code, interval_seconds)
                         {
-                            Ok(token) => AppEvent::DeviceFlowCompleted { token },
-                            Err(error) => AppEvent::DeviceFlowFailed {
+                            Ok(token) => GitHubEvent::DeviceFlowCompleted { token },
+                            Err(error) => GitHubEvent::DeviceFlowFailed {
                                 message: error.to_string(),
                             },
                         };
                     event_sender.send(event);
                 });
             }
-            Effect::LoadGitHubToken => {
+            Effect::GitHub(GitHubEffect::LoadGitHubToken) => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event = match services.load_github_token() {
-                        Ok(token) => AppEvent::GitHubTokenLoaded { token },
-                        Err(error) => AppEvent::GitHubTokenLoadFailed {
+                        Ok(token) => GitHubEvent::GitHubTokenLoaded { token },
+                        Err(error) => GitHubEvent::GitHubTokenLoadFailed {
                             message: error.to_string(),
                         },
                     };
                     event_sender.send(event);
                 });
             }
-            Effect::SaveGitHubToken(token) => {
+            Effect::GitHub(GitHubEffect::SaveGitHubToken(token)) => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     if let Err(error) = services.save_github_token(&token) {
-                        event_sender.send(AppEvent::GitHubTokenSaveFailed {
+                        event_sender.send(GitHubEvent::GitHubTokenSaveFailed {
                             message: error.to_string(),
                         });
                     }
                 });
             }
-            Effect::ClearGitHubToken => {
+            Effect::GitHub(GitHubEffect::ClearGitHubToken) => {
                 let services = self.services.clone();
                 thread::spawn(move || {
                     if let Err(error) = services.clear_github_token() {
@@ -375,37 +376,37 @@ impl EffectRunner {
                     }
                 });
             }
-            Effect::FetchGitHubUser { token } => {
+            Effect::GitHub(GitHubEffect::FetchGitHubUser { token }) => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event = match services.fetch_github_user(&token) {
-                        Ok(user) => AppEvent::GitHubUserFetched { user },
-                        Err(error) => AppEvent::GitHubUserFetchFailed {
+                        Ok(user) => GitHubEvent::GitHubUserFetched { user },
+                        Err(error) => GitHubEvent::GitHubUserFetchFailed {
                             message: error.to_string(),
                         },
                     };
                     event_sender.send(event);
                 });
             }
-            Effect::PeekPullRequest {
+            Effect::GitHub(GitHubEffect::PeekPullRequest {
                 owner,
                 repo,
                 number,
                 github_token,
-            } => {
+            }) => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event =
                         match services.peek_pull_request(&owner, &repo, number, github_token) {
-                            Ok(info) => AppEvent::PullRequestPeeked {
+                            Ok(info) => GitHubEvent::PullRequestPeeked {
                                 owner,
                                 repo,
                                 number,
                                 info,
                             },
-                            Err(error) => AppEvent::PullRequestPeekFailed {
+                            Err(error) => GitHubEvent::PullRequestPeekFailed {
                                 owner,
                                 repo,
                                 number,
@@ -415,18 +416,18 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
-            Effect::FetchAvatar { url } => {
+            Effect::GitHub(GitHubEffect::FetchAvatar { url }) => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event = match services.fetch_avatar(&url) {
-                        Ok((rgba, width, height)) => AppEvent::AvatarFetched {
+                        Ok((rgba, width, height)) => GitHubEvent::AvatarFetched {
                             url,
                             rgba: std::sync::Arc::new(rgba),
                             width,
                             height,
                         },
-                        Err(error) => AppEvent::AvatarFetchFailed {
+                        Err(error) => GitHubEvent::AvatarFetchFailed {
                             url,
                             message: error.to_string(),
                         },
@@ -434,41 +435,41 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
-            Effect::ResolveRef {
+            Effect::Compare(CompareEffect::ResolveRef {
                 repo_path,
                 query,
                 generation,
-            } => {
+            }) => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event = match services.resolve_ref(&repo_path, &query) {
-                        Ok((short_oid, summary)) => AppEvent::RefResolved {
+                        Ok((short_oid, summary)) => CompareEvent::RefResolved {
                             query,
                             generation,
                             short_oid,
                             summary,
                         },
-                        Err(_) => AppEvent::RefResolveFailed { generation },
+                        Err(_) => CompareEvent::RefResolveFailed { generation },
                     };
                     event_sender.send(event);
                 });
             }
-            Effect::SaveSettings(settings) => {
+            Effect::Settings(SettingsEffect::SaveSettings(settings)) => {
                 self.save_worker.dispatch(settings);
             }
-            Effect::CheckForUpdates { silent } => {
+            Effect::Update(UpdateEffect::CheckForUpdates { silent }) => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event = match services.check_for_updates(crate::APP_VERSION) {
                         Ok(crate::core::update::UpdateCheck::Available(update)) => {
-                            AppEvent::UpdateAvailable { update, silent }
+                            UpdateEvent::UpdateAvailable { update, silent }
                         }
                         Ok(crate::core::update::UpdateCheck::NotAvailable) => {
-                            AppEvent::UpdateNotAvailable { silent }
+                            UpdateEvent::UpdateNotAvailable { silent }
                         }
-                        Err(error) => AppEvent::UpdateCheckFailed {
+                        Err(error) => UpdateEvent::UpdateCheckFailed {
                             message: error.to_string(),
                             silent,
                         },
@@ -476,54 +477,54 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
-            Effect::StageUpdate { update, silent } => {
+            Effect::Update(UpdateEffect::StageUpdate { update, silent }) => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || match services.stage_update(&update) {
-                    Ok(staged) => event_sender.send(AppEvent::UpdateStaged { staged, silent }),
-                    Err(error) => event_sender.send(AppEvent::UpdateInstallFailed {
+                    Ok(staged) => event_sender.send(UpdateEvent::UpdateStaged { staged, silent }),
+                    Err(error) => event_sender.send(UpdateEvent::UpdateInstallFailed {
                         message: error.to_string(),
                         silent,
                     }),
                 });
             }
-            Effect::ApplyStagedUpdate(staged) => {
+            Effect::Update(UpdateEffect::ApplyStagedUpdate(staged)) => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     if let Err(error) = services.apply_staged_update(&staged) {
-                        event_sender.send(AppEvent::UpdateInstallFailed {
+                        event_sender.send(UpdateEvent::UpdateInstallFailed {
                             message: error.to_string(),
                             silent: false,
                         });
                     }
                 });
             }
-            Effect::OpenBrowser { url } => {
+            Effect::Ui(UiEffect::OpenBrowser { url }) => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     if let Err(error) = services.open_browser(&url) {
-                        event_sender.send(AppEvent::BrowserOpenFailed {
+                        event_sender.send(UiEvent::BrowserOpenFailed {
                             message: error.to_string(),
                         });
                     }
                 });
             }
-            Effect::SetClipboard(text) => {
+            Effect::Ui(UiEffect::SetClipboard(text)) => {
                 thread::spawn(move || {
                     if let Ok(mut clipboard) = arboard::Clipboard::new() {
                         let _ = clipboard.set_text(text);
                     }
                 });
             }
-            Effect::FetchContextLines(request) => {
+            Effect::Repository(RepositoryEffect::FetchContextLines(request)) => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event = match services.fetch_context_lines(&request) {
                         Ok(lines) => {
-                            AppEvent::ContextLinesReady(crate::events::ContextLinesReady {
+                            RepositoryEvent::ContextLinesReady(crate::events::ContextLinesReady {
                                 generation: request.generation,
                                 file_index: request.file_index,
                                 path: request.path,
@@ -533,7 +534,7 @@ impl EffectRunner {
                                 lines,
                             })
                         }
-                        Err(error) => AppEvent::ContextLinesFailed {
+                        Err(error) => RepositoryEvent::ContextLinesFailed {
                             generation: request.generation,
                             file_index: request.file_index,
                             message: error.to_string(),
@@ -542,32 +543,32 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
-            Effect::InstallCommonSyntaxPacks => {
+            Effect::Syntax(SyntaxEffect::InstallCommonSyntaxPacks) => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let language = "common syntax".to_owned();
                     tracing::info!("syntax pack install started");
-                    event_sender.send(AppEvent::SyntaxPackInstallStarted {
+                    event_sender.send(SyntaxEvent::SyntaxPackInstallStarted {
                         language: language.clone(),
                     });
                     match services.install_common_syntax_packs() {
                         Ok(languages) => {
                             let installed_count = languages.len();
                             for language in languages {
-                                event_sender.send(AppEvent::SyntaxPackInstalled { language });
+                                event_sender.send(SyntaxEvent::SyntaxPackInstalled { language });
                             }
                             tracing::info!(installed_count, "syntax pack install finished");
-                            event_sender.send(AppEvent::SyntaxPackInstallFinished { language });
+                            event_sender.send(SyntaxEvent::SyntaxPackInstallFinished { language });
                         }
                         Err(error) => {
                             tracing::warn!(%error, "syntax pack install failed");
-                            event_sender.send(AppEvent::SyntaxPackInstallFailed { language });
+                            event_sender.send(SyntaxEvent::SyntaxPackInstallFailed { language });
                         }
                     }
                 });
             }
-            Effect::EnsureSyntaxPackForPath { path } => {
+            Effect::Syntax(SyntaxEffect::EnsureSyntaxPackForPath { path }) => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
@@ -578,35 +579,38 @@ impl EffectRunner {
                         .map(|language| language.name().to_owned());
                     if let Some(language) = &language {
                         tracing::info!(language, path = %path, "syntax pack install started");
-                        event_sender.send(AppEvent::SyntaxPackInstallStarted {
+                        event_sender.send(SyntaxEvent::SyntaxPackInstallStarted {
                             language: language.clone(),
                         });
                     }
                     match services.ensure_syntax_pack_for_path(&path) {
                         Ok(Some(installed)) => {
                             tracing::info!(language = %installed, path = %path, "syntax pack installed");
-                            event_sender.send(AppEvent::SyntaxPackInstalled {
+                            event_sender.send(SyntaxEvent::SyntaxPackInstalled {
                                 language: installed,
                             });
                             if let Some(language) = language {
-                                event_sender.send(AppEvent::SyntaxPackInstallFinished { language });
+                                event_sender
+                                    .send(SyntaxEvent::SyntaxPackInstallFinished { language });
                             }
                         }
                         Ok(None) => {
                             if let Some(language) = language {
-                                event_sender.send(AppEvent::SyntaxPackInstallFinished { language });
+                                event_sender
+                                    .send(SyntaxEvent::SyntaxPackInstallFinished { language });
                             }
                         }
                         Err(error) => {
                             tracing::warn!(path = %path, %error, "syntax pack install failed");
                             if let Some(language) = language {
-                                event_sender.send(AppEvent::SyntaxPackInstallFailed { language });
+                                event_sender
+                                    .send(SyntaxEvent::SyntaxPackInstallFailed { language });
                             }
                         }
                     }
                 });
             }
-            Effect::EnsureSyntaxPacksForPaths { paths } => {
+            Effect::Syntax(SyntaxEffect::EnsureSyntaxPacksForPaths { paths }) => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
@@ -634,7 +638,7 @@ impl EffectRunner {
                         "syntax pack batch install started"
                     );
                     for language in &languages {
-                        event_sender.send(AppEvent::SyntaxPackInstallStarted {
+                        event_sender.send(SyntaxEvent::SyntaxPackInstallStarted {
                             language: language.clone(),
                         });
                     }
@@ -642,52 +646,54 @@ impl EffectRunner {
                         Ok(installed) => {
                             let installed_count = installed.len();
                             for language in installed {
-                                event_sender.send(AppEvent::SyntaxPackInstalled { language });
+                                event_sender.send(SyntaxEvent::SyntaxPackInstalled { language });
                             }
                             tracing::info!(installed_count, "syntax pack batch install finished");
                             for language in languages {
-                                event_sender.send(AppEvent::SyntaxPackInstallFinished { language });
+                                event_sender
+                                    .send(SyntaxEvent::SyntaxPackInstallFinished { language });
                             }
                         }
                         Err(error) => {
                             tracing::warn!(%error, "syntax pack batch install failed");
                             for language in languages {
-                                event_sender.send(AppEvent::SyntaxPackInstallFailed { language });
+                                event_sender
+                                    .send(SyntaxEvent::SyntaxPackInstallFailed { language });
                             }
                         }
                     }
                 });
             }
-            Effect::LoadAiKeys => {
+            Effect::Ai(AiEffect::LoadAiKeys) => {
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event = match crate::apprt::services::load_ai_keys() {
-                        Ok((openai, anthropic)) => AppEvent::AiKeysLoaded { openai, anthropic },
-                        Err(error) => AppEvent::AiKeysLoadFailed {
+                        Ok((openai, anthropic)) => AiEvent::AiKeysLoaded { openai, anthropic },
+                        Err(error) => AiEvent::AiKeysLoadFailed {
                             message: error.to_string(),
                         },
                     };
                     event_sender.send(event);
                 });
             }
-            Effect::SaveAiKey { kind, value } => {
+            Effect::Ai(AiEffect::SaveAiKey { kind, value }) => {
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     if let Err(error) = crate::platform::secrets::save_ai_key(kind, &value) {
-                        event_sender.send(AppEvent::AiKeySaveFailed {
+                        event_sender.send(AiEvent::AiKeySaveFailed {
                             message: error.to_string(),
                         });
                     }
                 });
             }
-            Effect::ClearAiKey { kind } => {
+            Effect::Ai(AiEffect::ClearAiKey { kind }) => {
                 thread::spawn(move || {
                     if let Err(error) = crate::platform::secrets::clear_ai_key(kind) {
                         tracing::warn!("failed to clear AI key from keyring: {error}");
                     }
                 });
             }
-            Effect::GenerateCommitMessage(request) => {
+            Effect::Ai(AiEffect::GenerateCommitMessage(request)) => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
@@ -745,9 +751,9 @@ fn persist_settings(
     let event = match services.save_settings(&settings) {
         Ok(()) => {
             *last_saved = Some(settings);
-            AppEvent::SettingsSaved
+            SettingsEvent::SettingsSaved
         }
-        Err(error) => AppEvent::SettingsSaveFailed {
+        Err(error) => SettingsEvent::SettingsSaveFailed {
             message: error.to_string(),
         },
     };
@@ -763,8 +769,8 @@ mod tests {
 
     use super::{AppRuntime, SETTINGS_SAVE_DEBOUNCE};
     use crate::apprt::services::AppServices;
-    use crate::effects::Effect;
-    use crate::events::AppEvent;
+    use crate::effects::SettingsEffect;
+    use crate::events::{AppEvent, SettingsEvent};
     use crate::platform::persistence::{Settings, SettingsStore};
 
     fn wait_for<P>(mut predicate: P)
@@ -789,13 +795,13 @@ mod tests {
 
         let mut settings = Settings::default();
         settings.theme_name = "One".to_owned();
-        runtime.dispatch_all(vec![Effect::SaveSettings(settings.clone())]);
+        runtime.dispatch_all(vec![SettingsEffect::SaveSettings(settings.clone()).into()]);
 
         settings.theme_name = "Two".to_owned();
-        runtime.dispatch_all(vec![Effect::SaveSettings(settings.clone())]);
+        runtime.dispatch_all(vec![SettingsEffect::SaveSettings(settings.clone()).into()]);
 
         settings.theme_name = "Three".to_owned();
-        runtime.dispatch_all(vec![Effect::SaveSettings(settings.clone())]);
+        runtime.dispatch_all(vec![SettingsEffect::SaveSettings(settings.clone()).into()]);
 
         wait_for(|| {
             store
@@ -807,7 +813,7 @@ mod tests {
         let saved_events = runtime
             .drain_events()
             .into_iter()
-            .filter(|event| matches!(event, AppEvent::SettingsSaved))
+            .filter(|event| matches!(event, AppEvent::Settings(SettingsEvent::SettingsSaved)))
             .count();
         assert_eq!(saved_events, 1);
     }
@@ -821,7 +827,7 @@ mod tests {
         let mut settings = Settings::default();
         settings.theme_name = "Gruvbox Hard".to_owned();
 
-        runtime.dispatch_all(vec![Effect::SaveSettings(settings.clone())]);
+        runtime.dispatch_all(vec![SettingsEffect::SaveSettings(settings.clone()).into()]);
         wait_for(|| {
             store
                 .load()
@@ -830,13 +836,13 @@ mod tests {
         });
         let _ = runtime.drain_events();
 
-        runtime.dispatch_all(vec![Effect::SaveSettings(settings.clone())]);
+        runtime.dispatch_all(vec![SettingsEffect::SaveSettings(settings.clone()).into()]);
         thread::sleep(SETTINGS_SAVE_DEBOUNCE + Duration::from_millis(100));
 
         let saved_events = runtime
             .drain_events()
             .into_iter()
-            .filter(|event| matches!(event, AppEvent::SettingsSaved))
+            .filter(|event| matches!(event, AppEvent::Settings(SettingsEvent::SettingsSaved)))
             .count();
         assert_eq!(saved_events, 0);
     }

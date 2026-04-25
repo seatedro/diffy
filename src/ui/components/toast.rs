@@ -1,4 +1,3 @@
-use crate::actions::Action;
 use crate::ui::animation::{AnimationKey, AnimationState};
 use crate::ui::design::{Alpha, Ico, Rad, Shadow, Sp, Sz};
 use crate::ui::element::*;
@@ -148,7 +147,7 @@ impl RenderOnce for ToastVisuals {
                 rounded={CORNER_RADIUS}
                 border={tc.border}
                 shadow_preset={Shadow::TOAST}
-                on_click={Action::DismissToast(self.index)}
+                on_click={crate::actions::AppAction::DismissToast(self.index).into()}
                 hit_identity={HitIdentity::Toast(self.index)}
                 cursor={CursorHint::Pointer}
                 z_index={self.z}
@@ -181,7 +180,7 @@ impl RenderOnce for ToastVisuals {
                         w={CLOSE_SIZE} h={CLOSE_SIZE}
                         rounded={Rad::MD}
                         hover_bg={tc.ghost_element_hover}
-                        on_click={Action::DismissToast(self.index)}
+                        on_click={crate::actions::AppAction::DismissToast(self.index).into()}
                         hit_identity={HitIdentity::Toast(self.index)}
                         cursor={CursorHint::Pointer}
                     >

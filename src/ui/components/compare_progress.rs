@@ -8,7 +8,6 @@
 
 use halogen::view;
 
-use crate::actions::Action;
 use crate::ui::components::{Button, ButtonStyle};
 use crate::ui::design::{Alpha, Ico, Rad, Sp, Sz};
 use crate::ui::element::*;
@@ -90,7 +89,7 @@ pub fn compare_progress_panel(
                     </text>
                 }
                 <div class="flex-row justify-center" pt={Sp::XS}>
-                    {Button::new(Action::CancelCompare)
+                    {Button::new(crate::actions::CompareAction::CancelCompare.into())
                         .label("Cancel")
                         .style(ButtonStyle::Subtle)}
                 </div>

@@ -1,6 +1,5 @@
 use halogen::view;
 
-use crate::actions::Action;
 use crate::ui::design::{Ico, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
@@ -33,7 +32,7 @@ impl<'a> FileListItem<'a> {
             <div class="w-full flex-row items-center" gap_2
                  h={theme.metrics.ui_row_height.round()}
                  px={Sp::SM}
-                 on_click={Action::SelectFile(self.index)}
+                 on_click={crate::actions::FileListAction::SelectFile(self.index).into()}
                  hit_identity={HitIdentity::File(self.index)}
                  cursor={CursorHint::Pointer}
                  @when {self.selected} { bg={tc.sidebar_row_selected} border_l={tc.accent} }

@@ -6,7 +6,7 @@ use halogen::view;
 
 use crate::actions::Action;
 use crate::core::vcs::git::{CommitInfo, StatusItem, StatusScope};
-use crate::effects::Effect;
+use crate::effects::SettingsEffect;
 use crate::render::{Rect, RectPrimitive, RoundedRectPrimitive};
 use crate::ui::components::{
     self, Button, ButtonSize, ButtonStyle, SegmentedControl, SegmentedItem,
@@ -52,13 +52,13 @@ impl SidebarResizeDrag {
 impl DragHandler for SidebarResizeDrag {
     fn on_move(&mut self, x: f32, _y: f32) -> Vec<Action> {
         let target_width = (self.starting_width + (x - self.origin_x)).round().max(0.0) as u32;
-        vec![Action::SetSidebarWidthPx(target_width)]
+        vec![crate::actions::SettingsAction::SetSidebarWidthPx(target_width).into()]
     }
 
     fn on_release(&mut self, state: &crate::ui::state::AppState) -> DragReleaseResult {
         DragReleaseResult {
             actions: Vec::new(),
-            effects: vec![Effect::SaveSettings(state.settings.clone())],
+            effects: vec![SettingsEffect::SaveSettings(state.settings.clone()).into()],
         }
     }
 
@@ -406,12 +406,12 @@ pub(crate) fn sidebar(
                 {SegmentedControl::new(vec![
                     SegmentedItem::new(
                         format!("Files {}", file_count),
-                        Action::SetSidebarTab(SidebarTab::Files),
+                        crate::actions::FileListAction::SetSidebarTab(SidebarTab::Files).into(),
                         !on_commits_tab,
                     ),
                     SegmentedItem::new(
                         format!("Commits {}", range_commits.len()),
-                        Action::SetSidebarTab(SidebarTab::Commits),
+                        crate::actions::FileListAction::SetSidebarTab(SidebarTab::Commits).into(),
                         on_commits_tab,
                     ),
                 ])}
@@ -449,7 +449,9 @@ pub(crate) fn sidebar(
                 .cursor(state.text_edit.cursor.get(&state.store))
                 .anchor(state.text_edit.anchor.get(&state.store))
                 .cursor_moved_at(state.text_edit.cursor_moved_at_ms.get(&state.store))
-                .on_click(Action::SetFocus(Some(FocusTarget::SidebarSearch)))
+                .on_click(
+                    crate::actions::AppAction::SetFocus(Some(FocusTarget::SidebarSearch)).into(),
+                )
                 .bare()
                 .w_full()
                 .h(row_h);
@@ -460,7 +462,7 @@ pub(crate) fn sidebar(
             };
             Some(view! { scale,
                 <div class="w-full" px={Sp::SM + Sp::XXS} pb={Sp::SM}>
-                    {components::search_field(input, has_filter, Some(Action::ClearSidebarFilter), hint, theme)}
+                    {components::search_field(input, has_filter, Some(crate::actions::FileListAction::ClearSidebarFilter.into()), hint, theme)}
                 </div>
             })
         } else {
@@ -489,7 +491,7 @@ pub(crate) fn sidebar(
                      px={Rad::LG} pt={Sp::XXS} gap={Sp::XS}
                      clip scroll_y={scroll_px}
                      scroll_total={total_height}
-                     on_scroll={ScrollActionBuilder::Custom(Action::ScrollCommitListPx)}>
+                     on_scroll={ScrollActionBuilder::Custom(crate::actions::scroll_commit_list_px)}>
                     {...rows}
                 </div>
             }
@@ -566,7 +568,7 @@ pub(crate) fn sidebar(
                     }
                     <spacer />
                     if file_count > 0 && workspace_source == WorkspaceSource::Compare {
-                        <Button action={Action::ToggleSidebarMode}
+                        <Button action={crate::actions::FileListAction::ToggleSidebarMode.into()}
                                 tooltip={mode_tip}
                                 fixed_size={Sz::MODE_TOGGLE}>
                             <Icon>{mode_icon}</Icon>
@@ -599,7 +601,7 @@ pub(crate) fn sidebar(
                     }
                     <spacer />
                     if file_count > 0 && workspace_source == WorkspaceSource::Compare {
-                        <Button action={Action::ToggleSidebarMode}
+                        <Button action={crate::actions::FileListAction::ToggleSidebarMode.into()}
                                 tooltip={mode_tip}
                                 fixed_size={Sz::MODE_TOGGLE}>
                             <Icon>{mode_icon}</Icon>
@@ -621,7 +623,7 @@ pub(crate) fn sidebar(
             .cursor(state.text_edit.cursor.get(&state.store))
             .anchor(state.text_edit.anchor.get(&state.store))
             .cursor_moved_at(state.text_edit.cursor_moved_at_ms.get(&state.store))
-            .on_click(Action::SetFocus(Some(FocusTarget::SidebarSearch)))
+            .on_click(crate::actions::AppAction::SetFocus(Some(FocusTarget::SidebarSearch)).into())
             .bare()
             .w_full()
             .h(row_h);
@@ -632,7 +634,7 @@ pub(crate) fn sidebar(
         };
         Some(view! { scale,
             <div class="w-full" px={Sp::SM + Sp::XXS} pb={Sp::SM}>
-                {components::search_field(input, has_filter, Some(Action::ClearSidebarFilter), hint, theme)}
+                {components::search_field(input, has_filter, Some(crate::actions::FileListAction::ClearSidebarFilter.into()), hint, theme)}
             </div>
         })
     } else {
@@ -693,8 +695,8 @@ pub(crate) fn sidebar(
         let tree = components::file_tree(entries)
             .expanded(expanded_folders)
             .selected(state.workspace.selected_file_index.get(&state.store))
-            .on_select_file(Action::SelectFile)
-            .on_toggle_folder(Action::ToggleFolder);
+            .on_select_file(crate::actions::select_file)
+            .on_toggle_folder(crate::actions::toggle_folder);
 
         let row_count = visible_count + expanded_count;
         let row_height = state.file_list.row_height.get(&state.store);
@@ -790,12 +792,12 @@ pub(crate) fn sidebar(
                      @when { commit_focused } { border={tc.accent} }>
                     <div class="flex-1 w-full" min_h={0.0}
                          px={Sp::SM} pt={Sp::XS}
-                         on_click={Action::SetFocus(Some(FocusTarget::CommitEditor))}
+                         on_click={crate::actions::AppAction::SetFocus(Some(FocusTarget::CommitEditor)).into()}
                          cursor={CursorHint::Text}>
                         {editor_el}
                     </div>
                     <div class="flex-row items-center" px={Sp::SM} pb={Sp::SM} gap={Sp::XS}>
-                        {Button::new(Action::GenerateCommitMessage)
+                        {Button::new(crate::actions::AiAction::GenerateCommitMessage.into())
                             .icon(lucide::SPARKLES)
                             .style(ButtonStyle::Ghost)
                             .size(ButtonSize::Compact)
@@ -812,7 +814,7 @@ pub(crate) fn sidebar(
                                         && state.ai_anthropic_key.is_empty())
                             )}
                         <spacer />
-                        {Button::new(Action::SubmitCommit)
+                        {Button::new(crate::actions::RepositoryAction::SubmitCommit.into())
                             .label("Commit")
                             .style(ButtonStyle::Subtle)
                             .disabled(!can_commit)}
@@ -847,10 +849,16 @@ fn status_section_row(
 ) -> AnyElement {
     let label = scope.label();
     let section_action: Option<(Action, &str, &str)> = match scope {
-        StatusScope::Unstaged | StatusScope::Untracked => {
-            Some((Action::StageAllFiles, lucide::PLUS, "Stage All"))
-        }
-        StatusScope::Staged => Some((Action::UnstageAllFiles, lucide::MINUS, "Unstage All")),
+        StatusScope::Unstaged | StatusScope::Untracked => Some((
+            crate::actions::RepositoryAction::StageAllFiles.into(),
+            lucide::PLUS,
+            "Stage All",
+        )),
+        StatusScope::Staged => Some((
+            crate::actions::RepositoryAction::UnstageAllFiles.into(),
+            lucide::MINUS,
+            "Unstage All",
+        )),
     };
 
     view! { scale,
@@ -912,10 +920,16 @@ fn file_row(
         .with(&state.store, |items| items.get(index).map(|i| i.scope))
         .filter(|_| is_status_view)
         .and_then(|scope| match scope {
-            StatusScope::Unstaged | StatusScope::Untracked => {
-                Some((Action::StageFile(index), lucide::PLUS, "Stage"))
-            }
-            StatusScope::Staged => Some((Action::UnstageFile(index), lucide::MINUS, "Unstage")),
+            StatusScope::Unstaged | StatusScope::Untracked => Some((
+                crate::actions::RepositoryAction::StageFile(index).into(),
+                lucide::PLUS,
+                "Stage",
+            )),
+            StatusScope::Staged => Some((
+                crate::actions::RepositoryAction::UnstageFile(index).into(),
+                lucide::MINUS,
+                "Unstage",
+            )),
         });
 
     let hovered = state.file_list.hovered_index.get(&state.store) == Some(index);
@@ -936,7 +950,7 @@ fn file_row(
     view! { scale,
         <div class="w-full shrink-0 flex-row items-center"
              h={row_height} px={Sp::SM} gap={Sp::SM}
-             on_click={Action::SelectFile(index)}
+             on_click={crate::actions::FileListAction::SelectFile(index).into()}
              hit_identity={HitIdentity::File(index)}
              cursor={CursorHint::Pointer}
              @when { selected } { bg={tc.sidebar_row_selected} border_l={tc.accent} }
@@ -985,9 +999,9 @@ fn commit_row(
             .left_ref
             .with(&state.store, |left| commit.oid.starts_with(left));
     let action = if selected {
-        Action::ClearSidebarCommit
+        crate::actions::CompareAction::ClearSidebarCommit.into()
     } else {
-        Action::SelectSidebarCommit(commit.oid.clone())
+        crate::actions::CompareAction::SelectSidebarCommit(commit.oid.clone()).into()
     };
 
     view! { scale,

@@ -1,6 +1,5 @@
 use halogen::view;
 
-use crate::actions::Action;
 use crate::ui::design::{Ico, Rad, Sp};
 use crate::ui::element::*;
 use crate::ui::shell::CursorHint;
@@ -37,7 +36,7 @@ pub fn picker_list<T: PickerItem>(
     view! { scale,
         <div class="w-full flex-col" gap={Sp::XS} h={list_h}
              overflow_hidden scroll_y={scroll} scroll_total={total_h}
-             on_scroll={ScrollActionBuilder::Custom(Action::ScrollActiveOverlayListPx)}
+             on_scroll={ScrollActionBuilder::Custom(crate::actions::scroll_active_overlay_list_px)}
              hide_scrollbar>
             for (i, entry) in entries.iter().enumerate() {
                 if entry.is_section_header() {
@@ -85,7 +84,7 @@ fn picker_row<T: PickerItem>(
              h={row_h} gap={Sp::SM} px={Sp::MD} rounded={Rad::MD}
              bg={row_bg}
              @when {!selected && !disabled} { hover_bg={tc.sidebar_row_hover} }
-             on_click={Action::SelectOverlayEntry(i)}
+             on_click={crate::actions::OverlayAction::SelectOverlayEntry(i).into()}
              hit_identity={HitIdentity::OverlayEntry(i)}
              cursor={CursorHint::Pointer}>
             {?icon_child}

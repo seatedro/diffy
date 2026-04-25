@@ -1,4 +1,3 @@
-use crate::actions::Action;
 use crate::editor::SelectionRect;
 use crate::render::scene::{EditorTextSlot, Rect};
 use crate::render::{RoundedRectPrimitive, Scene};
@@ -131,7 +130,7 @@ impl Element for TextEditorElement {
         cx.insert_hitbox(bounds, HitboxBehavior::Normal);
         cx.scroll_regions.push(ScrollRegion {
             bounds,
-            action_builder: ScrollActionBuilder::Custom(Action::EditorScrollPx),
+            action_builder: ScrollActionBuilder::Custom(crate::actions::editor_scroll_px),
         });
     }
 

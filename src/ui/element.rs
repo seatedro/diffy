@@ -135,8 +135,12 @@ impl ScrollbarDragHandler {
         let target_px = (fraction * max_scroll) as u32;
 
         match &self.action_builder {
-            ScrollActionBuilder::FileList => Some(Action::ScrollFileListToPx(target_px)),
-            ScrollActionBuilder::ViewportLines => Some(Action::ScrollViewportTo(target_px)),
+            ScrollActionBuilder::FileList => {
+                Some(crate::actions::FileListAction::ScrollFileListToPx(target_px).into())
+            }
+            ScrollActionBuilder::ViewportLines => {
+                Some(crate::actions::EditorAction::ScrollViewportTo(target_px).into())
+            }
             ScrollActionBuilder::Custom(_) => None,
         }
     }
@@ -176,9 +180,9 @@ pub struct ScrollbarTrack {
 /// How to convert a scroll delta (in lines) into an Action.
 #[derive(Debug, Clone)]
 pub enum ScrollActionBuilder {
-    /// Emit `Action::ScrollFileList(delta)`.
+    /// Emit `crate::actions::FileListAction::ScrollFileList(delta).into()`.
     FileList,
-    /// Emit `Action::ScrollViewportLines(delta)`.
+    /// Emit `crate::actions::EditorAction::ScrollViewportLines(delta).into()`.
     ViewportLines,
     /// Use a custom action constructor.
     Custom(fn(i32) -> Action),
@@ -187,8 +191,8 @@ pub enum ScrollActionBuilder {
 impl ScrollActionBuilder {
     pub fn build(&self, delta: i32) -> Action {
         match self {
-            Self::FileList => Action::ScrollFileList(delta),
-            Self::ViewportLines => Action::ScrollViewportLines(delta),
+            Self::FileList => crate::actions::FileListAction::ScrollFileList(delta).into(),
+            Self::ViewportLines => crate::actions::EditorAction::ScrollViewportLines(delta).into(),
             Self::Custom(f) => f(delta),
         }
     }
@@ -2672,7 +2676,7 @@ mod tests {
         let mut root = div()
             .w(200.0)
             .h(50.0)
-            .on_click(Action::OpenRepoPicker)
+            .on_click(crate::actions::OverlayAction::OpenRepoPicker.into())
             .into_any();
 
         render_element(&mut root, &mut scene, &mut cx, 200.0, 50.0);
@@ -2680,7 +2684,7 @@ mod tests {
         assert_eq!(cx.hits.len(), 1);
         assert_eq!(
             cx.hits[0].on_click.peek_actions(),
-            vec![Action::OpenRepoPicker]
+            vec![crate::actions::OverlayAction::OpenRepoPicker.into()]
         );
         assert_eq!(cx.hits[0].cursor, CursorHint::Pointer);
         assert!(cx.hits[0].rect.width > 0.0);
@@ -2702,7 +2706,7 @@ mod tests {
             .h(50.0)
             .bg(red)
             .hover_bg(blue)
-            .on_click(Action::Bootstrap)
+            .on_click(crate::actions::AppAction::Bootstrap.into())
             .into_any();
 
         render_element(&mut root, &mut scene, &mut cx, 200.0, 50.0);
@@ -2735,7 +2739,7 @@ mod tests {
             .h(50.0)
             .bg(red)
             .hover_bg(blue)
-            .on_click(Action::Bootstrap)
+            .on_click(crate::actions::AppAction::Bootstrap.into())
             .into_any();
 
         render_element_at(&mut root, &mut scene, &mut cx, 400.0, 300.0, 200.0, 50.0);
@@ -2771,7 +2775,7 @@ mod tests {
             .h(50.0)
             .bg(red)
             .hover_bg(blue)
-            .on_click(Action::Bootstrap)
+            .on_click(crate::actions::AppAction::Bootstrap.into())
             .into_any();
 
         render_element(&mut root, &mut scene, &mut cx, 200.0, 50.0);
@@ -2809,7 +2813,7 @@ mod tests {
                             .rounded(7.0)
                             .bg(theme.colors.element_background)
                             .hover_bg(theme.colors.element_hover)
-                            .on_click(Action::OpenRepoPicker)
+                            .on_click(crate::actions::OverlayAction::OpenRepoPicker.into())
                             .child(text("Compare").text_sm().color(theme.colors.text)),
                     )
                     .child(
@@ -2818,7 +2822,7 @@ mod tests {
                             .py(6.0)
                             .rounded(7.0)
                             .hover_bg(theme.colors.ghost_element_hover)
-                            .on_click(Action::StartGitHubDeviceFlow)
+                            .on_click(crate::actions::GitHubAction::StartGitHubDeviceFlow.into())
                             .child(text("Sign in").text_sm().color(theme.colors.text_muted)),
                     ),
             )
@@ -2849,11 +2853,11 @@ mod tests {
         assert_eq!(cx.hits.len(), 2);
         assert_eq!(
             cx.hits[0].on_click.peek_actions(),
-            vec![Action::OpenRepoPicker]
+            vec![crate::actions::OverlayAction::OpenRepoPicker.into()]
         );
         assert_eq!(
             cx.hits[1].on_click.peek_actions(),
-            vec![Action::StartGitHubDeviceFlow]
+            vec![crate::actions::GitHubAction::StartGitHubDeviceFlow.into()]
         );
     }
 
@@ -3056,7 +3060,7 @@ mod tests {
                         .flex_row()
                         .rounded(7.0)
                         .hover_bg(theme.colors.sidebar_row_hover)
-                        .on_click(Action::SelectFile(i))
+                        .on_click(crate::actions::FileListAction::SelectFile(i).into())
                         .child(text(*path).text_sm().color(theme.colors.text))
                         .into_any()
                 }),
@@ -3069,7 +3073,7 @@ mod tests {
         assert_eq!(cx.hits.len(), 4);
         assert_eq!(
             cx.hits[2].on_click.peek_actions(),
-            vec![Action::SelectFile(2)]
+            vec![crate::actions::FileListAction::SelectFile(2).into()]
         );
 
         // Should have text for header + 4 files = 5 text primitives
@@ -3418,7 +3422,7 @@ mod tests {
             .bg(red)
             .border_b(blue)
             .hover(|s| s.bg(green).border_color(green))
-            .on_click(Action::Bootstrap)
+            .on_click(crate::actions::AppAction::Bootstrap.into())
             .into_any();
 
         render_element(&mut root, &mut scene, &mut cx, 200.0, 50.0);
@@ -3495,7 +3499,10 @@ mod tests {
 
         assert_eq!(cx.scroll_regions.len(), 1);
         let action = cx.scroll_regions[0].action_builder.build(3);
-        assert_eq!(action, Action::ScrollFileList(3));
+        assert_eq!(
+            action,
+            crate::actions::FileListAction::ScrollFileList(3).into()
+        );
     }
 
     #[test]
@@ -3525,7 +3532,10 @@ mod tests {
         let mut root = text_input("Branch", "main")
             .w(200.0)
             .h(56.0)
-            .on_click(Action::OpenRefPicker(crate::ui::state::CompareField::Left))
+            .on_click(
+                crate::actions::OverlayAction::OpenRefPicker(crate::ui::state::CompareField::Left)
+                    .into(),
+            )
             .into_any();
 
         render_element(&mut root, &mut scene, &mut cx, 200.0, 56.0);

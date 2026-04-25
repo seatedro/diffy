@@ -1074,6 +1074,7 @@ version = "0.1.4"
 dependencies = [
  "arboard",
  "bytemuck",
+ "carbon",
  "clap",
  "difftastic",
  "dirs",

@@ -359,12 +359,9 @@ fn compare_cluster(
         false
     };
 
-    // Segmented pill with hairline dividers. The outer `overflow-hidden` +
-    // `rounded` clips children's hover fills to the rounded outer corners via
-    // the renderer's rounded-clip support (see `ClipPrimitive::corner_radii`),
-    // so end-cap hovers render cleanly without needing per-corner radii on
-    // the chips.
-    let cluster_h = Sz::SEARCH_INPUT + Sp::SM;
+    // Segmented pill with inset dividers. The title bar supplies the outer
+    // breathing room; segment hovers fill the control lane.
+    let cluster_h = ((Sz::SEARCH_INPUT + Sp::XS) * scale).round();
     view! { scale,
         <div class="flex-row shrink-0 items-center overflow-hidden"
              h={cluster_h}
@@ -382,7 +379,7 @@ fn compare_cluster(
             )}
             {cluster_divider(tc, scale)}
             <div h_full class="flex-row items-center"
-                 px={Sp::MD}
+                 px={Sp::LG}
                  hover_bg={tc.ghost_element_hover}
                  on_click={crate::actions::CompareAction::OpenCompareMenu.into()}
                  cursor={CursorHint::Pointer}
@@ -420,15 +417,14 @@ fn compare_cluster(
 
 fn cluster_divider(tc: &ThemeColors, _scale: f32) -> AnyElement {
     view! { _scale,
-        <div h_full w={Sz::SEPARATOR_W} bg={tc.border_variant} />
+        <div h={Sz::SEPARATOR_H} w={Sz::SEPARATOR_W} bg={tc.border} />
     }
 }
 
 fn compare_slot(has_pending: bool, tc: &ThemeColors, scale: f32) -> AnyElement {
     // Compare is always rendered while the picker is open — the disabled
     // state (no pending drafts) shows a muted pill so the width is stable
-    // and the affordance is always visible. No inner `rounded`: the outer
-    // cluster's rounded `overflow-hidden` clips the right edge for us.
+    // and the affordance is always visible.
     let (bg, hover_bg, text_color, cursor, action, tip) = if has_pending {
         (
             tc.accent,
@@ -475,10 +471,8 @@ fn chip_segment(
     } else {
         tc.text_strong
     };
-    // Active = tinted bg (fills the segment area, clipped by the outer
-    // cluster's rounded `overflow-hidden`). Inactive = transparent so the
-    // cluster pill bg shows through. Hover picks up the ghost hover color
-    // on both.
+    // Active = tinted bg. Inactive = transparent so the inset cluster surface
+    // shows through around each segment. Hover picks up the ghost hover color.
     let bg = if is_active {
         tc.ghost_element_active
     } else {

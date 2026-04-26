@@ -131,6 +131,9 @@ parent summaries only if their guidance changed.
 Use the smallest meaningful validation for the change, then broaden when the
 risk crosses module boundaries.
 
+- Do not add regression tests by default. Only add new tests when the user asks
+  for them or when the behavior is high-risk enough that you explicitly call out
+  why the test is necessary.
 - Format: `cargo fmt --all`
 - Test: `cargo test`
 - Focused tests: `cargo test <name>`

@@ -275,6 +275,12 @@ pub trait Styled: Sized {
         let s = self.element_style_mut();
         s.border_color = Some(color);
         s.border_widths = [1.0; 4];
+        s.layout.border = taffy::Rect {
+            left: taffy::LengthPercentage::length(1.0),
+            right: taffy::LengthPercentage::length(1.0),
+            top: taffy::LengthPercentage::length(1.0),
+            bottom: taffy::LengthPercentage::length(1.0),
+        };
         self
     }
 
@@ -282,6 +288,7 @@ pub trait Styled: Sized {
         let s = self.element_style_mut();
         s.border_color = Some(color);
         s.border_widths[0] = 1.0;
+        s.layout.border.top = taffy::LengthPercentage::length(1.0);
         self
     }
 
@@ -289,6 +296,7 @@ pub trait Styled: Sized {
         let s = self.element_style_mut();
         s.border_color = Some(color);
         s.border_widths[1] = 1.0;
+        s.layout.border.right = taffy::LengthPercentage::length(1.0);
         self
     }
 
@@ -296,6 +304,7 @@ pub trait Styled: Sized {
         let s = self.element_style_mut();
         s.border_color = Some(color);
         s.border_widths[2] = 1.0;
+        s.layout.border.bottom = taffy::LengthPercentage::length(1.0);
         self
     }
 
@@ -303,6 +312,7 @@ pub trait Styled: Sized {
         let s = self.element_style_mut();
         s.border_color = Some(color);
         s.border_widths[3] = 1.0;
+        s.layout.border.left = taffy::LengthPercentage::length(1.0);
         self
     }
 
@@ -606,7 +616,15 @@ pub trait Styled: Sized {
     }
 
     fn border_w(mut self, w: f32) -> Self {
-        self.element_style_mut().border_widths = [w; 4];
+        let s = self.element_style_mut();
+        s.border_widths = [w; 4];
+        let width = taffy::LengthPercentage::length(w);
+        s.layout.border = taffy::Rect {
+            left: width,
+            right: width,
+            top: width,
+            bottom: width,
+        };
         self
     }
 }

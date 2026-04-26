@@ -94,26 +94,44 @@ impl AppState {
                 Vec::new()
             }
             EditorClick(x, y) => {
-                if self.focus.get(&self.store) == Some(FocusTarget::SettingsSteeringPrompt) {
-                    self.steering_prompt_editor.click(x, y);
-                } else {
-                    self.commit_editor.click(x, y);
+                match self.focus.get(&self.store) {
+                    Some(FocusTarget::SettingsSteeringPrompt) => {
+                        self.steering_prompt_editor.click(x, y);
+                    }
+                    Some(FocusTarget::ReviewCommentEditor) => {
+                        self.review_comment_editor.click(x, y);
+                    }
+                    _ => {
+                        self.commit_editor.click(x, y);
+                    }
                 }
                 Vec::new()
             }
             EditorDrag(x, y) => {
-                if self.focus.get(&self.store) == Some(FocusTarget::SettingsSteeringPrompt) {
-                    self.steering_prompt_editor.drag(x, y);
-                } else {
-                    self.commit_editor.drag(x, y);
+                match self.focus.get(&self.store) {
+                    Some(FocusTarget::SettingsSteeringPrompt) => {
+                        self.steering_prompt_editor.drag(x, y);
+                    }
+                    Some(FocusTarget::ReviewCommentEditor) => {
+                        self.review_comment_editor.drag(x, y);
+                    }
+                    _ => {
+                        self.commit_editor.drag(x, y);
+                    }
                 }
                 Vec::new()
             }
             EditorScrollPx(delta) => {
-                if self.focus.get(&self.store) == Some(FocusTarget::SettingsSteeringPrompt) {
-                    self.steering_prompt_editor.scroll(delta as f32);
-                } else {
-                    self.commit_editor.scroll(delta as f32);
+                match self.focus.get(&self.store) {
+                    Some(FocusTarget::SettingsSteeringPrompt) => {
+                        self.steering_prompt_editor.scroll(delta as f32);
+                    }
+                    Some(FocusTarget::ReviewCommentEditor) => {
+                        self.review_comment_editor.scroll(delta as f32);
+                    }
+                    _ => {
+                        self.commit_editor.scroll(delta as f32);
+                    }
                 }
                 Vec::new()
             }

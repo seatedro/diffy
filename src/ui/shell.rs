@@ -8,6 +8,7 @@ use crate::render::{Rect, Scene, TextMetrics};
 use crate::ui::components::{Button, ButtonSize, ButtonStyle, ToastStack};
 use crate::ui::design::{Bp, Rad, Shadow, Sp, Sz};
 use crate::ui::editor::element::{EditorDocument, EditorElement};
+use crate::ui::editor_element::{CursorSnapshot, text_editor_element};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::overlays;
@@ -287,6 +288,13 @@ pub fn build_ui_frame(
                     &active_file.render_doc,
                     &expansion,
                 );
+                let review_comments =
+                    state.active_pr_review_comments_for_file(&active_file.carbon_file);
+                crate::ui::editor::review::populate_review_comment_blocks(
+                    editor.blocks_mut(),
+                    &active_file.render_doc,
+                    &review_comments,
+                );
                 editor.set_hunk_expand_caps(caps);
             } else {
                 editor.blocks_mut().clear();
@@ -449,6 +457,58 @@ pub fn build_ui_frame(
                 }
             }
 
+            if state.pull_request_review_enabled() {
+                if let EditorDocument::Text { doc, .. } = document {
+                    let has_line_selection = !editor_snap.line_selection.is_empty();
+                    let line_bar_rect = if has_line_selection {
+                        editor.line_selection_bar_rect(doc, &editor_snap)
+                    } else {
+                        None
+                    };
+                    let composer_open = state
+                        .github
+                        .pull_request
+                        .review_composer
+                        .with(&state.store, |composer| composer.draft.is_some());
+                    if composer_open {
+                        if let Some(anchor_rect) = line_bar_rect {
+                            let composer_h = (190.0 * ui_scale).round();
+                            let y = (anchor_rect.y + anchor_rect.height)
+                                .min(vp_bounds.bottom() - composer_h)
+                                .max(vp_bounds.y);
+                            let composer_rect = Rect {
+                                x: anchor_rect.x,
+                                y,
+                                width: anchor_rect.width,
+                                height: composer_h,
+                            };
+                            let mut composer =
+                                build_review_composer(state, theme, ui_scale, composer_rect);
+                            render_element_at(
+                                &mut composer,
+                                &mut scene,
+                                cx,
+                                composer_rect.x,
+                                composer_rect.y,
+                                composer_rect.width,
+                                composer_rect.height,
+                            );
+                        }
+                    } else if let Some(bar_rect) = line_bar_rect {
+                        let mut bar = build_review_bar(theme, ui_scale, bar_rect);
+                        render_element_at(
+                            &mut bar,
+                            &mut scene,
+                            cx,
+                            bar_rect.x,
+                            bar_rect.y,
+                            bar_rect.width,
+                            bar_rect.height,
+                        );
+                    }
+                }
+            }
+
             let content_h = state.editor.content_height_px.get(&state.store);
             let viewport_h = state.editor.viewport_height_px.get(&state.store);
             if content_h > viewport_h && viewport_h > 0 {
@@ -493,6 +553,134 @@ pub fn build_ui_frame(
         file_list_rect: file_list_rect.or_else(|| file_list_bounds.get()),
         sidebar_resize_handle_rect: sidebar_resize_bounds.get(),
         viewport_rect: viewport_bounds.get(),
+    }
+}
+
+fn build_review_bar(theme: &Theme, ui_scale: f32, bar_rect: Rect) -> AnyElement {
+    let tc = &theme.colors;
+    view! { ui_scale,
+        <div class="flex-row items-center"
+             w={bar_rect.width} h={bar_rect.height}
+             z_index={50}
+             pr={Sp::SM}>
+            <spacer />
+            <div class="flex-row items-center"
+                 bg={tc.modal_surface}
+                 border_b={tc.border}
+                 border_l={tc.border}
+                 border_r={tc.border}
+                 border_t={tc.border}
+                 rounded={Rad::MD}
+                 shadow_preset={Shadow::DROPDOWN}
+                 on_click={Action::Noop}
+                 gap={Sp::XXS}
+                 px={Sp::XXS}
+                 py={Sp::XXS}>
+                <Button action={crate::actions::GitHubAction::OpenReviewCommentComposer.into()}
+                        style={ButtonStyle::Ghost}
+                        size={ButtonSize::Compact}>
+                    <Icon>{lucide::PENCIL}</Icon>
+                    <Label>{"Comment"}</Label>
+                </Button>
+                <Button action={crate::actions::RepositoryAction::ClearLineSelection.into()}
+                        style={ButtonStyle::Ghost}
+                        size={ButtonSize::Compact}>
+                    <Icon>{lucide::X}</Icon>
+                </Button>
+            </div>
+        </div>
+    }
+}
+
+fn build_review_composer(state: &AppState, theme: &Theme, ui_scale: f32, rect: Rect) -> AnyElement {
+    let tc = &theme.colors;
+    let focused =
+        state.focus.get(&state.store) == Some(crate::ui::state::FocusTarget::ReviewCommentEditor);
+    let submitting = state
+        .github
+        .pull_request
+        .review_composer
+        .with(&state.store, |composer| {
+            composer.status == crate::ui::state::AsyncStatus::Loading
+        });
+    let submit_icon = if submitting {
+        lucide::LOADER
+    } else {
+        lucide::CHECK
+    };
+    let submit_label = if submitting {
+        "Posting"
+    } else {
+        "Post Comment"
+    };
+    let cursor = CursorSnapshot {
+        x: state.review_comment_editor.cursor_pos.x,
+        y: state.review_comment_editor.cursor_pos.y,
+        moved_at_ms: state.review_comment_editor.cursor_moved_at_ms,
+    };
+    let editor = text_editor_element()
+        .placeholder("Leave a review comment")
+        .is_empty(state.review_comment_editor.is_empty())
+        .focused(focused)
+        .focus_target(crate::ui::state::FocusTarget::ReviewCommentEditor)
+        .editor_id(2)
+        .font_size(theme.metrics.ui_small_font_size)
+        .text_color(tc.text)
+        .cursor(cursor)
+        .selection(state.review_comment_editor.selection_rects())
+        .content_height(state.review_comment_editor.content_height())
+        .scroll_y(state.review_comment_editor.scroll_y)
+        .w_full()
+        .flex_1();
+
+    view! { ui_scale,
+        <div class="flex-row"
+             w={rect.width} h={rect.height}
+             z_index={60}
+             pr={Sp::SM}>
+            <spacer />
+            <div class="flex-col"
+                 w={rect.width.min(620.0)}
+                 h={rect.height}
+                 bg={tc.modal_surface}
+                 border_b={tc.border}
+                 border_l={tc.border}
+                 border_r={tc.border}
+                 border_t={tc.border}
+                 rounded={Rad::LG}
+                 shadow_preset={Shadow::DROPDOWN}
+                 on_click={Action::Noop}
+                 p={Sp::SM}
+                 gap={Sp::SM}>
+                <div class="flex-1 w-full"
+                     min_h={0.0}
+                     px={Sp::SM}
+                     py={Sp::XS}
+                     rounded={Rad::MD}
+                     border={if focused { tc.accent } else { tc.border_variant }}
+                     on_click={crate::actions::AppAction::SetFocus(Some(crate::ui::state::FocusTarget::ReviewCommentEditor)).into()}
+                     cursor={CursorHint::Text}>
+                    {editor}
+                </div>
+                <div class="flex-row items-center" gap={Sp::XS}>
+                    <spacer />
+                    <Button action={crate::actions::GitHubAction::CancelReviewComment.into()}
+                            style={ButtonStyle::Ghost}
+                            size={ButtonSize::Compact}
+                            disabled={submitting}>
+                        <Icon>{lucide::X}</Icon>
+                        <Label>{"Cancel"}</Label>
+                    </Button>
+                    <Button action={crate::actions::GitHubAction::SubmitReviewComment.into()}
+                            style={ButtonStyle::Subtle}
+                            size={ButtonSize::Compact}
+                            disabled={submitting}>
+                        <Icon>{submit_icon}</Icon>
+                        <Label>{submit_label}</Label>
+                    </Button>
+                </div>
+            </div>
+        </div>
     }
 }
 

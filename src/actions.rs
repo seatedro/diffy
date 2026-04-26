@@ -195,6 +195,9 @@ pub enum GitHubAction {
     OpenDeviceFlowBrowser,
     OpenAccountMenu,
     SignOutGitHub,
+    OpenReviewCommentComposer,
+    SubmitReviewComment,
+    CancelReviewComment,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

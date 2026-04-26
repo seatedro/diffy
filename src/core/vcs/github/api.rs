@@ -28,6 +28,70 @@ pub struct PullRequestInfo {
     pub head_repo_url: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum GitHubReviewSide {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct GitHubReviewCommentUser {
+    pub login: String,
+    #[serde(default)]
+    pub avatar_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct PullRequestReviewComment {
+    pub id: i64,
+    #[serde(default)]
+    pub in_reply_to_id: Option<i64>,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub commit_id: String,
+    #[serde(default)]
+    pub original_commit_id: String,
+    #[serde(default)]
+    pub line: Option<u32>,
+    #[serde(default)]
+    pub original_line: Option<u32>,
+    #[serde(default)]
+    pub side: Option<GitHubReviewSide>,
+    #[serde(default)]
+    pub start_line: Option<u32>,
+    #[serde(default)]
+    pub original_start_line: Option<u32>,
+    #[serde(default)]
+    pub start_side: Option<GitHubReviewSide>,
+    #[serde(default)]
+    pub subject_type: Option<String>,
+    #[serde(default)]
+    pub html_url: String,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
+    #[serde(default)]
+    pub user: Option<GitHubReviewCommentUser>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CreatePullRequestReviewComment {
+    pub body: String,
+    pub commit_id: String,
+    pub path: String,
+    pub line: u32,
+    pub side: GitHubReviewSide,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_side: Option<GitHubReviewSide>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct GitHubApi {
     token: String,
@@ -132,6 +196,79 @@ impl GitHubApi {
         }
 
         Ok(result)
+    }
+
+    pub fn fetch_pull_request_review_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i32,
+    ) -> Result<Vec<PullRequestReviewComment>> {
+        http::block_on(async {
+            let client = reqwest::Client::new();
+            let mut comments = Vec::new();
+            let mut page = 1_u32;
+
+            loop {
+                let url = format!(
+                    "https://api.github.com/repos/{owner}/{repo}/pulls/{number}/comments?per_page=100&page={page}"
+                );
+                let mut request = client
+                    .get(&url)
+                    .header("Accept", "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", "2026-03-10")
+                    .header("User-Agent", "diffy/0.1");
+                if !self.token.is_empty() {
+                    request = request.header("Authorization", &format!("Bearer {}", self.token));
+                }
+                let response = request.send().await.map_err(|error| {
+                    DiffyError::Http(format!("GitHub review comments fetch failed: {error}"))
+                })?;
+                let body = http::response_text(response, "GitHub review comments fetch").await?;
+                let mut page_comments: Vec<PullRequestReviewComment> = serde_json::from_str(&body)?;
+                let count = page_comments.len();
+                comments.append(&mut page_comments);
+                if count < 100 {
+                    break;
+                }
+                page = page.saturating_add(1);
+            }
+
+            Ok(comments)
+        })
+    }
+
+    pub fn create_pull_request_review_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i32,
+        comment: &CreatePullRequestReviewComment,
+    ) -> Result<PullRequestReviewComment> {
+        if self.token.trim().is_empty() {
+            return Err(DiffyError::General(
+                "GitHub authentication is required to add review comments".to_owned(),
+            ));
+        }
+        let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls/{number}/comments");
+        let request_body = serde_json::to_string(comment)?;
+        let body = http::block_on(async {
+            let response = reqwest::Client::new()
+                .post(&url)
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2026-03-10")
+                .header("User-Agent", "diffy/0.1")
+                .header("Authorization", &format!("Bearer {}", self.token))
+                .header("Content-Type", "application/json")
+                .body(request_body)
+                .send()
+                .await
+                .map_err(|error| {
+                    DiffyError::Http(format!("GitHub review comment create failed: {error}"))
+                })?;
+            http::response_text(response, "GitHub review comment create").await
+        })?;
+        serde_json::from_str(&body).map_err(Into::into)
     }
 }
 

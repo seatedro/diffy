@@ -41,7 +41,8 @@ pub fn compare_progress_panel(
             left_label,
             right_label,
         } => view! { scale,
-            <div class="flex-row items-center" gap={Sp::MD}>
+            <div class="flex-row items-center justify-center flex-wrap w-full"
+                 gap={Sp::MD}>
                 {ref_chip(left_label, tc, scale)}
                 <icon svg={lucide::ARROW_LEFT_RIGHT}
                       size={Ico::SM}
@@ -50,7 +51,7 @@ pub fn compare_progress_panel(
             </div>
         },
         LoadingSubject::RepoOpen { name } => view! { scale,
-            <div class="flex-row items-center" gap={Sp::MD}>
+            <div class="flex-row items-center justify-center w-full" gap={Sp::MD}>
                 {repo_chip(name, tc, scale)}
             </div>
         },
@@ -62,9 +63,11 @@ pub fn compare_progress_panel(
     // milestone), so its bar is visual reassurance more than granular.
     let bar = progress_rail(progress, tc, scale);
 
+    let panel_max_w = (Sz::CARD_MD * scale).round();
+
     view! { scale,
         <div class="flex-1 items-center justify-center" p={Sp::XL}>
-            <div class="w-full flex-col" max_w={Sz::CARD_MD} gap={Sp::LG}
+            <div class="w-full flex-col" max_w={panel_max_w} gap={Sp::LG}
                  p={Sp::XL}
                  rounded={Rad::XL}
                  bg={tc.elevated_surface}
@@ -107,9 +110,11 @@ fn ref_chip(label: &str, tc: &crate::ui::theme::ThemeColors, scale: f32) -> AnyE
              bg={tc.element_background}
              border={tc.border_variant}>
             <icon svg={lucide::GIT_BRANCH} size={Ico::SM} color={tc.text_muted} />
-            <text class="text-sm font-medium font-mono" color={tc.text_strong}>
-                {label.to_owned()}
-            </text>
+            <div class="flex-1" min_w={0.0}>
+                <text class="text-sm font-medium font-mono truncate" color={tc.text_strong}>
+                    {label.to_owned()}
+                </text>
+            </div>
         </div>
     }
 }
@@ -123,9 +128,11 @@ fn repo_chip(name: &str, tc: &crate::ui::theme::ThemeColors, scale: f32) -> AnyE
              bg={tc.element_background}
              border={tc.border_variant}>
             <icon svg={lucide::FOLDER} size={Ico::SM} color={tc.text_muted} />
-            <text class="text-sm font-medium" color={tc.text_strong}>
-                {name.to_owned()}
-            </text>
+            <div class="flex-1" min_w={0.0}>
+                <text class="text-sm font-medium truncate" color={tc.text_strong}>
+                    {name.to_owned()}
+                </text>
+            </div>
         </div>
     }
 }

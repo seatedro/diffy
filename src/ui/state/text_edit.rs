@@ -385,6 +385,9 @@ impl AppState {
         if self.focus.get(&self.store) == Some(FocusTarget::CommitEditor) {
             return self.apply_commit_editor_action(action);
         }
+        if self.focus.get(&self.store) == Some(FocusTarget::ReviewCommentEditor) {
+            return self.apply_review_comment_editor_action(action);
+        }
         if self.focus.get(&self.store) == Some(FocusTarget::SettingsSteeringPrompt) {
             return self.apply_steering_prompt_action(action);
         }
@@ -516,6 +519,57 @@ impl AppState {
                 }
             }
             Paste(value) => self.commit_editor.insert_text(&value),
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    fn apply_review_comment_editor_action(&mut self, action: TextEditAction) -> Vec<Effect> {
+        use TextEditAction::*;
+        match action {
+            InsertText(value) => self.review_comment_editor.insert_text(&value),
+            Backspace => self.review_comment_editor.delete_backward(),
+            BackspaceWord => self.review_comment_editor.delete_backward_word(),
+            BackspaceLine => self.review_comment_editor.delete_backward_line(),
+            DeleteForward => self.review_comment_editor.delete_forward(),
+            DeleteForwardWord => self.review_comment_editor.delete_forward_word(),
+            CursorLeft => self.review_comment_editor.move_left(false),
+            CursorRight => self.review_comment_editor.move_right(false),
+            CursorUp => self.review_comment_editor.move_up(false),
+            CursorDown => self.review_comment_editor.move_down(false),
+            CursorWordLeft => self.review_comment_editor.move_word_left(false),
+            CursorWordRight => self.review_comment_editor.move_word_right(false),
+            CursorHome => self.review_comment_editor.move_home(false),
+            CursorEnd => self.review_comment_editor.move_end(false),
+            CursorSoftHome => self.review_comment_editor.move_soft_home(false),
+            CursorSoftEnd => self.review_comment_editor.move_soft_end(false),
+            SelectLeft => self.review_comment_editor.move_left(true),
+            SelectRight => self.review_comment_editor.move_right(true),
+            SelectUp => self.review_comment_editor.move_up(true),
+            SelectDown => self.review_comment_editor.move_down(true),
+            SelectWordLeft => self.review_comment_editor.move_word_left(true),
+            SelectWordRight => self.review_comment_editor.move_word_right(true),
+            SelectHome => self.review_comment_editor.move_home(true),
+            SelectEnd => self.review_comment_editor.move_end(true),
+            SelectSoftHome => self.review_comment_editor.move_soft_home(true),
+            SelectSoftEnd => self.review_comment_editor.move_soft_end(true),
+            SelectAll => self.review_comment_editor.select_all(),
+            Copy => {
+                if let Some(text) = self.review_comment_editor.selected_text()
+                    && let Ok(mut clipboard) = arboard::Clipboard::new()
+                {
+                    let _ = clipboard.set_text(text);
+                }
+            }
+            Cut => {
+                if let Some(text) = self.review_comment_editor.selected_text()
+                    && let Ok(mut clipboard) = arboard::Clipboard::new()
+                {
+                    let _ = clipboard.set_text(text);
+                    self.review_comment_editor.delete_backward();
+                }
+            }
+            Paste(value) => self.review_comment_editor.insert_text(&value),
             _ => {}
         }
         Vec::new()

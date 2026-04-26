@@ -16,8 +16,8 @@ use crate::core::http;
 use crate::core::syntax::annotator::FullFileSyntax;
 use crate::core::vcs::git::GitService;
 use crate::core::vcs::github::{
-    DeviceFlowState, GitHubApi, GitHubUser, PullRequestInfo, parse_pr_url, poll_for_token,
-    start_device_flow,
+    CreatePullRequestReviewComment, DeviceFlowState, GitHubApi, GitHubUser, PullRequestInfo,
+    PullRequestReviewComment, parse_pr_url, poll_for_token, start_device_flow,
 };
 use crate::effects::{
     CompareFileRequest, CompareFileStatsRequest, CompareHistoryRequest, CompareRequest,
@@ -408,6 +408,33 @@ impl AppServices {
             _ => GitHubApi::new(),
         };
         api.fetch_pull_request(owner, repo, number)
+    }
+
+    pub fn fetch_pull_request_review_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i32,
+        token: Option<String>,
+    ) -> Result<Vec<PullRequestReviewComment>> {
+        let api = match token {
+            Some(t) if !t.is_empty() => GitHubApi::with_token(t),
+            _ => GitHubApi::new(),
+        };
+        api.fetch_pull_request_review_comments(owner, repo, number)
+    }
+
+    pub fn create_pull_request_review_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i32,
+        token: Option<String>,
+        comment: &CreatePullRequestReviewComment,
+    ) -> Result<PullRequestReviewComment> {
+        let token = token.unwrap_or_default();
+        GitHubApi::with_token(token)
+            .create_pull_request_review_comment(owner, repo, number, comment)
     }
 
     pub fn fetch_github_user(&self, token: &str) -> Result<GitHubUser> {

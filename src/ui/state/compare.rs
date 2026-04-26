@@ -215,7 +215,15 @@ impl AppState {
                 self.compare.renderer.set(&self.store, renderer);
                 self.persist_settings_effect()
             }
-            StartCompare => self.kickoff_compare(),
+            StartCompare => {
+                self.github.pull_request.active.set(&self.store, None);
+                self.github
+                    .pull_request
+                    .review_composer
+                    .set(&self.store, ReviewCommentComposerState::default());
+                self.review_comment_editor.request_clear();
+                self.kickoff_compare()
+            }
             CancelCompare => self.cancel_compare(),
             SelectSidebarCommit(oid) => self.drill_into_commit(&oid),
             ClearSidebarCommit => self.restore_pre_drill_compare(),

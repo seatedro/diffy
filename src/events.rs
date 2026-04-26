@@ -4,7 +4,9 @@ use crate::core::compare::{CompareOutput, CompareSpec};
 use crate::core::syntax::annotator::{SyntaxLineTokens, SyntaxRowWindow};
 use crate::core::update::{AvailableUpdate, StagedUpdate};
 use crate::core::vcs::git::{BranchInfo, CommitInfo, StatusItem, TagInfo};
-use crate::core::vcs::github::{DeviceFlowState, GitHubUser, PullRequestInfo};
+use crate::core::vcs::github::{
+    DeviceFlowState, GitHubUser, PullRequestInfo, PullRequestReviewComment,
+};
 use crate::ui::state::{ComparePhase, PreparedActiveFile};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,6 +235,30 @@ pub enum GitHubEvent {
         info: PullRequestInfo,
     },
     PullRequestPeekFailed {
+        owner: String,
+        repo: String,
+        number: i32,
+        message: String,
+    },
+    PullRequestReviewCommentsLoaded {
+        owner: String,
+        repo: String,
+        number: i32,
+        comments: Vec<PullRequestReviewComment>,
+    },
+    PullRequestReviewCommentsLoadFailed {
+        owner: String,
+        repo: String,
+        number: i32,
+        message: String,
+    },
+    PullRequestReviewCommentCreated {
+        owner: String,
+        repo: String,
+        number: i32,
+        comment: PullRequestReviewComment,
+    },
+    PullRequestReviewCommentCreateFailed {
         owner: String,
         repo: String,
         number: i32,

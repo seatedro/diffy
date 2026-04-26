@@ -368,6 +368,9 @@ impl NativeApp {
         if let Some(renderer) = self.renderer.as_mut() {
             self.state.commit_editor.flush(renderer.font_system_mut());
             self.state
+                .review_comment_editor
+                .flush(renderer.font_system_mut());
+            self.state
                 .steering_prompt_editor
                 .flush(renderer.font_system_mut());
         }
@@ -499,6 +502,10 @@ impl ApplicationHandler for NativeApp {
                 for (target, editor) in [
                     (FocusTarget::CommitEditor, &mut self.state.commit_editor),
                     (
+                        FocusTarget::ReviewCommentEditor,
+                        &mut self.state.review_comment_editor,
+                    ),
+                    (
                         FocusTarget::SettingsSteeringPrompt,
                         &mut self.state.steering_prompt_editor,
                     ),
@@ -521,9 +528,10 @@ impl ApplicationHandler for NativeApp {
                 }
                 if let Some(renderer) = self.renderer.as_mut() {
                     let time_seconds = self.launch_at.elapsed().as_secs_f32();
-                    let editors: [Option<&crate::editor::Editor>; 2] = [
+                    let editors: [Option<&crate::editor::Editor>; 3] = [
                         Some(&self.state.commit_editor),
                         Some(&self.state.steering_prompt_editor),
+                        Some(&self.state.review_comment_editor),
                     ];
                     match renderer.render(&self.ui_frame.scene, time_seconds, &editors) {
                         Ok(frame) => {

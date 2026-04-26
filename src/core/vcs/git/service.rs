@@ -168,6 +168,7 @@ fn run_system_git(repo: &Repository, args: &[OsString]) -> Result<()> {
     let output = Command::new("git")
         .args(args)
         .current_dir(&workdir)
+        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .map_err(|e| DiffyError::General(format!("failed to run git: {e}")))?;
 
@@ -192,6 +193,122 @@ fn run_system_git(repo: &Repository, args: &[OsString]) -> Result<()> {
     Err(DiffyError::General(format!(
         "git {command} failed: {detail}"
     )))
+}
+
+fn github_repo_key_from_remote_url(url: &str) -> Option<(String, String)> {
+    let trimmed = url.trim();
+    let path = if let Some(rest) = trimmed.strip_prefix("git@github.com:") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix("ssh://git@github.com/") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix("ssh://github.com/") {
+        rest
+    } else {
+        let (_, rest) = trimmed.split_once("://")?;
+        let (authority, path) = rest.split_once('/')?;
+        if !github_authority_matches(authority) {
+            return None;
+        }
+        path
+    };
+
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    let path = path.trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let mut parts = path.split('/');
+    let owner = parts.next()?.trim();
+    let repo = parts.next()?.trim();
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some((owner.to_ascii_lowercase(), repo.to_ascii_lowercase()))
+}
+
+fn github_authority_matches(authority: &str) -> bool {
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    let host = host.split(':').next().unwrap_or(host);
+    host.eq_ignore_ascii_case("github.com")
+}
+
+fn local_remote_names_by_priority(repo: &Repository) -> Option<Vec<String>> {
+    let names = repo.remotes().ok()?;
+    let mut candidates = names
+        .iter()
+        .flatten()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|name| match name.as_str() {
+        "origin" => 0,
+        "upstream" => 1,
+        _ => 2,
+    });
+    Some(candidates)
+}
+
+fn local_remote_for_github_repo(repo: &Repository, owner: &str, repo_name: &str) -> Option<String> {
+    let target = (owner.to_ascii_lowercase(), repo_name.to_ascii_lowercase());
+    let candidates = local_remote_names_by_priority(repo)?;
+    for name in candidates {
+        if let Ok(remote) = repo.find_remote(&name)
+            && let Some(url) = remote.url()
+            && github_repo_key_from_remote_url(url).as_ref() == Some(&target)
+        {
+            return Some(name);
+        }
+    }
+    None
+}
+
+fn github_repo_url_from_remote_transport(url: &str, owner: &str, repo: &str) -> Option<String> {
+    let trimmed = url.trim();
+    if trimmed.strip_prefix("git@github.com:").is_some() {
+        return Some(format!("git@github.com:{owner}/{repo}.git"));
+    }
+
+    let (scheme, rest) = trimmed.split_once("://")?;
+    let (authority, _) = rest.split_once('/')?;
+    if !github_authority_matches(authority) {
+        return None;
+    }
+
+    let scheme = scheme.to_ascii_lowercase();
+    if scheme == "ssh" {
+        Some(format!("ssh://{authority}/{owner}/{repo}.git"))
+    } else {
+        Some(format!("{scheme}://github.com/{owner}/{repo}.git"))
+    }
+}
+
+fn local_github_url_for_repo(repo: &Repository, owner: &str, repo_name: &str) -> Option<String> {
+    let candidates = local_remote_names_by_priority(repo)?;
+    for name in candidates {
+        if let Ok(remote) = repo.find_remote(&name)
+            && let Some(url) = remote.url()
+            && let Some(fetch_url) = github_repo_url_from_remote_transport(url, owner, repo_name)
+        {
+            return Some(fetch_url);
+        }
+    }
+    None
+}
+
+fn fallback_pull_request_repo_url(owner: &str, repo: &str, api_clone_url: &str) -> String {
+    if api_clone_url.is_empty() {
+        format!("https://github.com/{owner}/{repo}.git")
+    } else {
+        api_clone_url.to_owned()
+    }
+}
+
+fn github_fetch_source_for_repo(
+    repo: &Repository,
+    owner: &str,
+    repo_name: &str,
+    api_clone_url: &str,
+) -> String {
+    local_remote_for_github_repo(repo, owner, repo_name)
+        .or_else(|| local_github_url_for_repo(repo, owner, repo_name))
+        .unwrap_or_else(|| fallback_pull_request_repo_url(owner, repo_name, api_clone_url))
 }
 
 #[derive(Default)]
@@ -804,31 +921,25 @@ impl GitService {
             .ok_or_else(|| DiffyError::Parse("not a valid GitHub pull request URL".to_owned()))?;
         let api = GitHubApi::with_token(github_token.to_owned());
         let info = api.fetch_pull_request(&parsed.owner, &parsed.repo, parsed.number)?;
-        let repo_url = if info.base_repo_url.is_empty() {
-            format!("https://github.com/{}/{}.git", parsed.owner, parsed.repo)
-        } else {
-            info.base_repo_url.clone()
-        };
+        let repo = self.repo()?;
+        let fetch_source =
+            github_fetch_source_for_repo(repo, &parsed.owner, &parsed.repo, &info.base_repo_url);
         let base_source = if info.base_sha.is_empty() {
             format!("refs/heads/{}", info.base_branch)
         } else {
             info.base_sha.clone()
         };
-        let head_source = if info.head_sha.is_empty() {
-            format!("refs/heads/{}", info.head_branch)
-        } else {
-            info.head_sha.clone()
-        };
+        let head_source = format!("refs/pull/{}/head", parsed.number);
         let base_target = pr_ref_path(parsed.number, &info.base_branch);
         let head_target = pr_ref_path(parsed.number, &info.head_branch);
         self.fetch_refspecs(
-            &repo_url,
+            &fetch_source,
             &[
                 format!("+{base_source}:{base_target}"),
                 format!("+{head_source}:{head_target}"),
             ],
         )?;
-        prune_stale_pr_refs(self.repo()?, parsed.number, &base_target, &head_target);
+        prune_stale_pr_refs(repo, parsed.number, &base_target, &head_target);
         Ok((base_target, head_target))
     }
 
@@ -966,7 +1077,11 @@ mod tests {
     use git2::{BranchType, Repository, Signature, Status, StatusOptions};
     use tempfile::TempDir;
 
-    use super::{INDEX_REF, PR_REF_PREFIX, WORKDIR_REF, pr_ref_path};
+    use super::{
+        INDEX_REF, PR_REF_PREFIX, WORKDIR_REF, github_fetch_source_for_repo,
+        github_repo_key_from_remote_url, github_repo_url_from_remote_transport,
+        local_remote_for_github_repo, pr_ref_path,
+    };
     use crate::core::vcs::git::{GitService, StatusItem, StatusOperation, StatusScope};
 
     fn commit_file(repo: &Repository, relative_path: &str, content: &str, message: &str) -> String {
@@ -1035,6 +1150,79 @@ mod tests {
             "refs/diffy/pr/77/feat/new-thing"
         );
         assert!(pr_ref_path(1, "x").starts_with(PR_REF_PREFIX));
+    }
+
+    #[test]
+    fn github_remote_url_parser_accepts_local_protocols() {
+        assert_eq!(
+            github_repo_key_from_remote_url("git@github.com:Owner/Repo.git"),
+            Some(("owner".to_owned(), "repo".to_owned()))
+        );
+        assert_eq!(
+            github_repo_key_from_remote_url("ssh://git@github.com/owner/repo.git"),
+            Some(("owner".to_owned(), "repo".to_owned()))
+        );
+        assert_eq!(
+            github_repo_key_from_remote_url("https://token@github.com/owner/repo"),
+            Some(("owner".to_owned(), "repo".to_owned()))
+        );
+        assert_eq!(
+            github_repo_key_from_remote_url("https://example.com/owner/repo"),
+            None
+        );
+    }
+
+    #[test]
+    fn github_remote_transport_rewrites_repo_without_forcing_https() {
+        assert_eq!(
+            github_repo_url_from_remote_transport("git@github.com:me/fork.git", "owner", "repo"),
+            Some("git@github.com:owner/repo.git".to_owned())
+        );
+        assert_eq!(
+            github_repo_url_from_remote_transport(
+                "ssh://git@github.com:22/me/fork.git",
+                "owner",
+                "repo",
+            ),
+            Some("ssh://git@github.com:22/owner/repo.git".to_owned())
+        );
+        assert_eq!(
+            github_repo_url_from_remote_transport(
+                "https://token@github.com/me/fork.git",
+                "owner",
+                "repo",
+            ),
+            Some("https://github.com/owner/repo.git".to_owned())
+        );
+    }
+
+    #[test]
+    fn local_remote_for_github_repo_prefers_matching_remote_name() {
+        let dir = TempDir::new().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        repo.remote("origin", "git@github.com:me/fork.git").unwrap();
+        repo.remote("upstream", "git@github.com:Owner/Repo.git")
+            .unwrap();
+
+        let remote = local_remote_for_github_repo(&repo, "owner", "repo").unwrap();
+
+        assert_eq!(remote, "upstream");
+    }
+
+    #[test]
+    fn github_fetch_source_uses_local_remote_protocol_when_base_remote_is_missing() {
+        let dir = TempDir::new().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        repo.remote("origin", "git@github.com:me/fork.git").unwrap();
+
+        let source = github_fetch_source_for_repo(
+            &repo,
+            "owner",
+            "repo",
+            "https://github.com/owner/repo.git",
+        );
+
+        assert_eq!(source, "git@github.com:owner/repo.git");
     }
 
     #[test]

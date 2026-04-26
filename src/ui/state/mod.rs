@@ -31,7 +31,10 @@ use crate::core::vcs::git::patch;
 use crate::core::vcs::git::{
     BranchInfo, CommitInfo, StatusItem, StatusOperation, StatusScope, TagInfo,
 };
-use crate::core::vcs::github::{DeviceFlowState, GitHubUser, PullRequestInfo};
+use crate::core::vcs::github::{
+    CreatePullRequestReviewComment, DeviceFlowState, GitHubReviewSide, GitHubUser, PullRequestInfo,
+    PullRequestReviewComment,
+};
 use crate::editor::Editor;
 use crate::effects::{
     AiEffect, BatchStatusOperationRequest, CommitRequest, CompareEffect, CompareFileRequest,
@@ -245,6 +248,7 @@ pub enum FocusTarget {
     SidebarSearch,
     SearchInput,
     CommitEditor,
+    ReviewCommentEditor,
     SettingsOpenAiKey,
     SettingsAnthropicKey,
     SettingsSteeringPrompt,
@@ -259,6 +263,7 @@ impl FocusTarget {
                 | Self::SidebarSearch
                 | Self::SearchInput
                 | Self::CommitEditor
+                | Self::ReviewCommentEditor
                 | Self::SettingsOpenAiKey
                 | Self::SettingsAnthropicKey
                 | Self::SettingsSteeringPrompt
@@ -1046,11 +1051,34 @@ pub struct PrCacheEntry {
     pub last_peek_ms: u64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PrReviewCommentsEntry {
+    pub status: AsyncStatus,
+    pub comments: Vec<PullRequestReviewComment>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewCommentDraft {
+    pub key: PrKey,
+    pub request: CreatePullRequestReviewComment,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReviewCommentComposerState {
+    pub draft: Option<ReviewCommentDraft>,
+    pub status: AsyncStatus,
+    pub message: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
 pub struct PullRequestState {
     pub status: AsyncStatus,
     pub cache: HashMap<PrKey, PrCacheEntry>,
     pub pending_confirm: Option<PrKey>,
+    pub active: Option<PrKey>,
+    pub review_comments: HashMap<PrKey, PrReviewCommentsEntry>,
+    pub review_composer: ReviewCommentComposerState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1247,6 +1275,7 @@ pub struct AppState {
     pub text_focused: Signal<bool>,
     pub animation: crate::ui::animation::AnimationState,
     pub commit_editor: Editor,
+    pub review_comment_editor: Editor,
     pub steering_prompt_editor: Editor,
     pub ai_openai_key: String,
     pub ai_anthropic_key: String,
@@ -1318,6 +1347,7 @@ impl Default for AppState {
             text_focused,
             animation: crate::ui::animation::AnimationState::default(),
             commit_editor: Editor::default(),
+            review_comment_editor: Editor::default(),
             steering_prompt_editor: Editor::default(),
             ai_openai_key: String::new(),
             ai_anthropic_key: String::new(),
@@ -1464,6 +1494,7 @@ impl AppState {
             text_focused,
             animation: crate::ui::animation::AnimationState::default(),
             commit_editor: Editor::default(),
+            review_comment_editor: Editor::default(),
             steering_prompt_editor: Editor::default(),
             ai_openai_key: String::new(),
             ai_anthropic_key: String::new(),
@@ -2891,6 +2922,28 @@ impl AppState {
             return Vec::new();
         }
 
+        let active_pr = self.github.pull_request.active.get(&self.store);
+        let active_pr_still_matches = active_pr.as_ref().is_some_and(|key| {
+            self.github.pull_request.cache.with(&self.store, |cache| {
+                matches!(
+                    cache.get(key).map(|entry| &entry.diff),
+                    Some(PrPeekDiff::Ready {
+                        left_ref: pr_left,
+                        right_ref: pr_right,
+                        ..
+                    }) if pr_left == &left_ref && pr_right == &right_ref
+                )
+            })
+        });
+        if !active_pr_still_matches {
+            self.github.pull_request.active.set(&self.store, None);
+            self.github
+                .pull_request
+                .review_composer
+                .set(&self.store, ReviewCommentComposerState::default());
+            self.review_comment_editor.request_clear();
+        }
+
         self.workspace
             .source
             .set(&self.store, WorkspaceSource::Compare);
@@ -4231,6 +4284,7 @@ impl AppState {
                     .pull_request
                     .pending_confirm
                     .set(&self.store, None);
+                self.github.pull_request.active.set(&self.store, Some(key));
                 self.apply_pr_compare(left_ref, right_ref)
             }
             Some(PrPeekDiff::Loading) | Some(PrPeekDiff::Idle) => {

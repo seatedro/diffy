@@ -41,7 +41,9 @@ pub fn auth_modal(
         AuthPhase::Idle
     };
 
-    let panel_width = Sz::MODAL_LG;
+    let panel_width = (Sz::MODAL_LG * scale)
+        .min(width - (Sz::MODAL_MARGIN * scale).round())
+        .max(0.0);
     let panel = view! { scale,
         <div class="flex-col overflow-hidden"
              w={panel_width} p={Sp::XXL} gap={Sp::XL}

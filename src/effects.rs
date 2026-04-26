@@ -6,6 +6,7 @@ use crate::core::syntax::annotator::SyntaxRowWindow;
 use crate::core::update::{AvailableUpdate, StagedUpdate};
 use crate::core::vcs::git::status::StatusScope;
 use crate::core::vcs::git::{StatusItem, StatusOperation};
+use crate::core::vcs::github::CreatePullRequestReviewComment;
 use crate::events::RepositorySyncReason;
 use crate::platform::persistence::Settings;
 use crate::platform::secrets::AiKeyKind;
@@ -200,6 +201,19 @@ pub enum GitHubEffect {
         repo: String,
         number: i32,
         github_token: Option<String>,
+    },
+    FetchPullRequestReviewComments {
+        owner: String,
+        repo: String,
+        number: i32,
+        github_token: Option<String>,
+    },
+    CreatePullRequestReviewComment {
+        owner: String,
+        repo: String,
+        number: i32,
+        github_token: Option<String>,
+        comment: CreatePullRequestReviewComment,
     },
     LoadGitHubToken,
     SaveGitHubToken(String),

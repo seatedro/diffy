@@ -416,6 +416,70 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
+            Effect::GitHub(GitHubEffect::FetchPullRequestReviewComments {
+                owner,
+                repo,
+                number,
+                github_token,
+            }) => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services.fetch_pull_request_review_comments(
+                        &owner,
+                        &repo,
+                        number,
+                        github_token,
+                    ) {
+                        Ok(comments) => GitHubEvent::PullRequestReviewCommentsLoaded {
+                            owner,
+                            repo,
+                            number,
+                            comments,
+                        },
+                        Err(error) => GitHubEvent::PullRequestReviewCommentsLoadFailed {
+                            owner,
+                            repo,
+                            number,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
+            Effect::GitHub(GitHubEffect::CreatePullRequestReviewComment {
+                owner,
+                repo,
+                number,
+                github_token,
+                comment,
+            }) => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services.create_pull_request_review_comment(
+                        &owner,
+                        &repo,
+                        number,
+                        github_token,
+                        &comment,
+                    ) {
+                        Ok(comment) => GitHubEvent::PullRequestReviewCommentCreated {
+                            owner,
+                            repo,
+                            number,
+                            comment,
+                        },
+                        Err(error) => GitHubEvent::PullRequestReviewCommentCreateFailed {
+                            owner,
+                            repo,
+                            number,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
             Effect::GitHub(GitHubEffect::FetchAvatar { url }) => {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();

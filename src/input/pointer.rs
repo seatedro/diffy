@@ -123,9 +123,9 @@ impl InputSystem {
                     ]);
                 }
             }
-            if state.workspace.source.get(&state.store) == WorkspaceSource::Status
-                && editor.is_gutter_hit(x, y)
-            {
+            let status_source = state.workspace.source.get(&state.store) == WorkspaceSource::Status;
+            let review_source = state.pull_request_review_enabled();
+            if (status_source || review_source) && editor.is_gutter_hit(x, y) {
                 if let Some(row) = hovered {
                     if editor.is_block_row(row) {
                         return InputOutcome::actions(vec![
@@ -147,7 +147,7 @@ impl InputSystem {
                         EditorAction::FocusViewport.into(),
                         EditorAction::HoverViewportRow(hovered).into(),
                     ];
-                    if is_hunk_sep {
+                    if is_hunk_sep && status_source {
                         let is_staged = matches!(
                             state.workspace.selected_status_scope.get(&state.store),
                             Some(crate::core::vcs::git::StatusScope::Staged)
@@ -157,6 +157,8 @@ impl InputSystem {
                         } else {
                             RepositoryAction::StageHunk.into()
                         });
+                    } else if is_hunk_sep {
+                        // Hunk headers are not review-comment anchors.
                     } else if self.modifiers.shift_key() {
                         let anchor = state
                             .editor

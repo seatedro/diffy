@@ -36,15 +36,39 @@ Diffy is a native GPU-accelerated Git diff viewer. Optimize every change for:
 - `src/ui/components/`, `src/ui/overlays/`, and `src/ui/editor/` are reusable
   UI surfaces. Use existing design constants from `src/ui/design.rs` and theme
   tokens from `src/ui/theme.rs`.
+- `crates/carbon/` is Diffy's data-oriented diff substrate: patch parsing,
+  durable diff coordinates, text stores, inline diffs, projections, and review
+  anchors.
 - `crates/halogen/` is Diffy's local UI/reactivity toolkit. Read
   `crates/halogen/ARCHITECTURE.md` before changing signals, scene primitives, or
   the `view!` macro contract.
+- `crates/halogen-macros/` owns the proc-macro parsing and lowering for
+  `#[derive(Store)]` and `view!`.
 - `crates/phosphor/` is the local tree-sitter-backed syntax highlighting crate.
 - `crates/difftastic/` is vendored and excluded from the main workspace. Do not
   casually refactor it; changes there should be intentional vendor or integration
   work.
 - `.docs/` contains reference material and experiments. Do not treat large
   reference checkouts there as app source.
+
+## Crate Intent Nodes
+
+Use these crate-level `AGENTS.md` files as progressive-disclosure downlinks.
+Load the relevant node before editing that crate, and keep shared facts at the
+shallowest node that always applies instead of duplicating them.
+
+- Diff substrate: `crates/carbon/AGENTS.md`
+- UI/reactivity toolkit: `crates/halogen/AGENTS.md`
+- UI proc macros: `crates/halogen-macros/AGENTS.md`
+- Syntax highlighting and packs: `crates/phosphor/AGENTS.md`
+
+Treat these files as an intent layer, not general documentation. Each node
+should compress the code it covers, surface hidden contracts and anti-patterns,
+and point to deeper context instead of copying it. Add new nodes only at
+semantic boundaries where responsibility, invariants, or failure modes change.
+When a fact applies to multiple areas, keep it in the least common ancestor
+node. When behavior changes, update the affected leaf node first and then revise
+parent summaries only if their guidance changed.
 
 ## Architecture Rules
 

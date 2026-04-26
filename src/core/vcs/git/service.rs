@@ -379,9 +379,9 @@ impl GitService {
         Ok(self.resolve_commit_oid(reference)?.to_string())
     }
 
-    pub fn read_file_lines_at(&self, reference: &str, path: &str) -> Result<Vec<String>> {
+    fn read_file_bytes_at(&self, reference: &str, path: &str) -> Result<Vec<u8>> {
         let repo = self.repo()?;
-        let bytes: Vec<u8> = if reference == WORKDIR_REF {
+        let bytes = if reference == WORKDIR_REF {
             let full = Path::new(&self.repo_path).join(path);
             std::fs::read(&full)?
         } else if reference == INDEX_REF {
@@ -403,18 +403,38 @@ impl GitService {
             })?;
             blob.content().to_vec()
         };
+        Ok(bytes)
+    }
 
+    fn validate_text_bytes(reference: &str, path: &str, bytes: &[u8]) -> Result<()> {
         if bytes.contains(&0u8) {
             return Err(DiffyError::General(format!(
                 "path {path} is binary at {reference}",
             )));
         }
 
-        let text = std::str::from_utf8(&bytes).map_err(|e| {
+        std::str::from_utf8(bytes).map_err(|e| {
             DiffyError::General(format!(
                 "path {path} at {reference} is not valid UTF-8: {e}"
             ))
         })?;
+        Ok(())
+    }
+
+    pub fn read_file_text_store_at(
+        &self,
+        reference: &str,
+        path: &str,
+    ) -> Result<carbon::TextStore> {
+        let bytes = self.read_file_bytes_at(reference, path)?;
+        Self::validate_text_bytes(reference, path, &bytes)?;
+        Ok(carbon::TextStore::from_bytes(bytes))
+    }
+
+    pub fn read_file_lines_at(&self, reference: &str, path: &str) -> Result<Vec<String>> {
+        let bytes = self.read_file_bytes_at(reference, path)?;
+        Self::validate_text_bytes(reference, path, &bytes)?;
+        let text = std::str::from_utf8(&bytes).unwrap_or_default();
 
         Ok(split_lines(text))
     }

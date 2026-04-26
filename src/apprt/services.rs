@@ -312,8 +312,8 @@ impl AppServices {
             return Some(cached);
         }
 
-        let lines = git.read_file_lines_at(reference, &request.path).ok()?;
-        let syntax = Arc::new(annotator.highlight_full_lines(&request.path, &lines));
+        let text = git.read_file_text_store_at(reference, &request.path).ok()?;
+        let syntax = Arc::new(annotator.highlight_full_text_store(&request.path, &text));
         if syntax.has_tokens()
             && let Ok(mut cache) = self.syntax_cache.lock()
         {

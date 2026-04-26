@@ -691,24 +691,37 @@ pub(crate) fn sidebar(
             });
 
         let expanded_folders = state.file_list.expanded_folders.get(&state.store);
-        let expanded_count = expanded_folders.len();
-        let tree = components::file_tree(entries)
-            .expanded(expanded_folders)
-            .selected(state.workspace.selected_file_index.get(&state.store))
+        let layout = components::file_tree_layout(
+            entries,
+            &expanded_folders,
+            state.workspace.selected_file_index.get(&state.store),
+        );
+        let row_count = layout.len();
+        let total_height = state.file_list_total_content_height(row_count);
+        let scroll_px = state.file_list.scroll_offset_px.get(&state.store);
+        let stride = state.file_list_row_stride();
+        let viewport_height = state.file_list.viewport_height.get(&state.store);
+        let window = visible_sidebar_window(scroll_px, viewport_height, stride, row_count);
+        let gap = state.file_list.gap.get(&state.store);
+        let (top_pad, bottom_pad) = virtual_sidebar_spacer_heights(row_count, &window, stride, gap);
+        let tree = layout
+            .render_window(window.clone())
+            .row_gap(gap)
             .on_select_file(crate::actions::select_file)
             .on_toggle_folder(crate::actions::toggle_folder);
-
-        let row_count = visible_count + expanded_count;
-        let row_height = state.file_list.row_height.get(&state.store);
-        let total_height = row_count as f32 * (row_height + state.file_list.gap.get(&state.store));
-        let scroll_px = state.file_list.scroll_offset_px.get(&state.store);
 
         Some(view! { scale,
             <div class="flex-1 flex-col" min_h={0.0}
                  clip scroll_y={scroll_px}
                  scroll_total={total_height}
                  on_scroll={ScrollActionBuilder::FileList}>
+                if top_pad > 0.0 {
+                    <div class="w-full shrink-0" h={top_pad} />
+                }
                 {tree}
+                if bottom_pad > 0.0 {
+                    <div class="w-full shrink-0" h={bottom_pad} />
+                }
             </div>
         })
     } else {

@@ -1,5 +1,6 @@
 use crate::core::syntax::Highlighter;
 use crate::core::text::DiffTokenSpan;
+use carbon::{LineId, TextStore};
 
 #[derive(Debug, Clone, Copy)]
 struct LineRef {
@@ -64,10 +65,17 @@ impl DiffSyntaxAnnotator {
     }
 
     pub fn highlight_full_lines(&self, path: &str, lines: &[String]) -> FullFileSyntax {
-        let (source, line_offsets) = source_from_lines(lines);
-        let line_lengths = lines.iter().map(|line| line.len()).collect::<Vec<_>>();
+        let text = text_store_from_lines(lines);
+        self.highlight_full_text_store(path, &text)
+    }
+
+    pub fn highlight_full_text_store(&self, path: &str, text: &TextStore) -> FullFileSyntax {
+        let (line_offsets, line_lengths) = line_ranges_from_text_store(text);
         let language = self.highlighter.resolve_language(path);
-        let tokens = match self.highlighter.highlight_resolved(language, &source) {
+        let tokens = match self
+            .highlighter
+            .highlight_text_store_resolved(language, text)
+        {
             Ok(tokens) => tokens,
             Err(error) => {
                 tracing::warn!(
@@ -166,17 +174,28 @@ fn build_carbon_full_file_refs(
     (old_refs, new_refs)
 }
 
-fn source_from_lines(lines: &[String]) -> (String, Vec<usize>) {
+fn text_store_from_lines(lines: &[String]) -> TextStore {
     let size = lines.iter().map(|line| line.len() + 1).sum();
     let mut source = String::with_capacity(size);
-    let mut offsets = Vec::with_capacity(lines.len() + 1);
     for line in lines {
-        offsets.push(source.len());
         source.push_str(line);
         source.push('\n');
     }
-    offsets.push(source.len());
-    (source, offsets)
+    TextStore::from_text(source)
+}
+
+fn line_ranges_from_text_store(text: &TextStore) -> (Vec<usize>, Vec<usize>) {
+    let line_count = carbon::u32_to_usize_saturating(text.line_count());
+    let mut offsets = Vec::with_capacity(line_count + 1);
+    let mut lengths = Vec::with_capacity(line_count);
+    for index in 0..line_count {
+        if let Some(range) = text.line_range(LineId(carbon::usize_to_u32_saturating(index))) {
+            offsets.push(carbon::u32_to_usize_saturating(range.start));
+            lengths.push(carbon::u32_to_usize_saturating(range.len));
+        }
+    }
+    offsets.push(carbon::u32_to_usize_saturating(text.len()));
+    (offsets, lengths)
 }
 
 fn byte_refs_for_cached_refs(refs: &[LineRef], syntax: &FullFileSyntax) -> Vec<LineRef> {

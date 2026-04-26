@@ -659,6 +659,20 @@ impl AppState {
     }
 
     pub fn sidebar_row_count(&self) -> usize {
+        if self.workspace.source.get(&self.store) == WorkspaceSource::Compare
+            && self.file_list.tab.get(&self.store) == SidebarTab::Files
+            && self.file_list.mode.get(&self.store) == SidebarMode::TreeView
+            && self.file_list.filter.with(&self.store, |s| s.is_empty())
+        {
+            let expanded_folders = self.file_list.expanded_folders.get(&self.store);
+            return self.workspace.files.with(&self.store, |files| {
+                crate::ui::components::file_tree_visible_row_count(
+                    files.iter().map(|file| file.path.as_str()),
+                    &expanded_folders,
+                )
+            });
+        }
+
         if self.workspace.source.get(&self.store) == WorkspaceSource::Status
             && self.file_list.filter.with(&self.store, |s| s.is_empty())
         {

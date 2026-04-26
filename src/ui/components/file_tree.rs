@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
+use std::ops::Range;
 
 use halogen::view;
 
@@ -20,35 +21,86 @@ pub struct FileTreeEntry {
 }
 
 pub struct FileTree {
-    entries: Vec<FileTreeEntry>,
-    expanded_folders: HashSet<String>,
-    selected: Option<usize>,
+    rows: Vec<FlatRow>,
+    total_rows: usize,
+    window_start: usize,
+    row_gap: f32,
     on_select_file: fn(usize) -> Action,
     on_toggle_folder: Option<fn(String) -> Action>,
 }
 
+pub struct FileTreeLayout {
+    rows: Vec<FlatRow>,
+}
+
 pub fn file_tree(entries: Vec<FileTreeEntry>) -> FileTree {
-    fn select_file(index: usize) -> Action {
-        crate::actions::FileListAction::SelectFile(index).into()
+    file_tree_layout(entries, &HashSet::new(), None).render_window(0..usize::MAX)
+}
+
+pub fn file_tree_layout(
+    entries: Vec<FileTreeEntry>,
+    expanded_folders: &HashSet<String>,
+    selected: Option<usize>,
+) -> FileTreeLayout {
+    let mut root = TreeNode::new();
+    for (i, entry) in entries.iter().enumerate() {
+        insert_entry(&mut root, i, entry);
     }
 
-    FileTree {
-        entries,
-        expanded_folders: HashSet::new(),
-        selected: None,
-        on_select_file: select_file,
-        on_toggle_folder: None,
+    let mut rows = Vec::new();
+    flatten_tree(&root, "", 0, expanded_folders, selected, &mut rows);
+    FileTreeLayout { rows }
+}
+
+pub fn file_tree_visible_row_count<'a>(
+    paths: impl IntoIterator<Item = &'a str>,
+    expanded_folders: &HashSet<String>,
+) -> usize {
+    let mut root = TreeNode::new();
+    for path in paths {
+        insert_path_for_count(&mut root, path);
+    }
+    count_visible_rows(&root, "", expanded_folders)
+}
+
+impl FileTreeLayout {
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    pub fn render_window(self, window: Range<usize>) -> FileTree {
+        let total_rows = self.rows.len();
+        let start = window.start.min(total_rows);
+        let end = window.end.min(total_rows).max(start);
+        let rows = self
+            .rows
+            .into_iter()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .collect();
+
+        FileTree {
+            rows,
+            total_rows,
+            window_start: start,
+            row_gap: 0.0,
+            on_select_file: select_file,
+            on_toggle_folder: None,
+        }
     }
 }
 
-impl FileTree {
-    pub fn expanded(mut self, folders: HashSet<String>) -> Self {
-        self.expanded_folders = folders;
-        self
-    }
+fn select_file(index: usize) -> Action {
+    crate::actions::FileListAction::SelectFile(index).into()
+}
 
-    pub fn selected(mut self, idx: Option<usize>) -> Self {
-        self.selected = idx;
+impl FileTree {
+    pub fn row_gap(mut self, gap: f32) -> Self {
+        self.row_gap = gap;
         self
     }
 
@@ -112,6 +164,64 @@ impl TreeNode {
             );
         }
     }
+}
+
+fn insert_entry(root: &mut TreeNode, original_index: usize, entry: &FileTreeEntry) {
+    let parts: Vec<&str> = entry.path.split('/').collect();
+    if parts.len() > 1 {
+        root.insert(
+            &parts[..parts.len() - 1],
+            original_index,
+            parts[parts.len() - 1],
+            &entry.status,
+            entry.scope.as_deref(),
+            entry.additions,
+            entry.deletions,
+        );
+    } else {
+        root.files.push((
+            original_index,
+            entry.path.clone(),
+            entry.status.clone(),
+            entry.scope.clone(),
+            entry.additions,
+            entry.deletions,
+        ));
+    }
+}
+
+fn insert_path_for_count(root: &mut TreeNode, path: &str) {
+    let parts: Vec<&str> = path.split('/').collect();
+    if parts.len() > 1 {
+        root.insert(
+            &parts[..parts.len() - 1],
+            0,
+            parts[parts.len() - 1],
+            "",
+            None,
+            0,
+            0,
+        );
+    } else {
+        root.files
+            .push((0, String::new(), String::new(), None, 0, 0));
+    }
+}
+
+fn count_visible_rows(node: &TreeNode, prefix: &str, expanded: &HashSet<String>) -> usize {
+    let mut count = node.files.len();
+    for (dir_name, child) in &node.children_dirs {
+        count += 1;
+        let full_path = if prefix.is_empty() {
+            dir_name.clone()
+        } else {
+            format!("{prefix}/{dir_name}")
+        };
+        if expanded.contains(&full_path) {
+            count += count_visible_rows(child, &full_path, expanded);
+        }
+    }
+    count
 }
 
 enum FlatRow {
@@ -186,47 +296,24 @@ impl RenderOnce for FileTree {
         let chevron_size = Ico::XS;
 
         let Self {
-            entries,
-            expanded_folders,
-            selected,
+            rows,
+            total_rows,
+            window_start,
+            row_gap,
             on_select_file,
             on_toggle_folder,
         } = self;
 
-        let mut root = TreeNode::new();
-        for (i, entry) in entries.iter().enumerate() {
-            let parts: Vec<&str> = entry.path.split('/').collect();
-            if parts.len() > 1 {
-                let dir_parts = &parts[..parts.len() - 1];
-                let file_name = parts[parts.len() - 1];
-                root.insert(
-                    dir_parts,
-                    i,
-                    file_name,
-                    &entry.status,
-                    entry.scope.as_deref(),
-                    entry.additions,
-                    entry.deletions,
-                );
-            } else {
-                root.files.push((
-                    i,
-                    entry.path.clone(),
-                    entry.status.clone(),
-                    entry.scope.clone(),
-                    entry.additions,
-                    entry.deletions,
-                ));
-            }
-        }
-
-        let mut flat_rows = Vec::new();
-        flatten_tree(&root, "", 0, &expanded_folders, selected, &mut flat_rows);
-
         let mut container = div().flex_col().w_full();
 
-        for row in flat_rows {
-            match row {
+        for (offset, row) in rows.into_iter().enumerate() {
+            let global_index = window_start + offset;
+            let wrapper_height = if global_index + 1 == total_rows {
+                row_height
+            } else {
+                row_height + row_gap
+            };
+            let row_element = match row {
                 FlatRow::Folder {
                     name,
                     path,
@@ -267,7 +354,7 @@ impl RenderOnce for FileTree {
                         .child(svg_icon(folder_icon, icon_size).color(tc.text_muted))
                         .child(text(name).text_sm().color(tc.text).medium());
 
-                    container = container.child(row_div);
+                    row_div.into_any()
                 }
                 FlatRow::File {
                     name,
@@ -336,9 +423,17 @@ impl RenderOnce for FileTree {
                         row_div = row_div.child(super::badge::status_badge(status));
                     }
 
-                    container = container.child(row_div);
+                    row_div.into_any()
                 }
-            }
+            };
+
+            container = container.child(
+                div()
+                    .w_full()
+                    .h(wrapper_height)
+                    .overflow_hidden()
+                    .child(row_element),
+            );
         }
 
         container.into_any()

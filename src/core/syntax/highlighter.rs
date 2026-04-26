@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::core::error::{DiffyError, Result};
 use crate::core::text::{DiffTokenSpan, SyntaxTokenKind};
+use carbon::TextStore;
 use phosphor::{
     HighlightKind, HighlightSpan, Highlighter as PhosphorHighlighter,
     LanguageId as PhosphorLanguageId, TextByteRange,
@@ -49,6 +50,19 @@ impl Highlighter {
             .highlight_language(language, source)
             .map(|spans| spans.into_iter().map(map_span).collect())
             .map_err(|error| DiffyError::Syntax(error.to_string()))
+    }
+
+    pub fn highlight_text_store_resolved(
+        &self,
+        language: Option<PhosphorLanguageId>,
+        text: &TextStore,
+    ) -> Result<Vec<DiffTokenSpan>> {
+        let Some(source) = text.as_str() else {
+            return Err(DiffyError::Syntax(
+                "syntax source is not valid UTF-8".to_owned(),
+            ));
+        };
+        self.highlight_resolved(language, source)
     }
 
     pub fn highlight_resolved_ranges(

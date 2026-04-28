@@ -77,6 +77,7 @@ struct NativeApp {
     launch_at: Instant,
     next_update_check_at: Option<Instant>,
     needs_redraw: bool,
+    exit_requested: bool,
     tooltip_state: TooltipState,
     #[cfg(feature = "hot-reload")]
     hot_reload_pending: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -105,6 +106,7 @@ impl NativeApp {
             next_update_check_at: update_polling_enabled
                 .then(|| Instant::now() + UPDATE_POLL_INTERVAL),
             needs_redraw: true,
+            exit_requested: false,
             tooltip_state: TooltipState::default(),
             #[cfg(feature = "hot-reload")]
             hot_reload_pending: None,
@@ -214,11 +216,12 @@ impl NativeApp {
     }
 
     fn window_attributes(&self) -> WindowAttributes {
-        Window::default_attributes()
+        let attrs = Window::default_attributes()
             .with_title(self.state.window_title())
             .with_inner_size(LogicalSize::new(1320.0, 840.0))
             .with_min_inner_size(LogicalSize::new(640.0, 480.0))
-            .with_window_icon(app_window_icon())
+            .with_window_icon(app_window_icon());
+        configure_chrome(attrs)
     }
 
     fn sync_window_metrics(&mut self, size: PhysicalSize<u32>, scale_factor: f64) {
@@ -226,8 +229,33 @@ impl NativeApp {
             renderer.resize(size.width, size.height, scale_factor);
         }
         self.sync_theme();
+        self.position_traffic_lights();
         self.mark_dirty();
     }
+
+    #[cfg(target_os = "macos")]
+    fn position_traffic_lights(&self) {
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        // Buttons are 12pt, content centerline of our bar is title_bar_height/2
+        // (logical points). title_bar_height in theme is already scaled, so
+        // divide by ui_scale to get the unscaled bar height in points.
+        let bar_h_logical =
+            self.theme.metrics.title_bar_height / self.theme.metrics.ui_scale().max(0.01);
+        // Match the OS default left inset (NSWindow places the close button
+        // around x=8). Tweak if we want them tighter or looser.
+        let left_margin = 12.0;
+        let target_center_y = bar_h_logical * 0.5;
+        crate::platform::macos_window::position_traffic_lights(
+            window,
+            left_margin,
+            target_center_y,
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn position_traffic_lights(&self) {}
 
     fn window_id(&self) -> Option<WindowId> {
         self.window.as_ref().map(|window| window.id())
@@ -237,6 +265,8 @@ impl NativeApp {
         if let Some(window) = self.window.as_ref() {
             window.set_title(&self.state.window_title());
         }
+        // Setting the window title resets traffic-light positions on macOS.
+        self.position_traffic_lights();
     }
 
     fn sync_window_text_input(&self) {
@@ -311,6 +341,11 @@ impl NativeApp {
         let width = size.width.max(1) as f32;
         let height = size.height.max(1) as f32;
         let ui_scale = self.state.ui_scale_factor();
+        let is_maximized = self
+            .window
+            .as_ref()
+            .map(|w| w.is_maximized())
+            .unwrap_or(false);
 
         // Clone the Rc so `cx` can hold `&SignalStore` independently of
         // `self.state` (which we need to borrow mutably for build_ui_frame).
@@ -337,6 +372,7 @@ impl NativeApp {
                 scale_text_metrics(text_metrics, ui_scale),
                 width,
                 height,
+                is_maximized,
                 &mut cx,
             )
         });
@@ -349,6 +385,7 @@ impl NativeApp {
             scale_text_metrics(text_metrics, ui_scale),
             width,
             height,
+            is_maximized,
             &mut cx,
         );
 
@@ -375,6 +412,10 @@ impl NativeApp {
         ) {
             tracing::info!(?action, "dispatch_action: hunk op");
         }
+        if let Action::Window(window_action) = &action {
+            self.handle_window_action(window_action.clone());
+            return;
+        }
         let effects = self.state.apply_action(action);
         if let Some(renderer) = self.renderer.as_mut() {
             self.state.commit_editor.flush(renderer.font_system_mut());
@@ -391,6 +432,35 @@ impl NativeApp {
         self.sync_window_text_input();
     }
 
+    fn handle_window_action(&mut self, action: crate::actions::WindowAction) {
+        use crate::actions::{ResizeEdge, WindowAction};
+        use winit::window::ResizeDirection;
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        match action {
+            WindowAction::Minimize => window.set_minimized(true),
+            WindowAction::ToggleMaximize => window.set_maximized(!window.is_maximized()),
+            WindowAction::Close => self.exit_requested = true,
+            WindowAction::BeginDrag => {
+                let _ = window.drag_window();
+            }
+            WindowAction::BeginResize(edge) => {
+                let dir = match edge {
+                    ResizeEdge::North => ResizeDirection::North,
+                    ResizeEdge::South => ResizeDirection::South,
+                    ResizeEdge::East => ResizeDirection::East,
+                    ResizeEdge::West => ResizeDirection::West,
+                    ResizeEdge::NorthEast => ResizeDirection::NorthEast,
+                    ResizeEdge::NorthWest => ResizeDirection::NorthWest,
+                    ResizeEdge::SouthEast => ResizeDirection::SouthEast,
+                    ResizeEdge::SouthWest => ResizeDirection::SouthWest,
+                };
+                let _ = window.drag_resize_window(dir);
+            }
+        }
+    }
+
     fn apply_input_outcome(&mut self, outcome: crate::input::InputOutcome) {
         for action in outcome.actions {
             self.dispatch_action(action);
@@ -402,6 +472,21 @@ impl NativeApp {
             self.mark_dirty();
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn configure_chrome(attrs: WindowAttributes) -> WindowAttributes {
+    use winit::platform::macos::WindowAttributesExtMacOS;
+    attrs
+        .with_titlebar_transparent(true)
+        .with_fullsize_content_view(true)
+        .with_title_hidden(true)
+        .with_movable_by_window_background(true)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_chrome(attrs: WindowAttributes) -> WindowAttributes {
+    attrs.with_decorations(false)
 }
 
 fn app_window_icon() -> Option<Icon> {
@@ -452,6 +537,7 @@ impl ApplicationHandler for NativeApp {
                 self.sync_theme();
                 self.refresh_window_title();
                 self.sync_window_text_input();
+                self.position_traffic_lights();
             }
             Err(error) => {
                 eprintln!("failed to create native window: {error}");
@@ -590,6 +676,10 @@ impl ApplicationHandler for NativeApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.exit_requested {
+            event_loop.exit();
+            return;
+        }
         let now = Instant::now();
         self.tick_update_polling(now);
         let prior_cursor_blink_epoch = self.state.cursor_blink_epoch();

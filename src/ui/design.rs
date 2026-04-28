@@ -20,6 +20,9 @@ impl Sp {
 pub struct Sz;
 
 impl Sz {
+    pub const CHROME_BAR_H: f32 = 28.0;
+    pub const CHROME_TRAFFIC_INSET: f32 = 64.0;
+    pub const CHROME_CONTROL_W: f32 = 40.0;
     pub const ROW: f32 = 40.0;
     pub const INPUT: f32 = 44.0;
     pub const INPUT_LABELED: f32 = 64.0;

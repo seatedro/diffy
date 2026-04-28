@@ -2218,6 +2218,7 @@ impl AppState {
             Action::Settings(action) => settings::reduce_action(self, action),
             Action::GitHub(action) => github::reduce_action(self, action),
             Action::Update(action) => update::reduce_action(self, action),
+            Action::Window(_) => Vec::new(),
             Action::Syntax(action) => syntax::reduce_action(self, action),
             Action::Ai(action) => ai::reduce_action(self, action),
             Action::Noop => Vec::new(),

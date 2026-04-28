@@ -18,5 +18,6 @@ pub mod symbols;
 pub mod theme;
 pub mod title_bar;
 pub mod toolbar;
+pub mod window_chrome;
 
 pub use app::run;

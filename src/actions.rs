@@ -209,6 +209,27 @@ pub enum UpdateAction {
     RestartToUpdate,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeEdge {
+    North,
+    South,
+    East,
+    West,
+    NorthEast,
+    NorthWest,
+    SouthEast,
+    SouthWest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WindowAction {
+    Minimize,
+    ToggleMaximize,
+    Close,
+    BeginDrag,
+    BeginResize(ResizeEdge),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyntaxAction {}
 
@@ -233,6 +254,7 @@ pub enum Action {
     Settings(SettingsAction),
     GitHub(GitHubAction),
     Update(UpdateAction),
+    Window(WindowAction),
     Syntax(SyntaxAction),
     Ai(AiAction),
     Noop,
@@ -301,6 +323,12 @@ impl From<GitHubAction> for Action {
 impl From<UpdateAction> for Action {
     fn from(action: UpdateAction) -> Self {
         Self::Update(action)
+    }
+}
+
+impl From<WindowAction> for Action {
+    fn from(action: WindowAction) -> Self {
+        Self::Window(action)
     }
 }
 

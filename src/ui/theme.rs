@@ -217,7 +217,7 @@ impl Theme {
 
 fn default_metrics() -> ThemeMetrics {
     ThemeMetrics {
-        title_bar_height: 40.0,
+        title_bar_height: 44.0,
         status_bar_height: 40.0,
         sidebar_width: 280.0,
         panel_radius: 12.0,

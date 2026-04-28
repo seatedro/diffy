@@ -20,8 +20,8 @@ use crate::ui::state::{
 };
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
-use crate::ui::title_bar;
 use crate::ui::toolbar as toolbar_mod;
+use crate::ui::window_chrome;
 
 pub use halogen::CursorHint;
 
@@ -46,6 +46,7 @@ pub fn build_ui_frame(
     text_metrics: TextMetrics,
     width: f32,
     height: f32,
+    is_maximized: bool,
     cx: &mut ElementContext,
 ) -> UiFrame {
     let mut effects = Vec::new();
@@ -177,17 +178,21 @@ pub fn build_ui_frame(
         .h(height)
         .flex_col()
         .bg(theme.colors.background)
-        .child(title_bar::title_bar(
+        .child(window_chrome::window_chrome(
             state,
             theme,
             sidebar_width_factor,
-            width,
+            is_maximized,
         ))
         .child(body)
         .child(crate::ui::status_bar::status_bar(state, theme));
 
     if let Some(overlay) = overlays::render_active_overlay(state, theme, width, height) {
         root = root.child(overlay);
+    }
+
+    if let Some(edges) = window_chrome::resize_edges(width, height) {
+        root = root.child(edges);
     }
 
     let toast_stack = state.toasts.with(&state.store, |toasts| {

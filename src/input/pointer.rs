@@ -293,7 +293,13 @@ impl InputSystem {
             actions.push(EditorAction::HoverViewportRow(hovered_row).into());
         }
 
-        let cursor_hint = if editor.file_header_path_at(x, y).is_some() {
+        let cursor_hint = if ui_frame
+            .scrollbar_tracks
+            .iter()
+            .any(|t| t.track_rect.contains(x, y))
+        {
+            crate::ui::shell::CursorHint::Pointer
+        } else if editor.file_header_path_at(x, y).is_some() {
             crate::ui::shell::CursorHint::Pointer
         } else if hovered_row.is_some_and(|row| editor.is_block_row(row)) {
             crate::ui::shell::CursorHint::Pointer

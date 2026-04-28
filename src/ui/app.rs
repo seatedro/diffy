@@ -316,6 +316,7 @@ impl NativeApp {
         // `self.state` (which we need to borrow mutably for build_ui_frame).
         let store = std::rc::Rc::clone(&self.state.store);
 
+        self.editor.set_mouse_pos(self.input.mouse_position());
         let mut cx = crate::ui::element::ElementContext::new(
             &self.theme,
             scale_factor,
@@ -328,7 +329,7 @@ impl NativeApp {
         cx.debug_wireframe = std::env::var("DIFFY_DEBUG_WIREFRAME").is_ok();
 
         #[cfg(feature = "hot-reload")]
-        return subsecond::call(|| {
+        let mut frame = subsecond::call(|| {
             build_ui_frame(
                 &mut self.state,
                 &self.theme,
@@ -341,7 +342,7 @@ impl NativeApp {
         });
 
         #[cfg(not(feature = "hot-reload"))]
-        build_ui_frame(
+        let mut frame = build_ui_frame(
             &mut self.state,
             &self.theme,
             &mut self.editor,
@@ -349,7 +350,17 @@ impl NativeApp {
             width,
             height,
             &mut cx,
-        )
+        );
+
+        let effects = std::mem::take(&mut frame.effects);
+        if !effects.is_empty() {
+            self.runtime.dispatch_all(effects);
+            self.sync_theme();
+            self.refresh_window_title();
+            self.sync_window_text_input();
+            self.mark_dirty();
+        }
+        frame
     }
 
     fn dispatch_action(&mut self, action: Action) {

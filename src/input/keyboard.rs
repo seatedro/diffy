@@ -290,11 +290,21 @@ fn workspace_key_actions_inner(
             }
         }
         Some(NamedKey::Home) if state.is_workspace_ready() => {
-            Some(vec![EditorAction::ScrollViewportTo(0).into()])
+            let action = if state.settings.continuous_scroll {
+                EditorAction::ScrollViewportToGlobal(0)
+            } else {
+                EditorAction::ScrollViewportTo(0)
+            };
+            Some(vec![action.into()])
         }
-        Some(NamedKey::End) if state.is_workspace_ready() => Some(vec![
-            EditorAction::ScrollViewportTo(state.editor_max_scroll_top_px()).into(),
-        ]),
+        Some(NamedKey::End) if state.is_workspace_ready() => {
+            let action = if state.settings.continuous_scroll {
+                EditorAction::ScrollViewportToGlobal(state.global_max_scroll_top_px())
+            } else {
+                EditorAction::ScrollViewportTo(state.editor_max_scroll_top_px())
+            };
+            Some(vec![action.into()])
+        }
         _ => {
             let ch = chord.logical_char()?;
             if ch == "?" {
@@ -317,14 +327,24 @@ fn workspace_key_actions_inner(
                 "k" => Some(vec![EditorAction::ScrollViewportLines(-1).into()]),
                 "d" => Some(vec![EditorAction::ScrollViewportHalfPage(1).into()]),
                 "u" => Some(vec![EditorAction::ScrollViewportHalfPage(-1).into()]),
-                "G" => Some(vec![
-                    EditorAction::ScrollViewportTo(state.editor_max_scroll_top_px()).into(),
-                ]),
+                "G" => {
+                    let action = if state.settings.continuous_scroll {
+                        EditorAction::ScrollViewportToGlobal(state.global_max_scroll_top_px())
+                    } else {
+                        EditorAction::ScrollViewportTo(state.editor_max_scroll_top_px())
+                    };
+                    Some(vec![action.into()])
+                }
                 "g" => {
                     let input = input.as_mut()?;
                     if input.pending_g {
                         input.pending_g = false;
-                        Some(vec![EditorAction::ScrollViewportTo(0).into()])
+                        let action = if state.settings.continuous_scroll {
+                            EditorAction::ScrollViewportToGlobal(0)
+                        } else {
+                            EditorAction::ScrollViewportTo(0)
+                        };
+                        Some(vec![action.into()])
                     } else {
                         input.pending_g = true;
                         Some(Vec::new())

@@ -4,17 +4,20 @@ use std::rc::Rc;
 use halogen::view;
 
 use crate::actions::Action;
+use crate::effects::Effect;
 use crate::render::{Rect, Scene, TextMetrics};
 use crate::ui::components::{Button, ButtonSize, ButtonStyle, ToastStack};
 use crate::ui::design::{Bp, Rad, Shadow, Sp, Sz};
-use crate::ui::editor::element::{EditorDocument, EditorElement};
+use crate::ui::editor::element::{EditorDocument, EditorElement, ScrollbarOverride};
 use crate::ui::editor_element::{CursorSnapshot, text_editor_element};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::overlays;
 use crate::ui::settings_page;
 use crate::ui::sidebar as sidebar_mod;
-use crate::ui::state::{AppState, AppView, WorkspaceSource};
+use crate::ui::state::{
+    ActiveFile, ActiveFileLoading, AppState, AppView, ViewportDocument, WorkspaceSource,
+};
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
 use crate::ui::title_bar;
@@ -30,6 +33,7 @@ pub struct UiFrame {
     pub text_input_hit_areas: Vec<TextInputHitArea>,
     pub scrollbar_tracks: Vec<ScrollbarTrack>,
     pub tooltip_regions: Vec<TooltipRegion>,
+    pub effects: Vec<Effect>,
     pub file_list_rect: Option<Rect>,
     pub sidebar_resize_handle_rect: Option<Rect>,
     pub viewport_rect: Option<Rect>,
@@ -44,6 +48,7 @@ pub fn build_ui_frame(
     height: f32,
     cx: &mut ElementContext,
 ) -> UiFrame {
+    let mut effects = Vec::new();
     let viewport_bounds: Rc<Cell<Option<Rect>>> = Rc::new(Cell::new(None));
     let file_list_bounds: Rc<Cell<Option<Rect>>> = Rc::new(Cell::new(None));
     let sidebar_resize_bounds: Rc<Cell<Option<Rect>>> = Rc::new(Cell::new(None));
@@ -257,26 +262,61 @@ pub fn build_ui_frame(
 
     if state.is_workspace_ready() {
         if let Some(vp_bounds) = viewport_bounds.get() {
+            let continuous_scroll = state.settings.continuous_scroll;
+            state
+                .editor
+                .viewport_width_px
+                .set_if_changed(&state.store, vp_bounds.width.max(0.0).round() as u32);
+            let viewport_height_changed = state
+                .editor
+                .viewport_height_px
+                .set_if_changed(&state.store, vp_bounds.height.max(0.0).round() as u32);
+            if continuous_scroll && viewport_height_changed {
+                state.recompute_file_scroll_total_height_px();
+            }
+            if continuous_scroll {
+                effects.extend(state.sync_editor_scroll_from_global());
+            }
+
             let active_file_snapshot = state.workspace.active_file.get(&state.store);
             let active_file_loading = state.workspace.active_file_loading.get(&state.store);
-            let compare_generation = state.workspace.compare_generation.get(&state.store);
-            let document = match active_file_snapshot.as_ref() {
-                Some(active_file) if active_file.carbon_file.is_binary => EditorDocument::Binary {
-                    path: &active_file.path,
-                },
-                Some(active_file) => EditorDocument::Text {
-                    compare_generation,
-                    file_index: active_file.index,
-                    path: &active_file.path,
-                    doc: &active_file.render_doc,
-                },
-                None if active_file_loading.is_some() => EditorDocument::Loading {
-                    path: &active_file_loading.as_ref().expect("loading file").path,
-                },
-                None => EditorDocument::Empty,
+            let render_generation = state.workspace_render_generation();
+            let selected_file_index = state.workspace.selected_file_index.get(&state.store);
+            let selected_file_path = state.workspace.selected_file_path.get(&state.store);
+            let active_file_matches_selection =
+                active_file_snapshot.as_ref().is_some_and(|active_file| {
+                    selected_file_index == Some(active_file.index)
+                        && selected_file_path.as_deref() == Some(active_file.path.as_str())
+                });
+
+            let mut viewport_document = if continuous_scroll {
+                let (doc, doc_effects) = state.build_continuous_viewport_document();
+                effects.extend(doc_effects);
+                doc
+            } else if let Some(active_file) = active_file_snapshot.as_ref().filter(|active_file| {
+                active_file_matches_selection && !active_file.carbon_file.is_binary
+            }) {
+                Some(ViewportDocument::single(
+                    active_file.render_doc.clone(),
+                    render_generation,
+                    active_file.index,
+                    active_file.path.clone(),
+                ))
+            } else {
+                None
             };
             let mut editor_snap = state.editor.snapshot(&state.store);
-            if let Some(active_file) = active_file_snapshot.as_ref() {
+            if let Some(doc) = viewport_document.as_ref().filter(|doc| doc.is_continuous()) {
+                editor_snap.scroll_top_px = state
+                    .global_scroll_position_px()
+                    .saturating_sub(doc.start_offset_px);
+            }
+
+            if !viewport_document
+                .as_ref()
+                .is_some_and(|doc| doc.is_continuous())
+                && let Some(active_file) = active_file_snapshot.as_ref()
+            {
                 let expansion = state
                     .workspace
                     .expansions
@@ -300,14 +340,97 @@ pub fn build_ui_frame(
                 editor.blocks_mut().clear();
                 editor.set_hunk_expand_caps(Vec::new());
             }
-            editor.prepare(&mut editor_snap, document, vp_bounds, text_metrics);
-            editor_snap.hovered_hunk_index = match document {
-                EditorDocument::Text { doc, .. } => editor_snap
-                    .hovered_row
-                    .and_then(|row| editor.render_line_index_for_row(row))
-                    .and_then(|line_index| doc.lines.get(line_index as usize))
-                    .and_then(|line| (line.hunk_index >= 0).then_some(line.hunk_index)),
-                _ => None,
+            let scrollbar_override = if continuous_scroll {
+                Some(ScrollbarOverride {
+                    total_height_px: state.total_diff_height_px(),
+                    scroll_top_px: state.global_scroll_position_px(),
+                    max_scroll_top_px: state.global_max_scroll_top_px(),
+                })
+            } else {
+                None
+            };
+            editor.set_scrollbar_override(scrollbar_override);
+            {
+                let document = editor_document_for(
+                    viewport_document.as_ref(),
+                    active_file_snapshot.as_ref(),
+                    active_file_loading.as_ref(),
+                    render_generation,
+                    active_file_matches_selection,
+                );
+                editor.prepare(&mut editor_snap, document, vp_bounds, text_metrics);
+            }
+
+            state
+                .editor
+                .content_height_px
+                .set_if_changed(&state.store, editor_snap.content_height_px);
+
+            let height_changed = if let Some(doc) =
+                viewport_document.as_ref().filter(|doc| doc.is_continuous())
+            {
+                update_continuous_slot_heights(state, doc, &editor_snap)
+            } else if let Some(active_file) = active_file_snapshot.as_ref()
+                && editor_snap.content_height_px > 0
+            {
+                state
+                    .update_file_content_height_px(active_file.index, editor_snap.content_height_px)
+            } else {
+                false
+            };
+
+            if continuous_scroll && height_changed {
+                effects.extend(state.sync_editor_scroll_from_global());
+                let (doc, doc_effects) = state.build_continuous_viewport_document();
+                effects.extend(doc_effects);
+                viewport_document = doc;
+                if let Some(doc) = viewport_document.as_ref() {
+                    editor_snap.scroll_top_px = state
+                        .global_scroll_position_px()
+                        .saturating_sub(doc.start_offset_px);
+                }
+                editor.set_scrollbar_override(Some(ScrollbarOverride {
+                    total_height_px: state.total_diff_height_px(),
+                    scroll_top_px: state.global_scroll_position_px(),
+                    max_scroll_top_px: state.global_max_scroll_top_px(),
+                }));
+                {
+                    let document = editor_document_for(
+                        viewport_document.as_ref(),
+                        active_file_snapshot.as_ref(),
+                        active_file_loading.as_ref(),
+                        render_generation,
+                        active_file_matches_selection,
+                    );
+                    editor.prepare(&mut editor_snap, document, vp_bounds, text_metrics);
+                }
+                state
+                    .editor
+                    .content_height_px
+                    .set_if_changed(&state.store, editor_snap.content_height_px);
+            }
+
+            let using_continuous_doc = viewport_document
+                .as_ref()
+                .is_some_and(|doc| doc.is_continuous());
+            let document = editor_document_for(
+                viewport_document.as_ref(),
+                active_file_snapshot.as_ref(),
+                active_file_loading.as_ref(),
+                render_generation,
+                active_file_matches_selection,
+            );
+            editor_snap.hovered_hunk_index = if using_continuous_doc {
+                None
+            } else {
+                match document {
+                    EditorDocument::Text { doc, .. } => editor_snap
+                        .hovered_row
+                        .and_then(|row| editor.render_line_index_for_row(row))
+                        .and_then(|line_index| doc.lines.get(line_index as usize))
+                        .and_then(|line| (line.hunk_index >= 0).then_some(line.hunk_index)),
+                    _ => None,
+                }
             };
             // Write back every field prepare may have mutated.
             state
@@ -358,8 +481,9 @@ pub fn build_ui_frame(
                 .editor
                 .line_selection
                 .set_if_changed(&state.store, editor_snap.line_selection.clone());
-            editor.layout.show_staging_controls =
-                state.workspace.source.get(&state.store) == WorkspaceSource::Status;
+            editor.layout.show_staging_controls = state.workspace.source.get(&state.store)
+                == WorkspaceSource::Status
+                && !using_continuous_doc;
             editor.layout.file_is_staged = matches!(
                 state.workspace.selected_status_scope.get(&state.store),
                 Some(crate::core::vcs::git::StatusScope::Staged)
@@ -457,7 +581,7 @@ pub fn build_ui_frame(
                 }
             }
 
-            if state.pull_request_review_enabled() {
+            if state.pull_request_review_enabled() && !using_continuous_doc {
                 if let EditorDocument::Text { doc, .. } = document {
                     let has_line_selection = !editor_snap.line_selection.is_empty();
                     let line_bar_rect = if has_line_selection {
@@ -509,14 +633,27 @@ pub fn build_ui_frame(
                 }
             }
 
-            let content_h = state.editor.content_height_px.get(&state.store);
             let viewport_h = state.editor.viewport_height_px.get(&state.store);
+            let continuous_scroll = state.settings.continuous_scroll;
+            let (content_h, scroll_top, max_scroll, action_builder) = if continuous_scroll {
+                let total = state.total_diff_height_px();
+                let pos = state.global_scroll_position_px();
+                let max = state.global_max_scroll_top_px();
+                (total, pos, max, ScrollActionBuilder::ViewportGlobal)
+            } else {
+                (
+                    state.editor.content_height_px.get(&state.store),
+                    state.editor.scroll_top_px.get(&state.store),
+                    state.editor_max_scroll_top_px(),
+                    ScrollActionBuilder::ViewportLines,
+                )
+            };
             if content_h > viewport_h && viewport_h > 0 {
                 let sb = editor.scrollbar_rect();
                 let ratio = viewport_h as f32 / content_h as f32;
                 let thumb_h = (sb.height * ratio).max(Sp::XXL * ui_scale).min(sb.height);
-                let scroll_range = state.editor_max_scroll_top_px().max(1) as f32;
-                let top_ratio = state.editor.scroll_top_px.get(&state.store) as f32 / scroll_range;
+                let scroll_range = max_scroll.max(1) as f32;
+                let top_ratio = (scroll_top as f32 / scroll_range).clamp(0.0, 1.0);
                 let thumb_y = sb.y + (sb.height - thumb_h) * top_ratio;
                 scrollbar_tracks.push(ScrollbarTrack {
                     track_rect: Rect {
@@ -527,9 +664,13 @@ pub fn build_ui_frame(
                     },
                     thumb_top: thumb_y,
                     thumb_height: thumb_h,
-                    content_height: content_h as f32,
+                    content_height: if continuous_scroll {
+                        viewport_h.saturating_add(max_scroll) as f32
+                    } else {
+                        content_h as f32
+                    },
                     viewport_height: viewport_h as f32,
-                    action_builder: ScrollActionBuilder::ViewportLines,
+                    action_builder,
                 });
             }
         }
@@ -550,10 +691,75 @@ pub fn build_ui_frame(
         text_input_hit_areas,
         scrollbar_tracks,
         tooltip_regions,
+        effects,
         file_list_rect: file_list_rect.or_else(|| file_list_bounds.get()),
         sidebar_resize_handle_rect: sidebar_resize_bounds.get(),
         viewport_rect: viewport_bounds.get(),
     }
+}
+
+fn editor_document_for<'a>(
+    viewport: Option<&'a ViewportDocument>,
+    active_file: Option<&'a ActiveFile>,
+    active_file_loading: Option<&'a ActiveFileLoading>,
+    compare_generation: u64,
+    active_file_matches_selection: bool,
+) -> EditorDocument<'a> {
+    if let Some(viewport) = viewport {
+        return EditorDocument::Text {
+            compare_generation: viewport.generation,
+            file_index: viewport.start_index,
+            path: &viewport.path,
+            doc: viewport.doc.as_ref(),
+            show_file_headers: viewport.is_continuous(),
+        };
+    }
+
+    match active_file {
+        Some(active_file) if active_file_matches_selection && active_file.carbon_file.is_binary => {
+            EditorDocument::Binary {
+                path: &active_file.path,
+            }
+        }
+        Some(active_file) if active_file_matches_selection => EditorDocument::Text {
+            compare_generation,
+            file_index: active_file.index,
+            path: &active_file.path,
+            doc: active_file.render_doc.as_ref(),
+            show_file_headers: false,
+        },
+        None if active_file_loading.is_some() => EditorDocument::Loading {
+            path: &active_file_loading.expect("loading file").path,
+        },
+        Some(_) if active_file_loading.is_some() => EditorDocument::Loading {
+            path: &active_file_loading.expect("loading file").path,
+        },
+        None => EditorDocument::Empty,
+        Some(_) => EditorDocument::Empty,
+    }
+}
+
+fn update_continuous_slot_heights(
+    state: &mut AppState,
+    continuous: &ViewportDocument,
+    editor_snap: &crate::ui::editor::state::EditorState,
+) -> bool {
+    let mut changed = false;
+    for (position_index, slot_index) in continuous.slot_indices.iter().copied().enumerate() {
+        let Some(start) = editor_snap.file_positions.get(position_index).copied() else {
+            continue;
+        };
+        let end = editor_snap
+            .file_positions
+            .get(position_index + 1)
+            .copied()
+            .unwrap_or(editor_snap.content_height_px);
+        let height = end.saturating_sub(start);
+        if height > 0 {
+            changed |= state.update_file_content_height_px(slot_index, height);
+        }
+    }
+    changed
 }
 
 fn build_review_bar(theme: &Theme, ui_scale: f32, bar_rect: Rect) -> AnyElement {

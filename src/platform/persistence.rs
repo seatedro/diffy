@@ -62,6 +62,7 @@ pub struct Settings {
     pub github_user: Option<GitHubUser>,
     pub wheel_scroll_lines: u8,
     pub auto_update: bool,
+    pub continuous_scroll: bool,
     pub ai_steering_prompt: String,
 }
 
@@ -77,6 +78,7 @@ impl Default for Settings {
             github_user: None,
             wheel_scroll_lines: 3,
             auto_update: true,
+            continuous_scroll: false,
             ai_steering_prompt: String::new(),
         }
     }

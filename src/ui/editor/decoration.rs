@@ -1,9 +1,21 @@
+use std::sync::Arc;
+
+use crate::render::scene::{IconPrimitive, Primitive, RichTextPrimitive, RichTextSpan};
 use crate::render::{FontKind, FontWeight, Rect, RectPrimitive, Scene, TextPrimitive};
+use crate::ui::icons::lucide;
 use crate::ui::theme::Theme;
 
 use super::display_layout::DisplayLayoutMetrics;
-use super::element::EditorLayout;
-use super::render_doc::{RenderDoc, RenderLine, RenderRowKind};
+use super::element::{BASE_MONO_FONT_SIZE, EditorLayout};
+use super::render_doc::{FileHeaderMeta, RenderDoc, RenderLine, RenderRowKind};
+
+const BASE_HEADER_PAD_X: f32 = 10.0;
+const BASE_HEADER_ICON_GAP: f32 = 8.0;
+const BASE_HEADER_STATS_GAP: f32 = 12.0;
+const BASE_HEADER_ICON_SIZE: f32 = 14.0;
+const BASE_HEADER_COPY_ICON_SIZE: f32 = 12.0;
+const BASE_HEADER_COPY_GAP: f32 = 8.0;
+const HEADER_MIN_SCALE: f32 = 0.7;
 
 pub struct RowPaintCtx<'a> {
     pub scene: &'a mut Scene,
@@ -12,9 +24,11 @@ pub struct RowPaintCtx<'a> {
     pub row_rect: Rect,
     pub text_y_offset: f32,
     pub font_size: f32,
+    pub mono_char_width_px: f32,
     pub line: &'a RenderLine,
     pub doc: &'a RenderDoc,
     pub path: &'a str,
+    pub is_header_hovered: bool,
 }
 
 impl RowPaintCtx<'_> {
@@ -41,6 +55,243 @@ pub trait RowDecoration {
     fn paint_background(&self, _ctx: &mut RowPaintCtx) {}
 
     fn paint_content(&self, _ctx: &mut RowPaintCtx) {}
+}
+
+pub struct FileHeaderDecoration;
+
+impl RowDecoration for FileHeaderDecoration {
+    fn height(&self, metrics: &DisplayLayoutMetrics) -> u16 {
+        metrics.file_header_height_px
+    }
+
+    fn paint_background(&self, ctx: &mut RowPaintCtx) {
+        ctx.scene.rect(RectPrimitive {
+            rect: ctx.row_rect,
+            color: ctx.theme.colors.file_header_bg,
+        });
+        ctx.scene.rect(RectPrimitive {
+            rect: Rect {
+                x: ctx.row_rect.x,
+                y: ctx.row_rect.y,
+                width: ctx.row_rect.width,
+                height: 1.0,
+            },
+            color: ctx.theme.colors.border_soft,
+        });
+        ctx.scene.rect(RectPrimitive {
+            rect: Rect {
+                x: ctx.row_rect.x,
+                y: ctx.row_rect.bottom() - 1.0,
+                width: ctx.row_rect.width,
+                height: 1.0,
+            },
+            color: ctx.theme.colors.border,
+        });
+    }
+
+    fn paint_content(&self, ctx: &mut RowPaintCtx) {
+        let path_text = ctx.doc.line_text(ctx.line.left_text);
+        let meta = ctx.doc.file_meta(ctx.line);
+        let row_rect = ctx.row_rect;
+        let hovered = ctx.is_header_hovered;
+        let scale = (ctx.font_size / BASE_MONO_FONT_SIZE).max(HEADER_MIN_SCALE);
+        let pad_x = (BASE_HEADER_PAD_X * scale).round();
+        let icon_gap = (BASE_HEADER_ICON_GAP * scale).round();
+        let stats_gap = (BASE_HEADER_STATS_GAP * scale).round();
+
+        let content_left = ctx.text_origin_x();
+
+        let icon_size = (BASE_HEADER_ICON_SIZE * scale).round();
+        let icon_y = row_rect.y + (row_rect.height - icon_size) * 0.5;
+        let icon_x = (row_rect.x + pad_x).round();
+        let icon_color = ctx.theme.colors.text_muted;
+        let icon_svg = if meta.map(|m| m.is_binary).unwrap_or(false) {
+            lucide::FILE
+        } else {
+            lucide::FILE_DIFF
+        };
+        ctx.scene.push(Primitive::Icon(IconPrimitive {
+            rect: Rect {
+                x: icon_x,
+                y: icon_y.round(),
+                width: icon_size,
+                height: icon_size,
+            },
+            name: icon_svg.to_owned(),
+            color: icon_color,
+        }));
+
+        let path_x = (icon_x + icon_size + icon_gap).max(content_left).round();
+        let baseline_y = row_rect.y + ctx.text_y_offset;
+
+        let stats_string = meta
+            .map(|m| stats_label(m.additions, m.deletions))
+            .unwrap_or_default();
+        let stats_width = if stats_string.is_empty() {
+            0.0
+        } else {
+            (stats_string.chars().count() as f32 * ctx.mono_char_width_px).ceil()
+        };
+        let stats_right = row_rect.right() - pad_x;
+        let stats_left = (stats_right - stats_width).round();
+        let copy_icon_size = (BASE_HEADER_COPY_ICON_SIZE * scale).round();
+        let copy_gap = (BASE_HEADER_COPY_GAP * scale).round();
+
+        let path_chars = path_display_char_count(path_text, meta);
+        let path_text_width = (path_chars as f32 * ctx.mono_char_width_px).ceil();
+        let path_max_right = if stats_width > 0.0 {
+            stats_left - stats_gap
+        } else {
+            stats_right
+        };
+        let path_width = (path_max_right - path_x).max(0.0).min(path_text_width);
+
+        let (filename_color, dirname_color) = if hovered {
+            (ctx.theme.colors.text_strong, ctx.theme.colors.text_strong)
+        } else {
+            (ctx.theme.colors.text_strong, ctx.theme.colors.text_muted)
+        };
+        let path_spans = build_path_spans(path_text, meta, filename_color, dirname_color);
+        ctx.scene.rich_text(RichTextPrimitive {
+            rect: Rect {
+                x: path_x,
+                y: baseline_y,
+                width: path_width,
+                height: row_rect.height,
+            },
+            spans: path_spans,
+            default_color: filename_color,
+            font_size: ctx.font_size,
+            font_kind: FontKind::Mono,
+            font_weight: FontWeight::Medium,
+        });
+
+        if hovered {
+            let copy_icon_x = (path_x + path_text_width + copy_gap)
+                .min(path_max_right - copy_icon_size)
+                .round();
+            let copy_icon_y = (row_rect.y + (row_rect.height - copy_icon_size) * 0.5).round();
+            ctx.scene.push(Primitive::Icon(IconPrimitive {
+                rect: Rect {
+                    x: copy_icon_x,
+                    y: copy_icon_y,
+                    width: copy_icon_size,
+                    height: copy_icon_size,
+                },
+                name: lucide::COPY.to_owned(),
+                color: ctx.theme.colors.text,
+            }));
+        }
+
+        if !stats_string.is_empty() {
+            let spans = build_stats_spans(meta.unwrap(), ctx.theme);
+            ctx.scene.rich_text(RichTextPrimitive {
+                rect: Rect {
+                    x: stats_left,
+                    y: baseline_y,
+                    width: stats_width,
+                    height: row_rect.height,
+                },
+                spans,
+                default_color: ctx.theme.colors.text_muted,
+                font_size: ctx.font_size,
+                font_kind: FontKind::Mono,
+                font_weight: FontWeight::Medium,
+            });
+        }
+    }
+}
+
+fn split_path(path: &str) -> (&str, &str) {
+    match path.rfind('/') {
+        Some(idx) => path.split_at(idx + 1),
+        None => ("", path),
+    }
+}
+
+fn build_path_spans(
+    path: &str,
+    meta: Option<&FileHeaderMeta>,
+    filename_color: crate::ui::theme::Color,
+    dirname_color: crate::ui::theme::Color,
+) -> Arc<[RichTextSpan]> {
+    let mut spans: Vec<RichTextSpan> = Vec::with_capacity(5);
+    if let Some(m) = meta
+        && let Some(old) = m.old_path.as_deref()
+    {
+        spans.push(RichTextSpan {
+            text: old.into(),
+            color: dirname_color,
+        });
+        spans.push(RichTextSpan {
+            text: " → ".into(),
+            color: dirname_color,
+        });
+    }
+    let (dir, base) = split_path(path);
+    if !dir.is_empty() {
+        spans.push(RichTextSpan {
+            text: dir.into(),
+            color: dirname_color,
+        });
+    }
+    spans.push(RichTextSpan {
+        text: base.into(),
+        color: filename_color,
+    });
+    spans.into()
+}
+
+fn path_display_char_count(path: &str, meta: Option<&FileHeaderMeta>) -> usize {
+    let mut count = path.chars().count();
+    if let Some(m) = meta
+        && let Some(old) = m.old_path.as_deref()
+    {
+        count += old.chars().count() + 3;
+    }
+    count
+}
+
+fn stats_label(additions: u32, deletions: u32) -> String {
+    if additions == 0 && deletions == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    if additions > 0 {
+        out.push('+');
+        out.push_str(&additions.to_string());
+    }
+    if deletions > 0 {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push('-');
+        out.push_str(&deletions.to_string());
+    }
+    out
+}
+
+fn build_stats_spans(meta: &FileHeaderMeta, theme: &Theme) -> Arc<[RichTextSpan]> {
+    let mut spans: Vec<RichTextSpan> = Vec::with_capacity(3);
+    if meta.additions > 0 {
+        spans.push(RichTextSpan {
+            text: format!("+{}", meta.additions).into(),
+            color: theme.colors.line_add_text,
+        });
+    }
+    if meta.deletions > 0 {
+        if !spans.is_empty() {
+            spans.push(RichTextSpan {
+                text: " ".into(),
+                color: theme.colors.text_muted,
+            });
+        }
+        spans.push(RichTextSpan {
+            text: format!("-{}", meta.deletions).into(),
+            color: theme.colors.line_del_text,
+        });
+    }
+    spans.into()
 }
 
 pub struct HunkSeparatorDecoration;
@@ -76,9 +327,9 @@ impl RowDecoration for HunkSeparatorDecoration {
 
 pub fn decoration_for_kind(kind: RenderRowKind) -> Option<&'static dyn RowDecoration> {
     match kind {
+        RenderRowKind::FileHeader => Some(&FileHeaderDecoration),
         RenderRowKind::HunkSeparator => Some(&HunkSeparatorDecoration),
-        RenderRowKind::FileHeader
-        | RenderRowKind::Context
+        RenderRowKind::Context
         | RenderRowKind::Added
         | RenderRowKind::Removed
         | RenderRowKind::Modified
@@ -170,9 +421,9 @@ mod tests {
     use crate::ui::editor::render_doc::RenderRowKind;
 
     #[test]
-    fn hunk_separator_has_decoration_body_and_file_header_do_not() {
+    fn hunk_separator_and_file_header_have_decoration_body_rows_do_not() {
         assert!(decoration_for_kind(RenderRowKind::HunkSeparator).is_some());
-        assert!(decoration_for_kind(RenderRowKind::FileHeader).is_none());
+        assert!(decoration_for_kind(RenderRowKind::FileHeader).is_some());
         assert!(decoration_for_kind(RenderRowKind::Context).is_none());
         assert!(decoration_for_kind(RenderRowKind::Added).is_none());
         assert!(decoration_for_kind(RenderRowKind::Removed).is_none());

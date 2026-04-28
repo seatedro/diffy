@@ -47,6 +47,7 @@ impl InputSystem {
                 }
             }
             ScrollTarget::Region(ScrollActionBuilder::ViewportLines)
+            | ScrollTarget::Region(ScrollActionBuilder::ViewportGlobal)
             | ScrollTarget::ViewportFallback => {
                 quantize_scroll_delta_px(&mut self.viewport_scroll_remainder_px, delta_px)
             }
@@ -62,6 +63,7 @@ impl InputSystem {
                     actions.push(build(rounded_delta_px));
                 }
                 ScrollTarget::Region(ScrollActionBuilder::ViewportLines)
+                | ScrollTarget::Region(ScrollActionBuilder::ViewportGlobal)
                 | ScrollTarget::ViewportFallback => {
                     actions.push(EditorAction::ScrollViewportPx(rounded_delta_px).into());
                 }
@@ -129,6 +131,7 @@ impl InputSystem {
                 }
             }
             ScrollTarget::Region(ScrollActionBuilder::ViewportLines)
+            | ScrollTarget::Region(ScrollActionBuilder::ViewportGlobal)
             | ScrollTarget::ViewportFallback => editor.scroll_line_height_px(),
         }
     }

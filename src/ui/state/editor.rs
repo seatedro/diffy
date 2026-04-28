@@ -12,22 +12,19 @@ impl AppState {
         use EditorAction::*;
         match action {
             ScrollViewportLines(delta) => {
-                self.scroll_viewport_lines(delta);
-                self.request_active_file_syntax_effect()
-                    .into_iter()
-                    .collect()
+                let mut effects = self.scroll_viewport_lines(delta);
+                effects.extend(self.request_active_file_syntax_effect());
+                effects
             }
             ScrollViewportPx(delta_px) => {
-                self.scroll_viewport_px(delta_px);
-                self.request_active_file_syntax_effect()
-                    .into_iter()
-                    .collect()
+                let mut effects = self.scroll_viewport_px(delta_px);
+                effects.extend(self.request_active_file_syntax_effect());
+                effects
             }
             ScrollViewportPages(delta) => {
-                self.scroll_viewport_pages(delta);
-                self.request_active_file_syntax_effect()
-                    .into_iter()
-                    .collect()
+                let mut effects = self.scroll_viewport_pages(delta);
+                effects.extend(self.request_active_file_syntax_effect());
+                effects
             }
             ScrollViewportTo(px) => {
                 self.editor.scroll_top_px.set(&self.store, px);
@@ -36,11 +33,11 @@ impl AppState {
                     .into_iter()
                     .collect()
             }
+            ScrollViewportToGlobal(px) => self.scroll_viewport_to_global(px),
             ScrollViewportHalfPage(dir) => {
-                self.scroll_viewport_half_page(dir);
-                self.request_active_file_syntax_effect()
-                    .into_iter()
-                    .collect()
+                let mut effects = self.scroll_viewport_half_page(dir);
+                effects.extend(self.request_active_file_syntax_effect());
+                effects
             }
             HoverViewportRow(row) => {
                 self.editor.hovered_row.set(&self.store, row);
@@ -55,27 +52,31 @@ impl AppState {
             }
             GoToNextHunk => {
                 self.navigate_to_hunk(true);
+                if self.settings.continuous_scroll {
+                    self.sync_global_scroll_from_editor();
+                }
                 self.request_active_file_syntax_effect()
                     .into_iter()
                     .collect()
             }
             GoToPreviousHunk => {
                 self.navigate_to_hunk(false);
+                if self.settings.continuous_scroll {
+                    self.sync_global_scroll_from_editor();
+                }
                 self.request_active_file_syntax_effect()
                     .into_iter()
                     .collect()
             }
             GoToNextFile => {
-                self.navigate_to_file(true);
-                self.request_active_file_syntax_effect()
-                    .into_iter()
-                    .collect()
+                let mut effects = self.navigate_to_file(true);
+                effects.extend(self.request_active_file_syntax_effect());
+                effects
             }
             GoToPreviousFile => {
-                self.navigate_to_file(false);
-                self.request_active_file_syntax_effect()
-                    .into_iter()
-                    .collect()
+                let mut effects = self.navigate_to_file(false);
+                effects.extend(self.request_active_file_syntax_effect());
+                effects
             }
             OpenSearch => {
                 self.open_search();

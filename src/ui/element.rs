@@ -141,6 +141,9 @@ impl ScrollbarDragHandler {
             ScrollActionBuilder::ViewportLines => {
                 Some(crate::actions::EditorAction::ScrollViewportTo(target_px).into())
             }
+            ScrollActionBuilder::ViewportGlobal => {
+                Some(crate::actions::EditorAction::ScrollViewportToGlobal(target_px).into())
+            }
             ScrollActionBuilder::Custom(_) => None,
         }
     }
@@ -184,6 +187,9 @@ pub enum ScrollActionBuilder {
     FileList,
     /// Emit `crate::actions::EditorAction::ScrollViewportLines(delta).into()`.
     ViewportLines,
+    /// Continuous-scroll: drag emits global-pixel `ScrollViewportToGlobal`,
+    /// wheel still falls back to `ScrollViewportLines`.
+    ViewportGlobal,
     /// Use a custom action constructor.
     Custom(fn(i32) -> Action),
 }
@@ -192,7 +198,9 @@ impl ScrollActionBuilder {
     pub fn build(&self, delta: i32) -> Action {
         match self {
             Self::FileList => crate::actions::FileListAction::ScrollFileList(delta).into(),
-            Self::ViewportLines => crate::actions::EditorAction::ScrollViewportLines(delta).into(),
+            Self::ViewportLines | Self::ViewportGlobal => {
+                crate::actions::EditorAction::ScrollViewportLines(delta).into()
+            }
             Self::Custom(f) => f(delta),
         }
     }

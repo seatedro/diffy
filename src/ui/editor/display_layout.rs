@@ -6,6 +6,7 @@ pub struct DisplayLayoutConfig {
     pub split_mode: bool,
     pub wrap_enabled: bool,
     pub wrap_column: u32,
+    pub show_file_headers: bool,
     pub char_width_px: f64,
     pub unified_text_width_px: f64,
     pub split_text_width_px: f64,
@@ -81,7 +82,7 @@ pub fn rebuild_display_rows(
 
     for (line_index, line) in doc.lines.iter().enumerate() {
         let kind = line.row_kind();
-        if kind == RenderRowKind::FileHeader {
+        if kind == RenderRowKind::FileHeader && !config.show_file_headers {
             continue;
         }
 
@@ -94,7 +95,9 @@ pub fn rebuild_display_rows(
             y_px,
             out,
         );
-        let (wrap_left, wrap_right, h_px) = if let Some(deco) = decoration_for_kind(kind) {
+        let (wrap_left, wrap_right, h_px) = if kind == RenderRowKind::FileHeader {
+            (1_u16, 1_u16, metrics.file_header_height_px)
+        } else if let Some(deco) = decoration_for_kind(kind) {
             (1_u16, 1_u16, deco.height(&metrics))
         } else if config.split_mode {
             let left_cols = split_wrap_cols.max(1);
@@ -260,6 +263,7 @@ mod tests {
     #[test]
     fn gutter_digits_track_largest_visible_line_number() {
         let doc = RenderDoc {
+            file_metadata: Vec::new(),
             text_bytes: Vec::new(),
             style_runs: Vec::new(),
             lines: vec![
@@ -288,6 +292,7 @@ mod tests {
     #[test]
     fn no_wrap_mode_keeps_body_rows_single_height() {
         let doc = RenderDoc {
+            file_metadata: Vec::new(),
             text_bytes: Vec::new(),
             style_runs: Vec::new(),
             lines: vec![RenderLine {
@@ -307,6 +312,7 @@ mod tests {
                 split_mode: false,
                 wrap_enabled: false,
                 wrap_column: 0,
+                show_file_headers: false,
                 char_width_px: 8.0,
                 unified_text_width_px: 100.0,
                 split_text_width_px: 50.0,
@@ -330,6 +336,7 @@ mod tests {
     #[test]
     fn split_layout_uses_taller_side_wrap_height() {
         let doc = RenderDoc {
+            file_metadata: Vec::new(),
             text_bytes: Vec::new(),
             style_runs: Vec::new(),
             lines: vec![RenderLine {
@@ -349,6 +356,7 @@ mod tests {
                 split_mode: true,
                 wrap_enabled: true,
                 wrap_column: 0,
+                show_file_headers: false,
                 char_width_px: 1.0,
                 unified_text_width_px: 100.0,
                 split_text_width_px: 10.0,
@@ -370,6 +378,7 @@ mod tests {
     #[test]
     fn unified_modified_rows_stack_removed_and_added_wrap_heights() {
         let doc = RenderDoc {
+            file_metadata: Vec::new(),
             text_bytes: Vec::new(),
             style_runs: Vec::new(),
             lines: vec![RenderLine {
@@ -389,6 +398,7 @@ mod tests {
                 split_mode: false,
                 wrap_enabled: true,
                 wrap_column: 0,
+                show_file_headers: false,
                 char_width_px: 1.0,
                 unified_text_width_px: 10.0,
                 split_text_width_px: 10.0,
@@ -410,6 +420,7 @@ mod tests {
     #[test]
     fn row_positions_stay_contiguous() {
         let doc = RenderDoc {
+            file_metadata: Vec::new(),
             text_bytes: Vec::new(),
             style_runs: Vec::new(),
             lines: vec![
@@ -439,6 +450,7 @@ mod tests {
                 split_mode: false,
                 wrap_enabled: true,
                 wrap_column: 0,
+                show_file_headers: false,
                 char_width_px: 8.0,
                 unified_text_width_px: 96.0,
                 split_text_width_px: 48.0,
@@ -462,6 +474,7 @@ mod tests {
     #[test]
     fn block_registry_injects_rows_above_and_below_anchor() {
         let doc = RenderDoc {
+            file_metadata: Vec::new(),
             text_bytes: Vec::new(),
             style_runs: Vec::new(),
             lines: vec![
@@ -490,6 +503,7 @@ mod tests {
                 split_mode: false,
                 wrap_enabled: false,
                 wrap_column: 0,
+                show_file_headers: false,
                 char_width_px: 8.0,
                 unified_text_width_px: 96.0,
                 split_text_width_px: 48.0,
@@ -522,6 +536,7 @@ mod tests {
     #[test]
     fn block_registry_preserves_order_for_multiple_blocks_at_same_anchor() {
         let doc = RenderDoc {
+            file_metadata: Vec::new(),
             text_bytes: Vec::new(),
             style_runs: Vec::new(),
             lines: vec![RenderLine {
@@ -558,6 +573,7 @@ mod tests {
     #[test]
     fn block_registry_is_inert_when_empty() {
         let doc = RenderDoc {
+            file_metadata: Vec::new(),
             text_bytes: Vec::new(),
             style_runs: Vec::new(),
             lines: vec![RenderLine {

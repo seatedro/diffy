@@ -158,6 +158,16 @@ pub struct RenderDoc {
     pub text_bytes: Vec<u8>,
     pub style_runs: Vec<StyleRun>,
     pub lines: Vec<RenderLine>,
+    pub file_metadata: Vec<FileHeaderMeta>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FileHeaderMeta {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub additions: u32,
+    pub deletions: u32,
+    pub is_binary: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -267,6 +277,92 @@ impl RenderDoc {
         let end = start.saturating_add(range.len as usize);
         self.style_runs.get(start..end).unwrap_or(&[])
     }
+
+    pub fn append_doc(&mut self, other: &RenderDoc) {
+        let byte_offset = self.text_bytes.len() as u32;
+        let run_offset = self.style_runs.len() as u32;
+        let meta_offset = self.file_metadata.len();
+        self.text_bytes.extend_from_slice(&other.text_bytes);
+        self.style_runs.extend_from_slice(&other.style_runs);
+        self.file_metadata
+            .extend(other.file_metadata.iter().cloned());
+        self.lines
+            .extend(other.lines.iter().copied().map(|mut line| {
+                line.left_text = offset_byte_range(line.left_text, byte_offset);
+                line.right_text = offset_byte_range(line.right_text, byte_offset);
+                line.left_runs = offset_run_range(line.left_runs, run_offset);
+                line.right_runs = offset_run_range(line.right_runs, run_offset);
+                if line.row_kind() == RenderRowKind::FileHeader && line.flags != 0 {
+                    let original_index = (line.flags as usize).saturating_sub(1);
+                    let new_index = original_index.saturating_add(meta_offset);
+                    line.flags = u8::try_from(new_index.saturating_add(1)).unwrap_or(0);
+                }
+                line
+            }));
+    }
+
+    pub fn file_meta(&self, line: &RenderLine) -> Option<&FileHeaderMeta> {
+        if line.row_kind() != RenderRowKind::FileHeader || line.flags == 0 {
+            return None;
+        }
+        let index = (line.flags as usize).saturating_sub(1);
+        self.file_metadata.get(index)
+    }
+}
+
+fn offset_byte_range(range: ByteRange, offset: u32) -> ByteRange {
+    if range.is_valid() {
+        ByteRange {
+            start: range.start.saturating_add(offset),
+            len: range.len,
+        }
+    } else {
+        range
+    }
+}
+
+fn offset_run_range(range: RunRange, offset: u32) -> RunRange {
+    RunRange {
+        start: range.start.saturating_add(offset),
+        len: range.len,
+    }
+}
+
+pub fn build_placeholder_render_doc(path: &str, message: &str) -> RenderDoc {
+    let mut doc = RenderDoc::default();
+    let left_text = append_text(&mut doc.text_bytes, path);
+    doc.file_metadata.push(FileHeaderMeta {
+        path: path.to_owned(),
+        ..FileHeaderMeta::default()
+    });
+    let flags = u8::try_from(doc.file_metadata.len()).unwrap_or(0);
+    doc.lines.push(RenderLine {
+        kind: RenderRowKind::FileHeader as u8,
+        flags,
+        left_cols: display_cols(path),
+        left_text,
+        right_text: ByteRange::invalid(),
+        left_runs: append_style_runs(&mut doc.style_runs, path, &[], &[]),
+        right_runs: RunRange::default(),
+        old_line_no: INVALID_U32,
+        new_line_no: INVALID_U32,
+        ..RenderLine::default()
+    });
+
+    let left_text = append_text(&mut doc.text_bytes, message);
+    doc.lines.push(RenderLine {
+        kind: RenderRowKind::HunkSeparator as u8,
+        hunk_index: -1,
+        left_cols: display_cols(message),
+        left_text,
+        right_text: ByteRange::invalid(),
+        left_runs: append_style_runs(&mut doc.style_runs, message, &[], &[]),
+        right_runs: RunRange::default(),
+        old_line_no: INVALID_U32,
+        new_line_no: INVALID_U32,
+        ..RenderLine::default()
+    });
+    doc
 }
 
 pub fn build_render_doc_from_carbon(
@@ -308,12 +404,14 @@ fn build_render_doc_from_carbon_rows(
         text_bytes: Vec::with_capacity(text_capacity),
         style_runs: Vec::with_capacity(token_buffer.len().saturating_mul(2).max(16)),
         lines: Vec::with_capacity(carbon_projection_capacity(carbon_file)),
+        file_metadata: Vec::with_capacity(1),
     };
 
     doc.lines.push(carbon_file_header_line(
         carbon_file,
         &mut doc.text_bytes,
         &mut doc.style_runs,
+        &mut doc.file_metadata,
     ));
     carbon::project_file(
         carbon_file,
@@ -343,11 +441,30 @@ fn carbon_file_header_line(
     carbon_file: &carbon::FileDiff,
     text_bytes: &mut Vec<u8>,
     style_runs: &mut Vec<StyleRun>,
+    file_metadata: &mut Vec<FileHeaderMeta>,
 ) -> RenderLine {
     let path = carbon_file.path();
     let left_text = append_text(text_bytes, path);
+    let path_string = path.to_owned();
+    let old_path = match carbon_file.status {
+        carbon::FileStatus::Renamed | carbon::FileStatus::RenamedModified => carbon_file
+            .old_path
+            .as_deref()
+            .filter(|old| *old != path)
+            .map(str::to_owned),
+        _ => None,
+    };
+    file_metadata.push(FileHeaderMeta {
+        path: path_string,
+        old_path,
+        additions: carbon_file.additions,
+        deletions: carbon_file.deletions,
+        is_binary: carbon_file.is_binary,
+    });
+    let flags = u8::try_from(file_metadata.len()).unwrap_or(0);
     RenderLine {
         kind: RenderRowKind::FileHeader as u8,
+        flags,
         left_cols: display_cols(path),
         left_text,
         right_text: ByteRange::invalid(),

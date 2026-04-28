@@ -52,7 +52,9 @@ use crate::platform::persistence::{PersistedCompare, Settings};
 use crate::platform::secrets::AiKeyKind;
 use crate::platform::startup::StartupOptions;
 use crate::ui::design::{Sp, Sz};
-use crate::ui::editor::render_doc::{CarbonStyleOverlays, RenderDoc, build_render_doc_from_carbon};
+use crate::ui::editor::render_doc::{
+    CarbonStyleOverlays, RenderDoc, build_placeholder_render_doc, build_render_doc_from_carbon,
+};
 use crate::ui::editor::state::{EditorState, EditorStateStore, SearchMatch};
 use crate::ui::icons::lucide;
 use crate::ui::theme::ThemeMode;
@@ -384,8 +386,79 @@ pub struct PreparedActiveFile {
     pub carbon_file: carbon::FileDiff,
     pub carbon_expansion: carbon::ExpansionState,
     pub carbon_overlays: CarbonStyleOverlays,
-    pub render_doc: RenderDoc,
+    pub render_doc: Arc<RenderDoc>,
     pub token_buffer: TokenBuffer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewportDocumentMode {
+    Single,
+    Continuous,
+}
+
+#[derive(Debug, Clone)]
+pub struct ViewportDocument {
+    pub doc: Arc<RenderDoc>,
+    pub mode: ViewportDocumentMode,
+    pub generation: u64,
+    pub start_index: usize,
+    pub start_offset_px: u32,
+    pub slot_indices: Vec<usize>,
+    pub path: String,
+}
+
+impl ViewportDocument {
+    pub fn single(doc: Arc<RenderDoc>, generation: u64, file_index: usize, path: String) -> Self {
+        Self {
+            doc,
+            mode: ViewportDocumentMode::Single,
+            generation,
+            start_index: file_index,
+            start_offset_px: 0,
+            slot_indices: vec![file_index],
+            path,
+        }
+    }
+
+    pub fn is_continuous(&self) -> bool {
+        self.mode == ViewportDocumentMode::Continuous
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ViewportSlotKey {
+    source: WorkspaceSource,
+    index: usize,
+    path: String,
+    left_ref: String,
+    right_ref: String,
+    kind: ViewportSlotKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ViewportSlotKind {
+    Text {
+        line_count: usize,
+        text_len: usize,
+        style_run_count: usize,
+        syntax_covered_count: usize,
+    },
+    Binary,
+    Loading,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ViewportDocumentKey {
+    source: WorkspaceSource,
+    generation: u64,
+    start_index: usize,
+    slots: Vec<ViewportSlotKey>,
+}
+
+#[derive(Debug, Clone)]
+struct ViewportDocumentCache {
+    key: ViewportDocumentKey,
+    doc: Arc<RenderDoc>,
 }
 
 fn refs_for_status_scope(scope: StatusScope) -> (String, String) {
@@ -395,6 +468,49 @@ fn refs_for_status_scope(scope: StatusScope) -> (String, String) {
         StatusScope::Unstaged => (INDEX_REF.to_owned(), WORKDIR_REF.to_owned()),
         StatusScope::Untracked => (String::new(), WORKDIR_REF.to_owned()),
     }
+}
+
+fn append_active_file_doc(out: &mut RenderDoc, active: &ActiveFile) {
+    if active.carbon_file.is_binary {
+        out.append_doc(&build_placeholder_render_doc(
+            &active.path,
+            "Binary file. The native viewport only renders text diffs in this phase.",
+        ));
+    } else {
+        out.append_doc(&active.render_doc);
+    }
+}
+
+fn request_syntax_for_active_file(
+    active: &mut ActiveFile,
+    repo_path: PathBuf,
+    generation: u64,
+    window: SyntaxRowWindow,
+) -> Option<LoadFileSyntaxRequest> {
+    if active
+        .syntax_pending
+        .is_some_and(|pending| pending.contains(window))
+        || active
+            .syntax_covered
+            .iter()
+            .any(|covered| covered.contains(window))
+    {
+        return None;
+    }
+
+    active.syntax_request_id = active.syntax_request_id.saturating_add(1);
+    active.syntax_pending = Some(window);
+    Some(LoadFileSyntaxRequest {
+        repo_path,
+        file_index: active.index,
+        path: active.path.clone(),
+        carbon_file: active.carbon_file.clone(),
+        left_ref: active.left_ref.clone(),
+        right_ref: active.right_ref.clone(),
+        window,
+        request_id: active.syntax_request_id,
+        cache_generation: generation,
+    })
 }
 
 fn apply_syntax_tokens_to_file(
@@ -474,7 +590,7 @@ pub struct ActiveFile {
     pub carbon_file: carbon::FileDiff,
     pub carbon_expansion: carbon::ExpansionState,
     pub carbon_overlays: CarbonStyleOverlays,
-    pub render_doc: RenderDoc,
+    pub render_doc: Arc<RenderDoc>,
     pub base_carbon_file: carbon::FileDiff,
     pub token_buffer: TokenBuffer,
     pub left_ref: String,
@@ -506,7 +622,7 @@ pub(crate) fn prepare_active_file(
         carbon_file: carbon_file.clone(),
         carbon_expansion,
         carbon_overlays,
-        render_doc,
+        render_doc: Arc::new(render_doc),
         token_buffer,
     }
 }
@@ -536,6 +652,8 @@ pub struct WorkspaceState {
     pub compare_stats_hydration_active: bool,
     pub active_file: Option<ActiveFile>,
     pub active_file_loading: Option<ActiveFileLoading>,
+    pub file_cache: Vec<Option<ActiveFile>>,
+    pub file_cache_loading: Vec<Option<ActiveFileLoading>>,
     pub raw_diff_len: usize,
     pub used_fallback: bool,
     pub fallback_message: String,
@@ -543,6 +661,10 @@ pub struct WorkspaceState {
     pub range_commits: Vec<CommitInfo>,
     pub pre_drill_compare: Option<(String, String, CompareMode)>,
     pub expansions: HashMap<String, carbon::ExpansionState>,
+    pub file_content_heights: Vec<Option<u32>>,
+    pub file_scroll_total_height_px: u32,
+    pub global_scroll_top_px: u32,
+    pub measured_px_per_row_q16: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -750,6 +872,489 @@ impl AppState {
         }
     }
 
+    fn ensure_file_cache_len(&mut self) {
+        let count = self.workspace_file_count();
+        self.workspace.file_cache.update(&self.store, |files| {
+            if files.len() < count {
+                files.resize_with(count, || None);
+            } else if files.len() > count {
+                files.truncate(count);
+            }
+        });
+        self.workspace
+            .file_cache_loading
+            .update(&self.store, |files| {
+                if files.len() < count {
+                    files.resize_with(count, || None);
+                } else if files.len() > count {
+                    files.truncate(count);
+                }
+            });
+    }
+
+    fn clear_file_cache(&mut self) {
+        self.workspace.file_cache.set(&self.store, Vec::new());
+        self.workspace
+            .file_cache_loading
+            .set(&self.store, Vec::new());
+        self.viewport_document_cache = None;
+    }
+
+    fn cache_active_file(&mut self, active_file: ActiveFile) {
+        self.ensure_file_cache_len();
+        let index = active_file.index;
+        self.workspace.file_cache.update(&self.store, |files| {
+            if let Some(slot) = files.get_mut(index) {
+                *slot = Some(active_file);
+            }
+        });
+        self.workspace
+            .file_cache_loading
+            .update(&self.store, |files| {
+                if let Some(slot) = files.get_mut(index) {
+                    *slot = None;
+                }
+            });
+    }
+
+    fn cached_file_at(&self, index: usize) -> Option<ActiveFile> {
+        self.workspace
+            .file_cache
+            .with(&self.store, |files| files.get(index).cloned().flatten())
+    }
+
+    fn file_load_is_pending(&self, index: usize, path: &str) -> bool {
+        self.workspace
+            .active_file_loading
+            .with(&self.store, |loading| {
+                loading
+                    .as_ref()
+                    .is_some_and(|loading| loading.index == index && loading.path == path)
+            })
+            || self
+                .workspace
+                .file_cache_loading
+                .with(&self.store, |loading| {
+                    loading
+                        .get(index)
+                        .and_then(|slot| slot.as_ref())
+                        .is_some_and(|loading| loading.path == path)
+                })
+    }
+
+    fn mark_file_cache_loading(&mut self, index: usize, path: String) {
+        self.ensure_file_cache_len();
+        self.workspace
+            .file_cache_loading
+            .update(&self.store, |loading| {
+                if let Some(slot) = loading.get_mut(index) {
+                    *slot = Some(ActiveFileLoading { index, path });
+                }
+            });
+    }
+
+    fn clear_file_cache_loading(&mut self, index: usize) {
+        self.workspace
+            .file_cache_loading
+            .update(&self.store, |loading| {
+                if let Some(slot) = loading.get_mut(index) {
+                    *slot = None;
+                }
+            });
+    }
+
+    fn compare_refs(&self) -> (String, String) {
+        let left_ref = self
+            .compare
+            .resolved_left
+            .get(&self.store)
+            .unwrap_or_else(|| self.compare.left_ref.get(&self.store));
+        let right_ref = self
+            .compare
+            .resolved_right
+            .get(&self.store)
+            .unwrap_or_else(|| self.compare.right_ref.get(&self.store));
+        (left_ref, right_ref)
+    }
+
+    fn cached_compare_file_at(&self, index: usize, path: &str) -> Option<ActiveFile> {
+        let (left_ref, right_ref) = self.compare_refs();
+        if let Some(active_file) = self.workspace.active_file.with(&self.store, |file| {
+            file.as_ref()
+                .filter(|file| {
+                    file.index == index
+                        && file.path == path
+                        && file.left_ref == left_ref
+                        && file.right_ref == right_ref
+                })
+                .cloned()
+        }) {
+            return Some(active_file);
+        }
+        self.cached_file_at(index).filter(|file| {
+            file.index == index
+                && file.path == path
+                && file.left_ref == left_ref
+                && file.right_ref == right_ref
+        })
+    }
+
+    fn cached_status_file_at(&self, index: usize, item: &StatusItem) -> Option<ActiveFile> {
+        let (left_ref, right_ref) = refs_for_status_scope(item.scope);
+        if let Some(active_file) = self.workspace.active_file.with(&self.store, |file| {
+            file.as_ref()
+                .filter(|file| {
+                    file.index == index
+                        && file.path == item.path
+                        && file.left_ref == left_ref
+                        && file.right_ref == right_ref
+                })
+                .cloned()
+        }) {
+            return Some(active_file);
+        }
+        self.cached_file_at(index).filter(|file| {
+            file.index == index
+                && file.path == item.path
+                && file.left_ref == left_ref
+                && file.right_ref == right_ref
+        })
+    }
+
+    fn active_file_slot_key(
+        &self,
+        source: WorkspaceSource,
+        active: &ActiveFile,
+    ) -> ViewportSlotKey {
+        let kind = if active.carbon_file.is_binary {
+            ViewportSlotKind::Binary
+        } else {
+            ViewportSlotKind::Text {
+                line_count: active.render_doc.lines.len(),
+                text_len: active.render_doc.text_bytes.len(),
+                style_run_count: active.render_doc.style_runs.len(),
+                syntax_covered_count: active.syntax_covered.len(),
+            }
+        };
+        ViewportSlotKey {
+            source,
+            index: active.index,
+            path: active.path.clone(),
+            left_ref: active.left_ref.clone(),
+            right_ref: active.right_ref.clone(),
+            kind,
+        }
+    }
+
+    fn loading_slot_key(
+        &self,
+        source: WorkspaceSource,
+        index: usize,
+        path: &str,
+        left_ref: String,
+        right_ref: String,
+    ) -> ViewportSlotKey {
+        ViewportSlotKey {
+            source,
+            index,
+            path: path.to_owned(),
+            left_ref,
+            right_ref,
+            kind: ViewportSlotKind::Loading,
+        }
+    }
+
+    fn compare_slot_key_at(&self, index: usize, path: &str) -> ViewportSlotKey {
+        let (left_ref, right_ref) = self.compare_refs();
+        if let Some(key) = self.workspace.active_file.with(&self.store, |file| {
+            file.as_ref()
+                .filter(|file| {
+                    file.index == index
+                        && file.path == path
+                        && file.left_ref == left_ref
+                        && file.right_ref == right_ref
+                })
+                .map(|file| self.active_file_slot_key(WorkspaceSource::Compare, file))
+        }) {
+            return key;
+        }
+        if let Some(key) = self.workspace.file_cache.with(&self.store, |files| {
+            files
+                .get(index)
+                .and_then(|slot| slot.as_ref())
+                .filter(|file| {
+                    file.index == index
+                        && file.path == path
+                        && file.left_ref == left_ref
+                        && file.right_ref == right_ref
+                })
+                .map(|file| self.active_file_slot_key(WorkspaceSource::Compare, file))
+        }) {
+            return key;
+        }
+        self.loading_slot_key(WorkspaceSource::Compare, index, path, left_ref, right_ref)
+    }
+
+    fn status_slot_key_at(&self, index: usize, item: &StatusItem) -> ViewportSlotKey {
+        let (left_ref, right_ref) = refs_for_status_scope(item.scope);
+        if let Some(key) = self.workspace.active_file.with(&self.store, |file| {
+            file.as_ref()
+                .filter(|file| {
+                    file.index == index
+                        && file.path == item.path
+                        && file.left_ref == left_ref
+                        && file.right_ref == right_ref
+                })
+                .map(|file| self.active_file_slot_key(WorkspaceSource::Status, file))
+        }) {
+            return key;
+        }
+        if let Some(key) = self.workspace.file_cache.with(&self.store, |files| {
+            files
+                .get(index)
+                .and_then(|slot| slot.as_ref())
+                .filter(|file| {
+                    file.index == index
+                        && file.path == item.path
+                        && file.left_ref == left_ref
+                        && file.right_ref == right_ref
+                })
+                .map(|file| self.active_file_slot_key(WorkspaceSource::Status, file))
+        }) {
+            return key;
+        }
+        self.loading_slot_key(
+            WorkspaceSource::Status,
+            index,
+            &item.path,
+            left_ref,
+            right_ref,
+        )
+    }
+
+    fn append_viewport_slot_doc(&self, out: &mut RenderDoc, key: &ViewportSlotKey) {
+        if let ViewportSlotKind::Loading = key.kind {
+            out.append_doc(&build_placeholder_render_doc(&key.path, "Loading diff..."));
+            return;
+        }
+
+        let mut appended = false;
+        self.workspace.active_file.with(&self.store, |file| {
+            let Some(active) = file.as_ref() else {
+                return;
+            };
+            if active.index == key.index
+                && active.path == key.path
+                && active.left_ref == key.left_ref
+                && active.right_ref == key.right_ref
+            {
+                append_active_file_doc(out, active);
+                appended = true;
+            }
+        });
+        if appended {
+            return;
+        }
+
+        self.workspace.file_cache.with(&self.store, |files| {
+            let Some(active) =
+                files
+                    .get(key.index)
+                    .and_then(|slot| slot.as_ref())
+                    .filter(|active| {
+                        active.index == key.index
+                            && active.path == key.path
+                            && active.left_ref == key.left_ref
+                            && active.right_ref == key.right_ref
+                    })
+            else {
+                return;
+            };
+            append_active_file_doc(out, active);
+            appended = true;
+        });
+
+        if !appended {
+            out.append_doc(&build_placeholder_render_doc(&key.path, "Loading diff..."));
+        }
+    }
+
+    fn request_viewport_slot_syntax_effect(&mut self, key: &ViewportSlotKey) -> Option<Effect> {
+        let ViewportSlotKind::Text { line_count, .. } = key.kind else {
+            return None;
+        };
+        if line_count == 0 {
+            return None;
+        }
+        let repo_path = self.compare.repo_path.get(&self.store)?;
+        let generation = self.active_syntax_generation();
+        let window = SyntaxRowWindow {
+            start: 0,
+            end: line_count.min(SYNTAX_INITIAL_ROWS),
+        };
+        let mut request = None;
+
+        self.workspace.active_file.update(&self.store, |slot| {
+            let Some(active) = slot.as_mut() else {
+                return;
+            };
+            if active.index != key.index
+                || active.path != key.path
+                || active.left_ref != key.left_ref
+                || active.right_ref != key.right_ref
+            {
+                return;
+            }
+            request = request_syntax_for_active_file(active, repo_path.clone(), generation, window);
+        });
+        if request.is_some() {
+            return request.map(|request| {
+                SyntaxEffect::LoadFileSyntax(Task {
+                    generation,
+                    request,
+                })
+                .into()
+            });
+        }
+
+        self.workspace.file_cache.update(&self.store, |files| {
+            let Some(active) = files
+                .get_mut(key.index)
+                .and_then(|slot| slot.as_mut())
+                .filter(|active| {
+                    active.index == key.index
+                        && active.path == key.path
+                        && active.left_ref == key.left_ref
+                        && active.right_ref == key.right_ref
+                })
+            else {
+                return;
+            };
+            request = request_syntax_for_active_file(active, repo_path, generation, window);
+        });
+
+        request.map(|request| {
+            SyntaxEffect::LoadFileSyntax(Task {
+                generation,
+                request,
+            })
+            .into()
+        })
+    }
+
+    fn cache_compare_file_from_output(&mut self, index: usize, path: &str) -> Option<ActiveFile> {
+        let carbon_file = self.workspace.compare_output.with(&self.store, |output| {
+            output
+                .as_ref()
+                .and_then(|output| output.carbon.files.get(index))
+                .filter(|file| file.path() == path)
+                .filter(|file| !(file.is_partial && file.hunks.is_empty()))
+                .cloned()
+        })?;
+        let prepared = prepare_active_file(index, &carbon_file);
+        let (left_ref, right_ref) = self.compare_refs();
+        let active_file =
+            self.build_active_file(index, path.to_owned(), prepared, left_ref, right_ref);
+        self.cache_active_file(active_file.clone());
+        Some(active_file)
+    }
+
+    fn ensure_compare_file_cached_for_viewport(&mut self, index: usize, path: &str) -> Vec<Effect> {
+        if self.cached_compare_file_at(index, path).is_some() {
+            return Vec::new();
+        }
+        if !self.compare_file_is_large(index)
+            && self.cache_compare_file_from_output(index, path).is_some()
+        {
+            return vec![
+                SyntaxEffect::EnsureSyntaxPackForPath {
+                    path: path.to_owned(),
+                }
+                .into(),
+            ];
+        }
+        if self.file_load_is_pending(index, path) {
+            return Vec::new();
+        }
+
+        let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
+            return Vec::new();
+        };
+        let deferred_file = self.workspace.compare_output.with(&self.store, |output| {
+            output
+                .as_ref()
+                .and_then(|output| output.carbon.files.get(index))
+                .filter(|file| file.path() == path)
+                .filter(|file| file.is_partial && file.hunks.is_empty())
+                .cloned()
+        });
+        self.mark_file_cache_loading(index, path.to_owned());
+        vec![
+            SyntaxEffect::EnsureSyntaxPackForPath {
+                path: path.to_owned(),
+            }
+            .into(),
+            CompareEffect::LoadFile(Task {
+                generation: self.workspace.compare_generation.get(&self.store),
+                request: CompareFileRequest {
+                    repo_path,
+                    spec: CompareSpec {
+                        mode: self.compare.mode.get(&self.store),
+                        left_ref: self.compare.left_ref.get(&self.store),
+                        right_ref: self.compare.right_ref.get(&self.store),
+                        renderer: self.compare.renderer.get(&self.store),
+                        layout: self.compare.layout.get(&self.store),
+                    },
+                    path: path.to_owned(),
+                    index,
+                    deferred_file,
+                },
+            })
+            .into(),
+        ]
+    }
+
+    fn ensure_status_file_cached_for_viewport(&mut self, index: usize) -> Vec<Effect> {
+        let Some(item) = self
+            .workspace
+            .status_items
+            .with(&self.store, |items| items.get(index).cloned())
+        else {
+            return Vec::new();
+        };
+        if self.cached_status_file_at(index, &item).is_some() {
+            return Vec::new();
+        }
+        if self.file_load_is_pending(index, &item.path) {
+            return Vec::new();
+        }
+
+        let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
+            return Vec::new();
+        };
+        self.mark_file_cache_loading(index, item.path.clone());
+        let generation = self.workspace.status_generation.get(&self.store);
+        let renderer = self.compare.renderer.get(&self.store);
+        vec![
+            SyntaxEffect::EnsureSyntaxPackForPath {
+                path: item.path.clone(),
+            }
+            .into(),
+            RepositoryEffect::LoadStatusDiff {
+                task: Task {
+                    generation,
+                    request: StatusDiffRequest {
+                        repo_path,
+                        item,
+                        renderer,
+                    },
+                },
+                index,
+            }
+            .into(),
+        ]
+    }
+
     fn install_compare_active_file(
         &mut self,
         index: usize,
@@ -768,6 +1373,7 @@ impl AppState {
             .unwrap_or_else(|| self.compare.right_ref.get(&self.store));
         let active_file =
             self.build_active_file(index, path.clone(), prepared, left_ref, right_ref);
+        self.cache_active_file(active_file.clone());
         let stats = CompareFileStat {
             index,
             path: path.clone(),
@@ -1297,6 +1903,7 @@ pub struct AppState {
     pub theme_variants: Vec<crate::core::themes::ThemeVariant>,
     pub theme_preview_original: Signal<Option<String>>,
     pub github_access_token: Option<String>,
+    viewport_document_cache: Option<ViewportDocumentCache>,
 }
 
 impl Default for AppState {
@@ -1366,6 +1973,7 @@ impl Default for AppState {
             theme_variants: Vec::new(),
             theme_preview_original,
             github_access_token: None,
+            viewport_document_cache: None,
         }
     }
 }
@@ -1513,6 +2121,7 @@ impl AppState {
             theme_variants: Vec::new(),
             theme_preview_original,
             github_access_token: None,
+            viewport_document_cache: None,
         };
         let seed_prompt = if state.settings.ai_steering_prompt.trim().is_empty() {
             crate::ai::DEFAULT_STEERING_PROMPT
@@ -1799,6 +2408,7 @@ impl AppState {
             .set(&self.store, false);
         self.workspace.active_file.set(&self.store, None);
         self.workspace.active_file_loading.set(&self.store, None);
+        self.clear_file_cache();
         self.workspace.raw_diff_len.set(&self.store, 0);
         self.workspace.used_fallback.set(&self.store, false);
         self.workspace
@@ -1808,6 +2418,8 @@ impl AppState {
         self.workspace.range_commits.set(&self.store, Vec::new());
         self.workspace.pre_drill_compare.set(&self.store, None);
         self.workspace.expansions.update(&self.store, |m| m.clear());
+        self.clear_file_scroll_layout();
+        self.workspace.global_scroll_top_px.set(&self.store, 0);
     }
 
     fn handle_repository_snapshot(&mut self, payload: RepositorySnapshot) -> Vec<Effect> {
@@ -2153,7 +2765,7 @@ impl AppState {
             if let Some(active) = af.as_mut() {
                 active.carbon_file = carbon_file;
                 active.carbon_expansion = expansion;
-                active.render_doc = render_doc;
+                active.render_doc = Arc::new(render_doc);
                 active.file_line_count = Some(total_lines);
                 active.old_file_lines = Some(old_lines);
                 active.file_lines = Some(new_lines);
@@ -2246,6 +2858,9 @@ impl AppState {
             .set(&self.store, false);
         self.workspace.active_file_loading.set(&self.store, None);
         self.workspace.sidebar_auto_width.set(&self.store, None);
+        self.clear_file_cache();
+        self.reset_file_scroll_layout();
+        self.workspace.global_scroll_top_px.set(&self.store, 0);
         // Record the discovered file count + advance the phase. The progress
         // panel stays up until the first file finishes mounting (or, for
         // small-file fast paths, is cleared by install_compare_active_file).
@@ -2395,6 +3010,39 @@ impl AppState {
             );
             return Vec::new();
         }
+        let matches_selection = self.workspace.selected_file_index.get(&self.store)
+            == Some(payload.index)
+            && self
+                .workspace
+                .selected_file_path
+                .get(&self.store)
+                .as_deref()
+                == Some(payload.item.path.as_str())
+            && self.workspace.selected_status_scope.get(&self.store) == Some(payload.item.scope);
+        let output = payload.output;
+
+        let Some(carbon_file) = output.carbon.files.first() else {
+            self.clear_file_cache_loading(payload.index);
+            if matches_selection {
+                self.workspace.active_file.set(&self.store, None);
+                self.workspace.active_file_loading.set(&self.store, None);
+                self.editor_clear_document();
+            }
+            return Vec::new();
+        };
+        let prepared = prepare_active_file(payload.index, carbon_file);
+        let (left_ref, right_ref) = refs_for_status_scope(payload.item.scope);
+        let active_file = self.build_active_file(
+            payload.index,
+            payload.item.path.clone(),
+            prepared,
+            left_ref,
+            right_ref,
+        );
+        self.cache_active_file(active_file.clone());
+        if !matches_selection {
+            return Vec::new();
+        }
 
         tracing::debug!("handle_status_diff_finished: clearing status_operation_pending");
         self.workspace
@@ -2405,7 +3053,6 @@ impl AppState {
             .set(&self.store, false);
         self.workspace.status.set(&self.store, AsyncStatus::Ready);
         self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
-        let output = payload.output;
         self.workspace
             .used_fallback
             .set(&self.store, output.used_fallback);
@@ -2418,13 +3065,6 @@ impl AppState {
         self.workspace.compare_output.set(&self.store, None);
         self.workspace.active_file_loading.set(&self.store, None);
 
-        let Some(carbon_file) = output.carbon.files.first() else {
-            self.workspace.active_file.set(&self.store, None);
-            self.editor_clear_document();
-            return Vec::new();
-        };
-        let prepared = prepare_active_file(payload.index, carbon_file);
-
         self.workspace
             .selected_file_index
             .set(&self.store, Some(payload.index));
@@ -2434,20 +3074,16 @@ impl AppState {
         self.workspace
             .selected_status_scope
             .set(&self.store, Some(payload.item.scope));
-        let (left_ref, right_ref) = refs_for_status_scope(payload.item.scope);
         // Preserve scroll/hover/positional editor state when refreshing the
         // same file (e.g. after staging a hunk). Only reset when the path
         // changed (navigating to a different file).
         let same_file = self.workspace.active_file.with(&self.store, |af| {
-            af.as_ref().is_some_and(|a| a.path == payload.item.path)
+            af.as_ref().is_some_and(|a| {
+                a.path == payload.item.path
+                    && a.left_ref == active_file.left_ref
+                    && a.right_ref == active_file.right_ref
+            })
         });
-        let active_file = self.build_active_file(
-            payload.index,
-            payload.item.path.clone(),
-            prepared,
-            left_ref,
-            right_ref,
-        );
         self.workspace
             .active_file
             .set(&self.store, Some(active_file));
@@ -2460,9 +3096,9 @@ impl AppState {
         if self.editor.search.open.get(&self.store) {
             self.recompute_search_matches();
         }
-        self.request_active_file_syntax_effect()
-            .into_iter()
-            .collect()
+        let mut effects = self.sync_editor_scroll_from_global();
+        effects.extend(self.request_active_file_syntax_effect());
+        effects
     }
 
     #[profiling::function]
@@ -2485,15 +3121,43 @@ impl AppState {
                     loading.index == payload.index && loading.path == payload.path
                 })
             });
-        if !matches_selected || !matches_loading {
+        let matches_cache_loading =
+            self.workspace
+                .file_cache_loading
+                .with(&self.store, |loading| {
+                    loading
+                        .get(payload.index)
+                        .and_then(|slot| slot.as_ref())
+                        .is_some_and(|loading| loading.path == payload.path)
+                });
+        if !matches_selected && !matches_cache_loading {
             return Vec::new();
         }
 
-        self.install_compare_active_file(payload.index, payload.path, payload.prepared);
-        let mut effects: Vec<_> = self
-            .request_active_file_syntax_effect()
-            .into_iter()
-            .collect();
+        if matches_selected && matches_loading {
+            self.install_compare_active_file(payload.index, payload.path, payload.prepared);
+        } else {
+            let left_ref = self
+                .compare
+                .resolved_left
+                .get(&self.store)
+                .unwrap_or_else(|| self.compare.left_ref.get(&self.store));
+            let right_ref = self
+                .compare
+                .resolved_right
+                .get(&self.store)
+                .unwrap_or_else(|| self.compare.right_ref.get(&self.store));
+            let active_file = self.build_active_file(
+                payload.index,
+                payload.path,
+                payload.prepared,
+                left_ref,
+                right_ref,
+            );
+            self.cache_active_file(active_file);
+        }
+        let mut effects = self.sync_editor_scroll_from_global();
+        effects.extend(self.request_active_file_syntax_effect());
         if let Some(effect) = self.start_compare_total_stats_if_needed() {
             effects.push(effect);
         } else if let Some(effect) = self.start_compare_stats_hydration_if_idle() {
@@ -2524,13 +3188,15 @@ impl AppState {
         }
 
         self.apply_compare_file_stats(&payload.stats);
+        let mut effects = self.sync_editor_scroll_from_global();
         if let Some(effect) = self.next_compare_stats_hydration_effect() {
-            vec![effect]
+            effects.push(effect);
+            effects
         } else {
             self.workspace
                 .compare_stats_hydration_active
                 .set(&self.store, false);
-            Vec::new()
+            effects
         }
     }
 
@@ -2680,6 +3346,11 @@ impl AppState {
                 break;
             }
         });
+
+        self.recompute_file_scroll_total_height_px();
+        if self.settings.continuous_scroll {
+            self.clamp_global_scroll_top_px();
+        }
     }
 
     fn handle_file_syntax_ready(&mut self, payload: FileSyntaxReady) -> Vec<Effect> {
@@ -2687,7 +3358,8 @@ impl AppState {
             return Vec::new();
         }
 
-        let mut applied = false;
+        let mut applied_file = None;
+        let mut applied_active = false;
         self.workspace.active_file.update(&self.store, |slot| {
             let Some(active) = slot.as_mut() else {
                 return;
@@ -2706,23 +3378,63 @@ impl AppState {
                 &mut active.token_buffer,
                 &payload.tokens,
             );
-            active.render_doc = build_render_doc_from_carbon(
+            active.render_doc = Arc::new(build_render_doc_from_carbon(
                 &active.carbon_file,
                 active.index,
                 &active.carbon_expansion,
                 &active.carbon_overlays,
                 &active.token_buffer,
-            );
-            applied = true;
+            ));
+            applied_file = Some(active.clone());
+            applied_active = true;
         });
 
-        if !applied {
-            return Vec::new();
+        if applied_file.is_none() {
+            self.workspace.file_cache.update(&self.store, |files| {
+                let Some(active) = files
+                    .get_mut(payload.file_index)
+                    .and_then(|slot| slot.as_mut())
+                else {
+                    return;
+                };
+                if active.index != payload.file_index
+                    || active.path != payload.path
+                    || active.syntax_request_id != payload.request_id
+                {
+                    return;
+                }
+
+                active.syntax_pending = None;
+                push_syntax_covered_window(&mut active.syntax_covered, payload.window);
+                apply_syntax_tokens_to_file(
+                    &mut active.carbon_overlays,
+                    &mut active.token_buffer,
+                    &payload.tokens,
+                );
+                active.render_doc = Arc::new(build_render_doc_from_carbon(
+                    &active.carbon_file,
+                    active.index,
+                    &active.carbon_expansion,
+                    &active.carbon_overlays,
+                    &active.token_buffer,
+                ));
+                applied_file = Some(active.clone());
+            });
         }
 
-        self.request_active_file_syntax_effect()
-            .into_iter()
-            .collect()
+        let Some(active_file) = applied_file else {
+            return Vec::new();
+        };
+        self.cache_active_file(active_file);
+        self.viewport_document_cache = None;
+
+        if applied_active {
+            self.request_active_file_syntax_effect()
+                .into_iter()
+                .collect()
+        } else {
+            Vec::new()
+        }
     }
 
     fn handle_syntax_pack_install_started(&mut self, language: &str) {
@@ -2783,31 +3495,86 @@ impl AppState {
     }
 
     fn handle_syntax_pack_installed(&mut self, language: &str) -> Vec<Effect> {
-        let Some(path) = self.workspace.selected_file_path.get(&self.store) else {
+        let selected_path = self.workspace.selected_file_path.get(&self.store);
+        let selected_matches_language = selected_path.as_deref().is_some_and(|path| {
+            Highlighter::new()
+                .resolve_language(path)
+                .is_some_and(|resolved| resolved.name() == language)
+        });
+
+        let mut effects = if selected_matches_language {
+            match self.workspace.source.get(&self.store) {
+                WorkspaceSource::Compare => {
+                    let Some(index) = self.workspace.selected_file_index.get(&self.store) else {
+                        return Vec::new();
+                    };
+                    self.select_loaded_compare_file(index, false)
+                }
+                WorkspaceSource::Status => {
+                    let Some(index) = self.workspace.selected_file_index.get(&self.store) else {
+                        return Vec::new();
+                    };
+                    self.select_status_item(index, false)
+                }
+                WorkspaceSource::None => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+        effects.extend(self.request_cached_file_syntax_effects_for_language(language));
+        effects
+    }
+
+    fn request_cached_file_syntax_effects_for_language(&mut self, language: &str) -> Vec<Effect> {
+        let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
             return Vec::new();
         };
-        let matches_language = Highlighter::new()
-            .resolve_language(&path)
-            .is_some_and(|resolved| resolved.name() == language);
-        if !matches_language {
-            return Vec::new();
-        }
+        let generation = self.active_syntax_generation();
+        let selected_index = self.workspace.selected_file_index.get(&self.store);
+        let selected_path = self.workspace.selected_file_path.get(&self.store);
+        let highlighter = Highlighter::new();
+        let mut requests = Vec::new();
 
-        match self.workspace.source.get(&self.store) {
-            WorkspaceSource::Compare => {
-                let Some(index) = self.workspace.selected_file_index.get(&self.store) else {
-                    return Vec::new();
+        self.workspace.file_cache.update(&self.store, |files| {
+            for active in files.iter_mut().filter_map(|slot| slot.as_mut()) {
+                if selected_index == Some(active.index)
+                    && selected_path.as_deref() == Some(active.path.as_str())
+                {
+                    continue;
+                }
+                if active.carbon_file.is_binary
+                    || !highlighter
+                        .resolve_language(&active.path)
+                        .is_some_and(|resolved| resolved.name() == language)
+                {
+                    continue;
+                }
+                let line_count = active.render_doc.lines.len();
+                if line_count == 0 {
+                    continue;
+                }
+                let window = SyntaxRowWindow {
+                    start: 0,
+                    end: line_count.min(SYNTAX_INITIAL_ROWS),
                 };
-                self.select_loaded_compare_file(index, false)
+                if let Some(request) =
+                    request_syntax_for_active_file(active, repo_path.clone(), generation, window)
+                {
+                    requests.push(request);
+                }
             }
-            WorkspaceSource::Status => {
-                let Some(index) = self.workspace.selected_file_index.get(&self.store) else {
-                    return Vec::new();
-                };
-                self.select_status_item(index, false)
-            }
-            WorkspaceSource::None => Vec::new(),
-        }
+        });
+
+        requests
+            .into_iter()
+            .map(|request| {
+                SyntaxEffect::LoadFileSyntax(Task {
+                    generation,
+                    request,
+                })
+                .into()
+            })
+            .collect()
     }
 
     fn activate_status_view(&mut self, reset_scroll: bool) -> Vec<Effect> {
@@ -2838,14 +3605,19 @@ impl AppState {
         self.workspace
             .status_generation
             .set(&self.store, next_status_gen);
+        self.clear_file_cache();
         self.workspace.sidebar_auto_width.set(&self.store, None);
         self.workspace.used_fallback.set(&self.store, false);
         self.workspace
             .fallback_message
             .set(&self.store, String::new());
         self.workspace.raw_diff_len.set(&self.store, 0);
+        self.reset_file_scroll_layout();
         if reset_scroll {
             self.file_list.scroll_offset_px.set(&self.store, 0.0);
+            self.workspace.global_scroll_top_px.set(&self.store, 0);
+        } else if self.settings.continuous_scroll {
+            self.clamp_global_scroll_top_px();
         }
 
         let current_path = self.workspace.selected_file_path.get(&self.store);
@@ -5027,7 +5799,7 @@ impl AppState {
     }
 
     fn shift_loaded_file(&mut self, delta: isize) -> Vec<Effect> {
-        let file_count = self.workspace.files.with(&self.store, |f| f.len());
+        let file_count = self.workspace_file_count();
         if file_count == 0 {
             return Vec::new();
         }
@@ -5043,14 +5815,23 @@ impl AppState {
                 .saturating_add(delta as usize)
                 .min(file_count.saturating_sub(1))
         };
-        match self.workspace.source.get(&self.store) {
-            WorkspaceSource::Compare => self.select_compare_file(next, true),
-            WorkspaceSource::Status => self.select_status_item(next, true),
-            WorkspaceSource::None => Vec::new(),
-        }
+        self.select_file(next, true)
     }
 
     fn select_file(&mut self, index: usize, reveal: bool) -> Vec<Effect> {
+        if self.settings.continuous_scroll
+            && !matches!(
+                self.workspace.source.get(&self.store),
+                WorkspaceSource::None
+            )
+        {
+            let target = self.file_start_offset_px(index);
+            self.workspace.global_scroll_top_px.set(&self.store, target);
+        }
+        self.select_file_inner(index, reveal)
+    }
+
+    fn select_file_inner(&mut self, index: usize, reveal: bool) -> Vec<Effect> {
         match self.workspace.source.get(&self.store) {
             WorkspaceSource::Compare => self.select_compare_file(index, reveal),
             WorkspaceSource::Status => self.select_status_item(index, reveal),
@@ -5077,6 +5858,32 @@ impl AppState {
             effects.extend(self.select_loaded_compare_file(index, reveal));
             return effects;
         }
+
+        if let Some(active_file) = self.cached_compare_file_at(index, &entry.path) {
+            self.workspace
+                .selected_file_index
+                .set(&self.store, Some(index));
+            self.workspace
+                .selected_file_path
+                .set(&self.store, Some(entry.path.clone()));
+            self.workspace.selected_status_scope.set(&self.store, None);
+            self.workspace.active_file_loading.set(&self.store, None);
+            self.workspace
+                .active_file
+                .set(&self.store, Some(active_file));
+            self.compare_progress.set(&self.store, None);
+            self.editor_clear_document();
+            self.file_list.hovered_index.set(&self.store, Some(index));
+            if reveal {
+                self.reveal_file_list_row(index);
+            }
+            let mut effects = self.sync_editor_scroll_from_global();
+            effects.push(SyntaxEffect::EnsureSyntaxPackForPath { path: entry.path }.into());
+            effects.extend(self.request_active_file_syntax_effect());
+            return effects;
+        }
+
+        let load_already_pending = self.file_load_is_pending(index, &entry.path);
 
         // If we're mid-compare (first file selection post-CompareFinished),
         // flip the phase so the progress panel reports "Preparing first
@@ -5114,35 +5921,41 @@ impl AppState {
                 path: entry.path.clone(),
             }),
         );
+        self.mark_file_cache_loading(index, entry.path.clone());
         self.editor_clear_document();
         self.file_list.hovered_index.set(&self.store, Some(index));
         if reveal {
             self.reveal_file_list_row(index);
         }
 
-        vec![
+        let mut effects = vec![
             SyntaxEffect::EnsureSyntaxPackForPath {
                 path: entry.path.clone(),
             }
             .into(),
-            CompareEffect::LoadFile(Task {
-                generation: self.workspace.compare_generation.get(&self.store),
-                request: CompareFileRequest {
-                    repo_path,
-                    spec: CompareSpec {
-                        mode: self.compare.mode.get(&self.store),
-                        left_ref: self.compare.left_ref.get(&self.store),
-                        right_ref: self.compare.right_ref.get(&self.store),
-                        renderer: self.compare.renderer.get(&self.store),
-                        layout: self.compare.layout.get(&self.store),
+        ];
+        if !load_already_pending {
+            effects.push(
+                CompareEffect::LoadFile(Task {
+                    generation: self.workspace.compare_generation.get(&self.store),
+                    request: CompareFileRequest {
+                        repo_path,
+                        spec: CompareSpec {
+                            mode: self.compare.mode.get(&self.store),
+                            left_ref: self.compare.left_ref.get(&self.store),
+                            right_ref: self.compare.right_ref.get(&self.store),
+                            renderer: self.compare.renderer.get(&self.store),
+                            layout: self.compare.layout.get(&self.store),
+                        },
+                        path: entry.path,
+                        index,
+                        deferred_file,
                     },
-                    path: entry.path,
-                    index,
-                    deferred_file,
-                },
-            })
-            .into(),
-        ]
+                })
+                .into(),
+            );
+        }
+        effects
     }
 
     #[profiling::function]
@@ -5182,9 +5995,9 @@ impl AppState {
         if reveal {
             self.reveal_file_list_row(index);
         }
-        self.request_active_file_syntax_effect()
-            .into_iter()
-            .collect()
+        let mut effects = self.sync_editor_scroll_from_global();
+        effects.extend(self.request_active_file_syntax_effect());
+        effects
     }
 
     fn reveal_file_list_row(&mut self, index: usize) {
@@ -5241,31 +6054,81 @@ impl AppState {
         self.workspace
             .selected_status_scope
             .set(&self.store, Some(item.scope));
-        self.file_list.hovered_index.set(&self.store, Some(index));
-        if reveal {
-            self.reveal_file_list_row(index);
-        }
+        let (left_ref, right_ref) = refs_for_status_scope(item.scope);
+        let active_matches_selection = self.workspace.active_file.with(&self.store, |af| {
+            af.as_ref().is_some_and(|active| {
+                active.index == index
+                    && active.path == item.path
+                    && active.left_ref == left_ref
+                    && active.right_ref == right_ref
+            })
+        });
+        if active_matches_selection {
+            self.workspace.active_file_loading.set(&self.store, None);
+            self.clear_file_cache_loading(index);
+            self.file_list.hovered_index.set(&self.store, Some(index));
+            if reveal {
+                self.reveal_file_list_row(index);
+            }
+            let mut effects = self.sync_editor_scroll_from_global();
+            effects.push(SyntaxEffect::EnsureSyntaxPackForPath { path: item.path }.into());
+            effects.extend(self.request_active_file_syntax_effect());
+            return effects;
+        } else if let Some(active_file) = self.cached_status_file_at(index, &item) {
+            self.workspace.active_file_loading.set(&self.store, None);
+            self.workspace
+                .active_file
+                .set(&self.store, Some(active_file));
+            self.editor_clear_document();
+            self.file_list.hovered_index.set(&self.store, Some(index));
+            if reveal {
+                self.reveal_file_list_row(index);
+            }
+            let mut effects = self.sync_editor_scroll_from_global();
+            effects.push(SyntaxEffect::EnsureSyntaxPackForPath { path: item.path }.into());
+            effects.extend(self.request_active_file_syntax_effect());
+            return effects;
+        } else {
+            let load_already_pending = self.file_load_is_pending(index, &item.path);
+            self.workspace.active_file_loading.set(
+                &self.store,
+                Some(ActiveFileLoading {
+                    index,
+                    path: item.path.clone(),
+                }),
+            );
+            self.mark_file_cache_loading(index, item.path.clone());
+            self.file_list.hovered_index.set(&self.store, Some(index));
+            if reveal {
+                self.reveal_file_list_row(index);
+            }
 
-        let generation = self.workspace.status_generation.get(&self.store);
-        let renderer = self.compare.renderer.get(&self.store);
-        vec![
-            SyntaxEffect::EnsureSyntaxPackForPath {
-                path: item.path.clone(),
+            let mut effects = vec![
+                SyntaxEffect::EnsureSyntaxPackForPath {
+                    path: item.path.clone(),
+                }
+                .into(),
+            ];
+            if !load_already_pending {
+                let generation = self.workspace.status_generation.get(&self.store);
+                let renderer = self.compare.renderer.get(&self.store);
+                effects.push(
+                    RepositoryEffect::LoadStatusDiff {
+                        task: Task {
+                            generation,
+                            request: StatusDiffRequest {
+                                repo_path,
+                                item,
+                                renderer,
+                            },
+                        },
+                        index,
+                    }
+                    .into(),
+                );
             }
-            .into(),
-            RepositoryEffect::LoadStatusDiff {
-                task: Task {
-                    generation,
-                    request: StatusDiffRequest {
-                        repo_path,
-                        item,
-                        renderer,
-                    },
-                },
-                index,
-            }
-            .into(),
-        ]
+            return effects;
+        }
     }
 
     fn apply_selected_status_operation(&mut self, operation: StatusOperation) -> Vec<Effect> {
@@ -5624,10 +6487,10 @@ impl AppState {
             .collect()
     }
 
-    fn scroll_viewport_lines(&mut self, delta_lines: i32) {
+    fn scroll_viewport_lines(&mut self, delta_lines: i32) -> Vec<Effect> {
         let step_px = 20_i32;
         let delta_px = delta_lines.saturating_mul(step_px);
-        self.scroll_viewport_px(delta_px);
+        self.scroll_viewport_px(delta_px)
     }
 
     fn scroll_active_overlay_list_px(&mut self, delta_px: i32) {
@@ -5658,31 +6521,482 @@ impl AppState {
         }
     }
 
-    fn scroll_viewport_px(&mut self, delta_px: i32) {
-        let current = self.editor.scroll_top_px.get(&self.store);
-        let max = self.editor_max_scroll_top_px();
-        let next = apply_scroll_delta_px(current, delta_px, max);
-        self.editor.scroll_top_px.set(&self.store, next);
+    fn scroll_viewport_px(&mut self, delta_px: i32) -> Vec<Effect> {
+        if !self.settings.continuous_scroll {
+            let current = self.editor.scroll_top_px.get(&self.store);
+            let max = self.editor_max_scroll_top_px();
+            let next = apply_scroll_delta_px(current, delta_px, max);
+            self.editor.scroll_top_px.set(&self.store, next);
+            return Vec::new();
+        }
+
+        if delta_px == 0 {
+            return Vec::new();
+        }
+
+        let current = self.workspace.global_scroll_top_px.get(&self.store);
+        let target = apply_scroll_delta_px(current, delta_px, self.global_max_scroll_top_px());
+        self.scroll_viewport_to_global(target)
     }
 
-    fn scroll_viewport_pages(&mut self, delta_pages: i32) {
+    fn clear_file_scroll_layout(&mut self) {
+        self.workspace
+            .file_content_heights
+            .set(&self.store, Vec::new());
+        self.workspace
+            .file_scroll_total_height_px
+            .set(&self.store, 0);
+    }
+
+    fn reset_file_scroll_layout(&mut self) {
+        self.workspace
+            .file_content_heights
+            .set(&self.store, Vec::new());
+        self.recompute_file_scroll_total_height_px();
+    }
+
+    pub fn recompute_file_scroll_total_height_px(&mut self) {
+        let count = self.workspace_file_count();
+        self.workspace
+            .file_content_heights
+            .update(&self.store, |heights| {
+                if heights.len() > count {
+                    heights.truncate(count);
+                }
+            });
+
+        let mut total = 0_u32;
+        for index in 0..count {
+            total = total.saturating_add(self.file_scroll_height_px(index));
+        }
+        self.workspace
+            .file_scroll_total_height_px
+            .set(&self.store, total);
+    }
+
+    pub fn update_file_content_height_px(&mut self, index: usize, height: u32) -> bool {
+        let count = self.workspace_file_count();
+        if index >= count || height == 0 {
+            return false;
+        }
+
+        let old_slot_height = self.file_scroll_height_px(index);
+        let old_total = self.total_diff_height_px();
+        let old_file_start = self.file_start_offset_px(index);
+        let old_scroll_top = self.workspace.global_scroll_top_px.get(&self.store);
+        let row_count = self.workspace_file_row_count(index);
+        let mut recorded_changed = false;
+        self.workspace
+            .file_content_heights
+            .update(&self.store, |heights| {
+                if heights.len() < count {
+                    heights.resize(count, None);
+                }
+                if heights[index] != Some(height) {
+                    heights[index] = Some(height);
+                    recorded_changed = true;
+                }
+            });
+
+        let mut calibration_initialized = false;
+        if let Some(rows) = row_count
+            && rows > 0
+        {
+            let sample_q16 = (u64::from(height) << 16) / u64::from(rows);
+            let prev = self.workspace.measured_px_per_row_q16.get(&self.store);
+            let next = if prev == 0 {
+                calibration_initialized = true;
+                sample_q16 as u32
+            } else {
+                (((u64::from(prev) * 7) + sample_q16) / 8) as u32
+            };
+            self.workspace
+                .measured_px_per_row_q16
+                .set(&self.store, next);
+        }
+
+        if calibration_initialized {
+            self.recompute_file_scroll_total_height_px();
+        }
+
+        if recorded_changed {
+            let new_slot_height = self.file_scroll_height_px(index);
+            let next_total = old_total
+                .saturating_sub(old_slot_height)
+                .saturating_add(new_slot_height);
+            self.workspace
+                .file_scroll_total_height_px
+                .set(&self.store, next_total);
+
+            if self.settings.continuous_scroll && new_slot_height != old_slot_height {
+                let local_within_file = old_scroll_top.saturating_sub(old_file_start);
+                let next_scroll_top = if old_scroll_top <= old_file_start {
+                    // Viewport is above this file — unaffected by the height change.
+                    old_scroll_top
+                } else if local_within_file < old_slot_height {
+                    // Viewport is inside this file — keep the same local offset
+                    // so the user's view doesn't jump.
+                    old_file_start.saturating_add(local_within_file.min(new_slot_height))
+                } else {
+                    // Viewport is past this file — shift by the height delta so
+                    // the user's logical position stays anchored to the same
+                    // content downstream.
+                    let delta = new_slot_height as i64 - old_slot_height as i64;
+                    if delta >= 0 {
+                        old_scroll_top.saturating_add(delta as u32)
+                    } else {
+                        old_scroll_top.saturating_sub((-delta) as u32)
+                    }
+                };
+                let max = next_total
+                    .saturating_sub(self.editor.viewport_height_px.get(&self.store).max(1));
+                self.workspace
+                    .global_scroll_top_px
+                    .set(&self.store, next_scroll_top.min(max));
+            }
+        }
+
+        recorded_changed && old_slot_height != height
+    }
+
+    fn file_scroll_height_px(&self, index: usize) -> u32 {
+        self.workspace
+            .file_content_heights
+            .with(&self.store, |heights| heights.get(index).copied().flatten())
+            .unwrap_or_else(|| self.estimated_file_height_px(index))
+    }
+
+    pub fn workspace_file_count(&self) -> usize {
+        match self.workspace.source.get(&self.store) {
+            WorkspaceSource::Compare => self.workspace.files.with(&self.store, |f| f.len()),
+            WorkspaceSource::Status => self.workspace.status_items.with(&self.store, |s| s.len()),
+            WorkspaceSource::None => 0,
+        }
+    }
+
+    pub fn workspace_file_path_at(&self, index: usize) -> Option<String> {
+        match self.workspace.source.get(&self.store) {
+            WorkspaceSource::Compare => self
+                .workspace
+                .files
+                .with(&self.store, |f| f.get(index).map(|e| e.path.clone())),
+            WorkspaceSource::Status => self
+                .workspace
+                .status_items
+                .with(&self.store, |s| s.get(index).map(|e| e.path.clone())),
+            WorkspaceSource::None => None,
+        }
+    }
+
+    pub fn workspace_render_generation(&self) -> u64 {
+        match self.workspace.source.get(&self.store) {
+            WorkspaceSource::Compare => self.workspace.compare_generation.get(&self.store),
+            WorkspaceSource::Status => self.workspace.status_generation.get(&self.store),
+            WorkspaceSource::None => 0,
+        }
+    }
+
+    pub fn estimated_file_height_px(&self, index: usize) -> u32 {
+        const BASELINE_ROWS: u32 = 8;
+        let row_height_q16 = {
+            let cal = self.workspace.measured_px_per_row_q16.get(&self.store);
+            if cal == 0 { 24_u32 << 16 } else { cal }
+        };
+        let row_height_px =
+            |rows: u32| ((u64::from(rows) * u64::from(row_height_q16)) >> 16) as u32;
+
+        if self.workspace.source.get(&self.store) == WorkspaceSource::Compare
+            && let Some(rows) = self.workspace.compare_output.with(&self.store, |output| {
+                output
+                    .as_ref()
+                    .and_then(|output| output.carbon.files.get(index))
+                    .map(estimated_carbon_file_rows_with_overhead)
+            })
+        {
+            return row_height_px(rows);
+        }
+
+        let line_count = match self.workspace.source.get(&self.store) {
+            WorkspaceSource::Compare => self.workspace.files.with(&self.store, |files| {
+                files
+                    .get(index)
+                    .map(|f| f.additions.saturating_add(f.deletions).max(1) as u32 + BASELINE_ROWS)
+                    .unwrap_or(BASELINE_ROWS)
+            }),
+            WorkspaceSource::Status => BASELINE_ROWS,
+            WorkspaceSource::None => BASELINE_ROWS,
+        };
+        row_height_px(line_count)
+    }
+
+    fn workspace_file_row_count(&self, index: usize) -> Option<u32> {
+        if self.workspace.source.get(&self.store) != WorkspaceSource::Compare {
+            return None;
+        }
+        self.workspace.compare_output.with(&self.store, |output| {
+            output
+                .as_ref()
+                .and_then(|output| output.carbon.files.get(index))
+                .map(estimated_carbon_file_rows_with_overhead)
+        })
+    }
+
+    pub fn total_diff_height_px(&self) -> u32 {
+        let cached = self.workspace.file_scroll_total_height_px.get(&self.store);
+        if cached > 0 || self.workspace_file_count() == 0 {
+            return cached;
+        }
+
+        let mut total = 0_u32;
+        for index in 0..self.workspace_file_count() {
+            total = total.saturating_add(self.file_scroll_height_px(index));
+        }
+        total
+    }
+
+    pub fn file_start_offset_px(&self, index: usize) -> u32 {
+        let mut total: u32 = 0;
+        for slot in 0..index.min(self.workspace_file_count()) {
+            total = total.saturating_add(self.file_scroll_height_px(slot));
+        }
+        total
+    }
+
+    pub fn global_max_scroll_top_px(&self) -> u32 {
+        let viewport = self.editor.viewport_height_px.get(&self.store);
+        self.total_diff_height_px().saturating_sub(viewport.max(1))
+    }
+
+    fn clamp_global_scroll_top_px(&mut self) {
+        let max = self.global_max_scroll_top_px();
+        let current = self.workspace.global_scroll_top_px.get(&self.store);
+        self.workspace
+            .global_scroll_top_px
+            .set(&self.store, current.min(max));
+    }
+
+    fn locate_global_scroll_px(&self, target_px: u32) -> Option<(usize, u32)> {
+        let count = self.workspace_file_count();
+        if count == 0 {
+            return None;
+        }
+        let mut prior: u32 = 0;
+        for index in 0..count {
+            let height = self.file_scroll_height_px(index).max(1);
+            let next_prior = prior.saturating_add(height);
+            if target_px < next_prior || index + 1 == count {
+                return Some((index, target_px.saturating_sub(prior)));
+            }
+            prior = next_prior;
+        }
+        Some((count - 1, 0))
+    }
+
+    fn scroll_viewport_to_global(&mut self, target_px: u32) -> Vec<Effect> {
+        let target_px = target_px.min(self.global_max_scroll_top_px());
+        let Some((target_index, local_offset)) = self.locate_global_scroll_px(target_px) else {
+            self.workspace.global_scroll_top_px.set(&self.store, 0);
+            return Vec::new();
+        };
+        self.workspace
+            .global_scroll_top_px
+            .set(&self.store, target_px);
+
+        let current_index = self.workspace.selected_file_index.get(&self.store);
+        let mut effects = if current_index == Some(target_index) {
+            Vec::new()
+        } else {
+            self.select_file_inner(target_index, true)
+        };
+
+        let local_max = self.editor_max_scroll_top_px();
+        self.editor
+            .scroll_top_px
+            .set(&self.store, local_offset.min(local_max));
+        effects.extend(self.request_active_file_syntax_effect());
+        effects
+    }
+
+    pub fn global_scroll_position_px(&self) -> u32 {
+        self.workspace.global_scroll_top_px.get(&self.store)
+    }
+
+    pub fn sync_editor_scroll_from_global(&mut self) -> Vec<Effect> {
+        if !self.settings.continuous_scroll {
+            return Vec::new();
+        }
+        self.clamp_global_scroll_top_px();
+        let target = self.workspace.global_scroll_top_px.get(&self.store);
+        let Some((target_index, local_offset)) = self.locate_global_scroll_px(target) else {
+            self.workspace.global_scroll_top_px.set(&self.store, 0);
+            return Vec::new();
+        };
+        let effects = if self.workspace.selected_file_index.get(&self.store) == Some(target_index) {
+            Vec::new()
+        } else {
+            self.select_file_inner(target_index, true)
+        };
+        let max = self.editor_max_scroll_top_px();
+        self.editor
+            .scroll_top_px
+            .set(&self.store, local_offset.min(max));
+        effects
+    }
+
+    pub fn sync_global_scroll_from_editor(&mut self) {
+        let Some(selected_index) = self.workspace.selected_file_index.get(&self.store) else {
+            self.workspace.global_scroll_top_px.set(&self.store, 0);
+            return;
+        };
+        let start = self.file_start_offset_px(selected_index);
+        let local = self.editor.scroll_top_px.get(&self.store);
+        let target = start
+            .saturating_add(local)
+            .min(self.global_max_scroll_top_px());
+        self.workspace.global_scroll_top_px.set(&self.store, target);
+    }
+
+    pub fn build_continuous_viewport_document(
+        &mut self,
+    ) -> (Option<ViewportDocument>, Vec<Effect>) {
+        if !self.settings.continuous_scroll {
+            return (None, Vec::new());
+        }
+        self.clamp_global_scroll_top_px();
+        let Some((start_index, _)) =
+            self.locate_global_scroll_px(self.workspace.global_scroll_top_px.get(&self.store))
+        else {
+            return (None, Vec::new());
+        };
+
+        let source = self.workspace.source.get(&self.store);
+        if source == WorkspaceSource::None {
+            return (None, Vec::new());
+        }
+
+        let count = self.workspace_file_count();
+        let viewport = self.editor.viewport_height_px.get(&self.store).max(1);
+        let start_offset = self.file_start_offset_px(start_index);
+        let local_top = self
+            .workspace
+            .global_scroll_top_px
+            .get(&self.store)
+            .saturating_sub(start_offset);
+        let target_height = local_top
+            .saturating_add(viewport)
+            .saturating_add(viewport / 2)
+            .max(1);
+
+        let mut effects = Vec::new();
+        let mut slot_keys = Vec::new();
+        let mut accumulated = 0_u32;
+        let mut index = start_index;
+        while index < count && (slot_keys.is_empty() || accumulated < target_height) {
+            let path = self
+                .workspace_file_path_at(index)
+                .unwrap_or_else(|| format!("File {}", index + 1));
+            let slot_key = match source {
+                WorkspaceSource::Compare => {
+                    effects.extend(self.ensure_compare_file_cached_for_viewport(index, &path));
+                    self.compare_slot_key_at(index, &path)
+                }
+                WorkspaceSource::Status => {
+                    effects.extend(self.ensure_status_file_cached_for_viewport(index));
+                    let status_item = self
+                        .workspace
+                        .status_items
+                        .with(&self.store, |items| items.get(index).cloned());
+                    status_item.as_ref().map_or_else(
+                        || {
+                            self.loading_slot_key(
+                                WorkspaceSource::Status,
+                                index,
+                                &path,
+                                String::new(),
+                                String::new(),
+                            )
+                        },
+                        |item| self.status_slot_key_at(index, item),
+                    )
+                }
+                WorkspaceSource::None => self.loading_slot_key(
+                    WorkspaceSource::None,
+                    index,
+                    &path,
+                    String::new(),
+                    String::new(),
+                ),
+            };
+            effects.extend(self.request_viewport_slot_syntax_effect(&slot_key));
+            slot_keys.push(slot_key);
+            accumulated = accumulated.saturating_add(self.file_scroll_height_px(index).max(1));
+            index += 1;
+        }
+
+        let key = ViewportDocumentKey {
+            source,
+            generation: self.workspace_render_generation(),
+            start_index,
+            slots: slot_keys,
+        };
+        let doc = if let Some(cache) = self.viewport_document_cache.as_ref()
+            && cache.key == key
+        {
+            cache.doc.clone()
+        } else {
+            let mut doc = RenderDoc::default();
+            for slot in &key.slots {
+                self.append_viewport_slot_doc(&mut doc, slot);
+            }
+            let doc = Arc::new(doc);
+            self.viewport_document_cache = Some(ViewportDocumentCache {
+                key: key.clone(),
+                doc: doc.clone(),
+            });
+            doc
+        };
+        let slot_indices = key.slots.iter().map(|slot| slot.index).collect();
+
+        (
+            Some(ViewportDocument {
+                doc,
+                mode: ViewportDocumentMode::Continuous,
+                generation: self.workspace_render_generation(),
+                start_index,
+                start_offset_px: start_offset,
+                slot_indices,
+                path: String::new(),
+            }),
+            effects,
+        )
+    }
+
+    fn scroll_viewport_pages(&mut self, delta_pages: i32) -> Vec<Effect> {
         let viewport = self.editor.viewport_height_px.get(&self.store);
         let page_px = ((viewport as f32) * 0.85).round().max(1.0) as i32;
         let delta_px = delta_pages.saturating_mul(page_px);
+        if self.settings.continuous_scroll {
+            return self.scroll_viewport_px(delta_px);
+        }
         let current = self.editor.scroll_top_px.get(&self.store);
         let max = self.editor_max_scroll_top_px();
         let next = apply_scroll_delta_px(current, delta_px, max);
         self.editor.scroll_top_px.set(&self.store, next);
+        Vec::new()
     }
 
-    fn scroll_viewport_half_page(&mut self, direction: i32) {
+    fn scroll_viewport_half_page(&mut self, direction: i32) -> Vec<Effect> {
         let viewport = self.editor.viewport_height_px.get(&self.store);
         let half_px = ((viewport as f32) * 0.5).round().max(1.0) as i32;
         let delta_px = direction.saturating_mul(half_px);
+        if self.settings.continuous_scroll {
+            return self.scroll_viewport_px(delta_px);
+        }
         let current = self.editor.scroll_top_px.get(&self.store);
         let max = self.editor_max_scroll_top_px();
         let next = apply_scroll_delta_px(current, delta_px, max);
         self.editor.scroll_top_px.set(&self.store, next);
+        Vec::new()
     }
 
     fn request_active_file_syntax_effect(&mut self) -> Option<Effect> {
@@ -5695,30 +7009,7 @@ impl AppState {
             let Some(active) = active.as_mut() else {
                 return;
             };
-            if active
-                .syntax_pending
-                .is_some_and(|pending| pending.contains(window))
-                || active
-                    .syntax_covered
-                    .iter()
-                    .any(|covered| covered.contains(window))
-            {
-                return;
-            }
-
-            active.syntax_request_id = active.syntax_request_id.saturating_add(1);
-            active.syntax_pending = Some(window);
-            request = Some(LoadFileSyntaxRequest {
-                repo_path,
-                file_index: active.index,
-                path: active.path.clone(),
-                carbon_file: active.carbon_file.clone(),
-                left_ref: active.left_ref.clone(),
-                right_ref: active.right_ref.clone(),
-                window,
-                request_id: active.syntax_request_id,
-                cache_generation: generation,
-            });
+            request = request_syntax_for_active_file(active, repo_path, generation, window);
         });
 
         request.map(|request| {
@@ -5794,7 +7085,23 @@ impl AppState {
         }
     }
 
-    fn navigate_to_file(&mut self, forward: bool) {
+    fn navigate_to_file(&mut self, forward: bool) -> Vec<Effect> {
+        if self.settings.continuous_scroll {
+            let Some(current) = self.workspace.selected_file_index.get(&self.store) else {
+                return Vec::new();
+            };
+            let count = self.workspace_file_count();
+            if count == 0 {
+                return Vec::new();
+            }
+            let target = if forward {
+                current.saturating_add(1).min(count.saturating_sub(1))
+            } else {
+                current.saturating_sub(1)
+            };
+            return self.scroll_viewport_to_global(self.file_start_offset_px(target));
+        }
+
         let current = self.editor.scroll_top_px.get(&self.store);
         let target = self.editor.file_positions.with(&self.store, |positions| {
             if positions.is_empty() {
@@ -5819,6 +7126,7 @@ impl AppState {
             self.editor.scroll_top_px.set(&self.store, y);
             self.editor_clamp_scroll();
         }
+        Vec::new()
     }
 
     fn push_error(&mut self, message: &str) -> u64 {
@@ -6338,6 +7646,60 @@ fn apply_scroll_delta_px(current: u32, delta: i32, max: u32) -> u32 {
     next.min(max)
 }
 
+fn estimated_carbon_file_rows_with_overhead(file: &carbon::FileDiff) -> u32 {
+    if file.is_binary {
+        return 4;
+    }
+    estimated_carbon_file_rows(file).saturating_add(1).max(1)
+}
+
+fn estimated_carbon_file_rows(file: &carbon::FileDiff) -> u32 {
+    if file.hunks.is_empty() {
+        return file.additions.saturating_add(file.deletions).max(1);
+    }
+
+    let mut rows = 0_u32;
+    for (hunk_index, hunk) in file.hunks.iter().enumerate() {
+        if !file.is_partial {
+            let gap_len = if hunk_index == 0 {
+                hunk.old_start_index().min(hunk.new_start_index())
+            } else {
+                let prev = &file.hunks[hunk_index - 1];
+                hunk.old_start_index()
+                    .saturating_sub(prev.old_end_index())
+                    .min(hunk.new_start_index().saturating_sub(prev.new_end_index()))
+            };
+            rows = rows.saturating_add((gap_len > 0) as u32);
+        }
+
+        rows = rows.saturating_add(1);
+        for block in file.hunk_blocks(hunk) {
+            rows = rows.saturating_add(match block.kind {
+                carbon::BlockKind::Context => block.old.len.min(block.new.len),
+                carbon::BlockKind::Change => block.old.len.saturating_add(block.new.len),
+            });
+        }
+
+        if !file.is_partial && hunk_index + 1 == file.hunks.len() {
+            let old_end = file
+                .old_text
+                .as_ref()
+                .map(|text| text.line_count())
+                .unwrap_or_else(|| hunk.old_end_index());
+            let new_end = file
+                .new_text
+                .as_ref()
+                .map(|text| text.line_count())
+                .unwrap_or_else(|| hunk.new_end_index());
+            let gap_len = old_end
+                .saturating_sub(hunk.old_end_index())
+                .min(new_end.saturating_sub(hunk.new_end_index()));
+            rows = rows.saturating_add((gap_len > 0) as u32);
+        }
+    }
+    rows
+}
+
 fn build_carbon_file_entries(files: &[carbon::FileDiff]) -> Vec<FileListEntry> {
     files.iter().map(carbon_file_entry).collect()
 }
@@ -6541,6 +7903,7 @@ fn split_browse_query(expanded: &str) -> (String, &str) {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     use clap::Parser;
 
@@ -6671,7 +8034,7 @@ diff --git a/src/lib.rs b/src/lib.rs
                 carbon_file: carbon_file.clone(),
                 carbon_expansion,
                 carbon_overlays: CarbonStyleOverlays::default(),
-                render_doc,
+                render_doc: Arc::new(render_doc),
                 base_carbon_file: carbon_file,
                 token_buffer,
                 left_ref,
@@ -7163,7 +8526,7 @@ diff --git a/src/lib.rs b/src/lib.rs
                     carbon_file: carbon::FileDiff::default(),
                     carbon_expansion: carbon::ExpansionState::default(),
                     carbon_overlays: CarbonStyleOverlays::default(),
-                    render_doc: RenderDoc::default(),
+                    render_doc: Arc::new(RenderDoc::default()),
                     token_buffer: TokenBuffer::default(),
                 },
             },

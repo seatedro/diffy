@@ -96,6 +96,12 @@ impl InputSystem {
             .viewport_rect
             .is_some_and(|rect| rect.contains(x, y))
         {
+            if let Some(path) = editor.file_header_path_at(x, y) {
+                return InputOutcome::actions(vec![
+                    EditorAction::FocusViewport.into(),
+                    AppAction::CopyText(path).into(),
+                ]);
+            }
             let editor_snap = state.editor.snapshot(&state.store);
             let hovered = editor.hit_test_row(&editor_snap, x, y);
             if let Some(row) = hovered
@@ -125,6 +131,7 @@ impl InputSystem {
             }
             let status_source = state.workspace.source.get(&state.store) == WorkspaceSource::Status;
             let review_source = state.pull_request_review_enabled();
+            let single_file_status_actions = status_source && !state.settings.continuous_scroll;
             if (status_source || review_source) && editor.is_gutter_hit(x, y) {
                 if let Some(row) = hovered {
                     if editor.is_block_row(row) {
@@ -147,7 +154,7 @@ impl InputSystem {
                         EditorAction::FocusViewport.into(),
                         EditorAction::HoverViewportRow(hovered).into(),
                     ];
-                    if is_hunk_sep && status_source {
+                    if is_hunk_sep && single_file_status_actions {
                         let is_staged = matches!(
                             state.workspace.selected_status_scope.get(&state.store),
                             Some(crate::core::vcs::git::StatusScope::Staged)
@@ -159,6 +166,8 @@ impl InputSystem {
                         });
                     } else if is_hunk_sep {
                         // Hunk headers are not review-comment anchors.
+                    } else if status_source && !single_file_status_actions {
+                        // Continuous status rows are not single-file line anchors.
                     } else if self.modifiers.shift_key() {
                         let anchor = state
                             .editor
@@ -284,7 +293,9 @@ impl InputSystem {
             actions.push(EditorAction::HoverViewportRow(hovered_row).into());
         }
 
-        let cursor_hint = if hovered_row.is_some_and(|row| editor.is_block_row(row)) {
+        let cursor_hint = if editor.file_header_path_at(x, y).is_some() {
+            crate::ui::shell::CursorHint::Pointer
+        } else if hovered_row.is_some_and(|row| editor.is_block_row(row)) {
             crate::ui::shell::CursorHint::Pointer
         } else if let Some(row) = hovered_row
             && editor.is_gutter_hit(x, y)

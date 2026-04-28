@@ -71,6 +71,18 @@ impl AppState {
                 self.settings.wheel_scroll_lines = clamped;
                 self.persist_settings_effect()
             }
+            ToggleContinuousScroll => {
+                let enabled = !self.settings.continuous_scroll;
+                self.settings.continuous_scroll = enabled;
+                self.recompute_file_scroll_total_height_px();
+                if enabled {
+                    self.editor
+                        .line_selection
+                        .update(&self.store, |ls| ls.clear());
+                    self.sync_global_scroll_from_editor();
+                }
+                self.persist_settings_effect()
+            }
             OpenThemePicker => {
                 self.open_theme_picker();
                 Vec::new()

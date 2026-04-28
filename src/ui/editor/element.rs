@@ -9,7 +9,10 @@ use crate::render::{
 use crate::ui::design::{Alpha, Sz};
 use crate::ui::theme::{Color, Theme};
 
-use super::decoration::{BlockPaintCtx, BlockRegistry, RowPaintCtx, decoration_for_kind};
+use super::decoration::{
+    BlockPaintCtx, BlockRegistry, FileHeaderDecoration, RowDecoration, RowPaintCtx,
+    decoration_for_kind,
+};
 use super::display_layout::{
     DisplayLayoutConfig, DisplayLayoutMetrics, DisplayLayoutSummary, compute_gutter_digits,
     rebuild_display_rows,
@@ -26,13 +29,14 @@ const BASE_COLUMN_GAP: f32 = 18.0;
 const BASE_GUTTER_PADDING: f32 = 8.0;
 const BASE_SCROLLBAR_WIDTH: f32 = 8.0;
 const BASE_SCROLLBAR_MARGIN: f32 = 6.0;
-const FILE_HEADER_ROW_MULTIPLE: u16 = 2;
+const FILE_HEADER_ROW_MULTIPLE: u16 = 1;
 const HUNK_ROW_MULTIPLE: u16 = 1;
 const BASE_SCROLLBAR_THUMB_MIN: f32 = 32.0;
-const BASE_MONO_FONT_SIZE: f32 = 13.0;
+pub(crate) const BASE_MONO_FONT_SIZE: f32 = 13.0;
 const STRIP_TARGET_HEIGHT_PX: u32 = 480;
 const STRIP_OVERSCAN: usize = 1;
 const UNWRAPPED_RENDER_OVERSCAN_COLS: u16 = 16;
+const STICKY_HEADER_Z: i32 = 10;
 
 fn editor_scale(text_metrics: TextMetrics) -> f32 {
     (text_metrics.mono_font_size_px / BASE_MONO_FONT_SIZE).max(0.5)
@@ -104,6 +108,7 @@ pub enum EditorDocument<'a> {
         file_index: usize,
         path: &'a str,
         doc: &'a RenderDoc,
+        show_file_headers: bool,
     },
 }
 
@@ -111,6 +116,7 @@ pub enum EditorDocument<'a> {
 struct EditorLayoutKey {
     compare_generation: u64,
     file_index: usize,
+    show_file_headers: bool,
     split_mode: bool,
     wrap_enabled: bool,
     wrap_column: u32,
@@ -119,6 +125,7 @@ struct EditorLayoutKey {
     mono_char_width_bits: u32,
     mono_line_height_bits: u32,
     doc_line_count: u32,
+    doc_text_len: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,6 +240,13 @@ impl CachedTextLayout {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollbarOverride {
+    pub total_height_px: u32,
+    pub scroll_top_px: u32,
+    pub max_scroll_top_px: u32,
+}
+
 #[derive(Debug)]
 pub struct EditorElement {
     layout_key: Option<EditorLayoutKey>,
@@ -249,6 +263,17 @@ pub struct EditorElement {
     text_layout_cache: HashMap<TextLayoutCacheKey, Arc<CachedTextLayout>>,
     gutter_text_cache: HashMap<GutterTextCacheKey, Arc<str>>,
     text_metrics: TextMetrics,
+    scrollbar_override: Option<ScrollbarOverride>,
+    sticky_header_hit: Option<(Rect, String)>,
+    file_header_hits: Vec<FileHeaderHit>,
+    mouse_pos: Option<(f32, f32)>,
+}
+
+#[derive(Debug, Clone)]
+struct FileHeaderHit {
+    y_px: u32,
+    h_px: u16,
+    path: String,
 }
 
 impl Default for EditorElement {
@@ -268,11 +293,23 @@ impl Default for EditorElement {
             text_layout_cache: HashMap::new(),
             gutter_text_cache: HashMap::new(),
             text_metrics: TextMetrics::default(),
+            scrollbar_override: None,
+            sticky_header_hit: None,
+            file_header_hits: Vec::new(),
+            mouse_pos: None,
         }
     }
 }
 
 impl EditorElement {
+    pub fn set_scrollbar_override(&mut self, value: Option<ScrollbarOverride>) {
+        self.scrollbar_override = value;
+    }
+
+    pub fn set_mouse_pos(&mut self, pos: Option<(f32, f32)>) {
+        self.mouse_pos = pos;
+    }
+
     pub fn scrollbar_rect(&self) -> Rect {
         self.layout.scrollbar.map(|sb| sb.track).unwrap_or_default()
     }
@@ -311,11 +348,13 @@ impl EditorElement {
                 compare_generation,
                 file_index,
                 doc,
+                show_file_headers,
                 ..
             } => {
                 let key = EditorLayoutKey {
                     compare_generation,
                     file_index,
+                    show_file_headers,
                     split_mode: state.layout == LayoutMode::Split,
                     wrap_enabled: state.wrap_enabled,
                     wrap_column: state.wrap_column,
@@ -324,10 +363,11 @@ impl EditorElement {
                     mono_char_width_bits: text_metrics.mono_char_width_px.to_bits(),
                     mono_line_height_bits: text_metrics.mono_line_height_px.to_bits(),
                     doc_line_count: doc.line_count() as u32,
+                    doc_text_len: doc.text_bytes.len().min(u32::MAX as usize) as u32,
                 };
 
                 if self.layout_key != Some(key) {
-                    self.rebuild_rows(doc, state, text_metrics);
+                    self.rebuild_rows(doc, state, text_metrics, show_file_headers);
                     self.clear_document_caches();
                     self.layout_key = Some(key);
                 }
@@ -350,7 +390,8 @@ impl EditorElement {
 
         self.layout.scroll_top_px = state.scroll_top_px as f32;
         self.layout.highlighted_row = state.hovered_row;
-        self.layout.scrollbar = compute_scrollbar_layout(&self.layout, state);
+        self.layout.scrollbar =
+            compute_scrollbar_layout(&self.layout, state, self.scrollbar_override);
 
         self.layout
     }
@@ -628,7 +669,13 @@ impl EditorElement {
         })
     }
 
-    fn rebuild_rows(&mut self, doc: &RenderDoc, state: &EditorState, text_metrics: TextMetrics) {
+    fn rebuild_rows(
+        &mut self,
+        doc: &RenderDoc,
+        state: &EditorState,
+        text_metrics: TextMetrics,
+        show_file_headers: bool,
+    ) {
         let body_h = text_metrics.mono_line_height_px.round().max(1.0) as u16;
         self.metrics = DisplayLayoutMetrics {
             body_row_height_px: body_h,
@@ -639,6 +686,7 @@ impl EditorElement {
             split_mode: state.layout == LayoutMode::Split,
             wrap_enabled: state.wrap_enabled,
             wrap_column: state.wrap_column,
+            show_file_headers,
             char_width_px: text_metrics.mono_char_width_px as f64,
             unified_text_width_px: self.layout.unified_text_rect.width as f64,
             split_text_width_px: self.layout.left_text_rect.width as f64,
@@ -646,6 +694,24 @@ impl EditorElement {
         self.summary =
             rebuild_display_rows(doc, self.config, self.metrics, &self.blocks, &mut self.rows);
         build_strip_layouts(&self.rows, STRIP_TARGET_HEIGHT_PX, &mut self.strips);
+        self.file_header_hits.clear();
+        if show_file_headers {
+            for row in &self.rows {
+                if row.kind != RenderRowKind::FileHeader as u8 {
+                    continue;
+                }
+                let Some(line) = doc.lines.get(row.line_index as usize) else {
+                    continue;
+                };
+                if let Some(meta) = doc.file_meta(line) {
+                    self.file_header_hits.push(FileHeaderHit {
+                        y_px: row.y_px,
+                        h_px: row.h_px,
+                        path: meta.path.clone(),
+                    });
+                }
+            }
+        }
     }
 
     fn rebuild_navigation_positions(&self, state: &mut EditorState) {
@@ -734,7 +800,12 @@ impl EditorElement {
                     "Binary file. The native viewport only renders text diffs in this phase.",
                 );
             }
-            EditorDocument::Text { path, doc, .. } => {
+            EditorDocument::Text {
+                path,
+                doc,
+                show_file_headers,
+                ..
+            } => {
                 self.sync_theme_cache(theme);
                 scene.clip(self.layout.content_bounds);
 
@@ -748,6 +819,9 @@ impl EditorElement {
                 self.paint_gutter_decorations(scene, theme);
                 self.paint_gutter_text(scene, theme, doc);
                 self.paint_body_text(scene, theme, path, doc);
+                if show_file_headers {
+                    self.paint_sticky_file_header(scene, theme, path, doc);
+                }
 
                 scene.pop_clip();
                 self.paint_scrollbar(scene, theme);
@@ -799,6 +873,102 @@ impl EditorElement {
     fn row_in_viewport(&self, row_rect: &Rect) -> bool {
         row_rect.bottom() >= self.layout.content_bounds.y
             && row_rect.y <= self.layout.content_bounds.bottom()
+    }
+
+    fn paint_sticky_file_header(
+        &mut self,
+        scene: &mut Scene,
+        theme: &Theme,
+        path: &str,
+        doc: &RenderDoc,
+    ) {
+        self.sticky_header_hit = None;
+        let header_h = self.metrics.file_header_height_px as f32;
+        if header_h <= 0.0 {
+            return;
+        }
+        let scroll_top = self.layout.scroll_top_px;
+        let mut active: Option<&DisplayRow> = None;
+        let mut next: Option<&DisplayRow> = None;
+        for row in &self.rows {
+            if row.kind != RenderRowKind::FileHeader as u8 {
+                continue;
+            }
+            if (row.y_px as f32) <= scroll_top {
+                active = Some(row);
+            } else {
+                next = Some(row);
+                break;
+            }
+        }
+        let Some(active_row) = active else {
+            return;
+        };
+        let natural_screen_y = self.layout.content_bounds.y + active_row.y_px as f32 - scroll_top;
+        if natural_screen_y >= self.layout.content_bounds.y {
+            return;
+        }
+        let mut sticky_y = self.layout.content_bounds.y;
+        if let Some(next_row) = next {
+            let next_screen_y = self.layout.content_bounds.y + next_row.y_px as f32 - scroll_top;
+            if next_screen_y < sticky_y + header_h {
+                sticky_y = next_screen_y - header_h;
+            }
+        }
+        let line_index = active_row.line_index as usize;
+        let Some(line) = doc.lines.get(line_index) else {
+            return;
+        };
+        let row_rect = Rect {
+            x: self.layout.content_bounds.x,
+            y: sticky_y,
+            width: self.layout.content_bounds.width,
+            height: header_h,
+        };
+        if let Some(meta) = doc.file_meta(line) {
+            self.sticky_header_hit = Some((row_rect, meta.path.clone()));
+        }
+        let hovered = self
+            .mouse_pos
+            .is_some_and(|(mx, my)| row_rect.contains(mx, my));
+        scene.push_z_index(STICKY_HEADER_Z);
+        let mut ctx = RowPaintCtx {
+            scene,
+            theme,
+            layout: &self.layout,
+            row_rect,
+            text_y_offset: self.layout.text_y_offset,
+            font_size: self.layout.font_size,
+            mono_char_width_px: self.text_metrics.mono_char_width_px,
+            line,
+            doc,
+            path,
+            is_header_hovered: hovered,
+        };
+        let deco = FileHeaderDecoration;
+        deco.paint_background(&mut ctx);
+        deco.paint_content(&mut ctx);
+        scene.pop_z_index();
+    }
+
+    pub fn file_header_path_at(&self, x: f32, y: f32) -> Option<String> {
+        if let Some((rect, path)) = self.sticky_header_hit.as_ref()
+            && rect.contains(x, y)
+        {
+            return Some(path.clone());
+        }
+        if !self.layout.content_bounds.contains(x, y) {
+            return None;
+        }
+        let content_y = (y - self.layout.content_bounds.y).max(0.0) + self.layout.scroll_top_px;
+        for hit in &self.file_header_hits {
+            let top = hit.y_px as f32;
+            let bottom = top + hit.h_px as f32;
+            if content_y >= top && content_y < bottom {
+                return Some(hit.path.clone());
+            }
+        }
+        None
     }
 
     fn paint_gutter_backgrounds(&self, scene: &mut Scene, theme: &Theme) {
@@ -866,6 +1036,8 @@ impl EditorElement {
                     });
                 }
             } else if let Some(deco) = decoration_for_kind(kind) {
+                let is_header_hovered = kind == RenderRowKind::FileHeader
+                    && self.mouse_pos.is_some_and(|(mx, my)| rr.contains(mx, my));
                 let mut ctx = RowPaintCtx {
                     scene,
                     theme,
@@ -873,9 +1045,11 @@ impl EditorElement {
                     row_rect: rr,
                     text_y_offset,
                     font_size,
+                    mono_char_width_px: self.text_metrics.mono_char_width_px,
                     line,
                     doc,
                     path,
+                    is_header_hovered,
                 };
                 deco.paint_background(&mut ctx);
             } else {
@@ -1660,6 +1834,8 @@ impl EditorElement {
 
             let kind = line.row_kind();
             if let Some(deco) = decoration_for_kind(kind) {
+                let is_header_hovered = kind == RenderRowKind::FileHeader
+                    && self.mouse_pos.is_some_and(|(mx, my)| rr.contains(mx, my));
                 let mut ctx = RowPaintCtx {
                     scene,
                     theme,
@@ -1667,9 +1843,11 @@ impl EditorElement {
                     row_rect: rr,
                     text_y_offset: ty,
                     font_size,
+                    mono_char_width_px: self.text_metrics.mono_char_width_px,
                     line: &line,
                     doc,
                     path,
+                    is_header_hovered,
                 };
                 deco.paint_content(&mut ctx);
                 if kind == RenderRowKind::HunkSeparator
@@ -2099,8 +2277,23 @@ impl RowTone {
     }
 }
 
-fn compute_scrollbar_layout(layout: &EditorLayout, state: &EditorState) -> Option<ScrollbarLayout> {
-    if state.content_height_px <= state.viewport_height_px || state.viewport_height_px == 0 {
+fn compute_scrollbar_layout(
+    layout: &EditorLayout,
+    state: &EditorState,
+    override_metrics: Option<ScrollbarOverride>,
+) -> Option<ScrollbarLayout> {
+    if state.viewport_height_px == 0 {
+        return None;
+    }
+    let (content_height_px, scroll_top_px, max_scroll_top_px) = match override_metrics {
+        Some(o) => (o.total_height_px, o.scroll_top_px, o.max_scroll_top_px),
+        None => (
+            state.content_height_px,
+            state.scroll_top_px,
+            state.max_scroll_top_px(),
+        ),
+    };
+    if content_height_px <= state.viewport_height_px {
         return None;
     }
     let s = layout.font_size / BASE_MONO_FONT_SIZE;
@@ -2113,11 +2306,11 @@ fn compute_scrollbar_layout(layout: &EditorLayout, state: &EditorState) -> Optio
         width: sb_width,
         height: (cb.height - sb_margin * 2.0).max(0.0),
     };
-    let ratio = state.viewport_height_px as f32 / state.content_height_px as f32;
+    let ratio = state.viewport_height_px as f32 / content_height_px as f32;
     let thumb_min = scaled(BASE_SCROLLBAR_THUMB_MIN, s);
     let thumb_height = (track.height * ratio).max(thumb_min).min(track.height);
-    let scroll_range = state.max_scroll_top_px().max(1) as f32;
-    let top_ratio = state.scroll_top_px as f32 / scroll_range;
+    let scroll_range = max_scroll_top_px.max(1) as f32;
+    let top_ratio = (scroll_top_px as f32 / scroll_range).clamp(0.0, 1.0);
     let thumb_y = track.y + (track.height - thumb_height) * top_ratio;
     Some(ScrollbarLayout {
         track,
@@ -2605,6 +2798,7 @@ mod tests {
     #[test]
     fn rich_text_builder_returns_spans_for_requested_segment() {
         let doc = RenderDoc {
+            file_metadata: Vec::new(),
             text_bytes: b"keyword value".to_vec(),
             style_runs: vec![crate::ui::editor::render_doc::StyleRun {
                 byte_start: 0,
@@ -2647,6 +2841,7 @@ mod tests {
     #[test]
     fn rich_text_builder_expands_tabs_across_wrapped_segments() {
         let doc = RenderDoc {
+            file_metadata: Vec::new(),
             text_bytes: b"\tabc".to_vec(),
             style_runs: vec![crate::ui::editor::render_doc::StyleRun {
                 byte_start: 0,
@@ -2745,6 +2940,7 @@ mod tests {
             ..EditorState::default()
         };
         let doc = RenderDoc {
+            file_metadata: Vec::new(),
             text_bytes: b"demo.txt@@ -1 +1 @@line".to_vec(),
             style_runs: Vec::new(),
             lines: vec![
@@ -2779,6 +2975,7 @@ mod tests {
                 file_index: 0,
                 path: "demo.txt",
                 doc: &doc,
+                show_file_headers: false,
             },
             Rect {
                 x: 0.0,
@@ -2829,6 +3026,7 @@ mod tests {
             ..EditorState::default()
         };
         let doc = RenderDoc {
+            file_metadata: Vec::new(),
             text_bytes: b"@@ hdr @@".to_vec(),
             style_runs: Vec::new(),
             lines: vec![RenderLine {
@@ -2857,6 +3055,7 @@ mod tests {
             file_index: 0,
             path: "demo.txt",
             doc: &doc,
+            show_file_headers: false,
         };
         runtime.prepare(
             &mut state,
@@ -2890,6 +3089,7 @@ mod tests {
             ..EditorState::default()
         };
         let doc = RenderDoc {
+            file_metadata: Vec::new(),
             text_bytes: b"@@ hdr @@".to_vec(),
             style_runs: Vec::new(),
             lines: vec![RenderLine {
@@ -2906,6 +3106,7 @@ mod tests {
             file_index: 0,
             path: "demo.txt",
             doc: &doc,
+            show_file_headers: false,
         };
         runtime.prepare(
             &mut state,

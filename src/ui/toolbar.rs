@@ -32,12 +32,17 @@ pub(crate) fn main_surface(
         .as_ref()
         .is_some_and(|p| state.clock_ms >= p.reveal_at_ms);
 
+    let continuous_scroll = state.settings.continuous_scroll;
     let toolbar = if !progress_visible && state.is_workspace_ready() {
-        state
-            .workspace
-            .selected_file_path
-            .get(&state.store)
-            .map(|file_label| viewport_toolbar(state, theme, &file_label))
+        if continuous_scroll {
+            Some(viewport_toolbar(state, theme, None))
+        } else {
+            state
+                .workspace
+                .selected_file_path
+                .get(&state.store)
+                .map(|file_label| viewport_toolbar(state, theme, Some(&file_label)))
+        }
     } else {
         None
     };
@@ -54,10 +59,11 @@ pub(crate) fn main_surface(
     let vb = viewport_bounds.clone();
     let viewport_canvas = if !progress_visible
         && state.is_workspace_ready()
-        && state
+        && (state
             .workspace
             .active_file
             .with(&state.store, |af| af.is_some())
+            || (continuous_scroll && state.workspace_file_count() > 0))
     {
         Some(
             canvas(move |bounds, _scene, _cx| {
@@ -82,6 +88,7 @@ pub(crate) fn main_surface(
             // the reveal delay hasn't elapsed — preserve the current view
             // instead of showing a placeholder.
             WorkspaceMode::Loading => None,
+            WorkspaceMode::Ready if continuous_scroll && state.workspace_file_count() > 0 => None,
             WorkspaceMode::Ready
                 if state
                     .workspace
@@ -118,14 +125,16 @@ pub(crate) fn main_surface(
     }
 }
 
-fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyElement {
+fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: Option<&str>) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let cx = &*state.store;
+    let continuous_scroll = state.settings.continuous_scroll;
     let has_active_diff = state
         .workspace
         .active_file
-        .with(&state.store, |af| af.is_some());
+        .with(&state.store, |af| af.is_some())
+        || (continuous_scroll && state.workspace_file_count() > 0);
     let selected_scope = state.workspace.selected_status_scope.get(&state.store);
     let compare_layout = state.compare.layout.get(&state.store);
     let show_stage = matches!(
@@ -140,16 +149,23 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
         Some(crate::core::vcs::git::StatusScope::Staged)
     );
     let show_discard = selected_scope.is_some();
+    let file_label_view = file_label.map(|file_label| {
+        view! { scale,
+            <div class="flex-row items-center flex-1" gap={Sp::SM} min_w={0.0}>
+                {components::file_icon(file_label, Ico::SM)}
+                <div class="flex-1" min_w={0.0}>
+                    <text class="text-sm truncate" color={tc.text_muted}>{file_label}</text>
+                </div>
+            </div>
+        }
+    });
 
     view! { scale,
         <div class="w-full flex-row items-center"
              h={theme.metrics.ui_row_height.round()}
              px={Sp::MD} border_b={tc.border_variant}>
             <div class="flex-row items-center flex-1" gap={Sp::SM} min_w={0.0}>
-                {components::file_icon(file_label, Ico::SM)}
-                <div class="flex-1" min_w={0.0}>
-                    <text class="text-sm truncate" color={tc.text_muted}>{file_label}</text>
-                </div>
+                {?file_label_view}
             </div>
             <div class="flex-row items-center" gap={Sp::SM}>
                 if has_active_diff {
@@ -208,6 +224,7 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                     </Button>
                 }
                 if state.workspace.source.get(&state.store) == WorkspaceSource::Status
+                    && !continuous_scroll
                     && !state.editor.line_selection.with(&state.store, |ls| ls.is_empty())
                     && show_stage
                 {
@@ -219,6 +236,7 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                     </Button>
                 }
                 if state.workspace.source.get(&state.store) == WorkspaceSource::Status
+                    && !continuous_scroll
                     && !state.editor.line_selection.with(&state.store, |ls| ls.is_empty())
                     && show_unstage
                 {
@@ -230,6 +248,7 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                     </Button>
                 }
                 if state.workspace.source.get(&state.store) == WorkspaceSource::Status
+                    && !continuous_scroll
                     && !state.editor.line_selection.with(&state.store, |ls| ls.is_empty())
                     && show_discard
                 {
@@ -241,6 +260,7 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: &str) -> AnyEle
                     </Button>
                 }
                 if state.workspace.source.get(&state.store) == WorkspaceSource::Status
+                    && !continuous_scroll
                     && !state.editor.line_selection.with(&state.store, |ls| ls.is_empty())
                 {
                     <Button action={crate::actions::RepositoryAction::ClearLineSelection.into()}

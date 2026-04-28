@@ -311,14 +311,26 @@ fn behavior_section(state: &AppState, theme: &Theme) -> AnyElement {
     )
     .into_any();
 
+    let continuous_toggle = toggle(state.settings.continuous_scroll)
+        .on_toggle(crate::actions::SettingsAction::ToggleContinuousScroll.into())
+        .into_any();
+
     section_card(
         theme,
-        vec![setting_row(
-            theme,
-            "Mouse wheel speed",
-            "Lines scrolled per wheel notch.",
-            control,
-        )],
+        vec![
+            setting_row(
+                theme,
+                "Mouse wheel speed",
+                "Lines scrolled per wheel notch.",
+                control,
+            ),
+            setting_row(
+                theme,
+                "Continuous scroll",
+                "Scroll past one file to flow into the next, like GitHub.",
+                continuous_toggle,
+            ),
+        ],
     )
 }
 

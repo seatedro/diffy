@@ -92,6 +92,8 @@ impl VisibleRange {
 pub struct ScrollbarLayout {
     pub track: Rect,
     pub thumb: Rect,
+    pub thumb_top: f32,
+    pub thumb_height: f32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -310,8 +312,8 @@ impl EditorElement {
         self.mouse_pos = pos;
     }
 
-    pub fn scrollbar_rect(&self) -> Rect {
-        self.layout.scrollbar.map(|sb| sb.track).unwrap_or_default()
+    pub fn scrollbar_layout(&self) -> Option<ScrollbarLayout> {
+        self.layout.scrollbar
     }
 
     pub fn scroll_line_height_px(&self) -> f32 {
@@ -2314,6 +2316,8 @@ fn compute_scrollbar_layout(
     let thumb_y = track.y + (track.height - thumb_height) * top_ratio;
     Some(ScrollbarLayout {
         track,
+        thumb_top: thumb_y,
+        thumb_height,
         thumb: Rect {
             x: track.x + 1.0,
             y: thumb_y + 1.0,

@@ -80,6 +80,8 @@ impl AppState {
                         .line_selection
                         .update(&self.store, |ls| ls.clear());
                     self.sync_global_scroll_from_editor();
+                } else {
+                    self.end_viewport_scrollbar_drag();
                 }
                 self.persist_settings_effect()
             }

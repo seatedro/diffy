@@ -30,8 +30,7 @@ pub fn position_traffic_lights(window: &Window, left_margin: f32, target_center_
     unsafe {
         let ns_view: *mut objc2::runtime::AnyObject = handle.ns_view.as_ptr().cast();
         let ns_view: &objc2::runtime::AnyObject = &*ns_view;
-        let ns_window: Option<Retained<NSWindow>> =
-            objc2::msg_send![ns_view, window];
+        let ns_window: Option<Retained<NSWindow>> = objc2::msg_send![ns_view, window];
         let Some(ns_window) = ns_window else {
             return;
         };

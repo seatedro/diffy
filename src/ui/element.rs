@@ -155,7 +155,13 @@ impl DragHandler for ScrollbarDragHandler {
     }
 
     fn on_release(&mut self, _state: &crate::ui::state::AppState) -> DragReleaseResult {
-        DragReleaseResult::empty()
+        match &self.action_builder {
+            ScrollActionBuilder::ViewportGlobal => DragReleaseResult {
+                actions: vec![crate::actions::EditorAction::EndViewportScrollbarDrag.into()],
+                effects: Vec::new(),
+            },
+            _ => DragReleaseResult::empty(),
+        }
     }
 }
 

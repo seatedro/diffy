@@ -346,10 +346,11 @@ pub fn build_ui_frame(
                 editor.set_hunk_expand_caps(Vec::new());
             }
             let scrollbar_override = if continuous_scroll {
+                let scrollbar = state.continuous_viewport_scrollbar_metrics();
                 Some(ScrollbarOverride {
-                    total_height_px: state.total_diff_height_px(),
-                    scroll_top_px: state.global_scroll_position_px(),
-                    max_scroll_top_px: state.global_max_scroll_top_px(),
+                    total_height_px: scrollbar.content_height_px,
+                    scroll_top_px: scrollbar.scroll_top_px,
+                    max_scroll_top_px: scrollbar.max_scroll_top_px,
                 })
             } else {
                 None
@@ -394,10 +395,11 @@ pub fn build_ui_frame(
                         .global_scroll_position_px()
                         .saturating_sub(doc.start_offset_px);
                 }
+                let scrollbar = state.continuous_viewport_scrollbar_metrics();
                 editor.set_scrollbar_override(Some(ScrollbarOverride {
-                    total_height_px: state.total_diff_height_px(),
-                    scroll_top_px: state.global_scroll_position_px(),
-                    max_scroll_top_px: state.global_max_scroll_top_px(),
+                    total_height_px: scrollbar.content_height_px,
+                    scroll_top_px: scrollbar.scroll_top_px,
+                    max_scroll_top_px: scrollbar.max_scroll_top_px,
                 }));
                 {
                     let document = editor_document_for(
@@ -638,42 +640,35 @@ pub fn build_ui_frame(
                 }
             }
 
-            let viewport_h = state.editor.viewport_height_px.get(&state.store);
             let continuous_scroll = state.settings.continuous_scroll;
-            let (content_h, scroll_top, max_scroll, action_builder) = if continuous_scroll {
-                let total = state.total_diff_height_px();
-                let pos = state.global_scroll_position_px();
-                let max = state.global_max_scroll_top_px();
-                (total, pos, max, ScrollActionBuilder::ViewportGlobal)
+            let (content_h, viewport_h, action_builder) = if continuous_scroll {
+                let scrollbar = state.continuous_viewport_scrollbar_metrics();
+                (
+                    scrollbar.content_height_px,
+                    scrollbar.viewport_height_px,
+                    ScrollActionBuilder::ViewportGlobal,
+                )
             } else {
                 (
                     state.editor.content_height_px.get(&state.store),
-                    state.editor.scroll_top_px.get(&state.store),
-                    state.editor_max_scroll_top_px(),
+                    state.editor.viewport_height_px.get(&state.store),
                     ScrollActionBuilder::ViewportLines,
                 )
             };
-            if content_h > viewport_h && viewport_h > 0 {
-                let sb = editor.scrollbar_rect();
-                let ratio = viewport_h as f32 / content_h as f32;
-                let thumb_h = (sb.height * ratio).max(Sp::XXL * ui_scale).min(sb.height);
-                let scroll_range = max_scroll.max(1) as f32;
-                let top_ratio = (scroll_top as f32 / scroll_range).clamp(0.0, 1.0);
-                let thumb_y = sb.y + (sb.height - thumb_h) * top_ratio;
+            if content_h > viewport_h
+                && viewport_h > 0
+                && let Some(sb) = editor.scrollbar_layout()
+            {
                 scrollbar_tracks.push(ScrollbarTrack {
                     track_rect: Rect {
-                        x: sb.x - Rad::LG * ui_scale,
-                        y: sb.y,
-                        width: sb.width + Sp::MD * ui_scale,
-                        height: sb.height,
+                        x: sb.track.x - Rad::LG * ui_scale,
+                        y: sb.track.y,
+                        width: sb.track.width + Sp::MD * ui_scale,
+                        height: sb.track.height,
                     },
-                    thumb_top: thumb_y,
-                    thumb_height: thumb_h,
-                    content_height: if continuous_scroll {
-                        viewport_h.saturating_add(max_scroll) as f32
-                    } else {
-                        content_h as f32
-                    },
+                    thumb_top: sb.thumb_top,
+                    thumb_height: sb.thumb_height,
+                    content_height: content_h as f32,
                     viewport_height: viewport_h as f32,
                     action_builder,
                 });

@@ -634,6 +634,20 @@ pub struct SidebarWidthCache {
     pub intrinsic_width_px: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewportScrollbarMetrics {
+    pub content_height_px: u32,
+    pub viewport_height_px: u32,
+    pub scroll_top_px: u32,
+    pub max_scroll_top_px: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewportScrollbarDragState {
+    pub metrics: ViewportScrollbarMetrics,
+    pub file_heights_px: Vec<u32>,
+}
+
 #[derive(Debug, Clone, Default, Store)]
 pub struct WorkspaceState {
     pub source: WorkspaceSource,
@@ -665,6 +679,7 @@ pub struct WorkspaceState {
     pub file_scroll_total_height_px: u32,
     pub global_scroll_top_px: u32,
     pub measured_px_per_row_q16: u32,
+    pub viewport_scrollbar_drag: Option<ViewportScrollbarDragState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -5843,6 +5858,69 @@ impl AppState {
         }
     }
 
+    fn select_viewport_file_during_scroll(&mut self, index: usize) {
+        match self.workspace.source.get(&self.store) {
+            WorkspaceSource::Compare => {
+                let Some(path) = self.workspace.files.with(&self.store, |files| {
+                    files.get(index).map(|entry| entry.path.clone())
+                }) else {
+                    return;
+                };
+                self.workspace
+                    .selected_file_index
+                    .set(&self.store, Some(index));
+                self.workspace
+                    .selected_file_path
+                    .set(&self.store, Some(path));
+                self.workspace.selected_status_scope.set(&self.store, None);
+                self.file_list.hovered_index.set(&self.store, Some(index));
+            }
+            WorkspaceSource::Status => {
+                let Some(item) = self
+                    .workspace
+                    .status_items
+                    .with(&self.store, |items| items.get(index).cloned())
+                else {
+                    return;
+                };
+                self.workspace
+                    .selected_file_index
+                    .set(&self.store, Some(index));
+                self.workspace
+                    .selected_file_path
+                    .set(&self.store, Some(item.path));
+                self.workspace
+                    .selected_status_scope
+                    .set(&self.store, Some(item.scope));
+                self.file_list.hovered_index.set(&self.store, Some(index));
+            }
+            WorkspaceSource::None => {}
+        }
+    }
+
+    fn active_file_matches_workspace_file(&self, index: usize) -> bool {
+        let Some(path) = self.workspace_file_path_at(index) else {
+            return false;
+        };
+        let source = self.workspace.source.get(&self.store);
+        let selected_scope = self.workspace.selected_status_scope.get(&self.store);
+        self.workspace.active_file.with(&self.store, |active| {
+            active.as_ref().is_some_and(|active| {
+                if active.index != index || active.path != path {
+                    return false;
+                }
+                match source {
+                    WorkspaceSource::Status => selected_scope.is_some_and(|scope| {
+                        let (left_ref, right_ref) = refs_for_status_scope(scope);
+                        active.left_ref == left_ref && active.right_ref == right_ref
+                    }),
+                    WorkspaceSource::Compare => true,
+                    WorkspaceSource::None => false,
+                }
+            })
+        })
+    }
+
     fn select_compare_file(&mut self, index: usize, reveal: bool) -> Vec<Effect> {
         let Some(entry) = self
             .workspace
@@ -6547,12 +6625,18 @@ impl AppState {
         self.workspace
             .file_scroll_total_height_px
             .set(&self.store, 0);
+        self.workspace
+            .viewport_scrollbar_drag
+            .set(&self.store, None);
     }
 
     fn reset_file_scroll_layout(&mut self) {
         self.workspace
             .file_content_heights
             .set(&self.store, Vec::new());
+        self.workspace
+            .viewport_scrollbar_drag
+            .set(&self.store, None);
         self.recompute_file_scroll_total_height_px();
     }
 
@@ -6578,6 +6662,15 @@ impl AppState {
     pub fn update_file_content_height_px(&mut self, index: usize, height: u32) -> bool {
         let count = self.workspace_file_count();
         if index >= count || height == 0 {
+            return false;
+        }
+        if self.settings.continuous_scroll
+            && self
+                .workspace
+                .viewport_scrollbar_drag
+                .get(&self.store)
+                .is_some()
+        {
             return false;
         }
 
@@ -6667,6 +6760,20 @@ impl AppState {
             .unwrap_or_else(|| self.estimated_file_height_px(index))
     }
 
+    fn viewport_file_scroll_height_px(&self, index: usize) -> u32 {
+        if let Some(height) = self
+            .workspace
+            .viewport_scrollbar_drag
+            .with(&self.store, |drag| {
+                drag.as_ref()
+                    .and_then(|drag| drag.file_heights_px.get(index).copied())
+            })
+        {
+            return height;
+        }
+        self.file_scroll_height_px(index)
+    }
+
     pub fn workspace_file_count(&self) -> usize {
         match self.workspace.source.get(&self.store) {
             WorkspaceSource::Compare => self.workspace.files.with(&self.store, |f| f.len()),
@@ -6743,6 +6850,15 @@ impl AppState {
     }
 
     pub fn total_diff_height_px(&self) -> u32 {
+        if let Some(total) = self
+            .workspace
+            .viewport_scrollbar_drag
+            .with(&self.store, |drag| {
+                drag.as_ref().map(|drag| drag.metrics.content_height_px)
+            })
+        {
+            return total;
+        }
         let cached = self.workspace.file_scroll_total_height_px.get(&self.store);
         if cached > 0 || self.workspace_file_count() == 0 {
             return cached;
@@ -6758,12 +6874,21 @@ impl AppState {
     pub fn file_start_offset_px(&self, index: usize) -> u32 {
         let mut total: u32 = 0;
         for slot in 0..index.min(self.workspace_file_count()) {
-            total = total.saturating_add(self.file_scroll_height_px(slot));
+            total = total.saturating_add(self.viewport_file_scroll_height_px(slot));
         }
         total
     }
 
     pub fn global_max_scroll_top_px(&self) -> u32 {
+        if let Some(max) = self
+            .workspace
+            .viewport_scrollbar_drag
+            .with(&self.store, |drag| {
+                drag.as_ref().map(|drag| drag.metrics.max_scroll_top_px)
+            })
+        {
+            return max;
+        }
         let viewport = self.editor.viewport_height_px.get(&self.store);
         self.total_diff_height_px().saturating_sub(viewport.max(1))
     }
@@ -6783,7 +6908,7 @@ impl AppState {
         }
         let mut prior: u32 = 0;
         for index in 0..count {
-            let height = self.file_scroll_height_px(index).max(1);
+            let height = self.viewport_file_scroll_height_px(index).max(1);
             let next_prior = prior.saturating_add(height);
             if target_px < next_prior || index + 1 == count {
                 return Some((index, target_px.saturating_sub(prior)));
@@ -6802,9 +6927,25 @@ impl AppState {
         self.workspace
             .global_scroll_top_px
             .set(&self.store, target_px);
+        self.workspace
+            .viewport_scrollbar_drag
+            .update(&self.store, |drag| {
+                if let Some(drag) = drag.as_mut() {
+                    drag.metrics.scroll_top_px = target_px.min(drag.metrics.max_scroll_top_px);
+                }
+            });
 
+        let dragging_scrollbar = self
+            .workspace
+            .viewport_scrollbar_drag
+            .with(&self.store, |drag| drag.is_some());
         let current_index = self.workspace.selected_file_index.get(&self.store);
-        let mut effects = if current_index == Some(target_index) {
+        let mut effects = if dragging_scrollbar {
+            if current_index != Some(target_index) {
+                self.select_viewport_file_during_scroll(target_index);
+            }
+            Vec::new()
+        } else if self.active_file_matches_workspace_file(target_index) {
             Vec::new()
         } else {
             self.select_file_inner(target_index, true)
@@ -6814,12 +6955,65 @@ impl AppState {
         self.editor
             .scroll_top_px
             .set(&self.store, local_offset.min(local_max));
-        effects.extend(self.request_active_file_syntax_effect());
+        if !dragging_scrollbar {
+            effects.extend(self.request_active_file_syntax_effect());
+        }
         effects
     }
 
     pub fn global_scroll_position_px(&self) -> u32 {
         self.workspace.global_scroll_top_px.get(&self.store)
+    }
+
+    pub fn continuous_viewport_scrollbar_metrics(&self) -> ViewportScrollbarMetrics {
+        if let Some(metrics) = self
+            .workspace
+            .viewport_scrollbar_drag
+            .with(&self.store, |drag| drag.as_ref().map(|drag| drag.metrics))
+        {
+            return metrics;
+        }
+        let content_height_px = self.total_diff_height_px();
+        let viewport_height_px = self.editor.viewport_height_px.get(&self.store);
+        ViewportScrollbarMetrics {
+            content_height_px,
+            viewport_height_px,
+            scroll_top_px: self.global_scroll_position_px(),
+            max_scroll_top_px: content_height_px.saturating_sub(viewport_height_px.max(1)),
+        }
+    }
+
+    pub fn begin_viewport_scrollbar_drag(
+        &mut self,
+        content_height_px: u32,
+        viewport_height_px: u32,
+        scroll_top_px: u32,
+        max_scroll_top_px: u32,
+    ) {
+        if !self.settings.continuous_scroll {
+            return;
+        }
+        let file_heights_px = (0..self.workspace_file_count())
+            .map(|index| self.file_scroll_height_px(index).max(1))
+            .collect();
+        self.workspace.viewport_scrollbar_drag.set(
+            &self.store,
+            Some(ViewportScrollbarDragState {
+                metrics: ViewportScrollbarMetrics {
+                    content_height_px,
+                    viewport_height_px,
+                    scroll_top_px: scroll_top_px.min(max_scroll_top_px),
+                    max_scroll_top_px,
+                },
+                file_heights_px,
+            }),
+        );
+    }
+
+    pub fn end_viewport_scrollbar_drag(&mut self) {
+        self.workspace
+            .viewport_scrollbar_drag
+            .set(&self.store, None);
     }
 
     pub fn sync_editor_scroll_from_global(&mut self) -> Vec<Effect> {
@@ -6832,7 +7026,17 @@ impl AppState {
             self.workspace.global_scroll_top_px.set(&self.store, 0);
             return Vec::new();
         };
-        let effects = if self.workspace.selected_file_index.get(&self.store) == Some(target_index) {
+        let dragging_scrollbar = self
+            .workspace
+            .viewport_scrollbar_drag
+            .with(&self.store, |drag| drag.is_some());
+        let current_index = self.workspace.selected_file_index.get(&self.store);
+        let effects = if dragging_scrollbar {
+            if current_index != Some(target_index) {
+                self.select_viewport_file_during_scroll(target_index);
+            }
+            Vec::new()
+        } else if self.active_file_matches_workspace_file(target_index) {
             Vec::new()
         } else {
             self.select_file_inner(target_index, true)
@@ -6930,7 +7134,8 @@ impl AppState {
             };
             effects.extend(self.request_viewport_slot_syntax_effect(&slot_key));
             slot_keys.push(slot_key);
-            accumulated = accumulated.saturating_add(self.file_scroll_height_px(index).max(1));
+            accumulated =
+                accumulated.saturating_add(self.viewport_file_scroll_height_px(index).max(1));
             index += 1;
         }
 

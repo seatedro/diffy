@@ -34,11 +34,27 @@ impl InputSystem {
             let on_thumb = y >= track.thumb_top && y <= track.thumb_top + track.thumb_height;
             let mut handler = crate::ui::element::ScrollbarDragHandler::new(track, y);
             let mut outcome = InputOutcome::default();
+            if matches!(
+                track.action_builder,
+                crate::ui::element::ScrollActionBuilder::ViewportGlobal
+            ) {
+                let content_height_px = track.content_height.max(0.0).round() as u32;
+                let viewport_height_px = track.viewport_height.max(0.0).round() as u32;
+                outcome.actions.push(
+                    EditorAction::BeginViewportScrollbarDrag {
+                        content_height_px,
+                        viewport_height_px,
+                        scroll_top_px: state.global_scroll_position_px(),
+                        max_scroll_top_px: content_height_px.saturating_sub(viewport_height_px),
+                    }
+                    .into(),
+                );
+            }
             if !on_thumb {
-                outcome.actions = handler.on_move(x, y);
-                outcome.dirty = !outcome.actions.is_empty();
+                outcome.actions.extend(handler.on_move(x, y));
             }
             self.pointer_capture = Some(Box::new(handler));
+            outcome.dirty = !outcome.actions.is_empty();
             return outcome;
         }
 

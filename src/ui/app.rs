@@ -481,7 +481,7 @@ fn configure_chrome(attrs: WindowAttributes) -> WindowAttributes {
         .with_titlebar_transparent(true)
         .with_fullsize_content_view(true)
         .with_title_hidden(true)
-        .with_movable_by_window_background(true)
+        .with_movable_by_window_background(false)
 }
 
 #[cfg(not(target_os = "macos"))]

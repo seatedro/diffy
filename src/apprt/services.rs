@@ -9,7 +9,7 @@ use crate::apprt::ProgressReporter;
 use crate::apprt::runtime::RuntimeEventSender;
 use crate::core::compare::backends::{DifftasticBackend, GitDiffBackend};
 use crate::core::compare::{
-    CompareOutput, ComparePhase, CompareService, ProgressSink, RendererKind,
+    CompareMode, CompareOutput, ComparePhase, CompareService, ProgressSink, RendererKind,
 };
 use crate::core::error::{DiffyError, Result};
 use crate::core::http;
@@ -92,11 +92,19 @@ impl AppServices {
             request.spec.mode,
         )?;
 
+        let mut backend_spec = request.spec.clone();
+        backend_spec.left_ref = resolved_left.clone();
+        backend_spec.right_ref = resolved_right.clone();
+        // The backend only needs the concrete endpoints. Keep the user's
+        // original spec for the finished payload, but avoid resolving the same
+        // three-dot merge-base a second time before progress can advance.
+        backend_spec.mode = CompareMode::TwoDot;
+
         // Phase labels are now driven from inside the backend (see
         // `EnumeratingChanges` + per-file `LoadingFiles`), so we just pass
         // the reporter through and let it speak for itself.
         let output = CompareService::default().compare(
-            &request.spec,
+            &backend_spec,
             &git,
             reporter.map(|r| r as &dyn ProgressSink),
         )?;

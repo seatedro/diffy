@@ -22,11 +22,7 @@ pub(crate) fn window_chrome(
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let bar_h = theme.metrics.title_bar_height;
-    let drag_action: Action = if ON_MACOS {
-        Action::Noop
-    } else {
-        WindowAction::BeginDrag.into()
-    };
+    let drag_action: Action = WindowAction::BeginDrag.into();
 
     let has_repo = state.compare.repo_path.with(&state.store, |p| p.is_some());
     let is_ready = state.is_workspace_ready();
@@ -277,11 +273,7 @@ fn window_controls(is_maximized: bool, tc: &ThemeColors, scale: f32) -> AnyEleme
     } else {
         lucide::MAXIMIZE
     };
-    let max_tip = if is_maximized {
-        "Restore"
-    } else {
-        "Maximize"
-    };
+    let max_tip = if is_maximized { "Restore" } else { "Maximize" };
     view! { scale,
         <div class="flex-row items-center" h_full>
             {control_button(lucide::MINUS, WindowAction::Minimize.into(), "Minimize", tc.ghost_element_hover, tc, scale)}

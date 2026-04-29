@@ -116,6 +116,13 @@ pub enum EditorAction {
     ScrollViewportPages(i32),
     ScrollViewportTo(u32),
     ScrollViewportToGlobal(u32),
+    BeginViewportScrollbarDrag {
+        content_height_px: u32,
+        viewport_height_px: u32,
+        scroll_top_px: u32,
+        max_scroll_top_px: u32,
+    },
+    EndViewportScrollbarDrag,
     HoverViewportRow(Option<usize>),
     GoToNextHunk,
     GoToPreviousHunk,

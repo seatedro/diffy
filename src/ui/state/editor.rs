@@ -34,6 +34,26 @@ impl AppState {
                     .collect()
             }
             ScrollViewportToGlobal(px) => self.scroll_viewport_to_global(px),
+            BeginViewportScrollbarDrag {
+                content_height_px,
+                viewport_height_px,
+                scroll_top_px,
+                max_scroll_top_px,
+            } => {
+                self.begin_viewport_scrollbar_drag(
+                    content_height_px,
+                    viewport_height_px,
+                    scroll_top_px,
+                    max_scroll_top_px,
+                );
+                Vec::new()
+            }
+            EndViewportScrollbarDrag => {
+                self.end_viewport_scrollbar_drag();
+                let mut effects = self.sync_editor_scroll_from_global();
+                effects.extend(self.request_active_file_syntax_effect());
+                effects
+            }
             ScrollViewportHalfPage(dir) => {
                 let mut effects = self.scroll_viewport_half_page(dir);
                 effects.extend(self.request_active_file_syntax_effect());

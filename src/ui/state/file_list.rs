@@ -27,16 +27,22 @@ impl AppState {
             SelectPreviousFile => self.shift_loaded_file(-1),
             ScrollFileList(delta) => {
                 self.file_list_scroll_rows(delta, self.sidebar_row_count());
-                Vec::new()
+                self.start_compare_stats_hydration_if_idle()
+                    .into_iter()
+                    .collect()
             }
             ScrollFileListPx(delta_px) => {
                 self.file_list_scroll_px(delta_px as f32, self.sidebar_row_count());
-                Vec::new()
+                self.start_compare_stats_hydration_if_idle()
+                    .into_iter()
+                    .collect()
             }
             ScrollFileListToPx(px) => {
                 self.file_list.scroll_offset_px.set(&self.store, px as f32);
                 self.file_list_clamp_scroll(self.sidebar_row_count());
-                Vec::new()
+                self.start_compare_stats_hydration_if_idle()
+                    .into_iter()
+                    .collect()
             }
             HoverFile(index) => {
                 use crate::ui::animation::AnimationKey;
@@ -88,7 +94,9 @@ impl AppState {
                 } else {
                     self.file_list.scroll_offset_px.set(&self.store, 0.0);
                 }
-                Vec::new()
+                self.start_compare_stats_hydration_if_idle()
+                    .into_iter()
+                    .collect()
             }
             ClearSidebarFilter => {
                 self.file_list.filter.update(&self.store, |s| s.clear());
@@ -99,7 +107,9 @@ impl AppState {
                 } else {
                     self.file_list.scroll_offset_px.set(&self.store, 0.0);
                 }
-                Vec::new()
+                self.start_compare_stats_hydration_if_idle()
+                    .into_iter()
+                    .collect()
             }
             ToggleSidebar => {
                 self.store.update(self.sidebar_visible, |v| *v = !*v);
@@ -112,7 +122,9 @@ impl AppState {
                 };
                 self.file_list.mode.set(&self.store, next);
                 self.file_list.scroll_offset_px.set(&self.store, 0.0);
-                Vec::new()
+                self.start_compare_stats_hydration_if_idle()
+                    .into_iter()
+                    .collect()
             }
             ExpandAllFolders => {
                 let paths = self.workspace.files.with(&self.store, |files| {

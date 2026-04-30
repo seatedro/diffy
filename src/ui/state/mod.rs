@@ -65,6 +65,8 @@ const TOAST_ANIM_MS: u64 = 150;
 const CURSOR_BLINK_INTERVAL_MS: u64 = 530;
 const LARGE_COMPARE_FILE_LINES: i32 = 1_500;
 const COMPARE_STATS_CHUNK_SIZE: usize = 64;
+const COMPARE_STATS_VISIBLE_ONLY_FILE_LIMIT: usize = 10_000;
+const COMPARE_STATS_VISIBLE_OVERSCAN_ROWS: usize = 32;
 const SYNTAX_INITIAL_ROWS: usize = 200;
 const SYNTAX_OVERSCAN_ROWS: usize = 160;
 
@@ -3275,8 +3277,34 @@ impl AppState {
 
     fn next_compare_stats_hydration_effect(&self) -> Option<Effect> {
         let repo_path = self.compare.repo_path.get(&self.store)?;
-        let files = self
+        let visible_only = self
             .workspace
+            .compare_output
+            .with(&self.store, |maybe_output| {
+                maybe_output.as_ref().is_some_and(|output| {
+                    output.carbon.files.len() > COMPARE_STATS_VISIBLE_ONLY_FILE_LIMIT
+                })
+            });
+        let files = if visible_only {
+            self.visible_compare_stats_hydration_items()
+        } else {
+            self.next_deferred_compare_stats_items()
+        };
+        if files.is_empty() {
+            return None;
+        }
+
+        Some(
+            CompareEffect::LoadFileStats(Task {
+                generation: self.workspace.compare_generation.get(&self.store),
+                request: CompareFileStatsRequest { repo_path, files },
+            })
+            .into(),
+        )
+    }
+
+    fn next_deferred_compare_stats_items(&self) -> Vec<CompareFileStatsItem> {
+        self.workspace
             .compare_output
             .with(&self.store, |maybe_output| {
                 maybe_output
@@ -3293,21 +3321,54 @@ impl AppState {
                                 index,
                                 file: file.clone(),
                             })
-                            .collect::<Vec<_>>()
+                            .collect()
                     })
                     .unwrap_or_default()
-            });
-        if files.is_empty() {
-            return None;
+            })
+    }
+
+    fn visible_compare_stats_hydration_items(&self) -> Vec<CompareFileStatsItem> {
+        if self.workspace.source.get(&self.store) != WorkspaceSource::Compare
+            || self.file_list.tab.get(&self.store) != SidebarTab::Files
+        {
+            return Vec::new();
         }
 
-        Some(
-            CompareEffect::LoadFileStats(Task {
-                generation: self.workspace.compare_generation.get(&self.store),
-                request: CompareFileStatsRequest { repo_path, files },
+        let stride = self.file_list_row_stride();
+        if stride <= 0.0 {
+            return Vec::new();
+        }
+        let scroll_px = self.file_list.scroll_offset_px.get(&self.store);
+        let viewport_px = self.file_list.viewport_height.get(&self.store);
+        let first = (scroll_px / stride).floor().max(0.0) as usize;
+        let visible = (viewport_px / stride).ceil().max(1.0) as usize;
+        let start = first.saturating_sub(COMPARE_STATS_VISIBLE_OVERSCAN_ROWS);
+        let end = first
+            .saturating_add(visible)
+            .saturating_add(COMPARE_STATS_VISIBLE_OVERSCAN_ROWS);
+
+        self.workspace
+            .compare_output
+            .with(&self.store, |maybe_output| {
+                let Some(output) = maybe_output.as_ref() else {
+                    return Vec::new();
+                };
+                let end = end.min(output.carbon.files.len());
+                output
+                    .carbon
+                    .files
+                    .get(start..end)
+                    .unwrap_or(&[])
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, file)| file.stats_deferred)
+                    .take(COMPARE_STATS_CHUNK_SIZE)
+                    .map(|(offset, file)| CompareFileStatsItem {
+                        index: start + offset,
+                        file: file.clone(),
+                    })
+                    .collect()
             })
-            .into(),
-        )
     }
 
     fn apply_compare_file_stats(&mut self, stats: &[CompareFileStat]) {
@@ -3823,7 +3884,7 @@ impl AppState {
     /// Soft-cancel an in-flight compare. Bumps the generation so any
     /// result that eventually arrives is dropped by the guard, clears the
     /// progress panel, and returns the viewport to the default empty state.
-    /// We do not attempt to interrupt the worker mid-flight — git2's
+    /// We do not attempt to interrupt the worker mid-flight — the Git backend
     /// `Diff::new` has no clean cancellation hook, and the wasted work is
     /// bounded by the caller's diff size.
     fn cancel_compare(&mut self) -> Vec<Effect> {

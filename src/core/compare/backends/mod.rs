@@ -17,7 +17,7 @@ const RENAME_DETECTION_LIMIT: usize = 1000;
 #[cfg(feature = "difftastic")]
 pub use difftastic::DifftasticBackend;
 pub use git_diff::GitDiffBackend;
-pub(crate) use git_diff::compare_output_from_diff;
+pub(crate) use git_diff::compare_output_from_raw_patch;
 
 pub trait DiffBackend: Send + Sync {
     fn compare(
@@ -26,13 +26,6 @@ pub trait DiffBackend: Send + Sync {
         git: &GitService,
         reporter: Option<&dyn ProgressSink>,
     ) -> Result<Option<CompareOutput>>;
-}
-
-pub(crate) fn find_similar_bounded(diff: &mut git2::Diff<'_>) -> Result<()> {
-    let mut options = git2::DiffFindOptions::new();
-    options.renames(true).rename_limit(RENAME_DETECTION_LIMIT);
-    diff.find_similar(Some(&mut options))?;
-    Ok(())
 }
 
 #[cfg(not(feature = "difftastic"))]

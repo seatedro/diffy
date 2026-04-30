@@ -1,8 +1,11 @@
-use std::path::Path;
+use gix::bstr::{BStr, ByteSlice};
+use gix::diff::blob::{
+    Algorithm, Diff, InternedInput, UnifiedDiff, diff_with_slider_heuristics,
+    platform::resource::ByteLinesWithoutTerminator,
+    unified_diff::{ConsumeBinaryHunk, ContextSize},
+};
 
-use git2::{Delta, DiffOptions, Oid, Repository};
-
-use crate::core::compare::backends::{DiffBackend, find_similar_bounded};
+use crate::core::compare::backends::{DiffBackend, RENAME_DETECTION_LIMIT};
 use crate::core::compare::progress::{ComparePhase, ProgressSink};
 use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::CompareSpec;
@@ -17,6 +20,8 @@ const LOADING_FILE_EMIT_STRIDE: usize = 16;
 /// tens of thousands of files; parsing every patch before first paint makes the
 /// app feel stuck even though the sidebar could be useful almost immediately.
 const DEFER_HUNKS_FILE_LIMIT: usize = 2_000;
+const DEFERRED_STATS_MAX_WORKERS: usize = 8;
+const DEFERRED_STATS_MIN_FILES_PER_WORKER: usize = 16;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GitDiffBackend;
@@ -27,29 +32,30 @@ impl GitDiffBackend {
         spec: &CompareSpec,
         git: &GitService,
     ) -> Result<Option<(i32, i32)>> {
-        let repo = match git.repo() {
-            Ok(r) => r,
-            Err(_) => return Ok(None),
-        };
         let (left, right) = resolve_compare_refs(spec, git)?;
+        if right != WORKDIR_REF {
+            let mut repo = open_gix_repo(git)?;
+            let changes = collect_gix_changes(&mut repo, &left, &right, None, false)?;
+            let mut additions = 0_u32;
+            let mut deletions = 0_u32;
+            for change in changes {
+                let Some((old_content, new_content)) = gix_change_contents(&repo, &change)? else {
+                    continue;
+                };
+                if is_binary_bytes(&old_content) || is_binary_bytes(&new_content) {
+                    continue;
+                }
+                let stats = gix_line_stats(&old_content, &new_content);
+                additions = additions.saturating_add(stats.0);
+                deletions = deletions.saturating_add(stats.1);
+            }
+            return Ok(Some((
+                u32_to_i32_saturating(additions),
+                u32_to_i32_saturating(deletions),
+            )));
+        }
 
-        let left_commit = repo.find_commit(git2::Oid::from_str(&left)?)?;
-        let left_tree = left_commit.tree()?;
-
-        let mut options = DiffOptions::new();
-        options.context_lines(0);
-        let diff = if right == WORKDIR_REF {
-            repo.diff_tree_to_workdir_with_index(Some(&left_tree), Some(&mut options))?
-        } else {
-            let right_commit = repo.find_commit(git2::Oid::from_str(&right)?)?;
-            let right_tree = right_commit.tree()?;
-            repo.diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(&mut options))?
-        };
-        let stats = diff.stats()?;
-        Ok(Some((
-            usize_to_i32_saturating(stats.insertions()),
-            usize_to_i32_saturating(stats.deletions()),
-        )))
+        Ok(None)
     }
 
     pub fn compare_deferred_file(
@@ -57,10 +63,6 @@ impl GitDiffBackend {
         file: &carbon::FileDiff,
         git: &GitService,
     ) -> Result<Option<CompareOutput>> {
-        let repo = match git.repo() {
-            Ok(r) => r,
-            Err(_) => return Ok(None),
-        };
         if file.is_binary {
             let mut file = file.clone();
             file.is_partial = false;
@@ -73,23 +75,23 @@ impl GitDiffBackend {
             return Ok(None);
         }
 
-        let old_content = load_blob_content(repo, file.old_oid.as_ref())?;
-        let new_content = load_blob_content(repo, file.new_oid.as_ref())?;
-        let old_path = file.old_path.as_deref().map(Path::new);
-        let new_path = file.new_path.as_deref().map(Path::new);
-        let mut options = DiffOptions::new();
-        options.context_lines(3);
-        let mut patch = git2::Patch::from_buffers(
-            &old_content,
-            old_path,
-            &new_content,
-            new_path,
-            Some(&mut options),
-        )?;
-
+        let gix_repo = open_gix_repo(git)?;
+        let old_content = load_gix_blob_content(&gix_repo, file.old_oid.as_ref())?;
+        let new_content = load_gix_blob_content(&gix_repo, file.new_oid.as_ref())?;
+        if is_binary_bytes(&old_content) || is_binary_bytes(&new_content) {
+            let mut file = file.clone();
+            file.is_binary = true;
+            file.status = carbon::FileStatus::Binary;
+            file.is_partial = false;
+            return Ok(Some(CompareOutput {
+                carbon: carbon::DiffDocument { files: vec![file] },
+                ..CompareOutput::default()
+            }));
+        }
+        let raw_diff = raw_patch_from_blob_pair(file, &old_content, &new_content, 3)?;
         let mut output = CompareOutput::default();
-        let (raw_diff, carbon_file) =
-            carbon_file_from_patch(&mut patch, output.carbon.files.len(), Some(file))?;
+        let carbon_file =
+            carbon_file_from_raw_diff(&raw_diff, output.carbon.files.len(), Some(file))?;
         output.raw_diff.push_str(&raw_diff);
         output.carbon.files.push(carbon_file);
         Ok(Some(output))
@@ -101,28 +103,17 @@ impl GitDiffBackend {
         path: &str,
         git: &GitService,
     ) -> Result<Option<CompareOutput>> {
-        let repo = match git.repo() {
-            Ok(r) => r,
-            Err(_) => return Ok(None),
-        };
         let (left, right) = resolve_compare_refs(spec, git)?;
+        if right != WORKDIR_REF {
+            let mut repo = open_gix_repo(git)?;
+            let changes = collect_gix_changes(&mut repo, &left, &right, Some(path), true)?;
+            return Ok(Some(compare_output_from_gix_changes(&repo, changes, None)?));
+        }
 
-        let left_commit = repo.find_commit(git2::Oid::from_str(&left)?)?;
-        let left_tree = left_commit.tree()?;
-
-        let mut options = DiffOptions::new();
-        options.context_lines(3);
-        options.pathspec(path);
-        let mut diff = if right == WORKDIR_REF {
-            repo.diff_tree_to_workdir_with_index(Some(&left_tree), Some(&mut options))?
-        } else {
-            let right_commit = repo.find_commit(git2::Oid::from_str(&right)?)?;
-            let right_tree = right_commit.tree()?;
-            repo.diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(&mut options))?
-        };
-        // Per-file path reloads: no progress UI wired for these yet and
-        // they're expected to be fast (one file), so pass None.
-        Ok(Some(compare_output_from_diff(&mut diff, None)?))
+        let raw = git.diff_two_refs(&left, &right)?;
+        let mut output = compare_output_from_raw_patch(&raw)?;
+        output.carbon.files.retain(|file| file.path() == path);
+        Ok(Some(output))
     }
 
     pub fn deferred_file_line_stats(
@@ -130,35 +121,56 @@ impl GitDiffBackend {
         file: &carbon::FileDiff,
         git: &GitService,
     ) -> Result<Option<(i32, i32)>> {
-        if file.is_binary {
-            return Ok(Some((0, 0)));
-        }
-        let repo = match git.repo() {
-            Ok(r) => r,
-            Err(_) => return Ok(None),
-        };
-        if !can_diff_deferred_file(file) {
-            return Ok(None);
+        let gix_repo = open_gix_repo(git)?;
+        deferred_file_line_stats_with_repo(file, &gix_repo)
+    }
+
+    pub fn deferred_file_line_stats_batch(
+        &self,
+        files: &[&carbon::FileDiff],
+        git: &GitService,
+    ) -> Vec<Option<(i32, i32)>> {
+        if files.is_empty() {
+            return Vec::new();
         }
 
-        let old_content = load_blob_content(repo, file.old_oid.as_ref())?;
-        let new_content = load_blob_content(repo, file.new_oid.as_ref())?;
-        let old_path = file.old_path.as_deref().map(Path::new);
-        let new_path = file.new_path.as_deref().map(Path::new);
-        let mut options = DiffOptions::new();
-        options.context_lines(0);
-        let patch = git2::Patch::from_buffers(
-            &old_content,
-            old_path,
-            &new_content,
-            new_path,
-            Some(&mut options),
-        )?;
-        let (_, additions, deletions) = patch.line_stats()?;
-        Ok(Some((
-            usize_to_i32_saturating(additions),
-            usize_to_i32_saturating(deletions),
-        )))
+        let worker_count = deferred_stats_worker_count(files.len());
+        if worker_count == 1 {
+            let Ok(gix_repo) = open_gix_repo(git) else {
+                return vec![None; files.len()];
+            };
+            return files
+                .iter()
+                .map(|file| {
+                    deferred_file_line_stats_with_repo(file, &gix_repo)
+                        .ok()
+                        .flatten()
+                })
+                .collect();
+        }
+
+        let repo_path = git.repo_path().to_owned();
+        let chunk_size = files.len().div_ceil(worker_count);
+        let mut results = vec![None; files.len()];
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(worker_count);
+            for (chunk_index, chunk) in files.chunks(chunk_size).enumerate() {
+                let repo_path = repo_path.as_str();
+                handles.push(scope.spawn(move || {
+                    let start = chunk_index * chunk_size;
+                    deferred_file_line_stats_chunk(repo_path, start, chunk)
+                }));
+            }
+
+            for handle in handles {
+                for (index, stat) in handle.join().unwrap_or_default() {
+                    if let Some(slot) = results.get_mut(index) {
+                        *slot = stat;
+                    }
+                }
+            }
+        });
+        results
     }
 }
 
@@ -169,34 +181,81 @@ impl DiffBackend for GitDiffBackend {
         git: &GitService,
         reporter: Option<&dyn ProgressSink>,
     ) -> Result<Option<CompareOutput>> {
-        let repo = match git.repo() {
-            Ok(r) => r,
-            Err(_) => return Ok(None),
-        };
         let (left, right) = resolve_compare_refs(spec, git)?;
+        if right != WORKDIR_REF {
+            if let Some(r) = reporter {
+                r.phase(ComparePhase::EnumeratingChanges);
+            }
+            let mut repo = open_gix_repo(git)?;
+            let mut changes = collect_gix_changes(&mut repo, &left, &right, None, false)?;
+            if changes.len() <= DEFER_HUNKS_FILE_LIMIT {
+                changes = collect_gix_changes(&mut repo, &left, &right, None, true)?;
+            }
+            return Ok(Some(compare_output_from_gix_changes(
+                &repo, changes, reporter,
+            )?));
+        }
 
-        // The expensive piece before file enumeration: walking trees and
-        // running rename detection (`find_similar` inside
-        // `compare_output_from_diff`). Announce the phase so the user
-        // stops seeing the generic "Opening repository…" label.
         if let Some(r) = reporter {
             r.phase(ComparePhase::EnumeratingChanges);
         }
 
-        let left_commit = repo.find_commit(git2::Oid::from_str(&left)?)?;
-        let left_tree = left_commit.tree()?;
-
-        let mut options = DiffOptions::new();
-        options.context_lines(3);
-        let mut diff = if right == WORKDIR_REF {
-            repo.diff_tree_to_workdir_with_index(Some(&left_tree), Some(&mut options))?
-        } else {
-            let right_commit = repo.find_commit(git2::Oid::from_str(&right)?)?;
-            let right_tree = right_commit.tree()?;
-            repo.diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(&mut options))?
-        };
-        Ok(Some(compare_output_from_diff(&mut diff, reporter)?))
+        let raw = git.diff_two_refs(&left, &right)?;
+        Ok(Some(compare_output_from_raw_patch(&raw)?))
     }
+}
+
+fn deferred_file_line_stats_with_repo(
+    file: &carbon::FileDiff,
+    gix_repo: &gix::Repository,
+) -> Result<Option<(i32, i32)>> {
+    if file.is_binary {
+        return Ok(Some((0, 0)));
+    }
+    if !can_diff_deferred_file(file) {
+        return Ok(None);
+    }
+
+    let old_content = load_gix_blob_content(gix_repo, file.old_oid.as_ref())?;
+    let new_content = load_gix_blob_content(gix_repo, file.new_oid.as_ref())?;
+    if is_binary_bytes(&old_content) || is_binary_bytes(&new_content) {
+        return Ok(Some((0, 0)));
+    }
+    let (additions, deletions) = gix_line_stats(&old_content, &new_content);
+    Ok(Some((
+        u32_to_i32_saturating(additions),
+        u32_to_i32_saturating(deletions),
+    )))
+}
+
+fn deferred_file_line_stats_chunk(
+    repo_path: &str,
+    start: usize,
+    files: &[&carbon::FileDiff],
+) -> Vec<(usize, Option<(i32, i32)>)> {
+    let Ok(gix_repo) = open_gix_repo_path(repo_path) else {
+        return Vec::new();
+    };
+    files
+        .iter()
+        .enumerate()
+        .map(|(offset, file)| {
+            (
+                start + offset,
+                deferred_file_line_stats_with_repo(file, &gix_repo)
+                    .ok()
+                    .flatten(),
+            )
+        })
+        .collect()
+}
+
+fn deferred_stats_worker_count(file_count: usize) -> usize {
+    let available = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1);
+    let useful = file_count.div_ceil(DEFERRED_STATS_MIN_FILES_PER_WORKER);
+    available.min(DEFERRED_STATS_MAX_WORKERS).min(useful).max(1)
 }
 
 fn resolve_compare_refs(spec: &CompareSpec, git: &GitService) -> Result<(String, String)> {
@@ -218,32 +277,113 @@ fn resolve_compare_refs(spec: &CompareSpec, git: &GitService) -> Result<(String,
     }
 }
 
-pub(crate) fn compare_output_from_diff(
-    diff: &mut git2::Diff<'_>,
+pub(crate) fn compare_output_from_raw_patch(raw_diff: &str) -> Result<CompareOutput> {
+    let mut output = CompareOutput::default();
+    let mut document = carbon::parse_unified_patch(raw_diff)
+        .map_err(|error| DiffyError::Parse(error.to_string()))?;
+    for (index, file) in document.files.iter_mut().enumerate() {
+        file.id = carbon::FileId(usize_to_u32_saturating(index));
+        file.is_partial = false;
+    }
+    output.raw_diff.push_str(raw_diff);
+    output.carbon = document;
+    Ok(output)
+}
+
+type GixChange = gix::object::tree::diff::ChangeDetached;
+
+fn open_gix_repo(git: &GitService) -> Result<gix::Repository> {
+    open_gix_repo_path(git.repo_path())
+}
+
+fn open_gix_repo_path(repo_path: &str) -> Result<gix::Repository> {
+    let mut repo = gix::open(repo_path).map_err(gix_error)?;
+    repo.object_cache_size_if_unset(64 * 1024 * 1024);
+    Ok(repo)
+}
+
+fn gix_error(error: impl std::fmt::Display) -> DiffyError {
+    DiffyError::General(format!("Gitoxide error: {error}"))
+}
+
+fn collect_gix_changes(
+    repo: &mut gix::Repository,
+    left: &str,
+    right: &str,
+    path_filter: Option<&str>,
+    track_rewrites: bool,
+) -> Result<Vec<GixChange>> {
+    let left_tree = gix_tree_for_oid(repo, left)?;
+    let right_tree = gix_tree_for_oid(repo, right)?;
+    let mut options = gix::diff::Options::default();
+    options.track_path();
+    if track_rewrites {
+        options.track_rewrites(Some(gix::diff::Rewrites {
+            limit: RENAME_DETECTION_LIMIT,
+            ..Default::default()
+        }));
+    } else {
+        options.track_rewrites(None);
+    }
+    let mut changes = repo
+        .diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(options))
+        .map_err(gix_error)?;
+    changes.retain(gix_change_is_file);
+    if let Some(path) = path_filter {
+        changes.retain(|change| gix_change_matches_path(change, path));
+    }
+    Ok(changes)
+}
+
+fn gix_tree_for_oid<'repo>(repo: &'repo gix::Repository, oid: &str) -> Result<gix::Tree<'repo>> {
+    let oid = gix_object_id(oid)?;
+    let object = repo.find_object(oid).map_err(gix_error)?;
+    object.peel_to_tree().map_err(gix_error)
+}
+
+fn gix_object_id(oid: &str) -> Result<gix::ObjectId> {
+    gix::ObjectId::from_hex(oid.as_bytes()).map_err(gix_error)
+}
+
+fn gix_change_matches_path(change: &GixChange, path: &str) -> bool {
+    let path = path.as_bytes();
+    change.location().as_bytes() == path || change.source_location().as_bytes() == path
+}
+
+fn gix_change_is_file(change: &GixChange) -> bool {
+    match change {
+        GixChange::Addition { entry_mode, .. } | GixChange::Deletion { entry_mode, .. } => {
+            entry_mode.is_no_tree()
+        }
+        GixChange::Modification {
+            previous_entry_mode,
+            entry_mode,
+            ..
+        } => previous_entry_mode.is_no_tree() && entry_mode.is_no_tree(),
+        GixChange::Rewrite {
+            source_entry_mode,
+            entry_mode,
+            ..
+        } => source_entry_mode.is_no_tree() && entry_mode.is_no_tree(),
+    }
+}
+
+fn compare_output_from_gix_changes(
+    repo: &gix::Repository,
+    changes: Vec<GixChange>,
     reporter: Option<&dyn ProgressSink>,
 ) -> Result<CompareOutput> {
-    // `find_similar` does rename detection — the hottest path after
-    // tree-walk on kernel-scale diffs. The user is still under the
-    // "Enumerating changes…" label until we finish this.
     let mut output = CompareOutput::default();
-    let deltas: Vec<_> = diff.deltas().collect();
-    if deltas.len() > DEFER_HUNKS_FILE_LIMIT {
-        output.carbon.files = deltas
+    if changes.len() > DEFER_HUNKS_FILE_LIMIT {
+        output.carbon.files = changes
             .iter()
             .enumerate()
-            .map(|(index, delta)| carbon_summary_from_delta(delta, index, true))
+            .map(|(index, change)| carbon_summary_from_gix_change(change, index, true, false))
             .collect();
         return Ok(output);
     }
 
-    // `find_similar` does rename detection - the hottest path after tree walk.
-    // Run it only after we know the diff is small enough to hydrate eagerly.
-    find_similar_bounded(diff)?;
-    let deltas: Vec<_> = diff.deltas().collect();
-    let files_total = deltas.len() as u32;
-
-    // Kick off the per-file phase with a zero count so the UI can flip to
-    // the determinate bar even before the first delta is parsed.
+    let files_total = changes.len() as u32;
     if let Some(r) = reporter {
         r.phase(ComparePhase::LoadingFiles {
             files_seen: 0,
@@ -251,53 +391,356 @@ pub(crate) fn compare_output_from_diff(
         });
     }
 
-    for (delta_idx, delta) in deltas.iter().enumerate() {
-        // Heartbeat: throttled to 1-in-N deltas + always the final one,
-        // to avoid flooding the event channel on big diffs.
+    for (change_idx, change) in changes.iter().enumerate() {
         if let Some(r) = reporter {
-            let is_last = delta_idx + 1 == deltas.len();
-            if delta_idx % LOADING_FILE_EMIT_STRIDE == 0 || is_last {
+            let is_last = change_idx + 1 == changes.len();
+            if change_idx % LOADING_FILE_EMIT_STRIDE == 0 || is_last {
                 r.phase(ComparePhase::LoadingFiles {
-                    files_seen: (delta_idx + 1) as u32,
+                    files_seen: (change_idx + 1) as u32,
                     files_total,
                 });
             }
         }
-        if delta.new_file().is_binary() || delta.old_file().is_binary() {
-            output.carbon.files.push(carbon_summary_from_delta(
-                delta,
+
+        let Some((old_content, new_content)) = gix_change_contents(repo, change)? else {
+            continue;
+        };
+        if is_binary_bytes(&old_content) || is_binary_bytes(&new_content) {
+            output.carbon.files.push(carbon_summary_from_gix_change(
+                change,
                 output.carbon.files.len(),
                 false,
+                true,
             ));
             continue;
         }
 
-        if let Ok(Some(mut patch)) = git2::Patch::from_diff(diff, delta_idx) {
-            let (raw_diff, carbon_file) =
-                carbon_file_from_patch(&mut patch, output.carbon.files.len(), None)?;
-            output.raw_diff.push_str(&raw_diff);
-            output.carbon.files.push(carbon_file);
-        }
+        let raw_diff = raw_patch_from_gix_change(change, &old_content, &new_content, 3)?;
+        let carbon_file = carbon_file_from_raw_diff(&raw_diff, output.carbon.files.len(), None)?;
+        output.raw_diff.push_str(&raw_diff);
+        output.carbon.files.push(carbon_file);
     }
+
     Ok(output)
 }
 
-fn load_blob_content(repo: &Repository, oid: Option<&carbon::ObjectId>) -> Result<Vec<u8>> {
+fn gix_change_contents(
+    repo: &gix::Repository,
+    change: &GixChange,
+) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+    match change {
+        GixChange::Addition { entry_mode, id, .. } => {
+            if !entry_mode.is_no_tree() {
+                return Ok(None);
+            }
+            Ok(Some((Vec::new(), load_gix_blob_id(repo, *id)?)))
+        }
+        GixChange::Deletion { entry_mode, id, .. } => {
+            if !entry_mode.is_no_tree() {
+                return Ok(None);
+            }
+            Ok(Some((load_gix_blob_id(repo, *id)?, Vec::new())))
+        }
+        GixChange::Modification {
+            previous_entry_mode,
+            previous_id,
+            entry_mode,
+            id,
+            ..
+        } => {
+            if !previous_entry_mode.is_no_tree() || !entry_mode.is_no_tree() {
+                return Ok(None);
+            }
+            Ok(Some((
+                load_gix_blob_id(repo, *previous_id)?,
+                load_gix_blob_id(repo, *id)?,
+            )))
+        }
+        GixChange::Rewrite {
+            source_entry_mode,
+            source_id,
+            entry_mode,
+            id,
+            ..
+        } => {
+            if !source_entry_mode.is_no_tree() || !entry_mode.is_no_tree() {
+                return Ok(None);
+            }
+            Ok(Some((
+                load_gix_blob_id(repo, *source_id)?,
+                load_gix_blob_id(repo, *id)?,
+            )))
+        }
+    }
+}
+
+fn load_gix_blob_content(
+    repo: &gix::Repository,
+    oid: Option<&carbon::ObjectId>,
+) -> Result<Vec<u8>> {
     let Some(oid) = oid else {
         return Ok(Vec::new());
     };
-    let oid = Oid::from_str(&oid.0)?;
-    Ok(repo.find_blob(oid)?.content().to_vec())
+    load_gix_blob_id(repo, gix_object_id(&oid.0)?)
 }
 
-fn carbon_file_from_patch(
-    patch: &mut git2::Patch<'_>,
+fn load_gix_blob_id(repo: &gix::Repository, oid: gix::ObjectId) -> Result<Vec<u8>> {
+    if oid.is_null() {
+        return Ok(Vec::new());
+    }
+    Ok(repo.find_blob(oid).map_err(gix_error)?.data.clone())
+}
+
+fn is_binary_bytes(bytes: &[u8]) -> bool {
+    bytes.iter().take(8192).any(|byte| *byte == 0)
+}
+
+fn gix_line_stats(old_content: &[u8], new_content: &[u8]) -> (u32, u32) {
+    let input = InternedInput::new(
+        ByteLinesWithoutTerminator::new(old_content),
+        ByteLinesWithoutTerminator::new(new_content),
+    );
+    let diff = Diff::compute(Algorithm::Histogram, &input);
+    (diff.count_additions(), diff.count_removals())
+}
+
+fn raw_patch_from_blob_pair(
+    file: &carbon::FileDiff,
+    old_content: &[u8],
+    new_content: &[u8],
+    context_lines: u32,
+) -> Result<String> {
+    let old_path = file.old_path.as_deref();
+    let new_path = file.new_path.as_deref();
+    let old_oid = file.old_oid.as_ref().map(|oid| oid.0.as_str());
+    let new_oid = file.new_oid.as_ref().map(|oid| oid.0.as_str());
+    let old_mode = Some("100644");
+    let new_mode = Some("100644");
+    let mut raw = raw_patch_header(
+        old_path,
+        new_path,
+        old_oid,
+        new_oid,
+        old_mode,
+        new_mode,
+        file.status,
+    );
+    raw.push_str(&render_gix_unified_hunks(
+        old_content,
+        new_content,
+        context_lines,
+    )?);
+    Ok(raw)
+}
+
+fn raw_patch_from_gix_change(
+    change: &GixChange,
+    old_content: &[u8],
+    new_content: &[u8],
+    context_lines: u32,
+) -> Result<String> {
+    let meta = gix_change_meta(change);
+    let mut raw = raw_patch_header(
+        meta.old_path,
+        meta.new_path,
+        meta.old_oid.as_deref(),
+        meta.new_oid.as_deref(),
+        meta.old_mode.as_deref(),
+        meta.new_mode.as_deref(),
+        meta.status,
+    );
+    raw.push_str(&render_gix_unified_hunks(
+        old_content,
+        new_content,
+        context_lines,
+    )?);
+    Ok(raw)
+}
+
+fn render_gix_unified_hunks(
+    old_content: &[u8],
+    new_content: &[u8],
+    context_lines: u32,
+) -> Result<String> {
+    let input = InternedInput::new(
+        ByteLinesWithoutTerminator::new(old_content),
+        ByteLinesWithoutTerminator::new(new_content),
+    );
+    let diff = diff_with_slider_heuristics(Algorithm::Histogram, &input);
+    UnifiedDiff::new(
+        &diff,
+        &input,
+        ConsumeBinaryHunk::new(String::new(), "\n"),
+        ContextSize::symmetrical(context_lines),
+    )
+    .consume()
+    .map_err(|error| DiffyError::General(format!("Gitoxide diff render failed: {error}")))
+}
+
+fn raw_patch_header(
+    old_path: Option<&str>,
+    new_path: Option<&str>,
+    old_oid: Option<&str>,
+    new_oid: Option<&str>,
+    old_mode: Option<&str>,
+    new_mode: Option<&str>,
+    status: carbon::FileStatus,
+) -> String {
+    let display_old = old_path.or(new_path).unwrap_or("unknown");
+    let display_new = new_path.or(old_path).unwrap_or("unknown");
+    let old_header = old_path
+        .map(|path| format!("a/{path}"))
+        .unwrap_or_else(|| "/dev/null".to_owned());
+    let new_header = new_path
+        .map(|path| format!("b/{path}"))
+        .unwrap_or_else(|| "/dev/null".to_owned());
+    let old_oid = old_oid.unwrap_or("0000000000000000000000000000000000000000");
+    let new_oid = new_oid.unwrap_or("0000000000000000000000000000000000000000");
+    let mode = new_mode.or(old_mode).unwrap_or("100644");
+
+    let mut raw = format!("diff --git a/{display_old} b/{display_new}\n");
+    match status {
+        carbon::FileStatus::Added => {
+            raw.push_str(&format!("new file mode {}\n", new_mode.unwrap_or(mode)));
+        }
+        carbon::FileStatus::Deleted => {
+            raw.push_str(&format!("deleted file mode {}\n", old_mode.unwrap_or(mode)));
+        }
+        carbon::FileStatus::Renamed | carbon::FileStatus::RenamedModified => {
+            if let Some(path) = old_path {
+                raw.push_str(&format!("rename from {path}\n"));
+            }
+            if let Some(path) = new_path {
+                raw.push_str(&format!("rename to {path}\n"));
+            }
+        }
+        _ => {}
+    }
+    if old_mode.is_some() && new_mode.is_some() && old_mode != new_mode {
+        raw.push_str(&format!("old mode {}\n", old_mode.unwrap()));
+        raw.push_str(&format!("new mode {}\n", new_mode.unwrap()));
+    }
+    raw.push_str(&format!("index {old_oid}..{new_oid} {mode}\n"));
+    raw.push_str(&format!("--- {old_header}\n"));
+    raw.push_str(&format!("+++ {new_header}\n"));
+    raw
+}
+
+struct GixChangeMeta<'a> {
+    old_path: Option<&'a str>,
+    new_path: Option<&'a str>,
+    old_oid: Option<String>,
+    new_oid: Option<String>,
+    old_mode: Option<String>,
+    new_mode: Option<String>,
+    status: carbon::FileStatus,
+}
+
+fn gix_change_meta(change: &GixChange) -> GixChangeMeta<'_> {
+    match change {
+        GixChange::Addition {
+            location,
+            entry_mode,
+            id,
+            ..
+        } => GixChangeMeta {
+            old_path: None,
+            new_path: Some(bstr_to_str(location.as_bstr())),
+            old_oid: None,
+            new_oid: Some(id.to_string()),
+            old_mode: None,
+            new_mode: Some(gix_mode(entry_mode)),
+            status: carbon::FileStatus::Added,
+        },
+        GixChange::Deletion {
+            location,
+            entry_mode,
+            id,
+            ..
+        } => GixChangeMeta {
+            old_path: Some(bstr_to_str(location.as_bstr())),
+            new_path: None,
+            old_oid: Some(id.to_string()),
+            new_oid: None,
+            old_mode: Some(gix_mode(entry_mode)),
+            new_mode: None,
+            status: carbon::FileStatus::Deleted,
+        },
+        GixChange::Modification {
+            location,
+            previous_entry_mode,
+            previous_id,
+            entry_mode,
+            id,
+        } => GixChangeMeta {
+            old_path: Some(bstr_to_str(location.as_bstr())),
+            new_path: Some(bstr_to_str(location.as_bstr())),
+            old_oid: Some(previous_id.to_string()),
+            new_oid: Some(id.to_string()),
+            old_mode: Some(gix_mode(previous_entry_mode)),
+            new_mode: Some(gix_mode(entry_mode)),
+            status: carbon::FileStatus::Modified,
+        },
+        GixChange::Rewrite {
+            source_location,
+            source_entry_mode,
+            source_id,
+            entry_mode,
+            id,
+            location,
+            copy: _,
+            ..
+        } => GixChangeMeta {
+            old_path: Some(bstr_to_str(source_location.as_bstr())),
+            new_path: Some(bstr_to_str(location.as_bstr())),
+            old_oid: Some(source_id.to_string()),
+            new_oid: Some(id.to_string()),
+            old_mode: Some(gix_mode(source_entry_mode)),
+            new_mode: Some(gix_mode(entry_mode)),
+            status: carbon::FileStatus::Renamed,
+        },
+    }
+}
+
+fn bstr_to_str(path: &BStr) -> &str {
+    path.to_str().unwrap_or("")
+}
+
+fn gix_mode(mode: &gix::objs::tree::EntryMode) -> String {
+    format!("{:06o}", mode.value())
+}
+
+fn carbon_summary_from_gix_change(
+    change: &GixChange,
+    file_id: usize,
+    stats_deferred: bool,
+    is_binary: bool,
+) -> carbon::FileDiff {
+    let meta = gix_change_meta(change);
+    carbon::FileDiff {
+        id: carbon::FileId(usize_to_u32_saturating(file_id)),
+        old_path: meta.old_path.map(ToOwned::to_owned),
+        new_path: meta.new_path.map(ToOwned::to_owned),
+        old_oid: meta.old_oid.map(carbon::ObjectId),
+        new_oid: meta.new_oid.map(carbon::ObjectId),
+        status: if is_binary {
+            carbon::FileStatus::Binary
+        } else {
+            meta.status
+        },
+        is_binary,
+        is_partial: stats_deferred,
+        stats_deferred,
+        ..carbon::FileDiff::default()
+    }
+}
+
+fn carbon_file_from_raw_diff(
+    raw_diff: &str,
     file_id: usize,
     summary: Option<&carbon::FileDiff>,
-) -> Result<(String, carbon::FileDiff)> {
-    let raw = patch.to_buf()?;
-    let raw_diff = String::from_utf8_lossy(raw.as_ref()).into_owned();
-    let mut document = carbon::parse_unified_patch(&raw_diff)
+) -> Result<carbon::FileDiff> {
+    let mut document = carbon::parse_unified_patch(raw_diff)
         .map_err(|error| DiffyError::Parse(error.to_string()))?;
     let Some(mut file) = document.files.pop() else {
         return Err(DiffyError::Parse("patch contained no file diff".to_owned()));
@@ -316,50 +759,7 @@ fn carbon_file_from_patch(
             file.status = carbon::FileStatus::Binary;
         }
     }
-    Ok((raw_diff, file))
-}
-
-fn carbon_summary_from_delta(
-    delta: &git2::DiffDelta<'_>,
-    file_id: usize,
-    stats_deferred: bool,
-) -> carbon::FileDiff {
-    carbon::FileDiff {
-        id: carbon::FileId(usize_to_u32_saturating(file_id)),
-        old_path: delta
-            .old_file()
-            .path()
-            .map(|path| path.to_string_lossy().into_owned()),
-        new_path: delta
-            .new_file()
-            .path()
-            .map(|path| path.to_string_lossy().into_owned()),
-        old_oid: object_id_from_git(delta.old_file().id()),
-        new_oid: object_id_from_git(delta.new_file().id()),
-        status: carbon_status_from_delta(delta),
-        is_binary: delta.new_file().is_binary() || delta.old_file().is_binary(),
-        is_partial: stats_deferred,
-        stats_deferred,
-        ..carbon::FileDiff::default()
-    }
-}
-
-fn carbon_status_from_delta(delta: &git2::DiffDelta<'_>) -> carbon::FileStatus {
-    let is_binary = delta.new_file().is_binary() || delta.old_file().is_binary();
-    if is_binary {
-        carbon::FileStatus::Binary
-    } else {
-        match delta.status() {
-            Delta::Added => carbon::FileStatus::Added,
-            Delta::Deleted => carbon::FileStatus::Deleted,
-            Delta::Renamed => carbon::FileStatus::Renamed,
-            _ => carbon::FileStatus::Modified,
-        }
-    }
-}
-
-fn object_id_from_git(oid: Oid) -> Option<carbon::ObjectId> {
-    (oid != Oid::zero()).then(|| carbon::ObjectId(oid.to_string()))
+    Ok(file)
 }
 
 fn can_diff_deferred_file(file: &carbon::FileDiff) -> bool {
@@ -370,8 +770,8 @@ fn can_diff_deferred_file(file: &carbon::FileDiff) -> bool {
     }
 }
 
-fn usize_to_i32_saturating(value: usize) -> i32 {
-    value.min(i32::MAX as usize) as i32
+fn u32_to_i32_saturating(value: u32) -> i32 {
+    value.min(i32::MAX as u32) as i32
 }
 
 fn usize_to_u32_saturating(value: usize) -> u32 {

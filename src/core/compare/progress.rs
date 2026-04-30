@@ -7,7 +7,7 @@
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ComparePhase {
-    /// libgit2 is opening the repository on disk.
+    /// The Git backend is opening the repository on disk.
     #[default]
     OpeningRepo,
     /// Resolving human-readable refs (branches/tags/sha prefixes) to full OIDs.

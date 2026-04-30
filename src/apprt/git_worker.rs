@@ -3,13 +3,12 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::Duration;
 
-use git2::{BranchType, Status, StatusOptions};
-
 use crate::apprt::ProgressReporter;
 use crate::apprt::runtime::RuntimeEventSender;
 use crate::core::compare::{ComparePhase, ProgressSink};
 use crate::core::vcs::git::{
-    GitService, StatusItem, StatusOperation, StatusScope, status::status_items_from_entry,
+    GitService, PatchApplyTarget, StatusItem, StatusOperation, StatusScope,
+    status::status_items_from_entry,
 };
 use crate::events::{
     RepositoryChangeKind, RepositoryEvent, RepositorySnapshot, RepositorySyncReason,
@@ -404,8 +403,8 @@ fn apply_patch_operation(
     }
 
     let location = match operation {
-        StatusOperation::Discard => git2::ApplyLocation::WorkDir,
-        _ => git2::ApplyLocation::Index,
+        StatusOperation::Discard => PatchApplyTarget::Workdir,
+        _ => PatchApplyTarget::Index,
     };
 
     if let Err(error) = state.git.apply_patch(patch, location) {
@@ -809,56 +808,25 @@ fn collect_snapshot(
         r.phase(ComparePhase::FetchingHistory);
     }
     let commits = git.commits("HEAD", 200).unwrap_or_default();
-    let repo = git.repo()?;
-
-    let mut branch_targets = repo
-        .branches(None)?
-        .flatten()
-        .filter_map(|(branch, branch_type)| {
-            let name = branch.name().ok().flatten()?.to_owned();
-            let target_oid = branch
-                .get()
-                .resolve()
-                .ok()
-                .and_then(|reference| reference.target())
-                .map(|oid| oid.to_string());
-            Some(BranchTarget {
-                name,
-                is_remote: branch_type == BranchType::Remote,
-                is_head: branch.is_head(),
-                target_oid,
-            })
+    let mut branch_targets = branches
+        .iter()
+        .map(|branch| BranchTarget {
+            name: branch.name.clone(),
+            is_remote: branch.is_remote,
+            is_head: branch.is_head,
+            target_oid: git.resolve_ref(&branch.name).ok(),
         })
         .collect::<Vec<_>>();
     branch_targets.sort();
-
-    let mut options = StatusOptions::new();
-    options
-        .include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .include_ignored(false)
-        .renames_head_to_index(true)
-        .renames_index_to_workdir(true);
-
-    let statuses = repo.statuses(Some(&mut options))?;
+    let statuses = git.status_entries()?;
     let mut status_entries = statuses
         .iter()
-        .map(|entry| {
-            (
-                entry.path().unwrap_or_default().to_owned(),
-                sanitize_status(entry.status()).bits(),
-            )
-        })
+        .map(|(path, status)| (path.clone(), sanitize_status(*status).bits()))
         .collect::<Vec<_>>();
     status_entries.sort();
     let mut status_items = statuses
         .iter()
-        .flat_map(|entry| {
-            status_items_from_entry(
-                entry.path().unwrap_or_default().to_owned(),
-                sanitize_status(entry.status()),
-            )
-        })
+        .flat_map(|(path, status)| status_items_from_entry(path.clone(), sanitize_status(*status)))
         .collect::<Vec<_>>();
     status_items.sort_by(|left, right| {
         left.scope
@@ -877,11 +845,7 @@ fn collect_snapshot(
         status_items,
     };
     let state = RepositorySnapshotState {
-        head_oid: repo
-            .head()
-            .ok()
-            .and_then(|head| head.target())
-            .map(|oid| oid.to_string()),
+        head_oid: git.resolve_ref("HEAD").ok(),
         branch_targets,
         tag_targets: tags
             .iter()
@@ -893,19 +857,21 @@ fn collect_snapshot(
     Ok(SnapshotBundle { snapshot, state })
 }
 
-fn sanitize_status(status: Status) -> Status {
+fn sanitize_status(
+    status: crate::core::vcs::git::status::StatusBits,
+) -> crate::core::vcs::git::status::StatusBits {
     status
-        & (Status::INDEX_NEW
-            | Status::INDEX_MODIFIED
-            | Status::INDEX_DELETED
-            | Status::INDEX_RENAMED
-            | Status::INDEX_TYPECHANGE
-            | Status::WT_NEW
-            | Status::WT_MODIFIED
-            | Status::WT_DELETED
-            | Status::WT_TYPECHANGE
-            | Status::WT_RENAMED
-            | Status::CONFLICTED)
+        & (crate::core::vcs::git::status::StatusBits::INDEX_NEW
+            | crate::core::vcs::git::status::StatusBits::INDEX_MODIFIED
+            | crate::core::vcs::git::status::StatusBits::INDEX_DELETED
+            | crate::core::vcs::git::status::StatusBits::INDEX_RENAMED
+            | crate::core::vcs::git::status::StatusBits::INDEX_TYPECHANGE
+            | crate::core::vcs::git::status::StatusBits::WT_NEW
+            | crate::core::vcs::git::status::StatusBits::WT_MODIFIED
+            | crate::core::vcs::git::status::StatusBits::WT_DELETED
+            | crate::core::vcs::git::status::StatusBits::WT_TYPECHANGE
+            | crate::core::vcs::git::status::StatusBits::WT_RENAMED
+            | crate::core::vcs::git::status::StatusBits::CONFLICTED)
 }
 
 impl RepositorySnapshotState {

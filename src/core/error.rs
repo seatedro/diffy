@@ -2,8 +2,6 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum DiffyError {
-    #[error("Git error: {0}")]
-    Git(#[from] git2::Error),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("JSON error: {0}")]

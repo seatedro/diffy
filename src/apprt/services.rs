@@ -249,15 +249,14 @@ impl AppServices {
         let mut git = GitService::new();
         git.open(request.repo_path.to_string_lossy().as_ref())?;
 
+        let files: Vec<&carbon::FileDiff> = request.files.iter().map(|item| &item.file).collect();
+        let file_stats = GitDiffBackend.deferred_file_line_stats_batch(&files, &git);
         let mut stats = Vec::with_capacity(request.files.len());
-        for item in request.files {
-            let (additions, deletions) = GitDiffBackend
-                .deferred_file_line_stats(&item.file, &git)
-                .unwrap_or(None)
-                .unwrap_or((
-                    u32_to_i32_saturating(item.file.additions),
-                    u32_to_i32_saturating(item.file.deletions),
-                ));
+        for (item, stat) in request.files.into_iter().zip(file_stats) {
+            let (additions, deletions) = stat.unwrap_or((
+                u32_to_i32_saturating(item.file.additions),
+                u32_to_i32_saturating(item.file.deletions),
+            ));
             stats.push(CompareFileStat {
                 index: item.index,
                 path: item.file.path().to_owned(),
@@ -484,7 +483,7 @@ impl AppServices {
     pub fn resolve_ref(&self, repo_path: &Path, reference: &str) -> Result<(String, String)> {
         let mut git = GitService::new();
         git.open(repo_path.to_string_lossy().as_ref())?;
-        // libgit2 may not support bare `@` as HEAD alias; normalize it.
+        // Normalize bare `@` aliases before asking gix to resolve the revision.
         let normalized;
         let reference =
             if reference == "@" || reference.starts_with("@~") || reference.starts_with("@^") {
@@ -494,12 +493,15 @@ impl AppServices {
                 reference
             };
         let oid = git.resolve_commit_oid(reference)?;
-        let repo = git.repo()?;
-        let commit = repo.find_commit(oid)?;
         let short_oid = git
-            .abbreviate_oid(&oid.to_string())
-            .unwrap_or_else(|_| oid.to_string()[..7].to_owned());
-        let summary = commit.summary().unwrap_or_default().to_owned();
+            .abbreviate_oid(&oid)
+            .unwrap_or_else(|_| oid[..7].to_owned());
+        let summary = git
+            .commits(&oid, 1)
+            .ok()
+            .and_then(|mut commits| commits.pop())
+            .map(|commit| commit.summary)
+            .unwrap_or_default();
         Ok((short_oid, summary))
     }
 

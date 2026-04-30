@@ -1,8 +1,6 @@
 use std::collections::HashMap;
-use std::fs;
 use std::path::Path;
 
-use git2::{Delta, DiffOptions, ObjectType, Repository};
 use vendored_difftastic::{
     ChangeIntensity as DftIntensity, DiffRequest, DiffStatus, SemanticDiffResult,
 };
@@ -31,8 +29,7 @@ impl DifftasticBackend {
         item: &StatusItem,
         git: &GitService,
     ) -> Result<CompareOutput> {
-        let repo = git.repo()?;
-        let changed = changed_path_for_status_item(repo, item)?;
+        let changed = changed_path_for_status_item(git, item)?;
         compare_changed_paths(vec![changed], None)
     }
 
@@ -58,8 +55,7 @@ impl DifftasticBackend {
             }
         };
 
-        let repo = git.repo()?;
-        let changed_paths = collect_changed_paths(repo, &left, &right, Some(path))?;
+        let changed_paths = collect_changed_paths(git, &left, &right, Some(path))?;
 
         Ok(Some(compare_changed_paths(changed_paths, None)?))
     }
@@ -97,8 +93,7 @@ impl DiffBackend for DifftasticBackend {
             r.phase(ComparePhase::EnumeratingChanges);
         }
 
-        let repo = git.repo()?;
-        let changed_paths = collect_changed_paths(repo, &left, &right, None)?;
+        let changed_paths = collect_changed_paths(git, &left, &right, None)?;
 
         Ok(Some(compare_changed_paths(changed_paths, reporter)?))
     }
@@ -401,53 +396,27 @@ struct ChangedPath {
 }
 
 fn collect_changed_paths(
-    repo: &Repository,
+    git: &GitService,
     left: &str,
     right: &str,
     only_path: Option<&str>,
 ) -> Result<Vec<ChangedPath>> {
-    let left_tree = repo
-        .revparse_single(left)?
-        .peel(ObjectType::Commit)?
-        .peel_to_tree()?;
-    let right_tree = repo
-        .revparse_single(right)
-        .ok()
-        .and_then(|object| object.peel(ObjectType::Commit).ok())
-        .and_then(|object| object.peel_to_tree().ok());
-    let mut options = DiffOptions::new();
-    options.context_lines(3);
-    if let Some(path) = only_path {
-        options.pathspec(path);
-    }
-    let is_workdir = right == WORKDIR_REF;
-    let workdir = if is_workdir {
-        Some(
-            repo.workdir()
-                .ok_or_else(|| DiffyError::General("repository has no workdir".to_owned()))?,
-        )
-    } else {
-        None
-    };
-    let mut diff = if is_workdir {
-        repo.diff_tree_to_workdir_with_index(Some(&left_tree), Some(&mut options))?
-    } else {
-        repo.diff_tree_to_tree(Some(&left_tree), right_tree.as_ref(), Some(&mut options))?
-    };
-    diff.find_similar(None)?;
-
     let mut changed = Vec::new();
-    for delta in diff.deltas() {
-        let old_content = load_blob_content(repo, delta.old_file().id())?;
-        let new_content = if let Some(workdir) = workdir {
-            load_workdir_content(
-                workdir,
-                delta.status(),
-                delta.old_file().path(),
-                delta.new_file().path(),
-            )?
+    for (status, old_path, new_path) in git.diff_name_status(left, right, only_path)? {
+        let old_content = if let Some(path) = old_path.as_deref() {
+            git.read_file_bytes_at(left, path).ok()
         } else {
-            load_blob_content(repo, delta.new_file().id())?
+            None
+        };
+        let new_reference = if right == WORKDIR_REF {
+            WORKDIR_REF
+        } else {
+            right
+        };
+        let new_content = if let Some(path) = new_path.as_deref() {
+            git.read_file_bytes_at(new_reference, path).ok()
+        } else {
+            None
         };
         let old_binary = old_content
             .as_ref()
@@ -456,20 +425,9 @@ fn collect_changed_paths(
             .as_ref()
             .is_some_and(|bytes| bytes.iter().take(1024).any(|b| *b == 0));
         changed.push(ChangedPath {
-            status: match delta.status() {
-                Delta::Added => "A".to_owned(),
-                Delta::Deleted => "D".to_owned(),
-                Delta::Renamed => "R".to_owned(),
-                _ => "M".to_owned(),
-            },
-            old_path: delta
-                .old_file()
-                .path()
-                .map(|p| p.to_string_lossy().into_owned()),
-            new_path: delta
-                .new_file()
-                .path()
-                .map(|p| p.to_string_lossy().into_owned()),
+            status,
+            old_path,
+            new_path,
             old_content: old_content.unwrap_or_default(),
             new_content: new_content.unwrap_or_default(),
             is_binary: old_binary || new_binary,
@@ -478,44 +436,21 @@ fn collect_changed_paths(
     Ok(changed)
 }
 
-fn changed_path_for_status_item(repo: &Repository, item: &StatusItem) -> Result<ChangedPath> {
-    let workdir = repo
-        .workdir()
-        .ok_or_else(|| DiffyError::General("repository has no workdir".to_owned()))?;
-    let path = Path::new(&item.path);
-    let index = repo.index()?;
-
-    let head_tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
-    let head_entry = head_tree.as_ref().and_then(|tree| tree.get_path(path).ok());
-    let index_entry = index.get_path(path, 0);
-
+fn changed_path_for_status_item(git: &GitService, item: &StatusItem) -> Result<ChangedPath> {
     let old_content = match item.scope {
-        StatusScope::Staged => head_entry
-            .as_ref()
-            .map(|entry| {
-                repo.find_blob(entry.id())
-                    .map(|blob| blob.content().to_vec())
-            })
-            .transpose()?,
-        StatusScope::Unstaged => index_entry
-            .as_ref()
-            .map(|entry| repo.find_blob(entry.id).map(|blob| blob.content().to_vec()))
-            .transpose()?,
+        StatusScope::Staged => git.read_file_bytes_at("HEAD", &item.path).ok(),
+        StatusScope::Unstaged => git
+            .read_file_bytes_at(crate::core::vcs::git::INDEX_REF, &item.path)
+            .ok(),
         StatusScope::Untracked => None,
     };
 
     let new_content = match item.scope {
-        StatusScope::Staged => index_entry
-            .as_ref()
-            .map(|entry| repo.find_blob(entry.id).map(|blob| blob.content().to_vec()))
-            .transpose()?,
+        StatusScope::Staged => git
+            .read_file_bytes_at(crate::core::vcs::git::INDEX_REF, &item.path)
+            .ok(),
         StatusScope::Unstaged | StatusScope::Untracked => {
-            let absolute_path = workdir.join(path);
-            match fs::read(&absolute_path) {
-                Ok(content) => Some(content),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => return Err(error.into()),
-            }
+            git.read_file_bytes_at(WORKDIR_REF, &item.path).ok()
         }
     };
 
@@ -541,34 +476,6 @@ fn changed_path_for_status_item(repo: &Repository, item: &StatusItem) -> Result<
         new_content: new_content.unwrap_or_default(),
         is_binary: old_binary || new_binary,
     })
-}
-
-fn load_blob_content(repo: &Repository, oid: git2::Oid) -> Result<Option<Vec<u8>>> {
-    if oid.is_zero() {
-        return Ok(None);
-    }
-    Ok(Some(repo.find_blob(oid)?.content().to_vec()))
-}
-
-fn load_workdir_content(
-    workdir: &Path,
-    status: Delta,
-    old_path: Option<&Path>,
-    new_path: Option<&Path>,
-) -> Result<Option<Vec<u8>>> {
-    let relative_path = match status {
-        Delta::Deleted => return Ok(None),
-        _ => new_path.or(old_path),
-    };
-    let Some(relative_path) = relative_path else {
-        return Ok(None);
-    };
-    let absolute_path = workdir.join(relative_path);
-    match fs::read(&absolute_path) {
-        Ok(content) => Ok(Some(content)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
-    }
 }
 
 fn usize_to_u32_saturating(value: usize) -> u32 {

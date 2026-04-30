@@ -384,8 +384,10 @@ pub(crate) fn sidebar(
     cx: &ElementContext,
 ) -> AnyElement {
     let tc = &theme.colors;
-    let all_files = state.workspace.files.get(&state.store);
-    let file_count = all_files.len();
+    let file_count = state
+        .workspace
+        .files
+        .with(&state.store, |files| files.len());
     let scale = theme.metrics.ui_scale();
     let filter = state.file_list.filter.get(&state.store);
     let has_filter = !filter.is_empty();
@@ -512,39 +514,40 @@ pub(crate) fn sidebar(
     let is_tree = state.file_list.mode.get(&state.store) == SidebarMode::TreeView
         && workspace_source == WorkspaceSource::Compare;
 
-    let filtered_indices: Vec<usize> = if has_filter {
-        let haystack: Vec<&str> = all_files.iter().map(|f| f.path.as_str()).collect();
-        let config = neo_frizbee::Config {
-            max_typos: Some(2),
-            sort: false,
-            ..Default::default()
-        };
-        let mut matches = neo_frizbee::match_list(&filter, &haystack, &config);
-        matches.sort_by(|a, b| b.score.cmp(&a.score));
-        matches.iter().map(|m| m.index as usize).collect()
-    } else {
-        (0..file_count).collect()
-    };
-    let visible_count = filtered_indices.len();
-
-    let entry_total_adds: i32 = all_files.iter().map(|f| f.additions).sum();
-    let entry_total_dels: i32 = all_files.iter().map(|f| f.deletions).sum();
-    let (total_adds, total_dels) = state
-        .workspace
-        .compare_total_stats
-        .get(&state.store)
-        .unwrap_or((entry_total_adds, entry_total_dels));
-    let stats_pending = workspace_source == WorkspaceSource::Compare
-        && state.workspace.compare_output.with(&state.store, |output| {
-            output
-                .as_ref()
-                .is_some_and(|output| output.carbon.files.iter().any(|file| file.stats_deferred))
+    let filtered_indices: Option<Vec<usize>> = if has_filter {
+        state.workspace.files.with(&state.store, |all_files| {
+            let haystack: Vec<&str> = all_files.iter().map(|f| f.path.as_str()).collect();
+            let config = neo_frizbee::Config {
+                max_typos: Some(2),
+                sort: false,
+                ..Default::default()
+            };
+            let mut matches = neo_frizbee::match_list(&filter, &haystack, &config);
+            matches.sort_by(|a, b| b.score.cmp(&a.score));
+            Some(matches.iter().map(|m| m.index as usize).collect())
         })
+    } else {
+        None
+    };
+    let visible_count = filtered_indices.as_ref().map_or(file_count, Vec::len);
+
+    let compare_total_stats = state.workspace.compare_total_stats.get(&state.store);
+    let stats_pending = workspace_source == WorkspaceSource::Compare
+        && compare_total_stats.is_none()
         && state
             .workspace
-            .compare_total_stats
-            .get(&state.store)
-            .is_none();
+            .compare_total_stats_loading
+            .get(&state.store);
+    let (total_adds, total_dels) = match compare_total_stats {
+        Some(stats) => stats,
+        None if stats_pending => (0, 0),
+        None => state.workspace.files.with(&state.store, |files| {
+            (
+                files.iter().map(|f| f.additions).sum(),
+                files.iter().map(|f| f.deletions).sum(),
+            )
+        }),
+    };
 
     let mode_icon = if is_tree {
         lucide::ROWS
@@ -641,7 +644,7 @@ pub(crate) fn sidebar(
         None
     };
 
-    let content: Option<AnyElement> = if all_files.is_empty() {
+    let content: Option<AnyElement> = if file_count == 0 {
         let has_repo = state.compare.repo_path.with(&state.store, |p| p.is_some());
         let (icon, msg) = if has_repo {
             if workspace_source == WorkspaceSource::Status {
@@ -669,84 +672,33 @@ pub(crate) fn sidebar(
                 </div>
             </div>
         })
-    } else if is_tree && !has_filter {
-        let entries: Vec<components::FileTreeEntry> =
-            state.workspace.status_items.with(&state.store, |items| {
-                filtered_indices
-                    .iter()
-                    .map(|&i| {
-                        let f = &all_files[i];
-                        components::FileTreeEntry {
-                            path: f.path.clone(),
-                            status: f.status.clone(),
-                            scope: items
-                                .get(i)
-                                .filter(|_| workspace_source == WorkspaceSource::Status)
-                                .map(|item| item.scope.label().to_owned()),
-                            additions: f.additions,
-                            deletions: f.deletions,
-                        }
-                    })
-                    .collect()
-            });
-
-        let expanded_folders = state.file_list.expanded_folders.get(&state.store);
-        let layout = components::file_tree_layout(
-            entries,
-            &expanded_folders,
-            state.workspace.selected_file_index.get(&state.store),
-        );
-        let row_count = layout.len();
-        let total_height = state.file_list_total_content_height(row_count);
+    } else if workspace_source == WorkspaceSource::Compare && !has_filter && !is_tree {
+        let total_height = state.file_list_total_content_height(file_count);
         let scroll_px = state.file_list.scroll_offset_px.get(&state.store);
         let stride = state.file_list_row_stride();
         let viewport_height = state.file_list.viewport_height.get(&state.store);
-        let window = visible_sidebar_window(scroll_px, viewport_height, stride, row_count);
-        let gap = state.file_list.gap.get(&state.store);
-        let (top_pad, bottom_pad) = virtual_sidebar_spacer_heights(row_count, &window, stride, gap);
-        let tree = layout
-            .render_window(window.clone())
-            .row_gap(gap)
-            .on_select_file(crate::actions::select_file)
-            .on_toggle_folder(crate::actions::toggle_folder);
-
-        Some(view! { scale,
-            <div class="flex-1 flex-col" min_h={0.0}
-                 clip scroll_y={scroll_px}
-                 scroll_total={total_height}
-                 on_scroll={ScrollActionBuilder::FileList}>
-                if top_pad > 0.0 {
-                    <div class="w-full shrink-0" h={top_pad} />
-                }
-                {tree}
-                if bottom_pad > 0.0 {
-                    <div class="w-full shrink-0" h={bottom_pad} />
-                }
-            </div>
-        })
-    } else {
-        let grouped_status = workspace_source == WorkspaceSource::Status && !has_filter;
-        let status_rows = grouped_status.then(|| state.workspace.status_items.get(&state.store));
-        let rows = build_sidebar_rows(&all_files, &filtered_indices, status_rows.as_deref());
-        let total_height = state.file_list_total_content_height(rows.len());
-        let scroll_px = state.file_list.scroll_offset_px.get(&state.store);
-        let stride = state.file_list_row_stride();
-        let viewport_height = state.file_list.viewport_height.get(&state.store);
-        let window = visible_sidebar_window(scroll_px, viewport_height, stride, rows.len());
+        let window = visible_sidebar_window(scroll_px, viewport_height, stride, file_count);
         let gap = state.file_list.gap.get(&state.store);
         let (top_pad, bottom_pad) =
-            virtual_sidebar_spacer_heights(rows.len(), &window, stride, gap);
+            virtual_sidebar_spacer_heights(file_count, &window, stride, gap);
+        let visible_files = state.workspace.files.with(&state.store, |files| {
+            files
+                .get(window.clone())
+                .unwrap_or(&[])
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(offset, entry)| (window.start + offset, entry))
+                .collect::<Vec<_>>()
+        });
 
-        let rendered_rows: Vec<AnyElement> = rows[window.clone()]
+        let rendered_rows: Vec<AnyElement> = visible_files
             .iter()
-            .enumerate()
-            .map(|(offset, row)| {
-                let global_index = window.start + offset;
-                let wrapper_height =
-                    sidebar_row_wrapper_height(global_index, rows.len(), row_h, stride);
+            .map(|(index, entry)| {
+                let wrapper_height = sidebar_row_wrapper_height(*index, file_count, row_h, stride);
                 view! { scale,
                     <div class="w-full shrink-0 overflow-hidden" h={wrapper_height}>
-                        {render_sidebar_row(*row, state, tc, scale, row_h)}
+                        {file_row(entry, *index, state, tc, scale)}
                     </div>
                 }
                 .into_any()
@@ -768,6 +720,113 @@ pub(crate) fn sidebar(
                 }
             </div>
         })
+    } else {
+        let all_files = state.workspace.files.get(&state.store);
+        let filtered_indices: Vec<usize> =
+            filtered_indices.unwrap_or_else(|| (0..file_count).collect());
+
+        if is_tree && !has_filter {
+            let entries: Vec<components::FileTreeEntry> =
+                state.workspace.status_items.with(&state.store, |items| {
+                    filtered_indices
+                        .iter()
+                        .map(|&i| {
+                            let f = &all_files[i];
+                            components::FileTreeEntry {
+                                path: f.path.clone(),
+                                status: f.status.clone(),
+                                scope: items
+                                    .get(i)
+                                    .filter(|_| workspace_source == WorkspaceSource::Status)
+                                    .map(|item| item.scope.label().to_owned()),
+                                additions: f.additions,
+                                deletions: f.deletions,
+                            }
+                        })
+                        .collect()
+                });
+
+            let expanded_folders = state.file_list.expanded_folders.get(&state.store);
+            let layout = components::file_tree_layout(
+                entries,
+                &expanded_folders,
+                state.workspace.selected_file_index.get(&state.store),
+            );
+            let row_count = layout.len();
+            let total_height = state.file_list_total_content_height(row_count);
+            let scroll_px = state.file_list.scroll_offset_px.get(&state.store);
+            let stride = state.file_list_row_stride();
+            let viewport_height = state.file_list.viewport_height.get(&state.store);
+            let window = visible_sidebar_window(scroll_px, viewport_height, stride, row_count);
+            let gap = state.file_list.gap.get(&state.store);
+            let (top_pad, bottom_pad) =
+                virtual_sidebar_spacer_heights(row_count, &window, stride, gap);
+            let tree = layout
+                .render_window(window.clone())
+                .row_gap(gap)
+                .on_select_file(crate::actions::select_file)
+                .on_toggle_folder(crate::actions::toggle_folder);
+
+            Some(view! { scale,
+                <div class="flex-1 flex-col" min_h={0.0}
+                     clip scroll_y={scroll_px}
+                     scroll_total={total_height}
+                     on_scroll={ScrollActionBuilder::FileList}>
+                    if top_pad > 0.0 {
+                        <div class="w-full shrink-0" h={top_pad} />
+                    }
+                    {tree}
+                    if bottom_pad > 0.0 {
+                        <div class="w-full shrink-0" h={bottom_pad} />
+                    }
+                </div>
+            })
+        } else {
+            let grouped_status = workspace_source == WorkspaceSource::Status && !has_filter;
+            let status_rows =
+                grouped_status.then(|| state.workspace.status_items.get(&state.store));
+            let rows = build_sidebar_rows(&all_files, &filtered_indices, status_rows.as_deref());
+            let total_height = state.file_list_total_content_height(rows.len());
+            let scroll_px = state.file_list.scroll_offset_px.get(&state.store);
+            let stride = state.file_list_row_stride();
+            let viewport_height = state.file_list.viewport_height.get(&state.store);
+            let window = visible_sidebar_window(scroll_px, viewport_height, stride, rows.len());
+            let gap = state.file_list.gap.get(&state.store);
+            let (top_pad, bottom_pad) =
+                virtual_sidebar_spacer_heights(rows.len(), &window, stride, gap);
+
+            let rendered_rows: Vec<AnyElement> = rows[window.clone()]
+                .iter()
+                .enumerate()
+                .map(|(offset, row)| {
+                    let global_index = window.start + offset;
+                    let wrapper_height =
+                        sidebar_row_wrapper_height(global_index, rows.len(), row_h, stride);
+                    view! { scale,
+                        <div class="w-full shrink-0 overflow-hidden" h={wrapper_height}>
+                            {render_sidebar_row(*row, state, tc, scale, row_h)}
+                        </div>
+                    }
+                    .into_any()
+                })
+                .collect();
+
+            Some(view! { scale,
+                <div class="flex-1 flex-col" min_h={0.0}
+                     px={Rad::LG} pt={Sp::XXS}
+                     clip scroll_y={scroll_px}
+                     scroll_total={total_height}
+                     on_scroll={ScrollActionBuilder::FileList}>
+                    if top_pad > 0.0 {
+                        <div class="w-full shrink-0" h={top_pad} />
+                    }
+                    {...rendered_rows}
+                    if bottom_pad > 0.0 {
+                        <div class="w-full shrink-0" h={bottom_pad} />
+                    }
+                </div>
+            })
+        }
     };
 
     let commit_box: Option<AnyElement> = if workspace_source == WorkspaceSource::Status {

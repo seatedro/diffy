@@ -3,7 +3,6 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::Duration;
 
-use git2::Repository;
 use notify::event::{EventKind, MetadataKind, ModifyKind};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 
@@ -137,9 +136,9 @@ fn replace_active_watch(
     });
 }
 
-fn watch_paths_for_repo(path: &Path) -> Result<Vec<PathBuf>, git2::Error> {
-    let repo = Repository::open(path)?;
-    let git_dir = repo.path().to_path_buf();
+fn watch_paths_for_repo(path: &Path) -> Result<Vec<PathBuf>, gix::open::Error> {
+    let repo = gix::open(path)?;
+    let git_dir = repo.git_dir().to_path_buf();
     let workdir = repo.workdir().map(Path::to_path_buf);
 
     Ok(match workdir {

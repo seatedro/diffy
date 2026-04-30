@@ -3,17 +3,13 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use git2::{
-    ApplyLocation, BranchType, Diff, DiffFormat, DiffOptions, ObjectType, Oid, Repository,
-    build::CheckoutBuilder,
-};
 use serde::Serialize;
 
-use crate::core::compare::backends::compare_output_from_diff;
+use crate::core::compare::backends::compare_output_from_raw_patch;
 use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::CompareMode;
 use crate::core::error::{DiffyError, Result};
-use crate::core::vcs::git::status::{StatusItem, StatusOperation, StatusScope};
+use crate::core::vcs::git::status::{StatusBits, StatusItem, StatusOperation, StatusScope};
 use crate::core::vcs::github::{GitHubApi, parse_pr_url};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,14 +44,22 @@ pub enum PullOutcome {
     FastForwarded { behind: usize },
 }
 
-fn workdir_is_dirty(repo: &Repository) -> Result<bool> {
-    let mut options = git2::StatusOptions::new();
-    options
-        .include_untracked(false)
-        .recurse_untracked_dirs(false)
-        .include_ignored(false);
-    let statuses = repo.statuses(Some(&mut options))?;
-    Ok(!statuses.is_empty())
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatchApplyTarget {
+    Index,
+    Workdir,
+}
+
+fn workdir_is_dirty(repo_path: &Path) -> Result<bool> {
+    let output = run_system_git_capture(
+        repo_path,
+        &[
+            OsString::from("status"),
+            OsString::from("--porcelain=v1"),
+            OsString::from("--untracked-files=no"),
+        ],
+    )?;
+    Ok(!output.stdout.is_empty())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -97,44 +101,39 @@ pub fn pr_ref_path(pr_number: i32, branch: &str) -> String {
 
 /// Remove stale refs from prior fetches for this PR. Keeps only the targets
 /// the latest fetch wrote, and also cleans up the old `refs/diffy/pull/{N}/*`
-/// scheme we used to use. Uses a prefix filter rather than `references_glob`
-/// because libgit2's glob `*` does not span `/`, which would miss branches
-/// that contain slashes.
-fn prune_stale_pr_refs(repo: &Repository, pr_number: i32, keep_base: &str, keep_head: &str) {
+/// scheme we used to use. Uses a prefix filter so branch names with slashes are
+/// handled exactly instead of relying on glob semantics.
+fn prune_stale_pr_refs(repo_path: &Path, pr_number: i32, keep_base: &str, keep_head: &str) {
     let prefixes = [
         format!("{PR_REF_PREFIX}{pr_number}/"),
         format!("refs/diffy/pull/{pr_number}/"),
     ];
-    let Ok(iter) = repo.references() else {
+    let Ok(output) = run_system_git_capture(
+        repo_path,
+        &[
+            OsString::from("for-each-ref"),
+            OsString::from("--format=%(refname)"),
+        ],
+    ) else {
         return;
     };
-    let stale: Vec<String> = iter
-        .filter_map(|r| r.ok()?.name().map(str::to_owned))
+    let stale: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
         .filter(|name| {
             name != keep_base && name != keep_head && prefixes.iter().any(|p| name.starts_with(p))
         })
         .collect();
     for name in stale {
-        if let Ok(mut r) = repo.find_reference(&name) {
-            let _ = r.delete();
-        }
+        let _ = run_system_git(
+            repo_path,
+            &[
+                OsString::from("update-ref"),
+                OsString::from("-d"),
+                name.into(),
+            ],
+        );
     }
-}
-
-/// Stage a path into the index, handling deletions the way `git add` does:
-/// if the workdir file is missing, remove it from the index instead of
-/// calling `add_path` (which requires the file to exist on disk).
-fn stage_path_into_index(repo: &Repository, index: &mut git2::Index, path: &str) -> Result<()> {
-    let exists = repo
-        .workdir()
-        .map(|wd| wd.join(path).exists())
-        .unwrap_or(false);
-    if exists {
-        index.add_path(Path::new(path))?;
-    } else {
-        index.remove_path(Path::new(path))?;
-    }
-    Ok(())
 }
 
 fn split_lines(text: &str) -> Vec<String> {
@@ -156,24 +155,45 @@ fn split_lines(text: &str) -> Vec<String> {
     out
 }
 
-fn git_workdir(repo: &Repository) -> Result<PathBuf> {
+fn git_workdir(repo: &gix::Repository) -> Result<PathBuf> {
     repo.workdir()
         .map(Path::to_path_buf)
-        .or_else(|| repo.path().parent().map(Path::to_path_buf))
+        .or_else(|| repo.git_dir().parent().map(Path::to_path_buf))
         .ok_or_else(|| DiffyError::General("repository has no working directory".to_owned()))
 }
 
-fn run_system_git(repo: &Repository, args: &[OsString]) -> Result<()> {
-    let workdir = git_workdir(repo)?;
+struct GitOutput {
+    stdout: Vec<u8>,
+}
+
+fn run_system_git(repo_path: &Path, args: &[OsString]) -> Result<()> {
+    run_system_git_inner(repo_path, args, false).map(|_| ())
+}
+
+fn run_system_git_allow_diff(repo_path: &Path, args: &[OsString]) -> Result<GitOutput> {
+    run_system_git_inner(repo_path, args, true)
+}
+
+fn run_system_git_capture(repo_path: &Path, args: &[OsString]) -> Result<GitOutput> {
+    run_system_git_inner(repo_path, args, false)
+}
+
+fn run_system_git_inner(
+    repo_path: &Path,
+    args: &[OsString],
+    allow_diff_exit: bool,
+) -> Result<GitOutput> {
     let output = Command::new("git")
         .args(args)
-        .current_dir(&workdir)
+        .current_dir(repo_path)
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .map_err(|e| DiffyError::General(format!("failed to run git: {e}")))?;
 
-    if output.status.success() {
-        return Ok(());
+    if output.status.success() || (allow_diff_exit && output.status.code() == Some(1)) {
+        return Ok(GitOutput {
+            stdout: output.stdout,
+        });
     }
 
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -193,6 +213,10 @@ fn run_system_git(repo: &Repository, args: &[OsString]) -> Result<()> {
     Err(DiffyError::General(format!(
         "git {command} failed: {detail}"
     )))
+}
+
+fn gix_error(error: impl std::fmt::Display) -> DiffyError {
+    DiffyError::General(format!("Gitoxide error: {error}"))
 }
 
 fn github_repo_key_from_remote_url(url: &str) -> Option<(String, String)> {
@@ -230,11 +254,10 @@ fn github_authority_matches(authority: &str) -> bool {
     host.eq_ignore_ascii_case("github.com")
 }
 
-fn local_remote_names_by_priority(repo: &Repository) -> Option<Vec<String>> {
-    let names = repo.remotes().ok()?;
-    let mut candidates = names
-        .iter()
-        .flatten()
+fn local_remote_names_by_priority(repo_path: &Path) -> Option<Vec<String>> {
+    let output = run_system_git_capture(repo_path, &[OsString::from("remote")]).ok()?;
+    let mut candidates = String::from_utf8_lossy(&output.stdout)
+        .lines()
         .map(str::to_owned)
         .collect::<Vec<_>>();
     candidates.sort_by_key(|name| match name.as_str() {
@@ -245,13 +268,25 @@ fn local_remote_names_by_priority(repo: &Repository) -> Option<Vec<String>> {
     Some(candidates)
 }
 
-fn local_remote_for_github_repo(repo: &Repository, owner: &str, repo_name: &str) -> Option<String> {
+fn remote_url(repo_path: &Path, name: &str) -> Option<String> {
+    let output = run_system_git_capture(
+        repo_path,
+        &[
+            OsString::from("remote"),
+            OsString::from("get-url"),
+            OsString::from(name),
+        ],
+    )
+    .ok()?;
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn local_remote_for_github_repo(repo_path: &Path, owner: &str, repo_name: &str) -> Option<String> {
     let target = (owner.to_ascii_lowercase(), repo_name.to_ascii_lowercase());
-    let candidates = local_remote_names_by_priority(repo)?;
+    let candidates = local_remote_names_by_priority(repo_path)?;
     for name in candidates {
-        if let Ok(remote) = repo.find_remote(&name)
-            && let Some(url) = remote.url()
-            && github_repo_key_from_remote_url(url).as_ref() == Some(&target)
+        if let Some(url) = remote_url(repo_path, &name)
+            && github_repo_key_from_remote_url(&url).as_ref() == Some(&target)
         {
             return Some(name);
         }
@@ -279,12 +314,11 @@ fn github_repo_url_from_remote_transport(url: &str, owner: &str, repo: &str) -> 
     }
 }
 
-fn local_github_url_for_repo(repo: &Repository, owner: &str, repo_name: &str) -> Option<String> {
-    let candidates = local_remote_names_by_priority(repo)?;
+fn local_github_url_for_repo(repo_path: &Path, owner: &str, repo_name: &str) -> Option<String> {
+    let candidates = local_remote_names_by_priority(repo_path)?;
     for name in candidates {
-        if let Ok(remote) = repo.find_remote(&name)
-            && let Some(url) = remote.url()
-            && let Some(fetch_url) = github_repo_url_from_remote_transport(url, owner, repo_name)
+        if let Some(url) = remote_url(repo_path, &name)
+            && let Some(fetch_url) = github_repo_url_from_remote_transport(&url, owner, repo_name)
         {
             return Some(fetch_url);
         }
@@ -301,19 +335,19 @@ fn fallback_pull_request_repo_url(owner: &str, repo: &str, api_clone_url: &str) 
 }
 
 fn github_fetch_source_for_repo(
-    repo: &Repository,
+    repo_path: &Path,
     owner: &str,
     repo_name: &str,
     api_clone_url: &str,
 ) -> String {
-    local_remote_for_github_repo(repo, owner, repo_name)
-        .or_else(|| local_github_url_for_repo(repo, owner, repo_name))
+    local_remote_for_github_repo(repo_path, owner, repo_name)
+        .or_else(|| local_github_url_for_repo(repo_path, owner, repo_name))
         .unwrap_or_else(|| fallback_pull_request_repo_url(owner, repo_name, api_clone_url))
 }
 
 #[derive(Default)]
 pub struct GitService {
-    repo: Option<Repository>,
+    repo: Option<gix::Repository>,
     repo_path: String,
 }
 
@@ -339,9 +373,11 @@ impl GitService {
 
     pub fn open(&mut self, path: &str) -> Result<()> {
         self.close();
-        let repo = Repository::open(path)?;
+        let mut repo = gix::open(path).map_err(gix_error)?;
+        repo.object_cache_size_if_unset(64 * 1024 * 1024);
+        let repo_path = git_workdir(&repo).unwrap_or_else(|_| PathBuf::from(path));
         self.repo = Some(repo);
-        self.repo_path = path.to_owned();
+        self.repo_path = repo_path.to_string_lossy().into_owned();
         Ok(())
     }
 
@@ -359,11 +395,16 @@ impl GitService {
     }
 
     pub fn refs(&self) -> Result<Vec<String>> {
-        let mut refs = self
-            .repo()?
-            .references()?
-            .flatten()
-            .filter_map(|reference| reference.shorthand().map(str::to_owned))
+        let output = run_system_git_capture(
+            self.repo_path_ref()?,
+            &[
+                OsString::from("for-each-ref"),
+                OsString::from("--format=%(refname:short)"),
+            ],
+        )?;
+        let mut refs = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_owned)
             .collect::<Vec<_>>();
         refs.sort();
         refs.dedup();
@@ -371,33 +412,48 @@ impl GitService {
     }
 
     pub fn branches(&self) -> Result<Vec<BranchInfo>> {
-        let repo = self.repo()?;
+        let repo_path = self.repo_path_ref()?;
+        let head = self.head_branch_name()?.unwrap_or_default();
+        let output = run_system_git_capture(
+            repo_path,
+            &[
+                OsString::from("for-each-ref"),
+                OsString::from(
+                    "--format=%(refname)%00%(refname:short)%00%(objectname)%00%(upstream:short)",
+                ),
+                OsString::from("refs/heads"),
+                OsString::from("refs/remotes"),
+            ],
+        )?;
         let mut branches = Vec::new();
-        for branch in repo.branches(None)? {
-            let (branch, branch_type) = branch?;
-            let Some(name) = branch.name()?.map(str::to_owned) else {
+        for line in output.stdout.split(|byte| *byte == b'\n') {
+            if line.is_empty() {
                 continue;
-            };
-            let is_remote = branch_type == BranchType::Remote;
-            let (upstream, ahead_behind) = if is_remote {
-                (None, None)
+            }
+            let fields = line.split(|byte| *byte == 0).collect::<Vec<_>>();
+            if fields.len() < 4 {
+                continue;
+            }
+            let full_name = String::from_utf8_lossy(fields[0]);
+            let name = String::from_utf8_lossy(fields[1]).to_string();
+            if name.ends_with("/HEAD") {
+                continue;
+            }
+            let is_remote = full_name.starts_with("refs/remotes/");
+            let upstream =
+                (!fields[3].is_empty()).then(|| String::from_utf8_lossy(fields[3]).to_string());
+            let ahead_behind = if is_remote {
+                None
+            } else if let Some(upstream) = upstream.as_ref() {
+                graph_ahead_behind(repo_path, &name, upstream).ok()
             } else {
-                let upstream = branch.upstream().ok();
-                let upstream_name = upstream
-                    .as_ref()
-                    .and_then(|u| u.name().ok().flatten().map(str::to_owned));
-                let local_oid = branch.get().target();
-                let upstream_oid = upstream.as_ref().and_then(|u| u.get().target());
-                let counts = match (local_oid, upstream_oid) {
-                    (Some(local), Some(up)) => repo.graph_ahead_behind(local, up).ok(),
-                    _ => None,
-                };
-                (upstream_name, counts)
+                None
             };
+            let is_head = !is_remote && name == head;
             branches.push(BranchInfo {
                 name,
                 is_remote,
-                is_head: branch.is_head(),
+                is_head,
                 upstream,
                 ahead_behind,
             });
@@ -413,19 +469,34 @@ impl GitService {
     }
 
     pub fn tags(&self) -> Result<Vec<TagInfo>> {
-        let repo = self.repo()?;
-        let mut tags = repo
-            .tag_names(None)?
-            .iter()
-            .flatten()
-            .map(|name| TagInfo {
-                name: name.to_owned(),
-                target_oid: repo
-                    .revparse_single(&format!("refs/tags/{name}"))
-                    .ok()
-                    .and_then(|object| object.peel(ObjectType::Commit).ok())
-                    .map(|object| object.id().to_string())
-                    .unwrap_or_default(),
+        let output = run_system_git_capture(
+            self.repo_path_ref()?,
+            &[
+                OsString::from("for-each-ref"),
+                OsString::from("--format=%(refname:short)%00%(*objectname)%00%(objectname)"),
+                OsString::from("refs/tags"),
+            ],
+        )?;
+        let mut tags = output
+            .stdout
+            .split(|byte| *byte == b'\n')
+            .filter_map(|line| {
+                if line.is_empty() {
+                    return None;
+                }
+                let fields = line.split(|byte| *byte == 0).collect::<Vec<_>>();
+                if fields.len() < 3 {
+                    return None;
+                }
+                let peeled = if fields[1].is_empty() {
+                    fields[2]
+                } else {
+                    fields[1]
+                };
+                Some(TagInfo {
+                    name: String::from_utf8_lossy(fields[0]).to_string(),
+                    target_oid: String::from_utf8_lossy(peeled).to_string(),
+                })
             })
             .collect::<Vec<_>>();
         tags.sort_by(|left, right| left.name.cmp(&right.name));
@@ -433,19 +504,10 @@ impl GitService {
     }
 
     pub fn commits(&self, reference: &str, max_count: usize) -> Result<Vec<CommitInfo>> {
-        let repo = self.repo()?;
-        let start_oid = self.resolve_commit_oid(reference)?;
-        let mut walk = repo.revwalk()?;
-        walk.set_sorting(git2::Sort::TIME)?;
-        walk.push(start_oid)?;
-
-        walk.take(max_count)
-            .map(|entry| {
-                entry
-                    .map_err(Into::into)
-                    .and_then(|oid| self.commit_info(repo, oid))
-            })
-            .collect()
+        self.git_log_commits(&[
+            OsString::from(format!("-n{max_count}")),
+            OsString::from(reference),
+        ])
     }
 
     pub fn commits_in_range(
@@ -454,71 +516,44 @@ impl GitService {
         right: &str,
         max_count: usize,
     ) -> Result<Vec<CommitInfo>> {
-        let repo = self.repo()?;
-        let right_oid = self.resolve_commit_oid(right)?;
-        let left_oid = self.resolve_commit_oid(left)?;
-        let mut walk = repo.revwalk()?;
-        walk.set_sorting(git2::Sort::TIME)?;
-        walk.push(right_oid)?;
-        walk.hide(left_oid)?;
-
-        walk.take(max_count)
-            .map(|entry| {
-                entry
-                    .map_err(Into::into)
-                    .and_then(|oid| self.commit_info(repo, oid))
-            })
-            .collect()
+        self.git_log_commits(&[
+            OsString::from(format!("-n{max_count}")),
+            OsString::from(format!("{left}..{right}")),
+        ])
     }
 
     pub fn search_commits(&self, hex_prefix: &str) -> Result<Vec<CommitInfo>> {
         if hex_prefix.len() < 4 {
             return Ok(Vec::new());
         }
-        let repo = self.repo()?;
-        let mut walk = repo.revwalk()?;
-        walk.set_sorting(git2::Sort::TIME)?;
-        walk.push_head()?;
         let prefix = hex_prefix.to_ascii_lowercase();
-        let mut results = Vec::new();
-        for oid in walk.flatten() {
-            if oid.to_string().starts_with(&prefix) {
-                results.push(self.commit_info(repo, oid)?);
-                if results.len() >= 50 {
-                    break;
-                }
-            }
-        }
-        Ok(results)
+        let mut commits =
+            self.git_log_commits(&[OsString::from("-n500"), OsString::from("HEAD")])?;
+        commits.retain(|commit| commit.oid.starts_with(&prefix));
+        commits.truncate(50);
+        Ok(commits)
     }
 
     pub fn resolve_ref(&self, reference: &str) -> Result<String> {
-        Ok(self.resolve_commit_oid(reference)?.to_string())
+        self.resolve_commit_oid(reference)
     }
 
-    fn read_file_bytes_at(&self, reference: &str, path: &str) -> Result<Vec<u8>> {
-        let repo = self.repo()?;
+    pub(crate) fn read_file_bytes_at(&self, reference: &str, path: &str) -> Result<Vec<u8>> {
         let bytes = if reference == WORKDIR_REF {
-            let full = Path::new(&self.repo_path).join(path);
+            let full = self.repo_path_ref()?.join(path);
             std::fs::read(&full)?
-        } else if reference == INDEX_REF {
-            let index = repo.index()?;
-            let entry = index.get_path(Path::new(path), 0).ok_or_else(|| {
-                DiffyError::General(format!("path {path} is not present in the index"))
-            })?;
-            repo.find_blob(entry.id)?.content().to_vec()
         } else {
-            let oid = self.resolve_commit_oid(reference)?;
-            let commit = repo.find_commit(oid)?;
-            let tree = commit.tree()?;
-            let entry = tree.get_path(Path::new(path)).map_err(|_| {
-                DiffyError::General(format!("path {path} is not present at {reference}"))
-            })?;
-            let object = entry.to_object(repo)?;
-            let blob = object.as_blob().ok_or_else(|| {
-                DiffyError::General(format!("path {path} at {reference} is not a blob"))
-            })?;
-            blob.content().to_vec()
+            let spec = if reference == INDEX_REF {
+                format!(":{path}")
+            } else {
+                format!("{}:{path}", self.resolve_commit_oid(reference)?)
+            };
+            run_system_git_capture(
+                self.repo_path_ref()?,
+                &[OsString::from("show"), OsString::from(spec)],
+            )
+            .map_err(|_| DiffyError::General(format!("path {path} is not present at {reference}")))?
+            .stdout
         };
         Ok(bytes)
     }
@@ -559,58 +594,47 @@ impl GitService {
     /// Unified-diff patch text against HEAD suitable for feeding to an LLM
     /// (staged index when `has_staged` is true, else the worktree).
     pub fn diff_for_commit(&self, has_staged: bool) -> Result<String> {
-        let repo = self.repo()?;
-        let mut options = DiffOptions::new();
-        options.context_lines(3);
-
-        let diff = if has_staged {
-            let mut index = repo.index()?;
-            let head_tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
-            repo.diff_tree_to_index(head_tree.as_ref(), Some(&mut index), Some(&mut options))?
-        } else {
-            options.include_untracked(true);
-            options.recurse_untracked_dirs(true);
-            let mut index = repo.index()?;
-            repo.diff_index_to_workdir(Some(&mut index), Some(&mut options))?
-        };
-
-        let mut patch = String::new();
-        diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
-            let prefix = match line.origin() {
-                '+' | '-' | ' ' => Some(line.origin()),
-                _ => None,
-            };
-            if let Some(p) = prefix {
-                patch.push(p);
-            }
-            patch.push_str(std::str::from_utf8(line.content()).unwrap_or_default());
-            true
-        })?;
-        Ok(patch)
+        let mut args = vec![
+            OsString::from("diff"),
+            OsString::from("--no-ext-diff"),
+            OsString::from("--src-prefix=a/"),
+            OsString::from("--dst-prefix=b/"),
+        ];
+        if has_staged {
+            args.push(OsString::from("--cached"));
+        }
+        let output = run_system_git_allow_diff(self.repo_path_ref()?, &args)?;
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
     pub fn diff_status_item(&self, item: &StatusItem) -> Result<CompareOutput> {
-        let repo = self.repo()?;
-        let mut options = DiffOptions::new();
-        options.context_lines(3);
-        options.pathspec(&item.path);
+        let patch = self.status_item_patch(item)?;
+        compare_output_from_raw_patch(&patch)
+    }
 
-        let mut diff = match item.scope {
-            StatusScope::Staged => {
-                let mut index = repo.index()?;
-                let head_tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
-                repo.diff_tree_to_index(head_tree.as_ref(), Some(&mut index), Some(&mut options))?
+    pub fn status_item_patch(&self, item: &StatusItem) -> Result<String> {
+        let mut args = vec![
+            OsString::from("diff"),
+            OsString::from("--no-ext-diff"),
+            OsString::from("--src-prefix=a/"),
+            OsString::from("--dst-prefix=b/"),
+        ];
+        match item.scope {
+            StatusScope::Staged => args.push(OsString::from("--cached")),
+            StatusScope::Unstaged => {}
+            StatusScope::Untracked => {
+                args.push(OsString::from("--no-index"));
+                args.push(OsString::from("--"));
+                args.push(OsString::from("/dev/null"));
+                args.push(OsString::from(self.repo_path_ref()?.join(&item.path)));
+                let output = run_system_git_allow_diff(self.repo_path_ref()?, &args)?;
+                return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
             }
-            StatusScope::Unstaged | StatusScope::Untracked => {
-                options.include_untracked(true);
-                options.recurse_untracked_dirs(true);
-                let mut index = repo.index()?;
-                repo.diff_index_to_workdir(Some(&mut index), Some(&mut options))?
-            }
-        };
-
-        // Status-item diff is a single file; no progress UI hook needed.
-        compare_output_from_diff(&mut diff, None)
+        }
+        args.push(OsString::from("--"));
+        args.push(OsString::from(&item.path));
+        let output = run_system_git_allow_diff(self.repo_path_ref()?, &args)?;
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
     pub fn apply_status_operation(
@@ -630,54 +654,38 @@ impl GitService {
         items: &[StatusItem],
         operation: StatusOperation,
     ) -> Result<()> {
-        match operation {
-            StatusOperation::Stage => {
-                let repo = self.repo()?;
-                let mut index = repo.index()?;
-                for item in items {
-                    stage_path_into_index(&repo, &mut index, &item.path)?;
-                }
-                index.write()?;
-                Ok(())
-            }
-            StatusOperation::Unstage => {
-                let repo = self.repo()?;
-                let head = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
-                let head_object = head.as_ref().map(|c| c.as_object());
-                let paths: Vec<&Path> = items.iter().map(|i| Path::new(i.path.as_str())).collect();
-                repo.reset_default(head_object, paths)?;
-                Ok(())
-            }
-            StatusOperation::Discard => {
-                for item in items {
-                    self.discard_path(&item.path)?;
-                }
-                Ok(())
-            }
+        for item in items {
+            self.apply_status_operation(item, operation)?;
         }
+        Ok(())
     }
 
     pub fn abbreviate_oid(&self, full_oid: &str) -> Result<String> {
-        let oid = Oid::from_str(full_oid)?;
-        let short = self.repo()?.find_object(oid, None)?.short_id()?;
-        Ok(short.as_str().unwrap_or(full_oid).to_owned())
+        Ok(fixed_short_oid(full_oid).to_owned())
     }
 
     pub fn resolve_oid_to_branch_name(&self, oid_hex: &str) -> Result<String> {
         if oid_hex.len() != 40 {
             return Ok(String::new());
         }
-        let target = Oid::from_str(oid_hex)?;
-        for branch in self.repo()?.branches(Some(BranchType::Local))? {
-            let (branch, _) = branch?;
-            let Some(name) = branch.name()?.map(str::to_owned) else {
+        let output = run_system_git_capture(
+            self.repo_path_ref()?,
+            &[
+                OsString::from("for-each-ref"),
+                OsString::from("--format=%(refname:short)%00%(objectname)"),
+                OsString::from("refs/heads"),
+            ],
+        )?;
+        for line in output.stdout.split(|byte| *byte == b'\n') {
+            if line.is_empty() {
                 continue;
-            };
-            let Some(branch_oid) = branch.into_reference().resolve()?.target() else {
+            }
+            let fields = line.split(|byte| *byte == 0).collect::<Vec<_>>();
+            if fields.len() < 2 {
                 continue;
-            };
-            if branch_oid == target {
-                return Ok(name);
+            }
+            if fields[1] == oid_hex.as_bytes() {
+                return Ok(String::from_utf8_lossy(fields[0]).to_string());
             }
         }
         Ok(String::new())
@@ -689,7 +697,6 @@ impl GitService {
         right_ref: &str,
         mode: CompareMode,
     ) -> Result<(String, String)> {
-        let repo = self.repo()?;
         match mode {
             CompareMode::SingleCommit => {
                 let commit_ref = if right_ref.is_empty() {
@@ -703,11 +710,10 @@ impl GitService {
                     ));
                 }
                 let right_oid = self.resolve_commit_oid(commit_ref)?;
-                let commit = repo.find_commit(right_oid)?;
-                let parent = commit.parent(0).map_err(|_| {
+                let parent = first_parent(self.repo()?, &right_oid).ok_or_else(|| {
                     DiffyError::Parse("cannot diff the root commit in commit mode yet".to_owned())
                 })?;
-                Ok((parent.id().to_string(), commit.id().to_string()))
+                Ok((parent, right_oid))
             }
             CompareMode::TwoDot | CompareMode::ThreeDot => {
                 if left_ref.is_empty() || right_ref.is_empty() {
@@ -717,20 +723,45 @@ impl GitService {
                 }
                 if right_ref == WORKDIR_REF {
                     let left_oid = self.resolve_commit_oid(left_ref)?;
-                    return Ok((left_oid.to_string(), WORKDIR_REF.to_owned()));
+                    return Ok((left_oid, WORKDIR_REF.to_owned()));
                 }
                 let mut left_oid = self.resolve_commit_oid(left_ref)?;
                 let right_oid = self.resolve_commit_oid(right_ref)?;
                 if mode == CompareMode::ThreeDot {
-                    left_oid = repo.merge_base(left_oid, right_oid)?;
+                    left_oid = merge_base(self.repo()?, &left_oid, &right_oid)?;
                 }
-                Ok((left_oid.to_string(), right_oid.to_string()))
+                Ok((left_oid, right_oid))
             }
         }
     }
 
     pub fn diff_two_refs(&self, left: &str, right: &str) -> Result<String> {
         self.diff_between_refs(left, right)
+    }
+
+    #[cfg_attr(not(feature = "difftastic"), allow(dead_code))]
+    pub(crate) fn diff_name_status(
+        &self,
+        left: &str,
+        right: &str,
+        only_path: Option<&str>,
+    ) -> Result<Vec<(String, Option<String>, Option<String>)>> {
+        let mut args = vec![
+            OsString::from("diff"),
+            OsString::from("--name-status"),
+            OsString::from("-z"),
+            OsString::from("--find-renames"),
+            OsString::from(self.resolve_commit_oid(left)?),
+        ];
+        if right != WORKDIR_REF {
+            args.push(OsString::from(self.resolve_commit_oid(right)?));
+        }
+        if let Some(path) = only_path {
+            args.push(OsString::from("--"));
+            args.push(OsString::from(path));
+        }
+        let output = run_system_git_allow_diff(self.repo_path_ref()?, &args)?;
+        Ok(parse_name_status(&output.stdout))
     }
 
     pub fn diff_three_refs(&self, left: &str, right: &str) -> Result<String> {
@@ -745,12 +776,11 @@ impl GitService {
     }
 
     fn fetch_refspecs(&self, repo_url: &str, refspecs: &[String]) -> Result<()> {
-        let repo = self.repo()?;
         let mut args = Vec::with_capacity(refspecs.len() + 2);
         args.push(OsString::from("fetch"));
         args.push(OsString::from(repo_url));
         args.extend(refspecs.iter().map(OsString::from));
-        run_system_git(repo, &args)
+        run_system_git(self.repo_path_ref()?, &args)
     }
 
     /// Fetch a named remote using the remote's configured refspecs.
@@ -758,49 +788,54 @@ impl GitService {
     where
         F: FnMut(usize, usize, usize) + Send + 'static,
     {
-        let repo = self.repo()?;
         run_system_git(
-            repo,
+            self.repo_path_ref()?,
             &[OsString::from("fetch"), OsString::from(remote_name)],
         )
     }
 
     /// List the names of configured remotes (e.g. `["origin"]`).
     pub fn remote_names(&self) -> Result<Vec<String>> {
-        let repo = self.repo()?;
-        let names = repo.remotes()?;
-        Ok(names.iter().flatten().map(str::to_owned).collect())
+        let output = run_system_git_capture(self.repo_path_ref()?, &[OsString::from("remote")])?;
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect())
     }
 
     /// Name of the current HEAD branch (no `refs/heads/` prefix), if HEAD is on
     /// a branch (not detached).
     pub fn head_branch_name(&self) -> Result<Option<String>> {
-        let repo = self.repo()?;
-        let head = match repo.head() {
-            Ok(head) => head,
-            Err(_) => return Ok(None),
-        };
-        if !head.is_branch() {
-            return Ok(None);
-        }
-        Ok(head.shorthand().map(str::to_owned))
+        let output = run_system_git_capture(
+            self.repo_path_ref()?,
+            &[
+                OsString::from("symbolic-ref"),
+                OsString::from("--quiet"),
+                OsString::from("--short"),
+                OsString::from("HEAD"),
+            ],
+        );
+        Ok(output
+            .ok()
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+            .filter(|name| !name.is_empty()))
     }
 
     /// Returns `(upstream_remote, upstream_branch)` for a local branch if
     /// configured. e.g. `("origin", "main")`.
     pub fn upstream_for(&self, local_branch: &str) -> Result<Option<(String, String)>> {
-        let repo = self.repo()?;
-        let branch = match repo.find_branch(local_branch, BranchType::Local) {
-            Ok(branch) => branch,
-            Err(_) => return Ok(None),
-        };
-        let upstream = match branch.upstream() {
-            Ok(upstream) => upstream,
-            Err(_) => return Ok(None),
-        };
-        let Some(upstream_name) = upstream.name()?.map(str::to_owned) else {
+        let output = run_system_git_capture(
+            self.repo_path_ref()?,
+            &[
+                OsString::from("rev-parse"),
+                OsString::from("--abbrev-ref"),
+                OsString::from(format!("{local_branch}@{{upstream}}")),
+            ],
+        );
+        let Ok(output) = output else {
             return Ok(None);
         };
+        let upstream_name = String::from_utf8_lossy(&output.stdout).trim().to_owned();
         // Upstream shorthand is `<remote>/<branch>`. Split on first `/`.
         let Some((remote, branch)) = upstream_name.split_once('/') else {
             return Ok(None);
@@ -820,7 +855,6 @@ impl GitService {
     where
         F: FnMut(usize, usize, usize) + Send + 'static,
     {
-        let repo = self.repo()?;
         let mut args = Vec::with_capacity(4);
         args.push(OsString::from("push"));
         if force_with_lease {
@@ -828,7 +862,7 @@ impl GitService {
         }
         args.push(OsString::from(remote_name));
         args.push(OsString::from(refspec));
-        run_system_git(repo, &args)
+        run_system_git(self.repo_path_ref()?, &args)
     }
 
     /// Fast-forward the named local branch to match its upstream on the given
@@ -851,62 +885,56 @@ impl GitService {
     {
         self.fetch_remote(remote_name, progress)
             .map_err(|e| PullError::Other(e.to_string()))?;
-        let repo = self.repo().map_err(|e| PullError::Other(e.to_string()))?;
-        let upstream_shorthand = format!("{remote_name}/{local_branch}");
-        let upstream = repo
-            .find_branch(&upstream_shorthand, BranchType::Remote)
-            .map_err(|_| PullError::NoUpstream)?;
-        let upstream_oid = upstream.get().target().ok_or(PullError::NoUpstream)?;
-
-        let mut local_branch_ref = repo
-            .find_branch(local_branch, BranchType::Local)
+        let repo_path = self
+            .repo_path_ref()
             .map_err(|e| PullError::Other(e.to_string()))?;
-        let local_oid = local_branch_ref
-            .get()
-            .target()
-            .ok_or_else(|| PullError::Other("local branch has no target".to_owned()))?;
+        let upstream_shorthand = format!("{remote_name}/{local_branch}");
+        let upstream_oid = resolve_commit_oid_at(repo_path, &upstream_shorthand)
+            .map_err(|_| PullError::NoUpstream)?;
+        let local_oid = resolve_commit_oid_at(repo_path, local_branch)
+            .map_err(|e| PullError::Other(e.to_string()))?;
 
         if local_oid == upstream_oid {
             return Ok(PullOutcome::AlreadyUpToDate);
         }
 
-        let (ahead, behind) = repo
-            .graph_ahead_behind(local_oid, upstream_oid)
+        let (ahead, behind) = graph_ahead_behind(repo_path, local_branch, &upstream_shorthand)
             .map_err(|e| PullError::Other(e.to_string()))?;
         if ahead > 0 {
             return Err(PullError::NonFastForward { ahead, behind });
         }
 
-        let head_is_this_branch = repo
-            .head()
-            .ok()
-            .and_then(|h| h.shorthand().map(str::to_owned))
+        let head_is_this_branch = self
+            .head_branch_name()
+            .map_err(|e| PullError::Other(e.to_string()))?
             .as_deref()
             == Some(local_branch);
 
         if head_is_this_branch {
-            let dirty = workdir_is_dirty(repo).map_err(|e| PullError::Other(e.to_string()))?;
+            let dirty = workdir_is_dirty(repo_path).map_err(|e| PullError::Other(e.to_string()))?;
             if dirty {
                 return Err(PullError::DirtyWorkdir);
             }
-            let target_commit = repo
-                .find_object(upstream_oid, Some(ObjectType::Commit))
-                .map_err(|e| PullError::Other(e.to_string()))?;
-            let mut checkout = CheckoutBuilder::new();
-            checkout.safe();
-            repo.checkout_tree(&target_commit, Some(&mut checkout))
-                .map_err(|e| PullError::Other(e.to_string()))?;
-        }
-
-        let reflog_msg = format!("diffy: fast-forward to {upstream_shorthand}");
-        local_branch_ref
-            .get_mut()
-            .set_target(upstream_oid, &reflog_msg)
+            run_system_git(
+                repo_path,
+                &[
+                    OsString::from("merge"),
+                    OsString::from("--ff-only"),
+                    OsString::from(&upstream_shorthand),
+                ],
+            )
             .map_err(|e| PullError::Other(e.to_string()))?;
-
-        if head_is_this_branch {
-            repo.set_head(&format!("refs/heads/{local_branch}"))
-                .map_err(|e| PullError::Other(e.to_string()))?;
+        } else {
+            run_system_git(
+                repo_path,
+                &[
+                    OsString::from("branch"),
+                    OsString::from("-f"),
+                    OsString::from(local_branch),
+                    OsString::from(&upstream_shorthand),
+                ],
+            )
+            .map_err(|e| PullError::Other(e.to_string()))?;
         }
 
         Ok(PullOutcome::FastForwarded { behind })
@@ -921,9 +949,12 @@ impl GitService {
             .ok_or_else(|| DiffyError::Parse("not a valid GitHub pull request URL".to_owned()))?;
         let api = GitHubApi::with_token(github_token.to_owned());
         let info = api.fetch_pull_request(&parsed.owner, &parsed.repo, parsed.number)?;
-        let repo = self.repo()?;
-        let fetch_source =
-            github_fetch_source_for_repo(repo, &parsed.owner, &parsed.repo, &info.base_repo_url);
+        let fetch_source = github_fetch_source_for_repo(
+            self.repo_path_ref()?,
+            &parsed.owner,
+            &parsed.repo,
+            &info.base_repo_url,
+        );
         let base_source = if info.base_sha.is_empty() {
             format!("refs/heads/{}", info.base_branch)
         } else {
@@ -939,130 +970,316 @@ impl GitService {
                 format!("+{head_source}:{head_target}"),
             ],
         )?;
-        prune_stale_pr_refs(repo, parsed.number, &base_target, &head_target);
+        prune_stale_pr_refs(
+            self.repo_path_ref()?,
+            parsed.number,
+            &base_target,
+            &head_target,
+        );
         Ok((base_target, head_target))
     }
 
     fn diff_between_refs(&self, left: &str, right: &str) -> Result<String> {
-        let repo = self.repo()?;
-        let left_commit = repo.find_commit(self.resolve_commit_oid(left)?)?;
-        let left_tree = left_commit.tree()?;
-
-        let mut options = DiffOptions::new();
-        options.context_lines(3);
-
-        let diff = if right == WORKDIR_REF {
-            let mut diff =
-                repo.diff_tree_to_workdir_with_index(Some(&left_tree), Some(&mut options))?;
-            diff.find_similar(None)?;
-            diff
-        } else {
-            let right_commit = repo.find_commit(self.resolve_commit_oid(right)?)?;
-            let right_tree = right_commit.tree()?;
-            let mut diff =
-                repo.diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(&mut options))?;
-            diff.find_similar(None)?;
-            diff
-        };
-
-        let mut patch = String::new();
-        diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
-            patch.push_str(std::str::from_utf8(line.content()).unwrap_or_default());
-            true
-        })?;
-        Ok(patch)
+        let mut args = vec![
+            OsString::from("diff"),
+            OsString::from("--no-ext-diff"),
+            OsString::from("--find-renames"),
+            OsString::from("--src-prefix=a/"),
+            OsString::from("--dst-prefix=b/"),
+            OsString::from(self.resolve_commit_oid(left)?),
+        ];
+        if right != WORKDIR_REF {
+            args.push(OsString::from(self.resolve_commit_oid(right)?));
+        }
+        let output = run_system_git_allow_diff(self.repo_path_ref()?, &args)?;
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
-    pub fn resolve_commit_oid(&self, reference: &str) -> Result<Oid> {
-        let object = self.repo()?.revparse_single(reference)?;
-        Ok(object.peel(ObjectType::Commit)?.id())
+    pub fn resolve_commit_oid(&self, reference: &str) -> Result<String> {
+        let id = self
+            .repo()?
+            .rev_parse_single(reference)
+            .map_err(gix_error)?
+            .object()
+            .map_err(gix_error)?
+            .peel_to_commit()
+            .map_err(gix_error)?
+            .id
+            .to_string();
+        Ok(id)
     }
 
-    fn commit_info(&self, repo: &Repository, oid: Oid) -> Result<CommitInfo> {
-        let commit = repo.find_commit(oid)?;
-        let oid = oid.to_string();
-        Ok(CommitInfo {
-            short_oid: fixed_short_oid(&oid).to_owned(),
-            oid,
-            summary: commit.summary().unwrap_or_default().to_owned(),
-            author_name: commit.author().name().unwrap_or_default().to_owned(),
-            timestamp: commit.time().seconds(),
-        })
-    }
-
-    pub fn repo(&self) -> Result<&Repository> {
+    pub fn repo(&self) -> Result<&gix::Repository> {
         self.repo
             .as_ref()
             .ok_or_else(|| DiffyError::General("repository is not open".to_owned()))
     }
 
-    pub fn commit(&self, message: &str) -> Result<Oid> {
-        let repo = self.repo()?;
-        let mut index = repo.index()?;
-        let tree_id = index.write_tree()?;
-        let tree = repo.find_tree(tree_id)?;
-        let signature = repo.signature()?;
-        let parents = repo
-            .head()
-            .ok()
-            .and_then(|head| head.target())
-            .map(|oid| repo.find_commit(oid))
-            .transpose()?;
-        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
-        let oid = repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            message,
-            &tree,
-            &parent_refs,
+    fn repo_path_ref(&self) -> Result<&Path> {
+        if self.repo_path.is_empty() {
+            return Err(DiffyError::General("repository is not open".to_owned()));
+        }
+        Ok(Path::new(&self.repo_path))
+    }
+
+    pub fn commit(&self, message: &str) -> Result<String> {
+        run_system_git(
+            self.repo_path_ref()?,
+            &[
+                OsString::from("commit"),
+                OsString::from("-m"),
+                OsString::from(message),
+            ],
         )?;
-        Ok(oid)
+        self.resolve_ref("HEAD")
     }
 
     fn stage_path(&self, path: &str) -> Result<()> {
-        let repo = self.repo()?;
-        let mut index = repo.index()?;
-        stage_path_into_index(&repo, &mut index, path)?;
-        index.write()?;
-        Ok(())
+        run_system_git(
+            self.repo_path_ref()?,
+            &[
+                OsString::from("add"),
+                OsString::from("--"),
+                OsString::from(path),
+            ],
+        )
     }
 
     fn unstage_path(&self, path: &str) -> Result<()> {
-        let repo = self.repo()?;
-        let head = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
-        let head_object = head.as_ref().map(|commit| commit.as_object());
-        repo.reset_default(head_object, [Path::new(path)])?;
-        Ok(())
+        run_system_git(
+            self.repo_path_ref()?,
+            &[
+                OsString::from("reset"),
+                OsString::from("--"),
+                OsString::from(path),
+            ],
+        )
     }
 
     fn discard_path(&self, path: &str) -> Result<()> {
-        let repo = self.repo()?;
-        let mut checkout = CheckoutBuilder::new();
-        checkout.path(path).force().remove_untracked(true);
-
-        let head = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
-        let head_object = head.as_ref().map(|commit| commit.as_object());
-        repo.reset_default(head_object, [Path::new(path)])?;
-
-        let mut index = repo.index()?;
-        repo.checkout_index(Some(&mut index), Some(&mut checkout))?;
-        Ok(())
-    }
-
-    pub fn apply_patch(&self, patch_text: &str, location: ApplyLocation) -> Result<()> {
-        let repo = self.repo()?;
-        let diff = Diff::from_buffer(patch_text.as_bytes())?;
-        repo.apply(&diff, location, None)?;
-        // Defensive: older libgit2 builds of git_apply mutate the index only
-        // in-memory; without an explicit write a subsequent apply can reject
-        // patches because a fresh repo handle loads the stale on-disk index.
-        if matches!(location, ApplyLocation::Index | ApplyLocation::Both) {
-            let mut index = repo.index()?;
-            index.write()?;
+        let absolute = self.repo_path_ref()?.join(path);
+        if !is_path_tracked(self.repo_path_ref()?, path)? {
+            match std::fs::remove_file(&absolute) {
+                Ok(()) => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(error.into()),
+            }
         }
-        Ok(())
+        run_system_git(
+            self.repo_path_ref()?,
+            &[
+                OsString::from("restore"),
+                OsString::from("--staged"),
+                OsString::from("--worktree"),
+                OsString::from("--"),
+                OsString::from(path),
+            ],
+        )
     }
+
+    pub fn apply_patch(&self, patch_text: &str, target: PatchApplyTarget) -> Result<()> {
+        let mut child = Command::new("git")
+            .args(match target {
+                PatchApplyTarget::Index => ["apply", "--cached"].as_slice(),
+                PatchApplyTarget::Workdir => ["apply"].as_slice(),
+            })
+            .current_dir(self.repo_path_ref()?)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| DiffyError::General(format!("failed to run git apply: {e}")))?;
+        use std::io::Write;
+        child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| DiffyError::General("failed to open git apply stdin".to_owned()))?
+            .write_all(patch_text.as_bytes())?;
+        let output = child.wait_with_output()?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(DiffyError::General(format!(
+                "git apply failed: {}",
+                stderr.trim()
+            )))
+        }
+    }
+
+    pub fn status_entries(&self) -> Result<Vec<(String, StatusBits)>> {
+        let output = run_system_git_capture(
+            self.repo_path_ref()?,
+            &[
+                OsString::from("status"),
+                OsString::from("--porcelain=v1"),
+                OsString::from("-z"),
+                OsString::from("--untracked-files=all"),
+            ],
+        )?;
+        Ok(parse_porcelain_status(&output.stdout))
+    }
+
+    fn git_log_commits(&self, rev_args: &[OsString]) -> Result<Vec<CommitInfo>> {
+        let mut args = vec![
+            OsString::from("log"),
+            OsString::from("--date-order"),
+            OsString::from("--format=%H%x00%h%x00%s%x00%an%x00%ct"),
+        ];
+        args.extend_from_slice(rev_args);
+        let output = run_system_git_capture(self.repo_path_ref()?, &args)?;
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(parse_commit_info_line)
+            .collect())
+    }
+}
+
+fn parse_commit_info_line(line: &str) -> Option<CommitInfo> {
+    let mut fields = line.split('\0');
+    let oid = fields.next()?.to_owned();
+    let short_oid = fields
+        .next()
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| fixed_short_oid(&oid).to_owned());
+    let summary = fields.next().unwrap_or_default().to_owned();
+    let author_name = fields.next().unwrap_or_default().to_owned();
+    let timestamp = fields
+        .next()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    Some(CommitInfo {
+        oid,
+        short_oid,
+        summary,
+        author_name,
+        timestamp,
+    })
+}
+
+fn parse_porcelain_status(bytes: &[u8]) -> Vec<(String, StatusBits)> {
+    let mut out = Vec::new();
+    let mut fields = bytes.split(|byte| *byte == 0);
+    while let Some(entry) = fields.next() {
+        if entry.is_empty() || entry.len() < 4 {
+            continue;
+        }
+        let x = entry[0] as char;
+        let y = entry[1] as char;
+        let path = String::from_utf8_lossy(&entry[3..]).to_string();
+        if x == 'R' || x == 'C' || y == 'R' || y == 'C' {
+            let _old_path = fields.next();
+        }
+        out.push((path, status_bits_from_xy(x, y)));
+    }
+    out
+}
+
+#[cfg_attr(not(feature = "difftastic"), allow(dead_code))]
+fn parse_name_status(bytes: &[u8]) -> Vec<(String, Option<String>, Option<String>)> {
+    let mut out = Vec::new();
+    let mut fields = bytes
+        .split(|byte| *byte == 0)
+        .filter(|field| !field.is_empty());
+    while let Some(status_bytes) = fields.next() {
+        let status = String::from_utf8_lossy(status_bytes).to_string();
+        let Some(first_path) = fields.next() else {
+            break;
+        };
+        let first = String::from_utf8_lossy(first_path).to_string();
+        if status.starts_with('R') || status.starts_with('C') {
+            let Some(second_path) = fields.next() else {
+                break;
+            };
+            out.push((
+                "R".to_owned(),
+                Some(first),
+                Some(String::from_utf8_lossy(second_path).to_string()),
+            ));
+        } else {
+            let label = status.chars().next().unwrap_or('M').to_string();
+            let old_path = (label != "A").then(|| first.clone());
+            let new_path = (label != "D").then_some(first);
+            out.push((label, old_path, new_path));
+        }
+    }
+    out
+}
+
+fn status_bits_from_xy(x: char, y: char) -> StatusBits {
+    let mut bits = StatusBits::default();
+    match x {
+        'A' => bits |= StatusBits::INDEX_NEW,
+        'M' => bits |= StatusBits::INDEX_MODIFIED,
+        'D' => bits |= StatusBits::INDEX_DELETED,
+        'R' | 'C' => bits |= StatusBits::INDEX_RENAMED,
+        'T' => bits |= StatusBits::INDEX_TYPECHANGE,
+        'U' => bits |= StatusBits::CONFLICTED,
+        '?' => bits |= StatusBits::WT_NEW,
+        _ => {}
+    }
+    match y {
+        '?' => bits |= StatusBits::WT_NEW,
+        'M' => bits |= StatusBits::WT_MODIFIED,
+        'D' => bits |= StatusBits::WT_DELETED,
+        'R' | 'C' => bits |= StatusBits::WT_RENAMED,
+        'T' => bits |= StatusBits::WT_TYPECHANGE,
+        'U' => bits |= StatusBits::CONFLICTED,
+        _ => {}
+    }
+    bits
+}
+
+fn graph_ahead_behind(repo_path: &Path, left: &str, right: &str) -> Result<(usize, usize)> {
+    let output = run_system_git_capture(
+        repo_path,
+        &[
+            OsString::from("rev-list"),
+            OsString::from("--left-right"),
+            OsString::from("--count"),
+            OsString::from(format!("{left}...{right}")),
+        ],
+    )?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut fields = text.split_whitespace();
+    let ahead = fields.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let behind = fields.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    Ok((ahead, behind))
+}
+
+fn resolve_commit_oid_at(repo_path: &Path, reference: &str) -> Result<String> {
+    let output = run_system_git_capture(
+        repo_path,
+        &[
+            OsString::from("rev-parse"),
+            OsString::from(format!("{reference}^{{commit}}")),
+        ],
+    )?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn merge_base(repo: &gix::Repository, left: &str, right: &str) -> Result<String> {
+    let left = gix::ObjectId::from_hex(left.as_bytes()).map_err(gix_error)?;
+    let right = gix::ObjectId::from_hex(right.as_bytes()).map_err(gix_error)?;
+    Ok(repo.merge_base(left, right).map_err(gix_error)?.to_string())
+}
+
+fn first_parent(repo: &gix::Repository, oid: &str) -> Option<String> {
+    let oid = gix::ObjectId::from_hex(oid.as_bytes()).ok()?;
+    let commit = repo.find_commit(oid).ok()?;
+    commit.parent_ids().next().map(|id| id.to_string())
+}
+
+fn is_path_tracked(repo_path: &Path, path: &str) -> Result<bool> {
+    let output = Command::new("git")
+        .args(["ls-files", "--error-unmatch", "--", path])
+        .current_dir(repo_path)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|e| DiffyError::General(format!("failed to run git: {e}")))?;
+    Ok(output.status.success())
 }
 
 fn fixed_short_oid(oid: &str) -> &str {

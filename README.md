@@ -33,10 +33,36 @@ Clone repo with submodules
 git clone git@github.com:seatedro/diffy.git --recursive
 ```
 
+For an existing or fresh checkout without initialized submodules, run:
+
+```bash
+git submodule update --init --recursive
+```
+
+Linux builds may also need the D-Bus development package used by the existing secret-service/keyring dependency path:
+
+```bash
+sudo apt-get install libdbus-1-dev pkg-config
+```
+
 ```bash
 cargo build
 cargo run
 ```
+
+To verify a self-compare against the latest two tags, run:
+
+```bash
+scripts/compare-latest-tags.sh
+```
+
+The direct equivalent is:
+
+```bash
+cargo run -- --repo . --left v0.1.3 --right v0.1.4 --compare-mode two-dot
+```
+
+This workflow was verified with `v0.1.3` → `v0.1.4`: Diffy loaded 14 changed files and rendered `Cargo.lock` in unified diff.
 
 ## Development
 

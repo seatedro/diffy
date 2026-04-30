@@ -1,9 +1,11 @@
 [target.aarch64-apple-darwin]
 linker = "clang"
+runner = "./scripts/cargo-run-signed-macos.sh"
 rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 
 [target.x86_64-apple-darwin]
 linker = "clang"
+runner = "./scripts/cargo-run-signed-macos.sh"
 rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 
 [target.x86_64-unknown-linux-gnu]

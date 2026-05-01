@@ -142,6 +142,19 @@ risk crosses module boundaries.
 - Hot reload UI iteration: `dx serve --hot-patch --features hot-reload`
 - Packaging/release smoke check: `cargo build --release`
 
+For GUI validation, use the global `$cua` skill and CLI when available. Prefer
+the one-shot path for screenshots:
+
+```bash
+cua capture --window "diffy native" --path /tmp/cua/diffy.png --upload -- \
+  env WINIT_UNIX_BACKEND=x11 WGPU_BACKEND=vulkan LIBGL_ALWAYS_SOFTWARE=1 \
+  target/debug/diffy --repo <repo-with-diff> --file-path <path>
+```
+
+Use `cua start`, `cua launch`, `cua wait-window`, `cua shot-window`, and
+`cua upload` for interactive UI loops. Keep captures under `/tmp/cua/` so
+validation does not dirty the repository.
+
 If a command cannot be run in the current environment, say so in the final
 response and explain what was not verified.
 

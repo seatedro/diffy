@@ -265,7 +265,12 @@ impl AppServices {
             });
         }
 
-        Ok(CompareFileStatsReady { generation, stats })
+        Ok(CompareFileStatsReady {
+            generation,
+            stats,
+            request_complete: true,
+            requested_at_ms: request.requested_at_ms,
+        })
     }
 
     pub fn load_file_syntax(

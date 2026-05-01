@@ -1,3 +1,4 @@
+mod compare;
 mod git_worker;
 pub mod progress;
 mod runtime;

@@ -18,10 +18,21 @@ pub struct CompareRequest {
     pub github_token: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompareWorkPriority {
+    InteractiveSelectedFile,
+    VisibleSidebarStats,
+    VisibleViewportDiff,
+    Overscan,
+    TotalStats,
+    Warmup,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompareStatsRequest {
     pub repo_path: PathBuf,
     pub spec: CompareSpec,
+    pub priority: CompareWorkPriority,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +49,7 @@ pub struct CompareFileRequest {
     pub path: String,
     pub index: usize,
     pub deferred_file: Option<carbon::FileDiff>,
+    pub priority: CompareWorkPriority,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +62,8 @@ pub struct CompareFileStatsItem {
 pub struct CompareFileStatsRequest {
     pub repo_path: PathBuf,
     pub files: Vec<CompareFileStatsItem>,
+    pub priority: CompareWorkPriority,
+    pub requested_at_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

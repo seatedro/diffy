@@ -746,6 +746,14 @@ fn update_continuous_slot_heights(
 ) -> bool {
     let mut changed = false;
     for (position_index, slot_index) in continuous.slot_indices.iter().copied().enumerate() {
+        if continuous
+            .slot_loading
+            .get(position_index)
+            .copied()
+            .unwrap_or(false)
+        {
+            continue;
+        }
         let Some(start) = editor_snap.file_positions.get(position_index).copied() else {
             continue;
         };

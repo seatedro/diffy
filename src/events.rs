@@ -78,6 +78,8 @@ pub struct CompareFileStat {
 pub struct CompareFileStatsReady {
     pub generation: u64,
     pub stats: Vec<CompareFileStat>,
+    pub request_complete: bool,
+    pub requested_at_ms: u64,
 }
 
 #[derive(Debug, Clone)]

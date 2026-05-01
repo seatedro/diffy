@@ -39,9 +39,10 @@ use crate::editor::Editor;
 use crate::effects::{
     AiEffect, BatchStatusOperationRequest, CommitRequest, CompareEffect, CompareFileRequest,
     CompareFileStatsItem, CompareFileStatsRequest, CompareHistoryRequest, CompareRequest,
-    CompareStatsRequest, Effect, FetchRemoteRequest, GitHubEffect, LoadFileSyntaxRequest,
-    PatchOperationRequest, PullFfRequest, PushRequest, RepositoryEffect, SettingsEffect,
-    StatusDiffRequest, StatusOperationRequest, SyntaxEffect, Task, UiEffect, UpdateEffect,
+    CompareStatsRequest, CompareWorkPriority, Effect, FetchRemoteRequest, GitHubEffect,
+    LoadFileSyntaxRequest, PatchOperationRequest, PullFfRequest, PushRequest, RepositoryEffect,
+    SettingsEffect, StatusDiffRequest, StatusOperationRequest, SyntaxEffect, Task, UiEffect,
+    UpdateEffect,
 };
 use crate::events::{
     AppEvent, CompareFileFinished, CompareFileStat, CompareFileStatsReady, CompareFinished,
@@ -406,6 +407,7 @@ pub struct ViewportDocument {
     pub start_index: usize,
     pub start_offset_px: u32,
     pub slot_indices: Vec<usize>,
+    pub slot_loading: Vec<bool>,
     pub path: String,
 }
 
@@ -418,6 +420,7 @@ impl ViewportDocument {
             start_index: file_index,
             start_offset_px: 0,
             slot_indices: vec![file_index],
+            slot_loading: vec![false],
             path,
         }
     }
@@ -679,6 +682,8 @@ pub struct WorkspaceState {
     pub expansions: HashMap<String, carbon::ExpansionState>,
     pub file_content_heights: Vec<Option<u32>>,
     pub file_scroll_total_height_px: u32,
+    pub pending_file_content_heights: HashMap<usize, u32>,
+    pub file_scroll_recompute_pending: bool,
     pub global_scroll_top_px: u32,
     pub measured_px_per_row_q16: u32,
     pub viewport_scrollbar_drag: Option<ViewportScrollbarDragState>,
@@ -1149,9 +1154,14 @@ impl AppState {
         )
     }
 
-    fn append_viewport_slot_doc(&self, out: &mut RenderDoc, key: &ViewportSlotKey) {
+    fn append_viewport_slot_doc(
+        &self,
+        out: &mut RenderDoc,
+        key: &ViewportSlotKey,
+        loading_message: &str,
+    ) {
         if let ViewportSlotKind::Loading = key.kind {
-            out.append_doc(&build_placeholder_render_doc(&key.path, "Loading diff..."));
+            out.append_doc(&build_placeholder_render_doc(&key.path, loading_message));
             return;
         }
 
@@ -1192,7 +1202,7 @@ impl AppState {
         });
 
         if !appended {
-            out.append_doc(&build_placeholder_render_doc(&key.path, "Loading diff..."));
+            out.append_doc(&build_placeholder_render_doc(&key.path, loading_message));
         }
     }
 
@@ -1325,6 +1335,7 @@ impl AppState {
                     path: path.to_owned(),
                     index,
                     deferred_file,
+                    priority: CompareWorkPriority::VisibleViewportDiff,
                 },
             })
             .into(),
@@ -1874,6 +1885,122 @@ pub struct DebugState {
 }
 
 #[derive(Debug)]
+struct FileHeightIndex {
+    heights: Vec<u32>,
+    tree: Vec<u64>,
+}
+
+impl FileHeightIndex {
+    fn rebuild(&mut self, heights: Vec<u32>) {
+        self.heights = heights;
+        self.tree = vec![0; self.heights.len() + 1];
+        for index in 0..self.heights.len() {
+            self.add(index, u64::from(self.heights[index]));
+        }
+    }
+
+    fn clear(&mut self) {
+        self.heights.clear();
+        self.tree.clear();
+    }
+
+    fn total_u64(&self) -> u64 {
+        self.prefix_u64(self.heights.len())
+    }
+
+    fn total_u32(&self) -> u32 {
+        self.total_u64().min(u64::from(u32::MAX)) as u32
+    }
+
+    fn prefix_u32(&self, index: usize) -> u32 {
+        self.prefix_u64(index).min(u64::from(u32::MAX)) as u32
+    }
+
+    fn update(&mut self, index: usize, height: u32) {
+        if index >= self.heights.len() {
+            return;
+        }
+        let old = self.heights[index];
+        if old == height {
+            return;
+        }
+        self.heights[index] = height;
+        if height >= old {
+            self.add(index, u64::from(height - old));
+        } else {
+            self.sub(index, u64::from(old - height));
+        }
+    }
+
+    fn locate(&self, target_px: u32) -> Option<(usize, u32)> {
+        if self.heights.is_empty() {
+            return None;
+        }
+        let target = u64::from(target_px);
+        let total = self.total_u64();
+        if target >= total {
+            let index = self.heights.len() - 1;
+            return Some((index, self.heights[index].saturating_sub(1)));
+        }
+
+        let mut idx = 0_usize;
+        let mut bit = 1_usize;
+        while bit < self.tree.len() {
+            bit <<= 1;
+        }
+        let mut sum = 0_u64;
+        while bit > 0 {
+            let next = idx + bit;
+            if next < self.tree.len() && sum.saturating_add(self.tree[next]) <= target {
+                idx = next;
+                sum = sum.saturating_add(self.tree[next]);
+            }
+            bit >>= 1;
+        }
+        let index = idx.min(self.heights.len().saturating_sub(1));
+        Some((
+            index,
+            target.saturating_sub(sum).min(u64::from(u32::MAX)) as u32,
+        ))
+    }
+
+    fn prefix_u64(&self, index: usize) -> u64 {
+        let mut idx = index.min(self.heights.len());
+        let mut sum = 0_u64;
+        while idx > 0 {
+            sum = sum.saturating_add(self.tree[idx]);
+            idx &= idx - 1;
+        }
+        sum
+    }
+
+    fn add(&mut self, index: usize, delta: u64) {
+        let mut idx = index + 1;
+        while idx < self.tree.len() {
+            self.tree[idx] = self.tree[idx].saturating_add(delta);
+            idx += idx & idx.wrapping_neg();
+        }
+    }
+
+    fn sub(&mut self, index: usize, delta: u64) {
+        let mut idx = index + 1;
+        while idx < self.tree.len() {
+            self.tree[idx] = self.tree[idx].saturating_sub(delta);
+            idx += idx & idx.wrapping_neg();
+        }
+    }
+}
+
+impl Default for FileHeightIndex {
+    fn default() -> Self {
+        Self {
+            heights: Vec::new(),
+            tree: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct AppState {
     pub workspace_mode: Signal<WorkspaceMode>,
     pub compare_progress: Signal<Option<CompareProgress>>,
@@ -1921,6 +2048,7 @@ pub struct AppState {
     pub theme_preview_original: Signal<Option<String>>,
     pub github_access_token: Option<String>,
     viewport_document_cache: Option<ViewportDocumentCache>,
+    file_height_index: FileHeightIndex,
 }
 
 impl Default for AppState {
@@ -1991,6 +2119,7 @@ impl Default for AppState {
             theme_preview_original,
             github_access_token: None,
             viewport_document_cache: None,
+            file_height_index: FileHeightIndex::default(),
         }
     }
 }
@@ -2139,6 +2268,7 @@ impl AppState {
             theme_preview_original,
             github_access_token: None,
             viewport_document_cache: None,
+            file_height_index: FileHeightIndex::default(),
         };
         let seed_prompt = if state.settings.ai_steering_prompt.trim().is_empty() {
             crate::ai::DEFAULT_STEERING_PROMPT
@@ -2943,6 +3073,9 @@ impl AppState {
                 selected_syntax_paths.push(path.clone());
             }
             effects.extend(self.select_file(index, true));
+            if let Some(effect) = self.start_compare_stats_hydration_if_idle() {
+                effects.push(effect);
+            }
         } else {
             self.workspace.selected_file_index.set(&self.store, None);
             self.workspace.selected_file_path.set(&self.store, None);
@@ -3176,9 +3309,9 @@ impl AppState {
         }
         let mut effects = self.sync_editor_scroll_from_global();
         effects.extend(self.request_active_file_syntax_effect());
-        if let Some(effect) = self.start_compare_total_stats_if_needed() {
+        if let Some(effect) = self.start_compare_stats_hydration_if_idle() {
             effects.push(effect);
-        } else if let Some(effect) = self.start_compare_stats_hydration_if_idle() {
+        } else if let Some(effect) = self.start_compare_total_stats_if_needed() {
             effects.push(effect);
         }
         effects
@@ -3206,7 +3339,18 @@ impl AppState {
         }
 
         self.apply_compare_file_stats(&payload.stats);
+        tracing::debug!(
+            target: "diffy::perf",
+            generation = payload.generation,
+            count = payload.stats.len(),
+            request_complete = payload.request_complete,
+            elapsed_ms = self.clock_ms.saturating_sub(payload.requested_at_ms),
+            "compare stats applied"
+        );
         let mut effects = self.sync_editor_scroll_from_global();
+        if !payload.request_complete {
+            return effects;
+        }
         if let Some(effect) = self.next_compare_stats_hydration_effect() {
             effects.push(effect);
             effects
@@ -3214,6 +3358,9 @@ impl AppState {
             self.workspace
                 .compare_stats_hydration_active
                 .set(&self.store, false);
+            if let Some(effect) = self.start_compare_total_stats_if_needed() {
+                effects.push(effect);
+            }
             effects
         }
     }
@@ -3269,6 +3416,7 @@ impl AppState {
                         renderer: self.compare.renderer.get(&self.store),
                         layout: self.compare.layout.get(&self.store),
                     },
+                    priority: CompareWorkPriority::TotalStats,
                 },
             })
             .into(),
@@ -3294,10 +3442,26 @@ impl AppState {
             return None;
         }
 
+        tracing::debug!(
+            target: "diffy::perf",
+            generation = self.workspace.compare_generation.get(&self.store),
+            visible_only,
+            count = files.len(),
+            "compare visible stats requested"
+        );
         Some(
             CompareEffect::LoadFileStats(Task {
                 generation: self.workspace.compare_generation.get(&self.store),
-                request: CompareFileStatsRequest { repo_path, files },
+                request: CompareFileStatsRequest {
+                    repo_path,
+                    files,
+                    priority: if visible_only {
+                        CompareWorkPriority::VisibleSidebarStats
+                    } else {
+                        CompareWorkPriority::Warmup
+                    },
+                    requested_at_ms: self.clock_ms,
+                },
             })
             .into(),
         )
@@ -3424,9 +3588,19 @@ impl AppState {
             }
         });
 
-        self.recompute_file_scroll_total_height_px();
-        if self.settings.continuous_scroll {
-            self.clamp_global_scroll_top_px();
+        let dragging_scrollbar = self
+            .workspace
+            .viewport_scrollbar_drag
+            .with(&self.store, |drag| drag.is_some());
+        if dragging_scrollbar {
+            self.workspace
+                .file_scroll_recompute_pending
+                .set(&self.store, true);
+        } else {
+            self.recompute_file_scroll_total_height_px();
+            if self.settings.continuous_scroll {
+                self.clamp_global_scroll_top_px();
+            }
         }
     }
 
@@ -5919,46 +6093,6 @@ impl AppState {
         }
     }
 
-    fn select_viewport_file_during_scroll(&mut self, index: usize) {
-        match self.workspace.source.get(&self.store) {
-            WorkspaceSource::Compare => {
-                let Some(path) = self.workspace.files.with(&self.store, |files| {
-                    files.get(index).map(|entry| entry.path.clone())
-                }) else {
-                    return;
-                };
-                self.workspace
-                    .selected_file_index
-                    .set(&self.store, Some(index));
-                self.workspace
-                    .selected_file_path
-                    .set(&self.store, Some(path));
-                self.workspace.selected_status_scope.set(&self.store, None);
-                self.file_list.hovered_index.set(&self.store, Some(index));
-            }
-            WorkspaceSource::Status => {
-                let Some(item) = self
-                    .workspace
-                    .status_items
-                    .with(&self.store, |items| items.get(index).cloned())
-                else {
-                    return;
-                };
-                self.workspace
-                    .selected_file_index
-                    .set(&self.store, Some(index));
-                self.workspace
-                    .selected_file_path
-                    .set(&self.store, Some(item.path));
-                self.workspace
-                    .selected_status_scope
-                    .set(&self.store, Some(item.scope));
-                self.file_list.hovered_index.set(&self.store, Some(index));
-            }
-            WorkspaceSource::None => {}
-        }
-    }
-
     fn active_file_matches_workspace_file(&self, index: usize) -> bool {
         let Some(path) = self.workspace_file_path_at(index) else {
             return false;
@@ -6090,6 +6224,7 @@ impl AppState {
                         path: entry.path,
                         index,
                         deferred_file,
+                        priority: CompareWorkPriority::InteractiveSelectedFile,
                     },
                 })
                 .into(),
@@ -6687,8 +6822,15 @@ impl AppState {
             .file_scroll_total_height_px
             .set(&self.store, 0);
         self.workspace
+            .pending_file_content_heights
+            .set(&self.store, HashMap::new());
+        self.workspace
+            .file_scroll_recompute_pending
+            .set(&self.store, false);
+        self.workspace
             .viewport_scrollbar_drag
             .set(&self.store, None);
+        self.file_height_index.clear();
     }
 
     fn reset_file_scroll_layout(&mut self) {
@@ -6696,12 +6838,22 @@ impl AppState {
             .file_content_heights
             .set(&self.store, Vec::new());
         self.workspace
+            .pending_file_content_heights
+            .set(&self.store, HashMap::new());
+        self.workspace
+            .file_scroll_recompute_pending
+            .set(&self.store, false);
+        self.workspace
             .viewport_scrollbar_drag
             .set(&self.store, None);
         self.recompute_file_scroll_total_height_px();
     }
 
     pub fn recompute_file_scroll_total_height_px(&mut self) {
+        let _span = crate::core::perf::PerfSpan::new(
+            "scrollmap.rebuild",
+            format!("files={}", self.workspace_file_count()),
+        );
         let count = self.workspace_file_count();
         self.workspace
             .file_content_heights
@@ -6711,10 +6863,11 @@ impl AppState {
                 }
             });
 
-        let mut total = 0_u32;
-        for index in 0..count {
-            total = total.saturating_add(self.file_scroll_height_px(index));
-        }
+        let heights = (0..count)
+            .map(|index| self.file_scroll_height_px(index).max(1))
+            .collect::<Vec<_>>();
+        self.file_height_index.rebuild(heights);
+        let total = self.file_height_index.total_u32();
         self.workspace
             .file_scroll_total_height_px
             .set(&self.store, total);
@@ -6732,6 +6885,11 @@ impl AppState {
                 .get(&self.store)
                 .is_some()
         {
+            self.workspace
+                .pending_file_content_heights
+                .update(&self.store, |pending| {
+                    pending.insert(index, height);
+                });
             return false;
         }
 
@@ -6782,6 +6940,7 @@ impl AppState {
             self.workspace
                 .file_scroll_total_height_px
                 .set(&self.store, next_total);
+            self.file_height_index.update(index, new_slot_height.max(1));
 
             if self.settings.continuous_scroll && new_slot_height != old_slot_height {
                 let local_within_file = old_scroll_top.saturating_sub(old_file_start);
@@ -6925,14 +7084,18 @@ impl AppState {
             return cached;
         }
 
-        let mut total = 0_u32;
-        for index in 0..self.workspace_file_count() {
-            total = total.saturating_add(self.file_scroll_height_px(index));
-        }
-        total
+        self.file_height_index.total_u32()
     }
 
     pub fn file_start_offset_px(&self, index: usize) -> u32 {
+        if self
+            .workspace
+            .viewport_scrollbar_drag
+            .with(&self.store, |drag| drag.is_none())
+            && self.file_height_index.heights.len() == self.workspace_file_count()
+        {
+            return self.file_height_index.prefix_u32(index);
+        }
         let mut total: u32 = 0;
         for slot in 0..index.min(self.workspace_file_count()) {
             total = total.saturating_add(self.viewport_file_scroll_height_px(slot));
@@ -6967,6 +7130,14 @@ impl AppState {
         if count == 0 {
             return None;
         }
+        if self
+            .workspace
+            .viewport_scrollbar_drag
+            .with(&self.store, |drag| drag.is_none())
+            && self.file_height_index.heights.len() == count
+        {
+            return self.file_height_index.locate(target_px);
+        }
         let mut prior: u32 = 0;
         for index in 0..count {
             let height = self.viewport_file_scroll_height_px(index).max(1);
@@ -7000,11 +7171,7 @@ impl AppState {
             .workspace
             .viewport_scrollbar_drag
             .with(&self.store, |drag| drag.is_some());
-        let current_index = self.workspace.selected_file_index.get(&self.store);
         let mut effects = if dragging_scrollbar {
-            if current_index != Some(target_index) {
-                self.select_viewport_file_during_scroll(target_index);
-            }
             Vec::new()
         } else if self.active_file_matches_workspace_file(target_index) {
             Vec::new()
@@ -7075,6 +7242,31 @@ impl AppState {
         self.workspace
             .viewport_scrollbar_drag
             .set(&self.store, None);
+        self.apply_pending_file_scroll_updates();
+    }
+
+    fn apply_pending_file_scroll_updates(&mut self) {
+        let pending_heights = self
+            .workspace
+            .pending_file_content_heights
+            .with(&self.store, |pending| pending.clone());
+        self.workspace
+            .pending_file_content_heights
+            .set(&self.store, HashMap::new());
+        for (index, height) in pending_heights {
+            self.update_file_content_height_px(index, height);
+        }
+        if self
+            .workspace
+            .file_scroll_recompute_pending
+            .get(&self.store)
+        {
+            self.workspace
+                .file_scroll_recompute_pending
+                .set(&self.store, false);
+            self.recompute_file_scroll_total_height_px();
+            self.clamp_global_scroll_top_px();
+        }
     }
 
     pub fn sync_editor_scroll_from_global(&mut self) -> Vec<Effect> {
@@ -7091,11 +7283,7 @@ impl AppState {
             .workspace
             .viewport_scrollbar_drag
             .with(&self.store, |drag| drag.is_some());
-        let current_index = self.workspace.selected_file_index.get(&self.store);
         let effects = if dragging_scrollbar {
-            if current_index != Some(target_index) {
-                self.select_viewport_file_during_scroll(target_index);
-            }
             Vec::new()
         } else if self.active_file_matches_workspace_file(target_index) {
             Vec::new()
@@ -7139,6 +7327,10 @@ impl AppState {
         if source == WorkspaceSource::None {
             return (None, Vec::new());
         }
+        let dragging_scrollbar = self
+            .workspace
+            .viewport_scrollbar_drag
+            .with(&self.store, |drag| drag.is_some());
 
         let count = self.workspace_file_count();
         let viewport = self.editor.viewport_height_px.get(&self.store).max(1);
@@ -7155,6 +7347,7 @@ impl AppState {
 
         let mut effects = Vec::new();
         let mut slot_keys = Vec::new();
+        let mut slot_loading = Vec::new();
         let mut accumulated = 0_u32;
         let mut index = start_index;
         while index < count && (slot_keys.is_empty() || accumulated < target_height) {
@@ -7194,6 +7387,7 @@ impl AppState {
                 ),
             };
             effects.extend(self.request_viewport_slot_syntax_effect(&slot_key));
+            slot_loading.push(matches!(slot_key.kind, ViewportSlotKind::Loading));
             slot_keys.push(slot_key);
             accumulated =
                 accumulated.saturating_add(self.viewport_file_scroll_height_px(index).max(1));
@@ -7212,8 +7406,13 @@ impl AppState {
             cache.doc.clone()
         } else {
             let mut doc = RenderDoc::default();
+            let loading_message = if dragging_scrollbar {
+                ""
+            } else {
+                "Loading diff..."
+            };
             for slot in &key.slots {
-                self.append_viewport_slot_doc(&mut doc, slot);
+                self.append_viewport_slot_doc(&mut doc, slot, loading_message);
             }
             let doc = Arc::new(doc);
             self.viewport_document_cache = Some(ViewportDocumentCache {
@@ -7232,6 +7431,7 @@ impl AppState {
                 start_index,
                 start_offset_px: start_offset,
                 slot_indices,
+                slot_loading,
                 path: String::new(),
             }),
             effects,

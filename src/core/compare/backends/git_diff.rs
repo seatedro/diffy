@@ -32,6 +32,13 @@ impl GitDiffBackend {
         spec: &CompareSpec,
         git: &GitService,
     ) -> Result<Option<(i32, i32)>> {
+        let _span = crate::core::perf::PerfSpan::new(
+            "compare.total_stats",
+            format!(
+                "mode={:?} left={} right={}",
+                spec.mode, spec.left_ref, spec.right_ref
+            ),
+        );
         let (left, right) = resolve_compare_refs(spec, git)?;
         if right != WORKDIR_REF {
             let mut repo = open_gix_repo(git)?;
@@ -119,6 +126,10 @@ impl GitDiffBackend {
         files: &[&carbon::FileDiff],
         git: &GitService,
     ) -> Vec<Option<(i32, i32)>> {
+        let _span = crate::core::perf::PerfSpan::new(
+            "compare.file_stats_batch",
+            format!("batch_len={}", files.len()),
+        );
         if files.is_empty() {
             return Vec::new();
         }
@@ -199,6 +210,8 @@ fn deferred_file_line_stats_with_repo(
     file: &carbon::FileDiff,
     gix_repo: &gix::Repository,
 ) -> Result<Option<(i32, i32)>> {
+    let _span =
+        crate::core::perf::PerfSpan::new("compare.file_stats_one", format!("path={}", file.path()));
     if file.is_binary {
         return Ok(Some((0, 0)));
     }
@@ -578,6 +591,14 @@ fn is_binary_bytes(bytes: &[u8]) -> bool {
 }
 
 fn gix_line_stats(old_content: &[u8], new_content: &[u8]) -> (u32, u32) {
+    let _span = crate::core::perf::PerfSpan::new(
+        "compare.histogram_diff",
+        format!(
+            "old_bytes={} new_bytes={}",
+            old_content.len(),
+            new_content.len()
+        ),
+    );
     let input = InternedInput::new(
         ByteLinesWithoutTerminator::new(old_content),
         ByteLinesWithoutTerminator::new(new_content),

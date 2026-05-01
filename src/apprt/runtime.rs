@@ -3,6 +3,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::Duration;
 
+use crate::apprt::compare::CompareScheduler;
 use crate::apprt::git_worker::GitWorker;
 use crate::apprt::services::AppServices;
 use crate::apprt::watcher::RepoWatchWorker;
@@ -30,6 +31,7 @@ impl AppRuntime {
         let event_sender = RuntimeEventSender::new(sender, wake_proxy);
         let save_worker = SaveWorker::new(services.clone(), event_sender.clone());
         let git_worker = GitWorker::new(event_sender.clone());
+        let compare_scheduler = CompareScheduler::new(services.clone(), event_sender.clone());
         let repo_watch_worker = RepoWatchWorker::new(git_worker.sender());
         Self {
             receiver,
@@ -38,6 +40,7 @@ impl AppRuntime {
                 event_sender,
                 save_worker,
                 git_worker,
+                compare_scheduler,
                 repo_watch_worker,
             },
         }
@@ -59,6 +62,7 @@ struct EffectRunner {
     event_sender: RuntimeEventSender,
     save_worker: SaveWorker,
     git_worker: GitWorker,
+    compare_scheduler: CompareScheduler,
     repo_watch_worker: RepoWatchWorker,
 }
 
@@ -188,20 +192,7 @@ impl EffectRunner {
                 });
             }
             Effect::Compare(CompareEffect::LoadStats(task)) => {
-                let generation = task.generation;
-                let request = task.request;
-                let services = self.services.clone();
-                let event_sender = self.event_sender.clone();
-                thread::spawn(move || {
-                    let event = match services.load_compare_stats(generation, request) {
-                        Ok(payload) => CompareEvent::CompareStatsReady(payload),
-                        Err(error) => CompareEvent::CompareStatsFailed {
-                            generation,
-                            message: error.to_string(),
-                        },
-                    };
-                    event_sender.send(event);
-                });
+                self.compare_scheduler.dispatch_load_stats(task);
             }
             Effect::Compare(CompareEffect::LoadHistory(task)) => {
                 let generation = task.generation;
@@ -220,38 +211,10 @@ impl EffectRunner {
                 });
             }
             Effect::Compare(CompareEffect::LoadFile(task)) => {
-                let generation = task.generation;
-                let request = task.request;
-                let services = self.services.clone();
-                let event_sender = self.event_sender.clone();
-                thread::spawn(move || {
-                    let path = request.path.clone();
-                    let event = match services.load_compare_file(generation, request) {
-                        Ok(payload) => CompareEvent::CompareFileFinished(payload),
-                        Err(error) => CompareEvent::CompareFileFailed {
-                            generation,
-                            path,
-                            message: error.to_string(),
-                        },
-                    };
-                    event_sender.send(event);
-                });
+                self.compare_scheduler.dispatch_load_file(task);
             }
             Effect::Compare(CompareEffect::LoadFileStats(task)) => {
-                let generation = task.generation;
-                let request = task.request;
-                let services = self.services.clone();
-                let event_sender = self.event_sender.clone();
-                thread::spawn(move || {
-                    let event = match services.load_compare_file_stats(generation, request) {
-                        Ok(payload) => CompareEvent::CompareFileStatsReady(payload),
-                        Err(error) => CompareEvent::CompareFileStatsFailed {
-                            generation,
-                            message: error.to_string(),
-                        },
-                    };
-                    event_sender.send(event);
-                });
+                self.compare_scheduler.dispatch_load_file_stats(task);
             }
             Effect::Repository(RepositoryEffect::LoadStatusDiff { task, index }) => {
                 let generation = task.generation;

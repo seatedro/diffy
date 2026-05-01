@@ -268,7 +268,6 @@ impl AppServices {
             generation,
             stats,
             request_complete: true,
-            requested_at_ms: request.requested_at_ms,
         })
     }
 

@@ -32,13 +32,6 @@ impl GitDiffBackend {
         spec: &CompareSpec,
         git: &GitService,
     ) -> Result<Option<(i32, i32)>> {
-        let _span = crate::core::perf::PerfSpan::new(
-            "compare.total_stats",
-            format!(
-                "mode={:?} left={} right={}",
-                spec.mode, spec.left_ref, spec.right_ref
-            ),
-        );
         let (left, right) = resolve_compare_refs(spec, git)?;
         if right != WORKDIR_REF {
             let mut repo = open_gix_repo(git)?;
@@ -134,10 +127,6 @@ impl GitDiffBackend {
         files: &[&carbon::FileDiff],
         repo_path: &str,
     ) -> Vec<Option<(i32, i32)>> {
-        let _span = crate::core::perf::PerfSpan::new(
-            "compare.file_stats_batch",
-            format!("batch_len={}", files.len()),
-        );
         if files.is_empty() {
             return Vec::new();
         }
@@ -216,8 +205,6 @@ fn deferred_file_line_stats_with_repo(
     file: &carbon::FileDiff,
     gix_repo: &gix::Repository,
 ) -> Result<Option<(i32, i32)>> {
-    let _span =
-        crate::core::perf::PerfSpan::new("compare.file_stats_one", format!("path={}", file.path()));
     if file.is_binary {
         return Ok(Some((0, 0)));
     }
@@ -365,7 +352,6 @@ fn open_gix_repo(git: &GitService) -> Result<gix::Repository> {
 }
 
 fn open_gix_repo_path(repo_path: &str) -> Result<gix::Repository> {
-    let _span = crate::core::perf::PerfSpan::new("git.gix_open", format!("path={repo_path}"));
     let mut repo = gix::open(repo_path).map_err(gix_error)?;
     repo.object_cache_size_if_unset(64 * 1024 * 1024);
     Ok(repo)
@@ -382,13 +368,6 @@ fn collect_gix_changes(
     path_filter: Option<&str>,
     track_rewrites: bool,
 ) -> Result<Vec<GixChange>> {
-    let _span = crate::core::perf::PerfSpan::new(
-        "compare.enumerate_changes",
-        format!(
-            "left={left} right={right} path_filter={} track_rewrites={track_rewrites}",
-            path_filter.unwrap_or("")
-        ),
-    );
     let left_tree = gix_tree_for_oid(repo, left)?;
     let right_tree = gix_tree_for_oid(repo, right)?;
     let mut options = gix::diff::Options::default();
@@ -465,10 +444,6 @@ fn compare_output_from_gix_changes(
     changes: Vec<GixChange>,
     reporter: Option<&dyn ProgressSink>,
 ) -> Result<CompareOutput> {
-    let _span = crate::core::perf::PerfSpan::new(
-        "compare.build_output",
-        format!("changes={}", changes.len()),
-    );
     let mut output = CompareOutput::default();
     if changes.len() > DEFER_HUNKS_FILE_LIMIT {
         output.carbon.files = changes
@@ -609,14 +584,6 @@ fn is_binary_bytes(bytes: &[u8]) -> bool {
 }
 
 fn gix_line_stats(old_content: &[u8], new_content: &[u8]) -> (u32, u32) {
-    let _span = crate::core::perf::PerfSpan::new(
-        "compare.histogram_diff",
-        format!(
-            "old_bytes={} new_bytes={}",
-            old_content.len(),
-            new_content.len()
-        ),
-    );
     let input = InternedInput::new(
         ByteLinesWithoutTerminator::new(old_content),
         ByteLinesWithoutTerminator::new(new_content),

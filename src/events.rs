@@ -23,6 +23,17 @@ pub enum RepositoryChangeKind {
     Both,
 }
 
+impl RepositoryChangeKind {
+    pub fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Both, _) | (_, Self::Both) => Self::Both,
+            (Self::Git, Self::Worktree) | (Self::Worktree, Self::Git) => Self::Both,
+            (Self::Git, Self::Git) => Self::Git,
+            (Self::Worktree, Self::Worktree) => Self::Worktree,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RepositorySnapshot {
     pub path: PathBuf,
@@ -79,7 +90,6 @@ pub struct CompareFileStatsReady {
     pub generation: u64,
     pub stats: Vec<CompareFileStat>,
     pub request_complete: bool,
-    pub requested_at_ms: u64,
 }
 
 #[derive(Debug, Clone)]

@@ -1,10 +1,8 @@
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Instant;
 
 use super::runtime::RuntimeEventSender;
 use super::services::AppServices;
-use crate::core::perf::PerfSpan;
 use crate::effects::{
     CompareFileRequest, CompareFileStatsRequest, CompareStatsRequest, CompareWorkPriority, Task,
 };
@@ -30,7 +28,6 @@ struct CompareQueueState {
 
 struct QueuedCompareJob {
     sequence: u64,
-    enqueued_at: Instant,
     key: CompareJobKey,
     priority: CompareWorkPriority,
     job: CompareJob,
@@ -94,22 +91,11 @@ impl CompareScheduler {
         let key = job.key();
         let priority = job.priority();
         let mut state = self.queue.state.lock().expect("compare queue poisoned");
-        let dropped = state.jobs.iter().filter(|job| job.key == key).count();
         state.jobs.retain(|job| job.key != key);
         let sequence = state.next_sequence;
         state.next_sequence = state.next_sequence.saturating_add(1);
-        let depth_after = state.jobs.len() + 1;
-        tracing::debug!(
-            target: "diffy::perf",
-            ?priority,
-            ?key,
-            dropped,
-            depth_after,
-            "compare scheduler enqueue"
-        );
         state.jobs.push(QueuedCompareJob {
             sequence,
-            enqueued_at: Instant::now(),
             key,
             priority,
             job,
@@ -142,14 +128,6 @@ impl CompareJob {
                 generation: task.generation,
                 priority: task.request.priority,
             },
-        }
-    }
-
-    fn kind(&self) -> &'static str {
-        match self {
-            CompareJob::LoadStats(_) => "total_stats",
-            CompareJob::LoadFile(_) => "file_diff",
-            CompareJob::LoadFileStats(_) => "file_stats",
         }
     }
 }
@@ -197,13 +175,6 @@ fn priority_score(priority: CompareWorkPriority) -> u8 {
 }
 
 fn run_job(job: QueuedCompareJob, services: &AppServices, event_sender: &RuntimeEventSender) {
-    let queue_wait_ms = job.enqueued_at.elapsed().as_millis();
-    let kind = job.job.kind();
-    let priority = job.priority;
-    let _span = PerfSpan::new(
-        "scheduler.run_job",
-        format!("kind={kind} priority={priority:?} queue_wait_ms={queue_wait_ms}"),
-    );
     match job.job {
         CompareJob::LoadStats(task) => run_load_stats(task, services, event_sender),
         CompareJob::LoadFile(task) => run_load_file(task, services, event_sender),
@@ -268,7 +239,6 @@ fn run_load_file_stats(
 
     let repo_path = request.repo_path;
     let priority = request.priority;
-    let requested_at_ms = request.requested_at_ms;
     thread::scope(|scope| {
         for files in request.files.chunks(FILE_STATS_STREAM_CHUNK_SIZE) {
             let services = services.clone();
@@ -280,7 +250,6 @@ fn run_load_file_stats(
                     repo_path,
                     files,
                     priority,
-                    requested_at_ms,
                 };
                 let event = match services.load_compare_file_stats(generation, request) {
                     Ok(mut payload) => {
@@ -300,6 +269,5 @@ fn run_load_file_stats(
         generation,
         stats: Vec::new(),
         request_complete: true,
-        requested_at_ms,
     }));
 }

@@ -2,7 +2,6 @@ pub mod compare;
 pub mod error;
 pub mod frecency;
 pub mod http;
-pub mod perf;
 pub mod search;
 pub mod syntax;
 pub mod text;

@@ -679,7 +679,7 @@ pub struct WorkspaceState {
     pub fallback_message: String,
     pub sidebar_auto_width: Option<SidebarWidthCache>,
     pub range_commits: Vec<CommitInfo>,
-    pub compare_history_pending: Option<(String, String)>,
+    pub compare_history_pending: Option<CompareHistoryRequest>,
     pub pre_drill_compare: Option<(String, String, CompareMode)>,
     pub expansions: HashMap<String, carbon::ExpansionState>,
     pub file_content_heights: Vec<Option<u32>>,
@@ -3102,16 +3102,19 @@ impl AppState {
             .workspace
             .pre_drill_compare
             .with(&self.store, |p| p.is_none());
-        let history_effect = if should_load_history && has_deferred_stats {
-            self.workspace
-                .compare_history_pending
-                .set(&self.store, Some((history_left, history_right)));
-            None
-        } else if should_load_history {
-            self.compare_history_effect(history_left, history_right)
-        } else {
-            None
-        };
+        let history_effect = should_load_history
+            .then(|| self.compare_history_request(history_left, history_right))
+            .flatten()
+            .and_then(|request| {
+                if has_deferred_stats {
+                    self.workspace
+                        .compare_history_pending
+                        .set(&self.store, Some(request));
+                    None
+                } else {
+                    Some(self.compare_history_effect(request))
+                }
+            });
         if let Some(index) = index_for_path
             .or(preferred_index.filter(|index| *index < file_count))
             .or_else(|| (file_count > 0).then_some(0))
@@ -3386,14 +3389,6 @@ impl AppState {
         }
 
         self.apply_compare_file_stats(&payload.stats);
-        tracing::debug!(
-            target: "diffy::perf",
-            generation = payload.generation,
-            count = payload.stats.len(),
-            request_complete = payload.request_complete,
-            elapsed_ms = self.clock_ms.saturating_sub(payload.requested_at_ms),
-            "compare stats applied"
-        );
         let mut effects = self.sync_editor_scroll_from_global();
         if !payload.request_complete {
             return effects;
@@ -3509,13 +3504,6 @@ impl AppState {
             return None;
         }
 
-        tracing::debug!(
-            target: "diffy::perf",
-            generation = self.workspace.compare_generation.get(&self.store),
-            visible_only,
-            count = files.len(),
-            "compare stats requested"
-        );
         Some(
             CompareEffect::LoadFileStats(Task {
                 generation: self.workspace.compare_generation.get(&self.store),
@@ -3523,26 +3511,30 @@ impl AppState {
                     repo_path,
                     files,
                     priority,
-                    requested_at_ms: self.clock_ms,
                 },
             })
             .into(),
         )
     }
 
-    fn compare_history_effect(&self, left_ref: String, right_ref: String) -> Option<Effect> {
-        let repo_path = self.compare.repo_path.get(&self.store)?;
-        Some(
-            CompareEffect::LoadHistory(Task {
-                generation: self.workspace.compare_generation.get(&self.store),
-                request: CompareHistoryRequest {
-                    repo_path,
-                    left_ref,
-                    right_ref,
-                },
-            })
-            .into(),
-        )
+    fn compare_history_request(
+        &self,
+        left_ref: String,
+        right_ref: String,
+    ) -> Option<CompareHistoryRequest> {
+        Some(CompareHistoryRequest {
+            repo_path: self.compare.repo_path.get(&self.store)?,
+            left_ref,
+            right_ref,
+        })
+    }
+
+    fn compare_history_effect(&self, request: CompareHistoryRequest) -> Effect {
+        CompareEffect::LoadHistory(Task {
+            generation: self.workspace.compare_generation.get(&self.store),
+            request,
+        })
+        .into()
     }
 
     fn take_pending_compare_history_effect(&mut self) -> Option<Effect> {
@@ -3560,7 +3552,7 @@ impl AppState {
         self.workspace
             .compare_history_pending
             .set(&self.store, None);
-        self.compare_history_effect(pending.0, pending.1)
+        Some(self.compare_history_effect(pending))
     }
 
     fn next_deferred_compare_stats_items(&self, limit: usize) -> Vec<CompareFileStatsItem> {
@@ -3640,11 +3632,6 @@ impl AppState {
         if !ready {
             return None;
         }
-        let file_count = self.workspace_file_count();
-        let _span = crate::core::perf::PerfSpan::new(
-            "compare.total_stats_from_hydrated",
-            format!("files={file_count}"),
-        );
         self.workspace.compare_output.with(&self.store, |output| {
             let output = output.as_ref()?;
             Some(
@@ -6980,10 +6967,6 @@ impl AppState {
     }
 
     pub fn recompute_file_scroll_total_height_px(&mut self) {
-        let _span = crate::core::perf::PerfSpan::new(
-            "scrollmap.rebuild",
-            format!("files={}", self.workspace_file_count()),
-        );
         let count = self.workspace_file_count();
         self.workspace
             .file_content_heights

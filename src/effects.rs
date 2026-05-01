@@ -63,7 +63,6 @@ pub struct CompareFileStatsRequest {
     pub repo_path: PathBuf,
     pub files: Vec<CompareFileStatsItem>,
     pub priority: CompareWorkPriority,
-    pub requested_at_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -56,7 +56,7 @@ fn repo_watch_worker_loop(
     };
 
     let mut active = None;
-    let mut pending_dirty = None;
+    let mut pending_dirty: Option<RepositoryChangeKind> = None;
 
     loop {
         let command = if pending_dirty.is_some() {
@@ -83,7 +83,7 @@ fn repo_watch_worker_loop(
                 {
                     let change_kind = classify_event(active_watch, &event);
                     pending_dirty = Some(match pending_dirty {
-                        Some(existing) => merge_change_kind(existing, change_kind),
+                        Some(existing) => existing.merge(change_kind),
                         None => change_kind,
                     });
                 }
@@ -195,7 +195,7 @@ fn classify_event(active: &ActiveRepoWatch, event: &Event) -> RepositoryChangeKi
         .paths
         .iter()
         .map(|path| classify_path(active, path))
-        .reduce(merge_change_kind)
+        .reduce(RepositoryChangeKind::merge)
         .unwrap_or(RepositoryChangeKind::Both)
 }
 
@@ -224,23 +224,6 @@ fn is_git_index_path(git_dir: &Path, path: &Path) -> bool {
     relative.components().next().is_some_and(|component| {
         component.as_os_str() == "index" || component.as_os_str() == "index.lock"
     })
-}
-
-fn merge_change_kind(
-    left: RepositoryChangeKind,
-    right: RepositoryChangeKind,
-) -> RepositoryChangeKind {
-    match (left, right) {
-        (RepositoryChangeKind::Both, _) | (_, RepositoryChangeKind::Both) => {
-            RepositoryChangeKind::Both
-        }
-        (RepositoryChangeKind::Git, RepositoryChangeKind::Worktree)
-        | (RepositoryChangeKind::Worktree, RepositoryChangeKind::Git) => RepositoryChangeKind::Both,
-        (RepositoryChangeKind::Git, RepositoryChangeKind::Git) => RepositoryChangeKind::Git,
-        (RepositoryChangeKind::Worktree, RepositoryChangeKind::Worktree) => {
-            RepositoryChangeKind::Worktree
-        }
-    }
 }
 
 #[cfg(test)]

@@ -303,7 +303,7 @@ fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorke
             Some(GitWorkerCommand::Dirty { path, change_hint }) => {
                 pending_dirty = Some(match pending_dirty.take() {
                     Some((pending_path, pending_hint)) if pending_path == path => {
-                        (path, merge_change_kind(pending_hint, change_hint))
+                        (path, pending_hint.merge(change_hint))
                     }
                     _ => (path, change_hint),
                 });
@@ -842,8 +842,6 @@ fn collect_snapshot(
     reason: RepositorySyncReason,
     reporter: Option<&dyn ProgressSink>,
 ) -> crate::core::error::Result<SnapshotBundle> {
-    let _span =
-        crate::core::perf::PerfSpan::new("git.snapshot", format!("reason={reason:?} mode=full"));
     let repo_path = git.repo_path().to_owned();
     let (refs, (status_items, status_entries)) = thread::scope(
         |scope| -> crate::core::error::Result<(
@@ -889,10 +887,6 @@ fn collect_worktree_snapshot(
     reason: RepositorySyncReason,
     previous: &SnapshotBundle,
 ) -> crate::core::error::Result<SnapshotBundle> {
-    let _span = crate::core::perf::PerfSpan::new(
-        "git.snapshot",
-        format!("reason={reason:?} mode=worktree"),
-    );
     let (status_items, status_entries) = collect_status(git)?;
     let mut snapshot = previous.snapshot.clone();
     snapshot.path = path;
@@ -911,8 +905,6 @@ fn collect_git_snapshot(
     reporter: Option<&dyn ProgressSink>,
     previous: &SnapshotBundle,
 ) -> crate::core::error::Result<SnapshotBundle> {
-    let _span =
-        crate::core::perf::PerfSpan::new("git.snapshot", format!("reason={reason:?} mode=git"));
     let refs = collect_git_refs(git, reporter)?;
     let mut snapshot = previous.snapshot.clone();
     snapshot.path = path;
@@ -999,23 +991,6 @@ fn collect_status(
             .then(left.path.cmp(&right.path))
     });
     Ok((status_items, status_entries))
-}
-
-fn merge_change_kind(
-    left: RepositoryChangeKind,
-    right: RepositoryChangeKind,
-) -> RepositoryChangeKind {
-    match (left, right) {
-        (RepositoryChangeKind::Both, _) | (_, RepositoryChangeKind::Both) => {
-            RepositoryChangeKind::Both
-        }
-        (RepositoryChangeKind::Git, RepositoryChangeKind::Worktree)
-        | (RepositoryChangeKind::Worktree, RepositoryChangeKind::Git) => RepositoryChangeKind::Both,
-        (RepositoryChangeKind::Git, RepositoryChangeKind::Git) => RepositoryChangeKind::Git,
-        (RepositoryChangeKind::Worktree, RepositoryChangeKind::Worktree) => {
-            RepositoryChangeKind::Worktree
-        }
-    }
 }
 
 fn sanitize_status(

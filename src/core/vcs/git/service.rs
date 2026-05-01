@@ -188,14 +188,6 @@ fn run_system_git_inner(
     args: &[OsString],
     allow_diff_exit: bool,
 ) -> Result<GitOutput> {
-    let command = git_command_label(args);
-    let _span = crate::core::perf::PerfSpan::new(
-        "git.system",
-        format!(
-            "command={command} argc={} allow_diff_exit={allow_diff_exit}",
-            args.len()
-        ),
-    );
     let output = Command::new("git")
         .args(args)
         .current_dir(repo_path)
@@ -219,6 +211,7 @@ fn run_system_git_inner(
         .or_else(|| stdout.trim().lines().last())
         .map(str::to_owned)
         .unwrap_or_else(|| format!("git exited with {}", output.status));
+    let command = git_command_label(args);
     Err(DiffyError::General(format!(
         "git {command} failed: {detail}"
     )))
@@ -425,7 +418,6 @@ impl GitService {
     }
 
     pub fn open(&mut self, path: &str) -> Result<()> {
-        let _span = crate::core::perf::PerfSpan::new("git.open", format!("path={path}"));
         self.close();
         let mut repo = gix::open(path).map_err(gix_error)?;
         repo.object_cache_size_if_unset(64 * 1024 * 1024);
@@ -449,7 +441,6 @@ impl GitService {
     }
 
     pub fn refs(&self) -> Result<Vec<String>> {
-        let _span = crate::core::perf::PerfSpan::new("git.refs", "backend=system");
         let output = run_system_git_capture(
             self.repo_path_ref()?,
             &[
@@ -467,7 +458,6 @@ impl GitService {
     }
 
     pub fn branches(&self) -> Result<Vec<BranchInfo>> {
-        let _span = crate::core::perf::PerfSpan::new("git.branches", "backend=system");
         let output = run_system_git_capture(
             self.repo_path_ref()?,
             &[
@@ -523,7 +513,6 @@ impl GitService {
     }
 
     pub fn tags(&self) -> Result<Vec<TagInfo>> {
-        let _span = crate::core::perf::PerfSpan::new("git.tags", "backend=system");
         let output = run_system_git_capture(
             self.repo_path_ref()?,
             &[
@@ -559,13 +548,6 @@ impl GitService {
     }
 
     pub fn commits(&self, reference: &str, max_count: usize) -> Result<Vec<CommitInfo>> {
-        let _span = crate::core::perf::PerfSpan::new(
-            "git.commits",
-            format!(
-                "reference={} max_count={max_count}",
-                sanitize_git_arg(reference)
-            ),
-        );
         self.git_log_commits(&[
             OsString::from(format!("-n{max_count}")),
             OsString::from(reference),
@@ -578,14 +560,6 @@ impl GitService {
         right: &str,
         max_count: usize,
     ) -> Result<Vec<CommitInfo>> {
-        let _span = crate::core::perf::PerfSpan::new(
-            "git.commits_in_range",
-            format!(
-                "left={} right={} max_count={max_count}",
-                sanitize_git_arg(left),
-                sanitize_git_arg(right)
-            ),
-        );
         self.git_log_commits(&[
             OsString::from(format!("-n{max_count}")),
             OsString::from(format!("{left}..{right}")),
@@ -593,10 +567,6 @@ impl GitService {
     }
 
     pub fn search_commits(&self, hex_prefix: &str) -> Result<Vec<CommitInfo>> {
-        let _span = crate::core::perf::PerfSpan::new(
-            "git.search_commits",
-            format!("prefix_len={}", hex_prefix.len()),
-        );
         if hex_prefix.len() < 4 {
             return Ok(Vec::new());
         }
@@ -613,10 +583,6 @@ impl GitService {
     }
 
     pub(crate) fn read_file_bytes_at(&self, reference: &str, path: &str) -> Result<Vec<u8>> {
-        let _span = crate::core::perf::PerfSpan::new(
-            "git.read_file_bytes",
-            format!("reference={} path={path}", sanitize_git_arg(reference)),
-        );
         if reference == WORKDIR_REF {
             let full = self.repo_path_ref()?.join(path);
             return Ok(std::fs::read(&full)?);
@@ -634,14 +600,6 @@ impl GitService {
         paths: impl IntoIterator<Item = &'a str>,
     ) -> Vec<Option<Vec<u8>>> {
         let paths = paths.into_iter().collect::<Vec<_>>();
-        let _span = crate::core::perf::PerfSpan::new(
-            "git.read_file_bytes_batch",
-            format!(
-                "reference={} path_count={}",
-                sanitize_git_arg(reference),
-                paths.len()
-            ),
-        );
         if paths.is_empty() {
             return Vec::new();
         }
@@ -658,7 +616,6 @@ impl GitService {
     }
 
     fn read_file_bytes_from_index(&self, path: &str) -> Result<Vec<u8>> {
-        let _span = crate::core::perf::PerfSpan::new("git.read_file_index", format!("path={path}"));
         let index = self.repo()?.index().map_err(gix_error)?;
         let entry = index
             .entry_by_path(path.as_bytes().as_bstr())
@@ -675,10 +632,6 @@ impl GitService {
 
     #[cfg_attr(not(feature = "difftastic"), allow(dead_code))]
     fn read_file_bytes_batch_from_index(&self, paths: &[&str]) -> Vec<Option<Vec<u8>>> {
-        let _span = crate::core::perf::PerfSpan::new(
-            "git.read_file_index_batch",
-            format!("path_count={}", paths.len()),
-        );
         let Ok(repo) = self.repo() else {
             return vec![None; paths.len()];
         };
@@ -695,10 +648,6 @@ impl GitService {
     }
 
     fn read_file_bytes_from_tree(&self, reference: &str, path: &str) -> Result<Vec<u8>> {
-        let _span = crate::core::perf::PerfSpan::new(
-            "git.read_file_tree",
-            format!("reference={} path={path}", sanitize_git_arg(reference)),
-        );
         let tree = self.gix_tree_for_reference(reference)?;
         let entry = tree
             .lookup_entry_by_path(path)
@@ -723,14 +672,6 @@ impl GitService {
         reference: &str,
         paths: &[&str],
     ) -> Vec<Option<Vec<u8>>> {
-        let _span = crate::core::perf::PerfSpan::new(
-            "git.read_file_tree_batch",
-            format!(
-                "reference={} path_count={}",
-                sanitize_git_arg(reference),
-                paths.len()
-            ),
-        );
         let Ok(repo) = self.repo() else {
             return vec![None; paths.len()];
         };
@@ -912,14 +853,6 @@ impl GitService {
         right_ref: &str,
         mode: CompareMode,
     ) -> Result<(String, String)> {
-        let _span = crate::core::perf::PerfSpan::new(
-            "git.resolve_comparison",
-            format!(
-                "mode={mode:?} left={} right={}",
-                sanitize_git_arg(left_ref),
-                sanitize_git_arg(right_ref)
-            ),
-        );
         match mode {
             CompareMode::SingleCommit => {
                 let commit_ref = if right_ref.is_empty() {
@@ -999,13 +932,6 @@ impl GitService {
         right: &str,
         only_path: Option<&str>,
     ) -> Result<Vec<(String, Option<String>, Option<String>)>> {
-        let _span = crate::core::perf::PerfSpan::new(
-            "git.diff_name_status_gix",
-            format!(
-                "left={left} right={right} path_filter={}",
-                only_path.unwrap_or("")
-            ),
-        );
         let repo = self.repo()?.clone();
         let left_tree = gix_tree_for_oid(&repo, left)?;
         let right_tree = gix_tree_for_oid(&repo, right)?;
@@ -1283,10 +1209,6 @@ impl GitService {
     }
 
     pub fn resolve_commit_oid(&self, reference: &str) -> Result<String> {
-        let _span = crate::core::perf::PerfSpan::new(
-            "git.resolve_commit",
-            format!("reference={}", sanitize_git_arg(reference)),
-        );
         if is_full_hex_oid(reference) {
             let oid = gix_object_id(reference)?;
             return Ok(self
@@ -1401,22 +1323,6 @@ impl GitService {
     }
 
     pub fn apply_patch(&self, patch_text: &str, target: PatchApplyTarget) -> Result<()> {
-        let command = match target {
-            PatchApplyTarget::Index => "apply --cached",
-            PatchApplyTarget::Workdir => "apply",
-        };
-        let _span = crate::core::perf::PerfSpan::new(
-            "git.system",
-            format!(
-                "command={command} argc={} stdin_bytes={}",
-                if target == PatchApplyTarget::Index {
-                    2
-                } else {
-                    1
-                },
-                patch_text.len()
-            ),
-        );
         let mut child = Command::new("git")
             .args(match target {
                 PatchApplyTarget::Index => ["apply", "--cached"].as_slice(),
@@ -1449,7 +1355,6 @@ impl GitService {
     }
 
     pub fn status_entries(&self) -> Result<Vec<(String, StatusBits)>> {
-        let _span = crate::core::perf::PerfSpan::new("git.status_entries", "backend=system");
         let output = run_system_git_capture(
             self.repo_path_ref()?,
             &[
@@ -1614,14 +1519,6 @@ fn status_bits_from_xy(x: char, y: char) -> StatusBits {
 }
 
 fn graph_ahead_behind(repo_path: &Path, left: &str, right: &str) -> Result<(usize, usize)> {
-    let _span = crate::core::perf::PerfSpan::new(
-        "git.ahead_behind",
-        format!(
-            "left={} right={}",
-            sanitize_git_arg(left),
-            sanitize_git_arg(right)
-        ),
-    );
     let output = run_system_git_capture(
         repo_path,
         &[
@@ -1639,10 +1536,6 @@ fn graph_ahead_behind(repo_path: &Path, left: &str, right: &str) -> Result<(usiz
 }
 
 fn resolve_commit_oid_at(repo_path: &Path, reference: &str) -> Result<String> {
-    let _span = crate::core::perf::PerfSpan::new(
-        "git.resolve_commit_at",
-        format!("reference={}", sanitize_git_arg(reference)),
-    );
     let output = run_system_git_capture(
         repo_path,
         &[
@@ -1688,24 +1581,18 @@ fn bstr_to_string(value: impl AsRef<[u8]>) -> String {
 }
 
 fn merge_base(repo: &gix::Repository, left: &str, right: &str) -> Result<String> {
-    let _span = crate::core::perf::PerfSpan::new("git.merge_base", "backend=gix");
     let left = gix::ObjectId::from_hex(left.as_bytes()).map_err(gix_error)?;
     let right = gix::ObjectId::from_hex(right.as_bytes()).map_err(gix_error)?;
     Ok(repo.merge_base(left, right).map_err(gix_error)?.to_string())
 }
 
 fn first_parent(repo: &gix::Repository, oid: &str) -> Option<String> {
-    let _span = crate::core::perf::PerfSpan::new("git.first_parent", "backend=gix");
     let oid = gix::ObjectId::from_hex(oid.as_bytes()).ok()?;
     let commit = repo.find_commit(oid).ok()?;
     commit.parent_ids().next().map(|id| id.to_string())
 }
 
 fn tracked_paths(repo_path: &Path, paths: &[&str]) -> Result<HashSet<String>> {
-    let _span = crate::core::perf::PerfSpan::new(
-        "git.tracked_paths",
-        format!("path_count={}", paths.len()),
-    );
     if paths.is_empty() {
         return Ok(HashSet::new());
     }

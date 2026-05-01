@@ -36,19 +36,7 @@ impl GitDiffBackend {
         if right != WORKDIR_REF {
             let mut repo = open_gix_repo(git)?;
             let changes = collect_gix_changes(&mut repo, &left, &right, None, false)?;
-            let mut additions = 0_u32;
-            let mut deletions = 0_u32;
-            for change in changes {
-                let Some((old_content, new_content)) = gix_change_contents(&repo, &change)? else {
-                    continue;
-                };
-                if is_binary_bytes(&old_content) || is_binary_bytes(&new_content) {
-                    continue;
-                }
-                let stats = gix_line_stats(&old_content, &new_content);
-                additions = additions.saturating_add(stats.0);
-                deletions = deletions.saturating_add(stats.1);
-            }
+            let (additions, deletions) = gix_changes_line_stats(git.repo_path(), &repo, &changes)?;
             return Ok(Some((
                 u32_to_i32_saturating(additions),
                 u32_to_i32_saturating(deletions),
@@ -78,7 +66,7 @@ impl GitDiffBackend {
         let gix_repo = open_gix_repo(git)?;
         let old_content = load_gix_blob_content(&gix_repo, file.old_oid.as_ref())?;
         let new_content = load_gix_blob_content(&gix_repo, file.new_oid.as_ref())?;
-        if is_binary_bytes(&old_content) || is_binary_bytes(&new_content) {
+        if is_binary_bytes(old_content.as_bytes()) || is_binary_bytes(new_content.as_bytes()) {
             let mut file = file.clone();
             file.is_binary = true;
             file.status = carbon::FileStatus::Binary;
@@ -88,7 +76,8 @@ impl GitDiffBackend {
                 ..CompareOutput::default()
             }));
         }
-        let raw_diff = raw_patch_from_blob_pair(file, &old_content, &new_content, 3)?;
+        let raw_diff =
+            raw_patch_from_blob_pair(file, old_content.as_bytes(), new_content.as_bytes(), 3)?;
         let mut output = CompareOutput::default();
         let carbon_file =
             carbon_file_from_raw_diff(&raw_diff, output.carbon.files.len(), Some(file))?;
@@ -188,7 +177,8 @@ impl DiffBackend for GitDiffBackend {
             }
             let mut repo = open_gix_repo(git)?;
             let mut changes = collect_gix_changes(&mut repo, &left, &right, None, false)?;
-            if changes.len() <= DEFER_HUNKS_FILE_LIMIT {
+            if changes.len() <= DEFER_HUNKS_FILE_LIMIT && gix_changes_may_include_rewrites(&changes)
+            {
                 changes = collect_gix_changes(&mut repo, &left, &right, None, true)?;
             }
             return Ok(Some(compare_output_from_gix_changes(
@@ -218,10 +208,10 @@ fn deferred_file_line_stats_with_repo(
 
     let old_content = load_gix_blob_content(gix_repo, file.old_oid.as_ref())?;
     let new_content = load_gix_blob_content(gix_repo, file.new_oid.as_ref())?;
-    if is_binary_bytes(&old_content) || is_binary_bytes(&new_content) {
+    if is_binary_bytes(old_content.as_bytes()) || is_binary_bytes(new_content.as_bytes()) {
         return Ok(Some((0, 0)));
     }
-    let (additions, deletions) = gix_line_stats(&old_content, &new_content);
+    let (additions, deletions) = gix_line_stats(old_content.as_bytes(), new_content.as_bytes());
     Ok(Some((
         u32_to_i32_saturating(additions),
         u32_to_i32_saturating(deletions),
@@ -256,6 +246,65 @@ fn deferred_stats_worker_count(file_count: usize) -> usize {
         .unwrap_or(1);
     let useful = file_count.div_ceil(DEFERRED_STATS_MIN_FILES_PER_WORKER);
     available.min(DEFERRED_STATS_MAX_WORKERS).min(useful).max(1)
+}
+
+fn gix_changes_line_stats(
+    repo_path: &str,
+    repo: &gix::Repository,
+    changes: &[GixChange],
+) -> Result<(u32, u32)> {
+    if changes.is_empty() {
+        return Ok((0, 0));
+    }
+
+    let worker_count = deferred_stats_worker_count(changes.len());
+    if worker_count == 1 {
+        return gix_changes_line_stats_with_repo(repo, changes);
+    }
+
+    let chunk_size = changes.len().div_ceil(worker_count);
+    let mut additions = 0_u32;
+    let mut deletions = 0_u32;
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(worker_count);
+        for chunk in changes.chunks(chunk_size) {
+            handles.push(scope.spawn(move || {
+                let repo = open_gix_repo_path(repo_path)?;
+                gix_changes_line_stats_with_repo(&repo, chunk)
+            }));
+        }
+
+        for handle in handles {
+            let (chunk_additions, chunk_deletions) = handle
+                .join()
+                .map_err(|_| DiffyError::General("Gitoxide stats worker panicked".to_owned()))??;
+            additions = additions.saturating_add(chunk_additions);
+            deletions = deletions.saturating_add(chunk_deletions);
+        }
+        Ok::<(), DiffyError>(())
+    })?;
+
+    Ok((additions, deletions))
+}
+
+fn gix_changes_line_stats_with_repo(
+    repo: &gix::Repository,
+    changes: &[GixChange],
+) -> Result<(u32, u32)> {
+    let mut additions = 0_u32;
+    let mut deletions = 0_u32;
+    for change in changes {
+        let Some((old_content, new_content)) = gix_change_contents(repo, change)? else {
+            continue;
+        };
+        if is_binary_bytes(old_content.as_bytes()) || is_binary_bytes(new_content.as_bytes()) {
+            continue;
+        }
+        let stats = gix_line_stats(old_content.as_bytes(), new_content.as_bytes());
+        additions = additions.saturating_add(stats.0);
+        deletions = deletions.saturating_add(stats.1);
+    }
+    Ok((additions, deletions))
 }
 
 fn resolve_compare_refs(spec: &CompareSpec, git: &GitService) -> Result<(String, String)> {
@@ -368,6 +417,22 @@ fn gix_change_is_file(change: &GixChange) -> bool {
     }
 }
 
+fn gix_changes_may_include_rewrites(changes: &[GixChange]) -> bool {
+    let mut has_addition = false;
+    let mut has_deletion = false;
+    for change in changes {
+        match change {
+            GixChange::Addition { .. } => has_addition = true,
+            GixChange::Deletion { .. } => has_deletion = true,
+            GixChange::Modification { .. } | GixChange::Rewrite { .. } => {}
+        }
+        if has_addition && has_deletion {
+            return true;
+        }
+    }
+    false
+}
+
 fn compare_output_from_gix_changes(
     repo: &gix::Repository,
     changes: Vec<GixChange>,
@@ -405,7 +470,7 @@ fn compare_output_from_gix_changes(
         let Some((old_content, new_content)) = gix_change_contents(repo, change)? else {
             continue;
         };
-        if is_binary_bytes(&old_content) || is_binary_bytes(&new_content) {
+        if is_binary_bytes(old_content.as_bytes()) || is_binary_bytes(new_content.as_bytes()) {
             output.carbon.files.push(carbon_summary_from_gix_change(
                 change,
                 output.carbon.files.len(),
@@ -415,7 +480,8 @@ fn compare_output_from_gix_changes(
             continue;
         }
 
-        let raw_diff = raw_patch_from_gix_change(change, &old_content, &new_content, 3)?;
+        let raw_diff =
+            raw_patch_from_gix_change(change, old_content.as_bytes(), new_content.as_bytes(), 3)?;
         let carbon_file = carbon_file_from_raw_diff(&raw_diff, output.carbon.files.len(), None)?;
         output.raw_diff.push_str(&raw_diff);
         output.carbon.files.push(carbon_file);
@@ -424,22 +490,36 @@ fn compare_output_from_gix_changes(
     Ok(output)
 }
 
-fn gix_change_contents(
-    repo: &gix::Repository,
+enum GixBlobContent<'repo> {
+    Empty,
+    Blob(gix::Blob<'repo>),
+}
+
+impl GixBlobContent<'_> {
+    fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Empty => &[],
+            Self::Blob(blob) => &blob.data,
+        }
+    }
+}
+
+fn gix_change_contents<'repo>(
+    repo: &'repo gix::Repository,
     change: &GixChange,
-) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+) -> Result<Option<(GixBlobContent<'repo>, GixBlobContent<'repo>)>> {
     match change {
         GixChange::Addition { entry_mode, id, .. } => {
             if !entry_mode.is_no_tree() {
                 return Ok(None);
             }
-            Ok(Some((Vec::new(), load_gix_blob_id(repo, *id)?)))
+            Ok(Some((GixBlobContent::Empty, load_gix_blob_id(repo, *id)?)))
         }
         GixChange::Deletion { entry_mode, id, .. } => {
             if !entry_mode.is_no_tree() {
                 return Ok(None);
             }
-            Ok(Some((load_gix_blob_id(repo, *id)?, Vec::new())))
+            Ok(Some((load_gix_blob_id(repo, *id)?, GixBlobContent::Empty)))
         }
         GixChange::Modification {
             previous_entry_mode,
@@ -474,21 +554,23 @@ fn gix_change_contents(
     }
 }
 
-fn load_gix_blob_content(
-    repo: &gix::Repository,
+fn load_gix_blob_content<'repo>(
+    repo: &'repo gix::Repository,
     oid: Option<&carbon::ObjectId>,
-) -> Result<Vec<u8>> {
+) -> Result<GixBlobContent<'repo>> {
     let Some(oid) = oid else {
-        return Ok(Vec::new());
+        return Ok(GixBlobContent::Empty);
     };
     load_gix_blob_id(repo, gix_object_id(&oid.0)?)
 }
 
-fn load_gix_blob_id(repo: &gix::Repository, oid: gix::ObjectId) -> Result<Vec<u8>> {
+fn load_gix_blob_id(repo: &gix::Repository, oid: gix::ObjectId) -> Result<GixBlobContent<'_>> {
     if oid.is_null() {
-        return Ok(Vec::new());
+        return Ok(GixBlobContent::Empty);
     }
-    Ok(repo.find_blob(oid).map_err(gix_error)?.data.clone())
+    Ok(GixBlobContent::Blob(
+        repo.find_blob(oid).map_err(gix_error)?,
+    ))
 }
 
 fn is_binary_bytes(bytes: &[u8]) -> bool {

@@ -12,7 +12,7 @@ use crate::core::vcs::git::GitService;
 /// `diff.renameLimit` behavior closely enough for UI use: preserve rename
 /// detection for ordinary diffs, but skip exhaustive similarity scans when a
 /// range touches thousands of files.
-const RENAME_DETECTION_LIMIT: usize = 1000;
+pub(crate) const RENAME_DETECTION_LIMIT: usize = 1000;
 
 #[cfg(feature = "difftastic")]
 pub use difftastic::DifftasticBackend;

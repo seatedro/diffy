@@ -98,6 +98,9 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSView", "NSButton", "NSControl", "NSResponder"] }
 objc2-foundation = { version = "0.3", features = ["NSGeometry"] }
 
+[dev-dependencies]
+git2 = { version = "0.20", default-features = false }
+
 [[bin]]
 name = "diffy"
 path = "src/main.rs"

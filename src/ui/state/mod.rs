@@ -66,6 +66,7 @@ const TOAST_ANIM_MS: u64 = 150;
 const CURSOR_BLINK_INTERVAL_MS: u64 = 530;
 const LARGE_COMPARE_FILE_LINES: i32 = 1_500;
 const COMPARE_STATS_CHUNK_SIZE: usize = 64;
+const COMPARE_STATS_BACKGROUND_CHUNK_SIZE: usize = 8_192;
 const COMPARE_STATS_VISIBLE_ONLY_FILE_LIMIT: usize = 10_000;
 const COMPARE_STATS_VISIBLE_OVERSCAN_ROWS: usize = 32;
 const SYNTAX_INITIAL_ROWS: usize = 200;
@@ -678,6 +679,7 @@ pub struct WorkspaceState {
     pub fallback_message: String,
     pub sidebar_auto_width: Option<SidebarWidthCache>,
     pub range_commits: Vec<CommitInfo>,
+    pub compare_history_pending: Option<(String, String)>,
     pub pre_drill_compare: Option<(String, String, CompareMode)>,
     pub expansions: HashMap<String, carbon::ExpansionState>,
     pub file_content_heights: Vec<Option<u32>>,
@@ -1873,6 +1875,7 @@ pub enum UpdateState {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StartupState {
     pub auto_compare_pending: bool,
+    pub bootstrap_compare_started: bool,
     pub pending_pr_url: Option<String>,
     pub preferred_file_index: Option<usize>,
     pub preferred_file_path: Option<String>,
@@ -2156,6 +2159,12 @@ impl AppState {
             .or_else(|| persisted.as_ref().map(|compare| compare.renderer))
             .unwrap_or_default();
         let auto_compare_pending = startup.wants_compare(mode, &left_ref, &right_ref);
+        let bootstrap_compare_started = repo_path.is_some()
+            && startup.args.open_pr.is_none()
+            && auto_compare_pending
+            && (startup.args.left.is_some()
+                || startup.args.right.is_some()
+                || startup.args.compare_mode.is_some());
 
         let store = Rc::new(SignalStore::default());
         let sidebar_visible = store.create(true);
@@ -2236,7 +2245,8 @@ impl AppState {
             github,
             settings,
             startup: StartupState {
-                auto_compare_pending,
+                auto_compare_pending: auto_compare_pending && !bootstrap_compare_started,
+                bootstrap_compare_started,
                 pending_pr_url: startup.args.open_pr.clone(),
                 preferred_file_index: startup.args.file_index,
                 preferred_file_path: startup.args.file_path.clone(),
@@ -2309,7 +2319,18 @@ impl AppState {
                 Some(CompareProgress {
                     generation: boot_gen,
                     phase: ComparePhase::OpeningRepo,
-                    subject: LoadingSubject::RepoOpen { name: repo_name },
+                    subject: if bootstrap_compare_started {
+                        LoadingSubject::Compare {
+                            left_label: compare_ref_display_label(
+                                &state.compare.left_ref.get(&state.store),
+                            ),
+                            right_label: compare_ref_display_label(
+                                &state.compare.right_ref.get(&state.store),
+                            ),
+                        }
+                    } else {
+                        LoadingSubject::RepoOpen { name: repo_name }
+                    },
                     started_at_ms: 0,
                     reveal_at_ms: COMPARE_REVEAL_DELAY_MS,
                     file_count_total: None,
@@ -2321,11 +2342,30 @@ impl AppState {
                 RepositoryEffect::SyncRepository {
                     path: path.clone(),
                     reason: RepositorySyncReason::Open,
-                    reporter_generation: Some(boot_gen),
+                    reporter_generation: (!bootstrap_compare_started).then_some(boot_gen),
                 }
                 .into(),
             );
             effects.push(RepositoryEffect::WatchRepository { path: Some(path) }.into());
+            if bootstrap_compare_started {
+                effects.push(
+                    CompareEffect::Run(Task {
+                        generation: boot_gen,
+                        request: CompareRequest {
+                            repo_path: state.compare.repo_path.get(&state.store).unwrap(),
+                            spec: CompareSpec {
+                                mode: state.compare.mode.get(&state.store),
+                                left_ref: state.compare.left_ref.get(&state.store),
+                                right_ref: state.compare.right_ref.get(&state.store),
+                                renderer: state.compare.renderer.get(&state.store),
+                                layout: state.compare.layout.get(&state.store),
+                            },
+                            github_token: startup.github_token.clone(),
+                        },
+                    })
+                    .into(),
+                );
+            }
         }
         if let Some(token) = startup.github_token.clone() {
             state.github_access_token = Some(token.clone());
@@ -2564,6 +2604,9 @@ impl AppState {
             .set(&self.store, String::new());
         self.workspace.sidebar_auto_width.set(&self.store, None);
         self.workspace.range_commits.set(&self.store, Vec::new());
+        self.workspace
+            .compare_history_pending
+            .set(&self.store, None);
         self.workspace.pre_drill_compare.set(&self.store, None);
         self.workspace.expansions.update(&self.store, |m| m.clear());
         self.clear_file_scroll_layout();
@@ -2644,6 +2687,8 @@ impl AppState {
                 } else if self.startup.auto_compare_pending {
                     self.startup.auto_compare_pending = false;
                     effects.extend(self.kickoff_compare());
+                } else if self.startup.bootstrap_compare_started {
+                    self.startup.bootstrap_compare_started = false;
                 } else if let Some(persisted) = self.settings.last_compare.as_ref().filter(|c| {
                     c.repo_path.as_ref() == Some(&payload.path)
                         && compare_refs_are_valid(c.mode, &c.left_ref, &c.right_ref)
@@ -2929,7 +2974,6 @@ impl AppState {
             return Vec::new();
         }
 
-        let generation = payload.generation;
         let history_left = payload.resolved_left.clone();
         let history_right = if payload.resolved_right == crate::core::vcs::git::WORKDIR_REF {
             "HEAD".to_owned()
@@ -3000,7 +3044,7 @@ impl AppState {
             .set(&self.store, eager_total_stats);
         self.workspace
             .compare_total_stats_loading
-            .set(&self.store, false);
+            .set(&self.store, has_deferred_stats);
         self.workspace
             .compare_stats_hydration_active
             .set(&self.store, false);
@@ -3054,17 +3098,20 @@ impl AppState {
 
         let mut effects = Vec::new();
         let mut selected_syntax_paths = Vec::new();
-        let history_effect = self.compare.repo_path.get(&self.store).map(|repo_path| {
-            CompareEffect::LoadHistory(Task {
-                generation,
-                request: CompareHistoryRequest {
-                    repo_path,
-                    left_ref: history_left,
-                    right_ref: history_right,
-                },
-            })
-            .into()
-        });
+        let should_load_history = self
+            .workspace
+            .pre_drill_compare
+            .with(&self.store, |p| p.is_none());
+        let history_effect = if should_load_history && has_deferred_stats {
+            self.workspace
+                .compare_history_pending
+                .set(&self.store, Some((history_left, history_right)));
+            None
+        } else if should_load_history {
+            self.compare_history_effect(history_left, history_right)
+        } else {
+            None
+        };
         if let Some(index) = index_for_path
             .or(preferred_index.filter(|index| *index < file_count))
             .or_else(|| (file_count > 0).then_some(0))
@@ -3358,6 +3405,15 @@ impl AppState {
             self.workspace
                 .compare_stats_hydration_active
                 .set(&self.store, false);
+            if let Some(stats) = self.exact_compare_total_stats_if_ready() {
+                self.workspace
+                    .compare_total_stats
+                    .set(&self.store, Some(stats));
+                self.workspace
+                    .compare_total_stats_loading
+                    .set(&self.store, false);
+                return effects;
+            }
             if let Some(effect) = self.start_compare_total_stats_if_needed() {
                 effects.push(effect);
             }
@@ -3396,7 +3452,7 @@ impl AppState {
                 .as_ref()
                 .is_some_and(|output| output.carbon.files.iter().any(|file| file.stats_deferred))
         });
-        if !has_deferred_stats {
+        if has_deferred_stats {
             return None;
         }
         let repo_path = self.compare.repo_path.get(&self.store)?;
@@ -3433,10 +3489,21 @@ impl AppState {
                     output.carbon.files.len() > COMPARE_STATS_VISIBLE_ONLY_FILE_LIMIT
                 })
             });
-        let files = if visible_only {
-            self.visible_compare_stats_hydration_items()
+        let (files, priority) = if visible_only {
+            let visible_files = self.visible_compare_stats_hydration_items();
+            if visible_files.is_empty() {
+                (
+                    self.next_deferred_compare_stats_items(COMPARE_STATS_BACKGROUND_CHUNK_SIZE),
+                    CompareWorkPriority::Warmup,
+                )
+            } else {
+                (visible_files, CompareWorkPriority::VisibleSidebarStats)
+            }
         } else {
-            self.next_deferred_compare_stats_items()
+            (
+                self.next_deferred_compare_stats_items(COMPARE_STATS_BACKGROUND_CHUNK_SIZE),
+                CompareWorkPriority::Warmup,
+            )
         };
         if files.is_empty() {
             return None;
@@ -3447,7 +3514,7 @@ impl AppState {
             generation = self.workspace.compare_generation.get(&self.store),
             visible_only,
             count = files.len(),
-            "compare visible stats requested"
+            "compare stats requested"
         );
         Some(
             CompareEffect::LoadFileStats(Task {
@@ -3455,11 +3522,7 @@ impl AppState {
                 request: CompareFileStatsRequest {
                     repo_path,
                     files,
-                    priority: if visible_only {
-                        CompareWorkPriority::VisibleSidebarStats
-                    } else {
-                        CompareWorkPriority::Warmup
-                    },
+                    priority,
                     requested_at_ms: self.clock_ms,
                 },
             })
@@ -3467,7 +3530,40 @@ impl AppState {
         )
     }
 
-    fn next_deferred_compare_stats_items(&self) -> Vec<CompareFileStatsItem> {
+    fn compare_history_effect(&self, left_ref: String, right_ref: String) -> Option<Effect> {
+        let repo_path = self.compare.repo_path.get(&self.store)?;
+        Some(
+            CompareEffect::LoadHistory(Task {
+                generation: self.workspace.compare_generation.get(&self.store),
+                request: CompareHistoryRequest {
+                    repo_path,
+                    left_ref,
+                    right_ref,
+                },
+            })
+            .into(),
+        )
+    }
+
+    fn take_pending_compare_history_effect(&mut self) -> Option<Effect> {
+        if self
+            .workspace
+            .pre_drill_compare
+            .with(&self.store, |p| p.is_some())
+        {
+            self.workspace
+                .compare_history_pending
+                .set(&self.store, None);
+            return None;
+        }
+        let pending = self.workspace.compare_history_pending.get(&self.store)?;
+        self.workspace
+            .compare_history_pending
+            .set(&self.store, None);
+        self.compare_history_effect(pending.0, pending.1)
+    }
+
+    fn next_deferred_compare_stats_items(&self, limit: usize) -> Vec<CompareFileStatsItem> {
         self.workspace
             .compare_output
             .with(&self.store, |maybe_output| {
@@ -3480,7 +3576,7 @@ impl AppState {
                             .iter()
                             .enumerate()
                             .filter(|(_, file)| file.stats_deferred)
-                            .take(COMPARE_STATS_CHUNK_SIZE)
+                            .take(limit)
                             .map(|(index, file)| CompareFileStatsItem {
                                 index,
                                 file: file.clone(),
@@ -3535,10 +3631,44 @@ impl AppState {
             })
     }
 
+    fn exact_compare_total_stats_if_ready(&self) -> Option<(i32, i32)> {
+        let ready = self.workspace.compare_output.with(&self.store, |output| {
+            output
+                .as_ref()
+                .is_some_and(|output| !output.carbon.files.iter().any(|file| file.stats_deferred))
+        });
+        if !ready {
+            return None;
+        }
+        let file_count = self.workspace_file_count();
+        let _span = crate::core::perf::PerfSpan::new(
+            "compare.total_stats_from_hydrated",
+            format!("files={file_count}"),
+        );
+        self.workspace.compare_output.with(&self.store, |output| {
+            let output = output.as_ref()?;
+            Some(
+                output
+                    .carbon
+                    .files
+                    .iter()
+                    .map(carbon_file_stats)
+                    .fold((0_i32, 0_i32), |acc, next| {
+                        (acc.0.saturating_add(next.0), acc.1.saturating_add(next.1))
+                    }),
+            )
+        })
+    }
+
     fn apply_compare_file_stats(&mut self, stats: &[CompareFileStat]) {
         if stats.is_empty() {
             return;
         }
+
+        let old_scroll_heights = stats
+            .iter()
+            .map(|stat| (stat.index, self.file_scroll_height_px(stat.index)))
+            .collect::<Vec<_>>();
 
         self.workspace
             .compare_output
@@ -3597,7 +3727,7 @@ impl AppState {
                 .file_scroll_recompute_pending
                 .set(&self.store, true);
         } else {
-            self.recompute_file_scroll_total_height_px();
+            self.update_file_scroll_heights(old_scroll_heights);
             if self.settings.continuous_scroll {
                 self.clamp_global_scroll_top_px();
             }
@@ -6873,6 +7003,27 @@ impl AppState {
             .set(&self.store, total);
     }
 
+    fn update_file_scroll_heights(&mut self, old_heights: Vec<(usize, u32)>) {
+        let count = self.workspace_file_count();
+        if self.file_height_index.heights.len() != count {
+            self.recompute_file_scroll_total_height_px();
+            return;
+        }
+
+        let mut total = self.workspace.file_scroll_total_height_px.get(&self.store);
+        for (index, old_height) in old_heights {
+            if index >= count {
+                continue;
+            }
+            let new_height = self.file_scroll_height_px(index).max(1);
+            total = total.saturating_sub(old_height).saturating_add(new_height);
+            self.file_height_index.update(index, new_height);
+        }
+        self.workspace
+            .file_scroll_total_height_px
+            .set(&self.store, total);
+    }
+
     pub fn update_file_content_height_px(&mut self, index: usize, height: u32) -> bool {
         let count = self.workspace_file_count();
         if index >= count || height == 0 {
@@ -9127,6 +9278,7 @@ diff --git a/src/lib.rs b/src/lib.rs
                 name: "main".to_owned(),
                 is_remote: false,
                 is_head: true,
+                target_oid: "0000000000000000000000000000000000000000".to_owned(),
                 upstream: None,
                 ahead_behind: None,
             }],

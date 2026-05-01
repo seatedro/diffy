@@ -7,6 +7,7 @@ use notify::event::{EventKind, MetadataKind, ModifyKind};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::apprt::git_worker::GitWorkerCommand;
+use crate::events::RepositoryChangeKind;
 
 const REPO_WATCH_DEBOUNCE: Duration = Duration::from_millis(150);
 
@@ -34,6 +35,8 @@ enum WatchCommand {
 
 struct ActiveRepoWatch {
     request_path: PathBuf,
+    git_dir: PathBuf,
+    workdir: Option<PathBuf>,
     watched_paths: Vec<PathBuf>,
 }
 
@@ -53,10 +56,10 @@ fn repo_watch_worker_loop(
     };
 
     let mut active = None;
-    let mut pending_dirty = false;
+    let mut pending_dirty = None;
 
     loop {
-        let command = if pending_dirty {
+        let command = if pending_dirty.is_some() {
             match receiver.recv_timeout(REPO_WATCH_DEBOUNCE) {
                 Ok(command) => Some(command),
                 Err(RecvTimeoutError::Timeout) => None,
@@ -71,27 +74,36 @@ fn repo_watch_worker_loop(
 
         match command {
             Some(WatchCommand::SetRepo(path)) => {
-                pending_dirty = false;
+                pending_dirty = None;
                 replace_active_watch(&mut watcher, &mut active, path);
             }
             Some(WatchCommand::Notify(Ok(event))) => {
-                if active.is_some() && should_consider_event(&event) {
-                    pending_dirty = true;
+                if let Some(active_watch) = active.as_ref()
+                    && should_consider_event(&event)
+                {
+                    let change_kind = classify_event(active_watch, &event);
+                    pending_dirty = Some(match pending_dirty {
+                        Some(existing) => merge_change_kind(existing, change_kind),
+                        None => change_kind,
+                    });
                 }
             }
             Some(WatchCommand::Notify(Err(error))) => {
                 tracing::warn!("repository watcher error: {error}");
-                pending_dirty = true;
+                pending_dirty = Some(RepositoryChangeKind::Both);
             }
             None => {
                 let Some(active_watch) = active.as_ref() else {
-                    pending_dirty = false;
+                    pending_dirty = None;
+                    continue;
+                };
+                let Some(change_hint) = pending_dirty.take() else {
                     continue;
                 };
                 let _ = dirty_sender.send(GitWorkerCommand::Dirty {
                     path: active_watch.request_path.clone(),
+                    change_hint,
                 });
-                pending_dirty = false;
             }
         }
     }
@@ -110,7 +122,7 @@ fn replace_active_watch(
         return;
     };
 
-    let watched_paths = match watch_paths_for_repo(&path) {
+    let watch_paths = match watch_paths_for_repo(&path) {
         Ok(paths) => paths,
         Err(error) => {
             tracing::warn!(
@@ -121,7 +133,7 @@ fn replace_active_watch(
         }
     };
 
-    for watch_path in &watched_paths {
+    for watch_path in &watch_paths.watched_paths {
         if let Err(error) = watcher.watch(watch_path, RecursiveMode::Recursive) {
             tracing::warn!(
                 path = %watch_path.display(),
@@ -132,19 +144,33 @@ fn replace_active_watch(
 
     *active = Some(ActiveRepoWatch {
         request_path: path,
-        watched_paths,
+        git_dir: watch_paths.git_dir,
+        workdir: watch_paths.workdir,
+        watched_paths: watch_paths.watched_paths,
     });
 }
 
-fn watch_paths_for_repo(path: &Path) -> Result<Vec<PathBuf>, gix::open::Error> {
+struct RepoWatchPaths {
+    git_dir: PathBuf,
+    workdir: Option<PathBuf>,
+    watched_paths: Vec<PathBuf>,
+}
+
+fn watch_paths_for_repo(path: &Path) -> Result<RepoWatchPaths, gix::open::Error> {
     let repo = gix::open(path)?;
     let git_dir = repo.git_dir().to_path_buf();
     let workdir = repo.workdir().map(Path::to_path_buf);
 
-    Ok(match workdir {
-        Some(workdir) if git_dir.starts_with(&workdir) => vec![workdir],
-        Some(workdir) => vec![workdir, git_dir],
-        None => vec![git_dir],
+    let watched_paths = match workdir.as_ref() {
+        Some(workdir) if git_dir.starts_with(workdir) => vec![workdir.clone()],
+        Some(workdir) => vec![workdir.clone(), git_dir.clone()],
+        None => vec![git_dir.clone()],
+    };
+
+    Ok(RepoWatchPaths {
+        git_dir,
+        workdir,
+        watched_paths,
     })
 }
 
@@ -161,6 +187,59 @@ fn should_consider_event(event: &Event) -> bool {
         EventKind::Access(_) => false,
         EventKind::Modify(ModifyKind::Metadata(MetadataKind::AccessTime)) => false,
         _ => true,
+    }
+}
+
+fn classify_event(active: &ActiveRepoWatch, event: &Event) -> RepositoryChangeKind {
+    event
+        .paths
+        .iter()
+        .map(|path| classify_path(active, path))
+        .reduce(merge_change_kind)
+        .unwrap_or(RepositoryChangeKind::Both)
+}
+
+fn classify_path(active: &ActiveRepoWatch, path: &Path) -> RepositoryChangeKind {
+    if path.starts_with(&active.git_dir) {
+        if is_git_index_path(&active.git_dir, path) {
+            RepositoryChangeKind::Worktree
+        } else {
+            RepositoryChangeKind::Git
+        }
+    } else if active
+        .workdir
+        .as_ref()
+        .is_some_and(|workdir| path.starts_with(workdir))
+    {
+        RepositoryChangeKind::Worktree
+    } else {
+        RepositoryChangeKind::Both
+    }
+}
+
+fn is_git_index_path(git_dir: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(git_dir) else {
+        return false;
+    };
+    relative.components().next().is_some_and(|component| {
+        component.as_os_str() == "index" || component.as_os_str() == "index.lock"
+    })
+}
+
+fn merge_change_kind(
+    left: RepositoryChangeKind,
+    right: RepositoryChangeKind,
+) -> RepositoryChangeKind {
+    match (left, right) {
+        (RepositoryChangeKind::Both, _) | (_, RepositoryChangeKind::Both) => {
+            RepositoryChangeKind::Both
+        }
+        (RepositoryChangeKind::Git, RepositoryChangeKind::Worktree)
+        | (RepositoryChangeKind::Worktree, RepositoryChangeKind::Git) => RepositoryChangeKind::Both,
+        (RepositoryChangeKind::Git, RepositoryChangeKind::Git) => RepositoryChangeKind::Git,
+        (RepositoryChangeKind::Worktree, RepositoryChangeKind::Worktree) => {
+            RepositoryChangeKind::Worktree
+        }
     }
 }
 

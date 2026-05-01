@@ -272,13 +272,10 @@ pub fn build_ui_frame(
                 .editor
                 .viewport_width_px
                 .set_if_changed(&state.store, vp_bounds.width.max(0.0).round() as u32);
-            let viewport_height_changed = state
+            state
                 .editor
                 .viewport_height_px
                 .set_if_changed(&state.store, vp_bounds.height.max(0.0).round() as u32);
-            if continuous_scroll && viewport_height_changed {
-                state.recompute_file_scroll_total_height_px();
-            }
             if continuous_scroll {
                 effects.extend(state.sync_editor_scroll_from_global());
             }

@@ -150,7 +150,13 @@ impl AppState {
             SetSidebarTab(tab) => {
                 self.file_list.tab.set(&self.store, tab);
                 self.file_list.filter.update(&self.store, |s| s.clear());
-                Vec::new()
+                if tab == SidebarTab::Commits {
+                    self.take_pending_compare_history_effect()
+                        .into_iter()
+                        .collect()
+                } else {
+                    Vec::new()
+                }
             }
             ScrollCommitListPx(delta) => {
                 let stride = self.file_list_row_stride();

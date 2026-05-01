@@ -1,11 +1,13 @@
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use gix::bstr::ByteSlice;
 use serde::Serialize;
 
-use crate::core::compare::backends::compare_output_from_raw_patch;
+use crate::core::compare::backends::{RENAME_DETECTION_LIMIT, compare_output_from_raw_patch};
 use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::CompareMode;
 use crate::core::error::{DiffyError, Result};
@@ -67,6 +69,7 @@ pub struct BranchInfo {
     pub name: String,
     pub is_remote: bool,
     pub is_head: bool,
+    pub target_oid: String,
     /// Shorthand name of the upstream tracking branch (e.g. `origin/main`) for
     /// local branches that have one configured. `None` for remote branches and
     /// for local branches without an upstream.
@@ -166,6 +169,8 @@ struct GitOutput {
     stdout: Vec<u8>,
 }
 
+const GIT_PATH_ARG_CHUNK_SIZE: usize = 512;
+
 fn run_system_git(repo_path: &Path, args: &[OsString]) -> Result<()> {
     run_system_git_inner(repo_path, args, false).map(|_| ())
 }
@@ -183,10 +188,19 @@ fn run_system_git_inner(
     args: &[OsString],
     allow_diff_exit: bool,
 ) -> Result<GitOutput> {
+    let command = git_command_label(args);
+    let _span = crate::core::perf::PerfSpan::new(
+        "git.system",
+        format!(
+            "command={command} argc={} allow_diff_exit={allow_diff_exit}",
+            args.len()
+        ),
+    );
     let output = Command::new("git")
         .args(args)
         .current_dir(repo_path)
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .output()
         .map_err(|e| DiffyError::General(format!("failed to run git: {e}")))?;
 
@@ -205,14 +219,46 @@ fn run_system_git_inner(
         .or_else(|| stdout.trim().lines().last())
         .map(str::to_owned)
         .unwrap_or_else(|| format!("git exited with {}", output.status));
-    let command = args
-        .iter()
-        .map(|arg| arg.to_string_lossy())
-        .collect::<Vec<_>>()
-        .join(" ");
     Err(DiffyError::General(format!(
         "git {command} failed: {detail}"
     )))
+}
+
+fn git_command_label(args: &[OsString]) -> String {
+    let mut label = Vec::new();
+    let mut redact_next = false;
+    for arg in args {
+        let arg = arg.to_string_lossy();
+        if arg == "--" {
+            break;
+        }
+        if redact_next {
+            label.push("<redacted>".to_owned());
+            redact_next = false;
+            continue;
+        }
+        redact_next = arg == "-m" || arg == "--message";
+        label.push(sanitize_git_arg(&arg));
+    }
+    label.join(" ")
+}
+
+fn sanitize_git_arg(arg: &str) -> String {
+    if arg.contains("://") || arg.contains('@') {
+        return "<redacted>".to_owned();
+    }
+    const MAX_ARG_LEN: usize = 96;
+    if arg.len() > MAX_ARG_LEN {
+        let end = arg
+            .char_indices()
+            .map(|(index, _)| index)
+            .take_while(|index| *index <= MAX_ARG_LEN)
+            .last()
+            .unwrap_or(0);
+        format!("{}...", &arg[..end])
+    } else {
+        arg.to_owned()
+    }
 }
 
 fn gix_error(error: impl std::fmt::Display) -> DiffyError {
@@ -371,7 +417,15 @@ impl GitService {
         Ok(git)
     }
 
+    pub(crate) fn new_with_repo_path(path: impl Into<String>) -> Self {
+        Self {
+            repo: None,
+            repo_path: path.into(),
+        }
+    }
+
     pub fn open(&mut self, path: &str) -> Result<()> {
+        let _span = crate::core::perf::PerfSpan::new("git.open", format!("path={path}"));
         self.close();
         let mut repo = gix::open(path).map_err(gix_error)?;
         repo.object_cache_size_if_unset(64 * 1024 * 1024);
@@ -395,6 +449,7 @@ impl GitService {
     }
 
     pub fn refs(&self) -> Result<Vec<String>> {
+        let _span = crate::core::perf::PerfSpan::new("git.refs", "backend=system");
         let output = run_system_git_capture(
             self.repo_path_ref()?,
             &[
@@ -412,14 +467,13 @@ impl GitService {
     }
 
     pub fn branches(&self) -> Result<Vec<BranchInfo>> {
-        let repo_path = self.repo_path_ref()?;
-        let head = self.head_branch_name()?.unwrap_or_default();
+        let _span = crate::core::perf::PerfSpan::new("git.branches", "backend=system");
         let output = run_system_git_capture(
-            repo_path,
+            self.repo_path_ref()?,
             &[
                 OsString::from("for-each-ref"),
                 OsString::from(
-                    "--format=%(refname)%00%(refname:short)%00%(objectname)%00%(upstream:short)",
+                    "--format=%(refname)%00%(refname:short)%00%(objectname)%00%(upstream:short)%00%(upstream:track)%00%(HEAD)",
                 ),
                 OsString::from("refs/heads"),
                 OsString::from("refs/remotes"),
@@ -431,11 +485,12 @@ impl GitService {
                 continue;
             }
             let fields = line.split(|byte| *byte == 0).collect::<Vec<_>>();
-            if fields.len() < 4 {
+            if fields.len() < 6 {
                 continue;
             }
             let full_name = String::from_utf8_lossy(fields[0]);
             let name = String::from_utf8_lossy(fields[1]).to_string();
+            let target_oid = String::from_utf8_lossy(fields[2]).to_string();
             if name.ends_with("/HEAD") {
                 continue;
             }
@@ -444,16 +499,15 @@ impl GitService {
                 (!fields[3].is_empty()).then(|| String::from_utf8_lossy(fields[3]).to_string());
             let ahead_behind = if is_remote {
                 None
-            } else if let Some(upstream) = upstream.as_ref() {
-                graph_ahead_behind(repo_path, &name, upstream).ok()
             } else {
-                None
+                parse_upstream_track(upstream.as_ref(), &String::from_utf8_lossy(fields[4]))
             };
-            let is_head = !is_remote && name == head;
+            let is_head = !is_remote && fields[5] == b"*";
             branches.push(BranchInfo {
                 name,
                 is_remote,
                 is_head,
+                target_oid,
                 upstream,
                 ahead_behind,
             });
@@ -469,6 +523,7 @@ impl GitService {
     }
 
     pub fn tags(&self) -> Result<Vec<TagInfo>> {
+        let _span = crate::core::perf::PerfSpan::new("git.tags", "backend=system");
         let output = run_system_git_capture(
             self.repo_path_ref()?,
             &[
@@ -504,6 +559,13 @@ impl GitService {
     }
 
     pub fn commits(&self, reference: &str, max_count: usize) -> Result<Vec<CommitInfo>> {
+        let _span = crate::core::perf::PerfSpan::new(
+            "git.commits",
+            format!(
+                "reference={} max_count={max_count}",
+                sanitize_git_arg(reference)
+            ),
+        );
         self.git_log_commits(&[
             OsString::from(format!("-n{max_count}")),
             OsString::from(reference),
@@ -516,6 +578,14 @@ impl GitService {
         right: &str,
         max_count: usize,
     ) -> Result<Vec<CommitInfo>> {
+        let _span = crate::core::perf::PerfSpan::new(
+            "git.commits_in_range",
+            format!(
+                "left={} right={} max_count={max_count}",
+                sanitize_git_arg(left),
+                sanitize_git_arg(right)
+            ),
+        );
         self.git_log_commits(&[
             OsString::from(format!("-n{max_count}")),
             OsString::from(format!("{left}..{right}")),
@@ -523,6 +593,10 @@ impl GitService {
     }
 
     pub fn search_commits(&self, hex_prefix: &str) -> Result<Vec<CommitInfo>> {
+        let _span = crate::core::perf::PerfSpan::new(
+            "git.search_commits",
+            format!("prefix_len={}", hex_prefix.len()),
+        );
         if hex_prefix.len() < 4 {
             return Ok(Vec::new());
         }
@@ -539,23 +613,155 @@ impl GitService {
     }
 
     pub(crate) fn read_file_bytes_at(&self, reference: &str, path: &str) -> Result<Vec<u8>> {
-        let bytes = if reference == WORKDIR_REF {
+        let _span = crate::core::perf::PerfSpan::new(
+            "git.read_file_bytes",
+            format!("reference={} path={path}", sanitize_git_arg(reference)),
+        );
+        if reference == WORKDIR_REF {
             let full = self.repo_path_ref()?.join(path);
-            std::fs::read(&full)?
-        } else {
-            let spec = if reference == INDEX_REF {
-                format!(":{path}")
-            } else {
-                format!("{}:{path}", self.resolve_commit_oid(reference)?)
-            };
-            run_system_git_capture(
-                self.repo_path_ref()?,
-                &[OsString::from("show"), OsString::from(spec)],
-            )
-            .map_err(|_| DiffyError::General(format!("path {path} is not present at {reference}")))?
-            .stdout
+            return Ok(std::fs::read(&full)?);
+        }
+        if reference == INDEX_REF {
+            return self.read_file_bytes_from_index(path);
+        }
+        self.read_file_bytes_from_tree(reference, path)
+    }
+
+    #[cfg_attr(not(feature = "difftastic"), allow(dead_code))]
+    pub(crate) fn read_file_bytes_batch_at<'a>(
+        &self,
+        reference: &str,
+        paths: impl IntoIterator<Item = &'a str>,
+    ) -> Vec<Option<Vec<u8>>> {
+        let paths = paths.into_iter().collect::<Vec<_>>();
+        let _span = crate::core::perf::PerfSpan::new(
+            "git.read_file_bytes_batch",
+            format!(
+                "reference={} path_count={}",
+                sanitize_git_arg(reference),
+                paths.len()
+            ),
+        );
+        if paths.is_empty() {
+            return Vec::new();
+        }
+        if reference == WORKDIR_REF {
+            return paths
+                .iter()
+                .map(|path| std::fs::read(self.repo_path_ref().ok()?.join(path)).ok())
+                .collect();
+        }
+        if reference == INDEX_REF {
+            return self.read_file_bytes_batch_from_index(&paths);
+        }
+        self.read_file_bytes_batch_from_tree(reference, &paths)
+    }
+
+    fn read_file_bytes_from_index(&self, path: &str) -> Result<Vec<u8>> {
+        let _span = crate::core::perf::PerfSpan::new("git.read_file_index", format!("path={path}"));
+        let index = self.repo()?.index().map_err(gix_error)?;
+        let entry = index
+            .entry_by_path(path.as_bytes().as_bstr())
+            .ok_or_else(|| {
+                DiffyError::General(format!("path {path} is not present at {INDEX_REF}"))
+            })?;
+        Ok(self
+            .repo()?
+            .find_blob(entry.id)
+            .map_err(gix_error)?
+            .data
+            .clone())
+    }
+
+    #[cfg_attr(not(feature = "difftastic"), allow(dead_code))]
+    fn read_file_bytes_batch_from_index(&self, paths: &[&str]) -> Vec<Option<Vec<u8>>> {
+        let _span = crate::core::perf::PerfSpan::new(
+            "git.read_file_index_batch",
+            format!("path_count={}", paths.len()),
+        );
+        let Ok(repo) = self.repo() else {
+            return vec![None; paths.len()];
         };
-        Ok(bytes)
+        let Ok(index) = repo.index().map_err(gix_error) else {
+            return vec![None; paths.len()];
+        };
+        paths
+            .iter()
+            .map(|path| {
+                let entry = index.entry_by_path(path.as_bytes().as_bstr())?;
+                repo.find_blob(entry.id).ok().map(|blob| blob.data.clone())
+            })
+            .collect()
+    }
+
+    fn read_file_bytes_from_tree(&self, reference: &str, path: &str) -> Result<Vec<u8>> {
+        let _span = crate::core::perf::PerfSpan::new(
+            "git.read_file_tree",
+            format!("reference={} path={path}", sanitize_git_arg(reference)),
+        );
+        let tree = self.gix_tree_for_reference(reference)?;
+        let entry = tree
+            .lookup_entry_by_path(path)
+            .map_err(gix_error)?
+            .ok_or_else(|| {
+                DiffyError::General(format!("path {path} is not present at {reference}"))
+            })?;
+        if !entry.mode().is_blob_or_symlink() {
+            return Err(DiffyError::General(format!("path {path} is not a file")));
+        }
+        Ok(self
+            .repo()?
+            .find_blob(entry.object_id())
+            .map_err(gix_error)?
+            .data
+            .clone())
+    }
+
+    #[cfg_attr(not(feature = "difftastic"), allow(dead_code))]
+    fn read_file_bytes_batch_from_tree(
+        &self,
+        reference: &str,
+        paths: &[&str],
+    ) -> Vec<Option<Vec<u8>>> {
+        let _span = crate::core::perf::PerfSpan::new(
+            "git.read_file_tree_batch",
+            format!(
+                "reference={} path_count={}",
+                sanitize_git_arg(reference),
+                paths.len()
+            ),
+        );
+        let Ok(repo) = self.repo() else {
+            return vec![None; paths.len()];
+        };
+        let Ok(tree) = self.gix_tree_for_reference(reference) else {
+            return vec![None; paths.len()];
+        };
+        paths
+            .iter()
+            .map(|path| {
+                let entry = tree.lookup_entry_by_path(path).ok().flatten()?;
+                entry
+                    .mode()
+                    .is_blob_or_symlink()
+                    .then_some(())
+                    .and_then(|_| repo.find_blob(entry.object_id()).ok())
+                    .map(|blob| blob.data.clone())
+            })
+            .collect()
+    }
+
+    fn gix_tree_for_reference(&self, reference: &str) -> Result<gix::Tree<'_>> {
+        if is_full_hex_oid(reference) {
+            return gix_tree_for_oid(self.repo()?, reference);
+        }
+        self.repo()?
+            .rev_parse_single(reference)
+            .map_err(gix_error)?
+            .object()
+            .map_err(gix_error)?
+            .peel_to_tree()
+            .map_err(gix_error)
     }
 
     fn validate_text_bytes(reference: &str, path: &str, bytes: &[u8]) -> Result<()> {
@@ -654,10 +860,19 @@ impl GitService {
         items: &[StatusItem],
         operation: StatusOperation,
     ) -> Result<()> {
-        for item in items {
-            self.apply_status_operation(item, operation)?;
+        if items.is_empty() {
+            return Ok(());
         }
-        Ok(())
+
+        match operation {
+            StatusOperation::Stage => self.stage_paths(items.iter().map(|item| item.path.as_str())),
+            StatusOperation::Unstage => {
+                self.unstage_paths(items.iter().map(|item| item.path.as_str()))
+            }
+            StatusOperation::Discard => {
+                self.discard_paths(items.iter().map(|item| item.path.as_str()))
+            }
+        }
     }
 
     pub fn abbreviate_oid(&self, full_oid: &str) -> Result<String> {
@@ -697,6 +912,14 @@ impl GitService {
         right_ref: &str,
         mode: CompareMode,
     ) -> Result<(String, String)> {
+        let _span = crate::core::perf::PerfSpan::new(
+            "git.resolve_comparison",
+            format!(
+                "mode={mode:?} left={} right={}",
+                sanitize_git_arg(left_ref),
+                sanitize_git_arg(right_ref)
+            ),
+        );
         match mode {
             CompareMode::SingleCommit => {
                 let commit_ref = if right_ref.is_empty() {
@@ -746,6 +969,12 @@ impl GitService {
         right: &str,
         only_path: Option<&str>,
     ) -> Result<Vec<(String, Option<String>, Option<String>)>> {
+        if right != WORKDIR_REF {
+            let left = self.resolve_commit_oid(left)?;
+            let right = self.resolve_commit_oid(right)?;
+            return self.gix_diff_name_status(&left, &right, only_path);
+        }
+
         let mut args = vec![
             OsString::from("diff"),
             OsString::from("--name-status"),
@@ -762,6 +991,64 @@ impl GitService {
         }
         let output = run_system_git_allow_diff(self.repo_path_ref()?, &args)?;
         Ok(parse_name_status(&output.stdout))
+    }
+
+    fn gix_diff_name_status(
+        &self,
+        left: &str,
+        right: &str,
+        only_path: Option<&str>,
+    ) -> Result<Vec<(String, Option<String>, Option<String>)>> {
+        let _span = crate::core::perf::PerfSpan::new(
+            "git.diff_name_status_gix",
+            format!(
+                "left={left} right={right} path_filter={}",
+                only_path.unwrap_or("")
+            ),
+        );
+        let repo = self.repo()?.clone();
+        let left_tree = gix_tree_for_oid(&repo, left)?;
+        let right_tree = gix_tree_for_oid(&repo, right)?;
+        let mut options = gix::diff::Options::default();
+        options.track_path();
+        options.track_rewrites(Some(gix::diff::Rewrites {
+            limit: RENAME_DETECTION_LIMIT,
+            ..Default::default()
+        }));
+        let mut changes = repo
+            .diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(options))
+            .map_err(gix_error)?;
+        changes.retain(gix_change_is_file);
+        if let Some(path) = only_path {
+            let path = path.as_bytes();
+            changes.retain(|change| {
+                change.location().as_bytes() == path || change.source_location().as_bytes() == path
+            });
+        }
+        Ok(changes
+            .into_iter()
+            .map(|change| match change {
+                gix::object::tree::diff::ChangeDetached::Addition { location, .. } => {
+                    ("A".to_owned(), None, Some(bstr_to_string(&location)))
+                }
+                gix::object::tree::diff::ChangeDetached::Deletion { location, .. } => {
+                    ("D".to_owned(), Some(bstr_to_string(&location)), None)
+                }
+                gix::object::tree::diff::ChangeDetached::Modification { location, .. } => {
+                    let path = bstr_to_string(&location);
+                    ("M".to_owned(), Some(path.clone()), Some(path))
+                }
+                gix::object::tree::diff::ChangeDetached::Rewrite {
+                    source_location,
+                    location,
+                    ..
+                } => (
+                    "R".to_owned(),
+                    Some(bstr_to_string(&source_location)),
+                    Some(bstr_to_string(&location)),
+                ),
+            })
+            .collect())
     }
 
     pub fn diff_three_refs(&self, left: &str, right: &str) -> Result<String> {
@@ -996,6 +1283,19 @@ impl GitService {
     }
 
     pub fn resolve_commit_oid(&self, reference: &str) -> Result<String> {
+        let _span = crate::core::perf::PerfSpan::new(
+            "git.resolve_commit",
+            format!("reference={}", sanitize_git_arg(reference)),
+        );
+        if is_full_hex_oid(reference) {
+            let oid = gix_object_id(reference)?;
+            return Ok(self
+                .repo()?
+                .find_commit(oid)
+                .map_err(gix_error)?
+                .id
+                .to_string());
+        }
         let id = self
             .repo()?
             .rev_parse_single(reference)
@@ -1035,49 +1335,88 @@ impl GitService {
     }
 
     fn stage_path(&self, path: &str) -> Result<()> {
-        run_system_git(
-            self.repo_path_ref()?,
-            &[
-                OsString::from("add"),
-                OsString::from("--"),
-                OsString::from(path),
-            ],
-        )
+        self.stage_paths(std::iter::once(path))
+    }
+
+    fn stage_paths<'a>(&self, paths: impl IntoIterator<Item = &'a str>) -> Result<()> {
+        for chunk in path_arg_chunks(paths) {
+            let mut args = Vec::with_capacity(chunk.len() + 3);
+            args.push(OsString::from("add"));
+            args.push(OsString::from("--"));
+            args.extend(chunk.into_iter().map(OsString::from));
+            run_system_git(self.repo_path_ref()?, &args)?;
+        }
+        Ok(())
     }
 
     fn unstage_path(&self, path: &str) -> Result<()> {
-        run_system_git(
-            self.repo_path_ref()?,
-            &[
-                OsString::from("reset"),
-                OsString::from("--"),
-                OsString::from(path),
-            ],
-        )
+        self.unstage_paths(std::iter::once(path))
+    }
+
+    fn unstage_paths<'a>(&self, paths: impl IntoIterator<Item = &'a str>) -> Result<()> {
+        for chunk in path_arg_chunks(paths) {
+            let mut args = Vec::with_capacity(chunk.len() + 3);
+            args.push(OsString::from("reset"));
+            args.push(OsString::from("--"));
+            args.extend(chunk.into_iter().map(OsString::from));
+            run_system_git(self.repo_path_ref()?, &args)?;
+        }
+        Ok(())
     }
 
     fn discard_path(&self, path: &str) -> Result<()> {
-        let absolute = self.repo_path_ref()?.join(path);
-        if !is_path_tracked(self.repo_path_ref()?, path)? {
-            match std::fs::remove_file(&absolute) {
-                Ok(()) => return Ok(()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-                Err(error) => return Err(error.into()),
+        self.discard_paths(std::iter::once(path))
+    }
+
+    fn discard_paths<'a>(&self, paths: impl IntoIterator<Item = &'a str>) -> Result<()> {
+        let repo_path = self.repo_path_ref()?;
+        let paths = paths.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        let mut tracked = Vec::new();
+        for chunk in path_arg_chunks(paths.iter().map(String::as_str)) {
+            let tracked_in_chunk = tracked_paths(repo_path, &chunk)?;
+            for path in chunk {
+                if tracked_in_chunk.contains(path) {
+                    tracked.push(path.to_owned());
+                    continue;
+                }
+                let absolute = repo_path.join(path);
+                match std::fs::remove_file(&absolute) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
             }
         }
-        run_system_git(
-            self.repo_path_ref()?,
-            &[
-                OsString::from("restore"),
-                OsString::from("--staged"),
-                OsString::from("--worktree"),
-                OsString::from("--"),
-                OsString::from(path),
-            ],
-        )
+
+        for chunk in path_arg_chunks(tracked.iter().map(String::as_str)) {
+            let mut args = Vec::with_capacity(chunk.len() + 5);
+            args.push(OsString::from("restore"));
+            args.push(OsString::from("--staged"));
+            args.push(OsString::from("--worktree"));
+            args.push(OsString::from("--"));
+            args.extend(chunk.into_iter().map(OsString::from));
+            run_system_git(repo_path, &args)?;
+        }
+        Ok(())
     }
 
     pub fn apply_patch(&self, patch_text: &str, target: PatchApplyTarget) -> Result<()> {
+        let command = match target {
+            PatchApplyTarget::Index => "apply --cached",
+            PatchApplyTarget::Workdir => "apply",
+        };
+        let _span = crate::core::perf::PerfSpan::new(
+            "git.system",
+            format!(
+                "command={command} argc={} stdin_bytes={}",
+                if target == PatchApplyTarget::Index {
+                    2
+                } else {
+                    1
+                },
+                patch_text.len()
+            ),
+        );
         let mut child = Command::new("git")
             .args(match target {
                 PatchApplyTarget::Index => ["apply", "--cached"].as_slice(),
@@ -1085,6 +1424,7 @@ impl GitService {
             })
             .current_dir(self.repo_path_ref()?)
             .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_OPTIONAL_LOCKS", "0")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -1109,6 +1449,7 @@ impl GitService {
     }
 
     pub fn status_entries(&self) -> Result<Vec<(String, StatusBits)>> {
+        let _span = crate::core::perf::PerfSpan::new("git.status_entries", "backend=system");
         let output = run_system_git_capture(
             self.repo_path_ref()?,
             &[
@@ -1134,6 +1475,46 @@ impl GitService {
             .filter_map(parse_commit_info_line)
             .collect())
     }
+}
+
+fn path_arg_chunks<'a>(paths: impl IntoIterator<Item = &'a str>) -> Vec<Vec<&'a str>> {
+    let mut chunks = Vec::new();
+    let mut current = Vec::with_capacity(GIT_PATH_ARG_CHUNK_SIZE);
+    for path in paths {
+        if current.len() == GIT_PATH_ARG_CHUNK_SIZE {
+            chunks.push(current);
+            current = Vec::with_capacity(GIT_PATH_ARG_CHUNK_SIZE);
+        }
+        current.push(path);
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
+fn parse_upstream_track(upstream: Option<&String>, track: &str) -> Option<(usize, usize)> {
+    upstream?;
+    let track = track.trim();
+    if track.is_empty() {
+        return Some((0, 0));
+    }
+    let track = track.strip_prefix('[').unwrap_or(track);
+    let track = track.strip_suffix(']').unwrap_or(track);
+    if track == "gone" {
+        return None;
+    }
+
+    let mut ahead = 0;
+    let mut behind = 0;
+    for part in track.split(',').map(str::trim) {
+        if let Some(value) = part.strip_prefix("ahead ") {
+            ahead = value.parse().ok()?;
+        } else if let Some(value) = part.strip_prefix("behind ") {
+            behind = value.parse().ok()?;
+        }
+    }
+    Some((ahead, behind))
 }
 
 fn parse_commit_info_line(line: &str) -> Option<CommitInfo> {
@@ -1233,6 +1614,14 @@ fn status_bits_from_xy(x: char, y: char) -> StatusBits {
 }
 
 fn graph_ahead_behind(repo_path: &Path, left: &str, right: &str) -> Result<(usize, usize)> {
+    let _span = crate::core::perf::PerfSpan::new(
+        "git.ahead_behind",
+        format!(
+            "left={} right={}",
+            sanitize_git_arg(left),
+            sanitize_git_arg(right)
+        ),
+    );
     let output = run_system_git_capture(
         repo_path,
         &[
@@ -1250,6 +1639,10 @@ fn graph_ahead_behind(repo_path: &Path, left: &str, right: &str) -> Result<(usiz
 }
 
 fn resolve_commit_oid_at(repo_path: &Path, reference: &str) -> Result<String> {
+    let _span = crate::core::perf::PerfSpan::new(
+        "git.resolve_commit_at",
+        format!("reference={}", sanitize_git_arg(reference)),
+    );
     let output = run_system_git_capture(
         repo_path,
         &[
@@ -1260,30 +1653,82 @@ fn resolve_commit_oid_at(repo_path: &Path, reference: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+type GixChange = gix::object::tree::diff::ChangeDetached;
+
+fn gix_tree_for_oid<'repo>(repo: &'repo gix::Repository, oid: &str) -> Result<gix::Tree<'repo>> {
+    let oid = gix_object_id(oid)?;
+    let object = repo.find_object(oid).map_err(gix_error)?;
+    object.peel_to_tree().map_err(gix_error)
+}
+
+fn gix_object_id(oid: &str) -> Result<gix::ObjectId> {
+    gix::ObjectId::from_hex(oid.as_bytes()).map_err(gix_error)
+}
+
+fn gix_change_is_file(change: &GixChange) -> bool {
+    match change {
+        GixChange::Addition { entry_mode, .. } | GixChange::Deletion { entry_mode, .. } => {
+            entry_mode.is_no_tree()
+        }
+        GixChange::Modification {
+            previous_entry_mode,
+            entry_mode,
+            ..
+        } => previous_entry_mode.is_no_tree() && entry_mode.is_no_tree(),
+        GixChange::Rewrite {
+            source_entry_mode,
+            entry_mode,
+            ..
+        } => source_entry_mode.is_no_tree() && entry_mode.is_no_tree(),
+    }
+}
+
+fn bstr_to_string(value: impl AsRef<[u8]>) -> String {
+    String::from_utf8_lossy(value.as_ref()).to_string()
+}
+
 fn merge_base(repo: &gix::Repository, left: &str, right: &str) -> Result<String> {
+    let _span = crate::core::perf::PerfSpan::new("git.merge_base", "backend=gix");
     let left = gix::ObjectId::from_hex(left.as_bytes()).map_err(gix_error)?;
     let right = gix::ObjectId::from_hex(right.as_bytes()).map_err(gix_error)?;
     Ok(repo.merge_base(left, right).map_err(gix_error)?.to_string())
 }
 
 fn first_parent(repo: &gix::Repository, oid: &str) -> Option<String> {
+    let _span = crate::core::perf::PerfSpan::new("git.first_parent", "backend=gix");
     let oid = gix::ObjectId::from_hex(oid.as_bytes()).ok()?;
     let commit = repo.find_commit(oid).ok()?;
     commit.parent_ids().next().map(|id| id.to_string())
 }
 
-fn is_path_tracked(repo_path: &Path, path: &str) -> Result<bool> {
-    let output = Command::new("git")
-        .args(["ls-files", "--error-unmatch", "--", path])
-        .current_dir(repo_path)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .map_err(|e| DiffyError::General(format!("failed to run git: {e}")))?;
-    Ok(output.status.success())
+fn tracked_paths(repo_path: &Path, paths: &[&str]) -> Result<HashSet<String>> {
+    let _span = crate::core::perf::PerfSpan::new(
+        "git.tracked_paths",
+        format!("path_count={}", paths.len()),
+    );
+    if paths.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let mut args = Vec::with_capacity(paths.len() + 3);
+    args.push(OsString::from("ls-files"));
+    args.push(OsString::from("-z"));
+    args.push(OsString::from("--"));
+    args.extend(paths.iter().map(OsString::from));
+    let output = run_system_git_capture(repo_path, &args)?;
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| String::from_utf8_lossy(path).to_string())
+        .collect())
 }
 
 fn fixed_short_oid(oid: &str) -> &str {
     oid.get(..8).unwrap_or(oid)
+}
+
+fn is_full_hex_oid(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[cfg(test)]
@@ -1299,7 +1744,9 @@ mod tests {
         github_repo_key_from_remote_url, github_repo_url_from_remote_transport,
         local_remote_for_github_repo, pr_ref_path,
     };
-    use crate::core::vcs::git::{GitService, StatusItem, StatusOperation, StatusScope};
+    use crate::core::vcs::git::{
+        GitService, PatchApplyTarget, StatusItem, StatusOperation, StatusScope,
+    };
 
     fn commit_file(repo: &Repository, relative_path: &str, content: &str, message: &str) -> String {
         // Pin `core.autocrlf=false` on the test repo so LF content written
@@ -1421,7 +1868,7 @@ mod tests {
         repo.remote("upstream", "git@github.com:Owner/Repo.git")
             .unwrap();
 
-        let remote = local_remote_for_github_repo(&repo, "owner", "repo").unwrap();
+        let remote = local_remote_for_github_repo(repo.path(), "owner", "repo").unwrap();
 
         assert_eq!(remote, "upstream");
     }
@@ -1433,7 +1880,7 @@ mod tests {
         repo.remote("origin", "git@github.com:me/fork.git").unwrap();
 
         let source = github_fetch_source_for_repo(
-            &repo,
+            repo.path(),
             "owner",
             "repo",
             "https://github.com/owner/repo.git",
@@ -1543,7 +1990,7 @@ mod tests {
             " line3\n",
             "+extra\n",
         );
-        git.apply_patch(patch, git2::ApplyLocation::Index).unwrap();
+        git.apply_patch(patch, PatchApplyTarget::Index).unwrap();
 
         let st = statuses(&repo);
         assert!(st[0].1.contains(Status::INDEX_MODIFIED));
@@ -1654,7 +2101,7 @@ mod tests {
             "-ccc\n",
             "+bbb\n",
         );
-        git.apply_patch(reverse_patch, git2::ApplyLocation::Index)
+        git.apply_patch(reverse_patch, PatchApplyTarget::Index)
             .unwrap();
 
         let st2 = statuses(&repo);

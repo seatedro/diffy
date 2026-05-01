@@ -394,8 +394,13 @@ pub(crate) fn sidebar(
     let row_h = theme.metrics.ui_row_height.round();
 
     let range_commits = state.workspace.range_commits.get(&state.store);
+    let history_pending = state
+        .workspace
+        .compare_history_pending
+        .with(&state.store, |pending| pending.is_some());
     let workspace_source = state.workspace.source.get(&state.store);
-    let show_tabs = workspace_source == WorkspaceSource::Compare && range_commits.len() > 1;
+    let show_tabs = workspace_source == WorkspaceSource::Compare
+        && (range_commits.len() > 1 || history_pending);
     let on_commits_tab = show_tabs && state.file_list.tab.get(&state.store) == SidebarTab::Commits;
     let is_drilled = state
         .workspace
@@ -412,7 +417,11 @@ pub(crate) fn sidebar(
                         !on_commits_tab,
                     ),
                     SegmentedItem::new(
-                        format!("Commits {}", range_commits.len()),
+                        if history_pending && range_commits.is_empty() {
+                            "Commits".to_owned()
+                        } else {
+                            format!("Commits {}", range_commits.len())
+                        },
                         crate::actions::FileListAction::SetSidebarTab(SidebarTab::Commits).into(),
                         on_commits_tab,
                     ),

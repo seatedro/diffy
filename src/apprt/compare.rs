@@ -10,7 +10,7 @@ use crate::effects::{
 };
 use crate::events::{CompareEvent, CompareFileStatsReady};
 
-const FILE_STATS_STREAM_CHUNK_SIZE: usize = 16;
+const FILE_STATS_STREAM_CHUNK_SIZE: usize = 8_192;
 const MAX_COMPARE_WORKERS: usize = 4;
 
 pub(crate) struct CompareScheduler {

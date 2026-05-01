@@ -7,8 +7,8 @@ use crate::apprt::ProgressReporter;
 use crate::apprt::runtime::RuntimeEventSender;
 use crate::core::compare::{ComparePhase, ProgressSink};
 use crate::core::vcs::git::{
-    GitService, PatchApplyTarget, StatusItem, StatusOperation, StatusScope,
-    status::status_items_from_entry,
+    BranchInfo, CommitInfo, GitService, PatchApplyTarget, StatusItem, StatusOperation, StatusScope,
+    TagInfo, status::status_items_from_entry,
 };
 use crate::events::{
     RepositoryChangeKind, RepositoryEvent, RepositorySnapshot, RepositorySyncReason,
@@ -169,6 +169,7 @@ pub(crate) enum GitWorkerCommand {
     },
     Dirty {
         path: PathBuf,
+        change_hint: RepositoryChangeKind,
     },
 }
 
@@ -176,7 +177,7 @@ pub(crate) enum GitWorkerCommand {
 struct GitWorkerState {
     git: GitService,
     active_path: Option<PathBuf>,
-    snapshot: Option<RepositorySnapshotState>,
+    snapshot: Option<SnapshotBundle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +196,7 @@ struct BranchTarget {
     target_oid: Option<String>,
 }
 
+#[derive(Debug, Clone)]
 struct SnapshotBundle {
     snapshot: RepositorySnapshot,
     state: RepositorySnapshotState,
@@ -202,7 +204,7 @@ struct SnapshotBundle {
 
 fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorkerCommand>) {
     let mut state = GitWorkerState::default();
-    let mut pending_dirty: Option<PathBuf> = None;
+    let mut pending_dirty: Option<(PathBuf, RepositoryChangeKind)> = None;
 
     loop {
         let command = if pending_dirty.is_some() {
@@ -225,7 +227,14 @@ fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorke
                 reporter_generation,
             }) => {
                 pending_dirty = None;
-                sync_repository(&mut state, &event_sender, path, reason, reporter_generation);
+                sync_repository(
+                    &mut state,
+                    &event_sender,
+                    path,
+                    reason,
+                    None,
+                    reporter_generation,
+                );
             }
             Some(GitWorkerCommand::ApplyOperation {
                 path,
@@ -291,11 +300,16 @@ fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorke
                 pending_dirty = None;
                 apply_pull_ff(&mut state, &event_sender, path, remote, branch, toast_id);
             }
-            Some(GitWorkerCommand::Dirty { path }) => {
-                pending_dirty = Some(path);
+            Some(GitWorkerCommand::Dirty { path, change_hint }) => {
+                pending_dirty = Some(match pending_dirty.take() {
+                    Some((pending_path, pending_hint)) if pending_path == path => {
+                        (path, merge_change_kind(pending_hint, change_hint))
+                    }
+                    _ => (path, change_hint),
+                });
             }
             None => {
-                let Some(path) = pending_dirty.take() else {
+                let Some((path, change_hint)) = pending_dirty.take() else {
                     continue;
                 };
                 sync_repository(
@@ -303,6 +317,7 @@ fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorke
                     &event_sender,
                     path,
                     RepositorySyncReason::Dirty,
+                    Some(change_hint),
                     None,
                 );
             }
@@ -684,7 +699,7 @@ fn sync_repository_forced(
     path: PathBuf,
     reason: RepositorySyncReason,
 ) {
-    sync_repository_inner(state, event_sender, path, reason, true, None);
+    sync_repository_inner(state, event_sender, path, reason, true, None, None);
 }
 
 fn sync_repository(
@@ -692,6 +707,7 @@ fn sync_repository(
     event_sender: &RuntimeEventSender,
     path: PathBuf,
     reason: RepositorySyncReason,
+    dirty_hint: Option<RepositoryChangeKind>,
     reporter_generation: Option<u64>,
 ) {
     sync_repository_inner(
@@ -700,6 +716,7 @@ fn sync_repository(
         path,
         reason,
         false,
+        dirty_hint,
         reporter_generation,
     );
 }
@@ -710,6 +727,7 @@ fn sync_repository_inner(
     path: PathBuf,
     reason: RepositorySyncReason,
     force_emit: bool,
+    dirty_hint: Option<RepositoryChangeKind>,
     reporter_generation: Option<u64>,
 ) {
     let reporter = reporter_generation
@@ -736,7 +754,14 @@ fn sync_repository_inner(
         }
     }
 
-    let bundle = match collect_snapshot(&state.git, path.clone(), reason, reporter_ref) {
+    let bundle = match collect_snapshot_for_sync(
+        &state.git,
+        path.clone(),
+        reason,
+        reporter_ref,
+        if force_emit { None } else { dirty_hint },
+        state.snapshot.as_ref(),
+    ) {
         Ok(bundle) => bundle,
         Err(error) => {
             event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
@@ -751,7 +776,7 @@ fn sync_repository_inner(
     let change_kind = state
         .snapshot
         .as_ref()
-        .and_then(|previous| previous.diff_kind(&bundle.state));
+        .and_then(|previous| previous.state.diff_kind(&bundle.state));
 
     let should_emit = force_emit || reason == RepositorySyncReason::Open || change_kind.is_some();
     tracing::debug!(
@@ -763,10 +788,9 @@ fn sync_repository_inner(
         prev_had_snapshot = state.snapshot.is_some(),
         "sync_repository: computed"
     );
-    state.snapshot = Some(bundle.state);
 
     if should_emit {
-        let mut snapshot = bundle.snapshot;
+        let mut snapshot = bundle.snapshot.clone();
         snapshot.change_kind = if reason == RepositorySyncReason::Open {
             None
         } else {
@@ -787,6 +811,29 @@ fn sync_repository_inner(
             "sync_repository: suppressing snapshot (no diff detected)"
         );
     }
+    state.snapshot = Some(bundle);
+}
+
+fn collect_snapshot_for_sync(
+    git: &GitService,
+    path: PathBuf,
+    reason: RepositorySyncReason,
+    reporter: Option<&dyn ProgressSink>,
+    dirty_hint: Option<RepositoryChangeKind>,
+    previous: Option<&SnapshotBundle>,
+) -> crate::core::error::Result<SnapshotBundle> {
+    let Some(previous) = previous else {
+        return collect_snapshot(git, path, reason, reporter);
+    };
+    match (reason, dirty_hint) {
+        (RepositorySyncReason::Dirty, Some(RepositoryChangeKind::Worktree)) => {
+            collect_worktree_snapshot(git, path, reason, previous)
+        }
+        (RepositorySyncReason::Dirty, Some(RepositoryChangeKind::Git)) => {
+            collect_git_snapshot(git, path, reason, reporter, previous)
+        }
+        _ => collect_snapshot(git, path, reason, reporter),
+    }
 }
 
 fn collect_snapshot(
@@ -795,9 +842,107 @@ fn collect_snapshot(
     reason: RepositorySyncReason,
     reporter: Option<&dyn ProgressSink>,
 ) -> crate::core::error::Result<SnapshotBundle> {
+    let _span =
+        crate::core::perf::PerfSpan::new("git.snapshot", format!("reason={reason:?} mode=full"));
+    let repo_path = git.repo_path().to_owned();
+    let (refs, (status_items, status_entries)) = thread::scope(
+        |scope| -> crate::core::error::Result<(
+            GitSnapshotRefs,
+            (Vec<StatusItem>, Vec<(String, u32)>),
+        )> {
+            let status_handle = scope.spawn(move || {
+                let status_git = GitService::new_with_repo_path(repo_path);
+                collect_status(&status_git)
+            });
+            let refs = collect_git_refs(git, reporter);
+            let status = status_handle.join().unwrap_or_else(|_| {
+                Err(crate::core::error::DiffyError::General(
+                    "status worker panicked".to_owned(),
+                ))
+            });
+            Ok((refs?, status?))
+        },
+    )?;
+
+    let snapshot = RepositorySnapshot {
+        path,
+        reason,
+        change_kind: None,
+        branches: refs.branches,
+        tags: refs.tags,
+        commits: refs.commits,
+        status_items,
+    };
+    let state = RepositorySnapshotState {
+        head_oid: refs.head_oid,
+        branch_targets: refs.branch_targets,
+        tag_targets: refs.tag_targets,
+        statuses: status_entries,
+    };
+
+    Ok(SnapshotBundle { snapshot, state })
+}
+
+fn collect_worktree_snapshot(
+    git: &GitService,
+    path: PathBuf,
+    reason: RepositorySyncReason,
+    previous: &SnapshotBundle,
+) -> crate::core::error::Result<SnapshotBundle> {
+    let _span = crate::core::perf::PerfSpan::new(
+        "git.snapshot",
+        format!("reason={reason:?} mode=worktree"),
+    );
+    let (status_items, status_entries) = collect_status(git)?;
+    let mut snapshot = previous.snapshot.clone();
+    snapshot.path = path;
+    snapshot.reason = reason;
+    snapshot.change_kind = None;
+    snapshot.status_items = status_items;
+    let mut state = previous.state.clone();
+    state.statuses = status_entries;
+    Ok(SnapshotBundle { snapshot, state })
+}
+
+fn collect_git_snapshot(
+    git: &GitService,
+    path: PathBuf,
+    reason: RepositorySyncReason,
+    reporter: Option<&dyn ProgressSink>,
+    previous: &SnapshotBundle,
+) -> crate::core::error::Result<SnapshotBundle> {
+    let _span =
+        crate::core::perf::PerfSpan::new("git.snapshot", format!("reason={reason:?} mode=git"));
+    let refs = collect_git_refs(git, reporter)?;
+    let mut snapshot = previous.snapshot.clone();
+    snapshot.path = path;
+    snapshot.reason = reason;
+    snapshot.change_kind = None;
+    snapshot.branches = refs.branches;
+    snapshot.tags = refs.tags;
+    snapshot.commits = refs.commits;
+    let mut state = previous.state.clone();
+    state.head_oid = refs.head_oid;
+    state.branch_targets = refs.branch_targets;
+    state.tag_targets = refs.tag_targets;
+    Ok(SnapshotBundle { snapshot, state })
+}
+
+struct GitSnapshotRefs {
+    branches: Vec<BranchInfo>,
+    tags: Vec<TagInfo>,
+    commits: Vec<CommitInfo>,
+    head_oid: Option<String>,
+    branch_targets: Vec<BranchTarget>,
+    tag_targets: Vec<(String, String)>,
+}
+
+fn collect_git_refs(
+    git: &GitService,
+    reporter: Option<&dyn ProgressSink>,
+) -> crate::core::error::Result<GitSnapshotRefs> {
     // Phase boundaries roughly track the I/O cost: branch/tag enumeration
-    // first, then commit walk, then status. The repository open itself
-    // was already reported before we got here.
+    // first, then commit walk. The repository open itself was already reported.
     if let Some(r) = reporter {
         r.phase(ComparePhase::ResolvingRefs);
     }
@@ -814,10 +959,29 @@ fn collect_snapshot(
             name: branch.name.clone(),
             is_remote: branch.is_remote,
             is_head: branch.is_head,
-            target_oid: git.resolve_ref(&branch.name).ok(),
+            target_oid: (!branch.target_oid.is_empty()).then(|| branch.target_oid.clone()),
         })
         .collect::<Vec<_>>();
     branch_targets.sort();
+    let mut tag_targets = tags
+        .iter()
+        .map(|tag| (tag.name.clone(), tag.target_oid.clone()))
+        .collect::<Vec<_>>();
+    tag_targets.sort();
+
+    Ok(GitSnapshotRefs {
+        branches,
+        tags,
+        commits,
+        head_oid: git.resolve_ref("HEAD").ok(),
+        branch_targets,
+        tag_targets,
+    })
+}
+
+fn collect_status(
+    git: &GitService,
+) -> crate::core::error::Result<(Vec<StatusItem>, Vec<(String, u32)>)> {
     let statuses = git.status_entries()?;
     let mut status_entries = statuses
         .iter()
@@ -834,27 +998,24 @@ fn collect_snapshot(
             .cmp(right.scope.label())
             .then(left.path.cmp(&right.path))
     });
+    Ok((status_items, status_entries))
+}
 
-    let snapshot = RepositorySnapshot {
-        path,
-        reason,
-        change_kind: None,
-        branches: branches.clone(),
-        tags: tags.clone(),
-        commits: commits.clone(),
-        status_items,
-    };
-    let state = RepositorySnapshotState {
-        head_oid: git.resolve_ref("HEAD").ok(),
-        branch_targets,
-        tag_targets: tags
-            .iter()
-            .map(|tag| (tag.name.clone(), tag.target_oid.clone()))
-            .collect(),
-        statuses: status_entries,
-    };
-
-    Ok(SnapshotBundle { snapshot, state })
+fn merge_change_kind(
+    left: RepositoryChangeKind,
+    right: RepositoryChangeKind,
+) -> RepositoryChangeKind {
+    match (left, right) {
+        (RepositoryChangeKind::Both, _) | (_, RepositoryChangeKind::Both) => {
+            RepositoryChangeKind::Both
+        }
+        (RepositoryChangeKind::Git, RepositoryChangeKind::Worktree)
+        | (RepositoryChangeKind::Worktree, RepositoryChangeKind::Git) => RepositoryChangeKind::Both,
+        (RepositoryChangeKind::Git, RepositoryChangeKind::Git) => RepositoryChangeKind::Git,
+        (RepositoryChangeKind::Worktree, RepositoryChangeKind::Worktree) => {
+            RepositoryChangeKind::Worktree
+        }
+    }
 }
 
 fn sanitize_status(

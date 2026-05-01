@@ -126,6 +126,14 @@ impl GitDiffBackend {
         files: &[&carbon::FileDiff],
         git: &GitService,
     ) -> Vec<Option<(i32, i32)>> {
+        self.deferred_file_line_stats_batch_for_repo_path(files, git.repo_path())
+    }
+
+    pub fn deferred_file_line_stats_batch_for_repo_path(
+        &self,
+        files: &[&carbon::FileDiff],
+        repo_path: &str,
+    ) -> Vec<Option<(i32, i32)>> {
         let _span = crate::core::perf::PerfSpan::new(
             "compare.file_stats_batch",
             format!("batch_len={}", files.len()),
@@ -136,7 +144,7 @@ impl GitDiffBackend {
 
         let worker_count = deferred_stats_worker_count(files.len());
         if worker_count == 1 {
-            let Ok(gix_repo) = open_gix_repo(git) else {
+            let Ok(gix_repo) = open_gix_repo_path(repo_path) else {
                 return vec![None; files.len()];
             };
             return files
@@ -149,13 +157,11 @@ impl GitDiffBackend {
                 .collect();
         }
 
-        let repo_path = git.repo_path().to_owned();
         let chunk_size = files.len().div_ceil(worker_count);
         let mut results = vec![None; files.len()];
         std::thread::scope(|scope| {
             let mut handles = Vec::with_capacity(worker_count);
             for (chunk_index, chunk) in files.chunks(chunk_size).enumerate() {
-                let repo_path = repo_path.as_str();
                 handles.push(scope.spawn(move || {
                     let start = chunk_index * chunk_size;
                     deferred_file_line_stats_chunk(repo_path, start, chunk)
@@ -359,6 +365,7 @@ fn open_gix_repo(git: &GitService) -> Result<gix::Repository> {
 }
 
 fn open_gix_repo_path(repo_path: &str) -> Result<gix::Repository> {
+    let _span = crate::core::perf::PerfSpan::new("git.gix_open", format!("path={repo_path}"));
     let mut repo = gix::open(repo_path).map_err(gix_error)?;
     repo.object_cache_size_if_unset(64 * 1024 * 1024);
     Ok(repo)
@@ -375,6 +382,13 @@ fn collect_gix_changes(
     path_filter: Option<&str>,
     track_rewrites: bool,
 ) -> Result<Vec<GixChange>> {
+    let _span = crate::core::perf::PerfSpan::new(
+        "compare.enumerate_changes",
+        format!(
+            "left={left} right={right} path_filter={} track_rewrites={track_rewrites}",
+            path_filter.unwrap_or("")
+        ),
+    );
     let left_tree = gix_tree_for_oid(repo, left)?;
     let right_tree = gix_tree_for_oid(repo, right)?;
     let mut options = gix::diff::Options::default();
@@ -451,6 +465,10 @@ fn compare_output_from_gix_changes(
     changes: Vec<GixChange>,
     reporter: Option<&dyn ProgressSink>,
 ) -> Result<CompareOutput> {
+    let _span = crate::core::perf::PerfSpan::new(
+        "compare.build_output",
+        format!("changes={}", changes.len()),
+    );
     let mut output = CompareOutput::default();
     if changes.len() > DEFER_HUNKS_FILE_LIMIT {
         output.carbon.files = changes

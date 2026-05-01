@@ -401,23 +401,33 @@ fn collect_changed_paths(
     right: &str,
     only_path: Option<&str>,
 ) -> Result<Vec<ChangedPath>> {
-    let mut changed = Vec::new();
-    for (status, old_path, new_path) in git.diff_name_status(left, right, only_path)? {
-        let old_content = if let Some(path) = old_path.as_deref() {
-            git.read_file_bytes_at(left, path).ok()
-        } else {
-            None
-        };
-        let new_reference = if right == WORKDIR_REF {
-            WORKDIR_REF
-        } else {
-            right
-        };
-        let new_content = if let Some(path) = new_path.as_deref() {
-            git.read_file_bytes_at(new_reference, path).ok()
-        } else {
-            None
-        };
+    let entries = git.diff_name_status(left, right, only_path)?;
+    let old_paths = entries
+        .iter()
+        .filter_map(|(_, old_path, _)| old_path.as_deref())
+        .collect::<Vec<_>>();
+    let new_reference = if right == WORKDIR_REF {
+        WORKDIR_REF
+    } else {
+        right
+    };
+    let new_paths = entries
+        .iter()
+        .filter_map(|(_, _, new_path)| new_path.as_deref())
+        .collect::<Vec<_>>();
+    let mut old_contents = git.read_file_bytes_batch_at(left, old_paths).into_iter();
+    let mut new_contents = git
+        .read_file_bytes_batch_at(new_reference, new_paths)
+        .into_iter();
+
+    let mut changed = Vec::with_capacity(entries.len());
+    for (status, old_path, new_path) in entries {
+        let old_content = old_path
+            .as_ref()
+            .and_then(|_| old_contents.next().flatten());
+        let new_content = new_path
+            .as_ref()
+            .and_then(|_| new_contents.next().flatten());
         let old_binary = old_content
             .as_ref()
             .is_some_and(|bytes| bytes.iter().take(1024).any(|b| *b == 0));
@@ -783,7 +793,9 @@ mod tests {
         )
         .unwrap();
 
-        let changed = collect_changed_paths(&repo, &head, WORKDIR_REF, None).unwrap();
+        let mut git = GitService::new();
+        git.open(repo_dir.path().to_str().unwrap()).unwrap();
+        let changed = collect_changed_paths(&git, &head, WORKDIR_REF, None).unwrap();
         assert_eq!(changed.len(), 1);
         assert_eq!(changed[0].new_path.as_deref(), Some("src/lib.rs"));
         assert_eq!(
@@ -801,7 +813,9 @@ mod tests {
         fs::write(repo_dir.path().join("src/lib.rs"), "after\n").unwrap();
         fs::write(repo_dir.path().join("src/other.rs"), "changed\n").unwrap();
 
-        let changed = collect_changed_paths(&repo, &head, WORKDIR_REF, Some("src/lib.rs")).unwrap();
+        let mut git = GitService::new();
+        git.open(repo_dir.path().to_str().unwrap()).unwrap();
+        let changed = collect_changed_paths(&git, &head, WORKDIR_REF, Some("src/lib.rs")).unwrap();
 
         assert_eq!(changed.len(), 1);
         assert_eq!(changed[0].new_path.as_deref(), Some("src/lib.rs"));

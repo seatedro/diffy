@@ -78,6 +78,9 @@ struct NativeApp {
     next_update_check_at: Option<Instant>,
     needs_redraw: bool,
     exit_requested: bool,
+    has_seen_focus: bool,
+    skip_next_focus_regain_rescan: bool,
+    rescan_on_next_focus: bool,
     tooltip_state: TooltipState,
     #[cfg(feature = "hot-reload")]
     hot_reload_pending: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -107,6 +110,9 @@ impl NativeApp {
                 .then(|| Instant::now() + UPDATE_POLL_INTERVAL),
             needs_redraw: true,
             exit_requested: false,
+            has_seen_focus: false,
+            skip_next_focus_regain_rescan: true,
+            rescan_on_next_focus: false,
             tooltip_state: TooltipState::default(),
             #[cfg(feature = "hot-reload")]
             hot_reload_pending: None,
@@ -561,7 +567,9 @@ impl ApplicationHandler for NativeApp {
                 event_loop.exit();
             }
             WindowEvent::Focused(true) => {
-                if let Some(path) = self.state.compare.repo_path.get(&self.state.store) {
+                if self.rescan_on_next_focus
+                    && let Some(path) = self.state.compare.repo_path.get(&self.state.store)
+                {
                     self.runtime.dispatch_all(vec![
                         RepositoryEffect::SyncRepository {
                             path,
@@ -570,6 +578,15 @@ impl ApplicationHandler for NativeApp {
                         }
                         .into(),
                     ]);
+                }
+                self.has_seen_focus = true;
+                self.rescan_on_next_focus = false;
+                self.mark_dirty();
+            }
+            WindowEvent::Focused(false) => {
+                if self.has_seen_focus {
+                    self.rescan_on_next_focus = !self.skip_next_focus_regain_rescan;
+                    self.skip_next_focus_regain_rescan = false;
                 }
                 self.mark_dirty();
             }

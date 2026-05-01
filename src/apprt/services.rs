@@ -246,11 +246,10 @@ impl AppServices {
         generation: u64,
         request: CompareFileStatsRequest,
     ) -> Result<CompareFileStatsReady> {
-        let mut git = GitService::new();
-        git.open(request.repo_path.to_string_lossy().as_ref())?;
-
         let files: Vec<&carbon::FileDiff> = request.files.iter().map(|item| &item.file).collect();
-        let file_stats = GitDiffBackend.deferred_file_line_stats_batch(&files, &git);
+        let repo_path = request.repo_path.to_string_lossy();
+        let file_stats =
+            GitDiffBackend.deferred_file_line_stats_batch_for_repo_path(&files, &repo_path);
         let mut stats = Vec::with_capacity(request.files.len());
         for (item, stat) in request.files.into_iter().zip(file_stats) {
             let (additions, deletions) = stat.unwrap_or((

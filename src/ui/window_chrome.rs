@@ -213,7 +213,7 @@ fn update_chip(state: &AppState) -> Option<AnyElement> {
 }
 
 fn account_chip(
-    user: Option<&crate::core::vcs::github::GitHubUser>,
+    user: Option<&crate::core::forge::github::GitHubUser>,
     avatar_image: Option<AvatarImage>,
     loading: bool,
     tc: &ThemeColors,

@@ -4,8 +4,8 @@ use std::thread;
 use std::time::Duration;
 
 use crate::apprt::compare::CompareScheduler;
-use crate::apprt::git_worker::GitWorker;
 use crate::apprt::services::AppServices;
+use crate::apprt::vcs_worker::VcsWorker;
 use crate::apprt::watcher::RepoWatchWorker;
 use crate::effects::{
     AiEffect, CompareEffect, Effect, GitHubEffect, RepositoryEffect, SettingsEffect, SyntaxEffect,
@@ -30,16 +30,16 @@ impl AppRuntime {
         let (sender, receiver) = mpsc::channel();
         let event_sender = RuntimeEventSender::new(sender, wake_proxy);
         let save_worker = SaveWorker::new(services.clone(), event_sender.clone());
-        let git_worker = GitWorker::new(event_sender.clone());
+        let vcs_worker = VcsWorker::new(event_sender.clone());
         let compare_scheduler = CompareScheduler::new(services.clone(), event_sender.clone());
-        let repo_watch_worker = RepoWatchWorker::new(git_worker.sender());
+        let repo_watch_worker = RepoWatchWorker::new(vcs_worker.sender());
         Self {
             receiver,
             runner: EffectRunner {
                 services,
                 event_sender,
                 save_worker,
-                git_worker,
+                vcs_worker,
                 compare_scheduler,
                 repo_watch_worker,
             },
@@ -61,7 +61,7 @@ struct EffectRunner {
     services: AppServices,
     event_sender: RuntimeEventSender,
     save_worker: SaveWorker,
-    git_worker: GitWorker,
+    vcs_worker: VcsWorker,
     compare_scheduler: CompareScheduler,
     repo_watch_worker: RepoWatchWorker,
 }
@@ -123,25 +123,25 @@ impl EffectRunner {
                 reason,
                 reporter_generation,
             }) => {
-                self.git_worker
+                self.vcs_worker
                     .dispatch_sync(path, reason, reporter_generation);
             }
             Effect::Repository(RepositoryEffect::ApplyStatusOperation(request)) => {
-                self.git_worker.dispatch_operation(
+                self.vcs_worker.dispatch_operation(
                     request.repo_path,
                     request.item,
                     request.operation,
                 );
             }
             Effect::Repository(RepositoryEffect::ApplyBatchStatusOperation(request)) => {
-                self.git_worker.dispatch_batch_operation(
+                self.vcs_worker.dispatch_batch_operation(
                     request.repo_path,
                     request.items,
                     request.operation,
                 );
             }
             Effect::Repository(RepositoryEffect::ApplyPatchOperation(request)) => {
-                self.git_worker.dispatch_patch_operation(
+                self.vcs_worker.dispatch_patch_operation(
                     request.repo_path,
                     request.patch,
                     request.scope,
@@ -149,15 +149,15 @@ impl EffectRunner {
                 );
             }
             Effect::Repository(RepositoryEffect::CreateCommit(request)) => {
-                self.git_worker
+                self.vcs_worker
                     .dispatch_commit(request.repo_path, request.message);
             }
             Effect::Repository(RepositoryEffect::FetchRemote(request)) => {
-                self.git_worker
+                self.vcs_worker
                     .dispatch_fetch(request.repo_path, request.remote, request.toast_id);
             }
             Effect::Repository(RepositoryEffect::Push(request)) => {
-                self.git_worker.dispatch_push(
+                self.vcs_worker.dispatch_push(
                     request.repo_path,
                     request.remote,
                     request.refspec,
@@ -166,7 +166,7 @@ impl EffectRunner {
                 );
             }
             Effect::Repository(RepositoryEffect::PullFf(request)) => {
-                self.git_worker.dispatch_pull_ff(
+                self.vcs_worker.dispatch_pull_ff(
                     request.repo_path,
                     request.remote,
                     request.branch,

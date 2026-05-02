@@ -255,6 +255,16 @@ impl AppState {
     }
 
     fn submit_commit(&mut self) -> Vec<Effect> {
+        if !self
+            .repository
+            .capabilities
+            .with(&self.store, |capabilities| {
+                capabilities.is_some_and(|capabilities| capabilities.staging_area)
+            })
+        {
+            self.push_error("This repository backend does not support Git commits.");
+            return Vec::new();
+        }
         let message = self.commit_editor.text().trim().to_owned();
         if message.is_empty() {
             return Vec::new();

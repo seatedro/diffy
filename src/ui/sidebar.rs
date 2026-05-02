@@ -146,7 +146,7 @@ fn render_sidebar_row(
     row_h: f32,
 ) -> AnyElement {
     match row {
-        SidebarRow::Section(scope) => status_section_row(scope, tc, scale, row_h),
+        SidebarRow::Section(scope) => status_section_row(scope, state, tc, scale, row_h),
         SidebarRow::File { index, entry } => file_row(entry, index, state, tc, scale),
     }
 }
@@ -747,7 +747,20 @@ pub(crate) fn sidebar(
                                 scope: items
                                     .get(i)
                                     .filter(|_| workspace_source == WorkspaceSource::Status)
-                                    .map(|item| item.scope.label().to_owned()),
+                                    .map(|item| {
+                                        if state.repository.capabilities.with(
+                                            &state.store,
+                                            |capabilities| {
+                                                capabilities.is_some_and(|capabilities| {
+                                                    capabilities.staging_area
+                                                })
+                                            },
+                                        ) {
+                                            item.scope.label().to_owned()
+                                        } else {
+                                            "Changed files".to_owned()
+                                        }
+                                    }),
                                 additions: f.additions,
                                 deletions: f.deletions,
                             }
@@ -838,7 +851,15 @@ pub(crate) fn sidebar(
         }
     };
 
-    let commit_box: Option<AnyElement> = if workspace_source == WorkspaceSource::Status {
+    let supports_git_commit = state
+        .repository
+        .capabilities
+        .with(&state.store, |capabilities| {
+            capabilities.is_some_and(|capabilities| capabilities.staging_area)
+        });
+    let commit_box: Option<AnyElement> = if workspace_source == WorkspaceSource::Status
+        && supports_git_commit
+    {
         let commit_focused = cx.is_focused(FocusTarget::CommitEditor);
         let has_staged = state.workspace.status_items.with(&state.store, |items| {
             items.iter().any(|item| item.scope == StatusScope::Staged)
@@ -924,23 +945,36 @@ pub(crate) fn sidebar(
 
 fn status_section_row(
     scope: StatusScope,
+    state: &AppState,
     tc: &crate::ui::theme::ThemeColors,
     scale: f32,
     row_height: f32,
 ) -> AnyElement {
-    let label = scope.label();
-    let section_action: Option<(Action, &str, &str)> = match scope {
-        StatusScope::Unstaged | StatusScope::Untracked => Some((
-            crate::actions::RepositoryAction::StageAllFiles.into(),
-            lucide::PLUS,
-            "Stage All",
-        )),
-        StatusScope::Staged => Some((
-            crate::actions::RepositoryAction::UnstageAllFiles.into(),
-            lucide::MINUS,
-            "Unstage All",
-        )),
+    let has_staging_area = state
+        .repository
+        .capabilities
+        .with(&state.store, |capabilities| {
+            capabilities.is_some_and(|capabilities| capabilities.staging_area)
+        });
+    let label = if has_staging_area {
+        scope.label()
+    } else {
+        "Changed files"
     };
+    let section_action: Option<(Action, &str, &str)> = has_staging_area
+        .then(|| match scope {
+            StatusScope::Unstaged | StatusScope::Untracked => Some((
+                crate::actions::RepositoryAction::StageAllFiles.into(),
+                lucide::PLUS,
+                "Stage All",
+            )),
+            StatusScope::Staged => Some((
+                crate::actions::RepositoryAction::UnstageAllFiles.into(),
+                lucide::MINUS,
+                "Unstage All",
+            )),
+        })
+        .flatten();
 
     view! { scale,
         <div class="w-full shrink-0 flex-row items-center"
@@ -993,12 +1027,34 @@ fn file_row(
         .status_items
         .with(&state.store, |items| items.get(index).cloned())
         .filter(|_| is_status_view && !state.file_list.filter.with(&state.store, |s| s.is_empty()))
-        .map(|item| item.scope.label());
+        .map(|item| {
+            if state
+                .repository
+                .capabilities
+                .with(&state.store, |capabilities| {
+                    capabilities.is_some_and(|capabilities| capabilities.staging_area)
+                })
+            {
+                item.scope.label()
+            } else {
+                "Changed files"
+            }
+        });
 
-    let stage_action: Option<(Action, &str, &str)> = state
-        .workspace
-        .status_items
-        .with(&state.store, |items| items.get(index).map(|i| i.scope))
+    let has_staging_area = state
+        .repository
+        .capabilities
+        .with(&state.store, |capabilities| {
+            capabilities.is_some_and(|capabilities| capabilities.staging_area)
+        });
+    let stage_action: Option<(Action, &str, &str)> = has_staging_area
+        .then(|| {
+            state
+                .workspace
+                .status_items
+                .with(&state.store, |items| items.get(index).map(|i| i.scope))
+        })
+        .flatten()
         .filter(|_| is_status_view)
         .and_then(|scope| match scope {
             StatusScope::Unstaged | StatusScope::Untracked => Some((

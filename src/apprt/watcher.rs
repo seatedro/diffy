@@ -6,7 +6,8 @@ use std::time::Duration;
 use notify::event::{EventKind, MetadataKind, ModifyKind};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 
-use crate::apprt::git_worker::GitWorkerCommand;
+use crate::apprt::vcs_worker::VcsWorkerCommand;
+use crate::core::vcs::discovery;
 use crate::events::RepositoryChangeKind;
 
 const REPO_WATCH_DEBOUNCE: Duration = Duration::from_millis(150);
@@ -16,7 +17,7 @@ pub struct RepoWatchWorker {
 }
 
 impl RepoWatchWorker {
-    pub fn new(dirty_sender: Sender<GitWorkerCommand>) -> Self {
+    pub fn new(dirty_sender: Sender<VcsWorkerCommand>) -> Self {
         let (sender, receiver) = mpsc::channel();
         let callback_sender = sender.clone();
         thread::spawn(move || repo_watch_worker_loop(callback_sender, dirty_sender, receiver));
@@ -35,14 +36,14 @@ enum WatchCommand {
 
 struct ActiveRepoWatch {
     request_path: PathBuf,
-    git_dir: PathBuf,
+    metadata_dir: PathBuf,
     workdir: Option<PathBuf>,
     watched_paths: Vec<PathBuf>,
 }
 
 fn repo_watch_worker_loop(
     callback_sender: Sender<WatchCommand>,
-    dirty_sender: Sender<GitWorkerCommand>,
+    dirty_sender: Sender<VcsWorkerCommand>,
     receiver: Receiver<WatchCommand>,
 ) {
     let mut watcher = match notify::recommended_watcher(move |event| {
@@ -100,7 +101,7 @@ fn repo_watch_worker_loop(
                 let Some(change_hint) = pending_dirty.take() else {
                     continue;
                 };
-                let _ = dirty_sender.send(GitWorkerCommand::Dirty {
+                let _ = dirty_sender.send(VcsWorkerCommand::Dirty {
                     path: active_watch.request_path.clone(),
                     change_hint,
                 });
@@ -122,7 +123,7 @@ fn replace_active_watch(
         return;
     };
 
-    let watch_paths = match watch_paths_for_repo(&path) {
+    let watch_paths = match discovery::watch_paths_for_repository(&path) {
         Ok(paths) => paths,
         Err(error) => {
             tracing::warn!(
@@ -144,34 +145,10 @@ fn replace_active_watch(
 
     *active = Some(ActiveRepoWatch {
         request_path: path,
-        git_dir: watch_paths.git_dir,
+        metadata_dir: watch_paths.metadata_dir,
         workdir: watch_paths.workdir,
         watched_paths: watch_paths.watched_paths,
     });
-}
-
-struct RepoWatchPaths {
-    git_dir: PathBuf,
-    workdir: Option<PathBuf>,
-    watched_paths: Vec<PathBuf>,
-}
-
-fn watch_paths_for_repo(path: &Path) -> Result<RepoWatchPaths, gix::open::Error> {
-    let repo = gix::open(path)?;
-    let git_dir = repo.git_dir().to_path_buf();
-    let workdir = repo.workdir().map(Path::to_path_buf);
-
-    let watched_paths = match workdir.as_ref() {
-        Some(workdir) if git_dir.starts_with(workdir) => vec![workdir.clone()],
-        Some(workdir) => vec![workdir.clone(), git_dir.clone()],
-        None => vec![git_dir.clone()],
-    };
-
-    Ok(RepoWatchPaths {
-        git_dir,
-        workdir,
-        watched_paths,
-    })
 }
 
 fn unwatch_paths(watcher: &mut RecommendedWatcher, watched_paths: &[PathBuf]) {
@@ -200,8 +177,8 @@ fn classify_event(active: &ActiveRepoWatch, event: &Event) -> RepositoryChangeKi
 }
 
 fn classify_path(active: &ActiveRepoWatch, path: &Path) -> RepositoryChangeKind {
-    if path.starts_with(&active.git_dir) {
-        if is_git_index_path(&active.git_dir, path) {
+    if path.starts_with(&active.metadata_dir) {
+        if is_git_index_path(&active.metadata_dir, path) {
             RepositoryChangeKind::Worktree
         } else {
             RepositoryChangeKind::Git

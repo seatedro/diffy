@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::core::vcs::github::{GitHubReviewSide, PullRequestReviewComment};
+use crate::core::forge::github::{GitHubReviewSide, PullRequestReviewComment};
 use crate::render::{
     BorderPrimitive, FontKind, FontWeight, Rect, RectPrimitive, RoundedRectPrimitive, TextPrimitive,
 };

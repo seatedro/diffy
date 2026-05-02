@@ -2,11 +2,11 @@ use std::path::PathBuf;
 
 use crate::ai::Provider;
 use crate::core::compare::{CompareSpec, RendererKind};
+use crate::core::forge::github::CreatePullRequestReviewComment;
 use crate::core::syntax::annotator::SyntaxRowWindow;
 use crate::core::update::{AvailableUpdate, StagedUpdate};
 use crate::core::vcs::git::status::StatusScope;
 use crate::core::vcs::git::{StatusItem, StatusOperation};
-use crate::core::vcs::github::CreatePullRequestReviewComment;
 use crate::events::RepositorySyncReason;
 use crate::platform::persistence::Settings;
 use crate::platform::secrets::AiKeyKind;

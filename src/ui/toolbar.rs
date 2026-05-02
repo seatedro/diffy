@@ -137,18 +137,30 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: Option<&str>) -
         || (continuous_scroll && state.workspace_file_count() > 0);
     let selected_scope = state.workspace.selected_status_scope.get(&state.store);
     let compare_layout = state.compare.layout.get(&state.store);
+    let supports_staging = state
+        .repository
+        .capabilities
+        .with(&state.store, |capabilities| {
+            capabilities.is_some_and(|capabilities| capabilities.staging_area)
+        });
+    let supports_hunk_mutation = state
+        .repository
+        .capabilities
+        .with(&state.store, |capabilities| {
+            capabilities.is_some_and(|capabilities| capabilities.partial_hunk_mutation)
+        });
     let show_stage = matches!(
         selected_scope,
         Some(
             crate::core::vcs::git::StatusScope::Unstaged
                 | crate::core::vcs::git::StatusScope::Untracked
         )
-    );
+    ) && supports_staging;
     let show_unstage = matches!(
         selected_scope,
         Some(crate::core::vcs::git::StatusScope::Staged)
-    );
-    let show_discard = selected_scope.is_some();
+    ) && supports_staging;
+    let show_discard = selected_scope.is_some() && supports_hunk_mutation;
     let file_label_view = file_label.map(|file_label| {
         view! { scale,
             <div class="flex-row items-center flex-1" gap={Sp::SM} min_w={0.0}>

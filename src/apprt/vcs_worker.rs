@@ -6,24 +6,30 @@ use std::time::Duration;
 use crate::apprt::ProgressReporter;
 use crate::apprt::runtime::RuntimeEventSender;
 use crate::core::compare::{ComparePhase, ProgressSink};
+use crate::core::vcs::git::adapter;
 use crate::core::vcs::git::{
     BranchInfo, CommitInfo, GitService, PatchApplyTarget, StatusItem, StatusOperation, StatusScope,
     TagInfo, status::status_items_from_entry,
+};
+use crate::core::vcs::{
+    backend::VcsRepository,
+    discovery,
+    model::{RepoLocation, VcsKind},
 };
 use crate::events::{
     RepositoryChangeKind, RepositoryEvent, RepositorySnapshot, RepositorySyncReason,
 };
 
-const GIT_DIRTY_DEBOUNCE: Duration = Duration::from_millis(150);
+const VCS_DIRTY_DEBOUNCE: Duration = Duration::from_millis(150);
 
-pub struct GitWorker {
-    sender: Sender<GitWorkerCommand>,
+pub struct VcsWorker {
+    sender: Sender<VcsWorkerCommand>,
 }
 
-impl GitWorker {
+impl VcsWorker {
     pub fn new(event_sender: RuntimeEventSender) -> Self {
         let (sender, receiver) = mpsc::channel();
-        thread::spawn(move || git_worker_loop(event_sender, receiver));
+        thread::spawn(move || vcs_worker_loop(event_sender, receiver));
         Self { sender }
     }
 
@@ -33,7 +39,7 @@ impl GitWorker {
         reason: RepositorySyncReason,
         reporter_generation: Option<u64>,
     ) {
-        let _ = self.sender.send(GitWorkerCommand::Sync {
+        let _ = self.sender.send(VcsWorkerCommand::Sync {
             path,
             reason,
             reporter_generation,
@@ -41,7 +47,7 @@ impl GitWorker {
     }
 
     pub fn dispatch_operation(&self, path: PathBuf, item: StatusItem, operation: StatusOperation) {
-        let _ = self.sender.send(GitWorkerCommand::ApplyOperation {
+        let _ = self.sender.send(VcsWorkerCommand::ApplyOperation {
             path,
             item,
             operation,
@@ -54,7 +60,7 @@ impl GitWorker {
         items: Vec<StatusItem>,
         operation: StatusOperation,
     ) {
-        let _ = self.sender.send(GitWorkerCommand::ApplyBatchOperation {
+        let _ = self.sender.send(VcsWorkerCommand::ApplyBatchOperation {
             path,
             items,
             operation,
@@ -68,7 +74,7 @@ impl GitWorker {
         scope: StatusScope,
         operation: StatusOperation,
     ) {
-        let _ = self.sender.send(GitWorkerCommand::ApplyPatch {
+        let _ = self.sender.send(VcsWorkerCommand::ApplyPatch {
             path,
             patch,
             scope,
@@ -77,11 +83,11 @@ impl GitWorker {
     }
 
     pub fn dispatch_commit(&self, path: PathBuf, message: String) {
-        let _ = self.sender.send(GitWorkerCommand::Commit { path, message });
+        let _ = self.sender.send(VcsWorkerCommand::Commit { path, message });
     }
 
     pub fn dispatch_fetch(&self, path: PathBuf, remote: String, toast_id: u64) {
-        let _ = self.sender.send(GitWorkerCommand::Fetch {
+        let _ = self.sender.send(VcsWorkerCommand::Fetch {
             path,
             remote,
             toast_id,
@@ -96,7 +102,7 @@ impl GitWorker {
         force_with_lease: bool,
         toast_id: u64,
     ) {
-        let _ = self.sender.send(GitWorkerCommand::Push {
+        let _ = self.sender.send(VcsWorkerCommand::Push {
             path,
             remote,
             refspec,
@@ -106,7 +112,7 @@ impl GitWorker {
     }
 
     pub fn dispatch_pull_ff(&self, path: PathBuf, remote: String, branch: String, toast_id: u64) {
-        let _ = self.sender.send(GitWorkerCommand::PullFf {
+        let _ = self.sender.send(VcsWorkerCommand::PullFf {
             path,
             remote,
             branch,
@@ -114,13 +120,13 @@ impl GitWorker {
         });
     }
 
-    pub(crate) fn sender(&self) -> Sender<GitWorkerCommand> {
+    pub(crate) fn sender(&self) -> Sender<VcsWorkerCommand> {
         self.sender.clone()
     }
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum GitWorkerCommand {
+pub(crate) enum VcsWorkerCommand {
     Sync {
         path: PathBuf,
         reason: RepositorySyncReason,
@@ -174,8 +180,9 @@ pub(crate) enum GitWorkerCommand {
 }
 
 #[derive(Default)]
-struct GitWorkerState {
+struct VcsWorkerState {
     git: GitService,
+    vcs_repo: Option<Box<dyn VcsRepository>>,
     active_path: Option<PathBuf>,
     snapshot: Option<SnapshotBundle>,
 }
@@ -202,13 +209,13 @@ struct SnapshotBundle {
     state: RepositorySnapshotState,
 }
 
-fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorkerCommand>) {
-    let mut state = GitWorkerState::default();
+fn vcs_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<VcsWorkerCommand>) {
+    let mut state = VcsWorkerState::default();
     let mut pending_dirty: Option<(PathBuf, RepositoryChangeKind)> = None;
 
     loop {
         let command = if pending_dirty.is_some() {
-            match receiver.recv_timeout(GIT_DIRTY_DEBOUNCE) {
+            match receiver.recv_timeout(VCS_DIRTY_DEBOUNCE) {
                 Ok(command) => Some(command),
                 Err(RecvTimeoutError::Timeout) => None,
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -221,7 +228,7 @@ fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorke
         };
 
         match command {
-            Some(GitWorkerCommand::Sync {
+            Some(VcsWorkerCommand::Sync {
                 path,
                 reason,
                 reporter_generation,
@@ -236,7 +243,7 @@ fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorke
                     reporter_generation,
                 );
             }
-            Some(GitWorkerCommand::ApplyOperation {
+            Some(VcsWorkerCommand::ApplyOperation {
                 path,
                 item,
                 operation,
@@ -244,7 +251,7 @@ fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorke
                 pending_dirty = None;
                 apply_status_operation(&mut state, &event_sender, path, item, operation);
             }
-            Some(GitWorkerCommand::ApplyBatchOperation {
+            Some(VcsWorkerCommand::ApplyBatchOperation {
                 path,
                 items,
                 operation,
@@ -252,7 +259,7 @@ fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorke
                 pending_dirty = None;
                 apply_batch_status_operation(&mut state, &event_sender, path, items, operation);
             }
-            Some(GitWorkerCommand::ApplyPatch {
+            Some(VcsWorkerCommand::ApplyPatch {
                 path,
                 patch,
                 scope,
@@ -261,11 +268,11 @@ fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorke
                 pending_dirty = None;
                 apply_patch_operation(&mut state, &event_sender, path, &patch, scope, operation);
             }
-            Some(GitWorkerCommand::Commit { path, message }) => {
+            Some(VcsWorkerCommand::Commit { path, message }) => {
                 pending_dirty = None;
                 apply_commit(&mut state, &event_sender, path, &message);
             }
-            Some(GitWorkerCommand::Fetch {
+            Some(VcsWorkerCommand::Fetch {
                 path,
                 remote,
                 toast_id,
@@ -273,7 +280,7 @@ fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorke
                 pending_dirty = None;
                 apply_fetch(&mut state, &event_sender, path, remote, toast_id);
             }
-            Some(GitWorkerCommand::Push {
+            Some(VcsWorkerCommand::Push {
                 path,
                 remote,
                 refspec,
@@ -291,7 +298,7 @@ fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorke
                     toast_id,
                 );
             }
-            Some(GitWorkerCommand::PullFf {
+            Some(VcsWorkerCommand::PullFf {
                 path,
                 remote,
                 branch,
@@ -300,7 +307,7 @@ fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorke
                 pending_dirty = None;
                 apply_pull_ff(&mut state, &event_sender, path, remote, branch, toast_id);
             }
-            Some(GitWorkerCommand::Dirty { path, change_hint }) => {
+            Some(VcsWorkerCommand::Dirty { path, change_hint }) => {
                 pending_dirty = Some(match pending_dirty.take() {
                     Some((pending_path, pending_hint)) if pending_path == path => {
                         (path, pending_hint.merge(change_hint))
@@ -326,7 +333,7 @@ fn git_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<GitWorke
 }
 
 fn apply_status_operation(
-    state: &mut GitWorkerState,
+    state: &mut VcsWorkerState,
     event_sender: &RuntimeEventSender,
     path: PathBuf,
     item: StatusItem,
@@ -360,7 +367,7 @@ fn apply_status_operation(
 }
 
 fn apply_batch_status_operation(
-    state: &mut GitWorkerState,
+    state: &mut VcsWorkerState,
     event_sender: &RuntimeEventSender,
     path: PathBuf,
     items: Vec<StatusItem>,
@@ -394,7 +401,7 @@ fn apply_batch_status_operation(
 }
 
 fn apply_patch_operation(
-    state: &mut GitWorkerState,
+    state: &mut VcsWorkerState,
     event_sender: &RuntimeEventSender,
     path: PathBuf,
     patch: &str,
@@ -441,7 +448,7 @@ fn apply_patch_operation(
 }
 
 fn apply_commit(
-    state: &mut GitWorkerState,
+    state: &mut VcsWorkerState,
     event_sender: &RuntimeEventSender,
     path: PathBuf,
     message: &str,
@@ -474,7 +481,7 @@ fn apply_commit(
     sync_repository_forced(state, event_sender, path, RepositorySyncReason::Dirty);
 }
 
-fn ensure_open(state: &mut GitWorkerState, path: &PathBuf) -> std::result::Result<(), String> {
+fn ensure_open(state: &mut VcsWorkerState, path: &PathBuf) -> std::result::Result<(), String> {
     if state.active_path.as_ref() != Some(path) {
         state.git.close();
         state.snapshot = None;
@@ -490,7 +497,7 @@ fn ensure_open(state: &mut GitWorkerState, path: &PathBuf) -> std::result::Resul
 }
 
 fn apply_fetch(
-    state: &mut GitWorkerState,
+    state: &mut VcsWorkerState,
     event_sender: &RuntimeEventSender,
     path: PathBuf,
     remote: String,
@@ -541,7 +548,7 @@ fn apply_fetch(
 }
 
 fn apply_push(
-    state: &mut GitWorkerState,
+    state: &mut VcsWorkerState,
     event_sender: &RuntimeEventSender,
     path: PathBuf,
     remote: String,
@@ -614,7 +621,7 @@ fn apply_push(
 }
 
 fn apply_pull_ff(
-    state: &mut GitWorkerState,
+    state: &mut VcsWorkerState,
     event_sender: &RuntimeEventSender,
     path: PathBuf,
     remote: String,
@@ -694,7 +701,7 @@ fn apply_pull_ff(
 }
 
 fn sync_repository_forced(
-    state: &mut GitWorkerState,
+    state: &mut VcsWorkerState,
     event_sender: &RuntimeEventSender,
     path: PathBuf,
     reason: RepositorySyncReason,
@@ -703,7 +710,7 @@ fn sync_repository_forced(
 }
 
 fn sync_repository(
-    state: &mut GitWorkerState,
+    state: &mut VcsWorkerState,
     event_sender: &RuntimeEventSender,
     path: PathBuf,
     reason: RepositorySyncReason,
@@ -722,7 +729,7 @@ fn sync_repository(
 }
 
 fn sync_repository_inner(
-    state: &mut GitWorkerState,
+    state: &mut VcsWorkerState,
     event_sender: &RuntimeEventSender,
     path: PathBuf,
     reason: RepositorySyncReason,
@@ -737,8 +744,32 @@ fn sync_repository_inner(
     if let Some(r) = reporter_ref {
         r.phase(ComparePhase::OpeningRepo);
     }
+    let location = match discovery::discover_repository(&path) {
+        Ok(location) => location,
+        Err(error) => {
+            event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
+                path,
+                reason,
+                message: error.to_string(),
+            });
+            return;
+        }
+    };
+    if let Some(location) = location
+        && location.kind != VcsKind::Git
+    {
+        if state.active_path.as_ref() != Some(&path) {
+            state.git.close();
+            state.vcs_repo = None;
+            state.snapshot = None;
+            state.active_path = Some(path.clone());
+        }
+        sync_vcs_repository(state, event_sender, path, reason, reporter_ref, location);
+        return;
+    }
     if state.active_path.as_ref() != Some(&path) {
         state.git.close();
+        state.vcs_repo = None;
         state.snapshot = None;
         state.active_path = Some(path.clone());
     }
@@ -803,6 +834,7 @@ fn sync_repository_inner(
                 None
             })
         };
+        refresh_neutral_git_snapshot(&mut snapshot);
         event_sender.send(RepositoryEvent::RepositorySnapshotReady(snapshot));
     } else {
         tracing::debug!(
@@ -812,6 +844,55 @@ fn sync_repository_inner(
         );
     }
     state.snapshot = Some(bundle);
+}
+
+fn sync_vcs_repository(
+    state: &mut VcsWorkerState,
+    event_sender: &RuntimeEventSender,
+    path: PathBuf,
+    reason: RepositorySyncReason,
+    reporter: Option<&dyn ProgressSink>,
+    location: RepoLocation,
+) {
+    if state
+        .vcs_repo
+        .as_ref()
+        .is_none_or(|repo| repo.location() != &location)
+    {
+        state.vcs_repo = match discovery::open_location(location) {
+            Ok(repo) => Some(repo),
+            Err(error) => {
+                event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
+                    path,
+                    reason,
+                    message: error.to_string(),
+                });
+                return;
+            }
+        };
+    }
+    let Some(repo) = state.vcs_repo.as_mut() else {
+        event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
+            path,
+            reason,
+            message: "repository backend is not open".to_owned(),
+        });
+        return;
+    };
+    let snapshot = match repo.snapshot(reason, reporter) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
+                path,
+                reason,
+                message: error.to_string(),
+            });
+            return;
+        }
+    };
+    event_sender.send(RepositoryEvent::RepositorySnapshotReady(
+        RepositorySnapshot::from_vcs_snapshot(snapshot),
+    ));
 }
 
 fn collect_snapshot_for_sync(
@@ -862,15 +943,15 @@ fn collect_snapshot(
         },
     )?;
 
-    let snapshot = RepositorySnapshot {
+    let snapshot = RepositorySnapshot::from_git_parts(
         path,
         reason,
-        change_kind: None,
-        branches: refs.branches,
-        tags: refs.tags,
-        commits: refs.commits,
+        None,
+        refs.branches,
+        refs.tags,
+        refs.commits,
         status_items,
-    };
+    );
     let state = RepositorySnapshotState {
         head_oid: refs.head_oid,
         branch_targets: refs.branch_targets,
@@ -893,6 +974,7 @@ fn collect_worktree_snapshot(
     snapshot.reason = reason;
     snapshot.change_kind = None;
     snapshot.status_items = status_items;
+    refresh_neutral_git_snapshot(&mut snapshot);
     let mut state = previous.state.clone();
     state.statuses = status_entries;
     Ok(SnapshotBundle { snapshot, state })
@@ -913,11 +995,29 @@ fn collect_git_snapshot(
     snapshot.branches = refs.branches;
     snapshot.tags = refs.tags;
     snapshot.commits = refs.commits;
+    refresh_neutral_git_snapshot(&mut snapshot);
     let mut state = previous.state.clone();
     state.head_oid = refs.head_oid;
     state.branch_targets = refs.branch_targets;
     state.tag_targets = refs.tag_targets;
     Ok(SnapshotBundle { snapshot, state })
+}
+
+fn refresh_neutral_git_snapshot(snapshot: &mut RepositorySnapshot) {
+    let neutral = adapter::git_snapshot_from_parts(
+        snapshot.path.clone(),
+        snapshot.reason,
+        snapshot.change_kind,
+        &snapshot.branches,
+        &snapshot.tags,
+        &snapshot.commits,
+        &snapshot.status_items,
+    );
+    snapshot.location = neutral.location;
+    snapshot.capabilities = neutral.capabilities;
+    snapshot.refs = neutral.refs;
+    snapshot.changes = neutral.changes;
+    snapshot.file_changes = neutral.file_changes;
 }
 
 struct GitSnapshotRefs {

@@ -22,6 +22,10 @@ use halogen::reactive::{Signal, SignalStore};
 
 use crate::actions::Action;
 use crate::core::compare::{CompareMode, CompareOutput, CompareSpec, LayoutMode, RendererKind};
+use crate::core::forge::github::{
+    CreatePullRequestReviewComment, DeviceFlowState, GitHubReviewSide, GitHubUser, PullRequestInfo,
+    PullRequestReviewComment,
+};
 use crate::core::frecency::FrecencyStore;
 use crate::core::syntax::Highlighter;
 use crate::core::syntax::annotator::{SyntaxLineTokens, SyntaxRowWindow};
@@ -31,9 +35,8 @@ use crate::core::vcs::git::patch;
 use crate::core::vcs::git::{
     BranchInfo, CommitInfo, StatusItem, StatusOperation, StatusScope, TagInfo,
 };
-use crate::core::vcs::github::{
-    CreatePullRequestReviewComment, DeviceFlowState, GitHubReviewSide, GitHubUser, PullRequestInfo,
-    PullRequestReviewComment,
+use crate::core::vcs::model::{
+    FileChange, RepoCapabilities, RepoLocation, VcsChange, VcsKind, VcsRef,
 };
 use crate::editor::Editor;
 use crate::effects::{
@@ -320,6 +323,11 @@ impl Default for CompareState {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
 pub struct RepositoryState {
     pub status: AsyncStatus,
+    pub location: Option<RepoLocation>,
+    pub capabilities: Option<RepoCapabilities>,
+    pub refs: Vec<VcsRef>,
+    pub changes: Vec<VcsChange>,
+    pub file_changes: Vec<FileChange>,
     pub branches: Vec<BranchInfo>,
     pub tags: Vec<TagInfo>,
     pub commits: Vec<CommitInfo>,
@@ -1024,7 +1032,7 @@ impl AppState {
     }
 
     fn cached_status_file_at(&self, index: usize, item: &StatusItem) -> Option<ActiveFile> {
-        let (left_ref, right_ref) = refs_for_status_scope(item.scope);
+        let (left_ref, right_ref) = self.status_refs_for_scope(item.scope);
         if let Some(active_file) = self.workspace.active_file.with(&self.store, |file| {
             file.as_ref()
                 .filter(|file| {
@@ -1043,6 +1051,18 @@ impl AppState {
                 && file.left_ref == left_ref
                 && file.right_ref == right_ref
         })
+    }
+
+    fn status_refs_for_scope(&self, scope: StatusScope) -> (String, String) {
+        if self.repository.location.with(&self.store, |location| {
+            location
+                .as_ref()
+                .is_some_and(|location| location.kind == VcsKind::Jj)
+        }) {
+            ("@-".to_owned(), "@".to_owned())
+        } else {
+            refs_for_status_scope(scope)
+        }
     }
 
     fn active_file_slot_key(
@@ -1120,7 +1140,7 @@ impl AppState {
     }
 
     fn status_slot_key_at(&self, index: usize, item: &StatusItem) -> ViewportSlotKey {
-        let (left_ref, right_ref) = refs_for_status_scope(item.scope);
+        let (left_ref, right_ref) = self.status_refs_for_scope(item.scope);
         if let Some(key) = self.workspace.active_file.with(&self.store, |file| {
             file.as_ref()
                 .filter(|file| {
@@ -1620,6 +1640,24 @@ pub struct PaletteEntry {
     pub rhs: Option<String>,
     /// Disables the entry when set; `detail` usually explains why.
     pub disabled: bool,
+}
+
+fn palette_command_available(
+    command: &PaletteCommand,
+    capabilities: Option<RepoCapabilities>,
+) -> bool {
+    match command {
+        PaletteCommand::FetchOrigin
+        | PaletteCommand::FetchAllRemotes
+        | PaletteCommand::PushCurrentBranch
+        | PaletteCommand::PushCurrentBranchForceWithLease => {
+            capabilities.is_some_and(|capabilities| capabilities.remotes)
+        }
+        PaletteCommand::PullCurrentBranch => {
+            capabilities.is_some_and(|capabilities| capabilities.pull_fast_forward)
+        }
+        _ => true,
+    }
 }
 
 impl PickerItem for PaletteEntry {
@@ -2498,6 +2536,7 @@ impl AppState {
     }
 
     fn open_repository(&mut self, path: PathBuf) -> Vec<Effect> {
+        let path = normalize_repository_open_path(path);
         self.workspace_mode.set(&self.store, WorkspaceMode::Loading);
         self.compare.repo_path.set(&self.store, Some(path.clone()));
         self.compare.resolved_left.set(&self.store, None);
@@ -2505,6 +2544,14 @@ impl AppState {
         self.repository
             .status
             .set(&self.store, AsyncStatus::Loading);
+        self.repository.location.set(&self.store, None);
+        self.repository.capabilities.set(&self.store, None);
+        self.repository.refs.set(&self.store, Vec::new());
+        self.repository.changes.set(&self.store, Vec::new());
+        self.repository.file_changes.set(&self.store, Vec::new());
+        self.repository.branches.set(&self.store, Vec::new());
+        self.repository.tags.set(&self.store, Vec::new());
+        self.repository.commits.set(&self.store, Vec::new());
         self.workspace_clear_compare();
         self.reset_file_list();
         self.editor_clear_document();
@@ -2632,6 +2679,17 @@ impl AppState {
         }
 
         self.repository.status.set(&self.store, AsyncStatus::Ready);
+        self.repository
+            .location
+            .set(&self.store, Some(payload.location));
+        self.repository
+            .capabilities
+            .set(&self.store, Some(payload.capabilities));
+        self.repository.refs.set(&self.store, payload.refs);
+        self.repository.changes.set(&self.store, payload.changes);
+        self.repository
+            .file_changes
+            .set(&self.store, payload.file_changes);
         self.repository.branches.set(&self.store, payload.branches);
         self.repository.tags.set(&self.store, payload.tags);
         self.repository.commits.set(&self.store, payload.commits);
@@ -2662,7 +2720,7 @@ impl AppState {
                         .pull_request
                         .status
                         .set(&self.store, AsyncStatus::Loading);
-                    if let Some(parsed) = crate::core::vcs::github::parse_pr_url(&url) {
+                    if let Some(parsed) = crate::core::forge::github::parse_pr_url(&url) {
                         let key: PrKey = (parsed.owner, parsed.repo, parsed.number);
                         self.github.pull_request.cache.update(&self.store, |c| {
                             c.entry(key.clone()).or_insert_with(|| PrCacheEntry {
@@ -3232,7 +3290,7 @@ impl AppState {
             return Vec::new();
         };
         let prepared = prepare_active_file(payload.index, carbon_file);
-        let (left_ref, right_ref) = refs_for_status_scope(payload.item.scope);
+        let (left_ref, right_ref) = self.status_refs_for_scope(payload.item.scope);
         let active_file = self.build_active_file(
             payload.index,
             payload.item.path.clone(),
@@ -5040,7 +5098,7 @@ impl AppState {
             if !query.is_empty() {
                 let expanded = expand_tilde(&query);
                 let path = PathBuf::from(&expanded);
-                if path.is_dir() && path.join(".git").exists() {
+                if path.is_dir() && path_looks_like_repository(&path) {
                     self.pop_overlay();
                     return self.open_repository(path);
                 }
@@ -5074,7 +5132,7 @@ impl AppState {
                 self.navigate_picker_to_dir(&path);
                 return Vec::new();
             }
-            if path.is_dir() && path.join(".git").exists() {
+            if path.is_dir() && path_looks_like_repository(&path) {
                 self.pop_overlay();
                 return self.open_repository(path);
             }
@@ -5509,7 +5567,7 @@ impl AppState {
         if query.is_empty() {
             for repo in &unique_repos {
                 let display = repo.display().to_string();
-                let is_git = repo.join(".git").exists();
+                let is_repo = path_looks_like_repository(repo);
                 entries.push(PickerEntry {
                     label: repo
                         .file_name()
@@ -5519,7 +5577,7 @@ impl AppState {
                     detail: display.clone(),
                     value: repo.display().to_string(),
                     highlights: Vec::new(),
-                    icon: Some(if is_git {
+                    icon: Some(if is_repo {
                         lucide::FOLDER_GIT
                     } else {
                         lucide::FOLDER
@@ -5553,13 +5611,13 @@ impl AppState {
                     .to_owned();
                 let highlights =
                     highlight_ranges_for_visible_match(query, &label, &m.indices, &config);
-                let is_git = repo.join(".git").exists();
+                let is_repo = path_looks_like_repository(repo);
                 entries.push(PickerEntry {
                     label,
                     detail: display.clone(),
                     value: repo.display().to_string(),
                     highlights,
-                    icon: Some(if is_git {
+                    icon: Some(if is_repo {
                         lucide::FOLDER_GIT
                     } else {
                         lucide::FOLDER
@@ -5589,7 +5647,7 @@ impl AppState {
 
         let mut entries = Vec::new();
 
-        if dir.join(".git").exists() {
+        if path_looks_like_repository(&dir) {
             entries.push(PickerEntry {
                 label: "open this directory".to_owned(),
                 detail: String::new(),
@@ -5625,8 +5683,8 @@ impl AppState {
                 if name.starts_with('.') {
                     continue;
                 }
-                let is_git = path.join(".git").exists();
-                dirs.push((name, path, is_git));
+                let is_repo = path_looks_like_repository(&path);
+                dirs.push((name, path, is_repo));
             }
         }
 
@@ -5890,10 +5948,17 @@ impl AppState {
         let mut out_effects = Vec::new();
         let mut pr_entry: Option<PaletteEntry> = None;
 
-        if let Some(parsed) = crate::core::vcs::github::parse_pr_url(query) {
+        if let Some(parsed) = crate::core::forge::github::parse_pr_url(query) {
             let key: PrKey = (parsed.owner.clone(), parsed.repo.clone(), parsed.number);
             let token = self.github_access_token.clone();
             let repo_path = self.compare.repo_path.get(&self.store);
+            let supports_github_prs = repo_path.is_some()
+                && self
+                    .repository
+                    .capabilities
+                    .with(&self.store, |capabilities| {
+                        capabilities.is_some_and(|capabilities| capabilities.github_pull_requests)
+                    });
 
             let already_cached = self
                 .github
@@ -5924,7 +5989,7 @@ impl AppState {
 
             // Speculative diff load — kick off as soon as we know the key, provided
             // a repo is open. Dedupe via the cache's diff state.
-            if let Some(repo_path) = repo_path.clone() {
+            if supports_github_prs && let Some(repo_path) = repo_path.clone() {
                 let diff_idle = self.github.pull_request.cache.with(&self.store, |c| {
                     matches!(c.get(&key).map(|e| &e.diff), Some(PrPeekDiff::Idle) | None)
                 });
@@ -5952,7 +6017,7 @@ impl AppState {
             pr_entry = Some(build_pr_palette_entry(
                 &self.github.pull_request.cache.get(&self.store),
                 &key,
-                repo_path.is_some(),
+                supports_github_prs,
             ));
         }
 
@@ -5964,6 +6029,7 @@ impl AppState {
         }
 
         let mut all_candidates = Vec::new();
+        let repo_capabilities = self.repository.capabilities.get(&self.store);
 
         for (label, detail, command) in [
             (
@@ -6042,6 +6108,9 @@ impl AppState {
                 PaletteCommand::OpenSettings,
             ),
         ] {
+            if !palette_command_available(&command, repo_capabilities) {
+                continue;
+            }
             let search_text = format!("{label} {detail}");
             all_candidates.push(PaletteCandidate {
                 search_text,
@@ -6223,7 +6292,7 @@ impl AppState {
                 }
                 match source {
                     WorkspaceSource::Status => selected_scope.is_some_and(|scope| {
-                        let (left_ref, right_ref) = refs_for_status_scope(scope);
+                        let (left_ref, right_ref) = self.status_refs_for_scope(scope);
                         active.left_ref == left_ref && active.right_ref == right_ref
                     }),
                     WorkspaceSource::Compare => true,
@@ -6446,7 +6515,7 @@ impl AppState {
         self.workspace
             .selected_status_scope
             .set(&self.store, Some(item.scope));
-        let (left_ref, right_ref) = refs_for_status_scope(item.scope);
+        let (left_ref, right_ref) = self.status_refs_for_scope(item.scope);
         let active_matches_selection = self.workspace.active_file.with(&self.store, |af| {
             af.as_ref().is_some_and(|active| {
                 active.index == index
@@ -6524,6 +6593,16 @@ impl AppState {
     }
 
     fn apply_selected_status_operation(&mut self, operation: StatusOperation) -> Vec<Effect> {
+        if !self
+            .repository
+            .capabilities
+            .with(&self.store, |capabilities| {
+                capabilities.is_some_and(|capabilities| capabilities.staging_area)
+            })
+        {
+            self.push_error("This repository backend does not support Git status operations.");
+            return Vec::new();
+        }
         if self.workspace.source.get(&self.store) != WorkspaceSource::Status {
             return Vec::new();
         }
@@ -6562,6 +6641,16 @@ impl AppState {
         index: usize,
         operation: StatusOperation,
     ) -> Vec<Effect> {
+        if !self
+            .repository
+            .capabilities
+            .with(&self.store, |capabilities| {
+                capabilities.is_some_and(|capabilities| capabilities.staging_area)
+            })
+        {
+            self.push_error("This repository backend does not support Git status operations.");
+            return Vec::new();
+        }
         if self.workspace.source.get(&self.store) != WorkspaceSource::Status {
             return Vec::new();
         }
@@ -6597,6 +6686,16 @@ impl AppState {
         scopes: &[StatusScope],
         operation: StatusOperation,
     ) -> Vec<Effect> {
+        if !self
+            .repository
+            .capabilities
+            .with(&self.store, |capabilities| {
+                capabilities.is_some_and(|capabilities| capabilities.staging_area)
+            })
+        {
+            self.push_error("This repository backend does not support Git status operations.");
+            return Vec::new();
+        }
         if self.workspace.source.get(&self.store) != WorkspaceSource::Status {
             return Vec::new();
         }
@@ -6650,6 +6749,16 @@ impl AppState {
         );
         if self.workspace.source.get(&self.store) != WorkspaceSource::Status {
             tracing::debug!("apply_hunk_operation: bail: source != Status");
+            return Vec::new();
+        }
+        if !self
+            .repository
+            .capabilities
+            .with(&self.store, |capabilities| {
+                capabilities.is_some_and(|capabilities| capabilities.partial_hunk_mutation)
+            })
+        {
+            self.push_error("This repository backend does not support hunk operations.");
             return Vec::new();
         }
         if self.workspace.status_operation_pending.get(&self.store) {
@@ -7810,6 +7919,16 @@ impl AppState {
     }
 
     fn start_fetch_remote(&mut self, remote: String) -> Vec<Effect> {
+        if !self
+            .repository
+            .capabilities
+            .with(&self.store, |capabilities| {
+                capabilities.is_some_and(|capabilities| capabilities.remotes)
+            })
+        {
+            self.push_error("This repository backend does not support Git remotes.");
+            return Vec::new();
+        }
         let Some(repo_path) = self.compare.repo_path.with(&self.store, |p| p.clone()) else {
             self.push_error("Open a repository before fetching.");
             return Vec::new();
@@ -7826,6 +7945,16 @@ impl AppState {
     }
 
     fn start_fetch_all_remotes(&mut self) -> Vec<Effect> {
+        if !self
+            .repository
+            .capabilities
+            .with(&self.store, |capabilities| {
+                capabilities.is_some_and(|capabilities| capabilities.remotes)
+            })
+        {
+            self.push_error("This repository backend does not support Git remotes.");
+            return Vec::new();
+        }
         let Some(repo_path) = self.compare.repo_path.with(&self.store, |p| p.clone()) else {
             self.push_error("Open a repository before fetching.");
             return Vec::new();
@@ -7860,6 +7989,16 @@ impl AppState {
     }
 
     fn start_push_current_branch(&mut self, force_with_lease: bool) -> Vec<Effect> {
+        if !self
+            .repository
+            .capabilities
+            .with(&self.store, |capabilities| {
+                capabilities.is_some_and(|capabilities| capabilities.remotes)
+            })
+        {
+            self.push_error("This repository backend does not support Git push.");
+            return Vec::new();
+        }
         let Some(repo_path) = self.compare.repo_path.with(&self.store, |p| p.clone()) else {
             self.push_error("Open a repository before pushing.");
             return Vec::new();
@@ -7921,6 +8060,16 @@ impl AppState {
     }
 
     fn start_pull_current_branch(&mut self) -> Vec<Effect> {
+        if !self
+            .repository
+            .capabilities
+            .with(&self.store, |capabilities| {
+                capabilities.is_some_and(|capabilities| capabilities.pull_fast_forward)
+            })
+        {
+            self.push_error("This repository backend does not support fast-forward pull.");
+            return Vec::new();
+        }
         let Some(repo_path) = self.compare.repo_path.with(&self.store, |p| p.clone()) else {
             self.push_error("Open a repository before pulling.");
             return Vec::new();
@@ -8470,6 +8619,18 @@ fn query_looks_like_path(query: &str) -> bool {
         || (query.len() >= 2 && query.as_bytes()[1] == b':')
 }
 
+fn path_looks_like_repository(path: &Path) -> bool {
+    path.join(".git").exists() || path.join(".jj").exists()
+}
+
+fn normalize_repository_open_path(path: PathBuf) -> PathBuf {
+    crate::core::vcs::discovery::discover_repository(&path)
+        .ok()
+        .flatten()
+        .map(|location| location.workspace_root)
+        .unwrap_or(path)
+}
+
 fn expand_tilde(path: &str) -> String {
     if path.starts_with("~/") || path == "~" {
         if let Some(home) = dirs::home_dir() {
@@ -8516,6 +8677,7 @@ mod tests {
     use crate::core::compare::{CompareMode, CompareOutput, LayoutMode, RendererKind};
     use crate::core::text::TokenBuffer;
     use crate::core::vcs::git::{StatusItem, StatusScope};
+    use crate::core::vcs::model::RepoCapabilities;
     use crate::effects::{
         AiEffect, CompareEffect, Effect, GitHubEffect, RepositoryEffect, SyntaxEffect,
     };
@@ -8587,6 +8749,10 @@ diff --git a/src/lib.rs b/src/lib.rs
         let (left_ref, right_ref) = refs_for_status_scope(StatusScope::Unstaged);
 
         state.compare.repo_path.set(&state.store, Some(repo_path));
+        state
+            .repository
+            .capabilities
+            .set(&state.store, Some(RepoCapabilities::git()));
         state
             .workspace
             .source
@@ -9413,7 +9579,7 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[test]
     fn pr_peeked_event_transitions_cache_meta_to_ready() {
-        use crate::core::vcs::github::PullRequestInfo;
+        use crate::core::forge::github::PullRequestInfo;
         use crate::events::AppEvent;
 
         let mut state = AppState::default();
@@ -9665,15 +9831,15 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert!(state.compare_progress.with(&state.store, |p| p.is_some()));
 
         state.apply_event(AppEvent::from(RepositoryEvent::RepositorySnapshotReady(
-            crate::events::RepositorySnapshot {
+            crate::events::RepositorySnapshot::from_git_parts(
                 path,
-                reason: RepositorySyncReason::Open,
-                change_kind: None,
-                branches: Vec::new(),
-                tags: Vec::new(),
-                commits: Vec::new(),
-                status_items: Vec::<StatusItem>::new(),
-            },
+                RepositorySyncReason::Open,
+                None,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::<StatusItem>::new(),
+            ),
         )));
 
         assert!(

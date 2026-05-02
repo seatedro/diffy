@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 use crate::core::error::{DiffyError, Result};
-use crate::core::vcs::github::GitHubUser;
+use crate::core::forge::github::GitHubUser;
 use crate::ui::theme::ThemeMode;
 
 const SETTINGS_FILE_NAME: &str = "settings.json";

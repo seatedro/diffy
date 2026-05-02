@@ -1,8 +1,8 @@
 mod compare;
-mod git_worker;
 pub mod progress;
 mod runtime;
 pub mod services;
+mod vcs_worker;
 mod watcher;
 
 pub use progress::ProgressReporter;

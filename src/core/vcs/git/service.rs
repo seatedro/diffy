@@ -11,8 +11,8 @@ use crate::core::compare::backends::{RENAME_DETECTION_LIMIT, compare_output_from
 use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::CompareMode;
 use crate::core::error::{DiffyError, Result};
+use crate::core::forge::github::{GitHubApi, parse_pr_url};
 use crate::core::vcs::git::status::{StatusBits, StatusItem, StatusOperation, StatusScope};
-use crate::core::vcs::github::{GitHubApi, parse_pr_url};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PullError {

@@ -24,7 +24,7 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
                 .status
                 .set(&state.store, AsyncStatus::Ready);
 
-            let key: PrKey = crate::core::vcs::github::parse_pr_url(&url)
+            let key: PrKey = crate::core::forge::github::parse_pr_url(&url)
                 .map(|p| (p.owner, p.repo, p.number))
                 .unwrap_or_else(|| (String::new(), String::new(), info.number));
             state.github.pull_request.cache.update(&state.store, |c| {
@@ -88,7 +88,7 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
                 .pull_request
                 .status
                 .set(&state.store, AsyncStatus::Failed);
-            if let Some(parsed) = crate::core::vcs::github::parse_pr_url(&url) {
+            if let Some(parsed) = crate::core::forge::github::parse_pr_url(&url) {
                 let key: PrKey = (parsed.owner, parsed.repo, parsed.number);
                 state.github.pull_request.cache.update(&state.store, |c| {
                     if let Some(entry) = c.get_mut(&key) {

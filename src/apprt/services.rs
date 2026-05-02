@@ -8,17 +8,17 @@ use crate::ai::{self, GenerateRequest, StreamMessage};
 use crate::apprt::ProgressReporter;
 use crate::apprt::runtime::RuntimeEventSender;
 use crate::core::compare::backends::{DifftasticBackend, GitDiffBackend};
-use crate::core::compare::{
-    CompareMode, CompareOutput, ComparePhase, CompareService, ProgressSink, RendererKind,
-};
+use crate::core::compare::{CompareOutput, ComparePhase, ProgressSink, RendererKind};
 use crate::core::error::{DiffyError, Result};
-use crate::core::http;
-use crate::core::syntax::annotator::FullFileSyntax;
-use crate::core::vcs::git::GitService;
-use crate::core::vcs::github::{
+use crate::core::forge::github::{
     CreatePullRequestReviewComment, DeviceFlowState, GitHubApi, GitHubUser, PullRequestInfo,
     PullRequestReviewComment, parse_pr_url, poll_for_token, start_device_flow,
 };
+use crate::core::http;
+use crate::core::syntax::annotator::FullFileSyntax;
+use crate::core::vcs::discovery;
+use crate::core::vcs::git::GitService;
+use crate::core::vcs::model::RevisionId;
 use crate::effects::{
     CompareFileRequest, CompareFileStatsRequest, CompareHistoryRequest, CompareRequest,
     CompareStatsRequest, GenerateCommitMessageRequest, LoadFileSyntaxRequest, StatusDiffRequest,
@@ -80,34 +80,18 @@ impl AppServices {
         if let Some(r) = reporter {
             r.phase(ComparePhase::OpeningRepo);
         }
-        let mut git = GitService::new();
-        git.open(request.repo_path.to_string_lossy().as_ref())?;
+        let mut repo = discovery::open_repository(&request.repo_path)?;
 
         if let Some(r) = reporter {
             r.phase(ComparePhase::ResolvingRefs);
         }
-        let (resolved_left, resolved_right) = git.resolve_comparison(
-            &request.spec.left_ref,
-            &request.spec.right_ref,
-            request.spec.mode,
-        )?;
-
-        let mut backend_spec = request.spec.clone();
-        backend_spec.left_ref = resolved_left.clone();
-        backend_spec.right_ref = resolved_right.clone();
-        // The backend only needs the concrete endpoints. Keep the user's
-        // original spec for the finished payload, but avoid resolving the same
-        // three-dot merge-base a second time before progress can advance.
-        backend_spec.mode = CompareMode::TwoDot;
+        let (resolved_left, resolved_right, backend_spec) =
+            repo.resolve_compare_spec(&request.spec)?;
 
         // Phase labels are now driven from inside the backend (see
         // `EnumeratingChanges` + per-file `LoadingFiles`), so we just pass
         // the reporter through and let it speak for itself.
-        let output = CompareService::default().compare(
-            &backend_spec,
-            &git,
-            reporter.map(|r| r as &dyn ProgressSink),
-        )?;
+        let output = repo.compare(&backend_spec, reporter.map(|r| r as &dyn ProgressSink))?;
 
         Ok(CompareFinished {
             generation,
@@ -125,6 +109,19 @@ impl AppServices {
         index: usize,
         request: StatusDiffRequest,
     ) -> Result<StatusDiffFinished> {
+        if let Some(location) = discovery::discover_repository(&request.repo_path)?
+            && location.kind == crate::core::vcs::model::VcsKind::Jj
+        {
+            let mut repo = discovery::open_location(location)?;
+            let output = repo.compare_working_file(&request.item.path)?;
+            return Ok(StatusDiffFinished {
+                generation,
+                index,
+                item: request.item,
+                output,
+            });
+        }
+
         let mut git = GitService::new();
         git.open(request.repo_path.to_string_lossy().as_ref())?;
         let mut output: CompareOutput = match request.renderer {
@@ -151,48 +148,10 @@ impl AppServices {
         generation: u64,
         request: CompareFileRequest,
     ) -> Result<CompareFileFinished> {
-        let mut git = GitService::new();
-        git.open(request.repo_path.to_string_lossy().as_ref())?;
-        let mut output: CompareOutput = match request.spec.renderer {
-            RendererKind::Builtin => {
-                let output = request
-                    .deferred_file
-                    .as_ref()
-                    .map(|file| GitDiffBackend.compare_deferred_file(file, &git))
-                    .transpose()?
-                    .flatten();
-                match output {
-                    Some(output) => output,
-                    None => GitDiffBackend
-                        .compare_path(&request.spec, &request.path, &git)?
-                        .ok_or_else(|| {
-                            DiffyError::General("compare file returned no result".to_owned())
-                        })?,
-                }
-            }
-            RendererKind::Difftastic if DifftasticBackend::is_available() => DifftasticBackend
-                .compare_path(&request.spec, &request.path, &git)?
-                .ok_or_else(|| DiffyError::General("compare file returned no result".to_owned()))?,
-            RendererKind::Difftastic => {
-                let output = request
-                    .deferred_file
-                    .as_ref()
-                    .map(|file| GitDiffBackend.compare_deferred_file(file, &git))
-                    .transpose()?
-                    .flatten();
-                match output {
-                    Some(output) => output,
-                    None => GitDiffBackend
-                        .compare_path(&request.spec, &request.path, &git)?
-                        .ok_or_else(|| {
-                            DiffyError::General("compare file returned no result".to_owned())
-                        })?,
-                }
-            }
-        };
-        if request.spec.renderer == RendererKind::Difftastic && !DifftasticBackend::is_available() {
-            mark_difftastic_fallback(&mut output);
-        }
+        let mut repo = discovery::open_repository(&request.repo_path)?;
+        let (_, _, backend_spec) = repo.resolve_compare_spec(&request.spec)?;
+        let mut output =
+            repo.compare_path(&backend_spec, &request.path, request.deferred_file.as_ref())?;
 
         let carbon_file = output.carbon.files.pop().ok_or_else(|| {
             DiffyError::General("compare file returned no Carbon file".to_owned())
@@ -211,11 +170,9 @@ impl AppServices {
         generation: u64,
         request: CompareStatsRequest,
     ) -> Result<CompareStatsReady> {
-        let mut git = GitService::new();
-        git.open(request.repo_path.to_string_lossy().as_ref())?;
-        let (additions, deletions) = GitDiffBackend
-            .compare_stats(&request.spec, &git)?
-            .ok_or_else(|| DiffyError::General("compare stats returned no result".to_owned()))?;
+        let mut repo = discovery::open_repository(&request.repo_path)?;
+        let (_, _, backend_spec) = repo.resolve_compare_spec(&request.spec)?;
+        let (additions, deletions) = repo.compare_stats(&backend_spec)?;
 
         Ok(CompareStatsReady {
             generation,
@@ -229,6 +186,15 @@ impl AppServices {
         generation: u64,
         request: CompareHistoryRequest,
     ) -> Result<CompareHistoryReady> {
+        if let Some(location) = discovery::discover_repository(&request.repo_path)?
+            && location.kind == crate::core::vcs::model::VcsKind::Jj
+        {
+            return Ok(CompareHistoryReady {
+                generation,
+                range_commits: Vec::new(),
+            });
+        }
+
         let mut git = GitService::new();
         git.open(request.repo_path.to_string_lossy().as_ref())?;
         let range_commits = git
@@ -246,6 +212,26 @@ impl AppServices {
         generation: u64,
         request: CompareFileStatsRequest,
     ) -> Result<CompareFileStatsReady> {
+        if let Some(location) = discovery::discover_repository(&request.repo_path)?
+            && location.kind == crate::core::vcs::model::VcsKind::Jj
+        {
+            let stats = request
+                .files
+                .into_iter()
+                .map(|item| CompareFileStat {
+                    index: item.index,
+                    path: item.file.path().to_owned(),
+                    additions: u32_to_i32_saturating(item.file.additions),
+                    deletions: u32_to_i32_saturating(item.file.deletions),
+                })
+                .collect();
+            return Ok(CompareFileStatsReady {
+                generation,
+                stats,
+                request_complete: true,
+            });
+        }
+
         let files: Vec<&carbon::FileDiff> = request.files.iter().map(|item| &item.file).collect();
         let repo_path = request.repo_path.to_string_lossy();
         let file_stats =
@@ -275,17 +261,15 @@ impl AppServices {
         &self,
         request: &LoadFileSyntaxRequest,
     ) -> Vec<crate::core::syntax::annotator::SyntaxLineTokens> {
-        let mut git = GitService::new();
-        if git
-            .open(request.repo_path.to_string_lossy().as_ref())
-            .is_err()
-        {
+        let Ok(mut repo) = discovery::open_repository(&request.repo_path) else {
             return Vec::new();
-        }
+        };
 
         let annotator = crate::core::syntax::DiffSyntaxAnnotator::new();
-        let old_syntax = self.cached_file_syntax(&git, request, &request.left_ref, &annotator);
-        let new_syntax = self.cached_file_syntax(&git, request, &request.right_ref, &annotator);
+        let old_syntax =
+            self.cached_file_syntax(&mut *repo, request, &request.left_ref, &annotator);
+        let new_syntax =
+            self.cached_file_syntax(&mut *repo, request, &request.right_ref, &annotator);
 
         annotator.annotate_carbon_full_file_window_from_cache(
             &request.carbon_file,
@@ -298,7 +282,7 @@ impl AppServices {
 
     fn cached_file_syntax(
         &self,
-        git: &GitService,
+        repo: &mut dyn crate::core::vcs::backend::VcsRepository,
         request: &LoadFileSyntaxRequest,
         reference: &str,
         annotator: &crate::core::syntax::DiffSyntaxAnnotator,
@@ -322,7 +306,11 @@ impl AppServices {
             return Some(cached);
         }
 
-        let text = git.read_file_text_store_at(reference, &request.path).ok()?;
+        let revision = RevisionId {
+            backend: repo.location().kind,
+            id: reference.to_owned(),
+        };
+        let text = repo.read_file_text(&revision, &request.path).ok()?;
         let syntax = Arc::new(annotator.highlight_full_text_store(&request.path, &text));
         if syntax.has_tokens()
             && let Ok(mut cache) = self.syntax_cache.lock()
@@ -484,46 +472,25 @@ impl AppServices {
     }
 
     pub fn resolve_ref(&self, repo_path: &Path, reference: &str) -> Result<(String, String)> {
-        let mut git = GitService::new();
-        git.open(repo_path.to_string_lossy().as_ref())?;
-        // Normalize bare `@` aliases before asking gix to resolve the revision.
-        let normalized;
-        let reference =
-            if reference == "@" || reference.starts_with("@~") || reference.starts_with("@^") {
-                normalized = format!("HEAD{}", &reference[1..]);
-                &normalized
-            } else {
-                reference
-            };
-        let oid = git.resolve_commit_oid(reference)?;
-        let short_oid = git
-            .abbreviate_oid(&oid)
-            .unwrap_or_else(|_| oid[..7].to_owned());
-        let summary = git
-            .commits(&oid, 1)
-            .ok()
-            .and_then(|mut commits| commits.pop())
-            .map(|commit| commit.summary)
-            .unwrap_or_default();
-        Ok((short_oid, summary))
+        let mut repo = discovery::open_repository(repo_path)?;
+        repo.resolve_ref(reference)
     }
 
     pub fn fetch_context_lines(
         &self,
         request: &crate::effects::FetchContextLinesRequest,
     ) -> Result<(Vec<String>, Vec<String>)> {
-        let mut git = GitService::new();
-        git.open(request.repo_path.to_string_lossy().as_ref())?;
+        let mut repo = discovery::open_repository(&request.repo_path)?;
         let old_lines = if request.old_reference.is_empty() {
             Vec::new()
         } else {
-            git.read_file_lines_at(&request.old_reference, &request.path)
+            read_file_lines_from_repo(&mut *repo, &request.old_reference, &request.path)
                 .unwrap_or_default()
         };
         let new_lines = if request.new_reference.is_empty() {
             Vec::new()
         } else {
-            git.read_file_lines_at(&request.new_reference, &request.path)
+            read_file_lines_from_repo(&mut *repo, &request.new_reference, &request.path)
                 .unwrap_or_default()
         };
         Ok((old_lines, new_lines))
@@ -711,6 +678,21 @@ fn mark_difftastic_fallback(output: &mut CompareOutput) {
 
 fn u32_to_i32_saturating(value: u32) -> i32 {
     i32::try_from(value).unwrap_or(i32::MAX)
+}
+
+fn read_file_lines_from_repo(
+    repo: &mut dyn crate::core::vcs::backend::VcsRepository,
+    reference: &str,
+    path: &str,
+) -> Result<Vec<String>> {
+    let revision = RevisionId {
+        backend: repo.location().kind,
+        id: reference.to_owned(),
+    };
+    let text = repo.read_file_text(&revision, path)?;
+    Ok((0..text.line_count())
+        .filter_map(|line| text.line_str(carbon::LineId(line)).map(str::to_owned))
+        .collect())
 }
 
 pub fn load_ai_keys() -> Result<(Option<String>, Option<String>)> {

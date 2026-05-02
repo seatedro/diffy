@@ -1,11 +1,15 @@
 use std::path::PathBuf;
 
 use crate::core::compare::{CompareOutput, CompareSpec};
+use crate::core::forge::github::{
+    DeviceFlowState, GitHubUser, PullRequestInfo, PullRequestReviewComment,
+};
 use crate::core::syntax::annotator::{SyntaxLineTokens, SyntaxRowWindow};
 use crate::core::update::{AvailableUpdate, StagedUpdate};
 use crate::core::vcs::git::{BranchInfo, CommitInfo, StatusItem, TagInfo};
-use crate::core::vcs::github::{
-    DeviceFlowState, GitHubUser, PullRequestInfo, PullRequestReviewComment,
+use crate::core::vcs::model::{
+    ChangeBucket, FileChange, FileChangeStatus, RefKind, RepoCapabilities, RepoLocation, VcsChange,
+    VcsRef, VcsSnapshot,
 };
 use crate::ui::state::{ComparePhase, PreparedActiveFile};
 
@@ -36,13 +40,176 @@ impl RepositoryChangeKind {
 
 #[derive(Debug, Clone)]
 pub struct RepositorySnapshot {
+    pub location: RepoLocation,
     pub path: PathBuf,
     pub reason: RepositorySyncReason,
     pub change_kind: Option<RepositoryChangeKind>,
+    pub capabilities: RepoCapabilities,
+    pub refs: Vec<VcsRef>,
+    pub changes: Vec<VcsChange>,
+    pub file_changes: Vec<FileChange>,
     pub branches: Vec<BranchInfo>,
     pub tags: Vec<TagInfo>,
     pub commits: Vec<CommitInfo>,
     pub status_items: Vec<StatusItem>,
+}
+
+impl RepositorySnapshot {
+    pub fn from_git_parts(
+        path: PathBuf,
+        reason: RepositorySyncReason,
+        change_kind: Option<RepositoryChangeKind>,
+        branches: Vec<BranchInfo>,
+        tags: Vec<TagInfo>,
+        commits: Vec<CommitInfo>,
+        status_items: Vec<StatusItem>,
+    ) -> Self {
+        let neutral = crate::core::vcs::git::adapter::git_snapshot_from_parts(
+            path.clone(),
+            reason,
+            change_kind,
+            &branches,
+            &tags,
+            &commits,
+            &status_items,
+        );
+        Self::from_git_parts_with_neutral(
+            path,
+            reason,
+            change_kind,
+            branches,
+            tags,
+            commits,
+            status_items,
+            neutral,
+        )
+    }
+
+    pub fn from_git_parts_with_neutral(
+        path: PathBuf,
+        reason: RepositorySyncReason,
+        change_kind: Option<RepositoryChangeKind>,
+        branches: Vec<BranchInfo>,
+        tags: Vec<TagInfo>,
+        commits: Vec<CommitInfo>,
+        status_items: Vec<StatusItem>,
+        neutral: VcsSnapshot,
+    ) -> Self {
+        Self {
+            location: neutral.location,
+            path,
+            reason,
+            change_kind,
+            capabilities: neutral.capabilities,
+            refs: neutral.refs,
+            changes: neutral.changes,
+            file_changes: neutral.file_changes,
+            branches,
+            tags,
+            commits,
+            status_items,
+        }
+    }
+
+    pub fn from_vcs_snapshot(snapshot: VcsSnapshot) -> Self {
+        let path = snapshot.location.workspace_root.clone();
+        let branches = snapshot
+            .refs
+            .iter()
+            .filter_map(branch_info_from_vcs_ref)
+            .collect();
+        let tags = snapshot
+            .refs
+            .iter()
+            .filter_map(tag_info_from_vcs_ref)
+            .collect();
+        let commits = snapshot
+            .changes
+            .iter()
+            .map(commit_info_from_vcs_change)
+            .collect();
+        let status_items = snapshot
+            .file_changes
+            .iter()
+            .map(status_item_from_file_change)
+            .collect();
+        Self {
+            location: snapshot.location,
+            path,
+            reason: snapshot.reason,
+            change_kind: snapshot.change_kind,
+            capabilities: snapshot.capabilities,
+            refs: snapshot.refs,
+            changes: snapshot.changes,
+            file_changes: snapshot.file_changes,
+            branches,
+            tags,
+            commits,
+            status_items,
+        }
+    }
+}
+
+fn branch_info_from_vcs_ref(reference: &VcsRef) -> Option<BranchInfo> {
+    let is_remote = match reference.kind {
+        RefKind::Branch => false,
+        RefKind::RemoteBranch => true,
+        _ => return None,
+    };
+    Some(BranchInfo {
+        name: reference.name.clone(),
+        is_remote,
+        is_head: reference.active,
+        target_oid: reference.target.id.clone(),
+        upstream: reference.upstream.clone(),
+        ahead_behind: reference.ahead_behind,
+    })
+}
+
+fn tag_info_from_vcs_ref(reference: &VcsRef) -> Option<TagInfo> {
+    (reference.kind == RefKind::Tag).then(|| TagInfo {
+        name: reference.name.clone(),
+        target_oid: reference.target.id.clone(),
+    })
+}
+
+fn commit_info_from_vcs_change(change: &VcsChange) -> CommitInfo {
+    CommitInfo {
+        oid: change.revision.id.clone(),
+        short_oid: change.short_revision.clone(),
+        summary: change.summary.clone(),
+        author_name: change.author_name.clone(),
+        timestamp: change.timestamp,
+    }
+}
+
+fn status_item_from_file_change(change: &FileChange) -> StatusItem {
+    let scope = match change.bucket {
+        ChangeBucket::Staged => crate::core::vcs::git::StatusScope::Staged,
+        ChangeBucket::Untracked => crate::core::vcs::git::StatusScope::Untracked,
+        ChangeBucket::WorkingCopy | ChangeBucket::Unstaged | ChangeBucket::Conflicted => {
+            crate::core::vcs::git::StatusScope::Unstaged
+        }
+    };
+    StatusItem {
+        path: change.path.clone(),
+        scope,
+        status: file_change_status_label(change.status, change.bucket).to_owned(),
+    }
+}
+
+fn file_change_status_label(status: FileChangeStatus, bucket: ChangeBucket) -> &'static str {
+    match (status, bucket) {
+        (FileChangeStatus::Added, _) => "A",
+        (FileChangeStatus::Deleted, _) => "D",
+        (FileChangeStatus::Renamed, _) => "R",
+        (FileChangeStatus::Copied, _) => "C",
+        (FileChangeStatus::Untracked, _) => "U",
+        (FileChangeStatus::Conflicted, _) | (_, ChangeBucket::Conflicted) => "!",
+        (FileChangeStatus::TypeChanged, _) => "T",
+        (FileChangeStatus::Binary, _) => "B",
+        (FileChangeStatus::Modified, _) => "M",
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -1,7 +1,9 @@
+pub mod adapter;
 pub mod patch;
 pub mod service;
 pub mod status;
 
+pub use adapter::GitBackend;
 pub use service::{
     BranchInfo, CommitInfo, GitService, INDEX_REF, PatchApplyTarget, PullError, PullOutcome,
     TagInfo, WORKDIR_REF,

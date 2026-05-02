@@ -1,5 +1,4 @@
 pub mod adapter;
-pub mod patch;
 pub mod service;
 pub mod status;
 

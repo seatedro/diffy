@@ -489,8 +489,8 @@ pub fn build_ui_frame(
                 == WorkspaceSource::Status
                 && !using_continuous_doc;
             editor.layout.file_is_staged = matches!(
-                state.workspace.selected_status_scope.get(&state.store),
-                Some(crate::core::vcs::git::StatusScope::Staged)
+                state.workspace.selected_change_bucket.get(&state.store),
+                Some(crate::core::vcs::model::ChangeBucket::Staged)
             );
             scene.clip(vp_bounds);
             editor.paint(&mut scene, theme, &editor_snap, document);

@@ -1,4 +1,5 @@
 use crate::core::compare::RendererKind;
+use crate::core::vcs::model::RefKind;
 use crate::ui::design::{Alpha, Ico, Rad, Sp};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
@@ -22,11 +23,16 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
     let profile = state.repository.location.with(&state.store, |location| {
         crate::ui::vcs::profile(location.as_ref())
     });
-    let head_branch_info = state.repository.branches.with(&state.store, |branches| {
-        branches
-            .iter()
-            .find(|b| b.is_head)
-            .map(|b| (b.name.clone(), b.upstream.clone(), b.ahead_behind))
+    let head_branch_info = state.repository.refs.with(&state.store, |refs| {
+        refs.iter()
+            .find(|reference| reference.active && reference.kind == RefKind::Branch)
+            .map(|reference| {
+                (
+                    reference.name.clone(),
+                    reference.upstream.clone(),
+                    reference.ahead_behind,
+                )
+            })
     });
     let vcs_identity = state.repository.changes.with(&state.store, |changes| {
         profile.repository_identity_from_changes(changes)
@@ -71,7 +77,7 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
 
     let right_text = match state.workspace.source.get(&state.store) {
         WorkspaceSource::Status => {
-            profile.status_view_label(state.workspace.selected_status_scope.get(&state.store))
+            profile.status_view_label(state.workspace.selected_change_bucket.get(&state.store))
         }
         _ => format!(
             "{}  \u{00b7}  {}",
@@ -222,12 +228,14 @@ pub(crate) fn renderer_label(renderer: RendererKind) -> &'static str {
     }
 }
 
+const PULL_REQUEST_REF_PREFIX: &str = "refs/diffy/pr/";
+
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn display_ref(value: &str) -> &str {
     if value.is_empty() {
         return "?";
     }
-    if let Some(rest) = value.strip_prefix(crate::core::vcs::git::service::PR_REF_PREFIX)
+    if let Some(rest) = value.strip_prefix(PULL_REQUEST_REF_PREFIX)
         && let Some(idx) = rest.find('/')
     {
         return &rest[idx + 1..];

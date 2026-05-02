@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use carbon::TextStore;
 
 use crate::core::compare::backends::compare_output_from_raw_patch;
-use crate::core::compare::{CompareMode, CompareOutput, CompareSpec, ProgressSink};
+use crate::core::compare::{CompareOutput, ProgressSink};
 use crate::core::error::{DiffyError, Result};
 use crate::core::vcs::backend::{VcsBackend, VcsRepository, VcsWatchPaths};
 use crate::core::vcs::jj::cli::JjCli;
@@ -12,8 +12,8 @@ use crate::core::vcs::jj::parse::{
     parse_bookmark_list, parse_change_log, parse_conflict_list, parse_diff_summary,
 };
 use crate::core::vcs::model::{
-    RefKind, RepoCapabilities, RepoLocation, RevisionId, VcsCompareRequest, VcsCompareSpec,
-    VcsKind, VcsRef, VcsSnapshot,
+    FileChange, FileOperation, RefKind, RepoCapabilities, RepoLocation, RevisionId, VCS_PROFILE_JJ,
+    VcsCompareRequest, VcsCompareSpec, VcsKind, VcsRef, VcsSnapshot,
 };
 use crate::events::RepositorySyncReason;
 
@@ -22,7 +22,7 @@ pub struct JjBackend;
 
 impl VcsBackend for JjBackend {
     fn kind(&self) -> VcsKind {
-        VcsKind::Jj
+        VcsKind::JJ
     }
 
     fn detect(&self, path: &Path) -> Result<Option<RepoLocation>> {
@@ -30,7 +30,8 @@ impl VcsBackend for JjBackend {
             return Ok(None);
         };
         Ok(Some(RepoLocation {
-            kind: VcsKind::Jj,
+            kind: VcsKind::JJ,
+            profile: VCS_PROFILE_JJ,
             workspace_root: root.clone(),
             store_root: Some(root.join(".jj")),
         }))
@@ -47,6 +48,7 @@ impl VcsBackend for JjBackend {
                 .clone()
                 .unwrap_or_else(|| location.workspace_root.join(".jj")),
             workdir: Some(location.workspace_root.clone()),
+            worktree_metadata_paths: Vec::new(),
             watched_paths: vec![location.workspace_root.clone()],
         })
     }
@@ -229,6 +231,13 @@ impl JjRepository {
             Err(error) => Err(error),
         }
     }
+
+    fn clear_after_write(&mut self) {
+        self.last_operation_id = None;
+        self.last_snapshot = None;
+        self.diff_cache.clear();
+        self.file_text_cache.clear();
+    }
 }
 
 impl VcsRepository for JjRepository {
@@ -299,6 +308,26 @@ impl VcsRepository for JjRepository {
             OsString::from("-T"),
             OsString::from("name ++ \"\\t\" ++ normal_target.commit_id() ++ \"\\n\""),
         ])?;
+        let remotes = self
+            .cli
+            .run_ignored_wc(&[
+                OsString::from("git"),
+                OsString::from("remote"),
+                OsString::from("list"),
+            ])
+            .unwrap_or_default();
+        let remote_bookmarks = self
+            .cli
+            .run_ignored_wc(&[
+                OsString::from("bookmark"),
+                OsString::from("list"),
+                OsString::from("--all-remotes"),
+                OsString::from("-T"),
+                OsString::from(
+                    "name ++ \"\\t\" ++ if(self.remote(), self.remote(), \"\") ++ \"\\t\" ++ normal_target.commit_id() ++ \"\\n\"",
+                ),
+            ])
+            .unwrap_or_default();
         let conflicts = self.conflict_list()?;
         let mut file_changes = parse_diff_summary(&summary);
         file_changes.extend(parse_conflict_list(&conflicts));
@@ -313,7 +342,7 @@ impl VcsRepository for JjRepository {
             .first()
             .map(|change| change.revision.clone())
             .unwrap_or_else(|| RevisionId {
-                backend: VcsKind::Jj,
+                backend: VcsKind::JJ,
                 id: "@".to_owned(),
             });
 
@@ -325,7 +354,17 @@ impl VcsRepository for JjRepository {
             upstream: None,
             ahead_behind: None,
         }];
-        refs.extend(parse_bookmark_list(&bookmarks));
+        let current_target = refs[0].target.clone();
+        refs.extend(
+            parse_bookmark_list(&bookmarks)
+                .into_iter()
+                .map(|mut reference| {
+                    reference.active = reference.target == current_target;
+                    reference
+                }),
+        );
+        let remote_names = parse_remote_names(&remotes);
+        refs.extend(parse_remote_bookmark_list(&remote_bookmarks, &remote_names));
 
         let snapshot = VcsSnapshot {
             location: self.location.clone(),
@@ -340,37 +379,13 @@ impl VcsRepository for JjRepository {
         Ok(snapshot)
     }
 
-    fn resolve_compare_spec(
-        &mut self,
-        spec: &CompareSpec,
-    ) -> Result<(String, String, VcsCompareRequest)> {
-        let vcs_spec = match spec.mode {
-            CompareMode::SingleCommit => {
-                let revision = if spec.right_ref.is_empty() {
-                    spec.left_ref.clone()
-                } else {
-                    spec.right_ref.clone()
-                };
-                VcsCompareSpec::Change { revision }
-            }
-            CompareMode::TwoDot => VcsCompareSpec::Range {
-                from: spec.left_ref.clone(),
-                to: spec.right_ref.clone(),
-            },
-            CompareMode::ThreeDot => VcsCompareSpec::MergeBaseRange {
-                base: spec.left_ref.clone(),
-                head: spec.right_ref.clone(),
-            },
-        };
-        Ok((
-            spec.left_ref.clone(),
-            spec.right_ref.clone(),
-            VcsCompareRequest {
-                spec: vcs_spec,
-                layout: spec.layout,
-                renderer: spec.renderer,
-            },
-        ))
+    fn resolve_compare_request(&mut self, request: &VcsCompareRequest) -> Result<(String, String)> {
+        match &request.spec {
+            VcsCompareSpec::WorkingCopy => Ok(("@-".to_owned(), "@".to_owned())),
+            VcsCompareSpec::Change { revision } => Ok((String::new(), revision.clone())),
+            VcsCompareSpec::Range { from, to } => Ok((from.clone(), to.clone())),
+            VcsCompareSpec::MergeBaseRange { base, head } => Ok((base.clone(), head.clone())),
+        }
     }
 
     fn compare(
@@ -429,6 +444,80 @@ impl VcsRepository for JjRepository {
         Ok(output)
     }
 
+    fn file_change_diff(
+        &mut self,
+        change: &FileChange,
+        _renderer: crate::core::compare::RendererKind,
+    ) -> Result<CompareOutput> {
+        self.compare_working_file(&change.path)
+    }
+
+    fn commit_diff(&mut self, _has_staged: bool) -> Result<String> {
+        self.ensure_read_epoch()?;
+        self.cli.run_ignored_wc(&[
+            OsString::from("diff"),
+            OsString::from("-r"),
+            OsString::from("@"),
+            OsString::from("--git"),
+        ])
+    }
+
+    fn apply_file_operation(
+        &mut self,
+        change: &FileChange,
+        operation: FileOperation,
+    ) -> Result<()> {
+        if operation != FileOperation::Discard {
+            return Err(DiffyError::General(
+                "jj does not support stage or unstage operations".to_owned(),
+            ));
+        }
+        let mut args = vec![OsString::from("restore")];
+        if let Some(old_path) = change.old_path.as_deref() {
+            args.push(OsString::from(old_path));
+        }
+        args.push(OsString::from(change.path.as_str()));
+        self.cli.run(&args)?;
+        self.clear_after_write();
+        Ok(())
+    }
+
+    fn create_commit(&mut self, message: &str) -> Result<()> {
+        self.cli.run(&[
+            OsString::from("commit"),
+            OsString::from("-m"),
+            OsString::from(message),
+        ])?;
+        self.clear_after_write();
+        Ok(())
+    }
+
+    fn fetch_remote(&mut self, remote: &str) -> Result<()> {
+        self.cli.run(&[
+            OsString::from("git"),
+            OsString::from("fetch"),
+            OsString::from("--remote"),
+            OsString::from(remote),
+        ])?;
+        self.clear_after_write();
+        Ok(())
+    }
+
+    fn push(&mut self, remote: &str, refspec: &str, _force_with_lease: bool) -> Result<()> {
+        let bookmark = bookmark_from_refspec(refspec)
+            .ok_or_else(|| DiffyError::General("jj push requires a bookmark refspec".to_owned()))?;
+        self.cli.run(&[
+            OsString::from("git"),
+            OsString::from("push"),
+            OsString::from("--remote"),
+            OsString::from(remote),
+            OsString::from("--bookmark"),
+            OsString::from(bookmark),
+        ])?;
+        self.clear_after_write();
+        Ok(())
+    }
+
     fn compare_working_file(&mut self, path: &str) -> Result<CompareOutput> {
         let operation_id = self.ensure_read_epoch()?;
         let request = VcsCompareRequest {
@@ -484,13 +573,68 @@ pub fn jj_capabilities() -> RepoCapabilities {
         branches: false,
         bookmarks: true,
         tags: false,
-        remotes: false,
+        remotes: true,
         pull_fast_forward: false,
+        create_commit: true,
         partial_file_restore: true,
         partial_hunk_mutation: false,
         operation_log: true,
         github_pull_requests: false,
     }
+}
+
+fn parse_remote_names(output: &str) -> std::collections::BTreeSet<String> {
+    output
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|remote| !remote.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn parse_remote_bookmark_list(
+    output: &str,
+    remote_names: &std::collections::BTreeSet<String>,
+) -> Vec<VcsRef> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(3, '\t');
+            let name = fields.next()?.trim();
+            let remote = fields.next()?.trim();
+            let target = fields.next()?.trim();
+            if name.is_empty()
+                || remote.is_empty()
+                || target.is_empty()
+                || !remote_names.contains(remote)
+            {
+                return None;
+            }
+            Some((name, remote, target))
+        })
+        .map(|(name, remote, target)| VcsRef {
+            name: format!("{name}@{remote}"),
+            kind: RefKind::RemoteBookmark,
+            target: RevisionId {
+                backend: VcsKind::JJ,
+                id: target.to_owned(),
+            },
+            active: false,
+            upstream: Some(format!("{remote}/{name}")),
+            ahead_behind: None,
+        })
+        .collect()
+}
+
+fn bookmark_from_refspec(refspec: &str) -> Option<String> {
+    let source = refspec
+        .split_once(':')
+        .map_or(refspec, |(source, _)| source);
+    source
+        .strip_prefix("refs/heads/")
+        .or_else(|| source.strip_prefix("refs/bookmarks/"))
+        .or_else(|| (!source.is_empty()).then_some(source))
+        .map(str::to_owned)
 }
 
 fn find_jj_root(path: &Path) -> Option<PathBuf> {
@@ -517,9 +661,11 @@ mod tests {
     use tempfile::TempDir;
 
     use super::JjBackend;
-    use crate::core::compare::{CompareMode, CompareSpec, LayoutMode, RendererKind};
+    use crate::core::compare::{LayoutMode, RendererKind};
     use crate::core::vcs::backend::VcsBackend;
-    use crate::core::vcs::model::{ChangeBucket, FileChangeStatus, VcsCompareSpec, VcsKind};
+    use crate::core::vcs::model::{
+        ChangeBucket, FileChangeStatus, FileOperation, VcsCompareRequest, VcsCompareSpec, VcsKind,
+    };
     use crate::events::RepositorySyncReason;
 
     #[test]
@@ -531,7 +677,7 @@ mod tests {
 
         let backend = JjBackend;
         let location = backend.detect(repo_dir.path()).unwrap().unwrap();
-        assert_eq!(location.kind, VcsKind::Jj);
+        assert_eq!(location.kind, VcsKind::JJ);
 
         let mut repo = backend.open(location).unwrap();
         let snapshot = repo
@@ -549,25 +695,63 @@ mod tests {
         assert_eq!(output.carbon.files.len(), 1);
         assert_eq!(output.carbon.files[0].path(), "README.md");
 
-        let spec = CompareSpec {
-            left_ref: "@-".to_owned(),
-            right_ref: "@".to_owned(),
-            mode: CompareMode::TwoDot,
+        let request = VcsCompareRequest {
+            spec: VcsCompareSpec::Range {
+                from: "@-".to_owned(),
+                to: "@".to_owned(),
+            },
             layout: LayoutMode::Unified,
             renderer: RendererKind::Builtin,
         };
-        let (_, _, request) = repo.resolve_compare_spec(&spec).unwrap();
         let (additions, deletions) = repo.compare_stats(&request).unwrap();
         assert_eq!((additions, deletions), (1, 0));
 
-        let single_spec = CompareSpec {
-            left_ref: "@".to_owned(),
-            right_ref: String::new(),
-            mode: CompareMode::SingleCommit,
+        let readme_change = snapshot
+            .file_changes
+            .iter()
+            .find(|file| file.path == "README.md")
+            .unwrap()
+            .clone();
+        repo.apply_file_operation(&readme_change, FileOperation::Discard)
+            .unwrap();
+        let snapshot = repo
+            .snapshot(RepositorySyncReason::Rescan, None)
+            .expect("jj snapshot after restore");
+        assert!(
+            !snapshot
+                .file_changes
+                .iter()
+                .any(|file| file.path == "README.md")
+        );
+
+        fs::write(repo_dir.path().join("COMMIT.md"), "committed\n").unwrap();
+        repo.create_commit("add commit from diffy").unwrap();
+        let description = Command::new("jj")
+            .arg("--no-pager")
+            .arg("--color=never")
+            .arg("--quiet")
+            .arg("log")
+            .arg("--no-graph")
+            .arg("-r")
+            .arg("@-")
+            .arg("-T")
+            .arg("description.first_line()")
+            .current_dir(repo_dir.path())
+            .output()
+            .unwrap();
+        assert!(description.status.success());
+        assert_eq!(
+            String::from_utf8(description.stdout).unwrap(),
+            "add commit from diffy"
+        );
+
+        let request = VcsCompareRequest {
+            spec: VcsCompareSpec::Change {
+                revision: "@".to_owned(),
+            },
             layout: LayoutMode::Unified,
             renderer: RendererKind::Builtin,
         };
-        let (_, _, request) = repo.resolve_compare_spec(&single_spec).unwrap();
         assert_eq!(
             request.spec,
             VcsCompareSpec::Change {
@@ -589,6 +773,19 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
+        for (key, value) in [("user.name", "Diffy"), ("user.email", "diffy@example.com")] {
+            let status = Command::new("jj")
+                .arg("--quiet")
+                .arg("config")
+                .arg("set")
+                .arg("--repo")
+                .arg(key)
+                .arg(value)
+                .current_dir(repo_dir.path())
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
         Some(repo_dir)
     }
 }

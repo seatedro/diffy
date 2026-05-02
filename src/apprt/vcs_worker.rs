@@ -6,15 +6,12 @@ use std::time::Duration;
 use crate::apprt::ProgressReporter;
 use crate::apprt::runtime::RuntimeEventSender;
 use crate::core::compare::{ComparePhase, ProgressSink};
-use crate::core::vcs::git::adapter;
-use crate::core::vcs::git::{
-    BranchInfo, CommitInfo, GitService, PatchApplyTarget, StatusItem, StatusOperation, StatusScope,
-    TagInfo, status::status_items_from_entry,
-};
 use crate::core::vcs::{
     backend::VcsRepository,
     discovery,
-    model::{RepoLocation, VcsKind},
+    model::{
+        ChangeBucket, FileChange, FileOperation, PullFastForwardOutcome, RepoLocation, VcsSnapshot,
+    },
 };
 use crate::events::{
     RepositoryChangeKind, RepositoryEvent, RepositorySnapshot, RepositorySyncReason,
@@ -46,10 +43,15 @@ impl VcsWorker {
         });
     }
 
-    pub fn dispatch_operation(&self, path: PathBuf, item: StatusItem, operation: StatusOperation) {
+    pub fn dispatch_operation(
+        &self,
+        path: PathBuf,
+        file_change: FileChange,
+        operation: FileOperation,
+    ) {
         let _ = self.sender.send(VcsWorkerCommand::ApplyOperation {
             path,
-            item,
+            file_change,
             operation,
         });
     }
@@ -57,12 +59,12 @@ impl VcsWorker {
     pub fn dispatch_batch_operation(
         &self,
         path: PathBuf,
-        items: Vec<StatusItem>,
-        operation: StatusOperation,
+        file_changes: Vec<FileChange>,
+        operation: FileOperation,
     ) {
         let _ = self.sender.send(VcsWorkerCommand::ApplyBatchOperation {
             path,
-            items,
+            file_changes,
             operation,
         });
     }
@@ -71,13 +73,13 @@ impl VcsWorker {
         &self,
         path: PathBuf,
         patch: String,
-        scope: StatusScope,
-        operation: StatusOperation,
+        bucket: ChangeBucket,
+        operation: FileOperation,
     ) {
         let _ = self.sender.send(VcsWorkerCommand::ApplyPatch {
             path,
             patch,
-            scope,
+            bucket,
             operation,
         });
     }
@@ -137,19 +139,19 @@ pub(crate) enum VcsWorkerCommand {
     },
     ApplyOperation {
         path: PathBuf,
-        item: StatusItem,
-        operation: StatusOperation,
+        file_change: FileChange,
+        operation: FileOperation,
     },
     ApplyBatchOperation {
         path: PathBuf,
-        items: Vec<StatusItem>,
-        operation: StatusOperation,
+        file_changes: Vec<FileChange>,
+        operation: FileOperation,
     },
     ApplyPatch {
         path: PathBuf,
         patch: String,
-        scope: StatusScope,
-        operation: StatusOperation,
+        bucket: ChangeBucket,
+        operation: FileOperation,
     },
     Commit {
         path: PathBuf,
@@ -181,32 +183,9 @@ pub(crate) enum VcsWorkerCommand {
 
 #[derive(Default)]
 struct VcsWorkerState {
-    git: GitService,
     vcs_repo: Option<Box<dyn VcsRepository>>,
     active_path: Option<PathBuf>,
-    snapshot: Option<SnapshotBundle>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RepositorySnapshotState {
-    head_oid: Option<String>,
-    branch_targets: Vec<BranchTarget>,
-    tag_targets: Vec<(String, String)>,
-    statuses: Vec<(String, u32)>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct BranchTarget {
-    name: String,
-    is_remote: bool,
-    is_head: bool,
-    target_oid: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-struct SnapshotBundle {
-    snapshot: RepositorySnapshot,
-    state: RepositorySnapshotState,
+    last_snapshot: Option<VcsSnapshot>,
 }
 
 fn vcs_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<VcsWorkerCommand>) {
@@ -245,28 +224,34 @@ fn vcs_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<VcsWorke
             }
             Some(VcsWorkerCommand::ApplyOperation {
                 path,
-                item,
+                file_change,
                 operation,
             }) => {
                 pending_dirty = None;
-                apply_status_operation(&mut state, &event_sender, path, item, operation);
+                apply_status_operation(&mut state, &event_sender, path, file_change, operation);
             }
             Some(VcsWorkerCommand::ApplyBatchOperation {
                 path,
-                items,
+                file_changes,
                 operation,
             }) => {
                 pending_dirty = None;
-                apply_batch_status_operation(&mut state, &event_sender, path, items, operation);
+                apply_batch_status_operation(
+                    &mut state,
+                    &event_sender,
+                    path,
+                    file_changes,
+                    operation,
+                );
             }
             Some(VcsWorkerCommand::ApplyPatch {
                 path,
                 patch,
-                scope,
+                bucket,
                 operation,
             }) => {
                 pending_dirty = None;
-                apply_patch_operation(&mut state, &event_sender, path, &patch, scope, operation);
+                apply_patch_operation(&mut state, &event_sender, path, &patch, bucket, operation);
             }
             Some(VcsWorkerCommand::Commit { path, message }) => {
                 pending_dirty = None;
@@ -336,27 +321,13 @@ fn apply_status_operation(
     state: &mut VcsWorkerState,
     event_sender: &RuntimeEventSender,
     path: PathBuf,
-    item: StatusItem,
-    operation: StatusOperation,
+    file_change: FileChange,
+    operation: FileOperation,
 ) {
-    if state.active_path.as_ref() != Some(&path) {
-        state.git.close();
-        state.snapshot = None;
-        state.active_path = Some(path.clone());
-    }
-
-    if !state.git.is_open() {
-        if let Err(error) = state.git.open(path.to_string_lossy().as_ref()) {
-            event_sender.send(RepositoryEvent::StatusOperationFailed {
-                path,
-                message: error.to_string(),
-            });
-            return;
-        }
-    }
-
-    if let Err(error) = state.git.apply_status_operation(&item, operation) {
-        event_sender.send(RepositoryEvent::StatusOperationFailed {
+    let result = discovery::open_repository(&path)
+        .and_then(|mut repo| repo.apply_file_operation(&file_change, operation));
+    if let Err(error) = result {
+        event_sender.send(RepositoryEvent::FileOperationFailed {
             path: path.clone(),
             message: error.to_string(),
         });
@@ -370,27 +341,13 @@ fn apply_batch_status_operation(
     state: &mut VcsWorkerState,
     event_sender: &RuntimeEventSender,
     path: PathBuf,
-    items: Vec<StatusItem>,
-    operation: StatusOperation,
+    file_changes: Vec<FileChange>,
+    operation: FileOperation,
 ) {
-    if state.active_path.as_ref() != Some(&path) {
-        state.git.close();
-        state.snapshot = None;
-        state.active_path = Some(path.clone());
-    }
-
-    if !state.git.is_open() {
-        if let Err(error) = state.git.open(path.to_string_lossy().as_ref()) {
-            event_sender.send(RepositoryEvent::StatusOperationFailed {
-                path,
-                message: error.to_string(),
-            });
-            return;
-        }
-    }
-
-    if let Err(error) = state.git.apply_batch_status_operation(&items, operation) {
-        event_sender.send(RepositoryEvent::StatusOperationFailed {
+    let result = discovery::open_repository(&path)
+        .and_then(|mut repo| repo.apply_batch_file_operation(&file_changes, operation));
+    if let Err(error) = result {
+        event_sender.send(RepositoryEvent::FileOperationFailed {
             path: path.clone(),
             message: error.to_string(),
         });
@@ -405,31 +362,12 @@ fn apply_patch_operation(
     event_sender: &RuntimeEventSender,
     path: PathBuf,
     patch: &str,
-    _scope: StatusScope,
-    operation: StatusOperation,
+    _bucket: ChangeBucket,
+    operation: FileOperation,
 ) {
-    if state.active_path.as_ref() != Some(&path) {
-        state.git.close();
-        state.snapshot = None;
-        state.active_path = Some(path.clone());
-    }
-
-    if !state.git.is_open() {
-        if let Err(error) = state.git.open(path.to_string_lossy().as_ref()) {
-            event_sender.send(RepositoryEvent::StatusOperationFailed {
-                path,
-                message: error.to_string(),
-            });
-            return;
-        }
-    }
-
-    let location = match operation {
-        StatusOperation::Discard => PatchApplyTarget::Workdir,
-        _ => PatchApplyTarget::Index,
-    };
-
-    if let Err(error) = state.git.apply_patch(patch, location) {
+    if let Err(error) = discovery::open_repository(&path)
+        .and_then(|mut repo| repo.apply_patch_operation(patch, operation))
+    {
         tracing::error!(
             ?operation,
             path = %path.display(),
@@ -437,7 +375,7 @@ fn apply_patch_operation(
             patch = %patch,
             "patch apply failed"
         );
-        event_sender.send(RepositoryEvent::StatusOperationFailed {
+        event_sender.send(RepositoryEvent::FileOperationFailed {
             path: path.clone(),
             message: format!("{} failed: {}", operation.label(), error),
         });
@@ -453,23 +391,9 @@ fn apply_commit(
     path: PathBuf,
     message: &str,
 ) {
-    if state.active_path.as_ref() != Some(&path) {
-        state.git.close();
-        state.snapshot = None;
-        state.active_path = Some(path.clone());
-    }
-
-    if !state.git.is_open() {
-        if let Err(error) = state.git.open(path.to_string_lossy().as_ref()) {
-            event_sender.send(RepositoryEvent::CommitFailed {
-                path,
-                message: error.to_string(),
-            });
-            return;
-        }
-    }
-
-    if let Err(error) = state.git.commit(message) {
+    if let Err(error) =
+        discovery::open_repository(&path).and_then(|mut repo| repo.create_commit(message))
+    {
         event_sender.send(RepositoryEvent::CommitFailed {
             path,
             message: error.to_string(),
@@ -481,21 +405,6 @@ fn apply_commit(
     sync_repository_forced(state, event_sender, path, RepositorySyncReason::Dirty);
 }
 
-fn ensure_open(state: &mut VcsWorkerState, path: &PathBuf) -> std::result::Result<(), String> {
-    if state.active_path.as_ref() != Some(path) {
-        state.git.close();
-        state.snapshot = None;
-        state.active_path = Some(path.clone());
-    }
-    if !state.git.is_open() {
-        state
-            .git
-            .open(path.to_string_lossy().as_ref())
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
 fn apply_fetch(
     state: &mut VcsWorkerState,
     event_sender: &RuntimeEventSender,
@@ -503,32 +412,12 @@ fn apply_fetch(
     remote: String,
     toast_id: u64,
 ) {
-    tracing::debug!(path = %path.display(), %remote, toast_id, "git: fetch requested");
-    if let Err(message) = ensure_open(state, &path) {
-        tracing::warn!(path = %path.display(), %message, "git: fetch ensure_open failed");
-        event_sender.send(RepositoryEvent::FetchFailed {
-            toast_id,
-            remote,
-            message,
-        });
-        return;
-    }
-
-    let progress_sender = event_sender.clone();
-    let result = state
-        .git
-        .fetch_remote(&remote, move |received, total, bytes| {
-            progress_sender.send(RepositoryEvent::FetchProgress {
-                toast_id,
-                received_objects: received,
-                total_objects: total,
-                received_bytes: bytes,
-            });
-        });
+    tracing::debug!(path = %path.display(), %remote, toast_id, "vcs: fetch requested");
+    let result = discovery::open_repository(&path).and_then(|mut repo| repo.fetch_remote(&remote));
 
     match result {
         Ok(()) => {
-            tracing::debug!(path = %path.display(), %remote, "git: fetch complete");
+            tracing::debug!(path = %path.display(), %remote, "vcs: fetch complete");
             event_sender.send(RepositoryEvent::FetchComplete {
                 toast_id,
                 path: path.clone(),
@@ -537,7 +426,7 @@ fn apply_fetch(
             sync_repository_forced(state, event_sender, path, RepositorySyncReason::Rescan);
         }
         Err(error) => {
-            tracing::warn!(path = %path.display(), %remote, %error, "git: fetch failed");
+            tracing::warn!(path = %path.display(), %remote, %error, "vcs: fetch failed");
             event_sender.send(RepositoryEvent::FetchFailed {
                 toast_id,
                 remote,
@@ -562,18 +451,8 @@ fn apply_push(
         %refspec,
         force_with_lease,
         toast_id,
-        "git: push requested",
+        "vcs: push requested",
     );
-    if let Err(message) = ensure_open(state, &path) {
-        tracing::warn!(path = %path.display(), %message, "git: push ensure_open failed");
-        event_sender.send(RepositoryEvent::PushFailed {
-            toast_id,
-            remote,
-            message,
-        });
-        return;
-    }
-
     // Parse the branch out of the refspec for the completion event, e.g.
     // `refs/heads/foo:refs/heads/foo` → `foo`.
     let branch = refspec
@@ -583,24 +462,12 @@ fn apply_push(
         .unwrap_or("")
         .to_owned();
 
-    let progress_sender = event_sender.clone();
-    let result = state.git.push(
-        &remote,
-        &refspec,
-        force_with_lease,
-        move |current, total, bytes| {
-            progress_sender.send(RepositoryEvent::PushProgress {
-                toast_id,
-                current,
-                total,
-                bytes,
-            });
-        },
-    );
+    let result = discovery::open_repository(&path)
+        .and_then(|mut repo| repo.push(&remote, &refspec, force_with_lease));
 
     match result {
         Ok(()) => {
-            tracing::debug!(path = %path.display(), %remote, %branch, "git: push complete");
+            tracing::debug!(path = %path.display(), %remote, %branch, "vcs: push complete");
             event_sender.send(RepositoryEvent::PushComplete {
                 toast_id,
                 path: path.clone(),
@@ -610,7 +477,7 @@ fn apply_push(
             sync_repository_forced(state, event_sender, path, RepositorySyncReason::Rescan);
         }
         Err(error) => {
-            tracing::warn!(path = %path.display(), %remote, %error, "git: push failed");
+            tracing::warn!(path = %path.display(), %remote, %error, "vcs: push failed");
             event_sender.send(RepositoryEvent::PushFailed {
                 toast_id,
                 remote,
@@ -633,36 +500,16 @@ fn apply_pull_ff(
         %remote,
         %branch,
         toast_id,
-        "git: pull-ff requested",
+        "vcs: pull-ff requested",
     );
-    if let Err(message) = ensure_open(state, &path) {
-        tracing::warn!(path = %path.display(), %message, "git: pull-ff ensure_open failed");
-        event_sender.send(RepositoryEvent::PullFailed {
-            toast_id,
-            remote,
-            branch,
-            message,
-        });
-        return;
-    }
-
-    let progress_sender = event_sender.clone();
-    let result = state
-        .git
-        .pull_ff(&remote, &branch, move |received, total, bytes| {
-            progress_sender.send(RepositoryEvent::FetchProgress {
-                toast_id,
-                received_objects: received,
-                total_objects: total,
-                received_bytes: bytes,
-            });
-        });
+    let result = discovery::open_repository(&path)
+        .and_then(|mut repo| repo.pull_fast_forward(&remote, &branch));
 
     match result {
         Ok(outcome) => {
             let (already_up_to_date, behind) = match outcome {
-                crate::core::vcs::git::PullOutcome::AlreadyUpToDate => (true, 0),
-                crate::core::vcs::git::PullOutcome::FastForwarded { behind } => (false, behind),
+                PullFastForwardOutcome::AlreadyUpToDate => (true, 0),
+                PullFastForwardOutcome::FastForwarded { behind } => (false, behind),
             };
             tracing::debug!(
                 path = %path.display(),
@@ -670,7 +517,7 @@ fn apply_pull_ff(
                 %branch,
                 already_up_to_date,
                 behind,
-                "git: pull-ff complete",
+                "vcs: pull-ff complete",
             );
             event_sender.send(RepositoryEvent::PullComplete {
                 toast_id,
@@ -688,7 +535,7 @@ fn apply_pull_ff(
                 %remote,
                 %branch,
                 %error,
-                "git: pull-ff failed",
+                "vcs: pull-ff failed",
             );
             event_sender.send(RepositoryEvent::PullFailed {
                 toast_id,
@@ -745,7 +592,15 @@ fn sync_repository_inner(
         r.phase(ComparePhase::OpeningRepo);
     }
     let location = match discovery::discover_repository(&path) {
-        Ok(location) => location,
+        Ok(Some(location)) => location,
+        Ok(None) => {
+            event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
+                path: path.clone(),
+                reason,
+                message: format!("{} is not a supported repository", path.display()),
+            });
+            return;
+        }
         Err(error) => {
             event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
                 path,
@@ -755,95 +610,21 @@ fn sync_repository_inner(
             return;
         }
     };
-    if let Some(location) = location
-        && location.kind != VcsKind::Git
-    {
-        if state.active_path.as_ref() != Some(&path) {
-            state.git.close();
-            state.vcs_repo = None;
-            state.snapshot = None;
-            state.active_path = Some(path.clone());
-        }
-        sync_vcs_repository(state, event_sender, path, reason, reporter_ref, location);
-        return;
-    }
     if state.active_path.as_ref() != Some(&path) {
-        state.git.close();
         state.vcs_repo = None;
-        state.snapshot = None;
+        state.last_snapshot = None;
         state.active_path = Some(path.clone());
     }
-
-    if !state.git.is_open() {
-        if let Err(error) = state.git.open(path.to_string_lossy().as_ref()) {
-            event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
-                path,
-                reason,
-                message: error.to_string(),
-            });
-            return;
-        }
-    }
-
-    let bundle = match collect_snapshot_for_sync(
-        &state.git,
-        path.clone(),
+    sync_vcs_repository(
+        state,
+        event_sender,
+        path,
         reason,
-        reporter_ref,
-        if force_emit { None } else { dirty_hint },
-        state.snapshot.as_ref(),
-    ) {
-        Ok(bundle) => bundle,
-        Err(error) => {
-            event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
-                path,
-                reason,
-                message: error.to_string(),
-            });
-            return;
-        }
-    };
-
-    let change_kind = state
-        .snapshot
-        .as_ref()
-        .and_then(|previous| previous.state.diff_kind(&bundle.state));
-
-    let should_emit = force_emit || reason == RepositorySyncReason::Open || change_kind.is_some();
-    tracing::debug!(
-        path = %path.display(),
-        ?reason,
-        ?change_kind,
         force_emit,
-        should_emit,
-        prev_had_snapshot = state.snapshot.is_some(),
-        "sync_repository: computed"
+        dirty_hint,
+        reporter_ref,
+        location,
     );
-
-    if should_emit {
-        let mut snapshot = bundle.snapshot.clone();
-        snapshot.change_kind = if reason == RepositorySyncReason::Open {
-            None
-        } else {
-            // Force-emitted user operations may have no detected diff (same
-            // coarse status bits) but still changed the index content, so
-            // report Worktree to drive the UI refresh downstream.
-            change_kind.or(if force_emit {
-                Some(RepositoryChangeKind::Worktree)
-            } else {
-                None
-            })
-        };
-        refresh_neutral_git_snapshot(&mut snapshot);
-        event_sender.send(RepositoryEvent::RepositorySnapshotReady(snapshot));
-    } else {
-        tracing::debug!(
-            path = %path.display(),
-            ?reason,
-            "sync_repository: suppressing snapshot (no diff detected)"
-        );
-    }
-    state.snapshot = Some(bundle);
 }
 
 fn sync_vcs_repository(
@@ -851,6 +632,8 @@ fn sync_vcs_repository(
     event_sender: &RuntimeEventSender,
     path: PathBuf,
     reason: RepositorySyncReason,
+    force_emit: bool,
+    dirty_hint: Option<RepositoryChangeKind>,
     reporter: Option<&dyn ProgressSink>,
     location: RepoLocation,
 ) {
@@ -879,7 +662,7 @@ fn sync_vcs_repository(
         });
         return;
     };
-    let snapshot = match repo.snapshot(reason, reporter) {
+    let mut snapshot = match repo.snapshot(reason, reporter) {
         Ok(snapshot) => snapshot,
         Err(error) => {
             event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
@@ -890,321 +673,40 @@ fn sync_vcs_repository(
             return;
         }
     };
-    event_sender.send(RepositoryEvent::RepositorySnapshotReady(
-        RepositorySnapshot::from_vcs_snapshot(snapshot),
-    ));
-}
-
-fn collect_snapshot_for_sync(
-    git: &GitService,
-    path: PathBuf,
-    reason: RepositorySyncReason,
-    reporter: Option<&dyn ProgressSink>,
-    dirty_hint: Option<RepositoryChangeKind>,
-    previous: Option<&SnapshotBundle>,
-) -> crate::core::error::Result<SnapshotBundle> {
-    let Some(previous) = previous else {
-        return collect_snapshot(git, path, reason, reporter);
-    };
-    match (reason, dirty_hint) {
-        (RepositorySyncReason::Dirty, Some(RepositoryChangeKind::Worktree)) => {
-            collect_worktree_snapshot(git, path, reason, previous)
-        }
-        (RepositorySyncReason::Dirty, Some(RepositoryChangeKind::Git)) => {
-            collect_git_snapshot(git, path, reason, reporter, previous)
-        }
-        _ => collect_snapshot(git, path, reason, reporter),
-    }
-}
-
-fn collect_snapshot(
-    git: &GitService,
-    path: PathBuf,
-    reason: RepositorySyncReason,
-    reporter: Option<&dyn ProgressSink>,
-) -> crate::core::error::Result<SnapshotBundle> {
-    let repo_path = git.repo_path().to_owned();
-    let (refs, (status_items, status_entries)) = thread::scope(
-        |scope| -> crate::core::error::Result<(
-            GitSnapshotRefs,
-            (Vec<StatusItem>, Vec<(String, u32)>),
-        )> {
-            let status_handle = scope.spawn(move || {
-                let status_git = GitService::new_with_repo_path(repo_path);
-                collect_status(&status_git)
-            });
-            let refs = collect_git_refs(git, reporter);
-            let status = status_handle.join().unwrap_or_else(|_| {
-                Err(crate::core::error::DiffyError::General(
-                    "status worker panicked".to_owned(),
-                ))
-            });
-            Ok((refs?, status?))
-        },
-    )?;
-
-    let snapshot = RepositorySnapshot::from_git_parts(
-        path,
-        reason,
-        None,
-        refs.branches,
-        refs.tags,
-        refs.commits,
-        status_items,
+    let changed = state
+        .last_snapshot
+        .as_ref()
+        .is_none_or(|previous| neutral_snapshot_changed(previous, &snapshot));
+    let should_emit = force_emit || reason == RepositorySyncReason::Open || changed;
+    tracing::debug!(
+        path = %path.display(),
+        ?reason,
+        force_emit,
+        changed,
+        should_emit,
+        "sync_repository: computed"
     );
-    let state = RepositorySnapshotState {
-        head_oid: refs.head_oid,
-        branch_targets: refs.branch_targets,
-        tag_targets: refs.tag_targets,
-        statuses: status_entries,
-    };
-
-    Ok(SnapshotBundle { snapshot, state })
-}
-
-fn collect_worktree_snapshot(
-    git: &GitService,
-    path: PathBuf,
-    reason: RepositorySyncReason,
-    previous: &SnapshotBundle,
-) -> crate::core::error::Result<SnapshotBundle> {
-    let (status_items, status_entries) = collect_status(git)?;
-    let mut snapshot = previous.snapshot.clone();
-    snapshot.path = path;
-    snapshot.reason = reason;
-    snapshot.change_kind = None;
-    snapshot.status_items = status_items;
-    refresh_neutral_git_snapshot(&mut snapshot);
-    let mut state = previous.state.clone();
-    state.statuses = status_entries;
-    Ok(SnapshotBundle { snapshot, state })
-}
-
-fn collect_git_snapshot(
-    git: &GitService,
-    path: PathBuf,
-    reason: RepositorySyncReason,
-    reporter: Option<&dyn ProgressSink>,
-    previous: &SnapshotBundle,
-) -> crate::core::error::Result<SnapshotBundle> {
-    let refs = collect_git_refs(git, reporter)?;
-    let mut snapshot = previous.snapshot.clone();
-    snapshot.path = path;
-    snapshot.reason = reason;
-    snapshot.change_kind = None;
-    snapshot.branches = refs.branches;
-    snapshot.tags = refs.tags;
-    snapshot.commits = refs.commits;
-    refresh_neutral_git_snapshot(&mut snapshot);
-    let mut state = previous.state.clone();
-    state.head_oid = refs.head_oid;
-    state.branch_targets = refs.branch_targets;
-    state.tag_targets = refs.tag_targets;
-    Ok(SnapshotBundle { snapshot, state })
-}
-
-fn refresh_neutral_git_snapshot(snapshot: &mut RepositorySnapshot) {
-    let neutral = adapter::git_snapshot_from_parts(
-        snapshot.path.clone(),
-        snapshot.reason,
-        snapshot.change_kind,
-        &snapshot.branches,
-        &snapshot.tags,
-        &snapshot.commits,
-        &snapshot.status_items,
-    );
-    snapshot.location = neutral.location;
-    snapshot.capabilities = neutral.capabilities;
-    snapshot.refs = neutral.refs;
-    snapshot.changes = neutral.changes;
-    snapshot.file_changes = neutral.file_changes;
-}
-
-struct GitSnapshotRefs {
-    branches: Vec<BranchInfo>,
-    tags: Vec<TagInfo>,
-    commits: Vec<CommitInfo>,
-    head_oid: Option<String>,
-    branch_targets: Vec<BranchTarget>,
-    tag_targets: Vec<(String, String)>,
-}
-
-fn collect_git_refs(
-    git: &GitService,
-    reporter: Option<&dyn ProgressSink>,
-) -> crate::core::error::Result<GitSnapshotRefs> {
-    // Phase boundaries roughly track the I/O cost: branch/tag enumeration
-    // first, then commit walk. The repository open itself was already reported.
-    if let Some(r) = reporter {
-        r.phase(ComparePhase::ResolvingRefs);
+    if should_emit {
+        snapshot.change_kind = if reason == RepositorySyncReason::Open {
+            None
+        } else {
+            dirty_hint.or(if force_emit {
+                Some(RepositoryChangeKind::Worktree)
+            } else {
+                None
+            })
+        };
+        event_sender.send(RepositoryEvent::RepositorySnapshotReady(
+            RepositorySnapshot::from_vcs_snapshot(snapshot.clone()),
+        ));
     }
-    let branches = git.branches()?;
-    let tags = git.tags()?;
-
-    if let Some(r) = reporter {
-        r.phase(ComparePhase::FetchingHistory);
-    }
-    let commits = git.commits("HEAD", 200).unwrap_or_default();
-    let mut branch_targets = branches
-        .iter()
-        .map(|branch| BranchTarget {
-            name: branch.name.clone(),
-            is_remote: branch.is_remote,
-            is_head: branch.is_head,
-            target_oid: (!branch.target_oid.is_empty()).then(|| branch.target_oid.clone()),
-        })
-        .collect::<Vec<_>>();
-    branch_targets.sort();
-    let mut tag_targets = tags
-        .iter()
-        .map(|tag| (tag.name.clone(), tag.target_oid.clone()))
-        .collect::<Vec<_>>();
-    tag_targets.sort();
-
-    Ok(GitSnapshotRefs {
-        branches,
-        tags,
-        commits,
-        head_oid: git.resolve_ref("HEAD").ok(),
-        branch_targets,
-        tag_targets,
-    })
+    state.last_snapshot = Some(snapshot);
 }
 
-fn collect_status(
-    git: &GitService,
-) -> crate::core::error::Result<(Vec<StatusItem>, Vec<(String, u32)>)> {
-    let statuses = git.status_entries()?;
-    let mut status_entries = statuses
-        .iter()
-        .map(|(path, status)| (path.clone(), sanitize_status(*status).bits()))
-        .collect::<Vec<_>>();
-    status_entries.sort();
-    let mut status_items = statuses
-        .iter()
-        .flat_map(|(path, status)| status_items_from_entry(path.clone(), sanitize_status(*status)))
-        .collect::<Vec<_>>();
-    status_items.sort_by(|left, right| {
-        left.scope
-            .label()
-            .cmp(right.scope.label())
-            .then(left.path.cmp(&right.path))
-    });
-    Ok((status_items, status_entries))
-}
-
-fn sanitize_status(
-    status: crate::core::vcs::git::status::StatusBits,
-) -> crate::core::vcs::git::status::StatusBits {
-    status
-        & (crate::core::vcs::git::status::StatusBits::INDEX_NEW
-            | crate::core::vcs::git::status::StatusBits::INDEX_MODIFIED
-            | crate::core::vcs::git::status::StatusBits::INDEX_DELETED
-            | crate::core::vcs::git::status::StatusBits::INDEX_RENAMED
-            | crate::core::vcs::git::status::StatusBits::INDEX_TYPECHANGE
-            | crate::core::vcs::git::status::StatusBits::WT_NEW
-            | crate::core::vcs::git::status::StatusBits::WT_MODIFIED
-            | crate::core::vcs::git::status::StatusBits::WT_DELETED
-            | crate::core::vcs::git::status::StatusBits::WT_TYPECHANGE
-            | crate::core::vcs::git::status::StatusBits::WT_RENAMED
-            | crate::core::vcs::git::status::StatusBits::CONFLICTED)
-}
-
-impl RepositorySnapshotState {
-    fn diff_kind(&self, next: &Self) -> Option<RepositoryChangeKind> {
-        let worktree_changed = self.statuses != next.statuses;
-        let git_changed = self.head_oid != next.head_oid
-            || self.branch_targets != next.branch_targets
-            || self.tag_targets != next.tag_targets;
-
-        match (git_changed, worktree_changed) {
-            (false, false) => None,
-            (true, false) => Some(RepositoryChangeKind::Git),
-            (false, true) => Some(RepositoryChangeKind::Worktree),
-            (true, true) => Some(RepositoryChangeKind::Both),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-    use std::path::Path;
-
-    use git2::{Repository, Signature};
-    use tempfile::TempDir;
-
-    use super::{RepositorySnapshotState, collect_snapshot};
-    use crate::core::vcs::git::GitService;
-    use crate::events::{RepositoryChangeKind, RepositorySyncReason};
-
-    fn commit_file(repo: &Repository, relative_path: &str, content: &str, message: &str) -> String {
-        let workdir = repo.workdir().expect("repo workdir");
-        let full_path = workdir.join(relative_path);
-        if let Some(parent) = full_path.parent() {
-            fs::create_dir_all(parent).unwrap();
-        }
-        fs::write(&full_path, content).unwrap();
-
-        let mut index = repo.index().unwrap();
-        index.add_path(Path::new(relative_path)).unwrap();
-        index.write().unwrap();
-
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let signature = Signature::now("Diffy", "diffy@example.com").unwrap();
-        let parents = repo
-            .head()
-            .ok()
-            .and_then(|head| head.target())
-            .map(|oid| repo.find_commit(oid).unwrap())
-            .into_iter()
-            .collect::<Vec<_>>();
-        let parent_refs = parents.iter().collect::<Vec<_>>();
-        repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            message,
-            &tree,
-            &parent_refs,
-        )
-        .unwrap()
-        .to_string()
-    }
-
-    fn load_state(path: &Path) -> RepositorySnapshotState {
-        let mut git = GitService::new();
-        git.open(path.to_string_lossy().as_ref()).unwrap();
-        collect_snapshot(&git, path.to_path_buf(), RepositorySyncReason::Open, None)
-            .unwrap()
-            .state
-    }
-
-    #[test]
-    fn detects_worktree_only_changes() {
-        let repo_dir = TempDir::new().unwrap();
-        let repo = Repository::init(repo_dir.path()).unwrap();
-        commit_file(&repo, "src/lib.rs", "old\n", "initial");
-        let before = load_state(repo_dir.path());
-        fs::write(repo_dir.path().join("src/lib.rs"), "new\n").unwrap();
-        let after = load_state(repo_dir.path());
-
-        assert_eq!(
-            before.diff_kind(&after),
-            Some(RepositoryChangeKind::Worktree)
-        );
-    }
-
-    #[test]
-    fn detects_git_only_changes() {
-        let repo_dir = TempDir::new().unwrap();
-        let repo = Repository::init(repo_dir.path()).unwrap();
-        commit_file(&repo, "src/lib.rs", "old\n", "initial");
-        let before = load_state(repo_dir.path());
-        commit_file(&repo, "src/lib.rs", "new\n", "second");
-        let after = load_state(repo_dir.path());
-
-        assert_eq!(before.diff_kind(&after), Some(RepositoryChangeKind::Git));
-    }
+fn neutral_snapshot_changed(previous: &VcsSnapshot, next: &VcsSnapshot) -> bool {
+    previous.location != next.location
+        || previous.capabilities != next.capabilities
+        || previous.refs != next.refs
+        || previous.changes != next.changes
+        || previous.file_changes != next.file_changes
 }

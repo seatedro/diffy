@@ -172,8 +172,8 @@ impl InputSystem {
                     ];
                     if is_hunk_sep && single_file_status_actions {
                         let is_staged = matches!(
-                            state.workspace.selected_status_scope.get(&state.store),
-                            Some(crate::core::vcs::git::StatusScope::Staged)
+                            state.workspace.selected_change_bucket.get(&state.store),
+                            Some(crate::core::vcs::model::ChangeBucket::Staged)
                         );
                         actions.push(if is_staged {
                             RepositoryAction::UnstageHunk.into()

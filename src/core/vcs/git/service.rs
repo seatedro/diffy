@@ -410,13 +410,6 @@ impl GitService {
         Ok(git)
     }
 
-    pub(crate) fn new_with_repo_path(path: impl Into<String>) -> Self {
-        Self {
-            repo: None,
-            repo_path: path.into(),
-        }
-    }
-
     pub fn open(&mut self, path: &str) -> Result<()> {
         self.close();
         let mut repo = gix::open(path).map_err(gix_error)?;

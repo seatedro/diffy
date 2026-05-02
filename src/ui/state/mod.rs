@@ -21,7 +21,7 @@ use halogen::Store;
 use halogen::reactive::{Signal, SignalStore};
 
 use crate::actions::Action;
-use crate::core::compare::{CompareMode, CompareOutput, CompareSpec, LayoutMode, RendererKind};
+use crate::core::compare::{CompareMode, CompareOutput, LayoutMode, RendererKind};
 use crate::core::forge::github::{
     CreatePullRequestReviewComment, DeviceFlowState, GitHubReviewSide, GitHubUser, PullRequestInfo,
     PullRequestReviewComment,
@@ -31,20 +31,18 @@ use crate::core::syntax::Highlighter;
 use crate::core::syntax::annotator::{SyntaxLineTokens, SyntaxRowWindow};
 use crate::core::text::TokenBuffer;
 use crate::core::update::{AvailableUpdate, StagedUpdate};
-use crate::core::vcs::git::patch;
-use crate::core::vcs::git::{
-    BranchInfo, CommitInfo, StatusItem, StatusOperation, StatusScope, TagInfo,
-};
 use crate::core::vcs::model::{
-    FileChange, RefKind, RepoCapabilities, RepoLocation, VcsChange, VcsRef,
+    ChangeBucket, FileChange, FileChangeStatus, FileOperation, RefKind, RepoCapabilities,
+    RepoLocation, VcsChange, VcsCompareRequest, VcsCompareSpec, VcsRef,
 };
+use crate::core::vcs::patch;
 use crate::editor::Editor;
 use crate::effects::{
-    AiEffect, BatchStatusOperationRequest, CommitRequest, CompareEffect, CompareFileRequest,
+    AiEffect, BatchFileOperationRequest, CommitRequest, CompareEffect, CompareFileRequest,
     CompareFileStatsItem, CompareFileStatsRequest, CompareHistoryRequest, CompareRequest,
-    CompareStatsRequest, CompareWorkPriority, Effect, FetchRemoteRequest, GitHubEffect,
-    LoadFileSyntaxRequest, PatchOperationRequest, PullFfRequest, PushRequest, RepositoryEffect,
-    SettingsEffect, StatusDiffRequest, StatusOperationRequest, SyntaxEffect, Task, UiEffect,
+    CompareStatsRequest, CompareWorkPriority, Effect, FetchRemoteRequest, FileOperationRequest,
+    GitHubEffect, LoadFileSyntaxRequest, PatchOperationRequest, PullFfRequest, PushRequest,
+    RepositoryEffect, SettingsEffect, StatusDiffRequest, SyntaxEffect, Task, UiEffect,
     UpdateEffect,
 };
 use crate::events::{
@@ -328,9 +326,6 @@ pub struct RepositoryState {
     pub refs: Vec<VcsRef>,
     pub changes: Vec<VcsChange>,
     pub file_changes: Vec<FileChange>,
-    pub branches: Vec<BranchInfo>,
-    pub tags: Vec<TagInfo>,
-    pub commits: Vec<CommitInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -475,12 +470,49 @@ struct ViewportDocumentCache {
     doc: Arc<RenderDoc>,
 }
 
-fn refs_for_status_scope(scope: StatusScope) -> (String, String) {
-    use crate::core::vcs::git::{INDEX_REF, WORKDIR_REF};
-    match scope {
-        StatusScope::Staged => ("HEAD".to_owned(), INDEX_REF.to_owned()),
-        StatusScope::Unstaged => (INDEX_REF.to_owned(), WORKDIR_REF.to_owned()),
-        StatusScope::Untracked => (String::new(), WORKDIR_REF.to_owned()),
+fn file_change_status_label(status: FileChangeStatus, bucket: ChangeBucket) -> &'static str {
+    match (status, bucket) {
+        (FileChangeStatus::Added, _) => "A",
+        (FileChangeStatus::Deleted, _) => "D",
+        (FileChangeStatus::Renamed, _) => "R",
+        (FileChangeStatus::Copied, _) => "C",
+        (FileChangeStatus::Untracked, _) => "U",
+        (FileChangeStatus::Conflicted, _) | (_, ChangeBucket::Conflicted) => "!",
+        (FileChangeStatus::TypeChanged, _) => "T",
+        (FileChangeStatus::Binary, _) => "B",
+        (FileChangeStatus::Modified, _) => "M",
+    }
+}
+
+fn vcs_compare_request(
+    mode: CompareMode,
+    left_ref: String,
+    right_ref: String,
+    layout: LayoutMode,
+    renderer: RendererKind,
+) -> VcsCompareRequest {
+    let compare_spec = match mode {
+        CompareMode::SingleCommit => {
+            let revision = if right_ref.is_empty() {
+                left_ref
+            } else {
+                right_ref
+            };
+            VcsCompareSpec::Change { revision }
+        }
+        CompareMode::TwoDot => VcsCompareSpec::Range {
+            from: left_ref,
+            to: right_ref,
+        },
+        CompareMode::ThreeDot => VcsCompareSpec::MergeBaseRange {
+            base: left_ref,
+            head: right_ref,
+        },
+    };
+    VcsCompareRequest {
+        spec: compare_spec,
+        layout,
+        renderer,
     }
 }
 
@@ -670,10 +702,10 @@ pub struct WorkspaceState {
     pub compare_generation: u64,
     pub status_generation: u64,
     pub files: Vec<FileListEntry>,
-    pub status_items: Vec<StatusItem>,
+    pub status_file_changes: Vec<FileChange>,
     pub selected_file_index: Option<usize>,
     pub selected_file_path: Option<String>,
-    pub selected_status_scope: Option<StatusScope>,
+    pub selected_change_bucket: Option<ChangeBucket>,
     pub compare_output: Option<CompareOutput>,
     pub compare_total_stats: Option<(i32, i32)>,
     pub compare_total_stats_loading: bool,
@@ -686,7 +718,7 @@ pub struct WorkspaceState {
     pub used_fallback: bool,
     pub fallback_message: String,
     pub sidebar_auto_width: Option<SidebarWidthCache>,
-    pub range_commits: Vec<CommitInfo>,
+    pub range_commits: Vec<VcsChange>,
     pub compare_history_pending: Option<CompareHistoryRequest>,
     pub pre_drill_compare: Option<(String, String, CompareMode)>,
     pub expansions: HashMap<String, carbon::ExpansionState>,
@@ -838,7 +870,7 @@ impl AppState {
             self.workspace.files.with(&self.store, |f| f.len())
                 + self
                     .workspace
-                    .status_items
+                    .status_file_changes
                     .with(&self.store, |s| status_section_count(s))
         } else {
             self.workspace.files.with(&self.store, |f| f.len())
@@ -854,7 +886,7 @@ impl AppState {
         index
             + self
                 .workspace
-                .status_items
+                .status_file_changes
                 .with(&self.store, |s| status_section_count_before(s, index + 1))
     }
 
@@ -1031,13 +1063,13 @@ impl AppState {
         })
     }
 
-    fn cached_status_file_at(&self, index: usize, item: &StatusItem) -> Option<ActiveFile> {
-        let (left_ref, right_ref) = self.status_refs_for_scope(item.scope);
+    fn cached_status_file_at(&self, index: usize, change: &FileChange) -> Option<ActiveFile> {
+        let (left_ref, right_ref) = self.status_refs_for_bucket(change.bucket);
         if let Some(active_file) = self.workspace.active_file.with(&self.store, |file| {
             file.as_ref()
                 .filter(|file| {
                     file.index == index
-                        && file.path == item.path
+                        && file.path == change.path
                         && file.left_ref == left_ref
                         && file.right_ref == right_ref
                 })
@@ -1047,20 +1079,14 @@ impl AppState {
         }
         self.cached_file_at(index).filter(|file| {
             file.index == index
-                && file.path == item.path
+                && file.path == change.path
                 && file.left_ref == left_ref
                 && file.right_ref == right_ref
         })
     }
 
-    fn status_refs_for_scope(&self, scope: StatusScope) -> (String, String) {
-        let profile = self.vcs_ui_profile();
-        if profile.uses_git_status_scopes() {
-            refs_for_status_scope(scope)
-        } else {
-            let (left, right, _) = profile.working_copy_compare();
-            (left.to_owned(), right.to_owned())
-        }
+    fn status_refs_for_bucket(&self, bucket: ChangeBucket) -> (String, String) {
+        self.vcs_ui_profile().status_compare_refs(bucket)
     }
 
     fn vcs_ui_profile(&self) -> crate::ui::vcs::VcsUiProfile {
@@ -1143,13 +1169,13 @@ impl AppState {
         self.loading_slot_key(WorkspaceSource::Compare, index, path, left_ref, right_ref)
     }
 
-    fn status_slot_key_at(&self, index: usize, item: &StatusItem) -> ViewportSlotKey {
-        let (left_ref, right_ref) = self.status_refs_for_scope(item.scope);
+    fn status_slot_key_at(&self, index: usize, change: &FileChange) -> ViewportSlotKey {
+        let (left_ref, right_ref) = self.status_refs_for_bucket(change.bucket);
         if let Some(key) = self.workspace.active_file.with(&self.store, |file| {
             file.as_ref()
                 .filter(|file| {
                     file.index == index
-                        && file.path == item.path
+                        && file.path == change.path
                         && file.left_ref == left_ref
                         && file.right_ref == right_ref
                 })
@@ -1163,7 +1189,7 @@ impl AppState {
                 .and_then(|slot| slot.as_ref())
                 .filter(|file| {
                     file.index == index
-                        && file.path == item.path
+                        && file.path == change.path
                         && file.left_ref == left_ref
                         && file.right_ref == right_ref
                 })
@@ -1174,7 +1200,7 @@ impl AppState {
         self.loading_slot_key(
             WorkspaceSource::Status,
             index,
-            &item.path,
+            &change.path,
             left_ref,
             right_ref,
         )
@@ -1351,13 +1377,13 @@ impl AppState {
                 generation: self.workspace.compare_generation.get(&self.store),
                 request: CompareFileRequest {
                     repo_path,
-                    spec: CompareSpec {
-                        mode: self.compare.mode.get(&self.store),
-                        left_ref: self.compare.left_ref.get(&self.store),
-                        right_ref: self.compare.right_ref.get(&self.store),
-                        renderer: self.compare.renderer.get(&self.store),
-                        layout: self.compare.layout.get(&self.store),
-                    },
+                    request: vcs_compare_request(
+                        self.compare.mode.get(&self.store),
+                        self.compare.left_ref.get(&self.store),
+                        self.compare.right_ref.get(&self.store),
+                        self.compare.layout.get(&self.store),
+                        self.compare.renderer.get(&self.store),
+                    ),
                     path: path.to_owned(),
                     index,
                     deferred_file,
@@ -1369,29 +1395,29 @@ impl AppState {
     }
 
     fn ensure_status_file_cached_for_viewport(&mut self, index: usize) -> Vec<Effect> {
-        let Some(item) = self
+        let Some(file_change) = self
             .workspace
-            .status_items
-            .with(&self.store, |items| items.get(index).cloned())
+            .status_file_changes
+            .with(&self.store, |changes| changes.get(index).cloned())
         else {
             return Vec::new();
         };
-        if self.cached_status_file_at(index, &item).is_some() {
+        if self.cached_status_file_at(index, &file_change).is_some() {
             return Vec::new();
         }
-        if self.file_load_is_pending(index, &item.path) {
+        if self.file_load_is_pending(index, &file_change.path) {
             return Vec::new();
         }
 
         let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
             return Vec::new();
         };
-        self.mark_file_cache_loading(index, item.path.clone());
+        self.mark_file_cache_loading(index, file_change.path.clone());
         let generation = self.workspace.status_generation.get(&self.store);
         let renderer = self.compare.renderer.get(&self.store);
         vec![
             SyntaxEffect::EnsureSyntaxPackForPath {
-                path: item.path.clone(),
+                path: file_change.path.clone(),
             }
             .into(),
             RepositoryEffect::LoadStatusDiff {
@@ -1399,7 +1425,7 @@ impl AppState {
                     generation,
                     request: StatusDiffRequest {
                         repo_path,
-                        item,
+                        file_change,
                         renderer,
                     },
                 },
@@ -1441,7 +1467,7 @@ impl AppState {
         self.workspace
             .selected_file_path
             .set(&self.store, Some(path));
-        self.workspace.selected_status_scope.set(&self.store, None);
+        self.workspace.selected_change_bucket.set(&self.store, None);
         self.workspace.active_file_loading.set(&self.store, None);
         self.workspace
             .active_file
@@ -2380,10 +2406,10 @@ impl AppState {
                     phase: ComparePhase::OpeningRepo,
                     subject: if bootstrap_compare_started {
                         LoadingSubject::Compare {
-                            left_label: compare_ref_display_label(
+                            left_label: state.vcs_ui_profile().compare_ref_display_label(
                                 &state.compare.left_ref.get(&state.store),
                             ),
-                            right_label: compare_ref_display_label(
+                            right_label: state.vcs_ui_profile().compare_ref_display_label(
                                 &state.compare.right_ref.get(&state.store),
                             ),
                         }
@@ -2412,13 +2438,13 @@ impl AppState {
                         generation: boot_gen,
                         request: CompareRequest {
                             repo_path: state.compare.repo_path.get(&state.store).unwrap(),
-                            spec: CompareSpec {
-                                mode: state.compare.mode.get(&state.store),
-                                left_ref: state.compare.left_ref.get(&state.store),
-                                right_ref: state.compare.right_ref.get(&state.store),
-                                renderer: state.compare.renderer.get(&state.store),
-                                layout: state.compare.layout.get(&state.store),
-                            },
+                            request: vcs_compare_request(
+                                state.compare.mode.get(&state.store),
+                                state.compare.left_ref.get(&state.store),
+                                state.compare.right_ref.get(&state.store),
+                                state.compare.layout.get(&state.store),
+                                state.compare.renderer.get(&state.store),
+                            ),
                             github_token: startup.github_token.clone(),
                         },
                     })
@@ -2570,9 +2596,6 @@ impl AppState {
         self.repository.refs.set(&self.store, Vec::new());
         self.repository.changes.set(&self.store, Vec::new());
         self.repository.file_changes.set(&self.store, Vec::new());
-        self.repository.branches.set(&self.store, Vec::new());
-        self.repository.tags.set(&self.store, Vec::new());
-        self.repository.commits.set(&self.store, Vec::new());
         self.workspace_clear_compare();
         self.reset_file_list();
         self.editor_clear_document();
@@ -2650,10 +2673,12 @@ impl AppState {
             .set(&self.store, false);
         self.workspace.status_generation.set(&self.store, 0);
         self.workspace.files.set(&self.store, Vec::new());
-        self.workspace.status_items.set(&self.store, Vec::new());
+        self.workspace
+            .status_file_changes
+            .set(&self.store, Vec::new());
         self.workspace.selected_file_index.set(&self.store, None);
         self.workspace.selected_file_path.set(&self.store, None);
-        self.workspace.selected_status_scope.set(&self.store, None);
+        self.workspace.selected_change_bucket.set(&self.store, None);
         self.workspace.compare_output.set(&self.store, None);
         self.workspace.compare_total_stats.set(&self.store, None);
         self.workspace
@@ -2706,17 +2731,15 @@ impl AppState {
         self.repository
             .capabilities
             .set(&self.store, Some(payload.capabilities));
+        let file_changes = payload.file_changes;
         self.repository.refs.set(&self.store, payload.refs);
         self.repository.changes.set(&self.store, payload.changes);
         self.repository
             .file_changes
-            .set(&self.store, payload.file_changes);
-        self.repository.branches.set(&self.store, payload.branches);
-        self.repository.tags.set(&self.store, payload.tags);
-        self.repository.commits.set(&self.store, payload.commits);
+            .set(&self.store, file_changes.clone());
         self.workspace
-            .status_items
-            .set(&self.store, payload.status_items);
+            .status_file_changes
+            .set(&self.store, file_changes);
 
         // Tear down a repo-open progress panel. Compare-subject progress
         // survives — a kickoff_compare may be queued below and will
@@ -2805,11 +2828,11 @@ impl AppState {
                 }
 
                 match payload.change_kind {
-                    Some(RepositoryChangeKind::Git | RepositoryChangeKind::Both) => {
+                    Some(RepositoryChangeKind::Metadata | RepositoryChangeKind::Both) => {
                         self.kickoff_compare()
                     }
                     Some(RepositoryChangeKind::Worktree)
-                        if right_ref == crate::core::vcs::git::service::WORKDIR_REF =>
+                        if self.vcs_ui_profile().is_working_copy_ref(&right_ref) =>
                     {
                         self.kickoff_compare()
                     }
@@ -3053,11 +3076,9 @@ impl AppState {
         }
 
         let history_left = payload.resolved_left.clone();
-        let history_right = if payload.resolved_right == crate::core::vcs::git::WORKDIR_REF {
-            "HEAD".to_owned()
-        } else {
-            payload.resolved_right.clone()
-        };
+        let history_right = self
+            .vcs_ui_profile()
+            .history_right_ref(&payload.resolved_right);
         let syntax_warmup_paths = payload
             .output
             .carbon
@@ -3073,10 +3094,10 @@ impl AppState {
             .set(&self.store, WorkspaceSource::Compare);
         self.workspace.status.set(&self.store, AsyncStatus::Ready);
         self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
-        self.compare.layout.set(&self.store, payload.spec.layout);
+        self.compare.layout.set(&self.store, payload.request.layout);
         self.compare
             .renderer
-            .set(&self.store, payload.spec.renderer);
+            .set(&self.store, payload.request.renderer);
         self.compare
             .resolved_left
             .set(&self.store, Some(payload.resolved_left));
@@ -3207,7 +3228,7 @@ impl AppState {
         } else {
             self.workspace.selected_file_index.set(&self.store, None);
             self.workspace.selected_file_path.set(&self.store, None);
-            self.workspace.selected_status_scope.set(&self.store, None);
+            self.workspace.selected_change_bucket.set(&self.store, None);
             self.workspace.active_file.set(&self.store, None);
             self.workspace.active_file_loading.set(&self.store, None);
             // No files to select — the compare succeeded but has no diffs.
@@ -3257,8 +3278,8 @@ impl AppState {
             payload_gen = payload.generation,
             current_gen,
             payload_index = payload.index,
-            payload_path = %payload.item.path,
-            payload_scope = ?payload.item.scope,
+            payload_path = %payload.file_change.path,
+            payload_bucket = ?payload.file_change.bucket,
             "handle_status_diff_finished: entered"
         );
         if payload.generation != current_gen {
@@ -3267,25 +3288,22 @@ impl AppState {
             );
             return Vec::new();
         }
-        let matches =
-            self.workspace
-                .status_items
-                .with(&self.store, |items| match items.get(payload.index) {
-                    Some(current) => {
-                        current.path == payload.item.path && current.scope == payload.item.scope
-                    }
-                    None => false,
-                });
+        let matches = self.repository.file_changes.with(&self.store, |changes| {
+            match changes.get(payload.index) {
+                Some(current) => current == &payload.file_change,
+                None => false,
+            }
+        });
         if !matches {
-            let current_items_at_idx = self.workspace.status_items.with(&self.store, |items| {
-                items
+            let current_change_at_idx = self.repository.file_changes.with(&self.store, |changes| {
+                changes
                     .get(payload.index)
-                    .map(|i| format!("{}:{:?}", i.path, i.scope))
+                    .map(|change| format!("{}:{:?}", change.path, change.bucket))
                     .unwrap_or_else(|| "<out of range>".to_owned())
             });
             tracing::debug!(
-                current_items_at_idx,
-                "handle_status_diff_finished: item mismatch, discarding (pending NOT cleared)"
+                current_change_at_idx,
+                "handle_status_diff_finished: file change mismatch, discarding (pending NOT cleared)"
             );
             return Vec::new();
         }
@@ -3296,8 +3314,9 @@ impl AppState {
                 .selected_file_path
                 .get(&self.store)
                 .as_deref()
-                == Some(payload.item.path.as_str())
-            && self.workspace.selected_status_scope.get(&self.store) == Some(payload.item.scope);
+                == Some(payload.file_change.path.as_str())
+            && self.workspace.selected_change_bucket.get(&self.store)
+                == Some(payload.file_change.bucket);
         let output = payload.output;
 
         let Some(carbon_file) = output.carbon.files.first() else {
@@ -3310,10 +3329,11 @@ impl AppState {
             return Vec::new();
         };
         let prepared = prepare_active_file(payload.index, carbon_file);
-        let (left_ref, right_ref) = self.status_refs_for_scope(payload.item.scope);
+        let bucket = payload.file_change.bucket;
+        let (left_ref, right_ref) = self.status_refs_for_bucket(bucket);
         let active_file = self.build_active_file(
             payload.index,
-            payload.item.path.clone(),
+            payload.file_change.path.clone(),
             prepared,
             left_ref,
             right_ref,
@@ -3349,16 +3369,16 @@ impl AppState {
             .set(&self.store, Some(payload.index));
         self.workspace
             .selected_file_path
-            .set(&self.store, Some(payload.item.path.clone()));
+            .set(&self.store, Some(payload.file_change.path.clone()));
         self.workspace
-            .selected_status_scope
-            .set(&self.store, Some(payload.item.scope));
+            .selected_change_bucket
+            .set(&self.store, Some(bucket));
         // Preserve scroll/hover/positional editor state when refreshing the
         // same file (e.g. after staging a hunk). Only reset when the path
         // changed (navigating to a different file).
         let same_file = self.workspace.active_file.with(&self.store, |af| {
             af.as_ref().is_some_and(|a| {
-                a.path == payload.item.path
+                a.path == payload.file_change.path
                     && a.left_ref == active_file.left_ref
                     && a.right_ref == active_file.right_ref
             })
@@ -3538,13 +3558,13 @@ impl AppState {
                 generation: self.workspace.compare_generation.get(&self.store),
                 request: CompareStatsRequest {
                     repo_path,
-                    spec: CompareSpec {
-                        mode: self.compare.mode.get(&self.store),
-                        left_ref: self.compare.left_ref.get(&self.store),
-                        right_ref: self.compare.right_ref.get(&self.store),
-                        renderer: self.compare.renderer.get(&self.store),
-                        layout: self.compare.layout.get(&self.store),
-                    },
+                    request: vcs_compare_request(
+                        self.compare.mode.get(&self.store),
+                        self.compare.left_ref.get(&self.store),
+                        self.compare.right_ref.get(&self.store),
+                        self.compare.layout.get(&self.store),
+                        self.compare.renderer.get(&self.store),
+                    ),
                     priority: CompareWorkPriority::TotalStats,
                 },
             })
@@ -4028,7 +4048,10 @@ impl AppState {
             reset_scroll,
             pending = self.workspace.status_operation_pending.get(&self.store),
             status_gen = self.workspace.status_generation.get(&self.store),
-            status_items_count = self.workspace.status_items.with(&self.store, |i| i.len()),
+            status_file_changes_count = self
+                .workspace
+                .status_file_changes
+                .with(&self.store, |i| i.len()),
             "activate_status_view: entered"
         );
         self.workspace
@@ -4040,8 +4063,8 @@ impl AppState {
         self.workspace.active_file_loading.set(&self.store, None);
         let new_files = self
             .workspace
-            .status_items
-            .with(&self.store, |items| build_status_file_entries(items));
+            .status_file_changes
+            .with(&self.store, |changes| build_status_file_entries(changes));
         self.workspace.files.set(&self.store, new_files);
         let next_status_gen = self
             .workspace
@@ -4067,28 +4090,30 @@ impl AppState {
         }
 
         let current_path = self.workspace.selected_file_path.get(&self.store);
-        let current_scope = self.workspace.selected_status_scope.get(&self.store);
+        let current_bucket = self.workspace.selected_change_bucket.get(&self.store);
         let (status_syntax_paths, selected_index) =
-            self.workspace.status_items.with(&self.store, |items| {
-                let paths = items
-                    .iter()
-                    .map(|item| item.path.clone())
-                    .collect::<Vec<_>>();
-                if let Some((path, scope)) = current_path.clone().zip(current_scope) {
-                    if let Some(idx) = items
+            self.workspace
+                .status_file_changes
+                .with(&self.store, |changes| {
+                    let paths = changes
                         .iter()
-                        .position(|item| item.path == path && item.scope == scope)
-                    {
-                        return (paths, Some(idx));
+                        .map(|change| change.path.clone())
+                        .collect::<Vec<_>>();
+                    if let Some((path, bucket)) = current_path.clone().zip(current_bucket) {
+                        if let Some(idx) = changes
+                            .iter()
+                            .position(|change| change.path == path && change.bucket == bucket)
+                        {
+                            return (paths, Some(idx));
+                        }
                     }
-                }
-                if let Some(path) = current_path.as_deref() {
-                    if let Some(idx) = items.iter().position(|item| item.path == path) {
-                        return (paths, Some(idx));
+                    if let Some(path) = current_path.as_deref() {
+                        if let Some(idx) = changes.iter().position(|change| change.path == path) {
+                            return (paths, Some(idx));
+                        }
                     }
-                }
-                (paths, (!items.is_empty()).then_some(0))
-            });
+                    (paths, (!changes.is_empty()).then_some(0))
+                });
 
         tracing::debug!(
             ?selected_index,
@@ -4117,7 +4142,7 @@ impl AppState {
                     .set(&self.store, false);
                 self.workspace.selected_file_index.set(&self.store, None);
                 self.workspace.selected_file_path.set(&self.store, None);
-                self.workspace.selected_status_scope.set(&self.store, None);
+                self.workspace.selected_change_bucket.set(&self.store, None);
                 self.workspace.active_file.set(&self.store, None);
                 self.workspace.active_file_loading.set(&self.store, None);
                 self.editor_clear_document();
@@ -4210,8 +4235,9 @@ impl AppState {
             self.workspace.status.set(&self.store, AsyncStatus::Loading);
         }
 
-        let left_label = compare_ref_display_label(&left_ref);
-        let right_label = compare_ref_display_label(&right_ref);
+        let profile = self.vcs_ui_profile();
+        let left_label = profile.compare_ref_display_label(&left_ref);
+        let right_label = profile.compare_ref_display_label(&right_ref);
         self.compare_progress.set(
             &self.store,
             Some(CompareProgress {
@@ -4236,13 +4262,7 @@ impl AppState {
                 generation: next_gen,
                 request: CompareRequest {
                     repo_path,
-                    spec: CompareSpec {
-                        mode,
-                        left_ref,
-                        right_ref,
-                        renderer,
-                        layout,
-                    },
+                    request: vcs_compare_request(mode, left_ref, right_ref, layout, renderer),
                     github_token: self.github_access_token.clone(),
                 },
             })
@@ -4253,9 +4273,8 @@ impl AppState {
     /// Soft-cancel an in-flight compare. Bumps the generation so any
     /// result that eventually arrives is dropped by the guard, clears the
     /// progress panel, and returns the viewport to the default empty state.
-    /// We do not attempt to interrupt the worker mid-flight — the Git backend
-    /// `Diff::new` has no clean cancellation hook, and the wasted work is
-    /// bounded by the caller's diff size.
+    /// We do not attempt to interrupt backend work mid-flight; stale-result
+    /// guards keep late answers from mutating newer state.
     fn cancel_compare(&mut self) -> Vec<Effect> {
         if self.compare_progress.with(&self.store, |p| p.is_none()) {
             return Vec::new();
@@ -4317,10 +4336,11 @@ impl AppState {
     fn swap_refs(&mut self) -> Vec<Effect> {
         let left = self.compare.left_ref.get(&self.store);
         let right = self.compare.right_ref.get(&self.store);
+        let profile = self.vcs_ui_profile();
         if left.trim().is_empty()
             || right.trim().is_empty()
-            || right == crate::core::vcs::git::service::WORKDIR_REF
-            || left == crate::core::vcs::git::service::WORKDIR_REF
+            || !profile.can_swap_ref(&right)
+            || !profile.can_swap_ref(&left)
         {
             return Vec::new();
         }
@@ -4603,7 +4623,7 @@ impl AppState {
         if left.is_empty() || right.is_empty() {
             return;
         }
-        if left == right && right != crate::core::vcs::git::service::WORKDIR_REF {
+        if left == right && !profile.is_working_copy_ref(&right) {
             self.compare
                 .mode
                 .set(&self.store, CompareMode::SingleCommit);
@@ -5728,14 +5748,14 @@ impl AppState {
         dirs.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
 
         if filter.is_empty() {
-            for (name, path, is_git) in &dirs {
+            for (name, path, is_repo) in &dirs {
                 entries.push(PickerEntry {
                     label: name.clone(),
                     detail: String::new(),
                     value: path.display().to_string(),
                     highlights: Vec::new(),
                     label_style: PickerLabelStyle::Default,
-                    icon: Some(if *is_git {
+                    icon: Some(if *is_repo {
                         lucide::FOLDER_GIT
                     } else {
                         lucide::FOLDER
@@ -5753,14 +5773,14 @@ impl AppState {
             let mut matches = neo_frizbee::match_list_indices(filter, &haystack, &config);
             matches.sort_by(|a, b| b.score.cmp(&a.score));
             for m in matches {
-                let (name, path, is_git) = &dirs[m.index as usize];
+                let (name, path, is_repo) = &dirs[m.index as usize];
                 entries.push(PickerEntry {
                     label: name.clone(),
                     detail: String::new(),
                     value: path.display().to_string(),
                     highlights: highlight_ranges_from_match_indices(name, &m.indices),
                     label_style: PickerLabelStyle::Default,
-                    icon: Some(if *is_git {
+                    icon: Some(if *is_repo {
                         lucide::FOLDER_GIT
                     } else {
                         lucide::FOLDER
@@ -6210,14 +6230,26 @@ impl AppState {
             });
         }
 
-        let repo_branches = self.repository.branches.get(&self.store);
-        for branch in &repo_branches {
-            let search_text = format!("{} Branch", branch.name);
+        let repo_refs = self.repository.refs.get(&self.store);
+        for reference in repo_refs.iter().filter(|reference| {
+            matches!(
+                reference.kind,
+                RefKind::Branch
+                    | RefKind::RemoteBranch
+                    | RefKind::Bookmark
+                    | RefKind::RemoteBookmark
+                    | RefKind::Tag
+            )
+        }) {
+            let (detail, _) = self
+                .vcs_ui_profile()
+                .ref_kind_label_and_icon(reference.kind);
+            let search_text = format!("{} {}", reference.name, detail);
             all_candidates.push(PaletteCandidate {
                 search_text,
-                label: branch.name.clone(),
-                detail: "Branch".to_owned(),
-                kind: PaletteEntryKind::Ref(CompareField::Left, branch.name.clone()),
+                label: reference.name.clone(),
+                detail: detail.to_owned(),
+                kind: PaletteEntryKind::Ref(CompareField::Left, reference.name.clone()),
             });
         }
 
@@ -6341,15 +6373,15 @@ impl AppState {
             return false;
         };
         let source = self.workspace.source.get(&self.store);
-        let selected_scope = self.workspace.selected_status_scope.get(&self.store);
+        let selected_bucket = self.workspace.selected_change_bucket.get(&self.store);
         self.workspace.active_file.with(&self.store, |active| {
             active.as_ref().is_some_and(|active| {
                 if active.index != index || active.path != path {
                     return false;
                 }
                 match source {
-                    WorkspaceSource::Status => selected_scope.is_some_and(|scope| {
-                        let (left_ref, right_ref) = self.status_refs_for_scope(scope);
+                    WorkspaceSource::Status => selected_bucket.is_some_and(|bucket| {
+                        let (left_ref, right_ref) = self.status_refs_for_bucket(bucket);
                         active.left_ref == left_ref && active.right_ref == right_ref
                     }),
                     WorkspaceSource::Compare => true,
@@ -6383,7 +6415,7 @@ impl AppState {
             self.workspace
                 .selected_file_path
                 .set(&self.store, Some(entry.path.clone()));
-            self.workspace.selected_status_scope.set(&self.store, None);
+            self.workspace.selected_change_bucket.set(&self.store, None);
             self.workspace.active_file_loading.set(&self.store, None);
             self.workspace
                 .active_file
@@ -6429,7 +6461,7 @@ impl AppState {
         self.workspace
             .selected_file_path
             .set(&self.store, Some(entry.path.clone()));
-        self.workspace.selected_status_scope.set(&self.store, None);
+        self.workspace.selected_change_bucket.set(&self.store, None);
         self.workspace.active_file.set(&self.store, None);
         self.workspace.active_file_loading.set(
             &self.store,
@@ -6457,13 +6489,13 @@ impl AppState {
                     generation: self.workspace.compare_generation.get(&self.store),
                     request: CompareFileRequest {
                         repo_path,
-                        spec: CompareSpec {
-                            mode: self.compare.mode.get(&self.store),
-                            left_ref: self.compare.left_ref.get(&self.store),
-                            right_ref: self.compare.right_ref.get(&self.store),
-                            renderer: self.compare.renderer.get(&self.store),
-                            layout: self.compare.layout.get(&self.store),
-                        },
+                        request: vcs_compare_request(
+                            self.compare.mode.get(&self.store),
+                            self.compare.left_ref.get(&self.store),
+                            self.compare.right_ref.get(&self.store),
+                            self.compare.layout.get(&self.store),
+                            self.compare.renderer.get(&self.store),
+                        ),
                         path: entry.path,
                         index,
                         deferred_file,
@@ -6534,10 +6566,10 @@ impl AppState {
     }
 
     fn select_status_item(&mut self, index: usize, reveal: bool) -> Vec<Effect> {
-        let Some(item) = self
+        let Some(file_change) = self
             .workspace
-            .status_items
-            .with(&self.store, |items| items.get(index).cloned())
+            .status_file_changes
+            .with(&self.store, |changes| changes.get(index).cloned())
         else {
             tracing::warn!(
                 index,
@@ -6547,8 +6579,8 @@ impl AppState {
         };
         tracing::debug!(
             index,
-            path = %item.path,
-            scope = ?item.scope,
+            path = %file_change.path,
+            bucket = ?file_change.bucket,
             status_gen = self.workspace.status_generation.get(&self.store),
             "select_status_item: dispatching LoadStatusDiff"
         );
@@ -6568,15 +6600,15 @@ impl AppState {
             .set(&self.store, Some(index));
         self.workspace
             .selected_file_path
-            .set(&self.store, Some(item.path.clone()));
+            .set(&self.store, Some(file_change.path.clone()));
         self.workspace
-            .selected_status_scope
-            .set(&self.store, Some(item.scope));
-        let (left_ref, right_ref) = self.status_refs_for_scope(item.scope);
+            .selected_change_bucket
+            .set(&self.store, Some(file_change.bucket));
+        let (left_ref, right_ref) = self.status_refs_for_bucket(file_change.bucket);
         let active_matches_selection = self.workspace.active_file.with(&self.store, |af| {
             af.as_ref().is_some_and(|active| {
                 active.index == index
-                    && active.path == item.path
+                    && active.path == file_change.path
                     && active.left_ref == left_ref
                     && active.right_ref == right_ref
             })
@@ -6589,10 +6621,15 @@ impl AppState {
                 self.reveal_file_list_row(index);
             }
             let mut effects = self.sync_editor_scroll_from_global();
-            effects.push(SyntaxEffect::EnsureSyntaxPackForPath { path: item.path }.into());
+            effects.push(
+                SyntaxEffect::EnsureSyntaxPackForPath {
+                    path: file_change.path,
+                }
+                .into(),
+            );
             effects.extend(self.request_active_file_syntax_effect());
             return effects;
-        } else if let Some(active_file) = self.cached_status_file_at(index, &item) {
+        } else if let Some(active_file) = self.cached_status_file_at(index, &file_change) {
             self.workspace.active_file_loading.set(&self.store, None);
             self.workspace
                 .active_file
@@ -6603,19 +6640,24 @@ impl AppState {
                 self.reveal_file_list_row(index);
             }
             let mut effects = self.sync_editor_scroll_from_global();
-            effects.push(SyntaxEffect::EnsureSyntaxPackForPath { path: item.path }.into());
+            effects.push(
+                SyntaxEffect::EnsureSyntaxPackForPath {
+                    path: file_change.path,
+                }
+                .into(),
+            );
             effects.extend(self.request_active_file_syntax_effect());
             return effects;
         } else {
-            let load_already_pending = self.file_load_is_pending(index, &item.path);
+            let load_already_pending = self.file_load_is_pending(index, &file_change.path);
             self.workspace.active_file_loading.set(
                 &self.store,
                 Some(ActiveFileLoading {
                     index,
-                    path: item.path.clone(),
+                    path: file_change.path.clone(),
                 }),
             );
-            self.mark_file_cache_loading(index, item.path.clone());
+            self.mark_file_cache_loading(index, file_change.path.clone());
             self.file_list.hovered_index.set(&self.store, Some(index));
             if reveal {
                 self.reveal_file_list_row(index);
@@ -6623,7 +6665,7 @@ impl AppState {
 
             let mut effects = vec![
                 SyntaxEffect::EnsureSyntaxPackForPath {
-                    path: item.path.clone(),
+                    path: file_change.path.clone(),
                 }
                 .into(),
             ];
@@ -6636,7 +6678,7 @@ impl AppState {
                             generation,
                             request: StatusDiffRequest {
                                 repo_path,
-                                item,
+                                file_change,
                                 renderer,
                             },
                         },
@@ -6649,7 +6691,7 @@ impl AppState {
         }
     }
 
-    fn apply_selected_status_operation(&mut self, operation: StatusOperation) -> Vec<Effect> {
+    fn apply_selected_status_operation(&mut self, operation: FileOperation) -> Vec<Effect> {
         if !self
             .repository
             .capabilities
@@ -6657,7 +6699,7 @@ impl AppState {
                 capabilities.is_some_and(|capabilities| capabilities.staging_area)
             })
         {
-            self.push_error("This repository backend does not support Git status operations.");
+            self.push_error("This repository backend does not support staging operations.");
             return Vec::new();
         }
         if self.workspace.source.get(&self.store) != WorkspaceSource::Status {
@@ -6672,10 +6714,10 @@ impl AppState {
         let Some(index) = self.workspace.selected_file_index.get(&self.store) else {
             return Vec::new();
         };
-        let Some(item) = self
+        let Some(file_change) = self
             .workspace
-            .status_items
-            .with(&self.store, |items| items.get(index).cloned())
+            .status_file_changes
+            .with(&self.store, |changes| changes.get(index).cloned())
         else {
             return Vec::new();
         };
@@ -6684,9 +6726,9 @@ impl AppState {
             .status_operation_pending
             .set(&self.store, true);
         vec![
-            RepositoryEffect::ApplyStatusOperation(StatusOperationRequest {
+            RepositoryEffect::ApplyFileOperation(FileOperationRequest {
                 repo_path,
-                item,
+                file_change,
                 operation,
             })
             .into(),
@@ -6696,7 +6738,7 @@ impl AppState {
     fn apply_file_status_operation(
         &mut self,
         index: usize,
-        operation: StatusOperation,
+        operation: FileOperation,
     ) -> Vec<Effect> {
         if !self
             .repository
@@ -6705,7 +6747,7 @@ impl AppState {
                 capabilities.is_some_and(|capabilities| capabilities.staging_area)
             })
         {
-            self.push_error("This repository backend does not support Git status operations.");
+            self.push_error("This repository backend does not support staging operations.");
             return Vec::new();
         }
         if self.workspace.source.get(&self.store) != WorkspaceSource::Status {
@@ -6717,10 +6759,10 @@ impl AppState {
         let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
             return Vec::new();
         };
-        let Some(item) = self
+        let Some(file_change) = self
             .workspace
-            .status_items
-            .with(&self.store, |items| items.get(index).cloned())
+            .status_file_changes
+            .with(&self.store, |changes| changes.get(index).cloned())
         else {
             return Vec::new();
         };
@@ -6729,9 +6771,9 @@ impl AppState {
             .status_operation_pending
             .set(&self.store, true);
         vec![
-            RepositoryEffect::ApplyStatusOperation(StatusOperationRequest {
+            RepositoryEffect::ApplyFileOperation(FileOperationRequest {
                 repo_path,
-                item,
+                file_change,
                 operation,
             })
             .into(),
@@ -6740,8 +6782,8 @@ impl AppState {
 
     fn apply_batch_scope_operation(
         &mut self,
-        scopes: &[StatusScope],
-        operation: StatusOperation,
+        buckets: &[ChangeBucket],
+        operation: FileOperation,
     ) -> Vec<Effect> {
         if !self
             .repository
@@ -6750,7 +6792,7 @@ impl AppState {
                 capabilities.is_some_and(|capabilities| capabilities.staging_area)
             })
         {
-            self.push_error("This repository backend does not support Git status operations.");
+            self.push_error("This repository backend does not support staging operations.");
             return Vec::new();
         }
         if self.workspace.source.get(&self.store) != WorkspaceSource::Status {
@@ -6762,14 +6804,17 @@ impl AppState {
         let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
             return Vec::new();
         };
-        let items: Vec<StatusItem> = self.workspace.status_items.with(&self.store, |items| {
-            items
-                .iter()
-                .filter(|item| scopes.contains(&item.scope))
-                .cloned()
-                .collect()
-        });
-        if items.is_empty() {
+        let file_changes: Vec<FileChange> =
+            self.workspace
+                .status_file_changes
+                .with(&self.store, |changes| {
+                    changes
+                        .iter()
+                        .filter(|change| buckets.contains(&change.bucket))
+                        .cloned()
+                        .collect()
+                });
+        if file_changes.is_empty() {
             return Vec::new();
         }
 
@@ -6777,9 +6822,9 @@ impl AppState {
             .status_operation_pending
             .set(&self.store, true);
         vec![
-            RepositoryEffect::ApplyBatchStatusOperation(BatchStatusOperationRequest {
+            RepositoryEffect::ApplyBatchFileOperation(BatchFileOperationRequest {
                 repo_path,
-                items,
+                file_changes,
                 operation,
             })
             .into(),
@@ -6792,7 +6837,7 @@ impl AppState {
 
     fn apply_hunk_operation(
         &mut self,
-        operation: StatusOperation,
+        operation: FileOperation,
         explicit_hunk: Option<i16>,
     ) -> Vec<Effect> {
         tracing::debug!(
@@ -6826,8 +6871,8 @@ impl AppState {
             tracing::debug!("apply_hunk_operation: bail: no repo_path");
             return Vec::new();
         };
-        let Some(scope) = self.workspace.selected_status_scope.get(&self.store) else {
-            tracing::debug!("apply_hunk_operation: bail: no selected_status_scope");
+        let Some(bucket) = self.workspace.selected_change_bucket.get(&self.store) else {
+            tracing::debug!("apply_hunk_operation: bail: no selected_change_bucket");
             return Vec::new();
         };
         let resolved = explicit_hunk.or_else(|| self.current_hunk_index_from_hover());
@@ -6844,7 +6889,7 @@ impl AppState {
             patch::format_carbon_hunk_patch(
                 &active.carbon_file,
                 hunk_index,
-                operation != StatusOperation::Stage,
+                operation != FileOperation::Stage,
             )
         });
         let Some(patch) = patch_text else {
@@ -6867,7 +6912,7 @@ impl AppState {
             RepositoryEffect::ApplyPatchOperation(PatchOperationRequest {
                 repo_path,
                 patch,
-                scope,
+                bucket,
                 operation,
             })
             .into(),
@@ -6959,7 +7004,7 @@ impl AppState {
         });
     }
 
-    fn apply_line_selection_operation(&mut self, operation: StatusOperation) -> Vec<Effect> {
+    fn apply_line_selection_operation(&mut self, operation: FileOperation) -> Vec<Effect> {
         if self.workspace.source.get(&self.store) != WorkspaceSource::Status {
             return Vec::new();
         }
@@ -6976,10 +7021,10 @@ impl AppState {
         let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
             return Vec::new();
         };
-        let Some(scope) = self.workspace.selected_status_scope.get(&self.store) else {
+        let Some(bucket) = self.workspace.selected_change_bucket.get(&self.store) else {
             return Vec::new();
         };
-        let reverse = operation != StatusOperation::Stage;
+        let reverse = operation != FileOperation::Stage;
 
         let (hunk_indices, selection_snapshot) =
             self.editor.line_selection.with(&self.store, |ls| {
@@ -7037,7 +7082,7 @@ impl AppState {
                 RepositoryEffect::ApplyPatchOperation(PatchOperationRequest {
                     repo_path: repo_path.clone(),
                     patch: p,
-                    scope,
+                    bucket,
                     operation,
                 })
                 .into()
@@ -7297,7 +7342,10 @@ impl AppState {
     pub fn workspace_file_count(&self) -> usize {
         match self.workspace.source.get(&self.store) {
             WorkspaceSource::Compare => self.workspace.files.with(&self.store, |f| f.len()),
-            WorkspaceSource::Status => self.workspace.status_items.with(&self.store, |s| s.len()),
+            WorkspaceSource::Status => self
+                .workspace
+                .status_file_changes
+                .with(&self.store, |s| s.len()),
             WorkspaceSource::None => 0,
         }
     }
@@ -7310,7 +7358,7 @@ impl AppState {
                 .with(&self.store, |f| f.get(index).map(|e| e.path.clone())),
             WorkspaceSource::Status => self
                 .workspace
-                .status_items
+                .status_file_changes
                 .with(&self.store, |s| s.get(index).map(|e| e.path.clone())),
             WorkspaceSource::None => None,
         }
@@ -7661,11 +7709,11 @@ impl AppState {
                 }
                 WorkspaceSource::Status => {
                     effects.extend(self.ensure_status_file_cached_for_viewport(index));
-                    let status_item = self
+                    let file_change = self
                         .workspace
-                        .status_items
-                        .with(&self.store, |items| items.get(index).cloned());
-                    status_item.as_ref().map_or_else(
+                        .status_file_changes
+                        .with(&self.store, |changes| changes.get(index).cloned());
+                    file_change.as_ref().map_or_else(
                         || {
                             self.loading_slot_key(
                                 WorkspaceSource::Status,
@@ -7675,7 +7723,7 @@ impl AppState {
                                 String::new(),
                             )
                         },
-                        |item| self.status_slot_key_at(index, item),
+                        |change| self.status_slot_key_at(index, change),
                     )
                 }
                 WorkspaceSource::None => self.loading_slot_key(
@@ -7983,7 +8031,7 @@ impl AppState {
                 capabilities.is_some_and(|capabilities| capabilities.remotes)
             })
         {
-            self.push_error("This repository backend does not support Git remotes.");
+            self.push_error("This repository backend does not support remotes.");
             return Vec::new();
         }
         let Some(repo_path) = self.compare.repo_path.with(&self.store, |p| p.clone()) else {
@@ -8009,26 +8057,20 @@ impl AppState {
                 capabilities.is_some_and(|capabilities| capabilities.remotes)
             })
         {
-            self.push_error("This repository backend does not support Git remotes.");
+            self.push_error("This repository backend does not support remotes.");
             return Vec::new();
         }
         let Some(repo_path) = self.compare.repo_path.with(&self.store, |p| p.clone()) else {
             self.push_error("Open a repository before fetching.");
             return Vec::new();
         };
-        let remotes = match crate::core::vcs::git::GitService::new_with_open(&repo_path)
-            .and_then(|git| git.remote_names())
-        {
-            Ok(names) if !names.is_empty() => names,
-            Ok(_) => {
-                self.push_error("No remotes are configured for this repository.");
-                return Vec::new();
-            }
-            Err(error) => {
-                self.push_error(&error.to_string());
-                return Vec::new();
-            }
-        };
+        let remotes = self.repository.refs.with(&self.store, |refs| {
+            remote_names_from_refs(refs).into_iter().collect::<Vec<_>>()
+        });
+        if remotes.is_empty() {
+            self.push_error("No remotes are configured for this repository.");
+            return Vec::new();
+        }
         remotes
             .into_iter()
             .flat_map(|remote| {
@@ -8053,40 +8095,32 @@ impl AppState {
                 capabilities.is_some_and(|capabilities| capabilities.remotes)
             })
         {
-            self.push_error("This repository backend does not support Git push.");
+            self.push_error("This repository backend does not support push.");
             return Vec::new();
         }
         let Some(repo_path) = self.compare.repo_path.with(&self.store, |p| p.clone()) else {
             self.push_error("Open a repository before pushing.");
             return Vec::new();
         };
-        let git = match crate::core::vcs::git::GitService::new_with_open(&repo_path) {
-            Ok(git) => git,
-            Err(error) => {
-                self.push_error(&error.to_string());
-                return Vec::new();
-            }
+        let Some(branch_ref) = self
+            .repository
+            .refs
+            .with(&self.store, |refs| active_publish_ref(refs))
+        else {
+            self.push_error("No active branch or bookmark to push.");
+            return Vec::new();
         };
-        let branch = match git.head_branch_name() {
-            Ok(Some(name)) => name,
-            Ok(None) => {
-                self.push_error("HEAD is detached; no branch to push.");
-                return Vec::new();
-            }
-            Err(error) => {
-                self.push_error(&error.to_string());
-                return Vec::new();
-            }
-        };
-        let upstream = git.upstream_for(&branch).ok().flatten();
-        let (remote, refspec) = match upstream {
+        let branch = branch_ref.name;
+        let (remote, refspec) = match branch_ref.upstream.as_deref().and_then(upstream_pair) {
             Some((remote, upstream_branch)) => (
                 remote,
                 format!("refs/heads/{branch}:refs/heads/{upstream_branch}"),
             ),
             None => {
                 // No upstream configured yet — default to `origin/<branch>`.
-                let remotes = git.remote_names().unwrap_or_default();
+                let remotes = self.repository.refs.with(&self.store, |refs| {
+                    remote_names_from_refs(refs).into_iter().collect::<Vec<_>>()
+                });
                 let remote = if remotes.iter().any(|n| n == "origin") {
                     "origin".to_owned()
                 } else if let Some(first) = remotes.first() {
@@ -8131,34 +8165,22 @@ impl AppState {
             self.push_error("Open a repository before pulling.");
             return Vec::new();
         };
-        let git = match crate::core::vcs::git::GitService::new_with_open(&repo_path) {
-            Ok(git) => git,
-            Err(error) => {
-                self.push_error(&error.to_string());
-                return Vec::new();
-            }
+        let Some(branch_ref) = self
+            .repository
+            .refs
+            .with(&self.store, |refs| active_publish_ref(refs))
+        else {
+            self.push_error("HEAD is detached; no branch to pull into.");
+            return Vec::new();
         };
-        let branch = match git.head_branch_name() {
-            Ok(Some(name)) => name,
-            Ok(None) => {
-                self.push_error("HEAD is detached; no branch to pull into.");
-                return Vec::new();
-            }
-            Err(error) => {
-                self.push_error(&error.to_string());
-                return Vec::new();
-            }
-        };
-        let (remote, upstream_branch) = match git.upstream_for(&branch) {
-            Ok(Some(pair)) => pair,
-            Ok(None) => {
+        let branch = branch_ref.name;
+        let (remote, upstream_branch) = match branch_ref.upstream.as_deref().and_then(upstream_pair)
+        {
+            Some(pair) => pair,
+            None => {
                 self.push_error(&format!(
                     "No upstream configured for {branch}. Push once to set one."
                 ));
-                return Vec::new();
-            }
-            Err(error) => {
-                self.push_error(&error.to_string());
                 return Vec::new();
             }
         };
@@ -8431,19 +8453,6 @@ fn compare_refs_are_valid(mode: CompareMode, left_ref: &str, right_ref: &str) ->
     }
 }
 
-/// Short, user-facing label for a ref. Maps the internal WORKDIR sentinel
-/// to a friendly "working copy"; empty strings become the conventional
-/// "base"/"head" placeholder (handled by the caller since the side matters).
-fn compare_ref_display_label(value: &str) -> String {
-    if value == crate::core::vcs::git::service::WORKDIR_REF {
-        "working copy".to_owned()
-    } else if value.is_empty() {
-        "\u{2014}".to_owned()
-    } else {
-        value.to_owned()
-    }
-}
-
 fn apply_scroll_delta_px(current: u32, delta: i32, max: u32) -> u32 {
     let next = if delta.is_negative() {
         current.saturating_sub(delta.unsigned_abs())
@@ -8554,24 +8563,59 @@ fn carbon_status_label(status: carbon::FileStatus) -> &'static str {
     }
 }
 
-fn build_status_file_entries(items: &[StatusItem]) -> Vec<FileListEntry> {
-    items.iter().map(FileListEntry::from).collect()
+fn build_status_file_entries(changes: &[FileChange]) -> Vec<FileListEntry> {
+    changes.iter().map(FileListEntry::from).collect()
 }
 
-fn status_section_count(items: &[StatusItem]) -> usize {
-    let mut last_scope = None;
+fn active_publish_ref(refs: &[VcsRef]) -> Option<VcsRef> {
+    refs.iter()
+        .find(|reference| {
+            reference.active && matches!(reference.kind, RefKind::Branch | RefKind::Bookmark)
+        })
+        .cloned()
+}
+
+fn upstream_pair(upstream: &str) -> Option<(String, String)> {
+    upstream
+        .split_once('/')
+        .map(|(remote, branch)| (remote.to_owned(), branch.to_owned()))
+}
+
+fn remote_names_from_refs(refs: &[VcsRef]) -> std::collections::BTreeSet<String> {
+    let mut remotes = std::collections::BTreeSet::new();
+    for reference in refs {
+        if let Some((remote, _)) = reference
+            .upstream
+            .as_deref()
+            .and_then(|upstream| upstream.split_once('/'))
+        {
+            remotes.insert(remote.to_owned());
+        }
+        if matches!(
+            reference.kind,
+            RefKind::RemoteBranch | RefKind::RemoteBookmark
+        ) && let Some((remote, _)) = reference.name.split_once('/')
+        {
+            remotes.insert(remote.to_owned());
+        }
+    }
+    remotes
+}
+
+fn status_section_count(changes: &[FileChange]) -> usize {
+    let mut last_bucket = None;
     let mut count = 0;
-    for item in items {
-        if Some(item.scope) != last_scope {
+    for change in changes {
+        if Some(change.bucket) != last_bucket {
             count += 1;
-            last_scope = Some(item.scope);
+            last_bucket = Some(change.bucket);
         }
     }
     count
 }
 
-fn status_section_count_before(items: &[StatusItem], len: usize) -> usize {
-    status_section_count(&items[..len.min(items.len())])
+fn status_section_count_before(changes: &[FileChange], len: usize) -> usize {
+    status_section_count(&changes[..len.min(changes.len())])
 }
 
 fn overlay_name(surface: OverlaySurface) -> &'static str {
@@ -8595,11 +8639,11 @@ pub fn workspace_mode_name(mode: WorkspaceMode) -> &'static str {
     }
 }
 
-impl From<&StatusItem> for FileListEntry {
-    fn from(value: &StatusItem) -> Self {
+impl From<&FileChange> for FileListEntry {
+    fn from(value: &FileChange) -> Self {
         Self {
             path: value.path.clone(),
-            status: value.status.clone(),
+            status: file_change_status_label(value.status, value.bucket).to_owned(),
             additions: 0,
             deletions: 0,
             is_binary: false,
@@ -8730,14 +8774,13 @@ mod tests {
         ActiveFile, ActiveFileLoading, AppState, AsyncStatus, CarbonStyleOverlays, CompareField,
         FileListEntry, FocusTarget, OverlaySurface, PickerItem, PickerLabelStyle,
         PreparedActiveFile, WorkspaceMode, WorkspaceSource, prepare_active_file,
-        refs_for_status_scope,
+        vcs_compare_request,
     };
     use crate::core::compare::{CompareMode, CompareOutput, LayoutMode, RendererKind};
     use crate::core::text::TokenBuffer;
-    use crate::core::vcs::git::{StatusItem, StatusScope};
     use crate::core::vcs::model::{
-        ChangeFlags, RefKind, RepoCapabilities, RepoLocation, RevisionId, VcsChange, VcsKind,
-        VcsRef,
+        ChangeBucket, ChangeFlags, FileChange, FileChangeStatus, RefKind, RepoCapabilities,
+        RepoLocation, RevisionId, VcsChange, VcsKind, VcsRef,
     };
     use crate::effects::{
         AiEffect, CompareEffect, Effect, GitHubEffect, RepositoryEffect, SyntaxEffect,
@@ -8807,7 +8850,8 @@ diff --git a/src/lib.rs b/src/lib.rs
             &CarbonStyleOverlays::default(),
             &token_buffer,
         );
-        let (left_ref, right_ref) = refs_for_status_scope(StatusScope::Unstaged);
+        let (left_ref, right_ref) =
+            crate::ui::vcs::profile(None).status_compare_refs(ChangeBucket::Unstaged);
 
         state.compare.repo_path.set(&state.store, Some(repo_path));
         state
@@ -8834,12 +8878,13 @@ diff --git a/src/lib.rs b/src/lib.rs
                 is_binary: false,
             }],
         );
-        state.workspace.status_items.set(
+        state.workspace.status_file_changes.set(
             &state.store,
-            vec![StatusItem {
+            vec![FileChange {
                 path: path.clone(),
-                scope: StatusScope::Unstaged,
-                status: "M".to_owned(),
+                old_path: None,
+                status: FileChangeStatus::Modified,
+                bucket: ChangeBucket::Unstaged,
             }],
         );
         state
@@ -8852,8 +8897,8 @@ diff --git a/src/lib.rs b/src/lib.rs
             .set(&state.store, Some(path.clone()));
         state
             .workspace
-            .selected_status_scope
-            .set(&state.store, Some(StatusScope::Unstaged));
+            .selected_change_bucket
+            .set(&state.store, Some(ChangeBucket::Unstaged));
         state.workspace.active_file.set(
             &state.store,
             Some(ActiveFile {
@@ -9472,7 +9517,7 @@ diff --git a/src/lib.rs b/src/lib.rs
         let _ = state.apply_action(crate::actions::RepositoryAction::StageHunkAt(0));
         assert!(state.workspace.status_operation_pending.get(&state.store));
 
-        let _ = state.apply_event(AppEvent::from(RepositoryEvent::StatusOperationFailed {
+        let _ = state.apply_event(AppEvent::from(RepositoryEvent::FileOperationFailed {
             path: PathBuf::from("/repo"),
             message: "patch failed".to_owned(),
         }));
@@ -9535,7 +9580,8 @@ diff --git a/src/lib.rs b/src/lib.rs
         state.repository.location.set(
             &state.store,
             Some(RepoLocation {
-                kind: VcsKind::Jj,
+                kind: VcsKind::JJ,
+                profile: crate::core::vcs::model::VCS_PROFILE_JJ,
                 workspace_root: PathBuf::from("/repo"),
                 store_root: Some(PathBuf::from("/repo/.jj")),
             }),
@@ -9547,7 +9593,7 @@ diff --git a/src/lib.rs b/src/lib.rs
                     name: "@".to_owned(),
                     kind: RefKind::WorkingCopy,
                     target: RevisionId {
-                        backend: VcsKind::Jj,
+                        backend: VcsKind::JJ,
                         id: working_commit.clone(),
                     },
                     active: true,
@@ -9558,7 +9604,7 @@ diff --git a/src/lib.rs b/src/lib.rs
                     name: "main".to_owned(),
                     kind: RefKind::Bookmark,
                     target: RevisionId {
-                        backend: VcsKind::Jj,
+                        backend: VcsKind::JJ,
                         id: "a4c9f6e8b1d24036a78610a332e12ca25e97c315".to_owned(),
                     },
                     active: false,
@@ -9571,7 +9617,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             &state.store,
             vec![VcsChange {
                 revision: RevisionId {
-                    backend: VcsKind::Jj,
+                    backend: VcsKind::JJ,
                     id: working_commit,
                 },
                 change_id: Some(change_id.clone()),
@@ -9785,7 +9831,6 @@ diff --git a/src/lib.rs b/src/lib.rs
     // -----------------------------------------------------------------
 
     use super::{ComparePhase, CompareProgress, LoadingSubject};
-    use crate::core::compare::CompareSpec;
     use crate::events::{CompareFinished, RepositorySyncReason};
 
     fn compare_ready_state() -> AppState {
@@ -9985,21 +10030,27 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[test]
     fn repository_snapshot_ready_clears_repo_open_progress() {
-        use super::StatusItem;
         let mut state = AppState::default();
         let path = PathBuf::from("/tmp/linux");
         let _ = state.open_repository(path.clone());
         assert!(state.compare_progress.with(&state.store, |p| p.is_some()));
 
         state.apply_event(AppEvent::from(RepositoryEvent::RepositorySnapshotReady(
-            crate::events::RepositorySnapshot::from_git_parts(
-                path,
-                RepositorySyncReason::Open,
-                None,
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::<StatusItem>::new(),
+            crate::events::RepositorySnapshot::from_vcs_snapshot(
+                crate::core::vcs::model::VcsSnapshot {
+                    location: RepoLocation {
+                        kind: VcsKind::GIT,
+                        profile: crate::core::vcs::model::VCS_PROFILE_GIT,
+                        workspace_root: path,
+                        store_root: None,
+                    },
+                    reason: RepositorySyncReason::Open,
+                    change_kind: None,
+                    capabilities: RepoCapabilities::git(),
+                    refs: Vec::new(),
+                    changes: Vec::new(),
+                    file_changes: Vec::new(),
+                },
             ),
         )));
 
@@ -10057,13 +10108,13 @@ diff --git a/src/lib.rs b/src/lib.rs
         state.apply_event(AppEvent::from(CompareEvent::CompareFinished(
             CompareFinished {
                 generation,
-                spec: CompareSpec {
-                    mode: CompareMode::TwoDot,
-                    left_ref: "v5.0".to_owned(),
-                    right_ref: "v5.1".to_owned(),
-                    renderer: RendererKind::Builtin,
-                    layout: LayoutMode::Unified,
-                },
+                request: vcs_compare_request(
+                    CompareMode::TwoDot,
+                    "v5.0".to_owned(),
+                    "v5.1".to_owned(),
+                    LayoutMode::Unified,
+                    RendererKind::Builtin,
+                ),
                 resolved_left: "deadbeef".to_owned(),
                 resolved_right: "cafefeed".to_owned(),
                 output: CompareOutput::default(),
@@ -10138,13 +10189,13 @@ diff --git a/src/lib.rs b/src/lib.rs
         state.apply_event(AppEvent::from(CompareEvent::CompareFinished(
             CompareFinished {
                 generation,
-                spec: CompareSpec {
-                    mode: CompareMode::TwoDot,
-                    left_ref: "v5.0".to_owned(),
-                    right_ref: "v5.1".to_owned(),
-                    renderer: RendererKind::Builtin,
-                    layout: LayoutMode::Unified,
-                },
+                request: vcs_compare_request(
+                    CompareMode::TwoDot,
+                    "v5.0".to_owned(),
+                    "v5.1".to_owned(),
+                    LayoutMode::Unified,
+                    RendererKind::Builtin,
+                ),
                 resolved_left: "deadbeef".to_owned(),
                 resolved_right: "cafefeed".to_owned(),
                 output,

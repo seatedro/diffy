@@ -2,6 +2,7 @@ use halogen::view;
 
 use crate::actions::Action;
 use crate::core::compare::CompareMode;
+use crate::core::vcs::model::RefKind;
 use crate::ui::design::{Ico, Rad, Shadow, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
@@ -22,15 +23,18 @@ pub fn compare_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
     });
     let modes = profile.compare_modes();
 
-    let (head_branch, trunk) = state.repository.branches.with(&state.store, |branches| {
-        let head = branches
+    let (head_branch, trunk) = state.repository.refs.with(&state.store, |refs| {
+        let head = refs
             .iter()
-            .find(|b| b.is_head && !b.is_remote)
-            .map(|b| b.name.clone());
-        let trunk = branches
+            .find(|reference| reference.active && reference.kind == RefKind::Branch)
+            .map(|reference| reference.name.clone());
+        let trunk = refs
             .iter()
-            .find(|b| !b.is_remote && matches!(b.name.as_str(), "main" | "master" | "develop"))
-            .map(|b| b.name.clone());
+            .find(|reference| {
+                reference.kind == RefKind::Branch
+                    && matches!(reference.name.as_str(), "main" | "master" | "develop")
+            })
+            .map(|reference| reference.name.clone());
         (head, trunk)
     });
 
@@ -38,8 +42,8 @@ pub fn compare_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
         && matches!((&head_branch, &trunk), (Some(h), Some(t)) if h != t);
     let head_commit = state
         .repository
-        .commits
-        .with(&state.store, |commits| commits.first().cloned());
+        .changes
+        .with(&state.store, |changes| changes.first().cloned());
     let current_change = state.repository.changes.with(&state.store, |changes| {
         changes
             .iter()
@@ -60,11 +64,11 @@ pub fn compare_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
     let head_commit_preset = if profile.shows_head_commit_preset() {
         head_commit.as_ref().map(|commit| {
             preset_row(
-                &format!("HEAD ({})", commit.short_oid),
+                &format!("HEAD ({})", commit.short_revision),
                 &commit.summary,
                 crate::actions::CompareAction::ApplyComparePreset(format!(
                     "{}::commit",
-                    commit.oid
+                    commit.revision.id
                 ))
                 .into(),
                 theme,

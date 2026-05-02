@@ -25,7 +25,7 @@ pub fn parse_change_log_line(line: &str) -> Option<VcsChange> {
     let short_revision = commit_id.chars().take(12).collect::<String>();
     Some(VcsChange {
         revision: RevisionId {
-            backend: VcsKind::Jj,
+            backend: VcsKind::JJ,
             id: commit_id,
         },
         change_id: Some(change_id),
@@ -65,7 +65,7 @@ pub fn parse_bookmark_line(line: &str) -> Option<VcsRef> {
         name: name.to_owned(),
         kind: RefKind::Bookmark,
         target: RevisionId {
-            backend: VcsKind::Jj,
+            backend: VcsKind::JJ,
             id: target.to_owned(),
         },
         active: false,
@@ -157,7 +157,7 @@ mod tests {
         let change =
             parse_change_log_line("change123\tch\tange\tabcdef1234567890\tmy change\tro\tignored")
                 .unwrap();
-        assert_eq!(change.revision.backend, VcsKind::Jj);
+        assert_eq!(change.revision.backend, VcsKind::JJ);
         assert_eq!(change.revision.id, "abcdef1234567890");
         assert_eq!(change.change_id.as_deref(), Some("change123"));
         assert_eq!(change.short_change_id.as_deref(), Some("change"));

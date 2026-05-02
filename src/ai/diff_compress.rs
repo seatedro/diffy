@@ -8,6 +8,9 @@
 
 const LONG_LINE_LIMIT: usize = 256;
 const LINE_TRUNCATION_MARKER: &str = "...[truncated]";
+const MAX_SUMMARY_BYTES: usize = 6_000;
+const MAX_SUMMARY_FILES: usize = 80;
+const MIN_PATCH_BYTES: usize = 4_000;
 
 /// One file's worth of unified diff, with a cursor pointing at how many of
 /// its hunks we're still willing to send.
@@ -15,6 +18,13 @@ struct FilePatch {
     header: String,
     hunks: Vec<String>,
     hunks_to_keep: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileSummary {
+    status: &'static str,
+    path: String,
+    old_path: Option<String>,
 }
 
 impl FilePatch {
@@ -169,6 +179,175 @@ pub fn compress_commit_diff(diff_text: &str, max_bytes: usize) -> String {
     drop_hunks_until(&shortened, max_bytes)
 }
 
+pub fn build_commit_diff_payload(diff_text: &str, max_bytes: usize) -> String {
+    let summary = summarize_commit_diff(diff_text, MAX_SUMMARY_BYTES);
+    let overhead = "\n\nPatch excerpt:\n".len();
+    let patch_budget = max_bytes
+        .saturating_sub(summary.len().saturating_add(overhead))
+        .max(MIN_PATCH_BYTES.min(max_bytes));
+    let patch = compress_commit_diff(diff_text, patch_budget);
+    format!("{summary}\n\nPatch excerpt:\n{patch}")
+}
+
+fn summarize_commit_diff(diff_text: &str, max_bytes: usize) -> String {
+    let files = parse_file_summaries(diff_text);
+    let mut out = String::new();
+    out.push_str("Repository diff summary:\n");
+    if files.is_empty() {
+        out.push_str("- No file-level summary could be parsed from the patch.\n");
+        return out;
+    }
+
+    out.push_str(&format!("- {} files changed\n", files.len()));
+    let counts = status_counts(&files);
+    out.push_str(&format!(
+        "- Status counts: added {}, modified {}, deleted {}, renamed {}, copied {}, type changed {}, other {}\n",
+        counts.added,
+        counts.modified,
+        counts.deleted,
+        counts.renamed,
+        counts.copied,
+        counts.type_changed,
+        counts.other
+    ));
+    let areas = top_level_areas(&files);
+    if !areas.is_empty() {
+        out.push_str("- Top-level areas:");
+        for (area, count) in areas.into_iter().take(12) {
+            out.push_str(&format!(" {area}({count})"));
+        }
+        out.push('\n');
+    }
+    out.push_str("- Files:\n");
+    for file in files.iter().take(MAX_SUMMARY_FILES) {
+        if let Some(old_path) = &file.old_path {
+            out.push_str(&format!(
+                "  {} {} -> {}\n",
+                file.status, old_path, file.path
+            ));
+        } else {
+            out.push_str(&format!("  {} {}\n", file.status, file.path));
+        }
+        if out.len() >= max_bytes {
+            truncate_summary(&mut out, max_bytes);
+            return out;
+        }
+    }
+    let omitted = files.len().saturating_sub(MAX_SUMMARY_FILES);
+    if omitted > 0 {
+        out.push_str(&format!(
+            "  ... {omitted} more files omitted from summary\n"
+        ));
+    }
+    if out.len() > max_bytes {
+        truncate_summary(&mut out, max_bytes);
+    }
+    out
+}
+
+#[derive(Default)]
+struct StatusCounts {
+    added: usize,
+    modified: usize,
+    deleted: usize,
+    renamed: usize,
+    copied: usize,
+    type_changed: usize,
+    other: usize,
+}
+
+fn status_counts(files: &[FileSummary]) -> StatusCounts {
+    let mut counts = StatusCounts::default();
+    for file in files {
+        match file.status {
+            "A" => counts.added += 1,
+            "M" => counts.modified += 1,
+            "D" => counts.deleted += 1,
+            "R" => counts.renamed += 1,
+            "C" => counts.copied += 1,
+            "T" => counts.type_changed += 1,
+            _ => counts.other += 1,
+        }
+    }
+    counts
+}
+
+fn top_level_areas(files: &[FileSummary]) -> Vec<(String, usize)> {
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    for file in files {
+        let area = file.path.split('/').next().unwrap_or(file.path.as_str());
+        *counts.entry(area.to_owned()).or_default() += 1;
+    }
+    let mut areas = counts.into_iter().collect::<Vec<_>>();
+    areas.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    areas
+}
+
+fn parse_file_summaries(diff_text: &str) -> Vec<FileSummary> {
+    let mut files = Vec::new();
+    let mut current: Option<FileSummary> = None;
+    for line in diff_text.lines() {
+        if let Some((old_path, path)) = parse_diff_git_line(line) {
+            if let Some(file) = current.take() {
+                files.push(file);
+            }
+            current = Some(FileSummary {
+                status: "M",
+                path,
+                old_path: (old_path != "/dev/null").then_some(old_path),
+            });
+            continue;
+        }
+
+        let Some(file) = current.as_mut() else {
+            continue;
+        };
+        if line.starts_with("new file mode ") {
+            file.status = "A";
+            file.old_path = None;
+        } else if line.starts_with("deleted file mode ") {
+            file.status = "D";
+        } else if line.starts_with("similarity index ") {
+            file.status = "R";
+        } else if line.starts_with("copy from ") {
+            file.status = "C";
+            file.old_path = Some(line.trim_start_matches("copy from ").to_owned());
+        } else if line.starts_with("copy to ") {
+            file.status = "C";
+            file.path = line.trim_start_matches("copy to ").to_owned();
+        } else if line.starts_with("rename from ") {
+            file.status = "R";
+            file.old_path = Some(line.trim_start_matches("rename from ").to_owned());
+        } else if line.starts_with("rename to ") {
+            file.status = "R";
+            file.path = line.trim_start_matches("rename to ").to_owned();
+        } else if line.starts_with("old mode ") || line.starts_with("new mode ") {
+            if file.status == "M" {
+                file.status = "T";
+            }
+        }
+    }
+    if let Some(file) = current {
+        files.push(file);
+    }
+    files
+}
+
+fn parse_diff_git_line(line: &str) -> Option<(String, String)> {
+    let rest = line.strip_prefix("diff --git ")?;
+    let (old, new) = rest.split_once(" b/")?;
+    let old = old.strip_prefix("a/").unwrap_or(old).to_owned();
+    Some((old, new.to_owned()))
+}
+
+fn truncate_summary(summary: &mut String, max_bytes: usize) {
+    let marker = "\n  ... summary truncated ...\n";
+    let limit = max_bytes.saturating_sub(marker.len());
+    let cut = floor_char_boundary(summary, limit);
+    summary.truncate(cut);
+    summary.push_str(marker);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +375,29 @@ mod tests {
         let diff = format!("{big_file}\n{small_file}");
         let compressed = compress_commit_diff(&diff, big_file.len() / 2);
         assert!(compressed.contains("[...skipped"));
+    }
+
+    #[test]
+    fn payload_keeps_summary_for_files_outside_patch_excerpt() {
+        let mut diff = String::new();
+        for index in 0..20 {
+            diff.push_str(&format!(
+                "diff --git a/src/module{index}.rs b/src/module{index}.rs\n--- a/src/module{index}.rs\n+++ b/src/module{index}.rs\n@@ -1 +1 @@\n-old{index}\n+new{index}\n"
+            ));
+        }
+
+        let payload = build_commit_diff_payload(&diff, 900);
+        assert!(payload.contains("Repository diff summary:"));
+        assert!(payload.contains("- 20 files changed"));
+        assert!(payload.contains("M src/module19.rs"));
+        assert!(payload.contains("Patch excerpt:"));
+    }
+
+    #[test]
+    fn summary_reports_renames() {
+        let diff = "diff --git a/src/old.rs b/src/new.rs\nsimilarity index 100%\nrename from src/old.rs\nrename to src/new.rs\n";
+        let payload = build_commit_diff_payload(diff, 1024);
+        assert!(payload.contains("renamed 1"));
+        assert!(payload.contains("R src/old.rs -> src/new.rs"));
     }
 }

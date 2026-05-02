@@ -3,18 +3,20 @@ use std::path::{Path, PathBuf};
 use carbon::TextStore;
 
 use crate::core::compare::backends::{DifftasticBackend, GitDiffBackend};
-use crate::core::compare::{CompareMode, ComparePhase, CompareService, CompareSpec, ProgressSink};
+use crate::core::compare::{
+    CompareMode, ComparePhase, CompareService, CompareSpec, ProgressSink, RendererKind,
+};
 use crate::core::error::{DiffyError, Result};
 use crate::core::vcs::backend::{VcsBackend, VcsRepository, VcsWatchPaths};
 use crate::core::vcs::git::status::StatusBits;
 use crate::core::vcs::git::{
-    BranchInfo, CommitInfo, GitService, StatusItem, StatusScope, TagInfo, WORKDIR_REF,
-    status::status_items_from_entry,
+    BranchInfo, CommitInfo, GitService, PatchApplyTarget, PullOutcome, StatusItem, StatusOperation,
+    StatusScope, TagInfo, WORKDIR_REF, status::status_items_from_entry,
 };
 use crate::core::vcs::model::{
-    ChangeBucket, ChangeFlags, FileChange, FileChangeStatus, RefKind, RepoCapabilities,
-    RepoLocation, RevisionId, VcsChange, VcsCompareRequest, VcsCompareSpec, VcsKind, VcsRef,
-    VcsSnapshot,
+    ChangeBucket, ChangeFlags, FileChange, FileChangeStatus, FileOperation, PullFastForwardOutcome,
+    RefKind, RepoCapabilities, RepoLocation, RevisionId, VCS_PROFILE_GIT, VcsChange,
+    VcsCompareRequest, VcsCompareSpec, VcsKind, VcsRef, VcsSnapshot,
 };
 use crate::events::{RepositoryChangeKind, RepositorySyncReason};
 
@@ -23,7 +25,7 @@ pub struct GitBackend;
 
 impl VcsBackend for GitBackend {
     fn kind(&self) -> VcsKind {
-        VcsKind::Git
+        VcsKind::GIT
     }
 
     fn detect(&self, path: &Path) -> Result<Option<RepoLocation>> {
@@ -37,7 +39,8 @@ impl VcsBackend for GitBackend {
             .or_else(|| repo.git_dir().parent().map(Path::to_path_buf))
             .unwrap_or_else(|| path.to_path_buf());
         Ok(Some(RepoLocation {
-            kind: VcsKind::Git,
+            kind: VcsKind::GIT,
+            profile: VCS_PROFILE_GIT,
             workspace_root,
             store_root: Some(repo.git_dir().to_path_buf()),
         }))
@@ -58,6 +61,10 @@ impl VcsBackend for GitBackend {
             None => vec![metadata_dir.clone()],
         };
         Ok(VcsWatchPaths {
+            worktree_metadata_paths: vec![
+                metadata_dir.join("index"),
+                metadata_dir.join("index.lock"),
+            ],
             metadata_dir,
             workdir,
             watched_paths,
@@ -137,22 +144,10 @@ impl VcsRepository for GitRepository {
         ))
     }
 
-    fn resolve_compare_spec(
-        &mut self,
-        spec: &CompareSpec,
-    ) -> Result<(String, String, VcsCompareRequest)> {
-        let (resolved_left, resolved_right) =
-            self.service
-                .resolve_comparison(&spec.left_ref, &spec.right_ref, spec.mode)?;
-        let backend_spec = VcsCompareRequest {
-            spec: VcsCompareSpec::Range {
-                from: resolved_left.clone(),
-                to: resolved_right.clone(),
-            },
-            layout: spec.layout,
-            renderer: spec.renderer,
-        };
-        Ok((resolved_left, resolved_right, backend_spec))
+    fn resolve_compare_request(&mut self, request: &VcsCompareRequest) -> Result<(String, String)> {
+        let spec = git_compare_spec(request);
+        self.service
+            .resolve_comparison(&spec.left_ref, &spec.right_ref, spec.mode)
     }
 
     fn compare(
@@ -169,6 +164,35 @@ impl VcsRepository for GitRepository {
         GitDiffBackend
             .compare_stats(&spec, &self.service)?
             .ok_or_else(|| DiffyError::General("compare stats returned no result".to_owned()))
+    }
+
+    fn compare_history(
+        &mut self,
+        left_ref: &str,
+        right_ref: &str,
+        limit: usize,
+    ) -> Result<Vec<VcsChange>> {
+        let commits = self
+            .service
+            .commits_in_range(left_ref, right_ref, limit)
+            .unwrap_or_default();
+        Ok(git_changes(&commits, &[]))
+    }
+
+    fn compare_file_stats(&mut self, files: &[&carbon::FileDiff]) -> Result<Vec<(i32, i32)>> {
+        let repo_path = self.location.workspace_root.to_string_lossy();
+        let file_stats =
+            GitDiffBackend.deferred_file_line_stats_batch_for_repo_path(files, &repo_path);
+        Ok(files
+            .iter()
+            .zip(file_stats)
+            .map(|(file, stat)| {
+                stat.unwrap_or((
+                    u32_to_i32_saturating(file.additions),
+                    u32_to_i32_saturating(file.deletions),
+                ))
+            })
+            .collect())
     }
 
     fn compare_path(
@@ -223,6 +247,96 @@ impl VcsRepository for GitRepository {
         }
     }
 
+    fn file_change_diff(
+        &mut self,
+        change: &FileChange,
+        renderer: RendererKind,
+    ) -> Result<crate::core::compare::CompareOutput> {
+        let item = status_item_from_file_change(change);
+        let mut output = match renderer {
+            RendererKind::Builtin => self.service.diff_status_item(&item)?,
+            RendererKind::Difftastic if DifftasticBackend::is_available() => {
+                compare_status_item_with_difftastic(&item, &self.service)?
+            }
+            RendererKind::Difftastic => self.service.diff_status_item(&item)?,
+        };
+        if renderer == RendererKind::Difftastic && !DifftasticBackend::is_available() {
+            output.used_fallback = true;
+            output.fallback_message =
+                "difftastic not compiled in, used built-in backend".to_owned();
+        }
+        Ok(output)
+    }
+
+    fn commit_diff(&mut self, has_staged: bool) -> Result<String> {
+        self.service.diff_for_commit(has_staged)
+    }
+
+    fn apply_file_operation(
+        &mut self,
+        change: &FileChange,
+        operation: FileOperation,
+    ) -> Result<()> {
+        let item = status_item_from_file_change(change);
+        self.service
+            .apply_status_operation(&item, status_operation_from_file_operation(operation))
+    }
+
+    fn apply_batch_file_operation(
+        &mut self,
+        changes: &[FileChange],
+        operation: FileOperation,
+    ) -> Result<()> {
+        let items = changes
+            .iter()
+            .map(status_item_from_file_change)
+            .collect::<Vec<_>>();
+        self.service
+            .apply_batch_status_operation(&items, status_operation_from_file_operation(operation))
+    }
+
+    fn apply_patch_operation(&mut self, patch: &str, operation: FileOperation) -> Result<()> {
+        let target = match operation {
+            FileOperation::Discard => PatchApplyTarget::Workdir,
+            FileOperation::Stage | FileOperation::Unstage => PatchApplyTarget::Index,
+        };
+        self.service.apply_patch(patch, target)
+    }
+
+    fn create_commit(&mut self, message: &str) -> Result<()> {
+        self.service.commit(message).map(|_| ())
+    }
+
+    fn fetch_remote(&mut self, remote: &str) -> Result<()> {
+        self.service.fetch_remote(remote, |_, _, _| {})
+    }
+
+    fn push(&mut self, remote: &str, refspec: &str, force_with_lease: bool) -> Result<()> {
+        self.service
+            .push(remote, refspec, force_with_lease, |_, _, _| {})
+    }
+
+    fn pull_fast_forward(&mut self, remote: &str, branch: &str) -> Result<PullFastForwardOutcome> {
+        self.service
+            .pull_ff(remote, branch, |_, _, _| {})
+            .map(|outcome| match outcome {
+                PullOutcome::AlreadyUpToDate => PullFastForwardOutcome::AlreadyUpToDate,
+                PullOutcome::FastForwarded { behind } => {
+                    PullFastForwardOutcome::FastForwarded { behind }
+                }
+            })
+            .map_err(|error| DiffyError::General(error.to_string()))
+    }
+
+    fn resolve_pull_request_comparison(
+        &mut self,
+        pull_request_url: &str,
+        github_token: &str,
+    ) -> Result<(String, String)> {
+        self.service
+            .resolve_pull_request_comparison(pull_request_url, github_token)
+    }
+
     fn compare_working_file(&mut self, path: &str) -> Result<crate::core::compare::CompareOutput> {
         Err(DiffyError::General(format!(
             "Git working-file compare requires a status scope for {path}"
@@ -266,6 +380,63 @@ pub fn git_capabilities() -> RepoCapabilities {
     RepoCapabilities::git()
 }
 
+fn u32_to_i32_saturating(value: u32) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
+}
+
+fn status_item_from_file_change(change: &FileChange) -> StatusItem {
+    let scope = match change.bucket {
+        ChangeBucket::Staged => StatusScope::Staged,
+        ChangeBucket::Untracked => StatusScope::Untracked,
+        ChangeBucket::WorkingCopy | ChangeBucket::Unstaged | ChangeBucket::Conflicted => {
+            StatusScope::Unstaged
+        }
+    };
+    StatusItem {
+        path: change.path.clone(),
+        scope,
+        status: file_change_status_label(change.status, change.bucket).to_owned(),
+    }
+}
+
+fn status_operation_from_file_operation(operation: FileOperation) -> StatusOperation {
+    match operation {
+        FileOperation::Stage => StatusOperation::Stage,
+        FileOperation::Unstage => StatusOperation::Unstage,
+        FileOperation::Discard => StatusOperation::Discard,
+    }
+}
+
+fn file_change_status_label(status: FileChangeStatus, bucket: ChangeBucket) -> &'static str {
+    match (status, bucket) {
+        (FileChangeStatus::Added, _) => "A",
+        (FileChangeStatus::Deleted, _) => "D",
+        (FileChangeStatus::Renamed, _) => "R",
+        (FileChangeStatus::Copied, _) => "C",
+        (FileChangeStatus::Untracked, _) => "U",
+        (FileChangeStatus::Conflicted, _) | (_, ChangeBucket::Conflicted) => "!",
+        (FileChangeStatus::TypeChanged, _) => "T",
+        (FileChangeStatus::Binary, _) => "B",
+        (FileChangeStatus::Modified, _) => "M",
+    }
+}
+
+#[cfg(feature = "difftastic")]
+fn compare_status_item_with_difftastic(
+    item: &StatusItem,
+    git: &GitService,
+) -> Result<crate::core::compare::CompareOutput> {
+    DifftasticBackend.compare_status_item(item, git)
+}
+
+#[cfg(not(feature = "difftastic"))]
+fn compare_status_item_with_difftastic(
+    _item: &StatusItem,
+    _git: &GitService,
+) -> Result<crate::core::compare::CompareOutput> {
+    unreachable!("difftastic status compare is gated by DifftasticBackend::is_available()")
+}
+
 pub fn git_snapshot_from_parts(
     path: PathBuf,
     reason: RepositorySyncReason,
@@ -279,7 +450,8 @@ pub fn git_snapshot_from_parts(
         .ok()
         .flatten()
         .unwrap_or_else(|| RepoLocation {
-            kind: VcsKind::Git,
+            kind: VcsKind::GIT,
+            profile: VCS_PROFILE_GIT,
             workspace_root: path,
             store_root: None,
         });

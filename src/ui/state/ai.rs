@@ -134,11 +134,14 @@ impl AppState {
             self.push_error("Open a repository before generating a commit message.");
             return Vec::new();
         };
-        let has_staged = self.workspace.status_items.with(&self.store, |items| {
-            items
-                .iter()
-                .any(|item| item.scope == crate::core::vcs::git::status::StatusScope::Staged)
-        });
+        let has_staged = self
+            .workspace
+            .status_file_changes
+            .with(&self.store, |changes| {
+                changes
+                    .iter()
+                    .any(|change| change.bucket == crate::core::vcs::model::ChangeBucket::Staged)
+            });
         let (provider, api_key) = if !self.ai_anthropic_key.is_empty() {
             (
                 crate::ai::Provider::Anthropic,

@@ -28,10 +28,8 @@ pub(crate) fn compare_cluster_view(state: &AppState, theme: &Theme) -> Option<An
         };
         let right_label = if right_ref_value.is_empty() {
             "head".to_owned()
-        } else if right_ref_value == crate::core::vcs::git::service::WORKDIR_REF {
-            "working copy".to_owned()
         } else {
-            right_ref_value.clone()
+            profile.compare_ref_display_label(&right_ref_value)
         };
 
         let mode = profile.compare_mode_ui(state.compare.mode.get(&state.store));
@@ -63,14 +61,17 @@ pub(crate) fn compare_cluster_view(state: &AppState, theme: &Theme) -> Option<An
     }
 }
 
-fn swap_enabled(left: &str, right: &str) -> bool {
+fn swap_enabled_for_profile(
+    profile: crate::ui::vcs::VcsUiProfile,
+    left: &str,
+    right: &str,
+) -> bool {
     let left_trim = left.trim();
     let right_trim = right.trim();
     if left_trim.is_empty() || right_trim.is_empty() {
         return false;
     }
-    left_trim != crate::core::vcs::git::service::WORKDIR_REF
-        && right_trim != crate::core::vcs::git::service::WORKDIR_REF
+    profile.can_swap_ref(left_trim) && profile.can_swap_ref(right_trim)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -87,7 +88,10 @@ fn compare_cluster(
 ) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
-    let allow_swap = swap_enabled(left_ref, right_ref);
+    let profile = state.repository.location.with(&state.store, |location| {
+        crate::ui::vcs::profile(location.as_ref())
+    });
+    let allow_swap = swap_enabled_for_profile(profile, left_ref, right_ref);
     let active_field = state.overlays.ref_picker.active_field.get(&state.store);
     let left_active = picker_open && active_field == CompareField::Left;
     let right_active = picker_open && active_field == CompareField::Right;

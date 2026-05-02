@@ -1,19 +1,49 @@
+use std::fmt;
 use std::path::PathBuf;
 
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 use crate::core::compare::{LayoutMode, RendererKind};
 use crate::events::{RepositoryChangeKind, RepositorySyncReason};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
-pub enum VcsKind {
-    Git,
-    Jj,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct VcsKind(&'static str);
+
+impl VcsKind {
+    pub const GIT: Self = Self("git");
+    pub const JJ: Self = Self("jj");
+
+    pub const fn new(id: &'static str) -> Self {
+        Self(id)
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
 }
+
+impl Serialize for VcsKind {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.0)
+    }
+}
+
+impl fmt::Display for VcsKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+pub const VCS_PROFILE_GIT: &str = "git";
+pub const VCS_PROFILE_JJ: &str = "jj";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RepoLocation {
     pub kind: VcsKind,
+    pub profile: &'static str,
     pub workspace_root: PathBuf,
     pub store_root: Option<PathBuf>,
 }
@@ -26,6 +56,7 @@ pub struct RepoCapabilities {
     pub tags: bool,
     pub remotes: bool,
     pub pull_fast_forward: bool,
+    pub create_commit: bool,
     pub partial_file_restore: bool,
     pub partial_hunk_mutation: bool,
     pub operation_log: bool,
@@ -41,6 +72,7 @@ impl RepoCapabilities {
             tags: true,
             remotes: true,
             pull_fast_forward: true,
+            create_commit: true,
             partial_file_restore: true,
             partial_hunk_mutation: true,
             operation_log: false,
@@ -58,7 +90,7 @@ pub struct RevisionId {
 impl RevisionId {
     pub fn git(id: impl Into<String>) -> Self {
         Self {
-            backend: VcsKind::Git,
+            backend: VcsKind::GIT,
             id: id.into(),
         }
     }
@@ -136,6 +168,29 @@ pub struct FileChange {
     pub old_path: Option<String>,
     pub status: FileChangeStatus,
     pub bucket: ChangeBucket,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileOperation {
+    Stage,
+    Unstage,
+    Discard,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullFastForwardOutcome {
+    AlreadyUpToDate,
+    FastForwarded { behind: usize },
+}
+
+impl FileOperation {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Stage => "stage",
+            Self::Unstage => "unstage",
+            Self::Discard => "discard",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

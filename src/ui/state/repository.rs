@@ -43,7 +43,7 @@ pub(super) fn reduce_event(state: &mut AppState, event: RepositoryEvent) -> Vec<
             }
             Vec::new()
         }
-        RepositoryEvent::StatusOperationFailed { path, message } => {
+        RepositoryEvent::FileOperationFailed { path, message } => {
             if state
                 .compare
                 .repo_path
@@ -204,24 +204,24 @@ impl AppState {
     pub(super) fn apply_repository_action(&mut self, action: RepositoryAction) -> Vec<Effect> {
         use RepositoryAction::*;
         match action {
-            StageSelectedFile => self.apply_selected_status_operation(StatusOperation::Stage),
-            UnstageSelectedFile => self.apply_selected_status_operation(StatusOperation::Unstage),
-            DiscardSelectedFile => self.apply_selected_status_operation(StatusOperation::Discard),
-            StageFile(index) => self.apply_file_status_operation(index, StatusOperation::Stage),
-            UnstageFile(index) => self.apply_file_status_operation(index, StatusOperation::Unstage),
+            StageSelectedFile => self.apply_selected_status_operation(FileOperation::Stage),
+            UnstageSelectedFile => self.apply_selected_status_operation(FileOperation::Unstage),
+            DiscardSelectedFile => self.apply_selected_status_operation(FileOperation::Discard),
+            StageFile(index) => self.apply_file_status_operation(index, FileOperation::Stage),
+            UnstageFile(index) => self.apply_file_status_operation(index, FileOperation::Unstage),
             StageAllFiles => self.apply_batch_scope_operation(
-                &[StatusScope::Unstaged, StatusScope::Untracked],
-                StatusOperation::Stage,
+                &[ChangeBucket::Unstaged, ChangeBucket::Untracked],
+                FileOperation::Stage,
             ),
             UnstageAllFiles => {
-                self.apply_batch_scope_operation(&[StatusScope::Staged], StatusOperation::Unstage)
+                self.apply_batch_scope_operation(&[ChangeBucket::Staged], FileOperation::Unstage)
             }
-            StageHunk => self.apply_hunk_operation(StatusOperation::Stage, None),
-            UnstageHunk => self.apply_hunk_operation(StatusOperation::Unstage, None),
-            DiscardHunk => self.apply_hunk_operation(StatusOperation::Discard, None),
-            StageHunkAt(i) => self.apply_hunk_operation(StatusOperation::Stage, Some(i)),
-            UnstageHunkAt(i) => self.apply_hunk_operation(StatusOperation::Unstage, Some(i)),
-            DiscardHunkAt(i) => self.apply_hunk_operation(StatusOperation::Discard, Some(i)),
+            StageHunk => self.apply_hunk_operation(FileOperation::Stage, None),
+            UnstageHunk => self.apply_hunk_operation(FileOperation::Unstage, None),
+            DiscardHunk => self.apply_hunk_operation(FileOperation::Discard, None),
+            StageHunkAt(i) => self.apply_hunk_operation(FileOperation::Stage, Some(i)),
+            UnstageHunkAt(i) => self.apply_hunk_operation(FileOperation::Unstage, Some(i)),
+            DiscardHunkAt(i) => self.apply_hunk_operation(FileOperation::Discard, Some(i)),
             ToggleLineSelection(row) => {
                 self.toggle_line_selection(row, false);
                 let entries_len = self
@@ -235,9 +235,9 @@ impl AppState {
                 self.toggle_line_selection_range(row, anchor);
                 Vec::new()
             }
-            StageSelectedLines => self.apply_line_selection_operation(StatusOperation::Stage),
-            UnstageSelectedLines => self.apply_line_selection_operation(StatusOperation::Unstage),
-            DiscardSelectedLines => self.apply_line_selection_operation(StatusOperation::Discard),
+            StageSelectedLines => self.apply_line_selection_operation(FileOperation::Stage),
+            UnstageSelectedLines => self.apply_line_selection_operation(FileOperation::Unstage),
+            DiscardSelectedLines => self.apply_line_selection_operation(FileOperation::Discard),
             ClearLineSelection => {
                 self.editor
                     .line_selection
@@ -255,16 +255,12 @@ impl AppState {
     }
 
     fn submit_commit(&mut self) -> Vec<Effect> {
-        if !self
-            .repository
-            .capabilities
-            .with(&self.store, |capabilities| {
-                capabilities.is_some_and(|capabilities| capabilities.staging_area)
-            })
-        {
-            self.push_error("This repository backend does not support Git commits.");
+        let capabilities = self.repository.capabilities.get(&self.store);
+        if !capabilities.is_some_and(|capabilities| capabilities.create_commit) {
+            self.push_error("This repository backend does not support commits.");
             return Vec::new();
         }
+        let has_staging_area = capabilities.is_some_and(|capabilities| capabilities.staging_area);
         let message = self.commit_editor.text().trim().to_owned();
         if message.is_empty() {
             return Vec::new();
@@ -272,10 +268,22 @@ impl AppState {
         let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
             return Vec::new();
         };
-        let has_staged = self.workspace.status_items.with(&self.store, |items| {
-            items.iter().any(|item| item.scope == StatusScope::Staged)
-        });
-        if !has_staged {
+        let has_committable_changes =
+            self.workspace
+                .status_file_changes
+                .with(&self.store, |changes| {
+                    changes.iter().any(|change| {
+                        if has_staging_area {
+                            change.bucket == ChangeBucket::Staged
+                        } else {
+                            matches!(
+                                change.bucket,
+                                ChangeBucket::WorkingCopy | ChangeBucket::Conflicted
+                            )
+                        }
+                    })
+                });
+        if !has_committable_changes {
             return Vec::new();
         }
         vec![RepositoryEffect::CreateCommit(CommitRequest { repo_path, message }).into()]

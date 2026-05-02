@@ -126,17 +126,17 @@ impl EffectRunner {
                 self.vcs_worker
                     .dispatch_sync(path, reason, reporter_generation);
             }
-            Effect::Repository(RepositoryEffect::ApplyStatusOperation(request)) => {
+            Effect::Repository(RepositoryEffect::ApplyFileOperation(request)) => {
                 self.vcs_worker.dispatch_operation(
                     request.repo_path,
-                    request.item,
+                    request.file_change,
                     request.operation,
                 );
             }
-            Effect::Repository(RepositoryEffect::ApplyBatchStatusOperation(request)) => {
+            Effect::Repository(RepositoryEffect::ApplyBatchFileOperation(request)) => {
                 self.vcs_worker.dispatch_batch_operation(
                     request.repo_path,
-                    request.items,
+                    request.file_changes,
                     request.operation,
                 );
             }
@@ -144,7 +144,7 @@ impl EffectRunner {
                 self.vcs_worker.dispatch_patch_operation(
                     request.repo_path,
                     request.patch,
-                    request.scope,
+                    request.bucket,
                     request.operation,
                 );
             }

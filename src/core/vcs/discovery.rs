@@ -4,16 +4,17 @@ use crate::core::error::Result;
 use crate::core::vcs::backend::{VcsBackend, VcsRepository, VcsWatchPaths};
 use crate::core::vcs::git::GitBackend;
 use crate::core::vcs::jj::JjBackend;
-use crate::core::vcs::model::{RepoLocation, VcsKind};
+use crate::core::vcs::model::RepoLocation;
+
+pub fn backends() -> Vec<Box<dyn VcsBackend>> {
+    vec![Box::new(JjBackend), Box::new(GitBackend)]
+}
 
 pub fn discover_repository(path: &Path) -> Result<Option<RepoLocation>> {
-    let jj = JjBackend;
-    if let Some(location) = jj.detect(path)? {
-        return Ok(Some(location));
-    }
-    let git = GitBackend;
-    if let Some(location) = git.detect(path)? {
-        return Ok(Some(location));
+    for backend in &backends() {
+        if let Some(location) = backend.detect(path)? {
+            return Ok(Some(location));
+        }
     }
     Ok(None)
 }
@@ -33,10 +34,8 @@ pub fn open_repository(path: &Path) -> Result<Box<dyn VcsRepository>> {
 }
 
 pub fn open_location(location: RepoLocation) -> Result<Box<dyn VcsRepository>> {
-    match location.kind {
-        VcsKind::Git => GitBackend.open(location),
-        VcsKind::Jj => JjBackend.open(location),
-    }
+    let backend = backend_for_location(&location)?;
+    backend.open(location)
 }
 
 pub fn watch_paths_for_repository(path: &Path) -> Result<VcsWatchPaths> {
@@ -46,10 +45,7 @@ pub fn watch_paths_for_repository(path: &Path) -> Result<VcsWatchPaths> {
             path.display()
         ))
     })?;
-    match location.kind {
-        VcsKind::Git => GitBackend.watch_paths(&location),
-        VcsKind::Jj => JjBackend.watch_paths(&location),
-    }
+    backend_for_location(&location)?.watch_paths(&location)
 }
 
 pub fn open_git_repository(path: &Path) -> Result<Box<dyn VcsRepository>> {
@@ -61,4 +57,16 @@ pub fn open_git_repository(path: &Path) -> Result<Box<dyn VcsRepository>> {
         ))
     })?;
     git.open(location)
+}
+
+fn backend_for_location(location: &RepoLocation) -> Result<Box<dyn VcsBackend>> {
+    backends()
+        .into_iter()
+        .find(|backend| backend.owns_location(location))
+        .ok_or_else(|| {
+            crate::core::error::DiffyError::General(format!(
+                "no backend registered for {}",
+                location.kind
+            ))
+        })
 }

@@ -1,12 +1,11 @@
 use std::path::PathBuf;
 
 use crate::ai::Provider;
-use crate::core::compare::{CompareSpec, RendererKind};
+use crate::core::compare::RendererKind;
 use crate::core::forge::github::CreatePullRequestReviewComment;
 use crate::core::syntax::annotator::SyntaxRowWindow;
 use crate::core::update::{AvailableUpdate, StagedUpdate};
-use crate::core::vcs::git::status::StatusScope;
-use crate::core::vcs::git::{StatusItem, StatusOperation};
+use crate::core::vcs::model::{ChangeBucket, FileChange, FileOperation, VcsCompareRequest};
 use crate::events::RepositorySyncReason;
 use crate::platform::persistence::Settings;
 use crate::platform::secrets::AiKeyKind;
@@ -14,7 +13,7 @@ use crate::platform::secrets::AiKeyKind;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompareRequest {
     pub repo_path: PathBuf,
-    pub spec: CompareSpec,
+    pub request: VcsCompareRequest,
     pub github_token: Option<String>,
 }
 
@@ -31,7 +30,7 @@ pub enum CompareWorkPriority {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompareStatsRequest {
     pub repo_path: PathBuf,
-    pub spec: CompareSpec,
+    pub request: VcsCompareRequest,
     pub priority: CompareWorkPriority,
 }
 
@@ -45,7 +44,7 @@ pub struct CompareHistoryRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompareFileRequest {
     pub repo_path: PathBuf,
-    pub spec: CompareSpec,
+    pub request: VcsCompareRequest,
     pub path: String,
     pub index: usize,
     pub deferred_file: Option<carbon::FileDiff>,
@@ -68,7 +67,7 @@ pub struct CompareFileStatsRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusDiffRequest {
     pub repo_path: PathBuf,
-    pub item: StatusItem,
+    pub file_change: FileChange,
     pub renderer: RendererKind,
 }
 
@@ -86,25 +85,25 @@ pub struct LoadFileSyntaxRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StatusOperationRequest {
+pub struct FileOperationRequest {
     pub repo_path: PathBuf,
-    pub item: StatusItem,
-    pub operation: StatusOperation,
+    pub file_change: FileChange,
+    pub operation: FileOperation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BatchStatusOperationRequest {
+pub struct BatchFileOperationRequest {
     pub repo_path: PathBuf,
-    pub items: Vec<StatusItem>,
-    pub operation: StatusOperation,
+    pub file_changes: Vec<FileChange>,
+    pub operation: FileOperation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatchOperationRequest {
     pub repo_path: PathBuf,
     pub patch: String,
-    pub scope: StatusScope,
-    pub operation: StatusOperation,
+    pub bucket: ChangeBucket,
+    pub operation: FileOperation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,8 +166,8 @@ pub enum RepositoryEffect {
         task: Task<StatusDiffRequest>,
         index: usize,
     },
-    ApplyStatusOperation(StatusOperationRequest),
-    ApplyBatchStatusOperation(BatchStatusOperationRequest),
+    ApplyFileOperation(FileOperationRequest),
+    ApplyBatchFileOperation(BatchFileOperationRequest),
     ApplyPatchOperation(PatchOperationRequest),
     CreateCommit(CommitRequest),
     FetchContextLines(FetchContextLinesRequest),

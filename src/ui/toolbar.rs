@@ -135,7 +135,7 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: Option<&str>) -
         .active_file
         .with(&state.store, |af| af.is_some())
         || (continuous_scroll && state.workspace_file_count() > 0);
-    let selected_scope = state.workspace.selected_status_scope.get(&state.store);
+    let selected_bucket = state.workspace.selected_change_bucket.get(&state.store);
     let compare_layout = state.compare.layout.get(&state.store);
     let supports_staging = state
         .repository
@@ -150,17 +150,17 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: Option<&str>) -
             capabilities.is_some_and(|capabilities| capabilities.partial_hunk_mutation)
         });
     let show_stage = matches!(
-        selected_scope,
+        selected_bucket,
         Some(
-            crate::core::vcs::git::StatusScope::Unstaged
-                | crate::core::vcs::git::StatusScope::Untracked
+            crate::core::vcs::model::ChangeBucket::Unstaged
+                | crate::core::vcs::model::ChangeBucket::Untracked
         )
     ) && supports_staging;
     let show_unstage = matches!(
-        selected_scope,
-        Some(crate::core::vcs::git::StatusScope::Staged)
+        selected_bucket,
+        Some(crate::core::vcs::model::ChangeBucket::Staged)
     ) && supports_staging;
-    let show_discard = selected_scope.is_some() && supports_hunk_mutation;
+    let show_discard = selected_bucket.is_some() && supports_hunk_mutation;
     let file_label_view = file_label.map(|file_label| {
         view! { scale,
             <div class="flex-row items-center flex-1" gap={Sp::SM} min_w={0.0}>

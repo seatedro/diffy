@@ -38,6 +38,7 @@ struct ActiveRepoWatch {
     request_path: PathBuf,
     metadata_dir: PathBuf,
     workdir: Option<PathBuf>,
+    worktree_metadata_paths: Vec<PathBuf>,
     watched_paths: Vec<PathBuf>,
 }
 
@@ -150,11 +151,17 @@ fn replace_active_watch(
         .workdir
         .as_ref()
         .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()));
+    let worktree_metadata_paths = watch_paths
+        .worktree_metadata_paths
+        .iter()
+        .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()))
+        .collect();
 
     *active = Some(ActiveRepoWatch {
         request_path: path,
         metadata_dir,
         workdir,
+        worktree_metadata_paths,
         watched_paths: watch_paths.watched_paths,
     });
 }
@@ -205,10 +212,10 @@ fn classify_event(active: &ActiveRepoWatch, event: &Event) -> RepositoryChangeKi
 
 fn classify_path(active: &ActiveRepoWatch, path: &Path) -> RepositoryChangeKind {
     if path.starts_with(&active.metadata_dir) {
-        if is_git_index_path(&active.metadata_dir, path) {
+        if is_worktree_metadata_path(active, path) {
             RepositoryChangeKind::Worktree
         } else {
-            RepositoryChangeKind::Git
+            RepositoryChangeKind::Metadata
         }
     } else if active
         .workdir
@@ -221,13 +228,11 @@ fn classify_path(active: &ActiveRepoWatch, path: &Path) -> RepositoryChangeKind 
     }
 }
 
-fn is_git_index_path(git_dir: &Path, path: &Path) -> bool {
-    let Ok(relative) = path.strip_prefix(git_dir) else {
-        return false;
-    };
-    relative.components().next().is_some_and(|component| {
-        component.as_os_str() == "index" || component.as_os_str() == "index.lock"
-    })
+fn is_worktree_metadata_path(active: &ActiveRepoWatch, path: &Path) -> bool {
+    active
+        .worktree_metadata_paths
+        .iter()
+        .any(|metadata_path| path == metadata_path || path.starts_with(metadata_path))
 }
 
 #[cfg(test)]

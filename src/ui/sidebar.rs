@@ -5,7 +5,7 @@ use std::rc::Rc;
 use halogen::view;
 
 use crate::actions::Action;
-use crate::core::vcs::git::{CommitInfo, StatusItem, StatusScope};
+use crate::core::vcs::model::{ChangeBucket, FileChange, VcsChange};
 use crate::effects::SettingsEffect;
 use crate::render::{Rect, RectPrimitive, RoundedRectPrimitive};
 use crate::ui::components::{
@@ -33,7 +33,7 @@ const EXACT_SIDEBAR_WIDTH_MAX_FILES: usize = 200;
 
 #[derive(Debug, Clone, Copy)]
 enum SidebarRow<'a> {
-    Section(StatusScope),
+    Section(ChangeBucket),
     File {
         index: usize,
         entry: &'a FileListEntry,
@@ -103,21 +103,22 @@ fn virtual_sidebar_spacer_heights(
 fn build_sidebar_rows<'a>(
     all_files: &'a [FileListEntry],
     filtered_indices: &[usize],
-    status_items: Option<&[StatusItem]>,
+    status_changes: Option<&[FileChange]>,
 ) -> Vec<SidebarRow<'a>> {
     let mut rows = Vec::with_capacity(filtered_indices.len());
-    let mut last_scope = None;
+    let mut last_bucket = None;
 
     for &index in filtered_indices {
         let Some(entry) = all_files.get(index) else {
             continue;
         };
-        let scope = status_items.and_then(|items| items.get(index).map(|item| item.scope));
-        if scope != last_scope {
-            if let Some(scope) = scope {
-                rows.push(SidebarRow::Section(scope));
+        let bucket =
+            status_changes.and_then(|changes| changes.get(index).map(|change| change.bucket));
+        if bucket != last_bucket {
+            if let Some(bucket) = bucket {
+                rows.push(SidebarRow::Section(bucket));
             }
-            last_scope = scope;
+            last_bucket = bucket;
         }
         rows.push(SidebarRow::File { index, entry });
     }
@@ -436,7 +437,7 @@ pub(crate) fn sidebar(
         let filtered_commits: Vec<usize> = if has_filter {
             let haystack: Vec<String> = range_commits
                 .iter()
-                .map(|c| format!("{} {}", c.short_oid, c.summary))
+                .map(|change| format!("{} {}", change.short_revision, change.summary))
                 .collect();
             let haystack_refs: Vec<&str> = haystack.iter().map(|s| s.as_str()).collect();
             let config = neo_frizbee::Config {
@@ -736,37 +737,40 @@ pub(crate) fn sidebar(
 
         if is_tree && !has_filter {
             let entries: Vec<components::FileTreeEntry> =
-                state.workspace.status_items.with(&state.store, |items| {
-                    filtered_indices
-                        .iter()
-                        .map(|&i| {
-                            let f = &all_files[i];
-                            components::FileTreeEntry {
-                                path: f.path.clone(),
-                                status: f.status.clone(),
-                                scope: items
-                                    .get(i)
-                                    .filter(|_| workspace_source == WorkspaceSource::Status)
-                                    .map(|item| {
-                                        if state.repository.capabilities.with(
-                                            &state.store,
-                                            |capabilities| {
-                                                capabilities.is_some_and(|capabilities| {
-                                                    capabilities.staging_area
-                                                })
-                                            },
-                                        ) {
-                                            item.scope.label().to_owned()
-                                        } else {
-                                            "Changed files".to_owned()
-                                        }
-                                    }),
-                                additions: f.additions,
-                                deletions: f.deletions,
-                            }
-                        })
-                        .collect()
-                });
+                state
+                    .workspace
+                    .status_file_changes
+                    .with(&state.store, |changes| {
+                        filtered_indices
+                            .iter()
+                            .map(|&i| {
+                                let f = &all_files[i];
+                                components::FileTreeEntry {
+                                    path: f.path.clone(),
+                                    status: f.status.clone(),
+                                    scope: changes
+                                        .get(i)
+                                        .filter(|_| workspace_source == WorkspaceSource::Status)
+                                        .map(|change| {
+                                            if state.repository.capabilities.with(
+                                                &state.store,
+                                                |capabilities| {
+                                                    capabilities.is_some_and(|capabilities| {
+                                                        capabilities.staging_area
+                                                    })
+                                                },
+                                            ) {
+                                                bucket_label(change.bucket).to_owned()
+                                            } else {
+                                                "Changed files".to_owned()
+                                            }
+                                        }),
+                                    additions: f.additions,
+                                    deletions: f.deletions,
+                                }
+                            })
+                            .collect()
+                    });
 
             let expanded_folders = state.file_list.expanded_folders.get(&state.store);
             let layout = components::file_tree_layout(
@@ -806,7 +810,7 @@ pub(crate) fn sidebar(
         } else {
             let grouped_status = workspace_source == WorkspaceSource::Status && !has_filter;
             let status_rows =
-                grouped_status.then(|| state.workspace.status_items.get(&state.store));
+                grouped_status.then(|| state.workspace.status_file_changes.get(&state.store));
             let rows = build_sidebar_rows(&all_files, &filtered_indices, status_rows.as_deref());
             let total_height = state.file_list_total_content_height(rows.len());
             let scroll_px = state.file_list.scroll_offset_px.get(&state.store);
@@ -851,20 +855,30 @@ pub(crate) fn sidebar(
         }
     };
 
-    let supports_git_commit = state
-        .repository
-        .capabilities
-        .with(&state.store, |capabilities| {
-            capabilities.is_some_and(|capabilities| capabilities.staging_area)
-        });
+    let capabilities = state.repository.capabilities.get(&state.store);
+    let supports_commit = capabilities.is_some_and(|capabilities| capabilities.create_commit);
+    let has_staging_area = capabilities.is_some_and(|capabilities| capabilities.staging_area);
     let commit_box: Option<AnyElement> = if workspace_source == WorkspaceSource::Status
-        && supports_git_commit
+        && supports_commit
     {
         let commit_focused = cx.is_focused(FocusTarget::CommitEditor);
-        let has_staged = state.workspace.status_items.with(&state.store, |items| {
-            items.iter().any(|item| item.scope == StatusScope::Staged)
-        });
-        let can_commit = has_staged && !state.commit_editor.text().trim().is_empty();
+        let has_committable_changes =
+            state
+                .workspace
+                .status_file_changes
+                .with(&state.store, |changes| {
+                    changes.iter().any(|change| {
+                        if has_staging_area {
+                            change.bucket == ChangeBucket::Staged
+                        } else {
+                            matches!(
+                                change.bucket,
+                                ChangeBucket::WorkingCopy | ChangeBucket::Conflicted
+                            )
+                        }
+                    })
+                });
+        let can_commit = has_committable_changes && !state.commit_editor.text().trim().is_empty();
         let box_h = (Sz::COMMIT_BOX_H * scale).round();
         let cursor_snap = CursorSnapshot {
             x: state.commit_editor.cursor_pos.x,
@@ -944,7 +958,7 @@ pub(crate) fn sidebar(
 }
 
 fn status_section_row(
-    scope: StatusScope,
+    bucket: ChangeBucket,
     state: &AppState,
     tc: &crate::ui::theme::ThemeColors,
     scale: f32,
@@ -957,22 +971,23 @@ fn status_section_row(
             capabilities.is_some_and(|capabilities| capabilities.staging_area)
         });
     let label = if has_staging_area {
-        scope.label()
+        bucket_label(bucket)
     } else {
         "Changed files"
     };
     let section_action: Option<(Action, &str, &str)> = has_staging_area
-        .then(|| match scope {
-            StatusScope::Unstaged | StatusScope::Untracked => Some((
+        .then(|| match bucket {
+            ChangeBucket::Unstaged | ChangeBucket::Untracked => Some((
                 crate::actions::RepositoryAction::StageAllFiles.into(),
                 lucide::PLUS,
                 "Stage All",
             )),
-            StatusScope::Staged => Some((
+            ChangeBucket::Staged => Some((
                 crate::actions::RepositoryAction::UnstageAllFiles.into(),
                 lucide::MINUS,
                 "Unstage All",
             )),
+            ChangeBucket::WorkingCopy | ChangeBucket::Conflicted => None,
         })
         .flatten();
 
@@ -994,6 +1009,16 @@ fn status_section_row(
         </div>
     }
     .into_any()
+}
+
+fn bucket_label(bucket: ChangeBucket) -> &'static str {
+    match bucket {
+        ChangeBucket::Staged => "Staged",
+        ChangeBucket::Unstaged => "Unstaged",
+        ChangeBucket::Untracked => "Untracked",
+        ChangeBucket::WorkingCopy => "Changed files",
+        ChangeBucket::Conflicted => "Conflicts",
+    }
 }
 
 fn file_row(
@@ -1024,10 +1049,10 @@ fn file_row(
     let is_status_view = state.workspace.source.get(&state.store) == WorkspaceSource::Status;
     let status_scope = state
         .workspace
-        .status_items
-        .with(&state.store, |items| items.get(index).cloned())
+        .status_file_changes
+        .with(&state.store, |changes| changes.get(index).cloned())
         .filter(|_| is_status_view && !state.file_list.filter.with(&state.store, |s| s.is_empty()))
-        .map(|item| {
+        .map(|change| {
             if state
                 .repository
                 .capabilities
@@ -1035,7 +1060,7 @@ fn file_row(
                     capabilities.is_some_and(|capabilities| capabilities.staging_area)
                 })
             {
-                item.scope.label()
+                bucket_label(change.bucket)
             } else {
                 "Changed files"
             }
@@ -1051,22 +1076,25 @@ fn file_row(
         .then(|| {
             state
                 .workspace
-                .status_items
-                .with(&state.store, |items| items.get(index).map(|i| i.scope))
+                .status_file_changes
+                .with(&state.store, |changes| {
+                    changes.get(index).map(|change| change.bucket)
+                })
         })
         .flatten()
         .filter(|_| is_status_view)
-        .and_then(|scope| match scope {
-            StatusScope::Unstaged | StatusScope::Untracked => Some((
+        .and_then(|bucket| match bucket {
+            ChangeBucket::Unstaged | ChangeBucket::Untracked => Some((
                 crate::actions::RepositoryAction::StageFile(index).into(),
                 lucide::PLUS,
                 "Stage",
             )),
-            StatusScope::Staged => Some((
+            ChangeBucket::Staged => Some((
                 crate::actions::RepositoryAction::UnstageFile(index).into(),
                 lucide::MINUS,
                 "Unstage",
             )),
+            ChangeBucket::WorkingCopy | ChangeBucket::Conflicted => None,
         });
 
     let hovered = state.file_list.hovered_index.get(&state.store) == Some(index);
@@ -1122,7 +1150,7 @@ fn file_row(
 }
 
 fn commit_row(
-    commit: &CommitInfo,
+    change: &VcsChange,
     _index: usize,
     state: &AppState,
     tc: &crate::ui::theme::ThemeColors,
@@ -1134,11 +1162,11 @@ fn commit_row(
         && state
             .compare
             .left_ref
-            .with(&state.store, |left| commit.oid.starts_with(left));
+            .with(&state.store, |left| change.revision.id.starts_with(left));
     let action = if selected {
         crate::actions::CompareAction::ClearSidebarCommit.into()
     } else {
-        crate::actions::CompareAction::SelectSidebarCommit(commit.oid.clone()).into()
+        crate::actions::CompareAction::SelectSidebarCommit(change.revision.id.clone()).into()
     };
 
     view! { scale,
@@ -1150,10 +1178,10 @@ fn commit_row(
              @when { !selected } { hover_bg={tc.sidebar_row_hover} }>
             <icon svg={lucide::CIRCLE_DOT} size={Ico::SM} color={if selected { tc.accent } else { tc.text_muted }} />
             <div class="flex-1 overflow-hidden" min_w={0.0}>
-                <text class="text-sm" color={if selected { tc.text_strong } else { tc.text }}>{&commit.summary}</text>
+                <text class="text-sm" color={if selected { tc.text_strong } else { tc.text }}>{&change.summary}</text>
             </div>
             <div class="shrink-0">
-                <text class="text-xs font-mono" color={tc.text_muted}>{&commit.short_oid}</text>
+                <text class="text-xs font-mono" color={tc.text_muted}>{&change.short_revision}</text>
             </div>
         </div>
     }

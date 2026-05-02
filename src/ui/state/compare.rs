@@ -184,6 +184,13 @@ impl AppState {
                 self.cancel_ref_picker()
             }
             SetCompareMode(mode) => {
+                let profile = self.vcs_ui_profile();
+                if !profile.accepts_compare_mode(mode) {
+                    if self.overlays_top() == Some(OverlaySurface::CompareMenu) {
+                        self.pop_overlay();
+                    }
+                    return Vec::new();
+                }
                 self.compare.mode.set(&self.store, mode);
                 if self.overlays_top() == Some(OverlaySurface::CompareMenu) {
                     self.pop_overlay();
@@ -191,11 +198,9 @@ impl AppState {
                 self.persist_settings_effect()
             }
             CycleCompareMode => {
-                let next = match self.compare.mode.get(&self.store) {
-                    CompareMode::SingleCommit => CompareMode::TwoDot,
-                    CompareMode::TwoDot => CompareMode::ThreeDot,
-                    CompareMode::ThreeDot => CompareMode::SingleCommit,
-                };
+                let next = self
+                    .vcs_ui_profile()
+                    .next_compare_mode(self.compare.mode.get(&self.store));
                 self.compare.mode.set(&self.store, next);
                 self.persist_settings_effect()
             }

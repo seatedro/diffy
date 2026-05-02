@@ -290,7 +290,7 @@ impl VcsRepository for JjRepository {
             OsString::from("ancestors(@, 200) ~ root()"),
             OsString::from("-T"),
             OsString::from(
-                "change_id ++ \"\\t\" ++ commit_id ++ \"\\t\" ++ description.first_line() ++ \"\\t\" ++ author.name() ++ \"\\t\" ++ committer.timestamp() ++ \"\\n\"",
+                "change_id ++ \"\\t\" ++ change_id.shortest(8).prefix() ++ \"\\t\" ++ change_id.shortest(8).rest() ++ \"\\t\" ++ commit_id ++ \"\\t\" ++ description.first_line() ++ \"\\t\" ++ author.name() ++ \"\\t\" ++ committer.timestamp() ++ \"\\n\"",
             ),
         ])?;
         let bookmarks = self.cli.run_ignored_wc(&[
@@ -345,9 +345,14 @@ impl VcsRepository for JjRepository {
         spec: &CompareSpec,
     ) -> Result<(String, String, VcsCompareRequest)> {
         let vcs_spec = match spec.mode {
-            CompareMode::SingleCommit => VcsCompareSpec::Change {
-                revision: spec.right_ref.clone(),
-            },
+            CompareMode::SingleCommit => {
+                let revision = if spec.right_ref.is_empty() {
+                    spec.left_ref.clone()
+                } else {
+                    spec.right_ref.clone()
+                };
+                VcsCompareSpec::Change { revision }
+            }
             CompareMode::TwoDot => VcsCompareSpec::Range {
                 from: spec.left_ref.clone(),
                 to: spec.right_ref.clone(),
@@ -514,7 +519,7 @@ mod tests {
     use super::JjBackend;
     use crate::core::compare::{CompareMode, CompareSpec, LayoutMode, RendererKind};
     use crate::core::vcs::backend::VcsBackend;
-    use crate::core::vcs::model::{ChangeBucket, FileChangeStatus, VcsKind};
+    use crate::core::vcs::model::{ChangeBucket, FileChangeStatus, VcsCompareSpec, VcsKind};
     use crate::events::RepositorySyncReason;
 
     #[test]
@@ -554,6 +559,21 @@ mod tests {
         let (_, _, request) = repo.resolve_compare_spec(&spec).unwrap();
         let (additions, deletions) = repo.compare_stats(&request).unwrap();
         assert_eq!((additions, deletions), (1, 0));
+
+        let single_spec = CompareSpec {
+            left_ref: "@".to_owned(),
+            right_ref: String::new(),
+            mode: CompareMode::SingleCommit,
+            layout: LayoutMode::Unified,
+            renderer: RendererKind::Builtin,
+        };
+        let (_, _, request) = repo.resolve_compare_spec(&single_spec).unwrap();
+        assert_eq!(
+            request.spec,
+            VcsCompareSpec::Change {
+                revision: "@".to_owned()
+            }
+        );
     }
 
     fn init_jj_repo() -> Option<TempDir> {

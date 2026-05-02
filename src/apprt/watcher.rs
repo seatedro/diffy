@@ -81,6 +81,7 @@ fn repo_watch_worker_loop(
             Some(WatchCommand::Notify(Ok(event))) => {
                 if let Some(active_watch) = active.as_ref()
                     && should_consider_event(&event)
+                    && !is_ignored_metadata_event(active_watch, &event)
                 {
                     let change_kind = classify_event(active_watch, &event);
                     pending_dirty = Some(match pending_dirty {
@@ -143,10 +144,17 @@ fn replace_active_watch(
         }
     }
 
+    let metadata_dir = std::fs::canonicalize(&watch_paths.metadata_dir)
+        .unwrap_or_else(|_| watch_paths.metadata_dir.clone());
+    let workdir = watch_paths
+        .workdir
+        .as_ref()
+        .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()));
+
     *active = Some(ActiveRepoWatch {
         request_path: path,
-        metadata_dir: watch_paths.metadata_dir,
-        workdir: watch_paths.workdir,
+        metadata_dir,
+        workdir,
         watched_paths: watch_paths.watched_paths,
     });
 }
@@ -165,6 +173,25 @@ fn should_consider_event(event: &Event) -> bool {
         EventKind::Modify(ModifyKind::Metadata(MetadataKind::AccessTime)) => false,
         _ => true,
     }
+}
+
+fn is_ignored_metadata_event(active: &ActiveRepoWatch, event: &Event) -> bool {
+    if active
+        .metadata_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some(".jj")
+    {
+        return false;
+    }
+
+    event.paths.iter().all(|path| {
+        path.starts_with(&active.metadata_dir)
+            || active
+                .workdir
+                .as_ref()
+                .is_some_and(|workdir| path == workdir)
+    })
 }
 
 fn classify_event(active: &ActiveRepoWatch, event: &Event) -> RepositoryChangeKind {

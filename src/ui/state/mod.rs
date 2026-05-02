@@ -36,7 +36,7 @@ use crate::core::vcs::git::{
     BranchInfo, CommitInfo, StatusItem, StatusOperation, StatusScope, TagInfo,
 };
 use crate::core::vcs::model::{
-    FileChange, RepoCapabilities, RepoLocation, VcsChange, VcsKind, VcsRef,
+    FileChange, RefKind, RepoCapabilities, RepoLocation, VcsChange, VcsRef,
 };
 use crate::editor::Editor;
 use crate::effects::{
@@ -1054,15 +1054,19 @@ impl AppState {
     }
 
     fn status_refs_for_scope(&self, scope: StatusScope) -> (String, String) {
-        if self.repository.location.with(&self.store, |location| {
-            location
-                .as_ref()
-                .is_some_and(|location| location.kind == VcsKind::Jj)
-        }) {
-            ("@-".to_owned(), "@".to_owned())
-        } else {
+        let profile = self.vcs_ui_profile();
+        if profile.uses_git_status_scopes() {
             refs_for_status_scope(scope)
+        } else {
+            let (left, right, _) = profile.working_copy_compare();
+            (left.to_owned(), right.to_owned())
         }
+    }
+
+    fn vcs_ui_profile(&self) -> crate::ui::vcs::VcsUiProfile {
+        self.repository.location.with(&self.store, |location| {
+            crate::ui::vcs::profile(location.as_ref())
+        })
     }
 
     fn active_file_slot_key(
@@ -1545,6 +1549,9 @@ pub enum PickerKind {
 pub trait PickerItem {
     fn label(&self) -> &str;
     fn detail(&self) -> Option<&str>;
+    fn label_style(&self) -> PickerLabelStyle {
+        PickerLabelStyle::Default
+    }
     fn highlight_ranges(&self) -> &[(usize, usize)] {
         &[]
     }
@@ -1562,12 +1569,23 @@ pub trait PickerItem {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PickerLabelStyle {
+    #[default]
+    Default,
+    JjChangeId {
+        prefix_len: usize,
+        working_copy: bool,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickerEntry {
     pub label: String,
     pub detail: String,
     pub value: String,
     pub highlights: Vec<(usize, usize)>,
+    pub label_style: PickerLabelStyle,
     pub icon: Option<&'static str>,
     pub section_header: bool,
 }
@@ -1578,6 +1596,9 @@ impl PickerItem for PickerEntry {
     }
     fn detail(&self) -> Option<&str> {
         Some(&self.detail)
+    }
+    fn label_style(&self) -> PickerLabelStyle {
+        self.label_style
     }
     fn highlight_ranges(&self) -> &[(usize, usize)] {
         &self.highlights
@@ -2681,7 +2702,7 @@ impl AppState {
         self.repository.status.set(&self.store, AsyncStatus::Ready);
         self.repository
             .location
-            .set(&self.store, Some(payload.location));
+            .set(&self.store, Some(payload.location.clone()));
         self.repository
             .capabilities
             .set(&self.store, Some(payload.capabilities));
@@ -2760,12 +2781,11 @@ impl AppState {
                     self.compare.mode.set(&self.store, persisted.mode);
                     effects.extend(self.kickoff_compare());
                 } else {
-                    self.compare.left_ref.set(&self.store, "HEAD".to_owned());
-                    self.compare.right_ref.set(
-                        &self.store,
-                        crate::core::vcs::git::service::WORKDIR_REF.to_owned(),
-                    );
-                    self.compare.mode.set(&self.store, CompareMode::ThreeDot);
+                    let profile = crate::ui::vcs::profile(Some(&payload.location));
+                    let (left, right, mode) = profile.default_compare();
+                    self.compare.left_ref.set(&self.store, left.to_owned());
+                    self.compare.right_ref.set(&self.store, right.to_owned());
+                    self.compare.mode.set(&self.store, mode);
                     effects.extend(self.activate_status_view(true));
                 }
                 effects
@@ -4285,12 +4305,10 @@ impl AppState {
     }
 
     fn show_working_tree(&mut self) -> Vec<Effect> {
-        self.compare.left_ref.set(&self.store, "HEAD".to_owned());
-        self.compare.right_ref.set(
-            &self.store,
-            crate::core::vcs::git::service::WORKDIR_REF.to_owned(),
-        );
-        self.compare.mode.set(&self.store, CompareMode::TwoDot);
+        let (left, right, mode) = self.vcs_ui_profile().working_copy_compare();
+        self.compare.left_ref.set(&self.store, left.to_owned());
+        self.compare.right_ref.set(&self.store, right.to_owned());
+        self.compare.mode.set(&self.store, mode);
         let mut effects = self.persist_settings_effect();
         effects.extend(self.activate_status_view(true));
         effects
@@ -4576,6 +4594,10 @@ impl AppState {
     }
 
     fn auto_select_compare_mode(&mut self) {
+        let profile = self.vcs_ui_profile();
+        if !profile.should_auto_select_trunk_mode() {
+            return;
+        }
         let left = self.compare.left_ref.get(&self.store);
         let right = self.compare.right_ref.get(&self.store);
         if left.is_empty() || right.is_empty() {
@@ -4673,6 +4695,7 @@ impl AppState {
             },
             value: name.clone(),
             highlights: Vec::new(),
+            label_style: PickerLabelStyle::Default,
             icon: None,
             section_header: false,
         };
@@ -4681,6 +4704,7 @@ impl AppState {
             detail: String::new(),
             value: String::new(),
             highlights: Vec::new(),
+            label_style: PickerLabelStyle::Default,
             icon: None,
             section_header: true,
         };
@@ -4753,6 +4777,7 @@ impl AppState {
                         },
                         value: name.clone(),
                         highlights: highlight_ranges_from_match_indices(name, &m.indices),
+                        label_style: PickerLabelStyle::Default,
                         icon: None,
                         section_header: false,
                     }
@@ -5203,6 +5228,7 @@ impl AppState {
                     detail: "Use typed ref".to_owned(),
                     value: query.clone(),
                     highlights: vec![(0, query.len())],
+                    label_style: PickerLabelStyle::Default,
                     icon: None,
                     section_header: false,
                 })
@@ -5360,6 +5386,12 @@ impl AppState {
             "commit" => CompareMode::SingleCommit,
             "diff" => CompareMode::TwoDot,
             _ => CompareMode::ThreeDot,
+        };
+        let profile = self.vcs_ui_profile();
+        let mode = if profile.accepts_compare_mode(mode) {
+            mode
+        } else {
+            profile.compare_modes()[0].mode
         };
         self.workspace.pre_drill_compare.set(&self.store, None);
         self.compare.left_ref.set(&self.store, left.to_owned());
@@ -5559,6 +5591,7 @@ impl AppState {
                 detail: String::new(),
                 value: String::new(),
                 highlights: Vec::new(),
+                label_style: PickerLabelStyle::Default,
                 icon: None,
                 section_header: true,
             });
@@ -5577,6 +5610,7 @@ impl AppState {
                     detail: display.clone(),
                     value: repo.display().to_string(),
                     highlights: Vec::new(),
+                    label_style: PickerLabelStyle::Default,
                     icon: Some(if is_repo {
                         lucide::FOLDER_GIT
                     } else {
@@ -5617,6 +5651,7 @@ impl AppState {
                     detail: display.clone(),
                     value: repo.display().to_string(),
                     highlights,
+                    label_style: PickerLabelStyle::Default,
                     icon: Some(if is_repo {
                         lucide::FOLDER_GIT
                     } else {
@@ -5654,6 +5689,7 @@ impl AppState {
                 value: format!("open:{}", dir.display()),
                 icon: Some(lucide::CORNER_UP_LEFT),
                 highlights: Vec::new(),
+                label_style: PickerLabelStyle::Default,
                 section_header: false,
             });
         }
@@ -5668,6 +5704,7 @@ impl AppState {
                     .unwrap_or_default(),
                 icon: Some(lucide::CORNER_UP_LEFT),
                 highlights: Vec::new(),
+                label_style: PickerLabelStyle::Default,
                 section_header: false,
             });
         }
@@ -5697,6 +5734,7 @@ impl AppState {
                     detail: String::new(),
                     value: path.display().to_string(),
                     highlights: Vec::new(),
+                    label_style: PickerLabelStyle::Default,
                     icon: Some(if *is_git {
                         lucide::FOLDER_GIT
                     } else {
@@ -5721,6 +5759,7 @@ impl AppState {
                     detail: String::new(),
                     value: path.display().to_string(),
                     highlights: highlight_ranges_from_match_indices(name, &m.indices),
+                    label_style: PickerLabelStyle::Default,
                     icon: Some(if *is_git {
                         lucide::FOLDER_GIT
                     } else {
@@ -5753,15 +5792,22 @@ impl AppState {
             label: String,
             detail: String,
             value: String,
+            icon: Option<&'static str>,
+            default_highlights: Vec<(usize, usize)>,
+            label_style: PickerLabelStyle,
             ordinal: usize,
         }
 
         let mut all_candidates = Vec::new();
         let mut ordinal = 0_usize;
 
-        seen.insert("@workdir".to_owned());
-
-        let mut push = |search_text: String, label: String, detail: String, value: String| {
+        let mut push = |search_text: String,
+                        label: String,
+                        detail: String,
+                        value: String,
+                        icon: Option<&'static str>,
+                        default_highlights: Vec<(usize, usize)>,
+                        label_style: PickerLabelStyle| {
             if !seen.insert(value.clone()) {
                 return;
             }
@@ -5770,68 +5816,84 @@ impl AppState {
                 label,
                 detail,
                 value,
+                icon,
+                default_highlights,
+                label_style,
                 ordinal,
             });
             ordinal += 1;
         };
 
-        let branches = self.repository.branches.get(&self.store);
-        let tags = self.repository.tags.get(&self.store);
-        let commits = self.repository.commits.get(&self.store);
+        let profile = self.vcs_ui_profile();
+        let refs = self.repository.refs.get(&self.store);
+        let changes = self.repository.changes.get(&self.store);
 
-        for branch in &branches {
-            let scope = if branch.is_remote {
-                "Remote branch"
-            } else {
-                "Branch"
-            };
-            let mut detail = scope.to_owned();
-            if branch.is_head {
-                detail.push_str(" \u{2022} HEAD");
+        for reference in &refs {
+            let value = reference.name.clone();
+            let (kind_label, icon) = profile.ref_kind_label_and_icon(reference.kind);
+            let mut detail = kind_label.to_owned();
+            if reference.active {
+                detail.push_str(" \u{2022} current");
             }
-            let label = branch.name.clone();
-            push(format!("{label} {detail}"), label.clone(), detail, label);
-        }
-
-        for tag in &tags {
-            let label = tag.name.clone();
+            let mut search_text = format!("{} {detail}", reference.name);
+            if reference.target.id != reference.name {
+                search_text.push(' ');
+                search_text.push_str(&reference.target.id);
+            }
+            if reference.kind == RefKind::WorkingCopy
+                && let Some((detail_suffix, search_suffix)) =
+                    profile.working_copy_ref_suffix(&changes)
+            {
+                detail.push_str(&detail_suffix);
+                search_text.push_str(&search_suffix);
+            }
             push(
-                format!("{label} Tag"),
-                label.clone(),
-                "Tag".to_owned(),
-                label,
+                search_text,
+                reference.name.clone(),
+                detail,
+                value,
+                icon,
+                Vec::new(),
+                PickerLabelStyle::Default,
             );
         }
 
-        for commit in &commits {
-            let label = commit.short_oid.clone();
+        for change in &changes {
+            let entry = profile.change_ref_entry(change);
+            let label_style = entry
+                .prefix_len
+                .map(|prefix_len| PickerLabelStyle::JjChangeId {
+                    prefix_len,
+                    working_copy: entry.working_copy,
+                })
+                .unwrap_or_default();
             push(
-                format!("{label} {} {}", commit.summary, commit.oid),
-                label,
-                commit.summary.clone(),
-                commit.oid.clone(),
+                entry.search_text,
+                entry.label,
+                entry.detail,
+                entry.value,
+                Some(lucide::HASH),
+                entry.default_highlights,
+                label_style,
             );
         }
 
         let mut needs_resolve = false;
 
         if query.is_empty() {
-            let mut entries = vec![PickerEntry {
-                label: "@workdir".to_owned(),
-                detail: "Uncommitted changes on disk".to_owned(),
-                value: "@workdir".to_owned(),
-                highlights: Vec::new(),
-                icon: None,
-                section_header: false,
-            }];
-            entries.extend(all_candidates.into_iter().take(10).map(|c| PickerEntry {
-                label: c.label,
-                detail: c.detail,
-                value: c.value,
-                highlights: Vec::new(),
-                icon: None,
-                section_header: false,
-            }));
+            let entries = all_candidates
+                .into_iter()
+                .take(10)
+                .map(|c| PickerEntry {
+                    label: c.label,
+                    detail: c.detail,
+                    value: c.value,
+                    highlights: c.default_highlights,
+                    label_style: c.label_style,
+                    icon: c.icon,
+                    section_header: false,
+                })
+                .collect();
             self.overlays.picker.entries.set(&self.store, entries);
         } else {
             let haystack: Vec<&str> = all_candidates
@@ -5858,7 +5920,8 @@ impl AppState {
                             highlights: highlight_ranges_for_visible_match(
                                 query, &c.label, &m.indices, &config,
                             ),
-                            icon: None,
+                            label_style: c.label_style,
+                            icon: c.icon,
                             section_header: false,
                         },
                     )
@@ -5869,14 +5932,7 @@ impl AppState {
                     .then(a.1.cmp(&b.1))
                     .then(a.2.label.cmp(&b.2.label))
             });
-            let mut entries = vec![PickerEntry {
-                label: "@workdir".to_owned(),
-                detail: "Uncommitted changes on disk".to_owned(),
-                value: "@workdir".to_owned(),
-                highlights: Vec::new(),
-                icon: None,
-                section_header: false,
-            }];
+            let mut entries = Vec::new();
             entries.extend(scored.into_iter().map(|(_, _, entry)| entry).take(10));
             if !entries.iter().any(|entry| entry.value == query) {
                 entries.insert(
@@ -5886,6 +5942,7 @@ impl AppState {
                         detail: "Resolving\u{2026}".to_owned(),
                         value: query.to_owned(),
                         highlights: vec![(0, query.len())],
+                        label_style: PickerLabelStyle::Default,
                         icon: None,
                         section_header: false,
                     },
@@ -8671,13 +8728,17 @@ mod tests {
 
     use super::{
         ActiveFile, ActiveFileLoading, AppState, AsyncStatus, CarbonStyleOverlays, CompareField,
-        FileListEntry, FocusTarget, OverlaySurface, PreparedActiveFile, WorkspaceMode,
-        WorkspaceSource, prepare_active_file, refs_for_status_scope,
+        FileListEntry, FocusTarget, OverlaySurface, PickerItem, PickerLabelStyle,
+        PreparedActiveFile, WorkspaceMode, WorkspaceSource, prepare_active_file,
+        refs_for_status_scope,
     };
     use crate::core::compare::{CompareMode, CompareOutput, LayoutMode, RendererKind};
     use crate::core::text::TokenBuffer;
     use crate::core::vcs::git::{StatusItem, StatusScope};
-    use crate::core::vcs::model::RepoCapabilities;
+    use crate::core::vcs::model::{
+        ChangeFlags, RefKind, RepoCapabilities, RepoLocation, RevisionId, VcsChange, VcsKind,
+        VcsRef,
+    };
     use crate::effects::{
         AiEffect, CompareEffect, Effect, GitHubEffect, RepositoryEffect, SyntaxEffect,
     };
@@ -9324,6 +9385,7 @@ diff --git a/src/lib.rs b/src/lib.rs
                 detail: format!("C:\\repo-{index}"),
                 value: format!("C:\\repo-{index}"),
                 highlights: Vec::new(),
+                label_style: PickerLabelStyle::Default,
                 icon: None,
                 section_header: false,
             })
@@ -9421,13 +9483,13 @@ diff --git a/src/lib.rs b/src/lib.rs
     #[test]
     fn ref_picker_rebuilds_matches_while_typing_and_keeps_raw_git_revisions_selectable() {
         let mut state = AppState::default();
-        state.repository.branches.set(
+        state.repository.refs.set(
             &state.store,
-            vec![crate::core::vcs::git::BranchInfo {
+            vec![VcsRef {
                 name: "main".to_owned(),
-                is_remote: false,
-                is_head: true,
-                target_oid: "0000000000000000000000000000000000000000".to_owned(),
+                kind: RefKind::Branch,
+                target: RevisionId::git("0000000000000000000000000000000000000000"),
+                active: true,
                 upstream: None,
                 ahead_behind: None,
             }],
@@ -9462,6 +9524,105 @@ diff --git a/src/lib.rs b/src/lib.rs
 
         state.apply_action(crate::actions::OverlayAction::ConfirmOverlaySelection);
         assert_eq!(state.compare.left_ref.get(&state.store), "HEAD~2");
+    }
+
+    #[test]
+    fn ref_picker_uses_jj_refs_and_change_ids_without_git_workdir() {
+        let mut state = AppState::default();
+        let working_commit = "3e2d7a6e55221e519e3efb86e4f8fbb324980427".to_owned();
+        let change_id = "xxyzvpwmsuxytmqltlzwzqpylvlqqyso".to_owned();
+
+        state.repository.location.set(
+            &state.store,
+            Some(RepoLocation {
+                kind: VcsKind::Jj,
+                workspace_root: PathBuf::from("/repo"),
+                store_root: Some(PathBuf::from("/repo/.jj")),
+            }),
+        );
+        state.repository.refs.set(
+            &state.store,
+            vec![
+                VcsRef {
+                    name: "@".to_owned(),
+                    kind: RefKind::WorkingCopy,
+                    target: RevisionId {
+                        backend: VcsKind::Jj,
+                        id: working_commit.clone(),
+                    },
+                    active: true,
+                    upstream: None,
+                    ahead_behind: None,
+                },
+                VcsRef {
+                    name: "main".to_owned(),
+                    kind: RefKind::Bookmark,
+                    target: RevisionId {
+                        backend: VcsKind::Jj,
+                        id: "a4c9f6e8b1d24036a78610a332e12ca25e97c315".to_owned(),
+                    },
+                    active: false,
+                    upstream: None,
+                    ahead_behind: None,
+                },
+            ],
+        );
+        state.repository.changes.set(
+            &state.store,
+            vec![VcsChange {
+                revision: RevisionId {
+                    backend: VcsKind::Jj,
+                    id: working_commit,
+                },
+                change_id: Some(change_id.clone()),
+                short_change_id: Some("xsvsonvs".to_owned()),
+                short_change_id_prefix_len: Some(2),
+                short_revision: "3e2d7a6e5522".to_owned(),
+                summary: "Working copy".to_owned(),
+                author_name: "ro".to_owned(),
+                timestamp: 0,
+                flags: ChangeFlags {
+                    current: true,
+                    working_copy: true,
+                    ..ChangeFlags::default()
+                },
+            }],
+        );
+
+        state.open_ref_picker(CompareField::Left);
+
+        state.overlays.picker.entries.with(&state.store, |entries| {
+            assert!(!entries.iter().any(|entry| entry.value == "@workdir"));
+
+            let working_copy = entries
+                .iter()
+                .find(|entry| entry.value == "@")
+                .expect("working copy ref");
+            assert_eq!(
+                working_copy.detail,
+                "Working copy change \u{2022} current / xsvsonvs 3e2d7a6e5522"
+            );
+
+            let bookmark = entries
+                .iter()
+                .find(|entry| entry.value == "main")
+                .expect("bookmark ref");
+            assert_eq!(bookmark.detail, "Bookmark");
+
+            let change = entries
+                .iter()
+                .find(|entry| entry.value == change_id)
+                .expect("change id entry");
+            assert_eq!(change.label, "xsvsonvs");
+            assert!(change.highlights.is_empty());
+            assert_eq!(
+                change.label_style(),
+                PickerLabelStyle::JjChangeId {
+                    prefix_len: 2,
+                    working_copy: true,
+                }
+            );
+        });
     }
 
     #[test]

@@ -17,15 +17,10 @@ pub fn compare_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
     let menu_w = (Sz::CONTEXT_MENU_MIN_W * 1.4 * scale).round();
     let menu_x = ((width - menu_w) / 2.0).round();
     let menu_y = m.title_bar_height + (Sp::XS * scale).round();
-    let modes = [
-        (CompareMode::ThreeDot, "merge", "Changes since fork point"),
-        (CompareMode::TwoDot, "diff", "Compare two refs directly"),
-        (
-            CompareMode::SingleCommit,
-            "commit",
-            "Single commit vs parent",
-        ),
-    ];
+    let profile = state.repository.location.with(&state.store, |location| {
+        crate::ui::vcs::profile(location.as_ref())
+    });
+    let modes = profile.compare_modes();
 
     let (head_branch, trunk) = state.repository.branches.with(&state.store, |branches| {
         let head = branches
@@ -39,14 +34,47 @@ pub fn compare_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
         (head, trunk)
     });
 
-    let show_branch_preset = matches!((&head_branch, &trunk), (Some(h), Some(t)) if h != t);
+    let show_branch_preset = profile.shows_branch_preset()
+        && matches!((&head_branch, &trunk), (Some(h), Some(t)) if h != t);
     let head_commit = state
         .repository
         .commits
         .with(&state.store, |commits| commits.first().cloned());
-    let has_commits = head_commit.is_some();
-    let show_presets = show_branch_preset || has_commits;
+    let current_change = state.repository.changes.with(&state.store, |changes| {
+        changes
+            .iter()
+            .find(|change| change.flags.working_copy || change.flags.current)
+            .cloned()
+    });
     let compare_mode = state.compare.mode.get(&state.store);
+    let current_change_preset = current_change.as_ref().and_then(|change| {
+        profile.current_change_preset_label(change).map(|label| {
+            preset_row(
+                &label,
+                &change.summary,
+                crate::actions::CompareAction::ApplyComparePreset("@::commit".to_owned()).into(),
+                theme,
+            )
+        })
+    });
+    let head_commit_preset = if profile.shows_head_commit_preset() {
+        head_commit.as_ref().map(|commit| {
+            preset_row(
+                &format!("HEAD ({})", commit.short_oid),
+                &commit.summary,
+                crate::actions::CompareAction::ApplyComparePreset(format!(
+                    "{}::commit",
+                    commit.oid
+                ))
+                .into(),
+                theme,
+            )
+        })
+    } else {
+        None
+    };
+    let show_presets =
+        show_branch_preset || current_change_preset.is_some() || head_commit_preset.is_some();
 
     view! { scale,
         <div class="absolute" left={0.0} top={0.0} w={width} h={height}
@@ -63,8 +91,8 @@ pub fn compare_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
                  rounded={Rad::XL}
                  shadow_preset={Shadow::DROPDOWN}
                  on_click={Action::Noop}>
-                for (mode, label, desc) in modes {
-                    {mode_row(mode, label, desc, compare_mode, theme)}
+                for mode in modes {
+                    {mode_row(mode.mode, mode.label, mode.description, compare_mode, theme)}
                 }
                 if show_presets {
                     <div class="w-full" py={Sp::XS} px={Sp::SM}>
@@ -81,16 +109,8 @@ pub fn compare_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
                         theme,
                     )}
                 }
-                if let Some(commit) = head_commit.as_ref() {
-                    {preset_row(
-                        &format!("HEAD ({})", commit.short_oid),
-                        &commit.summary,
-                        crate::actions::CompareAction::ApplyComparePreset(
-                            format!("{}::commit", commit.oid)
-                        ).into(),
-                        theme,
-                    )}
-                }
+                {?current_change_preset}
+                {?head_commit_preset}
             </div>
         </div>
     }

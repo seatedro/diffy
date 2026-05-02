@@ -1,7 +1,6 @@
 use halogen::view;
 
 use crate::actions::Action;
-use crate::core::compare::CompareMode;
 use crate::ui::design::{Ico, Rad, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
@@ -17,6 +16,9 @@ pub(crate) fn compare_cluster_view(state: &AppState, theme: &Theme) -> Option<An
     let ref_picker_open = state.overlays_top() == Some(OverlaySurface::RefPicker);
 
     if has_repo && repo_loaded {
+        let profile = state.repository.location.with(&state.store, |location| {
+            crate::ui::vcs::profile(location.as_ref())
+        });
         let left_ref_value = state.compare.left_ref.get(&state.store);
         let right_ref_value = state.compare.right_ref.get(&state.store);
         let left_label = if left_ref_value.is_empty() {
@@ -32,17 +34,8 @@ pub(crate) fn compare_cluster_view(state: &AppState, theme: &Theme) -> Option<An
             right_ref_value.clone()
         };
 
-        let (mode_label, mode_tooltip) = match state.compare.mode.get(&state.store) {
-            CompareMode::SingleCommit => (
-                "commit",
-                "Single commit \u{2014} diff a commit against its parent",
-            ),
-            CompareMode::TwoDot => ("diff", "Diff \u{2014} compare two refs directly"),
-            CompareMode::ThreeDot => (
-                "merge",
-                "Merge \u{2014} changes since the right ref diverged from the left",
-            ),
-        };
+        let mode = profile.compare_mode_ui(state.compare.mode.get(&state.store));
+        let (mode_label, mode_tooltip) = (mode.label, mode.tooltip);
 
         Some(compare_cluster(
             state,

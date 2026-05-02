@@ -90,6 +90,8 @@ pub struct VcsRef {
 pub struct VcsChange {
     pub revision: RevisionId,
     pub change_id: Option<String>,
+    pub short_change_id: Option<String>,
+    pub short_change_id_prefix_len: Option<usize>,
     pub short_revision: String,
     pub summary: String,
     pub author_name: String,

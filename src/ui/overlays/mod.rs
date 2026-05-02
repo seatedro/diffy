@@ -88,6 +88,9 @@ pub fn render_active_overlay(
                 CompareField::Left => state.compare.left_ref.get(&state.store),
                 CompareField::Right => state.compare.right_ref.get(&state.store),
             };
+            let profile = state.repository.location.with(&state.store, |location| {
+                crate::ui::vcs::profile(location.as_ref())
+            });
             // Panel flush with the title bar: the title-bar segmented control
             // is the header; scrim begins below the title bar so those chips
             // stay interactive.
@@ -101,7 +104,7 @@ pub fn render_active_overlay(
             };
             picker::picker_with_header(
                 &query,
-                "Search branches, tags, commits",
+                profile.ref_picker_placeholder(),
                 &picker_entries,
                 picker_selected,
                 picker_scroll as f32,

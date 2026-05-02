@@ -1,4 +1,4 @@
-use crate::core::compare::{CompareMode, RendererKind};
+use crate::core::compare::RendererKind;
 use crate::ui::design::{Alpha, Ico, Rad, Sp};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
@@ -19,29 +19,45 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
         AsyncStatus::Idle => (lucide::INFO, tc.text_muted, "idle"),
     };
 
+    let profile = state.repository.location.with(&state.store, |location| {
+        crate::ui::vcs::profile(location.as_ref())
+    });
     let head_branch_info = state.repository.branches.with(&state.store, |branches| {
         branches
             .iter()
             .find(|b| b.is_head)
             .map(|b| (b.name.clone(), b.upstream.clone(), b.ahead_behind))
     });
+    let vcs_identity = state.repository.changes.with(&state.store, |changes| {
+        profile.repository_identity_from_changes(changes)
+    });
 
-    let branch_children = head_branch_info.map(|(branch, upstream, ahead_behind)| {
-        let sync_chip = ahead_behind.and_then(|counts| {
-            let remote = upstream
-                .as_deref()
-                .and_then(|u| u.split_once('/').map(|(r, _)| r.to_owned()));
-            remote.map(|remote| sync_chip(tc, scale, counts, remote))
-        });
-        view! { scale,
+    let branch_children = if let Some(identity) = vcs_identity {
+        Some(view! { scale,
             <div class="flex-row items-center" gap={Sp::SM}>
                 <text class="text-xs" color={tc.text_muted}>{"\u{00b7}"}</text>
-                <icon svg={lucide::GIT_BRANCH} size={Ico::XS} color={tc.text_muted} />
-                <text class="text-xs truncate" color={tc.text_muted}>{branch}</text>
-                {?sync_chip}
+                <icon svg={identity.icon} size={Ico::XS} color={tc.text_muted} />
+                <text class="text-xs truncate" color={tc.text_muted}>{identity.label}</text>
             </div>
-        }
-    });
+        })
+    } else {
+        head_branch_info.map(|(branch, upstream, ahead_behind)| {
+            let sync_chip = ahead_behind.and_then(|counts| {
+                let remote = upstream
+                    .as_deref()
+                    .and_then(|u| u.split_once('/').map(|(r, _)| r.to_owned()));
+                remote.map(|remote| sync_chip(tc, scale, counts, remote))
+            });
+            view! { scale,
+                <div class="flex-row items-center" gap={Sp::SM}>
+                    <text class="text-xs" color={tc.text_muted}>{"\u{00b7}"}</text>
+                    <icon svg={lucide::GIT_BRANCH} size={Ico::XS} color={tc.text_muted} />
+                    <text class="text-xs truncate" color={tc.text_muted}>{branch}</text>
+                    {?sync_chip}
+                </div>
+            }
+        })
+    };
 
     let hunk_child = state.editor_current_hunk_index().map(|(idx, total)| {
         view! {
@@ -54,15 +70,14 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
         .then(|| syntax_pack_status(state.clock_ms, theme, scale));
 
     let right_text = match state.workspace.source.get(&state.store) {
-        WorkspaceSource::Status => state
-            .workspace
-            .selected_status_scope
-            .get(&state.store)
-            .map(|scope| format!("working tree  \u{00b7}  {}", scope.label()))
-            .unwrap_or_else(|| "working tree".to_owned()),
+        WorkspaceSource::Status => {
+            profile.status_view_label(state.workspace.selected_status_scope.get(&state.store))
+        }
         _ => format!(
             "{}  \u{00b7}  {}",
-            compare_mode_label(state.compare.mode.get(&state.store)),
+            profile
+                .compare_mode_ui(state.compare.mode.get(&state.store))
+                .label,
             renderer_label(state.compare.renderer.get(&state.store)),
         ),
     };
@@ -198,14 +213,6 @@ fn sync_chip(
         </div>
     }
     .into_any()
-}
-
-fn compare_mode_label(mode: CompareMode) -> &'static str {
-    match mode {
-        CompareMode::SingleCommit => "commit",
-        CompareMode::TwoDot => "diff",
-        CompareMode::ThreeDot => "merge",
-    }
 }
 
 pub(crate) fn renderer_label(renderer: RendererKind) -> &'static str {

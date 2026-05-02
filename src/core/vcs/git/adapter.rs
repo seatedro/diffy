@@ -337,6 +337,8 @@ pub fn git_changes(commits: &[CommitInfo], branches: &[BranchInfo]) -> Vec<VcsCh
         .map(|commit| VcsChange {
             revision: RevisionId::git(commit.oid.clone()),
             change_id: None,
+            short_change_id: None,
+            short_change_id_prefix_len: None,
             short_revision: commit.short_oid.clone(),
             summary: commit.summary.clone(),
             author_name: commit.author_name.clone(),

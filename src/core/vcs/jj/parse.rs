@@ -13,11 +13,15 @@ pub fn parse_change_log(output: &str) -> Vec<VcsChange> {
 }
 
 pub fn parse_change_log_line(line: &str) -> Option<VcsChange> {
-    let mut fields = line.splitn(5, '\t');
+    let mut fields = line.splitn(7, '\t');
     let change_id = fields.next()?.to_owned();
+    let short_change_prefix = fields.next()?.to_owned();
+    let short_change_rest = fields.next()?.to_owned();
     let commit_id = fields.next()?.to_owned();
     let summary = fields.next().unwrap_or_default().to_owned();
     let author_name = fields.next().unwrap_or_default().to_owned();
+    let short_change_id = format!("{short_change_prefix}{short_change_rest}");
+    let short_change_id_prefix_len = short_change_prefix.len();
     let short_revision = commit_id.chars().take(12).collect::<String>();
     Some(VcsChange {
         revision: RevisionId {
@@ -25,6 +29,9 @@ pub fn parse_change_log_line(line: &str) -> Option<VcsChange> {
             id: commit_id,
         },
         change_id: Some(change_id),
+        short_change_id: (!short_change_id.is_empty()).then_some(short_change_id),
+        short_change_id_prefix_len: (!short_change_prefix.is_empty())
+            .then_some(short_change_id_prefix_len),
         short_revision,
         summary: if summary.is_empty() {
             "Working copy".to_owned()
@@ -148,10 +155,13 @@ mod tests {
     #[test]
     fn parses_change_log_rows() {
         let change =
-            parse_change_log_line("change123\tabcdef1234567890\tmy change\tro\tignored").unwrap();
+            parse_change_log_line("change123\tch\tange\tabcdef1234567890\tmy change\tro\tignored")
+                .unwrap();
         assert_eq!(change.revision.backend, VcsKind::Jj);
         assert_eq!(change.revision.id, "abcdef1234567890");
         assert_eq!(change.change_id.as_deref(), Some("change123"));
+        assert_eq!(change.short_change_id.as_deref(), Some("change"));
+        assert_eq!(change.short_change_id_prefix_len, Some(2));
         assert_eq!(change.short_revision, "abcdef123456");
         assert_eq!(change.summary, "my change");
         assert!(!change.flags.working_copy);
@@ -160,7 +170,7 @@ mod tests {
     #[test]
     fn marks_first_change_log_row_as_working_copy() {
         let changes = parse_change_log(
-            "change1\tabcdef1234567890\tcurrent\tro\tignored\nchange2\t123456abcdef\tparent\tro\tignored\n",
+            "change1\tch\t1\tabcdef1234567890\tcurrent\tro\tignored\nchange2\tch\t2\t123456abcdef\tparent\tro\tignored\n",
         );
         assert!(changes[0].flags.current);
         assert!(changes[0].flags.working_copy);

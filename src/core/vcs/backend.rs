@@ -5,8 +5,8 @@ use carbon::TextStore;
 use crate::core::compare::{CompareOutput, ProgressSink, RendererKind};
 use crate::core::error::Result;
 use crate::core::vcs::model::{
-    FileChange, FileOperation, PullFastForwardOutcome, RepoCapabilities, RepoLocation, RevisionId,
-    VcsChange, VcsCompareRequest, VcsKind, VcsSnapshot,
+    FileChange, FileOperation, PublishAction, PublishOutcome, PublishPlan, PullFastForwardOutcome,
+    RepoCapabilities, RepoLocation, RevisionId, VcsChange, VcsCompareRequest, VcsKind, VcsSnapshot,
 };
 use crate::events::RepositorySyncReason;
 
@@ -120,6 +120,16 @@ pub trait VcsRepository: Send {
     fn push(&mut self, _remote: &str, _refspec: &str, _force_with_lease: bool) -> Result<()> {
         Err(crate::core::error::DiffyError::General(
             "push unsupported by this backend".to_owned(),
+        ))
+    }
+    fn publish_plan(&mut self) -> Result<PublishPlan> {
+        Err(crate::core::error::DiffyError::General(
+            "publish unsupported by this backend".to_owned(),
+        ))
+    }
+    fn publish(&mut self, _action: &PublishAction) -> Result<PublishOutcome> {
+        Err(crate::core::error::DiffyError::General(
+            "publish unsupported by this backend".to_owned(),
         ))
     }
     fn pull_fast_forward(

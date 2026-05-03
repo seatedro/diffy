@@ -33,11 +33,7 @@ pub fn parse_change_log_line(line: &str) -> Option<VcsChange> {
         short_change_id_prefix_len: (!short_change_prefix.is_empty())
             .then_some(short_change_id_prefix_len),
         short_revision,
-        summary: if summary.is_empty() {
-            "Working copy".to_owned()
-        } else {
-            summary
-        },
+        summary,
         author_name,
         timestamp: 0,
         flags: ChangeFlags {
@@ -165,6 +161,13 @@ mod tests {
         assert_eq!(change.short_revision, "abcdef123456");
         assert_eq!(change.summary, "my change");
         assert!(!change.flags.working_copy);
+    }
+
+    #[test]
+    fn preserves_empty_change_descriptions() {
+        let change =
+            parse_change_log_line("change123\tch\tange\tabcdef1234567890\t\tro\tignored").unwrap();
+        assert_eq!(change.summary, "");
     }
 
     #[test]

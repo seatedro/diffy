@@ -421,7 +421,8 @@ fn cycle_focus_target(state: &AppState) -> Option<FocusTarget> {
         Some(
             OverlaySurface::KeyboardShortcuts
             | OverlaySurface::CompareMenu
-            | OverlaySurface::AccountMenu,
+            | OverlaySurface::AccountMenu
+            | OverlaySurface::PublishMenu,
         ) => None,
         None => match state.focus.get(&state.store) {
             Some(FocusTarget::FileList) => Some(FocusTarget::Editor),
@@ -459,7 +460,8 @@ fn activate_current_focus_actions(state: &AppState) -> Option<Vec<Action>> {
         Some(
             OverlaySurface::KeyboardShortcuts
             | OverlaySurface::CompareMenu
-            | OverlaySurface::AccountMenu,
+            | OverlaySurface::AccountMenu
+            | OverlaySurface::PublishMenu,
         ) => Some(Vec::new()),
         None => match state.focus.get(&state.store) {
             Some(FocusTarget::WorkspacePrimaryButton) => {

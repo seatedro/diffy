@@ -1,6 +1,7 @@
 use crate::core::compare::CompareMode;
 use crate::core::vcs::model::{
-    ChangeBucket, RefKind, RepoLocation, VCS_PROFILE_GIT, VCS_PROFILE_JJ, VcsChange,
+    ChangeBucket, ChangeIdToken, RefKind, RepoLocation, VCS_PROFILE_GIT, VCS_PROFILE_JJ, VcsChange,
+    VcsRef,
 };
 use crate::ui::icons::lucide;
 
@@ -27,12 +28,15 @@ struct VcsUiDescriptor {
     shows_branch_preset: bool,
     uses_status_buckets: bool,
     shows_head_commit_preset: bool,
+    publish_command_label: &'static str,
+    publish_command_detail: &'static str,
     working_copy_ref_label: &'static str,
     working_copy_ref_icon: Option<&'static str>,
     status_compare_refs: fn(ChangeBucket) -> (String, String),
     status_view_label: fn(Option<ChangeBucket>) -> String,
     current_change_preset_label: fn(&VcsChange) -> Option<String>,
     repository_identity_from_changes: fn(&[VcsChange]) -> Option<RepositoryIdentityUi>,
+    publish_status_ui: fn(&[VcsChange], &[VcsRef], bool) -> PublishStatusUi,
     working_copy_ref_suffix: fn(&[VcsChange]) -> Option<(String, String)>,
     change_ref_entry: fn(&VcsChange) -> ChangeRefUi,
 }
@@ -60,6 +64,45 @@ pub struct ChangeRefUi {
 pub struct RepositoryIdentityUi {
     pub icon: &'static str,
     pub label: String,
+    pub label_style: RepositoryIdentityLabelStyle,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RepositoryIdentityLabelStyle {
+    #[default]
+    Plain,
+    ChangeId {
+        change_id_prefix_len: usize,
+    },
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PublishStatusUi {
+    pub show_menu: bool,
+    pub hint: Option<PublishHintUi>,
+    pub ref_chips: Vec<PublishRefChipUi>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PublishHintUi {
+    pub label: String,
+    pub change_id_token: Option<ChangeIdToken>,
+    pub tooltip: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PublishRefChipUi {
+    pub name: String,
+    pub upstream: Option<String>,
+    pub tracked: bool,
+}
+
+pub fn change_summary_label(change: &VcsChange) -> String {
+    if change.summary.trim().is_empty() {
+        "(no description set)".to_owned()
+    } else {
+        change.summary.clone()
+    }
 }
 
 const GIT_COMPARE_MODES: &[CompareModeUi] = &[
@@ -109,12 +152,15 @@ static GIT_PROFILE: VcsUiDescriptor = VcsUiDescriptor {
     shows_branch_preset: true,
     uses_status_buckets: true,
     shows_head_commit_preset: true,
+    publish_command_label: "Push current branch",
+    publish_command_detail: "Push the current Git branch to its upstream",
     working_copy_ref_label: "Working copy",
     working_copy_ref_icon: Some(lucide::FILE_DIFF),
     status_compare_refs: git_status_compare_refs,
     status_view_label: git_status_view_label,
     current_change_preset_label: git_current_change_preset_label,
     repository_identity_from_changes: git_repository_identity_from_changes,
+    publish_status_ui: git_publish_status_ui,
     working_copy_ref_suffix: git_working_copy_ref_suffix,
     change_ref_entry: git_change_ref_entry,
 };
@@ -130,12 +176,15 @@ static JJ_PROFILE: VcsUiDescriptor = VcsUiDescriptor {
     shows_branch_preset: false,
     uses_status_buckets: false,
     shows_head_commit_preset: false,
+    publish_command_label: "Publish current change",
+    publish_command_detail: "Publish the current jj change or its bookmark",
     working_copy_ref_label: "Working copy change",
     working_copy_ref_icon: Some(lucide::CIRCLE_DOT),
     status_compare_refs: jj_status_compare_refs,
     status_view_label: jj_status_view_label,
     current_change_preset_label: jj_current_change_preset_label,
     repository_identity_from_changes: jj_repository_identity_from_changes,
+    publish_status_ui: jj_publish_status_ui,
     working_copy_ref_suffix: jj_working_copy_ref_suffix,
     change_ref_entry: jj_change_ref_entry,
 };
@@ -251,6 +300,15 @@ impl VcsUiProfile {
         (self.descriptor.repository_identity_from_changes)(changes)
     }
 
+    pub fn publish_status_ui(
+        self,
+        changes: &[VcsChange],
+        refs: &[VcsRef],
+        has_remotes: bool,
+    ) -> PublishStatusUi {
+        (self.descriptor.publish_status_ui)(changes, refs, has_remotes)
+    }
+
     pub fn working_copy_ref_suffix(self, changes: &[VcsChange]) -> Option<(String, String)> {
         (self.descriptor.working_copy_ref_suffix)(changes)
     }
@@ -261,6 +319,14 @@ impl VcsUiProfile {
 
     pub fn status_view_label(self, selected_bucket: Option<ChangeBucket>) -> String {
         (self.descriptor.status_view_label)(selected_bucket)
+    }
+
+    pub fn publish_command_label(self) -> &'static str {
+        self.descriptor.publish_command_label
+    }
+
+    pub fn publish_command_detail(self) -> &'static str {
+        self.descriptor.publish_command_detail
     }
 
     pub fn ref_kind_label_and_icon(self, kind: RefKind) -> (&'static str, Option<&'static str>) {
@@ -332,8 +398,16 @@ fn git_repository_identity_from_changes(_changes: &[VcsChange]) -> Option<Reposi
     None
 }
 
+fn git_publish_status_ui(
+    _changes: &[VcsChange],
+    _refs: &[VcsRef],
+    _has_remotes: bool,
+) -> PublishStatusUi {
+    PublishStatusUi::default()
+}
+
 fn jj_repository_identity_from_changes(changes: &[VcsChange]) -> Option<RepositoryIdentityUi> {
-    let label = changes
+    let identity = changes
         .iter()
         .find(|change| change.flags.working_copy || change.flags.current)
         .map(|change| {
@@ -343,13 +417,154 @@ fn jj_repository_identity_from_changes(changes: &[VcsChange]) -> Option<Reposito
                 .or(change.change_id.as_deref())
                 .map(str::to_owned)
                 .unwrap_or_else(|| change.short_revision.clone());
-            format!("@ {change_id} {}", change.short_revision)
-        })
-        .unwrap_or_else(|| "@".to_owned());
+            let prefix_len = change
+                .short_change_id_prefix_len
+                .unwrap_or(change_id.len())
+                .min(change_id.len());
+            (
+                format!("@ {change_id} {}", change.short_revision),
+                RepositoryIdentityLabelStyle::ChangeId {
+                    change_id_prefix_len: prefix_len,
+                },
+            )
+        });
+    let (label, label_style) = identity.unwrap_or_else(|| {
+        (
+            "@".to_owned(),
+            RepositoryIdentityLabelStyle::ChangeId {
+                change_id_prefix_len: 1,
+            },
+        )
+    });
     Some(RepositoryIdentityUi {
         icon: lucide::CIRCLE_DOT,
         label,
+        label_style,
     })
+}
+
+fn jj_publish_status_ui(
+    changes: &[VcsChange],
+    refs: &[VcsRef],
+    has_remotes: bool,
+) -> PublishStatusUi {
+    let hint = has_remotes
+        .then(|| jj_publish_target_hint(changes, refs))
+        .flatten();
+    PublishStatusUi {
+        show_menu: hint.is_some(),
+        hint,
+        ref_chips: publish_ref_chips(changes, refs),
+    }
+}
+
+fn jj_publish_target_hint(changes: &[VcsChange], refs: &[VcsRef]) -> Option<PublishHintUi> {
+    let wc_idx = changes
+        .iter()
+        .position(|change| change.flags.working_copy || change.flags.current)?;
+    // Mirror backend publish targeting: undescribed working-copy changes are
+    // not pushed directly, so `@-` becomes the target when possible.
+    let head_described = changes
+        .get(wc_idx)
+        .is_some_and(|change| !change.summary.trim().is_empty());
+    let (target, target_revision) = if head_described {
+        (changes.get(wc_idx)?, "@")
+    } else if let Some(parent) = changes.get(wc_idx + 1) {
+        (parent, "@-")
+    } else {
+        return None;
+    };
+    if target.summary.trim().is_empty() {
+        return None;
+    }
+    let remote = default_remote_from_refs(refs).unwrap_or_else(|| "origin".to_owned());
+
+    let bookmark_name = refs
+        .iter()
+        .filter(|reference| matches!(reference.kind, RefKind::Bookmark))
+        .find(|reference| reference.target.id == target.revision.id)
+        .map(|reference| reference.name.clone());
+
+    if let Some(name) = bookmark_name {
+        return Some(PublishHintUi {
+            label: name.clone(),
+            change_id_token: None,
+            tooltip: format!("Push bookmark {name} at {target_revision} to {remote}"),
+        });
+    }
+
+    let short_id = target
+        .short_change_id
+        .clone()
+        .unwrap_or_else(|| target.short_revision.clone());
+    if short_id.is_empty() {
+        return None;
+    }
+    let prefix_len = target.short_change_id_prefix_len.unwrap_or(1).max(1);
+    Some(PublishHintUi {
+        label: short_id.clone(),
+        change_id_token: Some(ChangeIdToken {
+            text: short_id.clone(),
+            prefix_len,
+        }),
+        tooltip: format!("Push change {short_id} at {target_revision} to {remote}"),
+    })
+}
+
+fn default_remote_from_refs(refs: &[VcsRef]) -> Option<String> {
+    let mut remotes: Vec<String> = refs
+        .iter()
+        .filter_map(|reference| {
+            reference
+                .upstream
+                .as_deref()
+                .and_then(|u| u.split_once('/').map(|(remote, _)| remote.to_owned()))
+                .or_else(|| {
+                    matches!(
+                        reference.kind,
+                        RefKind::RemoteBranch | RefKind::RemoteBookmark
+                    )
+                    .then(|| {
+                        reference
+                            .name
+                            .split_once('/')
+                            .map(|(remote, _)| remote.to_owned())
+                    })
+                    .flatten()
+                })
+        })
+        .collect();
+    remotes.sort();
+    remotes.dedup();
+    remotes
+        .iter()
+        .find(|remote| remote.as_str() == "origin")
+        .cloned()
+        .or_else(|| remotes.into_iter().next())
+}
+
+fn publish_ref_chips(changes: &[VcsChange], refs: &[VcsRef]) -> Vec<PublishRefChipUi> {
+    let publish_targets: Vec<&str> = changes
+        .iter()
+        .take(2)
+        .map(|change| change.revision.id.as_str())
+        .collect();
+    if publish_targets.is_empty() {
+        return Vec::new();
+    }
+    refs.iter()
+        .filter(|reference| matches!(reference.kind, RefKind::Bookmark))
+        .filter(|reference| {
+            publish_targets
+                .iter()
+                .any(|id| *id == reference.target.id.as_str())
+        })
+        .map(|reference| PublishRefChipUi {
+            name: reference.name.clone(),
+            upstream: reference.upstream.clone(),
+            tracked: reference.upstream.is_some(),
+        })
+        .collect()
 }
 
 fn git_working_copy_ref_suffix(_changes: &[VcsChange]) -> Option<(String, String)> {
@@ -371,13 +586,14 @@ fn jj_working_copy_ref_suffix(changes: &[VcsChange]) -> Option<(String, String)>
 }
 
 fn git_change_ref_entry(change: &VcsChange) -> ChangeRefUi {
+    let summary = change_summary_label(change);
     ChangeRefUi {
         label: change.short_revision.clone(),
         value: change.revision.id.clone(),
-        detail: change.summary.clone(),
+        detail: summary.clone(),
         search_text: format!(
             "{} {} {}",
-            change.short_revision, change.summary, change.revision.id
+            change.short_revision, summary, change.revision.id
         ),
         default_highlights: Vec::new(),
         prefix_len: None,
@@ -397,13 +613,14 @@ fn jj_change_ref_entry(change: &VcsChange) -> ChangeRefUi {
     } else {
         "Change"
     };
+    let summary = change_summary_label(change);
     ChangeRefUi {
         label: label.clone(),
         value: change_id.to_owned(),
-        detail: format!("{kind} / {} / {}", change.short_revision, change.summary),
+        detail: format!("{kind} / {} / {}", change.short_revision, summary),
         search_text: format!(
             "{label} {change_id} {} {} {}",
-            change.short_revision, change.summary, change.revision.id
+            change.short_revision, summary, change.revision.id
         ),
         default_highlights: Vec::new(),
         prefix_len: change.short_change_id_prefix_len,

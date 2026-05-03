@@ -8,6 +8,9 @@ use crate::ui::state::WorkspaceSource;
 use crate::ui::state::{AppState, AsyncStatus};
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
+use crate::ui::vcs::{
+    PublishHintUi, PublishRefChipUi, RepositoryIdentityLabelStyle, RepositoryIdentityUi,
+};
 use halogen::view;
 
 pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
@@ -23,27 +26,47 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
     let profile = state.repository.location.with(&state.store, |location| {
         crate::ui::vcs::profile(location.as_ref())
     });
-    let head_branch_info = state.repository.refs.with(&state.store, |refs| {
-        refs.iter()
-            .find(|reference| reference.active && reference.kind == RefKind::Branch)
-            .map(|reference| {
-                (
-                    reference.name.clone(),
-                    reference.upstream.clone(),
-                    reference.ahead_behind,
-                )
-            })
-    });
-    let vcs_identity = state.repository.changes.with(&state.store, |changes| {
-        profile.repository_identity_from_changes(changes)
-    });
+    let refs = state
+        .repository
+        .refs
+        .with(&state.store, |refs| refs.clone());
+    let changes = state
+        .repository
+        .changes
+        .with(&state.store, |changes| changes.clone());
+    let head_branch_info = refs
+        .iter()
+        .find(|reference| reference.active && reference.kind == RefKind::Branch)
+        .map(|reference| {
+            (
+                reference.name.clone(),
+                reference.upstream.clone(),
+                reference.ahead_behind,
+            )
+        });
+    let vcs_identity = profile.repository_identity_from_changes(&changes);
+    let has_remotes = state
+        .repository
+        .capabilities
+        .with(&state.store, |capabilities| {
+            capabilities.is_some_and(|capabilities| capabilities.remotes)
+        });
+    let publish_status = profile.publish_status_ui(&changes, &refs, has_remotes);
 
     let branch_children = if let Some(identity) = vcs_identity {
+        let icon_color = repository_identity_icon_color(&identity, tc);
+        let label = repository_identity_label(&identity, tc);
+        let ref_chips = publish_ref_chips(&publish_status.ref_chips, tc, scale);
+        let remote_button = publish_status
+            .show_menu
+            .then(|| remote_menu_button(publish_status.hint, tc, scale));
         Some(view! { scale,
-            <div class="flex-row items-center" gap={Sp::SM}>
+            <div class="flex-row items-center overflow-hidden" gap={Sp::XS} min_w={0.0}>
                 <text class="text-xs" color={tc.text_muted}>{"\u{00b7}"}</text>
-                <icon svg={identity.icon} size={Ico::XS} color={tc.text_muted} />
-                <text class="text-xs truncate" color={tc.text_muted}>{identity.label}</text>
+                <icon svg={identity.icon} size={Ico::XS} color={icon_color} />
+                {label}
+                {?ref_chips}
+                {?remote_button}
             </div>
         })
     } else {
@@ -109,6 +132,83 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
     }
 }
 
+fn repository_identity_icon_color(
+    identity: &RepositoryIdentityUi,
+    tc: &crate::ui::theme::ThemeColors,
+) -> crate::ui::theme::Color {
+    match identity.label_style {
+        RepositoryIdentityLabelStyle::Plain => tc.text_muted,
+        RepositoryIdentityLabelStyle::ChangeId { .. } => {
+            tc.syntax_keyword.lerp(tc.text_strong, 0.28)
+        }
+    }
+}
+
+fn repository_identity_label(
+    identity: &RepositoryIdentityUi,
+    tc: &crate::ui::theme::ThemeColors,
+) -> AnyElement {
+    match identity.label_style {
+        RepositoryIdentityLabelStyle::Plain => text(identity.label.clone())
+            .text_xs()
+            .truncate()
+            .color(tc.text_muted)
+            .into_any(),
+        RepositoryIdentityLabelStyle::ChangeId {
+            change_id_prefix_len,
+        } => change_id_identity_label(&identity.label, change_id_prefix_len, tc),
+    }
+}
+
+fn change_id_identity_label(
+    label: &str,
+    change_id_prefix_len: usize,
+    tc: &crate::ui::theme::ThemeColors,
+) -> AnyElement {
+    let mut parts = label.splitn(3, ' ');
+    let Some(marker) = parts.next() else {
+        return text(label.to_owned())
+            .text_xs()
+            .truncate()
+            .color(tc.text_muted)
+            .into_any();
+    };
+    let Some(change_id) = parts.next() else {
+        return text(label.to_owned())
+            .text_xs()
+            .truncate()
+            .color(tc.text_muted)
+            .into_any();
+    };
+    let Some(revision) = parts.next() else {
+        return text(label.to_owned())
+            .text_xs()
+            .truncate()
+            .color(tc.text_muted)
+            .into_any();
+    };
+
+    let split = change_id_prefix_len.min(change_id.len());
+    let split = if change_id.is_char_boundary(split) {
+        split
+    } else {
+        0
+    };
+    let (prefix, rest) = change_id.split_at(split);
+    let prefix_color = tc.syntax_keyword.lerp(tc.text_strong, 0.28);
+
+    view! {
+        <div class="flex-row items-center overflow-hidden" min_w={0.0}>
+            {text(marker.to_owned()).text_xs().color(tc.text_muted)}
+            <text class="text-xs" color={tc.text_muted}>{" "}</text>
+            {text(prefix.to_owned()).text_xs().bold().color(prefix_color)}
+            {text(rest.to_owned()).text_xs().color(tc.text_muted)}
+            <text class="text-xs" color={tc.text_muted}>{" "}</text>
+            {text(revision.to_owned()).text_xs().truncate().color(tc.syntax_type)}
+        </div>
+    }
+}
+
 fn syntax_pack_status(clock_ms: u64, theme: &Theme, scale: f32) -> AnyElement {
     let tc = &theme.colors;
     view! { scale,
@@ -164,6 +264,120 @@ fn circular_loader(clock_ms: u64, color: crate::ui::theme::Color) -> AnyElement 
         );
     }
     loader.into_any()
+}
+
+fn remote_menu_button(
+    hint: Option<PublishHintUi>,
+    tc: &crate::ui::theme::ThemeColors,
+    scale: f32,
+) -> AnyElement {
+    let tooltip = match hint.as_ref() {
+        Some(h) => h.tooltip.clone(),
+        None => "Publish, fetch, or pull".to_owned(),
+    };
+    let label = match hint.as_ref() {
+        Some(h) => render_publish_label(h, tc),
+        None => text("Push".to_owned())
+            .text_xs()
+            .medium()
+            .color(tc.text)
+            .into_any(),
+    };
+
+    view! { scale,
+        <div class="flex-row shrink-0 items-center"
+            gap={Sp::XS}
+            px={Sp::SM}
+            py={2.0}
+            rounded={Rad::SM}
+            hover_bg={tc.ghost_element_hover}
+            cursor={CursorHint::Pointer}
+            tooltip={tooltip}
+            on_click={crate::actions::RepositoryAction::OpenPublishMenu.into()}
+        >
+            <icon svg={lucide::ARROW_UP} size={Ico::XS} color={tc.text_muted} />
+            {label}
+            <icon svg={lucide::CHEVRON_DOWN} size={Ico::XS} color={tc.text_muted} />
+        </div>
+    }
+    .into_any()
+}
+
+fn render_publish_label(hint: &PublishHintUi, tc: &crate::ui::theme::ThemeColors) -> AnyElement {
+    // Inter-span spacing comes from a trailing space on "Push " — flex `gap`
+    // between text elements doesn't render reliably across runs in halogen,
+    // so we use explicit whitespace the same way the identity label does.
+    let push_word = text("Push ".to_owned())
+        .text_xs()
+        .medium()
+        .color(tc.text)
+        .into_any();
+    let Some(token) = hint.change_id_token.as_ref() else {
+        return view! {
+            <div class="flex-row items-center">
+                {push_word}
+                {text(hint.label.clone()).text_xs().medium().color(tc.text)}
+            </div>
+        }
+        .into_any();
+    };
+    let split = token.prefix_len.min(token.text.len()).max(1);
+    let split = if token.text.is_char_boundary(split) {
+        split
+    } else {
+        0
+    };
+    let (prefix, rest) = token.text.split_at(split);
+    let prefix_color = tc.syntax_keyword.lerp(tc.text_strong, 0.28);
+
+    view! {
+        <div class="flex-row items-center">
+            {push_word}
+            {text(prefix.to_owned()).text_xs().bold().color(prefix_color)}
+            {text(rest.to_owned()).text_xs().color(tc.text_muted)}
+        </div>
+    }
+    .into_any()
+}
+
+fn publish_ref_chips(
+    chips: &[PublishRefChipUi],
+    tc: &crate::ui::theme::ThemeColors,
+    scale: f32,
+) -> Option<AnyElement> {
+    if chips.is_empty() {
+        return None;
+    }
+    let mut rows: Vec<AnyElement> = Vec::with_capacity(chips.len());
+    for chip in chips.iter().take(3) {
+        let dot_color = if chip.tracked {
+            tc.line_add_text
+        } else {
+            tc.status_warning
+        };
+        let row = view! { scale,
+            <div class="flex-row items-center shrink-0"
+                 gap={Sp::XS}
+                 px={Sp::XS + Sp::XXS}
+                 py={1.0}
+                 rounded={Rad::SM}
+                 bg={tc.ghost_element_hover}>
+                <div class="shrink-0" w={6.0} h={6.0} rounded={3.0} bg={dot_color} />
+                <text class="text-xs truncate" color={tc.text}>{chip.name.clone()}</text>
+            </div>
+        }
+        .into_any();
+        rows.push(row);
+    }
+
+    Some(
+        view! { scale,
+            <div class="flex-row items-center shrink-0" gap={Sp::XS}>
+                {...rows}
+            </div>
+        }
+        .into_any(),
+    )
 }
 
 /// Clickable ahead/behind indicator next to the branch name. Colors the

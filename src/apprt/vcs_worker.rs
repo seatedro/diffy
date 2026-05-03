@@ -10,7 +10,8 @@ use crate::core::vcs::{
     backend::VcsRepository,
     discovery,
     model::{
-        ChangeBucket, FileChange, FileOperation, PullFastForwardOutcome, RepoLocation, VcsSnapshot,
+        ChangeBucket, FileChange, FileOperation, PublishAction, PullFastForwardOutcome,
+        RepoLocation, VcsSnapshot,
     },
 };
 use crate::events::{
@@ -113,6 +114,20 @@ impl VcsWorker {
         });
     }
 
+    pub fn dispatch_publish(&self, path: PathBuf, action: Option<PublishAction>, toast_id: u64) {
+        let _ = self.sender.send(VcsWorkerCommand::Publish {
+            path,
+            action,
+            toast_id,
+        });
+    }
+
+    pub fn dispatch_publish_plan(&self, path: PathBuf, toast_id: Option<u64>) {
+        let _ = self
+            .sender
+            .send(VcsWorkerCommand::PublishPlan { path, toast_id });
+    }
+
     pub fn dispatch_pull_ff(&self, path: PathBuf, remote: String, branch: String, toast_id: u64) {
         let _ = self.sender.send(VcsWorkerCommand::PullFf {
             path,
@@ -168,6 +183,15 @@ pub(crate) enum VcsWorkerCommand {
         refspec: String,
         force_with_lease: bool,
         toast_id: u64,
+    },
+    Publish {
+        path: PathBuf,
+        action: Option<PublishAction>,
+        toast_id: u64,
+    },
+    PublishPlan {
+        path: PathBuf,
+        toast_id: Option<u64>,
     },
     PullFf {
         path: PathBuf,
@@ -282,6 +306,18 @@ fn vcs_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<VcsWorke
                     force_with_lease,
                     toast_id,
                 );
+            }
+            Some(VcsWorkerCommand::Publish {
+                path,
+                action,
+                toast_id,
+            }) => {
+                pending_dirty = None;
+                apply_publish(&mut state, &event_sender, path, action, toast_id);
+            }
+            Some(VcsWorkerCommand::PublishPlan { path, toast_id }) => {
+                pending_dirty = None;
+                apply_publish_plan(&event_sender, path, toast_id);
             }
             Some(VcsWorkerCommand::PullFf {
                 path,
@@ -481,6 +517,65 @@ fn apply_push(
             event_sender.send(RepositoryEvent::PushFailed {
                 toast_id,
                 remote,
+                message: error.to_string(),
+            });
+        }
+    }
+}
+
+fn apply_publish(
+    state: &mut VcsWorkerState,
+    event_sender: &RuntimeEventSender,
+    path: PathBuf,
+    action: Option<PublishAction>,
+    toast_id: u64,
+) {
+    tracing::debug!(path = %path.display(), toast_id, "vcs: publish requested");
+    let result = discovery::open_repository(&path).and_then(|mut repo| {
+        let action = match action {
+            Some(action) => action,
+            None => repo.publish_plan()?.primary,
+        };
+        repo.publish(&action)
+    });
+
+    match result {
+        Ok(outcome) => {
+            tracing::debug!(path = %path.display(), label = %outcome.label, "vcs: publish complete");
+            event_sender.send(RepositoryEvent::PublishComplete {
+                toast_id,
+                path: path.clone(),
+                label: outcome.label,
+            });
+            sync_repository_forced(state, event_sender, path, RepositorySyncReason::Rescan);
+        }
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "vcs: publish failed");
+            event_sender.send(RepositoryEvent::PublishFailed {
+                toast_id,
+                message: error.to_string(),
+            });
+        }
+    }
+}
+
+fn apply_publish_plan(event_sender: &RuntimeEventSender, path: PathBuf, toast_id: Option<u64>) {
+    tracing::debug!(path = %path.display(), ?toast_id, "vcs: publish-plan requested");
+    let result = discovery::open_repository(&path).and_then(|mut repo| repo.publish_plan());
+
+    match result {
+        Ok(plan) => {
+            tracing::debug!(path = %path.display(), "vcs: publish-plan ready");
+            event_sender.send(RepositoryEvent::PublishPlanReady {
+                toast_id,
+                path,
+                plan,
+            });
+        }
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "vcs: publish-plan failed");
+            event_sender.send(RepositoryEvent::PublishPlanFailed {
+                toast_id,
                 message: error.to_string(),
             });
         }

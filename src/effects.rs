@@ -5,7 +5,9 @@ use crate::core::compare::RendererKind;
 use crate::core::forge::github::CreatePullRequestReviewComment;
 use crate::core::syntax::annotator::SyntaxRowWindow;
 use crate::core::update::{AvailableUpdate, StagedUpdate};
-use crate::core::vcs::model::{ChangeBucket, FileChange, FileOperation, VcsCompareRequest};
+use crate::core::vcs::model::{
+    ChangeBucket, FileChange, FileOperation, PublishAction, VcsCompareRequest,
+};
 use crate::events::RepositorySyncReason;
 use crate::platform::persistence::Settings;
 use crate::platform::secrets::AiKeyKind;
@@ -129,6 +131,19 @@ pub struct PushRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishRequest {
+    pub repo_path: PathBuf,
+    pub action: Option<PublishAction>,
+    pub toast_id: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishPlanRequest {
+    pub repo_path: PathBuf,
+    pub toast_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullFfRequest {
     pub repo_path: PathBuf,
     pub remote: String,
@@ -161,6 +176,8 @@ pub enum RepositoryEffect {
     },
     FetchRemote(FetchRemoteRequest),
     Push(PushRequest),
+    PublishDefault(PublishRequest),
+    LoadPublishPlan(PublishPlanRequest),
     PullFf(PullFfRequest),
     LoadStatusDiff {
         task: Task<StatusDiffRequest>,

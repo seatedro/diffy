@@ -4,8 +4,31 @@ set -euo pipefail
 identity="${DIFFY_CODESIGN_IDENTITY:-Diffy Dev}"
 keychain="${DIFFY_CODESIGN_KEYCHAIN:-$HOME/Library/Keychains/login.keychain-db}"
 
+repair_key_access() {
+  local password="${DIFFY_CODESIGN_KEYCHAIN_PASSWORD:-}"
+  if [[ -z "$password" ]]; then
+    if [[ -t 0 ]]; then
+      printf "login keychain password for codesign access: " >&2
+      IFS= read -r -s password
+      printf "\n" >&2
+    else
+      echo "setup-macos-dev-codesign: identity '$identity' exists, but key access may still prompt" >&2
+      echo "setup-macos-dev-codesign: rerun in a terminal or set DIFFY_CODESIGN_KEYCHAIN_PASSWORD once" >&2
+      return 0
+    fi
+  fi
+
+  security set-key-partition-list \
+    -S apple-tool:,apple:,codesign: \
+    -s \
+    -t private \
+    -k "$password" \
+    "$keychain" >/dev/null
+}
+
 if security find-identity -v -p codesigning | grep -Fq "\"$identity\""; then
-  echo "setup-macos-dev-codesign: identity '$identity' already exists"
+  repair_key_access
+  echo "setup-macos-dev-codesign: identity '$identity' already exists; refreshed codesign key access"
   exit 0
 fi
 
@@ -68,5 +91,7 @@ security add-trusted-cert \
   -p codeSign \
   -k "$keychain" \
   "$cert_pem" >/dev/null
+
+repair_key_access
 
 echo "setup-macos-dev-codesign: created code-signing identity '$identity'"

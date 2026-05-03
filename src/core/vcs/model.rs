@@ -183,6 +183,65 @@ pub enum PullFastForwardOutcome {
     FastForwarded { behind: usize },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishPlan {
+    pub primary: PublishAction,
+    pub alternatives: Vec<PublishAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishAction {
+    pub label: String,
+    pub description: String,
+    pub kind: PublishActionKind,
+    /// Short change-id token (e.g. "strqswum") that may appear inside `label`
+    /// or `description`. The UI highlights its unique prefix (bold) followed
+    /// by the rest (muted), matching the status-bar identity styling.
+    pub change_id_token: Option<ChangeIdToken>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeIdToken {
+    pub text: String,
+    pub prefix_len: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PublishActionKind {
+    PushRef {
+        remote: String,
+        refspec: String,
+        force_with_lease: bool,
+    },
+    PushChange {
+        remote: String,
+        revision: String,
+    },
+    PushBookmark {
+        remote: String,
+        bookmark: String,
+    },
+    PushTracked {
+        remote: String,
+    },
+    MoveBookmarkAndPush {
+        remote: String,
+        bookmark: String,
+        revision: String,
+        allow_backwards: bool,
+    },
+    CreateBookmarkAndPush {
+        remote: String,
+        bookmark: String,
+        revision: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishOutcome {
+    pub label: String,
+}
+
 impl FileOperation {
     pub const fn label(self) -> &'static str {
         match self {

@@ -165,6 +165,17 @@ impl EffectRunner {
                     request.toast_id,
                 );
             }
+            Effect::Repository(RepositoryEffect::PublishDefault(request)) => {
+                self.vcs_worker.dispatch_publish(
+                    request.repo_path,
+                    request.action,
+                    request.toast_id,
+                );
+            }
+            Effect::Repository(RepositoryEffect::LoadPublishPlan(request)) => {
+                self.vcs_worker
+                    .dispatch_publish_plan(request.repo_path, request.toast_id);
+            }
             Effect::Repository(RepositoryEffect::PullFf(request)) => {
                 self.vcs_worker.dispatch_pull_ff(
                     request.repo_path,

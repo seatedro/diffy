@@ -32,8 +32,8 @@ use crate::core::syntax::annotator::{SyntaxLineTokens, SyntaxRowWindow};
 use crate::core::text::TokenBuffer;
 use crate::core::update::{AvailableUpdate, StagedUpdate};
 use crate::core::vcs::model::{
-    ChangeBucket, FileChange, FileChangeStatus, FileOperation, RefKind, RepoCapabilities,
-    RepoLocation, VcsChange, VcsCompareRequest, VcsCompareSpec, VcsRef,
+    ChangeBucket, FileChange, FileChangeStatus, FileOperation, PublishAction, PublishPlan, RefKind,
+    RepoCapabilities, RepoLocation, VcsChange, VcsCompareRequest, VcsCompareSpec, VcsRef,
 };
 use crate::core::vcs::patch;
 use crate::editor::Editor;
@@ -41,9 +41,9 @@ use crate::effects::{
     AiEffect, BatchFileOperationRequest, CommitRequest, CompareEffect, CompareFileRequest,
     CompareFileStatsItem, CompareFileStatsRequest, CompareHistoryRequest, CompareRequest,
     CompareStatsRequest, CompareWorkPriority, Effect, FetchRemoteRequest, FileOperationRequest,
-    GitHubEffect, LoadFileSyntaxRequest, PatchOperationRequest, PullFfRequest, PushRequest,
-    RepositoryEffect, SettingsEffect, StatusDiffRequest, SyntaxEffect, Task, UiEffect,
-    UpdateEffect,
+    GitHubEffect, LoadFileSyntaxRequest, PatchOperationRequest, PublishPlanRequest, PublishRequest,
+    PullFfRequest, PushRequest, RepositoryEffect, SettingsEffect, StatusDiffRequest, SyntaxEffect,
+    Task, UiEffect, UpdateEffect,
 };
 use crate::events::{
     AppEvent, CompareFileFinished, CompareFileStat, CompareFileStatsReady, CompareFinished,
@@ -326,6 +326,7 @@ pub struct RepositoryState {
     pub refs: Vec<VcsRef>,
     pub changes: Vec<VcsChange>,
     pub file_changes: Vec<FileChange>,
+    pub publish_plan: Option<PublishPlan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1663,6 +1664,7 @@ pub enum PaletteCommand {
     FetchOrigin,
     FetchAllRemotes,
     PushCurrentBranch,
+    PublishOptions,
     PushCurrentBranchForceWithLease,
     PullCurrentBranch,
     OpenSettings,
@@ -1697,8 +1699,11 @@ fn palette_command_available(
         PaletteCommand::FetchOrigin
         | PaletteCommand::FetchAllRemotes
         | PaletteCommand::PushCurrentBranch
-        | PaletteCommand::PushCurrentBranchForceWithLease => {
+        | PaletteCommand::PublishOptions => {
             capabilities.is_some_and(|capabilities| capabilities.remotes)
+        }
+        PaletteCommand::PushCurrentBranchForceWithLease => {
+            capabilities.is_some_and(|capabilities| capabilities.remotes && capabilities.branches)
         }
         PaletteCommand::PullCurrentBranch => {
             capabilities.is_some_and(|capabilities| capabilities.pull_fast_forward)
@@ -1846,6 +1851,7 @@ pub enum OverlaySurface {
     ThemePicker,
     CompareMenu,
     AccountMenu,
+    PublishMenu,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2596,6 +2602,7 @@ impl AppState {
         self.repository.refs.set(&self.store, Vec::new());
         self.repository.changes.set(&self.store, Vec::new());
         self.repository.file_changes.set(&self.store, Vec::new());
+        self.repository.publish_plan.set(&self.store, None);
         self.workspace_clear_compare();
         self.reset_file_list();
         self.editor_clear_document();
@@ -2737,6 +2744,7 @@ impl AppState {
         self.repository
             .file_changes
             .set(&self.store, file_changes.clone());
+        self.repository.publish_plan.set(&self.store, None);
         self.workspace
             .status_file_changes
             .set(&self.store, file_changes);
@@ -5120,7 +5128,8 @@ impl AppState {
             Some(
                 OverlaySurface::KeyboardShortcuts
                 | OverlaySurface::CompareMenu
-                | OverlaySurface::AccountMenu,
+                | OverlaySurface::AccountMenu
+                | OverlaySurface::PublishMenu,
             ) => Vec::new(),
             None => Vec::new(),
         }
@@ -5491,6 +5500,9 @@ impl AppState {
                     self.apply_action(crate::actions::RepositoryAction::PushCurrentBranch {
                         force_with_lease: false,
                     })
+                }
+                PaletteCommand::PublishOptions => {
+                    self.apply_action(crate::actions::RepositoryAction::OpenPublishMenu)
                 }
                 PaletteCommand::PushCurrentBranchForceWithLease => {
                     self.apply_action(crate::actions::RepositoryAction::PushCurrentBranch {
@@ -6156,27 +6168,32 @@ impl AppState {
             ),
             (
                 "Fetch origin".to_owned(),
-                "Update tracking branches from origin".to_owned(),
+                "Update remote references from origin".to_owned(),
                 PaletteCommand::FetchOrigin,
             ),
             (
                 "Fetch all remotes".to_owned(),
-                "Update tracking branches from every configured remote".to_owned(),
+                "Update remote references from every configured remote".to_owned(),
                 PaletteCommand::FetchAllRemotes,
             ),
             (
                 "Pull current branch".to_owned(),
-                "Fast-forward the current branch from its upstream".to_owned(),
+                "Fast-forward the current Git branch from its upstream".to_owned(),
                 PaletteCommand::PullCurrentBranch,
             ),
             (
-                "Push current branch".to_owned(),
-                "Push the current branch to its upstream".to_owned(),
+                self.vcs_ui_profile().publish_command_label().to_owned(),
+                self.vcs_ui_profile().publish_command_detail().to_owned(),
                 PaletteCommand::PushCurrentBranch,
             ),
             (
+                "Publish options".to_owned(),
+                "Choose a backend-provided publish action".to_owned(),
+                PaletteCommand::PublishOptions,
+            ),
+            (
                 "Push current branch (force with lease)".to_owned(),
-                "Force-push the current branch; refuses if upstream moved".to_owned(),
+                "Force-push the current Git branch; refuse if upstream moved".to_owned(),
                 PaletteCommand::PushCurrentBranchForceWithLease,
             ),
             (
@@ -8087,6 +8104,76 @@ impl AppState {
             .collect()
     }
 
+    fn start_publish_default(&mut self) -> Vec<Effect> {
+        if !self
+            .repository
+            .capabilities
+            .with(&self.store, |capabilities| {
+                capabilities.is_some_and(|capabilities| capabilities.remotes)
+            })
+        {
+            self.push_error("This repository backend does not support publishing.");
+            return Vec::new();
+        }
+        let Some(repo_path) = self.compare.repo_path.with(&self.store, |p| p.clone()) else {
+            self.push_error("Open a repository before publishing.");
+            return Vec::new();
+        };
+        let toast_id = self.push_progress_toast(&format!(
+            "{}\u{2026}",
+            self.vcs_ui_profile().publish_command_label()
+        ));
+        vec![
+            RepositoryEffect::PublishDefault(PublishRequest {
+                repo_path,
+                action: None,
+                toast_id,
+            })
+            .into(),
+        ]
+    }
+
+    fn start_open_publish_menu(&mut self) -> Vec<Effect> {
+        if !self
+            .repository
+            .capabilities
+            .with(&self.store, |capabilities| {
+                capabilities.is_some_and(|capabilities| capabilities.remotes)
+            })
+        {
+            self.push_error("This repository backend does not support publishing.");
+            return Vec::new();
+        }
+        let Some(repo_path) = self.compare.repo_path.with(&self.store, |p| p.clone()) else {
+            self.push_error("Open a repository before publishing.");
+            return Vec::new();
+        };
+        self.push_overlay(OverlaySurface::PublishMenu, None);
+        vec![
+            RepositoryEffect::LoadPublishPlan(PublishPlanRequest {
+                repo_path,
+                toast_id: None,
+            })
+            .into(),
+        ]
+    }
+
+    fn start_publish_action(&mut self, action: PublishAction) -> Vec<Effect> {
+        let Some(repo_path) = self.compare.repo_path.with(&self.store, |p| p.clone()) else {
+            self.push_error("Open a repository before publishing.");
+            return Vec::new();
+        };
+        let toast_id = self.push_progress_toast(&format!("{}\u{2026}", action.label));
+        vec![
+            RepositoryEffect::PublishDefault(PublishRequest {
+                repo_path,
+                action: Some(action),
+                toast_id,
+            })
+            .into(),
+        ]
+    }
+
     fn start_push_current_branch(&mut self, force_with_lease: bool) -> Vec<Effect> {
         if !self
             .repository
@@ -8170,7 +8257,7 @@ impl AppState {
             .refs
             .with(&self.store, |refs| active_publish_ref(refs))
         else {
-            self.push_error("HEAD is detached; no branch to pull into.");
+            self.push_error("No active branch or bookmark to pull into.");
             return Vec::new();
         };
         let branch = branch_ref.name;
@@ -8628,6 +8715,7 @@ fn overlay_name(surface: OverlaySurface) -> &'static str {
         OverlaySurface::KeyboardShortcuts => "keyboard-shortcuts",
         OverlaySurface::ThemePicker => "theme-picker",
         OverlaySurface::CompareMenu => "compare-menu",
+        OverlaySurface::PublishMenu => "publish-menu",
     }
 }
 

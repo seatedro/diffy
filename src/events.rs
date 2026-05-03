@@ -7,7 +7,8 @@ use crate::core::forge::github::{
 use crate::core::syntax::annotator::{SyntaxLineTokens, SyntaxRowWindow};
 use crate::core::update::{AvailableUpdate, StagedUpdate};
 use crate::core::vcs::model::{
-    FileChange, RepoCapabilities, RepoLocation, VcsChange, VcsCompareRequest, VcsRef, VcsSnapshot,
+    FileChange, PublishPlan, RepoCapabilities, RepoLocation, VcsChange, VcsCompareRequest, VcsRef,
+    VcsSnapshot,
 };
 use crate::ui::state::{ComparePhase, PreparedActiveFile};
 
@@ -180,6 +181,24 @@ pub enum RepositoryEvent {
     PushFailed {
         toast_id: u64,
         remote: String,
+        message: String,
+    },
+    PublishComplete {
+        toast_id: u64,
+        path: PathBuf,
+        label: String,
+    },
+    PublishFailed {
+        toast_id: u64,
+        message: String,
+    },
+    PublishPlanReady {
+        toast_id: Option<u64>,
+        path: PathBuf,
+        plan: PublishPlan,
+    },
+    PublishPlanFailed {
+        toast_id: Option<u64>,
         message: String,
     },
     PullComplete {

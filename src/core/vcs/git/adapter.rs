@@ -14,9 +14,10 @@ use crate::core::vcs::git::{
     StatusScope, TagInfo, WORKDIR_REF, status::status_items_from_entry,
 };
 use crate::core::vcs::model::{
-    ChangeBucket, ChangeFlags, FileChange, FileChangeStatus, FileOperation, PullFastForwardOutcome,
-    RefKind, RepoCapabilities, RepoLocation, RevisionId, VCS_PROFILE_GIT, VcsChange,
-    VcsCompareRequest, VcsCompareSpec, VcsKind, VcsRef, VcsSnapshot,
+    ChangeBucket, ChangeFlags, FileChange, FileChangeStatus, FileOperation, PublishAction,
+    PublishActionKind, PublishOutcome, PublishPlan, PullFastForwardOutcome, RefKind,
+    RepoCapabilities, RepoLocation, RevisionId, VCS_PROFILE_GIT, VcsChange, VcsCompareRequest,
+    VcsCompareSpec, VcsKind, VcsRef, VcsSnapshot,
 };
 use crate::events::{RepositoryChangeKind, RepositorySyncReason};
 
@@ -316,6 +317,54 @@ impl VcsRepository for GitRepository {
             .push(remote, refspec, force_with_lease, |_, _, _| {})
     }
 
+    fn publish_plan(&mut self) -> Result<PublishPlan> {
+        let branches = self.service.branches()?;
+        let branch = branches
+            .iter()
+            .find(|branch| branch.is_head && !branch.is_remote)
+            .ok_or_else(|| DiffyError::General("No current branch to push.".to_owned()))?;
+        let (remote, upstream_branch) = branch
+            .upstream
+            .as_deref()
+            .and_then(upstream_pair)
+            .unwrap_or_else(|| {
+                let remote = preferred_git_remote(&branches).unwrap_or_else(|| "origin".to_owned());
+                (remote, branch.name.clone())
+            });
+        let refspec = format!("refs/heads/{}:refs/heads/{upstream_branch}", branch.name);
+        Ok(PublishPlan {
+            primary: PublishAction {
+                label: format!("Push {}", branch.name),
+                description: format!("Push {} to {remote}/{upstream_branch}", branch.name),
+                kind: PublishActionKind::PushRef {
+                    remote,
+                    refspec,
+                    force_with_lease: false,
+                },
+                change_id_token: None,
+            },
+            alternatives: Vec::new(),
+        })
+    }
+
+    fn publish(&mut self, action: &PublishAction) -> Result<PublishOutcome> {
+        match &action.kind {
+            PublishActionKind::PushRef {
+                remote,
+                refspec,
+                force_with_lease,
+            } => {
+                self.push(remote, refspec, *force_with_lease)?;
+                Ok(PublishOutcome {
+                    label: completed_publish_label(&action.label),
+                })
+            }
+            _ => Err(DiffyError::General(
+                "Git cannot run this publish action".to_owned(),
+            )),
+        }
+    }
+
     fn pull_fast_forward(&mut self, remote: &str, branch: &str) -> Result<PullFastForwardOutcome> {
         self.service
             .pull_ff(remote, branch, |_, _, _| {})
@@ -370,6 +419,39 @@ fn git_compare_spec(request: &VcsCompareRequest) -> CompareSpec {
         layout: request.layout,
         renderer: request.renderer,
     }
+}
+
+fn upstream_pair(upstream: &str) -> Option<(String, String)> {
+    upstream
+        .split_once('/')
+        .map(|(remote, branch)| (remote.to_owned(), branch.to_owned()))
+}
+
+fn preferred_git_remote(branches: &[BranchInfo]) -> Option<String> {
+    let mut remotes = branches
+        .iter()
+        .filter(|branch| branch.is_remote)
+        .filter_map(|branch| {
+            branch
+                .name
+                .split_once('/')
+                .map(|(remote, _)| remote.to_owned())
+        })
+        .collect::<Vec<_>>();
+    remotes.sort();
+    remotes.dedup();
+    remotes
+        .iter()
+        .find(|remote| remote.as_str() == "origin")
+        .cloned()
+        .or_else(|| remotes.into_iter().next())
+}
+
+fn completed_publish_label(label: &str) -> String {
+    label
+        .strip_prefix("Push ")
+        .map(|suffix| format!("Pushed {suffix}"))
+        .unwrap_or_else(|| label.to_owned())
 }
 
 pub fn detect_git_location(path: &Path) -> Result<Option<RepoLocation>> {

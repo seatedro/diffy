@@ -55,7 +55,7 @@ pub fn compare_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
         profile.current_change_preset_label(change).map(|label| {
             preset_row(
                 &label,
-                &change.summary,
+                &crate::ui::vcs::change_summary_label(change),
                 crate::actions::CompareAction::ApplyComparePreset("@::commit".to_owned()).into(),
                 theme,
             )
@@ -65,7 +65,7 @@ pub fn compare_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
         head_commit.as_ref().map(|commit| {
             preset_row(
                 &format!("HEAD ({})", commit.short_revision),
-                &commit.summary,
+                &crate::ui::vcs::change_summary_label(commit),
                 crate::actions::CompareAction::ApplyComparePreset(format!(
                     "{}::commit",
                     commit.revision.id

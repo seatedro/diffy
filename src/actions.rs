@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
+use crate::core::vcs::model::PublishAction;
 use crate::platform::secrets::AiKeyKind;
 use crate::ui::state::{CompareField, FocusTarget, SettingsSection, SidebarTab};
 use crate::ui::theme::ThemeMode;
@@ -68,6 +69,9 @@ pub enum RepositoryAction {
     FetchRemote(String),
     FetchAllRemotes,
     PushCurrentBranch { force_with_lease: bool },
+    PublishDefault,
+    OpenPublishMenu,
+    Publish(PublishAction),
     PullCurrentBranch,
 }
 

@@ -168,6 +168,44 @@ pub(super) fn reduce_event(state: &mut AppState, event: RepositoryEvent) -> Vec<
             state.fail_progress_toast(toast_id, &format!("Push to {remote} failed"), Some(message));
             Vec::new()
         }
+        RepositoryEvent::PublishComplete {
+            toast_id,
+            path: _,
+            label,
+        } => {
+            state.finish_progress_toast(toast_id, &label, None);
+            Vec::new()
+        }
+        RepositoryEvent::PublishFailed { toast_id, message } => {
+            state.fail_progress_toast(toast_id, "Publish failed", Some(message));
+            Vec::new()
+        }
+        RepositoryEvent::PublishPlanReady {
+            toast_id,
+            path,
+            plan,
+        } => {
+            if state
+                .compare
+                .repo_path
+                .with(&state.store, |p| p.as_ref() != Some(&path))
+            {
+                return Vec::new();
+            }
+            if let Some(id) = toast_id {
+                state.finish_progress_toast(id, "Publish options ready", None);
+            }
+            state.repository.publish_plan.set(&state.store, Some(plan));
+            Vec::new()
+        }
+        RepositoryEvent::PublishPlanFailed { toast_id, message } => {
+            if let Some(id) = toast_id {
+                state.fail_progress_toast(id, "Publish options failed", Some(message));
+            } else {
+                state.push_error(&format!("Publish options failed: {message}"));
+            }
+            Vec::new()
+        }
         RepositoryEvent::PullComplete {
             toast_id,
             path: _,
@@ -178,6 +216,8 @@ pub(super) fn reduce_event(state: &mut AppState, event: RepositoryEvent) -> Vec<
         } => {
             let message = if already_up_to_date {
                 format!("{branch} is already up to date with {remote}")
+            } else if behind == 0 {
+                format!("Pulled {branch} from {remote}")
             } else {
                 format!("Fast-forwarded {branch} by {behind} commit(s) from {remote}")
             };
@@ -247,9 +287,12 @@ impl AppState {
             SubmitCommit => self.submit_commit(),
             FetchRemote(remote) => self.start_fetch_remote(remote),
             FetchAllRemotes => self.start_fetch_all_remotes(),
-            PushCurrentBranch { force_with_lease } => {
-                self.start_push_current_branch(force_with_lease)
+            PushCurrentBranch { force_with_lease } if force_with_lease => {
+                self.start_push_current_branch(true)
             }
+            PushCurrentBranch { .. } | PublishDefault => self.start_publish_default(),
+            OpenPublishMenu => self.start_open_publish_menu(),
+            Publish(action) => self.start_publish_action(action),
             PullCurrentBranch => self.start_pull_current_branch(),
         }
     }

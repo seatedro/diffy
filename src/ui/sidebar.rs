@@ -22,6 +22,7 @@ use crate::ui::state::{
 };
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme};
+use crate::ui::vcs::change_summary_label;
 
 pub(crate) struct SidebarResizeDrag {
     origin_x: f32,
@@ -437,7 +438,7 @@ pub(crate) fn sidebar(
         let filtered_commits: Vec<usize> = if has_filter {
             let haystack: Vec<String> = range_commits
                 .iter()
-                .map(|change| format!("{} {}", change.short_revision, change.summary))
+                .map(|change| format!("{} {}", change.short_revision, change_summary_label(change)))
                 .collect();
             let haystack_refs: Vec<&str> = haystack.iter().map(|s| s.as_str()).collect();
             let config = neo_frizbee::Config {
@@ -1178,7 +1179,7 @@ fn commit_row(
              @when { !selected } { hover_bg={tc.sidebar_row_hover} }>
             <icon svg={lucide::CIRCLE_DOT} size={Ico::SM} color={if selected { tc.accent } else { tc.text_muted }} />
             <div class="flex-1 overflow-hidden" min_w={0.0}>
-                <text class="text-sm" color={if selected { tc.text_strong } else { tc.text }}>{&change.summary}</text>
+                <text class="text-sm" color={if selected { tc.text_strong } else { tc.text }}>{change_summary_label(change)}</text>
             </div>
             <div class="shrink-0">
                 <text class="text-xs font-mono" color={tc.text_muted}>{&change.short_revision}</text>

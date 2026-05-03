@@ -44,6 +44,7 @@ pub struct StartupOptions {
     pub github_token: Option<String>,
     pub github_client_id: String,
     pub log_debug: bool,
+    pub keyring_enabled: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -112,13 +113,14 @@ impl StartupEnvDefaults {
 impl StartupOptions {
     pub fn load() -> Self {
         let env_defaults = StartupEnvDefaults::load(env_var);
-        Self::from_parts(
+        Self::from_parts_with_keyring(
             env_defaults.apply(Args::parse()),
             env_var("GITHUB_TOKEN"),
             env_var("DIFFY_GITHUB_CLIENT_ID")
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| DEFAULT_GITHUB_CLIENT_ID.to_owned()),
             env_flag("DIFFY_LOG_DEBUG"),
+            keyring_enabled_from_env(env_flag),
         )
     }
 
@@ -128,11 +130,22 @@ impl StartupOptions {
         github_client_id: String,
         log_debug: bool,
     ) -> Self {
+        Self::from_parts_with_keyring(args, github_token, github_client_id, log_debug, true)
+    }
+
+    pub fn from_parts_with_keyring(
+        args: Args,
+        github_token: Option<String>,
+        github_client_id: String,
+        log_debug: bool,
+        keyring_enabled: bool,
+    ) -> Self {
         Self {
             args,
             github_token: github_token.filter(|value| !value.is_empty()),
             github_client_id,
             log_debug,
+            keyring_enabled,
         }
     }
 
@@ -199,6 +212,19 @@ fn env_flag(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn keyring_enabled_from_env<FFlag>(env_flag: FFlag) -> bool
+where
+    FFlag: Fn(&str) -> bool,
+{
+    if env_flag("DIFFY_DISABLE_KEYRING") {
+        return false;
+    }
+    if env_flag("DIFFY_ENABLE_KEYRING") {
+        return true;
+    }
+    !cfg!(debug_assertions)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -206,7 +232,7 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{Args, StartupEnvDefaults, StartupOptions};
+    use super::{Args, StartupEnvDefaults, StartupOptions, keyring_enabled_from_env};
     use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 
     #[test]
@@ -254,6 +280,33 @@ mod tests {
         assert_eq!(options.github_token.as_deref(), Some("token"));
         assert_eq!(options.github_client_id, "client");
         assert!(options.log_debug);
+        assert!(options.keyring_enabled);
+    }
+
+    #[test]
+    fn keyring_is_disabled_by_default_in_debug_builds() {
+        let env = HashMap::<&str, &str>::new();
+        let enabled =
+            keyring_enabled_from_env(|name| env.get(name).is_some_and(|value| *value == "1"));
+
+        if cfg!(debug_assertions) {
+            assert!(!enabled);
+        } else {
+            assert!(enabled);
+        }
+    }
+
+    #[test]
+    fn keyring_env_flags_override_build_default() {
+        let disabled = HashMap::from([("DIFFY_DISABLE_KEYRING", "1")]);
+        assert!(!keyring_enabled_from_env(|name| {
+            disabled.get(name).is_some_and(|value| *value == "1")
+        }));
+
+        let enabled = HashMap::from([("DIFFY_ENABLE_KEYRING", "1")]);
+        assert!(keyring_enabled_from_env(|name| {
+            enabled.get(name).is_some_and(|value| *value == "1")
+        }));
     }
 
     #[test]

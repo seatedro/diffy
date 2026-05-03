@@ -222,6 +222,7 @@
               pkgs.nodejs_22
               pkgs.uv
               pkgs.git
+              pkgs.jujutsu
               pkgs.jq
               pkgs.lldb
               pkgs.lld

@@ -45,7 +45,25 @@ pub(super) fn reduce_event(state: &mut AppState, event: CompareEvent) -> Vec<Eff
                     .workspace
                     .compare_total_stats_loading
                     .set(&state.store, false);
+                if let Some(stats) = state.exact_compare_total_stats_if_ready() {
+                    state
+                        .workspace
+                        .compare_total_stats
+                        .set(&state.store, Some(stats));
+                    if !state.compare_stats_hydration_running() {
+                        return state
+                            .take_pending_compare_history_effect()
+                            .into_iter()
+                            .collect();
+                    }
+                    return Vec::new();
+                }
                 if let Some(effect) = state.start_compare_stats_hydration_if_idle() {
+                    return vec![effect];
+                }
+                if !state.compare_stats_hydration_running()
+                    && let Some(effect) = state.take_pending_compare_history_effect()
+                {
                     return vec![effect];
                 }
             }
@@ -60,10 +78,15 @@ pub(super) fn reduce_event(state: &mut AppState, event: CompareEvent) -> Vec<Eff
             message: _,
         } => {
             if generation == state.workspace.compare_generation.get(&state.store) {
-                state
+                state.set_compare_stats_hydration(CompareStatsHydrationState::Failed);
+                if !state
                     .workspace
-                    .compare_stats_hydration_active
-                    .set(&state.store, false);
+                    .compare_total_stats_loading
+                    .get(&state.store)
+                    && let Some(effect) = state.take_pending_compare_history_effect()
+                {
+                    return vec![effect];
+                }
             }
             Vec::new()
         }
@@ -81,6 +104,7 @@ pub(super) fn reduce_event(state: &mut AppState, event: CompareEvent) -> Vec<Eff
                     });
                 if matches_loading {
                     state.workspace.active_file_loading.set(&state.store, None);
+                    state.compare_progress.set(&state.store, None);
                     state.push_error(&message);
                 }
             }

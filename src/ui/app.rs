@@ -28,6 +28,7 @@ const UPDATE_POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
 pub fn run() -> Result<(), Box<dyn Error>> {
     let startup = StartupOptions::load();
     init_logging(startup.log_debug);
+    let keyring_enabled = startup.keyring_enabled;
 
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Wait);
@@ -45,6 +46,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let runtime = AppRuntime::new(
         AppServices::new(settings_store),
         Some(event_loop.create_proxy()),
+        keyring_enabled,
     );
     runtime.dispatch_all(initial_effects);
 
@@ -739,6 +741,17 @@ impl ApplicationHandler for NativeApp {
                 .state
                 .next_toast_expiry_at_ms()
                 .map(|ms| self.launch_at + std::time::Duration::from_millis(ms));
+            let next_compare_progress_reveal =
+                self.state
+                    .compare_progress
+                    .with(&self.state.store, |progress| {
+                        progress.as_ref().and_then(|progress| {
+                            (now_ms < progress.reveal_at_ms).then(|| {
+                                self.launch_at
+                                    + std::time::Duration::from_millis(progress.reveal_at_ms)
+                            })
+                        })
+                    });
             let next_tooltip = if !self.tooltip_state.text.is_empty() && !self.tooltip_state.visible
             {
                 Some(
@@ -751,6 +764,7 @@ impl ApplicationHandler for NativeApp {
             [
                 next_cursor_blink,
                 next_toast_expiry,
+                next_compare_progress_reveal,
                 next_tooltip,
                 self.next_update_check_at,
             ]
@@ -816,7 +830,11 @@ mod tests {
 
     fn test_app(state: AppState) -> NativeApp {
         let dir = TempDir::new().unwrap();
-        let runtime = AppRuntime::new(AppServices::new(SettingsStore::new_in(dir.path())), None);
+        let runtime = AppRuntime::new(
+            AppServices::new(SettingsStore::new_in(dir.path())),
+            None,
+            true,
+        );
         NativeApp::new(state, runtime, ThemeRegistry::load())
     }
 
@@ -932,11 +950,7 @@ mod tests {
             &state.store,
             (0..32)
                 .map(|index| FileListEntry {
-                    path: format!("src/file_{index}.rs"),
-                    status: "M".to_owned(),
-                    additions: 1,
-                    deletions: 0,
-                    is_binary: false,
+                    path: format!("src/file_{index}.rs").into(),
                 })
                 .collect(),
         );
@@ -987,11 +1001,7 @@ mod tests {
             &state.store,
             (0..32)
                 .map(|index| FileListEntry {
-                    path: format!("src/file_{index}.rs"),
-                    status: "M".to_owned(),
-                    additions: 1,
-                    deletions: 0,
-                    is_binary: false,
+                    path: format!("src/file_{index}.rs").into(),
                 })
                 .collect(),
         );
@@ -1039,11 +1049,7 @@ mod tests {
         state.workspace.files.set(
             &state.store,
             vec![FileListEntry {
-                path: "src/file_0.rs".to_owned(),
-                status: "M".to_owned(),
-                additions: 1,
-                deletions: 0,
-                is_binary: false,
+                path: "src/file_0.rs".into(),
             }],
         );
         state
@@ -1154,18 +1160,10 @@ mod tests {
             &state.store,
             vec![
                 FileListEntry {
-                    path: "src/ui/state/mod.rs".to_owned(),
-                    status: "M".to_owned(),
-                    additions: 1,
-                    deletions: 0,
-                    is_binary: false,
+                    path: "src/ui/state/mod.rs".into(),
                 },
                 FileListEntry {
-                    path: "src/ui/state/text_edit.rs".to_owned(),
-                    status: "M".to_owned(),
-                    additions: 1,
-                    deletions: 0,
-                    is_binary: false,
+                    path: "src/ui/state/text_edit.rs".into(),
                 },
             ],
         );
@@ -1234,18 +1232,10 @@ mod tests {
             &state.store,
             vec![
                 FileListEntry {
-                    path: "src/ui/state/mod.rs".to_owned(),
-                    status: "M".to_owned(),
-                    additions: 1,
-                    deletions: 0,
-                    is_binary: false,
+                    path: "src/ui/state/mod.rs".into(),
                 },
                 FileListEntry {
-                    path: "src/ui/state/text_edit.rs".to_owned(),
-                    status: "M".to_owned(),
-                    additions: 1,
-                    deletions: 0,
-                    is_binary: false,
+                    path: "src/ui/state/text_edit.rs".into(),
                 },
             ],
         );

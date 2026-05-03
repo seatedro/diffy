@@ -13,9 +13,7 @@ impl AppState {
         match action {
             SelectFile(index) => self.select_file(index, false),
             SelectFilePath(path) => {
-                let idx = self.workspace.files.with(&self.store, |files| {
-                    files.iter().position(|file| file.path == path)
-                });
+                let idx = self.workspace_file_index_for_path(&path);
                 if let Some(index) = idx {
                     return self.select_file(index, true);
                 } else {
@@ -27,20 +25,20 @@ impl AppState {
             SelectPreviousFile => self.shift_loaded_file(-1),
             ScrollFileList(delta) => {
                 self.file_list_scroll_rows(delta, self.sidebar_row_count());
-                self.start_compare_stats_hydration_if_idle()
+                self.start_visible_compare_stats_hydration()
                     .into_iter()
                     .collect()
             }
             ScrollFileListPx(delta_px) => {
                 self.file_list_scroll_px(delta_px as f32, self.sidebar_row_count());
-                self.start_compare_stats_hydration_if_idle()
+                self.start_visible_compare_stats_hydration()
                     .into_iter()
                     .collect()
             }
             ScrollFileListToPx(px) => {
                 self.file_list.scroll_offset_px.set(&self.store, px as f32);
                 self.file_list_clamp_scroll(self.sidebar_row_count());
-                self.start_compare_stats_hydration_if_idle()
+                self.start_visible_compare_stats_hydration()
                     .into_iter()
                     .collect()
             }
@@ -73,7 +71,9 @@ impl AppState {
                         set.insert(path);
                     }
                 });
-                Vec::new()
+                self.start_visible_compare_stats_hydration()
+                    .into_iter()
+                    .collect()
             }
             ToggleFileViewed(index) => {
                 self.file_list.viewed_files.update(&self.store, |set| {
@@ -94,7 +94,7 @@ impl AppState {
                 } else {
                     self.file_list.scroll_offset_px.set(&self.store, 0.0);
                 }
-                self.start_compare_stats_hydration_if_idle()
+                self.start_visible_compare_stats_hydration()
                     .into_iter()
                     .collect()
             }
@@ -107,7 +107,7 @@ impl AppState {
                 } else {
                     self.file_list.scroll_offset_px.set(&self.store, 0.0);
                 }
-                self.start_compare_stats_hydration_if_idle()
+                self.start_visible_compare_stats_hydration()
                     .into_iter()
                     .collect()
             }
@@ -122,30 +122,27 @@ impl AppState {
                 };
                 self.file_list.mode.set(&self.store, next);
                 self.file_list.scroll_offset_px.set(&self.store, 0.0);
-                self.start_compare_stats_hydration_if_idle()
+                self.start_visible_compare_stats_hydration()
                     .into_iter()
                     .collect()
             }
             ExpandAllFolders => {
-                let paths = self.workspace.files.with(&self.store, |files| {
-                    files.iter().map(|f| f.path.clone()).collect::<Vec<_>>()
+                let mut expanded = self.file_list.expanded_folders.get(&self.store);
+                self.for_each_workspace_file_path(|_, path| {
+                    insert_folder_prefixes(path, &mut expanded);
                 });
-                self.file_list.expanded_folders.update(&self.store, |set| {
-                    for path in &paths {
-                        let parts: Vec<&str> = path.split('/').collect();
-                        for depth in 0..parts.len().saturating_sub(1) {
-                            let folder_path = parts[..=depth].join("/");
-                            set.insert(folder_path);
-                        }
-                    }
-                });
-                Vec::new()
+                self.file_list.expanded_folders.set(&self.store, expanded);
+                self.start_visible_compare_stats_hydration()
+                    .into_iter()
+                    .collect()
             }
             CollapseAllFolders => {
                 self.file_list
                     .expanded_folders
                     .update(&self.store, |s| s.clear());
-                Vec::new()
+                self.start_visible_compare_stats_hydration()
+                    .into_iter()
+                    .collect()
             }
             SetSidebarTab(tab) => {
                 self.file_list.tab.set(&self.store, tab);
@@ -155,7 +152,9 @@ impl AppState {
                         .into_iter()
                         .collect()
                 } else {
-                    Vec::new()
+                    self.start_visible_compare_stats_hydration()
+                        .into_iter()
+                        .collect()
                 }
             }
             ScrollCommitListPx(delta) => {
@@ -171,5 +170,11 @@ impl AppState {
                 Vec::new()
             }
         }
+    }
+}
+
+fn insert_folder_prefixes(path: &str, set: &mut HashSet<String>) {
+    for (index, _) in path.match_indices('/') {
+        set.insert(path[..index].to_owned());
     }
 }

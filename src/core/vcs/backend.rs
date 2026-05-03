@@ -2,7 +2,9 @@ use std::path::{Path, PathBuf};
 
 use carbon::TextStore;
 
-use crate::core::compare::{CompareOutput, ProgressSink, RendererKind};
+use crate::core::compare::{
+    CompareFileStatsTarget, CompareFileSummary, CompareOutput, ProgressSink, RendererKind,
+};
 use crate::core::error::Result;
 use crate::core::vcs::model::{
     FileChange, FileOperation, PublishAction, PublishOutcome, PublishPlan, PullFastForwardOutcome,
@@ -53,22 +55,21 @@ pub trait VcsRepository: Send {
     ) -> Result<Vec<VcsChange>> {
         Ok(Vec::new())
     }
-    fn compare_file_stats(&mut self, files: &[&carbon::FileDiff]) -> Result<Vec<(i32, i32)>> {
+    fn compare_file_stats(
+        &mut self,
+        _request: &VcsCompareRequest,
+        files: &[CompareFileStatsTarget],
+    ) -> Result<Vec<(i32, i32)>> {
         Ok(files
             .iter()
-            .map(|file| {
-                (
-                    u32_to_i32_saturating(file.additions),
-                    u32_to_i32_saturating(file.deletions),
-                )
-            })
+            .map(CompareFileStatsTarget::fallback_stats)
             .collect())
     }
     fn compare_path(
         &mut self,
         request: &VcsCompareRequest,
         path: &str,
-        deferred_file: Option<&carbon::FileDiff>,
+        deferred_file: Option<&CompareFileSummary>,
     ) -> Result<CompareOutput>;
     fn file_change_diff(
         &mut self,
@@ -158,8 +159,4 @@ pub trait VcsRepository: Send {
     }
     fn compare_working_file(&mut self, path: &str) -> Result<CompareOutput>;
     fn read_file_text(&mut self, revision: &RevisionId, path: &str) -> Result<TextStore>;
-}
-
-fn u32_to_i32_saturating(value: u32) -> i32 {
-    i32::try_from(value).unwrap_or(i32::MAX)
 }

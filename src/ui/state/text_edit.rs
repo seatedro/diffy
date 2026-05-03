@@ -54,9 +54,15 @@ impl AppState {
             Some(FocusTarget::CommandPaletteInput) => return self.rebuild_command_palette(),
             Some(FocusTarget::SearchInput) => self.recompute_search_matches(),
             Some(FocusTarget::SettingsOpenAiKey) => {
+                if !self.startup.keyring_enabled {
+                    return Vec::new();
+                }
                 return vec![ai_key_save_effect(AiKeyKind::OpenAi, &self.ai_openai_key)];
             }
             Some(FocusTarget::SettingsAnthropicKey) => {
+                if !self.startup.keyring_enabled {
+                    return Vec::new();
+                }
                 return vec![ai_key_save_effect(
                     AiKeyKind::Anthropic,
                     &self.ai_anthropic_key,

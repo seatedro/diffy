@@ -1,7 +1,8 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::ai::Provider;
-use crate::core::compare::RendererKind;
+use crate::core::compare::{CompareFileStatsTarget, CompareFileSummary, RendererKind};
 use crate::core::forge::github::CreatePullRequestReviewComment;
 use crate::core::syntax::annotator::SyntaxRowWindow;
 use crate::core::update::{AvailableUpdate, StagedUpdate};
@@ -29,6 +30,19 @@ pub enum CompareWorkPriority {
     Warmup,
 }
 
+impl CompareWorkPriority {
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::InteractiveSelectedFile => 60,
+            Self::VisibleViewportDiff => 50,
+            Self::VisibleSidebarStats => 40,
+            Self::Overscan => 30,
+            Self::TotalStats => 20,
+            Self::Warmup => 10,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompareStatsRequest {
     pub repo_path: PathBuf,
@@ -49,19 +63,20 @@ pub struct CompareFileRequest {
     pub request: VcsCompareRequest,
     pub path: String,
     pub index: usize,
-    pub deferred_file: Option<carbon::FileDiff>,
+    pub deferred_file: Option<CompareFileSummary>,
     pub priority: CompareWorkPriority,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompareFileStatsItem {
     pub index: usize,
-    pub file: carbon::FileDiff,
+    pub target: CompareFileStatsTarget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompareFileStatsRequest {
     pub repo_path: PathBuf,
+    pub request: VcsCompareRequest,
     pub files: Vec<CompareFileStatsItem>,
     pub priority: CompareWorkPriority,
 }
@@ -78,12 +93,14 @@ pub struct LoadFileSyntaxRequest {
     pub repo_path: PathBuf,
     pub file_index: usize,
     pub path: String,
-    pub carbon_file: carbon::FileDiff,
+    pub carbon_file: Arc<carbon::FileDiff>,
+    pub carbon_expansion: carbon::ExpansionState,
     pub left_ref: String,
     pub right_ref: String,
     pub window: SyntaxRowWindow,
     pub request_id: u64,
     pub cache_generation: u64,
+    pub syntax_epoch: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,6 +293,7 @@ pub enum UpdateEffect {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyntaxEffect {
+    SetFileSyntaxEpoch { epoch: u64 },
     LoadFileSyntax(Task<LoadFileSyntaxRequest>),
     InstallCommonSyntaxPacks,
     EnsureSyntaxPackForPath { path: String },

@@ -8,6 +8,7 @@
     pkgs.pkg-config
     pkgs.uv
     pkgs.git
+    pkgs.jujutsu
     pkgs.jq
     pkgs.gdb
     pkgs.lldb

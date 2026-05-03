@@ -96,7 +96,7 @@ pub(crate) fn main_surface(
                     .with(&state.store, |af| af.is_none()) =>
             {
                 if state.workspace.source.get(&state.store) == WorkspaceSource::Status {
-                    let no_files = state.workspace.files.with(&state.store, |f| f.is_empty());
+                    let no_files = state.workspace_file_count() == 0;
                     Some(status_ready_hint(theme, no_files))
                 } else if state.compare.repo_path.with(&state.store, |p| p.is_some()) {
                     Some(repo_ready_hint(theme))

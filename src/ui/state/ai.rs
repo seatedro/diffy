@@ -71,6 +71,9 @@ impl AppState {
             AiKeyKind::OpenAi => self.ai_openai_key = value.clone(),
             AiKeyKind::Anthropic => self.ai_anthropic_key = value.clone(),
         }
+        if !self.startup.keyring_enabled {
+            return Vec::new();
+        }
         if value.is_empty() {
             vec![AiEffect::ClearAiKey { kind }.into()]
         } else {
@@ -88,6 +91,9 @@ impl AppState {
                 self.ai_anthropic_key.clear();
                 self.ai_anthropic_editing = false;
             }
+        }
+        if !self.startup.keyring_enabled {
+            return Vec::new();
         }
         vec![AiEffect::ClearAiKey { kind }.into()]
     }

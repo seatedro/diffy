@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use crate::apprt::compare::CompareScheduler;
 use crate::apprt::services::AppServices;
+use crate::apprt::syntax::SyntaxScheduler;
 use crate::apprt::vcs_worker::VcsWorker;
 use crate::apprt::watcher::RepoWatchWorker;
 use crate::effects::{
@@ -26,12 +27,17 @@ pub struct AppRuntime {
 }
 
 impl AppRuntime {
-    pub fn new(services: AppServices, wake_proxy: Option<EventLoopProxy<()>>) -> Self {
+    pub fn new(
+        services: AppServices,
+        wake_proxy: Option<EventLoopProxy<()>>,
+        keyring_enabled: bool,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel();
         let event_sender = RuntimeEventSender::new(sender, wake_proxy);
         let save_worker = SaveWorker::new(services.clone(), event_sender.clone());
         let vcs_worker = VcsWorker::new(event_sender.clone());
         let compare_scheduler = CompareScheduler::new(services.clone(), event_sender.clone());
+        let syntax_scheduler = SyntaxScheduler::new(services.clone(), event_sender.clone());
         let repo_watch_worker = RepoWatchWorker::new(vcs_worker.sender());
         Self {
             receiver,
@@ -41,7 +47,9 @@ impl AppRuntime {
                 save_worker,
                 vcs_worker,
                 compare_scheduler,
+                syntax_scheduler,
                 repo_watch_worker,
+                keyring_enabled,
             },
         }
     }
@@ -63,7 +71,9 @@ struct EffectRunner {
     save_worker: SaveWorker,
     vcs_worker: VcsWorker,
     compare_scheduler: CompareScheduler,
+    syntax_scheduler: SyntaxScheduler,
     repo_watch_worker: RepoWatchWorker,
+    keyring_enabled: bool,
 }
 
 struct SaveWorker {
@@ -252,23 +262,10 @@ impl EffectRunner {
                 });
             }
             Effect::Syntax(SyntaxEffect::LoadFileSyntax(task)) => {
-                let generation = task.generation;
-                let request = task.request;
-                let services = self.services.clone();
-                let event_sender = self.event_sender.clone();
-                thread::spawn(move || {
-                    let tokens = services.load_file_syntax(&request);
-                    event_sender.send(SyntaxEvent::FileSyntaxReady(
-                        crate::events::FileSyntaxReady {
-                            generation,
-                            request_id: request.request_id,
-                            file_index: request.file_index,
-                            path: request.path,
-                            window: request.window,
-                            tokens,
-                        },
-                    ));
-                });
+                self.syntax_scheduler.dispatch_load_file_syntax(task);
+            }
+            Effect::Syntax(SyntaxEffect::SetFileSyntaxEpoch { epoch }) => {
+                self.syntax_scheduler.set_epoch(epoch);
             }
             Effect::GitHub(GitHubEffect::LoadPullRequest {
                 url,
@@ -326,6 +323,11 @@ impl EffectRunner {
                 });
             }
             Effect::GitHub(GitHubEffect::LoadGitHubToken) => {
+                if !self.keyring_enabled {
+                    self.event_sender
+                        .send(GitHubEvent::GitHubTokenLoaded { token: None });
+                    return;
+                }
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
@@ -339,6 +341,9 @@ impl EffectRunner {
                 });
             }
             Effect::GitHub(GitHubEffect::SaveGitHubToken(token)) => {
+                if !self.keyring_enabled {
+                    return;
+                }
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
@@ -350,6 +355,9 @@ impl EffectRunner {
                 });
             }
             Effect::GitHub(GitHubEffect::ClearGitHubToken) => {
+                if !self.keyring_enabled {
+                    return;
+                }
                 let services = self.services.clone();
                 thread::spawn(move || {
                     if let Err(error) = services.clear_github_token() {
@@ -601,8 +609,9 @@ impl EffectRunner {
                     match services.install_common_syntax_packs() {
                         Ok(languages) => {
                             let installed_count = languages.len();
-                            for language in languages {
-                                event_sender.send(SyntaxEvent::SyntaxPackInstalled { language });
+                            if installed_count > 0 {
+                                services.clear_file_syntax_cache();
+                                event_sender.send(SyntaxEvent::SyntaxPacksInstalled { languages });
                             }
                             tracing::info!(installed_count, "syntax pack install finished");
                             event_sender.send(SyntaxEvent::SyntaxPackInstallFinished { language });
@@ -631,9 +640,10 @@ impl EffectRunner {
                     }
                     match services.ensure_syntax_pack_for_path(&path) {
                         Ok(Some(installed)) => {
+                            services.clear_file_syntax_cache();
                             tracing::info!(language = %installed, path = %path, "syntax pack installed");
-                            event_sender.send(SyntaxEvent::SyntaxPackInstalled {
-                                language: installed,
+                            event_sender.send(SyntaxEvent::SyntaxPacksInstalled {
+                                languages: vec![installed],
                             });
                             if let Some(language) = language {
                                 event_sender
@@ -691,8 +701,11 @@ impl EffectRunner {
                     match services.ensure_syntax_packs_for_paths(&paths) {
                         Ok(installed) => {
                             let installed_count = installed.len();
-                            for language in installed {
-                                event_sender.send(SyntaxEvent::SyntaxPackInstalled { language });
+                            if installed_count > 0 {
+                                services.clear_file_syntax_cache();
+                                event_sender.send(SyntaxEvent::SyntaxPacksInstalled {
+                                    languages: installed,
+                                });
                             }
                             tracing::info!(installed_count, "syntax pack batch install finished");
                             for language in languages {
@@ -711,6 +724,13 @@ impl EffectRunner {
                 });
             }
             Effect::Ai(AiEffect::LoadAiKeys) => {
+                if !self.keyring_enabled {
+                    self.event_sender.send(AiEvent::AiKeysLoaded {
+                        openai: None,
+                        anthropic: None,
+                    });
+                    return;
+                }
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     let event = match crate::apprt::services::load_ai_keys() {
@@ -723,6 +743,9 @@ impl EffectRunner {
                 });
             }
             Effect::Ai(AiEffect::SaveAiKey { kind, value }) => {
+                if !self.keyring_enabled {
+                    return;
+                }
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
                     if let Err(error) = crate::platform::secrets::save_ai_key(kind, &value) {
@@ -733,6 +756,9 @@ impl EffectRunner {
                 });
             }
             Effect::Ai(AiEffect::ClearAiKey { kind }) => {
+                if !self.keyring_enabled {
+                    return;
+                }
                 thread::spawn(move || {
                     if let Err(error) = crate::platform::secrets::clear_ai_key(kind) {
                         tracing::warn!("failed to clear AI key from keyring: {error}");
@@ -837,7 +863,7 @@ mod tests {
     fn save_settings_coalesces_rapid_updates_and_keeps_latest() {
         let dir = TempDir::new().unwrap();
         let store = SettingsStore::new_in(dir.path());
-        let runtime = AppRuntime::new(AppServices::new(store.clone()), None);
+        let runtime = AppRuntime::new(AppServices::new(store.clone()), None, true);
 
         let mut settings = Settings::default();
         settings.theme_name = "One".to_owned();
@@ -868,7 +894,7 @@ mod tests {
     fn save_settings_skips_duplicate_snapshots() {
         let dir = TempDir::new().unwrap();
         let store = SettingsStore::new_in(dir.path());
-        let runtime = AppRuntime::new(AppServices::new(store.clone()), None);
+        let runtime = AppRuntime::new(AppServices::new(store.clone()), None, true);
 
         let mut settings = Settings::default();
         settings.theme_name = "Gruvbox Hard".to_owned();

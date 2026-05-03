@@ -189,6 +189,14 @@ impl CarbonStyleOverlays {
         self.change.clear();
     }
 
+    pub fn clear_syntax(&mut self) {
+        self.syntax.clear();
+    }
+
+    pub fn has_change_tokens(&self) -> bool {
+        !self.change.is_empty()
+    }
+
     pub fn insert_syntax(
         &mut self,
         hunk_id: u32,

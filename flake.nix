@@ -136,6 +136,9 @@
               pkgs.pkg-config
               pkgs.git
               pkgs.lld
+            ]
+            ++ lib.optionals isLinux [
+              pkgs.makeWrapper
             ];
 
             buildInputs = [
@@ -151,6 +154,18 @@
               pkgs.libxrandr
               pkgs.dbus
             ];
+
+            preFixup = lib.optionalString isLinux ''
+              wrapProgram "$out/bin/diffy" \
+                --prefix LD_LIBRARY_PATH : "${
+                  lib.makeLibraryPath [
+                    pkgs.dbus
+                    pkgs.libGL
+                    pkgs.libxkbcommon
+                    pkgs.wayland
+                  ]
+                }"
+            '';
           };
         in
         {

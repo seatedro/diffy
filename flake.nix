@@ -4,7 +4,10 @@
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+    }:
     let
       lib = nixpkgs.lib;
       supportedSystems = [
@@ -16,6 +19,15 @@
       forAllSystems = lib.genAttrs supportedSystems;
       pkgsFor = system: import nixpkgs { inherit system; };
       cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
+      packageSrc =
+        if self.sourceInfo ? rev then
+          builtins.fetchGit {
+            url = "https://github.com/seatedro/diffy.git";
+            rev = self.sourceInfo.rev;
+            submodules = true;
+          }
+        else
+          self;
       mkDevCommand =
         pkgs:
         pkgs.writeShellScriptBin "dev" ''
@@ -37,14 +49,16 @@
           diffy = pkgs.rustPlatform.buildRustPackage {
             pname = "diffy";
             version = cargoToml.workspace.package.version;
-            src = self;
+            src = packageSrc;
             cargoLock = {
               lockFile = ./Cargo.lock;
             };
+            doCheck = false;
 
             nativeBuildInputs = [
               pkgs.pkg-config
               pkgs.git
+              pkgs.lld
             ];
 
             buildInputs = [

@@ -55,6 +55,83 @@
             };
             doCheck = false;
 
+            postInstall =
+              lib.optionalString isLinux ''
+                install -Dm644 ${./assets/packaging/png/diffy-16.png} \
+                  "$out/share/icons/hicolor/16x16/apps/diffy.png"
+                install -Dm644 ${./assets/packaging/png/diffy-24.png} \
+                  "$out/share/icons/hicolor/24x24/apps/diffy.png"
+                install -Dm644 ${./assets/packaging/png/diffy-32.png} \
+                  "$out/share/icons/hicolor/32x32/apps/diffy.png"
+                install -Dm644 ${./assets/packaging/png/diffy-48.png} \
+                  "$out/share/icons/hicolor/48x48/apps/diffy.png"
+                install -Dm644 ${./assets/packaging/png/diffy-64.png} \
+                  "$out/share/icons/hicolor/64x64/apps/diffy.png"
+                install -Dm644 ${./assets/packaging/png/diffy-128.png} \
+                  "$out/share/icons/hicolor/128x128/apps/diffy.png"
+                install -Dm644 ${./assets/packaging/png/diffy-256.png} \
+                  "$out/share/icons/hicolor/256x256/apps/diffy.png"
+                install -Dm644 ${./assets/packaging/png/diffy-512.png} \
+                  "$out/share/icons/hicolor/512x512/apps/diffy.png"
+                install -Dm644 ${./assets/packaging/png/diffy-1024.png} \
+                  "$out/share/icons/hicolor/1024x1024/apps/diffy.png"
+
+                mkdir -p "$out/share/applications"
+                cat > "$out/share/applications/io.github.seatedro.diffy.desktop" <<'EOF'
+                [Desktop Entry]
+                Type=Application
+                Name=Diffy
+                GenericName=Git Diff Viewer
+                Comment=Native GPU-accelerated Git diff viewer
+                Exec=diffy %F
+                Icon=diffy
+                Terminal=false
+                Categories=Development;RevisionControl;
+                Keywords=git;diff;review;
+                StartupWMClass=diffy
+                EOF
+              ''
+              + lib.optionalString pkgs.stdenv.isDarwin ''
+                app="$out/Applications/Diffy.app"
+                mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+
+                cat > "$app/Contents/Info.plist" <<EOF
+                <?xml version="1.0" encoding="UTF-8"?>
+                <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+                <plist version="1.0">
+                <dict>
+                  <key>CFBundleExecutable</key>
+                  <string>Diffy</string>
+                  <key>CFBundleIdentifier</key>
+                  <string>io.github.seatedro.diffy</string>
+                  <key>CFBundleName</key>
+                  <string>Diffy</string>
+                  <key>CFBundleDisplayName</key>
+                  <string>Diffy</string>
+                  <key>CFBundlePackageType</key>
+                  <string>APPL</string>
+                  <key>CFBundleIconFile</key>
+                  <string>diffy.png</string>
+                  <key>CFBundleShortVersionString</key>
+                  <string>${cargoToml.workspace.package.version}</string>
+                  <key>CFBundleVersion</key>
+                  <string>${cargoToml.workspace.package.version}</string>
+                  <key>NSHighResolutionCapable</key>
+                  <true/>
+                  <key>LSMinimumSystemVersion</key>
+                  <string>11.0</string>
+                </dict>
+                </plist>
+                EOF
+
+                cat > "$app/Contents/MacOS/Diffy" <<EOF
+                #!/bin/sh
+                exec "$out/bin/diffy" "\$@"
+                EOF
+                chmod +x "$app/Contents/MacOS/Diffy"
+                cp ${./assets/packaging/png/diffy-macos-hires.png} "$app/Contents/Resources/diffy.png"
+              '';
+
             nativeBuildInputs = [
               pkgs.pkg-config
               pkgs.git

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
-use crate::core::vcs::model::PublishAction;
+use crate::core::vcs::model::{PublishAction, VcsOperation};
 use crate::platform::secrets::AiKeyKind;
 use crate::ui::state::{CompareField, FocusTarget, SettingsSection, SidebarTab};
 use crate::ui::theme::ThemeMode;
@@ -21,6 +21,7 @@ pub enum AppAction {
 pub enum WorkspaceAction {
     OpenRepository(PathBuf),
     ShowWorkingTree,
+    RefreshRepository,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,11 +62,14 @@ pub enum RepositoryAction {
     DiscardHunkAt(i16),
     ToggleLineSelection(usize),
     ToggleLineSelectionRange(usize, usize),
+    ToggleCurrentLineSelection,
+    ToggleCurrentLineSelectionRange,
     StageSelectedLines,
     UnstageSelectedLines,
     DiscardSelectedLines,
     ClearLineSelection,
     SubmitCommit,
+    RunOperation(VcsOperation),
     FetchRemote(String),
     FetchAllRemotes,
     PushCurrentBranch { force_with_lease: bool },
@@ -138,6 +142,7 @@ pub enum EditorAction {
     SearchNext,
     SearchPrevious,
     ScrollViewportHalfPage(i32),
+    MoveRowCursor(i32),
     EditorClick(i32, i32),
     EditorDrag(i32, i32),
     EditorScrollPx(i32),

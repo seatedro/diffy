@@ -544,6 +544,7 @@ pub fn git_snapshot_from_parts(
         capabilities: git_capabilities(),
         refs: git_refs(branches, tags),
         changes: git_changes(commits, branches),
+        operation_log: Vec::new(),
         file_changes: git_file_changes(status_items),
     }
 }

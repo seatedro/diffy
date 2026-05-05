@@ -1,6 +1,7 @@
 pub mod account_menu;
 pub mod auth;
 pub mod compare_menu;
+pub mod confirmation;
 pub mod picker;
 pub mod publish_menu;
 pub mod shortcuts;
@@ -8,6 +9,7 @@ pub mod shortcuts;
 pub use account_menu::account_menu;
 pub use auth::auth_modal;
 pub use compare_menu::compare_menu;
+pub use confirmation::confirmation_dialog;
 pub use picker::picker;
 pub use publish_menu::publish_menu;
 pub use shortcuts::keyboard_shortcuts;
@@ -133,6 +135,7 @@ pub fn render_active_overlay(
             width,
             height,
         ),
+        OverlaySurface::Confirmation => confirmation_dialog(state, theme, width, height),
         OverlaySurface::GitHubAuthModal => auth_modal(state, theme, width, height),
         OverlaySurface::KeyboardShortcuts => keyboard_shortcuts(state, theme, width, height),
         OverlaySurface::CompareMenu => compare_menu(state, theme, width, height),

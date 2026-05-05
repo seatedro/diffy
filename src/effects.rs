@@ -6,7 +6,7 @@ use crate::core::forge::github::CreatePullRequestReviewComment;
 use crate::core::syntax::annotator::SyntaxRowWindow;
 use crate::core::update::{AvailableUpdate, StagedUpdate};
 use crate::core::vcs::model::{
-    ChangeBucket, FileChange, FileOperation, PublishAction, VcsCompareRequest,
+    ChangeBucket, FileChange, FileOperation, PublishAction, VcsCompareRequest, VcsOperation,
 };
 use crate::events::RepositorySyncReason;
 use crate::platform::persistence::Settings;
@@ -115,6 +115,13 @@ pub struct CommitRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VcsOperationRequest {
+    pub repo_path: PathBuf,
+    pub operation: VcsOperation,
+    pub toast_id: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchRemoteRequest {
     pub repo_path: PathBuf,
     pub remote: String,
@@ -187,6 +194,7 @@ pub enum RepositoryEffect {
     ApplyBatchFileOperation(BatchFileOperationRequest),
     ApplyPatchOperation(PatchOperationRequest),
     CreateCommit(CommitRequest),
+    RunOperation(VcsOperationRequest),
     FetchContextLines(FetchContextLinesRequest),
 }
 

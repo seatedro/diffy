@@ -424,14 +424,20 @@ pub fn build_ui_frame(
                 render_generation,
                 active_file_matches_selection,
             );
+            let hovered_render_line_index = match document {
+                EditorDocument::Text { .. } => editor_snap
+                    .hovered_row
+                    .and_then(|row| editor.render_line_index_for_row(row))
+                    .map(|line| line as usize),
+                _ => None,
+            };
+            editor_snap.hovered_render_line_index = hovered_render_line_index;
             editor_snap.hovered_hunk_index = if using_continuous_doc {
                 None
             } else {
                 match document {
-                    EditorDocument::Text { doc, .. } => editor_snap
-                        .hovered_row
-                        .and_then(|row| editor.render_line_index_for_row(row))
-                        .and_then(|line_index| doc.lines.get(line_index as usize))
+                    EditorDocument::Text { doc, .. } => hovered_render_line_index
+                        .and_then(|line_index| doc.lines.get(line_index))
                         .and_then(|line| (line.hunk_index >= 0).then_some(line.hunk_index)),
                     _ => None,
                 }
@@ -465,6 +471,10 @@ pub fn build_ui_frame(
                 .editor
                 .hovered_row
                 .set_if_changed(&state.store, editor_snap.hovered_row);
+            state
+                .editor
+                .hovered_render_line_index
+                .set_if_changed(&state.store, editor_snap.hovered_render_line_index);
             state
                 .editor
                 .hovered_hunk_index

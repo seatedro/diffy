@@ -10,11 +10,12 @@ use crate::core::vcs::backend::{VcsBackend, VcsRepository, VcsWatchPaths};
 use crate::core::vcs::jj::cli::JjCli;
 use crate::core::vcs::jj::parse::{
     parse_bookmark_list, parse_change_log, parse_conflict_list, parse_diff_summary,
+    parse_operation_log,
 };
 use crate::core::vcs::model::{
-    ChangeIdToken, FileChange, FileOperation, PublishAction, PublishActionKind, PublishOutcome,
-    PublishPlan, RefKind, RepoCapabilities, RepoLocation, RevisionId, VCS_PROFILE_JJ,
-    VcsCompareRequest, VcsCompareSpec, VcsKind, VcsRef, VcsSnapshot,
+    ChangeIdToken, FileChange, FileOperation, JjOperation, PublishAction, PublishActionKind,
+    PublishOutcome, PublishPlan, RefKind, RepoCapabilities, RepoLocation, RevisionId,
+    VCS_PROFILE_JJ, VcsCompareRequest, VcsCompareSpec, VcsKind, VcsOperation, VcsRef, VcsSnapshot,
 };
 use crate::events::RepositorySyncReason;
 
@@ -501,6 +502,17 @@ impl VcsRepository for JjRepository {
                 ),
             ])
             .unwrap_or_default();
+        let operation_log = self.cli.run_ignored_wc(&[
+            OsString::from("operation"),
+            OsString::from("log"),
+            OsString::from("--no-graph"),
+            OsString::from("-n"),
+            OsString::from("24"),
+            OsString::from("-T"),
+            OsString::from(
+                "id ++ \"\\t\" ++ id.short() ++ \"\\t\" ++ user ++ \"\\t\" ++ time.start() ++ \"\\t\" ++ description.first_line() ++ \"\\n\"",
+            ),
+        ])?;
         let conflicts = self.conflict_list()?;
         let mut file_changes = parse_diff_summary(&summary);
         file_changes.extend(parse_conflict_list(&conflicts));
@@ -549,6 +561,7 @@ impl VcsRepository for JjRepository {
             capabilities: jj_capabilities(),
             refs,
             changes,
+            operation_log: parse_operation_log(&operation_log),
             file_changes,
         };
         self.last_snapshot = Some(snapshot.clone());
@@ -666,6 +679,88 @@ impl VcsRepository for JjRepository {
         ])?;
         self.clear_after_write();
         Ok(())
+    }
+
+    fn run_operation(&mut self, operation: &VcsOperation) -> Result<String> {
+        match operation {
+            VcsOperation::Jj(JjOperation::NewChange) => {
+                self.cli.run(&[OsString::from("new")])?;
+                self.clear_after_write();
+                Ok(operation.success_message())
+            }
+            VcsOperation::Jj(JjOperation::NewSiblingChange) => {
+                self.cli
+                    .run(&[OsString::from("new"), OsString::from("@-")])?;
+                self.clear_after_write();
+                Ok(operation.success_message())
+            }
+            VcsOperation::Jj(JjOperation::DuplicateChange) => {
+                self.cli
+                    .run(&[OsString::from("duplicate"), OsString::from("@")])?;
+                self.clear_after_write();
+                Ok(operation.success_message())
+            }
+            VcsOperation::Jj(JjOperation::AbandonChange) => {
+                self.cli
+                    .run(&[OsString::from("abandon"), OsString::from("@")])?;
+                self.clear_after_write();
+                Ok(operation.success_message())
+            }
+            VcsOperation::Jj(JjOperation::SquashIntoParent) => {
+                self.cli.run(&[
+                    OsString::from("squash"),
+                    OsString::from("--revision"),
+                    OsString::from("@"),
+                    OsString::from("--use-destination-message"),
+                ])?;
+                self.clear_after_write();
+                Ok(operation.success_message())
+            }
+            VcsOperation::Jj(JjOperation::AbsorbIntoStack) => {
+                self.cli.run(&[
+                    OsString::from("absorb"),
+                    OsString::from("--from"),
+                    OsString::from("@"),
+                ])?;
+                self.clear_after_write();
+                Ok(operation.success_message())
+            }
+            VcsOperation::Jj(JjOperation::UndoLastOperation) => {
+                self.cli.run(&[
+                    OsString::from("op"),
+                    OsString::from("undo"),
+                    OsString::from("@"),
+                ])?;
+                self.clear_after_write();
+                Ok(operation.success_message())
+            }
+            VcsOperation::JjRebaseCurrentChangeOnto { destination } => {
+                self.cli.run(&[
+                    OsString::from("rebase"),
+                    OsString::from("--branch"),
+                    OsString::from("@"),
+                    OsString::from("--destination"),
+                    OsString::from(destination.as_str()),
+                ])?;
+                self.clear_after_write();
+                Ok(operation.success_message())
+            }
+            VcsOperation::JjEditRevision { revision, .. } => {
+                self.cli
+                    .run(&[OsString::from("edit"), OsString::from(revision.as_str())])?;
+                self.clear_after_write();
+                Ok(operation.success_message())
+            }
+            VcsOperation::JjRestoreOperation { operation_id, .. } => {
+                self.cli.run(&[
+                    OsString::from("operation"),
+                    OsString::from("restore"),
+                    OsString::from(operation_id.as_str()),
+                ])?;
+                self.clear_after_write();
+                Ok(operation.success_message())
+            }
+        }
     }
 
     fn fetch_remote(&mut self, remote: &str) -> Result<()> {

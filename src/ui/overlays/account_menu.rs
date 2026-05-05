@@ -1,6 +1,7 @@
 use halogen::view;
 
 use crate::actions::Action;
+use crate::ui::components;
 use crate::ui::components::avatar::{AvatarImage, avatar};
 use crate::ui::design::{Ico, Rad, Shadow, Sp, Sz};
 use crate::ui::element::*;
@@ -74,17 +75,24 @@ pub fn account_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
                     <div class="w-full" h={Sz::SEPARATOR_W} bg={tc.border_variant} />
                 </div>
 
-                {menu_row(lucide::SETTINGS, "Settings", crate::actions::SettingsAction::OpenSettings.into(), theme)}
-                {menu_row(lucide::KEY, "Sign out", crate::actions::GitHubAction::SignOutGitHub.into(), theme)}
+                {menu_row(lucide::SETTINGS, "Settings", "1", crate::actions::SettingsAction::OpenSettings.into(), theme)}
+                {menu_row(lucide::KEY, "Sign out", "2", crate::actions::GitHubAction::SignOutGitHub.into(), theme)}
             </div>
         </div>
     }
 }
 
-fn menu_row(icon: &'static str, label: &str, action: Action, theme: &Theme) -> AnyElement {
+fn menu_row(
+    icon: &'static str,
+    label: &str,
+    shortcut: &str,
+    action: Action,
+    theme: &Theme,
+) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let icon_size = (Ico::SM * scale).round();
+    let shortcut_badge = components::kbd(shortcut, theme);
 
     view! { scale,
         <div class="w-full flex-row items-center" gap={Sp::SM}
@@ -94,7 +102,10 @@ fn menu_row(icon: &'static str, label: &str, action: Action, theme: &Theme) -> A
              on_click={action}
              cursor={CursorHint::Pointer}>
             <icon svg={icon} size={icon_size} color={tc.text_muted} />
-            <text class="text-sm" color={tc.text}>{label}</text>
+            <div class="flex-1" min_w={0.0}>
+                <text class="text-sm truncate" color={tc.text}>{label}</text>
+            </div>
+            {shortcut_badge}
         </div>
     }
 }

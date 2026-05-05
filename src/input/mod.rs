@@ -1,4 +1,5 @@
 mod keyboard;
+mod keymap;
 mod pointer;
 mod scroll;
 
@@ -20,6 +21,7 @@ use crate::ui::element::DragHandler;
 use crate::ui::shell::UiFrame;
 use crate::ui::state::{AppState, FocusTarget, OverlaySurface, WorkspaceMode};
 
+pub use keymap::{ShortcutEntry, ShortcutGroup, shortcut_groups};
 pub use pointer::hit_test_text_offset;
 pub use scroll::{quantize_scroll_delta_px, scroll_delta_to_px};
 

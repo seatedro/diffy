@@ -50,6 +50,7 @@ impl AppState {
                     return self.rebuild_ref_picker(CompareField::Right);
                 }
                 PickerKind::Theme => self.rebuild_theme_picker(),
+                PickerKind::UiFont | PickerKind::MonoFont => self.rebuild_font_picker(),
             },
             Some(FocusTarget::CommandPaletteInput) => return self.rebuild_command_palette(),
             Some(FocusTarget::SearchInput) => self.recompute_search_matches(),

@@ -56,6 +56,7 @@ use crate::events::{
     CompareHistoryReady, CompareStatsReady, FileSyntaxReady, RepositoryChangeKind,
     RepositorySnapshot, RepositorySyncReason, StatusDiffFinished,
 };
+use crate::fonts::{FontFamilyEntry, FontRole};
 use crate::platform::persistence::{PersistedCompare, Settings};
 use crate::platform::secrets::AiKeyKind;
 use crate::platform::startup::StartupOptions;
@@ -604,7 +605,7 @@ fn append_active_file_doc(out: &mut RenderDoc, active: &ActiveFile) {
     if active.carbon_file.is_binary {
         out.append_doc(&build_placeholder_render_doc(
             &active.path,
-            "Binary file. The native viewport only renders text diffs in this phase.",
+            "Binary file. Diffy only shows text diffs here.",
         ));
     } else {
         out.append_doc(&active.render_doc);
@@ -2368,6 +2369,8 @@ pub enum PickerKind {
     LeftRef,
     RightRef,
     Theme,
+    UiFont,
+    MonoFont,
 }
 
 pub trait PickerItem {
@@ -2714,6 +2717,7 @@ pub enum OverlaySurface {
     GitHubAuthModal,
     KeyboardShortcuts,
     ThemePicker,
+    FontPicker,
     CompareMenu,
     AccountMenu,
     PublishMenu,
@@ -5699,6 +5703,7 @@ impl AppState {
 
     fn sync_settings_snapshot(&mut self) {
         self.settings.ui_scale_pct = self.clamp_ui_scale_pct(self.settings.ui_scale_pct);
+        self.settings.fonts = self.settings.fonts.normalized();
         self.settings.sidebar_width_px = self
             .settings
             .sidebar_width_px
@@ -5772,7 +5777,10 @@ impl AppState {
     ) -> Option<R> {
         match target {
             FocusTarget::PickerInput => match self.overlays.picker.kind.get(&self.store) {
-                PickerKind::Repository | PickerKind::Theme => {
+                PickerKind::Repository
+                | PickerKind::Theme
+                | PickerKind::UiFont
+                | PickerKind::MonoFont => {
                     Some(self.overlays.picker.query.with(&self.store, |s| f(s)))
                 }
                 PickerKind::LeftRef => Some(self.compare.left_ref.with(&self.store, |s| f(s))),
@@ -5809,7 +5817,10 @@ impl AppState {
     pub(super) fn update_focused_text<R>(&mut self, f: impl FnOnce(&mut String) -> R) -> Option<R> {
         match self.focus.get(&self.store) {
             Some(FocusTarget::PickerInput) => match self.overlays.picker.kind.get(&self.store) {
-                PickerKind::Repository | PickerKind::Theme => {
+                PickerKind::Repository
+                | PickerKind::Theme
+                | PickerKind::UiFont
+                | PickerKind::MonoFont => {
                     let mut out = None;
                     self.overlays
                         .picker
@@ -6149,6 +6160,111 @@ impl AppState {
         });
     }
 
+    fn open_font_picker(&mut self, role: FontRole) {
+        let scale = self.ui_scale_factor();
+        self.overlays.picker.kind.set(
+            &self.store,
+            match role {
+                FontRole::Ui => PickerKind::UiFont,
+                FontRole::Mono => PickerKind::MonoFont,
+            },
+        );
+        self.overlays.picker.query.set(&self.store, String::new());
+        self.overlays.picker.list.update(&self.store, |l| {
+            l.scroll_top_px = 0;
+            l.row_height_px = (Sz::ROW * scale).round() as u32;
+            l.gap_px = (Sp::XS * scale).round() as u32;
+        });
+        self.rebuild_font_picker();
+        self.reset_text_edit(0);
+        self.push_overlay(OverlaySurface::FontPicker, Some(FocusTarget::PickerInput));
+    }
+
+    fn rebuild_font_picker(&mut self) {
+        let Some(role) = self.font_picker_role() else {
+            return;
+        };
+        let query = self
+            .overlays
+            .picker
+            .query
+            .with(&self.store, |q| q.trim().to_owned());
+        let selected_family = self.selected_font_family(role);
+        let font_entries = crate::fonts::font_family_entries(role);
+        let entries: Vec<PickerEntry> = if query.is_empty() {
+            font_entries
+                .iter()
+                .map(|entry| font_picker_entry(entry, &selected_family, Vec::new()))
+                .collect()
+        } else {
+            let search_texts: Vec<String> = font_entries
+                .iter()
+                .map(|entry| {
+                    if entry.label == entry.family {
+                        entry.label.clone()
+                    } else {
+                        format!("{} {}", entry.label, entry.family)
+                    }
+                })
+                .collect();
+            let haystack: Vec<&str> = search_texts.iter().map(|s| s.as_str()).collect();
+            let config = neo_frizbee::Config {
+                max_typos: Some(2),
+                sort: false,
+                ..Default::default()
+            };
+            let mut matches = neo_frizbee::match_list_indices(&query, &haystack, &config);
+            matches.sort_by(|a, b| b.score.cmp(&a.score).then(a.index.cmp(&b.index)));
+            matches
+                .into_iter()
+                .map(|m| {
+                    let entry = &font_entries[m.index as usize];
+                    let highlights = highlight_ranges_for_visible_match(
+                        &query,
+                        &entry.label,
+                        &m.indices,
+                        &config,
+                    );
+                    font_picker_entry(entry, &selected_family, highlights)
+                })
+                .collect()
+        };
+
+        let selected = entries
+            .iter()
+            .position(|entry| entry.value == selected_family)
+            .unwrap_or(0);
+        let entry_count = entries.len();
+        self.overlays.picker.entries.set(&self.store, entries);
+        self.overlays
+            .picker
+            .selected_index
+            .set(&self.store, selected);
+        self.overlays.picker.list.update(&self.store, |l| {
+            l.viewport_height_px = l.viewport_for_max_rows(Sz::PICKER_MAX_ROWS, entry_count);
+            l.scroll_top_px = 0;
+        });
+    }
+
+    fn font_picker_role(&self) -> Option<FontRole> {
+        match self.overlays.picker.kind.get(&self.store) {
+            PickerKind::UiFont => Some(FontRole::Ui),
+            PickerKind::MonoFont => Some(FontRole::Mono),
+            _ => None,
+        }
+    }
+
+    fn selected_font_family(&self, role: FontRole) -> String {
+        match role {
+            FontRole::Ui => {
+                crate::fonts::normalize_font_selection(role, &self.settings.fonts.ui_family)
+            }
+            FontRole::Mono => {
+                crate::fonts::normalize_font_selection(role, &self.settings.fonts.mono_family)
+            }
+        }
+    }
+
     fn open_ref_picker(&mut self, field: CompareField) -> Vec<Effect> {
         let scale = self.ui_scale_factor();
         let already_open = self.overlays_top() == Some(OverlaySurface::RefPicker);
@@ -6242,7 +6358,7 @@ impl AppState {
                 }
                 self.reset_picker();
             }
-            OverlaySurface::RepoPicker | OverlaySurface::RefPicker => {
+            OverlaySurface::RepoPicker | OverlaySurface::RefPicker | OverlaySurface::FontPicker => {
                 self.reset_picker();
             }
             OverlaySurface::CommandPalette => {
@@ -6323,7 +6439,9 @@ impl AppState {
                     self.settings.theme_name = value;
                 }
             }
-            Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker) => {
+            Some(
+                OverlaySurface::RepoPicker | OverlaySurface::RefPicker | OverlaySurface::FontPicker,
+            ) => {
                 let current = self.overlays.picker.selected_index.get(&self.store);
                 let (idx, len) = self.overlays.picker.entries.with(&self.store, |entries| {
                     let len = entries.len();
@@ -6401,7 +6519,9 @@ impl AppState {
                     .list
                     .update(&self.store, |l| l.reveal_index(clamped, len));
             }
-            Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker) => {
+            Some(
+                OverlaySurface::RepoPicker | OverlaySurface::RefPicker | OverlaySurface::FontPicker,
+            ) => {
                 let (clamped, len, is_header) =
                     self.overlays.picker.entries.with(&self.store, |entries| {
                         let len = entries.len();
@@ -6456,6 +6576,7 @@ impl AppState {
                 self.pop_overlay();
                 self.persist_settings_effect()
             }
+            Some(OverlaySurface::FontPicker) => self.confirm_font_picker(),
             Some(OverlaySurface::RepoPicker) => self.confirm_repo_picker(),
             Some(OverlaySurface::RefPicker) => {
                 let field = self.overlays.ref_picker.active_field.get(&self.store);
@@ -6490,6 +6611,44 @@ impl AppState {
                 | OverlaySurface::PublishMenu,
             ) => Vec::new(),
             None => Vec::new(),
+        }
+    }
+
+    fn confirm_font_picker(&mut self) -> Vec<Effect> {
+        let Some(role) = self.font_picker_role() else {
+            return Vec::new();
+        };
+        let selected = self.overlays.picker.selected_index.get(&self.store);
+        let family = self.overlays.picker.entries.with(&self.store, |entries| {
+            entries.get(selected).map(|entry| entry.value.clone())
+        });
+        let Some(family) = family else {
+            return Vec::new();
+        };
+        let family = crate::fonts::normalize_font_selection(role, &family);
+        let changed = match role {
+            FontRole::Ui => {
+                if self.settings.fonts.ui_family == family {
+                    false
+                } else {
+                    self.settings.fonts.ui_family = family;
+                    true
+                }
+            }
+            FontRole::Mono => {
+                if self.settings.fonts.mono_family == family {
+                    false
+                } else {
+                    self.settings.fonts.mono_family = family;
+                    true
+                }
+            }
+        };
+        self.pop_overlay();
+        if changed {
+            self.persist_settings_effect()
+        } else {
+            Vec::new()
         }
     }
 
@@ -8958,7 +9117,8 @@ impl AppState {
             Some(
                 OverlaySurface::RepoPicker
                 | OverlaySurface::RefPicker
-                | OverlaySurface::ThemePicker,
+                | OverlaySurface::ThemePicker
+                | OverlaySurface::FontPicker,
             ) => {
                 let count = self.overlays.picker.entries.with(&self.store, |e| e.len());
                 self.overlays
@@ -10781,8 +10941,35 @@ fn overlay_name(surface: OverlaySurface) -> &'static str {
         OverlaySurface::AccountMenu => "account-menu",
         OverlaySurface::KeyboardShortcuts => "keyboard-shortcuts",
         OverlaySurface::ThemePicker => "theme-picker",
+        OverlaySurface::FontPicker => "font-picker",
         OverlaySurface::CompareMenu => "compare-menu",
         OverlaySurface::PublishMenu => "publish-menu",
+    }
+}
+
+fn font_picker_entry(
+    entry: &FontFamilyEntry,
+    selected_family: &str,
+    highlights: Vec<(usize, usize)>,
+) -> PickerEntry {
+    let source = entry.source.label();
+    let detail = if entry.family == selected_family {
+        format!("Selected - {source}")
+    } else {
+        source.to_owned()
+    };
+    PickerEntry {
+        label: entry.label.clone(),
+        detail,
+        value: entry.family.clone(),
+        highlights,
+        label_style: PickerLabelStyle::Default,
+        icon: Some(if entry.monospaced {
+            lucide::TERMINAL
+        } else {
+            lucide::FILE
+        }),
+        section_header: false,
     }
 }
 

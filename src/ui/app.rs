@@ -13,6 +13,7 @@ use crate::apprt::{AppRuntime, AppServices};
 use crate::core::themes::ThemeRegistry;
 use crate::effects::{RepositoryEffect, UpdateEffect};
 use crate::events::RepositorySyncReason;
+use crate::fonts::FontSettings;
 use crate::input::InputSystem;
 use crate::platform::persistence::SettingsStore;
 use crate::platform::startup::StartupOptions;
@@ -72,6 +73,7 @@ struct NativeApp {
     theme_registry: ThemeRegistry,
     runtime: AppRuntime,
     renderer: Option<Renderer>,
+    font_settings: FontSettings,
     window: Option<Arc<Window>>,
     ui_frame: UiFrame,
     editor: EditorElement,
@@ -97,12 +99,14 @@ impl NativeApp {
         )
         .with_ui_scale(state.ui_scale_factor());
         let update_polling_enabled = state.update_polling_enabled();
+        let font_settings = state.settings.fonts.normalized();
         Self {
             state,
             theme,
             theme_registry,
             runtime,
             renderer: None,
+            font_settings,
             window: None,
             ui_frame: UiFrame::default(),
             input: InputSystem::default(),
@@ -221,6 +225,23 @@ impl NativeApp {
             &self.theme_registry,
         )
         .with_ui_scale(self.state.ui_scale_factor() * dpi);
+    }
+
+    fn sync_fonts(&mut self) {
+        let font_settings = self.state.settings.fonts.normalized();
+        if font_settings == self.font_settings {
+            return;
+        }
+
+        self.font_settings = font_settings;
+        self.state.commit_editor.invalidate_font();
+        self.state.review_comment_editor.invalidate_font();
+        self.state.steering_prompt_editor.invalidate_font();
+
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.set_font_settings(&self.font_settings);
+        }
+        self.mark_dirty();
     }
 
     fn window_attributes(&self) -> WindowAttributes {
@@ -342,7 +363,8 @@ impl NativeApp {
         let font_system = if let Some(renderer) = self.renderer.as_mut() {
             renderer.font_system_mut()
         } else {
-            fallback_font_system = crate::fonts::new_font_system();
+            fallback_font_system =
+                crate::fonts::new_font_system_with_settings(&self.state.settings.fonts);
             &mut fallback_font_system
         };
 
@@ -425,6 +447,7 @@ impl NativeApp {
             return;
         }
         let effects = self.state.apply_action(action);
+        self.sync_fonts();
         if let Some(renderer) = self.renderer.as_mut() {
             self.state.commit_editor.flush(renderer.font_system_mut());
             self.state
@@ -530,7 +553,7 @@ impl ApplicationHandler for NativeApp {
                 let window = Arc::new(window);
                 let size = window.inner_size();
                 let scale_factor = window.scale_factor();
-                match Renderer::new(window.clone()) {
+                match Renderer::new(window.clone(), &self.font_settings) {
                     Ok(mut renderer) => {
                         renderer.resize(size.width, size.height, scale_factor);
                         self.renderer = Some(renderer);

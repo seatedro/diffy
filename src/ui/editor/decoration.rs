@@ -222,10 +222,12 @@ fn build_path_spans(
         spans.push(RichTextSpan {
             text: old.into(),
             color: dirname_color,
+            ..RichTextSpan::default()
         });
         spans.push(RichTextSpan {
             text: " → ".into(),
             color: dirname_color,
+            ..RichTextSpan::default()
         });
     }
     let (dir, base) = split_path(path);
@@ -233,11 +235,13 @@ fn build_path_spans(
         spans.push(RichTextSpan {
             text: dir.into(),
             color: dirname_color,
+            ..RichTextSpan::default()
         });
     }
     spans.push(RichTextSpan {
         text: base.into(),
         color: filename_color,
+        ..RichTextSpan::default()
     });
     spans.into()
 }
@@ -277,6 +281,7 @@ fn build_stats_spans(meta: &FileHeaderMeta, theme: &Theme) -> Arc<[RichTextSpan]
         spans.push(RichTextSpan {
             text: format!("+{}", meta.additions).into(),
             color: theme.colors.line_add_text,
+            ..RichTextSpan::default()
         });
     }
     if meta.deletions > 0 {
@@ -284,11 +289,13 @@ fn build_stats_spans(meta: &FileHeaderMeta, theme: &Theme) -> Arc<[RichTextSpan]
             spans.push(RichTextSpan {
                 text: " ".into(),
                 color: theme.colors.text_muted,
+                ..RichTextSpan::default()
             });
         }
         spans.push(RichTextSpan {
             text: format!("-{}", meta.deletions).into(),
             color: theme.colors.line_del_text,
+            ..RichTextSpan::default()
         });
     }
     spans.into()

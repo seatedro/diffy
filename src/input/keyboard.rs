@@ -888,10 +888,12 @@ fn cycle_focus_target(state: &AppState) -> Option<FocusTarget> {
             Some(FocusTarget::CommandPaletteInput) => Some(FocusTarget::CommandPaletteList),
             _ => Some(FocusTarget::CommandPaletteInput),
         },
-        Some(OverlaySurface::ThemePicker) => match state.focus.get(&state.store) {
-            Some(FocusTarget::PickerInput) => Some(FocusTarget::PickerList),
-            _ => Some(FocusTarget::PickerInput),
-        },
+        Some(OverlaySurface::ThemePicker | OverlaySurface::FontPicker) => {
+            match state.focus.get(&state.store) {
+                Some(FocusTarget::PickerInput) => Some(FocusTarget::PickerList),
+                _ => Some(FocusTarget::PickerInput),
+            }
+        }
         Some(OverlaySurface::GitHubAuthModal) => Some(FocusTarget::AuthPrimaryAction),
         Some(
             OverlaySurface::KeyboardShortcuts
@@ -920,6 +922,7 @@ fn activate_current_focus_actions(state: &AppState) -> Option<Vec<Action>> {
             | OverlaySurface::RefPicker
             | OverlaySurface::CommandPalette
             | OverlaySurface::ThemePicker
+            | OverlaySurface::FontPicker
             | OverlaySurface::Confirmation,
         ) => Some(vec![OverlayAction::ConfirmOverlaySelection.into()]),
         Some(OverlaySurface::GitHubAuthModal) => {

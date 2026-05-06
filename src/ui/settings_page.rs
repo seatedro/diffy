@@ -4,6 +4,7 @@ use crate::actions::Action;
 use crate::ai::stream::{ANTHROPIC_MODEL, OPENAI_MODEL};
 use crate::core::compare::backends::DifftasticBackend;
 use crate::core::compare::{LayoutMode, RendererKind};
+use crate::fonts::FontRole;
 use crate::input::{
     ShortcutCommand, ShortcutEntry, active_bindings, binding_conflict, format_binding,
     override_for, shortcut_groups,
@@ -481,6 +482,8 @@ fn appearance_section(state: &AppState, theme: &Theme) -> AnyElement {
     let theme_mode = state.settings.theme_mode;
     let theme_name = state.settings.theme_name.clone();
     let scale_pct = state.settings.ui_scale_pct;
+    let ui_font_family = state.settings.fonts.ui_family.clone();
+    let mono_font_family = state.settings.fonts.mono_family.clone();
 
     let mode_control = SegmentedControl::new(vec![
         SegmentedItem::new(
@@ -522,14 +525,68 @@ fn appearance_section(state: &AppState, theme: &Theme) -> AnyElement {
         .size(ButtonSize::Default)
         .into_any();
 
+    let ui_font_control = font_family_control(FontRole::Ui, &ui_font_family, theme);
+    let mono_font_control = font_family_control(FontRole::Mono, &mono_font_family, theme);
+
     section_card(
         theme,
         vec![
             setting_row(theme, "Mode", "Dark or light palette.", mode_control),
             setting_row(theme, "Theme", "Active color theme.", theme_browse),
+            setting_row(
+                theme,
+                "UI font",
+                "Typeface for app chrome.",
+                ui_font_control,
+            ),
+            setting_row(
+                theme,
+                "Code font",
+                "Typeface for diffs and code.",
+                mono_font_control,
+            ),
             setting_row(theme, "UI Scale", "Density of UI elements.", scale_control),
         ],
     )
+}
+
+fn font_family_control(role: FontRole, selected: &str, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = theme.metrics.ui_scale();
+    let selected = crate::fonts::normalize_font_selection(role, selected);
+    let label = crate::fonts::font_selection_label(&selected);
+    let action: Action = match role {
+        FontRole::Ui => crate::actions::SettingsAction::OpenUiFontPicker.into(),
+        FontRole::Mono => crate::actions::SettingsAction::OpenMonoFontPicker.into(),
+    };
+    let icon = match role {
+        FontRole::Ui => lucide::FILE,
+        FontRole::Mono => lucide::TERMINAL,
+    };
+    let tooltip = match role {
+        FontRole::Ui => "Choose UI font",
+        FontRole::Mono => "Choose code font",
+    };
+    let control_w = (240.0 * scale).round();
+
+    view! { scale,
+        <div class="flex-row items-center shrink-0"
+             w={control_w}
+             gap={Sp::SM}
+             px={Sp::MD} py={Sp::XS}
+             bg={tc.element_background}
+             hover_bg={tc.element_hover}
+             rounded={Rad::XL}
+             cursor={CursorHint::Pointer}
+             tooltip={tooltip}
+             on_click={action}>
+            <icon svg={icon} size={Ico::BUTTON_DEFAULT} color={tc.text_muted} />
+            <div class="flex-1" min_w={0.0}>
+                {text(label).text_sm().medium().color(tc.text).truncate()}
+            </div>
+            <icon svg={lucide::CHEVRON_DOWN} size={Ico::XS} color={tc.text_muted} />
+        </div>
+    }
 }
 
 fn editor_section(state: &AppState, theme: &Theme) -> AnyElement {

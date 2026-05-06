@@ -3,7 +3,7 @@ use std::{collections::HashMap, ops::Range, sync::Arc};
 use crate::core::compare::LayoutMode;
 use crate::core::text::SyntaxTokenKind;
 use crate::render::{
-    FontKind, FontWeight, Rect, RectPrimitive, RichTextPrimitive, RichTextSpan,
+    FontKind, FontStyle, FontWeight, Rect, RectPrimitive, RichTextPrimitive, RichTextSpan,
     RoundedRectPrimitive, Scene, TextMetrics, TextPrimitive,
 };
 use crate::ui::design::{Alpha, Sz};
@@ -799,7 +799,7 @@ impl EditorElement {
                     scene,
                     theme,
                     path,
-                    "Binary file. The native viewport only renders text diffs in this phase.",
+                    "Binary file. Diffy only shows text diffs here.",
                 );
             }
             EditorDocument::Text {
@@ -2658,7 +2658,7 @@ fn build_segment_spans(
     }
 
     let mut current_text = String::new();
-    let mut current_color = None;
+    let mut current_style = None;
     let mut run_index = runs.partition_point(|run| {
         let run_end = run.byte_start.saturating_add(run.byte_len);
         run_end as usize <= text_layout.char_boundaries[char_start] as usize
@@ -2687,45 +2687,70 @@ fn build_segment_spans(
             continue;
         }
 
-        let color = runs
+        let style = runs
             .get(run_index)
-            .map(|run| style_run_color(*run, tone, theme))
-            .unwrap_or_else(|| tone.default_text(theme));
+            .map(|run| style_run_text_style(*run, tone, theme))
+            .unwrap_or_else(|| CodeTextStyle::default_for_tone(tone, theme));
         let text = if &full_text[start..end] == "\t" {
             " ".repeat((visible_end - visible_start) as usize)
         } else {
             full_text[start..end].to_owned()
         };
 
-        if current_color == Some(color) {
+        if current_style == Some(style) {
             current_text.push_str(&text);
             continue;
         }
 
         if !current_text.is_empty() {
+            let style =
+                current_style.unwrap_or_else(|| CodeTextStyle::default_for_tone(tone, theme));
             spans.push(RichTextSpan {
                 text: current_text.into(),
-                color: current_color.unwrap_or_else(|| tone.default_text(theme)),
+                color: style.color,
+                font_weight: style.font_weight,
+                font_style: style.font_style,
             });
             current_text = String::new();
         }
 
-        current_color = Some(color);
+        current_style = Some(style);
         current_text.push_str(&text);
     }
 
     if !current_text.is_empty() {
+        let style = current_style.unwrap_or_else(|| CodeTextStyle::default_for_tone(tone, theme));
         spans.push(RichTextSpan {
             text: current_text.into(),
-            color: current_color.unwrap_or_else(|| tone.default_text(theme)),
+            color: style.color,
+            font_weight: style.font_weight,
+            font_style: style.font_style,
         });
     }
 
     spans
 }
 
-fn style_run_color(run: StyleRun, tone: RowTone, theme: &Theme) -> Color {
-    let base = match syntax_kind_from_style_id(run.style_id) {
+#[derive(Clone, Copy, PartialEq)]
+struct CodeTextStyle {
+    color: Color,
+    font_weight: Option<FontWeight>,
+    font_style: Option<FontStyle>,
+}
+
+impl CodeTextStyle {
+    fn default_for_tone(tone: RowTone, theme: &Theme) -> Self {
+        Self {
+            color: tone.default_text(theme),
+            font_weight: None,
+            font_style: None,
+        }
+    }
+}
+
+fn style_run_text_style(run: StyleRun, tone: RowTone, theme: &Theme) -> CodeTextStyle {
+    let syntax_kind = syntax_kind_from_style_id(run.style_id);
+    let color = match syntax_kind {
         SyntaxTokenKind::Keyword | SyntaxTokenKind::Builtin => theme.colors.syntax_keyword,
         SyntaxTokenKind::String => theme.colors.syntax_string,
         SyntaxTokenKind::Comment | SyntaxTokenKind::Label | SyntaxTokenKind::Preprocessor => {
@@ -2740,7 +2765,34 @@ fn style_run_color(run: StyleRun, tone: RowTone, theme: &Theme) -> Color {
         SyntaxTokenKind::Operator | SyntaxTokenKind::Punctuation => theme.colors.syntax_operator,
         SyntaxTokenKind::Variable | SyntaxTokenKind::Normal => tone.default_text(theme),
     };
-    base
+    let (font_weight, font_style) = syntax_kind_font_style(syntax_kind);
+    CodeTextStyle {
+        color,
+        font_weight,
+        font_style,
+    }
+}
+
+fn syntax_kind_font_style(syntax_kind: SyntaxTokenKind) -> (Option<FontWeight>, Option<FontStyle>) {
+    match syntax_kind {
+        SyntaxTokenKind::Comment => (None, Some(FontStyle::Italic)),
+        SyntaxTokenKind::Keyword | SyntaxTokenKind::Builtin => (Some(FontWeight::Semibold), None),
+        SyntaxTokenKind::Type
+        | SyntaxTokenKind::Function
+        | SyntaxTokenKind::Constant
+        | SyntaxTokenKind::Attribute
+        | SyntaxTokenKind::Tag
+        | SyntaxTokenKind::Property
+        | SyntaxTokenKind::Namespace
+        | SyntaxTokenKind::Label
+        | SyntaxTokenKind::Preprocessor => (Some(FontWeight::Medium), None),
+        SyntaxTokenKind::Normal
+        | SyntaxTokenKind::String
+        | SyntaxTokenKind::Number
+        | SyntaxTokenKind::Operator
+        | SyntaxTokenKind::Punctuation
+        | SyntaxTokenKind::Variable => (None, None),
+    }
 }
 
 fn syntax_kind_from_style_id(style_id: u16) -> SyntaxTokenKind {
@@ -2773,7 +2825,7 @@ mod tests {
         render_cols_for_width, visible_segment_range_for_block, wrapped_byte_slice,
     };
     use crate::core::compare::LayoutMode;
-    use crate::render::{Rect, TextMetrics};
+    use crate::render::{FontStyle, FontWeight, Rect, TextMetrics};
     use crate::ui::editor::render_doc::{
         ByteRange, RenderDoc, RenderLine, RenderRowKind, RunRange,
     };
@@ -2803,23 +2855,37 @@ mod tests {
     fn rich_text_builder_returns_spans_for_requested_segment() {
         let doc = RenderDoc {
             file_metadata: Vec::new(),
-            text_bytes: b"keyword value".to_vec(),
-            style_runs: vec![crate::ui::editor::render_doc::StyleRun {
-                byte_start: 0,
-                byte_len: 7,
-                style_id: 1,
-                flags: 0,
-            }],
+            text_bytes: b"keyword // comment".to_vec(),
+            style_runs: vec![
+                crate::ui::editor::render_doc::StyleRun {
+                    byte_start: 0,
+                    byte_len: 7,
+                    style_id: 1,
+                    flags: 0,
+                },
+                crate::ui::editor::render_doc::StyleRun {
+                    byte_start: 7,
+                    byte_len: 1,
+                    style_id: 0,
+                    flags: 0,
+                },
+                crate::ui::editor::render_doc::StyleRun {
+                    byte_start: 8,
+                    byte_len: 10,
+                    style_id: 3,
+                    flags: 0,
+                },
+            ],
             lines: vec![RenderLine {
                 kind: RenderRowKind::Context as u8,
-                right_text: ByteRange { start: 0, len: 13 },
-                right_runs: RunRange { start: 0, len: 1 },
-                right_cols: 13,
+                right_text: ByteRange { start: 0, len: 18 },
+                right_runs: RunRange { start: 0, len: 3 },
+                right_cols: 18,
                 ..RenderLine::default()
             }],
         };
 
-        let text_layout = CachedTextLayout::new("keyword value");
+        let text_layout = CachedTextLayout::new("keyword // comment");
         let spans = build_wrapped_rich_text(
             &doc,
             &text_layout,
@@ -2838,8 +2904,15 @@ mod tests {
                 .iter()
                 .map(|span| span.text.as_ref())
                 .collect::<String>(),
-            "keyword value"
+            "keyword // comment"
         );
+        assert_eq!(spans[0].text.as_ref(), "keyword");
+        assert_eq!(spans[0].font_weight, Some(FontWeight::Semibold));
+        let comment = spans
+            .iter()
+            .find(|span| span.text.as_ref() == "// comment")
+            .expect("comment span");
+        assert_eq!(comment.font_style, Some(FontStyle::Italic));
     }
 
     #[test]

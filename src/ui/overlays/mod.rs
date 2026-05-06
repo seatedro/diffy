@@ -16,7 +16,7 @@ pub use shortcuts::keyboard_shortcuts;
 
 use crate::ui::design::Sz;
 use crate::ui::element::AnyElement;
-use crate::ui::state::{AppState, CompareField, FocusTarget, OverlaySurface};
+use crate::ui::state::{AppState, CompareField, FocusTarget, OverlaySurface, PickerKind};
 use crate::ui::theme::Theme;
 
 pub fn render_active_overlay(
@@ -154,5 +154,24 @@ pub fn render_active_overlay(
             width,
             height,
         ),
+        OverlaySurface::FontPicker => {
+            let placeholder = match state.overlays.picker.kind.get(&state.store) {
+                PickerKind::MonoFont => "Filter code fonts\u{2026}",
+                _ => "Filter UI fonts\u{2026}",
+            };
+            picker(
+                &picker_query,
+                placeholder,
+                &picker_entries,
+                picker_selected,
+                picker_scroll as f32,
+                Sz::MODAL_XL,
+                FocusTarget::PickerInput,
+                state,
+                theme,
+                width,
+                height,
+            )
+        }
     })
 }

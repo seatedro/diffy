@@ -124,7 +124,7 @@ jobs:
           keychain_path="${RUNNER_TEMP}/diffy-signing.keychain-db"
           certificate_path="${RUNNER_TEMP}/diffy-developer-id.p12"
 
-          echo "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate_path"
+          echo "$APPLE_CERTIFICATE_P12_BASE64" | base64 -d > "$certificate_path"
           security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
           security set-keychain-settings -lut 21600 "$keychain_path"
           security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"

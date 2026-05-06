@@ -109,16 +109,17 @@ pub fn build_ui_frame(
         .set(&state.store, sidebar_list_height);
     state.file_list_clamp_scroll(state.sidebar_row_count());
 
-    // Settings → Keymaps body viewport. Mirrors how sidebar_list_height is
-    // computed: subtract every chrome layer above and below the scrollable
-    // body so wheel + drag clamping uses the same height the renderer sees.
+    // Settings → Keymaps body viewport. The keymaps layout is:
+    //   title row (pt=XL + title_block + pb=LG) above
+    //   scroll body (fills remaining height)
+    // Status bar sits below the body, so the viewport equals the window
+    // height minus title bar, status bar, and the title row's vertical chrome.
     let keymaps_title_block_h =
         m.heading_font_size * 1.4 + Sp::XXS * ui_scale + m.ui_small_font_size * 1.4;
     let keymaps_viewport_h = (height
         - m.title_bar_height
         - m.status_bar_height
         - Sp::XL * ui_scale
-        - Sp::XXL * ui_scale
         - keymaps_title_block_h
         - Sp::LG * ui_scale)
         .max(0.0);

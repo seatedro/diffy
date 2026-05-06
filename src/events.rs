@@ -7,8 +7,8 @@ use crate::core::forge::github::{
 use crate::core::syntax::annotator::{SyntaxLineTokens, SyntaxRowWindow};
 use crate::core::update::{AvailableUpdate, StagedUpdate};
 use crate::core::vcs::model::{
-    FileChange, PublishPlan, RepoCapabilities, RepoLocation, VcsChange, VcsCompareRequest, VcsRef,
-    VcsSnapshot,
+    FileChange, PublishPlan, RepoCapabilities, RepoLocation, VcsChange, VcsCompareRequest,
+    VcsOperation, VcsOperationLogEntry, VcsRef, VcsSnapshot,
 };
 use crate::ui::state::{ComparePhase, PreparedActiveFile};
 
@@ -46,6 +46,7 @@ pub struct RepositorySnapshot {
     pub capabilities: RepoCapabilities,
     pub refs: Vec<VcsRef>,
     pub changes: Vec<VcsChange>,
+    pub operation_log: Vec<VcsOperationLogEntry>,
     pub file_changes: Vec<FileChange>,
 }
 
@@ -60,6 +61,7 @@ impl RepositorySnapshot {
             capabilities: snapshot.capabilities,
             refs: snapshot.refs,
             changes: snapshot.changes,
+            operation_log: snapshot.operation_log,
             file_changes: snapshot.file_changes,
         }
     }
@@ -142,6 +144,17 @@ pub enum RepositoryEvent {
     },
     CommitFailed {
         path: PathBuf,
+        message: String,
+    },
+    VcsOperationComplete {
+        toast_id: u64,
+        path: PathBuf,
+        operation: VcsOperation,
+        message: String,
+    },
+    VcsOperationFailed {
+        toast_id: u64,
+        operation: VcsOperation,
         message: String,
     },
     ContextLinesReady(ContextLinesReady),

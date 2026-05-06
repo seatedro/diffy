@@ -11,7 +11,7 @@ use crate::core::vcs::{
     discovery,
     model::{
         ChangeBucket, FileChange, FileOperation, PublishAction, PullFastForwardOutcome,
-        RepoLocation, VcsSnapshot,
+        RepoLocation, VcsOperation, VcsSnapshot,
     },
 };
 use crate::events::{
@@ -87,6 +87,19 @@ impl VcsWorker {
 
     pub fn dispatch_commit(&self, path: PathBuf, message: String) {
         let _ = self.sender.send(VcsWorkerCommand::Commit { path, message });
+    }
+
+    pub fn dispatch_operation_command(
+        &self,
+        path: PathBuf,
+        operation: VcsOperation,
+        toast_id: u64,
+    ) {
+        let _ = self.sender.send(VcsWorkerCommand::RunOperation {
+            path,
+            operation,
+            toast_id,
+        });
     }
 
     pub fn dispatch_fetch(&self, path: PathBuf, remote: String, toast_id: u64) {
@@ -171,6 +184,11 @@ pub(crate) enum VcsWorkerCommand {
     Commit {
         path: PathBuf,
         message: String,
+    },
+    RunOperation {
+        path: PathBuf,
+        operation: VcsOperation,
+        toast_id: u64,
     },
     Fetch {
         path: PathBuf,
@@ -280,6 +298,14 @@ fn vcs_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<VcsWorke
             Some(VcsWorkerCommand::Commit { path, message }) => {
                 pending_dirty = None;
                 apply_commit(&mut state, &event_sender, path, &message);
+            }
+            Some(VcsWorkerCommand::RunOperation {
+                path,
+                operation,
+                toast_id,
+            }) => {
+                pending_dirty = None;
+                apply_vcs_operation(&mut state, &event_sender, path, operation, toast_id);
             }
             Some(VcsWorkerCommand::Fetch {
                 path,
@@ -439,6 +465,53 @@ fn apply_commit(
 
     event_sender.send(RepositoryEvent::CommitCreated { path: path.clone() });
     sync_repository_forced(state, event_sender, path, RepositorySyncReason::Dirty);
+}
+
+fn apply_vcs_operation(
+    state: &mut VcsWorkerState,
+    event_sender: &RuntimeEventSender,
+    path: PathBuf,
+    operation: VcsOperation,
+    toast_id: u64,
+) {
+    tracing::debug!(
+        path = %path.display(),
+        operation = %operation.label(),
+        toast_id,
+        "vcs: operation requested",
+    );
+    let result =
+        discovery::open_repository(&path).and_then(|mut repo| repo.run_operation(&operation));
+
+    match result {
+        Ok(message) => {
+            tracing::debug!(
+                path = %path.display(),
+                operation = %operation.label(),
+                "vcs: operation complete",
+            );
+            event_sender.send(RepositoryEvent::VcsOperationComplete {
+                toast_id,
+                path: path.clone(),
+                operation,
+                message,
+            });
+            sync_repository_forced(state, event_sender, path, RepositorySyncReason::Rescan);
+        }
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                operation = %operation.label(),
+                %error,
+                "vcs: operation failed",
+            );
+            event_sender.send(RepositoryEvent::VcsOperationFailed {
+                toast_id,
+                operation,
+                message: error.to_string(),
+            });
+        }
+    }
 }
 
 fn apply_fetch(

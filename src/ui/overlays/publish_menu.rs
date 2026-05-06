@@ -2,6 +2,7 @@ use halogen::view;
 
 use crate::actions::{Action, OverlayAction, RepositoryAction};
 use crate::core::vcs::model::{ChangeIdToken, PublishAction, PublishActionKind, PublishPlan};
+use crate::ui::components;
 use crate::ui::design::{Ico, Rad, Shadow, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
@@ -109,8 +110,8 @@ fn plan_body(plan: PublishPlan, theme: &Theme) -> AnyElement {
     let alternatives = plan.alternatives;
 
     let mut alt_rows: Vec<AnyElement> = Vec::with_capacity(alternatives.len());
-    for action in alternatives {
-        alt_rows.push(action_row(action, false, theme));
+    for (index, action) in alternatives.into_iter().enumerate() {
+        alt_rows.push(action_row(action, false, Some(index + 2), theme));
     }
 
     let alt_section = (!alt_rows.is_empty()).then(|| {
@@ -131,14 +132,19 @@ fn plan_body(plan: PublishPlan, theme: &Theme) -> AnyElement {
     view! { scale,
         <div class="flex-col">
             {separator(theme)}
-            {action_row(primary, true, theme)}
+            {action_row(primary, true, None, theme)}
             {?alt_section}
         </div>
     }
     .into_any()
 }
 
-fn action_row(action: PublishAction, primary: bool, theme: &Theme) -> AnyElement {
+fn action_row(
+    action: PublishAction,
+    primary: bool,
+    shortcut: Option<usize>,
+    theme: &Theme,
+) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let (icon, accent) = action_visuals(&action.kind, tc);
@@ -165,6 +171,11 @@ fn action_row(action: PublishAction, primary: bool, theme: &Theme) -> AnyElement
         },
         tc,
     );
+    let shortcut_badge = if primary {
+        Some(components::kbd("Enter", theme))
+    } else {
+        shortcut.map(|shortcut| components::kbd(shortcut.to_string(), theme))
+    };
 
     view! { scale,
         <div class="flex-row items-start"
@@ -182,6 +193,11 @@ fn action_row(action: PublishAction, primary: bool, theme: &Theme) -> AnyElement
                 {title}
                 {description}
             </div>
+            if let Some(shortcut_badge) = shortcut_badge {
+                <div class="shrink-0" pt={2.0}>
+                    {shortcut_badge}
+                </div>
+            }
         </div>
     }
     .into_any()

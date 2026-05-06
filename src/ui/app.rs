@@ -794,20 +794,24 @@ fn scale_text_metrics(
 
 #[cfg(test)]
 mod tests {
+    use crate::core::compare::{CompareMode, CompareOutput};
+    use crate::core::forge::github::DeviceFlowState;
     use crate::core::themes::ThemeRegistry;
+    use crate::core::vcs::model::{PublishAction, PublishActionKind, PublishPlan};
     use tempfile::TempDir;
     use winit::dpi::PhysicalPosition;
-    use winit::event::{MouseScrollDelta, TouchPhase};
-    use winit::keyboard::ModifiersState;
+    use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase};
+    use winit::keyboard::{ModifiersState, NamedKey};
 
     use super::NativeApp;
     use crate::apprt::{AppRuntime, AppServices};
     use crate::input::{
-        InputEvent, KeyChord, KeyKind, quantize_scroll_delta_px, scroll_delta_to_px,
+        InputEvent, InputOutcome, KeyChord, KeyKind, quantize_scroll_delta_px, scroll_delta_to_px,
     };
     use crate::platform::persistence::SettingsStore;
     use crate::ui::state::{
-        AppState, FileListEntry, FocusTarget, OverlayEntry, OverlaySurface, WorkspaceMode,
+        AppState, AppView, FileListEntry, FocusTarget, OverlayEntry, OverlaySurface,
+        SettingsSection, WorkspaceMode, WorkspaceSource,
     };
 
     fn test_app(state: AppState) -> NativeApp {
@@ -816,8 +820,8 @@ mod tests {
         NativeApp::new(state, runtime, ThemeRegistry::load())
     }
 
-    fn dispatch_input_event(app: &mut NativeApp, event: InputEvent) {
-        let outcome = app.input.handle_input_event_for_test(
+    fn route_input_event(app: &mut NativeApp, event: InputEvent) -> InputOutcome {
+        app.input.handle_input_event_for_test(
             &mut app.state,
             &mut app.ui_frame,
             &app.editor,
@@ -826,7 +830,11 @@ mod tests {
             &mut app.tooltip_state,
             app.launch_at,
             event,
-        );
+        )
+    }
+
+    fn dispatch_input_event(app: &mut NativeApp, event: InputEvent) {
+        let outcome = route_input_event(app, event);
         app.apply_input_outcome(outcome);
     }
 
@@ -837,6 +845,52 @@ mod tests {
             modifiers,
             repeat: false,
         })
+    }
+
+    fn named_keypress(named: NamedKey, modifiers: ModifiersState) -> InputEvent {
+        InputEvent::KeyPress(KeyChord {
+            logical: KeyKind::Named(named),
+            physical: None,
+            modifiers,
+            repeat: false,
+        })
+    }
+
+    fn publish_action(label: &str) -> PublishAction {
+        PublishAction {
+            label: label.to_owned(),
+            description: format!("{label} description"),
+            kind: PublishActionKind::PushRef {
+                remote: "origin".to_owned(),
+                refspec: "main".to_owned(),
+                force_with_lease: false,
+            },
+            change_id_token: None,
+        }
+    }
+
+    fn compare_file(path: &str) -> carbon::FileDiff {
+        carbon::FileDiff {
+            old_path: Some(path.to_owned()),
+            new_path: Some(path.to_owned()),
+            ..carbon::FileDiff::default()
+        }
+    }
+
+    fn file_header_point(app: &NativeApp, path: &str) -> (f32, f32) {
+        let viewport = app.ui_frame.viewport_rect.expect("viewport rect");
+        let width = viewport.width.max(1.0).round() as u32;
+        let height = viewport.height.max(1.0).round() as u32;
+        for y_offset in 0..height {
+            let y = viewport.y + y_offset as f32 + 0.5;
+            for x_offset in (0..width).step_by(8) {
+                let x = viewport.x + x_offset as f32 + 0.5;
+                if app.editor.file_header_path_at(x, y).as_deref() == Some(path) {
+                    return (x, y);
+                }
+            }
+        }
+        panic!("missing file header for {path}");
     }
 
     #[test]
@@ -1084,6 +1138,570 @@ mod tests {
         assert_eq!(
             app.state.overlays_top(),
             Some(OverlaySurface::CommandPalette)
+        );
+    }
+
+    #[test]
+    fn clicking_file_row_selects_exact_file() {
+        let state = AppState::default();
+        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+        state
+            .workspace
+            .source
+            .set(&state.store, WorkspaceSource::Compare);
+        state.workspace.files.set(
+            &state.store,
+            vec![
+                FileListEntry {
+                    path: "src/ui/state/mod.rs".to_owned(),
+                    status: "M".to_owned(),
+                    additions: 1,
+                    deletions: 0,
+                    is_binary: false,
+                },
+                FileListEntry {
+                    path: "src/ui/state/text_edit.rs".to_owned(),
+                    status: "M".to_owned(),
+                    additions: 1,
+                    deletions: 0,
+                    is_binary: false,
+                },
+            ],
+        );
+        state.workspace.compare_output.set(
+            &state.store,
+            Some(CompareOutput {
+                carbon: carbon::DiffDocument {
+                    files: vec![
+                        compare_file("src/ui/state/mod.rs"),
+                        compare_file("src/ui/state/text_edit.rs"),
+                    ],
+                },
+                ..CompareOutput::default()
+            }),
+        );
+        state
+            .workspace
+            .selected_file_index
+            .set(&state.store, Some(0));
+        state
+            .workspace
+            .selected_file_path
+            .set(&state.store, Some("src/ui/state/mod.rs".to_owned()));
+
+        let mut app = test_app(state);
+        app.ui_frame = app.build_frame();
+        let hit = app
+            .ui_frame
+            .hits
+            .iter()
+            .rev()
+            .find(|hit| matches!(hit.identity, Some(crate::ui::element::HitIdentity::File(1))))
+            .expect("text_edit.rs file row hit");
+        let x = hit.rect.x + hit.rect.width * 0.5;
+        let y = hit.rect.y + hit.rect.height * 0.5;
+
+        dispatch_input_event(&mut app, InputEvent::PointerMoved { x, y });
+        dispatch_input_event(
+            &mut app,
+            InputEvent::PointerButton {
+                button: MouseButton::Left,
+                state: ElementState::Pressed,
+            },
+        );
+
+        assert_eq!(
+            app.state.workspace.selected_file_path.get(&app.state.store),
+            Some("src/ui/state/text_edit.rs".to_owned())
+        );
+        assert_eq!(
+            app.state.focus.get(&app.state.store),
+            Some(FocusTarget::FileList)
+        );
+    }
+
+    #[test]
+    fn clicking_continuous_file_header_selects_exact_file() {
+        let mut state = AppState::default();
+        state.settings.continuous_scroll = true;
+        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+        state
+            .workspace
+            .source
+            .set(&state.store, WorkspaceSource::Compare);
+        state.workspace.files.set(
+            &state.store,
+            vec![
+                FileListEntry {
+                    path: "src/ui/state/mod.rs".to_owned(),
+                    status: "M".to_owned(),
+                    additions: 1,
+                    deletions: 0,
+                    is_binary: false,
+                },
+                FileListEntry {
+                    path: "src/ui/state/text_edit.rs".to_owned(),
+                    status: "M".to_owned(),
+                    additions: 1,
+                    deletions: 0,
+                    is_binary: false,
+                },
+            ],
+        );
+        state.workspace.compare_output.set(
+            &state.store,
+            Some(CompareOutput {
+                carbon: carbon::DiffDocument {
+                    files: vec![
+                        compare_file("src/ui/state/mod.rs"),
+                        compare_file("src/ui/state/text_edit.rs"),
+                    ],
+                },
+                ..CompareOutput::default()
+            }),
+        );
+        state
+            .workspace
+            .selected_file_index
+            .set(&state.store, Some(0));
+        state
+            .workspace
+            .selected_file_path
+            .set(&state.store, Some("src/ui/state/mod.rs".to_owned()));
+
+        let mut app = test_app(state);
+        app.ui_frame = app.build_frame();
+        let (x, y) = file_header_point(&app, "src/ui/state/text_edit.rs");
+
+        dispatch_input_event(&mut app, InputEvent::PointerMoved { x, y });
+        dispatch_input_event(
+            &mut app,
+            InputEvent::PointerButton {
+                button: MouseButton::Left,
+                state: ElementState::Pressed,
+            },
+        );
+
+        assert_eq!(
+            app.state.workspace.selected_file_path.get(&app.state.store),
+            Some("src/ui/state/text_edit.rs".to_owned())
+        );
+        assert_eq!(
+            app.state.focus.get(&app.state.store),
+            Some(FocusTarget::Editor)
+        );
+
+        app.ui_frame = app.build_frame();
+        assert_eq!(
+            app.state.workspace.selected_file_path.get(&app.state.store),
+            Some("src/ui/state/text_edit.rs".to_owned())
+        );
+    }
+
+    #[test]
+    fn escape_closes_search_while_search_input_focused() {
+        let mut state = AppState::default();
+        state.apply_action(crate::actions::EditorAction::OpenSearch);
+        let mut app = test_app(state);
+
+        dispatch_input_event(
+            &mut app,
+            named_keypress(NamedKey::Escape, ModifiersState::empty()),
+        );
+
+        assert!(!app.state.editor.search.open.get(&app.state.store));
+        assert_eq!(
+            app.state.focus.get(&app.state.store),
+            Some(FocusTarget::Editor)
+        );
+    }
+
+    #[test]
+    fn question_mark_toggles_keyboard_shortcuts_overlay() {
+        let mut app = test_app(AppState::default());
+
+        dispatch_input_event(&mut app, keypress("?", ModifiersState::empty()));
+        assert_eq!(app.state.app_view.get(&app.state.store), AppView::Settings);
+        assert_eq!(
+            app.state.settings_section.get(&app.state.store),
+            SettingsSection::Keymaps
+        );
+    }
+
+    #[test]
+    fn compare_menu_number_key_selects_compare_mode() {
+        let state = AppState::default();
+        state.overlays.stack.update(&state.store, |stack| {
+            stack.push(OverlayEntry {
+                surface: OverlaySurface::CompareMenu,
+                focus_return: None,
+            });
+        });
+        let mut app = test_app(state);
+
+        dispatch_input_event(&mut app, keypress("2", ModifiersState::empty()));
+
+        assert_eq!(
+            app.state.compare.mode.get(&app.state.store),
+            CompareMode::TwoDot
+        );
+        assert_eq!(app.state.overlays_top(), None);
+    }
+
+    #[test]
+    fn sidebar_tab_keys_switch_files_and_commits() {
+        let repo_dir = TempDir::new().unwrap();
+        let state = AppState::default();
+        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+        state
+            .workspace
+            .source
+            .set(&state.store, crate::ui::state::WorkspaceSource::Compare);
+        state.workspace.compare_history_pending.set(
+            &state.store,
+            Some(crate::effects::CompareHistoryRequest {
+                repo_path: repo_dir.path().to_path_buf(),
+                left_ref: "main".to_owned(),
+                right_ref: "HEAD".to_owned(),
+            }),
+        );
+        let mut app = test_app(state);
+
+        dispatch_input_event(&mut app, keypress("C", ModifiersState::empty()));
+        assert_eq!(
+            app.state.file_list.tab.get(&app.state.store),
+            crate::ui::state::SidebarTab::Commits
+        );
+
+        dispatch_input_event(&mut app, keypress("F", ModifiersState::empty()));
+        assert_eq!(
+            app.state.file_list.tab.get(&app.state.store),
+            crate::ui::state::SidebarTab::Files
+        );
+    }
+
+    #[test]
+    fn escape_restores_compare_from_commit_drilldown() {
+        let state = AppState::default();
+        state.workspace.pre_drill_compare.set(
+            &state.store,
+            Some(("main".to_owned(), "HEAD".to_owned(), CompareMode::TwoDot)),
+        );
+        let mut app = test_app(state);
+
+        let outcome = route_input_event(
+            &mut app,
+            named_keypress(NamedKey::Escape, ModifiersState::empty()),
+        );
+
+        assert_eq!(
+            outcome.actions,
+            vec![crate::actions::CompareAction::ClearSidebarCommit.into()]
+        );
+    }
+
+    #[test]
+    fn publish_menu_enter_dispatches_primary_action() {
+        let primary = publish_action("Publish primary");
+        let state = AppState::default();
+        state.repository.publish_plan.set(
+            &state.store,
+            Some(PublishPlan {
+                primary: primary.clone(),
+                alternatives: vec![publish_action("Publish alternate")],
+            }),
+        );
+        state.overlays.stack.update(&state.store, |stack| {
+            stack.push(OverlayEntry {
+                surface: OverlaySurface::PublishMenu,
+                focus_return: None,
+            });
+        });
+        let mut app = test_app(state);
+
+        let outcome = route_input_event(
+            &mut app,
+            named_keypress(NamedKey::Enter, ModifiersState::empty()),
+        );
+
+        assert_eq!(
+            outcome.actions,
+            vec![crate::actions::RepositoryAction::Publish(primary).into()]
+        );
+    }
+
+    #[test]
+    fn account_menu_number_keys_dispatch_menu_actions() {
+        let state = AppState::default();
+        state.overlays.stack.update(&state.store, |stack| {
+            stack.push(OverlayEntry {
+                surface: OverlaySurface::AccountMenu,
+                focus_return: None,
+            });
+        });
+        let mut app = test_app(state);
+
+        let outcome = route_input_event(&mut app, keypress("1", ModifiersState::empty()));
+        assert_eq!(
+            outcome.actions,
+            vec![crate::actions::SettingsAction::OpenSettings.into()]
+        );
+
+        let outcome = route_input_event(&mut app, keypress("2", ModifiersState::empty()));
+        assert_eq!(
+            outcome.actions,
+            vec![crate::actions::GitHubAction::SignOutGitHub.into()]
+        );
+    }
+
+    #[test]
+    fn github_auth_modal_keys_copy_code_and_open_browser() {
+        let state = AppState::default();
+        state.github.auth.device_flow.set(
+            &state.store,
+            Some(DeviceFlowState {
+                device_code: "device".to_owned(),
+                user_code: "ABCD-1234".to_owned(),
+                verification_uri: "https://github.com/login/device".to_owned(),
+                interval: 5,
+            }),
+        );
+        state.overlays.stack.update(&state.store, |stack| {
+            stack.push(OverlayEntry {
+                surface: OverlaySurface::GitHubAuthModal,
+                focus_return: None,
+            });
+        });
+        let mut app = test_app(state);
+
+        let outcome = route_input_event(&mut app, keypress("c", ModifiersState::empty()));
+        assert_eq!(
+            outcome.actions,
+            vec![crate::actions::AppAction::CopyText("ABCD-1234".to_owned()).into()]
+        );
+
+        let outcome = route_input_event(&mut app, keypress("o", ModifiersState::empty()));
+        assert_eq!(
+            outcome.actions,
+            vec![crate::actions::GitHubAction::OpenDeviceFlowBrowser.into()]
+        );
+    }
+
+    #[test]
+    fn confirmation_overlay_keys_confirm_and_cancel() {
+        let state = AppState::default();
+        state.overlays.stack.update(&state.store, |stack| {
+            stack.push(OverlayEntry {
+                surface: OverlaySurface::Confirmation,
+                focus_return: None,
+            });
+        });
+        let mut app = test_app(state);
+
+        let outcome = route_input_event(&mut app, keypress("y", ModifiersState::empty()));
+        assert_eq!(
+            outcome.actions,
+            vec![crate::actions::OverlayAction::ConfirmOverlaySelection.into()]
+        );
+
+        let outcome = route_input_event(&mut app, keypress("n", ModifiersState::empty()));
+        assert_eq!(
+            outcome.actions,
+            vec![crate::actions::OverlayAction::CloseOverlay.into()]
+        );
+
+        let outcome = route_input_event(
+            &mut app,
+            named_keypress(NamedKey::Enter, ModifiersState::empty()),
+        );
+        assert_eq!(
+            outcome.actions,
+            vec![crate::actions::OverlayAction::ConfirmOverlaySelection.into()]
+        );
+    }
+
+    #[test]
+    fn publish_action_closes_publish_menu() {
+        let repo_dir = TempDir::new().unwrap();
+        let primary = publish_action("Publish primary");
+        let state = AppState::default();
+        state
+            .compare
+            .repo_path
+            .set(&state.store, Some(repo_dir.path().to_path_buf()));
+        state.overlays.stack.update(&state.store, |stack| {
+            stack.push(OverlayEntry {
+                surface: OverlaySurface::PublishMenu,
+                focus_return: None,
+            });
+        });
+
+        let mut app = test_app(state);
+        let effects = app
+            .state
+            .apply_action(crate::actions::RepositoryAction::Publish(primary));
+
+        assert_eq!(app.state.overlays_top(), None);
+        assert_eq!(effects.len(), 1);
+    }
+
+    #[test]
+    fn row_cursor_keys_move_visible_editor_cursor() {
+        let state = AppState::default();
+        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+        state.focus.set(&state.store, Some(FocusTarget::Editor));
+        state.editor.visible_row_start.set(&state.store, Some(4));
+        state.editor.visible_row_end.set(&state.store, Some(8));
+        let mut app = test_app(state);
+
+        dispatch_input_event(&mut app, keypress("J", ModifiersState::empty()));
+        assert_eq!(app.state.editor.hovered_row.get(&app.state.store), Some(4));
+
+        dispatch_input_event(&mut app, keypress("J", ModifiersState::empty()));
+        assert_eq!(app.state.editor.hovered_row.get(&app.state.store), Some(5));
+
+        dispatch_input_event(&mut app, keypress("K", ModifiersState::empty()));
+        assert_eq!(app.state.editor.hovered_row.get(&app.state.store), Some(4));
+    }
+
+    #[test]
+    fn line_selection_keys_dispatch_current_line_actions() {
+        let state = AppState::default();
+        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+        state
+            .workspace
+            .source
+            .set(&state.store, crate::ui::state::WorkspaceSource::Status);
+        state.focus.set(&state.store, Some(FocusTarget::Editor));
+        let mut app = test_app(state);
+
+        let toggle = route_input_event(&mut app, keypress("v", ModifiersState::empty()));
+        assert_eq!(
+            toggle.actions,
+            vec![crate::actions::RepositoryAction::ToggleCurrentLineSelection.into()]
+        );
+
+        let range = route_input_event(&mut app, keypress("V", ModifiersState::empty()));
+        assert_eq!(
+            range.actions,
+            vec![crate::actions::RepositoryAction::ToggleCurrentLineSelectionRange.into()]
+        );
+    }
+
+    #[test]
+    fn review_comment_editor_keyboard_submit_and_cancel() {
+        let state = AppState::default();
+        state
+            .focus
+            .set(&state.store, Some(FocusTarget::ReviewCommentEditor));
+        let mut app = test_app(state);
+
+        let submit = route_input_event(
+            &mut app,
+            named_keypress(NamedKey::Enter, ModifiersState::SUPER),
+        );
+        assert_eq!(
+            submit.actions,
+            vec![crate::actions::GitHubAction::SubmitReviewComment.into()]
+        );
+
+        let cancel = route_input_event(
+            &mut app,
+            named_keypress(NamedKey::Escape, ModifiersState::empty()),
+        );
+        assert_eq!(
+            cancel.actions,
+            vec![crate::actions::GitHubAction::CancelReviewComment.into()]
+        );
+    }
+
+    #[test]
+    fn settings_number_and_navigation_keys_switch_sections() {
+        let state = AppState::default();
+        state.app_view.set(&state.store, AppView::Settings);
+        let mut app = test_app(state);
+
+        dispatch_input_event(&mut app, keypress("3", ModifiersState::empty()));
+        assert_eq!(
+            app.state.settings_section.get(&app.state.store),
+            SettingsSection::Behavior
+        );
+
+        dispatch_input_event(&mut app, keypress("j", ModifiersState::empty()));
+        assert_eq!(
+            app.state.settings_section.get(&app.state.store),
+            SettingsSection::Keymaps
+        );
+
+        dispatch_input_event(
+            &mut app,
+            named_keypress(NamedKey::ArrowUp, ModifiersState::empty()),
+        );
+        assert_eq!(
+            app.state.settings_section.get(&app.state.store),
+            SettingsSection::Behavior
+        );
+    }
+
+    #[test]
+    fn settings_control_keys_dispatch_existing_actions() {
+        let state = AppState::default();
+        state.app_view.set(&state.store, AppView::Settings);
+        let mut app = test_app(state);
+
+        dispatch_input_event(&mut app, keypress("w", ModifiersState::empty()));
+        assert!(app.state.editor.wrap_enabled.get(&app.state.store));
+
+        dispatch_input_event(&mut app, keypress("c", ModifiersState::empty()));
+        assert!(app.state.settings.continuous_scroll);
+
+        let outcome = route_input_event(&mut app, keypress("u", ModifiersState::empty()));
+        assert_eq!(
+            outcome.actions,
+            vec![crate::actions::UpdateAction::CheckForUpdates.into()]
+        );
+    }
+
+    #[test]
+    fn keymap_rebind_overrides_default_shortcut() {
+        let state = AppState::default();
+        state.app_view.set(&state.store, AppView::Settings);
+        state
+            .settings_section
+            .set(&state.store, SettingsSection::Keymaps);
+        state.keymap_capture.set(
+            &state.store,
+            Some(crate::input::ShortcutCommand::ToggleWrap),
+        );
+        let mut app = test_app(state);
+
+        dispatch_input_event(&mut app, keypress("z", ModifiersState::empty()));
+        assert_eq!(app.state.settings.keymap_overrides.len(), 1);
+
+        dispatch_input_event(&mut app, keypress("w", ModifiersState::empty()));
+        assert!(!app.state.editor.wrap_enabled.get(&app.state.store));
+
+        dispatch_input_event(&mut app, keypress("z", ModifiersState::empty()));
+        assert!(app.state.editor.wrap_enabled.get(&app.state.store));
+    }
+
+    #[test]
+    fn vim_focus_keys_switch_file_list_and_editor_focus() {
+        let state = AppState::default();
+        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+        state.focus.set(&state.store, Some(FocusTarget::FileList));
+        let mut app = test_app(state);
+
+        dispatch_input_event(&mut app, keypress("l", ModifiersState::empty()));
+        assert_eq!(
+            app.state.focus.get(&app.state.store),
+            Some(FocusTarget::Editor)
+        );
+
+        dispatch_input_event(&mut app, keypress("h", ModifiersState::empty()));
+        assert_eq!(
+            app.state.focus.get(&app.state.store),
+            Some(FocusTarget::FileList)
         );
     }
 

@@ -32,8 +32,9 @@ use crate::core::syntax::annotator::{SyntaxLineTokens, SyntaxRowWindow};
 use crate::core::text::TokenBuffer;
 use crate::core::update::{AvailableUpdate, StagedUpdate};
 use crate::core::vcs::model::{
-    ChangeBucket, FileChange, FileChangeStatus, FileOperation, PublishAction, PublishPlan, RefKind,
-    RepoCapabilities, RepoLocation, VcsChange, VcsCompareRequest, VcsCompareSpec, VcsRef,
+    ChangeBucket, FileChange, FileChangeStatus, FileOperation, JjOperation, PublishAction,
+    PublishPlan, RefKind, RepoCapabilities, RepoLocation, VCS_PROFILE_JJ, VcsChange,
+    VcsCompareRequest, VcsCompareSpec, VcsOperation, VcsOperationLogEntry, VcsRef,
 };
 use crate::core::vcs::patch;
 use crate::editor::Editor;
@@ -43,7 +44,7 @@ use crate::effects::{
     CompareStatsRequest, CompareWorkPriority, Effect, FetchRemoteRequest, FileOperationRequest,
     GitHubEffect, LoadFileSyntaxRequest, PatchOperationRequest, PublishPlanRequest, PublishRequest,
     PullFfRequest, PushRequest, RepositoryEffect, SettingsEffect, StatusDiffRequest, SyntaxEffect,
-    Task, UiEffect, UpdateEffect,
+    Task, UiEffect, UpdateEffect, VcsOperationRequest,
 };
 use crate::events::{
     AppEvent, CompareFileFinished, CompareFileStat, CompareFileStatsReady, CompareFinished,
@@ -182,6 +183,7 @@ pub enum SettingsSection {
     Appearance,
     Editor,
     Behavior,
+    Keymaps,
     Clankers,
     About,
 }
@@ -192,6 +194,7 @@ impl SettingsSection {
             Self::Appearance => "Appearance",
             Self::Editor => "Editor",
             Self::Behavior => "Behavior",
+            Self::Keymaps => "Keymaps",
             Self::Clankers => "Clankers",
             Self::About => "About",
         }
@@ -202,15 +205,17 @@ impl SettingsSection {
             Self::Appearance => lucide::SUN,
             Self::Editor => lucide::FILE_CODE,
             Self::Behavior => lucide::SETTINGS,
+            Self::Keymaps => lucide::KEY,
             Self::Clankers => lucide::SPARKLES,
             Self::About => lucide::INFO,
         }
     }
 
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Appearance,
         Self::Editor,
         Self::Behavior,
+        Self::Keymaps,
         Self::Clankers,
         Self::About,
     ];
@@ -325,6 +330,7 @@ pub struct RepositoryState {
     pub capabilities: Option<RepoCapabilities>,
     pub refs: Vec<VcsRef>,
     pub changes: Vec<VcsChange>,
+    pub operation_log: Vec<VcsOperationLogEntry>,
     pub file_changes: Vec<FileChange>,
     pub publish_plan: Option<PublishPlan>,
 }
@@ -802,6 +808,19 @@ impl AppState {
         let cur = self.file_list.scroll_offset_px.get(&self.store);
         self.file_list
             .scroll_offset_px
+            .set(&self.store, cur.clamp(0.0, max));
+    }
+
+    pub fn keymaps_max_scroll_px(&self) -> f32 {
+        let content = self.keymaps_content_height_px.get(&self.store);
+        let viewport = self.keymaps_viewport_height_px.get(&self.store);
+        (content - viewport).max(0.0)
+    }
+
+    pub fn clamp_keymaps_scroll(&mut self) {
+        let max = self.keymaps_max_scroll_px();
+        let cur = self.keymaps_scroll_top_px.get(&self.store);
+        self.keymaps_scroll_top_px
             .set(&self.store, cur.clamp(0.0, max));
     }
 
@@ -1654,13 +1673,44 @@ pub struct PickerState {
 pub enum PaletteCommand {
     OpenRepoPicker,
     OpenGitHubAuthModal,
+    OpenGitHubAccountMenu,
+    SignOutGitHub,
     FocusFileList,
     FocusViewport,
+    ShowWorkingTree,
+    RefreshRepository,
+    OpenBaseRefPicker,
+    OpenHeadRefPicker,
+    SwapRefs,
+    StartCompare,
+    OpenCompareMenu,
+    ShowKeyboardShortcuts,
+    RestoreCompare,
+    ToggleSidebar,
+    ToggleFileTree,
+    ExpandAllFolders,
+    CollapseAllFolders,
     ToggleWrap,
+    ToggleContinuousScroll,
+    SetSettingsSection(SettingsSection),
+    SetThemeMode(ThemeMode),
+    SetUiScalePct(u16),
+    SetWrapColumn(u32),
+    SetWheelScrollLines(u8),
+    ToggleAutoUpdate,
     ToggleThemeMode,
     ChangeTheme,
     SetLayout(LayoutMode),
+    SetRenderer(RendererKind),
     SetTheme(String),
+    ExpandAllContext,
+    ClearLineSelection,
+    GenerateCommitMessage,
+    OpenReviewComment,
+    CheckForUpdates,
+    InstallUpdate,
+    RestartToUpdate,
+    RunOperation(VcsOperation),
     FetchOrigin,
     FetchAllRemotes,
     PushCurrentBranch,
@@ -1674,6 +1724,7 @@ pub enum PaletteCommand {
 pub enum PaletteEntryKind {
     Command(PaletteCommand),
     File(usize),
+    Commit(String),
     Repo(PathBuf),
     Ref(CompareField, String),
     PullRequest(PrKey),
@@ -1709,6 +1760,41 @@ fn palette_command_available(
             capabilities.is_some_and(|capabilities| capabilities.pull_fast_forward)
         }
         _ => true,
+    }
+}
+
+fn vcs_operation_available_for_location(
+    operation: &VcsOperation,
+    location: Option<&RepoLocation>,
+) -> bool {
+    match operation {
+        VcsOperation::Jj(_) => location.is_some_and(|location| location.profile == VCS_PROFILE_JJ),
+        VcsOperation::JjRebaseCurrentChangeOnto { .. } => {
+            location.is_some_and(|location| location.profile == VCS_PROFILE_JJ)
+        }
+        VcsOperation::JjEditRevision { .. } => {
+            location.is_some_and(|location| location.profile == VCS_PROFILE_JJ)
+        }
+        VcsOperation::JjRestoreOperation { .. } => {
+            location.is_some_and(|location| location.profile == VCS_PROFILE_JJ)
+        }
+    }
+}
+
+fn operation_log_entry_detail(entry: &VcsOperationLogEntry) -> String {
+    match (
+        entry.description.is_empty(),
+        entry.user.is_empty(),
+        entry.time.is_empty(),
+    ) {
+        (false, false, false) => format!("{} - {} - {}", entry.description, entry.user, entry.time),
+        (false, false, true) => format!("{} - {}", entry.description, entry.user),
+        (false, true, false) => format!("{} - {}", entry.description, entry.time),
+        (false, true, true) => entry.description.clone(),
+        (true, false, false) => format!("{} - {}", entry.user, entry.time),
+        (true, false, true) => entry.user.clone(),
+        (true, true, false) => entry.time.clone(),
+        (true, true, true) => "jj operation log entry".to_owned(),
     }
 }
 
@@ -1846,6 +1932,7 @@ pub enum OverlaySurface {
     RepoPicker,
     RefPicker,
     CommandPalette,
+    Confirmation,
     GitHubAuthModal,
     KeyboardShortcuts,
     ThemePicker,
@@ -1861,6 +1948,14 @@ pub struct OverlayEntry {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
+pub struct ConfirmationState {
+    pub title: String,
+    pub message: String,
+    pub confirm_label: String,
+    pub action: Option<Action>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
 pub struct OverlayStackState {
     pub stack: Vec<OverlayEntry>,
     #[store(flatten)]
@@ -1869,6 +1964,8 @@ pub struct OverlayStackState {
     pub command_palette: CommandPaletteState,
     #[store(flatten)]
     pub ref_picker: RefPickerState,
+    #[store(flatten)]
+    pub confirmation: ConfirmationState,
 }
 
 impl AppState {
@@ -1923,12 +2020,27 @@ impl AppState {
         self.overlays.command_palette.list.set(&self.store, d.list);
     }
 
+    pub fn reset_confirmation(&mut self) {
+        let d = ConfirmationState::default();
+        self.overlays.confirmation.title.set(&self.store, d.title);
+        self.overlays
+            .confirmation
+            .message
+            .set(&self.store, d.message);
+        self.overlays
+            .confirmation
+            .confirm_label
+            .set(&self.store, d.confirm_label);
+        self.overlays.confirmation.action.set(&self.store, d.action);
+    }
+
     pub fn clear_overlays(&mut self) {
         self.overlays
             .stack
             .update(&self.store, |stack| stack.clear());
         self.reset_picker();
         self.reset_command_palette();
+        self.reset_confirmation();
     }
 }
 
@@ -2100,6 +2212,10 @@ pub struct AppState {
     pub compare_progress: Signal<Option<CompareProgress>>,
     pub app_view: Signal<AppView>,
     pub settings_section: Signal<SettingsSection>,
+    pub keymap_capture: Signal<Option<crate::input::ShortcutCommand>>,
+    pub keymaps_scroll_top_px: Signal<f32>,
+    pub keymaps_viewport_height_px: Signal<f32>,
+    pub keymaps_content_height_px: Signal<f32>,
     pub compare: CompareStateStore,
     pub repository: RepositoryStateStore,
     pub workspace: WorkspaceStateStore,
@@ -2156,6 +2272,10 @@ impl Default for AppState {
         let compare_progress = store.create(None::<CompareProgress>);
         let app_view = store.create(AppView::default());
         let settings_section = store.create(SettingsSection::default());
+        let keymap_capture = store.create(None::<crate::input::ShortcutCommand>);
+        let keymaps_scroll_top_px = store.create(0.0_f32);
+        let keymaps_viewport_height_px = store.create(0.0_f32);
+        let keymaps_content_height_px = store.create(0.0_f32);
         let last_error = store.create(None::<String>);
         let theme_preview_original = store.create(None::<String>);
         let toasts = store.create(Vec::<Toast>::new());
@@ -2175,6 +2295,10 @@ impl Default for AppState {
             compare_progress,
             app_view,
             settings_section,
+            keymap_capture,
+            keymaps_scroll_top_px,
+            keymaps_viewport_height_px,
+            keymaps_content_height_px,
             compare,
             repository,
             workspace,
@@ -2274,6 +2398,10 @@ impl AppState {
         let compare_progress = store.create(None::<CompareProgress>);
         let app_view = store.create(AppView::default());
         let settings_section = store.create(SettingsSection::default());
+        let keymap_capture = store.create(None::<crate::input::ShortcutCommand>);
+        let keymaps_scroll_top_px = store.create(0.0_f32);
+        let keymaps_viewport_height_px = store.create(0.0_f32);
+        let keymaps_content_height_px = store.create(0.0_f32);
         let last_error = store.create(None::<String>);
         let theme_preview_original = store.create(None::<String>);
         let toasts = store.create(Vec::<Toast>::new());
@@ -2325,6 +2453,10 @@ impl AppState {
             compare_progress,
             app_view,
             settings_section,
+            keymap_capture,
+            keymaps_scroll_top_px,
+            keymaps_viewport_height_px,
+            keymaps_content_height_px,
             compare,
             repository,
             workspace,
@@ -2601,6 +2733,7 @@ impl AppState {
         self.repository.capabilities.set(&self.store, None);
         self.repository.refs.set(&self.store, Vec::new());
         self.repository.changes.set(&self.store, Vec::new());
+        self.repository.operation_log.set(&self.store, Vec::new());
         self.repository.file_changes.set(&self.store, Vec::new());
         self.repository.publish_plan.set(&self.store, None);
         self.workspace_clear_compare();
@@ -2741,6 +2874,9 @@ impl AppState {
         let file_changes = payload.file_changes;
         self.repository.refs.set(&self.store, payload.refs);
         self.repository.changes.set(&self.store, payload.changes);
+        self.repository
+            .operation_log
+            .set(&self.store, payload.operation_log);
         self.repository
             .file_changes
             .set(&self.store, file_changes.clone());
@@ -4929,9 +5065,39 @@ impl AppState {
             OverlaySurface::CommandPalette => {
                 self.reset_command_palette();
             }
+            OverlaySurface::Confirmation => {
+                self.reset_confirmation();
+            }
             _ => {}
         }
         self.set_focus(entry.focus_return);
+    }
+
+    fn open_confirmation(
+        &mut self,
+        title: impl Into<String>,
+        message: impl Into<String>,
+        confirm_label: impl Into<String>,
+        action: Action,
+    ) {
+        self.overlays
+            .confirmation
+            .title
+            .set(&self.store, title.into());
+        self.overlays
+            .confirmation
+            .message
+            .set(&self.store, message.into());
+        self.overlays
+            .confirmation
+            .confirm_label
+            .set(&self.store, confirm_label.into());
+        self.overlays
+            .confirmation
+            .action
+            .set(&self.store, Some(action));
+        self.set_focus(None);
+        self.push_overlay(OverlaySurface::Confirmation, None);
     }
 
     fn move_overlay_selection(&mut self, delta: i32) {
@@ -5113,6 +5279,15 @@ impl AppState {
                 self.confirm_ref_picker(field)
             }
             Some(OverlaySurface::CommandPalette) => self.confirm_command_palette(),
+            Some(OverlaySurface::Confirmation) => {
+                let action = self.overlays.confirmation.action.get(&self.store);
+                self.pop_overlay();
+                if let Some(action) = action {
+                    self.apply_action(action)
+                } else {
+                    Vec::new()
+                }
+            }
             Some(OverlaySurface::GitHubAuthModal) => {
                 if self
                     .github
@@ -5455,68 +5630,164 @@ impl AppState {
         }
         self.clear_overlays();
         match entry.kind {
-            PaletteEntryKind::Command(command) => match command {
-                PaletteCommand::OpenRepoPicker => {
-                    self.open_repo_picker();
-                    Vec::new()
+            PaletteEntryKind::Command(command) => {
+                match command {
+                    PaletteCommand::OpenRepoPicker => {
+                        self.open_repo_picker();
+                        Vec::new()
+                    }
+                    PaletteCommand::OpenGitHubAuthModal => {
+                        self.push_overlay(
+                            OverlaySurface::GitHubAuthModal,
+                            Some(FocusTarget::AuthPrimaryAction),
+                        );
+                        Vec::new()
+                    }
+                    PaletteCommand::OpenGitHubAccountMenu => {
+                        self.apply_action(crate::actions::GitHubAction::OpenAccountMenu)
+                    }
+                    PaletteCommand::SignOutGitHub => {
+                        self.apply_action(crate::actions::GitHubAction::SignOutGitHub)
+                    }
+                    PaletteCommand::FocusFileList => {
+                        self.set_focus(Some(FocusTarget::FileList));
+                        Vec::new()
+                    }
+                    PaletteCommand::FocusViewport => {
+                        self.set_focus(Some(FocusTarget::Editor));
+                        Vec::new()
+                    }
+                    PaletteCommand::ShowWorkingTree => {
+                        self.apply_action(crate::actions::WorkspaceAction::ShowWorkingTree)
+                    }
+                    PaletteCommand::RefreshRepository => {
+                        self.apply_action(crate::actions::WorkspaceAction::RefreshRepository)
+                    }
+                    PaletteCommand::OpenBaseRefPicker => self.apply_action(
+                        crate::actions::OverlayAction::OpenRefPicker(CompareField::Left),
+                    ),
+                    PaletteCommand::OpenHeadRefPicker => self.apply_action(
+                        crate::actions::OverlayAction::OpenRefPicker(CompareField::Right),
+                    ),
+                    PaletteCommand::SwapRefs => {
+                        self.apply_action(crate::actions::CompareAction::SwapRefs)
+                    }
+                    PaletteCommand::StartCompare => {
+                        self.apply_action(crate::actions::CompareAction::StartCompare)
+                    }
+                    PaletteCommand::OpenCompareMenu => {
+                        self.apply_action(crate::actions::CompareAction::OpenCompareMenu)
+                    }
+                    PaletteCommand::ShowKeyboardShortcuts => {
+                        self.apply_action(crate::actions::SettingsAction::OpenKeymaps)
+                    }
+                    PaletteCommand::RestoreCompare => {
+                        self.apply_action(crate::actions::CompareAction::ClearSidebarCommit)
+                    }
+                    PaletteCommand::ToggleSidebar => {
+                        self.apply_action(crate::actions::FileListAction::ToggleSidebar)
+                    }
+                    PaletteCommand::ToggleFileTree => {
+                        self.apply_action(crate::actions::FileListAction::ToggleSidebarMode)
+                    }
+                    PaletteCommand::ExpandAllFolders => {
+                        self.apply_action(crate::actions::FileListAction::ExpandAllFolders)
+                    }
+                    PaletteCommand::CollapseAllFolders => {
+                        self.apply_action(crate::actions::FileListAction::CollapseAllFolders)
+                    }
+                    PaletteCommand::ToggleWrap => {
+                        self.apply_action(crate::actions::SettingsAction::ToggleWrap)
+                    }
+                    PaletteCommand::ToggleContinuousScroll => {
+                        self.apply_action(crate::actions::SettingsAction::ToggleContinuousScroll)
+                    }
+                    PaletteCommand::SetSettingsSection(section) => self
+                        .apply_action(crate::actions::SettingsAction::SetSettingsSection(section)),
+                    PaletteCommand::SetThemeMode(mode) => {
+                        self.apply_action(crate::actions::SettingsAction::SetThemeMode(mode))
+                    }
+                    PaletteCommand::SetUiScalePct(pct) => {
+                        self.apply_action(crate::actions::SettingsAction::SetUiScalePct(pct))
+                    }
+                    PaletteCommand::SetWrapColumn(column) => {
+                        self.apply_action(crate::actions::SettingsAction::SetWrapColumn(column))
+                    }
+                    PaletteCommand::SetWheelScrollLines(lines) => self
+                        .apply_action(crate::actions::SettingsAction::SetWheelScrollLines(lines)),
+                    PaletteCommand::ToggleAutoUpdate => {
+                        self.apply_action(crate::actions::SettingsAction::ToggleAutoUpdate)
+                    }
+                    PaletteCommand::ToggleThemeMode => {
+                        self.apply_action(crate::actions::SettingsAction::ToggleThemeMode)
+                    }
+                    PaletteCommand::SetLayout(layout) => {
+                        self.apply_action(crate::actions::CompareAction::SetLayoutMode(layout))
+                    }
+                    PaletteCommand::SetRenderer(renderer) => {
+                        self.apply_action(crate::actions::CompareAction::SetRenderer(renderer))
+                    }
+                    PaletteCommand::ChangeTheme => {
+                        self.apply_action(crate::actions::SettingsAction::OpenThemePicker)
+                    }
+                    PaletteCommand::SetTheme(name) => {
+                        self.apply_action(crate::actions::SettingsAction::SetThemeName(name))
+                    }
+                    PaletteCommand::ExpandAllContext => {
+                        self.apply_action(crate::actions::EditorAction::ExpandAllContext)
+                    }
+                    PaletteCommand::ClearLineSelection => {
+                        self.apply_action(crate::actions::RepositoryAction::ClearLineSelection)
+                    }
+                    PaletteCommand::GenerateCommitMessage => {
+                        self.apply_action(crate::actions::AiAction::GenerateCommitMessage)
+                    }
+                    PaletteCommand::OpenReviewComment => {
+                        self.apply_action(crate::actions::GitHubAction::OpenReviewCommentComposer)
+                    }
+                    PaletteCommand::CheckForUpdates => {
+                        self.apply_action(crate::actions::UpdateAction::CheckForUpdates)
+                    }
+                    PaletteCommand::InstallUpdate => {
+                        self.apply_action(crate::actions::UpdateAction::InstallUpdate)
+                    }
+                    PaletteCommand::RestartToUpdate => {
+                        self.apply_action(crate::actions::UpdateAction::RestartToUpdate)
+                    }
+                    PaletteCommand::RunOperation(operation) => {
+                        self.confirm_or_run_vcs_operation(operation)
+                    }
+                    PaletteCommand::FetchOrigin => self.apply_action(
+                        crate::actions::RepositoryAction::FetchRemote("origin".to_owned()),
+                    ),
+                    PaletteCommand::FetchAllRemotes => {
+                        self.apply_action(crate::actions::RepositoryAction::FetchAllRemotes)
+                    }
+                    PaletteCommand::PushCurrentBranch => {
+                        self.apply_action(crate::actions::RepositoryAction::PushCurrentBranch {
+                            force_with_lease: false,
+                        })
+                    }
+                    PaletteCommand::PublishOptions => {
+                        self.apply_action(crate::actions::RepositoryAction::OpenPublishMenu)
+                    }
+                    PaletteCommand::PushCurrentBranchForceWithLease => {
+                        self.apply_action(crate::actions::RepositoryAction::PushCurrentBranch {
+                            force_with_lease: true,
+                        })
+                    }
+                    PaletteCommand::PullCurrentBranch => {
+                        self.apply_action(crate::actions::RepositoryAction::PullCurrentBranch)
+                    }
+                    PaletteCommand::OpenSettings => {
+                        self.apply_action(crate::actions::SettingsAction::OpenSettings)
+                    }
                 }
-                PaletteCommand::OpenGitHubAuthModal => {
-                    self.push_overlay(
-                        OverlaySurface::GitHubAuthModal,
-                        Some(FocusTarget::AuthPrimaryAction),
-                    );
-                    Vec::new()
-                }
-                PaletteCommand::FocusFileList => {
-                    self.set_focus(Some(FocusTarget::FileList));
-                    Vec::new()
-                }
-                PaletteCommand::FocusViewport => {
-                    self.set_focus(Some(FocusTarget::Editor));
-                    Vec::new()
-                }
-                PaletteCommand::ToggleWrap => {
-                    self.apply_action(crate::actions::SettingsAction::ToggleWrap)
-                }
-                PaletteCommand::ToggleThemeMode => {
-                    self.apply_action(crate::actions::SettingsAction::ToggleThemeMode)
-                }
-                PaletteCommand::SetLayout(layout) => {
-                    self.apply_action(crate::actions::CompareAction::SetLayoutMode(layout))
-                }
-                PaletteCommand::ChangeTheme => {
-                    self.apply_action(crate::actions::SettingsAction::OpenThemePicker)
-                }
-                PaletteCommand::SetTheme(name) => {
-                    self.apply_action(crate::actions::SettingsAction::SetThemeName(name))
-                }
-                PaletteCommand::FetchOrigin => self.apply_action(
-                    crate::actions::RepositoryAction::FetchRemote("origin".to_owned()),
-                ),
-                PaletteCommand::FetchAllRemotes => {
-                    self.apply_action(crate::actions::RepositoryAction::FetchAllRemotes)
-                }
-                PaletteCommand::PushCurrentBranch => {
-                    self.apply_action(crate::actions::RepositoryAction::PushCurrentBranch {
-                        force_with_lease: false,
-                    })
-                }
-                PaletteCommand::PublishOptions => {
-                    self.apply_action(crate::actions::RepositoryAction::OpenPublishMenu)
-                }
-                PaletteCommand::PushCurrentBranchForceWithLease => {
-                    self.apply_action(crate::actions::RepositoryAction::PushCurrentBranch {
-                        force_with_lease: true,
-                    })
-                }
-                PaletteCommand::PullCurrentBranch => {
-                    self.apply_action(crate::actions::RepositoryAction::PullCurrentBranch)
-                }
-                PaletteCommand::OpenSettings => {
-                    self.apply_action(crate::actions::SettingsAction::OpenSettings)
-                }
-            },
+            }
             PaletteEntryKind::File(index) => self.select_file(index, true),
+            PaletteEntryKind::Commit(oid) => {
+                self.apply_action(crate::actions::CompareAction::SelectSidebarCommit(oid))
+            }
             PaletteEntryKind::Repo(path) => self.open_repository(path),
             PaletteEntryKind::Ref(field, value) => {
                 let _ = self.update_compare_field(field, value);
@@ -5565,6 +5836,21 @@ impl AppState {
                 self.push_error("Pull request not available.");
                 Vec::new()
             }
+        }
+    }
+
+    fn confirm_or_run_vcs_operation(&mut self, operation: VcsOperation) -> Vec<Effect> {
+        let action = crate::actions::RepositoryAction::RunOperation(operation.clone());
+        if let Some(message) = operation.confirmation_message() {
+            self.open_confirmation(
+                format!("Confirm {}", operation.label()),
+                message,
+                operation.label(),
+                action.into(),
+            );
+            Vec::new()
+        } else {
+            self.apply_action(action)
         }
     }
 
@@ -6132,6 +6418,16 @@ impl AppState {
                 PaletteCommand::OpenGitHubAuthModal,
             ),
             (
+                "GitHub Account Menu".to_owned(),
+                "Open GitHub account actions".to_owned(),
+                PaletteCommand::OpenGitHubAccountMenu,
+            ),
+            (
+                "GitHub Sign Out".to_owned(),
+                "Remove the saved GitHub session".to_owned(),
+                PaletteCommand::SignOutGitHub,
+            ),
+            (
                 "Focus File List".to_owned(),
                 "Move keyboard focus to sidebar".to_owned(),
                 PaletteCommand::FocusFileList,
@@ -6142,9 +6438,74 @@ impl AppState {
                 PaletteCommand::FocusViewport,
             ),
             (
+                "Show Working Tree".to_owned(),
+                "Return to the repository working tree view".to_owned(),
+                PaletteCommand::ShowWorkingTree,
+            ),
+            (
+                "Refresh Repository".to_owned(),
+                "Refresh status or rerun the current compare".to_owned(),
+                PaletteCommand::RefreshRepository,
+            ),
+            (
+                "Select Base Ref".to_owned(),
+                "Open the left-side ref picker".to_owned(),
+                PaletteCommand::OpenBaseRefPicker,
+            ),
+            (
+                "Select Head Ref".to_owned(),
+                "Open the right-side ref picker".to_owned(),
+                PaletteCommand::OpenHeadRefPicker,
+            ),
+            (
+                "Swap Compare Refs".to_owned(),
+                "Swap the current base and head refs".to_owned(),
+                PaletteCommand::SwapRefs,
+            ),
+            (
+                "Run Compare".to_owned(),
+                "Compare the selected refs now".to_owned(),
+                PaletteCommand::StartCompare,
+            ),
+            (
+                "Open Compare Menu".to_owned(),
+                "Change compare mode or preset".to_owned(),
+                PaletteCommand::OpenCompareMenu,
+            ),
+            (
+                "Keymaps".to_owned(),
+                "Review and rebind keyboard shortcuts".to_owned(),
+                PaletteCommand::ShowKeyboardShortcuts,
+            ),
+            (
+                "Toggle Sidebar".to_owned(),
+                "Show or hide the file sidebar".to_owned(),
+                PaletteCommand::ToggleSidebar,
+            ),
+            (
+                "Toggle File Tree".to_owned(),
+                "Switch sidebar between tree and flat list".to_owned(),
+                PaletteCommand::ToggleFileTree,
+            ),
+            (
+                "Expand All Folders".to_owned(),
+                "Expand every folder in the file tree".to_owned(),
+                PaletteCommand::ExpandAllFolders,
+            ),
+            (
+                "Collapse All Folders".to_owned(),
+                "Collapse every folder in the file tree".to_owned(),
+                PaletteCommand::CollapseAllFolders,
+            ),
+            (
                 "Toggle Wrap".to_owned(),
                 "Enable or disable line wrapping".to_owned(),
                 PaletteCommand::ToggleWrap,
+            ),
+            (
+                "Toggle Continuous Scroll".to_owned(),
+                "Switch between continuous and single-file diff navigation".to_owned(),
+                PaletteCommand::ToggleContinuousScroll,
             ),
             (
                 "Toggle Theme".to_owned(),
@@ -6165,6 +6526,31 @@ impl AppState {
                 "Use Split Layout".to_owned(),
                 "Set side-by-side diff mode".to_owned(),
                 PaletteCommand::SetLayout(LayoutMode::Split),
+            ),
+            (
+                "Use Built-in Renderer".to_owned(),
+                "Render diffs with Diffy's built-in engine".to_owned(),
+                PaletteCommand::SetRenderer(RendererKind::Builtin),
+            ),
+            (
+                "Use Difftastic Renderer".to_owned(),
+                "Render diffs with Difftastic".to_owned(),
+                PaletteCommand::SetRenderer(RendererKind::Difftastic),
+            ),
+            (
+                "Expand All Context".to_owned(),
+                "Show all hidden context in the active diff".to_owned(),
+                PaletteCommand::ExpandAllContext,
+            ),
+            (
+                "Clear Line Selection".to_owned(),
+                "Clear the current partial-line staging selection".to_owned(),
+                PaletteCommand::ClearLineSelection,
+            ),
+            (
+                "Generate Commit Message".to_owned(),
+                "Draft a commit message from the current changes".to_owned(),
+                PaletteCommand::GenerateCommitMessage,
             ),
             (
                 "Fetch origin".to_owned(),
@@ -6214,6 +6600,219 @@ impl AppState {
             });
         }
 
+        for section in SettingsSection::ALL {
+            let label = format!("Settings: {}", section.label());
+            let detail = "Switch settings section".to_owned();
+            all_candidates.push(PaletteCandidate {
+                search_text: format!("{label} {detail}"),
+                label,
+                detail,
+                kind: PaletteEntryKind::Command(PaletteCommand::SetSettingsSection(section)),
+            });
+        }
+        for (label, detail, mode) in [
+            (
+                "Use Dark Mode",
+                "Set settings appearance to dark",
+                ThemeMode::Dark,
+            ),
+            (
+                "Use Light Mode",
+                "Set settings appearance to light",
+                ThemeMode::Light,
+            ),
+        ] {
+            all_candidates.push(PaletteCandidate {
+                search_text: format!("{label} {detail}"),
+                label: label.to_owned(),
+                detail: detail.to_owned(),
+                kind: PaletteEntryKind::Command(PaletteCommand::SetThemeMode(mode)),
+            });
+        }
+        for pct in [80, 90, 100, 110, 125, 150, 180] {
+            let label = format!("Set UI Scale {pct}%");
+            let detail = "Change interface density".to_owned();
+            all_candidates.push(PaletteCandidate {
+                search_text: format!("{label} {detail}"),
+                label,
+                detail,
+                kind: PaletteEntryKind::Command(PaletteCommand::SetUiScalePct(pct)),
+            });
+        }
+        for (column, label_suffix) in [(0, "Auto"), (80, "80"), (100, "100"), (120, "120")] {
+            let label = format!("Set Wrap Column {label_suffix}");
+            let detail = "Set line wrapping column".to_owned();
+            all_candidates.push(PaletteCandidate {
+                search_text: format!("{label} {detail}"),
+                label,
+                detail,
+                kind: PaletteEntryKind::Command(PaletteCommand::SetWrapColumn(column)),
+            });
+        }
+        for lines in [1, 2, 3, 5, 7] {
+            let label = format!("Set Mouse Wheel Speed {lines}");
+            let detail = "Set lines scrolled per wheel notch".to_owned();
+            all_candidates.push(PaletteCandidate {
+                search_text: format!("{label} {detail}"),
+                label,
+                detail,
+                kind: PaletteEntryKind::Command(PaletteCommand::SetWheelScrollLines(lines)),
+            });
+        }
+        all_candidates.push(PaletteCandidate {
+            search_text: "Toggle Automatic Updates auto update".to_owned(),
+            label: "Toggle Automatic Updates".to_owned(),
+            detail: "Enable or disable hourly update checks".to_owned(),
+            kind: PaletteEntryKind::Command(PaletteCommand::ToggleAutoUpdate),
+        });
+        all_candidates.push(PaletteCandidate {
+            search_text: "Check For Updates update release".to_owned(),
+            label: "Check For Updates".to_owned(),
+            detail: "Check Diffy's release channel now".to_owned(),
+            kind: PaletteEntryKind::Command(PaletteCommand::CheckForUpdates),
+        });
+        match self.update.get(&self.store) {
+            UpdateState::Available(update) => {
+                let label = format!("Install Update {}", update.version);
+                let detail = "Download and verify the available update".to_owned();
+                all_candidates.push(PaletteCandidate {
+                    search_text: format!("{label} {detail}"),
+                    label,
+                    detail,
+                    kind: PaletteEntryKind::Command(PaletteCommand::InstallUpdate),
+                });
+            }
+            UpdateState::ReadyToRestart(update) => {
+                let label = format!("Restart To Update {}", update.update.version);
+                let detail = "Restart Diffy and apply the staged update".to_owned();
+                all_candidates.push(PaletteCandidate {
+                    search_text: format!("{label} {detail}"),
+                    label,
+                    detail,
+                    kind: PaletteEntryKind::Command(PaletteCommand::RestartToUpdate),
+                });
+            }
+            _ => {}
+        }
+
+        let repo_location = self.repository.location.get(&self.store);
+        for operation in JjOperation::ALL.map(VcsOperation::Jj) {
+            if !vcs_operation_available_for_location(&operation, repo_location.as_ref()) {
+                continue;
+            }
+            let label = format!("jj: {}", operation.label());
+            let detail = operation.detail();
+            all_candidates.push(PaletteCandidate {
+                search_text: format!("{label} {detail}"),
+                label,
+                detail,
+                kind: PaletteEntryKind::Command(PaletteCommand::RunOperation(operation)),
+            });
+        }
+        if repo_location
+            .as_ref()
+            .is_some_and(|location| location.profile == VCS_PROFILE_JJ)
+        {
+            let mut destinations = self.repository.refs.with(&self.store, |refs| {
+                refs.iter()
+                    .filter(|reference| {
+                        !reference.active
+                            && matches!(reference.kind, RefKind::Bookmark | RefKind::Branch)
+                    })
+                    .map(|reference| reference.name.clone())
+                    .collect::<Vec<_>>()
+            });
+            destinations.sort();
+            destinations.dedup();
+            for destination in destinations.into_iter().take(12) {
+                let operation = VcsOperation::JjRebaseCurrentChangeOnto {
+                    destination: destination.clone(),
+                };
+                let label = format!("jj: {}", operation.label());
+                let detail = operation.detail();
+                all_candidates.push(PaletteCandidate {
+                    search_text: format!("{label} {detail}"),
+                    label,
+                    detail,
+                    kind: PaletteEntryKind::Command(PaletteCommand::RunOperation(operation)),
+                });
+            }
+            let changes = self.repository.changes.get(&self.store);
+            for change in changes
+                .iter()
+                .filter(|change| {
+                    !change.flags.current && !change.flags.working_copy && !change.flags.immutable
+                })
+                .take(12)
+            {
+                let change_label = change
+                    .short_change_id
+                    .as_deref()
+                    .unwrap_or(change.short_revision.as_str())
+                    .to_owned();
+                let operation = VcsOperation::JjEditRevision {
+                    revision: change.revision.id.clone(),
+                    label: change_label.clone(),
+                };
+                let label = format!("jj: {}", operation.label());
+                let detail = crate::ui::vcs::change_summary_label(change);
+                all_candidates.push(PaletteCandidate {
+                    search_text: format!(
+                        "{label} {detail} {} {}",
+                        change.short_revision, change.revision.id
+                    ),
+                    label,
+                    detail,
+                    kind: PaletteEntryKind::Command(PaletteCommand::RunOperation(operation)),
+                });
+            }
+            let operation_log = self.repository.operation_log.get(&self.store);
+            for entry in operation_log.iter().skip(1).take(12) {
+                let operation_label = entry.short_operation_id.clone();
+                let operation = VcsOperation::JjRestoreOperation {
+                    operation_id: entry.operation_id.clone(),
+                    label: operation_label.clone(),
+                };
+                let label = format!("jj: {}", operation.label());
+                let detail = operation_log_entry_detail(entry);
+                all_candidates.push(PaletteCandidate {
+                    search_text: format!(
+                        "{label} {detail} {} {}",
+                        entry.operation_id, entry.short_operation_id
+                    ),
+                    label,
+                    detail,
+                    kind: PaletteEntryKind::Command(PaletteCommand::RunOperation(operation)),
+                });
+            }
+        }
+
+        if self
+            .workspace
+            .pre_drill_compare
+            .with(&self.store, |pre_drill| pre_drill.is_some())
+        {
+            all_candidates.push(PaletteCandidate {
+                search_text: "Restore compare return range comparison commit drilldown".to_owned(),
+                label: "Restore Compare".to_owned(),
+                detail: "Return from the selected commit to the previous compare".to_owned(),
+                kind: PaletteEntryKind::Command(PaletteCommand::RestoreCompare),
+            });
+        }
+
+        if self
+            .editor
+            .line_selection
+            .with(&self.store, |selection| !selection.is_empty())
+        {
+            all_candidates.push(PaletteCandidate {
+                search_text: "Comment on selected lines review pull request".to_owned(),
+                label: "Comment on Selected Lines".to_owned(),
+                detail: "Open the pull request review comment composer".to_owned(),
+                kind: PaletteEntryKind::Command(PaletteCommand::OpenReviewComment),
+            });
+        }
+
         let workspace_files = self.workspace.files.get(&self.store);
         for (index, file) in workspace_files.iter().enumerate() {
             let detail = format!(
@@ -6226,6 +6825,19 @@ impl AppState {
                 label: file.path.clone(),
                 detail,
                 kind: PaletteEntryKind::File(index),
+            });
+        }
+
+        let range_commits = self.workspace.range_commits.get(&self.store);
+        for change in &range_commits {
+            let label = crate::ui::vcs::change_summary_label(change);
+            let detail = format!("Commit {}", change.short_revision);
+            let search_text = format!("{} {} {}", change.short_revision, change.revision.id, label);
+            all_candidates.push(PaletteCandidate {
+                search_text,
+                label,
+                detail,
+                kind: PaletteEntryKind::Commit(change.revision.id.clone()),
             });
         }
 
@@ -6346,11 +6958,7 @@ impl AppState {
         if file_count == 0 {
             return Vec::new();
         }
-        let current = self
-            .workspace
-            .selected_file_index
-            .get(&self.store)
-            .unwrap_or(0);
+        let current = self.reconcile_selected_file_index_from_path().unwrap_or(0);
         let next = if delta.is_negative() {
             current.saturating_sub(delta.unsigned_abs())
         } else {
@@ -6368,7 +6976,9 @@ impl AppState {
                 WorkspaceSource::None
             )
         {
-            let target = self.file_start_offset_px(index);
+            let target = self
+                .file_start_offset_px(index)
+                .min(self.global_max_scroll_top_px());
             self.workspace.global_scroll_top_px.set(&self.store, target);
         }
         self.select_file_inner(index, reveal)
@@ -6849,7 +7459,17 @@ impl AppState {
     }
 
     fn current_hunk_index_from_hover(&self) -> Option<i16> {
-        self.editor.hovered_hunk_index.get(&self.store)
+        self.editor
+            .hovered_hunk_index
+            .get(&self.store)
+            .or_else(|| self.editor_current_hunk_index().map(|(idx, _)| idx as i16))
+    }
+
+    fn current_render_line_index_from_hover(&self) -> Option<usize> {
+        self.editor
+            .hovered_render_line_index
+            .get(&self.store)
+            .or_else(|| self.editor.hovered_row.get(&self.store))
     }
 
     fn apply_hunk_operation(
@@ -7019,6 +7639,30 @@ impl AppState {
             }
             ls.last_toggled_row = Some(row);
         });
+    }
+
+    fn toggle_current_line_selection(&mut self) {
+        let Some(row) = self.current_render_line_index_from_hover() else {
+            self.push_error("Move the row cursor to a changed line before selecting lines.");
+            return;
+        };
+        self.toggle_line_selection(row, false);
+    }
+
+    fn toggle_current_line_selection_range(&mut self) {
+        let Some(row) = self.current_render_line_index_from_hover() else {
+            self.push_error("Move the row cursor to a changed line before selecting lines.");
+            return;
+        };
+        let anchor = self
+            .editor
+            .line_selection
+            .with(&self.store, |ls| ls.last_toggled_row);
+        if let Some(anchor) = anchor {
+            self.toggle_line_selection_range(row, anchor);
+        } else {
+            self.toggle_line_selection(row, false);
+        }
     }
 
     fn apply_line_selection_operation(&mut self, operation: FileOperation) -> Vec<Effect> {
@@ -7324,8 +7968,7 @@ impl AppState {
                         old_scroll_top.saturating_sub((-delta) as u32)
                     }
                 };
-                let max = next_total
-                    .saturating_sub(self.editor.viewport_height_px.get(&self.store).max(1));
+                let max = self.global_max_scroll_top_px();
                 self.workspace
                     .global_scroll_top_px
                     .set(&self.store, next_scroll_top.min(max));
@@ -7379,6 +8022,51 @@ impl AppState {
                 .with(&self.store, |s| s.get(index).map(|e| e.path.clone())),
             WorkspaceSource::None => None,
         }
+    }
+
+    fn workspace_file_index_for_path(&self, path: &str) -> Option<usize> {
+        match self.workspace.source.get(&self.store) {
+            WorkspaceSource::Compare => self.workspace.files.with(&self.store, |files| {
+                files.iter().position(|file| file.path == path)
+            }),
+            WorkspaceSource::Status => self
+                .workspace
+                .status_file_changes
+                .with(&self.store, |changes| {
+                    changes.iter().position(|change| change.path == path)
+                }),
+            WorkspaceSource::None => None,
+        }
+    }
+
+    pub fn selected_workspace_file_index(&self) -> Option<usize> {
+        if let Some(index) = self
+            .workspace
+            .selected_file_path
+            .get(&self.store)
+            .as_deref()
+            .and_then(|path| self.workspace_file_index_for_path(path))
+        {
+            return Some(index);
+        }
+
+        let count = self.workspace_file_count();
+        self.workspace
+            .selected_file_index
+            .get(&self.store)
+            .filter(|index| *index < count)
+    }
+
+    fn reconcile_selected_file_index_from_path(&mut self) -> Option<usize> {
+        let resolved = self.selected_workspace_file_index();
+        if let Some(index) = resolved
+            && self.workspace.selected_file_index.get(&self.store) != Some(index)
+        {
+            self.workspace
+                .selected_file_index
+                .set(&self.store, Some(index));
+        }
+        resolved
     }
 
     pub fn workspace_render_generation(&self) -> u64 {
@@ -7566,8 +8254,8 @@ impl AppState {
         {
             return metrics;
         }
-        let content_height_px = self.total_diff_height_px();
         let viewport_height_px = self.editor.viewport_height_px.get(&self.store);
+        let content_height_px = self.total_diff_height_px();
         ViewportScrollbarMetrics {
             content_height_px,
             viewport_height_px,
@@ -7640,30 +8328,19 @@ impl AppState {
         }
         self.clamp_global_scroll_top_px();
         let target = self.workspace.global_scroll_top_px.get(&self.store);
-        let Some((target_index, local_offset)) = self.locate_global_scroll_px(target) else {
+        let Some((_, local_offset)) = self.locate_global_scroll_px(target) else {
             self.workspace.global_scroll_top_px.set(&self.store, 0);
             return Vec::new();
-        };
-        let dragging_scrollbar = self
-            .workspace
-            .viewport_scrollbar_drag
-            .with(&self.store, |drag| drag.is_some());
-        let effects = if dragging_scrollbar {
-            Vec::new()
-        } else if self.active_file_matches_workspace_file(target_index) {
-            Vec::new()
-        } else {
-            self.select_file_inner(target_index, true)
         };
         let max = self.editor_max_scroll_top_px();
         self.editor
             .scroll_top_px
             .set(&self.store, local_offset.min(max));
-        effects
+        Vec::new()
     }
 
     pub fn sync_global_scroll_from_editor(&mut self) {
-        let Some(selected_index) = self.workspace.selected_file_index.get(&self.store) else {
+        let Some(selected_index) = self.reconcile_selected_file_index_from_path() else {
             self.workspace.global_scroll_top_px.set(&self.store, 0);
             return;
         };
@@ -7918,47 +8595,27 @@ impl AppState {
     }
 
     fn navigate_to_file(&mut self, forward: bool) -> Vec<Effect> {
-        if self.settings.continuous_scroll {
-            let Some(current) = self.workspace.selected_file_index.get(&self.store) else {
-                return Vec::new();
-            };
-            let count = self.workspace_file_count();
-            if count == 0 {
-                return Vec::new();
-            }
-            let target = if forward {
-                current.saturating_add(1).min(count.saturating_sub(1))
-            } else {
-                current.saturating_sub(1)
-            };
-            return self.scroll_viewport_to_global(self.file_start_offset_px(target));
+        let Some(current) = self.reconcile_selected_file_index_from_path() else {
+            return Vec::new();
+        };
+        let count = self.workspace_file_count();
+        if count == 0 {
+            return Vec::new();
+        }
+        let target = if forward {
+            current.saturating_add(1).min(count.saturating_sub(1))
+        } else {
+            current.saturating_sub(1)
+        };
+        if target == current {
+            return Vec::new();
         }
 
-        let current = self.editor.scroll_top_px.get(&self.store);
-        let target = self.editor.file_positions.with(&self.store, |positions| {
-            if positions.is_empty() {
-                return None;
-            }
-            if forward {
-                positions
-                    .iter()
-                    .find(|&&y| y > current)
-                    .or_else(|| positions.first())
-                    .copied()
-            } else {
-                positions
-                    .iter()
-                    .rev()
-                    .find(|&&y| y < current)
-                    .or_else(|| positions.last())
-                    .copied()
-            }
-        });
-        if let Some(y) = target {
-            self.editor.scroll_top_px.set(&self.store, y);
-            self.editor_clamp_scroll();
+        if self.settings.continuous_scroll {
+            return self.select_file(target, true);
         }
-        Vec::new()
+
+        self.select_file(target, true)
     }
 
     fn push_error(&mut self, message: &str) -> u64 {
@@ -8163,6 +8820,9 @@ impl AppState {
             self.push_error("Open a repository before publishing.");
             return Vec::new();
         };
+        if self.overlays_top() == Some(OverlaySurface::PublishMenu) {
+            self.pop_overlay();
+        }
         let toast_id = self.push_progress_toast(&format!("{}\u{2026}", action.label));
         vec![
             RepositoryEffect::PublishDefault(PublishRequest {
@@ -8479,6 +9139,7 @@ impl AppState {
         self.editor.scroll_top_px.set(&self.store, 0);
         self.editor.content_height_px.set(&self.store, 0);
         self.editor.hovered_row.set(&self.store, None);
+        self.editor.hovered_render_line_index.set(&self.store, None);
         self.editor.hovered_hunk_index.set(&self.store, None);
         self.editor.visible_row_start.set(&self.store, None);
         self.editor.visible_row_end.set(&self.store, None);
@@ -8519,6 +9180,38 @@ impl AppState {
                 .saturating_sub(1);
             Some((idx, positions.len()))
         })
+    }
+
+    fn move_editor_row_cursor(&mut self, delta: i32) {
+        let Some(start) = self.editor.visible_row_start.get(&self.store) else {
+            return;
+        };
+        let Some(end) = self.editor.visible_row_end.get(&self.store) else {
+            return;
+        };
+        if start >= end {
+            return;
+        }
+        let max = end.saturating_sub(1);
+        let Some(current) = self
+            .editor
+            .hovered_row
+            .get(&self.store)
+            .filter(|row| *row >= start && *row <= max)
+        else {
+            self.editor
+                .hovered_row
+                .set(&self.store, Some(if delta < 0 { max } else { start }));
+            return;
+        };
+        let next = if delta < 0 {
+            current
+                .saturating_sub(delta.unsigned_abs() as usize)
+                .max(start)
+        } else {
+            current.saturating_add(delta as usize).min(max)
+        };
+        self.editor.hovered_row.set(&self.store, Some(next));
     }
 }
 
@@ -8710,6 +9403,7 @@ fn overlay_name(surface: OverlaySurface) -> &'static str {
         OverlaySurface::RepoPicker => "repo-picker",
         OverlaySurface::RefPicker => "ref-picker",
         OverlaySurface::CommandPalette => "command-palette",
+        OverlaySurface::Confirmation => "confirmation",
         OverlaySurface::GitHubAuthModal => "github-auth-modal",
         OverlaySurface::AccountMenu => "account-menu",
         OverlaySurface::KeyboardShortcuts => "keyboard-shortcuts",
@@ -8860,15 +9554,16 @@ mod tests {
 
     use super::{
         ActiveFile, ActiveFileLoading, AppState, AsyncStatus, CarbonStyleOverlays, CompareField,
-        FileListEntry, FocusTarget, OverlaySurface, PickerItem, PickerLabelStyle,
+        FileListEntry, FocusTarget, OverlayEntry, OverlaySurface, PickerItem, PickerLabelStyle,
         PreparedActiveFile, WorkspaceMode, WorkspaceSource, prepare_active_file,
         vcs_compare_request,
     };
     use crate::core::compare::{CompareMode, CompareOutput, LayoutMode, RendererKind};
     use crate::core::text::TokenBuffer;
     use crate::core::vcs::model::{
-        ChangeBucket, ChangeFlags, FileChange, FileChangeStatus, RefKind, RepoCapabilities,
-        RepoLocation, RevisionId, VcsChange, VcsKind, VcsRef,
+        ChangeBucket, ChangeFlags, FileChange, FileChangeStatus, JjOperation, RefKind,
+        RepoCapabilities, RepoLocation, RevisionId, VcsChange, VcsKind, VcsOperation,
+        VcsOperationLogEntry, VcsRef,
     };
     use crate::effects::{
         AiEffect, CompareEffect, Effect, GitHubEffect, RepositoryEffect, SyntaxEffect,
@@ -9231,6 +9926,118 @@ diff --git a/src/lib.rs b/src/lib.rs
             Some(1)
         );
         assert_eq!(state.file_list.scroll_offset_px.get(&state.store), 40.0);
+    }
+
+    #[test]
+    fn next_file_action_selects_adjacent_file_in_single_file_mode() {
+        let mut state =
+            loaded_state_with_files(&["src/ui/state/mod.rs", "src/ui/state/text_edit.rs"]);
+        state.apply_action(crate::actions::FileListAction::SelectFile(0));
+
+        state.apply_action(crate::actions::EditorAction::GoToNextFile);
+        state.sync_editor_scroll_from_global();
+
+        assert_eq!(
+            state.workspace.selected_file_index.get(&state.store),
+            Some(1)
+        );
+        assert_eq!(
+            state
+                .workspace
+                .selected_file_path
+                .get(&state.store)
+                .as_deref(),
+            Some("src/ui/state/text_edit.rs")
+        );
+        assert_eq!(
+            state
+                .workspace
+                .active_file
+                .get(&state.store)
+                .as_ref()
+                .map(|file| file.path.as_str()),
+            Some("src/ui/state/text_edit.rs")
+        );
+        assert_eq!(state.workspace.global_scroll_top_px.get(&state.store), 0);
+    }
+
+    #[test]
+    fn next_file_action_selects_next_file_when_tail_is_short() {
+        let mut state =
+            loaded_state_with_files(&["src/ui/state/mod.rs", "src/ui/state/text_edit.rs"]);
+        state.settings.continuous_scroll = true;
+        state.editor.viewport_height_px.set(&state.store, 10_000);
+        state.apply_action(crate::actions::FileListAction::SelectFile(0));
+
+        state.apply_action(crate::actions::EditorAction::GoToNextFile);
+
+        assert_eq!(
+            state.workspace.selected_file_index.get(&state.store),
+            Some(1)
+        );
+        assert_eq!(
+            state
+                .workspace
+                .selected_file_path
+                .get(&state.store)
+                .as_deref(),
+            Some("src/ui/state/text_edit.rs")
+        );
+        assert_eq!(
+            state
+                .workspace
+                .active_file
+                .get(&state.store)
+                .as_ref()
+                .map(|file| file.path.as_str()),
+            Some("src/ui/state/text_edit.rs")
+        );
+    }
+
+    #[test]
+    fn continuous_scroll_keeps_short_tail_at_natural_bottom() {
+        let state = loaded_state_with_files(&["a.rs", "b.rs", "c.rs"]);
+        state.editor.viewport_height_px.set(&state.store, 10_000);
+
+        assert_eq!(state.global_max_scroll_top_px(), 0);
+    }
+
+    #[test]
+    fn next_file_action_resolves_current_file_from_selected_path() {
+        let mut state = loaded_state_with_files(&[
+            "src/core/compare/backends/git_diff.rs",
+            "src/core/compare/mod.rs",
+            "src/core/compare/service.rs",
+            "src/core/compare/stats.rs",
+            "src/core/frecency.rs",
+            "src/ui/state/mod.rs",
+            "src/ui/state/text_edit.rs",
+            "src/ui/toolbar.rs",
+        ]);
+        state.settings.continuous_scroll = true;
+        state
+            .workspace
+            .selected_file_index
+            .set(&state.store, Some(0));
+        state
+            .workspace
+            .selected_file_path
+            .set(&state.store, Some("src/ui/state/mod.rs".to_owned()));
+
+        state.apply_action(crate::actions::EditorAction::GoToNextFile);
+
+        assert_eq!(
+            state.workspace.selected_file_index.get(&state.store),
+            Some(6)
+        );
+        assert_eq!(
+            state
+                .workspace
+                .selected_file_path
+                .get(&state.store)
+                .as_deref(),
+            Some("src/ui/state/text_edit.rs")
+        );
     }
 
     #[test]
@@ -9786,6 +10593,351 @@ diff --git a/src/lib.rs b/src/lib.rs
     }
 
     #[test]
+    fn command_palette_surfaces_jj_operations_for_jj_repositories() {
+        let mut state = AppState::default();
+        state.repository.location.set(
+            &state.store,
+            Some(RepoLocation {
+                kind: VcsKind::JJ,
+                profile: crate::core::vcs::model::VCS_PROFILE_JJ,
+                workspace_root: PathBuf::from("/repo"),
+                store_root: Some(PathBuf::from("/repo/.jj")),
+            }),
+        );
+        state
+            .overlays
+            .command_palette
+            .query
+            .set(&state.store, "jj".to_owned());
+
+        state.rebuild_command_palette();
+
+        let entries = state
+            .overlays
+            .command_palette
+            .entries
+            .with(&state.store, |entries| entries.clone());
+        for operation in JjOperation::ALL {
+            let label = format!("jj: {}", operation.label());
+            let entry = entries
+                .iter()
+                .find(|entry| entry.label == label)
+                .unwrap_or_else(|| panic!("missing {label} command"));
+            assert!(matches!(
+                entry.kind,
+                super::PaletteEntryKind::Command(super::PaletteCommand::RunOperation(
+                    VcsOperation::Jj(found)
+                )) if found == operation
+            ));
+        }
+
+        let mut state = AppState::default();
+        state
+            .overlays
+            .command_palette
+            .query
+            .set(&state.store, "jj".to_owned());
+        state.rebuild_command_palette();
+        let has_jj_operation =
+            state
+                .overlays
+                .command_palette
+                .entries
+                .with(&state.store, |entries| {
+                    entries.iter().any(|entry| {
+                        JjOperation::ALL
+                            .into_iter()
+                            .any(|operation| entry.label == format!("jj: {}", operation.label()))
+                    })
+                });
+        assert!(!has_jj_operation);
+    }
+
+    #[test]
+    fn jj_operation_action_emits_repository_effect() {
+        let mut state = AppState::default();
+        let repo_path = PathBuf::from("/repo");
+        let operation = VcsOperation::Jj(JjOperation::NewChange);
+        state
+            .compare
+            .repo_path
+            .set(&state.store, Some(repo_path.clone()));
+        state.repository.location.set(
+            &state.store,
+            Some(RepoLocation {
+                kind: VcsKind::JJ,
+                profile: crate::core::vcs::model::VCS_PROFILE_JJ,
+                workspace_root: repo_path.clone(),
+                store_root: Some(repo_path.join(".jj")),
+            }),
+        );
+
+        let effects = state.apply_action(crate::actions::RepositoryAction::RunOperation(
+            operation.clone(),
+        ));
+
+        let [Effect::Repository(RepositoryEffect::RunOperation(request))] = effects.as_slice()
+        else {
+            panic!("expected RunOperation effect, got {effects:?}");
+        };
+        assert_eq!(request.repo_path, repo_path);
+        assert_eq!(request.operation, operation);
+    }
+
+    #[test]
+    fn destructive_jj_palette_operation_requires_confirmation() {
+        let mut state = AppState::default();
+        let repo_path = PathBuf::from("/repo");
+        let operation = VcsOperation::Jj(JjOperation::AbandonChange);
+        state
+            .compare
+            .repo_path
+            .set(&state.store, Some(repo_path.clone()));
+        state.repository.location.set(
+            &state.store,
+            Some(RepoLocation {
+                kind: VcsKind::JJ,
+                profile: crate::core::vcs::model::VCS_PROFILE_JJ,
+                workspace_root: repo_path.clone(),
+                store_root: Some(repo_path.join(".jj")),
+            }),
+        );
+        state
+            .overlays
+            .command_palette
+            .query
+            .set(&state.store, "abandon".to_owned());
+        state.overlays.stack.update(&state.store, |stack| {
+            stack.push(OverlayEntry {
+                surface: OverlaySurface::CommandPalette,
+                focus_return: None,
+            });
+        });
+        state.rebuild_command_palette();
+
+        let effects = state.apply_action(crate::actions::OverlayAction::ConfirmOverlaySelection);
+
+        assert!(effects.is_empty());
+        assert_eq!(state.overlays_top(), Some(OverlaySurface::Confirmation));
+        assert_eq!(
+            state.overlays.confirmation.action.get(&state.store),
+            Some(crate::actions::RepositoryAction::RunOperation(operation.clone()).into())
+        );
+
+        let effects = state.apply_action(crate::actions::OverlayAction::ConfirmOverlaySelection);
+
+        let [Effect::Repository(RepositoryEffect::RunOperation(request))] = effects.as_slice()
+        else {
+            panic!("expected RunOperation effect, got {effects:?}");
+        };
+        assert_eq!(request.repo_path, repo_path);
+        assert_eq!(request.operation, operation);
+        assert_eq!(state.overlays_top(), None);
+    }
+
+    #[test]
+    fn command_palette_surfaces_jj_rebase_destinations() {
+        let mut state = AppState::default();
+        state.repository.location.set(
+            &state.store,
+            Some(RepoLocation {
+                kind: VcsKind::JJ,
+                profile: crate::core::vcs::model::VCS_PROFILE_JJ,
+                workspace_root: PathBuf::from("/repo"),
+                store_root: Some(PathBuf::from("/repo/.jj")),
+            }),
+        );
+        state.repository.refs.set(
+            &state.store,
+            vec![
+                VcsRef {
+                    name: "@".to_owned(),
+                    kind: RefKind::WorkingCopy,
+                    target: RevisionId {
+                        backend: VcsKind::JJ,
+                        id: "current".to_owned(),
+                    },
+                    active: true,
+                    upstream: None,
+                    ahead_behind: None,
+                },
+                VcsRef {
+                    name: "main".to_owned(),
+                    kind: RefKind::Bookmark,
+                    target: RevisionId {
+                        backend: VcsKind::JJ,
+                        id: "main-revision".to_owned(),
+                    },
+                    active: false,
+                    upstream: None,
+                    ahead_behind: None,
+                },
+            ],
+        );
+        state
+            .overlays
+            .command_palette
+            .query
+            .set(&state.store, "rebase main".to_owned());
+
+        state.rebuild_command_palette();
+
+        let entry = state
+            .overlays
+            .command_palette
+            .entries
+            .with(&state.store, |entries| entries.first().cloned())
+            .expect("rebase entry");
+        assert_eq!(entry.label, "jj: Rebase @ Onto main");
+        assert!(matches!(
+            entry.kind,
+            super::PaletteEntryKind::Command(super::PaletteCommand::RunOperation(
+                VcsOperation::JjRebaseCurrentChangeOnto { ref destination }
+            )) if destination == "main"
+        ));
+    }
+
+    #[test]
+    fn command_palette_surfaces_jj_editable_changes() {
+        let mut state = AppState::default();
+        state.repository.location.set(
+            &state.store,
+            Some(RepoLocation {
+                kind: VcsKind::JJ,
+                profile: crate::core::vcs::model::VCS_PROFILE_JJ,
+                workspace_root: PathBuf::from("/repo"),
+                store_root: Some(PathBuf::from("/repo/.jj")),
+            }),
+        );
+        state.repository.changes.set(
+            &state.store,
+            vec![
+                VcsChange {
+                    revision: RevisionId {
+                        backend: VcsKind::JJ,
+                        id: "current-revision".to_owned(),
+                    },
+                    change_id: Some("current-change".to_owned()),
+                    short_change_id: Some("cur".to_owned()),
+                    short_change_id_prefix_len: Some(3),
+                    short_revision: "currev".to_owned(),
+                    summary: "current".to_owned(),
+                    author_name: "ro".to_owned(),
+                    timestamp: 0,
+                    flags: ChangeFlags {
+                        current: true,
+                        working_copy: true,
+                        ..ChangeFlags::default()
+                    },
+                },
+                VcsChange {
+                    revision: RevisionId {
+                        backend: VcsKind::JJ,
+                        id: "target-revision".to_owned(),
+                    },
+                    change_id: Some("target-change".to_owned()),
+                    short_change_id: Some("tgt".to_owned()),
+                    short_change_id_prefix_len: Some(3),
+                    short_revision: "tgt123".to_owned(),
+                    summary: "target change".to_owned(),
+                    author_name: "ro".to_owned(),
+                    timestamp: 0,
+                    flags: ChangeFlags::default(),
+                },
+            ],
+        );
+        state
+            .overlays
+            .command_palette
+            .query
+            .set(&state.store, "edit tgt".to_owned());
+
+        state.rebuild_command_palette();
+
+        let entry = state
+            .overlays
+            .command_palette
+            .entries
+            .with(&state.store, |entries| entries.first().cloned())
+            .expect("edit entry");
+        assert_eq!(entry.label, "jj: Edit tgt");
+        assert!(matches!(
+            entry.kind,
+            super::PaletteEntryKind::Command(super::PaletteCommand::RunOperation(
+                VcsOperation::JjEditRevision {
+                    ref revision,
+                    ref label
+                }
+            )) if revision == "target-revision" && label == "tgt"
+        ));
+    }
+
+    #[test]
+    fn command_palette_surfaces_jj_operation_log_restore_targets() {
+        let mut state = AppState::default();
+        state.repository.location.set(
+            &state.store,
+            Some(RepoLocation {
+                kind: VcsKind::JJ,
+                profile: crate::core::vcs::model::VCS_PROFILE_JJ,
+                workspace_root: PathBuf::from("/repo"),
+                store_root: Some(PathBuf::from("/repo/.jj")),
+            }),
+        );
+        state.repository.operation_log.set(
+            &state.store,
+            vec![
+                VcsOperationLogEntry {
+                    operation_id: "current-operation".to_owned(),
+                    short_operation_id: "current".to_owned(),
+                    user: "ro".to_owned(),
+                    time: "later".to_owned(),
+                    description: "snapshot working copy".to_owned(),
+                },
+                VcsOperationLogEntry {
+                    operation_id: "target-operation".to_owned(),
+                    short_operation_id: "target".to_owned(),
+                    user: "ro".to_owned(),
+                    time: "earlier".to_owned(),
+                    description: "describe change".to_owned(),
+                },
+            ],
+        );
+        state
+            .overlays
+            .command_palette
+            .query
+            .set(&state.store, "restore target".to_owned());
+
+        state.rebuild_command_palette();
+
+        let entries = state
+            .overlays
+            .command_palette
+            .entries
+            .with(&state.store, |entries| entries.clone());
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| entry.label == "jj: Restore Operation current")
+        );
+        let entry = entries
+            .iter()
+            .find(|entry| entry.label == "jj: Restore Operation target")
+            .expect("restore entry");
+        assert_eq!(entry.detail, "describe change - ro - earlier");
+        assert!(matches!(
+            entry.kind,
+            super::PaletteEntryKind::Command(super::PaletteCommand::RunOperation(
+                VcsOperation::JjRestoreOperation {
+                    ref operation_id,
+                    ref label
+                }
+            )) if operation_id == "target-operation" && label == "target"
+        ));
+    }
+
+    #[test]
     fn sidebar_width_action_clamps_and_stores_manual_preference() {
         let mut state = AppState::default();
 
@@ -10137,6 +11289,7 @@ diff --git a/src/lib.rs b/src/lib.rs
                     capabilities: RepoCapabilities::git(),
                     refs: Vec::new(),
                     changes: Vec::new(),
+                    operation_log: Vec::new(),
                     file_changes: Vec::new(),
                 },
             ),

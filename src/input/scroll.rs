@@ -1,6 +1,6 @@
 use winit::event::{MouseScrollDelta, TouchPhase};
 
-use crate::actions::{Action, EditorAction, FileListAction};
+use crate::actions::{Action, EditorAction, FileListAction, SettingsAction};
 use crate::ui::editor::element::EditorElement;
 use crate::ui::element::ScrollActionBuilder;
 use crate::ui::shell::UiFrame;
@@ -39,6 +39,9 @@ impl InputSystem {
             ScrollTarget::Region(ScrollActionBuilder::FileList) => {
                 quantize_scroll_delta_px(&mut self.file_list_scroll_remainder_px, delta_px)
             }
+            ScrollTarget::Region(ScrollActionBuilder::SettingsKeymaps) => {
+                quantize_scroll_delta_px(&mut self.overlay_scroll_remainder_px, delta_px)
+            }
             ScrollTarget::Region(ScrollActionBuilder::Custom(build)) => {
                 if custom_scroll_is_editor(*build) {
                     quantize_scroll_delta_px(&mut self.editor_scroll_remainder_px, delta_px)
@@ -58,6 +61,9 @@ impl InputSystem {
             match target {
                 ScrollTarget::Region(ScrollActionBuilder::FileList) => {
                     actions.push(FileListAction::ScrollFileListPx(rounded_delta_px).into());
+                }
+                ScrollTarget::Region(ScrollActionBuilder::SettingsKeymaps) => {
+                    actions.push(SettingsAction::ScrollKeymapsPx(rounded_delta_px).into());
                 }
                 ScrollTarget::Region(ScrollActionBuilder::Custom(build)) => {
                     actions.push(build(rounded_delta_px));
@@ -123,6 +129,7 @@ impl InputSystem {
             ScrollTarget::Region(ScrollActionBuilder::FileList) => {
                 state.file_list_row_stride().max(1.0)
             }
+            ScrollTarget::Region(ScrollActionBuilder::SettingsKeymaps) => 36.0,
             ScrollTarget::Region(ScrollActionBuilder::Custom(build)) => {
                 if custom_scroll_is_editor(*build) {
                     state.commit_editor.scroll_line_height_px().max(1.0)

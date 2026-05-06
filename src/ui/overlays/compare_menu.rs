@@ -3,6 +3,7 @@ use halogen::view;
 use crate::actions::Action;
 use crate::core::compare::CompareMode;
 use crate::core::vcs::model::RefKind;
+use crate::ui::components;
 use crate::ui::design::{Ico, Rad, Shadow, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
@@ -51,18 +52,38 @@ pub fn compare_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
             .cloned()
     });
     let compare_mode = state.compare.mode.get(&state.store);
+    let mode_rows = modes
+        .iter()
+        .enumerate()
+        .map(|(index, mode)| {
+            mode_row(
+                mode.mode,
+                mode.label,
+                mode.description,
+                compare_mode,
+                Some(index + 1),
+                theme,
+            )
+        })
+        .collect::<Vec<_>>();
+    let branch_shortcut = show_branch_preset.then_some(modes.len() + 1);
+    let mut next_shortcut = modes.len() + 1 + if show_branch_preset { 1 } else { 0 };
     let current_change_preset = current_change.as_ref().and_then(|change| {
         profile.current_change_preset_label(change).map(|label| {
+            let shortcut = next_shortcut;
+            next_shortcut += 1;
             preset_row(
                 &label,
                 &crate::ui::vcs::change_summary_label(change),
                 crate::actions::CompareAction::ApplyComparePreset("@::commit".to_owned()).into(),
+                Some(shortcut),
                 theme,
             )
         })
     });
     let head_commit_preset = if profile.shows_head_commit_preset() {
         head_commit.as_ref().map(|commit| {
+            let shortcut = next_shortcut;
             preset_row(
                 &format!("HEAD ({})", commit.short_revision),
                 &crate::ui::vcs::change_summary_label(commit),
@@ -71,6 +92,7 @@ pub fn compare_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
                     commit.revision.id
                 ))
                 .into(),
+                Some(shortcut),
                 theme,
             )
         })
@@ -95,9 +117,7 @@ pub fn compare_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
                  rounded={Rad::XL}
                  shadow_preset={Shadow::DROPDOWN}
                  on_click={Action::Noop}>
-                for mode in modes {
-                    {mode_row(mode.mode, mode.label, mode.description, compare_mode, theme)}
-                }
+                {...mode_rows}
                 if show_presets {
                     <div class="w-full" py={Sp::XS} px={Sp::SM}>
                         <div class="w-full" h={Sz::SEPARATOR_W} bg={tc.border_variant} />
@@ -110,6 +130,7 @@ pub fn compare_menu(state: &AppState, theme: &Theme, width: f32, height: f32) ->
                         crate::actions::CompareAction::ApplyComparePreset(
                             format!("{}:{}:merge", trunk.as_deref().unwrap(), head_branch.as_deref().unwrap())
                         ).into(),
+                        branch_shortcut,
                         theme,
                     )}
                 }
@@ -125,12 +146,14 @@ fn mode_row(
     label: &str,
     desc: &str,
     active: CompareMode,
+    shortcut: Option<usize>,
     theme: &Theme,
 ) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let selected = mode == active;
     let check_size = (Ico::XS * scale).round();
+    let shortcut_badge = shortcut.map(|shortcut| components::kbd(shortcut.to_string(), theme));
 
     view! { scale,
         <div class="flex-row items-center"
@@ -148,13 +171,25 @@ fn mode_row(
                     <icon svg={lucide::CHECK} size={check_size} color={tc.accent} />
                 </div>
             }
+            if let Some(shortcut_badge) = shortcut_badge {
+                <div class="shrink-0" pl={Sp::SM}>
+                    {shortcut_badge}
+                </div>
+            }
         </div>
     }
 }
 
-fn preset_row(label: &str, desc: &str, action: Action, theme: &Theme) -> AnyElement {
+fn preset_row(
+    label: &str,
+    desc: &str,
+    action: Action,
+    shortcut: Option<usize>,
+    theme: &Theme,
+) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
+    let shortcut_badge = shortcut.map(|shortcut| components::kbd(shortcut.to_string(), theme));
 
     view! { scale,
         <div class="w-full flex-row items-center"
@@ -167,6 +202,11 @@ fn preset_row(label: &str, desc: &str, action: Action, theme: &Theme) -> AnyElem
                 <text class="text-sm truncate" color={tc.text}>{label}</text>
                 <text class="text-xs truncate" color={tc.text_muted}>{desc}</text>
             </div>
+            if let Some(shortcut_badge) = shortcut_badge {
+                <div class="shrink-0" pl={Sp::SM}>
+                    {shortcut_badge}
+                </div>
+            }
         </div>
     }
 }

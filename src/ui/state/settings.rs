@@ -94,7 +94,16 @@ impl AppState {
                 self.app_view.set(&self.store, AppView::Settings);
                 Vec::new()
             }
+            OpenKeymaps => {
+                self.clear_overlays();
+                self.app_view.set(&self.store, AppView::Settings);
+                self.settings_section
+                    .set(&self.store, SettingsSection::Keymaps);
+                self.keymaps_scroll_top_px.set(&self.store, 0.0);
+                Vec::new()
+            }
             CloseSettings => {
+                self.keymap_capture.set(&self.store, None);
                 self.app_view.set(&self.store, AppView::Workspace);
                 Vec::new()
             }
@@ -107,7 +116,39 @@ impl AppState {
                 effects
             }
             SetSettingsSection(section) => {
+                self.keymap_capture.set(&self.store, None);
                 self.settings_section.set(&self.store, section);
+                self.keymaps_scroll_top_px.set(&self.store, 0.0);
+                Vec::new()
+            }
+            BeginKeymapRebind(command) => {
+                self.keymap_capture.set(&self.store, Some(command));
+                Vec::new()
+            }
+            ApplyKeymapBinding { command, binding } => {
+                crate::input::set_override(&mut self.settings.keymap_overrides, command, binding);
+                self.keymap_capture.set(&self.store, None);
+                self.persist_settings_effect()
+            }
+            ResetKeymapBinding(command) => {
+                crate::input::reset_override(&mut self.settings.keymap_overrides, command);
+                self.keymap_capture.set(&self.store, None);
+                self.persist_settings_effect()
+            }
+            CancelKeymapRebind => {
+                self.keymap_capture.set(&self.store, None);
+                Vec::new()
+            }
+            ScrollKeymapsPx(delta) => {
+                let cur = self.keymaps_scroll_top_px.get(&self.store);
+                self.keymaps_scroll_top_px
+                    .set(&self.store, cur + delta as f32);
+                self.clamp_keymaps_scroll();
+                Vec::new()
+            }
+            ScrollKeymapsToPx(target) => {
+                self.keymaps_scroll_top_px.set(&self.store, target as f32);
+                self.clamp_keymaps_scroll();
                 Vec::new()
             }
         }

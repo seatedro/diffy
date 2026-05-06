@@ -108,6 +108,28 @@ pub fn build_ui_frame(
         .viewport_height
         .set(&state.store, sidebar_list_height);
     state.file_list_clamp_scroll(state.sidebar_row_count());
+
+    // Settings → Keymaps body viewport. Mirrors how sidebar_list_height is
+    // computed: subtract every chrome layer above and below the scrollable
+    // body so wheel + drag clamping uses the same height the renderer sees.
+    let keymaps_title_block_h = m.heading_font_size * 1.4
+        + Sp::XXS * ui_scale
+        + m.ui_small_font_size * 1.4;
+    let keymaps_viewport_h = (height
+        - m.title_bar_height
+        - m.status_bar_height
+        - Sp::XL * ui_scale
+        - Sp::XXL * ui_scale
+        - keymaps_title_block_h
+        - Sp::LG * ui_scale)
+        .max(0.0);
+    state
+        .keymaps_viewport_height_px
+        .set(&state.store, keymaps_viewport_h);
+    state
+        .keymaps_content_height_px
+        .set(&state.store, settings_page::keymaps_content_height(theme));
+    state.clamp_keymaps_scroll();
     let sidebar_width_factor = if state.sidebar_visible.get(&state.store) {
         1.0
     } else {
@@ -424,14 +446,20 @@ pub fn build_ui_frame(
                 render_generation,
                 active_file_matches_selection,
             );
+            let hovered_render_line_index = match document {
+                EditorDocument::Text { .. } => editor_snap
+                    .hovered_row
+                    .and_then(|row| editor.render_line_index_for_row(row))
+                    .map(|line| line as usize),
+                _ => None,
+            };
+            editor_snap.hovered_render_line_index = hovered_render_line_index;
             editor_snap.hovered_hunk_index = if using_continuous_doc {
                 None
             } else {
                 match document {
-                    EditorDocument::Text { doc, .. } => editor_snap
-                        .hovered_row
-                        .and_then(|row| editor.render_line_index_for_row(row))
-                        .and_then(|line_index| doc.lines.get(line_index as usize))
+                    EditorDocument::Text { doc, .. } => hovered_render_line_index
+                        .and_then(|line_index| doc.lines.get(line_index))
                         .and_then(|line| (line.hunk_index >= 0).then_some(line.hunk_index)),
                     _ => None,
                 }
@@ -465,6 +493,10 @@ pub fn build_ui_frame(
                 .editor
                 .hovered_row
                 .set_if_changed(&state.store, editor_snap.hovered_row);
+            state
+                .editor
+                .hovered_render_line_index
+                .set_if_changed(&state.store, editor_snap.hovered_render_line_index);
             state
                 .editor
                 .hovered_hunk_index

@@ -1,5 +1,6 @@
 use halogen::view;
 
+use crate::input::{format_binding, shortcut_groups};
 use crate::ui::components;
 use crate::ui::components::modal::Modal;
 use crate::ui::design::{Sp, Sz};
@@ -8,145 +9,10 @@ use crate::ui::icons::lucide;
 use crate::ui::state::AppState;
 use crate::ui::style::Styled;
 
-struct ShortcutEntry {
-    key: &'static str,
-    description: &'static str,
-}
-
-struct ShortcutGroup {
-    title: &'static str,
-    entries: &'static [ShortcutEntry],
-}
-
-const GROUPS: &[ShortcutGroup] = &[
-    ShortcutGroup {
-        title: "Navigation",
-        entries: &[
-            ShortcutEntry {
-                key: "] / [",
-                description: "Next / previous hunk",
-            },
-            ShortcutEntry {
-                key: "n / N",
-                description: "Next / previous file",
-            },
-            ShortcutEntry {
-                key: "Tab",
-                description: "Toggle sidebar / editor focus",
-            },
-            ShortcutEntry {
-                key: "/",
-                description: "Focus sidebar search",
-            },
-        ],
-    },
-    ShortcutGroup {
-        title: "Scrolling",
-        entries: &[
-            ShortcutEntry {
-                key: "j / k",
-                description: "Scroll down / up one line",
-            },
-            ShortcutEntry {
-                key: "d / u",
-                description: "Scroll down / up half page",
-            },
-            ShortcutEntry {
-                key: "Space / Shift+Space",
-                description: "Page down / up",
-            },
-            ShortcutEntry {
-                key: "g g / G",
-                description: "Go to top / bottom",
-            },
-        ],
-    },
-    ShortcutGroup {
-        title: "View",
-        entries: &[
-            ShortcutEntry {
-                key: "1 / 2",
-                description: "Unified / split diff view",
-            },
-            ShortcutEntry {
-                key: "w",
-                description: "Toggle line wrapping",
-            },
-            ShortcutEntry {
-                key: "Cmd+B",
-                description: "Toggle sidebar",
-            },
-        ],
-    },
-    ShortcutGroup {
-        title: "Search",
-        entries: &[
-            ShortcutEntry {
-                key: "Cmd+F",
-                description: "Open search",
-            },
-            ShortcutEntry {
-                key: "Enter / Shift+Enter",
-                description: "Next / previous match",
-            },
-            ShortcutEntry {
-                key: "Escape",
-                description: "Close search",
-            },
-        ],
-    },
-    ShortcutGroup {
-        title: "Staging (Working Tree)",
-        entries: &[
-            ShortcutEntry {
-                key: "s",
-                description: "Stage hunk / selected lines",
-            },
-            ShortcutEntry {
-                key: "S",
-                description: "Unstage hunk / selected lines",
-            },
-            ShortcutEntry {
-                key: "x",
-                description: "Discard hunk / selected lines",
-            },
-            ShortcutEntry {
-                key: "Gutter click",
-                description: "Toggle line selection",
-            },
-            ShortcutEntry {
-                key: "Shift + Gutter click",
-                description: "Extend line selection",
-            },
-        ],
-    },
-    ShortcutGroup {
-        title: "General",
-        entries: &[
-            ShortcutEntry {
-                key: "Cmd+P",
-                description: "Command palette",
-            },
-            ShortcutEntry {
-                key: "Cmd+= / Cmd+-",
-                description: "Zoom in / out",
-            },
-            ShortcutEntry {
-                key: "?",
-                description: "Show this help",
-            },
-            ShortcutEntry {
-                key: "Escape",
-                description: "Close overlay",
-            },
-        ],
-    },
-];
-
-fn build_keys_row(key: &str, theme: &crate::ui::theme::Theme) -> AnyElement {
+fn build_keys_row(keys: &[&str], theme: &crate::ui::theme::Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
-    let parts: Vec<&str> = key.split(" / ").collect();
+    let parts: Vec<String> = keys.iter().map(|key| format_binding(key)).collect();
 
     view! { scale,
         <div class="shrink-0 flex-row items-center flex-wrap"
@@ -182,12 +48,12 @@ pub fn keyboard_shortcuts(
 
     let body = view! { scale,
         <div class="flex-col" gap={Sp::XL}>
-            for group in GROUPS {
+            for group in shortcut_groups() {
                 <div class="flex-col" gap={Sp::XS}>
                     <text class="text-sm font-semibold" color={tc.accent}>{group.title}</text>
                     for entry in group.entries {
                         <div class="flex-row items-center" gap={Sp::MD}>
-                            {build_keys_row(entry.key, theme)}
+                            {build_keys_row(entry.keys, theme)}
                             <text class="text-sm" color={tc.text_muted}>{entry.description}</text>
                         </div>
                     }

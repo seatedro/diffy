@@ -152,6 +152,13 @@ impl EffectRunner {
                 self.vcs_worker
                     .dispatch_commit(request.repo_path, request.message);
             }
+            Effect::Repository(RepositoryEffect::RunOperation(request)) => {
+                self.vcs_worker.dispatch_operation_command(
+                    request.repo_path,
+                    request.operation,
+                    request.toast_id,
+                );
+            }
             Effect::Repository(RepositoryEffect::FetchRemote(request)) => {
                 self.vcs_worker
                     .dispatch_fetch(request.repo_path, request.remote, request.toast_id);

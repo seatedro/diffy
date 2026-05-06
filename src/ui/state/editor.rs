@@ -50,7 +50,8 @@ impl AppState {
             }
             EndViewportScrollbarDrag => {
                 self.end_viewport_scrollbar_drag();
-                let mut effects = self.sync_editor_scroll_from_global();
+                let current = self.workspace.global_scroll_top_px.get(&self.store);
+                let mut effects = self.scroll_viewport_to_global(current);
                 effects.extend(self.request_active_file_syntax_effect());
                 effects
             }
@@ -62,8 +63,13 @@ impl AppState {
             HoverViewportRow(row) => {
                 self.editor.hovered_row.set(&self.store, row);
                 if row.is_none() {
+                    self.editor.hovered_render_line_index.set(&self.store, None);
                     self.editor.hovered_hunk_index.set(&self.store, None);
                 }
+                Vec::new()
+            }
+            MoveRowCursor(delta) => {
+                self.move_editor_row_cursor(delta);
                 Vec::new()
             }
             FocusViewport => {

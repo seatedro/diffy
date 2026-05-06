@@ -1,6 +1,6 @@
 use crate::core::vcs::model::{
     ChangeBucket, ChangeFlags, FileChange, FileChangeStatus, RefKind, RevisionId, VcsChange,
-    VcsKind, VcsRef,
+    VcsKind, VcsOperationLogEntry, VcsRef,
 };
 
 pub fn parse_change_log(output: &str) -> Vec<VcsChange> {
@@ -48,6 +48,32 @@ pub fn parse_change_log_line(line: &str) -> Option<VcsChange> {
 
 pub fn parse_bookmark_list(output: &str) -> Vec<VcsRef> {
     output.lines().filter_map(parse_bookmark_line).collect()
+}
+
+pub fn parse_operation_log(output: &str) -> Vec<VcsOperationLogEntry> {
+    output
+        .lines()
+        .filter_map(parse_operation_log_line)
+        .collect()
+}
+
+pub fn parse_operation_log_line(line: &str) -> Option<VcsOperationLogEntry> {
+    let mut fields = line.splitn(5, '\t');
+    let operation_id = fields.next()?.trim();
+    let short_operation_id = fields.next()?.trim();
+    let user = fields.next().unwrap_or_default().trim();
+    let time = fields.next().unwrap_or_default().trim();
+    let description = fields.next().unwrap_or_default().trim();
+    if operation_id.is_empty() || short_operation_id.is_empty() {
+        return None;
+    }
+    Some(VcsOperationLogEntry {
+        operation_id: operation_id.to_owned(),
+        short_operation_id: short_operation_id.to_owned(),
+        user: user.to_owned(),
+        time: time.to_owned(),
+        description: description.to_owned(),
+    })
 }
 
 pub fn parse_bookmark_line(line: &str) -> Option<VcsRef> {
@@ -145,6 +171,7 @@ mod tests {
     use super::parse_bookmark_line;
     use super::{
         parse_change_log, parse_change_log_line, parse_conflict_list, parse_diff_summary_line,
+        parse_operation_log, parse_operation_log_line,
     };
     use crate::core::vcs::model::{ChangeBucket, FileChangeStatus, VcsKind};
 
@@ -187,6 +214,25 @@ mod tests {
         assert_eq!(bookmark.kind, crate::core::vcs::model::RefKind::Bookmark);
         assert_eq!(bookmark.name, "main");
         assert_eq!(bookmark.target.id, "abcdef1234567890");
+    }
+
+    #[test]
+    fn parses_operation_log_rows() {
+        let entry = parse_operation_log_line(
+            "op1234567890\top1234567890\tro@example.com\t2026-05-05 00:54:08 -07:00\tsnapshot working copy",
+        )
+        .unwrap();
+        assert_eq!(entry.operation_id, "op1234567890");
+        assert_eq!(entry.short_operation_id, "op1234567890");
+        assert_eq!(entry.user, "ro@example.com");
+        assert_eq!(entry.time, "2026-05-05 00:54:08 -07:00");
+        assert_eq!(entry.description, "snapshot working copy");
+
+        let entries = parse_operation_log(
+            "op1\top1\tro\tlater\tdescribe change\nop2\top2\tro\tearlier\trestore operation\n",
+        );
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1].description, "restore operation");
     }
 
     #[test]

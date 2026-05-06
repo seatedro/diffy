@@ -1,4 +1,5 @@
 mod keyboard;
+mod keymap;
 mod pointer;
 mod scroll;
 
@@ -20,6 +21,11 @@ use crate::ui::element::DragHandler;
 use crate::ui::shell::UiFrame;
 use crate::ui::state::{AppState, FocusTarget, OverlaySurface, WorkspaceMode};
 
+pub use keymap::{
+    KeymapOverride, ShortcutCommand, ShortcutEntry, ShortcutGroup, active_bindings,
+    binding_conflict, binding_matches, format_binding, override_for, reset_override, set_override,
+    shortcut_entries, shortcut_entry, shortcut_groups,
+};
 pub use pointer::hit_test_text_offset;
 pub use scroll::{quantize_scroll_delta_px, scroll_delta_to_px};
 
@@ -103,6 +109,131 @@ impl KeyChord {
             _ => None,
         }
     }
+
+    pub fn binding_string(&self) -> Option<String> {
+        let (key, inferred_shift) = match &self.logical {
+            KeyKind::Character(text) => character_binding_key(text)?,
+            KeyKind::Named(named) => named_binding_key(*named)?,
+            KeyKind::Other => return None,
+        };
+
+        let mut parts = Vec::new();
+        if self.modifiers.super_key() {
+            parts.push("cmd");
+        }
+        if self.modifiers.control_key() {
+            parts.push("ctrl");
+        }
+        if self.modifiers.alt_key() {
+            parts.push("alt");
+        }
+        if self.modifiers.shift_key() || inferred_shift {
+            parts.push("shift");
+        }
+        parts.push(key);
+        Some(parts.join("+"))
+    }
+}
+
+fn character_binding_key(text: &str) -> Option<(&'static str, bool)> {
+    if text.chars().count() != 1 {
+        return None;
+    }
+    let ch = text.chars().next()?;
+    Some(match ch {
+        ' ' => ("space", false),
+        'A'..='Z' => (lower_ascii_key(ch), true),
+        'a'..='z' | '0'..='9' => (lower_ascii_key(ch), false),
+        '}' => ("]", true),
+        '{' => ("[", true),
+        '+' => ("=", true),
+        '_' => ("-", true),
+        '?' => ("/", true),
+        ')' => ("0", true),
+        '!' => ("1", true),
+        '@' => ("2", true),
+        '#' => ("3", true),
+        '$' => ("4", true),
+        '%' => ("5", true),
+        '^' => ("6", true),
+        '&' => ("7", true),
+        '*' => ("8", true),
+        '(' => ("9", true),
+        ',' => (",", false),
+        '.' => (".", false),
+        '/' => ("/", false),
+        ';' => (";", false),
+        '\'' => ("'", false),
+        '[' => ("[", false),
+        ']' => ("]", false),
+        '\\' => ("\\", false),
+        '-' => ("-", false),
+        '=' => ("=", false),
+        '`' => ("`", false),
+        _ => return None,
+    })
+}
+
+fn lower_ascii_key(ch: char) -> &'static str {
+    match ch.to_ascii_lowercase() {
+        'a' => "a",
+        'b' => "b",
+        'c' => "c",
+        'd' => "d",
+        'e' => "e",
+        'f' => "f",
+        'g' => "g",
+        'h' => "h",
+        'i' => "i",
+        'j' => "j",
+        'k' => "k",
+        'l' => "l",
+        'm' => "m",
+        'n' => "n",
+        'o' => "o",
+        'p' => "p",
+        'q' => "q",
+        'r' => "r",
+        's' => "s",
+        't' => "t",
+        'u' => "u",
+        'v' => "v",
+        'w' => "w",
+        'x' => "x",
+        'y' => "y",
+        'z' => "z",
+        '0' => "0",
+        '1' => "1",
+        '2' => "2",
+        '3' => "3",
+        '4' => "4",
+        '5' => "5",
+        '6' => "6",
+        '7' => "7",
+        '8' => "8",
+        '9' => "9",
+        _ => unreachable!("caller only passes ascii alphanumeric keys"),
+    }
+}
+
+fn named_binding_key(named: NamedKey) -> Option<(&'static str, bool)> {
+    Some(match named {
+        NamedKey::Enter => ("enter", false),
+        NamedKey::Tab => ("tab", false),
+        NamedKey::Escape => ("escape", false),
+        NamedKey::Space => ("space", false),
+        NamedKey::ArrowUp => ("arrowup", false),
+        NamedKey::ArrowDown => ("arrowdown", false),
+        NamedKey::ArrowLeft => ("arrowleft", false),
+        NamedKey::ArrowRight => ("arrowright", false),
+        NamedKey::PageDown => ("pagedown", false),
+        NamedKey::PageUp => ("pageup", false),
+        NamedKey::Home => ("home", false),
+        NamedKey::End => ("end", false),
+        NamedKey::Backspace => ("backspace", false),
+        NamedKey::Delete => ("delete", false),
+        _ => return None,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

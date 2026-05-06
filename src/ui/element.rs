@@ -144,6 +144,9 @@ impl ScrollbarDragHandler {
             ScrollActionBuilder::ViewportGlobal => {
                 Some(crate::actions::EditorAction::ScrollViewportToGlobal(target_px).into())
             }
+            ScrollActionBuilder::SettingsKeymaps => {
+                Some(crate::actions::SettingsAction::ScrollKeymapsToPx(target_px).into())
+            }
             ScrollActionBuilder::Custom(_) => None,
         }
     }
@@ -196,6 +199,8 @@ pub enum ScrollActionBuilder {
     /// Continuous-scroll: drag emits global-pixel `ScrollViewportToGlobal`,
     /// wheel still falls back to `ScrollViewportLines`.
     ViewportGlobal,
+    /// Settings → Keymaps section list.
+    SettingsKeymaps,
     /// Use a custom action constructor.
     Custom(fn(i32) -> Action),
 }
@@ -207,6 +212,7 @@ impl ScrollActionBuilder {
             Self::ViewportLines | Self::ViewportGlobal => {
                 crate::actions::EditorAction::ScrollViewportLines(delta).into()
             }
+            Self::SettingsKeymaps => crate::actions::SettingsAction::ScrollKeymapsPx(delta).into(),
             Self::Custom(f) => f(delta),
         }
     }

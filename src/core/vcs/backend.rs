@@ -6,7 +6,8 @@ use crate::core::compare::{CompareOutput, ProgressSink, RendererKind};
 use crate::core::error::Result;
 use crate::core::vcs::model::{
     FileChange, FileOperation, PublishAction, PublishOutcome, PublishPlan, PullFastForwardOutcome,
-    RepoCapabilities, RepoLocation, RevisionId, VcsChange, VcsCompareRequest, VcsKind, VcsSnapshot,
+    RepoCapabilities, RepoLocation, RevisionId, VcsChange, VcsCompareRequest, VcsKind,
+    VcsOperation, VcsSnapshot,
 };
 use crate::events::RepositorySyncReason;
 
@@ -110,6 +111,11 @@ pub trait VcsRepository: Send {
     fn create_commit(&mut self, _message: &str) -> Result<()> {
         Err(crate::core::error::DiffyError::General(
             "commit unsupported by this backend".to_owned(),
+        ))
+    }
+    fn run_operation(&mut self, _operation: &VcsOperation) -> Result<String> {
+        Err(crate::core::error::DiffyError::General(
+            "operation unsupported by this backend".to_owned(),
         ))
     }
     fn fetch_remote(&mut self, _remote: &str) -> Result<()> {

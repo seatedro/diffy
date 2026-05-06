@@ -1,5 +1,6 @@
 use crate::actions::WorkspaceAction;
-use crate::effects::Effect;
+use crate::effects::{Effect, RepositoryEffect};
+use crate::events::RepositorySyncReason;
 
 use super::*;
 
@@ -12,6 +13,26 @@ impl AppState {
         match action {
             WorkspaceAction::OpenRepository(path) => self.open_repository(path),
             WorkspaceAction::ShowWorkingTree => self.show_working_tree(),
+            WorkspaceAction::RefreshRepository => self.refresh_repository(),
+        }
+    }
+
+    fn refresh_repository(&mut self) -> Vec<Effect> {
+        let Some(path) = self.compare.repo_path.get(&self.store) else {
+            self.push_error("Open a repository before refreshing.");
+            return Vec::new();
+        };
+        if self.workspace.source.get(&self.store) == WorkspaceSource::Compare {
+            self.kickoff_compare()
+        } else {
+            vec![
+                RepositoryEffect::SyncRepository {
+                    path,
+                    reason: RepositorySyncReason::Rescan,
+                    reporter_generation: None,
+                }
+                .into(),
+            ]
         }
     }
 }

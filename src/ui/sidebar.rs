@@ -777,7 +777,7 @@ pub(crate) fn sidebar(
             let layout = components::file_tree_layout(
                 entries,
                 &expanded_folders,
-                state.workspace.selected_file_index.get(&state.store),
+                state.selected_workspace_file_index(),
             );
             let row_count = layout.len();
             let total_height = state.file_list_total_content_height(row_count);
@@ -1029,7 +1029,7 @@ fn file_row(
     tc: &crate::ui::theme::ThemeColors,
     scale: f32,
 ) -> AnyElement {
-    let selected = state.workspace.selected_file_index.get(&state.store) == Some(index);
+    let selected = state.selected_workspace_file_index() == Some(index);
     let viewed = state
         .file_list
         .viewed_files

@@ -113,10 +113,13 @@ impl InputSystem {
             .is_some_and(|rect| rect.contains(x, y))
         {
             if let Some(path) = editor.file_header_path_at(x, y) {
-                return InputOutcome::actions(vec![
-                    EditorAction::FocusViewport.into(),
-                    AppAction::CopyText(path).into(),
-                ]);
+                let mut actions = vec![EditorAction::FocusViewport.into()];
+                if self.modifiers.super_key() || self.modifiers.control_key() {
+                    actions.push(AppAction::CopyText(path).into());
+                } else {
+                    actions.push(FileListAction::SelectFilePath(path).into());
+                }
+                return InputOutcome::actions(actions);
             }
             let editor_snap = state.editor.snapshot(&state.store);
             let hovered = editor.hit_test_row(&editor_snap, x, y);

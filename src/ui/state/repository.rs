@@ -78,6 +78,33 @@ pub(super) fn reduce_event(state: &mut AppState, event: RepositoryEvent) -> Vec<
             }
             Vec::new()
         }
+        RepositoryEvent::VcsOperationComplete {
+            toast_id,
+            path,
+            operation: _,
+            message,
+        } => {
+            if state
+                .compare
+                .repo_path
+                .with(&state.store, |p| p.as_ref() == Some(&path))
+            {
+                state.finish_progress_toast(toast_id, &message, None);
+            }
+            Vec::new()
+        }
+        RepositoryEvent::VcsOperationFailed {
+            toast_id,
+            operation,
+            message,
+        } => {
+            state.fail_progress_toast(
+                toast_id,
+                &format!("{} failed", operation.label()),
+                Some(message),
+            );
+            Vec::new()
+        }
         RepositoryEvent::ContextLinesReady(payload) => state.handle_context_lines_ready(payload),
         RepositoryEvent::ContextLinesFailed {
             generation: _,
@@ -275,6 +302,14 @@ impl AppState {
                 self.toggle_line_selection_range(row, anchor);
                 Vec::new()
             }
+            ToggleCurrentLineSelection => {
+                self.toggle_current_line_selection();
+                Vec::new()
+            }
+            ToggleCurrentLineSelectionRange => {
+                self.toggle_current_line_selection_range();
+                Vec::new()
+            }
             StageSelectedLines => self.apply_line_selection_operation(FileOperation::Stage),
             UnstageSelectedLines => self.apply_line_selection_operation(FileOperation::Unstage),
             DiscardSelectedLines => self.apply_line_selection_operation(FileOperation::Discard),
@@ -285,6 +320,7 @@ impl AppState {
                 Vec::new()
             }
             SubmitCommit => self.submit_commit(),
+            RunOperation(operation) => self.start_vcs_operation(operation),
             FetchRemote(remote) => self.start_fetch_remote(remote),
             FetchAllRemotes => self.start_fetch_all_remotes(),
             PushCurrentBranch { force_with_lease } if force_with_lease => {
@@ -330,5 +366,27 @@ impl AppState {
             return Vec::new();
         }
         vec![RepositoryEffect::CreateCommit(CommitRequest { repo_path, message }).into()]
+    }
+
+    fn start_vcs_operation(&mut self, operation: VcsOperation) -> Vec<Effect> {
+        if !self.repository.location.with(&self.store, |location| {
+            vcs_operation_available_for_location(&operation, location.as_ref())
+        }) {
+            self.push_error("This operation is not available for the current repository backend.");
+            return Vec::new();
+        }
+        let Some(repo_path) = self.compare.repo_path.with(&self.store, |p| p.clone()) else {
+            self.push_error("Open a repository before running repository operations.");
+            return Vec::new();
+        };
+        let toast_id = self.push_progress_toast(&format!("{}\u{2026}", operation.progress_label()));
+        vec![
+            RepositoryEffect::RunOperation(VcsOperationRequest {
+                repo_path,
+                operation,
+                toast_id,
+            })
+            .into(),
+        ]
     }
 }

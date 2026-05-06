@@ -174,9 +174,6 @@ install_macos() {
   info "installing to ${dest}"
   ditto "$src" "$dest" 2>/dev/null || sudo ditto "$src" "$dest"
 
-  info "clearing Gatekeeper quarantine"
-  /usr/bin/xattr -cr "$dest" 2>/dev/null || sudo /usr/bin/xattr -cr "$dest"
-
   hdiutil detach "$MOUNT_POINT" -quiet -force >/dev/null 2>&1 || true
   MOUNT_POINT=""
 

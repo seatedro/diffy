@@ -9,6 +9,7 @@ git_diff_output.txt
 .devenv.flake.nix
 .direnv/
 .envrc
+.env
 .diffy-dev.env
 .agents/
 .claude/

@@ -29,18 +29,22 @@ jobs:
             os: macos-26
             format_one: dmg
             format_two: ""
+            macos_arch: aarch64
           - name: macos-x64
             os: macos-26-intel
             format_one: dmg
             format_two: ""
+            macos_arch: x64
           - name: windows-x64
             os: windows-2025
             format_one: nsis
             format_two: ""
+            macos_arch: ""
           - name: linux-x64
             os: ubuntu-24.04
             format_one: appimage
             format_two: deb
+            macos_arch: ""
 
     runs-on: ${{ matrix.os }}
 
@@ -78,6 +82,65 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install lld
 
+      - name: Validate macOS signing config
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_PRIVATE_KEY: ${{ secrets.APPLE_NOTARY_PRIVATE_KEY }}
+          APPLE_NOTARY_PRIVATE_KEY_BASE64: ${{ secrets.APPLE_NOTARY_PRIVATE_KEY_BASE64 }}
+        shell: bash
+        run: |
+          for name in \
+            APPLE_CERTIFICATE_P12_BASE64 \
+            APPLE_CERTIFICATE_PASSWORD \
+            APPLE_CODESIGN_IDENTITY \
+            APPLE_KEYCHAIN_PASSWORD \
+            APPLE_NOTARY_ISSUER_ID \
+            APPLE_NOTARY_KEY_ID
+          do
+            if [[ -z "${!name:-}" ]]; then
+              echo "${name} repository secret is required for macOS signing and notarization" >&2
+              exit 1
+            fi
+          done
+          if [[ -z "${APPLE_NOTARY_PRIVATE_KEY:-}" && -z "${APPLE_NOTARY_PRIVATE_KEY_BASE64:-}" ]]; then
+            echo "APPLE_NOTARY_PRIVATE_KEY or APPLE_NOTARY_PRIVATE_KEY_BASE64 repository secret is required for notarization" >&2
+            exit 1
+          fi
+
+      - name: Import Apple signing certificate
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        shell: bash
+        run: |
+          keychain_path="${RUNNER_TEMP}/diffy-signing.keychain-db"
+          certificate_path="${RUNNER_TEMP}/diffy-developer-id.p12"
+
+          echo "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate_path"
+          security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain_path"
+          security import "$certificate_path" \
+            -k "$keychain_path" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security list-keychains -d user -s "$keychain_path"
+          security default-keychain -s "$keychain_path"
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$APPLE_KEYCHAIN_PASSWORD" \
+            "$keychain_path"
+          security find-identity -v -p codesigning "$keychain_path"
+
       - name: Install Linux packaging dependencies
         if: runner.os == 'Linux'
         run: |
@@ -100,7 +163,19 @@ jobs:
         run: cargo install cargo-packager --locked --version "${CARGO_PACKAGER_VERSION}"
 
       - name: Package ${{ matrix.format_one }}
+        if: runner.os != 'macOS'
         run: cargo packager --release --formats ${{ matrix.format_one }}
+
+      - name: Package signed notarized macOS DMG
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_PRIVATE_KEY: ${{ secrets.APPLE_NOTARY_PRIVATE_KEY }}
+          APPLE_NOTARY_PRIVATE_KEY_BASE64: ${{ secrets.APPLE_NOTARY_PRIVATE_KEY_BASE64 }}
+          DIFFY_MACOS_PACKAGE_ARCH: ${{ matrix.macos_arch }}
+        run: bash scripts/package-macos-release.sh
 
       - name: Package ${{ matrix.format_two }}
         if: matrix.format_two != ''
@@ -197,9 +272,7 @@ jobs:
           body: |
             ## Install
 
-            > Diffy is unsigned during dev — the steps below strip the macOS
-            > quarantine bit so Gatekeeper lets it run. Proper notarization
-            > is coming later.
+            macOS builds are signed with Developer ID and notarized by Apple.
 
             ### macOS / Linux
 
@@ -209,8 +282,7 @@ jobs:
 
             Detects your OS + arch, downloads the right artifact, verifies
             the SHA256, and installs:
-            - **macOS** → `/Applications/Diffy.app` (quarantine flag cleared
-              so Gatekeeper doesn't block it)
+            - **macOS** → `/Applications/Diffy.app`
             - **Linux** → `~/.local/share/diffy/diffy.AppImage` with a
               `~/.local/bin/diffy` symlink
 
@@ -233,12 +305,6 @@ jobs:
             | Windows         | `Diffy_*_x64-setup.exe`            |
             | Linux AppImage  | `diffy_*_x64.AppImage`             |
             | Linux Debian    | `diffy_*_amd64.deb`                |
-
-            On macOS, after dragging to Applications run once to bypass
-            Gatekeeper (Diffy is unsigned during dev):
-            ```
-            xattr -cr /Applications/Diffy.app
-            ```
 
             ### Verify downloads
 

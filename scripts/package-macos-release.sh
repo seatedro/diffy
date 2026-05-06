@@ -42,12 +42,22 @@ write_notary_key() {
   if [[ -n "${APPLE_NOTARY_PRIVATE_KEY:-}" ]]; then
     printf '%s' "$APPLE_NOTARY_PRIVATE_KEY" > "$key_path"
   elif [[ -n "${APPLE_NOTARY_PRIVATE_KEY_BASE64:-}" ]]; then
-    printf '%s' "$APPLE_NOTARY_PRIVATE_KEY_BASE64" | base64 --decode > "$key_path"
+    printf '%s' "$APPLE_NOTARY_PRIVATE_KEY_BASE64" | base64 -d > "$key_path"
   else
     die "APPLE_NOTARY_PRIVATE_KEY or APPLE_NOTARY_PRIVATE_KEY_BASE64 is required"
   fi
 
   chmod 600 "$key_path"
+}
+
+submit_for_notarization() {
+  local path="$1"
+
+  xcrun notarytool submit "$path" \
+    --key "$notary_key" \
+    --key-id "$APPLE_NOTARY_KEY_ID" \
+    --issuer "$APPLE_NOTARY_ISSUER_ID" \
+    --wait
 }
 
 sign_macho_files() {
@@ -79,8 +89,10 @@ version="$(package_version)"
 arch="$(artifact_arch)"
 work_dir="$(mktemp -d)"
 notary_key="${work_dir}/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
+app_zip="${work_dir}/${APP_NAME}-${version}-${arch}.zip"
 stage_dir="${work_dir}/stage"
 trap 'rm -rf "$work_dir"' EXIT
+write_notary_key "$notary_key"
 
 cargo packager --release --formats app
 
@@ -99,6 +111,11 @@ sign_macho_files "$app_path"
   "$app_path"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_path"
 
+ditto -c -k --keepParent "$app_path" "$app_zip"
+submit_for_notarization "$app_zip"
+xcrun stapler staple "$app_path"
+xcrun stapler validate "$app_path"
+
 mkdir -p "$stage_dir"
 ditto "$app_path" "${stage_dir}/${APP_BUNDLE_NAME}"
 ln -s /Applications "${stage_dir}/Applications"
@@ -115,15 +132,9 @@ hdiutil create \
 /usr/bin/codesign --force --timestamp --sign "$APPLE_CODESIGN_IDENTITY" "$dmg_path"
 /usr/bin/codesign --verify --verbose=2 "$dmg_path"
 
-write_notary_key "$notary_key"
-xcrun notarytool submit "$dmg_path" \
-  --key "$notary_key" \
-  --key-id "$APPLE_NOTARY_KEY_ID" \
-  --issuer "$APPLE_NOTARY_ISSUER_ID" \
-  --wait
-
+submit_for_notarization "$dmg_path"
 xcrun stapler staple "$dmg_path"
-xcrun stapler staple "$app_path"
+xcrun stapler validate "$dmg_path"
 spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg_path"
 spctl --assess --type execute --verbose=2 "$app_path"
 

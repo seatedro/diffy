@@ -88,35 +88,49 @@ impl StatusOperation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StatusItem {
     pub path: String,
+    pub old_path: Option<String>,
     pub scope: StatusScope,
     pub status: String,
 }
 
 pub fn status_items_from_entry(path: String, status: StatusBits) -> Vec<StatusItem> {
+    status_items_from_entry_with_old_path(path, None, status)
+}
+
+pub fn status_items_from_entry_with_old_path(
+    path: String,
+    old_path: Option<String>,
+    status: StatusBits,
+) -> Vec<StatusItem> {
     let mut items = Vec::new();
 
     if status.contains(StatusBits::INDEX_NEW) {
-        items.push(item(path.clone(), StatusScope::Staged, "A"));
+        items.push(item(path.clone(), None, StatusScope::Staged, "A"));
     } else if status.intersects(
         StatusBits::INDEX_MODIFIED | StatusBits::INDEX_TYPECHANGE | StatusBits::CONFLICTED,
     ) {
-        items.push(item(path.clone(), StatusScope::Staged, "M"));
+        items.push(item(path.clone(), None, StatusScope::Staged, "M"));
     } else if status.contains(StatusBits::INDEX_DELETED) {
-        items.push(item(path.clone(), StatusScope::Staged, "D"));
+        items.push(item(path.clone(), None, StatusScope::Staged, "D"));
     } else if status.contains(StatusBits::INDEX_RENAMED) {
-        items.push(item(path.clone(), StatusScope::Staged, "R"));
+        items.push(item(
+            path.clone(),
+            old_path.clone(),
+            StatusScope::Staged,
+            "R",
+        ));
     }
 
     if status.contains(StatusBits::WT_NEW) {
-        items.push(item(path.clone(), StatusScope::Untracked, "U"));
+        items.push(item(path.clone(), None, StatusScope::Untracked, "U"));
     } else if status
         .intersects(StatusBits::WT_MODIFIED | StatusBits::WT_TYPECHANGE | StatusBits::CONFLICTED)
     {
-        items.push(item(path.clone(), StatusScope::Unstaged, "M"));
+        items.push(item(path.clone(), None, StatusScope::Unstaged, "M"));
     } else if status.contains(StatusBits::WT_DELETED) {
-        items.push(item(path.clone(), StatusScope::Unstaged, "D"));
+        items.push(item(path.clone(), None, StatusScope::Unstaged, "D"));
     } else if status.contains(StatusBits::WT_RENAMED) {
-        items.push(item(path, StatusScope::Unstaged, "R"));
+        items.push(item(path, old_path, StatusScope::Unstaged, "R"));
     }
 
     items.sort_by(|left, right| {
@@ -127,9 +141,10 @@ pub fn status_items_from_entry(path: String, status: StatusBits) -> Vec<StatusIt
     items
 }
 
-fn item(path: String, scope: StatusScope, status: &str) -> StatusItem {
+fn item(path: String, old_path: Option<String>, scope: StatusScope, status: &str) -> StatusItem {
     StatusItem {
         path,
+        old_path,
         scope,
         status: status.to_owned(),
     }
@@ -145,7 +160,9 @@ fn scope_sort_key(scope: StatusScope) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{StatusBits, StatusScope, status_items_from_entry};
+    use super::{
+        StatusBits, StatusScope, status_items_from_entry, status_items_from_entry_with_old_path,
+    };
 
     #[test]
     fn flattens_staged_and_unstaged_entries() {
@@ -165,5 +182,19 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].scope, StatusScope::Untracked);
         assert_eq!(items[0].status, "U");
+    }
+
+    #[test]
+    fn keeps_old_path_on_rename_entries() {
+        let items = status_items_from_entry_with_old_path(
+            "src/new.rs".to_owned(),
+            Some("src/old.rs".to_owned()),
+            StatusBits::INDEX_RENAMED,
+        );
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].scope, StatusScope::Staged);
+        assert_eq!(items[0].status, "R");
+        assert_eq!(items[0].old_path.as_deref(), Some("src/old.rs"));
     }
 }

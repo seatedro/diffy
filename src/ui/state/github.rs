@@ -276,7 +276,9 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
                 state.pop_overlay();
             }
             let mut effects = state.persist_settings_effect();
-            effects.push(GitHubEffect::SaveGitHubToken(token.clone()).into());
+            if state.startup.keyring_enabled {
+                effects.push(GitHubEffect::SaveGitHubToken(token.clone()).into());
+            }
             effects.push(GitHubEffect::FetchGitHubUser { token }.into());
             effects
         }

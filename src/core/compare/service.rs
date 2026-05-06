@@ -1,15 +1,128 @@
 use crate::core::compare::backends::{DiffBackend, DifftasticBackend, GitDiffBackend};
 use crate::core::compare::progress::ProgressSink;
 use crate::core::compare::spec::{CompareSpec, RendererKind};
+use crate::core::compare::stats::{
+    CompareFileStatsTarget, CompareFileSummary, compact_summary_paths,
+};
 use crate::core::error::{DiffyError, Result};
 use crate::core::vcs::git::GitService;
 
 #[derive(Debug, Clone, Default)]
 pub struct CompareOutput {
     pub carbon: carbon::DiffDocument,
+    pub file_summaries: Vec<CompareFileSummary>,
     pub raw_diff: String,
     pub used_fallback: bool,
     pub fallback_message: String,
+}
+
+impl CompareOutput {
+    pub fn file_count(&self) -> usize {
+        if self.file_summaries.is_empty() {
+            self.carbon.files.len()
+        } else {
+            self.file_summaries.len()
+        }
+    }
+
+    pub fn summary_at(&self, index: usize) -> Option<CompareFileSummary> {
+        self.file_summaries.get(index).cloned().or_else(|| {
+            self.carbon
+                .files
+                .get(index)
+                .map(CompareFileSummary::from_file)
+        })
+    }
+
+    pub fn deferred_stats_target_at(&self, index: usize) -> Option<CompareFileStatsTarget> {
+        let summary = self.summary_at(index)?;
+        summary.stats_deferred.then(|| summary.stats_target())
+    }
+
+    pub fn for_each_deferred_stats_target(
+        &self,
+        limit: usize,
+        mut visit: impl FnMut(usize, CompareFileStatsTarget),
+    ) {
+        if limit == 0 {
+            return;
+        }
+        let mut visited = 0;
+        if self.file_summaries.is_empty() {
+            for (index, file) in self.carbon.files.iter().enumerate() {
+                let summary = CompareFileSummary::from_file(file);
+                if !summary.stats_deferred {
+                    continue;
+                }
+                visit(index, summary.stats_target());
+                visited += 1;
+                if visited >= limit {
+                    break;
+                }
+            }
+        } else {
+            for (index, summary) in self.file_summaries.iter().enumerate() {
+                if !summary.stats_deferred {
+                    continue;
+                }
+                visit(index, summary.stats_target());
+                visited += 1;
+                if visited >= limit {
+                    break;
+                }
+            }
+        }
+    }
+
+    pub fn for_each_summary(&self, mut visit: impl FnMut(usize, &CompareFileSummary)) {
+        if self.file_summaries.is_empty() {
+            for (index, file) in self.carbon.files.iter().enumerate() {
+                let summary = CompareFileSummary::from_file(file);
+                visit(index, &summary);
+            }
+        } else {
+            for (index, summary) in self.file_summaries.iter().enumerate() {
+                visit(index, summary);
+            }
+        }
+    }
+
+    pub fn for_each_path(&self, mut visit: impl FnMut(usize, &str)) {
+        if self.file_summaries.is_empty() {
+            for (index, file) in self.carbon.files.iter().enumerate() {
+                visit(index, file.path());
+            }
+        } else {
+            let mut scratch = String::new();
+            for (index, summary) in self.file_summaries.iter().enumerate() {
+                scratch.clear();
+                summary.push_path_to(&mut scratch);
+                visit(index, &scratch);
+            }
+        }
+    }
+
+    pub fn max_path_chars(&self) -> usize {
+        if self.file_summaries.is_empty() {
+            self.carbon
+                .files
+                .iter()
+                .map(|file| file.path().chars().count())
+                .max()
+                .unwrap_or(0)
+        } else {
+            self.file_summaries
+                .iter()
+                .map(CompareFileSummary::path_chars)
+                .max()
+                .unwrap_or(0)
+        }
+    }
+
+    pub fn compact_file_summaries(&mut self) {
+        compact_summary_paths(&mut self.file_summaries);
+        self.file_summaries.shrink_to_fit();
+    }
 }
 
 pub struct CompareService {

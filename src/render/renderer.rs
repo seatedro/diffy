@@ -69,12 +69,16 @@ struct PooledTexture {
     width: u32,
     height: u32,
     in_use: bool,
+    last_used_frame: u64,
 }
 
 struct TexturePool {
     textures: Vec<PooledTexture>,
     format: wgpu::TextureFormat,
+    frame: u64,
 }
+
+const KEEP_UNUSED_OFFSCREEN_FRAMES: u64 = 2;
 
 #[derive(Debug)]
 struct ReusableBuffer {
@@ -148,7 +152,12 @@ impl TexturePool {
         Self {
             textures: Vec::new(),
             format,
+            frame: 0,
         }
+    }
+
+    fn begin_frame(&mut self) {
+        self.frame = self.frame.saturating_add(1);
     }
 
     /// Acquire a texture of at least the given dimensions.
@@ -161,6 +170,7 @@ impl TexturePool {
         for (i, entry) in self.textures.iter_mut().enumerate() {
             if !entry.in_use && entry.width >= w && entry.height >= h {
                 entry.in_use = true;
+                entry.last_used_frame = self.frame;
                 return OffscreenTarget {
                     pool_index: i,
                     width: entry.width,
@@ -192,6 +202,7 @@ impl TexturePool {
             width: w,
             height: h,
             in_use: true,
+            last_used_frame: self.frame,
         });
         OffscreenTarget {
             pool_index: index,
@@ -206,6 +217,17 @@ impl TexturePool {
 
     fn release(&mut self, target: OffscreenTarget) {
         self.textures[target.pool_index].in_use = false;
+        self.textures[target.pool_index].last_used_frame = self.frame;
+    }
+
+    fn trim_unused(&mut self) {
+        if self.textures.iter().any(|entry| entry.in_use) {
+            return;
+        }
+        let frame = self.frame;
+        self.textures.retain(|entry| {
+            frame.saturating_sub(entry.last_used_frame) <= KEEP_UNUSED_OFFSCREEN_FRAMES
+        });
     }
 }
 
@@ -686,6 +708,7 @@ impl Renderer {
         if self.surface_config.width == 0 || self.surface_config.height == 0 {
             return Ok(FrameStats::default());
         }
+        self.texture_pool.begin_frame();
 
         let viewport_rect = Rect {
             x: 0.0,
@@ -1260,6 +1283,7 @@ impl Renderer {
         self.queue.submit(Some(encoder.finish()));
         frame.present();
         self.atlas.trim();
+        self.texture_pool.trim_unused();
 
         Ok(FrameStats {
             primitive_count: scene.len(),

@@ -737,6 +737,7 @@ impl GitService {
         let mut args = vec![
             OsString::from("diff"),
             OsString::from("--no-ext-diff"),
+            OsString::from("--find-renames"),
             OsString::from("--src-prefix=a/"),
             OsString::from("--dst-prefix=b/"),
         ];
@@ -772,7 +773,7 @@ impl GitService {
             }
         }
         args.push(OsString::from("--"));
-        args.push(OsString::from(&item.path));
+        args.extend(status_item_pathspecs(item).into_iter().map(OsString::from));
         let output = run_system_git_allow_diff(self.repo_path_ref()?, &args)?;
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
@@ -783,9 +784,9 @@ impl GitService {
         operation: StatusOperation,
     ) -> Result<()> {
         match operation {
-            StatusOperation::Stage => self.stage_path(&item.path),
-            StatusOperation::Unstage => self.unstage_path(&item.path),
-            StatusOperation::Discard => self.discard_path(&item.path),
+            StatusOperation::Stage => self.stage_paths(status_item_pathspecs(item)),
+            StatusOperation::Unstage => self.unstage_paths(status_item_pathspecs(item)),
+            StatusOperation::Discard => self.discard_paths(status_item_pathspecs(item)),
         }
     }
 
@@ -799,13 +800,9 @@ impl GitService {
         }
 
         match operation {
-            StatusOperation::Stage => self.stage_paths(items.iter().map(|item| item.path.as_str())),
-            StatusOperation::Unstage => {
-                self.unstage_paths(items.iter().map(|item| item.path.as_str()))
-            }
-            StatusOperation::Discard => {
-                self.discard_paths(items.iter().map(|item| item.path.as_str()))
-            }
+            StatusOperation::Stage => self.stage_paths(status_items_pathspecs(items)),
+            StatusOperation::Unstage => self.unstage_paths(status_items_pathspecs(items)),
+            StatusOperation::Discard => self.discard_paths(status_items_pathspecs(items)),
         }
     }
 
@@ -888,6 +885,19 @@ impl GitService {
         self.diff_between_refs(left, right)
     }
 
+    pub fn diff_two_refs_path(&self, left: &str, right: &str, path: &str) -> Result<String> {
+        self.diff_between_refs_path(left, right, path, true)
+    }
+
+    pub fn diff_two_refs_path_no_renames(
+        &self,
+        left: &str,
+        right: &str,
+        path: &str,
+    ) -> Result<String> {
+        self.diff_between_refs_path(left, right, path, false)
+    }
+
     #[cfg_attr(not(feature = "difftastic"), allow(dead_code))]
     pub(crate) fn diff_name_status(
         &self,
@@ -917,6 +927,21 @@ impl GitService {
         }
         let output = run_system_git_allow_diff(self.repo_path_ref()?, &args)?;
         Ok(parse_name_status(&output.stdout))
+    }
+
+    pub fn diff_shortstat_find_renames(&self, left: &str, right: &str) -> Result<(i32, i32)> {
+        let mut args = vec![
+            OsString::from("diff"),
+            OsString::from("--no-ext-diff"),
+            OsString::from("--shortstat"),
+            OsString::from("--find-renames"),
+            OsString::from(left),
+        ];
+        if right != WORKDIR_REF {
+            args.push(OsString::from(right));
+        }
+        let output = run_system_git_allow_diff(self.repo_path_ref()?, &args)?;
+        Ok(parse_shortstat(&output.stdout).unwrap_or((0, 0)))
     }
 
     fn gix_diff_name_status(
@@ -1201,6 +1226,34 @@ impl GitService {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
+    fn diff_between_refs_path(
+        &self,
+        left: &str,
+        right: &str,
+        path: &str,
+        find_renames: bool,
+    ) -> Result<String> {
+        let mut args = vec![
+            OsString::from("diff"),
+            OsString::from("--no-ext-diff"),
+            OsString::from(if find_renames {
+                "--find-renames"
+            } else {
+                "--no-renames"
+            }),
+            OsString::from("--src-prefix=a/"),
+            OsString::from("--dst-prefix=b/"),
+            OsString::from(self.resolve_commit_oid(left)?),
+        ];
+        if right != WORKDIR_REF {
+            args.push(OsString::from(self.resolve_commit_oid(right)?));
+        }
+        args.push(OsString::from("--"));
+        args.push(OsString::from(path));
+        let output = run_system_git_allow_diff(self.repo_path_ref()?, &args)?;
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
     pub fn resolve_commit_oid(&self, reference: &str) -> Result<String> {
         if is_full_hex_oid(reference) {
             let oid = gix_object_id(reference)?;
@@ -1249,10 +1302,6 @@ impl GitService {
         self.resolve_ref("HEAD")
     }
 
-    fn stage_path(&self, path: &str) -> Result<()> {
-        self.stage_paths(std::iter::once(path))
-    }
-
     fn stage_paths<'a>(&self, paths: impl IntoIterator<Item = &'a str>) -> Result<()> {
         for chunk in path_arg_chunks(paths) {
             let mut args = Vec::with_capacity(chunk.len() + 3);
@@ -1262,10 +1311,6 @@ impl GitService {
             run_system_git(self.repo_path_ref()?, &args)?;
         }
         Ok(())
-    }
-
-    fn unstage_path(&self, path: &str) -> Result<()> {
-        self.unstage_paths(std::iter::once(path))
     }
 
     fn unstage_paths<'a>(&self, paths: impl IntoIterator<Item = &'a str>) -> Result<()> {
@@ -1279,16 +1324,12 @@ impl GitService {
         Ok(())
     }
 
-    fn discard_path(&self, path: &str) -> Result<()> {
-        self.discard_paths(std::iter::once(path))
-    }
-
     fn discard_paths<'a>(&self, paths: impl IntoIterator<Item = &'a str>) -> Result<()> {
         let repo_path = self.repo_path_ref()?;
         let paths = paths.into_iter().map(str::to_owned).collect::<Vec<_>>();
         let mut tracked = Vec::new();
         for chunk in path_arg_chunks(paths.iter().map(String::as_str)) {
-            let tracked_in_chunk = tracked_paths(repo_path, &chunk)?;
+            let tracked_in_chunk = restoreable_paths(repo_path, &chunk)?;
             for path in chunk {
                 if tracked_in_chunk.contains(path) {
                     tracked.push(path.to_owned());
@@ -1347,7 +1388,7 @@ impl GitService {
         }
     }
 
-    pub fn status_entries(&self) -> Result<Vec<(String, StatusBits)>> {
+    pub fn status_entries(&self) -> Result<Vec<(String, Option<String>, StatusBits)>> {
         let output = run_system_git_capture(
             self.repo_path_ref()?,
             &[
@@ -1389,6 +1430,30 @@ fn path_arg_chunks<'a>(paths: impl IntoIterator<Item = &'a str>) -> Vec<Vec<&'a 
         chunks.push(current);
     }
     chunks
+}
+
+fn status_item_pathspecs(item: &StatusItem) -> Vec<&str> {
+    let mut paths = Vec::with_capacity(2);
+    if let Some(old_path) = item.old_path.as_deref()
+        && old_path != item.path
+    {
+        paths.push(old_path);
+    }
+    paths.push(item.path.as_str());
+    paths
+}
+
+fn status_items_pathspecs(items: &[StatusItem]) -> Vec<&str> {
+    let mut seen = HashSet::new();
+    let mut paths = Vec::new();
+    for item in items {
+        for path in status_item_pathspecs(item) {
+            if seen.insert(path) {
+                paths.push(path);
+            }
+        }
+    }
+    paths
 }
 
 fn parse_upstream_track(upstream: Option<&String>, track: &str) -> Option<(usize, usize)> {
@@ -1438,7 +1503,7 @@ fn parse_commit_info_line(line: &str) -> Option<CommitInfo> {
     })
 }
 
-fn parse_porcelain_status(bytes: &[u8]) -> Vec<(String, StatusBits)> {
+fn parse_porcelain_status(bytes: &[u8]) -> Vec<(String, Option<String>, StatusBits)> {
     let mut out = Vec::new();
     let mut fields = bytes.split(|byte| *byte == 0);
     while let Some(entry) = fields.next() {
@@ -1448,10 +1513,15 @@ fn parse_porcelain_status(bytes: &[u8]) -> Vec<(String, StatusBits)> {
         let x = entry[0] as char;
         let y = entry[1] as char;
         let path = String::from_utf8_lossy(&entry[3..]).to_string();
-        if x == 'R' || x == 'C' || y == 'R' || y == 'C' {
-            let _old_path = fields.next();
-        }
-        out.push((path, status_bits_from_xy(x, y)));
+        let old_path = if x == 'R' || x == 'C' || y == 'R' || y == 'C' {
+            fields
+                .next()
+                .filter(|field| !field.is_empty())
+                .map(|field| String::from_utf8_lossy(field).to_string())
+        } else {
+            None
+        };
+        out.push((path, old_path, status_bits_from_xy(x, y)));
     }
     out
 }
@@ -1485,6 +1555,30 @@ fn parse_name_status(bytes: &[u8]) -> Vec<(String, Option<String>, Option<String
         }
     }
     out
+}
+
+fn parse_shortstat(bytes: &[u8]) -> Option<(i32, i32)> {
+    let text = String::from_utf8_lossy(bytes);
+    let mut additions = 0_i32;
+    let mut deletions = 0_i32;
+    let mut saw_stat = false;
+    for part in text.trim().split(',') {
+        let part = part.trim();
+        if let Some(value) = part
+            .strip_suffix(" insertions(+)")
+            .or_else(|| part.strip_suffix(" insertion(+)"))
+        {
+            additions = value.split_whitespace().next()?.parse::<i32>().ok()?;
+            saw_stat = true;
+        } else if let Some(value) = part
+            .strip_suffix(" deletions(-)")
+            .or_else(|| part.strip_suffix(" deletion(-)"))
+        {
+            deletions = value.split_whitespace().next()?.parse::<i32>().ok()?;
+            saw_stat = true;
+        }
+    }
+    saw_stat.then_some((additions, deletions))
 }
 
 fn status_bits_from_xy(x: char, y: char) -> StatusBits {
@@ -1603,6 +1697,30 @@ fn tracked_paths(repo_path: &Path, paths: &[&str]) -> Result<HashSet<String>> {
         .collect())
 }
 
+fn restoreable_paths(repo_path: &Path, paths: &[&str]) -> Result<HashSet<String>> {
+    let mut out = tracked_paths(repo_path, paths)?;
+    if paths.is_empty() {
+        return Ok(out);
+    }
+    let mut args = Vec::with_capacity(paths.len() + 5);
+    args.push(OsString::from("ls-tree"));
+    args.push(OsString::from("-rz"));
+    args.push(OsString::from("--name-only"));
+    args.push(OsString::from("HEAD"));
+    args.push(OsString::from("--"));
+    args.extend(paths.iter().map(OsString::from));
+    if let Ok(output) = run_system_git_capture(repo_path, &args) {
+        out.extend(
+            output
+                .stdout
+                .split(|byte| *byte == 0)
+                .filter(|path| !path.is_empty())
+                .map(|path| String::from_utf8_lossy(path).to_string()),
+        );
+    }
+    Ok(out)
+}
+
 fn fixed_short_oid(oid: &str) -> &str {
     oid.get(..8).unwrap_or(oid)
 }
@@ -1622,7 +1740,7 @@ mod tests {
     use super::{
         INDEX_REF, PR_REF_PREFIX, WORKDIR_REF, github_fetch_source_for_repo,
         github_repo_key_from_remote_url, github_repo_url_from_remote_transport,
-        local_remote_for_github_repo, pr_ref_path,
+        local_remote_for_github_repo, parse_porcelain_status, parse_shortstat, pr_ref_path,
     };
     use crate::core::vcs::git::{
         GitService, PatchApplyTarget, StatusItem, StatusOperation, StatusScope,
@@ -1684,6 +1802,32 @@ mod tests {
             .iter()
             .map(|entry| (entry.path().unwrap_or_default().to_owned(), entry.status()))
             .collect()
+    }
+
+    #[test]
+    fn parses_shortstat_insertions_and_deletions() {
+        assert_eq!(
+            parse_shortstat(b" 2 files changed, 12 insertions(+), 3 deletions(-)\n"),
+            Some((12, 3))
+        );
+        assert_eq!(
+            parse_shortstat(b" 1 file changed, 1 insertion(+)\n"),
+            Some((1, 0))
+        );
+        assert_eq!(
+            parse_shortstat(b" 1 file changed, 1 deletion(-)\n"),
+            Some((0, 1))
+        );
+    }
+
+    #[test]
+    fn parses_porcelain_rename_old_path() {
+        let entries = parse_porcelain_status(b"R  src/new.rs\0src/old.rs\0");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "src/new.rs");
+        assert_eq!(entries[0].1.as_deref(), Some("src/old.rs"));
+        assert!(entries[0].2.contains(super::StatusBits::INDEX_RENAMED));
     }
 
     #[test]
@@ -1783,6 +1927,7 @@ mod tests {
         git.apply_status_operation(
             &StatusItem {
                 path: "src/lib.rs".to_owned(),
+                old_path: None,
                 scope: StatusScope::Unstaged,
                 status: "M".to_owned(),
             },
@@ -1796,6 +1941,7 @@ mod tests {
         git.apply_status_operation(
             &StatusItem {
                 path: "src/lib.rs".to_owned(),
+                old_path: None,
                 scope: StatusScope::Staged,
                 status: "M".to_owned(),
             },
@@ -1809,6 +1955,7 @@ mod tests {
         git.apply_status_operation(
             &StatusItem {
                 path: "src/lib.rs".to_owned(),
+                old_path: None,
                 scope: StatusScope::Unstaged,
                 status: "M".to_owned(),
             },
@@ -1824,6 +1971,34 @@ mod tests {
     }
 
     #[test]
+    fn status_item_patch_preserves_staged_rename() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        commit_file(&repo, "src/old.rs", "same\n", "initial");
+        fs::rename(
+            repo_dir.path().join("src/old.rs"),
+            repo_dir.path().join("src/new.rs"),
+        )
+        .unwrap();
+
+        let mut git = GitService::new();
+        git.open(repo_dir.path().to_str().unwrap()).unwrap();
+        git.stage_paths(["src/old.rs", "src/new.rs"]).unwrap();
+
+        let patch = git
+            .status_item_patch(&StatusItem {
+                path: "src/new.rs".to_owned(),
+                old_path: Some("src/old.rs".to_owned()),
+                scope: StatusScope::Staged,
+                status: "R".to_owned(),
+            })
+            .unwrap();
+
+        assert!(patch.contains("rename from src/old.rs"));
+        assert!(patch.contains("rename to src/new.rs"));
+    }
+
+    #[test]
     fn can_discard_untracked_file() {
         let repo_dir = TempDir::new().unwrap();
         let repo = Repository::init(repo_dir.path()).unwrap();
@@ -1835,6 +2010,7 @@ mod tests {
         git.apply_status_operation(
             &StatusItem {
                 path: "src/new.rs".to_owned(),
+                old_path: None,
                 scope: StatusScope::Untracked,
                 status: "U".to_owned(),
             },
@@ -1910,7 +2086,7 @@ mod tests {
 
         let mut git = GitService::new();
         git.open(repo_dir.path().to_str().unwrap()).unwrap();
-        git.stage_path("src/lib.rs").unwrap();
+        git.stage_paths(["src/lib.rs"]).unwrap();
 
         let lines = git.read_file_lines_at(INDEX_REF, "src/lib.rs").unwrap();
         assert_eq!(lines, vec!["a", "b", "c"]);
@@ -1968,7 +2144,7 @@ mod tests {
         let mut git = GitService::new();
         git.open(repo_dir.path().to_str().unwrap()).unwrap();
 
-        git.stage_path("src/lib.rs").unwrap();
+        git.stage_paths(["src/lib.rs"]).unwrap();
         let st = statuses(&repo);
         assert!(st[0].1.contains(Status::INDEX_MODIFIED));
 

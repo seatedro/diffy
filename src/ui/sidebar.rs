@@ -180,7 +180,7 @@ pub(crate) fn preferred_sidebar_width(
     } else {
         hard_max
     };
-    let file_count = state.workspace.files.with(&state.store, |f| f.len());
+    let file_count = state.workspace_file_count();
     if file_count == 0 {
         return state
             .settings
@@ -234,63 +234,61 @@ pub(crate) fn preferred_sidebar_width(
         let header_width = header_side_padding + header_label_width + header_badge_width;
 
         let widest_row = if file_count <= EXACT_SIDEBAR_WIDTH_MAX_FILES {
-            state.workspace.files.with(&state.store, |files| {
-                files
-                    .iter()
-                    .map(|file| {
-                        let path_width = measure_text_width(
+            (0..file_count)
+                .filter_map(|index| {
+                    state
+                        .workspace_file_entry_at(index)
+                        .map(|file| (index, file))
+                })
+                .map(|(index, file)| {
+                    let meta = state.file_list_entry_meta(index);
+                    let path = file.path.path();
+                    let path_width = measure_text_width(
+                        cx.font_system,
+                        path.as_ref(),
+                        theme.metrics.ui_small_font_size,
+                        crate::render::FontKind::Ui,
+                        crate::render::FontWeight::Normal,
+                    );
+
+                    let stats_width = if meta.additions > 0 || meta.deletions > 0 {
+                        let additions_width = measure_text_width(
                             cx.font_system,
-                            &file.path,
-                            theme.metrics.ui_small_font_size,
+                            &format!("+{}", meta.additions),
+                            theme.metrics.ui_small_font_size - 1.0,
                             crate::render::FontKind::Ui,
                             crate::render::FontWeight::Normal,
                         );
+                        let deletions_width = measure_text_width(
+                            cx.font_system,
+                            &format!("\u{2212}{}", meta.deletions),
+                            theme.metrics.ui_small_font_size - 1.0,
+                            crate::render::FontKind::Ui,
+                            crate::render::FontWeight::Normal,
+                        );
+                        row_gap + additions_width + stats_gap + deletions_width
+                    } else {
+                        0.0
+                    };
 
-                        let stats_width = if file.additions > 0 || file.deletions > 0 {
-                            let additions_width = measure_text_width(
-                                cx.font_system,
-                                &format!("+{}", file.additions),
-                                theme.metrics.ui_small_font_size - 1.0,
-                                crate::render::FontKind::Ui,
-                                crate::render::FontWeight::Normal,
-                            );
-                            let deletions_width = measure_text_width(
-                                cx.font_system,
-                                &format!("\u{2212}{}", file.deletions),
-                                theme.metrics.ui_small_font_size - 1.0,
-                                crate::render::FontKind::Ui,
-                                crate::render::FontWeight::Normal,
-                            );
-                            row_gap + additions_width + stats_gap + deletions_width
-                        } else {
-                            0.0
-                        };
+                    let status_badge_width = if !meta.status.is_empty() {
+                        row_gap + (theme.metrics.ui_small_font_size + Sp::XS).round()
+                    } else {
+                        0.0
+                    };
 
-                        let status_badge_width = if !file.status.is_empty() {
-                            row_gap + (theme.metrics.ui_small_font_size + Sp::XS).round()
-                        } else {
-                            0.0
-                        };
-
-                        list_side_padding
-                            + row_side_padding
-                            + file_icon_width
-                            + row_gap
-                            + path_width
-                            + stats_width
-                            + status_badge_width
-                            + scrollbar_gutter
-                    })
-                    .fold(0.0_f32, f32::max)
-            })
+                    list_side_padding
+                        + row_side_padding
+                        + file_icon_width
+                        + row_gap
+                        + path_width
+                        + stats_width
+                        + status_badge_width
+                        + scrollbar_gutter
+                })
+                .fold(0.0_f32, f32::max)
         } else {
-            let longest_chars = state.workspace.files.with(&state.store, |files| {
-                files
-                    .iter()
-                    .map(|file| file.path.chars().count())
-                    .max()
-                    .unwrap_or(0)
-            }) as f32;
+            let longest_chars = state.workspace_max_file_path_chars() as f32;
             let avg_char_width = theme.metrics.ui_small_font_size * 0.56;
             list_side_padding
                 + row_side_padding
@@ -386,10 +384,7 @@ pub(crate) fn sidebar(
     cx: &ElementContext,
 ) -> AnyElement {
     let tc = &theme.colors;
-    let file_count = state
-        .workspace
-        .files
-        .with(&state.store, |files| files.len());
+    let file_count = state.workspace_file_count();
     let scale = theme.metrics.ui_scale();
     let filter = state.file_list.filter.get(&state.store);
     let has_filter = !filter.is_empty();
@@ -526,39 +521,13 @@ pub(crate) fn sidebar(
         && workspace_source == WorkspaceSource::Compare;
 
     let filtered_indices: Option<Vec<usize>> = if has_filter {
-        state.workspace.files.with(&state.store, |all_files| {
-            let haystack: Vec<&str> = all_files.iter().map(|f| f.path.as_str()).collect();
-            let config = neo_frizbee::Config {
-                max_typos: Some(2),
-                sort: false,
-                ..Default::default()
-            };
-            let mut matches = neo_frizbee::match_list(&filter, &haystack, &config);
-            matches.sort_by(|a, b| b.score.cmp(&a.score));
-            Some(matches.iter().map(|m| m.index as usize).collect())
-        })
+        Some(state.workspace_file_filter_matches(&filter))
     } else {
         None
     };
     let visible_count = filtered_indices.as_ref().map_or(file_count, Vec::len);
 
-    let compare_total_stats = state.workspace.compare_total_stats.get(&state.store);
-    let stats_pending = workspace_source == WorkspaceSource::Compare
-        && compare_total_stats.is_none()
-        && state
-            .workspace
-            .compare_total_stats_loading
-            .get(&state.store);
-    let (total_adds, total_dels) = match compare_total_stats {
-        Some(stats) => stats,
-        None if stats_pending => (0, 0),
-        None => state.workspace.files.with(&state.store, |files| {
-            (
-                files.iter().map(|f| f.additions).sum(),
-                files.iter().map(|f| f.deletions).sum(),
-            )
-        }),
-    };
+    let total_stats = sidebar_total_stats(state, workspace_source, file_count);
 
     let mode_icon = if is_tree {
         lucide::ROWS
@@ -589,12 +558,12 @@ pub(crate) fn sidebar(
                         </Button>
                     }
                 </div>
-                if file_count > 0 && !stats_pending {
+                if file_count > 0 {
                     <div class="flex-row items-center" h={row_h} gap={Sp::XS}>
                         {components::stat_summary(
                             file_count,
-                            total_adds.unsigned_abs(),
-                            total_dels.unsigned_abs(),
+                            total_stats.additions,
+                            total_stats.deletions,
                         ).compact()}
                     </div>
                 }
@@ -606,11 +575,11 @@ pub(crate) fn sidebar(
         Some(view! { scale,
             <div class="flex-col" px={Sp::MD}>
                 <div class="flex-row items-center" h={row_h} gap={Sp::SM}>
-                    if file_count > 0 && !stats_pending {
+                    if file_count > 0 {
                         {components::stat_summary(
                             file_count,
-                            total_adds.unsigned_abs(),
-                            total_dels.unsigned_abs(),
+                            total_stats.additions,
+                            total_stats.deletions,
                         ).compact()}
                     }
                     <spacer />
@@ -692,16 +661,14 @@ pub(crate) fn sidebar(
         let gap = state.file_list.gap.get(&state.store);
         let (top_pad, bottom_pad) =
             virtual_sidebar_spacer_heights(file_count, &window, stride, gap);
-        let visible_files = state.workspace.files.with(&state.store, |files| {
-            files
-                .get(window.clone())
-                .unwrap_or(&[])
-                .iter()
-                .cloned()
-                .enumerate()
-                .map(|(offset, entry)| (window.start + offset, entry))
-                .collect::<Vec<_>>()
-        });
+        let visible_files = window
+            .clone()
+            .filter_map(|index| {
+                state
+                    .workspace_file_entry_at(index)
+                    .map(|entry| (index, entry))
+            })
+            .collect::<Vec<_>>();
 
         let rendered_rows: Vec<AnyElement> = visible_files
             .iter()
@@ -732,7 +699,6 @@ pub(crate) fn sidebar(
             </div>
         })
     } else {
-        let all_files = state.workspace.files.get(&state.store);
         let filtered_indices: Vec<usize> =
             filtered_indices.unwrap_or_else(|| (0..file_count).collect());
 
@@ -744,11 +710,12 @@ pub(crate) fn sidebar(
                     .with(&state.store, |changes| {
                         filtered_indices
                             .iter()
-                            .map(|&i| {
-                                let f = &all_files[i];
-                                components::FileTreeEntry {
-                                    path: f.path.clone(),
-                                    status: f.status.clone(),
+                            .filter_map(|&i| {
+                                let f = state.workspace_file_entry_at(i)?;
+                                let meta = state.file_list_entry_meta(i);
+                                Some(components::FileTreeEntry {
+                                    path: f.path.to_string(),
+                                    status: meta.status.label().to_owned(),
                                     scope: changes
                                         .get(i)
                                         .filter(|_| workspace_source == WorkspaceSource::Status)
@@ -766,9 +733,9 @@ pub(crate) fn sidebar(
                                                 "Changed files".to_owned()
                                             }
                                         }),
-                                    additions: f.additions,
-                                    deletions: f.deletions,
-                                }
+                                    additions: meta.additions,
+                                    deletions: meta.deletions,
+                                })
                             })
                             .collect()
                     });
@@ -812,7 +779,21 @@ pub(crate) fn sidebar(
             let grouped_status = workspace_source == WorkspaceSource::Status && !has_filter;
             let status_rows =
                 grouped_status.then(|| state.workspace.status_file_changes.get(&state.store));
-            let rows = build_sidebar_rows(&all_files, &filtered_indices, status_rows.as_deref());
+            let all_files = (0..file_count)
+                .filter_map(|index| state.workspace_file_entry_at(index))
+                .collect::<Vec<_>>();
+            let rows = if grouped_status {
+                build_sidebar_rows(&all_files, &filtered_indices, status_rows.as_deref())
+            } else {
+                filtered_indices
+                    .iter()
+                    .filter_map(|&index| {
+                        all_files
+                            .get(index)
+                            .map(|entry| SidebarRow::File { index, entry })
+                    })
+                    .collect()
+            };
             let total_height = state.file_list_total_content_height(rows.len());
             let scroll_px = state.file_list.scroll_offset_px.get(&state.store);
             let stride = state.file_list_row_stride();
@@ -958,6 +939,43 @@ pub(crate) fn sidebar(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SidebarTotalStats {
+    additions: u32,
+    deletions: u32,
+    pending: bool,
+}
+
+fn sidebar_total_stats(
+    state: &AppState,
+    workspace_source: WorkspaceSource,
+    file_count: usize,
+) -> SidebarTotalStats {
+    let compare_total_stats = state.workspace.compare_total_stats.get(&state.store);
+    let pending = workspace_source == WorkspaceSource::Compare
+        && state
+            .workspace
+            .compare_total_stats_loading
+            .get(&state.store);
+    let (additions, deletions) = match compare_total_stats {
+        Some(stats) => stats,
+        None => (0..file_count)
+            .map(|index| state.file_list_entry_meta(index))
+            .fold((0_i32, 0_i32), |acc, meta| {
+                (
+                    acc.0.saturating_add(meta.additions),
+                    acc.1.saturating_add(meta.deletions),
+                )
+            }),
+    };
+
+    SidebarTotalStats {
+        additions: additions.unsigned_abs(),
+        deletions: deletions.unsigned_abs(),
+        pending,
+    }
+}
+
 fn status_section_row(
     bucket: ChangeBucket,
     state: &AppState,
@@ -1037,16 +1055,19 @@ fn file_row(
     let text_color = if selected { tc.text_strong } else { tc.text };
     let row_height = state.file_list.row_height.get(&state.store);
 
-    let (filename, dir_path) = match file.path.rfind('/') {
-        Some(pos) => (&file.path[pos + 1..], Some(&file.path[..pos])),
-        None => (file.path.as_str(), None),
+    let path = file.path.path();
+    let path = path.as_ref();
+    let (filename, dir_path) = match path.rfind('/') {
+        Some(pos) => (&path[pos + 1..], Some(&path[..pos])),
+        None => (path, None),
     };
 
     let dir_el: Option<AnyElement> =
         dir_path.map(|p| text(p).text_xs().color(tc.text_muted).truncate().into_any());
 
-    let has_stats = file.additions > 0 || file.deletions > 0;
-    let has_status = !file.status.is_empty();
+    let meta = state.file_list_entry_meta(index);
+    let has_stats = meta.additions > 0 || meta.deletions > 0;
+    let has_status = !meta.status.is_empty();
     let is_status_view = state.workspace.source.get(&state.store) == WorkspaceSource::Status;
     let status_scope = state
         .workspace
@@ -1121,7 +1142,7 @@ fn file_row(
              cursor={CursorHint::Pointer}
              @when { selected } { bg={tc.sidebar_row_selected} border_l={tc.accent} }
              @when { !selected } { hover_bg={tc.sidebar_row_hover} }>
-            {components::file_icon(&file.path, Ico::LG).selected(selected)}
+            {components::file_icon(path, Ico::LG).selected(selected)}
             <div class="flex-1 flex-row items-center overflow-hidden" min_w={0.0} gap={Sp::SM}>
                 <div class="shrink-0">
                     <text class="text-sm" color={text_color}>{filename}</text>
@@ -1130,8 +1151,8 @@ fn file_row(
             </div>
             if has_stats {
                 <div class="flex-row shrink-0" gap={Sp::XS}>
-                    <text class="text-xs" color={tc.line_add_text}>{format!("+{}", file.additions)}</text>
-                    <text class="text-xs" color={tc.line_del_text}>{format!("\u{2212}{}", file.deletions)}</text>
+                    <text class="text-xs" color={tc.line_add_text}>{format!("+{}", meta.additions)}</text>
+                    <text class="text-xs" color={tc.line_del_text}>{format!("\u{2212}{}", meta.deletions)}</text>
                 </div>
             }
             if let Some(scope) = status_scope {
@@ -1141,7 +1162,7 @@ fn file_row(
             }
             {?stage_btn}
             if has_status {
-                {components::status_badge(&file.status)}
+                {components::status_badge(meta.status.label())}
             }
             if viewed {
                 <icon svg={lucide::CHECK} size={Ico::XS} color={tc.line_add_text} />
@@ -1190,7 +1211,11 @@ fn commit_row(
 
 #[cfg(test)]
 mod tests {
-    use super::{virtual_sidebar_spacer_heights, visible_sidebar_window};
+    use super::{
+        SidebarTotalStats, sidebar_total_stats, virtual_sidebar_spacer_heights,
+        visible_sidebar_window,
+    };
+    use crate::ui::state::{AppState, WorkspaceSource};
 
     #[test]
     fn visible_sidebar_window_overscans_and_clamps() {
@@ -1208,5 +1233,82 @@ mod tests {
 
         assert_eq!(top, 400.0);
         assert_eq!(bottom, 596.0);
+    }
+
+    #[test]
+    fn compare_total_stats_ready_unhides_sidebar_totals() {
+        let state = AppState::default();
+        state
+            .workspace
+            .source
+            .set(&state.store, WorkspaceSource::Compare);
+        state
+            .workspace
+            .compare_total_stats_loading
+            .set(&state.store, true);
+
+        assert_eq!(
+            sidebar_total_stats(&state, WorkspaceSource::Compare, 80),
+            SidebarTotalStats {
+                additions: 0,
+                deletions: 0,
+                pending: true,
+            }
+        );
+
+        state
+            .workspace
+            .compare_total_stats
+            .set(&state.store, Some((12_345, 6_789)));
+        state
+            .workspace
+            .compare_total_stats_loading
+            .set(&state.store, false);
+
+        assert_eq!(
+            sidebar_total_stats(&state, WorkspaceSource::Compare, 80),
+            SidebarTotalStats {
+                additions: 12_345,
+                deletions: 6_789,
+                pending: false,
+            }
+        );
+    }
+
+    #[test]
+    fn pending_compare_totals_include_hydrated_file_counts() {
+        let state = AppState::default();
+        state
+            .workspace
+            .source
+            .set(&state.store, WorkspaceSource::Compare);
+        state
+            .workspace
+            .compare_total_stats_loading
+            .set(&state.store, true);
+        state.workspace.compare_output.set(
+            &state.store,
+            Some(crate::core::compare::CompareOutput {
+                carbon: carbon::DiffDocument {
+                    files: vec![carbon::FileDiff {
+                        old_path: Some("src/lib.rs".to_owned()),
+                        new_path: Some("src/lib.rs".to_owned()),
+                        additions: 7,
+                        deletions: 3,
+                        ..carbon::FileDiff::default()
+                    }],
+                },
+                ..crate::core::compare::CompareOutput::default()
+            }),
+        );
+
+        assert_eq!(
+            sidebar_total_stats(&state, WorkspaceSource::Compare, 1),
+            SidebarTotalStats {
+                additions: 7,
+                deletions: 3,
+                pending: true,
+            }
+        );
     }
 }

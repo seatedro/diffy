@@ -44,6 +44,22 @@ impl FullFileSyntax {
     pub fn has_tokens(&self) -> bool {
         !self.tokens.is_empty()
     }
+
+    pub fn estimated_bytes(&self) -> usize {
+        self.line_offsets
+            .len()
+            .saturating_mul(std::mem::size_of::<usize>())
+            .saturating_add(
+                self.line_lengths
+                    .len()
+                    .saturating_mul(std::mem::size_of::<usize>()),
+            )
+            .saturating_add(
+                self.tokens
+                    .len()
+                    .saturating_mul(std::mem::size_of::<DiffTokenSpan>()),
+            )
+    }
 }
 
 #[derive(Debug)]
@@ -98,6 +114,7 @@ impl DiffSyntaxAnnotator {
     pub fn annotate_carbon_full_file_window_from_cache(
         &self,
         file: &carbon::FileDiff,
+        expansion: &carbon::ExpansionState,
         file_index: usize,
         old_syntax: Option<&FullFileSyntax>,
         new_syntax: Option<&FullFileSyntax>,
@@ -107,7 +124,7 @@ impl DiffSyntaxAnnotator {
             return Vec::new();
         }
 
-        let (old_refs, new_refs) = build_carbon_full_file_refs(file, file_index, window);
+        let (old_refs, new_refs) = build_carbon_full_file_refs(file, expansion, file_index, window);
         let mut out = Vec::new();
         if let Some(syntax) = old_syntax {
             let byte_refs = byte_refs_for_cached_refs(&old_refs, syntax);
@@ -123,6 +140,7 @@ impl DiffSyntaxAnnotator {
 
 fn build_carbon_full_file_refs(
     file: &carbon::FileDiff,
+    expansion: &carbon::ExpansionState,
     _file_index: usize,
     window: SyntaxRowWindow,
 ) -> (Vec<LineRef>, Vec<LineRef>) {
@@ -137,7 +155,7 @@ fn build_carbon_full_file_refs(
             collapsed_context_threshold: 0,
             include_hunk_headers: true,
         },
-        &carbon::ExpansionState::default(),
+        expansion,
         |row| {
             let in_window = projected_index >= window.start && projected_index < window.end;
             projected_index = projected_index.saturating_add(1);

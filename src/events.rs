@@ -397,7 +397,7 @@ pub enum UpdateEvent {
 pub enum SyntaxEvent {
     FileSyntaxReady(FileSyntaxReady),
     SyntaxPackInstallStarted { language: String },
-    SyntaxPackInstalled { language: String },
+    SyntaxPacksInstalled { languages: Vec<String> },
     SyntaxPackInstallFinished { language: String },
     SyntaxPackInstallFailed { language: String },
 }

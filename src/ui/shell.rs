@@ -57,7 +57,7 @@ pub fn build_ui_frame(
 
     let m = &theme.metrics;
     let row_h = m.ui_row_height;
-    let has_files = state.workspace.files.with(&state.store, |f| !f.is_empty());
+    let has_files = state.workspace_file_count() > 0;
     let sidebar_header_h = if has_files {
         3.0 * row_h + Sp::SM * ui_scale
     } else {
@@ -71,11 +71,14 @@ pub fn build_ui_frame(
     let sidebar_list_height =
         (height - m.title_bar_height - m.status_bar_height - sidebar_header_h - commit_box_h)
             .max(0.0);
-    state.file_list.row_height.set(&state.store, row_h.round());
+    state
+        .file_list
+        .row_height
+        .set_if_changed(&state.store, row_h.round());
     state
         .file_list
         .gap
-        .set(&state.store, (Sp::XS * ui_scale).round());
+        .set_if_changed(&state.store, (Sp::XS * ui_scale).round());
     let overlay_row_height = row_h.round().max(24.0) as u32;
     let overlay_gap = (Sp::XS * ui_scale).round() as u32;
     let picker_entries_len = state
@@ -83,30 +86,35 @@ pub fn build_ui_frame(
         .picker
         .entries
         .with(&state.store, |e| e.len());
-    state.overlays.picker.list.update(&state.store, |l| {
-        l.row_height_px = overlay_row_height;
-        l.gap_px = overlay_gap;
-        l.viewport_height_px = l.viewport_for_max_rows(Sz::PICKER_MAX_ROWS, picker_entries_len);
-    });
+    let mut picker_list = state.overlays.picker.list.get(&state.store);
+    picker_list.row_height_px = overlay_row_height;
+    picker_list.gap_px = overlay_gap;
+    picker_list.viewport_height_px =
+        picker_list.viewport_for_max_rows(Sz::PICKER_MAX_ROWS, picker_entries_len);
+    state
+        .overlays
+        .picker
+        .list
+        .set_if_changed(&state.store, picker_list);
     let palette_entries_len = state
         .overlays
         .command_palette
         .entries
         .with(&state.store, |e| e.len());
+    let mut palette_list = state.overlays.command_palette.list.get(&state.store);
+    palette_list.row_height_px = overlay_row_height;
+    palette_list.gap_px = overlay_gap;
+    palette_list.viewport_height_px =
+        palette_list.viewport_for_max_rows(Sz::PICKER_MAX_ROWS, palette_entries_len);
     state
         .overlays
         .command_palette
         .list
-        .update(&state.store, |l| {
-            l.row_height_px = overlay_row_height;
-            l.gap_px = overlay_gap;
-            l.viewport_height_px =
-                l.viewport_for_max_rows(Sz::PICKER_MAX_ROWS, palette_entries_len);
-        });
+        .set_if_changed(&state.store, palette_list);
     state
         .file_list
         .viewport_height
-        .set(&state.store, sidebar_list_height);
+        .set_if_changed(&state.store, sidebar_list_height);
     state.file_list_clamp_scroll(state.sidebar_row_count());
 
     // Settings → Keymaps body viewport. The keymaps layout is:

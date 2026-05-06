@@ -1,10 +1,14 @@
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use carbon::TextStore;
 
 use crate::core::compare::backends::compare_output_from_raw_patch;
-use crate::core::compare::{CompareOutput, ProgressSink};
+use crate::core::compare::{
+    COMPARE_SUMMARY_FILE_LIMIT, CompareFileStatsTarget, CompareFileSummary, CompareOutput,
+    ProgressSink,
+};
 use crate::core::error::{DiffyError, Result};
 use crate::core::vcs::backend::{VcsBackend, VcsRepository, VcsWatchPaths};
 use crate::core::vcs::jj::cli::JjCli;
@@ -13,11 +17,14 @@ use crate::core::vcs::jj::parse::{
     parse_operation_log,
 };
 use crate::core::vcs::model::{
-    ChangeIdToken, FileChange, FileOperation, JjOperation, PublishAction, PublishActionKind,
-    PublishOutcome, PublishPlan, RefKind, RepoCapabilities, RepoLocation, RevisionId,
-    VCS_PROFILE_JJ, VcsCompareRequest, VcsCompareSpec, VcsKind, VcsOperation, VcsRef, VcsSnapshot,
+    ChangeIdToken, FileChange, FileChangeStatus, FileOperation, JjOperation, PublishAction,
+    PublishActionKind, PublishOutcome, PublishPlan, RefKind, RepoCapabilities, RepoLocation,
+    RevisionId, VCS_PROFILE_JJ, VcsCompareRequest, VcsCompareSpec, VcsKind, VcsOperation, VcsRef,
+    VcsSnapshot,
 };
 use crate::events::RepositorySyncReason;
+
+const JJ_FILE_STATS_PATH_CHUNK: usize = 512;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JjBackend;
@@ -135,6 +142,20 @@ impl JjRepository {
             }
         }
         args.push(OsString::from("--git"));
+        Ok(args)
+    }
+
+    fn diff_summary_args_for_spec(&self, spec: &VcsCompareSpec) -> Result<Vec<OsString>> {
+        let mut args = self.diff_args_for_spec(spec)?;
+        args.retain(|arg| arg != "--git");
+        args.push(OsString::from("--summary"));
+        Ok(args)
+    }
+
+    fn diff_stat_args_for_spec(&self, spec: &VcsCompareSpec) -> Result<Vec<OsString>> {
+        let mut args = self.diff_args_for_spec(spec)?;
+        args.retain(|arg| arg != "--git");
+        args.push(OsString::from("--stat"));
         Ok(args)
     }
 
@@ -603,6 +624,18 @@ impl VcsRepository for JjRepository {
         if let Some(output) = self.cached_diff(operation_id.as_deref(), request, None) {
             return Ok(output);
         }
+        let summary_args = self.diff_summary_args_for_spec(&request.spec)?;
+        let summary = self.cli.run_ignored_wc(&summary_args)?;
+        let summaries = compare_summaries_from_jj_diff_summary(&summary, true);
+        if summaries.len() > COMPARE_SUMMARY_FILE_LIMIT {
+            let mut output = CompareOutput {
+                file_summaries: summaries,
+                ..CompareOutput::default()
+            };
+            output.compact_file_summaries();
+            self.insert_diff_cache(operation_id, request.clone(), None, output.clone());
+            return Ok(output);
+        }
         let args = self.diff_args_for_spec(&request.spec)?;
         let raw_diff = self.cli.run_ignored_wc(&args)?;
         let output = compare_output_from_raw_patch(&raw_diff)?;
@@ -611,7 +644,17 @@ impl VcsRepository for JjRepository {
     }
 
     fn compare_stats(&mut self, request: &VcsCompareRequest) -> Result<(i32, i32)> {
-        let output = self.compare(request, None)?;
+        self.ensure_read_epoch()?;
+        let args = self.diff_stat_args_for_spec(&request.spec)?;
+        let stat = self.cli.run_ignored_wc(&args)?;
+        if let Some(total) = parse_jj_diff_stat_total(&stat) {
+            return Ok(total);
+        }
+
+        let raw_diff = self
+            .cli
+            .run_ignored_wc(&self.diff_args_for_spec(&request.spec)?)?;
+        let output = compare_output_from_raw_patch(&raw_diff)?;
         let additions = output
             .carbon
             .files
@@ -627,11 +670,48 @@ impl VcsRepository for JjRepository {
         Ok((additions, deletions))
     }
 
+    fn compare_file_stats(
+        &mut self,
+        request: &VcsCompareRequest,
+        files: &[CompareFileStatsTarget],
+    ) -> Result<Vec<(i32, i32)>> {
+        self.ensure_read_epoch()?;
+        let mut stats_by_path = HashMap::with_capacity(files.len());
+        for chunk in files.chunks(JJ_FILE_STATS_PATH_CHUNK) {
+            let mut args = self.diff_args_for_spec(&request.spec)?;
+            args.extend(chunk.iter().filter_map(|file| {
+                let path = file.path();
+                (!path.is_empty()).then(|| OsString::from(format!("file:{path}")))
+            }));
+            let raw_diff = self.cli.run_ignored_wc(&args)?;
+            let output = compare_output_from_raw_patch(&raw_diff)?;
+            for file in output.carbon.files {
+                let stats = (
+                    u32_to_i32_saturating(file.additions),
+                    u32_to_i32_saturating(file.deletions),
+                );
+                if let Some(path) = file.new_path.as_ref().or(file.old_path.as_ref()) {
+                    stats_by_path.insert(path.clone(), stats);
+                }
+            }
+        }
+        Ok(files
+            .iter()
+            .map(|file| {
+                let path = file.path();
+                stats_by_path
+                    .get(path.as_ref())
+                    .copied()
+                    .unwrap_or_else(|| file.fallback_stats())
+            })
+            .collect())
+    }
+
     fn compare_path(
         &mut self,
         request: &VcsCompareRequest,
         path: &str,
-        _deferred_file: Option<&carbon::FileDiff>,
+        _deferred_file: Option<&CompareFileSummary>,
     ) -> Result<CompareOutput> {
         let operation_id = self.ensure_read_epoch()?;
         if let Some(output) = self.cached_diff(operation_id.as_deref(), request, Some(path)) {
@@ -1070,6 +1150,58 @@ fn u32_to_i32_saturating(value: u32) -> i32 {
     i32::try_from(value).unwrap_or(i32::MAX)
 }
 
+fn compare_summaries_from_jj_diff_summary(
+    output: &str,
+    stats_deferred: bool,
+) -> Vec<CompareFileSummary> {
+    parse_diff_summary(output)
+        .into_iter()
+        .map(|change| {
+            CompareFileSummary::from_paths_status(
+                change.old_path.as_deref(),
+                Some(change.path.as_str()),
+                carbon_status_from_file_change_status(change.status),
+                stats_deferred,
+            )
+        })
+        .collect()
+}
+
+fn carbon_status_from_file_change_status(status: FileChangeStatus) -> carbon::FileStatus {
+    match status {
+        FileChangeStatus::Added | FileChangeStatus::Untracked => carbon::FileStatus::Added,
+        FileChangeStatus::Deleted => carbon::FileStatus::Deleted,
+        FileChangeStatus::Renamed => carbon::FileStatus::Renamed,
+        FileChangeStatus::TypeChanged => carbon::FileStatus::ModeChanged,
+        FileChangeStatus::Binary => carbon::FileStatus::Binary,
+        FileChangeStatus::Copied | FileChangeStatus::Modified | FileChangeStatus::Conflicted => {
+            carbon::FileStatus::Modified
+        }
+    }
+}
+
+fn parse_jj_diff_stat_total(output: &str) -> Option<(i32, i32)> {
+    let summary = output.lines().rev().find(|line| {
+        line.contains(" changed") && (line.contains(" insertion") || line.contains(" deletion"))
+    })?;
+    Some((
+        parse_stat_count_before(summary, " insertion").unwrap_or(0),
+        parse_stat_count_before(summary, " deletion").unwrap_or(0),
+    ))
+}
+
+fn parse_stat_count_before(line: &str, label: &str) -> Option<i32> {
+    let label_start = line.find(label)?;
+    let prefix = line[..label_start].trim_end();
+    let digits_start = prefix
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !ch.is_ascii_digit())
+        .map(|(index, ch)| index + ch.len_utf8())
+        .unwrap_or(0);
+    prefix[digits_start..].parse().ok()
+}
+
 pub fn jj_capabilities() -> RepoCapabilities {
     RepoCapabilities {
         staging_area: false,
@@ -1224,14 +1356,46 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::JjBackend;
-    use crate::core::compare::{LayoutMode, RendererKind};
+    use super::{JjBackend, compare_summaries_from_jj_diff_summary, parse_jj_diff_stat_total};
+    use crate::core::compare::{CompareFileStatsTarget, LayoutMode, RendererKind};
     use crate::core::vcs::backend::VcsBackend;
     use crate::core::vcs::model::{
         ChangeBucket, FileChangeStatus, FileOperation, PublishActionKind, VcsCompareRequest,
         VcsCompareSpec, VcsKind,
     };
     use crate::events::RepositorySyncReason;
+
+    #[test]
+    fn jj_diff_summary_builds_compare_summaries() {
+        let summaries = compare_summaries_from_jj_diff_summary(
+            "A README.md\nM src/lib.rs\nR src/{old => new}.rs\n",
+            true,
+        );
+
+        assert_eq!(summaries.len(), 3);
+        assert_eq!(summaries[0].path(), "README.md");
+        assert_eq!(summaries[0].status, carbon::FileStatus::Added);
+        assert!(summaries[0].stats_deferred);
+        assert_eq!(summaries[1].path(), "src/lib.rs");
+        assert_eq!(summaries[1].status, carbon::FileStatus::Modified);
+        assert_eq!(summaries[2].paths.old_path().as_deref(), Some("src/old.rs"));
+        assert_eq!(summaries[2].paths.new_path().as_deref(), Some("src/new.rs"));
+        assert_eq!(summaries[2].status, carbon::FileStatus::Renamed);
+    }
+
+    #[test]
+    fn jj_diff_stat_summary_parses_total_stats() {
+        assert_eq!(
+            parse_jj_diff_stat_total(
+                "src/lib.rs | 3 ++-\nREADME.md | 1 -\n2 files changed, 2 insertions(+), 2 deletions(-)\n",
+            ),
+            Some((2, 2))
+        );
+        assert_eq!(
+            parse_jj_diff_stat_total("README.md | 1 +\n1 file changed, 1 insertion(+)\n"),
+            Some((1, 0))
+        );
+    }
 
     #[test]
     fn jj_backend_snapshots_and_diffs_working_copy() {
@@ -1270,6 +1434,13 @@ mod tests {
         };
         let (additions, deletions) = repo.compare_stats(&request).unwrap();
         assert_eq!((additions, deletions), (1, 0));
+        let file_stats = repo
+            .compare_file_stats(
+                &request,
+                &[CompareFileStatsTarget::from_file(&output.carbon.files[0])],
+            )
+            .unwrap();
+        assert_eq!(file_stats, vec![(1, 0)]);
 
         let readme_change = snapshot
             .file_changes

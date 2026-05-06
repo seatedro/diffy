@@ -50,9 +50,9 @@ enum CompareJobKey {
 }
 
 enum CompareJob {
-    LoadStats(Task<CompareStatsRequest>),
-    LoadFile(Task<CompareFileRequest>),
-    LoadFileStats(Task<CompareFileStatsRequest>),
+    Stats(Task<CompareStatsRequest>),
+    File(Task<CompareFileRequest>),
+    FileStats(Task<CompareFileStatsRequest>),
 }
 
 impl CompareScheduler {
@@ -64,8 +64,7 @@ impl CompareScheduler {
         let worker_count = std::thread::available_parallelism()
             .map(usize::from)
             .unwrap_or(1)
-            .min(MAX_COMPARE_WORKERS)
-            .max(1);
+            .clamp(1, MAX_COMPARE_WORKERS);
         for _ in 0..worker_count {
             let queue = Arc::clone(&queue);
             let services = services.clone();
@@ -76,15 +75,15 @@ impl CompareScheduler {
     }
 
     pub(crate) fn dispatch_load_stats(&self, task: Task<CompareStatsRequest>) {
-        self.enqueue(CompareJob::LoadStats(task));
+        self.enqueue(CompareJob::Stats(task));
     }
 
     pub(crate) fn dispatch_load_file(&self, task: Task<CompareFileRequest>) {
-        self.enqueue(CompareJob::LoadFile(task));
+        self.enqueue(CompareJob::File(task));
     }
 
     pub(crate) fn dispatch_load_file_stats(&self, task: Task<CompareFileStatsRequest>) {
-        self.enqueue(CompareJob::LoadFileStats(task));
+        self.enqueue(CompareJob::FileStats(task));
     }
 
     fn enqueue(&self, job: CompareJob) {
@@ -108,23 +107,23 @@ impl CompareScheduler {
 impl CompareJob {
     fn priority(&self) -> CompareWorkPriority {
         match self {
-            CompareJob::LoadStats(task) => task.request.priority,
-            CompareJob::LoadFile(task) => task.request.priority,
-            CompareJob::LoadFileStats(task) => task.request.priority,
+            CompareJob::Stats(task) => task.request.priority,
+            CompareJob::File(task) => task.request.priority,
+            CompareJob::FileStats(task) => task.request.priority,
         }
     }
 
     fn key(&self) -> CompareJobKey {
         match self {
-            CompareJob::LoadStats(task) => CompareJobKey::TotalStats {
+            CompareJob::Stats(task) => CompareJobKey::TotalStats {
                 generation: task.generation,
             },
-            CompareJob::LoadFile(task) => CompareJobKey::File {
+            CompareJob::File(task) => CompareJobKey::File {
                 generation: task.generation,
                 index: task.request.index,
                 path: task.request.path.clone(),
             },
-            CompareJob::LoadFileStats(task) => CompareJobKey::FileStats {
+            CompareJob::FileStats(task) => CompareJobKey::FileStats {
                 generation: task.generation,
                 priority: task.request.priority,
             },
@@ -154,31 +153,15 @@ fn compare_worker_loop(
 fn next_job_index(jobs: &[QueuedCompareJob]) -> Option<usize> {
     jobs.iter()
         .enumerate()
-        .max_by_key(|(_, job)| {
-            (
-                priority_score(job.priority),
-                std::cmp::Reverse(job.sequence),
-            )
-        })
+        .max_by_key(|(_, job)| (job.priority.rank(), std::cmp::Reverse(job.sequence)))
         .map(|(index, _)| index)
-}
-
-fn priority_score(priority: CompareWorkPriority) -> u8 {
-    match priority {
-        CompareWorkPriority::InteractiveSelectedFile => 60,
-        CompareWorkPriority::VisibleSidebarStats => 50,
-        CompareWorkPriority::VisibleViewportDiff => 40,
-        CompareWorkPriority::Overscan => 30,
-        CompareWorkPriority::TotalStats => 20,
-        CompareWorkPriority::Warmup => 10,
-    }
 }
 
 fn run_job(job: QueuedCompareJob, services: &AppServices, event_sender: &RuntimeEventSender) {
     match job.job {
-        CompareJob::LoadStats(task) => run_load_stats(task, services, event_sender),
-        CompareJob::LoadFile(task) => run_load_file(task, services, event_sender),
-        CompareJob::LoadFileStats(task) => run_load_file_stats(task, services, event_sender),
+        CompareJob::Stats(task) => run_load_stats(task, services, event_sender),
+        CompareJob::File(task) => run_load_file(task, services, event_sender),
+        CompareJob::FileStats(task) => run_load_file_stats(task, services, event_sender),
     }
 }
 
@@ -238,16 +221,19 @@ fn run_load_file_stats(
     }
 
     let repo_path = request.repo_path;
+    let compare_request = request.request;
     let priority = request.priority;
     thread::scope(|scope| {
         for files in request.files.chunks(FILE_STATS_STREAM_CHUNK_SIZE) {
             let services = services.clone();
             let event_sender = event_sender.clone();
             let repo_path = repo_path.clone();
+            let compare_request = compare_request.clone();
             let files = files.to_vec();
             scope.spawn(move || {
                 let request = CompareFileStatsRequest {
                     repo_path,
+                    request: compare_request,
                     files,
                     priority,
                 };
@@ -270,4 +256,25 @@ fn run_load_file_stats(
         stats: Vec::new(),
         request_complete: true,
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::effects::CompareWorkPriority;
+
+    #[test]
+    fn visible_diff_work_outprioritizes_stats_work() {
+        assert!(
+            CompareWorkPriority::InteractiveSelectedFile.rank()
+                > CompareWorkPriority::VisibleViewportDiff.rank()
+        );
+        assert!(
+            CompareWorkPriority::VisibleViewportDiff.rank()
+                > CompareWorkPriority::VisibleSidebarStats.rank()
+        );
+        assert!(
+            CompareWorkPriority::VisibleSidebarStats.rank()
+                > CompareWorkPriority::TotalStats.rank()
+        );
+    }
 }

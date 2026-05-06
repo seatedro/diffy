@@ -52,15 +52,33 @@ pub fn file_tree_layout(
     FileTreeLayout { rows }
 }
 
-pub fn file_tree_visible_row_count<'a>(
-    paths: impl IntoIterator<Item = &'a str>,
+pub fn file_tree_visible_row_count_by(
+    visit_paths: impl FnOnce(&mut dyn FnMut(&str)),
     expanded_folders: &HashSet<String>,
 ) -> usize {
     let mut root = TreeNode::new();
-    for path in paths {
+    let mut insert = |path: &str| {
         insert_path_for_count(&mut root, path);
-    }
+    };
+    visit_paths(&mut insert);
     count_visible_rows(&root, "", expanded_folders)
+}
+
+pub fn file_tree_visible_file_indices_by(
+    visit_paths: impl FnOnce(&mut dyn FnMut(usize, &str)),
+    expanded_folders: &HashSet<String>,
+    window: Range<usize>,
+) -> Vec<usize> {
+    let mut root = TreeNode::new();
+    let mut insert = |index: usize, path: &str| {
+        insert_path_with_index(&mut root, index, path);
+    };
+    visit_paths(&mut insert);
+
+    let mut row = 0usize;
+    let mut indices = Vec::new();
+    collect_visible_file_indices(&root, "", expanded_folders, &window, &mut row, &mut indices);
+    indices
 }
 
 impl FileTreeLayout {
@@ -191,11 +209,15 @@ fn insert_entry(root: &mut TreeNode, original_index: usize, entry: &FileTreeEntr
 }
 
 fn insert_path_for_count(root: &mut TreeNode, path: &str) {
+    insert_path_with_index(root, 0, path);
+}
+
+fn insert_path_with_index(root: &mut TreeNode, original_index: usize, path: &str) {
     let parts: Vec<&str> = path.split('/').collect();
     if parts.len() > 1 {
         root.insert(
             &parts[..parts.len() - 1],
-            0,
+            original_index,
             parts[parts.len() - 1],
             "",
             None,
@@ -204,7 +226,7 @@ fn insert_path_for_count(root: &mut TreeNode, path: &str) {
         );
     } else {
         root.files
-            .push((0, String::new(), String::new(), None, 0, 0));
+            .push((original_index, path.to_owned(), String::new(), None, 0, 0));
     }
 }
 
@@ -222,6 +244,34 @@ fn count_visible_rows(node: &TreeNode, prefix: &str, expanded: &HashSet<String>)
         }
     }
     count
+}
+
+fn collect_visible_file_indices(
+    node: &TreeNode,
+    prefix: &str,
+    expanded: &HashSet<String>,
+    window: &Range<usize>,
+    row: &mut usize,
+    out: &mut Vec<usize>,
+) {
+    for (dir_name, child) in &node.children_dirs {
+        let full_path = if prefix.is_empty() {
+            dir_name.clone()
+        } else {
+            format!("{prefix}/{dir_name}")
+        };
+        *row = row.saturating_add(1);
+        if expanded.contains(&full_path) {
+            collect_visible_file_indices(child, &full_path, expanded, window, row, out);
+        }
+    }
+
+    for &(original_index, _, _, _, _, _) in &node.files {
+        if window.contains(&*row) {
+            out.push(original_index);
+        }
+        *row = row.saturating_add(1);
+    }
 }
 
 enum FlatRow {

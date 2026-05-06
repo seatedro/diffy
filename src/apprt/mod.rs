@@ -2,6 +2,7 @@ mod compare;
 pub mod progress;
 mod runtime;
 pub mod services;
+mod syntax;
 mod vcs_worker;
 mod watcher;
 

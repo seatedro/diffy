@@ -4,14 +4,15 @@ use carbon::TextStore;
 
 use crate::core::compare::backends::{DifftasticBackend, GitDiffBackend};
 use crate::core::compare::{
-    CompareMode, ComparePhase, CompareService, CompareSpec, ProgressSink, RendererKind,
+    CompareFileStatsTarget, CompareFileSummary, CompareMode, ComparePhase, CompareService,
+    CompareSpec, ProgressSink, RendererKind,
 };
 use crate::core::error::{DiffyError, Result};
 use crate::core::vcs::backend::{VcsBackend, VcsRepository, VcsWatchPaths};
 use crate::core::vcs::git::status::StatusBits;
 use crate::core::vcs::git::{
     BranchInfo, CommitInfo, GitService, PatchApplyTarget, PullOutcome, StatusItem, StatusOperation,
-    StatusScope, TagInfo, WORKDIR_REF, status::status_items_from_entry,
+    StatusScope, TagInfo, WORKDIR_REF, status::status_items_from_entry_with_old_path,
 };
 use crate::core::vcs::model::{
     ChangeBucket, ChangeFlags, FileChange, FileChangeStatus, FileOperation, PublishAction,
@@ -180,19 +181,18 @@ impl VcsRepository for GitRepository {
         Ok(git_changes(&commits, &[]))
     }
 
-    fn compare_file_stats(&mut self, files: &[&carbon::FileDiff]) -> Result<Vec<(i32, i32)>> {
-        let repo_path = self.location.workspace_root.to_string_lossy();
+    fn compare_file_stats(
+        &mut self,
+        request: &VcsCompareRequest,
+        files: &[CompareFileStatsTarget],
+    ) -> Result<Vec<(i32, i32)>> {
+        let spec = git_compare_spec(request);
         let file_stats =
-            GitDiffBackend.deferred_file_line_stats_batch_for_repo_path(files, &repo_path);
+            GitDiffBackend.deferred_file_line_stats_batch_for_request(&spec, &self.service, files);
         Ok(files
             .iter()
             .zip(file_stats)
-            .map(|(file, stat)| {
-                stat.unwrap_or((
-                    u32_to_i32_saturating(file.additions),
-                    u32_to_i32_saturating(file.deletions),
-                ))
-            })
+            .map(|(file, stat)| stat.unwrap_or_else(|| file.fallback_stats()))
             .collect())
     }
 
@@ -200,17 +200,25 @@ impl VcsRepository for GitRepository {
         &mut self,
         request: &VcsCompareRequest,
         path: &str,
-        deferred_file: Option<&carbon::FileDiff>,
+        deferred_file: Option<&CompareFileSummary>,
     ) -> Result<crate::core::compare::CompareOutput> {
         let spec = git_compare_spec(request);
+        let deferred_file = deferred_file.map(CompareFileSummary::to_file_diff);
+        let summary_fallback = deferred_file.is_some();
         match request.renderer {
             crate::core::compare::RendererKind::Builtin => {
                 let output = deferred_file
+                    .as_ref()
                     .map(|file| GitDiffBackend.compare_deferred_file(file, &self.service))
                     .transpose()?
                     .flatten();
                 match output {
                     Some(output) => Ok(output),
+                    None if summary_fallback => GitDiffBackend
+                        .compare_path_no_renames(&spec, path, &self.service)?
+                        .ok_or_else(|| {
+                            DiffyError::General("compare file returned no result".to_owned())
+                        }),
                     None => GitDiffBackend
                         .compare_path(&spec, path, &self.service)?
                         .ok_or_else(|| {
@@ -227,15 +235,19 @@ impl VcsRepository for GitRepository {
             }
             crate::core::compare::RendererKind::Difftastic => {
                 let output = deferred_file
+                    .as_ref()
                     .map(|file| GitDiffBackend.compare_deferred_file(file, &self.service))
                     .transpose()?
                     .flatten();
                 match output {
                     Some(output) => Ok(output),
                     None => {
-                        let mut output = GitDiffBackend
-                            .compare_path(&spec, path, &self.service)?
-                            .ok_or_else(|| {
+                        let path_output = if summary_fallback {
+                            GitDiffBackend.compare_path_no_renames(&spec, path, &self.service)?
+                        } else {
+                            GitDiffBackend.compare_path(&spec, path, &self.service)?
+                        };
+                        let mut output = path_output.ok_or_else(|| {
                             DiffyError::General("compare file returned no result".to_owned())
                         })?;
                         output.used_fallback = true;
@@ -463,10 +475,6 @@ pub fn git_capabilities() -> RepoCapabilities {
     RepoCapabilities::git()
 }
 
-fn u32_to_i32_saturating(value: u32) -> i32 {
-    i32::try_from(value).unwrap_or(i32::MAX)
-}
-
 fn status_item_from_file_change(change: &FileChange) -> StatusItem {
     let scope = match change.bucket {
         ChangeBucket::Staged => StatusScope::Staged,
@@ -477,6 +485,7 @@ fn status_item_from_file_change(change: &FileChange) -> StatusItem {
     };
     StatusItem {
         path: change.path.clone(),
+        old_path: change.old_path.clone(),
         scope,
         status: file_change_status_label(change.status, change.bucket).to_owned(),
     }
@@ -532,7 +541,7 @@ pub fn git_snapshot_from_parts(
     let location = detect_git_location(&path)
         .ok()
         .flatten()
-        .unwrap_or_else(|| RepoLocation {
+        .unwrap_or(RepoLocation {
             kind: VcsKind::GIT,
             profile: VCS_PROFILE_GIT,
             workspace_root: path,
@@ -615,7 +624,7 @@ pub fn git_file_changes(status_items: &[StatusItem]) -> Vec<FileChange> {
         .iter()
         .map(|item| FileChange {
             path: item.path.clone(),
-            old_path: None,
+            old_path: item.old_path.clone(),
             status: git_file_status(item),
             bucket: git_change_bucket(item.scope),
         })
@@ -650,8 +659,12 @@ fn git_status_items(git: &GitService) -> Result<Vec<StatusItem>> {
     let mut status_items = git
         .status_entries()?
         .iter()
-        .flat_map(|(path, status)| {
-            status_items_from_entry(path.clone(), sanitize_status_bits(*status))
+        .flat_map(|(path, old_path, status)| {
+            status_items_from_entry_with_old_path(
+                path.clone(),
+                old_path.clone(),
+                sanitize_status_bits(*status),
+            )
         })
         .collect::<Vec<_>>();
     status_items.sort_by(|left, right| {

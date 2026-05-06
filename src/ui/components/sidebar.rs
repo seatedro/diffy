@@ -4,12 +4,13 @@ use crate::ui::design::{Ico, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
-use crate::ui::state::{AppState, FileListEntry};
+use crate::ui::state::{AppState, FileListEntry, FileListEntryMeta};
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme};
 
 pub struct FileListItem<'a> {
     pub entry: &'a FileListEntry,
+    pub meta: FileListEntryMeta,
     pub selected: bool,
     pub index: usize,
 }
@@ -39,12 +40,12 @@ impl<'a> FileListItem<'a> {
                  @when {!self.selected} { hover_bg={tc.sidebar_row_hover} }>
                 <icon svg={lucide::FILE_CODE} size={Ico::MD} color={icon_color} />
                 <div class="flex-1 flex-col" gap={Sz::SEPARATOR_W}>
-                    <text class="text-sm truncate" color={text_color}>{&self.entry.path}</text>
+                    <text class="text-sm truncate" color={text_color}>{self.entry.path.to_string()}</text>
                 </div>
-                if self.entry.additions > 0 || self.entry.deletions > 0 {
+                if self.meta.additions > 0 || self.meta.deletions > 0 {
                     <div class="flex-row shrink-0" gap={Sp::XS}>
-                        <text class="text-xs" color={tc.line_add_text}>{format!("+{}", self.entry.additions)}</text>
-                        <text class="text-xs" color={tc.line_del_text}>{format!("\u{2212}{}", self.entry.deletions)}</text>
+                        <text class="text-xs" color={tc.line_add_text}>{format!("+{}", self.meta.additions)}</text>
+                        <text class="text-xs" color={tc.line_del_text}>{format!("\u{2212}{}", self.meta.deletions)}</text>
                     </div>
                 }
             </div>
@@ -79,8 +80,7 @@ impl<'a> Sidebar<'a> {
         let scale = theme.metrics.ui_scale();
         let sidebar_width = theme.metrics.sidebar_width * self.width_factor;
         let state = self.state;
-        let files_snapshot = state.workspace.files.get(&state.store);
-        let file_count = files_snapshot.len();
+        let file_count = state.workspace_file_count();
         let has_repo = state.compare.repo_path.with(&state.store, |p| p.is_some());
         let selected_index = state.selected_workspace_file_index();
 
@@ -111,7 +111,7 @@ impl<'a> Sidebar<'a> {
                         </div>
                     }
                 </div>
-                if files_snapshot.is_empty() {
+                if file_count == 0 {
                     <div class="flex-1 items-center justify-center">
                         <div class="flex-col items-center" gap_2>
                             <icon svg={empty_icon} size={Ico::XL} color={tc.text_muted} />
@@ -125,12 +125,15 @@ impl<'a> Sidebar<'a> {
                          scroll_y={scroll_px}
                          scroll_total={total_height}
                          on_scroll={ScrollActionBuilder::FileList}>
-                        for (index, entry) in files_snapshot.iter().enumerate() {
+                        for index in 0..file_count {
+                            if let Some(entry) = state.workspace_file_entry_at(index) {
                             {FileListItem {
-                                entry,
+                                entry: &entry,
+                                meta: state.file_list_entry_meta(index),
                                 selected: selected_index == Some(index),
                                 index,
                             }.build(theme)}
+                            }
                         }
                     </div>
                 }

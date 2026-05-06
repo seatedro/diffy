@@ -9,18 +9,18 @@ use crate::core::compare::backends::{DiffBackend, RENAME_DETECTION_LIMIT};
 use crate::core::compare::progress::{ComparePhase, ProgressSink};
 use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::CompareSpec;
+use crate::core::compare::stats::{
+    COMPARE_SUMMARY_FILE_LIMIT, CompareFilePaths, CompareFileStatsTarget, CompareFileSummary,
+};
 use crate::core::error::{DiffyError, Result};
 use crate::core::vcs::git::{GitService, WORKDIR_REF};
 
 /// Throttle file-progress emits so a 3,000-file diff doesn't post 3,000
 /// mpsc sends + winit wakes. Emits on every Nth file plus the final one.
 const LOADING_FILE_EMIT_STRIDE: usize = 16;
-/// Above this many files, return the changed-file list immediately and defer
-/// hunk construction until a file is selected. A Linux release range can touch
-/// tens of thousands of files; parsing every patch before first paint makes the
-/// app feel stuck even though the sidebar could be useful almost immediately.
-const DEFER_HUNKS_FILE_LIMIT: usize = 2_000;
-const DEFERRED_STATS_MAX_WORKERS: usize = 8;
+/// Line-stat work parallelism. Hunk deferral uses the VCS-neutral
+/// `COMPARE_SUMMARY_FILE_LIMIT`.
+const LINE_STATS_MAX_WORKERS: usize = 8;
 const DEFERRED_STATS_MIN_FILES_PER_WORKER: usize = 16;
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -33,17 +33,7 @@ impl GitDiffBackend {
         git: &GitService,
     ) -> Result<Option<(i32, i32)>> {
         let (left, right) = resolve_compare_refs(spec, git)?;
-        if right != WORKDIR_REF {
-            let mut repo = open_gix_repo(git)?;
-            let changes = collect_gix_changes(&mut repo, &left, &right, None, false)?;
-            let (additions, deletions) = gix_changes_line_stats(git.repo_path(), &repo, &changes)?;
-            return Ok(Some((
-                u32_to_i32_saturating(additions),
-                u32_to_i32_saturating(deletions),
-            )));
-        }
-
-        Ok(None)
+        Ok(Some(git.diff_shortstat_find_renames(&left, &right)?))
     }
 
     pub fn compare_deferred_file(
@@ -93,67 +83,55 @@ impl GitDiffBackend {
         git: &GitService,
     ) -> Result<Option<CompareOutput>> {
         let (left, right) = resolve_compare_refs(spec, git)?;
-        if right != WORKDIR_REF {
-            let mut repo = open_gix_repo(git)?;
-            let changes = collect_gix_changes(&mut repo, &left, &right, Some(path), true)?;
-            return Ok(Some(compare_output_from_gix_changes(&repo, changes, None)?));
-        }
-
-        let raw = git.diff_two_refs(&left, &right)?;
-        let mut output = compare_output_from_raw_patch(&raw)?;
-        output.carbon.files.retain(|file| file.path() == path);
-        Ok(Some(output))
+        let raw = git.diff_two_refs_path(&left, &right, path)?;
+        Ok(Some(compare_output_from_raw_patch(&raw)?))
     }
 
-    pub fn deferred_file_line_stats(
+    pub fn compare_path_no_renames(
         &self,
-        file: &carbon::FileDiff,
+        spec: &CompareSpec,
+        path: &str,
         git: &GitService,
-    ) -> Result<Option<(i32, i32)>> {
-        let gix_repo = open_gix_repo(git)?;
-        deferred_file_line_stats_with_repo(file, &gix_repo)
+    ) -> Result<Option<CompareOutput>> {
+        let (left, right) = resolve_compare_refs(spec, git)?;
+        let raw = git.diff_two_refs_path_no_renames(&left, &right, path)?;
+        Ok(Some(compare_output_from_raw_patch(&raw)?))
     }
 
-    pub fn deferred_file_line_stats_batch(
+    pub fn deferred_file_line_stats_batch_for_request(
         &self,
-        files: &[&carbon::FileDiff],
+        spec: &CompareSpec,
         git: &GitService,
-    ) -> Vec<Option<(i32, i32)>> {
-        self.deferred_file_line_stats_batch_for_repo_path(files, git.repo_path())
-    }
-
-    pub fn deferred_file_line_stats_batch_for_repo_path(
-        &self,
-        files: &[&carbon::FileDiff],
-        repo_path: &str,
+        files: &[CompareFileStatsTarget],
     ) -> Vec<Option<(i32, i32)>> {
         if files.is_empty() {
             return Vec::new();
         }
-
+        let Ok((left, right)) = resolve_compare_refs(spec, git) else {
+            return vec![None; files.len()];
+        };
+        if right == WORKDIR_REF {
+            return vec![None; files.len()];
+        }
         let worker_count = deferred_stats_worker_count(files.len());
         if worker_count == 1 {
-            let Ok(gix_repo) = open_gix_repo_path(repo_path) else {
-                return vec![None; files.len()];
-            };
-            return files
-                .iter()
-                .map(|file| {
-                    deferred_file_line_stats_with_repo(file, &gix_repo)
-                        .ok()
-                        .flatten()
-                })
+            return deferred_file_stats_target_chunk(git.repo_path(), &left, &right, 0, files)
+                .into_iter()
+                .map(|(_, stat)| stat)
                 .collect();
         }
 
+        let repo_path = git.repo_path();
+        let left_ref = left.as_str();
+        let right_ref = right.as_str();
         let chunk_size = files.len().div_ceil(worker_count);
         let mut results = vec![None; files.len()];
         std::thread::scope(|scope| {
             let mut handles = Vec::with_capacity(worker_count);
             for (chunk_index, chunk) in files.chunks(chunk_size).enumerate() {
+                let start = chunk_index * chunk_size;
                 handles.push(scope.spawn(move || {
-                    let start = chunk_index * chunk_size;
-                    deferred_file_line_stats_chunk(repo_path, start, chunk)
+                    deferred_file_stats_target_chunk(repo_path, left_ref, right_ref, start, chunk)
                 }));
             }
 
@@ -183,7 +161,8 @@ impl DiffBackend for GitDiffBackend {
             }
             let mut repo = open_gix_repo(git)?;
             let mut changes = collect_gix_changes(&mut repo, &left, &right, None, false)?;
-            if changes.len() <= DEFER_HUNKS_FILE_LIMIT && gix_changes_may_include_rewrites(&changes)
+            if changes.len() <= COMPARE_SUMMARY_FILE_LIMIT
+                && gix_changes_may_include_rewrites(&changes)
             {
                 changes = collect_gix_changes(&mut repo, &left, &right, None, true)?;
             }
@@ -201,19 +180,39 @@ impl DiffBackend for GitDiffBackend {
     }
 }
 
-fn deferred_file_line_stats_with_repo(
-    file: &carbon::FileDiff,
+fn deferred_file_stats_target_with_trees(
+    file: &CompareFileStatsTarget,
     gix_repo: &gix::Repository,
+    left_tree: &gix::Tree<'_>,
+    right_tree: &gix::Tree<'_>,
 ) -> Result<Option<(i32, i32)>> {
     if file.is_binary {
         return Ok(Some((0, 0)));
     }
-    if !can_diff_deferred_file(file) {
-        return Ok(None);
-    }
-
-    let old_content = load_gix_blob_content(gix_repo, file.old_oid.as_ref())?;
-    let new_content = load_gix_blob_content(gix_repo, file.new_oid.as_ref())?;
+    let old_content = match file.status {
+        carbon::FileStatus::Added => GixBlobContent::Empty,
+        _ => {
+            let old_path = file.paths.old_path();
+            let Some(content) =
+                load_gix_tree_blob_content(gix_repo, left_tree, old_path.as_deref())?
+            else {
+                return Ok(None);
+            };
+            content
+        }
+    };
+    let new_content = match file.status {
+        carbon::FileStatus::Deleted => GixBlobContent::Empty,
+        _ => {
+            let new_path = file.paths.new_path();
+            let Some(content) =
+                load_gix_tree_blob_content(gix_repo, right_tree, new_path.as_deref())?
+            else {
+                return Ok(None);
+            };
+            content
+        }
+    };
     if is_binary_bytes(old_content.as_bytes()) || is_binary_bytes(new_content.as_bytes()) {
         return Ok(Some((0, 0)));
     }
@@ -224,13 +223,26 @@ fn deferred_file_line_stats_with_repo(
     )))
 }
 
-fn deferred_file_line_stats_chunk(
+fn deferred_file_stats_target_chunk(
     repo_path: &str,
+    left: &str,
+    right: &str,
     start: usize,
-    files: &[&carbon::FileDiff],
+    files: &[CompareFileStatsTarget],
 ) -> Vec<(usize, Option<(i32, i32)>)> {
+    let empty_stats = || {
+        (0..files.len())
+            .map(|offset| (start + offset, None))
+            .collect()
+    };
     let Ok(gix_repo) = open_gix_repo_path(repo_path) else {
-        return Vec::new();
+        return empty_stats();
+    };
+    let Ok(left_tree) = gix_tree_for_oid(&gix_repo, left) else {
+        return empty_stats();
+    };
+    let Ok(right_tree) = gix_tree_for_oid(&gix_repo, right) else {
+        return empty_stats();
     };
     files
         .iter()
@@ -238,7 +250,7 @@ fn deferred_file_line_stats_chunk(
         .map(|(offset, file)| {
             (
                 start + offset,
-                deferred_file_line_stats_with_repo(file, &gix_repo)
+                deferred_file_stats_target_with_trees(file, &gix_repo, &left_tree, &right_tree)
                     .ok()
                     .flatten(),
             )
@@ -251,66 +263,7 @@ fn deferred_stats_worker_count(file_count: usize) -> usize {
         .map(usize::from)
         .unwrap_or(1);
     let useful = file_count.div_ceil(DEFERRED_STATS_MIN_FILES_PER_WORKER);
-    available.min(DEFERRED_STATS_MAX_WORKERS).min(useful).max(1)
-}
-
-fn gix_changes_line_stats(
-    repo_path: &str,
-    repo: &gix::Repository,
-    changes: &[GixChange],
-) -> Result<(u32, u32)> {
-    if changes.is_empty() {
-        return Ok((0, 0));
-    }
-
-    let worker_count = deferred_stats_worker_count(changes.len());
-    if worker_count == 1 {
-        return gix_changes_line_stats_with_repo(repo, changes);
-    }
-
-    let chunk_size = changes.len().div_ceil(worker_count);
-    let mut additions = 0_u32;
-    let mut deletions = 0_u32;
-    std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(worker_count);
-        for chunk in changes.chunks(chunk_size) {
-            handles.push(scope.spawn(move || {
-                let repo = open_gix_repo_path(repo_path)?;
-                gix_changes_line_stats_with_repo(&repo, chunk)
-            }));
-        }
-
-        for handle in handles {
-            let (chunk_additions, chunk_deletions) = handle
-                .join()
-                .map_err(|_| DiffyError::General("Gitoxide stats worker panicked".to_owned()))??;
-            additions = additions.saturating_add(chunk_additions);
-            deletions = deletions.saturating_add(chunk_deletions);
-        }
-        Ok::<(), DiffyError>(())
-    })?;
-
-    Ok((additions, deletions))
-}
-
-fn gix_changes_line_stats_with_repo(
-    repo: &gix::Repository,
-    changes: &[GixChange],
-) -> Result<(u32, u32)> {
-    let mut additions = 0_u32;
-    let mut deletions = 0_u32;
-    for change in changes {
-        let Some((old_content, new_content)) = gix_change_contents(repo, change)? else {
-            continue;
-        };
-        if is_binary_bytes(old_content.as_bytes()) || is_binary_bytes(new_content.as_bytes()) {
-            continue;
-        }
-        let stats = gix_line_stats(old_content.as_bytes(), new_content.as_bytes());
-        additions = additions.saturating_add(stats.0);
-        deletions = deletions.saturating_add(stats.1);
-    }
-    Ok((additions, deletions))
+    available.min(LINE_STATS_MAX_WORKERS).min(useful).max(1)
 }
 
 fn resolve_compare_refs(spec: &CompareSpec, git: &GitService) -> Result<(String, String)> {
@@ -445,12 +398,13 @@ fn compare_output_from_gix_changes(
     reporter: Option<&dyn ProgressSink>,
 ) -> Result<CompareOutput> {
     let mut output = CompareOutput::default();
-    if changes.len() > DEFER_HUNKS_FILE_LIMIT {
-        output.carbon.files = changes
+    if changes.len() > COMPARE_SUMMARY_FILE_LIMIT {
+        output.file_summaries = changes
             .iter()
             .enumerate()
-            .map(|(index, change)| carbon_summary_from_gix_change(change, index, true, false))
+            .map(|(index, change)| compare_summary_from_gix_change(change, index, true, false))
             .collect();
+        output.compact_file_summaries();
         return Ok(output);
     }
 
@@ -568,6 +522,23 @@ fn load_gix_blob_content<'repo>(
         return Ok(GixBlobContent::Empty);
     };
     load_gix_blob_id(repo, gix_object_id(&oid.0)?)
+}
+
+fn load_gix_tree_blob_content<'repo>(
+    repo: &'repo gix::Repository,
+    tree: &gix::Tree<'_>,
+    path: Option<&str>,
+) -> Result<Option<GixBlobContent<'repo>>> {
+    let Some(path) = path else {
+        return Ok(Some(GixBlobContent::Empty));
+    };
+    let Some(entry) = tree.lookup_entry_by_path(path).map_err(gix_error)? else {
+        return Ok(None);
+    };
+    if !entry.mode().is_blob_or_symlink() {
+        return Ok(None);
+    }
+    Ok(Some(load_gix_blob_id(repo, entry.object_id())?))
 }
 
 fn load_gix_blob_id(repo: &gix::Repository, oid: gix::ObjectId) -> Result<GixBlobContent<'_>> {
@@ -704,9 +675,11 @@ fn raw_patch_header(
         }
         _ => {}
     }
-    if old_mode.is_some() && new_mode.is_some() && old_mode != new_mode {
-        raw.push_str(&format!("old mode {}\n", old_mode.unwrap()));
-        raw.push_str(&format!("new mode {}\n", new_mode.unwrap()));
+    if let (Some(old_mode), Some(new_mode)) = (old_mode, new_mode)
+        && old_mode != new_mode
+    {
+        raw.push_str(&format!("old mode {old_mode}\n"));
+        raw.push_str(&format!("new mode {new_mode}\n"));
     }
     raw.push_str(&format!("index {old_oid}..{new_oid} {mode}\n"));
     raw.push_str(&format!("--- {old_header}\n"));
@@ -823,6 +796,30 @@ fn carbon_summary_from_gix_change(
     }
 }
 
+fn compare_summary_from_gix_change(
+    change: &GixChange,
+    _file_id: usize,
+    stats_deferred: bool,
+    is_binary: bool,
+) -> CompareFileSummary {
+    let meta = gix_change_meta(change);
+    CompareFileSummary {
+        paths: CompareFilePaths::from_paths(meta.old_path.as_deref(), meta.new_path.as_deref()),
+        old_oid: meta.old_oid.map(std::sync::Arc::from),
+        new_oid: meta.new_oid.map(std::sync::Arc::from),
+        status: if is_binary {
+            carbon::FileStatus::Binary
+        } else {
+            meta.status
+        },
+        is_binary,
+        is_partial: stats_deferred,
+        additions: 0,
+        deletions: 0,
+        stats_deferred,
+    }
+}
+
 fn carbon_file_from_raw_diff(
     raw_diff: &str,
     file_id: usize,
@@ -868,10 +865,9 @@ fn usize_to_u32_saturating(value: usize) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use git2::{Oid, Repository, Signature};
     use std::fs;
     use std::path::Path;
-
-    use git2::{Oid, Repository, Signature};
     use tempfile::TempDir;
 
     use super::GitDiffBackend;
@@ -928,6 +924,7 @@ mod tests {
     }
 
     use crate::core::compare::service::CompareOutput;
+    use crate::core::compare::stats::{CompareFilePaths, CompareFileStatsTarget, ComparePath};
 
     #[test]
     fn builtin_backend_uses_single_commit_resolution() {
@@ -1039,6 +1036,68 @@ mod tests {
 
         assert_eq!(output.carbon.files.len(), 1);
         assert_eq!(output.carbon.files[0].path(), "src/a.rs");
+    }
+
+    #[test]
+    fn builtin_backend_can_compare_summary_path_without_renames() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        let first = commit_file(&repo, "src/a.rs", "before\n", "initial a");
+        let _ = commit_file(&repo, "src/b.rs", "before\n", "initial b");
+        let second = commit_file(&repo, "src/a.rs", "after\n", "update a");
+        let _ = commit_file(&repo, "src/b.rs", "after\n", "update b");
+
+        let mut git = GitService::new();
+        git.open(repo_dir.path().to_str().unwrap()).unwrap();
+
+        let output = GitDiffBackend
+            .compare_path_no_renames(
+                &CompareSpec {
+                    mode: CompareMode::TwoDot,
+                    left_ref: first,
+                    right_ref: second,
+                    renderer: RendererKind::Builtin,
+                    layout: LayoutMode::Unified,
+                },
+                "src/a.rs",
+                &git,
+            )
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(output.carbon.files.len(), 1);
+        assert_eq!(output.carbon.files[0].path(), "src/a.rs");
+    }
+
+    #[test]
+    fn builtin_backend_can_compute_deferred_stats_from_paths() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        let first = commit_file(&repo, "src/a.rs", "same\nold\n", "initial");
+        let second = commit_file(&repo, "src/a.rs", "same\nnew\nextra\n", "update");
+
+        let mut git = GitService::new();
+        git.open(repo_dir.path().to_str().unwrap()).unwrap();
+
+        let stats = GitDiffBackend.deferred_file_line_stats_batch_for_request(
+            &CompareSpec {
+                mode: CompareMode::TwoDot,
+                left_ref: first,
+                right_ref: second,
+                renderer: RendererKind::Builtin,
+                layout: LayoutMode::Unified,
+            },
+            &git,
+            &[CompareFileStatsTarget {
+                paths: CompareFilePaths::Same(ComparePath::from("src/a.rs")),
+                status: carbon::FileStatus::Modified,
+                is_binary: false,
+                additions: 0,
+                deletions: 0,
+            }],
+        );
+
+        assert_eq!(stats, vec![Some((2, 1))]);
     }
 
     #[test]

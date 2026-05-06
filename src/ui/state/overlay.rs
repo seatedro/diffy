@@ -61,11 +61,10 @@ impl AppState {
                 Vec::new()
             }
             ShowKeyboardShortcuts => {
-                if self.overlays_top() == Some(OverlaySurface::KeyboardShortcuts) {
-                    self.pop_overlay();
-                } else {
-                    self.push_overlay(OverlaySurface::KeyboardShortcuts, None);
-                }
+                self.clear_overlays();
+                self.app_view.set(&self.store, AppView::Settings);
+                self.settings_section
+                    .set(&self.store, SettingsSection::Keymaps);
                 Vec::new()
             }
         }

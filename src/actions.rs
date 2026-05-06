@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 use crate::core::vcs::model::{PublishAction, VcsOperation};
+use crate::input::ShortcutCommand;
 use crate::platform::secrets::AiKeyKind;
 use crate::ui::state::{CompareField, FocusTarget, SettingsSection, SidebarTab};
 use crate::ui::theme::ThemeMode;
@@ -202,9 +203,19 @@ pub enum SettingsAction {
     ToggleContinuousScroll,
     OpenThemePicker,
     OpenSettings,
+    OpenKeymaps,
     CloseSettings,
     ToggleAutoUpdate,
     SetSettingsSection(SettingsSection),
+    BeginKeymapRebind(ShortcutCommand),
+    ApplyKeymapBinding {
+        command: ShortcutCommand,
+        binding: String,
+    },
+    ResetKeymapBinding(ShortcutCommand),
+    CancelKeymapRebind,
+    ScrollKeymapsPx(i32),
+    ScrollKeymapsToPx(u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

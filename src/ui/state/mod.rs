@@ -183,6 +183,7 @@ pub enum SettingsSection {
     Appearance,
     Editor,
     Behavior,
+    Keymaps,
     Clankers,
     About,
 }
@@ -193,6 +194,7 @@ impl SettingsSection {
             Self::Appearance => "Appearance",
             Self::Editor => "Editor",
             Self::Behavior => "Behavior",
+            Self::Keymaps => "Keymaps",
             Self::Clankers => "Clankers",
             Self::About => "About",
         }
@@ -203,15 +205,17 @@ impl SettingsSection {
             Self::Appearance => lucide::SUN,
             Self::Editor => lucide::FILE_CODE,
             Self::Behavior => lucide::SETTINGS,
+            Self::Keymaps => lucide::KEY,
             Self::Clankers => lucide::SPARKLES,
             Self::About => lucide::INFO,
         }
     }
 
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Appearance,
         Self::Editor,
         Self::Behavior,
+        Self::Keymaps,
         Self::Clankers,
         Self::About,
     ];
@@ -804,6 +808,19 @@ impl AppState {
         let cur = self.file_list.scroll_offset_px.get(&self.store);
         self.file_list
             .scroll_offset_px
+            .set(&self.store, cur.clamp(0.0, max));
+    }
+
+    pub fn keymaps_max_scroll_px(&self) -> f32 {
+        let content = self.keymaps_content_height_px.get(&self.store);
+        let viewport = self.keymaps_viewport_height_px.get(&self.store);
+        (content - viewport).max(0.0)
+    }
+
+    pub fn clamp_keymaps_scroll(&mut self) {
+        let max = self.keymaps_max_scroll_px();
+        let cur = self.keymaps_scroll_top_px.get(&self.store);
+        self.keymaps_scroll_top_px
             .set(&self.store, cur.clamp(0.0, max));
     }
 
@@ -2195,6 +2212,10 @@ pub struct AppState {
     pub compare_progress: Signal<Option<CompareProgress>>,
     pub app_view: Signal<AppView>,
     pub settings_section: Signal<SettingsSection>,
+    pub keymap_capture: Signal<Option<crate::input::ShortcutCommand>>,
+    pub keymaps_scroll_top_px: Signal<f32>,
+    pub keymaps_viewport_height_px: Signal<f32>,
+    pub keymaps_content_height_px: Signal<f32>,
     pub compare: CompareStateStore,
     pub repository: RepositoryStateStore,
     pub workspace: WorkspaceStateStore,
@@ -2251,6 +2272,10 @@ impl Default for AppState {
         let compare_progress = store.create(None::<CompareProgress>);
         let app_view = store.create(AppView::default());
         let settings_section = store.create(SettingsSection::default());
+        let keymap_capture = store.create(None::<crate::input::ShortcutCommand>);
+        let keymaps_scroll_top_px = store.create(0.0_f32);
+        let keymaps_viewport_height_px = store.create(0.0_f32);
+        let keymaps_content_height_px = store.create(0.0_f32);
         let last_error = store.create(None::<String>);
         let theme_preview_original = store.create(None::<String>);
         let toasts = store.create(Vec::<Toast>::new());
@@ -2270,6 +2295,10 @@ impl Default for AppState {
             compare_progress,
             app_view,
             settings_section,
+            keymap_capture,
+            keymaps_scroll_top_px,
+            keymaps_viewport_height_px,
+            keymaps_content_height_px,
             compare,
             repository,
             workspace,
@@ -2369,6 +2398,10 @@ impl AppState {
         let compare_progress = store.create(None::<CompareProgress>);
         let app_view = store.create(AppView::default());
         let settings_section = store.create(SettingsSection::default());
+        let keymap_capture = store.create(None::<crate::input::ShortcutCommand>);
+        let keymaps_scroll_top_px = store.create(0.0_f32);
+        let keymaps_viewport_height_px = store.create(0.0_f32);
+        let keymaps_content_height_px = store.create(0.0_f32);
         let last_error = store.create(None::<String>);
         let theme_preview_original = store.create(None::<String>);
         let toasts = store.create(Vec::<Toast>::new());
@@ -2420,6 +2453,10 @@ impl AppState {
             compare_progress,
             app_view,
             settings_section,
+            keymap_capture,
+            keymaps_scroll_top_px,
+            keymaps_viewport_height_px,
+            keymaps_content_height_px,
             compare,
             repository,
             workspace,
@@ -5642,7 +5679,7 @@ impl AppState {
                         self.apply_action(crate::actions::CompareAction::OpenCompareMenu)
                     }
                     PaletteCommand::ShowKeyboardShortcuts => {
-                        self.apply_action(crate::actions::OverlayAction::ShowKeyboardShortcuts)
+                        self.apply_action(crate::actions::SettingsAction::OpenKeymaps)
                     }
                     PaletteCommand::RestoreCompare => {
                         self.apply_action(crate::actions::CompareAction::ClearSidebarCommit)
@@ -6436,8 +6473,8 @@ impl AppState {
                 PaletteCommand::OpenCompareMenu,
             ),
             (
-                "Keyboard Shortcuts".to_owned(),
-                "Show available keyboard commands".to_owned(),
+                "Keymaps".to_owned(),
+                "Review and rebind keyboard shortcuts".to_owned(),
                 PaletteCommand::ShowKeyboardShortcuts,
             ),
             (

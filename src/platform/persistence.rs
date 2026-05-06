@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 use crate::core::error::{DiffyError, Result};
 use crate::core::forge::github::GitHubUser;
+use crate::input::KeymapOverride;
 use crate::ui::theme::ThemeMode;
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
@@ -64,6 +65,7 @@ pub struct Settings {
     pub auto_update: bool,
     pub continuous_scroll: bool,
     pub ai_steering_prompt: String,
+    pub keymap_overrides: Vec<KeymapOverride>,
 }
 
 impl Default for Settings {
@@ -80,6 +82,7 @@ impl Default for Settings {
             auto_update: true,
             continuous_scroll: false,
             ai_steering_prompt: String::new(),
+            keymap_overrides: Vec::new(),
         }
     }
 }

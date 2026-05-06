@@ -11,7 +11,9 @@ use crate::ui::state::{
     WorkspaceSource,
 };
 
-use super::{InputContext, InputOutcome, InputOwner, InputSystem, KeyChord};
+use super::{
+    InputContext, InputOutcome, InputOwner, InputSystem, KeyChord, ShortcutCommand, binding_matches,
+};
 
 impl InputSystem {
     pub(super) fn route_text_input(&mut self, state: &AppState, text: String) -> InputOutcome {
@@ -25,11 +27,15 @@ impl InputSystem {
     }
 
     pub(super) fn route_key_press(&mut self, state: &AppState, chord: KeyChord) -> InputOutcome {
+        if let Some(actions) = keymap_capture_actions(state, &chord) {
+            return InputOutcome::actions(actions);
+        }
+
         if chord.logical_char() != Some("g") {
             self.pending_g = false;
         }
 
-        if let Some(action) = global_shortcut_action(&chord) {
+        if let Some(action) = global_shortcut_action(state, &chord) {
             return InputOutcome::action(action);
         }
 
@@ -41,12 +47,11 @@ impl InputSystem {
         }
 
         let actions = match ctx.owner {
-            InputOwner::TextField(target) => {
-                text_field_key_actions(&ctx, target, &chord).or_else(|| {
+            InputOwner::TextField(target) => text_field_key_actions(state, &ctx, target, &chord)
+                .or_else(|| {
                     ctx.overlay
                         .and_then(|surface| overlay_key_actions(state, surface, &chord, false))
-                })
-            }
+                }),
             InputOwner::Overlay(surface) => overlay_key_actions(state, surface, &chord, true),
             InputOwner::Editor => editor_key_actions(self, state, &chord),
             InputOwner::Workspace => workspace_key_actions(self, state, &chord),
@@ -56,19 +61,45 @@ impl InputSystem {
     }
 }
 
-fn global_shortcut_action(chord: &KeyChord) -> Option<Action> {
-    if !chord.ctrl_or_super() {
-        return None;
+fn global_shortcut_action(state: &AppState, chord: &KeyChord) -> Option<Action> {
+    let binding = chord.binding_string()?;
+    let overrides = &state.settings.keymap_overrides;
+    if matches_binding(overrides, ShortcutCommand::OpenSearch, &binding) {
+        Some(EditorAction::OpenSearch.into())
+    } else if matches_binding(overrides, ShortcutCommand::OpenCommandPalette, &binding) {
+        Some(OverlayAction::OpenCommandPalette.into())
+    } else if matches_binding(overrides, ShortcutCommand::IncreaseUiScale, &binding) {
+        Some(SettingsAction::IncreaseUiScale.into())
+    } else if matches_binding(overrides, ShortcutCommand::DecreaseUiScale, &binding) {
+        Some(SettingsAction::DecreaseUiScale.into())
+    } else if matches_binding(overrides, ShortcutCommand::ToggleSidebar, &binding) {
+        Some(FileListAction::ToggleSidebar.into())
+    } else if matches_binding(overrides, ShortcutCommand::OpenSettings, &binding) {
+        Some(SettingsAction::OpenSettings.into())
+    } else if matches_binding(overrides, ShortcutCommand::ShowKeymaps, &binding) {
+        Some(SettingsAction::OpenKeymaps.into())
+    } else {
+        None
     }
-    match chord.logical_char()?.to_ascii_lowercase().as_str() {
-        "f" => Some(EditorAction::OpenSearch.into()),
-        "p" => Some(OverlayAction::OpenCommandPalette.into()),
-        "=" | "+" => Some(SettingsAction::IncreaseUiScale.into()),
-        "-" | "_" => Some(SettingsAction::DecreaseUiScale.into()),
-        "b" => Some(FileListAction::ToggleSidebar.into()),
-        "," => Some(SettingsAction::OpenSettings.into()),
-        _ => None,
+}
+
+fn keymap_capture_actions(state: &AppState, chord: &KeyChord) -> Option<Vec<Action>> {
+    let command = state.keymap_capture.get(&state.store)?;
+    if chord.named() == Some(NamedKey::Escape) {
+        return Some(vec![SettingsAction::CancelKeymapRebind.into()]);
     }
+    let binding = chord.binding_string()?;
+    Some(vec![
+        SettingsAction::ApplyKeymapBinding { command, binding }.into(),
+    ])
+}
+
+fn matches_binding(
+    overrides: &[crate::input::KeymapOverride],
+    command: ShortcutCommand,
+    binding: &str,
+) -> bool {
+    binding_matches(overrides, command, binding)
 }
 
 fn clipboard_shortcut_action(chord: &KeyChord) -> Option<Action> {
@@ -88,10 +119,23 @@ fn clipboard_shortcut_action(chord: &KeyChord) -> Option<Action> {
 }
 
 fn text_field_key_actions(
+    state: &AppState,
     ctx: &InputContext,
     target: FocusTarget,
     chord: &KeyChord,
 ) -> Option<Vec<Action>> {
+    if target == FocusTarget::CommitEditor
+        && chord.binding_string().is_some_and(|binding| {
+            matches_binding(
+                &state.settings.keymap_overrides,
+                ShortcutCommand::SubmitCommit,
+                &binding,
+            )
+        })
+    {
+        return Some(vec![RepositoryAction::SubmitCommit.into()]);
+    }
+
     match chord.named() {
         Some(NamedKey::Enter) if target == FocusTarget::CommitEditor => {
             if chord.ctrl_or_super() {
@@ -539,161 +583,222 @@ fn workspace_key_actions_inner(
         }
         _ => {
             let ch = chord.logical_char()?;
-            if ch == "?" {
-                return Some(vec![OverlayAction::ShowKeyboardShortcuts.into()]);
-            }
+            let binding = chord.binding_string()?;
             if state.app_view.get(&state.store) == AppView::Settings {
-                return settings_key_actions(state, ch);
+                return settings_key_actions(state, &binding);
             }
             if state.overlays_top().is_some()
                 || state.workspace_mode.get(&state.store) != WorkspaceMode::Ready
             {
                 return None;
             }
-            match ch {
-                "/" => Some(vec![
+            let overrides = &state.settings.keymap_overrides;
+            if matches_binding(overrides, ShortcutCommand::FocusSidebarSearch, &binding) {
+                Some(vec![
                     AppAction::SetFocus(Some(FocusTarget::SidebarSearch)).into(),
-                ]),
-                "h" => Some(vec![
+                ])
+            } else if matches_binding(overrides, ShortcutCommand::FocusFileList, &binding) {
+                Some(vec![
                     AppAction::SetFocus(Some(FocusTarget::FileList)).into(),
-                ]),
-                "l" => Some(vec![AppAction::SetFocus(Some(FocusTarget::Editor)).into()]),
-                "]" | "}" => Some(vec![EditorAction::GoToNextHunk.into()]),
-                "[" | "{" => Some(vec![EditorAction::GoToPreviousHunk.into()]),
-                "n" => Some(vec![EditorAction::GoToNextFile.into()]),
-                "N" => Some(vec![EditorAction::GoToPreviousFile.into()]),
-                "j" if state.focus.get(&state.store) == Some(FocusTarget::FileList) => {
-                    Some(vec![FileListAction::SelectNextFile.into()])
+                ])
+            } else if matches_binding(overrides, ShortcutCommand::FocusEditor, &binding) {
+                Some(vec![AppAction::SetFocus(Some(FocusTarget::Editor)).into()])
+            } else if matches_binding(overrides, ShortcutCommand::NextHunk, &binding) {
+                Some(vec![EditorAction::GoToNextHunk.into()])
+            } else if matches_binding(overrides, ShortcutCommand::PreviousHunk, &binding) {
+                Some(vec![EditorAction::GoToPreviousHunk.into()])
+            } else if matches_binding(overrides, ShortcutCommand::NextFile, &binding) {
+                Some(vec![EditorAction::GoToNextFile.into()])
+            } else if matches_binding(overrides, ShortcutCommand::PreviousFile, &binding) {
+                Some(vec![EditorAction::GoToPreviousFile.into()])
+            } else if matches_binding(overrides, ShortcutCommand::MoveDown, &binding)
+                && state.focus.get(&state.store) == Some(FocusTarget::FileList)
+            {
+                Some(vec![FileListAction::SelectNextFile.into()])
+            } else if matches_binding(overrides, ShortcutCommand::MoveUp, &binding)
+                && state.focus.get(&state.store) == Some(FocusTarget::FileList)
+            {
+                Some(vec![FileListAction::SelectPreviousFile.into()])
+            } else if matches_binding(overrides, ShortcutCommand::MoveDown, &binding) {
+                Some(vec![EditorAction::ScrollViewportLines(1).into()])
+            } else if matches_binding(overrides, ShortcutCommand::MoveUp, &binding) {
+                Some(vec![EditorAction::ScrollViewportLines(-1).into()])
+            } else if matches_binding(overrides, ShortcutCommand::MoveRowDown, &binding) {
+                Some(vec![EditorAction::MoveRowCursor(1).into()])
+            } else if matches_binding(overrides, ShortcutCommand::MoveRowUp, &binding) {
+                Some(vec![EditorAction::MoveRowCursor(-1).into()])
+            } else if matches_binding(overrides, ShortcutCommand::ScrollHalfPageDown, &binding) {
+                Some(vec![EditorAction::ScrollViewportHalfPage(1).into()])
+            } else if matches_binding(overrides, ShortcutCommand::Unstage, &binding)
+                && state.workspace.source.get(&state.store) == WorkspaceSource::Status
+                && state.focus.get(&state.store) == Some(FocusTarget::FileList)
+            {
+                Some(vec![RepositoryAction::UnstageSelectedFile.into()])
+            } else if matches_binding(overrides, ShortcutCommand::ScrollHalfPageUp, &binding) {
+                Some(vec![EditorAction::ScrollViewportHalfPage(-1).into()])
+            } else if matches_binding(overrides, ShortcutCommand::GoToBottom, &binding) {
+                Some(vec![scroll_to_bottom_action(state).into()])
+            } else if ch == "g" {
+                let input = input.as_mut()?;
+                if input.pending_g {
+                    input.pending_g = false;
+                    Some(vec![scroll_to_top_action(state).into()])
+                } else {
+                    input.pending_g = true;
+                    Some(Vec::new())
                 }
-                "k" if state.focus.get(&state.store) == Some(FocusTarget::FileList) => {
-                    Some(vec![FileListAction::SelectPreviousFile.into()])
-                }
-                "j" => Some(vec![EditorAction::ScrollViewportLines(1).into()]),
-                "k" => Some(vec![EditorAction::ScrollViewportLines(-1).into()]),
-                "J" => Some(vec![EditorAction::MoveRowCursor(1).into()]),
-                "K" => Some(vec![EditorAction::MoveRowCursor(-1).into()]),
-                "d" => Some(vec![EditorAction::ScrollViewportHalfPage(1).into()]),
-                "u" if state.workspace.source.get(&state.store) == WorkspaceSource::Status
-                    && state.focus.get(&state.store) == Some(FocusTarget::FileList) =>
-                {
-                    Some(vec![RepositoryAction::UnstageSelectedFile.into()])
-                }
-                "u" => Some(vec![EditorAction::ScrollViewportHalfPage(-1).into()]),
-                "G" => Some(vec![scroll_to_bottom_action(state).into()]),
-                "g" => {
-                    let input = input.as_mut()?;
-                    if input.pending_g {
-                        input.pending_g = false;
-                        Some(vec![scroll_to_top_action(state).into()])
-                    } else {
-                        input.pending_g = true;
-                        Some(Vec::new())
-                    }
-                }
-                "1" => Some(vec![
+            } else if matches_binding(overrides, ShortcutCommand::UnifiedView, &binding) {
+                Some(vec![
                     CompareAction::SetLayoutMode(crate::core::compare::LayoutMode::Unified).into(),
-                ]),
-                "2" => Some(vec![
+                ])
+            } else if matches_binding(overrides, ShortcutCommand::SplitView, &binding) {
+                Some(vec![
                     CompareAction::SetLayoutMode(crate::core::compare::LayoutMode::Split).into(),
-                ]),
-                "m" => Some(vec![CompareAction::OpenCompareMenu.into()]),
-                "r" => Some(vec![WorkspaceAction::RefreshRepository.into()]),
-                "t" => Some(vec![FileListAction::ToggleSidebarMode.into()]),
-                "=" | "+" => Some(vec![FileListAction::ExpandAllFolders.into()]),
-                "-" | "_" => Some(vec![FileListAction::CollapseAllFolders.into()]),
-                "F" if has_commit_tab(state) => Some(vec![
+                ])
+            } else if matches_binding(overrides, ShortcutCommand::OpenCompareMenu, &binding) {
+                Some(vec![CompareAction::OpenCompareMenu.into()])
+            } else if matches_binding(overrides, ShortcutCommand::RefreshView, &binding) {
+                Some(vec![WorkspaceAction::RefreshRepository.into()])
+            } else if matches_binding(overrides, ShortcutCommand::ToggleFileTree, &binding) {
+                Some(vec![FileListAction::ToggleSidebarMode.into()])
+            } else if matches_binding(overrides, ShortcutCommand::ExpandFolders, &binding) {
+                Some(vec![FileListAction::ExpandAllFolders.into()])
+            } else if matches_binding(overrides, ShortcutCommand::CollapseFolders, &binding) {
+                Some(vec![FileListAction::CollapseAllFolders.into()])
+            } else if matches_binding(overrides, ShortcutCommand::SidebarFiles, &binding)
+                && has_commit_tab(state)
+            {
+                Some(vec![
                     FileListAction::SetSidebarTab(SidebarTab::Files).into(),
-                ]),
-                "C" if has_commit_tab(state) => Some(vec![
+                ])
+            } else if matches_binding(overrides, ShortcutCommand::SidebarCommits, &binding)
+                && has_commit_tab(state)
+            {
+                Some(vec![
                     FileListAction::SetSidebarTab(SidebarTab::Commits).into(),
-                ]),
-                "w" => Some(vec![SettingsAction::ToggleWrap.into()]),
-                "v" if can_select_diff_lines(state) => {
-                    Some(vec![RepositoryAction::ToggleCurrentLineSelection.into()])
-                }
-                "V" if can_select_diff_lines(state) => Some(vec![
+                ])
+            } else if matches_binding(overrides, ShortcutCommand::ToggleWrap, &binding) {
+                Some(vec![SettingsAction::ToggleWrap.into()])
+            } else if matches_binding(overrides, ShortcutCommand::ToggleLineSelection, &binding)
+                && can_select_diff_lines(state)
+            {
+                Some(vec![RepositoryAction::ToggleCurrentLineSelection.into()])
+            } else if matches_binding(
+                overrides,
+                ShortcutCommand::ToggleLineSelectionRange,
+                &binding,
+            ) && can_select_diff_lines(state)
+            {
+                Some(vec![
                     RepositoryAction::ToggleCurrentLineSelectionRange.into(),
-                ]),
-                "R" if state
+                ])
+            } else if matches_binding(overrides, ShortcutCommand::ReviewSelectedLines, &binding)
+                && state
                     .editor
                     .line_selection
-                    .with(&state.store, |selection| !selection.is_empty()) =>
-                {
-                    Some(vec![GitHubAction::OpenReviewCommentComposer.into()])
-                }
-                "s" => status_operation_actions(
+                    .with(&state.store, |selection| !selection.is_empty())
+            {
+                Some(vec![GitHubAction::OpenReviewCommentComposer.into()])
+            } else if matches_binding(overrides, ShortcutCommand::Stage, &binding) {
+                status_operation_actions(
                     state,
                     RepositoryAction::StageHunk,
                     RepositoryAction::StageSelectedLines,
                     RepositoryAction::StageSelectedFile,
-                ),
-                "S" | "U" => status_operation_actions(
+                )
+            } else if matches_binding(overrides, ShortcutCommand::Unstage, &binding) {
+                status_operation_actions(
                     state,
                     RepositoryAction::UnstageHunk,
                     RepositoryAction::UnstageSelectedLines,
                     RepositoryAction::UnstageSelectedFile,
-                ),
-                "x" => status_operation_actions(
+                )
+            } else if matches_binding(overrides, ShortcutCommand::Discard, &binding) {
+                status_operation_actions(
                     state,
                     RepositoryAction::DiscardHunk,
                     RepositoryAction::DiscardSelectedLines,
                     RepositoryAction::DiscardSelectedFile,
-                ),
-                "a" if state.workspace.source.get(&state.store) == WorkspaceSource::Status => {
-                    Some(vec![RepositoryAction::StageAllFiles.into()])
-                }
-                "A" if state.workspace.source.get(&state.store) == WorkspaceSource::Status => {
-                    Some(vec![RepositoryAction::UnstageAllFiles.into()])
-                }
-                "c" if state.workspace.source.get(&state.store) == WorkspaceSource::Status => {
-                    Some(vec![
-                        AppAction::SetFocus(Some(FocusTarget::CommitEditor)).into(),
-                    ])
-                }
-                "f" => Some(vec![RepositoryAction::FetchAllRemotes.into()]),
-                "p" => Some(vec![RepositoryAction::PullCurrentBranch.into()]),
-                "P" => Some(vec![RepositoryAction::OpenPublishMenu.into()]),
-                " " => Some(vec![if chord.shift() {
-                    EditorAction::ScrollViewportPages(-1).into()
-                } else {
-                    EditorAction::ScrollViewportPages(1).into()
-                }]),
-                _ => None,
+                )
+            } else if matches_binding(overrides, ShortcutCommand::StageAll, &binding)
+                && state.workspace.source.get(&state.store) == WorkspaceSource::Status
+            {
+                Some(vec![RepositoryAction::StageAllFiles.into()])
+            } else if matches_binding(overrides, ShortcutCommand::UnstageAll, &binding)
+                && state.workspace.source.get(&state.store) == WorkspaceSource::Status
+            {
+                Some(vec![RepositoryAction::UnstageAllFiles.into()])
+            } else if matches_binding(overrides, ShortcutCommand::FocusCommitMessage, &binding)
+                && state.workspace.source.get(&state.store) == WorkspaceSource::Status
+            {
+                Some(vec![
+                    AppAction::SetFocus(Some(FocusTarget::CommitEditor)).into(),
+                ])
+            } else if matches_binding(overrides, ShortcutCommand::FetchRemotes, &binding) {
+                Some(vec![RepositoryAction::FetchAllRemotes.into()])
+            } else if matches_binding(overrides, ShortcutCommand::PullCurrentBranch, &binding) {
+                Some(vec![RepositoryAction::PullCurrentBranch.into()])
+            } else if matches_binding(overrides, ShortcutCommand::OpenPublishMenu, &binding) {
+                Some(vec![RepositoryAction::OpenPublishMenu.into()])
+            } else if matches_binding(overrides, ShortcutCommand::PageUp, &binding) {
+                Some(vec![EditorAction::ScrollViewportPages(-1).into()])
+            } else if matches_binding(overrides, ShortcutCommand::PageDown, &binding) {
+                Some(vec![EditorAction::ScrollViewportPages(1).into()])
+            } else {
+                None
             }
         }
     }
 }
 
-fn settings_key_actions(state: &AppState, ch: &str) -> Option<Vec<Action>> {
-    match ch {
-        "j" | "J" => Some(vec![
+fn settings_key_actions(state: &AppState, binding: &str) -> Option<Vec<Action>> {
+    let overrides = &state.settings.keymap_overrides;
+    if matches_binding(overrides, ShortcutCommand::SettingsNextSection, binding) {
+        Some(vec![
             SettingsAction::SetSettingsSection(adjacent_settings_section(state, 1)).into(),
-        ]),
-        "k" | "K" => Some(vec![
+        ])
+    } else if matches_binding(overrides, ShortcutCommand::SettingsPreviousSection, binding) {
+        Some(vec![
             SettingsAction::SetSettingsSection(adjacent_settings_section(state, -1)).into(),
-        ]),
-        "1" => Some(vec![
+        ])
+    } else if matches_binding(overrides, ShortcutCommand::SettingsAppearance, binding) {
+        Some(vec![
             SettingsAction::SetSettingsSection(SettingsSection::Appearance).into(),
-        ]),
-        "2" => Some(vec![
+        ])
+    } else if matches_binding(overrides, ShortcutCommand::SettingsEditor, binding) {
+        Some(vec![
             SettingsAction::SetSettingsSection(SettingsSection::Editor).into(),
-        ]),
-        "3" => Some(vec![
+        ])
+    } else if matches_binding(overrides, ShortcutCommand::SettingsBehavior, binding) {
+        Some(vec![
             SettingsAction::SetSettingsSection(SettingsSection::Behavior).into(),
-        ]),
-        "4" => Some(vec![
+        ])
+    } else if matches_binding(overrides, ShortcutCommand::SettingsKeymaps, binding) {
+        Some(vec![
+            SettingsAction::SetSettingsSection(SettingsSection::Keymaps).into(),
+        ])
+    } else if matches_binding(overrides, ShortcutCommand::SettingsClankers, binding) {
+        Some(vec![
             SettingsAction::SetSettingsSection(SettingsSection::Clankers).into(),
-        ]),
-        "5" => Some(vec![
+        ])
+    } else if matches_binding(overrides, ShortcutCommand::SettingsAbout, binding) {
+        Some(vec![
             SettingsAction::SetSettingsSection(SettingsSection::About).into(),
-        ]),
-        "t" => Some(vec![SettingsAction::ToggleThemeMode.into()]),
-        "b" => Some(vec![SettingsAction::OpenThemePicker.into()]),
-        "w" => Some(vec![SettingsAction::ToggleWrap.into()]),
-        "c" => Some(vec![SettingsAction::ToggleContinuousScroll.into()]),
-        "a" => Some(vec![SettingsAction::ToggleAutoUpdate.into()]),
-        "u" => Some(vec![UpdateAction::CheckForUpdates.into()]),
-        _ => None,
+        ])
+    } else if matches_binding(overrides, ShortcutCommand::ToggleThemeMode, binding) {
+        Some(vec![SettingsAction::ToggleThemeMode.into()])
+    } else if matches_binding(overrides, ShortcutCommand::OpenThemePicker, binding) {
+        Some(vec![SettingsAction::OpenThemePicker.into()])
+    } else if matches_binding(overrides, ShortcutCommand::ToggleWrap, binding) {
+        Some(vec![SettingsAction::ToggleWrap.into()])
+    } else if matches_binding(overrides, ShortcutCommand::ToggleContinuousScroll, binding) {
+        Some(vec![SettingsAction::ToggleContinuousScroll.into()])
+    } else if matches_binding(overrides, ShortcutCommand::ToggleAutoUpdate, binding) {
+        Some(vec![SettingsAction::ToggleAutoUpdate.into()])
+    } else if matches_binding(overrides, ShortcutCommand::CheckUpdates, binding) {
+        Some(vec![UpdateAction::CheckForUpdates.into()])
+    } else {
+        None
     }
 }
 

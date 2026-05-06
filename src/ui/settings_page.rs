@@ -4,6 +4,10 @@ use crate::actions::Action;
 use crate::ai::stream::{ANTHROPIC_MODEL, OPENAI_MODEL};
 use crate::core::compare::backends::DifftasticBackend;
 use crate::core::compare::{LayoutMode, RendererKind};
+use crate::input::{
+    ShortcutCommand, ShortcutEntry, active_bindings, binding_conflict, format_binding,
+    override_for, shortcut_groups,
+};
 use crate::platform::secrets::AiKeyKind;
 use crate::ui::components::{
     Button, ButtonSize, ButtonStyle, SegmentedControl, SegmentedItem, toggle,
@@ -19,6 +23,7 @@ use crate::ui::theme::{Color, Theme, ThemeMode};
 
 const NAV_WIDTH: f32 = 220.0;
 const CONTENT_MAX_WIDTH: f32 = 720.0;
+const KEYMAPS_MAX_WIDTH: f32 = 1500.0;
 
 pub fn settings_page(state: &AppState, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
@@ -99,7 +104,12 @@ fn nav_row(theme: &Theme, section: SettingsSection, selected: bool) -> AnyElemen
 fn section_content(state: &AppState, theme: &Theme, section: SettingsSection) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
-    let max_w = (CONTENT_MAX_WIDTH * scale).round();
+    let max_w = (if section == SettingsSection::Keymaps {
+        KEYMAPS_MAX_WIDTH
+    } else {
+        CONTENT_MAX_WIDTH
+    } * scale)
+        .round();
 
     let (title, description, body) = match section {
         SettingsSection::Appearance => (
@@ -116,6 +126,11 @@ fn section_content(state: &AppState, theme: &Theme, section: SettingsSection) ->
             "Behavior",
             "Input and interaction.",
             behavior_section(state, theme),
+        ),
+        SettingsSection::Keymaps => (
+            "Keymaps",
+            "Review and rebind keyboard shortcuts.",
+            keymaps_section(state, theme),
         ),
         SettingsSection::Clankers => (
             "Clankers",
@@ -135,7 +150,7 @@ fn section_content(state: &AppState, theme: &Theme, section: SettingsSection) ->
              px={Sp::XXL}
              pt={Sp::XL}
              pb={Sp::XXL}>
-            <div class="flex-col" max_w={max_w} gap={Sp::LG}>
+            <div class="flex-1 flex-col" min_h={0.0} max_w={max_w} gap={Sp::LG}>
                 <div class="flex-col" gap={Sp::XXS}>
                     <text class="text-lg font-semibold" color={tc.text_strong}>{title}</text>
                     <text class="text-sm" color={tc.text_muted}>{description}</text>
@@ -144,6 +159,301 @@ fn section_content(state: &AppState, theme: &Theme, section: SettingsSection) ->
             </div>
         </div>
     }
+}
+
+fn keymaps_section(state: &AppState, theme: &Theme) -> AnyElement {
+    let scale = theme.metrics.ui_scale();
+    let capture = state.keymap_capture.get(&state.store);
+    let scroll_px = state.keymaps_scroll_top_px.get(&state.store);
+    let total_h = state.keymaps_content_height_px.get(&state.store);
+
+    let groups: Vec<AnyElement> = shortcut_groups()
+        .iter()
+        .map(|group| keymap_group(state, theme, group.title, group.entries, capture))
+        .collect();
+
+    view! { scale,
+        <div class="flex-1 flex-col" min_h={0.0}
+             clip
+             scroll_y={scroll_px}
+             scroll_total={total_h}
+             on_scroll={ScrollActionBuilder::SettingsKeymaps}>
+            <div class="flex-col" gap={Sp::LG} pb={Sp::XL}>
+                {...groups}
+            </div>
+        </div>
+    }
+    .into_any()
+}
+
+/// Content height of the keymaps scroll body, in scaled (logical) pixels.
+/// Used by `shell::build_ui_frame` to clamp wheel scroll and to drive the
+/// scrollbar thumb. Mirror any layout change in `keymap_group` / `keymap_row`
+/// here, otherwise the scrollbar position drifts from real content.
+pub fn keymaps_content_height(theme: &Theme) -> f32 {
+    let m = &theme.metrics;
+    let scale = m.ui_scale();
+
+    // Row height is the max of:
+    //   * compact button: icon (14) + 2*Sp::XXS padding = 18 base
+    //   * description text-sm with ~1.4 line-height: ui_small_font_size * 1.4
+    //   * key chip: text-xs (~ui_small - 1) line-box + 2px border
+    // plus row vertical padding (2*Sp::XXS).
+    let row_button_h = (Ico::BUTTON_COMPACT + 2.0 * Sp::XXS) * scale;
+    let row_text_h = m.ui_small_font_size * 1.4;
+    let row_chip_h = (m.ui_small_font_size - scale) * 1.4 + 2.0;
+    let row_inner_h = row_button_h.max(row_text_h).max(row_chip_h);
+    let row_h = row_inner_h + 2.0 * Sp::XXS * scale;
+
+    // Header strip: text-xs line-box + 2*(Sp::XS + Sp::XXS) padding.
+    let header_h = m.ui_small_font_size * 1.4 + 2.0 * (Sp::XS + Sp::XXS) * scale;
+    let line_h = 1.0;
+    let group_gap = Sp::LG * scale;
+    let bottom_pad = Sp::XL * scale;
+
+    let groups = shortcut_groups();
+    let n_groups = groups.len() as f32;
+    let mut total = bottom_pad + (n_groups - 1.0).max(0.0) * group_gap;
+
+    for g in groups {
+        let pair_count = g.entries.len().div_ceil(2) as f32;
+        let body_h = pair_count * row_h + (pair_count - 1.0).max(0.0) * line_h;
+        total += header_h + line_h + body_h;
+    }
+
+    total
+}
+
+fn keymap_group(
+    state: &AppState,
+    theme: &Theme,
+    title: &str,
+    entries: &'static [ShortcutEntry],
+    capture: Option<ShortcutCommand>,
+) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = theme.metrics.ui_scale();
+
+    let pair_count = entries.len().div_ceil(2);
+    let pairs: Vec<AnyElement> = entries
+        .chunks(2)
+        .enumerate()
+        .map(|(idx, chunk)| {
+            let left = keymap_row(state, theme, &chunk[0], capture);
+            let right: AnyElement = if let Some(entry) = chunk.get(1) {
+                keymap_row(state, theme, entry, capture)
+            } else {
+                view! { scale, <div class="flex-1" /> }.into_any()
+            };
+            let separator: Option<AnyElement> = if idx + 1 < pair_count {
+                Some(
+                    view! { scale,
+                        <div class="w-full" h={1.0} bg={tc.border_variant}></div>
+                    }
+                    .into_any(),
+                )
+            } else {
+                None
+            };
+            view! { scale,
+                <div class="flex-col">
+                    <div class="flex-row items-stretch">
+                        <div class="flex-1" min_w={0.0}>{left}</div>
+                        <div class="shrink-0" w={1.0} bg={tc.border_variant}></div>
+                        <div class="flex-1" min_w={0.0}>{right}</div>
+                    </div>
+                    {?separator}
+                </div>
+            }
+            .into_any()
+        })
+        .collect();
+
+    view! { scale,
+        <div class="flex-col"
+             bg={tc.surface}
+             border={tc.border_variant}
+             rounded={Rad::MD}>
+            <div class="flex-row items-center w-full"
+                 px={Sp::MD} py={Sp::XS + Sp::XXS}
+                 bg={tc.elevated_surface}>
+                <text class="text-xs font-semibold mono" color={tc.accent}>{title.to_uppercase()}</text>
+                <spacer />
+                <text class="text-xs mono" color={tc.text_muted}>
+                    {format!("{} {}", entries.len(), if entries.len() == 1 { "binding" } else { "bindings" })}
+                </text>
+            </div>
+            <div class="w-full" h={1.0} bg={tc.border_variant}></div>
+            <div class="flex-col">
+                {...pairs}
+            </div>
+        </div>
+    }
+    .into_any()
+}
+
+fn key_chip(label: &str, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = theme.metrics.ui_scale();
+    view! { scale,
+        <div class="shrink-0 items-center justify-center"
+             px={Sp::XS + Sp::XXS} py={0.0}
+             bg={tc.element_background}
+             border={tc.border_variant}
+             rounded={Rad::SM}>
+            <text class="text-xs mono text-center" color={tc.text}>{label}</text>
+        </div>
+    }
+    .into_any()
+}
+
+fn binding_chips(binding: &str, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = theme.metrics.ui_scale();
+    let formatted = format_binding(binding);
+    let parts: Vec<String> = formatted.split('+').map(|p| p.trim().to_owned()).collect();
+
+    view! { scale,
+        <div class="flex-row items-center" gap={Sp::XXS}>
+            for (i, part) in parts.iter().enumerate() {
+                <fragment>
+                    if i > 0 {
+                        <text class="text-xs mono" color={tc.text_muted}>{"+"}</text>
+                    }
+                    {key_chip(part, theme)}
+                </fragment>
+            }
+        </div>
+    }
+    .into_any()
+}
+
+fn keymap_row(
+    state: &AppState,
+    theme: &Theme,
+    entry: &ShortcutEntry,
+    capture: Option<ShortcutCommand>,
+) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = theme.metrics.ui_scale();
+    let command = entry.command;
+    let overrides = &state.settings.keymap_overrides;
+    let active = active_bindings(overrides, command);
+    let customized = override_for(overrides, command).is_some();
+    let recording = capture == Some(command);
+    let conflict = active
+        .first()
+        .and_then(|binding| binding_conflict(overrides, entry, binding))
+        .map(|entry| format!("Conflicts with {}", entry.description));
+
+    let description_color = if customized { tc.text_strong } else { tc.text };
+
+    let binding_view: AnyElement = if recording {
+        view! { scale,
+            <text class="text-xs mono" color={tc.text_accent}>{"\u{2190} press keys"}</text>
+        }
+        .into_any()
+    } else {
+        let chips: Vec<AnyElement> = active
+            .iter()
+            .enumerate()
+            .map(|(i, binding)| {
+                view! { scale,
+                    <div class="flex-row items-center" gap={Sp::XXS}>
+                        if i > 0 {
+                            <text class="text-xs mono" color={tc.text_muted}>{"/"}</text>
+                        }
+                        {binding_chips(binding, theme)}
+                    </div>
+                }
+                .into_any()
+            })
+            .collect();
+        view! { scale,
+            <div class="flex-row items-center" gap={Sp::XS}>
+                {...chips}
+            </div>
+        }
+        .into_any()
+    };
+
+    let marker_text: &'static str = if conflict.is_some() {
+        "!"
+    } else if customized {
+        "\u{2022}"
+    } else {
+        " "
+    };
+    let marker_color = if conflict.is_some() {
+        tc.status_warning
+    } else if customized {
+        tc.accent
+    } else {
+        Color::TRANSPARENT
+    };
+    let marker_tooltip = conflict.clone().unwrap_or_else(|| {
+        if customized {
+            "Customized".to_owned()
+        } else {
+            String::new()
+        }
+    });
+
+    let marker: AnyElement = view! { scale,
+        <div class="shrink-0 items-center justify-center"
+             w={Sp::MD} h={Sp::MD}
+             tooltip={marker_tooltip}>
+            <text class="text-xs mono font-semibold" color={marker_color}>{marker_text}</text>
+        </div>
+    }
+    .into_any();
+
+    let reset = Button::new(crate::actions::SettingsAction::ResetKeymapBinding(command).into())
+        .icon(lucide::CORNER_UP_LEFT)
+        .style(ButtonStyle::Ghost)
+        .size(ButtonSize::Compact)
+        .disabled(!customized)
+        .tooltip("Reset binding")
+        .into_any();
+
+    let edit = Button::new(crate::actions::SettingsAction::BeginKeymapRebind(command).into())
+        .icon(lucide::PENCIL)
+        .style(if recording {
+            ButtonStyle::Subtle
+        } else {
+            ButtonStyle::Ghost
+        })
+        .size(ButtonSize::Compact)
+        .tooltip("Record shortcut")
+        .into_any();
+
+    let row_bg = if recording {
+        tc.element_selected
+    } else {
+        Color::TRANSPARENT
+    };
+    let hover_bg = if recording {
+        tc.element_selected
+    } else {
+        tc.element_background
+    };
+
+    view! { scale,
+        <div class="flex-row items-center w-full"
+             gap={Sp::XS}
+             px={Sp::SM} py={Sp::XXS}
+             bg={row_bg}
+             hover_bg={hover_bg}>
+            {marker}
+            <div class="flex-1 overflow-hidden" min_w={0.0}>
+                <text class="text-sm truncate" color={description_color}>{entry.description}</text>
+            </div>
+            {binding_view}
+            {reset}
+            {edit}
+        </div>
+    }
+    .into_any()
 }
 
 fn appearance_section(state: &AppState, theme: &Theme) -> AnyElement {

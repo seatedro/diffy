@@ -1321,13 +1321,11 @@ mod tests {
         let mut app = test_app(AppState::default());
 
         dispatch_input_event(&mut app, keypress("?", ModifiersState::empty()));
+        assert_eq!(app.state.app_view.get(&app.state.store), AppView::Settings);
         assert_eq!(
-            app.state.overlays_top(),
-            Some(OverlaySurface::KeyboardShortcuts)
+            app.state.settings_section.get(&app.state.store),
+            SettingsSection::Keymaps
         );
-
-        dispatch_input_event(&mut app, keypress("?", ModifiersState::empty()));
-        assert_eq!(app.state.overlays_top(), None);
     }
 
     #[test]
@@ -1632,7 +1630,7 @@ mod tests {
         dispatch_input_event(&mut app, keypress("j", ModifiersState::empty()));
         assert_eq!(
             app.state.settings_section.get(&app.state.store),
-            SettingsSection::Clankers
+            SettingsSection::Keymaps
         );
 
         dispatch_input_event(
@@ -1662,6 +1660,29 @@ mod tests {
             outcome.actions,
             vec![crate::actions::UpdateAction::CheckForUpdates.into()]
         );
+    }
+
+    #[test]
+    fn keymap_rebind_overrides_default_shortcut() {
+        let state = AppState::default();
+        state.app_view.set(&state.store, AppView::Settings);
+        state
+            .settings_section
+            .set(&state.store, SettingsSection::Keymaps);
+        state.keymap_capture.set(
+            &state.store,
+            Some(crate::input::ShortcutCommand::ToggleWrap),
+        );
+        let mut app = test_app(state);
+
+        dispatch_input_event(&mut app, keypress("z", ModifiersState::empty()));
+        assert_eq!(app.state.settings.keymap_overrides.len(), 1);
+
+        dispatch_input_event(&mut app, keypress("w", ModifiersState::empty()));
+        assert!(!app.state.editor.wrap_enabled.get(&app.state.store));
+
+        dispatch_input_event(&mut app, keypress("z", ModifiersState::empty()));
+        assert!(app.state.editor.wrap_enabled.get(&app.state.store));
     }
 
     #[test]

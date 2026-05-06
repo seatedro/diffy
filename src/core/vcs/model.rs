@@ -373,10 +373,17 @@ pub struct PublishAction {
     pub label: String,
     pub description: String,
     pub kind: PublishActionKind,
+    pub disabled_reason: Option<String>,
     /// Short change-id token (e.g. "strqswum") that may appear inside `label`
     /// or `description`. The UI highlights its unique prefix (bold) followed
     /// by the rest (muted), matching the status-bar identity styling.
     pub change_id_token: Option<ChangeIdToken>,
+}
+
+impl PublishAction {
+    pub fn is_enabled(&self) -> bool {
+        self.disabled_reason.is_none()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -865,6 +865,7 @@ mod tests {
                 refspec: "main".to_owned(),
                 force_with_lease: false,
             },
+            disabled_reason: None,
             change_id_token: None,
         }
     }

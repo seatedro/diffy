@@ -112,9 +112,8 @@ pub fn build_ui_frame(
     // Settings → Keymaps body viewport. Mirrors how sidebar_list_height is
     // computed: subtract every chrome layer above and below the scrollable
     // body so wheel + drag clamping uses the same height the renderer sees.
-    let keymaps_title_block_h = m.heading_font_size * 1.4
-        + Sp::XXS * ui_scale
-        + m.ui_small_font_size * 1.4;
+    let keymaps_title_block_h =
+        m.heading_font_size * 1.4 + Sp::XXS * ui_scale + m.ui_small_font_size * 1.4;
     let keymaps_viewport_h = (height
         - m.title_bar_height
         - m.status_bar_height
@@ -222,10 +221,12 @@ pub fn build_ui_frame(
             None
         } else {
             use crate::ui::components::toast::{
-                DESC_MAX_LINES, INNER_TEXT_W, TITLE_MAX_LINES, ToastLayout, compute_toast_height,
+                DESC_MAX_LINES, TITLE_MAX_LINES, ToastLayout, compute_toast_height,
+                toast_inner_text_width, toast_stack_width,
             };
             let title_fs = theme.metrics.ui_small_font_size;
             let desc_fs = theme.metrics.ui_small_font_size - 1.0;
+            let toast_text_w = toast_inner_text_width(toast_stack_width(width, ui_scale));
             let layouts: Vec<ToastLayout> = toasts
                 .iter()
                 .map(|t| {
@@ -235,7 +236,7 @@ pub fn build_ui_frame(
                         title_fs,
                         crate::render::FontKind::Ui,
                         crate::render::FontWeight::Medium,
-                        INNER_TEXT_W,
+                        toast_text_w,
                         TITLE_MAX_LINES,
                     );
                     let description_lines = t
@@ -248,7 +249,7 @@ pub fn build_ui_frame(
                                 desc_fs,
                                 crate::render::FontKind::Ui,
                                 crate::render::FontWeight::Normal,
-                                INNER_TEXT_W,
+                                toast_text_w,
                                 DESC_MAX_LINES,
                             )
                         })

@@ -89,6 +89,7 @@ struct JjPublishTarget {
     short_change_id: String,
     short_change_id_prefix_len: usize,
     summary: String,
+    fell_back_from_empty_working_copy: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -287,11 +288,13 @@ impl JjRepository {
         // the user must describe the current change first.
         let head_target = self.publish_target("@")?;
         let target = if head_target.summary.trim().is_empty() {
-            self.publish_target("@-").map_err(|_| {
+            let mut parent = self.publish_target("@-").map_err(|_| {
                 DiffyError::General(
                     "Describe the current jj change before publishing it.".to_owned(),
                 )
-            })?
+            })?;
+            parent.fell_back_from_empty_working_copy = true;
+            parent
         } else {
             head_target
         };
@@ -335,7 +338,21 @@ impl JjRepository {
             short_change_id,
             short_change_id_prefix_len,
             summary,
+            fell_back_from_empty_working_copy: false,
         })
+    }
+
+    fn remote_bookmarks_at(&self, commit_id: &str, remote: &str) -> Result<Vec<String>> {
+        let output = self.cli.run_ignored_wc(&[
+            OsString::from("bookmark"),
+            OsString::from("list"),
+            OsString::from("--all-remotes"),
+            OsString::from("-T"),
+            OsString::from(
+                "name ++ \"\\t\" ++ if(self.remote(), self.remote(), \"\") ++ \"\\t\" ++ normal_target.commit_id() ++ \"\\n\"",
+            ),
+        ])?;
+        Ok(parse_remote_bookmark_targets(&output, remote, commit_id))
     }
 
     fn local_bookmarks_at(&self, commit_id: &str) -> Result<Vec<String>> {
@@ -621,7 +638,7 @@ impl VcsRepository for JjRepository {
             return Ok(output);
         }
         let mut args = self.diff_args_for_spec(&request.spec)?;
-        args.push(OsString::from(format!("file:{path}")));
+        args.push(jj_root_pathspec(path));
         let raw_diff = self.cli.run_ignored_wc(&args)?;
         let output = compare_output_from_raw_patch(&raw_diff)?;
         self.insert_diff_cache(
@@ -784,6 +801,7 @@ impl VcsRepository for JjRepository {
             OsString::from(remote),
             OsString::from("--bookmark"),
             OsString::from(bookmark),
+            OsString::from("--allow-new"),
         ])?;
         self.clear_after_write();
         Ok(())
@@ -794,6 +812,19 @@ impl VcsRepository for JjRepository {
         let remote = self.preferred_remote()?;
         let target = self.default_publish_target()?;
         let bookmarks = self.local_bookmarks_at(&target.commit_id)?;
+        let remote_bookmarks = self
+            .remote_bookmarks_at(&target.commit_id, &remote)
+            .unwrap_or_default();
+        let target_disabled_reason = (!remote_bookmarks.is_empty()).then(|| {
+            if target.fell_back_from_empty_working_copy {
+                format!(
+                    "Commit or describe the working copy before publishing. {} is already on {remote}.",
+                    target.revision
+                )
+            } else {
+                format!("{} is already on {remote}.", target.revision)
+            }
+        });
         let mut movable_bookmarks = self
             .movable_bookmarks(&target.revision)
             .unwrap_or_default()
@@ -813,6 +844,7 @@ impl VcsRepository for JjRepository {
                     remote: remote.clone(),
                     bookmark: bookmark.clone(),
                 },
+                disabled_reason: target_disabled_reason.clone(),
                 change_id_token: None,
             }
         } else {
@@ -826,6 +858,7 @@ impl VcsRepository for JjRepository {
                     remote: remote.clone(),
                     revision: target.revision.clone(),
                 },
+                disabled_reason: target_disabled_reason.clone(),
                 change_id_token: change_id_token.clone(),
             }
         };
@@ -838,6 +871,7 @@ impl VcsRepository for JjRepository {
                     remote: remote.clone(),
                     revision: target.revision.clone(),
                 },
+                disabled_reason: target_disabled_reason.clone(),
                 change_id_token: change_id_token.clone(),
             });
         }
@@ -857,6 +891,7 @@ impl VcsRepository for JjRepository {
                     bookmark: generated_bookmark,
                     revision: target.revision.clone(),
                 },
+                disabled_reason: target_disabled_reason.clone(),
                 change_id_token: change_id_token.clone(),
             });
         }
@@ -873,6 +908,7 @@ impl VcsRepository for JjRepository {
                     revision: target.revision.clone(),
                     allow_backwards: bookmark.allow_backwards,
                 },
+                disabled_reason: target_disabled_reason.clone(),
                 change_id_token: None,
             });
         }
@@ -880,6 +916,7 @@ impl VcsRepository for JjRepository {
             label: "Push tracked bookmarks".to_owned(),
             description: format!("Push tracked jj bookmarks in the default revset to {remote}"),
             kind: PublishActionKind::PushTracked { remote },
+            disabled_reason: None,
             change_id_token: None,
         });
         Ok(PublishPlan {
@@ -889,6 +926,9 @@ impl VcsRepository for JjRepository {
     }
 
     fn publish(&mut self, action: &PublishAction) -> Result<PublishOutcome> {
+        if let Some(reason) = &action.disabled_reason {
+            return Err(DiffyError::General(reason.clone()));
+        }
         match &action.kind {
             PublishActionKind::PushChange { remote, revision } => {
                 self.cli.run(&[
@@ -908,6 +948,7 @@ impl VcsRepository for JjRepository {
                     OsString::from(remote),
                     OsString::from("--bookmark"),
                     OsString::from(bookmark),
+                    OsString::from("--allow-new"),
                 ])?;
             }
             PublishActionKind::PushTracked { remote } => {
@@ -943,6 +984,7 @@ impl VcsRepository for JjRepository {
                     OsString::from(remote),
                     OsString::from("--bookmark"),
                     OsString::from(bookmark),
+                    OsString::from("--allow-new"),
                 ])?;
             }
             PublishActionKind::CreateBookmarkAndPush {
@@ -964,6 +1006,7 @@ impl VcsRepository for JjRepository {
                     OsString::from(remote),
                     OsString::from("--bookmark"),
                     OsString::from(bookmark),
+                    OsString::from("--allow-new"),
                 ])?;
             }
             PublishActionKind::PushRef { .. } => {
@@ -993,7 +1036,7 @@ impl VcsRepository for JjRepository {
             OsString::from("-r"),
             OsString::from("@"),
             OsString::from("--git"),
-            OsString::from(format!("file:{path}")),
+            jj_root_pathspec(path),
         ])?;
         let output = compare_output_from_raw_patch(&raw_diff)?;
         self.insert_diff_cache(operation_id, request, Some(path.to_owned()), output.clone());
@@ -1010,7 +1053,7 @@ impl VcsRepository for JjRepository {
             OsString::from("show"),
             OsString::from("-r"),
             OsString::from(revision.id.as_str()),
-            OsString::from(format!("file:{path}")),
+            jj_root_pathspec(path),
         ])?;
         let text = TextStore::from_text(output);
         self.insert_file_text_cache(
@@ -1092,6 +1135,24 @@ fn matching_remote_bookmark<'a>(local_name: &str, remote_refs: &'a [VcsRef]) -> 
         let (remote, name) = upstream.split_once('/')?;
         (name == local_name).then_some(remote)
     })
+}
+
+fn parse_remote_bookmark_targets(output: &str, remote: &str, commit_id: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(3, '\t');
+            let name = fields.next()?.trim();
+            let line_remote = fields.next()?.trim();
+            let target = fields.next()?.trim();
+            (line_remote == remote && target == commit_id && !name.is_empty())
+                .then(|| name.to_owned())
+        })
+        .collect()
+}
+
+fn jj_root_pathspec(path: &str) -> OsString {
+    OsString::from(format!("root:{path}"))
 }
 
 fn parse_movable_bookmark_line(line: &str) -> Option<MovableBookmark> {
@@ -1329,6 +1390,71 @@ mod tests {
                 PublishActionKind::PushChange { ref remote, ref revision }
                     if remote == "origin" && revision == "@-"
             )
+        }));
+    }
+
+    #[test]
+    fn jj_publish_plan_disables_parent_target_when_working_copy_is_uncommitted_and_parent_pushed() {
+        let Some(repo_dir) = init_jj_repo() else {
+            return;
+        };
+        let remote_dir = TempDir::new().unwrap();
+        let status = Command::new("git")
+            .arg("init")
+            .arg("--bare")
+            .arg(remote_dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let status = Command::new("jj")
+            .arg("--quiet")
+            .arg("git")
+            .arg("remote")
+            .arg("add")
+            .arg("origin")
+            .arg(remote_dir.path())
+            .current_dir(repo_dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let backend = JjBackend;
+        let location = backend.detect(repo_dir.path()).unwrap().unwrap();
+        let mut repo = backend.open(location).unwrap();
+        fs::write(repo_dir.path().join("PUBLISHED.md"), "already published\n").unwrap();
+        repo.create_commit("already published").unwrap();
+
+        let status = Command::new("jj")
+            .arg("--quiet")
+            .arg("git")
+            .arg("push")
+            .arg("--remote")
+            .arg("origin")
+            .arg("--change")
+            .arg("@-")
+            .arg("--allow-new")
+            .current_dir(repo_dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        fs::write(
+            repo_dir.path().join("UNCOMMITTED.md"),
+            "not described yet\n",
+        )
+        .unwrap();
+        let plan = repo.publish_plan().unwrap();
+        assert!(
+            plan.primary.disabled_reason.is_some(),
+            "primary should not publish @- when @- is already on origin"
+        );
+        assert!(plan.alternatives.iter().any(|action| {
+            matches!(action.kind, PublishActionKind::CreateBookmarkAndPush { .. })
+                && action.disabled_reason.is_some()
+        }));
+        assert!(plan.alternatives.iter().any(|action| {
+            matches!(action.kind, PublishActionKind::PushTracked { .. })
+                && action.disabled_reason.is_none()
         }));
     }
 

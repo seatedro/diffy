@@ -148,9 +148,25 @@ fn action_row(
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let (icon, accent) = action_visuals(&action.kind, tc);
-    let label_color = if primary { tc.text_strong } else { tc.text };
-    let click: Action = RepositoryAction::Publish(action.clone()).into();
+    let disabled = !action.is_enabled();
+    let label_color = if disabled {
+        tc.text_muted
+    } else if primary {
+        tc.text_strong
+    } else {
+        tc.text
+    };
+    let accent = if disabled { tc.text_muted } else { accent };
+    let click: Action = if disabled {
+        Action::Noop
+    } else {
+        RepositoryAction::Publish(action.clone()).into()
+    };
     let token = action.change_id_token.as_ref();
+    let description_text = action
+        .disabled_reason
+        .as_deref()
+        .unwrap_or(action.description.as_str());
     let title = highlighted_runs(
         &action.label,
         token,
@@ -162,8 +178,8 @@ fn action_row(
         tc,
     );
     let description = highlighted_runs(
-        &action.description,
-        token,
+        description_text,
+        (!disabled).then_some(token).flatten(),
         SpanStyle {
             base_color: tc.text_muted,
             small: true,
@@ -171,10 +187,22 @@ fn action_row(
         },
         tc,
     );
-    let shortcut_badge = if primary {
+    let shortcut_badge = if disabled {
+        None
+    } else if primary {
         Some(components::kbd("Enter", theme))
     } else {
         shortcut.map(|shortcut| components::kbd(shortcut.to_string(), theme))
+    };
+    let hover_bg = if disabled {
+        Color::TRANSPARENT
+    } else {
+        tc.sidebar_row_hover
+    };
+    let cursor = if disabled {
+        CursorHint::Default
+    } else {
+        CursorHint::Pointer
     };
 
     view! { scale,
@@ -183,8 +211,8 @@ fn action_row(
              px={Sp::MD}
              py={Sp::XS + Sp::XXS}
              rounded={Rad::MD}
-             hover_bg={tc.sidebar_row_hover}
-             cursor={CursorHint::Pointer}
+             hover_bg={hover_bg}
+             cursor={cursor}
              on_click={click}>
             <div class="shrink-0" pt={2.0}>
                 <icon svg={icon} size={Ico::SM} color={accent} />

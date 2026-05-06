@@ -42,6 +42,8 @@ impl JjCli {
             .arg("--no-pager")
             .arg("--color=never")
             .arg("--quiet")
+            .arg("--repository")
+            .arg(&self.root)
             .current_dir(&self.root);
         if ignore_working_copy {
             command.arg("--ignore-working-copy");

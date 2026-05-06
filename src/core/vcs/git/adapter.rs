@@ -341,6 +341,7 @@ impl VcsRepository for GitRepository {
                     refspec,
                     force_with_lease: false,
                 },
+                disabled_reason: None,
                 change_id_token: None,
             },
             alternatives: Vec::new(),

@@ -17,15 +17,15 @@ const FAN_GAP: f32 = 10.0;
 /// Mirrors state::TOAST_LIFETIME_MS.
 const TOAST_LIFETIME_MS: u64 = 5_000;
 
-/// Sonner uses 356 — we round to a nicer number and cap at MAX_W.
-pub const TOAST_WIDTH: f32 = 360.0;
+/// Wide enough for actionable command/error detail without dominating the app.
+pub const TOAST_WIDTH: f32 = 460.0;
 pub const BADGE_SIZE: f32 = 26.0;
 pub const CLOSE_SIZE: f32 = 22.0;
 const PROGRESS_H: f32 = 2.0;
 const CORNER_RADIUS: f32 = Rad::XL;
 /// Max wrapped lines for title and description.
 pub const TITLE_MAX_LINES: usize = 2;
-pub const DESC_MAX_LINES: usize = 3;
+pub const DESC_MAX_LINES: usize = 5;
 /// Vertical padding inside the toast (top and bottom).
 const PAD_Y: f32 = 12.0;
 /// Gap between title and description lines.
@@ -35,8 +35,19 @@ const DESC_GAP: f32 = 2.0;
 /// remaining width is available for wrapped text.
 pub const CHROME_W: f32 = Sp::MD + BADGE_SIZE + Sp::MD + Sp::MD + CLOSE_SIZE + Sp::MD;
 
+/// Width used by the stack after applying the current window constraints.
+pub fn toast_stack_width(window_width: f32, ui_scale: f32) -> f32 {
+    let side_margin = (Sp::XL * ui_scale).round();
+    let available = (window_width - side_margin * 2.0).max(1.0);
+    available
+        .min(TOAST_WIDTH)
+        .max(available.min(Sz::TOAST_MIN_W))
+}
+
 /// Inner content width available for wrapped title / description.
-pub const INNER_TEXT_W: f32 = TOAST_WIDTH - CHROME_W;
+pub fn toast_inner_text_width(toast_width: f32) -> f32 {
+    (toast_width - CHROME_W).max(80.0)
+}
 
 /// Laid-out per-toast dimensions, computed in the shell where the font system
 /// is available for wrapping. Parallel to `Toasts`.
@@ -124,6 +135,7 @@ impl RenderOnce for ToastVisuals {
                 text(line)
                     .text_sm()
                     .medium()
+                    .truncate()
                     .color(tc.text_strong)
                     .into_any()
             })
@@ -132,7 +144,13 @@ impl RenderOnce for ToastVisuals {
         let desc_children: Vec<AnyElement> = self
             .description_lines
             .into_iter()
-            .map(|line| text(line).text_xs().color(tc.text_muted).into_any())
+            .map(|line| {
+                text(line)
+                    .text_xs()
+                    .truncate()
+                    .color(tc.text_muted)
+                    .into_any()
+            })
             .collect();
 
         let has_description = !desc_children.is_empty();
@@ -170,7 +188,7 @@ impl RenderOnce for ToastVisuals {
                     <div class="flex-1 flex-col" min_w={0.0}>
                         {...title_children}
                         if has_description {
-                            <div class="flex-col" pt={DESC_GAP}>
+                            <div class="flex-col" pt={DESC_GAP} min_w={0.0}>
                                 {...desc_children}
                             </div>
                         }
@@ -244,7 +262,9 @@ impl<'a> ToastStack<'a> {
         let peek = (STACK_PEEK * scale).round();
         let fan_gap = (FAN_GAP * scale).round();
 
-        let container_w = TOAST_WIDTH.min(self.window_width - Sz::TOAST_MARGIN);
+        let container_w = toast_stack_width(self.window_width, scale);
+        let side_margin = (Sp::XL * scale).round();
+        let container_left = (self.window_width - container_w - side_margin).max(side_margin);
 
         let fan_t = self
             .animation
@@ -283,7 +303,7 @@ impl<'a> ToastStack<'a> {
         let mut container = div()
             .absolute()
             .bottom(self.status_bar_height + (Sp::LG * scale).round())
-            .right((Sp::XL * scale).round())
+            .left(container_left)
             .w(container_w)
             .h(stack_height)
             .z_index(TOAST_Z_BASE);

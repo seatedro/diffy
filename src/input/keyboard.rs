@@ -442,6 +442,9 @@ fn publish_menu_action_at(state: &AppState, index: usize) -> Option<Vec<Action>>
             plan.alternatives.get(index - 1).cloned()
         }
     })?;
+    if !action.is_enabled() {
+        return None;
+    }
     Some(vec![RepositoryAction::Publish(action).into()])
 }
 

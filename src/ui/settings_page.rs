@@ -102,14 +102,13 @@ fn nav_row(theme: &Theme, section: SettingsSection, selected: bool) -> AnyElemen
 }
 
 fn section_content(state: &AppState, theme: &Theme, section: SettingsSection) -> AnyElement {
+    if section == SettingsSection::Keymaps {
+        return keymaps_layout(state, theme);
+    }
+
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
-    let max_w = (if section == SettingsSection::Keymaps {
-        KEYMAPS_MAX_WIDTH
-    } else {
-        CONTENT_MAX_WIDTH
-    } * scale)
-        .round();
+    let max_w = (CONTENT_MAX_WIDTH * scale).round();
 
     let (title, description, body) = match section {
         SettingsSection::Appearance => (
@@ -127,11 +126,7 @@ fn section_content(state: &AppState, theme: &Theme, section: SettingsSection) ->
             "Input and interaction.",
             behavior_section(state, theme),
         ),
-        SettingsSection::Keymaps => (
-            "Keymaps",
-            "Review and rebind keyboard shortcuts.",
-            keymaps_section(state, theme),
-        ),
+        SettingsSection::Keymaps => unreachable!(),
         SettingsSection::Clankers => (
             "Clankers",
             "AI assistance. Keys stay in your OS keyring; no telemetry.",
@@ -161,8 +156,10 @@ fn section_content(state: &AppState, theme: &Theme, section: SettingsSection) ->
     }
 }
 
-fn keymaps_section(state: &AppState, theme: &Theme) -> AnyElement {
+fn keymaps_layout(state: &AppState, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
+    let inner_max_w = (KEYMAPS_MAX_WIDTH * scale).round();
     let capture = state.keymap_capture.get(&state.store);
     let scroll_px = state.keymaps_scroll_top_px.get(&state.store);
     let total_h = state.keymaps_content_height_px.get(&state.store);
@@ -173,13 +170,29 @@ fn keymaps_section(state: &AppState, theme: &Theme) -> AnyElement {
         .collect();
 
     view! { scale,
-        <div class="flex-1 flex-col" min_h={0.0}
-             clip
-             scroll_y={scroll_px}
-             scroll_total={total_h}
-             on_scroll={ScrollActionBuilder::SettingsKeymaps}>
-            <div class="flex-col" gap={Sp::LG} pb={Sp::XL}>
-                {...groups}
+        <div class="flex-1 flex-col items-stretch overflow-hidden" min_h={0.0}>
+            <div class="w-full flex-col"
+                 pt={Sp::XL} pb={Sp::LG}
+                 px={Sp::XXL}>
+                <div class="flex-col" max_w={inner_max_w} gap={Sp::XXS}>
+                    <text class="text-lg font-semibold" color={tc.text_strong}>{"Keymaps"}</text>
+                    <text class="text-sm" color={tc.text_muted}>
+                        {"Review and rebind keyboard shortcuts."}
+                    </text>
+                </div>
+            </div>
+            <div class="flex-1 flex-col w-full" min_h={0.0}
+                 clip
+                 scroll_y={scroll_px}
+                 scroll_total={total_h}
+                 on_scroll={ScrollActionBuilder::SettingsKeymaps}>
+                <div class="flex-col"
+                     px={Sp::XXL}
+                     pb={Sp::XXXL}
+                     max_w={inner_max_w}
+                     gap={Sp::LG}>
+                    {...groups}
+                </div>
             </div>
         </div>
     }
@@ -209,7 +222,7 @@ pub fn keymaps_content_height(theme: &Theme) -> f32 {
     let header_h = m.ui_small_font_size * 1.4 + 2.0 * (Sp::XS + Sp::XXS) * scale;
     let line_h = 1.0;
     let group_gap = Sp::LG * scale;
-    let bottom_pad = Sp::XL * scale;
+    let bottom_pad = Sp::XXXL * scale;
 
     let groups = shortcut_groups();
     let n_groups = groups.len() as f32;
@@ -221,7 +234,15 @@ pub fn keymaps_content_height(theme: &Theme) -> f32 {
         total += header_h + line_h + body_h;
     }
 
-    total
+    // Small per-pair safety margin: line-height multipliers and chip padding
+    // are estimates, and accumulated error from ~30 pairs pushes the last row
+    // past the computed max_scroll. A few pixels per pair keeps the bottom
+    // row fully on-screen without changing the rendered layout.
+    let pair_total: f32 = groups
+        .iter()
+        .map(|g| g.entries.len().div_ceil(2))
+        .sum::<usize>() as f32;
+    total + pair_total * 2.0 * scale
 }
 
 fn keymap_group(

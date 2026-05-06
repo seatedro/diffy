@@ -4,7 +4,7 @@
 
 <h1 align="center">Diffy</h1>
 
-<p align="center">A native GPU-accelerated Git diff viewer.</p>
+<p align="center">A native GPU-accelerated Git/JJ diff viewer.</p>
 
 ## Features
 

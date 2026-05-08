@@ -244,6 +244,7 @@
                     pkgs.wayland
                     pkgs.libGL
                     pkgs.vulkan-loader
+                    pkgs.dbus
                   ]
                 }''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               '')

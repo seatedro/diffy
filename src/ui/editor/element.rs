@@ -435,75 +435,6 @@ impl EditorElement {
         self.hunk_expand_caps = caps;
     }
 
-    fn row_gutter_rect(&self, row_rect: Rect) -> Rect {
-        let gutter = if self.layout.split_mode {
-            self.layout.left_gutter_rect
-        } else {
-            self.layout.unified_gutter_rect
-        };
-        Rect {
-            x: gutter.x,
-            y: row_rect.y,
-            width: gutter.width,
-            height: row_rect.height,
-        }
-    }
-
-    fn paint_hunk_expand_icon(
-        &self,
-        scene: &mut Scene,
-        theme: &Theme,
-        row_rect: Rect,
-        display_row_index: usize,
-    ) {
-        use crate::render::scene::{IconPrimitive, Primitive};
-        let gutter = self.row_gutter_rect(row_rect);
-        let hovered = self.layout.highlighted_row == Some(display_row_index);
-        if hovered {
-            scene.rect(RectPrimitive {
-                rect: gutter,
-                color: theme.colors.element_hover,
-            });
-        }
-        let color = if hovered {
-            theme.colors.text_strong
-        } else {
-            theme.colors.text_muted
-        };
-        let icon_size = self.layout.line_height.min(gutter.width).max(8.0) * 0.75;
-        let icon_x = gutter.x + (gutter.width - icon_size) * 0.5;
-        let icon_y = gutter.y + (gutter.height - icon_size) * 0.5;
-        scene.push(Primitive::Icon(IconPrimitive {
-            rect: Rect {
-                x: icon_x.round(),
-                y: icon_y.round(),
-                width: icon_size.round(),
-                height: icon_size.round(),
-            },
-            name: crate::ui::icons::lucide::CHEVRON_UP.to_owned(),
-            color,
-        }));
-    }
-
-    pub fn hunk_expand_action_for_row(
-        &self,
-        display_row_index: usize,
-        doc: &RenderDoc,
-    ) -> Option<crate::actions::Action> {
-        let row = self.rows.get(display_row_index)?;
-        if row.kind != RenderRowKind::HunkSeparator as u8 {
-            return None;
-        }
-        let line = doc.lines.get(row.line_index as usize)?;
-        let hunk_index = usize::try_from(line.hunk_index).ok()?;
-        let cap = self.hunk_expand_caps.get(hunk_index)?;
-        if cap.above_cap == 0 {
-            return None;
-        }
-        let step = cap.above_cap.min(20).max(1);
-        Some(crate::actions::EditorAction::ExpandContextAbove(hunk_index, step).into()).into()
-    }
-
     pub fn render_line_index_for_row(&self, display_row_index: usize) -> Option<u32> {
         let row = self.rows.get(display_row_index)?;
         if row.is_block() {
@@ -1852,15 +1783,6 @@ impl EditorElement {
                     is_header_hovered,
                 };
                 deco.paint_content(&mut ctx);
-                if kind == RenderRowKind::HunkSeparator
-                    && let Ok(hunk_index) = usize::try_from(line.hunk_index)
-                    && self
-                        .hunk_expand_caps
-                        .get(hunk_index)
-                        .is_some_and(|c| c.above_cap > 0)
-                {
-                    self.paint_hunk_expand_icon(scene, theme, rr, row_index);
-                }
                 continue;
             }
 

@@ -430,6 +430,9 @@ fn build_render_doc_from_carbon_rows(
         },
         expansion,
         |row| {
+            if row.kind == carbon::ProjectionRowKind::ContextGap {
+                return;
+            }
             doc.lines.push(build_render_line_from_carbon(
                 carbon_file,
                 file_index,
@@ -515,7 +518,7 @@ fn build_render_line_from_carbon(
                 ..RenderLine::default()
             }
         }
-        carbon::ProjectionRowKind::Context => {
+        carbon::ProjectionRowKind::Context | carbon::ProjectionRowKind::ContextExpanded => {
             let mut rl = build_dual_sided_line_with_text(
                 RenderRowKind::Context,
                 carbon_line_source_from_row(
@@ -595,16 +598,14 @@ fn build_render_line_from_carbon(
             source.apply(&mut rl);
             rl
         }
-        carbon::ProjectionRowKind::ContextExpanded | carbon::ProjectionRowKind::ContextGap => {
-            RenderLine {
-                kind: RenderRowKind::Context as u8,
-                hunk_index: source.hunk_index,
-                line_index: i32::try_from(file_index).unwrap_or(i32::MAX),
-                old_line_no: INVALID_U32,
-                new_line_no: INVALID_U32,
-                ..RenderLine::default()
-            }
-        }
+        carbon::ProjectionRowKind::ContextGap => RenderLine {
+            kind: RenderRowKind::Context as u8,
+            hunk_index: source.hunk_index,
+            line_index: i32::try_from(file_index).unwrap_or(i32::MAX),
+            old_line_no: INVALID_U32,
+            new_line_no: INVALID_U32,
+            ..RenderLine::default()
+        },
     }
 }
 
@@ -1080,5 +1081,63 @@ diff --git a/src/lib.rs b/src/lib.rs
 
         assert_eq!(doc.line_text(doc.lines[2].left_text), "old text");
         assert_eq!(doc.line_text(doc.lines[3].right_text), "new text");
+    }
+
+    #[test]
+    fn expanded_context_rows_show_full_file_text() {
+        let mut file = carbon::parse_unified_patch(
+            "\
+diff --git a/src/lib.rs b/src/lib.rs
+@@ -3 +3 @@
+-old text
++new text
+",
+        )
+        .unwrap()
+        .files
+        .into_iter()
+        .next()
+        .unwrap();
+        file.old_text = Some(carbon::TextStore::from_text("one\ntwo\nold text\nfour\n"));
+        file.new_text = Some(carbon::TextStore::from_text("one\ntwo\nnew text\nfour\n"));
+        for block in &mut file.blocks {
+            block.old.start = block.old_line_start.saturating_sub(1);
+            block.new.start = block.new_line_start.saturating_sub(1);
+        }
+        file.is_partial = false;
+
+        let mut expansion = carbon::ExpansionState::default();
+        carbon::expand_context(
+            &file,
+            &mut expansion,
+            file.hunks[0].id,
+            carbon::ExpansionDirection::Above,
+            1,
+        );
+        let token_buffer = TokenBuffer::default();
+
+        let doc = build_render_doc_from_carbon(
+            &file,
+            0,
+            &expansion,
+            &CarbonStyleOverlays::default(),
+            &token_buffer,
+        );
+        let expanded = doc
+            .lines
+            .iter()
+            .find(|line| line.old_line_no == 2 && line.new_line_no == 2)
+            .expect("expanded context line");
+
+        assert_eq!(expanded.row_kind(), RenderRowKind::Context);
+        assert_eq!(doc.line_text(expanded.left_text), "two");
+        assert_eq!(doc.line_text(expanded.right_text), "two");
+        assert!(!doc.lines.iter().any(|line| {
+            line.row_kind() == RenderRowKind::Context
+                && line.old_line_no == INVALID_U32
+                && line.new_line_no == INVALID_U32
+                && !line.left_text.is_valid()
+                && !line.right_text.is_valid()
+        }));
     }
 }

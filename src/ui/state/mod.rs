@@ -4044,12 +4044,12 @@ impl AppState {
             return Vec::new();
         };
 
+        let generation = self.workspace.compare_generation.get(&self.store);
         let Some((
             file_index,
             path,
             old_reference,
             new_reference,
-            generation,
             cached_old_lines,
             cached_new_lines,
         )) = self.workspace.active_file.with(&self.store, |af| {
@@ -4066,7 +4066,6 @@ impl AppState {
                 } else {
                     active.right_ref.clone()
                 },
-                self.workspace.compare_generation.get(&self.store),
                 active.old_file_lines.clone(),
                 active.file_lines.clone(),
             ))
@@ -12022,6 +12021,7 @@ diff --git a/src/lib.rs b/src/lib.rs
                 (0..12).map(|index| format!("new {index}")).collect(),
             ));
         });
+        state.workspace.compare_generation.set(&state.store, 1);
         for request_id in 0..super::MAX_PENDING_SYNTAX_WINDOWS as u64 {
             state.syntax_requests.insert_inflight(0, request_id);
         }
@@ -12206,6 +12206,22 @@ diff --git a/src/lib.rs b/src/lib.rs
             panic!("expected one patch effect");
         };
         assert!(request.patch.contains("old_second();"));
+    }
+
+    #[test]
+    fn stage_hunk_without_partial_hunk_capability_is_ignored() {
+        let mut state = status_state_with_two_hunks();
+        let mut capabilities = RepoCapabilities::git();
+        capabilities.staging_area = false;
+        capabilities.partial_hunk_mutation = false;
+        state
+            .repository
+            .capabilities
+            .set(&state.store, Some(capabilities));
+
+        let effects = state.apply_action(crate::actions::RepositoryAction::StageHunkAt(0));
+
+        assert!(effects.is_empty());
     }
 
     #[test]

@@ -527,9 +527,17 @@ pub fn build_ui_frame(
                 .editor
                 .line_selection
                 .set_if_changed(&state.store, editor_snap.line_selection.clone());
+            let supports_hunk_mutation =
+                state
+                    .repository
+                    .capabilities
+                    .with(&state.store, |capabilities| {
+                        capabilities.is_some_and(|capabilities| capabilities.partial_hunk_mutation)
+                    });
             editor.layout.show_staging_controls = state.workspace.source.get(&state.store)
                 == WorkspaceSource::Status
-                && !using_continuous_doc;
+                && !using_continuous_doc
+                && supports_hunk_mutation;
             editor.layout.file_is_staged = matches!(
                 state.workspace.selected_change_bucket.get(&state.store),
                 Some(crate::core::vcs::model::ChangeBucket::Staged)

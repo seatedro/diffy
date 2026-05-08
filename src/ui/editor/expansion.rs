@@ -5,7 +5,7 @@ use crate::ui::editor::decoration::{
     BlockDecoration, BlockPaintCtx, BlockPlacement, BlockRegistry,
 };
 use crate::ui::editor::display_layout::DisplayLayoutMetrics;
-use crate::ui::editor::render_doc::RenderDoc;
+use crate::ui::editor::render_doc::{RenderDoc, RenderRowKind};
 use crate::ui::icons::lucide;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,6 +151,23 @@ pub fn populate_expand_blocks(
         })
         .collect::<Vec<_>>();
 
+    for (hunk_index, budget) in budgets.iter().enumerate() {
+        if budget.above_cap == 0 {
+            continue;
+        }
+        if let Some(anchor) = above_block_anchor(base_file, render_doc, expansion, hunk_index) {
+            blocks.push(
+                BlockPlacement::Above(anchor),
+                Box::new(ExpandChipBlock {
+                    hunk_index,
+                    direction: ExpandDirection::Above,
+                    remaining_lines: budget.above_cap,
+                    step: EXPAND_STEP,
+                }),
+            );
+        }
+    }
+
     if let Some((last_idx, last_budget)) = budgets.iter().enumerate().last()
         && last_budget.below_cap > 0
     {
@@ -172,4 +189,102 @@ pub fn populate_expand_blocks(
     }
 
     budgets
+}
+
+fn above_block_anchor(
+    base_file: &carbon::FileDiff,
+    render_doc: &RenderDoc,
+    expansion: &carbon::ExpansionState,
+    hunk_index: usize,
+) -> Option<u32> {
+    let hunk = base_file.hunks.get(hunk_index)?;
+    let used_above = expansion.hunk(hunk.id).above;
+    if used_above > 0 {
+        let old_line_no = hunk
+            .old_start_index()
+            .saturating_sub(used_above)
+            .saturating_add(1);
+        let new_line_no = hunk
+            .new_start_index()
+            .saturating_sub(used_above)
+            .saturating_add(1);
+        if let Some(anchor) = render_doc.lines.iter().position(|line| {
+            line.row_kind() == RenderRowKind::Context
+                && line.old_line_no == old_line_no
+                && line.new_line_no == new_line_no
+        }) {
+            return Some(anchor as u32);
+        }
+    }
+
+    render_doc
+        .lines
+        .iter()
+        .position(|line| {
+            line.row_kind() == RenderRowKind::HunkSeparator
+                && usize::try_from(line.hunk_index).ok() == Some(hunk_index)
+        })
+        .map(|anchor| anchor as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::text::TokenBuffer;
+    use crate::ui::editor::render_doc::build_render_doc_from_carbon;
+
+    #[test]
+    fn above_context_chip_moves_above_revealed_context() {
+        let mut file = carbon::parse_unified_patch(
+            "\
+diff --git a/src/lib.rs b/src/lib.rs
+@@ -4 +4 @@
+-old text
++new text
+",
+        )
+        .unwrap()
+        .files
+        .into_iter()
+        .next()
+        .unwrap();
+        file.old_text = Some(carbon::TextStore::from_text("one\ntwo\nthree\nold text\n"));
+        file.new_text = Some(carbon::TextStore::from_text("one\ntwo\nthree\nnew text\n"));
+        for block in &mut file.blocks {
+            block.old.start = block.old_line_start.saturating_sub(1);
+            block.new.start = block.new_line_start.saturating_sub(1);
+        }
+        file.is_partial = false;
+
+        let mut expansion = carbon::ExpansionState::default();
+        carbon::expand_context(
+            &file,
+            &mut expansion,
+            file.hunks[0].id,
+            carbon::ExpansionDirection::Above,
+            1,
+        );
+        let doc = build_render_doc_from_carbon(
+            &file,
+            0,
+            &expansion,
+            &Default::default(),
+            &TokenBuffer::default(),
+        );
+        let first_revealed = doc
+            .lines
+            .iter()
+            .position(|line| line.old_line_no == 3 && line.new_line_no == 3)
+            .expect("revealed context line");
+        let mut blocks = BlockRegistry::new();
+
+        let budgets = populate_expand_blocks(&mut blocks, &file, &doc, &expansion);
+
+        assert_eq!(budgets[0].above_cap, 2);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(
+            blocks.placement(0),
+            Some(BlockPlacement::Above(first_revealed as u32))
+        );
+    }
 }

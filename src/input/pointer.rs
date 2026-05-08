@@ -133,24 +133,17 @@ impl InputSystem {
                     block_action,
                 ]);
             }
-            if let Some(row) = hovered
-                && editor.is_gutter_hit(x, y)
-            {
-                let expand_action = state.workspace.active_file.with(&state.store, |af| {
-                    af.as_ref()
-                        .and_then(|a| editor.hunk_expand_action_for_row(row, &a.render_doc))
-                });
-                if let Some(action) = expand_action {
-                    return InputOutcome::actions(vec![
-                        EditorAction::FocusViewport.into(),
-                        EditorAction::HoverViewportRow(hovered).into(),
-                        action,
-                    ]);
-                }
-            }
             let status_source = state.workspace.source.get(&state.store) == WorkspaceSource::Status;
             let review_source = state.pull_request_review_enabled();
-            let single_file_status_actions = status_source && !state.settings.continuous_scroll;
+            let supports_hunk_mutation =
+                state
+                    .repository
+                    .capabilities
+                    .with(&state.store, |capabilities| {
+                        capabilities.is_some_and(|capabilities| capabilities.partial_hunk_mutation)
+                    });
+            let single_file_status_actions =
+                status_source && !state.settings.continuous_scroll && supports_hunk_mutation;
             if (status_source || review_source) && editor.is_gutter_hit(x, y) {
                 if let Some(row) = hovered {
                     if editor.is_block_row(row) {
@@ -321,15 +314,6 @@ impl InputSystem {
         } else if editor.file_header_path_at(x, y).is_some() {
             crate::ui::shell::CursorHint::Pointer
         } else if hovered_row.is_some_and(|row| editor.is_block_row(row)) {
-            crate::ui::shell::CursorHint::Pointer
-        } else if let Some(row) = hovered_row
-            && editor.is_gutter_hit(x, y)
-            && state.workspace.active_file.with(&state.store, |af| {
-                af.as_ref()
-                    .and_then(|a| editor.hunk_expand_action_for_row(row, &a.render_doc))
-                    .is_some()
-            })
-        {
             crate::ui::shell::CursorHint::Pointer
         } else if cursor_hint == crate::ui::shell::CursorHint::Default
             && hovered_row.is_some()

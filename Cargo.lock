@@ -534,7 +534,7 @@ dependencies = [
 
 [[package]]
 name = "carbon"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "criterion",
  "proptest",
@@ -1111,7 +1111,7 @@ dependencies = [
 
 [[package]]
 name = "diffy"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "arboard",
  "bytemuck",
@@ -2673,7 +2673,7 @@ dependencies = [
 
 [[package]]
 name = "halogen"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "halogen-macros",
  "serde",
@@ -2682,7 +2682,7 @@ dependencies = [
 
 [[package]]
 name = "halogen-macros"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4427,7 +4427,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "carbon",
  "dirs",

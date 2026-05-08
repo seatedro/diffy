@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 use crate::core::error::{DiffyError, Result};
 use crate::core::forge::github::GitHubUser;
+use crate::fonts::FontSettings;
 use crate::input::KeymapOverride;
 use crate::ui::theme::ThemeMode;
 
@@ -57,6 +58,7 @@ pub struct Settings {
     pub theme_mode: ThemeMode,
     pub theme_name: String,
     pub ui_scale_pct: u16,
+    pub fonts: FontSettings,
     pub sidebar_width_px: Option<u32>,
     pub last_compare: Option<PersistedCompare>,
     pub viewport: PersistedViewport,
@@ -74,6 +76,7 @@ impl Default for Settings {
             theme_mode: ThemeMode::Dark,
             theme_name: "diffy-default".to_owned(),
             ui_scale_pct: 100,
+            fonts: FontSettings::default(),
             sidebar_width_px: None,
             last_compare: None,
             viewport: PersistedViewport::default(),

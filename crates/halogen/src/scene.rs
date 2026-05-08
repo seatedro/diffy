@@ -24,6 +24,13 @@ pub enum FontWeight {
     Bold,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FontStyle {
+    #[default]
+    Normal,
+    Italic,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Scene {
     pub primitives: Vec<Primitive>,
@@ -226,6 +233,8 @@ pub struct TextPrimitive {
 pub struct RichTextSpan {
     pub text: Arc<str>,
     pub color: Color,
+    pub font_weight: Option<FontWeight>,
+    pub font_style: Option<FontStyle>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]

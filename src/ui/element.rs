@@ -2363,12 +2363,7 @@ pub(crate) fn measure_text_width(
         FontKind::Ui => glyphon::Family::SansSerif,
         FontKind::Mono => glyphon::Family::Monospace,
     };
-    let weight = match font_weight {
-        FontWeight::Normal => glyphon::Weight::NORMAL,
-        FontWeight::Medium => glyphon::Weight(500),
-        FontWeight::Semibold => glyphon::Weight(600),
-        FontWeight::Bold => glyphon::Weight::BOLD,
-    };
+    let weight = glyphon_weight_for_font(font_kind, font_weight);
     let attrs = glyphon::Attrs::new().family(family).weight(weight);
 
     // Set an unbounded width so glyphon shapes onto a single line.
@@ -2412,12 +2407,7 @@ pub(crate) fn wrap_text_to_lines(
         FontKind::Ui => glyphon::Family::SansSerif,
         FontKind::Mono => glyphon::Family::Monospace,
     };
-    let weight = match font_weight {
-        FontWeight::Normal => glyphon::Weight::NORMAL,
-        FontWeight::Medium => glyphon::Weight(500),
-        FontWeight::Semibold => glyphon::Weight(600),
-        FontWeight::Bold => glyphon::Weight::BOLD,
-    };
+    let weight = glyphon_weight_for_font(font_kind, font_weight);
     let attrs = glyphon::Attrs::new().family(family).weight(weight);
 
     buffer.set_size(font_system, Some(max_width.max(1.0)), None);
@@ -2452,6 +2442,16 @@ pub(crate) fn wrap_text_to_lines(
         lines.push(text.to_owned());
     }
     lines
+}
+
+fn glyphon_weight_for_font(font_kind: FontKind, font_weight: FontWeight) -> glyphon::Weight {
+    match (font_kind, font_weight) {
+        (FontKind::Ui, FontWeight::Normal) => glyphon::Weight(450),
+        (_, FontWeight::Normal) => glyphon::Weight::NORMAL,
+        (_, FontWeight::Medium) => glyphon::Weight(500),
+        (_, FontWeight::Semibold) => glyphon::Weight(600),
+        (_, FontWeight::Bold) => glyphon::Weight::BOLD,
+    }
 }
 
 fn truncate_text_to_fit(
@@ -2897,7 +2897,9 @@ mod tests {
 
         let metrics = glyphon::Metrics::new(font_size, font_size * 1.2);
         let mut buffer = glyphon::Buffer::new(&mut font_system, metrics);
-        let attrs = glyphon::Attrs::new().family(glyphon::Family::SansSerif);
+        let attrs = glyphon::Attrs::new()
+            .family(glyphon::Family::SansSerif)
+            .weight(glyphon::Weight(450));
         buffer.set_size(&mut font_system, None, None);
         buffer.set_text(
             &mut font_system,

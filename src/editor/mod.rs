@@ -418,6 +418,11 @@ impl Editor {
         }
     }
 
+    pub fn invalidate_font(&mut self) {
+        self.buffer = None;
+        self.dirty = true;
+    }
+
     fn ensure_init(&mut self, font_system: &mut glyphon::FontSystem) {
         if self.buffer.is_none() {
             let mut buffer = Buffer::new(font_system, self.metrics());

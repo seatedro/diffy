@@ -9,6 +9,7 @@ use thiserror::Error;
 use wgpu::util::DeviceExt;
 use winit::{dpi::PhysicalSize, window::Window};
 
+use crate::fonts::FontSettings;
 use crate::render::scene::{
     ClipPrimitive, EditorTextSlot, Primitive, Rect, RichTextPrimitive, Scene, TextPrimitive,
 };
@@ -261,11 +262,14 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(window: Arc<Window>) -> Result<Self, RenderError> {
-        pollster::block_on(Self::new_async(window))
+    pub fn new(window: Arc<Window>, font_settings: &FontSettings) -> Result<Self, RenderError> {
+        pollster::block_on(Self::new_async(window, font_settings))
     }
 
-    async fn new_async(window: Arc<Window>) -> Result<Self, RenderError> {
+    async fn new_async(
+        window: Arc<Window>,
+        font_settings: &FontSettings,
+    ) -> Result<Self, RenderError> {
         let size = window.inner_size();
         let scale_factor = window.scale_factor();
 
@@ -572,7 +576,7 @@ impl Renderer {
 
         let texture_pool = TexturePool::new(surface_format);
 
-        let font_system = crate::fonts::new_font_system();
+        let font_system = crate::fonts::new_font_system_with_settings(font_settings);
         let swash_cache = SwashCache::new();
         let glyph_cache = Cache::new(&device);
         let viewport = Viewport::new(&device, &glyph_cache);
@@ -635,6 +639,13 @@ impl Renderer {
 
     pub fn font_system_mut(&mut self) -> &mut FontSystem {
         &mut self.font_system
+    }
+
+    pub fn set_font_settings(&mut self, settings: &FontSettings) {
+        self.font_system = crate::fonts::new_font_system_with_settings(settings);
+        self.swash_cache = SwashCache::new();
+        self.text_cache.clear();
+        self.cached_mono_char_width = None;
     }
 
     pub fn scale_factor(&self) -> f64 {

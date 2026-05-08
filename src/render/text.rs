@@ -6,7 +6,9 @@ use glyphon::{
     TextBounds,
 };
 
-use crate::render::scene::{FontKind, FontWeight, Rect, RichTextPrimitive, TextPrimitive};
+use crate::render::scene::{
+    FontKind, FontStyle, FontWeight, Rect, RichTextPrimitive, TextPrimitive,
+};
 use crate::ui::theme::Color;
 
 use super::renderer::{CachedTextBuffer, ClippedRichText, ClippedText};
@@ -99,7 +101,12 @@ fn build_plain_text_buffer(
         Some((primitive.rect.width * scale_factor as f32).max(1.0)),
         Some((primitive.rect.height * scale_factor as f32).max(1.0)),
     );
-    let attrs = attrs_for_font(primitive.font_kind, primitive.font_weight, primitive.color);
+    let attrs = attrs_for_font(
+        primitive.font_kind,
+        primitive.font_weight,
+        FontStyle::Normal,
+        primitive.color,
+    );
     buffer.set_text(
         font_system,
         primitive.text.as_ref(),
@@ -135,15 +142,18 @@ fn build_rich_text_buffer(
     let default_attrs = attrs_for_font(
         primitive.font_kind,
         primitive.font_weight,
+        FontStyle::Normal,
         primitive.default_color,
     );
     let spans = primitive
         .spans
         .iter()
         .map(|span| {
+            let font_weight = span.font_weight.unwrap_or(primitive.font_weight);
+            let font_style = span.font_style.unwrap_or(FontStyle::Normal);
             (
                 span.text.as_ref(),
-                attrs_for_font(primitive.font_kind, primitive.font_weight, span.color),
+                attrs_for_font(primitive.font_kind, font_weight, font_style, span.color),
             )
         })
         .collect::<Vec<_>>();
@@ -202,6 +212,8 @@ fn rich_text_cache_key(primitive: &RichTextPrimitive, clip: Rect, scale_factor: 
     for span in primitive.spans.iter() {
         span.text.hash(&mut hasher);
         hash_color(&mut hasher, span.color);
+        hasher.write_u8(optional_font_weight_tag(span.font_weight));
+        hasher.write_u8(optional_font_style_tag(span.font_style));
     }
     hasher.finish()
 }
@@ -236,21 +248,51 @@ fn font_weight_tag(weight: FontWeight) -> u8 {
     }
 }
 
-fn attrs_for_font(font_kind: FontKind, font_weight: FontWeight, color: Color) -> Attrs<'static> {
+fn optional_font_weight_tag(weight: Option<FontWeight>) -> u8 {
+    weight.map(font_weight_tag).unwrap_or(255)
+}
+
+fn font_style_tag(style: FontStyle) -> u8 {
+    match style {
+        FontStyle::Normal => 0,
+        FontStyle::Italic => 1,
+    }
+}
+
+fn optional_font_style_tag(style: Option<FontStyle>) -> u8 {
+    style.map(font_style_tag).unwrap_or(255)
+}
+
+fn attrs_for_font(
+    font_kind: FontKind,
+    font_weight: FontWeight,
+    font_style: FontStyle,
+    color: Color,
+) -> Attrs<'static> {
     let family = match font_kind {
         FontKind::Ui => Family::SansSerif,
         FontKind::Mono => Family::Monospace,
     };
-    let weight = match font_weight {
-        FontWeight::Normal => glyphon::Weight::NORMAL,
-        FontWeight::Medium => glyphon::Weight(500),
-        FontWeight::Semibold => glyphon::Weight(600),
-        FontWeight::Bold => glyphon::Weight::BOLD,
+    let weight = glyphon_weight_for_font(font_kind, font_weight);
+    let style = match font_style {
+        FontStyle::Normal => glyphon::Style::Normal,
+        FontStyle::Italic => glyphon::Style::Italic,
     };
     Attrs::new()
         .family(family)
+        .style(style)
         .weight(weight)
         .color(glyphon_text_color(color))
+}
+
+fn glyphon_weight_for_font(font_kind: FontKind, font_weight: FontWeight) -> glyphon::Weight {
+    match (font_kind, font_weight) {
+        (FontKind::Ui, FontWeight::Normal) => glyphon::Weight(450),
+        (_, FontWeight::Normal) => glyphon::Weight::NORMAL,
+        (_, FontWeight::Medium) => glyphon::Weight(500),
+        (_, FontWeight::Semibold) => glyphon::Weight(600),
+        (_, FontWeight::Bold) => glyphon::Weight::BOLD,
+    }
 }
 
 pub(super) fn measure_mono_char_width(font_system: &mut FontSystem, font_size: f32) -> f32 {

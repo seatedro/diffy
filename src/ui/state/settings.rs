@@ -63,6 +63,32 @@ impl AppState {
                 self.settings.theme_name = name;
                 self.persist_settings_effect()
             }
+            OpenUiFontPicker => {
+                self.open_font_picker(crate::fonts::FontRole::Ui);
+                Vec::new()
+            }
+            OpenMonoFontPicker => {
+                self.open_font_picker(crate::fonts::FontRole::Mono);
+                Vec::new()
+            }
+            SetUiFontFamily(family) => {
+                let family =
+                    crate::fonts::normalize_font_selection(crate::fonts::FontRole::Ui, &family);
+                if self.settings.fonts.ui_family == family {
+                    return Vec::new();
+                }
+                self.settings.fonts.ui_family = family;
+                self.persist_settings_effect()
+            }
+            SetMonoFontFamily(family) => {
+                let family =
+                    crate::fonts::normalize_font_selection(crate::fonts::FontRole::Mono, &family);
+                if self.settings.fonts.mono_family == family {
+                    return Vec::new();
+                }
+                self.settings.fonts.mono_family = family;
+                self.persist_settings_effect()
+            }
             SetWheelScrollLines(lines) => {
                 let clamped = lines.clamp(1, 10);
                 if clamped == self.settings.wheel_scroll_lines {

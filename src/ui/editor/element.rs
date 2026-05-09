@@ -38,6 +38,9 @@ const STRIP_TARGET_HEIGHT_PX: u32 = 480;
 const STRIP_OVERSCAN: usize = 1;
 const UNWRAPPED_RENDER_OVERSCAN_COLS: u16 = 16;
 const STICKY_HEADER_Z: i32 = 10;
+const INLINE_CHANGE_BG_MERGE_GAP_COLS: u32 = 2;
+const INLINE_CHANGE_BG_X_PAD_EM: f32 = 0.22;
+const INLINE_CHANGE_BG_Y_INSET_RATIO: f32 = 0.10;
 
 fn editor_scale(text_metrics: TextMetrics) -> f32 {
     (text_metrics.mono_font_size_px / BASE_MONO_FONT_SIZE).max(0.5)
@@ -1220,6 +1223,7 @@ impl EditorElement {
             return;
         }
         let runs = doc.line_runs(runs_range);
+        let mut ranges: Vec<(u32, u32)> = Vec::new();
 
         for run in runs {
             if run.flags & STYLE_FLAG_CHANGE == 0 || run.flags & STYLE_FLAG_UNCHANGED_CTX != 0 {
@@ -1235,7 +1239,19 @@ impl EditorElement {
             if col_end <= col_start {
                 continue;
             }
-            paint_column_range_rects(
+            if let Some((_, previous_end)) = ranges.last_mut()
+                && col_start <= previous_end.saturating_add(INLINE_CHANGE_BG_MERGE_GAP_COLS)
+            {
+                *previous_end = (*previous_end).max(col_end);
+                continue;
+            }
+            ranges.push((col_start, col_end));
+        }
+
+        let x_pad = (char_w * INLINE_CHANGE_BG_X_PAD_EM).clamp(1.5, 3.0);
+        let y_inset = (line_height * INLINE_CHANGE_BG_Y_INSET_RATIO).clamp(1.5, 2.5);
+        for (col_start, col_end) in ranges {
+            paint_column_range_rects_with_padding(
                 scene,
                 col_start,
                 col_end,
@@ -1247,7 +1263,9 @@ impl EditorElement {
                 segment_cols,
                 visible_segments.clone(),
                 bg_color,
-                Some(3.0),
+                3.0,
+                x_pad,
+                y_inset,
             );
         }
     }
@@ -2501,6 +2519,65 @@ fn visible_segment_range_for_block(
     let start = start.min(max_segments);
     let end = end.max(start).min(max_segments);
     start as u16..end as u16
+}
+
+fn paint_column_range_rects_with_padding(
+    scene: &mut Scene,
+    col_start: u32,
+    col_end: u32,
+    text_x: f32,
+    row_y: f32,
+    text_width: f32,
+    char_w: f32,
+    line_height: f32,
+    segment_cols: u16,
+    visible_segments: Range<u16>,
+    color: Color,
+    corner_radius: f32,
+    x_pad: f32,
+    y_inset: f32,
+) {
+    if col_end <= col_start {
+        return;
+    }
+
+    let segment_cols = u32::from(segment_cols.max(1));
+    let first_segment = (col_start / segment_cols) as u16;
+    let last_segment = ((col_end - 1) / segment_cols).saturating_add(1) as u16;
+    let start = first_segment.max(visible_segments.start);
+    let end = last_segment.min(visible_segments.end);
+    let text_right = text_x + text_width;
+    let y_inset = y_inset.min((line_height * 0.35).max(0.0));
+    let height = (line_height - y_inset * 2.0).max(1.0);
+
+    for seg in start..end {
+        let segment_start_col = u32::from(seg) * segment_cols;
+        let local_start = col_start.max(segment_start_col) - segment_start_col;
+        let local_end =
+            col_end.min(segment_start_col.saturating_add(segment_cols)) - segment_start_col;
+        if local_end <= local_start {
+            continue;
+        }
+
+        let raw_x = text_x + local_start as f32 * char_w;
+        let raw_right = text_x + local_end as f32 * char_w;
+        let x = (raw_x - x_pad).max(text_x);
+        let right = (raw_right + x_pad).min(text_right);
+        if right <= x {
+            continue;
+        }
+
+        scene.rounded_rect(RoundedRectPrimitive::uniform(
+            Rect {
+                x,
+                y: row_y + seg as f32 * line_height + y_inset,
+                width: right - x,
+                height,
+            },
+            corner_radius,
+            color,
+        ));
+    }
 }
 
 fn paint_column_range_rects(

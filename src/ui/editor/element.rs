@@ -944,7 +944,7 @@ impl EditorElement {
                 continue;
             }
             let kind = line.row_kind();
-            if kind == RenderRowKind::Modified && line.flags & RENDER_FLAG_STRUCTURAL == 0 {
+            if kind == RenderRowKind::Modified {
                 self.paint_modified_row_background(scene, theme, rr, &display_row, line_height);
             } else if self.layout.split_mode
                 && line.flags & RENDER_FLAG_STRUCTURAL == 0

@@ -5,7 +5,7 @@ use crate::core::text::{DiffTokenSpan, SyntaxTokenKind};
 use carbon::TextStore;
 use phosphor::{
     HighlightKind, HighlightSpan, Highlighter as PhosphorHighlighter,
-    LanguageId as PhosphorLanguageId, TextByteRange,
+    LanguageId as PhosphorLanguageId, ParsedSyntax, TextByteRange,
 };
 
 #[derive(Debug)]
@@ -65,6 +65,23 @@ impl Highlighter {
         self.highlight_resolved(language, source)
     }
 
+    pub fn parse_text_store_resolved(
+        &self,
+        language: Option<PhosphorLanguageId>,
+        text: &TextStore,
+    ) -> Result<Option<ParsedSyntax>> {
+        let Some(language) = language else {
+            return Ok(None);
+        };
+        if !self.inner.is_parser_available(language) {
+            return Ok(None);
+        }
+        self.inner
+            .parse_text_store_language(language, text)
+            .map(Some)
+            .map_err(|error| DiffyError::Syntax(error.to_string()))
+    }
+
     pub fn highlight_resolved_ranges(
         &self,
         language: Option<PhosphorLanguageId>,
@@ -79,6 +96,18 @@ impl Highlighter {
         }
         self.inner
             .highlight_language_ranges(language, source, byte_ranges)
+            .map(|spans| spans.into_iter().map(map_span).collect())
+            .map_err(|error| DiffyError::Syntax(error.to_string()))
+    }
+
+    pub fn highlight_text_store_ranges_with_parse(
+        &self,
+        parsed: &ParsedSyntax,
+        text: &TextStore,
+        byte_ranges: &[TextByteRange],
+    ) -> Result<Vec<DiffTokenSpan>> {
+        self.inner
+            .highlight_text_store_language_ranges_with_parse(parsed, text, byte_ranges)
             .map(|spans| spans.into_iter().map(map_span).collect())
             .map_err(|error| DiffyError::Syntax(error.to_string()))
     }

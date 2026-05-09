@@ -215,6 +215,12 @@ fn carbon_file_from_changed_path(changed: ChangedPath, file_id: usize) -> Result
         rhs_bytes: &changed.new_content,
     })
     .map_err(|error| DiffyError::General(format!("difftastic failed: {error}")))?;
+    log_difftastic_semantic_result(
+        display_path,
+        &semantic,
+        changed.old_content.len(),
+        changed.new_content.len(),
+    );
 
     Ok(carbon_file_from_semantic_result_with_id(
         &semantic,
@@ -224,6 +230,32 @@ fn carbon_file_from_changed_path(changed: ChangedPath, file_id: usize) -> Result
         &new_src,
         file_id,
     ))
+}
+
+fn log_difftastic_semantic_result(
+    display_path: &str,
+    result: &SemanticDiffResult,
+    old_bytes: usize,
+    new_bytes: usize,
+) {
+    if let Some(reason) = difftastic_line_fallback_reason(&result.language) {
+        tracing::info!(
+            target: "diffy::difftastic",
+            path = %display_path,
+            reason,
+            chunks = result.chunks.len(),
+            aligned_lines = result.aligned_lines.len(),
+            old_bytes,
+            new_bytes,
+            "difftastic semantic diff fell back to line diff"
+        );
+    }
+}
+
+fn difftastic_line_fallback_reason(language: &str) -> Option<&str> {
+    language
+        .strip_prefix("Text (")
+        .and_then(|reason| reason.strip_suffix(')'))
 }
 
 fn carbon_file_for_whole_file_change(
@@ -680,7 +712,8 @@ mod tests {
 
     use super::{
         DifftasticBackend, carbon_file_from_semantic_result_with_id, collect_changed_paths,
-        compare_summaries_from_entries, map_intensity, should_defer_difftastic_files,
+        compare_summaries_from_entries, difftastic_line_fallback_reason, map_intensity,
+        should_defer_difftastic_files,
     };
     use crate::core::compare::backends::DiffBackend;
     use crate::core::compare::spec::{CompareMode, CompareSpec, LayoutMode, RendererKind};
@@ -720,6 +753,18 @@ mod tests {
         )
         .unwrap()
         .to_string()
+    }
+
+    #[test]
+    fn difftastic_fallback_reason_extracts_text_fallback() {
+        assert_eq!(
+            difftastic_line_fallback_reason(
+                "Text (38 C parse errors, exceeded DFT_PARSE_ERROR_LIMIT)"
+            ),
+            Some("38 C parse errors, exceeded DFT_PARSE_ERROR_LIMIT")
+        );
+        assert_eq!(difftastic_line_fallback_reason("C"), None);
+        assert_eq!(difftastic_line_fallback_reason("Text"), None);
     }
 
     #[test]

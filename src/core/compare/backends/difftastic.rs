@@ -107,8 +107,8 @@ impl DiffBackend for DifftasticBackend {
     }
 }
 
-fn compare_changed_paths(
-    changed_paths: Vec<ChangedPath>,
+pub(crate) fn compare_changed_paths(
+    changed_paths: Vec<DifftasticChangedPath>,
     reporter: Option<&dyn ProgressSink>,
 ) -> Result<CompareOutput> {
     let files_total = changed_paths.len() as u32;
@@ -183,7 +183,10 @@ fn report_file_loaded(reporter: Option<&dyn ProgressSink>, progress: &AtomicU32,
     }
 }
 
-fn carbon_file_from_changed_path(changed: ChangedPath, file_id: usize) -> Result<carbon::FileDiff> {
+fn carbon_file_from_changed_path(
+    changed: DifftasticChangedPath,
+    file_id: usize,
+) -> Result<carbon::FileDiff> {
     let display_path = changed
         .new_path
         .as_deref()
@@ -563,13 +566,13 @@ fn carbon_status_from_label(status: &str, is_binary: bool) -> carbon::FileStatus
 type ChangedPathEntry = (String, Option<String>, Option<String>);
 
 #[derive(Debug)]
-struct ChangedPath {
-    status: String,
-    old_path: Option<String>,
-    new_path: Option<String>,
-    old_content: Vec<u8>,
-    new_content: Vec<u8>,
-    is_binary: bool,
+pub(crate) struct DifftasticChangedPath {
+    pub(crate) status: String,
+    pub(crate) old_path: Option<String>,
+    pub(crate) new_path: Option<String>,
+    pub(crate) old_content: Vec<u8>,
+    pub(crate) new_content: Vec<u8>,
+    pub(crate) is_binary: bool,
 }
 
 fn should_defer_difftastic_files(file_count: usize, right: &str) -> bool {
@@ -609,7 +612,7 @@ fn collect_changed_paths(
     left: &str,
     right: &str,
     only_path: Option<&str>,
-) -> Result<Vec<ChangedPath>> {
+) -> Result<Vec<DifftasticChangedPath>> {
     let entries = collect_changed_path_entries(git, left, right, only_path)?;
     collect_changed_paths_from_entries(git, left, right, entries)
 }
@@ -619,7 +622,7 @@ fn collect_changed_paths_from_entries(
     left: &str,
     right: &str,
     entries: Vec<ChangedPathEntry>,
-) -> Result<Vec<ChangedPath>> {
+) -> Result<Vec<DifftasticChangedPath>> {
     let old_paths = entries
         .iter()
         .filter_map(|(_, old_path, _)| old_path.as_deref())
@@ -652,7 +655,7 @@ fn collect_changed_paths_from_entries(
         let new_binary = new_content
             .as_ref()
             .is_some_and(|bytes| bytes.iter().take(1024).any(|b| *b == 0));
-        changed.push(ChangedPath {
+        changed.push(DifftasticChangedPath {
             status,
             old_path,
             new_path,
@@ -664,7 +667,10 @@ fn collect_changed_paths_from_entries(
     Ok(changed)
 }
 
-fn changed_path_for_status_item(git: &GitService, item: &StatusItem) -> Result<ChangedPath> {
+fn changed_path_for_status_item(
+    git: &GitService,
+    item: &StatusItem,
+) -> Result<DifftasticChangedPath> {
     let old_content = match item.scope {
         StatusScope::Staged => git.read_file_bytes_at("HEAD", &item.path).ok(),
         StatusScope::Unstaged => git
@@ -689,7 +695,7 @@ fn changed_path_for_status_item(git: &GitService, item: &StatusItem) -> Result<C
         .as_ref()
         .is_some_and(|bytes| bytes.iter().take(1024).any(|b| *b == 0));
 
-    Ok(ChangedPath {
+    Ok(DifftasticChangedPath {
         status: item.status.clone(),
         old_path: match item.scope {
             StatusScope::Untracked => None,

@@ -5,9 +5,11 @@ use std::path::{Path, PathBuf};
 use carbon::TextStore;
 
 use crate::core::compare::backends::compare_output_from_raw_patch;
+#[cfg(feature = "difftastic")]
+use crate::core::compare::backends::{DifftasticChangedPath, compare_changed_paths};
 use crate::core::compare::{
     COMPARE_SUMMARY_FILE_LIMIT, CompareFileStatsTarget, CompareFileSummary, CompareOutput,
-    ProgressSink,
+    ProgressSink, RendererKind,
 };
 use crate::core::error::{DiffyError, Result};
 use crate::core::vcs::backend::{VcsBackend, VcsRepository, VcsWatchPaths};
@@ -135,10 +137,11 @@ impl JjRepository {
                 args.push(OsString::from("--to"));
                 args.push(OsString::from(to));
             }
-            VcsCompareSpec::MergeBaseRange { .. } => {
-                return Err(DiffyError::General(
-                    "jj merge-base compare is not supported yet".to_owned(),
-                ));
+            VcsCompareSpec::MergeBaseRange { base, head } => {
+                args.push(OsString::from("--from"));
+                args.push(OsString::from(jj_fork_point_revset(base, head)));
+                args.push(OsString::from("--to"));
+                args.push(OsString::from(head));
             }
         }
         args.push(OsString::from("--git"));
@@ -157,6 +160,96 @@ impl JjRepository {
         args.retain(|arg| arg != "--git");
         args.push(OsString::from("--stat"));
         Ok(args)
+    }
+
+    #[cfg(feature = "difftastic")]
+    fn compare_difftastic(
+        &self,
+        request: &VcsCompareRequest,
+        reporter: Option<&dyn ProgressSink>,
+        only_path: Option<&str>,
+    ) -> Result<CompareOutput> {
+        let mut summary_args = self.diff_summary_args_for_spec(&request.spec)?;
+        if let Some(path) = only_path {
+            summary_args.push(jj_root_pathspec(path));
+        }
+        let summary = self.cli.run_ignored_wc(&summary_args)?;
+        let changes = parse_diff_summary(&summary);
+        if only_path.is_none() && changes.len() > COMPARE_SUMMARY_FILE_LIMIT {
+            let mut output = CompareOutput {
+                file_summaries: changes
+                    .into_iter()
+                    .map(|change| {
+                        CompareFileSummary::from_paths_status(
+                            change.old_path.as_deref(),
+                            Some(change.path.as_str()),
+                            carbon_status_from_file_change_status(change.status),
+                            true,
+                        )
+                    })
+                    .collect(),
+                ..CompareOutput::default()
+            };
+            output.compact_file_summaries();
+            return Ok(output);
+        }
+
+        let (old_rev, new_rev) = difftastic_revisions_for_spec(&request.spec);
+        let mut changed_paths = Vec::with_capacity(changes.len());
+        for change in changes {
+            changed_paths.push(self.difftastic_changed_path(&change, &old_rev, &new_rev)?);
+        }
+        compare_changed_paths(changed_paths, reporter)
+    }
+
+    #[cfg(feature = "difftastic")]
+    fn difftastic_changed_path(
+        &self,
+        change: &FileChange,
+        old_rev: &str,
+        new_rev: &str,
+    ) -> Result<DifftasticChangedPath> {
+        let old_path = match change.status {
+            FileChangeStatus::Added | FileChangeStatus::Untracked => None,
+            _ => Some(change.old_path.as_deref().unwrap_or(change.path.as_str())),
+        };
+        let new_path = match change.status {
+            FileChangeStatus::Deleted => None,
+            _ => Some(change.path.as_str()),
+        };
+        let old_content = old_path
+            .map(|path| self.jj_file_show_bytes(old_rev, path))
+            .transpose()?
+            .unwrap_or_default();
+        let new_content = new_path
+            .map(|path| self.jj_file_show_bytes(new_rev, path))
+            .transpose()?
+            .unwrap_or_default();
+        let is_binary = matches!(
+            change.status,
+            FileChangeStatus::Binary | FileChangeStatus::Conflicted | FileChangeStatus::TypeChanged
+        ) || looks_binary(&old_content)
+            || looks_binary(&new_content);
+
+        Ok(DifftasticChangedPath {
+            status: difftastic_status_label(change.status).to_owned(),
+            old_path: old_path.map(str::to_owned),
+            new_path: new_path.map(str::to_owned),
+            old_content,
+            new_content,
+            is_binary,
+        })
+    }
+
+    #[cfg(feature = "difftastic")]
+    fn jj_file_show_bytes(&self, revision: &str, path: &str) -> Result<Vec<u8>> {
+        self.cli.run_bytes_ignored_wc(&[
+            OsString::from("file"),
+            OsString::from("show"),
+            OsString::from("-r"),
+            OsString::from(revision),
+            jj_root_pathspec(path),
+        ])
     }
 
     fn current_operation_id(&self) -> Result<String> {
@@ -624,6 +717,13 @@ impl VcsRepository for JjRepository {
         if let Some(output) = self.cached_diff(operation_id.as_deref(), request, None) {
             return Ok(output);
         }
+        #[cfg(feature = "difftastic")]
+        if request.renderer == RendererKind::Difftastic {
+            let output = self.compare_difftastic(request, _reporter, None)?;
+            self.insert_diff_cache(operation_id, request.clone(), None, output.clone());
+            return Ok(output);
+        }
+
         let summary_args = self.diff_summary_args_for_spec(&request.spec)?;
         let summary = self.cli.run_ignored_wc(&summary_args)?;
         let summaries = compare_summaries_from_jj_diff_summary(&summary, true);
@@ -717,6 +817,18 @@ impl VcsRepository for JjRepository {
         if let Some(output) = self.cached_diff(operation_id.as_deref(), request, Some(path)) {
             return Ok(output);
         }
+        #[cfg(feature = "difftastic")]
+        if request.renderer == RendererKind::Difftastic {
+            let output = self.compare_difftastic(request, None, Some(path))?;
+            self.insert_diff_cache(
+                operation_id,
+                request.clone(),
+                Some(path.to_owned()),
+                output.clone(),
+            );
+            return Ok(output);
+        }
+
         let mut args = self.diff_args_for_spec(&request.spec)?;
         args.push(jj_root_pathspec(path));
         let raw_diff = self.cli.run_ignored_wc(&args)?;
@@ -733,7 +845,7 @@ impl VcsRepository for JjRepository {
     fn file_change_diff(
         &mut self,
         change: &FileChange,
-        _renderer: crate::core::compare::RendererKind,
+        _renderer: RendererKind,
     ) -> Result<CompareOutput> {
         self.compare_working_file(&change.path)
     }
@@ -1106,7 +1218,7 @@ impl VcsRepository for JjRepository {
         let request = VcsCompareRequest {
             spec: VcsCompareSpec::WorkingCopy,
             layout: crate::core::compare::LayoutMode::Unified,
-            renderer: crate::core::compare::RendererKind::Builtin,
+            renderer: RendererKind::Builtin,
         };
         if let Some(output) = self.cached_diff(operation_id.as_deref(), &request, Some(path)) {
             return Ok(output);
@@ -1287,6 +1399,37 @@ fn jj_root_pathspec(path: &str) -> OsString {
     OsString::from(format!("root:{path}"))
 }
 
+fn jj_fork_point_revset(base: &str, head: &str) -> String {
+    format!("fork_point(({base})|({head}))")
+}
+
+#[cfg(feature = "difftastic")]
+fn difftastic_revisions_for_spec(spec: &VcsCompareSpec) -> (String, String) {
+    match spec {
+        VcsCompareSpec::WorkingCopy => ("@-".to_owned(), "@".to_owned()),
+        VcsCompareSpec::Change { revision } => (format!("({revision})-"), revision.clone()),
+        VcsCompareSpec::Range { from, to } => (from.clone(), to.clone()),
+        VcsCompareSpec::MergeBaseRange { base, head } => {
+            (jj_fork_point_revset(base, head), head.clone())
+        }
+    }
+}
+
+#[cfg(feature = "difftastic")]
+fn difftastic_status_label(status: FileChangeStatus) -> &'static str {
+    match status {
+        FileChangeStatus::Added | FileChangeStatus::Untracked => "A",
+        FileChangeStatus::Deleted => "D",
+        FileChangeStatus::Renamed => "R",
+        _ => "M",
+    }
+}
+
+#[cfg(feature = "difftastic")]
+fn looks_binary(bytes: &[u8]) -> bool {
+    bytes.iter().take(1024).any(|byte| *byte == 0)
+}
+
 fn parse_movable_bookmark_line(line: &str) -> Option<MovableBookmark> {
     let mut fields = line.splitn(3, '\t');
     let name = fields.next()?.trim();
@@ -1356,7 +1499,10 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{JjBackend, compare_summaries_from_jj_diff_summary, parse_jj_diff_stat_total};
+    use super::{
+        JjBackend, compare_summaries_from_jj_diff_summary, jj_fork_point_revset,
+        parse_jj_diff_stat_total,
+    };
     use crate::core::compare::{CompareFileStatsTarget, LayoutMode, RendererKind};
     use crate::core::vcs::backend::VcsBackend;
     use crate::core::vcs::model::{
@@ -1364,6 +1510,29 @@ mod tests {
         VcsCompareSpec, VcsKind,
     };
     use crate::events::RepositorySyncReason;
+
+    #[test]
+    fn jj_merge_base_revset_uses_fork_point() {
+        assert_eq!(
+            jj_fork_point_revset("main", "feature"),
+            "fork_point((main)|(feature))"
+        );
+    }
+
+    #[cfg(feature = "difftastic")]
+    #[test]
+    fn jj_difftastic_revisions_follow_compare_spec() {
+        assert_eq!(
+            super::difftastic_revisions_for_spec(&VcsCompareSpec::MergeBaseRange {
+                base: "main".to_owned(),
+                head: "feature".to_owned(),
+            }),
+            (
+                "fork_point((main)|(feature))".to_owned(),
+                "feature".to_owned()
+            )
+        );
+    }
 
     #[test]
     fn jj_diff_summary_builds_compare_summaries() {

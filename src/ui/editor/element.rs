@@ -39,7 +39,6 @@ const STRIP_OVERSCAN: usize = 1;
 const UNWRAPPED_RENDER_OVERSCAN_COLS: u16 = 16;
 const STICKY_HEADER_Z: i32 = 10;
 const INLINE_CHANGE_BG_MERGE_GAP_COLS: u32 = 2;
-const INLINE_CHANGE_BG_X_PAD_EM: f32 = 0.22;
 const INLINE_CHANGE_BG_Y_INSET_RATIO: f32 = 0.10;
 
 fn editor_scale(text_metrics: TextMetrics) -> f32 {
@@ -1248,10 +1247,9 @@ impl EditorElement {
             ranges.push((col_start, col_end));
         }
 
-        let x_pad = (char_w * INLINE_CHANGE_BG_X_PAD_EM).clamp(1.5, 3.0);
         let y_inset = (line_height * INLINE_CHANGE_BG_Y_INSET_RATIO).clamp(1.5, 2.5);
         for (col_start, col_end) in ranges {
-            paint_column_range_rects_with_padding(
+            paint_column_range_rects_with_vertical_inset(
                 scene,
                 col_start,
                 col_end,
@@ -1264,7 +1262,6 @@ impl EditorElement {
                 visible_segments.clone(),
                 bg_color,
                 3.0,
-                x_pad,
                 y_inset,
             );
         }
@@ -2521,7 +2518,7 @@ fn visible_segment_range_for_block(
     start as u16..end as u16
 }
 
-fn paint_column_range_rects_with_padding(
+fn paint_column_range_rects_with_vertical_inset(
     scene: &mut Scene,
     col_start: u32,
     col_end: u32,
@@ -2534,7 +2531,6 @@ fn paint_column_range_rects_with_padding(
     visible_segments: Range<u16>,
     color: Color,
     corner_radius: f32,
-    x_pad: f32,
     y_inset: f32,
 ) {
     if col_end <= col_start {
@@ -2546,7 +2542,6 @@ fn paint_column_range_rects_with_padding(
     let last_segment = ((col_end - 1) / segment_cols).saturating_add(1) as u16;
     let start = first_segment.max(visible_segments.start);
     let end = last_segment.min(visible_segments.end);
-    let text_right = text_x + text_width;
     let y_inset = y_inset.min((line_height * 0.35).max(0.0));
     let height = (line_height - y_inset * 2.0).max(1.0);
 
@@ -2559,11 +2554,10 @@ fn paint_column_range_rects_with_padding(
             continue;
         }
 
-        let raw_x = text_x + local_start as f32 * char_w;
-        let raw_right = text_x + local_end as f32 * char_w;
-        let x = (raw_x - x_pad).max(text_x);
-        let right = (raw_right + x_pad).min(text_right);
-        if right <= x {
+        let x = text_x + local_start as f32 * char_w;
+        let width = (local_end - local_start) as f32 * char_w;
+        let clamped_width = width.min((text_x + text_width - x).max(0.0));
+        if clamped_width <= 0.0 {
             continue;
         }
 
@@ -2571,7 +2565,7 @@ fn paint_column_range_rects_with_padding(
             Rect {
                 x,
                 y: row_y + seg as f32 * line_height + y_inset,
-                width: right - x,
+                width: clamped_width,
                 height,
             },
             corner_radius,

@@ -238,7 +238,11 @@ fn log_difftastic_semantic_result(
     old_bytes: usize,
     new_bytes: usize,
 ) {
-    if let Some(reason) = difftastic_line_fallback_reason(&result.language) {
+    if let Some(reason) = result
+        .line_fallback_reason
+        .as_deref()
+        .or_else(|| difftastic_line_fallback_reason(&result.language))
+    {
         tracing::info!(
             target: "diffy::difftastic",
             path = %display_path,
@@ -772,6 +776,7 @@ mod tests {
         let result = SemanticDiffResult {
             status: DiffStatus::Changed,
             language: "Rust".to_owned(),
+            line_fallback_reason: None,
             aligned_lines: vec![(Some(0), Some(0))],
             chunks: vec![SemanticChunk {
                 lines: vec![SemanticLine {
@@ -827,6 +832,7 @@ mod tests {
         let result = SemanticDiffResult {
             status: DiffStatus::Changed,
             language: "Rust".to_owned(),
+            line_fallback_reason: None,
             aligned_lines: vec![(Some(0), Some(0))],
             chunks: vec![SemanticChunk {
                 lines: vec![SemanticLine {
@@ -879,6 +885,7 @@ mod tests {
         let result = SemanticDiffResult {
             status: DiffStatus::Changed,
             language: "Rust".to_owned(),
+            line_fallback_reason: None,
             aligned_lines: vec![(None, Some(0))],
             chunks: vec![SemanticChunk {
                 lines: vec![SemanticLine {
@@ -915,6 +922,7 @@ mod tests {
         let result = SemanticDiffResult {
             status: DiffStatus::Changed,
             language: "Rust".to_owned(),
+            line_fallback_reason: None,
             aligned_lines: vec![(Some(0), Some(0))],
             chunks: vec![SemanticChunk {
                 lines: vec![SemanticLine {

@@ -12,6 +12,7 @@ use crate::core::compare::backends::DiffBackend;
 use crate::core::compare::progress::{ComparePhase, ProgressSink};
 use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::{CompareMode, CompareSpec};
+use crate::core::compare::stats::{COMPARE_SUMMARY_FILE_LIMIT, CompareFileSummary};
 use crate::core::error::{DiffyError, Result};
 use crate::core::vcs::git::{GitService, StatusItem, StatusScope, WORKDIR_REF};
 
@@ -89,16 +90,19 @@ impl DiffBackend for DifftasticBackend {
             }
         };
 
-        // Git enumeration phase — covers `collect_changed_paths` which
-        // runs `diff_tree_to_tree` + rename detection + per-path blob
-        // loads. Distinguished from the per-file semantic diff that
-        // follows, which is the dominant cost for difftastic on large
-        // repos.
+        // Git enumeration phase — covers `diff_tree_to_tree` + rename detection.
+        // Per-path blob loads and semantic diffs happen below only when the file
+        // list is small enough to materialize eagerly.
         if let Some(r) = reporter {
             r.phase(ComparePhase::EnumeratingChanges);
         }
 
-        let changed_paths = collect_changed_paths(git, &left, &right, None)?;
+        let entries = collect_changed_path_entries(git, &left, &right, None)?;
+        if should_defer_difftastic_files(entries.len(), &right) {
+            return Ok(Some(compare_summaries_from_entries(entries)));
+        }
+
+        let changed_paths = collect_changed_paths_from_entries(git, &left, &right, entries)?;
 
         Ok(Some(compare_changed_paths(changed_paths, reporter)?))
     }
@@ -527,6 +531,8 @@ fn carbon_status_from_label(status: &str, is_binary: bool) -> carbon::FileStatus
     }
 }
 
+type ChangedPathEntry = (String, Option<String>, Option<String>);
+
 #[derive(Debug)]
 struct ChangedPath {
     status: String,
@@ -537,13 +543,54 @@ struct ChangedPath {
     is_binary: bool,
 }
 
+fn should_defer_difftastic_files(file_count: usize, right: &str) -> bool {
+    right != WORKDIR_REF && file_count > COMPARE_SUMMARY_FILE_LIMIT
+}
+
+fn collect_changed_path_entries(
+    git: &GitService,
+    left: &str,
+    right: &str,
+    only_path: Option<&str>,
+) -> Result<Vec<ChangedPathEntry>> {
+    git.diff_name_status(left, right, only_path)
+}
+
+fn compare_summaries_from_entries(entries: Vec<ChangedPathEntry>) -> CompareOutput {
+    let mut output = CompareOutput {
+        file_summaries: entries
+            .into_iter()
+            .map(|(status, old_path, new_path)| {
+                CompareFileSummary::from_paths_status(
+                    old_path.as_deref(),
+                    new_path.as_deref(),
+                    carbon_status_from_label(&status, false),
+                    true,
+                )
+            })
+            .collect(),
+        ..CompareOutput::default()
+    };
+    output.compact_file_summaries();
+    output
+}
+
 fn collect_changed_paths(
     git: &GitService,
     left: &str,
     right: &str,
     only_path: Option<&str>,
 ) -> Result<Vec<ChangedPath>> {
-    let entries = git.diff_name_status(left, right, only_path)?;
+    let entries = collect_changed_path_entries(git, left, right, only_path)?;
+    collect_changed_paths_from_entries(git, left, right, entries)
+}
+
+fn collect_changed_paths_from_entries(
+    git: &GitService,
+    left: &str,
+    right: &str,
+    entries: Vec<ChangedPathEntry>,
+) -> Result<Vec<ChangedPath>> {
     let old_paths = entries
         .iter()
         .filter_map(|(_, old_path, _)| old_path.as_deref())
@@ -647,7 +694,7 @@ mod tests {
 
     use super::{
         DifftasticBackend, carbon_file_from_semantic_result_with_id, collect_changed_paths,
-        map_intensity,
+        compare_summaries_from_entries, map_intensity, should_defer_difftastic_files,
     };
     use crate::core::compare::backends::DiffBackend;
     use crate::core::compare::spec::{CompareMode, CompareSpec, LayoutMode, RendererKind};
@@ -917,6 +964,39 @@ mod tests {
             map_intensity(DftIntensity::UnchangedContext),
             carbon::ChangeIntensity::UnchangedContext
         );
+    }
+
+    #[test]
+    fn difftastic_large_compare_summaries_preserve_paths_and_status() {
+        assert!(should_defer_difftastic_files(
+            crate::core::compare::stats::COMPARE_SUMMARY_FILE_LIMIT + 1,
+            "abc123"
+        ));
+        assert!(!should_defer_difftastic_files(
+            crate::core::compare::stats::COMPARE_SUMMARY_FILE_LIMIT + 1,
+            WORKDIR_REF
+        ));
+
+        let output = compare_summaries_from_entries(vec![
+            ("A".to_owned(), None, Some("src/new.rs".to_owned())),
+            ("D".to_owned(), Some("src/old.rs".to_owned()), None),
+            (
+                "R".to_owned(),
+                Some("src/from.rs".to_owned()),
+                Some("src/to.rs".to_owned()),
+            ),
+        ]);
+
+        assert_eq!(output.carbon.files.len(), 0);
+        assert_eq!(output.file_summaries.len(), 3);
+        assert_eq!(output.file_summaries[0].path(), "src/new.rs");
+        assert_eq!(output.file_summaries[0].status, carbon::FileStatus::Added);
+        assert!(output.file_summaries[0].is_partial);
+        assert!(output.file_summaries[0].stats_deferred);
+        assert_eq!(output.file_summaries[1].path(), "src/old.rs");
+        assert_eq!(output.file_summaries[1].status, carbon::FileStatus::Deleted);
+        assert_eq!(output.file_summaries[2].path(), "src/to.rs");
+        assert_eq!(output.file_summaries[2].status, carbon::FileStatus::Renamed);
     }
 
     #[test]

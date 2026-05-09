@@ -999,8 +999,8 @@ impl EditorElement {
         display_row: &DisplayRow,
         line_height: f32,
     ) {
-        let del_bg = dim_bg(theme.colors.line_del);
-        let add_bg = dim_bg(theme.colors.line_add);
+        let del_bg = theme.colors.line_del.with_alpha(Alpha::WHISPER);
+        let add_bg = theme.colors.line_add.with_alpha(Alpha::WHISPER);
         if self.layout.split_mode {
             let mid = self.layout.right_gutter_rect.x;
             scene.rect(RectPrimitive {
@@ -2353,7 +2353,7 @@ fn paint_row_background(scene: &mut Scene, theme: &Theme, row_rect: Rect, kind: 
         RenderRowKind::Context => theme.colors.canvas,
         RenderRowKind::Added => dim_bg(theme.colors.line_add),
         RenderRowKind::Removed => dim_bg(theme.colors.line_del),
-        RenderRowKind::Modified => dim_bg(theme.colors.line_modified),
+        RenderRowKind::Modified => theme.colors.line_modified.with_alpha(Alpha::WHISPER),
         RenderRowKind::FileHeader | RenderRowKind::HunkSeparator | RenderRowKind::Block => return,
     };
     scene.rect(RectPrimitive {

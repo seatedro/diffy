@@ -400,11 +400,11 @@ fn carbon_file_from_semantic_result_with_id(
                 .rhs_line
                 .and_then(|n| new_lines.get(n as usize).copied());
 
-            let is_context = line.lhs_changes.is_empty()
-                && line.rhs_changes.is_empty()
-                && lhs_text.is_some()
+            let is_context = lhs_text.is_some()
                 && rhs_text.is_some()
-                && lhs_text == rhs_text;
+                && lhs_text == rhs_text
+                && semantic_spans_are_context(&line.lhs_changes)
+                && semantic_spans_are_context(&line.rhs_changes);
 
             if is_context {
                 if let Some(text) = lhs_text {
@@ -502,6 +502,12 @@ fn carbon_file_from_semantic_result_with_id(
     file.old_text = (old_store_count > 0).then(|| carbon::TextStore::from_text(old_text));
     file.new_text = (new_store_count > 0).then(|| carbon::TextStore::from_text(new_text));
     file
+}
+
+fn semantic_spans_are_context(spans: &[vendored_difftastic::ChangeSpan]) -> bool {
+    spans
+        .iter()
+        .all(|span| span.intensity == DftIntensity::UnchangedContext)
 }
 
 fn push_carbon_text_line(text: &mut String, line: &str) {
@@ -827,6 +833,66 @@ mod tests {
                 .and_then(|text| text.line_str(carbon::LineId(0))),
             Some("    new();")
         );
+    }
+
+    #[test]
+    fn carbon_semantic_treats_unchanged_semantic_lines_as_context() {
+        let result = SemanticDiffResult {
+            status: DiffStatus::Changed,
+            language: "Rust".to_owned(),
+            line_fallback_reason: None,
+            aligned_lines: vec![(Some(0), Some(0)), (Some(1), Some(1))],
+            chunks: vec![SemanticChunk {
+                lines: vec![
+                    SemanticLine {
+                        lhs_line: Some(0),
+                        rhs_line: Some(0),
+                        lhs_changes: vec![ChangeSpan {
+                            start_col: 0,
+                            end_col: 8,
+                            highlight: HighlightKind::Normal,
+                            intensity: DftIntensity::UnchangedContext,
+                        }],
+                        rhs_changes: vec![ChangeSpan {
+                            start_col: 0,
+                            end_col: 8,
+                            highlight: HighlightKind::Normal,
+                            intensity: DftIntensity::UnchangedContext,
+                        }],
+                    },
+                    SemanticLine {
+                        lhs_line: Some(1),
+                        rhs_line: Some(1),
+                        lhs_changes: vec![ChangeSpan {
+                            start_col: 4,
+                            end_col: 7,
+                            highlight: HighlightKind::Normal,
+                            intensity: DftIntensity::Novel,
+                        }],
+                        rhs_changes: vec![ChangeSpan {
+                            start_col: 4,
+                            end_col: 7,
+                            highlight: HighlightKind::Normal,
+                            intensity: DftIntensity::Novel,
+                        }],
+                    },
+                ],
+            }],
+        };
+
+        let file = carbon_file_from_semantic_result_with_id(
+            &result,
+            "src/lib.rs",
+            "M",
+            "same();\nold();\n",
+            "same();\nnew();\n",
+            0,
+        );
+
+        assert_eq!(file.blocks[0].kind, carbon::BlockKind::Context);
+        assert_eq!(file.blocks[1].kind, carbon::BlockKind::Change);
+        assert_eq!(file.additions, 1);
+        assert_eq!(file.deletions, 1);
     }
 
     #[test]
@@ -1170,13 +1236,13 @@ mod tests {
         assert_eq!(
             file.old_text
                 .as_ref()
-                .and_then(|text| text.line_str(carbon::LineId(0))),
+                .and_then(|text| text.line_str(carbon::LineId(1))),
             Some("    old();")
         );
         assert_eq!(
             file.new_text
                 .as_ref()
-                .and_then(|text| text.line_str(carbon::LineId(0))),
+                .and_then(|text| text.line_str(carbon::LineId(1))),
             Some("    new();")
         );
     }

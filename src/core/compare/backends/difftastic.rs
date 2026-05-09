@@ -1,5 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use rayon::prelude::*;
 
 use vendored_difftastic::{
     ChangeIntensity as DftIntensity, DiffRequest, DiffStatus, SemanticDiffResult,
@@ -15,6 +18,8 @@ use crate::core::vcs::git::{GitService, StatusItem, StatusScope, WORKDIR_REF};
 /// Match git_diff.rs — throttle per-file emits so a 3k-file diff doesn't
 /// flood the event channel.
 const LOADING_FILE_EMIT_STRIDE: usize = 16;
+const DIFFTASTIC_MAX_WORKERS: usize = 4;
+const DIFFTASTIC_MIN_FILES_FOR_PARALLEL: usize = 4;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DifftasticBackend;
@@ -103,7 +108,6 @@ fn compare_changed_paths(
     changed_paths: Vec<ChangedPath>,
     reporter: Option<&dyn ProgressSink>,
 ) -> Result<CompareOutput> {
-    let mut output = CompareOutput::default();
     let files_total = changed_paths.len() as u32;
 
     // Seed the determinate bar with a zero count so the UI swaps off the
@@ -116,53 +120,191 @@ fn compare_changed_paths(
         });
     }
 
-    for (idx, changed) in changed_paths.into_iter().enumerate() {
-        if let Some(r) = reporter {
-            let is_last = (idx as u32) + 1 == files_total;
-            if idx % LOADING_FILE_EMIT_STRIDE == 0 || is_last {
-                r.phase(ComparePhase::LoadingFiles {
-                    files_seen: (idx + 1) as u32,
-                    files_total,
-                });
-            }
-        }
-        let display_path = changed
-            .new_path
-            .as_deref()
-            .or(changed.old_path.as_deref())
-            .unwrap_or_default();
-        if changed.is_binary {
-            output
-                .carbon
-                .files
-                .push(carbon_binary_file(display_path, &changed.status, idx));
-            continue;
-        }
+    let progress = AtomicU32::new(0);
+    let worker_count = difftastic_worker_count(changed_paths.len());
+    let files = if worker_count == 1 {
+        changed_paths
+            .into_iter()
+            .enumerate()
+            .map(|(idx, changed)| {
+                let file = carbon_file_from_changed_path(changed, idx)?;
+                report_file_loaded(reporter, &progress, files_total);
+                Ok(file)
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(worker_count)
+            .thread_name(|idx| format!("diffy-difftastic-{idx}"))
+            .build()
+            .map_err(|error| {
+                DiffyError::General(format!("difftastic worker setup failed: {error}"))
+            })?;
+        pool.install(|| {
+            changed_paths
+                .into_par_iter()
+                .enumerate()
+                .map(|(idx, changed)| {
+                    let file = carbon_file_from_changed_path(changed, idx)?;
+                    report_file_loaded(reporter, &progress, files_total);
+                    Ok(file)
+                })
+                .collect::<Result<Vec<_>>>()
+        })?
+    };
 
-        let semantic = vendored_difftastic::diff_bytes_semantic(DiffRequest {
-            display_path,
-            lhs_path: changed.old_path.as_deref().map(Path::new),
-            rhs_path: changed.new_path.as_deref().map(Path::new),
-            lhs_bytes: &changed.old_content,
-            rhs_bytes: &changed.new_content,
-        })
-        .map_err(|error| DiffyError::General(format!("difftastic failed: {error}")))?;
-        let old_src = String::from_utf8_lossy(&changed.old_content);
-        let new_src = String::from_utf8_lossy(&changed.new_content);
-        output
-            .carbon
-            .files
-            .push(carbon_file_from_semantic_result_with_id(
-                &semantic,
-                display_path,
-                &changed.status,
-                &old_src,
-                &new_src,
-                idx,
-            ));
+    let mut output = CompareOutput::default();
+    output.carbon.files = files;
+    Ok(output)
+}
+
+fn difftastic_worker_count(file_count: usize) -> usize {
+    if file_count < DIFFTASTIC_MIN_FILES_FOR_PARALLEL {
+        return 1;
+    }
+    let available = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1);
+    file_count.min(available).min(DIFFTASTIC_MAX_WORKERS).max(1)
+}
+
+fn report_file_loaded(reporter: Option<&dyn ProgressSink>, progress: &AtomicU32, files_total: u32) {
+    let files_seen = progress.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+    if let Some(r) = reporter {
+        if files_seen % LOADING_FILE_EMIT_STRIDE as u32 == 0 || files_seen == files_total {
+            r.phase(ComparePhase::LoadingFiles {
+                files_seen,
+                files_total,
+            });
+        }
+    }
+}
+
+fn carbon_file_from_changed_path(changed: ChangedPath, file_id: usize) -> Result<carbon::FileDiff> {
+    let display_path = changed
+        .new_path
+        .as_deref()
+        .or(changed.old_path.as_deref())
+        .unwrap_or_default();
+    if changed.is_binary {
+        return Ok(carbon_binary_file(display_path, &changed.status, file_id));
     }
 
-    Ok(output)
+    let old_src = String::from_utf8_lossy(&changed.old_content);
+    let new_src = String::from_utf8_lossy(&changed.new_content);
+    if let Some(file) = carbon_file_for_whole_file_change(
+        display_path,
+        &changed.status,
+        changed.old_path.is_none(),
+        changed.new_path.is_none(),
+        &old_src,
+        &new_src,
+        file_id,
+    ) {
+        return Ok(file);
+    }
+
+    let semantic = vendored_difftastic::diff_bytes_semantic(DiffRequest {
+        display_path,
+        lhs_path: changed.old_path.as_deref().map(Path::new),
+        rhs_path: changed.new_path.as_deref().map(Path::new),
+        lhs_bytes: &changed.old_content,
+        rhs_bytes: &changed.new_content,
+    })
+    .map_err(|error| DiffyError::General(format!("difftastic failed: {error}")))?;
+
+    Ok(carbon_file_from_semantic_result_with_id(
+        &semantic,
+        display_path,
+        &changed.status,
+        &old_src,
+        &new_src,
+        file_id,
+    ))
+}
+
+fn carbon_file_for_whole_file_change(
+    fallback_path: &str,
+    fallback_status: &str,
+    old_path_missing: bool,
+    new_path_missing: bool,
+    old_src: &str,
+    new_src: &str,
+    file_id: usize,
+) -> Option<carbon::FileDiff> {
+    let status = if old_path_missing || fallback_status == "A" {
+        carbon::FileStatus::Added
+    } else if new_path_missing || fallback_status == "D" {
+        carbon::FileStatus::Deleted
+    } else {
+        return None;
+    };
+
+    let mut file = carbon::FileDiff {
+        id: carbon::FileId(usize_to_u32_saturating(file_id)),
+        old_path: (status != carbon::FileStatus::Added).then(|| fallback_path.to_owned()),
+        new_path: (status != carbon::FileStatus::Deleted).then(|| fallback_path.to_owned()),
+        status,
+        ..carbon::FileDiff::default()
+    };
+
+    match status {
+        carbon::FileStatus::Added => {
+            let new_text = carbon::TextStore::from_text(new_src.to_owned());
+            let new_count = new_text.line_count();
+            file.additions = new_count;
+            if new_count > 0 {
+                let mut block = carbon::Block::change(
+                    carbon::BlockId(0),
+                    carbon::SourceRange::new(0, 0),
+                    carbon::SourceRange::new(0, new_count),
+                )
+                .with_source_lines(1, 1);
+                block.new_no_newline_at_end = new_text.no_newline_at_eof();
+                file.new_text = Some(new_text);
+                file.add_hunk(
+                    carbon::Hunk::new(
+                        carbon::HunkId(0),
+                        1,
+                        0,
+                        1,
+                        new_count,
+                        carbon::BlockRange::default(),
+                    ),
+                    [block],
+                );
+            }
+        }
+        carbon::FileStatus::Deleted => {
+            let old_text = carbon::TextStore::from_text(old_src.to_owned());
+            let old_count = old_text.line_count();
+            file.deletions = old_count;
+            if old_count > 0 {
+                let mut block = carbon::Block::change(
+                    carbon::BlockId(0),
+                    carbon::SourceRange::new(0, old_count),
+                    carbon::SourceRange::new(0, 0),
+                )
+                .with_source_lines(1, 1);
+                block.old_no_newline_at_end = old_text.no_newline_at_eof();
+                file.old_text = Some(old_text);
+                file.add_hunk(
+                    carbon::Hunk::new(
+                        carbon::HunkId(0),
+                        1,
+                        old_count,
+                        1,
+                        0,
+                        carbon::BlockRange::default(),
+                    ),
+                    [block],
+                );
+            }
+        }
+        _ => return None,
+    }
+
+    Some(file)
 }
 
 fn carbon_file_from_semantic_result_with_id(
@@ -819,6 +961,51 @@ mod tests {
 
         assert_eq!(changed.len(), 1);
         assert_eq!(changed[0].new_path.as_deref(), Some("src/lib.rs"));
+    }
+
+    #[test]
+    fn difftastic_backend_renders_added_files_without_semantic_diff() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        let base = commit_file(&repo, "README.md", "base\n", "initial");
+        let head = commit_file(&repo, "src/new.rs", "fn new() {}\nlet x = 1;\n", "add file");
+
+        let mut git = GitService::new();
+        git.open(repo_dir.path().to_str().unwrap()).unwrap();
+
+        let output = DifftasticBackend
+            .compare(
+                &CompareSpec {
+                    mode: CompareMode::TwoDot,
+                    left_ref: base,
+                    right_ref: head,
+                    renderer: RendererKind::Difftastic,
+                    layout: LayoutMode::Unified,
+                },
+                &git,
+                None,
+            )
+            .unwrap()
+            .expect("difftastic result");
+
+        let file = output
+            .carbon
+            .files
+            .iter()
+            .find(|file| file.path() == "src/new.rs")
+            .expect("added file");
+        assert_eq!(file.status, carbon::FileStatus::Added);
+        assert_eq!(file.additions, 2);
+        assert_eq!(file.deletions, 0);
+        assert_eq!(file.hunks.len(), 1);
+        assert_eq!(file.hunks[0].old_count, 0);
+        assert_eq!(file.hunks[0].new_count, 2);
+        assert_eq!(
+            file.new_text
+                .as_ref()
+                .and_then(|text| text.line_str(carbon::LineId(1))),
+            Some("let x = 1;")
+        );
     }
 
     #[test]

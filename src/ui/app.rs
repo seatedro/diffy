@@ -1759,18 +1759,33 @@ fn log_dir() -> Option<std::path::PathBuf> {
     }
 }
 
+fn logging_filter(log_debug: bool) -> tracing_subscriber::EnvFilter {
+    use tracing_subscriber::EnvFilter;
+
+    if log_debug {
+        return EnvFilter::new("debug");
+    }
+
+    // Difftastic is chatty at info-level when it falls back or explores diff
+    // paths. Keep those internal logs out of normal app logs; DIFFY_LOG_DEBUG=1
+    // still enables them for debugging.
+    let base = std::env::var("RUST_LOG")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "info".to_owned());
+    let filter = format!("{base},difftastic=off,vendored_difftastic=off,difft=off");
+
+    EnvFilter::try_new(filter)
+        .unwrap_or_else(|_| EnvFilter::new("info,difftastic=off,vendored_difftastic=off,difft=off"))
+}
+
 fn init_logging(log_debug: bool) {
     use std::sync::Mutex;
-    use tracing_subscriber::EnvFilter;
     use tracing_subscriber::fmt;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
-    let filter = if log_debug {
-        EnvFilter::new("debug")
-    } else {
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
-    };
+    let filter = logging_filter(log_debug);
 
     let stdout_layer = fmt::layer().with_writer(std::io::stdout);
 

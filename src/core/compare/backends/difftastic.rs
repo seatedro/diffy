@@ -372,7 +372,7 @@ fn carbon_file_from_semantic_result_with_id(
         old_path: (status != carbon::FileStatus::Added).then(|| fallback_path.to_owned()),
         new_path: (status != carbon::FileStatus::Deleted).then(|| fallback_path.to_owned()),
         status,
-        prefer_paired_projection: result.line_fallback_reason.is_none(),
+        prefer_structural_projection: result.line_fallback_reason.is_none(),
         ..carbon::FileDiff::default()
     };
     let mut old_text = String::new();
@@ -818,7 +818,7 @@ mod tests {
         assert_eq!(file.hunks[0].old_start, 1);
         assert_eq!(file.hunks[0].old_count, 1);
         assert_eq!(file.hunks[0].new_start, 1);
-        assert!(file.prefer_paired_projection);
+        assert!(file.prefer_structural_projection);
         assert_eq!(file.hunks[0].new_count, 1);
         assert_eq!(file.hunks[0].header, "@@ -1,1 +1,1 @@");
         assert_eq!(

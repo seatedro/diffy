@@ -6,6 +6,7 @@ pub const INVALID_U32: u32 = u32::MAX;
 pub const STYLE_FLAG_CHANGE: u16 = 0x1;
 pub const STYLE_FLAG_NOVEL_WORD: u16 = 0x2;
 pub const STYLE_FLAG_UNCHANGED_CTX: u16 = 0x4;
+pub const RENDER_FLAG_STRUCTURAL: u8 = 0x80;
 pub const DIFF_TAB_WIDTH: u16 = 8;
 
 pub(crate) fn advance_display_col(col: u32, ch: char) -> u32 {
@@ -421,15 +422,34 @@ fn build_render_doc_from_carbon_rows(
         &mut doc.style_runs,
         &mut doc.file_metadata,
     ));
-    let projection_mode = if carbon_file.prefer_paired_projection {
-        carbon::ProjectionMode::Both
+    if carbon_file.prefer_structural_projection {
+        append_structural_render_rows(carbon_file, file_index, overlays, token_buffer, &mut doc);
     } else {
-        carbon::ProjectionMode::Unified
-    };
+        append_projected_render_rows(
+            carbon_file,
+            file_index,
+            expansion,
+            overlays,
+            token_buffer,
+            &mut doc,
+        );
+    }
+
+    doc
+}
+
+fn append_projected_render_rows(
+    carbon_file: &carbon::FileDiff,
+    file_index: usize,
+    expansion: &carbon::ExpansionState,
+    overlays: &CarbonStyleOverlays,
+    token_buffer: &TokenBuffer,
+    doc: &mut RenderDoc,
+) {
     carbon::project_file(
         carbon_file,
         carbon::ProjectionOptions {
-            mode: projection_mode,
+            mode: carbon::ProjectionMode::Unified,
             collapsed_context_threshold: 0,
             include_hunk_headers: true,
         },
@@ -438,19 +458,212 @@ fn build_render_doc_from_carbon_rows(
             if row.kind == carbon::ProjectionRowKind::ContextGap {
                 return;
             }
-            doc.lines.push(build_render_line_from_carbon(
-                carbon_file,
-                file_index,
-                row,
-                overlays,
-                &mut doc.text_bytes,
-                &mut doc.style_runs,
-                token_buffer,
-            ));
+            push_projected_row(carbon_file, file_index, row, overlays, token_buffer, doc);
         },
     );
+}
 
-    doc
+fn append_structural_render_rows(
+    carbon_file: &carbon::FileDiff,
+    file_index: usize,
+    overlays: &CarbonStyleOverlays,
+    token_buffer: &TokenBuffer,
+    doc: &mut RenderDoc,
+) {
+    for hunk in &carbon_file.hunks {
+        push_projected_row(
+            carbon_file,
+            file_index,
+            carbon::ProjectionRow {
+                file_id: carbon_file.id,
+                kind: carbon::ProjectionRowKind::HunkHeader,
+                hunk_id: Some(hunk.id),
+                ..carbon::ProjectionRow::default()
+            },
+            overlays,
+            token_buffer,
+            doc,
+        );
+
+        let blocks = carbon_file.hunk_blocks(hunk);
+        let first_change = blocks
+            .iter()
+            .position(|block| block.kind == carbon::BlockKind::Change);
+        let Some(first_change) = first_change else {
+            for block in blocks {
+                emit_structural_context(
+                    carbon_file,
+                    file_index,
+                    hunk,
+                    block,
+                    overlays,
+                    token_buffer,
+                    doc,
+                );
+            }
+            continue;
+        };
+        let last_change = blocks
+            .iter()
+            .rposition(|block| block.kind == carbon::BlockKind::Change)
+            .unwrap_or(first_change);
+
+        for block in &blocks[..first_change] {
+            emit_structural_context(
+                carbon_file,
+                file_index,
+                hunk,
+                block,
+                overlays,
+                token_buffer,
+                doc,
+            );
+        }
+        for block in &blocks[first_change..=last_change] {
+            if block.kind == carbon::BlockKind::Change {
+                emit_structural_side(
+                    carbon_file,
+                    file_index,
+                    hunk,
+                    block,
+                    carbon::DiffSide::Old,
+                    overlays,
+                    token_buffer,
+                    doc,
+                );
+            }
+        }
+        for block in &blocks[first_change..=last_change] {
+            if block.kind == carbon::BlockKind::Change {
+                emit_structural_side(
+                    carbon_file,
+                    file_index,
+                    hunk,
+                    block,
+                    carbon::DiffSide::New,
+                    overlays,
+                    token_buffer,
+                    doc,
+                );
+            }
+        }
+        for block in &blocks[last_change + 1..] {
+            emit_structural_context(
+                carbon_file,
+                file_index,
+                hunk,
+                block,
+                overlays,
+                token_buffer,
+                doc,
+            );
+        }
+    }
+}
+
+fn emit_structural_context(
+    carbon_file: &carbon::FileDiff,
+    file_index: usize,
+    hunk: &carbon::Hunk,
+    block: &carbon::Block,
+    overlays: &CarbonStyleOverlays,
+    token_buffer: &TokenBuffer,
+    doc: &mut RenderDoc,
+) {
+    let count = block.old.len.min(block.new.len);
+    for offset in 0..count {
+        push_projected_row(
+            carbon_file,
+            file_index,
+            carbon::ProjectionRow {
+                file_id: carbon_file.id,
+                kind: carbon::ProjectionRowKind::Context,
+                hunk_id: Some(hunk.id),
+                block_id: Some(block.id),
+                old_line: Some(block.old_line_start + offset),
+                new_line: Some(block.new_line_start + offset),
+                old_index: Some(block.old.start + offset),
+                new_index: Some(block.new.start + offset),
+                collapsed_count: 0,
+            },
+            overlays,
+            token_buffer,
+            doc,
+        );
+    }
+}
+
+fn emit_structural_side(
+    carbon_file: &carbon::FileDiff,
+    file_index: usize,
+    hunk: &carbon::Hunk,
+    block: &carbon::Block,
+    side: carbon::DiffSide,
+    overlays: &CarbonStyleOverlays,
+    token_buffer: &TokenBuffer,
+    doc: &mut RenderDoc,
+) {
+    let (kind, count) = match side {
+        carbon::DiffSide::Old => (carbon::ProjectionRowKind::Removed, block.old.len),
+        carbon::DiffSide::New => (carbon::ProjectionRowKind::Added, block.new.len),
+    };
+    for offset in 0..count {
+        let (old_line, old_index, new_line, new_index) = match side {
+            carbon::DiffSide::Old => (
+                Some(block.old_line_start + offset),
+                Some(block.old.start + offset),
+                None,
+                None,
+            ),
+            carbon::DiffSide::New => (
+                None,
+                None,
+                Some(block.new_line_start + offset),
+                Some(block.new.start + offset),
+            ),
+        };
+        let line_index = doc.lines.len();
+        push_projected_row(
+            carbon_file,
+            file_index,
+            carbon::ProjectionRow {
+                file_id: carbon_file.id,
+                kind,
+                hunk_id: Some(hunk.id),
+                block_id: Some(block.id),
+                old_line,
+                new_line,
+                old_index,
+                new_index,
+                collapsed_count: 0,
+            },
+            overlays,
+            token_buffer,
+            doc,
+        );
+        if let Some(line) = doc.lines.get_mut(line_index) {
+            line.flags |= RENDER_FLAG_STRUCTURAL;
+        }
+    }
+}
+
+fn push_projected_row(
+    carbon_file: &carbon::FileDiff,
+    file_index: usize,
+    row: carbon::ProjectionRow,
+    overlays: &CarbonStyleOverlays,
+    token_buffer: &TokenBuffer,
+    doc: &mut RenderDoc,
+) {
+    doc.lines.push(build_render_line_from_carbon(
+        carbon_file,
+        file_index,
+        row,
+        overlays,
+        &mut doc.text_bytes,
+        &mut doc.style_runs,
+        token_buffer,
+    ));
 }
 
 fn carbon_file_header_line(
@@ -901,8 +1114,8 @@ fn carbon_projection_capacity(file: &carbon::FileDiff) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        CarbonStyleOverlays, INVALID_U32, RenderDoc, RenderRowKind, STYLE_FLAG_CHANGE,
-        build_render_doc_from_carbon,
+        CarbonStyleOverlays, INVALID_U32, RENDER_FLAG_STRUCTURAL, RenderDoc, RenderRowKind,
+        STYLE_FLAG_CHANGE, build_render_doc_from_carbon,
     };
     use crate::core::text::{DiffTokenSpan, SyntaxTokenKind, TokenBuffer};
 
@@ -984,7 +1197,7 @@ diff --git a/src/app/controller.rs b/src/app/controller.rs
     }
 
     #[test]
-    fn paired_projection_files_emit_modified_rows() {
+    fn structural_projection_groups_old_and_new_sides() {
         let token_buffer = TokenBuffer::default();
         let mut file = carbon::parse_unified_patch(
             "\
@@ -1001,14 +1214,17 @@ diff --git a/src/lib.rs b/src/lib.rs
         .into_iter()
         .next()
         .unwrap();
-        file.prefer_paired_projection = true;
+        file.prefer_structural_projection = true;
 
         let doc = carbon_doc(&file, &CarbonStyleOverlays::default(), &token_buffer);
 
-        assert_eq!(doc.lines.len(), 3);
-        assert_eq!(doc.lines[2].row_kind(), RenderRowKind::Modified);
+        assert_eq!(doc.lines.len(), 4);
+        assert_eq!(doc.lines[2].row_kind(), RenderRowKind::Removed);
         assert_eq!(doc.line_text(doc.lines[2].left_text), "old text");
-        assert_eq!(doc.line_text(doc.lines[2].right_text), "new text");
+        assert_eq!(doc.lines[3].row_kind(), RenderRowKind::Added);
+        assert_eq!(doc.line_text(doc.lines[3].right_text), "new text");
+        assert!(doc.lines[2].flags & RENDER_FLAG_STRUCTURAL != 0);
+        assert!(doc.lines[3].flags & RENDER_FLAG_STRUCTURAL != 0);
     }
 
     #[test]

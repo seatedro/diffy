@@ -18,8 +18,9 @@ use super::display_layout::{
     rebuild_display_rows,
 };
 use super::render_doc::{
-    ByteRange, DisplayRow, INVALID_U32, RenderDoc, RenderLine, RenderRowKind, RunRange,
-    STYLE_FLAG_NOVEL_WORD, StyleRun, advance_display_col,
+    ByteRange, DisplayRow, INVALID_U32, RENDER_FLAG_STRUCTURAL, RenderDoc, RenderLine,
+    RenderRowKind, RunRange, STYLE_FLAG_CHANGE, STYLE_FLAG_UNCHANGED_CTX, StyleRun,
+    advance_display_col,
 };
 use super::state::EditorState;
 use super::strip_layout::{StripLayout, build_strip_layouts, visible_strip_range};
@@ -944,6 +945,7 @@ impl EditorElement {
             if kind == RenderRowKind::Modified {
                 self.paint_modified_row_background(scene, theme, rr, &display_row, line_height);
             } else if self.layout.split_mode
+                && line.flags & RENDER_FLAG_STRUCTURAL == 0
                 && matches!(kind, RenderRowKind::Added | RenderRowKind::Removed)
             {
                 let mid = self.layout.right_gutter_rect.x;
@@ -986,7 +988,7 @@ impl EditorElement {
                 };
                 deco.paint_background(&mut ctx);
             } else {
-                paint_row_background(scene, theme, rr, kind);
+                paint_row_background(scene, theme, rr, line);
             }
         }
     }
@@ -1069,12 +1071,21 @@ impl EditorElement {
                 continue;
             }
             let kind = line.row_kind();
-            if kind != RenderRowKind::Modified {
-                continue;
-            }
+            let left_segments = if self.config.wrap_enabled {
+                display_row.wrap_left.max(1)
+            } else {
+                1
+            };
+            let right_segments = if self.config.wrap_enabled {
+                display_row.wrap_right.max(1)
+            } else {
+                1
+            };
 
             if self.layout.split_mode {
-                if line.left_text.is_valid() {
+                if matches!(kind, RenderRowKind::Removed | RenderRowKind::Modified)
+                    && line.left_text.is_valid()
+                {
                     self.paint_change_rects_for_side(
                         scene,
                         doc,
@@ -1085,16 +1096,14 @@ impl EditorElement {
                         self.layout.left_text_rect.width,
                         char_w,
                         line_height,
-                        if self.config.wrap_enabled {
-                            display_row.wrap_left.max(1)
-                        } else {
-                            1
-                        },
+                        left_segments,
                         self.render_cols_split(),
                         theme.colors.line_del_word_bg,
                     );
                 }
-                if line.right_text.is_valid() {
+                if matches!(kind, RenderRowKind::Added | RenderRowKind::Modified)
+                    && line.right_text.is_valid()
+                {
                     self.paint_change_rects_for_side(
                         scene,
                         doc,
@@ -1105,54 +1114,80 @@ impl EditorElement {
                         self.layout.right_text_rect.width,
                         char_w,
                         line_height,
-                        if self.config.wrap_enabled {
-                            display_row.wrap_right.max(1)
-                        } else {
-                            1
-                        },
+                        right_segments,
                         self.render_cols_split(),
                         theme.colors.line_add_word_bg,
                     );
                 }
-            } else if line.left_text.is_valid() && line.right_text.is_valid() {
-                let del_y = rr.y;
-                let add_y = rr.y + display_row.wrap_left.max(1) as f32 * line_height;
-                self.paint_change_rects_for_side(
-                    scene,
-                    doc,
-                    line.left_text,
-                    line.left_runs,
-                    self.layout.unified_text_rect.x,
-                    del_y,
-                    self.layout.unified_text_rect.width,
-                    char_w,
-                    line_height,
-                    if self.config.wrap_enabled {
-                        display_row.wrap_left.max(1)
-                    } else {
-                        1
-                    },
-                    self.render_cols_unified(),
-                    theme.colors.line_del_word_bg,
-                );
-                self.paint_change_rects_for_side(
-                    scene,
-                    doc,
-                    line.right_text,
-                    line.right_runs,
-                    self.layout.unified_text_rect.x,
-                    add_y,
-                    self.layout.unified_text_rect.width,
-                    char_w,
-                    line_height,
-                    if self.config.wrap_enabled {
-                        display_row.wrap_right.max(1)
-                    } else {
-                        1
-                    },
-                    self.render_cols_unified(),
-                    theme.colors.line_add_word_bg,
-                );
+            } else {
+                match kind {
+                    RenderRowKind::Modified
+                        if line.left_text.is_valid() && line.right_text.is_valid() =>
+                    {
+                        let add_y = rr.y + left_segments as f32 * line_height;
+                        self.paint_change_rects_for_side(
+                            scene,
+                            doc,
+                            line.left_text,
+                            line.left_runs,
+                            self.layout.unified_text_rect.x,
+                            rr.y,
+                            self.layout.unified_text_rect.width,
+                            char_w,
+                            line_height,
+                            left_segments,
+                            self.render_cols_unified(),
+                            theme.colors.line_del_word_bg,
+                        );
+                        self.paint_change_rects_for_side(
+                            scene,
+                            doc,
+                            line.right_text,
+                            line.right_runs,
+                            self.layout.unified_text_rect.x,
+                            add_y,
+                            self.layout.unified_text_rect.width,
+                            char_w,
+                            line_height,
+                            right_segments,
+                            self.render_cols_unified(),
+                            theme.colors.line_add_word_bg,
+                        );
+                    }
+                    RenderRowKind::Removed if line.left_text.is_valid() => {
+                        self.paint_change_rects_for_side(
+                            scene,
+                            doc,
+                            line.left_text,
+                            line.left_runs,
+                            self.layout.unified_text_rect.x,
+                            rr.y,
+                            self.layout.unified_text_rect.width,
+                            char_w,
+                            line_height,
+                            left_segments,
+                            self.render_cols_unified(),
+                            theme.colors.line_del_word_bg,
+                        );
+                    }
+                    RenderRowKind::Added if line.right_text.is_valid() => {
+                        self.paint_change_rects_for_side(
+                            scene,
+                            doc,
+                            line.right_text,
+                            line.right_runs,
+                            self.layout.unified_text_rect.x,
+                            rr.y,
+                            self.layout.unified_text_rect.width,
+                            char_w,
+                            line_height,
+                            right_segments,
+                            self.render_cols_unified(),
+                            theme.colors.line_add_word_bg,
+                        );
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -1187,7 +1222,7 @@ impl EditorElement {
         let runs = doc.line_runs(runs_range);
 
         for run in runs {
-            if run.flags & STYLE_FLAG_NOVEL_WORD == 0 {
+            if run.flags & STYLE_FLAG_CHANGE == 0 || run.flags & STYLE_FLAG_UNCHANGED_CTX != 0 {
                 continue;
             }
             let start = run.byte_start as usize;
@@ -1900,13 +1935,13 @@ impl EditorElement {
                 line.left_runs,
                 seg,
                 render_cols,
-                tone_for_left_side(line.row_kind()),
+                tone_for_left_side(line),
                 theme,
             ) {
                 scene.rich_text(RichTextPrimitive {
                     rect,
                     spans,
-                    default_color: tone_for_left_side(line.row_kind()).default_text(theme),
+                    default_color: tone_for_left_side(line).default_text(theme),
                     font_size,
                     font_kind: FontKind::Mono,
                     font_weight: FontWeight::Normal,
@@ -1931,13 +1966,13 @@ impl EditorElement {
                 line.right_runs,
                 seg,
                 render_cols,
-                tone_for_right_side(line.row_kind()),
+                tone_for_right_side(line),
                 theme,
             ) {
                 scene.rich_text(RichTextPrimitive {
                     rect,
                     spans,
-                    default_color: tone_for_right_side(line.row_kind()).default_text(theme),
+                    default_color: tone_for_right_side(line).default_text(theme),
                     font_size,
                     font_kind: FontKind::Mono,
                     font_weight: FontWeight::Normal,
@@ -2348,13 +2383,19 @@ fn dim_bg(c: Color) -> Color {
     }
 }
 
-fn paint_row_background(scene: &mut Scene, theme: &Theme, row_rect: Rect, kind: RenderRowKind) {
-    let color = match kind {
-        RenderRowKind::Context => theme.colors.canvas,
-        RenderRowKind::Added => dim_bg(theme.colors.line_add),
-        RenderRowKind::Removed => dim_bg(theme.colors.line_del),
-        RenderRowKind::Modified => theme.colors.line_modified.with_alpha(Alpha::WHISPER),
-        RenderRowKind::FileHeader | RenderRowKind::HunkSeparator | RenderRowKind::Block => return,
+fn paint_row_background(scene: &mut Scene, theme: &Theme, row_rect: Rect, line: &RenderLine) {
+    let color = if line.flags & RENDER_FLAG_STRUCTURAL != 0 {
+        theme.colors.canvas
+    } else {
+        match line.row_kind() {
+            RenderRowKind::Context => theme.colors.canvas,
+            RenderRowKind::Added => dim_bg(theme.colors.line_add),
+            RenderRowKind::Removed => dim_bg(theme.colors.line_del),
+            RenderRowKind::Modified => theme.colors.line_modified.with_alpha(Alpha::WHISPER),
+            RenderRowKind::FileHeader | RenderRowKind::HunkSeparator | RenderRowKind::Block => {
+                return;
+            }
+        }
     };
     scene.rect(RectPrimitive {
         rect: row_rect,
@@ -2371,24 +2412,37 @@ fn format_line_number_string(line_no: u32, digits: u32) -> String {
 }
 
 fn unified_body_side(line: &RenderLine) -> Option<(ByteRange, RunRange, RowTone)> {
+    let structural = line.flags & RENDER_FLAG_STRUCTURAL != 0;
     match line.row_kind() {
         RenderRowKind::Context => Some((line.right_text, line.right_runs, RowTone::Neutral)),
+        RenderRowKind::Added if structural => {
+            Some((line.right_text, line.right_runs, RowTone::Neutral))
+        }
         RenderRowKind::Added => Some((line.right_text, line.right_runs, RowTone::Added)),
+        RenderRowKind::Removed if structural => {
+            Some((line.left_text, line.left_runs, RowTone::Neutral))
+        }
         RenderRowKind::Removed => Some((line.left_text, line.left_runs, RowTone::Removed)),
         _ => None,
     }
 }
 
-fn tone_for_left_side(kind: RenderRowKind) -> RowTone {
-    match kind {
+fn tone_for_left_side(line: &RenderLine) -> RowTone {
+    if line.flags & RENDER_FLAG_STRUCTURAL != 0 {
+        return RowTone::Neutral;
+    }
+    match line.row_kind() {
         RenderRowKind::Modified => RowTone::ModifiedOld,
         RenderRowKind::Removed => RowTone::Removed,
         _ => RowTone::Neutral,
     }
 }
 
-fn tone_for_right_side(kind: RenderRowKind) -> RowTone {
-    match kind {
+fn tone_for_right_side(line: &RenderLine) -> RowTone {
+    if line.flags & RENDER_FLAG_STRUCTURAL != 0 {
+        return RowTone::Neutral;
+    }
+    match line.row_kind() {
         RenderRowKind::Modified => RowTone::ModifiedNew,
         RenderRowKind::Added => RowTone::Added,
         _ => RowTone::Neutral,

@@ -421,10 +421,15 @@ fn build_render_doc_from_carbon_rows(
         &mut doc.style_runs,
         &mut doc.file_metadata,
     ));
+    let projection_mode = if carbon_file.prefer_paired_projection {
+        carbon::ProjectionMode::Both
+    } else {
+        carbon::ProjectionMode::Unified
+    };
     carbon::project_file(
         carbon_file,
         carbon::ProjectionOptions {
-            mode: carbon::ProjectionMode::Unified,
+            mode: projection_mode,
             collapsed_context_threshold: 0,
             include_hunk_headers: true,
         },
@@ -976,6 +981,34 @@ diff --git a/src/app/controller.rs b/src/app/controller.rs
             doc.line_runs(doc.lines[3].right_runs)[0].style_id,
             SyntaxTokenKind::Keyword as u16
         );
+    }
+
+    #[test]
+    fn paired_projection_files_emit_modified_rows() {
+        let token_buffer = TokenBuffer::default();
+        let mut file = carbon::parse_unified_patch(
+            "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +1 @@
+-old text
++new text
+",
+        )
+        .unwrap()
+        .files
+        .into_iter()
+        .next()
+        .unwrap();
+        file.prefer_paired_projection = true;
+
+        let doc = carbon_doc(&file, &CarbonStyleOverlays::default(), &token_buffer);
+
+        assert_eq!(doc.lines.len(), 3);
+        assert_eq!(doc.lines[2].row_kind(), RenderRowKind::Modified);
+        assert_eq!(doc.line_text(doc.lines[2].left_text), "old text");
+        assert_eq!(doc.line_text(doc.lines[2].right_text), "new text");
     }
 
     #[test]

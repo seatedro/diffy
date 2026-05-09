@@ -196,6 +196,10 @@ pub struct FileDiff {
     pub additions: u32,
     pub deletions: u32,
     pub stats_deferred: bool,
+    /// Prefer pairing old/new lines from change blocks in projections. Semantic
+    /// diff backends use this to keep aligned AST changes on one rendered row
+    /// so inline semantic spans remain visible.
+    pub prefer_paired_projection: bool,
     pub old_text: Option<TextStore>,
     pub new_text: Option<TextStore>,
     pub hunks: Vec<Hunk>,

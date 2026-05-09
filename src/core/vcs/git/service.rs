@@ -868,7 +868,11 @@ impl GitService {
                     ));
                 }
                 if right_ref == WORKDIR_REF {
-                    let left_oid = self.resolve_commit_oid(left_ref)?;
+                    let mut left_oid = self.resolve_commit_oid(left_ref)?;
+                    if mode == CompareMode::ThreeDot {
+                        let head_oid = self.resolve_commit_oid("HEAD")?;
+                        left_oid = merge_base(self.repo()?, &left_oid, &head_oid)?;
+                    }
                     return Ok((left_oid, WORKDIR_REF.to_owned()));
                 }
                 let mut left_oid = self.resolve_commit_oid(left_ref)?;

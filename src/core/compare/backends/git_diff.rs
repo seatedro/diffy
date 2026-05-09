@@ -873,7 +873,7 @@ mod tests {
     use super::GitDiffBackend;
     use crate::core::compare::backends::DiffBackend;
     use crate::core::compare::spec::{CompareMode, CompareSpec, LayoutMode, RendererKind};
-    use crate::core::vcs::git::GitService;
+    use crate::core::vcs::git::{GitService, WORKDIR_REF};
 
     fn commit_file(repo: &Repository, relative_path: &str, content: &str, message: &str) -> String {
         let workdir = repo.workdir().expect("repo workdir");
@@ -1005,6 +1005,55 @@ mod tests {
 
         assert_eq!(removed, "start");
         assert_eq!(added, "feature");
+    }
+
+    #[test]
+    fn builtin_backend_uses_head_merge_base_for_three_dot_workdir() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        let base = commit_file(&repo, "src/example.rs", "start\n", "initial");
+        let base_commit = repo.find_commit(Oid::from_str(&base).unwrap()).unwrap();
+        repo.branch("feature", &base_commit, false).unwrap();
+
+        checkout_branch(&repo, "feature");
+        let _feature = commit_file(&repo, "src/example.rs", "feature\n", "feature");
+
+        checkout_branch(&repo, "master");
+        let master = commit_file(&repo, "src/example.rs", "master\n", "master");
+
+        checkout_branch(&repo, "feature");
+        fs::write(repo.workdir().unwrap().join("src/example.rs"), "dirty\n").unwrap();
+
+        let output = compare(
+            &repo_dir,
+            CompareSpec {
+                mode: CompareMode::ThreeDot,
+                left_ref: master,
+                right_ref: WORKDIR_REF.to_owned(),
+                renderer: RendererKind::Builtin,
+                layout: LayoutMode::Unified,
+            },
+        );
+
+        assert_eq!(output.carbon.files.len(), 1);
+        let change = output.carbon.files[0]
+            .blocks
+            .iter()
+            .find(|block| block.kind == carbon::BlockKind::Change)
+            .expect("change block");
+        let removed = output.carbon.files[0]
+            .old_text
+            .as_ref()
+            .and_then(|text| text.line_str(carbon::LineId(change.old.start)))
+            .expect("removed line");
+        let added = output.carbon.files[0]
+            .new_text
+            .as_ref()
+            .and_then(|text| text.line_str(carbon::LineId(change.new.start)))
+            .expect("added line");
+
+        assert_eq!(removed, "start");
+        assert_eq!(added, "dirty");
     }
 
     #[test]

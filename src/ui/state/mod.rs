@@ -38,8 +38,8 @@ use crate::core::text::TokenBuffer;
 use crate::core::update::{AvailableUpdate, StagedUpdate};
 use crate::core::vcs::model::{
     ChangeBucket, FileChange, FileChangeStatus, FileOperation, JjOperation, PublishAction,
-    PublishPlan, RefKind, RepoCapabilities, RepoLocation, VCS_PROFILE_JJ, VcsChange,
-    VcsCompareRequest, VcsCompareSpec, VcsOperation, VcsOperationLogEntry, VcsRef,
+    PublishPlan, RefKind, RepoCapabilities, RepoLocation, VCS_PROFILE_GIT, VCS_PROFILE_JJ,
+    VcsChange, VcsCompareRequest, VcsCompareSpec, VcsOperation, VcsOperationLogEntry, VcsRef,
 };
 use crate::core::vcs::patch;
 use crate::editor::Editor;
@@ -5661,6 +5661,84 @@ impl AppState {
         let mut effects = self.persist_settings_effect();
         effects.extend(self.activate_status_view(true));
         effects
+    }
+
+    fn preview_pull_request(&mut self) -> Vec<Effect> {
+        let profile = self.vcs_ui_profile();
+        if !profile.accepts_compare_mode(CompareMode::ThreeDot)
+            || self.repository.location.with(&self.store, |location| {
+                !location
+                    .as_ref()
+                    .is_some_and(|location| location.profile == VCS_PROFILE_GIT)
+            })
+        {
+            self.push_error("PR preview is only available for Git repositories.");
+            return Vec::new();
+        }
+        let Some(base_ref) = self.default_pull_request_base_ref() else {
+            self.push_error("No default branch found for PR preview.");
+            return Vec::new();
+        };
+        let (_, workdir_ref, _) = profile.working_copy_compare();
+        self.workspace.pre_drill_compare.set(&self.store, None);
+        self.compare.left_ref.set(&self.store, base_ref);
+        self.compare
+            .right_ref
+            .set(&self.store, workdir_ref.to_owned());
+        self.compare.resolved_left.set(&self.store, None);
+        self.compare.resolved_right.set(&self.store, None);
+        self.compare.mode.set(&self.store, CompareMode::ThreeDot);
+        let mut effects = self.persist_settings_effect();
+        effects.extend(self.kickoff_compare());
+        effects
+    }
+
+    fn default_pull_request_base_ref(&self) -> Option<String> {
+        let refs = self.repository.refs.get(&self.store);
+        let active = refs
+            .iter()
+            .find(|reference| reference.active && reference.kind == RefKind::Branch)
+            .map(|reference| reference.name.as_str());
+        let branch_ref = |name: &str| {
+            refs.iter()
+                .find(|reference| {
+                    reference.name == name
+                        && active != Some(reference.name.as_str())
+                        && matches!(reference.kind, RefKind::Branch | RefKind::RemoteBranch)
+                })
+                .map(|reference| reference.name.clone())
+        };
+        for name in [
+            "origin/main",
+            "origin/master",
+            "upstream/main",
+            "upstream/master",
+            "origin/develop",
+            "origin/development",
+            "main",
+            "master",
+            "develop",
+            "development",
+        ] {
+            if let Some(reference) = branch_ref(name) {
+                return Some(reference);
+            }
+        }
+        for trunk in ["main", "master", "develop", "development"] {
+            let suffix = format!("/{trunk}");
+            if let Some(reference) = refs
+                .iter()
+                .find(|reference| {
+                    reference.name.ends_with(&suffix)
+                        && active != Some(reference.name.as_str())
+                        && reference.kind == RefKind::RemoteBranch
+                })
+                .map(|reference| reference.name.clone())
+            {
+                return Some(reference);
+            }
+        }
+        None
     }
 
     fn swap_refs(&mut self) -> Vec<Effect> {

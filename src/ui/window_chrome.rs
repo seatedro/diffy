@@ -34,6 +34,19 @@ pub(crate) fn window_chrome(
             .unwrap_or("diffy")
             .to_owned()
     });
+    let supports_pr_preview = state
+        .repository
+        .capabilities
+        .with(&state.store, |capabilities| {
+            capabilities.is_some_and(|capabilities| capabilities.github_pull_requests)
+        });
+    let right_ref = state.compare.right_ref.get(&state.store);
+    let pr_preview_active = supports_pr_preview
+        && state.workspace.source.get(&state.store) == WorkspaceSource::Compare
+        && state.compare.mode.get(&state.store) == crate::core::compare::CompareMode::ThreeDot
+        && state.repository.location.with(&state.store, |location| {
+            crate::ui::vcs::profile(location.as_ref()).is_working_copy_ref(&right_ref)
+        });
     let sidebar_icon = if sidebar_visible > 0.5 {
         lucide::PANEL_LEFT_CLOSE
     } else {
@@ -107,6 +120,15 @@ pub(crate) fn window_chrome(
             // right — working tree, update, account, window controls
             <div class="flex-1 flex-row items-center justify-end" min_w={0.0} gap={Sp::XS}>
                 if is_ready {
+                    if supports_pr_preview {
+                        <Button action={crate::actions::CompareAction::PreviewPullRequest.into()}
+                                active={pr_preview_active}
+                                size={ButtonSize::Compact}
+                                tooltip={"Preview PR with working tree edits"}>
+                            <Icon>{lucide::GIT_PULL_REQUEST}</Icon>
+                            <Label>{"PR preview"}</Label>
+                        </Button>
+                    }
                     <Button action={crate::actions::WorkspaceAction::ShowWorkingTree.into()}
                             active={state.workspace.source.get(&state.store) == WorkspaceSource::Status}
                             size={ButtonSize::Compact}

@@ -256,6 +256,7 @@ impl AppState {
             CancelCompare => self.cancel_compare(),
             SelectSidebarCommit(oid) => self.drill_into_commit(&oid),
             ClearSidebarCommit => self.restore_pre_drill_compare(),
+            PreviewPullRequest => self.preview_pull_request(),
         }
     }
 

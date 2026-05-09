@@ -44,6 +44,7 @@ pub enum CompareAction {
     CancelCompare,
     SelectSidebarCommit(String),
     ClearSidebarCommit,
+    PreviewPullRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

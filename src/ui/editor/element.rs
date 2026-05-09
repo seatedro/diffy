@@ -944,7 +944,7 @@ impl EditorElement {
                 continue;
             }
             let kind = line.row_kind();
-            if kind == RenderRowKind::Modified {
+            if kind == RenderRowKind::Modified && line.flags & RENDER_FLAG_STRUCTURAL == 0 {
                 self.paint_modified_row_background(scene, theme, rr, &display_row, line_height);
             } else if self.layout.split_mode
                 && line.flags & RENDER_FLAG_STRUCTURAL == 0
@@ -2028,13 +2028,13 @@ impl EditorElement {
                 line.left_runs,
                 seg,
                 render_cols,
-                RowTone::ModifiedOld,
+                tone_for_left_side(line),
                 theme,
             ) {
                 scene.rich_text(RichTextPrimitive {
                     rect,
                     spans,
-                    default_color: RowTone::ModifiedOld.default_text(theme),
+                    default_color: tone_for_left_side(line).default_text(theme),
                     font_size,
                     font_kind: FontKind::Mono,
                     font_weight: FontWeight::Normal,
@@ -2064,13 +2064,13 @@ impl EditorElement {
                 line.right_runs,
                 seg,
                 render_cols,
-                RowTone::ModifiedNew,
+                tone_for_right_side(line),
                 theme,
             ) {
                 scene.rich_text(RichTextPrimitive {
                     rect,
                     spans,
-                    default_color: RowTone::ModifiedNew.default_text(theme),
+                    default_color: tone_for_right_side(line).default_text(theme),
                     font_size,
                     font_kind: FontKind::Mono,
                     font_weight: FontWeight::Normal,

@@ -8,6 +8,9 @@ pub const STYLE_FLAG_NOVEL_WORD: u16 = 0x2;
 pub const STYLE_FLAG_UNCHANGED_CTX: u16 = 0x4;
 pub const RENDER_FLAG_STRUCTURAL: u8 = 0x80;
 const STRUCTURAL_LINE_DIFF_CONTEXT_THRESHOLD: u32 = 8;
+const STRUCTURAL_SIDE_BLOCK_MAX_SIDE_LINES: u32 = 3;
+const STRUCTURAL_SIDE_BLOCK_MAX_TOTAL_CHANGE_LINES: u32 = 6;
+const STRUCTURAL_SIDE_BLOCK_MAX_LINE_IMBALANCE: u32 = 1;
 pub const DIFF_TAB_WIDTH: u16 = 8;
 
 pub(crate) fn advance_display_col(col: u32, ch: char) -> u32 {
@@ -487,95 +490,54 @@ fn append_structural_render_rows(
         );
 
         let blocks = carbon_file.hunk_blocks(hunk);
-        if structural_hunk_should_use_line_diff(blocks) {
-            emit_line_oriented_hunk(
-                carbon_file,
-                file_index,
-                hunk,
-                blocks,
-                overlays,
-                token_buffer,
-                doc,
-            );
-            continue;
-        }
-
-        let first_change = blocks
-            .iter()
-            .position(|block| block.kind == carbon::BlockKind::Change);
-        let Some(first_change) = first_change else {
-            for block in blocks {
-                emit_structural_context(
-                    carbon_file,
-                    file_index,
-                    hunk,
-                    block,
-                    overlays,
-                    token_buffer,
-                    doc,
-                );
+        let line_pair_tiny_clusters = structural_hunk_has_sparse_single_change(blocks);
+        let mut index = 0;
+        while let Some(block) = blocks.get(index) {
+            match block.kind {
+                carbon::BlockKind::Context => {
+                    emit_structural_context(
+                        carbon_file,
+                        file_index,
+                        hunk,
+                        block,
+                        overlays,
+                        token_buffer,
+                        doc,
+                    );
+                    index += 1;
+                }
+                carbon::BlockKind::Change => {
+                    let start = index;
+                    while blocks
+                        .get(index)
+                        .is_some_and(|block| block.kind == carbon::BlockKind::Change)
+                    {
+                        index += 1;
+                    }
+                    emit_structural_change_cluster(
+                        carbon_file,
+                        file_index,
+                        hunk,
+                        &blocks[start..index],
+                        line_pair_tiny_clusters,
+                        overlays,
+                        token_buffer,
+                        doc,
+                    );
+                }
             }
-            continue;
-        };
-        let last_change = blocks
-            .iter()
-            .rposition(|block| block.kind == carbon::BlockKind::Change)
-            .unwrap_or(first_change);
-
-        for block in &blocks[..first_change] {
-            emit_structural_context(
-                carbon_file,
-                file_index,
-                hunk,
-                block,
-                overlays,
-                token_buffer,
-                doc,
-            );
-        }
-        for block in &blocks[first_change..=last_change] {
-            if block.kind == carbon::BlockKind::Change {
-                emit_structural_side(
-                    carbon_file,
-                    file_index,
-                    hunk,
-                    block,
-                    carbon::DiffSide::Old,
-                    overlays,
-                    token_buffer,
-                    doc,
-                );
-            }
-        }
-        for block in &blocks[first_change..=last_change] {
-            if block.kind == carbon::BlockKind::Change {
-                emit_structural_side(
-                    carbon_file,
-                    file_index,
-                    hunk,
-                    block,
-                    carbon::DiffSide::New,
-                    overlays,
-                    token_buffer,
-                    doc,
-                );
-            }
-        }
-        for block in &blocks[last_change + 1..] {
-            emit_structural_context(
-                carbon_file,
-                file_index,
-                hunk,
-                block,
-                overlays,
-                token_buffer,
-                doc,
-            );
         }
     }
 }
 
-fn structural_hunk_should_use_line_diff(blocks: &[carbon::Block]) -> bool {
+#[derive(Debug, Clone, Copy)]
+struct ClusterLine {
+    block_id: carbon::BlockId,
+    line_no: u32,
+    source_index: u32,
+}
+
+fn structural_hunk_has_sparse_single_change(blocks: &[carbon::Block]) -> bool {
     let mut change_blocks = 0_u32;
     let mut old_change_lines = 0_u32;
     let mut new_change_lines = 0_u32;
@@ -600,75 +562,215 @@ fn structural_hunk_should_use_line_diff(blocks: &[carbon::Block]) -> bool {
         && context_lines >= STRUCTURAL_LINE_DIFF_CONTEXT_THRESHOLD
 }
 
-fn emit_line_oriented_hunk(
+fn structural_cluster_uses_side_block(old_lines: usize, new_lines: usize) -> bool {
+    if old_lines == 0 || new_lines == 0 {
+        return false;
+    }
+    let max_side_lines = old_lines.max(new_lines) as u32;
+    let total_change_lines = old_lines.saturating_add(new_lines) as u32;
+    let line_imbalance = old_lines
+        .max(new_lines)
+        .saturating_sub(old_lines.min(new_lines)) as u32;
+
+    max_side_lines <= STRUCTURAL_SIDE_BLOCK_MAX_SIDE_LINES
+        && total_change_lines <= STRUCTURAL_SIDE_BLOCK_MAX_TOTAL_CHANGE_LINES
+        && line_imbalance <= STRUCTURAL_SIDE_BLOCK_MAX_LINE_IMBALANCE
+}
+
+fn emit_structural_change_cluster(
     carbon_file: &carbon::FileDiff,
     file_index: usize,
     hunk: &carbon::Hunk,
     blocks: &[carbon::Block],
+    line_pair_tiny_cluster: bool,
     overlays: &CarbonStyleOverlays,
     token_buffer: &TokenBuffer,
     doc: &mut RenderDoc,
 ) {
-    for block in blocks {
-        match block.kind {
-            carbon::BlockKind::Context => emit_structural_context(
-                carbon_file,
-                file_index,
-                hunk,
-                block,
-                overlays,
-                token_buffer,
-                doc,
-            ),
-            carbon::BlockKind::Change => emit_line_oriented_change(
-                carbon_file,
-                file_index,
-                hunk,
-                block,
-                overlays,
-                token_buffer,
-                doc,
-            ),
-        }
+    let old_lines = collect_cluster_lines(blocks, carbon::DiffSide::Old);
+    let new_lines = collect_cluster_lines(blocks, carbon::DiffSide::New);
+    if old_lines.is_empty() && new_lines.is_empty() {
+        return;
     }
-}
 
-fn emit_line_oriented_change(
-    carbon_file: &carbon::FileDiff,
-    file_index: usize,
-    hunk: &carbon::Hunk,
-    block: &carbon::Block,
-    overlays: &CarbonStyleOverlays,
-    token_buffer: &TokenBuffer,
-    doc: &mut RenderDoc,
-) {
-    for offset in 0..block.old.len.max(block.new.len) {
-        let has_old = offset < block.old.len;
-        let has_new = offset < block.new.len;
-        push_projected_row(
+    if !line_pair_tiny_cluster
+        && structural_cluster_uses_side_block(old_lines.len(), new_lines.len())
+    {
+        emit_cluster_side(
             carbon_file,
             file_index,
-            carbon::ProjectionRow {
-                file_id: carbon_file.id,
-                kind: match (has_old, has_new) {
-                    (true, true) => carbon::ProjectionRowKind::Modified,
-                    (true, false) => carbon::ProjectionRowKind::Removed,
-                    (false, true) => carbon::ProjectionRowKind::Added,
-                    (false, false) => carbon::ProjectionRowKind::Modified,
-                },
-                hunk_id: Some(hunk.id),
-                block_id: Some(block.id),
-                old_line: has_old.then_some(block.old_line_start + offset),
-                new_line: has_new.then_some(block.new_line_start + offset),
-                old_index: has_old.then_some(block.old.start + offset),
-                new_index: has_new.then_some(block.new.start + offset),
-                collapsed_count: 0,
-            },
+            hunk,
+            &old_lines,
+            carbon::DiffSide::Old,
+            overlays,
+            token_buffer,
+            doc,
+        );
+        emit_cluster_side(
+            carbon_file,
+            file_index,
+            hunk,
+            &new_lines,
+            carbon::DiffSide::New,
+            overlays,
+            token_buffer,
+            doc,
+        );
+    } else {
+        emit_line_oriented_cluster(
+            carbon_file,
+            file_index,
+            hunk,
+            &old_lines,
+            &new_lines,
             overlays,
             token_buffer,
             doc,
         );
     }
+}
+
+fn collect_cluster_lines(blocks: &[carbon::Block], side: carbon::DiffSide) -> Vec<ClusterLine> {
+    let len = blocks
+        .iter()
+        .map(|block| match side {
+            carbon::DiffSide::Old => block.old.len,
+            carbon::DiffSide::New => block.new.len,
+        })
+        .sum::<u32>();
+    let mut lines = Vec::with_capacity(carbon::u32_to_usize_saturating(len));
+    for block in blocks {
+        let (start, count, line_start) = match side {
+            carbon::DiffSide::Old => (block.old.start, block.old.len, block.old_line_start),
+            carbon::DiffSide::New => (block.new.start, block.new.len, block.new_line_start),
+        };
+        for offset in 0..count {
+            lines.push(ClusterLine {
+                block_id: block.id,
+                line_no: line_start + offset,
+                source_index: start + offset,
+            });
+        }
+    }
+    lines
+}
+
+fn emit_cluster_side(
+    carbon_file: &carbon::FileDiff,
+    file_index: usize,
+    hunk: &carbon::Hunk,
+    lines: &[ClusterLine],
+    side: carbon::DiffSide,
+    overlays: &CarbonStyleOverlays,
+    token_buffer: &TokenBuffer,
+    doc: &mut RenderDoc,
+) {
+    let kind = match side {
+        carbon::DiffSide::Old => RenderRowKind::Removed,
+        carbon::DiffSide::New => RenderRowKind::Added,
+    };
+    for line in lines {
+        let (old_line, new_line) = match side {
+            carbon::DiffSide::Old => (Some(*line), None),
+            carbon::DiffSide::New => (None, Some(*line)),
+        };
+        push_cluster_render_line(
+            carbon_file,
+            file_index,
+            hunk,
+            kind,
+            old_line,
+            new_line,
+            overlays,
+            token_buffer,
+            doc,
+        );
+    }
+}
+
+fn emit_line_oriented_cluster(
+    carbon_file: &carbon::FileDiff,
+    file_index: usize,
+    hunk: &carbon::Hunk,
+    old_lines: &[ClusterLine],
+    new_lines: &[ClusterLine],
+    overlays: &CarbonStyleOverlays,
+    token_buffer: &TokenBuffer,
+    doc: &mut RenderDoc,
+) {
+    for offset in 0..old_lines.len().max(new_lines.len()) {
+        let old_line = old_lines.get(offset).copied();
+        let new_line = new_lines.get(offset).copied();
+        let kind = match (old_line.is_some(), new_line.is_some()) {
+            (true, true) => RenderRowKind::Modified,
+            (true, false) => RenderRowKind::Removed,
+            (false, true) => RenderRowKind::Added,
+            (false, false) => RenderRowKind::Modified,
+        };
+        push_cluster_render_line(
+            carbon_file,
+            file_index,
+            hunk,
+            kind,
+            old_line,
+            new_line,
+            overlays,
+            token_buffer,
+            doc,
+        );
+    }
+}
+
+fn push_cluster_render_line(
+    carbon_file: &carbon::FileDiff,
+    _file_index: usize,
+    hunk: &carbon::Hunk,
+    kind: RenderRowKind,
+    old_line: Option<ClusterLine>,
+    new_line: Option<ClusterLine>,
+    overlays: &CarbonStyleOverlays,
+    token_buffer: &TokenBuffer,
+    doc: &mut RenderDoc,
+) {
+    let mut line = build_dual_sided_line_with_text(
+        kind,
+        old_line.and_then(|entry| {
+            carbon_line_source_from_cluster_entry(
+                carbon_file,
+                hunk,
+                entry,
+                carbon::DiffSide::Old,
+                overlays,
+                token_buffer,
+            )
+        }),
+        new_line.and_then(|entry| {
+            carbon_line_source_from_cluster_entry(
+                carbon_file,
+                hunk,
+                entry,
+                carbon::DiffSide::New,
+                overlays,
+                token_buffer,
+            )
+        }),
+        &mut doc.text_bytes,
+        &mut doc.style_runs,
+    );
+    line.flags |= RENDER_FLAG_STRUCTURAL;
+    line.hunk_index = i16::try_from(hunk.id.0).unwrap_or(i16::MAX);
+    line.line_index = old_line
+        .or(new_line)
+        .and_then(|entry| i32::try_from(entry.source_index).ok())
+        .unwrap_or(-1);
+    line.old_line_index = old_line
+        .and_then(|entry| i32::try_from(entry.source_index).ok())
+        .unwrap_or(-1);
+    line.new_line_index = new_line
+        .and_then(|entry| i32::try_from(entry.source_index).ok())
+        .unwrap_or(-1);
+    line.kind = kind as u8;
+    doc.lines.push(line);
 }
 
 fn emit_structural_context(
@@ -700,60 +802,6 @@ fn emit_structural_context(
             token_buffer,
             doc,
         );
-    }
-}
-
-fn emit_structural_side(
-    carbon_file: &carbon::FileDiff,
-    file_index: usize,
-    hunk: &carbon::Hunk,
-    block: &carbon::Block,
-    side: carbon::DiffSide,
-    overlays: &CarbonStyleOverlays,
-    token_buffer: &TokenBuffer,
-    doc: &mut RenderDoc,
-) {
-    let (kind, count) = match side {
-        carbon::DiffSide::Old => (carbon::ProjectionRowKind::Removed, block.old.len),
-        carbon::DiffSide::New => (carbon::ProjectionRowKind::Added, block.new.len),
-    };
-    for offset in 0..count {
-        let (old_line, old_index, new_line, new_index) = match side {
-            carbon::DiffSide::Old => (
-                Some(block.old_line_start + offset),
-                Some(block.old.start + offset),
-                None,
-                None,
-            ),
-            carbon::DiffSide::New => (
-                None,
-                None,
-                Some(block.new_line_start + offset),
-                Some(block.new.start + offset),
-            ),
-        };
-        let line_index = doc.lines.len();
-        push_projected_row(
-            carbon_file,
-            file_index,
-            carbon::ProjectionRow {
-                file_id: carbon_file.id,
-                kind,
-                hunk_id: Some(hunk.id),
-                block_id: Some(block.id),
-                old_line,
-                new_line,
-                old_index,
-                new_index,
-                collapsed_count: 0,
-            },
-            overlays,
-            token_buffer,
-            doc,
-        );
-        if let Some(line) = doc.lines.get_mut(line_index) {
-            line.flags |= RENDER_FLAG_STRUCTURAL;
-        }
     }
 }
 
@@ -1060,6 +1108,33 @@ fn carbon_line_source_from_row<'a>(
         core_change: overlays.change_tokens(token_buffer, hunk_id, side, index),
         carbon_change: carbon_inline_for_row(file, row, side),
         line_no,
+    })
+}
+
+fn carbon_line_source_from_cluster_entry<'a>(
+    file: &'a carbon::FileDiff,
+    hunk: &carbon::Hunk,
+    entry: ClusterLine,
+    side: carbon::DiffSide,
+    overlays: &'a CarbonStyleOverlays,
+    token_buffer: &'a TokenBuffer,
+) -> Option<LineSideSource<'a>> {
+    let text = file
+        .side_text(side)?
+        .line_str(carbon::LineId(entry.source_index))?;
+    let carbon_change = file
+        .block(entry.block_id)
+        .map(|block| match side {
+            carbon::DiffSide::Old => block.old_inline.as_slice(),
+            carbon::DiffSide::New => block.new_inline.as_slice(),
+        })
+        .unwrap_or(&[]);
+    Some(LineSideSource {
+        text,
+        syntax: overlays.syntax_tokens(token_buffer, hunk.id.0, side, entry.source_index),
+        core_change: overlays.change_tokens(token_buffer, hunk.id.0, side, entry.source_index),
+        carbon_change,
+        line_no: Some(entry.line_no),
     })
 }
 
@@ -1374,7 +1449,108 @@ diff --git a/src/lib.rs b/src/lib.rs
 
         assert_eq!(doc.line_text(changed.left_text), "old text");
         assert_eq!(doc.line_text(changed.right_text), "new text");
-        assert_eq!(changed.flags & RENDER_FLAG_STRUCTURAL, 0);
+        assert!(changed.flags & RENDER_FLAG_STRUCTURAL != 0);
+    }
+
+    #[test]
+    fn structural_projection_uses_line_diff_for_large_change_blocks() {
+        let token_buffer = TokenBuffer::default();
+        let mut file = carbon::parse_unified_patch(
+            "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,17 +1,2 @@
+-old 01
+-old 02
+-old 03
+-old 04
+-old 05
+-old 06
+-old 07
+-old 08
+-old 09
+-old 10
+-old 11
+-old 12
+-old 13
+-old 14
+-old 15
+-old 16
+-old 17
++new 01
++new 02
+",
+        )
+        .unwrap()
+        .files
+        .into_iter()
+        .next()
+        .unwrap();
+        file.prefer_structural_projection = true;
+
+        let doc = carbon_doc(&file, &CarbonStyleOverlays::default(), &token_buffer);
+        let first_change = doc
+            .lines
+            .iter()
+            .find(|line| {
+                matches!(
+                    line.row_kind(),
+                    RenderRowKind::Modified | RenderRowKind::Removed
+                )
+            })
+            .expect("large structural hunk should render as a line-oriented change");
+
+        assert_eq!(first_change.row_kind(), RenderRowKind::Modified);
+        assert_eq!(doc.line_text(first_change.left_text), "old 01");
+        assert_eq!(doc.line_text(first_change.right_text), "new 01");
+        assert!(first_change.flags & RENDER_FLAG_STRUCTURAL != 0);
+    }
+
+    #[test]
+    fn structural_projection_pairs_adjacent_one_sided_change_runs() {
+        let token_buffer = TokenBuffer::default();
+        let mut file = carbon::FileDiff {
+            id: carbon::FileId(0),
+            old_path: Some("src/lib.rs".to_owned()),
+            new_path: Some("src/lib.rs".to_owned()),
+            old_text: Some(carbon::TextStore::from_text("old 1\nold 2\nold 3\nold 4\n")),
+            new_text: Some(carbon::TextStore::from_text("new 1\nnew 2\nnew 3\nnew 4\n")),
+            prefer_structural_projection: true,
+            ..carbon::FileDiff::default()
+        };
+        file.add_hunk(
+            carbon::Hunk::new(carbon::HunkId(0), 1, 4, 1, 4, carbon::BlockRange::default()),
+            [
+                carbon::Block::change(
+                    carbon::BlockId(0),
+                    carbon::SourceRange::new(0, 4),
+                    carbon::SourceRange::new(0, 0),
+                )
+                .with_source_lines(1, 1),
+                carbon::Block::change(
+                    carbon::BlockId(1),
+                    carbon::SourceRange::new(4, 0),
+                    carbon::SourceRange::new(0, 4),
+                )
+                .with_source_lines(3, 1),
+            ],
+        );
+
+        let doc = carbon_doc(&file, &CarbonStyleOverlays::default(), &token_buffer);
+
+        assert_eq!(doc.lines[2].row_kind(), RenderRowKind::Modified);
+        assert_eq!(doc.line_text(doc.lines[2].left_text), "old 1");
+        assert_eq!(doc.line_text(doc.lines[2].right_text), "new 1");
+        assert_eq!(doc.lines[3].row_kind(), RenderRowKind::Modified);
+        assert_eq!(doc.line_text(doc.lines[3].left_text), "old 2");
+        assert_eq!(doc.line_text(doc.lines[3].right_text), "new 2");
+        assert_eq!(doc.lines[4].row_kind(), RenderRowKind::Modified);
+        assert_eq!(doc.line_text(doc.lines[4].left_text), "old 3");
+        assert_eq!(doc.line_text(doc.lines[4].right_text), "new 3");
+        assert_eq!(doc.lines[5].row_kind(), RenderRowKind::Modified);
+        assert_eq!(doc.line_text(doc.lines[5].left_text), "old 4");
+        assert_eq!(doc.line_text(doc.lines[5].right_text), "new 4");
     }
 
     #[test]

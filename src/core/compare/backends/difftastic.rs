@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -332,13 +331,6 @@ fn carbon_file_from_semantic_result_with_id(
     let old_lines: Vec<&str> = old_src.split('\n').collect();
     let new_lines: Vec<&str> = new_src.split('\n').collect();
 
-    let aligned_order: HashMap<(Option<u32>, Option<u32>), usize> = result
-        .aligned_lines
-        .iter()
-        .enumerate()
-        .map(|(i, &(l, r))| ((l, r), i))
-        .collect();
-
     let mut file = carbon::FileDiff {
         id: carbon::FileId(usize_to_u32_saturating(file_id)),
         old_path: (status != carbon::FileStatus::Added).then(|| fallback_path.to_owned()),
@@ -358,15 +350,9 @@ fn carbon_file_from_semantic_result_with_id(
         let mut old_count = 0_u32;
         let mut new_count = 0_u32;
 
-        let mut sorted_lines: Vec<_> = chunk.lines.iter().collect();
-        sorted_lines.sort_by_key(|line| {
-            aligned_order
-                .get(&(line.lhs_line, line.rhs_line))
-                .copied()
-                .unwrap_or(usize::MAX)
-        });
-
-        for line in sorted_lines {
+        // vendored_difftastic emits chunk lines in display order, so avoid
+        // rebuilding and sorting an aligned-line index per file.
+        for line in &chunk.lines {
             let lhs_line_no = line.lhs_line.map(|n| n.saturating_add(1));
             let rhs_line_no = line.rhs_line.map(|n| n.saturating_add(1));
 

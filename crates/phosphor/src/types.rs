@@ -1,4 +1,5 @@
 use carbon::{TextByteRange, u32_to_usize_saturating, usize_to_u32_saturating};
+use tree_sitter as ts;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -108,6 +109,12 @@ impl HighlightLineBuffer {
             },
         });
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ParsedSyntax {
+    pub(crate) language: LanguageId,
+    pub(crate) tree: ts::Tree,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

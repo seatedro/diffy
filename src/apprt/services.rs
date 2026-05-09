@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::ai::{self, GenerateRequest, StreamMessage};
 use crate::apprt::ProgressReporter;
@@ -14,7 +14,7 @@ use crate::core::forge::github::{
     PullRequestReviewComment, parse_pr_url, poll_for_token, start_device_flow,
 };
 use crate::core::http;
-use crate::core::syntax::annotator::FullFileSyntax;
+use crate::core::syntax::annotator::SyntaxTextSource;
 use crate::core::vcs::discovery;
 use crate::core::vcs::model::RevisionId;
 use crate::effects::{
@@ -47,59 +47,65 @@ struct FileSyntaxCacheKey {
 
 #[derive(Debug, Default)]
 struct FileSyntaxCache {
-    entries: HashMap<FileSyntaxCacheKey, FileSyntaxCacheEntry>,
+    source_entries: HashMap<FileSyntaxCacheKey, FileSyntaxSourceEntry>,
     inflight: HashSet<FileSyntaxCacheKey>,
-    bytes: usize,
+    source_bytes: usize,
     tick: u64,
     epoch: u64,
 }
 
 #[derive(Debug)]
-struct FileSyntaxCacheEntry {
-    syntax: Arc<FullFileSyntax>,
+struct FileSyntaxSourceEntry {
+    source: FileSyntaxSource,
     bytes: usize,
     last_used: u64,
 }
 
+#[derive(Debug, Clone)]
+struct FileSyntaxSource {
+    text: Arc<carbon::TextStore>,
+    parsed: Option<Arc<phosphor::ParsedSyntax>>,
+}
+
 impl FileSyntaxCache {
-    fn get(&mut self, key: &FileSyntaxCacheKey) -> Option<Arc<FullFileSyntax>> {
+    fn get_source(&mut self, key: &FileSyntaxCacheKey) -> Option<FileSyntaxSource> {
         let tick = self.next_tick();
-        let entry = self.entries.get_mut(key)?;
+        let entry = self.source_entries.get_mut(key)?;
         entry.last_used = tick;
-        Some(entry.syntax.clone())
+        Some(entry.source.clone())
     }
 
-    fn insert(&mut self, key: FileSyntaxCacheKey, syntax: Arc<FullFileSyntax>) {
-        const MAX_ENTRIES: usize = 128;
-        const BYTE_BUDGET: usize = 48 * 1024 * 1024;
+    fn insert_source(&mut self, key: FileSyntaxCacheKey, source: FileSyntaxSource) {
+        const MAX_SOURCE_ENTRIES: usize = 64;
+        const SOURCE_BYTE_BUDGET: usize = 64 * 1024 * 1024;
 
-        let bytes = syntax.estimated_bytes().max(1);
+        let bytes = estimated_text_store_bytes(&source.text).max(1);
         let tick = self.next_tick();
-        if let Some(previous) = self.entries.insert(
+        if let Some(previous) = self.source_entries.insert(
             key,
-            FileSyntaxCacheEntry {
-                syntax,
+            FileSyntaxSourceEntry {
+                source,
                 bytes,
                 last_used: tick,
             },
         ) {
-            self.bytes = self.bytes.saturating_sub(previous.bytes);
+            self.source_bytes = self.source_bytes.saturating_sub(previous.bytes);
         }
-        self.bytes = self.bytes.saturating_add(bytes);
+        self.source_bytes = self.source_bytes.saturating_add(bytes);
 
-        while self.entries.len() > MAX_ENTRIES
-            || (self.entries.len() > 1 && self.bytes > BYTE_BUDGET)
+        while self.source_entries.len() > MAX_SOURCE_ENTRIES
+            || (self.source_entries.len() > 1 && self.source_bytes > SOURCE_BYTE_BUDGET)
         {
             let Some(victim) = self
-                .entries
+                .source_entries
                 .iter()
                 .min_by_key(|(_, entry)| entry.last_used)
                 .map(|(key, _)| key.clone())
             else {
                 break;
             };
-            if let Some(entry) = self.entries.remove(&victim) {
-                self.bytes = self.bytes.saturating_sub(entry.bytes);
+            if let Some(entry) = self.source_entries.remove(&victim) {
+                self.source_bytes = self.source_bytes.saturating_sub(entry.bytes);
             }
         }
     }
@@ -110,11 +116,18 @@ impl FileSyntaxCache {
     }
 
     fn clear(&mut self) {
-        self.entries.clear();
+        self.source_entries.clear();
         self.inflight.clear();
-        self.bytes = 0;
+        self.source_bytes = 0;
         self.epoch = self.epoch.saturating_add(1);
     }
+}
+
+fn estimated_text_store_bytes(text: &carbon::TextStore) -> usize {
+    carbon::u32_to_usize_saturating(text.len()).saturating_add(
+        carbon::u32_to_usize_saturating(text.line_count())
+            .saturating_mul(std::mem::size_of::<u32>()),
+    )
 }
 
 impl AppServices {
@@ -268,17 +281,19 @@ impl AppServices {
         if !is_current() {
             return Vec::new();
         }
+        let total_started = Instant::now();
         let Ok(mut repo) = discovery::open_repository(&request.repo_path) else {
             return Vec::new();
         };
+        let repo_open_ms = total_started.elapsed().as_millis() as u64;
 
         let annotator = crate::core::syntax::DiffSyntaxAnnotator::new();
-        let old_syntax = request
+        let old_source = request
             .carbon_file
             .old_path
             .as_deref()
             .and_then(|old_path| {
-                self.cached_file_syntax(
+                self.cached_file_syntax_source(
                     &mut *repo,
                     request,
                     &request.left_ref,
@@ -290,12 +305,12 @@ impl AppServices {
         if !is_current() {
             return Vec::new();
         }
-        let new_syntax = request
+        let new_source = request
             .carbon_file
             .new_path
             .as_deref()
             .and_then(|new_path| {
-                self.cached_file_syntax(
+                self.cached_file_syntax_source(
                     &mut *repo,
                     request,
                     &request.right_ref,
@@ -308,17 +323,48 @@ impl AppServices {
             return Vec::new();
         }
 
-        annotator.annotate_carbon_full_file_window_from_cache(
+        let annotate_started = Instant::now();
+        let old_text_source = old_source.as_ref().map(|source| SyntaxTextSource {
+            path: request
+                .carbon_file
+                .old_path
+                .as_deref()
+                .unwrap_or(&request.path),
+            text: source.text.as_ref(),
+            parsed: source.parsed.as_deref(),
+        });
+        let new_text_source = new_source.as_ref().map(|source| SyntaxTextSource {
+            path: request
+                .carbon_file
+                .new_path
+                .as_deref()
+                .unwrap_or(&request.path),
+            text: source.text.as_ref(),
+            parsed: source.parsed.as_deref(),
+        });
+        let tokens = annotator.annotate_carbon_window_from_text_cache(
             &request.carbon_file,
             &request.carbon_expansion,
             request.file_index,
-            old_syntax.as_deref(),
-            new_syntax.as_deref(),
+            old_text_source,
+            new_text_source,
             request.window,
-        )
+        );
+        tracing::debug!(
+            file_index = request.file_index,
+            path = %request.path,
+            window_start = request.window.start,
+            window_end = request.window.end,
+            repo_open_ms,
+            annotate_ms = annotate_started.elapsed().as_millis() as u64,
+            total_ms = total_started.elapsed().as_millis() as u64,
+            line_updates = tokens.len(),
+            "syntax viewport load finished"
+        );
+        tokens
     }
 
-    fn cached_file_syntax<F>(
+    fn cached_file_syntax_source<F>(
         &self,
         repo: &mut dyn crate::core::vcs::backend::VcsRepository,
         request: &LoadFileSyntaxRequest,
@@ -326,7 +372,7 @@ impl AppServices {
         source_path: &str,
         annotator: &crate::core::syntax::DiffSyntaxAnnotator,
         is_current: &F,
-    ) -> Option<Arc<FullFileSyntax>>
+    ) -> Option<FileSyntaxSource>
     where
         F: Fn() -> bool,
     {
@@ -345,7 +391,15 @@ impl AppServices {
             if cache.epoch != key.epoch {
                 return None;
             }
-            if let Some(cached) = cache.get(&key) {
+            if let Some(cached) = cache.get_source(&key) {
+                tracing::debug!(
+                    file_index = request.file_index,
+                    path = %source_path,
+                    reference = %reference,
+                    bytes = cached.text.len(),
+                    parsed = cached.parsed.is_some(),
+                    "syntax source cache hit"
+                );
                 return Some(cached);
             }
             if cache.inflight.insert(key.clone()) {
@@ -371,6 +425,7 @@ impl AppServices {
             backend: repo.location().kind,
             id: reference.to_owned(),
         };
+        let read_started = Instant::now();
         let text = match repo.read_file_text(&revision, source_path) {
             Ok(text) => text,
             Err(_) => {
@@ -381,6 +436,7 @@ impl AppServices {
                 return None;
             }
         };
+        let read_ms = read_started.elapsed().as_millis() as u64;
         if !is_current() {
             if let Ok(mut cache) = self.syntax_cache.lock() {
                 cache.inflight.remove(&key);
@@ -388,7 +444,13 @@ impl AppServices {
             }
             return None;
         }
-        let syntax = Arc::new(annotator.highlight_full_text_store(source_path, &text));
+        let parse_started = Instant::now();
+        let parsed = annotator.parse_text_store(source_path, &text).map(Arc::new);
+        let parse_ms = parse_started.elapsed().as_millis() as u64;
+        let source = FileSyntaxSource {
+            text: Arc::new(text),
+            parsed,
+        };
         match self.syntax_cache.lock() {
             Ok(mut cache) => {
                 cache.inflight.remove(&key);
@@ -396,12 +458,22 @@ impl AppServices {
                     self.syntax_cache_ready.notify_all();
                     return None;
                 }
-                cache.insert(key, syntax.clone());
+                cache.insert_source(key, source.clone());
                 self.syntax_cache_ready.notify_all();
             }
             Err(_) => self.syntax_cache_ready.notify_all(),
         }
-        Some(syntax)
+        tracing::debug!(
+            file_index = request.file_index,
+            path = %source_path,
+            reference = %reference,
+            read_ms,
+            parse_ms,
+            bytes = source.text.len(),
+            parsed = source.parsed.is_some(),
+            "syntax source cache populated"
+        );
+        Some(source)
     }
 
     pub fn clear_file_syntax_cache(&self) {

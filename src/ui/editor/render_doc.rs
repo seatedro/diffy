@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::core::text::{ChangeIntensity, DiffTokenSpan, SyntaxTokenKind, TokenBuffer, TokenRange};
 
@@ -386,6 +386,106 @@ pub fn build_render_doc_from_carbon(
     token_buffer: &TokenBuffer,
 ) -> RenderDoc {
     build_render_doc_from_carbon_rows(carbon_file, file_index, expansion, overlays, token_buffer)
+}
+
+pub fn refresh_render_doc_syntax_from_carbon(
+    doc: &mut RenderDoc,
+    carbon_file: &carbon::FileDiff,
+    expansion: &carbon::ExpansionState,
+    overlays: &CarbonStyleOverlays,
+    token_buffer: &TokenBuffer,
+    updated: &[CarbonLineKey],
+) {
+    if updated.is_empty() {
+        return;
+    }
+
+    let updated = updated.iter().copied().collect::<HashSet<_>>();
+    let mut doc_index = 1usize;
+    carbon::project_file(
+        carbon_file,
+        carbon::ProjectionOptions {
+            mode: carbon::ProjectionMode::Unified,
+            collapsed_context_threshold: 0,
+            include_hunk_headers: true,
+        },
+        expansion,
+        |row| {
+            if row.kind == carbon::ProjectionRowKind::ContextGap {
+                return;
+            }
+            let current_index = doc_index;
+            doc_index = doc_index.saturating_add(1);
+            if current_index >= doc.lines.len() {
+                return;
+            }
+
+            if row_key(row, carbon::DiffSide::Old).is_some_and(|key| updated.contains(&key)) {
+                refresh_render_doc_side_from_carbon(
+                    doc,
+                    current_index,
+                    carbon_file,
+                    row,
+                    carbon::DiffSide::Old,
+                    overlays,
+                    token_buffer,
+                );
+            }
+            if row_key(row, carbon::DiffSide::New).is_some_and(|key| updated.contains(&key)) {
+                refresh_render_doc_side_from_carbon(
+                    doc,
+                    current_index,
+                    carbon_file,
+                    row,
+                    carbon::DiffSide::New,
+                    overlays,
+                    token_buffer,
+                );
+            }
+        },
+    );
+}
+
+fn row_key(row: carbon::ProjectionRow, side: carbon::DiffSide) -> Option<CarbonLineKey> {
+    let hunk_id = row.hunk_id?.0;
+    let source_index = match side {
+        carbon::DiffSide::Old => row.old_index?,
+        carbon::DiffSide::New => row.new_index?,
+    };
+    Some(CarbonLineKey {
+        hunk_id,
+        side,
+        source_index,
+    })
+}
+
+fn refresh_render_doc_side_from_carbon(
+    doc: &mut RenderDoc,
+    line_index: usize,
+    carbon_file: &carbon::FileDiff,
+    row: carbon::ProjectionRow,
+    side: carbon::DiffSide,
+    overlays: &CarbonStyleOverlays,
+    token_buffer: &TokenBuffer,
+) {
+    let Some(source) = carbon_line_source_from_row(carbon_file, row, side, overlays, token_buffer)
+    else {
+        return;
+    };
+    let runs = append_style_runs_with_carbon(
+        &mut doc.style_runs,
+        source.text,
+        source.syntax,
+        source.core_change,
+        source.carbon_change,
+    );
+    let Some(line) = doc.lines.get_mut(line_index) else {
+        return;
+    };
+    match side {
+        carbon::DiffSide::Old => line.left_runs = runs,
+        carbon::DiffSide::New => line.right_runs = runs,
+    }
 }
 
 fn build_render_doc_from_carbon_rows(
@@ -1299,8 +1399,9 @@ fn carbon_projection_capacity(file: &carbon::FileDiff) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        CarbonStyleOverlays, INVALID_U32, RENDER_FLAG_STRUCTURAL, RenderDoc, RenderRowKind,
-        STYLE_FLAG_CHANGE, build_render_doc_from_carbon,
+        CarbonLineKey, CarbonStyleOverlays, INVALID_U32, RENDER_FLAG_STRUCTURAL, RenderDoc,
+        RenderRowKind, STYLE_FLAG_CHANGE, build_render_doc_from_carbon,
+        refresh_render_doc_syntax_from_carbon,
     };
     use crate::core::text::{DiffTokenSpan, SyntaxTokenKind, TokenBuffer};
 
@@ -1551,6 +1652,58 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert_eq!(doc.lines[5].row_kind(), RenderRowKind::Modified);
         assert_eq!(doc.line_text(doc.lines[5].left_text), "old 4");
         assert_eq!(doc.line_text(doc.lines[5].right_text), "new 4");
+    }
+
+    #[test]
+    fn syntax_refresh_updates_only_targeted_line_runs() {
+        let mut token_buffer = TokenBuffer::default();
+        let file = carbon::parse_unified_patch(
+            "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,2 +1,2 @@
+ fn main() {
+-    old();
++    new();
+ }
+",
+        )
+        .unwrap()
+        .files
+        .into_iter()
+        .next()
+        .unwrap();
+        let mut overlays = CarbonStyleOverlays::default();
+        let mut doc = carbon_doc(&file, &overlays, &token_buffer);
+        let original_style_run_len = doc.style_runs.len();
+
+        let syntax = token_buffer.append(&[DiffTokenSpan {
+            offset: 4,
+            length: 3,
+            kind: SyntaxTokenKind::Function,
+            ..DiffTokenSpan::default()
+        }]);
+        overlays.insert_syntax(0, carbon::DiffSide::New, 1, syntax);
+
+        refresh_render_doc_syntax_from_carbon(
+            &mut doc,
+            &file,
+            &carbon::ExpansionState::default(),
+            &overlays,
+            &token_buffer,
+            &[CarbonLineKey {
+                hunk_id: 0,
+                side: carbon::DiffSide::New,
+                source_index: 1,
+            }],
+        );
+
+        assert!(doc.style_runs.len() > original_style_run_len);
+        assert_eq!(
+            doc.line_runs(doc.lines[4].right_runs)[1].style_id,
+            SyntaxTokenKind::Function as u16
+        );
     }
 
     #[test]

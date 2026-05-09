@@ -62,7 +62,8 @@ use crate::platform::secrets::AiKeyKind;
 use crate::platform::startup::StartupOptions;
 use crate::ui::design::{Sp, Sz};
 use crate::ui::editor::render_doc::{
-    CarbonStyleOverlays, RenderDoc, build_placeholder_render_doc, build_render_doc_from_carbon,
+    CarbonLineKey, CarbonStyleOverlays, RenderDoc, build_placeholder_render_doc,
+    build_render_doc_from_carbon, refresh_render_doc_syntax_from_carbon,
 };
 use crate::ui::editor::state::{EditorState, EditorStateStore, SearchMatch};
 use crate::ui::icons::lucide;
@@ -693,16 +694,24 @@ fn apply_syntax_tokens_to_file(
     carbon_overlays: &mut CarbonStyleOverlays,
     token_buffer: &mut TokenBuffer,
     updates: &[SyntaxLineTokens],
-) {
+) -> Vec<CarbonLineKey> {
+    let mut changed = Vec::new();
     for update in updates {
         if let (Some(side), Some(source_index)) = (update.side, update.source_index) {
             if update.tokens.is_empty() {
                 continue;
             }
             let range = token_buffer.append(&update.tokens);
-            carbon_overlays.insert_syntax(update.hunk_index as u32, side, source_index, range);
+            let key = CarbonLineKey {
+                hunk_id: update.hunk_index as u32,
+                side,
+                source_index,
+            };
+            carbon_overlays.insert_syntax(key.hunk_id, key.side, key.source_index, range);
+            changed.push(key);
         }
     }
+    changed
 }
 
 fn active_file_matches_language(
@@ -5094,18 +5103,21 @@ impl AppState {
                 return;
             }
             push_syntax_covered_window(&mut active.syntax_covered, payload.window);
-            apply_syntax_tokens_to_file(
+            let changed = apply_syntax_tokens_to_file(
                 &mut active.carbon_overlays,
                 &mut active.token_buffer,
                 &payload.tokens,
             );
-            active.render_doc = Arc::new(build_render_doc_from_carbon(
-                &active.carbon_file,
-                active.index,
-                &active.carbon_expansion,
-                &active.carbon_overlays,
-                &active.token_buffer,
-            ));
+            if !changed.is_empty() {
+                refresh_render_doc_syntax_from_carbon(
+                    Arc::make_mut(&mut active.render_doc),
+                    &active.carbon_file,
+                    &active.carbon_expansion,
+                    &active.carbon_overlays,
+                    &active.token_buffer,
+                    &changed,
+                );
+            }
             applied_file = Some(active.clone());
             applied_active = true;
         });
@@ -5143,18 +5155,21 @@ impl AppState {
                     return;
                 }
                 push_syntax_covered_window(&mut active.syntax_covered, payload.window);
-                apply_syntax_tokens_to_file(
+                let changed = apply_syntax_tokens_to_file(
                     &mut active.carbon_overlays,
                     &mut active.token_buffer,
                     &payload.tokens,
                 );
-                active.render_doc = Arc::new(build_render_doc_from_carbon(
-                    &active.carbon_file,
-                    active.index,
-                    &active.carbon_expansion,
-                    &active.carbon_overlays,
-                    &active.token_buffer,
-                ));
+                if !changed.is_empty() {
+                    refresh_render_doc_syntax_from_carbon(
+                        Arc::make_mut(&mut active.render_doc),
+                        &active.carbon_file,
+                        &active.carbon_expansion,
+                        &active.carbon_overlays,
+                        &active.token_buffer,
+                        &changed,
+                    );
+                }
                 applied_file = Some(active.clone());
             });
         }

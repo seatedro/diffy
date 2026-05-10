@@ -76,7 +76,7 @@ webbrowser = "1.0"
 halogen = { path = "crates/halogen" }
 carbon = { path = "crates/carbon" }
 phosphor = { path = "crates/phosphor", default-features = false }
-vendored_difftastic = { package = "difftastic", path = "crates/difftastic", optional = true }
+vendored_difftastic = { package = "difftastic", path = "crates/difftastic", optional = true, default-features = false, features = ["dynamic-languages"] }
 resvg = { version = "0.45", default-features = false }
 wgpu = "28.0.0"
 winit = { version = "0.30" }

@@ -16,6 +16,8 @@ pub(crate) const RENAME_DETECTION_LIMIT: usize = 1000;
 
 #[cfg(feature = "difftastic")]
 pub use difftastic::DifftasticBackend;
+#[cfg(feature = "difftastic")]
+pub(crate) use difftastic::{DifftasticChangedPath, compare_changed_paths};
 pub use git_diff::GitDiffBackend;
 pub(crate) use git_diff::compare_output_from_raw_patch;
 

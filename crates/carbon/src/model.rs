@@ -196,6 +196,10 @@ pub struct FileDiff {
     pub additions: u32,
     pub deletions: u32,
     pub stats_deferred: bool,
+    /// Prefer structural projections over line-oriented projections. Semantic
+    /// diff backends use this to group old-side changed snippets before
+    /// new-side snippets so AST changes remain easy to compare.
+    pub prefer_structural_projection: bool,
     pub old_text: Option<TextStore>,
     pub new_text: Option<TextStore>,
     pub hunks: Vec<Hunk>,

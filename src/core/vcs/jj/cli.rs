@@ -35,7 +35,17 @@ impl JjCli {
         self.run_inner(args, true)
     }
 
+    pub fn run_bytes_ignored_wc(&self, args: &[OsString]) -> Result<Vec<u8>> {
+        self.run_inner_bytes(args, true)
+    }
+
     fn run_inner(&self, args: &[OsString], ignore_working_copy: bool) -> Result<String> {
+        let stdout = self.run_inner_bytes(args, ignore_working_copy)?;
+        String::from_utf8(stdout)
+            .map_err(|error| DiffyError::General(format!("jj emitted non-UTF8 output: {error}")))
+    }
+
+    fn run_inner_bytes(&self, args: &[OsString], ignore_working_copy: bool) -> Result<Vec<u8>> {
         let started = Instant::now();
         let mut command = Command::new(&self.binary);
         command
@@ -63,9 +73,7 @@ impl JjCli {
                 elapsed_ms = elapsed.as_millis(),
                 "jj command finished",
             );
-            return String::from_utf8(output.stdout).map_err(|error| {
-                DiffyError::General(format!("jj emitted non-UTF8 output: {error}"))
-            });
+            return Ok(output.stdout);
         }
 
         let stderr = String::from_utf8_lossy(&output.stderr);

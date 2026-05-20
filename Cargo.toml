@@ -3,7 +3,7 @@ members = [".", "crates/carbon", "crates/halogen", "crates/halogen-macros", "cra
 exclude = ["crates/difftastic"]
 
 [workspace.package]
-version = "0.1.8"
+version = "0.1.9"
 
 [package]
 name = "diffy"

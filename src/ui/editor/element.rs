@@ -1016,9 +1016,13 @@ impl EditorElement {
                 .flatten()
             {
                 let text = doc.line_text(range);
-                let Some((byte_start, byte_end)) =
-                    selection_byte_range_for_side(selection, line_index, side, text)
-                else {
+                let Some((byte_start, byte_end)) = selection_byte_range_for_side(
+                    selection,
+                    self.layout.split_mode,
+                    line_index,
+                    side,
+                    text,
+                ) else {
                     continue;
                 };
                 if byte_end <= byte_start {
@@ -1648,9 +1652,13 @@ impl EditorElement {
                     continue;
                 };
                 let text = doc.line_text(block.text_range);
-                let Some((byte_start, byte_end)) =
-                    selection_byte_range_for_side(selection, block.line_index, block.side, text)
-                else {
+                let Some((byte_start, byte_end)) = selection_byte_range_for_side(
+                    selection,
+                    self.layout.split_mode,
+                    block.line_index,
+                    block.side,
+                    text,
+                ) else {
                     continue;
                 };
                 if byte_end <= byte_start {
@@ -2597,11 +2605,12 @@ fn text_side_ranges_for_line(
 
 fn selection_byte_range_for_side(
     selection: &ViewportTextSelection,
+    split_mode: bool,
     line_index: u32,
     side: ViewportTextSide,
     text: &str,
 ) -> Option<(usize, usize)> {
-    let (start, end) = selection.normalized();
+    let (start, end) = selection_bounds_for_side(selection, split_mode, side)?;
     let text_len = text.len();
     let text_len_u32 = text_len.min(u32::MAX as usize) as u32;
     let side_start = ViewportTextPoint {
@@ -2631,6 +2640,29 @@ fn selection_byte_range_for_side(
     let byte_start = previous_char_boundary(text, byte_start as usize);
     let byte_end = previous_char_boundary(text, byte_end as usize);
     (byte_end > byte_start).then_some((byte_start, byte_end))
+}
+
+fn selection_bounds_for_side(
+    selection: &ViewportTextSelection,
+    split_mode: bool,
+    side: ViewportTextSide,
+) -> Option<(ViewportTextPoint, ViewportTextPoint)> {
+    if !split_mode {
+        return Some(selection.normalized());
+    }
+    if selection.anchor.side != side {
+        return None;
+    }
+    let anchor = selection.anchor;
+    let focus = ViewportTextPoint {
+        side,
+        ..selection.focus
+    };
+    Some(if anchor <= focus {
+        (anchor, focus)
+    } else {
+        (focus, anchor)
+    })
 }
 
 fn previous_char_boundary(text: &str, byte: usize) -> usize {
@@ -3658,6 +3690,57 @@ mod tests {
         assert_eq!(
             runtime.viewport_selection_text(&doc, &selection).as_deref(),
             Some("lpha\nBRA")
+        );
+    }
+
+    #[test]
+    fn split_viewport_selection_text_stays_on_selected_side() {
+        let doc = RenderDoc {
+            file_metadata: Vec::new(),
+            text_bytes: b"old-aNEW-Aold-bNEW-B".to_vec(),
+            style_runs: Vec::new(),
+            lines: vec![
+                RenderLine {
+                    kind: RenderRowKind::Modified as u8,
+                    old_line_no: 1,
+                    new_line_no: 1,
+                    left_text: ByteRange { start: 0, len: 5 },
+                    right_text: ByteRange { start: 5, len: 5 },
+                    left_cols: 5,
+                    right_cols: 5,
+                    ..RenderLine::default()
+                },
+                RenderLine {
+                    kind: RenderRowKind::Modified as u8,
+                    old_line_no: 2,
+                    new_line_no: 2,
+                    left_text: ByteRange { start: 10, len: 5 },
+                    right_text: ByteRange { start: 15, len: 5 },
+                    left_cols: 5,
+                    right_cols: 5,
+                    ..RenderLine::default()
+                },
+            ],
+        };
+        let selection = ViewportTextSelection {
+            generation: 7,
+            anchor: ViewportTextPoint {
+                line_index: 0,
+                side: ViewportTextSide::Left,
+                byte_offset: 1,
+            },
+            focus: ViewportTextPoint {
+                line_index: 1,
+                side: ViewportTextSide::Left,
+                byte_offset: 4,
+            },
+        };
+        let mut runtime = EditorElement::default();
+        runtime.layout.split_mode = true;
+
+        assert_eq!(
+            runtime.viewport_selection_text(&doc, &selection).as_deref(),
+            Some("ld-a\nold-")
         );
     }
 

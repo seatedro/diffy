@@ -408,7 +408,14 @@ impl InputSystem {
             if let Some(point) =
                 editor.hit_test_text_point(&editor_snap, document.doc.as_ref(), x, y)
             {
-                actions.push(EditorAction::ExtendViewportTextSelection(point).into());
+                let same_split_side = !editor.layout.split_mode
+                    || editor_snap
+                        .text_selection
+                        .as_ref()
+                        .is_none_or(|selection| selection.anchor.side == point.side);
+                if same_split_side {
+                    actions.push(EditorAction::ExtendViewportTextSelection(point).into());
+                }
             }
         }
 

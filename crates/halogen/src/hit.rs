@@ -15,6 +15,7 @@ pub enum CursorHint {
     Pointer,
     Text,
     ResizeCol,
+    ResizeRow,
 }
 
 /// Opaque identity payload for hover routing. Lets halogen-owned code

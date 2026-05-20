@@ -86,6 +86,8 @@ pub enum AppAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceAction {
     OpenRepository(PathBuf),
+    OpenBlankDiff,
+    SetBlankDiffPanelHeightPx(u32),
     ShowWorkingTree,
     RefreshRepository,
 }

@@ -12,6 +12,14 @@ impl AppState {
     pub(super) fn apply_workspace_action(&mut self, action: WorkspaceAction) -> Vec<Effect> {
         match action {
             WorkspaceAction::OpenRepository(path) => self.open_repository(path),
+            WorkspaceAction::OpenBlankDiff => self.open_blank_diff(),
+            WorkspaceAction::SetBlankDiffPanelHeightPx(height) => {
+                self.blank_diff_panel_height_px = height.clamp(
+                    BLANK_DIFF_PANEL_MIN_HEIGHT_PX,
+                    BLANK_DIFF_PANEL_MAX_HEIGHT_PX,
+                );
+                Vec::new()
+            }
             WorkspaceAction::ShowWorkingTree => self.show_working_tree(),
             WorkspaceAction::RefreshRepository => self.refresh_repository(),
         }

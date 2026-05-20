@@ -524,6 +524,7 @@ impl InputSystem {
                 crate::ui::shell::CursorHint::Pointer => CursorIcon::Pointer,
                 crate::ui::shell::CursorHint::Text => CursorIcon::Text,
                 crate::ui::shell::CursorHint::ResizeCol => CursorIcon::EwResize,
+                crate::ui::shell::CursorHint::ResizeRow => CursorIcon::NsResize,
             };
             window.set_cursor(icon);
         }

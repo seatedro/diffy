@@ -25,6 +25,7 @@ use crate::ui::state::{AppState, FocusTarget};
 use crate::ui::theme::Theme;
 
 const UPDATE_POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
+const RESCAN_ON_FOCUS_MIN_BLUR: Duration = Duration::from_millis(750);
 
 pub fn run() -> Result<(), Box<dyn Error>> {
     let startup = StartupOptions::load();
@@ -85,6 +86,8 @@ struct NativeApp {
     has_seen_focus: bool,
     skip_next_focus_regain_rescan: bool,
     rescan_on_next_focus: bool,
+    focus_lost_at: Option<Instant>,
+    ime_allowed: Option<bool>,
     tooltip_state: TooltipState,
     #[cfg(feature = "hot-reload")]
     hot_reload_pending: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -119,6 +122,8 @@ impl NativeApp {
             has_seen_focus: false,
             skip_next_focus_regain_rescan: true,
             rescan_on_next_focus: false,
+            focus_lost_at: None,
+            ime_allowed: None,
             tooltip_state: TooltipState::default(),
             #[cfg(feature = "hot-reload")]
             hot_reload_pending: None,
@@ -237,6 +242,8 @@ impl NativeApp {
         self.state.commit_editor.invalidate_font();
         self.state.review_comment_editor.invalidate_font();
         self.state.steering_prompt_editor.invalidate_font();
+        self.state.blank_diff_left_editor.invalidate_font();
+        self.state.blank_diff_right_editor.invalidate_font();
 
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.set_font_settings(&self.font_settings);
@@ -298,11 +305,15 @@ impl NativeApp {
         self.position_traffic_lights();
     }
 
-    fn sync_window_text_input(&self) {
+    fn sync_window_text_input(&mut self) {
         if let Some(window) = self.window.as_ref() {
             // winit disables IME/text input by default. Mirror Diffy's focus state so
             // picker/search fields and the commit editor receive translated text.
-            window.set_ime_allowed(self.state.is_text_focused());
+            let allowed = self.state.is_text_focused();
+            if self.ime_allowed != Some(allowed) {
+                window.set_ime_allowed(allowed);
+                self.ime_allowed = Some(allowed);
+            }
         }
     }
 
@@ -456,6 +467,12 @@ impl NativeApp {
             self.state
                 .steering_prompt_editor
                 .flush(renderer.font_system_mut());
+            self.state
+                .blank_diff_left_editor
+                .flush(renderer.font_system_mut());
+            self.state
+                .blank_diff_right_editor
+                .flush(renderer.font_system_mut());
         }
         self.runtime.dispatch_all(effects);
         self.sync_theme();
@@ -592,7 +609,10 @@ impl ApplicationHandler for NativeApp {
                 event_loop.exit();
             }
             WindowEvent::Focused(true) => {
-                if self.rescan_on_next_focus
+                let blur_duration = self.focus_lost_at.map(|at| at.elapsed());
+                let should_rescan = self.rescan_on_next_focus
+                    && blur_duration.is_none_or(|duration| duration >= RESCAN_ON_FOCUS_MIN_BLUR);
+                if should_rescan
                     && let Some(path) = self.state.compare.repo_path.get(&self.state.store)
                 {
                     self.runtime.dispatch_all(vec![
@@ -606,9 +626,11 @@ impl ApplicationHandler for NativeApp {
                 }
                 self.has_seen_focus = true;
                 self.rescan_on_next_focus = false;
+                self.focus_lost_at = None;
                 self.mark_dirty();
             }
             WindowEvent::Focused(false) => {
+                self.focus_lost_at = Some(Instant::now());
                 if self.has_seen_focus {
                     self.rescan_on_next_focus = !self.skip_next_focus_regain_rescan;
                     self.skip_next_focus_regain_rescan = false;
@@ -648,6 +670,14 @@ impl ApplicationHandler for NativeApp {
                         FocusTarget::SettingsSteeringPrompt,
                         &mut self.state.steering_prompt_editor,
                     ),
+                    (
+                        FocusTarget::BlankDiffLeft,
+                        &mut self.state.blank_diff_left_editor,
+                    ),
+                    (
+                        FocusTarget::BlankDiffRight,
+                        &mut self.state.blank_diff_right_editor,
+                    ),
                 ] {
                     if let Some(ha) = self
                         .ui_frame
@@ -667,10 +697,12 @@ impl ApplicationHandler for NativeApp {
                 }
                 if let Some(renderer) = self.renderer.as_mut() {
                     let time_seconds = self.launch_at.elapsed().as_secs_f32();
-                    let editors: [Option<&crate::editor::Editor>; 3] = [
+                    let editors: [Option<&crate::editor::Editor>; 5] = [
                         Some(&self.state.commit_editor),
                         Some(&self.state.steering_prompt_editor),
                         Some(&self.state.review_comment_editor),
+                        Some(&self.state.blank_diff_left_editor),
+                        Some(&self.state.blank_diff_right_editor),
                     ];
                     match renderer.render(&self.ui_frame.scene, time_seconds, &editors) {
                         Ok(frame) => {

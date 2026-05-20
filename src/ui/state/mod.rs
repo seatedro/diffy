@@ -83,6 +83,9 @@ const SYNTAX_OVERSCAN_ROWS: usize = 160;
 const MAX_PENDING_SYNTAX_WINDOWS: usize = 96;
 const COMPARE_WORKING_SET_MAX_FILES: usize = 96;
 const COMPARE_WORKING_SET_MIN_FILES: usize = 24;
+const BLANK_DIFF_PANEL_DEFAULT_HEIGHT_PX: u32 = 220;
+const BLANK_DIFF_PANEL_MIN_HEIGHT_PX: u32 = 120;
+const BLANK_DIFF_PANEL_MAX_HEIGHT_PX: u32 = 720;
 const COMPARE_WORKING_SET_BYTE_BUDGET: usize = 64 * 1024 * 1024;
 const COMPARE_WORKING_SET_PREFETCH_PAGES: u32 = 3;
 const COMPARE_WORKING_SET_TRAILING_PAGES: u32 = 1;
@@ -274,6 +277,8 @@ pub enum FocusTarget {
     SearchInput,
     CommitEditor,
     ReviewCommentEditor,
+    BlankDiffLeft,
+    BlankDiffRight,
     SettingsOpenAiKey,
     SettingsAnthropicKey,
     SettingsSteeringPrompt,
@@ -289,6 +294,8 @@ impl FocusTarget {
                 | Self::SearchInput
                 | Self::CommitEditor
                 | Self::ReviewCommentEditor
+                | Self::BlankDiffLeft
+                | Self::BlankDiffRight
                 | Self::SettingsOpenAiKey
                 | Self::SettingsAnthropicKey
                 | Self::SettingsSteeringPrompt
@@ -3233,6 +3240,10 @@ pub struct AppState {
     pub commit_editor: Editor,
     pub review_comment_editor: Editor,
     pub steering_prompt_editor: Editor,
+    pub blank_diff_left_editor: Editor,
+    pub blank_diff_right_editor: Editor,
+    pub blank_diff_active: bool,
+    pub blank_diff_panel_height_px: u32,
     pub ai_openai_key: String,
     pub ai_anthropic_key: String,
     pub ai_openai_editing: bool,
@@ -3319,6 +3330,10 @@ impl Default for AppState {
             commit_editor: Editor::default(),
             review_comment_editor: Editor::default(),
             steering_prompt_editor: Editor::default(),
+            blank_diff_left_editor: blank_diff_editor(),
+            blank_diff_right_editor: blank_diff_editor(),
+            blank_diff_active: false,
+            blank_diff_panel_height_px: BLANK_DIFF_PANEL_DEFAULT_HEIGHT_PX,
             ai_openai_key: String::new(),
             ai_anthropic_key: String::new(),
             ai_openai_editing: false,
@@ -3343,6 +3358,13 @@ impl Default for AppState {
             last_continuous_scroll_top_px: None,
         }
     }
+}
+
+fn blank_diff_editor() -> Editor {
+    let mut editor = Editor::default();
+    editor.set_full_document_layout(false);
+    editor.set_wrap_mode(glyphon::Wrap::None);
+    editor
 }
 
 impl AppState {
@@ -3488,6 +3510,10 @@ impl AppState {
             commit_editor: Editor::default(),
             review_comment_editor: Editor::default(),
             steering_prompt_editor: Editor::default(),
+            blank_diff_left_editor: blank_diff_editor(),
+            blank_diff_right_editor: blank_diff_editor(),
+            blank_diff_active: false,
+            blank_diff_panel_height_px: BLANK_DIFF_PANEL_DEFAULT_HEIGHT_PX,
             ai_openai_key: String::new(),
             ai_anthropic_key: String::new(),
             ai_openai_editing: false,
@@ -3716,7 +3742,7 @@ impl AppState {
     }
 
     pub fn cursor_blink_epoch(&self) -> Option<u64> {
-        self.is_text_focused().then(|| {
+        self.cursor_blink_enabled().then(|| {
             self.clock_ms
                 .saturating_sub(self.text_edit.cursor_moved_at_ms.get(&self.store))
                 / CURSOR_BLINK_INTERVAL_MS
@@ -3724,12 +3750,20 @@ impl AppState {
     }
 
     pub fn next_cursor_blink_at_ms(&self) -> Option<u64> {
-        self.is_text_focused().then(|| {
+        self.cursor_blink_enabled().then(|| {
             let moved_at = self.text_edit.cursor_moved_at_ms.get(&self.store);
             let elapsed = self.clock_ms.saturating_sub(moved_at);
             let next_epoch = elapsed / CURSOR_BLINK_INTERVAL_MS + 1;
             moved_at.saturating_add(next_epoch.saturating_mul(CURSOR_BLINK_INTERVAL_MS))
         })
+    }
+
+    fn cursor_blink_enabled(&self) -> bool {
+        self.is_text_focused()
+            && !matches!(
+                self.focus.get(&self.store),
+                Some(FocusTarget::BlankDiffLeft | FocusTarget::BlankDiffRight)
+            )
     }
 
     pub fn next_toast_expiry_at_ms(&self) -> Option<u64> {
@@ -3748,6 +3782,7 @@ impl AppState {
 
     fn open_repository(&mut self, path: PathBuf) -> Vec<Effect> {
         let path = normalize_repository_open_path(path);
+        self.blank_diff_active = false;
         self.workspace_mode.set(&self.store, WorkspaceMode::Loading);
         self.compare.repo_path.set(&self.store, Some(path.clone()));
         self.compare.left_ref.set(&self.store, String::new());
@@ -3830,6 +3865,121 @@ impl AppState {
             .into(),
             RepositoryEffect::WatchRepository { path: Some(path) }.into(),
         ]
+    }
+
+    fn open_blank_diff(&mut self) -> Vec<Effect> {
+        self.blank_diff_active = true;
+        self.compare.repo_path.set(&self.store, None);
+        self.compare
+            .resolved_left
+            .set(&self.store, Some("Left".to_owned()));
+        self.compare
+            .resolved_right
+            .set(&self.store, Some("Right".to_owned()));
+        self.repository.status.set(&self.store, AsyncStatus::Idle);
+        self.repository.location.set(&self.store, None);
+        self.repository.capabilities.set(&self.store, None);
+        self.repository.refs.set(&self.store, Vec::new());
+        self.repository.changes.set(&self.store, Vec::new());
+        self.repository.operation_log.set(&self.store, Vec::new());
+        self.repository.file_changes.set(&self.store, Vec::new());
+        self.repository.publish_plan.set(&self.store, None);
+        self.workspace_clear_compare();
+        self.reset_file_list();
+        self.clear_overlays();
+        self.last_error.set(&self.store, None);
+        self.workspace
+            .source
+            .set(&self.store, WorkspaceSource::Compare);
+        self.workspace.status.set(&self.store, AsyncStatus::Ready);
+        self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
+        self.sidebar_visible.set(&self.store, false);
+        self.compare_progress.set(&self.store, None);
+        self.blank_diff_left_editor.request_clear();
+        self.blank_diff_right_editor.request_clear();
+
+        let mut effects = vec![self.invalidate_syntax_epoch_effect()];
+        effects.extend(self.rebuild_blank_diff(false));
+        self.set_focus(Some(FocusTarget::BlankDiffLeft));
+        effects.push(RepositoryEffect::WatchRepository { path: None }.into());
+        effects
+    }
+
+    fn rebuild_blank_diff(&mut self, preserve_viewport: bool) -> Vec<Effect> {
+        let old_text = self.blank_diff_left_editor.text();
+        let new_text = self.blank_diff_right_editor.text();
+        let output = match crate::core::compare::text::output_from_text_pair(&old_text, &new_text) {
+            Ok(output) => output,
+            Err(error) => {
+                self.push_error(&format!("Could not build text diff: {error}"));
+                return Vec::new();
+            }
+        };
+        let Some(carbon_file) = output.carbon.files.first().cloned() else {
+            return Vec::new();
+        };
+
+        let next_gen = self
+            .workspace
+            .compare_generation
+            .get(&self.store)
+            .saturating_add(1);
+        let path = crate::core::compare::text::BLANK_DIFF_PATH.to_owned();
+        let additions = u32_to_i32_saturating(carbon_file.additions);
+        let deletions = u32_to_i32_saturating(carbon_file.deletions);
+        let prepared = prepare_active_file(0, &carbon_file);
+        let active_file = self.build_active_file(
+            0,
+            path.clone(),
+            prepared,
+            "Left".to_owned(),
+            "Right".to_owned(),
+        );
+
+        self.workspace.compare_generation.set(&self.store, next_gen);
+        self.workspace
+            .compare_total_stats
+            .set(&self.store, Some((additions, deletions)));
+        self.workspace
+            .compare_total_stats_loading
+            .set(&self.store, false);
+        self.set_compare_stats_hydration(CompareStatsHydrationState::Idle);
+        self.workspace
+            .raw_diff_len
+            .set(&self.store, output.raw_diff.len());
+        self.workspace.used_fallback.set(&self.store, false);
+        self.workspace
+            .fallback_message
+            .set(&self.store, String::new());
+        self.workspace.selected_file_index.set(&self.store, Some(0));
+        self.workspace
+            .selected_file_path
+            .set(&self.store, Some(path));
+        self.workspace.selected_change_bucket.set(&self.store, None);
+        self.workspace.active_file_loading.set(&self.store, None);
+        self.workspace.files.set(&self.store, Vec::new());
+        self.workspace.compare_output.set(&self.store, Some(output));
+        if preserve_viewport {
+            self.workspace
+                .file_content_heights
+                .set(&self.store, Vec::new());
+            self.workspace
+                .pending_file_content_heights
+                .set(&self.store, HashMap::new());
+            self.viewport_document_cache = None;
+            self.editor_clamp_scroll();
+        } else {
+            self.clear_file_cache();
+            self.reset_file_scroll_layout();
+            self.editor_clear_document();
+            self.workspace.global_scroll_top_px.set(&self.store, 0);
+        }
+        self.workspace
+            .active_file
+            .set(&self.store, Some(active_file));
+        self.request_active_file_syntax_effect()
+            .into_iter()
+            .collect()
     }
 
     /// Clear the workspace back to a blank "no compare loaded" state. Replaces
@@ -5538,6 +5688,7 @@ impl AppState {
             self.review_comment_editor.request_clear();
         }
 
+        self.blank_diff_active = false;
         self.workspace
             .source
             .set(&self.store, WorkspaceSource::Compare);

@@ -3,9 +3,11 @@ use std::rc::Rc;
 
 use halogen::view;
 
-use crate::render::{Rect, TextMetrics};
+use crate::actions::Action;
+use crate::render::{Rect, RectPrimitive, RoundedRectPrimitive, TextMetrics};
 use crate::ui::components::{self, Button, ButtonStyle, SegmentedControl, SegmentedItem};
 use crate::ui::design::{Alpha, Ico, Rad, Shadow, Sp, Sz};
+use crate::ui::editor_element::{CursorSnapshot, text_editor_element};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
@@ -14,6 +16,38 @@ use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
 
 use crate::core::compare::LayoutMode;
+
+struct BlankDiffResizeDrag {
+    origin_y: f32,
+    starting_height: f32,
+    scale: f32,
+}
+
+impl BlankDiffResizeDrag {
+    fn new(origin_y: f32, starting_height: f32, scale: f32) -> Self {
+        Self {
+            origin_y,
+            starting_height,
+            scale,
+        }
+    }
+}
+
+impl DragHandler for BlankDiffResizeDrag {
+    fn on_move(&mut self, _x: f32, y: f32) -> Vec<Action> {
+        let delta = (y - self.origin_y) / self.scale.max(0.01);
+        let target = (self.starting_height + delta).round().max(0.0) as u32;
+        vec![crate::actions::WorkspaceAction::SetBlankDiffPanelHeightPx(target).into()]
+    }
+
+    fn on_release(&mut self, _state: &AppState) -> DragReleaseResult {
+        DragReleaseResult::empty()
+    }
+
+    fn cursor(&self) -> CursorHint {
+        CursorHint::ResizeRow
+    }
+}
 
 pub(crate) fn main_surface(
     state: &AppState,
@@ -114,10 +148,22 @@ pub(crate) fn main_surface(
             _ => None,
         }
     };
+    let blank_diff_panel = if state.blank_diff_active && !progress_visible {
+        Some(blank_diff_panel(state, theme))
+    } else {
+        None
+    };
+    let blank_diff_resizer = if state.blank_diff_active && !progress_visible {
+        Some(blank_diff_resizer(state, theme))
+    } else {
+        None
+    };
 
     view! { scale,
         <div class="flex-1 flex-col h-full" min_h={0.0} bg={tc.editor_surface}>
             {?toolbar}
+            {?blank_diff_panel}
+            {?blank_diff_resizer}
             {?search}
             {?viewport_canvas}
             {?content}
@@ -429,14 +475,181 @@ fn empty_state(state: &AppState, theme: &Theme) -> AnyElement {
                 </div>
                 {?recent_section}
                 <div pt={Sp::XS}>
-                    <Button action={crate::actions::OverlayAction::OpenRepoPicker.into()}
-                            tooltip={"Open a repository folder"}
-                            style={ButtonStyle::Subtle}>
-                        <Icon>{lucide::FOLDER_OPEN}</Icon>
-                        <Label>{"Open Folder"}</Label>
-                    </Button>
+                    <div class="flex-row" gap={Sp::SM}>
+                        <Button action={crate::actions::OverlayAction::OpenRepoPicker.into()}
+                                tooltip={"Open a repository folder"}
+                                style={ButtonStyle::Subtle}>
+                            <Icon>{lucide::FOLDER_OPEN}</Icon>
+                            <Label>{"Open Folder"}</Label>
+                        </Button>
+                        <Button action={crate::actions::WorkspaceAction::OpenBlankDiff.into()}
+                                tooltip={"Compare two snippets without a repository"}
+                                style={ButtonStyle::Subtle}>
+                            <Icon>{lucide::FILE_DIFF}</Icon>
+                            <Label>{"Open Blank Diff"}</Label>
+                        </Button>
+                    </div>
                 </div>
                 <text class="text-xs" color={tc.text_muted}>{"or drop a folder here"}</text>
+            </div>
+        </div>
+    }
+}
+
+fn blank_diff_panel(state: &AppState, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = theme.metrics.ui_scale();
+    let panel_h = (state.blank_diff_panel_height_px as f32 * scale).round();
+    let left_focused = state.focus.get(&state.store) == Some(FocusTarget::BlankDiffLeft);
+    let right_focused = state.focus.get(&state.store) == Some(FocusTarget::BlankDiffRight);
+
+    let left = blank_diff_editor_pane(
+        "Left",
+        &state.blank_diff_left_editor,
+        FocusTarget::BlankDiffLeft,
+        3,
+        left_focused,
+        theme,
+    );
+    let right = blank_diff_editor_pane(
+        "Right",
+        &state.blank_diff_right_editor,
+        FocusTarget::BlankDiffRight,
+        4,
+        right_focused,
+        theme,
+    );
+
+    view! { scale,
+        <div class="w-full flex-col"
+             h={panel_h}
+             border_b={tc.border_variant}
+             bg={tc.surface}
+             px={Sp::MD} py={Sp::MD}
+             gap={Sp::SM}>
+            <div class="flex-row items-center">
+                <div class="flex-row items-center" gap={Sp::SM}>
+                    <icon svg={lucide::FILE_DIFF} size={Ico::SM} color={tc.text_muted} />
+                    <text class="text-xs font-semibold" color={tc.text_muted}>{"Blank Diff"}</text>
+                </div>
+                <spacer />
+            </div>
+            <div class="flex-row flex-1" min_h={0.0} gap={Sp::MD}>
+                {left}
+                {right}
+            </div>
+        </div>
+    }
+}
+
+fn blank_diff_resizer(state: &AppState, theme: &Theme) -> AnyElement {
+    let tc = theme.colors;
+    let scale = theme.metrics.ui_scale();
+    let handle_h = (Sp::SM * scale).round().max(6.0);
+    let starting_height = state.blank_diff_panel_height_px as f32;
+
+    let handle = canvas(move |bounds, scene, cx| {
+        let hovered = cx
+            .mouse_position
+            .is_some_and(|(mx, my)| bounds.contains(mx, my));
+        cx.push_click_handler(
+            bounds,
+            CursorHint::ResizeRow,
+            ClickHandler::new(move |event| {
+                ClickResult::CaptureDrag(Box::new(BlankDiffResizeDrag::new(
+                    event.y,
+                    starting_height,
+                    scale,
+                )))
+            }),
+        );
+
+        let center_y = bounds.y + bounds.height * 0.5;
+        let line_color = if hovered {
+            tc.border_variant
+        } else {
+            tc.border_variant.with_alpha(Alpha::SOFT)
+        };
+        let thumb_color = if hovered { tc.text_muted } else { tc.border };
+
+        scene.rect(RectPrimitive {
+            rect: Rect {
+                x: bounds.x,
+                y: center_y - 0.5,
+                width: bounds.width,
+                height: 1.0,
+            },
+            color: line_color,
+        });
+        scene.rounded_rect(RoundedRectPrimitive::uniform(
+            Rect {
+                x: bounds.x + (bounds.width - 42.0 * scale).max(0.0) * 0.5,
+                y: center_y - 1.0,
+                width: 42.0 * scale,
+                height: 2.0,
+            },
+            1.0,
+            thumb_color,
+        ));
+    })
+    .flex_1()
+    .h(handle_h);
+
+    view! { scale,
+        <div class="w-full flex-row" h={handle_h}>
+            {handle}
+        </div>
+    }
+}
+
+fn blank_diff_editor_pane(
+    label: &'static str,
+    editor: &crate::editor::Editor,
+    focus_target: FocusTarget,
+    editor_id: u8,
+    focused: bool,
+    theme: &Theme,
+) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = theme.metrics.ui_scale();
+    let cursor = CursorSnapshot {
+        x: editor.cursor_pos.x,
+        y: editor.cursor_pos.y,
+        moved_at_ms: editor.cursor_moved_at_ms,
+    };
+    let editor_el = text_editor_element()
+        .placeholder(label)
+        .is_empty(editor.is_empty())
+        .focused(focused)
+        .focus_target(focus_target)
+        .editor_id(editor_id)
+        .font_size(theme.metrics.mono_font_size)
+        .text_color(tc.text)
+        .cursor(cursor)
+        .selection(editor.selection_rects())
+        .content_height(editor.content_height())
+        .scroll_y(editor.scroll_y)
+        .w_full()
+        .flex_1();
+
+    view! { scale,
+        <div class="flex-1 flex-col"
+             min_w={0.0}
+             rounded={Rad::LG}
+             border={tc.border_variant}
+             bg={tc.editor_surface}
+             @when { focused } { border={tc.accent} }>
+            <div class="shrink-0 flex-row items-center"
+                 h={theme.metrics.ui_row_height.round()}
+                 px={Sp::SM}
+                 border_b={tc.border_variant}>
+                <text class="text-xs font-semibold" color={tc.text_muted}>{label}</text>
+            </div>
+            <div class="flex-1 w-full" min_h={0.0}
+                 px={Sp::SM} py={Sp::SM}
+                 on_click={crate::actions::AppAction::SetFocus(Some(focus_target)).into()}
+                 cursor={CursorHint::Text}>
+                {editor_el}
             </div>
         </div>
     }

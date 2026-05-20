@@ -2203,10 +2203,15 @@ fn append_editor_text_areas<'a>(
             continue;
         };
         let color = es.slot.color;
+        let top = if editor.uses_internal_scroll() {
+            es.slot.rect.y
+        } else {
+            es.slot.rect.y - es.slot.scroll_y
+        };
         text_areas.push(glyphon::TextArea {
             buffer,
             left: es.slot.rect.x,
-            top: es.slot.rect.y - es.slot.scroll_y,
+            top,
             scale: 1.0,
             bounds: glyphon::TextBounds {
                 left: es.clip.x.round() as i32,

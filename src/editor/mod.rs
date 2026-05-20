@@ -30,6 +30,8 @@ pub struct Editor {
     font_size: f32,
     last_width: f32,
     last_height: f32,
+    full_document_layout: bool,
+    wrap: Wrap,
 }
 
 impl Default for Editor {
@@ -48,6 +50,8 @@ impl Default for Editor {
             font_size: 14.0,
             last_width: 0.0,
             last_height: 0.0,
+            full_document_layout: true,
+            wrap: Wrap::WordOrGlyph,
         }
     }
 }
@@ -68,6 +72,8 @@ impl Clone for Editor {
             font_size: self.font_size,
             last_width: self.last_width,
             last_height: self.last_height,
+            full_document_layout: self.full_document_layout,
+            wrap: self.wrap,
         }
     }
 }
@@ -155,6 +161,14 @@ fn next_word_boundary(text: &str, offset: usize) -> usize {
     text.len()
 }
 
+fn normalized_line_endings(value: &str) -> std::borrow::Cow<'_, str> {
+    if value.contains('\r') {
+        std::borrow::Cow::Owned(value.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        std::borrow::Cow::Borrowed(value)
+    }
+}
+
 impl Editor {
     fn line_height(&self) -> f32 {
         self.font_size * LINE_HEIGHT_FACTOR
@@ -162,6 +176,22 @@ impl Editor {
 
     fn metrics(&self) -> Metrics {
         Metrics::new(self.font_size, self.line_height())
+    }
+
+    fn estimated_content_height(&self) -> f32 {
+        if self.wrap == Wrap::None {
+            let lines = self.text.bytes().filter(|b| *b == b'\n').count() + 1;
+            return (lines as f32 * self.line_height()).max(self.line_height());
+        }
+        let wrap_cols = (self.last_width / (self.font_size * 0.6).max(1.0))
+            .floor()
+            .max(1.0) as usize;
+        let visual_lines = self
+            .text
+            .split('\n')
+            .map(|line| line.chars().count().max(1).div_ceil(wrap_cols))
+            .sum::<usize>();
+        (visual_lines as f32 * self.line_height()).max(self.line_height())
     }
 
     fn mark_cursor_moved(&mut self) {
@@ -291,6 +321,61 @@ impl Editor {
             }
         }
         (0.0, y)
+    }
+
+    fn cursor_point_from_layout_runs(&self) -> Option<(f32, f32)> {
+        let buffer = self.buffer.as_ref()?;
+        let (target_line, target_col) = self.global_to_line_col(self.cursor);
+        let y_offset = if self.full_document_layout {
+            0.0
+        } else {
+            self.scroll_y
+        };
+        let mut fallback = None;
+
+        for run in buffer.layout_runs() {
+            if run.line_i != target_line {
+                continue;
+            }
+
+            if run.glyphs.is_empty() && target_col == 0 {
+                return Some((0.0, run.line_top + y_offset));
+            }
+
+            for glyph in run.glyphs {
+                let x = if target_col == glyph.start {
+                    if glyph.level.is_rtl() {
+                        glyph.x + glyph.w
+                    } else {
+                        glyph.x
+                    }
+                } else if target_col > glyph.start && target_col < glyph.end {
+                    let span = (glyph.end - glyph.start).max(1) as f32;
+                    let offset = glyph.w * ((target_col - glyph.start) as f32 / span);
+                    if glyph.level.is_rtl() {
+                        glyph.x + glyph.w - offset
+                    } else {
+                        glyph.x + offset
+                    }
+                } else {
+                    continue;
+                };
+                return Some((x, run.line_top + y_offset));
+            }
+
+            if let Some(last) = run.glyphs.last()
+                && target_col >= last.end
+            {
+                let x = if last.level.is_rtl() {
+                    last.x
+                } else {
+                    last.x + last.w
+                };
+                fallback = Some((x, run.line_top + y_offset));
+            }
+        }
+
+        fallback
     }
 
     fn point_to_offset(&self, px: f32, py: f32) -> usize {
@@ -423,10 +508,28 @@ impl Editor {
         self.dirty = true;
     }
 
+    pub fn set_full_document_layout(&mut self, full_document_layout: bool) {
+        if self.full_document_layout == full_document_layout {
+            return;
+        }
+        self.full_document_layout = full_document_layout;
+        self.buffer = None;
+        self.dirty = true;
+    }
+
+    pub fn set_wrap_mode(&mut self, wrap: Wrap) {
+        if self.wrap == wrap {
+            return;
+        }
+        self.wrap = wrap;
+        self.buffer = None;
+        self.dirty = true;
+    }
+
     fn ensure_init(&mut self, font_system: &mut glyphon::FontSystem) {
         if self.buffer.is_none() {
             let mut buffer = Buffer::new(font_system, self.metrics());
-            buffer.set_wrap(font_system, Wrap::WordOrGlyph);
+            buffer.set_wrap(font_system, self.wrap);
             self.buffer = Some(buffer);
             self.dirty = true;
         }
@@ -443,8 +546,9 @@ impl Editor {
     }
 
     pub fn set_text(&mut self, value: &str) {
+        let value = normalized_line_endings(value);
         self.text.clear();
-        self.text.push_str(value);
+        self.text.push_str(&value);
         self.cursor = self.text.len();
         self.anchor = self.cursor;
         self.scroll_y = 0.0;
@@ -487,8 +591,17 @@ impl Editor {
             let attrs = Attrs::new().family(Family::SansSerif);
             buffer.set_text(font_system, &self.text, &attrs, Shaping::Advanced, None);
         }
-        buffer.shape_until_scroll(font_system, false);
-        let (x, y) = self.offset_to_point(self.cursor);
+        if !self.full_document_layout {
+            buffer.set_scroll(glyphon::cosmic_text::Scroll::new(
+                0,
+                self.scroll_y.max(0.0),
+                0.0,
+            ));
+        }
+        buffer.shape_until_scroll(font_system, !self.full_document_layout);
+        let (x, y) = self
+            .cursor_point_from_layout_runs()
+            .unwrap_or_else(|| self.offset_to_point(self.cursor));
         self.cursor_pos = CursorState { x, y };
         let max_scroll = (self.content_height() - self.last_height).max(0.0);
         self.scroll_y = self.scroll_y.clamp(0.0, max_scroll);
@@ -507,11 +620,8 @@ impl Editor {
     pub fn set_size(&mut self, font_system: &mut glyphon::FontSystem, width: f32, height: f32) {
         self.ensure_init(font_system);
         let buffer = self.buffer.as_mut().unwrap();
-        let _ = height;
-        // Leave buffer height unconstrained so cosmic-text lays out the full
-        // document. The viewport height is tracked separately in `last_height`
-        // for our own scrolling logic.
-        buffer.set_size(font_system, Some(width.max(1.0)), None);
+        let height = (!self.full_document_layout).then_some(height.max(1.0));
+        buffer.set_size(font_system, Some(width.max(1.0)), height);
     }
 
     pub fn text(&self) -> String {
@@ -523,6 +633,9 @@ impl Editor {
     }
 
     pub fn content_height(&self) -> f32 {
+        if !self.full_document_layout {
+            return self.estimated_content_height();
+        }
         let line_height = self.line_height();
         let Some(buffer) = &self.buffer else {
             return line_height;
@@ -636,7 +749,12 @@ impl Editor {
         self.buffer.as_ref()
     }
 
+    pub fn uses_internal_scroll(&self) -> bool {
+        !self.full_document_layout
+    }
+
     pub fn insert_char(&mut self, ch: char) {
+        let ch = if ch == '\r' { '\n' } else { ch };
         self.delete_selection();
         self.text.insert(self.cursor, ch);
         self.cursor += ch.len_utf8();
@@ -651,8 +769,9 @@ impl Editor {
     }
 
     pub fn insert_text(&mut self, s: &str) {
+        let s = normalized_line_endings(s);
         self.delete_selection();
-        self.text.insert_str(self.cursor, s);
+        self.text.insert_str(self.cursor, &s);
         self.cursor += s.len();
         self.anchor = self.cursor;
         self.dirty = true;

@@ -3,6 +3,7 @@ pub mod progress;
 pub mod service;
 pub mod spec;
 pub mod stats;
+pub mod text;
 
 pub use progress::{ComparePhase, ProgressSink};
 pub use service::{CompareOutput, CompareService};

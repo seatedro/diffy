@@ -194,6 +194,14 @@ fn text_field_key_actions(
                 Some(vec![TextEditAction::InsertText("\n".to_owned()).into()])
             }
         }
+        Some(NamedKey::Enter)
+            if matches!(
+                target,
+                FocusTarget::BlankDiffLeft | FocusTarget::BlankDiffRight
+            ) =>
+        {
+            Some(vec![TextEditAction::InsertText("\n".to_owned()).into()])
+        }
         Some(NamedKey::Enter) if target == FocusTarget::SearchInput => {
             Some(vec![if chord.shift() {
                 EditorAction::SearchPrevious.into()
@@ -208,7 +216,31 @@ fn text_field_key_actions(
                 TextEditAction::CursorUp.into()
             }])
         }
+        Some(NamedKey::ArrowUp)
+            if matches!(
+                target,
+                FocusTarget::BlankDiffLeft | FocusTarget::BlankDiffRight
+            ) =>
+        {
+            Some(vec![if chord.shift() {
+                TextEditAction::SelectUp.into()
+            } else {
+                TextEditAction::CursorUp.into()
+            }])
+        }
         Some(NamedKey::ArrowDown) if target == FocusTarget::CommitEditor => {
+            Some(vec![if chord.shift() {
+                TextEditAction::SelectDown.into()
+            } else {
+                TextEditAction::CursorDown.into()
+            }])
+        }
+        Some(NamedKey::ArrowDown)
+            if matches!(
+                target,
+                FocusTarget::BlankDiffLeft | FocusTarget::BlankDiffRight
+            ) =>
+        {
             Some(vec![if chord.shift() {
                 TextEditAction::SelectDown.into()
             } else {
@@ -286,6 +318,8 @@ fn text_field_key_actions(
             if matches!(
                 target,
                 FocusTarget::CommitEditor
+                    | FocusTarget::BlankDiffLeft
+                    | FocusTarget::BlankDiffRight
                     | FocusTarget::SettingsOpenAiKey
                     | FocusTarget::SettingsAnthropicKey
                     | FocusTarget::SettingsSteeringPrompt

@@ -128,6 +128,12 @@ impl AppState {
                     Some(FocusTarget::ReviewCommentEditor) => {
                         self.review_comment_editor.click(x, y);
                     }
+                    Some(FocusTarget::BlankDiffLeft) => {
+                        self.blank_diff_left_editor.click(x, y);
+                    }
+                    Some(FocusTarget::BlankDiffRight) => {
+                        self.blank_diff_right_editor.click(x, y);
+                    }
                     _ => {
                         self.commit_editor.click(x, y);
                     }
@@ -142,6 +148,12 @@ impl AppState {
                     Some(FocusTarget::ReviewCommentEditor) => {
                         self.review_comment_editor.drag(x, y);
                     }
+                    Some(FocusTarget::BlankDiffLeft) => {
+                        self.blank_diff_left_editor.drag(x, y);
+                    }
+                    Some(FocusTarget::BlankDiffRight) => {
+                        self.blank_diff_right_editor.drag(x, y);
+                    }
                     _ => {
                         self.commit_editor.drag(x, y);
                     }
@@ -155,6 +167,12 @@ impl AppState {
                     }
                     Some(FocusTarget::ReviewCommentEditor) => {
                         self.review_comment_editor.scroll(delta as f32);
+                    }
+                    Some(FocusTarget::BlankDiffLeft) => {
+                        self.blank_diff_left_editor.scroll(delta as f32);
+                    }
+                    Some(FocusTarget::BlankDiffRight) => {
+                        self.blank_diff_right_editor.scroll(delta as f32);
                     }
                     _ => {
                         self.commit_editor.scroll(delta as f32);

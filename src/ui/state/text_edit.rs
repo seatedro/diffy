@@ -395,6 +395,12 @@ impl AppState {
         if self.focus.get(&self.store) == Some(FocusTarget::ReviewCommentEditor) {
             return self.apply_review_comment_editor_action(action);
         }
+        if matches!(
+            self.focus.get(&self.store),
+            Some(FocusTarget::BlankDiffLeft | FocusTarget::BlankDiffRight)
+        ) {
+            return self.apply_blank_diff_editor_action(action);
+        }
         if self.focus.get(&self.store) == Some(FocusTarget::SettingsSteeringPrompt) {
             return self.apply_steering_prompt_action(action);
         }
@@ -580,6 +586,138 @@ impl AppState {
             _ => {}
         }
         Vec::new()
+    }
+
+    fn apply_blank_diff_editor_action(&mut self, action: TextEditAction) -> Vec<Effect> {
+        use TextEditAction::*;
+        let focus = self.focus.get(&self.store);
+        let Some(editor) = (match focus {
+            Some(FocusTarget::BlankDiffLeft) => Some(&mut self.blank_diff_left_editor),
+            Some(FocusTarget::BlankDiffRight) => Some(&mut self.blank_diff_right_editor),
+            _ => None,
+        }) else {
+            return Vec::new();
+        };
+
+        let mut changed = true;
+        match action {
+            InsertText(value) => editor.insert_text(&value),
+            Backspace => editor.delete_backward(),
+            BackspaceWord => editor.delete_backward_word(),
+            BackspaceLine => editor.delete_backward_line(),
+            DeleteForward => editor.delete_forward(),
+            DeleteForwardWord => editor.delete_forward_word(),
+            CursorLeft => {
+                editor.move_left(false);
+                changed = false;
+            }
+            CursorRight => {
+                editor.move_right(false);
+                changed = false;
+            }
+            CursorUp => {
+                editor.move_up(false);
+                changed = false;
+            }
+            CursorDown => {
+                editor.move_down(false);
+                changed = false;
+            }
+            CursorWordLeft => {
+                editor.move_word_left(false);
+                changed = false;
+            }
+            CursorWordRight => {
+                editor.move_word_right(false);
+                changed = false;
+            }
+            CursorHome => {
+                editor.move_home(false);
+                changed = false;
+            }
+            CursorEnd => {
+                editor.move_end(false);
+                changed = false;
+            }
+            CursorSoftHome => {
+                editor.move_soft_home(false);
+                changed = false;
+            }
+            CursorSoftEnd => {
+                editor.move_soft_end(false);
+                changed = false;
+            }
+            SelectLeft => {
+                editor.move_left(true);
+                changed = false;
+            }
+            SelectRight => {
+                editor.move_right(true);
+                changed = false;
+            }
+            SelectUp => {
+                editor.move_up(true);
+                changed = false;
+            }
+            SelectDown => {
+                editor.move_down(true);
+                changed = false;
+            }
+            SelectWordLeft => {
+                editor.move_word_left(true);
+                changed = false;
+            }
+            SelectWordRight => {
+                editor.move_word_right(true);
+                changed = false;
+            }
+            SelectHome => {
+                editor.move_home(true);
+                changed = false;
+            }
+            SelectEnd => {
+                editor.move_end(true);
+                changed = false;
+            }
+            SelectSoftHome => {
+                editor.move_soft_home(true);
+                changed = false;
+            }
+            SelectSoftEnd => {
+                editor.move_soft_end(true);
+                changed = false;
+            }
+            SelectAll => {
+                editor.select_all();
+                changed = false;
+            }
+            Copy => {
+                changed = false;
+                if let Some(text) = editor.selected_text()
+                    && let Ok(mut clipboard) = arboard::Clipboard::new()
+                {
+                    let _ = clipboard.set_text(text);
+                }
+            }
+            Cut => {
+                if let Some(text) = editor.selected_text() {
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        let _ = clipboard.set_text(text);
+                    }
+                    editor.delete_backward();
+                } else {
+                    changed = false;
+                }
+            }
+            Paste(value) => editor.insert_text(&value),
+            _ => changed = false,
+        }
+
+        if changed {
+            self.rebuild_blank_diff(true)
+        } else {
+            Vec::new()
+        }
     }
 
     fn apply_steering_prompt_action(&mut self, action: TextEditAction) -> Vec<Effect> {

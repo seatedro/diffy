@@ -37,6 +37,7 @@ pub struct UiFrame {
     pub file_list_rect: Option<Rect>,
     pub sidebar_resize_handle_rect: Option<Rect>,
     pub viewport_rect: Option<Rect>,
+    pub viewport_document: Option<ViewportDocument>,
 }
 
 pub fn build_ui_frame(
@@ -221,6 +222,10 @@ pub fn build_ui_frame(
         root = root.child(overlay);
     }
 
+    if let Some(menu) = state.context_menu.render(theme) {
+        root = root.child(menu);
+    }
+
     if let Some(edges) = window_chrome::resize_edges(width, height) {
         root = root.child(edges);
     }
@@ -296,6 +301,7 @@ pub fn build_ui_frame(
     let mut scene = Scene::default();
     render_element(&mut root, &mut scene, cx, width, height);
     let mut scrollbar_tracks = std::mem::take(&mut cx.scrollbar_tracks);
+    let mut input_viewport_document = None;
 
     if state.is_workspace_ready() {
         if let Some(vp_bounds) = viewport_bounds.get() {
@@ -720,6 +726,7 @@ pub fn build_ui_frame(
                     action_builder,
                 });
             }
+            input_viewport_document = viewport_document.clone();
         }
     }
 
@@ -742,6 +749,7 @@ pub fn build_ui_frame(
         file_list_rect: file_list_rect.or_else(|| file_list_bounds.get()),
         sidebar_resize_handle_rect: sidebar_resize_bounds.get(),
         viewport_rect: viewport_bounds.get(),
+        viewport_document: input_viewport_document,
     }
 }
 

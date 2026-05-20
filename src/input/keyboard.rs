@@ -6,6 +6,8 @@ use crate::actions::{
     RepositoryAction, SettingsAction, TextEditAction, UpdateAction, WorkspaceAction,
 };
 use crate::core::vcs::model::RefKind;
+use crate::ui::editor::element::EditorElement;
+use crate::ui::shell::UiFrame;
 use crate::ui::state::{
     AppState, AppView, FocusTarget, OverlaySurface, SettingsSection, SidebarTab, WorkspaceMode,
     WorkspaceSource,
@@ -26,13 +28,23 @@ impl InputSystem {
         }
     }
 
-    pub(super) fn route_key_press(&mut self, state: &AppState, chord: KeyChord) -> InputOutcome {
+    pub(super) fn route_key_press(
+        &mut self,
+        state: &AppState,
+        ui_frame: &UiFrame,
+        editor: &EditorElement,
+        chord: KeyChord,
+    ) -> InputOutcome {
         if let Some(actions) = keymap_capture_actions(state, &chord) {
             return InputOutcome::actions(actions);
         }
 
         if chord.logical_char() != Some("g") {
             self.pending_g = false;
+        }
+
+        if state.context_menu.visible && chord.named() == Some(NamedKey::Escape) {
+            return InputOutcome::action(AppAction::CloseContextMenu.into());
         }
 
         if let Some(action) = global_shortcut_action(state, &chord) {
@@ -44,6 +56,11 @@ impl InputSystem {
             && let Some(action) = clipboard_shortcut_action(&chord)
         {
             return InputOutcome::action(action);
+        }
+        if let Some(actions) =
+            viewport_clipboard_shortcut_actions(state, ui_frame, editor, &ctx, &chord)
+        {
+            return InputOutcome::actions(actions);
         }
 
         let actions = match ctx.owner {
@@ -59,6 +76,32 @@ impl InputSystem {
 
         InputOutcome::actions(actions.unwrap_or_default())
     }
+}
+
+fn viewport_clipboard_shortcut_actions(
+    state: &AppState,
+    ui_frame: &UiFrame,
+    editor: &EditorElement,
+    ctx: &InputContext,
+    chord: &KeyChord,
+) -> Option<Vec<Action>> {
+    if !chord.ctrl_or_super() || chord.logical_char()?.to_ascii_lowercase() != "c" {
+        return None;
+    }
+    if !matches!(ctx.owner, InputOwner::Editor | InputOwner::Workspace) {
+        return None;
+    }
+    let document = ui_frame.viewport_document.as_ref()?;
+    let selection = state.editor.text_selection.get(&state.store)?;
+    if selection.generation != document.generation {
+        return None;
+    }
+    let text = editor.viewport_selection_text(document.doc.as_ref(), &selection)?;
+    let mut actions = vec![AppAction::CopyText(text).into()];
+    if state.context_menu.visible {
+        actions.push(AppAction::CloseContextMenu.into());
+    }
+    Some(actions)
 }
 
 fn global_shortcut_action(state: &AppState, chord: &KeyChord) -> Option<Action> {
@@ -966,4 +1009,82 @@ pub(super) fn key_text_from_key_event(
         return None;
     }
     Some(text.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use winit::keyboard::ModifiersState;
+
+    use super::*;
+    use crate::input::KeyKind;
+    use crate::ui::editor::element::EditorElement;
+    use crate::ui::editor::render_doc::{ByteRange, RenderDoc, RenderLine, RenderRowKind};
+    use crate::ui::editor::state::{ViewportTextPoint, ViewportTextSelection, ViewportTextSide};
+    use crate::ui::shell::UiFrame;
+    use crate::ui::state::ViewportDocument;
+
+    #[test]
+    fn viewport_copy_shortcut_copies_current_text_selection() {
+        let state = AppState::default();
+        state.focus.set(&state.store, Some(FocusTarget::Editor));
+        state.editor.text_selection.set(
+            &state.store,
+            Some(ViewportTextSelection {
+                generation: 7,
+                anchor: ViewportTextPoint {
+                    line_index: 0,
+                    side: ViewportTextSide::Right,
+                    byte_offset: 1,
+                },
+                focus: ViewportTextPoint {
+                    line_index: 0,
+                    side: ViewportTextSide::Right,
+                    byte_offset: 4,
+                },
+            }),
+        );
+        let doc = Arc::new(RenderDoc {
+            file_metadata: Vec::new(),
+            text_bytes: b"alpha".to_vec(),
+            style_runs: Vec::new(),
+            lines: vec![RenderLine {
+                kind: RenderRowKind::Context as u8,
+                old_line_no: 1,
+                new_line_no: 1,
+                right_text: ByteRange { start: 0, len: 5 },
+                right_cols: 5,
+                ..RenderLine::default()
+            }],
+        });
+        let ui_frame = UiFrame {
+            viewport_document: Some(ViewportDocument::single(doc, 7, 0, "demo.txt".to_owned())),
+            ..UiFrame::default()
+        };
+        let chord = KeyChord {
+            logical: KeyKind::Character("c".to_owned()),
+            physical: None,
+            modifiers: ModifiersState::CONTROL,
+            repeat: false,
+        };
+        let ctx = InputContext {
+            owner: InputOwner::Editor,
+            overlay: None,
+            focus: Some(FocusTarget::Editor),
+            workspace_mode: WorkspaceMode::Ready,
+            ime_active: false,
+        };
+
+        let actions = viewport_clipboard_shortcut_actions(
+            &state,
+            &ui_frame,
+            &EditorElement::default(),
+            &ctx,
+            &chord,
+        )
+        .expect("copy action");
+
+        assert_eq!(actions, vec![AppAction::CopyText("lph".to_owned()).into()]);
+    }
 }

@@ -294,6 +294,7 @@ pub struct InputSystem {
     modifiers: ModifiersState,
     mouse_position: Option<(f32, f32)>,
     mouse_drag_target: Option<FocusTarget>,
+    viewport_text_drag_active: bool,
     pointer_capture: Option<Box<dyn DragHandler>>,
     file_list_scroll_remainder_px: f32,
     overlay_scroll_remainder_px: f32,
@@ -309,6 +310,7 @@ impl Default for InputSystem {
             modifiers: ModifiersState::default(),
             mouse_position: None,
             mouse_drag_target: None,
+            viewport_text_drag_active: false,
             pointer_capture: None,
             file_list_scroll_remainder_px: 0.0,
             overlay_scroll_remainder_px: 0.0,
@@ -467,7 +469,7 @@ impl InputSystem {
     ) -> InputOutcome {
         match event {
             InputEvent::TextInput(text) => self.route_text_input(state, text),
-            InputEvent::KeyPress(chord) => self.route_key_press(state, chord),
+            InputEvent::KeyPress(chord) => self.route_key_press(state, ui_frame, editor, chord),
             InputEvent::KeyRelease(chord) => {
                 if chord.logical_char() != Some("g") {
                     self.pending_g = false;
@@ -498,6 +500,15 @@ impl InputSystem {
                 button: MouseButton::Left,
                 state: ElementState::Released,
             } => self.handle_left_release(state),
+            InputEvent::PointerButton {
+                button: MouseButton::Right,
+                state: ElementState::Pressed,
+            } => {
+                let Some((x, y)) = self.mouse_position else {
+                    return InputOutcome::default();
+                };
+                self.handle_right_click(state, ui_frame, editor, x, y)
+            }
             InputEvent::PointerButton { .. } => InputOutcome::default(),
             InputEvent::Wheel { delta, phase } => {
                 self.handle_wheel(state, ui_frame, editor, delta, phase)
@@ -506,6 +517,7 @@ impl InputSystem {
                 if !focused {
                     self.pending_g = false;
                     self.mouse_drag_target = None;
+                    self.viewport_text_drag_active = false;
                     self.pointer_capture = None;
                     self.ime_composing = false;
                 }

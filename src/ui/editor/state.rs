@@ -18,6 +18,56 @@ pub enum MatchSide {
     Right,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ViewportTextSide {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ViewportTextPoint {
+    pub line_index: u32,
+    pub side: ViewportTextSide,
+    pub byte_offset: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewportTextSelection {
+    pub generation: u64,
+    pub anchor: ViewportTextPoint,
+    pub focus: ViewportTextPoint,
+}
+
+impl ViewportTextSelection {
+    pub fn new(generation: u64, point: ViewportTextPoint) -> Self {
+        Self {
+            generation,
+            anchor: point,
+            focus: point,
+        }
+    }
+
+    pub fn normalized(&self) -> (ViewportTextPoint, ViewportTextPoint) {
+        if self.anchor <= self.focus {
+            (self.anchor, self.focus)
+        } else {
+            (self.focus, self.anchor)
+        }
+    }
+
+    pub fn is_collapsed(&self) -> bool {
+        self.anchor == self.focus
+    }
+
+    pub fn contains_point(&self, point: ViewportTextPoint) -> bool {
+        if self.is_collapsed() {
+            return false;
+        }
+        let (start, end) = self.normalized();
+        point >= start && point <= end
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Store)]
 pub struct SearchState {
     pub open: bool,
@@ -58,6 +108,7 @@ pub struct EditorState {
     pub search: SearchState,
     pub search_match_y_positions: Vec<u32>,
     pub line_selection: LineSelection,
+    pub text_selection: Option<ViewportTextSelection>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -132,6 +183,7 @@ impl Default for EditorState {
             search: SearchState::default(),
             search_match_y_positions: Vec::new(),
             line_selection: LineSelection::default(),
+            text_selection: None,
         }
     }
 }
@@ -149,6 +201,7 @@ impl EditorState {
         self.file_positions.clear();
         self.search_match_y_positions.clear();
         self.line_selection.clear();
+        self.text_selection = None;
     }
 
     pub fn max_scroll_top_px(&self) -> u32 {

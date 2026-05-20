@@ -33,6 +33,14 @@ impl AppState {
                 self.push_info("Copied to clipboard.");
                 vec![UiEffect::SetClipboard(text).into()]
             }
+            AppAction::OpenContextMenu { entries, x, y } => {
+                self.context_menu.open(entries, x as f32, y as f32);
+                Vec::new()
+            }
+            AppAction::CloseContextMenu => {
+                self.context_menu.close();
+                Vec::new()
+            }
             AppAction::DismissToast(index) => {
                 self.toasts.update(&self.store, |toasts| {
                     if index < toasts.len() {

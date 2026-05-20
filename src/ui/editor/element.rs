@@ -22,7 +22,7 @@ use super::render_doc::{
     RenderRowKind, RunRange, STYLE_FLAG_CHANGE, STYLE_FLAG_UNCHANGED_CTX, StyleRun,
     advance_display_col,
 };
-use super::state::EditorState;
+use super::state::{EditorState, ViewportTextPoint, ViewportTextSelection, ViewportTextSide};
 use super::strip_layout::{StripLayout, build_strip_layouts, visible_strip_range};
 
 const BASE_VIEWPORT_PADDING: f32 = 14.0;
@@ -243,6 +243,34 @@ impl CachedTextLayout {
             .saturating_sub(1);
         self.col_boundaries.get(idx).copied().unwrap_or(0)
     }
+
+    fn byte_for_col_nearest(&self, col: f32) -> u32 {
+        let Some(&last_byte) = self.char_boundaries.last() else {
+            return 0;
+        };
+        let Some(&last_col) = self.col_boundaries.last() else {
+            return 0;
+        };
+        if col <= 0.0 {
+            return 0;
+        }
+        if col >= last_col as f32 {
+            return last_byte;
+        }
+
+        let upper = self
+            .col_boundaries
+            .partition_point(|boundary| (*boundary as f32) < col)
+            .min(self.col_boundaries.len().saturating_sub(1));
+        let lower = upper.saturating_sub(1);
+        let lower_col = self.col_boundaries[lower] as f32;
+        let upper_col = self.col_boundaries[upper] as f32;
+        if (col - lower_col).abs() <= (upper_col - col).abs() {
+            self.char_boundaries[lower]
+        } else {
+            self.char_boundaries[upper]
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,6 +307,18 @@ struct FileHeaderHit {
     y_px: u32,
     h_px: u16,
     path: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TextBlock {
+    line_index: u32,
+    side: ViewportTextSide,
+    text_range: ByteRange,
+    text_x: f32,
+    text_width: f32,
+    y: f32,
+    segment_count: u16,
+    segment_cols: u16,
 }
 
 impl Default for EditorElement {
@@ -737,6 +777,7 @@ impl EditorElement {
                 );
             }
             EditorDocument::Text {
+                compare_generation,
                 path,
                 doc,
                 show_file_headers,
@@ -750,6 +791,7 @@ impl EditorElement {
                 self.paint_inline_change_backgrounds(scene, theme, doc);
                 self.paint_line_highlights(scene, theme);
                 self.paint_line_selection(scene, theme, _state, doc);
+                self.paint_viewport_text_selection(scene, theme, _state, doc, compare_generation);
                 self.paint_search_highlights(scene, theme, _state, doc);
                 self.paint_gutter_diff_indicators(scene, theme, doc);
                 self.paint_gutter_decorations(scene, theme);
@@ -905,6 +947,209 @@ impl EditorElement {
             }
         }
         None
+    }
+
+    pub fn hit_test_text_point(
+        &self,
+        state: &EditorState,
+        doc: &RenderDoc,
+        x: f32,
+        y: f32,
+    ) -> Option<ViewportTextPoint> {
+        let row_index = self.hit_test_row(state, x, y)?;
+        let display_row = self.rows.get(row_index).copied()?;
+        if display_row.is_block() {
+            return None;
+        }
+        let line = doc.lines.get(display_row.line_index as usize)?;
+        if !line.row_kind().is_body() {
+            return None;
+        }
+        let row_rect = self.row_rect_for(&display_row);
+        let blocks = self.text_blocks_for_line(line, &display_row, row_rect);
+        blocks
+            .into_iter()
+            .flatten()
+            .filter(|block| {
+                let bottom = block.y + block.segment_count.max(1) as f32 * self.layout.line_height;
+                y >= block.y && y < bottom
+            })
+            .min_by(|a, b| {
+                distance_to_text_block_x(*a, x)
+                    .partial_cmp(&distance_to_text_block_x(*b, x))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|block| {
+                let text = doc.line_text(block.text_range);
+                let layout = CachedTextLayout::new(text);
+                let segment = ((y - block.y) / self.layout.line_height.max(1.0))
+                    .floor()
+                    .max(0.0) as u32;
+                let segment = segment.min(u32::from(block.segment_count.max(1).saturating_sub(1)));
+                let local_col =
+                    ((x - block.text_x) / self.text_metrics.mono_char_width_px.max(1.0)).max(0.0);
+                let col = local_col + segment.saturating_mul(u32::from(block.segment_cols)) as f32;
+                ViewportTextPoint {
+                    line_index: block.line_index,
+                    side: block.side,
+                    byte_offset: layout.byte_for_col_nearest(col),
+                }
+            })
+    }
+
+    pub fn viewport_selection_text(
+        &self,
+        doc: &RenderDoc,
+        selection: &ViewportTextSelection,
+    ) -> Option<String> {
+        if selection.is_collapsed() {
+            return None;
+        }
+        let mut copied = String::new();
+        let (start, end) = selection.normalized();
+        for line_index in start.line_index..=end.line_index {
+            let Some(line) = doc.lines.get(line_index as usize) else {
+                continue;
+            };
+            for (side, range) in text_side_ranges_for_line(self.layout.split_mode, line)
+                .into_iter()
+                .flatten()
+            {
+                let text = doc.line_text(range);
+                let Some((byte_start, byte_end)) =
+                    selection_byte_range_for_side(selection, line_index, side, text)
+                else {
+                    continue;
+                };
+                if byte_end <= byte_start {
+                    continue;
+                }
+                if !copied.is_empty() {
+                    copied.push('\n');
+                }
+                copied.push_str(&text[byte_start..byte_end]);
+            }
+        }
+        (!copied.is_empty()).then_some(copied)
+    }
+
+    pub fn viewport_line_text_at_point(
+        &self,
+        doc: &RenderDoc,
+        point: ViewportTextPoint,
+    ) -> Option<String> {
+        let line = doc.lines.get(point.line_index as usize)?;
+        let range = match point.side {
+            ViewportTextSide::Left => line.left_text,
+            ViewportTextSide::Right => line.right_text,
+        };
+        range.is_valid().then(|| doc.line_text(range).to_owned())
+    }
+
+    fn text_blocks_for_line(
+        &self,
+        line: &RenderLine,
+        display_row: &DisplayRow,
+        row_rect: Rect,
+    ) -> [Option<TextBlock>; 2] {
+        let mut blocks = [None, None];
+        let mut next = 0_usize;
+        let mut push_block = |block: TextBlock| {
+            if next < blocks.len() {
+                blocks[next] = Some(block);
+                next += 1;
+            }
+        };
+
+        let line_height = self.layout.line_height;
+        if self.layout.split_mode {
+            let segment_cols = self.render_cols_split();
+            if line.left_text.is_valid() {
+                push_block(TextBlock {
+                    line_index: display_row.line_index,
+                    side: ViewportTextSide::Left,
+                    text_range: line.left_text,
+                    text_x: self.layout.left_text_rect.x,
+                    text_width: self.layout.left_text_rect.width,
+                    y: row_rect.y,
+                    segment_count: if self.config.wrap_enabled {
+                        display_row.wrap_left.max(1)
+                    } else {
+                        1
+                    },
+                    segment_cols,
+                });
+            }
+            if line.right_text.is_valid() {
+                push_block(TextBlock {
+                    line_index: display_row.line_index,
+                    side: ViewportTextSide::Right,
+                    text_range: line.right_text,
+                    text_x: self.layout.right_text_rect.x,
+                    text_width: self.layout.right_text_rect.width,
+                    y: row_rect.y,
+                    segment_count: if self.config.wrap_enabled {
+                        display_row.wrap_right.max(1)
+                    } else {
+                        1
+                    },
+                    segment_cols,
+                });
+            }
+            return blocks;
+        }
+
+        let segment_cols = self.render_cols_unified();
+        if line.row_kind() == RenderRowKind::Modified
+            && line.left_text.is_valid()
+            && line.right_text.is_valid()
+        {
+            let left_segments = if self.config.wrap_enabled {
+                display_row.wrap_left.max(1)
+            } else {
+                1
+            };
+            push_block(TextBlock {
+                line_index: display_row.line_index,
+                side: ViewportTextSide::Left,
+                text_range: line.left_text,
+                text_x: self.layout.unified_text_rect.x,
+                text_width: self.layout.unified_text_rect.width,
+                y: row_rect.y,
+                segment_count: left_segments,
+                segment_cols,
+            });
+            push_block(TextBlock {
+                line_index: display_row.line_index,
+                side: ViewportTextSide::Right,
+                text_range: line.right_text,
+                text_x: self.layout.unified_text_rect.x,
+                text_width: self.layout.unified_text_rect.width,
+                y: row_rect.y + left_segments as f32 * line_height,
+                segment_count: if self.config.wrap_enabled {
+                    display_row.wrap_right.max(1)
+                } else {
+                    1
+                },
+                segment_cols,
+            });
+        } else if let Some((side, text_range, _, _)) = unified_body_side_with_side(line) {
+            push_block(TextBlock {
+                line_index: display_row.line_index,
+                side,
+                text_range,
+                text_x: self.layout.unified_text_rect.x,
+                text_width: self.layout.unified_text_rect.width,
+                y: row_rect.y,
+                segment_count: if self.config.wrap_enabled {
+                    display_row.wrap_left.max(1)
+                } else {
+                    1
+                },
+                segment_cols,
+            });
+        }
+        blocks
     }
 
     fn paint_gutter_backgrounds(&self, scene: &mut Scene, theme: &Theme) {
@@ -1358,6 +1603,85 @@ impl EditorElement {
                 },
                 color: theme.colors.accent,
             });
+        }
+    }
+
+    fn paint_viewport_text_selection(
+        &mut self,
+        scene: &mut Scene,
+        theme: &Theme,
+        state: &EditorState,
+        doc: &RenderDoc,
+        generation: u64,
+    ) {
+        let Some(selection) = state.text_selection.as_ref() else {
+            return;
+        };
+        if selection.generation != generation || selection.is_collapsed() {
+            return;
+        }
+
+        let char_w = self.text_metrics.mono_char_width_px;
+        let line_height = self.layout.line_height;
+        let color = theme.colors.selection_bg;
+
+        for row_index in self.layout.visible_row_range.iter() {
+            let Some(display_row) = self.rows.get(row_index).copied() else {
+                continue;
+            };
+            if display_row.is_block() {
+                continue;
+            }
+            let Some(line) = doc.lines.get(display_row.line_index as usize).copied() else {
+                continue;
+            };
+            if !line.row_kind().is_body() {
+                continue;
+            }
+            let row_rect = self.row_rect_for(&display_row);
+            if !self.row_in_viewport(&row_rect) {
+                continue;
+            }
+
+            for block in self.text_blocks_for_line(&line, &display_row, row_rect) {
+                let Some(block) = block else {
+                    continue;
+                };
+                let text = doc.line_text(block.text_range);
+                let Some((byte_start, byte_end)) =
+                    selection_byte_range_for_side(selection, block.line_index, block.side, text)
+                else {
+                    continue;
+                };
+                if byte_end <= byte_start {
+                    continue;
+                }
+
+                let text_layout = self.cached_text_layout(doc, block.text_range);
+                let col_start = text_layout.col_for_byte(byte_start);
+                let col_end = text_layout.col_for_byte(byte_end);
+                if col_end <= col_start {
+                    continue;
+                }
+                let visible_segments = self.visible_segment_range(block.y, block.segment_count);
+                if visible_segments.is_empty() {
+                    continue;
+                }
+                paint_column_range_rects(
+                    scene,
+                    col_start,
+                    col_end,
+                    block.text_x,
+                    block.y,
+                    block.text_width,
+                    char_w,
+                    line_height,
+                    block.segment_cols,
+                    visible_segments,
+                    color,
+                    None,
+                );
+            }
         }
     }
 
@@ -2230,6 +2554,93 @@ fn line_selection_contains_line(
             && selection.contains(hunk_id, carbon::DiffSide::New, line.new_line_index as u32))
 }
 
+fn distance_to_text_block_x(block: TextBlock, x: f32) -> f32 {
+    if x < block.text_x {
+        block.text_x - x
+    } else if x > block.text_x + block.text_width {
+        x - (block.text_x + block.text_width)
+    } else {
+        0.0
+    }
+}
+
+fn text_side_ranges_for_line(
+    split_mode: bool,
+    line: &RenderLine,
+) -> [Option<(ViewportTextSide, ByteRange)>; 2] {
+    let mut ranges = [None, None];
+    if !line.row_kind().is_body() {
+        return ranges;
+    }
+    let mut next = 0_usize;
+    let mut push = |side, range: ByteRange| {
+        if range.is_valid() && next < ranges.len() {
+            ranges[next] = Some((side, range));
+            next += 1;
+        }
+    };
+
+    if split_mode {
+        push(ViewportTextSide::Left, line.left_text);
+        push(ViewportTextSide::Right, line.right_text);
+    } else if line.row_kind() == RenderRowKind::Modified
+        && line.left_text.is_valid()
+        && line.right_text.is_valid()
+    {
+        push(ViewportTextSide::Left, line.left_text);
+        push(ViewportTextSide::Right, line.right_text);
+    } else if let Some((side, range, _, _)) = unified_body_side_with_side(line) {
+        push(side, range);
+    }
+    ranges
+}
+
+fn selection_byte_range_for_side(
+    selection: &ViewportTextSelection,
+    line_index: u32,
+    side: ViewportTextSide,
+    text: &str,
+) -> Option<(usize, usize)> {
+    let (start, end) = selection.normalized();
+    let text_len = text.len();
+    let text_len_u32 = text_len.min(u32::MAX as usize) as u32;
+    let side_start = ViewportTextPoint {
+        line_index,
+        side,
+        byte_offset: 0,
+    };
+    let side_end = ViewportTextPoint {
+        line_index,
+        side,
+        byte_offset: text_len_u32,
+    };
+    if side_end <= start || side_start >= end {
+        return None;
+    }
+
+    let byte_start = if start.line_index == line_index && start.side == side {
+        start.byte_offset.min(text_len_u32)
+    } else {
+        0
+    };
+    let byte_end = if end.line_index == line_index && end.side == side {
+        end.byte_offset.min(text_len_u32)
+    } else {
+        text_len_u32
+    };
+    let byte_start = previous_char_boundary(text, byte_start as usize);
+    let byte_end = previous_char_boundary(text, byte_end as usize);
+    (byte_end > byte_start).then_some((byte_start, byte_end))
+}
+
+fn previous_char_boundary(text: &str, byte: usize) -> usize {
+    let mut byte = byte.min(text.len());
+    while byte > 0 && !text.is_char_boundary(byte) {
+        byte -= 1;
+    }
+    byte
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum RowTone {
     Neutral,
@@ -2426,20 +2837,47 @@ fn format_line_number_string(line_no: u32, digits: u32) -> String {
     }
 }
 
-fn unified_body_side(line: &RenderLine) -> Option<(ByteRange, RunRange, RowTone)> {
+fn unified_body_side_with_side(
+    line: &RenderLine,
+) -> Option<(ViewportTextSide, ByteRange, RunRange, RowTone)> {
     let structural = line.flags & RENDER_FLAG_STRUCTURAL != 0;
     match line.row_kind() {
-        RenderRowKind::Context => Some((line.right_text, line.right_runs, RowTone::Neutral)),
-        RenderRowKind::Added if structural => {
-            Some((line.right_text, line.right_runs, RowTone::Neutral))
-        }
-        RenderRowKind::Added => Some((line.right_text, line.right_runs, RowTone::Added)),
-        RenderRowKind::Removed if structural => {
-            Some((line.left_text, line.left_runs, RowTone::Neutral))
-        }
-        RenderRowKind::Removed => Some((line.left_text, line.left_runs, RowTone::Removed)),
+        RenderRowKind::Context => Some((
+            ViewportTextSide::Right,
+            line.right_text,
+            line.right_runs,
+            RowTone::Neutral,
+        )),
+        RenderRowKind::Added if structural => Some((
+            ViewportTextSide::Right,
+            line.right_text,
+            line.right_runs,
+            RowTone::Neutral,
+        )),
+        RenderRowKind::Added => Some((
+            ViewportTextSide::Right,
+            line.right_text,
+            line.right_runs,
+            RowTone::Added,
+        )),
+        RenderRowKind::Removed if structural => Some((
+            ViewportTextSide::Left,
+            line.left_text,
+            line.left_runs,
+            RowTone::Neutral,
+        )),
+        RenderRowKind::Removed => Some((
+            ViewportTextSide::Left,
+            line.left_text,
+            line.left_runs,
+            RowTone::Removed,
+        )),
         _ => None,
     }
+}
+
+fn unified_body_side(line: &RenderLine) -> Option<(ByteRange, RunRange, RowTone)> {
+    unified_body_side_with_side(line).map(|(_, text, runs, tone)| (text, runs, tone))
 }
 
 fn tone_for_left_side(line: &RenderLine) -> RowTone {
@@ -2876,7 +3314,9 @@ mod tests {
     use crate::ui::editor::render_doc::{
         ByteRange, RenderDoc, RenderLine, RenderRowKind, RunRange,
     };
-    use crate::ui::editor::state::EditorState;
+    use crate::ui::editor::state::{
+        EditorState, ViewportTextPoint, ViewportTextSelection, ViewportTextSide,
+    };
     use crate::ui::theme::Theme;
 
     #[test]
@@ -3117,6 +3557,190 @@ mod tests {
         assert_eq!(
             runtime.hit_test_row(&state, body.x + 20.0, body.y + 5.0),
             Some(0)
+        );
+    }
+
+    #[test]
+    fn hit_test_text_point_maps_viewport_columns_to_line_bytes() {
+        let mut state = EditorState {
+            layout: LayoutMode::Unified,
+            ..EditorState::default()
+        };
+        let doc = RenderDoc {
+            file_metadata: Vec::new(),
+            text_bytes: b"hello".to_vec(),
+            style_runs: Vec::new(),
+            lines: vec![RenderLine {
+                kind: RenderRowKind::Context as u8,
+                old_line_no: 1,
+                new_line_no: 1,
+                right_text: ByteRange { start: 0, len: 5 },
+                right_cols: 5,
+                ..RenderLine::default()
+            }],
+        };
+        let mut runtime = EditorElement::default();
+        runtime.prepare(
+            &mut state,
+            EditorDocument::Text {
+                compare_generation: 1,
+                file_index: 0,
+                path: "demo.txt",
+                doc: &doc,
+                show_file_headers: false,
+            },
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 600.0,
+            },
+            TextMetrics::default(),
+        );
+
+        let x =
+            runtime.layout.unified_text_rect.x + TextMetrics::default().mono_char_width_px * 3.1;
+        let y = runtime.body_bounds().y + runtime.layout.line_height * 0.5;
+        let point = runtime
+            .hit_test_text_point(&state, &doc, x, y)
+            .expect("text point");
+
+        assert_eq!(
+            point,
+            ViewportTextPoint {
+                line_index: 0,
+                side: ViewportTextSide::Right,
+                byte_offset: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn viewport_selection_text_copies_visible_line_segments() {
+        let doc = RenderDoc {
+            file_metadata: Vec::new(),
+            text_bytes: b"alphaBRAVO".to_vec(),
+            style_runs: Vec::new(),
+            lines: vec![
+                RenderLine {
+                    kind: RenderRowKind::Context as u8,
+                    old_line_no: 1,
+                    new_line_no: 1,
+                    right_text: ByteRange { start: 0, len: 5 },
+                    right_cols: 5,
+                    ..RenderLine::default()
+                },
+                RenderLine {
+                    kind: RenderRowKind::Context as u8,
+                    old_line_no: 2,
+                    new_line_no: 2,
+                    right_text: ByteRange { start: 5, len: 5 },
+                    right_cols: 5,
+                    ..RenderLine::default()
+                },
+            ],
+        };
+        let selection = ViewportTextSelection {
+            generation: 7,
+            anchor: ViewportTextPoint {
+                line_index: 0,
+                side: ViewportTextSide::Right,
+                byte_offset: 1,
+            },
+            focus: ViewportTextPoint {
+                line_index: 1,
+                side: ViewportTextSide::Right,
+                byte_offset: 3,
+            },
+        };
+        let runtime = EditorElement::default();
+
+        assert_eq!(
+            runtime.viewport_selection_text(&doc, &selection).as_deref(),
+            Some("lpha\nBRA")
+        );
+    }
+
+    #[test]
+    fn viewport_text_selection_paints_square_rectangles() {
+        use crate::render::{Primitive, Scene};
+
+        let mut state = EditorState {
+            layout: LayoutMode::Unified,
+            text_selection: Some(ViewportTextSelection {
+                generation: 1,
+                anchor: ViewportTextPoint {
+                    line_index: 0,
+                    side: ViewportTextSide::Right,
+                    byte_offset: 1,
+                },
+                focus: ViewportTextPoint {
+                    line_index: 1,
+                    side: ViewportTextSide::Right,
+                    byte_offset: 4,
+                },
+            }),
+            ..EditorState::default()
+        };
+        let doc = RenderDoc {
+            file_metadata: Vec::new(),
+            text_bytes: b"alphabravo".to_vec(),
+            style_runs: Vec::new(),
+            lines: vec![
+                RenderLine {
+                    kind: RenderRowKind::Context as u8,
+                    old_line_no: 1,
+                    new_line_no: 1,
+                    right_text: ByteRange { start: 0, len: 5 },
+                    right_cols: 5,
+                    ..RenderLine::default()
+                },
+                RenderLine {
+                    kind: RenderRowKind::Context as u8,
+                    old_line_no: 2,
+                    new_line_no: 2,
+                    right_text: ByteRange { start: 5, len: 5 },
+                    right_cols: 5,
+                    ..RenderLine::default()
+                },
+            ],
+        };
+        let mut runtime = EditorElement::default();
+        let document = EditorDocument::Text {
+            compare_generation: 1,
+            file_index: 0,
+            path: "demo.txt",
+            doc: &doc,
+            show_file_headers: false,
+        };
+        runtime.prepare(
+            &mut state,
+            document,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 600.0,
+            },
+            TextMetrics::default(),
+        );
+
+        let theme = Theme::default_dark();
+        let selection_bg = theme.colors.selection_bg;
+        let mut scene = Scene::default();
+        runtime.paint(&mut scene, &theme, &state, document);
+
+        assert!(
+            scene
+                .primitives
+                .iter()
+                .any(|p| matches!(p, Primitive::Rect(r) if r.color == selection_bg))
+        );
+        assert!(
+            !scene
+                .primitives
+                .iter()
+                .any(|p| matches!(p, Primitive::RoundedRect(r) if r.color == selection_bg))
         );
     }
 

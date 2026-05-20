@@ -4,8 +4,67 @@ use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 use crate::core::vcs::model::{PublishAction, VcsOperation};
 use crate::input::ShortcutCommand;
 use crate::platform::secrets::AiKeyKind;
+use crate::ui::editor::state::ViewportTextPoint;
 use crate::ui::state::{CompareField, FocusTarget, SettingsSection, SidebarTab};
 use crate::ui::theme::ThemeMode;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContextMenuEntry {
+    Item {
+        label: String,
+        icon: Option<&'static str>,
+        action: Action,
+        shortcut: Option<String>,
+        destructive: bool,
+        disabled: bool,
+    },
+    Separator,
+}
+
+impl ContextMenuEntry {
+    pub fn item(label: impl Into<String>, action: Action) -> Self {
+        Self::Item {
+            label: label.into(),
+            icon: None,
+            action,
+            shortcut: None,
+            destructive: false,
+            disabled: false,
+        }
+    }
+
+    pub fn icon(mut self, svg: &'static str) -> Self {
+        if let Self::Item { icon, .. } = &mut self {
+            *icon = Some(svg);
+        }
+        self
+    }
+
+    pub fn shortcut(mut self, s: impl Into<String>) -> Self {
+        if let Self::Item { shortcut, .. } = &mut self {
+            *shortcut = Some(s.into());
+        }
+        self
+    }
+
+    pub fn destructive(mut self) -> Self {
+        if let Self::Item { destructive, .. } = &mut self {
+            *destructive = true;
+        }
+        self
+    }
+
+    pub fn disabled(mut self) -> Self {
+        if let Self::Item { disabled, .. } = &mut self {
+            *disabled = true;
+        }
+        self
+    }
+
+    pub fn separator() -> Self {
+        Self::Separator
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppAction {
@@ -13,6 +72,12 @@ pub enum AppAction {
     OpenRepositoryDialog,
     SetFocus(Option<FocusTarget>),
     CopyText(String),
+    OpenContextMenu {
+        entries: Vec<ContextMenuEntry>,
+        x: i32,
+        y: i32,
+    },
+    CloseContextMenu,
     DismissToast(usize),
     HoverToast(Option<usize>),
     Noop,
@@ -148,6 +213,12 @@ pub enum EditorAction {
     EditorClick(i32, i32),
     EditorDrag(i32, i32),
     EditorScrollPx(i32),
+    BeginViewportTextSelection {
+        point: ViewportTextPoint,
+        generation: u64,
+    },
+    ExtendViewportTextSelection(ViewportTextPoint),
+    ClearViewportTextSelection,
     ExpandContextAbove(usize, u32),
     ExpandContextBelow(usize, u32),
     ExpandAllContext,

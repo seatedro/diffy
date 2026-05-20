@@ -4,12 +4,14 @@ use std::time::Instant;
 use winit::window::{CursorIcon, Window};
 
 use crate::actions::{
-    AppAction, EditorAction, FileListAction, OverlayAction, RepositoryAction, TextEditAction,
+    AppAction, ContextMenuEntry, EditorAction, FileListAction, OverlayAction, RepositoryAction,
+    TextEditAction,
 };
 use crate::render::Renderer;
 use crate::ui::components::{TooltipSide, TooltipState};
 use crate::ui::editor::element::EditorElement;
 use crate::ui::element::{ClickEvent, ClickResult, DragHandler, HitIdentity};
+use crate::ui::icons::lucide;
 use crate::ui::shell::UiFrame;
 use crate::ui::state::{AppState, FocusTarget, WorkspaceSource};
 
@@ -25,6 +27,10 @@ impl InputSystem {
         x: f32,
         y: f32,
     ) -> InputOutcome {
+        if state.context_menu.visible {
+            return self.handle_context_menu_left_click(state, ui_frame, x, y);
+        }
+
         if let Some(track) = ui_frame
             .scrollbar_tracks
             .iter()
@@ -113,7 +119,10 @@ impl InputSystem {
             .is_some_and(|rect| rect.contains(x, y))
         {
             if let Some(path) = editor.file_header_path_at(x, y) {
-                let mut actions = vec![EditorAction::FocusViewport.into()];
+                let mut actions = vec![
+                    EditorAction::FocusViewport.into(),
+                    EditorAction::ClearViewportTextSelection.into(),
+                ];
                 if self.modifiers.super_key() || self.modifiers.control_key() {
                     actions.push(AppAction::CopyText(path).into());
                 } else {
@@ -130,6 +139,7 @@ impl InputSystem {
                 return InputOutcome::actions(vec![
                     EditorAction::FocusViewport.into(),
                     EditorAction::HoverViewportRow(hovered).into(),
+                    EditorAction::ClearViewportTextSelection.into(),
                     block_action,
                 ]);
             }
@@ -150,6 +160,7 @@ impl InputSystem {
                         return InputOutcome::actions(vec![
                             EditorAction::FocusViewport.into(),
                             EditorAction::HoverViewportRow(hovered).into(),
+                            EditorAction::ClearViewportTextSelection.into(),
                         ]);
                     }
                     let line_idx =
@@ -165,6 +176,7 @@ impl InputSystem {
                     let mut actions = vec![
                         EditorAction::FocusViewport.into(),
                         EditorAction::HoverViewportRow(hovered).into(),
+                        EditorAction::ClearViewportTextSelection.into(),
                     ];
                     if is_hunk_sep && single_file_status_actions {
                         let is_staged = matches!(
@@ -198,13 +210,155 @@ impl InputSystem {
                     return InputOutcome::actions(actions);
                 }
             }
+            if let Some(document) = ui_frame.viewport_document.as_ref()
+                && !editor.is_gutter_hit(x, y)
+                && let Some(point) =
+                    editor.hit_test_text_point(&editor_snap, document.doc.as_ref(), x, y)
+            {
+                self.viewport_text_drag_active = true;
+                return InputOutcome::actions(vec![
+                    EditorAction::FocusViewport.into(),
+                    EditorAction::HoverViewportRow(hovered).into(),
+                    EditorAction::BeginViewportTextSelection {
+                        point,
+                        generation: document.generation,
+                    }
+                    .into(),
+                ]);
+            }
             return InputOutcome::actions(vec![
                 EditorAction::FocusViewport.into(),
                 EditorAction::HoverViewportRow(hovered).into(),
+                EditorAction::ClearViewportTextSelection.into(),
             ]);
         }
 
         InputOutcome::default()
+    }
+
+    pub(super) fn handle_right_click(
+        &mut self,
+        state: &AppState,
+        ui_frame: &UiFrame,
+        editor: &EditorElement,
+        x: f32,
+        y: f32,
+    ) -> InputOutcome {
+        self.mouse_drag_target = None;
+        self.viewport_text_drag_active = false;
+
+        if input_is_blocked_by_overlay(state, ui_frame, x, y)
+            || !ui_frame
+                .viewport_rect
+                .is_some_and(|rect| rect.contains(x, y))
+            || editor.is_gutter_hit(x, y)
+        {
+            return if state.context_menu.visible {
+                InputOutcome::action(AppAction::CloseContextMenu.into())
+            } else {
+                InputOutcome::default()
+            };
+        }
+
+        let Some(document) = ui_frame.viewport_document.as_ref() else {
+            return if state.context_menu.visible {
+                InputOutcome::action(AppAction::CloseContextMenu.into())
+            } else {
+                InputOutcome::default()
+            };
+        };
+
+        let editor_snap = state.editor.snapshot(&state.store);
+        let Some(point) = editor.hit_test_text_point(&editor_snap, document.doc.as_ref(), x, y)
+        else {
+            return if state.context_menu.visible {
+                InputOutcome::action(AppAction::CloseContextMenu.into())
+            } else {
+                InputOutcome::default()
+            };
+        };
+
+        let active_selection = state
+            .editor
+            .text_selection
+            .get(&state.store)
+            .filter(|selection| {
+                selection.generation == document.generation && selection.contains_point(point)
+            });
+        let selected_text = active_selection
+            .as_ref()
+            .and_then(|selection| editor.viewport_selection_text(document.doc.as_ref(), selection));
+
+        let (copy_label, copy_text) = if let Some(text) = selected_text {
+            ("Copy", text)
+        } else {
+            (
+                "Copy Line",
+                editor
+                    .viewport_line_text_at_point(document.doc.as_ref(), point)
+                    .unwrap_or_default(),
+            )
+        };
+
+        let copy_entry = if copy_text.is_empty() {
+            ContextMenuEntry::item(copy_label, crate::actions::Action::Noop)
+                .icon(lucide::COPY)
+                .disabled()
+        } else {
+            ContextMenuEntry::item(copy_label, AppAction::CopyText(copy_text).into())
+                .icon(lucide::COPY)
+        };
+
+        let mut actions = vec![EditorAction::FocusViewport.into()];
+        if active_selection.is_none() {
+            actions.push(
+                EditorAction::BeginViewportTextSelection {
+                    point,
+                    generation: document.generation,
+                }
+                .into(),
+            );
+        }
+        actions.push(
+            AppAction::OpenContextMenu {
+                entries: vec![copy_entry],
+                x: x.round() as i32,
+                y: y.round() as i32,
+            }
+            .into(),
+        );
+        InputOutcome::actions(actions)
+    }
+
+    fn handle_context_menu_left_click(
+        &mut self,
+        state: &AppState,
+        ui_frame: &UiFrame,
+        x: f32,
+        y: f32,
+    ) -> InputOutcome {
+        if !state.context_menu.contains(x, y) {
+            return InputOutcome::action(AppAction::CloseContextMenu.into());
+        }
+
+        let mut actions = Vec::new();
+        if let Some(idx) = ui_frame
+            .hits
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(i, hit)| hit.rect.contains(x, y).then_some(i))
+        {
+            match ui_frame.hits[idx].on_click.invoke(ClickEvent { x, y }) {
+                ClickResult::Handled => {}
+                ClickResult::Actions(handler_actions) => actions.extend(handler_actions),
+                ClickResult::CaptureDrag(drag) => {
+                    self.pointer_capture = Some(drag);
+                }
+            }
+        }
+        actions.push(AppAction::CloseContextMenu.into());
+        InputOutcome::actions(actions)
     }
 
     pub(super) fn handle_pointer_moved(
@@ -244,6 +398,17 @@ impl InputSystem {
                     x - hit_area.text_x,
                 );
                 actions.push(TextEditAction::ExtendTextSelection(byte_offset).into());
+            }
+        }
+
+        if self.viewport_text_drag_active
+            && let Some(document) = ui_frame.viewport_document.as_ref()
+        {
+            let editor_snap = state.editor.snapshot(&state.store);
+            if let Some(point) =
+                editor.hit_test_text_point(&editor_snap, document.doc.as_ref(), x, y)
+            {
+                actions.push(EditorAction::ExtendViewportTextSelection(point).into());
             }
         }
 
@@ -372,6 +537,7 @@ impl InputSystem {
             outcome.dirty = true;
         }
         self.mouse_drag_target = None;
+        self.viewport_text_drag_active = false;
         outcome
     }
 }

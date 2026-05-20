@@ -162,6 +162,27 @@ impl AppState {
                 }
                 Vec::new()
             }
+            BeginViewportTextSelection { point, generation } => {
+                self.editor.text_selection.set(
+                    &self.store,
+                    Some(crate::ui::editor::state::ViewportTextSelection::new(
+                        generation, point,
+                    )),
+                );
+                Vec::new()
+            }
+            ExtendViewportTextSelection(point) => {
+                self.editor.text_selection.update(&self.store, |selection| {
+                    if let Some(selection) = selection {
+                        selection.focus = point;
+                    }
+                });
+                Vec::new()
+            }
+            ClearViewportTextSelection => {
+                self.editor.text_selection.set(&self.store, None);
+                Vec::new()
+            }
             ExpandContextAbove(hunk_index, amount) => self.expand_context(
                 hunk_index,
                 crate::ui::editor::expansion::ExpandDirection::Above,

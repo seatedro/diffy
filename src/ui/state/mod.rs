@@ -60,6 +60,7 @@ use crate::fonts::{FontFamilyEntry, FontRole};
 use crate::platform::persistence::{PersistedCompare, Settings};
 use crate::platform::secrets::AiKeyKind;
 use crate::platform::startup::StartupOptions;
+use crate::ui::components::ContextMenuState;
 use crate::ui::design::{Sp, Sz};
 use crate::ui::editor::render_doc::{
     CarbonStyleOverlays, RenderDoc, build_placeholder_render_doc, build_render_doc_from_carbon,
@@ -3225,6 +3226,7 @@ pub struct AppState {
     pub toasts: Signal<Vec<Toast>>,
     pub syntax_pack_installs: Signal<Vec<String>>,
     pub update: Signal<UpdateState>,
+    pub context_menu: ContextMenuState,
     /// Memoized: `true` when `focus` targets a text-editing field.
     pub text_focused: Signal<bool>,
     pub animation: crate::ui::animation::AnimationState,
@@ -3311,6 +3313,7 @@ impl Default for AppState {
             toasts,
             syntax_pack_installs,
             update,
+            context_menu: ContextMenuState::default(),
             text_focused,
             animation: crate::ui::animation::AnimationState::default(),
             commit_editor: Editor::default(),
@@ -3479,6 +3482,7 @@ impl AppState {
             toasts,
             syntax_pack_installs,
             update,
+            context_menu: ContextMenuState::default(),
             text_focused,
             animation: crate::ui::animation::AnimationState::default(),
             commit_editor: Editor::default(),
@@ -3746,6 +3750,9 @@ impl AppState {
         let path = normalize_repository_open_path(path);
         self.workspace_mode.set(&self.store, WorkspaceMode::Loading);
         self.compare.repo_path.set(&self.store, Some(path.clone()));
+        self.compare.left_ref.set(&self.store, String::new());
+        self.compare.right_ref.set(&self.store, String::new());
+        self.compare.mode.set(&self.store, CompareMode::default());
         self.compare.resolved_left.set(&self.store, None);
         self.compare.resolved_right.set(&self.store, None);
         self.repository
@@ -10709,6 +10716,8 @@ impl AppState {
         self.editor
             .line_selection
             .update(&self.store, |ls| ls.clear());
+        self.editor.text_selection.set(&self.store, None);
+        self.context_menu.close();
     }
 
     pub fn editor_max_scroll_top_px(&self) -> u32 {
@@ -11211,7 +11220,7 @@ mod tests {
     };
     use crate::effects::{
         AiEffect, CompareEffect, CompareWorkPriority, Effect, GitHubEffect, RepositoryEffect,
-        SyntaxEffect,
+        SettingsEffect, SyntaxEffect,
     };
     use crate::events::{
         AppEvent, CompareEvent, CompareFileFinished, CompareStatsReady, GitHubEvent,
@@ -13152,6 +13161,68 @@ diff --git a/src/lib.rs b/src/lib.rs
             progress.reveal_at_ms, 10_500,
             "re-open with prior diff delays reveal by COMPARE_REVEAL_DELAY_MS"
         );
+    }
+
+    #[test]
+    fn open_repository_resets_stale_compare_refs_before_snapshot() {
+        let mut state = AppState::default();
+        state.compare.left_ref.set(&state.store, "@-".to_owned());
+        state.compare.right_ref.set(&state.store, "@".to_owned());
+        state.compare.mode.set(&state.store, CompareMode::TwoDot);
+
+        let path = PathBuf::from("/tmp/git-repo");
+        let effects = state.open_repository(path.clone());
+
+        assert_eq!(state.compare.left_ref.get(&state.store), "");
+        assert_eq!(state.compare.right_ref.get(&state.store), "");
+        assert_eq!(state.compare.mode.get(&state.store), CompareMode::default());
+        let saved = effects.iter().find_map(|effect| match effect {
+            Effect::Settings(SettingsEffect::SaveSettings(settings)) => {
+                settings.last_compare.as_ref()
+            }
+            _ => None,
+        });
+        let saved = saved.expect("open_repository should persist settings");
+        assert_eq!(saved.repo_path.as_ref(), Some(&path));
+        assert_eq!(saved.left_ref, "");
+        assert_eq!(saved.right_ref, "");
+    }
+
+    #[test]
+    fn git_snapshot_after_jj_refs_uses_git_defaults() {
+        let mut state = AppState::default();
+        state.compare.left_ref.set(&state.store, "@-".to_owned());
+        state.compare.right_ref.set(&state.store, "@".to_owned());
+        state.compare.mode.set(&state.store, CompareMode::TwoDot);
+
+        let path = PathBuf::from("/tmp/git-repo");
+        let _ = state.open_repository(path.clone());
+        state.apply_event(AppEvent::from(RepositoryEvent::RepositorySnapshotReady(
+            crate::events::RepositorySnapshot::from_vcs_snapshot(
+                crate::core::vcs::model::VcsSnapshot {
+                    location: RepoLocation {
+                        kind: VcsKind::GIT,
+                        profile: crate::core::vcs::model::VCS_PROFILE_GIT,
+                        workspace_root: path,
+                        store_root: None,
+                    },
+                    reason: RepositorySyncReason::Open,
+                    change_kind: None,
+                    capabilities: RepoCapabilities::git(),
+                    refs: Vec::new(),
+                    changes: Vec::new(),
+                    operation_log: Vec::new(),
+                    file_changes: Vec::new(),
+                },
+            ),
+        )));
+
+        let (left, right, mode) =
+            crate::ui::vcs::profile(state.repository.location.get(&state.store).as_ref())
+                .default_compare();
+        assert_eq!(state.compare.left_ref.get(&state.store), left);
+        assert_eq!(state.compare.right_ref.get(&state.store), right);
+        assert_eq!(state.compare.mode.get(&state.store), mode);
     }
 
     #[test]

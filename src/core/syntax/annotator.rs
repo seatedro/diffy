@@ -1,6 +1,7 @@
 use crate::core::syntax::Highlighter;
 use crate::core::text::DiffTokenSpan;
-use carbon::{LineId, TextStore};
+use carbon::{LineId, TextByteRange, TextStore};
+use phosphor::ParsedSyntax;
 
 #[derive(Debug, Clone, Copy)]
 struct LineRef {
@@ -62,6 +63,13 @@ impl FullFileSyntax {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct SyntaxTextSource<'a> {
+    pub path: &'a str,
+    pub text: &'a TextStore,
+    pub parsed: Option<&'a ParsedSyntax>,
+}
+
 #[derive(Debug)]
 pub struct DiffSyntaxAnnotator {
     highlighter: Highlighter,
@@ -111,6 +119,46 @@ impl DiffSyntaxAnnotator {
         }
     }
 
+    pub fn parse_text_store(&self, path: &str, text: &TextStore) -> Option<ParsedSyntax> {
+        let language = self.highlighter.resolve_language(path);
+        match self.highlighter.parse_text_store_resolved(language, text) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                tracing::warn!(
+                    path = %path,
+                    ?language,
+                    %error,
+                    "syntax parse failed"
+                );
+                None
+            }
+        }
+    }
+
+    pub fn annotate_carbon_window_from_text_cache(
+        &self,
+        file: &carbon::FileDiff,
+        expansion: &carbon::ExpansionState,
+        file_index: usize,
+        old_source: Option<SyntaxTextSource<'_>>,
+        new_source: Option<SyntaxTextSource<'_>>,
+        window: SyntaxRowWindow,
+    ) -> Vec<SyntaxLineTokens> {
+        if file.is_binary || window.end <= window.start {
+            return Vec::new();
+        }
+
+        let (old_refs, new_refs) = build_carbon_full_file_refs(file, expansion, file_index, window);
+        let mut out = Vec::new();
+        if let Some(source) = old_source {
+            out.extend(self.annotate_text_source_ranges(source, &old_refs));
+        }
+        if let Some(source) = new_source {
+            out.extend(self.annotate_text_source_ranges(source, &new_refs));
+        }
+        out
+    }
+
     pub fn annotate_carbon_full_file_window_from_cache(
         &self,
         file: &carbon::FileDiff,
@@ -135,6 +183,45 @@ impl DiffSyntaxAnnotator {
             out.extend(collect_line_tokens(&syntax.tokens, &byte_refs));
         }
         out
+    }
+
+    fn annotate_text_source_ranges(
+        &self,
+        source: SyntaxTextSource<'_>,
+        refs: &[LineRef],
+    ) -> Vec<SyntaxLineTokens> {
+        if refs.is_empty() {
+            return Vec::new();
+        }
+
+        let (byte_refs, ranges) = byte_refs_and_ranges_for_text_refs(refs, source.text);
+        if ranges.is_empty() {
+            return Vec::new();
+        }
+
+        let tokens = if let Some(parsed) = source.parsed {
+            self.highlighter
+                .highlight_text_store_ranges_with_parse(parsed, source.text, &ranges)
+        } else {
+            let Some(text) = source.text.as_str() else {
+                return Vec::new();
+            };
+            let language = self.highlighter.resolve_language(source.path);
+            self.highlighter
+                .highlight_resolved_ranges(language, text, &ranges)
+        };
+
+        match tokens {
+            Ok(tokens) => collect_line_tokens(&tokens, &byte_refs),
+            Err(error) => {
+                tracing::warn!(
+                    path = %source.path,
+                    %error,
+                    "syntax range highlight failed"
+                );
+                Vec::new()
+            }
+        }
     }
 }
 
@@ -230,6 +317,30 @@ fn byte_refs_for_cached_refs(refs: &[LineRef], syntax: &FullFileSyntax) -> Vec<L
             })
         })
         .collect()
+}
+
+fn byte_refs_and_ranges_for_text_refs(
+    refs: &[LineRef],
+    text: &TextStore,
+) -> (Vec<LineRef>, Vec<TextByteRange>) {
+    let mut byte_refs = Vec::with_capacity(refs.len());
+    let mut ranges = Vec::with_capacity(refs.len());
+    for reference in refs {
+        let line_index = reference.content_offset;
+        let Some(range) = text.line_range(LineId(usize_to_u32_saturating(line_index))) else {
+            continue;
+        };
+        ranges.push(range);
+        byte_refs.push(LineRef {
+            hunk_index: reference.hunk_index,
+            line_index: reference.line_index,
+            side: reference.side,
+            source_index: reference.source_index,
+            content_offset: u32_to_usize_saturating(range.start),
+            content_len: u32_to_usize_saturating(range.len),
+        });
+    }
+    (byte_refs, ranges)
 }
 
 fn usize_to_u32_saturating(value: usize) -> u32 {

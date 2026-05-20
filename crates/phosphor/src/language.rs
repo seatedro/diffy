@@ -12,7 +12,9 @@ use tree_sitter::StreamingIterator;
 use carbon::{TextByteRange, u32_to_usize_saturating, usize_to_u32_saturating};
 
 use crate::error::{PhosphorError, Result};
-use crate::{HighlightKind, HighlightLineBuffer, HighlightSpan, LanguageId, LanguageMetadata};
+use crate::{
+    HighlightKind, HighlightLineBuffer, HighlightSpan, LanguageId, LanguageMetadata, ParsedSyntax,
+};
 
 #[derive(Debug)]
 struct CompiledLanguage {
@@ -140,6 +142,16 @@ pub(crate) fn highlight(language: LanguageId, source: &str) -> Result<Vec<Highli
     compact_spans(language, raw_spans)
 }
 
+pub(crate) fn parse(language: LanguageId, source: &str) -> Result<ParsedSyntax> {
+    if !is_parser_available(language) {
+        return Err(PhosphorError::MissingParser { language });
+    }
+
+    let compiled = compiled_language(language)?;
+    let tree = parse_source(&compiled, source)?;
+    Ok(ParsedSyntax { language, tree })
+}
+
 pub(crate) fn highlight_text_ranges(
     language: LanguageId,
     source: &str,
@@ -161,6 +173,24 @@ pub(crate) fn highlight_text_ranges(
     let tree = parse_source(&compiled, source)?;
     let raw_spans = collect_spans_in_ranges(&compiled, &tree, source, &ranges);
     compact_spans(language, raw_spans)
+}
+
+pub(crate) fn highlight_text_ranges_with_parse(
+    parsed: &ParsedSyntax,
+    source: &str,
+    byte_ranges: &[TextByteRange],
+) -> Result<Vec<HighlightSpan>> {
+    if source.is_empty() || byte_ranges.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ranges = merged_text_ranges(byte_ranges, source.len());
+    if ranges.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let compiled = compiled_language(parsed.language)?;
+    let raw_spans = collect_spans_in_ranges(&compiled, &parsed.tree, source, &ranges);
+    compact_spans(parsed.language, raw_spans)
 }
 
 pub(crate) fn highlight_text_lines(

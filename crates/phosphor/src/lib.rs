@@ -14,7 +14,7 @@ pub use error::{PhosphorError, Result};
 pub use pack::PackInstaller;
 pub use types::{
     HighlightKind, HighlightLine, HighlightLineBuffer, HighlightSpan, HighlightSpanRange,
-    LanguageId, LanguageMetadata,
+    LanguageId, LanguageMetadata, ParsedSyntax,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -75,6 +75,25 @@ impl Highlighter {
     ) -> Result<Vec<HighlightSpan>> {
         let source = text.as_str().ok_or(PhosphorError::InvalidUtf8)?;
         language::highlight_text_ranges(language, source, byte_ranges)
+    }
+
+    pub fn parse_text_store_language(
+        &self,
+        language: LanguageId,
+        text: &TextStore,
+    ) -> Result<ParsedSyntax> {
+        let source = text.as_str().ok_or(PhosphorError::InvalidUtf8)?;
+        language::parse(language, source)
+    }
+
+    pub fn highlight_text_store_language_ranges_with_parse(
+        &self,
+        parsed: &ParsedSyntax,
+        text: &TextStore,
+        byte_ranges: &[TextByteRange],
+    ) -> Result<Vec<HighlightSpan>> {
+        let source = text.as_str().ok_or(PhosphorError::InvalidUtf8)?;
+        language::highlight_text_ranges_with_parse(parsed, source, byte_ranges)
     }
 
     pub fn highlight_text_store_language_lines(

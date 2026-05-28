@@ -17,6 +17,10 @@ pub enum AccessibilityAction {
     Focus(FocusTarget),
     TextValue(FocusTarget),
     Scroll(ScrollActionBuilder),
+    EditorViewport {
+        focus: FocusTarget,
+        scroll: ScrollActionBuilder,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -142,6 +146,11 @@ impl AccessibilityNode {
                 node.add_action(AxAction::ScrollUp);
                 node.add_action(AxAction::ScrollDown);
             }
+            Some(AccessibilityAction::EditorViewport { .. }) => {
+                node.add_action(AxAction::Focus);
+                node.add_action(AxAction::ScrollUp);
+                node.add_action(AxAction::ScrollDown);
+            }
             None => {}
         }
         node
@@ -175,7 +184,11 @@ impl AccessibilityFrame {
         }
         if matches!(
             node.action,
-            Some(AccessibilityAction::Focus(_) | AccessibilityAction::TextValue(_))
+            Some(
+                AccessibilityAction::Focus(_)
+                    | AccessibilityAction::TextValue(_)
+                    | AccessibilityAction::EditorViewport { .. }
+            )
         ) {
             self.focused.get_or_insert(node.id);
         }
@@ -202,6 +215,7 @@ impl AccessibilityFrame {
                     Some(AccessibilityAction::Focus(t) | AccessibilityAction::TextValue(t)) => {
                         t == target
                     }
+                    Some(AccessibilityAction::EditorViewport { focus, .. }) => focus == target,
                     _ => false,
                 };
                 if node_focus {

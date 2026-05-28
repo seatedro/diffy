@@ -30,6 +30,22 @@ pub struct ExpandChipBlock {
 
 const EXPAND_STEP: u32 = 20;
 
+impl ExpandChipBlock {
+    fn label(&self) -> String {
+        let direction_word = match self.direction {
+            ExpandDirection::Above => "above",
+            ExpandDirection::Below => "below",
+        };
+        if self.remaining_lines == u32::MAX {
+            format!("Show {} more lines {}", self.step, direction_word)
+        } else if self.remaining_lines <= self.step {
+            format!("Show all {} lines {}", self.remaining_lines, direction_word)
+        } else {
+            format!("Show {} more lines {}", self.step, direction_word)
+        }
+    }
+}
+
 impl BlockDecoration for ExpandChipBlock {
     fn height(&self, metrics: &DisplayLayoutMetrics) -> u16 {
         metrics.body_row_height_px
@@ -88,17 +104,7 @@ impl BlockDecoration for ExpandChipBlock {
         } else {
             ctx.layout.unified_text_rect
         };
-        let direction_word = match self.direction {
-            ExpandDirection::Above => "above",
-            ExpandDirection::Below => "below",
-        };
-        let label = if self.remaining_lines == u32::MAX {
-            format!("Show {} more lines {}", self.step, direction_word)
-        } else if self.remaining_lines <= self.step {
-            format!("Show all {} lines {}", self.remaining_lines, direction_word)
-        } else {
-            format!("Show {} more lines {}", self.step, direction_word)
-        };
+        let label = self.label();
         ctx.scene.text(TextPrimitive {
             rect: Rect {
                 x: text_origin.x,
@@ -124,6 +130,10 @@ impl BlockDecoration for ExpandChipBlock {
                 crate::actions::EditorAction::ExpandContextBelow(self.hunk_index, step).into()
             }
         })
+    }
+
+    fn accessibility_label(&self) -> Option<String> {
+        Some(self.label())
     }
 }
 

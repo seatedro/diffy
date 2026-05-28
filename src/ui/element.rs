@@ -248,6 +248,7 @@ pub struct ElementContext<'a> {
     element_offset_stack: Vec<(f32, f32)>,
     text_color_stack: Vec<Color>,
     icon_color_stack: Vec<Color>,
+    accessibility_text_hidden_stack: Vec<bool>,
 }
 
 impl<'a> ElementContext<'a> {
@@ -280,6 +281,7 @@ impl<'a> ElementContext<'a> {
             element_offset_stack: vec![(0.0, 0.0)],
             text_color_stack: Vec::new(),
             icon_color_stack: Vec::new(),
+            accessibility_text_hidden_stack: Vec::new(),
         }
     }
 
@@ -358,6 +360,27 @@ impl<'a> ElementContext<'a> {
 
     pub fn icon_color_override(&self) -> Option<Color> {
         self.icon_color_stack.last().copied()
+    }
+
+    pub fn push_accessibility_text_hidden(&mut self, hidden: bool) {
+        let inherited = self
+            .accessibility_text_hidden_stack
+            .last()
+            .copied()
+            .unwrap_or(false);
+        self.accessibility_text_hidden_stack
+            .push(inherited || hidden);
+    }
+
+    pub fn pop_accessibility_text_hidden(&mut self) {
+        self.accessibility_text_hidden_stack.pop();
+    }
+
+    pub fn accessibility_text_hidden(&self) -> bool {
+        self.accessibility_text_hidden_stack
+            .last()
+            .copied()
+            .unwrap_or(false)
     }
 
     pub fn current_element_offset(&self) -> (f32, f32) {
@@ -914,6 +937,27 @@ pub fn div() -> Div {
     }
 }
 
+fn role_labels_descendant_text(role: AccessibilityRole) -> bool {
+    matches!(
+        role,
+        AccessibilityRole::Button
+            | AccessibilityRole::DefaultButton
+            | AccessibilityRole::CheckBox
+            | AccessibilityRole::Switch
+            | AccessibilityRole::RadioButton
+            | AccessibilityRole::Tab
+            | AccessibilityRole::TreeItem
+            | AccessibilityRole::ListItem
+            | AccessibilityRole::ListBoxOption
+            | AccessibilityRole::MenuItem
+            | AccessibilityRole::MenuItemCheckBox
+            | AccessibilityRole::MenuItemRadio
+            | AccessibilityRole::MenuListOption
+            | AccessibilityRole::ComboBox
+            | AccessibilityRole::EditableComboBox
+    )
+}
+
 impl Styled for Div {
     fn element_style_mut(&mut self) -> &mut ElementStyle {
         &mut self.base_style
@@ -1317,6 +1361,8 @@ impl Element for Div {
             (click_action.is_some() && accessibility_label.is_some())
                 .then_some(AccessibilityRole::Button)
         });
+        let suppress_descendant_accessibility_text =
+            accessibility_role.is_some_and(role_labels_descendant_text);
         if let Some(role) = accessibility_role {
             let key = self.accessibility_id.clone().unwrap_or_else(|| {
                 format!(
@@ -1406,6 +1452,7 @@ impl Element for Div {
         if let Some(ic) = pushed_icon_color {
             cx.push_icon_color(ic);
         }
+        cx.push_accessibility_text_hidden(suppress_descendant_accessibility_text);
 
         if self.scroll_y != 0.0 {
             for child in &mut self.children {
@@ -1417,6 +1464,7 @@ impl Element for Div {
             }
         }
 
+        cx.pop_accessibility_text_hidden();
         if pushed_icon_color.is_some() {
             cx.pop_icon_color();
         }
@@ -1787,6 +1835,34 @@ impl Element for TextElement {
             font_kind: self.font_kind,
             font_weight: self.font_weight,
         });
+
+        if !content.is_empty()
+            && !cx.accessibility_text_hidden()
+            && bounds.width > 0.0
+            && bounds.height > 0.0
+        {
+            let text_bounds = Rect {
+                x: bounds.x + x_offset,
+                y: bounds.y,
+                width: text_width.max(1.0).min(bounds.width.max(1.0)),
+                height: bounds.height,
+            };
+            cx.accessibility.push(
+                AccessibilityNode::new(
+                    format!(
+                        "text:{:?}:{:.0}:{:.0}:{:.0}:{:.0}",
+                        content,
+                        text_bounds.x,
+                        text_bounds.y,
+                        text_bounds.width,
+                        text_bounds.height
+                    ),
+                    AccessibilityRole::Label,
+                    text_bounds,
+                )
+                .label(content.clone()),
+            );
+        }
 
         // Debug wireframe: red rect around text + log measurement vs bounds
         if cx.debug_wireframe {

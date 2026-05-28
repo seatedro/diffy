@@ -190,7 +190,7 @@ const SEARCH: &[ShortcutEntry] = &[
     global_entry(ShortcutCommand::OpenSearch, &["mod+f"], "Open search"),
     global_entry(
         ShortcutCommand::OpenCommandPalette,
-        &["mod+p"],
+        &["mod+p", "mod+k"],
         "Command palette",
     ),
     global_entry(ShortcutCommand::ShowKeymaps, &["shift+/"], "Open keymaps"),

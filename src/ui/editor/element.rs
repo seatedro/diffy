@@ -6,8 +6,12 @@ use crate::render::{
     FontKind, FontStyle, FontWeight, Rect, RectPrimitive, RichTextPrimitive, RichTextSpan,
     RoundedRectPrimitive, Scene, TextMetrics, TextPrimitive,
 };
+use crate::ui::accessibility::{AccessibilityAction, AccessibilityFrame, AccessibilityNode};
 use crate::ui::design::{Alpha, Sz};
+use crate::ui::element::ScrollActionBuilder;
+use crate::ui::state::FocusTarget;
 use crate::ui::theme::{Color, Theme};
+use accesskit::Role;
 
 use super::decoration::{
     BlockPaintCtx, BlockRegistry, FileHeaderDecoration, RowDecoration, RowPaintCtx,
@@ -18,8 +22,8 @@ use super::display_layout::{
     rebuild_display_rows,
 };
 use super::render_doc::{
-    ByteRange, DisplayRow, INVALID_U32, RENDER_FLAG_STRUCTURAL, RenderDoc, RenderLine,
-    RenderRowKind, RunRange, STYLE_FLAG_CHANGE, STYLE_FLAG_UNCHANGED_CTX, StyleRun,
+    ByteRange, DisplayRow, FileHeaderMeta, INVALID_U32, RENDER_FLAG_STRUCTURAL, RenderDoc,
+    RenderLine, RenderRowKind, RunRange, STYLE_FLAG_CHANGE, STYLE_FLAG_UNCHANGED_CTX, StyleRun,
     advance_display_col,
 };
 use super::state::{EditorState, ViewportTextPoint, ViewportTextSelection, ViewportTextSide};
@@ -804,6 +808,270 @@ impl EditorElement {
                 scene.pop_clip();
                 self.paint_scrollbar(scene, theme);
             }
+        }
+    }
+
+    pub fn append_accessibility(
+        &self,
+        frame: &mut AccessibilityFrame,
+        state: &EditorState,
+        document: EditorDocument<'_>,
+        scroll_builder: ScrollActionBuilder,
+    ) {
+        let viewport_bounds = self.layout.content_bounds;
+        if viewport_bounds.width <= 0.0 || viewport_bounds.height <= 0.0 {
+            return;
+        }
+
+        frame.push(
+            AccessibilityNode::new(
+                format!("editor-viewport:{}", document_accessibility_key(document)),
+                Role::ScrollView,
+                viewport_bounds,
+            )
+            .label(document_accessibility_label(document))
+            .description("Diff editor viewport")
+            .action(AccessibilityAction::EditorViewport {
+                focus: FocusTarget::Editor,
+                scroll: scroll_builder,
+            }),
+        );
+
+        match document {
+            EditorDocument::Empty => {}
+            EditorDocument::Loading { path } => {
+                self.append_placeholder_accessibility(frame, path, "Loading diff...");
+            }
+            EditorDocument::Binary { path } => {
+                self.append_placeholder_accessibility(
+                    frame,
+                    path,
+                    "Binary file. Diffy only shows text diffs here.",
+                );
+            }
+            EditorDocument::Text {
+                path,
+                doc,
+                show_file_headers,
+                ..
+            } => {
+                if show_file_headers {
+                    self.append_sticky_file_header_accessibility(frame, doc);
+                }
+                self.append_visible_rows_accessibility(frame, state, path, doc);
+            }
+        }
+    }
+
+    fn append_placeholder_accessibility(
+        &self,
+        frame: &mut AccessibilityFrame,
+        path: &str,
+        message: &str,
+    ) {
+        let fs = self.text_metrics.ui_font_size_px;
+        let s = editor_scale(self.text_metrics);
+        let inset = self.layout.content_bounds.inset(scaled(24.0, s));
+        let title_y = inset.y + inset.height * 0.35;
+        frame.push(
+            AccessibilityNode::new(
+                format!("editor-placeholder-title:{path}"),
+                Role::Heading,
+                Rect {
+                    x: inset.x,
+                    y: title_y,
+                    width: inset.width,
+                    height: fs + 10.0,
+                },
+            )
+            .label(path),
+        );
+        frame.push(
+            AccessibilityNode::new(
+                format!("editor-placeholder-message:{path}:{message}"),
+                Role::Status,
+                Rect {
+                    x: inset.x,
+                    y: title_y + fs + 16.0,
+                    width: inset.width,
+                    height: fs + 4.0,
+                },
+            )
+            .label(message),
+        );
+    }
+
+    fn append_sticky_file_header_accessibility(
+        &self,
+        frame: &mut AccessibilityFrame,
+        doc: &RenderDoc,
+    ) {
+        let Some((rect, path)) = self.sticky_header_hit.as_ref() else {
+            return;
+        };
+        let Some(bounds) = rect.intersection(self.layout.content_bounds) else {
+            return;
+        };
+        let meta = doc.file_metadata.iter().find(|meta| meta.path == *path);
+        frame.push(
+            AccessibilityNode::new(
+                format!("editor-sticky-file-header:{path}"),
+                Role::Heading,
+                bounds,
+            )
+            .label(file_header_accessibility_label(path, meta)),
+        );
+    }
+
+    fn append_visible_rows_accessibility(
+        &self,
+        frame: &mut AccessibilityFrame,
+        state: &EditorState,
+        path: &str,
+        doc: &RenderDoc,
+    ) {
+        for row_index in self.layout.visible_row_range.iter() {
+            let Some(display_row) = self.rows.get(row_index).copied() else {
+                continue;
+            };
+            let row_rect = self.row_rect_for(&display_row);
+            let Some(bounds) = row_rect.intersection(self.layout.content_bounds) else {
+                continue;
+            };
+            if display_row.is_block() {
+                self.append_block_accessibility(frame, path, row_index, display_row, bounds);
+                continue;
+            }
+            let Some(line) = doc.lines.get(display_row.line_index as usize).copied() else {
+                continue;
+            };
+            match line.row_kind() {
+                RenderRowKind::FileHeader => {
+                    let meta = doc.file_meta(&line);
+                    let label_path = meta.map(|meta| meta.path.as_str()).unwrap_or(path);
+                    frame.push(
+                        AccessibilityNode::new(
+                            format!("editor-file-header:{path}:{}", display_row.line_index),
+                            Role::Heading,
+                            bounds,
+                        )
+                        .label(file_header_accessibility_label(label_path, meta)),
+                    );
+                }
+                RenderRowKind::HunkSeparator => {
+                    frame.push(
+                        AccessibilityNode::new(
+                            format!(
+                                "editor-hunk:{}:{}:{}",
+                                path, display_row.line_index, line.hunk_index
+                            ),
+                            Role::RowHeader,
+                            bounds,
+                        )
+                        .label(hunk_accessibility_label(doc, &line)),
+                    );
+                }
+                RenderRowKind::Context
+                | RenderRowKind::Added
+                | RenderRowKind::Removed
+                | RenderRowKind::Modified => {
+                    self.append_body_line_accessibility(
+                        frame,
+                        state,
+                        path,
+                        doc,
+                        &line,
+                        &display_row,
+                        row_rect,
+                    );
+                }
+                RenderRowKind::Block => {}
+            }
+        }
+    }
+
+    fn append_block_accessibility(
+        &self,
+        frame: &mut AccessibilityFrame,
+        path: &str,
+        row_index: usize,
+        display_row: DisplayRow,
+        bounds: Rect,
+    ) {
+        let Some(block) = self.blocks.get(display_row.block_index as usize) else {
+            return;
+        };
+        let action = block.on_click();
+        let label = block
+            .accessibility_label()
+            .or_else(|| action.as_ref().map(|_| "Editor action".to_owned()))
+            .unwrap_or_else(|| "Editor annotation".to_owned());
+        let role = if action.is_some() {
+            Role::Button
+        } else {
+            Role::Comment
+        };
+        let mut node = AccessibilityNode::new(
+            format!(
+                "editor-block:{path}:{row_index}:{}",
+                display_row.block_index
+            ),
+            role,
+            bounds,
+        )
+        .label(label);
+        if let Some(action) = action {
+            node = node.action(AccessibilityAction::Click(action));
+        }
+        frame.push(node);
+    }
+
+    fn append_body_line_accessibility(
+        &self,
+        frame: &mut AccessibilityFrame,
+        state: &EditorState,
+        path: &str,
+        doc: &RenderDoc,
+        line: &RenderLine,
+        display_row: &DisplayRow,
+        row_rect: Rect,
+    ) {
+        let selected = !state.line_selection.is_empty()
+            && line_selection_contains_line(&state.line_selection, line);
+        for block in self.text_blocks_for_line(line, display_row, row_rect) {
+            let Some(block) = block else {
+                continue;
+            };
+            let text = doc.line_text(block.text_range);
+            let text_bounds = Rect {
+                x: block.text_x,
+                y: block.y + self.layout.text_y_offset,
+                width: block.text_width,
+                height: block.segment_count.max(1) as f32 * self.layout.line_height,
+            };
+            let Some(bounds) = text_bounds.intersection(self.layout.content_bounds) else {
+                continue;
+            };
+            frame.push(
+                AccessibilityNode::new(
+                    format!(
+                        "editor-line:{path}:{}:{}:{}:{}",
+                        block.line_index,
+                        accessibility_side_key(block.side),
+                        block.text_range.start,
+                        block.text_range.len
+                    ),
+                    Role::Paragraph,
+                    bounds,
+                )
+                .label(line_accessibility_label(
+                    self.layout.split_mode,
+                    line,
+                    block.side,
+                    text,
+                ))
+                .selected(selected),
+            );
         }
     }
 
@@ -2931,6 +3199,144 @@ fn tone_for_right_side(line: &RenderLine) -> RowTone {
         RenderRowKind::Modified => RowTone::ModifiedNew,
         RenderRowKind::Added => RowTone::Added,
         _ => RowTone::Neutral,
+    }
+}
+
+fn document_accessibility_key(document: EditorDocument<'_>) -> String {
+    match document {
+        EditorDocument::Empty => "empty".to_owned(),
+        EditorDocument::Loading { path } => format!("loading:{path}"),
+        EditorDocument::Binary { path } => format!("binary:{path}"),
+        EditorDocument::Text {
+            compare_generation,
+            file_index,
+            path,
+            ..
+        } => format!(
+            "text:{compare_generation}:{file_index}:{}",
+            if path.is_empty() { "continuous" } else { path }
+        ),
+    }
+}
+
+fn document_accessibility_label(document: EditorDocument<'_>) -> String {
+    match document {
+        EditorDocument::Empty => "Diff editor".to_owned(),
+        EditorDocument::Loading { path } => format!("Diff editor, loading {path}"),
+        EditorDocument::Binary { path } => format!("Diff editor, binary file {path}"),
+        EditorDocument::Text { path, doc, .. } if path.is_empty() => {
+            format!(
+                "Diff editor, visible compare document, {} rows",
+                doc.line_count()
+            )
+        }
+        EditorDocument::Text { path, doc, .. } => {
+            format!("Diff editor, {path}, {} rows", doc.line_count())
+        }
+    }
+}
+
+fn file_header_accessibility_label(path: &str, meta: Option<&FileHeaderMeta>) -> String {
+    let mut label = format!("File {path}");
+    if let Some(meta) = meta {
+        if let Some(old_path) = meta.old_path.as_deref()
+            && old_path != path
+        {
+            label.push_str(", renamed from ");
+            label.push_str(old_path);
+        }
+        if meta.is_binary {
+            label.push_str(", binary");
+        }
+        label.push_str(&format!(
+            ", {} additions, {} deletions",
+            meta.additions, meta.deletions
+        ));
+    }
+    label
+}
+
+fn hunk_accessibility_label(doc: &RenderDoc, line: &RenderLine) -> String {
+    let mut label = if line.hunk_index >= 0 {
+        format!("Hunk {}", i32::from(line.hunk_index) + 1)
+    } else {
+        "Hunk".to_owned()
+    };
+    let right_text = doc.line_text(line.right_text).trim();
+    let text = if right_text.is_empty() {
+        doc.line_text(line.left_text).trim()
+    } else {
+        right_text
+    };
+    if !text.is_empty() {
+        label.push_str(": ");
+        label.push_str(text);
+    }
+    label
+}
+
+fn line_accessibility_label(
+    split_mode: bool,
+    line: &RenderLine,
+    side: ViewportTextSide,
+    text: &str,
+) -> String {
+    let kind = line_accessibility_kind(line, side);
+    let location = line_accessibility_location(split_mode, line, side);
+    let text = if text.is_empty() { "empty line" } else { text };
+    if location.is_empty() {
+        format!("{kind}: {text}")
+    } else {
+        format!("{kind}, {location}: {text}")
+    }
+}
+
+fn line_accessibility_kind(line: &RenderLine, side: ViewportTextSide) -> &'static str {
+    if line.flags & RENDER_FLAG_STRUCTURAL != 0 {
+        return "Context";
+    }
+    match (line.row_kind(), side) {
+        (RenderRowKind::Added, _) => "Added",
+        (RenderRowKind::Removed, _) => "Removed",
+        (RenderRowKind::Modified, ViewportTextSide::Left) => "Modified old",
+        (RenderRowKind::Modified, ViewportTextSide::Right) => "Modified new",
+        (RenderRowKind::Context, ViewportTextSide::Left) => "Context old",
+        (RenderRowKind::Context, ViewportTextSide::Right) => "Context new",
+        _ => "Line",
+    }
+}
+
+fn line_accessibility_location(
+    split_mode: bool,
+    line: &RenderLine,
+    side: ViewportTextSide,
+) -> String {
+    if split_mode || line.row_kind() == RenderRowKind::Modified {
+        return match side {
+            ViewportTextSide::Left => accessible_line_number("old line", line.old_line_no),
+            ViewportTextSide::Right => accessible_line_number("new line", line.new_line_no),
+        }
+        .unwrap_or_default();
+    }
+
+    let old = accessible_line_number("old line", line.old_line_no);
+    let new = accessible_line_number("new line", line.new_line_no);
+    match (old, new) {
+        (Some(old), Some(new)) => format!("{old}, {new}"),
+        (Some(old), None) => old,
+        (None, Some(new)) => new,
+        (None, None) => String::new(),
+    }
+}
+
+fn accessible_line_number(prefix: &str, line_no: u32) -> Option<String> {
+    (line_no != INVALID_U32).then(|| format!("{prefix} {line_no}"))
+}
+
+fn accessibility_side_key(side: ViewportTextSide) -> &'static str {
+    match side {
+        ViewportTextSide::Left => "left",
+        ViewportTextSide::Right => "right",
     }
 }
 

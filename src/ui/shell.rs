@@ -553,6 +553,17 @@ pub fn build_ui_frame(
             scene.clip(vp_bounds);
             editor.paint(&mut scene, theme, &editor_snap, document);
             scene.pop_clip();
+            let editor_scroll_builder = if continuous_scroll {
+                ScrollActionBuilder::ViewportGlobal
+            } else {
+                ScrollActionBuilder::ViewportLines
+            };
+            editor.append_accessibility(
+                &mut cx.accessibility,
+                &editor_snap,
+                document,
+                editor_scroll_builder,
+            );
 
             if editor.layout.show_staging_controls {
                 if let EditorDocument::Text { doc, .. } = document {

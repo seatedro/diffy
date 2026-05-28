@@ -157,9 +157,10 @@ expose stable roles, labels, and actions so Computer Use can inspect and operate
 them through platform accessibility APIs. Current coverage includes buttons,
 recent repo rows, file rows/tree rows, picker rows, tabs, segmented controls,
 checkboxes/toggles, dropdown/menu rows, modals, text inputs, editor focus,
-scrolling, click/focus/set-value actions. Full line-level diff/editor document
-accessibility is a deeper follow-up, not part of the first control-surface
-coverage.
+scrolling, click/focus/set-value actions, and the GPU-rendered editor document
+itself: the editor viewport, visible file headers, hunk headers, diff line
+text, review comment blocks, and context-expansion controls should all be
+represented in the AccessKit tree.
 
 For GUI validation, use the global `$cua` skill and CLI when available. Prefer
 the one-shot path for screenshots:

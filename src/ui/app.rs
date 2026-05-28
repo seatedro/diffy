@@ -447,6 +447,25 @@ impl NativeApp {
                 self.dispatch_action(builder.build(delta));
                 self.mark_dirty();
             }
+            (
+                AxAction::Focus,
+                crate::ui::accessibility::AccessibilityAction::EditorViewport { focus, .. },
+            ) => {
+                self.dispatch_action(AppAction::SetFocus(Some(focus)).into());
+                self.mark_dirty();
+            }
+            (
+                AxAction::ScrollDown | AxAction::ScrollUp,
+                crate::ui::accessibility::AccessibilityAction::EditorViewport { scroll, .. },
+            ) => {
+                let delta = if request.action == AxAction::ScrollDown {
+                    3
+                } else {
+                    -3
+                };
+                self.dispatch_action(scroll.build(delta));
+                self.mark_dirty();
+            }
             _ => {}
         }
     }

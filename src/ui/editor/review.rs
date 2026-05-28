@@ -39,6 +39,34 @@ impl ReviewCommentBlock {
             .max(2);
         rows.min(u32::from(u16::MAX)) as u16
     }
+
+    fn accessibility_summary(&self) -> String {
+        let count = self.comments.len();
+        let mut label = if count == 1 {
+            "1 review comment".to_owned()
+        } else {
+            format!("{count} review comments")
+        };
+        for comment in self.comments.iter().take(3) {
+            let author = comment
+                .user
+                .as_ref()
+                .map(|user| user.login.as_str())
+                .filter(|login| !login.is_empty())
+                .unwrap_or("unknown");
+            let snippet = comment
+                .body
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .unwrap_or("(empty comment)");
+            label.push_str("; @");
+            label.push_str(author);
+            label.push_str(": ");
+            label.push_str(snippet);
+        }
+        label
+    }
 }
 
 impl BlockDecoration for ReviewCommentBlock {
@@ -170,6 +198,10 @@ impl BlockDecoration for ReviewCommentBlock {
                 y += line_h;
             }
         }
+    }
+
+    fn accessibility_label(&self) -> Option<String> {
+        Some(self.accessibility_summary())
     }
 }
 

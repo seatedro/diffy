@@ -376,6 +376,10 @@ pub trait BlockDecoration: std::fmt::Debug {
     fn on_click(&self) -> Option<crate::actions::Action> {
         None
     }
+
+    fn accessibility_label(&self) -> Option<String> {
+        None
+    }
 }
 
 #[derive(Debug, Default)]

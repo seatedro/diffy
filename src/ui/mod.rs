@@ -1,3 +1,4 @@
+pub mod accessibility;
 pub mod animation;
 pub mod app;
 pub mod components;

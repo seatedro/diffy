@@ -93,6 +93,7 @@ impl RenderOnce for Modal {
         let padding = (self.padding * scale).round();
         let gap = (self.gap * scale).round();
         let max_h = self.window_height - (Sz::MODAL_MARGIN * scale).round() * 2.0;
+        let accessibility_label = self.title.clone();
 
         let header = view! { scale,
             <div class="flex-col" gap={Sp::SM}>
@@ -112,6 +113,9 @@ impl RenderOnce for Modal {
                  bg={tc.elevated_surface} rounded={Rad::XXXL}
                  border_b={tc.border} shadow_preset={Shadow::MODAL}
                  on_click={Action::Noop}
+                 accessibility_role={accesskit::Role::Dialog}
+                 accessibility_id={format!("modal:{accessibility_label}")}
+                 accessibility_label={accessibility_label}
                  @when {self.height.is_some()} { h={(self.height.unwrap() * scale).round().min(max_h)} }>
                 {header}
                 {...self.body}

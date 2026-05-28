@@ -46,6 +46,11 @@ impl RenderOnce for Breadcrumb {
                              py={Sp::XXS}
                              rounded={m.control_radius - Sp::XS * scale}
                              @when {i != last && self.on_click_segment.is_some()} { on_click={(self.on_click_segment.unwrap())(i)} }
+                             @when {i != last && self.on_click_segment.is_some()} {
+                                 accessibility_role={accesskit::Role::Button}
+                                 accessibility_id={format!("breadcrumb:{i}:{segment}")}
+                                 accessibility_label={segment.clone()}
+                             }
                              @when {i != last} { hover_bg={tc.ghost_element_hover} }>
                             <text class="text-sm"
                                   color={if i == last { tc.text_strong } else { tc.text_muted }}

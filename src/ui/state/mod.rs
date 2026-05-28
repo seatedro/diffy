@@ -3675,10 +3675,11 @@ impl AppState {
                 .to_owned()
         });
         let selected_path = self.workspace.selected_file_path.get(&self.store);
+        let title_prefix = crate::platform::startup::window_title_prefix();
         if let Some(path) = selected_path.as_deref() {
-            format!("diffy native - {repo} [{workspace_mode}] {path}")
+            format!("{title_prefix} - {repo} [{workspace_mode}] {path}")
         } else {
-            format!("diffy native - {repo} [{workspace_mode}]")
+            format!("{title_prefix} - {repo} [{workspace_mode}]")
         }
     }
 

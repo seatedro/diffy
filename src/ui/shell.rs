@@ -33,6 +33,7 @@ pub struct UiFrame {
     pub text_input_hit_areas: Vec<TextInputHitArea>,
     pub scrollbar_tracks: Vec<ScrollbarTrack>,
     pub tooltip_regions: Vec<TooltipRegion>,
+    pub accessibility: crate::ui::accessibility::AccessibilityFrame,
     pub effects: Vec<Effect>,
     pub file_list_rect: Option<Rect>,
     pub sidebar_resize_handle_rect: Option<Rect>,
@@ -51,6 +52,7 @@ pub fn build_ui_frame(
     cx: &mut ElementContext,
 ) -> UiFrame {
     let mut effects = Vec::new();
+    cx.accessibility = crate::ui::accessibility::AccessibilityFrame::new(width, height);
     let viewport_bounds: Rc<Cell<Option<Rect>>> = Rc::new(Cell::new(None));
     let file_list_bounds: Rc<Cell<Option<Rect>>> = Rc::new(Cell::new(None));
     let sidebar_resize_bounds: Rc<Cell<Option<Rect>>> = Rc::new(Cell::new(None));
@@ -734,6 +736,7 @@ pub fn build_ui_frame(
     let scroll_regions = std::mem::take(&mut cx.scroll_regions);
     let text_input_hit_areas = std::mem::take(&mut cx.text_input_hit_areas);
     let tooltip_regions = std::mem::take(&mut cx.tooltip_regions);
+    let accessibility = std::mem::take(&mut cx.accessibility);
     let file_list_rect = scroll_regions.iter().find_map(|region| {
         matches!(region.action_builder, ScrollActionBuilder::FileList).then_some(region.bounds)
     });
@@ -745,6 +748,7 @@ pub fn build_ui_frame(
         text_input_hit_areas,
         scrollbar_tracks,
         tooltip_regions,
+        accessibility,
         effects,
         file_list_rect: file_list_rect.or_else(|| file_list_bounds.get()),
         sidebar_resize_handle_rect: sidebar_resize_bounds.get(),

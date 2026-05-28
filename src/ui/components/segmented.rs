@@ -55,7 +55,12 @@ impl RenderOnce for SegmentedControl {
                          bg={if item.selected { tc.ghost_element_hover }}
                          hover_bg={if !item.selected { tc.ghost_element_hover }}
                          hover_text_color={if !item.selected { tc.text }}
-                         on_click={item.action}
+                         on_click={item.action.clone()}
+                         accessibility_role={accesskit::Role::RadioButton}
+                         accessibility_id={format!("segmented:{:?}:{}", item.action, item.label)}
+                         accessibility_label={item.label.clone()}
+                         accessibility_selected={item.selected}
+                         accessibility_toggled={item.selected}
                          cursor={CursorHint::Pointer}
                          @when { item.tooltip_text.is_some() } {
                              tooltip={item.tooltip_text.as_deref().unwrap_or_default()}

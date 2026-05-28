@@ -11,8 +11,10 @@ use crate::actions::Action;
 use crate::effects::Effect;
 use crate::render::Scene;
 use crate::render::scene::{BlurRegionPrimitive, EffectQuadPrimitive, EffectType, Rect};
+use crate::ui::accessibility::{AccessibilityAction, AccessibilityFrame, AccessibilityNode};
 use crate::ui::design::{Alpha, Sz};
 use crate::ui::theme::Theme;
+use accesskit::Role as AccessibilityRole;
 pub use halogen::hit::{ClickEvent, CursorHint, HitIdentity, Hitbox, HitboxBehavior, HitboxId};
 use halogen::reactive::{Signal, SignalStore};
 
@@ -238,6 +240,7 @@ pub struct ElementContext<'a> {
     pub text_input_hit_areas: Vec<TextInputHitArea>,
     pub scrollbar_tracks: Vec<ScrollbarTrack>,
     pub tooltip_regions: Vec<TooltipRegion>,
+    pub accessibility: AccessibilityFrame,
     hitboxes: Vec<Hitbox>,
     hovered_hitboxes: Vec<HitboxId>,
     next_hitbox_id: usize,
@@ -269,6 +272,7 @@ impl<'a> ElementContext<'a> {
             text_input_hit_areas: Vec::new(),
             scrollbar_tracks: Vec::new(),
             tooltip_regions: Vec::new(),
+            accessibility: AccessibilityFrame::default(),
             hitboxes: Vec::new(),
             hovered_hitboxes: Vec::new(),
             next_hitbox_id: 0,
@@ -869,6 +873,15 @@ pub struct Div {
     focus_target: Option<crate::ui::state::FocusTarget>,
     tooltip: Option<String>,
     hit_identity: Option<HitIdentity>,
+    accessibility_id: Option<String>,
+    accessibility_role: Option<AccessibilityRole>,
+    accessibility_label: Option<String>,
+    accessibility_value: Option<String>,
+    accessibility_description: Option<String>,
+    accessibility_selected: Option<bool>,
+    accessibility_toggled: Option<bool>,
+    accessibility_expanded: Option<bool>,
+    accessibility_disabled: bool,
 }
 
 pub fn div() -> Div {
@@ -889,6 +902,15 @@ pub fn div() -> Div {
         focus_target: None,
         tooltip: None,
         hit_identity: None,
+        accessibility_id: None,
+        accessibility_role: None,
+        accessibility_label: None,
+        accessibility_value: None,
+        accessibility_description: None,
+        accessibility_selected: None,
+        accessibility_toggled: None,
+        accessibility_expanded: None,
+        accessibility_disabled: false,
     }
 }
 
@@ -1016,6 +1038,51 @@ impl Div {
 
     pub fn tooltip(mut self, text: impl Into<String>) -> Self {
         self.tooltip = Some(text.into());
+        self
+    }
+
+    pub fn accessibility_id(mut self, id: impl Into<String>) -> Self {
+        self.accessibility_id = Some(id.into());
+        self
+    }
+
+    pub fn accessibility_role(mut self, role: AccessibilityRole) -> Self {
+        self.accessibility_role = Some(role);
+        self
+    }
+
+    pub fn accessibility_label(mut self, label: impl Into<String>) -> Self {
+        self.accessibility_label = Some(label.into());
+        self
+    }
+
+    pub fn accessibility_value(mut self, value: impl Into<String>) -> Self {
+        self.accessibility_value = Some(value.into());
+        self
+    }
+
+    pub fn accessibility_description(mut self, description: impl Into<String>) -> Self {
+        self.accessibility_description = Some(description.into());
+        self
+    }
+
+    pub fn accessibility_selected(mut self, selected: bool) -> Self {
+        self.accessibility_selected = Some(selected);
+        self
+    }
+
+    pub fn accessibility_toggled(mut self, toggled: bool) -> Self {
+        self.accessibility_toggled = Some(toggled);
+        self
+    }
+
+    pub fn accessibility_expanded(mut self, expanded: bool) -> Self {
+        self.accessibility_expanded = Some(expanded);
+        self
+    }
+
+    pub fn accessibility_disabled(mut self, disabled: bool) -> Self {
+        self.accessibility_disabled = disabled;
         self
     }
 
@@ -1239,6 +1306,58 @@ impl Element for Div {
                     color: cx.theme.colors.focus_border,
                 });
             }
+        }
+
+        let click_action = self.on_click.clone();
+        let accessibility_label = self
+            .accessibility_label
+            .clone()
+            .or_else(|| self.tooltip.clone());
+        let accessibility_role = self.accessibility_role.or_else(|| {
+            (click_action.is_some() && accessibility_label.is_some())
+                .then_some(AccessibilityRole::Button)
+        });
+        if let Some(role) = accessibility_role {
+            let key = self.accessibility_id.clone().unwrap_or_else(|| {
+                format!(
+                    "div:{role:?}:{:?}:{:?}:{:.0}:{:.0}:{:.0}:{:.0}",
+                    accessibility_label,
+                    click_action,
+                    bounds.x,
+                    bounds.y,
+                    bounds.width,
+                    bounds.height
+                )
+            });
+            let mut node =
+                AccessibilityNode::new(key, role, bounds).disabled(self.accessibility_disabled);
+            if let Some(label) = accessibility_label {
+                node = node.label(label);
+            }
+            if let Some(value) = self.accessibility_value.clone() {
+                node = node.value(value);
+            }
+            if let Some(description) = self.accessibility_description.clone() {
+                node = node.description(description);
+            }
+            if let Some(selected) = self.accessibility_selected {
+                node = node.selected(selected);
+            }
+            if let Some(toggled) = self.accessibility_toggled {
+                node = node.toggled(toggled);
+            }
+            if let Some(expanded) = self.accessibility_expanded {
+                node = node.expanded(expanded);
+            }
+            if !self.accessibility_disabled
+                && let Some(action) = click_action
+                && !matches!(action, Action::Noop)
+            {
+                node = node.action(AccessibilityAction::Click(action));
+            } else if let Some(builder) = self.on_scroll.clone() {
+                node = node.action(AccessibilityAction::Scroll(builder));
+            }
+            cx.accessibility.push(node);
         }
 
         // Register parent hit BEFORE children so that children's hit regions
@@ -1864,6 +1983,15 @@ impl Element for TextInput {
         cx: &mut ElementContext,
     ) {
         let theme = cx.theme;
+        let accessibility_label = if !self.label.is_empty() {
+            self.label.clone()
+        } else if !self.placeholder.is_empty() {
+            self.placeholder.clone()
+        } else if let Some(target) = self.focus_target {
+            format!("{target:?}")
+        } else {
+            String::new()
+        };
         let radius = theme.metrics.control_radius;
         let value_size = if self.bare {
             theme.metrics.ui_small_font_size
@@ -2042,6 +2170,29 @@ impl Element for TextInput {
         // Register hit area for click-to-position (stored in cx for app.rs to use)
         if let Some(target) = self.focus_target {
             let value = std::mem::take(&mut self.value);
+            let role = if self.masked {
+                AccessibilityRole::PasswordInput
+            } else {
+                match target {
+                    crate::ui::state::FocusTarget::SearchInput
+                    | crate::ui::state::FocusTarget::SidebarSearch
+                    | crate::ui::state::FocusTarget::CommandPaletteInput => {
+                        AccessibilityRole::SearchInput
+                    }
+                    _ => AccessibilityRole::TextInput,
+                }
+            };
+            let accessible_value = if self.masked {
+                "\u{2022}".repeat(value.chars().count())
+            } else {
+                value.clone()
+            };
+            cx.accessibility.push(
+                AccessibilityNode::new(format!("text-input:{target:?}"), role, bounds)
+                    .label(accessibility_label)
+                    .value(accessible_value)
+                    .action(AccessibilityAction::TextValue(target)),
+            );
             cx.text_input_hit_areas.push(TextInputHitArea {
                 bounds,
                 text_x,

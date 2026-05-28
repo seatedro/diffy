@@ -156,7 +156,14 @@ impl RenderOnce for Button {
             CursorHint::Pointer
         };
 
-        let label_el = self.label.map(|label| {
+        let label_text = self.label;
+        let accessibility_label = label_text
+            .clone()
+            .or_else(|| tooltip_text.clone())
+            .unwrap_or_default();
+        let accessibility_id = format!("button:{action:?}:{accessibility_label}");
+
+        let label_el = label_text.map(|label| {
             let mut txt = text(label).medium().color(text_color);
             match self.size {
                 ButtonSize::Default => txt = txt.text_sm(),
@@ -168,6 +175,10 @@ impl RenderOnce for Button {
         view! { scale,
             <div class="shrink-0" bg={bg}
                  cursor={cursor}
+                 accessibility_role={accesskit::Role::Button}
+                 accessibility_label={accessibility_label}
+                 accessibility_id={accessibility_id}
+                 accessibility_disabled={disabled}
                  @when { !disabled } { on_click={action} }
                  @when { fixed.is_some() } {
                      items_center justify_center

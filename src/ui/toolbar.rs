@@ -448,12 +448,16 @@ fn repo_row(repo: &std::path::Path, tc: &crate::ui::theme::ThemeColors, scale: f
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
     let repo_path = repo.display().to_string();
+    let accessibility_label = format!("{repo_name}, {repo_path}");
     view! { scale,
         <div class="w-full flex-row items-center"
              py={Sp::SM} px={Sp::SM}
              rounded={Rad::MD} gap={Sp::SM}
              hover_bg={tc.sidebar_row_hover}
              on_click={crate::actions::WorkspaceAction::OpenRepository(repo.to_path_buf()).into()}
+             accessibility_role={accesskit::Role::Button}
+             accessibility_id={format!("recent-repo:{repo_path}")}
+             accessibility_label={accessibility_label}
              cursor={CursorHint::Pointer}>
             <icon svg={lucide::FOLDER} size={Ico::SM} color={tc.text_muted} />
             <div class="flex-col flex-1" min_w={0.0}>

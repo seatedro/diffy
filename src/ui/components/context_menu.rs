@@ -27,6 +27,8 @@ pub fn context_menu_layer(
             for entry in entries {
                 match entry {
                     ContextMenuEntry::Item { label, icon, action, shortcut, destructive, disabled } => {
+                        let accessibility_label = label.clone();
+                        let accessibility_id = format!("context-menu:{:?}:{accessibility_label}", action);
                         let fg = if disabled {
                             tc.text_muted
                         } else if destructive {
@@ -46,6 +48,10 @@ pub fn context_menu_layer(
                             <div class="flex-row items-center"
                                  gap={m.spacing_sm} px={m.spacing_md}
                                  py={m.spacing_xs + Sp::XXS * scale}
+                                 accessibility_role={accesskit::Role::MenuItem}
+                                 accessibility_id={accessibility_id}
+                                 accessibility_label={accessibility_label}
+                                 accessibility_disabled={disabled}
                                  @when {!disabled} { on_click={action} hover_bg={tc.sidebar_row_hover} }>
                                 if let Some(svg) = icon {
                                     <icon svg={svg} size={icon_size} color={icon_color} />

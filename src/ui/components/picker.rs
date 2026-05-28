@@ -86,6 +86,11 @@ fn picker_row<T: PickerItem>(
              @when {!selected && !disabled} { hover_bg={tc.sidebar_row_hover} }
              on_click={crate::actions::OverlayAction::SelectOverlayEntry(i).into()}
              hit_identity={HitIdentity::OverlayEntry(i)}
+             accessibility_role={accesskit::Role::ListBoxOption}
+             accessibility_id={format!("picker-row:{i}:{}", entry.label())}
+             accessibility_label={entry.label()}
+             accessibility_selected={selected}
+             accessibility_disabled={disabled}
              cursor={CursorHint::Pointer}>
             {?icon_child}
             {picker_label(

@@ -370,6 +370,8 @@ impl RenderOnce for FileTree {
                     depth,
                     expanded,
                 } => {
+                    let accessibility_label = name.clone();
+                    let accessibility_id = format!("file-tree-folder:{path}");
                     let chevron = if expanded {
                         lucide::CHEVRON_DOWN
                     } else {
@@ -388,6 +390,10 @@ impl RenderOnce for FileTree {
                         .h(row_height)
                         .gap(m.spacing_xs)
                         .px(m.spacing_sm)
+                        .accessibility_role(accesskit::Role::TreeItem)
+                        .accessibility_id(accessibility_id)
+                        .accessibility_label(accessibility_label)
+                        .accessibility_expanded(expanded)
                         .hover_bg(tc.sidebar_row_hover);
 
                     if depth > 0 {
@@ -416,6 +422,15 @@ impl RenderOnce for FileTree {
                     deletions,
                     selected: is_selected,
                 } => {
+                    let accessibility_id = format!("file-tree-file:{original_index}:{name}");
+                    let accessibility_label = match (&scope, additions, deletions) {
+                        (Some(scope), 0, 0) => format!("{name}, {scope}"),
+                        (Some(scope), _, _) => {
+                            format!("{name}, {scope}, +{additions}, -{deletions}")
+                        }
+                        (None, 0, 0) => name.clone(),
+                        (None, _, _) => format!("{name}, +{additions}, -{deletions}"),
+                    };
                     let fg = if is_selected { tc.text_strong } else { tc.text };
                     let bg = if is_selected {
                         tc.sidebar_row_selected
@@ -431,6 +446,10 @@ impl RenderOnce for FileTree {
                         .gap(m.spacing_xs)
                         .px(m.spacing_sm)
                         .bg(bg)
+                        .accessibility_role(accesskit::Role::TreeItem)
+                        .accessibility_id(accessibility_id)
+                        .accessibility_label(accessibility_label)
+                        .accessibility_selected(is_selected)
                         .on_click(on_select_file(original_index));
 
                     if !is_selected {

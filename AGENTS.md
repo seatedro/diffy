@@ -139,8 +139,27 @@ risk crosses module boundaries.
 - Focused tests: `cargo test <name>`
 - Lints when practical: `cargo clippy --workspace --all-targets --all-features`
 - Run locally: `cargo run`
+- macOS Computer Use dev app: `scripts/dev-loop.sh app` builds and launches
+  `/Users/ro/Applications/Diffy Dev.app` with bundle id
+  `io.github.seatedro.diffy.dev`. Prefer this app path or bundle id for
+  `$computer-use` validation so the dev build is targeted instead of any
+  globally installed `/Applications/Diffy.app`.
 - Hot reload UI iteration: `dx serve --hot-patch --features hot-reload`
 - Packaging/release smoke check: `cargo build --release`
+
+`Diffy Dev.app` is intentionally ad-hoc signed and wrapped for local
+automation: no release cert is required, the window title prefix is `diffy dev`,
+and keyring is disabled by default in the wrapper. Pass startup args after `--`,
+for example `scripts/dev-loop.sh app -- --repo /Users/ro/personal/diffy`.
+
+The native accessibility tree is built with AccessKit. Shared controls should
+expose stable roles, labels, and actions so Computer Use can inspect and operate
+them through platform accessibility APIs. Current coverage includes buttons,
+recent repo rows, file rows/tree rows, picker rows, tabs, segmented controls,
+checkboxes/toggles, dropdown/menu rows, modals, text inputs, editor focus,
+scrolling, click/focus/set-value actions. Full line-level diff/editor document
+accessibility is a deeper follow-up, not part of the first control-surface
+coverage.
 
 For GUI validation, use the global `$cua` skill and CLI when available. Prefer
 the one-shot path for screenshots:

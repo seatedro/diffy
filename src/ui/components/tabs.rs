@@ -70,7 +70,11 @@ impl RenderOnce for TabBar {
             <div class="flex-row items-end" border_b={tc.border_variant}>
                 for item in self.items {
                     <div class="flex-col items-center"
-                         on_click={item.action}
+                         on_click={item.action.clone()}
+                         accessibility_role={accesskit::Role::Tab}
+                         accessibility_id={format!("tab:{:?}:{}", item.action, item.label)}
+                         accessibility_label={item.label.clone()}
+                         accessibility_selected={item.active}
                          @when {!item.active} { hover_bg={tc.ghost_element_hover} }
                          @when {fill} { flex_1 }>
                         <div class="flex-row items-center"
@@ -124,7 +128,11 @@ impl RenderOnce for SegmentedTabs {
                     <div class="flex-row flex-1 items-center justify-center"
                          px={m.spacing_md} py={m.spacing_xs}
                          rounded={inner_radius}
-                         on_click={item.action}
+                         on_click={item.action.clone()}
+                         accessibility_role={accesskit::Role::Tab}
+                         accessibility_id={format!("segmented-tab:{:?}:{}", item.action, item.label)}
+                         accessibility_label={item.label.clone()}
+                         accessibility_selected={item.active}
                          @when {item.active} { bg={tc.surface} shadow_preset={Shadow::SUBTLE} }
                          @when {!item.active} { hover_bg={tc.ghost_element_hover} }>
                         <text class="text-sm font-medium"

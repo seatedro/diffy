@@ -6,6 +6,8 @@ use clap::Parser;
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 
 const DEFAULT_GITHUB_CLIENT_ID: &str = "Ov23lijXMwtY1XmHedUM";
+const DEFAULT_APP_DISPLAY_NAME: &str = "Diffy";
+const DEFAULT_WINDOW_TITLE_PREFIX: &str = "diffy native";
 
 #[derive(Debug, Clone, Parser, PartialEq, Eq)]
 #[command(name = "diffy", version = crate::APP_VERSION, about = "Native desktop diff viewer")]
@@ -161,6 +163,14 @@ impl StartupOptions {
             }
         }
     }
+}
+
+pub fn app_display_name() -> String {
+    env_var("DIFFY_APP_DISPLAY_NAME").unwrap_or_else(|| DEFAULT_APP_DISPLAY_NAME.to_owned())
+}
+
+pub fn window_title_prefix() -> String {
+    env_var("DIFFY_WINDOW_TITLE_PREFIX").unwrap_or_else(|| DEFAULT_WINDOW_TITLE_PREFIX.to_owned())
 }
 
 fn parse_compare_mode(value: &str) -> Result<CompareMode, String> {

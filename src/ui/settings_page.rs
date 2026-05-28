@@ -86,6 +86,7 @@ fn nav_row(theme: &Theme, section: SettingsSection, selected: bool) -> AnyElemen
         tc.text_muted
     };
     let label_color = if selected { tc.text_strong } else { tc.text };
+    let accessibility_label = section.label();
 
     view! { scale,
         <div class="flex-row items-center"
@@ -95,6 +96,10 @@ fn nav_row(theme: &Theme, section: SettingsSection, selected: bool) -> AnyElemen
              bg={if selected { tc.element_selected } else { Color::TRANSPARENT }}
              hover_bg={if !selected { tc.ghost_element_hover }}
              on_click={crate::actions::SettingsAction::SetSettingsSection(section).into()}
+             accessibility_role={accesskit::Role::Tab}
+             accessibility_id={format!("settings-section:{accessibility_label}")}
+             accessibility_label={accessibility_label}
+             accessibility_selected={selected}
              cursor={CursorHint::Pointer}>
             <icon svg={section.icon()} size={Ico::SM * scale} color={icon_color} />
             <text class="text-sm font-medium" color={label_color}>{section.label()}</text>

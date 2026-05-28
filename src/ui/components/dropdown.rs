@@ -92,6 +92,8 @@ impl RenderOnce for Dropdown {
         };
         let chevron_icon = svg_icon(chevron, icon_size - Sp::XXS * scale).color(tc.text_muted);
         let trigger_py = m.spacing_xs + (Sp::XXS * scale).round();
+        let trigger_label = self.label.clone();
+        let trigger_id = format!("dropdown-trigger:{:?}:{trigger_label}", self.on_toggle);
 
         view! {
             <div class="flex-col">
@@ -99,6 +101,10 @@ impl RenderOnce for Dropdown {
                      gap={m.spacing_sm} px={m.spacing_md} py={trigger_py}
                      bg={tc.element_background} border={tc.border_variant}
                      rounded={m.control_radius} hover_bg={tc.element_hover}
+                     accessibility_role={accesskit::Role::ComboBox}
+                     accessibility_id={trigger_id}
+                     accessibility_label={trigger_label}
+                     accessibility_expanded={self.open}
                      @when {self.width.is_some()} { w={self.width.unwrap()} }
                      @when {self.on_toggle.is_some()} { on_click={self.on_toggle.unwrap()} }>
                     <div class="flex-1">
@@ -119,6 +125,13 @@ impl RenderOnce for Dropdown {
                                  py={m.spacing_xs + (Sp::XXS * scale).round()}
                                  bg={if item.selected { tc.ghost_element_selected } else { Color::TRANSPARENT }}
                                  hover_bg={tc.ghost_element_hover}
+                                 accessibility_role={accesskit::Role::MenuItem}
+                                 accessibility_id={format!("dropdown-item:{:?}:{}", item.action, item.label)}
+                                 accessibility_label={item.label.clone()}
+                                 @when {item.description.is_some()} {
+                                     accessibility_description={item.description.as_deref().unwrap_or_default()}
+                                 }
+                                 accessibility_selected={item.selected}
                                  on_click={item.action}>
                                 if let Some(svg) = item.icon {
                                     <icon svg={svg} size={icon_size} color={tc.icon} />

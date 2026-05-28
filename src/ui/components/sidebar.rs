@@ -35,6 +35,10 @@ impl<'a> FileListItem<'a> {
                  px={Sp::SM}
                  on_click={crate::actions::FileListAction::SelectFile(self.index).into()}
                  hit_identity={HitIdentity::File(self.index)}
+                 accessibility_role={accesskit::Role::ListBoxOption}
+                 accessibility_id={format!("file-list:{}", self.entry.path)}
+                 accessibility_label={self.entry.path.to_string()}
+                 accessibility_selected={self.selected}
                  cursor={CursorHint::Pointer}
                  @when {self.selected} { bg={tc.sidebar_row_selected} border_l={tc.accent} }
                  @when {!self.selected} { hover_bg={tc.sidebar_row_hover} }>

@@ -1,14 +1,20 @@
 use std::error::Error;
-use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use accesskit::{
+    Action as AxAction, ActionData, ActionHandler, ActionRequest, ActivationHandler,
+    DeactivationHandler, TreeUpdate,
+};
+use accesskit_winit::Adapter as AccessibilityAdapter;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Icon, Window, WindowAttributes, WindowId};
 
-use crate::actions::Action;
+use crate::actions::{Action, AppAction, TextEditAction};
 use crate::apprt::{AppRuntime, AppServices};
 use crate::core::themes::ThemeRegistry;
 use crate::effects::{RepositoryEffect, UpdateEffect};
@@ -44,9 +50,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         .iter()
         .map(|n| theme_registry.variant(n))
         .collect();
+    let wake_proxy = event_loop.create_proxy();
     let runtime = AppRuntime::new(
         AppServices::new(settings_store),
-        Some(event_loop.create_proxy()),
+        Some(wake_proxy.clone()),
         keyring_enabled,
     );
     runtime.dispatch_all(initial_effects);
@@ -54,11 +61,11 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     #[cfg(feature = "hot-reload")]
     let hot_reload_pending = {
         let pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        crate::hot_reload::connect(event_loop.create_proxy(), pending.clone());
+        crate::hot_reload::connect(wake_proxy.clone(), pending.clone());
         pending
     };
 
-    let mut app = NativeApp::new(state, runtime, theme_registry);
+    let mut app = NativeApp::new(state, runtime, theme_registry, Some(wake_proxy));
     #[cfg(feature = "hot-reload")]
     {
         app.hot_reload_pending = Some(hot_reload_pending);
@@ -75,6 +82,11 @@ struct NativeApp {
     renderer: Option<Renderer>,
     font_settings: FontSettings,
     window: Option<Arc<Window>>,
+    wake_proxy: Option<EventLoopProxy<()>>,
+    accessibility_adapter: Option<AccessibilityAdapter>,
+    accessibility_latest_tree: Arc<Mutex<TreeUpdate>>,
+    accessibility_action_sender: Sender<ActionRequest>,
+    accessibility_actions: Receiver<ActionRequest>,
     ui_frame: UiFrame,
     editor: EditorElement,
     input: InputSystem,
@@ -91,7 +103,12 @@ struct NativeApp {
 }
 
 impl NativeApp {
-    fn new(state: AppState, runtime: AppRuntime, theme_registry: ThemeRegistry) -> Self {
+    fn new(
+        state: AppState,
+        runtime: AppRuntime,
+        theme_registry: ThemeRegistry,
+        wake_proxy: Option<EventLoopProxy<()>>,
+    ) -> Self {
         let theme = Theme::from_registry(
             &state.settings.theme_name,
             state.settings.theme_mode,
@@ -100,6 +117,7 @@ impl NativeApp {
         .with_ui_scale(state.ui_scale_factor());
         let update_polling_enabled = state.update_polling_enabled();
         let font_settings = state.settings.fonts.normalized();
+        let (accessibility_action_sender, accessibility_actions) = mpsc::channel();
         Self {
             state,
             theme,
@@ -108,6 +126,13 @@ impl NativeApp {
             renderer: None,
             font_settings,
             window: None,
+            wake_proxy,
+            accessibility_adapter: None,
+            accessibility_latest_tree: Arc::new(Mutex::new(
+                crate::ui::accessibility::empty_tree_update(),
+            )),
+            accessibility_action_sender,
+            accessibility_actions,
             ui_frame: UiFrame::default(),
             input: InputSystem::default(),
             editor: EditorElement::default(),
@@ -246,10 +271,11 @@ impl NativeApp {
 
     fn window_attributes(&self) -> WindowAttributes {
         let attrs = Window::default_attributes()
-            .with_title(self.state.window_title())
+            .with_title(crate::platform::startup::app_display_name())
             .with_inner_size(LogicalSize::new(1320.0, 840.0))
             .with_min_inner_size(LogicalSize::new(640.0, 480.0))
-            .with_window_icon(app_window_icon());
+            .with_window_icon(app_window_icon())
+            .with_visible(false);
         configure_chrome(attrs)
     }
 
@@ -320,6 +346,109 @@ impl NativeApp {
         self.refresh_window_title();
         self.sync_window_text_input();
         self.mark_dirty();
+    }
+
+    fn create_accessibility_adapter(
+        &self,
+        event_loop: &ActiveEventLoop,
+        window: &Window,
+    ) -> AccessibilityAdapter {
+        AccessibilityAdapter::with_direct_handlers(
+            event_loop,
+            window,
+            DiffyAccessibilityActivation {
+                latest_tree: Arc::clone(&self.accessibility_latest_tree),
+            },
+            DiffyAccessibilityActions {
+                sender: self.accessibility_action_sender.clone(),
+                wake_proxy: self.wake_proxy.clone(),
+            },
+            DiffyAccessibilityDeactivation,
+        )
+    }
+
+    fn publish_accessibility_update(&mut self) {
+        let update = self
+            .ui_frame
+            .accessibility
+            .tree_update(self.state.focus.get(&self.state.store));
+        if let Ok(mut latest) = self.accessibility_latest_tree.lock() {
+            *latest = update.clone();
+        }
+        if let Some(adapter) = self.accessibility_adapter.as_mut() {
+            adapter.update_if_active(|| update);
+        }
+    }
+
+    fn process_accessibility_actions(&mut self) {
+        let requests: Vec<_> = self.accessibility_actions.try_iter().collect();
+        for request in requests {
+            self.handle_accessibility_request(request);
+        }
+    }
+
+    fn handle_accessibility_request(&mut self, request: ActionRequest) {
+        if request.target_tree != accesskit::TreeId::ROOT {
+            return;
+        }
+
+        let Some(action) = self
+            .ui_frame
+            .accessibility
+            .action_for(request.target_node)
+            .cloned()
+        else {
+            return;
+        };
+
+        match (request.action, action) {
+            (AxAction::Click, crate::ui::accessibility::AccessibilityAction::Click(action)) => {
+                self.dispatch_action(action);
+                self.mark_dirty();
+            }
+            (
+                AxAction::Focus,
+                crate::ui::accessibility::AccessibilityAction::Focus(target)
+                | crate::ui::accessibility::AccessibilityAction::TextValue(target),
+            ) => {
+                self.dispatch_action(AppAction::SetFocus(Some(target)).into());
+                self.mark_dirty();
+            }
+            (
+                AxAction::SetValue,
+                crate::ui::accessibility::AccessibilityAction::TextValue(target),
+            ) => {
+                if let Some(ActionData::Value(value)) = request.data {
+                    self.dispatch_action(AppAction::SetFocus(Some(target)).into());
+                    self.dispatch_action(TextEditAction::SelectAll.into());
+                    self.dispatch_action(TextEditAction::Paste(value.into()).into());
+                    self.mark_dirty();
+                }
+            }
+            (
+                AxAction::ReplaceSelectedText,
+                crate::ui::accessibility::AccessibilityAction::TextValue(target),
+            ) => {
+                if let Some(ActionData::Value(value)) = request.data {
+                    self.dispatch_action(AppAction::SetFocus(Some(target)).into());
+                    self.dispatch_action(TextEditAction::Paste(value.into()).into());
+                    self.mark_dirty();
+                }
+            }
+            (
+                AxAction::ScrollDown | AxAction::ScrollUp,
+                crate::ui::accessibility::AccessibilityAction::Scroll(builder),
+            ) => {
+                let delta = if request.action == AxAction::ScrollDown {
+                    3
+                } else {
+                    -3
+                };
+                self.dispatch_action(builder.build(delta));
+                self.mark_dirty();
+            }
+            _ => {}
+        }
     }
 
     fn tick_update_polling(&mut self, now: Instant) {
@@ -535,8 +664,40 @@ fn app_window_icon() -> Option<Icon> {
     }
 }
 
+struct DiffyAccessibilityActivation {
+    latest_tree: Arc<Mutex<TreeUpdate>>,
+}
+
+impl ActivationHandler for DiffyAccessibilityActivation {
+    fn request_initial_tree(&mut self) -> Option<TreeUpdate> {
+        self.latest_tree.lock().ok().map(|tree| tree.clone())
+    }
+}
+
+struct DiffyAccessibilityActions {
+    sender: Sender<ActionRequest>,
+    wake_proxy: Option<EventLoopProxy<()>>,
+}
+
+impl ActionHandler for DiffyAccessibilityActions {
+    fn do_action(&mut self, request: ActionRequest) {
+        if self.sender.send(request).is_ok() {
+            if let Some(wake_proxy) = &self.wake_proxy {
+                let _ = wake_proxy.send_event(());
+            }
+        }
+    }
+}
+
+struct DiffyAccessibilityDeactivation;
+
+impl DeactivationHandler for DiffyAccessibilityDeactivation {
+    fn deactivate_accessibility(&mut self) {}
+}
+
 impl ApplicationHandler for NativeApp {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+        self.process_accessibility_actions();
         self.process_runtime_events();
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
@@ -553,10 +714,13 @@ impl ApplicationHandler for NativeApp {
                 let window = Arc::new(window);
                 let size = window.inner_size();
                 let scale_factor = window.scale_factor();
+                let accessibility_adapter = self.create_accessibility_adapter(event_loop, &window);
                 match Renderer::new(window.clone(), &self.font_settings) {
                     Ok(mut renderer) => {
                         renderer.resize(size.width, size.height, scale_factor);
                         self.renderer = Some(renderer);
+                        self.accessibility_adapter = Some(accessibility_adapter);
+                        window.set_visible(true);
                         self.window = Some(window);
                     }
                     Err(error) => {
@@ -585,6 +749,12 @@ impl ApplicationHandler for NativeApp {
     ) {
         if self.window_id() != Some(window_id) {
             return;
+        }
+
+        if let (Some(adapter), Some(window)) =
+            (self.accessibility_adapter.as_mut(), self.window.as_ref())
+        {
+            adapter.process_event(window, &event);
         }
 
         match event {
@@ -638,6 +808,7 @@ impl ApplicationHandler for NativeApp {
                 let frame = self.build_frame();
                 self.ui_frame = frame;
                 self.paint_tooltip();
+                self.publish_accessibility_update();
                 for (target, editor) in [
                     (FocusTarget::CommitEditor, &mut self.state.commit_editor),
                     (
@@ -723,6 +894,7 @@ impl ApplicationHandler for NativeApp {
             return;
         }
         let now = Instant::now();
+        self.process_accessibility_actions();
         self.tick_update_polling(now);
         let prior_cursor_blink_epoch = self.state.cursor_blink_epoch();
         self.state.update_time(
@@ -858,7 +1030,7 @@ mod tests {
             None,
             true,
         );
-        NativeApp::new(state, runtime, ThemeRegistry::load())
+        NativeApp::new(state, runtime, ThemeRegistry::load(), None)
     }
 
     fn route_input_event(app: &mut NativeApp, event: InputEvent) -> InputOutcome {

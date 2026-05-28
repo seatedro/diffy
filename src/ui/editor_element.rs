@@ -1,6 +1,7 @@
 use crate::editor::SelectionRect;
 use crate::render::scene::{EditorTextSlot, Rect};
 use crate::render::{RoundedRectPrimitive, Scene};
+use crate::ui::accessibility::{AccessibilityAction, AccessibilityNode};
 use crate::ui::design::{Alpha, Sz};
 use crate::ui::element::*;
 use crate::ui::state::FocusTarget;
@@ -144,6 +145,11 @@ impl Element for TextEditorElement {
         cx: &mut ElementContext,
     ) {
         let theme = cx.theme;
+        let accessibility_label = if self.placeholder.is_empty() {
+            format!("{:?}", self.focus_target)
+        } else {
+            self.placeholder.clone()
+        };
         let font_size = self.font_size;
         let line_height = font_size * 1.35;
         let text_area_w = bounds.width.max(0.0);
@@ -222,6 +228,15 @@ impl Element for TextEditorElement {
         scene.pop_clip();
 
         let target = self.focus_target;
+        cx.accessibility.push(
+            AccessibilityNode::new(
+                format!("text-editor:{target:?}"),
+                accesskit::Role::MultilineTextInput,
+                bounds.into(),
+            )
+            .label(accessibility_label)
+            .action(AccessibilityAction::Focus(target)),
+        );
         cx.text_input_hit_areas.push(TextInputHitArea {
             bounds: bounds.into(),
             text_x,

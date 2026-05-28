@@ -9,6 +9,7 @@ commands:
   once        run the default app check once
   watch       rerun the default app check when source files change
   run         run the app through cargo
+  app         build, install, and launch Diffy Dev.app
   test        run the app library tests
   clippy      run clippy for the app crate
   fmt         check formatting
@@ -29,6 +30,9 @@ case "$cmd" in
     ;;
   run)
     cargo run "$@"
+    ;;
+  app)
+    scripts/install-macos-dev-app.sh "$@"
     ;;
   test)
     cargo test -p diffy --lib "$@"

@@ -71,7 +71,10 @@ impl RenderOnce for Checkbox {
             </div>
         };
 
+        let label_text = self.label;
+        let accessibility_label = label_text.clone().unwrap_or_else(|| "Checkbox".to_owned());
         let click_action = self.on_toggle.filter(|_| !self.disabled);
+        let accessibility_id = format!("checkbox:{:?}:{accessibility_label}", click_action);
         let label_color = if self.disabled {
             tc.text_muted
         } else {
@@ -80,9 +83,14 @@ impl RenderOnce for Checkbox {
 
         view! {
             <div class="flex-row items-center" gap={m.spacing_sm}
+                 accessibility_role={accesskit::Role::CheckBox}
+                 accessibility_id={accessibility_id}
+                 accessibility_label={accessibility_label}
+                 accessibility_toggled={self.checked}
+                 accessibility_disabled={self.disabled}
                  @when {click_action.is_some()} { on_click={click_action.unwrap()} }>
                 {check_box}
-                if let Some(label_text) = self.label {
+                if let Some(label_text) = label_text {
                     <text class="text-sm" color={label_color}>{label_text}</text>
                 }
             </div>
@@ -172,7 +180,10 @@ impl RenderOnce for Toggle {
             </div>
         };
 
+        let label_text = self.label;
+        let accessibility_label = label_text.clone().unwrap_or_else(|| "Toggle".to_owned());
         let click_action = self.on_toggle.filter(|_| !self.disabled);
+        let accessibility_id = format!("toggle:{:?}:{accessibility_label}", click_action);
         let label_color = if self.disabled {
             tc.text_muted
         } else {
@@ -181,9 +192,14 @@ impl RenderOnce for Toggle {
 
         view! {
             <div class="flex-row items-center" gap={m.spacing_sm}
+                 accessibility_role={accesskit::Role::Switch}
+                 accessibility_id={accessibility_id}
+                 accessibility_label={accessibility_label}
+                 accessibility_toggled={self.on}
+                 accessibility_disabled={self.disabled}
                  @when {click_action.is_some()} { on_click={click_action.unwrap()} }>
                 {track}
-                if let Some(label_text) = self.label {
+                if let Some(label_text) = label_text {
                     <text class="text-sm" color={label_color}>{label_text}</text>
                 }
             </div>

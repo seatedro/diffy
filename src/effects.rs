@@ -3,7 +3,11 @@ use std::sync::Arc;
 
 use crate::ai::Provider;
 use crate::core::compare::{CompareFileStatsTarget, CompareFileSummary, RendererKind};
-use crate::core::forge::github::CreatePullRequestReviewComment;
+use crate::core::forge::github::{
+    CreatePullRequestReview, CreatePullRequestReviewComment, CreatePullRequestReviewReply,
+    SubmitPullRequestReview, UpdatePullRequestReviewComment,
+};
+use crate::core::review::{ReviewDecision, ReviewSession, ReviewTarget};
 use crate::core::syntax::annotator::SyntaxRowWindow;
 use crate::core::update::{AvailableUpdate, StagedUpdate};
 use crate::core::vcs::model::{
@@ -262,12 +266,101 @@ pub enum GitHubEffect {
         number: i32,
         github_token: Option<String>,
     },
+    FetchPullRequestReviewData {
+        owner: String,
+        repo: String,
+        number: i32,
+        github_token: Option<String>,
+    },
     CreatePullRequestReviewComment {
         owner: String,
         repo: String,
         number: i32,
         github_token: Option<String>,
         comment: CreatePullRequestReviewComment,
+    },
+    CreatePullRequestReviewReply {
+        owner: String,
+        repo: String,
+        number: i32,
+        comment_id: i64,
+        github_token: Option<String>,
+        reply: CreatePullRequestReviewReply,
+    },
+    UpdatePullRequestReviewComment {
+        owner: String,
+        repo: String,
+        number: i32,
+        comment_id: i64,
+        github_token: Option<String>,
+        update: UpdatePullRequestReviewComment,
+    },
+    DeletePullRequestReviewComment {
+        owner: String,
+        repo: String,
+        number: i32,
+        comment_id: i64,
+        github_token: Option<String>,
+    },
+    CreatePullRequestReview {
+        owner: String,
+        repo: String,
+        number: i32,
+        github_token: Option<String>,
+        review: CreatePullRequestReview,
+    },
+    SubmitReviewSessionDrafts {
+        session: ReviewSession,
+        decision: ReviewDecision,
+        body: Option<String>,
+        github_token: Option<String>,
+    },
+    AddPullRequestReviewThreadReply {
+        owner: String,
+        repo: String,
+        number: i32,
+        thread_node_id: String,
+        review_node_id: Option<String>,
+        github_token: Option<String>,
+        body: String,
+    },
+    UpdatePullRequestReviewCommentGraphql {
+        owner: String,
+        repo: String,
+        number: i32,
+        comment_node_id: String,
+        github_token: Option<String>,
+        body: String,
+    },
+    DeletePullRequestReviewCommentGraphql {
+        owner: String,
+        repo: String,
+        number: i32,
+        comment_node_id: String,
+        github_token: Option<String>,
+    },
+    SetPullRequestReviewThreadResolution {
+        owner: String,
+        repo: String,
+        number: i32,
+        thread_node_id: String,
+        github_token: Option<String>,
+        resolved: bool,
+    },
+    SubmitPullRequestReview {
+        owner: String,
+        repo: String,
+        number: i32,
+        review_id: i64,
+        github_token: Option<String>,
+        submit: SubmitPullRequestReview,
+    },
+    LoadReviewSession {
+        target: ReviewTarget,
+        pull_request: crate::core::forge::github::PullRequestInfo,
+    },
+    SaveReviewSession {
+        session: ReviewSession,
     },
     LoadGitHubToken,
     SaveGitHubToken(String),

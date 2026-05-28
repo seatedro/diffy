@@ -436,6 +436,37 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
+            Effect::GitHub(GitHubEffect::FetchPullRequestReviewData {
+                owner,
+                repo,
+                number,
+                github_token,
+            }) => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services.fetch_pull_request_review_data(
+                        &owner,
+                        &repo,
+                        number,
+                        github_token,
+                    ) {
+                        Ok(data) => GitHubEvent::PullRequestReviewDataLoaded {
+                            owner,
+                            repo,
+                            number,
+                            data,
+                        },
+                        Err(error) => GitHubEvent::PullRequestReviewDataLoadFailed {
+                            owner,
+                            repo,
+                            number,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
             Effect::GitHub(GitHubEffect::CreatePullRequestReviewComment {
                 owner,
                 repo,
@@ -463,6 +494,383 @@ impl EffectRunner {
                             owner,
                             repo,
                             number,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
+            Effect::GitHub(GitHubEffect::CreatePullRequestReviewReply {
+                owner,
+                repo,
+                number,
+                comment_id,
+                github_token,
+                reply,
+            }) => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services.create_pull_request_review_reply(
+                        &owner,
+                        &repo,
+                        number,
+                        comment_id,
+                        github_token,
+                        &reply,
+                    ) {
+                        Ok(comment) => GitHubEvent::PullRequestReviewCommentReplied {
+                            owner,
+                            repo,
+                            number,
+                            comment,
+                        },
+                        Err(error) => GitHubEvent::PullRequestReviewCommentReplyFailed {
+                            owner,
+                            repo,
+                            number,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
+            Effect::GitHub(GitHubEffect::UpdatePullRequestReviewComment {
+                owner,
+                repo,
+                number,
+                comment_id,
+                github_token,
+                update,
+            }) => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services.update_pull_request_review_comment(
+                        &owner,
+                        &repo,
+                        comment_id,
+                        github_token,
+                        &update,
+                    ) {
+                        Ok(comment) => GitHubEvent::PullRequestReviewCommentUpdated {
+                            owner,
+                            repo,
+                            number,
+                            comment,
+                        },
+                        Err(error) => GitHubEvent::PullRequestReviewCommentUpdateFailed {
+                            owner,
+                            repo,
+                            number,
+                            comment_id,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
+            Effect::GitHub(GitHubEffect::DeletePullRequestReviewComment {
+                owner,
+                repo,
+                number,
+                comment_id,
+                github_token,
+            }) => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services.delete_pull_request_review_comment(
+                        &owner,
+                        &repo,
+                        comment_id,
+                        github_token,
+                    ) {
+                        Ok(()) => GitHubEvent::PullRequestReviewCommentDeleted {
+                            owner,
+                            repo,
+                            number,
+                            comment_id,
+                        },
+                        Err(error) => GitHubEvent::PullRequestReviewCommentDeleteFailed {
+                            owner,
+                            repo,
+                            number,
+                            comment_id,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
+            Effect::GitHub(GitHubEffect::CreatePullRequestReview {
+                owner,
+                repo,
+                number,
+                github_token,
+                review,
+            }) => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services.create_pull_request_review(
+                        &owner,
+                        &repo,
+                        number,
+                        github_token,
+                        &review,
+                    ) {
+                        Ok(review) => GitHubEvent::PullRequestReviewCreated {
+                            owner,
+                            repo,
+                            number,
+                            review,
+                        },
+                        Err(error) => GitHubEvent::PullRequestReviewCreateFailed {
+                            owner,
+                            repo,
+                            number,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
+            Effect::GitHub(GitHubEffect::SubmitReviewSessionDrafts {
+                session,
+                decision,
+                body,
+                github_token,
+            }) => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let owner = session.target.owner.clone();
+                    let repo = session.target.repo.clone();
+                    let number = session.target.number;
+                    let draft_ids = session
+                        .pending_drafts()
+                        .map(|draft| draft.id)
+                        .collect::<Vec<_>>();
+                    let event = match services.submit_review_session_drafts(
+                        &session,
+                        decision,
+                        body,
+                        github_token,
+                    ) {
+                        Ok(review) => GitHubEvent::PullRequestReviewDraftsSubmitted {
+                            owner,
+                            repo,
+                            number,
+                            review,
+                            draft_ids,
+                        },
+                        Err(error) => GitHubEvent::PullRequestReviewDraftsSubmitFailed {
+                            owner,
+                            repo,
+                            number,
+                            draft_ids,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
+            Effect::GitHub(GitHubEffect::AddPullRequestReviewThreadReply {
+                owner,
+                repo,
+                number,
+                thread_node_id,
+                review_node_id,
+                github_token,
+                body,
+            }) => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services.add_pull_request_review_thread_reply(
+                        &thread_node_id,
+                        review_node_id.as_deref(),
+                        github_token,
+                        &body,
+                    ) {
+                        Ok(comment) => GitHubEvent::PullRequestReviewThreadReplyAdded {
+                            owner,
+                            repo,
+                            number,
+                            thread_node_id,
+                            comment,
+                        },
+                        Err(error) => GitHubEvent::PullRequestReviewThreadReplyAddFailed {
+                            owner,
+                            repo,
+                            number,
+                            thread_node_id,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
+            Effect::GitHub(GitHubEffect::UpdatePullRequestReviewCommentGraphql {
+                owner,
+                repo,
+                number,
+                comment_node_id,
+                github_token,
+                body,
+            }) => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services.update_pull_request_review_comment_graphql(
+                        &comment_node_id,
+                        github_token,
+                        &body,
+                    ) {
+                        Ok(comment) => GitHubEvent::PullRequestReviewCommentGraphqlUpdated {
+                            owner,
+                            repo,
+                            number,
+                            comment,
+                        },
+                        Err(error) => GitHubEvent::PullRequestReviewCommentGraphqlUpdateFailed {
+                            owner,
+                            repo,
+                            number,
+                            comment_node_id,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
+            Effect::GitHub(GitHubEffect::DeletePullRequestReviewCommentGraphql {
+                owner,
+                repo,
+                number,
+                comment_node_id,
+                github_token,
+            }) => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services
+                        .delete_pull_request_review_comment_graphql(&comment_node_id, github_token)
+                    {
+                        Ok(comment) => GitHubEvent::PullRequestReviewCommentGraphqlDeleted {
+                            owner,
+                            repo,
+                            number,
+                            comment_node_id,
+                            comment,
+                        },
+                        Err(error) => GitHubEvent::PullRequestReviewCommentGraphqlDeleteFailed {
+                            owner,
+                            repo,
+                            number,
+                            comment_node_id,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
+            Effect::GitHub(GitHubEffect::SetPullRequestReviewThreadResolution {
+                owner,
+                repo,
+                number,
+                thread_node_id,
+                github_token,
+                resolved,
+            }) => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services.set_pull_request_review_thread_resolution(
+                        &thread_node_id,
+                        github_token,
+                        resolved,
+                    ) {
+                        Ok(resolution) => GitHubEvent::PullRequestReviewThreadResolutionChanged {
+                            owner,
+                            repo,
+                            number,
+                            resolution,
+                        },
+                        Err(error) => GitHubEvent::PullRequestReviewThreadResolutionChangeFailed {
+                            owner,
+                            repo,
+                            number,
+                            thread_node_id,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
+            Effect::GitHub(GitHubEffect::SubmitPullRequestReview {
+                owner,
+                repo,
+                number,
+                review_id,
+                github_token,
+                submit,
+            }) => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services.submit_pull_request_review(
+                        &owner,
+                        &repo,
+                        number,
+                        review_id,
+                        github_token,
+                        &submit,
+                    ) {
+                        Ok(review) => GitHubEvent::PullRequestReviewSubmitted {
+                            owner,
+                            repo,
+                            number,
+                            review,
+                        },
+                        Err(error) => GitHubEvent::PullRequestReviewSubmitFailed {
+                            owner,
+                            repo,
+                            number,
+                            review_id,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
+            Effect::GitHub(GitHubEffect::LoadReviewSession {
+                target,
+                pull_request,
+            }) => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services.load_review_session(target.clone(), pull_request) {
+                        Ok(session) => GitHubEvent::ReviewSessionLoaded { target, session },
+                        Err(error) => GitHubEvent::ReviewSessionLoadFailed {
+                            target,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
+            Effect::GitHub(GitHubEffect::SaveReviewSession { session }) => {
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let key = session.key();
+                    let event = match services.save_review_session(&session) {
+                        Ok(key) => GitHubEvent::ReviewSessionSaved { key },
+                        Err(error) => GitHubEvent::ReviewSessionSaveFailed {
+                            key,
                             message: error.to_string(),
                         },
                     };

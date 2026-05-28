@@ -3,6 +3,7 @@ pub mod error;
 pub mod forge;
 pub mod frecency;
 pub mod http;
+pub mod review;
 pub mod search;
 pub mod syntax;
 pub mod text;

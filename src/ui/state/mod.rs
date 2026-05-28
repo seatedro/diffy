@@ -32,6 +32,7 @@ use crate::core::forge::github::{
     PullRequestReviewComment,
 };
 use crate::core::frecency::FrecencyStore;
+use crate::core::review::{ReviewSession, ReviewTarget};
 use crate::core::syntax::Highlighter;
 use crate::core::syntax::annotator::{SyntaxLineTokens, SyntaxRowWindow};
 use crate::core::text::TokenBuffer;
@@ -2672,6 +2673,7 @@ pub struct PullRequestState {
     pub pending_confirm: Option<PrKey>,
     pub active: Option<PrKey>,
     pub review_comments: HashMap<PrKey, PrReviewCommentsEntry>,
+    pub review_sessions: HashMap<PrKey, ReviewSession>,
     pub review_composer: ReviewCommentComposerState,
 }
 

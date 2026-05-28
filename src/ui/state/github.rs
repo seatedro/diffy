@@ -1,4 +1,5 @@
 use crate::actions::GitHubAction;
+use crate::core::review::{ReviewResolution, ReviewThreadId};
 use crate::effects::{Effect, GitHubEffect, UiEffect};
 use crate::events::GitHubEvent;
 use crate::ui::editor::render_doc::{INVALID_U32, RenderLine};
@@ -27,6 +28,7 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
             let key: PrKey = crate::core::forge::github::parse_pr_url(&url)
                 .map(|p| (p.owner, p.repo, p.number))
                 .unwrap_or_else(|| (String::new(), String::new(), info.number));
+            let target = ReviewTarget::github(key.0.clone(), key.1.clone(), key.2);
             state.github.pull_request.cache.update(&state.store, |c| {
                 let entry = c.entry(key.clone()).or_insert_with(|| PrCacheEntry {
                     meta: PrPeekMeta::Ready(info.clone()),
@@ -50,8 +52,35 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
                     entry.status = AsyncStatus::Loading;
                     entry.message = None;
                 });
+            state
+                .github
+                .pull_request
+                .review_sessions
+                .update(&state.store, |sessions| {
+                    let session = sessions.entry(key.clone()).or_insert_with(|| {
+                        ReviewSession::new(
+                            ReviewTarget::github(key.0.clone(), key.1.clone(), key.2),
+                            info.clone(),
+                        )
+                    });
+                    session.pull_request = info.clone();
+                    session.status = crate::core::review::ReviewSessionStatus::Loading;
+                    session.status_message = None;
+                });
             let mut effects: Vec<Effect> = vec![
+                GitHubEffect::LoadReviewSession {
+                    target: target.clone(),
+                    pull_request: info.clone(),
+                }
+                .into(),
                 GitHubEffect::FetchPullRequestReviewComments {
+                    owner: key.0.clone(),
+                    repo: key.1.clone(),
+                    number: key.2,
+                    github_token: state.github_access_token.clone(),
+                }
+                .into(),
+                GitHubEffect::FetchPullRequestReviewData {
                     owner: key.0.clone(),
                     repo: key.1.clone(),
                     number: key.2,
@@ -146,13 +175,20 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
             comments,
         } => {
             let key: PrKey = (owner, repo, number);
+            let info = state.github.pull_request.cache.with(&state.store, |cache| {
+                match cache.get(&key).map(|entry| &entry.meta) {
+                    Some(PrPeekMeta::Ready(info)) => Some(info.clone()),
+                    _ => None,
+                }
+            });
+            let session_comments = comments.clone();
             state
                 .github
                 .pull_request
                 .review_comments
                 .update(&state.store, |map| {
                     map.insert(
-                        key,
+                        key.clone(),
                         PrReviewCommentsEntry {
                             status: AsyncStatus::Ready,
                             comments,
@@ -160,6 +196,71 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
                         },
                     );
                 });
+            if let Some(info) = info {
+                state
+                    .github
+                    .pull_request
+                    .review_sessions
+                    .update(&state.store, |sessions| {
+                        let session = sessions.entry(key.clone()).or_insert_with(|| {
+                            ReviewSession::new(
+                                ReviewTarget::github(key.0.clone(), key.1.clone(), key.2),
+                                info,
+                            )
+                        });
+                        session.replace_github_comments(session_comments);
+                    });
+            }
+            save_review_session_effect(state, &key)
+        }
+        GitHubEvent::PullRequestReviewDataLoaded {
+            owner,
+            repo,
+            number,
+            data,
+        } => {
+            let key: PrKey = (owner, repo, number);
+            let info = state.github.pull_request.cache.with(&state.store, |cache| {
+                match cache.get(&key).map(|entry| &entry.meta) {
+                    Some(PrPeekMeta::Ready(info)) => Some(info.clone()),
+                    _ => None,
+                }
+            });
+            state
+                .github
+                .pull_request
+                .review_sessions
+                .update(&state.store, |sessions| {
+                    if let Some(session) = sessions.get_mut(&key) {
+                        session.apply_github_review_data(data);
+                    } else if let Some(info) = info {
+                        let mut session = ReviewSession::new(
+                            ReviewTarget::github(key.0.clone(), key.1.clone(), key.2),
+                            info,
+                        );
+                        session.apply_github_review_data(data);
+                        sessions.insert(key.clone(), session);
+                    }
+                });
+            save_review_session_effect(state, &key)
+        }
+        GitHubEvent::PullRequestReviewDataLoadFailed {
+            owner,
+            repo,
+            number,
+            message,
+        } => {
+            let key: PrKey = (owner, repo, number);
+            state
+                .github
+                .pull_request
+                .review_sessions
+                .update(&state.store, |sessions| {
+                    if let Some(session) = sessions.get_mut(&key) {
+                        session.status_message = Some(message.clone());
+                    }
+                });
+            tracing::warn!("failed to fetch pull request review data: {message}");
             Vec::new()
         }
         GitHubEvent::PullRequestReviewCommentsLoadFailed {
@@ -174,9 +275,19 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
                 .pull_request
                 .review_comments
                 .update(&state.store, |map| {
-                    let entry = map.entry(key).or_default();
+                    let entry = map.entry(key.clone()).or_default();
                     entry.status = AsyncStatus::Failed;
                     entry.message = Some(message.clone());
+                });
+            state
+                .github
+                .pull_request
+                .review_sessions
+                .update(&state.store, |sessions| {
+                    if let Some(session) = sessions.get_mut(&key) {
+                        session.status = crate::core::review::ReviewSessionStatus::Failed;
+                        session.status_message = Some(message.clone());
+                    }
                 });
             tracing::warn!("failed to fetch pull request review comments: {message}");
             Vec::new()
@@ -193,10 +304,19 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
                 .pull_request
                 .review_comments
                 .update(&state.store, |map| {
-                    let entry = map.entry(key).or_default();
+                    let entry = map.entry(key.clone()).or_default();
                     entry.status = AsyncStatus::Ready;
                     entry.message = None;
-                    entry.comments.push(comment);
+                    entry.comments.push(comment.clone());
+                });
+            state
+                .github
+                .pull_request
+                .review_sessions
+                .update(&state.store, |sessions| {
+                    if let Some(session) = sessions.get_mut(&key) {
+                        session.apply_github_comment(comment.clone());
+                    }
                 });
             state
                 .github
@@ -210,7 +330,7 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
                 .update(&state.store, |ls| ls.clear());
             state.set_focus(Some(FocusTarget::Editor));
             state.push_info("Review comment posted.");
-            Vec::new()
+            save_review_session_effect(state, &key)
         }
         GitHubEvent::PullRequestReviewCommentCreateFailed {
             owner: _,
@@ -227,6 +347,389 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
                     composer.message = Some(message.clone());
                 });
             state.push_error(&message);
+            Vec::new()
+        }
+        GitHubEvent::PullRequestReviewCommentReplied {
+            owner,
+            repo,
+            number,
+            comment,
+        } => {
+            let key: PrKey = (owner, repo, number);
+            state
+                .github
+                .pull_request
+                .review_comments
+                .update(&state.store, |map| {
+                    let entry = map.entry(key.clone()).or_default();
+                    entry.status = AsyncStatus::Ready;
+                    entry.message = None;
+                    entry.comments.push(comment.clone());
+                });
+            state
+                .github
+                .pull_request
+                .review_sessions
+                .update(&state.store, |sessions| {
+                    if let Some(session) = sessions.get_mut(&key) {
+                        session.apply_github_comment(comment.clone());
+                    }
+                });
+            save_review_session_effect(state, &key)
+        }
+        GitHubEvent::PullRequestReviewCommentReplyFailed {
+            owner: _,
+            repo: _,
+            number: _,
+            message,
+        } => {
+            state.push_error(&message);
+            Vec::new()
+        }
+        GitHubEvent::PullRequestReviewCommentUpdated {
+            owner,
+            repo,
+            number,
+            comment,
+        } => {
+            let key: PrKey = (owner, repo, number);
+            state
+                .github
+                .pull_request
+                .review_comments
+                .update(&state.store, |map| {
+                    if let Some(entry) = map.get_mut(&key)
+                        && let Some(existing) = entry
+                            .comments
+                            .iter_mut()
+                            .find(|existing| existing.id == comment.id)
+                    {
+                        *existing = comment;
+                    }
+                });
+            vec![
+                GitHubEffect::FetchPullRequestReviewData {
+                    owner: key.0.clone(),
+                    repo: key.1.clone(),
+                    number: key.2,
+                    github_token: state.github_access_token.clone(),
+                }
+                .into(),
+            ]
+        }
+        GitHubEvent::PullRequestReviewCommentUpdateFailed {
+            owner: _,
+            repo: _,
+            number: _,
+            comment_id: _,
+            message,
+        } => {
+            state.push_error(&message);
+            Vec::new()
+        }
+        GitHubEvent::PullRequestReviewCommentDeleted {
+            owner,
+            repo,
+            number,
+            comment_id,
+        } => {
+            let key: PrKey = (owner, repo, number);
+            state
+                .github
+                .pull_request
+                .review_comments
+                .update(&state.store, |map| {
+                    if let Some(entry) = map.get_mut(&key) {
+                        entry.comments.retain(|comment| comment.id != comment_id);
+                    }
+                });
+            vec![
+                GitHubEffect::FetchPullRequestReviewData {
+                    owner: key.0.clone(),
+                    repo: key.1.clone(),
+                    number: key.2,
+                    github_token: state.github_access_token.clone(),
+                }
+                .into(),
+            ]
+        }
+        GitHubEvent::PullRequestReviewCommentDeleteFailed {
+            owner: _,
+            repo: _,
+            number: _,
+            comment_id: _,
+            message,
+        } => {
+            state.push_error(&message);
+            Vec::new()
+        }
+        GitHubEvent::PullRequestReviewCreated {
+            owner,
+            repo,
+            number,
+            review: _,
+        } => {
+            let key: PrKey = (owner, repo, number);
+            state
+                .github
+                .pull_request
+                .review_sessions
+                .update(&state.store, |sessions| {
+                    if let Some(session) = sessions.get_mut(&key) {
+                        session.status = crate::core::review::ReviewSessionStatus::Ready;
+                        session.status_message = None;
+                    }
+                });
+            vec![
+                GitHubEffect::FetchPullRequestReviewData {
+                    owner: key.0.clone(),
+                    repo: key.1.clone(),
+                    number: key.2,
+                    github_token: state.github_access_token.clone(),
+                }
+                .into(),
+            ]
+        }
+        GitHubEvent::PullRequestReviewCreateFailed {
+            owner,
+            repo,
+            number,
+            message,
+        } => {
+            let key: PrKey = (owner, repo, number);
+            state
+                .github
+                .pull_request
+                .review_sessions
+                .update(&state.store, |sessions| {
+                    if let Some(session) = sessions.get_mut(&key) {
+                        session.status = crate::core::review::ReviewSessionStatus::Failed;
+                        session.status_message = Some(message.clone());
+                    }
+                });
+            state.push_error(&message);
+            Vec::new()
+        }
+        GitHubEvent::PullRequestReviewDraftsSubmitted {
+            owner,
+            repo,
+            number,
+            review: _,
+            draft_ids,
+        } => {
+            let key: PrKey = (owner, repo, number);
+            state
+                .github
+                .pull_request
+                .review_sessions
+                .update(&state.store, |sessions| {
+                    if let Some(session) = sessions.get_mut(&key) {
+                        session.status = crate::core::review::ReviewSessionStatus::Ready;
+                        session.status_message = None;
+                        for draft_id in &draft_ids {
+                            session.mark_draft_submitted(*draft_id, None);
+                        }
+                    }
+                });
+            let mut effects = save_review_session_effect(state, &key);
+            effects.push(
+                GitHubEffect::FetchPullRequestReviewData {
+                    owner: key.0.clone(),
+                    repo: key.1.clone(),
+                    number: key.2,
+                    github_token: state.github_access_token.clone(),
+                }
+                .into(),
+            );
+            effects
+        }
+        GitHubEvent::PullRequestReviewDraftsSubmitFailed {
+            owner,
+            repo,
+            number,
+            draft_ids,
+            message,
+        } => {
+            let key: PrKey = (owner, repo, number);
+            state
+                .github
+                .pull_request
+                .review_sessions
+                .update(&state.store, |sessions| {
+                    if let Some(session) = sessions.get_mut(&key) {
+                        session.status = crate::core::review::ReviewSessionStatus::Failed;
+                        session.status_message = Some(message.clone());
+                        for draft_id in &draft_ids {
+                            session.mark_draft_failed(*draft_id, message.clone());
+                        }
+                    }
+                });
+            state.push_error(&message);
+            save_review_session_effect(state, &key)
+        }
+        GitHubEvent::PullRequestReviewSubmitted {
+            owner,
+            repo,
+            number,
+            review: _,
+        } => {
+            let key: PrKey = (owner, repo, number);
+            state
+                .github
+                .pull_request
+                .review_sessions
+                .update(&state.store, |sessions| {
+                    if let Some(session) = sessions.get_mut(&key) {
+                        session.status = crate::core::review::ReviewSessionStatus::Ready;
+                        session.status_message = None;
+                    }
+                });
+            vec![
+                GitHubEffect::FetchPullRequestReviewData {
+                    owner: key.0.clone(),
+                    repo: key.1.clone(),
+                    number: key.2,
+                    github_token: state.github_access_token.clone(),
+                }
+                .into(),
+            ]
+        }
+        GitHubEvent::PullRequestReviewSubmitFailed {
+            owner,
+            repo,
+            number,
+            review_id: _,
+            message,
+        } => {
+            let key: PrKey = (owner, repo, number);
+            state
+                .github
+                .pull_request
+                .review_sessions
+                .update(&state.store, |sessions| {
+                    if let Some(session) = sessions.get_mut(&key) {
+                        session.status = crate::core::review::ReviewSessionStatus::Failed;
+                        session.status_message = Some(message.clone());
+                    }
+                });
+            state.push_error(&message);
+            Vec::new()
+        }
+        GitHubEvent::PullRequestReviewThreadReplyAdded {
+            owner,
+            repo,
+            number,
+            thread_node_id: _,
+            comment: _,
+        }
+        | GitHubEvent::PullRequestReviewCommentGraphqlUpdated {
+            owner,
+            repo,
+            number,
+            comment: _,
+        } => vec![
+            GitHubEffect::FetchPullRequestReviewData {
+                owner,
+                repo,
+                number,
+                github_token: state.github_access_token.clone(),
+            }
+            .into(),
+        ],
+        GitHubEvent::PullRequestReviewCommentGraphqlDeleted {
+            owner,
+            repo,
+            number,
+            comment_node_id: _,
+            comment: _,
+        } => vec![
+            GitHubEffect::FetchPullRequestReviewData {
+                owner,
+                repo,
+                number,
+                github_token: state.github_access_token.clone(),
+            }
+            .into(),
+        ],
+        GitHubEvent::PullRequestReviewThreadReplyAddFailed {
+            owner: _,
+            repo: _,
+            number: _,
+            thread_node_id: _,
+            message,
+        }
+        | GitHubEvent::PullRequestReviewCommentGraphqlUpdateFailed {
+            owner: _,
+            repo: _,
+            number: _,
+            comment_node_id: _,
+            message,
+        }
+        | GitHubEvent::PullRequestReviewCommentGraphqlDeleteFailed {
+            owner: _,
+            repo: _,
+            number: _,
+            comment_node_id: _,
+            message,
+        }
+        | GitHubEvent::PullRequestReviewThreadResolutionChangeFailed {
+            owner: _,
+            repo: _,
+            number: _,
+            thread_node_id: _,
+            message,
+        } => {
+            state.push_error(&message);
+            Vec::new()
+        }
+        GitHubEvent::PullRequestReviewThreadResolutionChanged {
+            owner,
+            repo,
+            number,
+            resolution,
+        } => {
+            let key: PrKey = (owner, repo, number);
+            let thread_id = ReviewThreadId::github_node(resolution.thread_node_id);
+            state
+                .github
+                .pull_request
+                .review_sessions
+                .update(&state.store, |sessions| {
+                    if let Some(session) = sessions.get_mut(&key) {
+                        session.mark_thread_resolution(
+                            &thread_id,
+                            if resolution.is_resolved {
+                                ReviewResolution::Resolved
+                            } else {
+                                ReviewResolution::Unresolved
+                            },
+                        );
+                    }
+                });
+            save_review_session_effect(state, &key)
+        }
+        GitHubEvent::ReviewSessionLoaded { target, session } => {
+            let key: PrKey = (target.owner, target.repo, target.number);
+            state
+                .github
+                .pull_request
+                .review_sessions
+                .update(&state.store, |sessions| {
+                    if let Some(current) = sessions.get_mut(&key) {
+                        current.merge_persisted_state(session);
+                    } else {
+                        sessions.insert(key, session);
+                    }
+                });
+            Vec::new()
+        }
+        GitHubEvent::ReviewSessionLoadFailed { target: _, message } => {
+            tracing::warn!("failed to load review session: {message}");
+            Vec::new()
+        }
+        GitHubEvent::ReviewSessionSaved { key: _ } => Vec::new(),
+        GitHubEvent::ReviewSessionSaveFailed { key: _, message } => {
+            tracing::warn!("failed to save review session: {message}");
             Vec::new()
         }
         GitHubEvent::DeviceFlowStarted(device_flow) => {
@@ -344,6 +847,11 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
                 state
                     .github
                     .pull_request
+                    .review_sessions
+                    .update(&state.store, |c| c.clear());
+                state
+                    .github
+                    .pull_request
                     .review_composer
                     .set(&state.store, ReviewCommentComposerState::default());
                 state.review_comment_editor.request_clear();
@@ -454,6 +962,10 @@ impl AppState {
                 self.github
                     .pull_request
                     .review_comments
+                    .update(&self.store, |c| c.clear());
+                self.github
+                    .pull_request
+                    .review_sessions
                     .update(&self.store, |c| c.clear());
                 self.github
                     .pull_request
@@ -683,6 +1195,21 @@ fn selected_review_range(
     }?
     .clone();
     Some((path, side, line, start_line))
+}
+
+fn save_review_session_effect(state: &AppState, key: &PrKey) -> Vec<Effect> {
+    state
+        .github
+        .pull_request
+        .review_sessions
+        .with(&state.store, |sessions| {
+            sessions
+                .get(key)
+                .cloned()
+                .map(|session| GitHubEffect::SaveReviewSession { session }.into())
+                .into_iter()
+                .collect()
+        })
 }
 
 #[cfg(test)]

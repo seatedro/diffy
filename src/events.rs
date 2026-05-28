@@ -2,8 +2,11 @@ use std::path::PathBuf;
 
 use crate::core::compare::CompareOutput;
 use crate::core::forge::github::{
-    DeviceFlowState, GitHubUser, PullRequestInfo, PullRequestReviewComment,
+    DeviceFlowState, GitHubPullRequestReviewData, GitHubPullRequestReviewThreadComment,
+    GitHubReviewThreadResolution, GitHubUser, PullRequestInfo, PullRequestReview,
+    PullRequestReviewComment,
 };
+use crate::core::review::{ReviewDraftId, ReviewSession, ReviewSessionKey, ReviewTarget};
 use crate::core::syntax::annotator::{SyntaxLineTokens, SyntaxRowWindow};
 use crate::core::update::{AvailableUpdate, StagedUpdate};
 use crate::core::vcs::model::{
@@ -315,6 +318,18 @@ pub enum GitHubEvent {
         number: i32,
         message: String,
     },
+    PullRequestReviewDataLoaded {
+        owner: String,
+        repo: String,
+        number: i32,
+        data: GitHubPullRequestReviewData,
+    },
+    PullRequestReviewDataLoadFailed {
+        owner: String,
+        repo: String,
+        number: i32,
+        message: String,
+    },
     PullRequestReviewCommentCreated {
         owner: String,
         repo: String,
@@ -325,6 +340,152 @@ pub enum GitHubEvent {
         owner: String,
         repo: String,
         number: i32,
+        message: String,
+    },
+    PullRequestReviewCommentReplied {
+        owner: String,
+        repo: String,
+        number: i32,
+        comment: PullRequestReviewComment,
+    },
+    PullRequestReviewCommentReplyFailed {
+        owner: String,
+        repo: String,
+        number: i32,
+        message: String,
+    },
+    PullRequestReviewCommentUpdated {
+        owner: String,
+        repo: String,
+        number: i32,
+        comment: PullRequestReviewComment,
+    },
+    PullRequestReviewCommentUpdateFailed {
+        owner: String,
+        repo: String,
+        number: i32,
+        comment_id: i64,
+        message: String,
+    },
+    PullRequestReviewCommentDeleted {
+        owner: String,
+        repo: String,
+        number: i32,
+        comment_id: i64,
+    },
+    PullRequestReviewCommentDeleteFailed {
+        owner: String,
+        repo: String,
+        number: i32,
+        comment_id: i64,
+        message: String,
+    },
+    PullRequestReviewCreated {
+        owner: String,
+        repo: String,
+        number: i32,
+        review: PullRequestReview,
+    },
+    PullRequestReviewCreateFailed {
+        owner: String,
+        repo: String,
+        number: i32,
+        message: String,
+    },
+    PullRequestReviewDraftsSubmitted {
+        owner: String,
+        repo: String,
+        number: i32,
+        review: PullRequestReview,
+        draft_ids: Vec<ReviewDraftId>,
+    },
+    PullRequestReviewDraftsSubmitFailed {
+        owner: String,
+        repo: String,
+        number: i32,
+        draft_ids: Vec<ReviewDraftId>,
+        message: String,
+    },
+    PullRequestReviewSubmitted {
+        owner: String,
+        repo: String,
+        number: i32,
+        review: PullRequestReview,
+    },
+    PullRequestReviewSubmitFailed {
+        owner: String,
+        repo: String,
+        number: i32,
+        review_id: i64,
+        message: String,
+    },
+    PullRequestReviewThreadReplyAdded {
+        owner: String,
+        repo: String,
+        number: i32,
+        thread_node_id: String,
+        comment: GitHubPullRequestReviewThreadComment,
+    },
+    PullRequestReviewThreadReplyAddFailed {
+        owner: String,
+        repo: String,
+        number: i32,
+        thread_node_id: String,
+        message: String,
+    },
+    PullRequestReviewCommentGraphqlUpdated {
+        owner: String,
+        repo: String,
+        number: i32,
+        comment: GitHubPullRequestReviewThreadComment,
+    },
+    PullRequestReviewCommentGraphqlUpdateFailed {
+        owner: String,
+        repo: String,
+        number: i32,
+        comment_node_id: String,
+        message: String,
+    },
+    PullRequestReviewCommentGraphqlDeleted {
+        owner: String,
+        repo: String,
+        number: i32,
+        comment_node_id: String,
+        comment: Option<GitHubPullRequestReviewThreadComment>,
+    },
+    PullRequestReviewCommentGraphqlDeleteFailed {
+        owner: String,
+        repo: String,
+        number: i32,
+        comment_node_id: String,
+        message: String,
+    },
+    PullRequestReviewThreadResolutionChanged {
+        owner: String,
+        repo: String,
+        number: i32,
+        resolution: GitHubReviewThreadResolution,
+    },
+    PullRequestReviewThreadResolutionChangeFailed {
+        owner: String,
+        repo: String,
+        number: i32,
+        thread_node_id: String,
+        message: String,
+    },
+    ReviewSessionLoaded {
+        target: ReviewTarget,
+        session: ReviewSession,
+    },
+    ReviewSessionLoadFailed {
+        target: ReviewTarget,
+        message: String,
+    },
+    ReviewSessionSaved {
+        key: ReviewSessionKey,
+    },
+    ReviewSessionSaveFailed {
+        key: ReviewSessionKey,
         message: String,
     },
     DeviceFlowStarted(DeviceFlowState),

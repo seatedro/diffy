@@ -10,10 +10,14 @@ use crate::apprt::runtime::RuntimeEventSender;
 use crate::core::compare::{ComparePhase, ProgressSink};
 use crate::core::error::{DiffyError, Result};
 use crate::core::forge::github::{
-    CreatePullRequestReviewComment, DeviceFlowState, GitHubApi, GitHubUser, PullRequestInfo,
-    PullRequestReviewComment, parse_pr_url, poll_for_token, start_device_flow,
+    CreatePullRequestReview, CreatePullRequestReviewComment, CreatePullRequestReviewReply,
+    DeviceFlowState, GitHubApi, GitHubPullRequestReviewData, GitHubPullRequestReviewThreadComment,
+    GitHubReviewThreadResolution, GitHubUser, PullRequestInfo, PullRequestReview,
+    PullRequestReviewComment, SubmitPullRequestReview, UpdatePullRequestReviewComment,
+    parse_pr_url, poll_for_token, start_device_flow,
 };
 use crate::core::http;
+use crate::core::review::{ReviewDecision, ReviewSession, ReviewSessionKey, ReviewTarget};
 use crate::core::syntax::annotator::FullFileSyntax;
 use crate::core::vcs::discovery;
 use crate::core::vcs::model::RevisionId;
@@ -26,12 +30,14 @@ use crate::events::{
     CompareHistoryReady, CompareStatsReady, StatusDiffFinished,
 };
 use crate::platform::persistence::{Settings, SettingsStore};
+use crate::platform::review_store::ReviewStore;
 use crate::platform::secrets::{self, AiKeyKind};
 use crate::ui::state::prepare_active_file;
 
 #[derive(Debug, Clone)]
 pub struct AppServices {
     settings_store: SettingsStore,
+    review_store: ReviewStore,
     syntax_cache: Arc<Mutex<FileSyntaxCache>>,
     syntax_cache_ready: Arc<Condvar>,
 }
@@ -119,8 +125,10 @@ impl FileSyntaxCache {
 
 impl AppServices {
     pub fn new(settings_store: SettingsStore) -> Self {
+        let review_store = ReviewStore::for_settings_store(&settings_store);
         Self {
             settings_store,
+            review_store,
             syntax_cache: Arc::new(Mutex::new(FileSyntaxCache::default())),
             syntax_cache_ready: Arc::new(Condvar::new()),
         }
@@ -518,6 +526,17 @@ impl AppServices {
         api.fetch_pull_request_review_comments(owner, repo, number)
     }
 
+    pub fn fetch_pull_request_review_data(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i32,
+        token: Option<String>,
+    ) -> Result<GitHubPullRequestReviewData> {
+        let token = token.unwrap_or_default();
+        GitHubApi::with_token(token).fetch_pull_request_review_data(owner, repo, number)
+    }
+
     pub fn create_pull_request_review_comment(
         &self,
         owner: &str,
@@ -529,6 +548,150 @@ impl AppServices {
         let token = token.unwrap_or_default();
         GitHubApi::with_token(token)
             .create_pull_request_review_comment(owner, repo, number, comment)
+    }
+
+    pub fn create_pull_request_review_reply(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i32,
+        comment_id: i64,
+        token: Option<String>,
+        reply: &CreatePullRequestReviewReply,
+    ) -> Result<PullRequestReviewComment> {
+        let token = token.unwrap_or_default();
+        GitHubApi::with_token(token)
+            .create_pull_request_review_reply(owner, repo, number, comment_id, reply)
+    }
+
+    pub fn update_pull_request_review_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: i64,
+        token: Option<String>,
+        update: &UpdatePullRequestReviewComment,
+    ) -> Result<PullRequestReviewComment> {
+        let token = token.unwrap_or_default();
+        GitHubApi::with_token(token)
+            .update_pull_request_review_comment(owner, repo, comment_id, update)
+    }
+
+    pub fn delete_pull_request_review_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: i64,
+        token: Option<String>,
+    ) -> Result<()> {
+        let token = token.unwrap_or_default();
+        GitHubApi::with_token(token).delete_pull_request_review_comment(owner, repo, comment_id)
+    }
+
+    pub fn create_pull_request_review(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i32,
+        token: Option<String>,
+        review: &CreatePullRequestReview,
+    ) -> Result<PullRequestReview> {
+        let token = token.unwrap_or_default();
+        GitHubApi::with_token(token).create_pull_request_review(owner, repo, number, review)
+    }
+
+    pub fn submit_review_session_drafts(
+        &self,
+        session: &ReviewSession,
+        decision: ReviewDecision,
+        body: Option<String>,
+        token: Option<String>,
+    ) -> Result<PullRequestReview> {
+        let review = session.build_github_review_request(decision, body)?;
+        let token = token.unwrap_or_default();
+        GitHubApi::with_token(token).create_pull_request_review(
+            &session.target.owner,
+            &session.target.repo,
+            session.target.number,
+            &review,
+        )
+    }
+
+    pub fn submit_pull_request_review(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i32,
+        review_id: i64,
+        token: Option<String>,
+        submit: &SubmitPullRequestReview,
+    ) -> Result<PullRequestReview> {
+        let token = token.unwrap_or_default();
+        GitHubApi::with_token(token)
+            .submit_pull_request_review(owner, repo, number, review_id, submit)
+    }
+
+    pub fn add_pull_request_review_thread_reply(
+        &self,
+        thread_node_id: &str,
+        review_node_id: Option<&str>,
+        token: Option<String>,
+        body: &str,
+    ) -> Result<GitHubPullRequestReviewThreadComment> {
+        let token = token.unwrap_or_default();
+        GitHubApi::with_token(token).add_pull_request_review_thread_reply(
+            thread_node_id,
+            review_node_id,
+            body,
+        )
+    }
+
+    pub fn update_pull_request_review_comment_graphql(
+        &self,
+        comment_node_id: &str,
+        token: Option<String>,
+        body: &str,
+    ) -> Result<GitHubPullRequestReviewThreadComment> {
+        let token = token.unwrap_or_default();
+        GitHubApi::with_token(token)
+            .update_pull_request_review_comment_graphql(comment_node_id, body)
+    }
+
+    pub fn delete_pull_request_review_comment_graphql(
+        &self,
+        comment_node_id: &str,
+        token: Option<String>,
+    ) -> Result<Option<GitHubPullRequestReviewThreadComment>> {
+        let token = token.unwrap_or_default();
+        GitHubApi::with_token(token).delete_pull_request_review_comment_graphql(comment_node_id)
+    }
+
+    pub fn set_pull_request_review_thread_resolution(
+        &self,
+        thread_node_id: &str,
+        token: Option<String>,
+        resolved: bool,
+    ) -> Result<GitHubReviewThreadResolution> {
+        let token = token.unwrap_or_default();
+        GitHubApi::with_token(token)
+            .set_pull_request_review_thread_resolution(thread_node_id, resolved)
+    }
+
+    pub fn load_review_session(
+        &self,
+        target: ReviewTarget,
+        pull_request: PullRequestInfo,
+    ) -> Result<ReviewSession> {
+        Ok(self
+            .review_store
+            .load_session(&target, &pull_request.head_sha)?
+            .unwrap_or_else(|| ReviewSession::new(target, pull_request)))
+    }
+
+    pub fn save_review_session(&self, session: &ReviewSession) -> Result<ReviewSessionKey> {
+        let key = session.key();
+        self.review_store.save_session(session)?;
+        Ok(key)
     }
 
     pub fn fetch_github_user(&self, token: &str) -> Result<GitHubUser> {

@@ -4,8 +4,8 @@ use std::time::Instant;
 use winit::window::{CursorIcon, Window};
 
 use crate::actions::{
-    AppAction, ContextMenuEntry, EditorAction, FileListAction, OverlayAction, RepositoryAction,
-    TextEditAction,
+    AppAction, ContextMenuEntry, EditorAction, FileListAction, GitHubAction, OverlayAction,
+    RepositoryAction, TextEditAction,
 };
 use crate::render::Renderer;
 use crate::ui::components::{TooltipSide, TooltipState};
@@ -134,7 +134,7 @@ impl InputSystem {
             let hovered = editor.hit_test_row(&editor_snap, x, y);
             if let Some(row) = hovered
                 && editor.is_block_row(row)
-                && let Some(block_action) = editor.block_action_for_row(row)
+                && let Some(block_action) = editor.block_action_for_row_at(row, x, y)
             {
                 return InputOutcome::actions(vec![
                     EditorAction::FocusViewport.into(),
@@ -178,6 +178,18 @@ impl InputSystem {
                         EditorAction::HoverViewportRow(hovered).into(),
                         EditorAction::ClearViewportTextSelection.into(),
                     ];
+                    let review_add_hit = if review_source {
+                        ui_frame.viewport_document.as_ref().and_then(|document| {
+                            editor.review_add_comment_button_at(
+                                &editor_snap,
+                                document.doc.as_ref(),
+                                x,
+                                y,
+                            )
+                        })
+                    } else {
+                        None
+                    };
                     if is_hunk_sep && single_file_status_actions {
                         let is_staged = matches!(
                             state.workspace.selected_change_bucket.get(&state.store),
@@ -188,6 +200,15 @@ impl InputSystem {
                         } else {
                             RepositoryAction::StageHunk.into()
                         });
+                    } else if let Some(review_line) = review_add_hit {
+                        self.review_line_drag_anchor = Some(review_line);
+                        actions.push(
+                            RepositoryAction::SetLineSelectionRange {
+                                row: review_line,
+                                anchor: review_line,
+                            }
+                            .into(),
+                        );
                     } else if is_hunk_sep {
                         // Hunk headers are not review-comment anchors.
                     } else if status_source && !single_file_status_actions {
@@ -246,6 +267,7 @@ impl InputSystem {
     ) -> InputOutcome {
         self.mouse_drag_target = None;
         self.viewport_text_drag_active = false;
+        self.review_line_drag_anchor = None;
 
         if input_is_blocked_by_overlay(state, ui_frame, x, y)
             || !ui_frame
@@ -269,6 +291,23 @@ impl InputSystem {
         };
 
         let editor_snap = state.editor.snapshot(&state.store);
+        if let Some(row) = editor.hit_test_row(&editor_snap, x, y)
+            && editor.is_block_row(row)
+            && let Some(entries) = editor.block_context_menu_for_row(row)
+        {
+            return InputOutcome::actions(vec![
+                EditorAction::FocusViewport.into(),
+                EditorAction::HoverViewportRow(Some(row)).into(),
+                EditorAction::ClearViewportTextSelection.into(),
+                AppAction::OpenContextMenu {
+                    entries,
+                    x: x.round() as i32,
+                    y: y.round() as i32,
+                }
+                .into(),
+            ]);
+        }
+
         let Some(point) = editor.hit_test_text_point(&editor_snap, document.doc.as_ref(), x, y)
         else {
             return if state.context_menu.visible {
@@ -380,6 +419,24 @@ impl InputSystem {
             actions.extend(capture.on_move(x, y));
         }
 
+        if let Some(anchor) = self.review_line_drag_anchor
+            && let Some(document) = ui_frame.viewport_document.as_ref()
+        {
+            let editor_snap = state.editor.snapshot(&state.store);
+            if let Some(row) = editor.hit_test_row(&editor_snap, x, y)
+                && let Some(line_index) =
+                    editor.review_comment_line_for_row(document.doc.as_ref(), row)
+            {
+                actions.push(
+                    RepositoryAction::SetLineSelectionRange {
+                        row: line_index,
+                        anchor,
+                    }
+                    .into(),
+                );
+            }
+        }
+
         if let Some(drag_target) = self.mouse_drag_target
             && let Some(hit_area) = ui_frame
                 .text_input_hit_areas
@@ -477,6 +534,15 @@ impl InputSystem {
             actions.push(EditorAction::HoverViewportRow(hovered_row).into());
         }
 
+        let review_add_hover = state.pull_request_review_enabled()
+            && ui_frame.viewport_document.as_ref().is_some_and(|document| {
+                let editor_snap = state.editor.snapshot(&state.store);
+                editor
+                    .review_add_comment_button_at(&editor_snap, document.doc.as_ref(), x, y)
+                    .is_some()
+            });
+
+        let block_row = hovered_row.filter(|&row| editor.is_block_row(row));
         let cursor_hint = if ui_frame
             .scrollbar_tracks
             .iter()
@@ -485,8 +551,19 @@ impl InputSystem {
             crate::ui::shell::CursorHint::Pointer
         } else if editor.file_header_path_at(x, y).is_some() {
             crate::ui::shell::CursorHint::Pointer
-        } else if hovered_row.is_some_and(|row| editor.is_block_row(row)) {
+        } else if review_add_hover {
             crate::ui::shell::CursorHint::Pointer
+        } else if let Some(row) = block_row {
+            // Whole-row-clickable blocks (e.g. expand chips) show a pointer anywhere on
+            // the row. Granular blocks (review thread cards, whose own `on_click` is None
+            // and whose controls register their own element hit regions) defer to the
+            // element hit cursor — so the pointer shows only over actual controls — and
+            // never fall through to the code-row Text cursor.
+            if editor.block_action_for_row_at(row, x, y).is_some() {
+                crate::ui::shell::CursorHint::Pointer
+            } else {
+                cursor_hint
+            }
         } else if cursor_hint == crate::ui::shell::CursorHint::Default
             && hovered_row.is_some()
             && !editor.is_gutter_hit(x, y)
@@ -541,6 +618,12 @@ impl InputSystem {
             let result = capture.on_release(state);
             outcome.actions = result.actions;
             outcome.effects = result.effects;
+            outcome.dirty = true;
+        }
+        if self.review_line_drag_anchor.take().is_some() && state.pull_request_review_enabled() {
+            outcome
+                .actions
+                .push(GitHubAction::OpenReviewCommentComposer.into());
             outcome.dirty = true;
         }
         self.mouse_drag_target = None;

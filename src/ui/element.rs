@@ -893,6 +893,7 @@ pub struct Div {
     scroll_total_height: f32,
     hide_scrollbar: bool,
     clips: bool,
+    block_mouse: bool,
     focus_target: Option<crate::ui::state::FocusTarget>,
     tooltip: Option<String>,
     hit_identity: Option<HitIdentity>,
@@ -922,6 +923,7 @@ pub fn div() -> Div {
         scroll_total_height: 0.0,
         hide_scrollbar: false,
         clips: false,
+        block_mouse: false,
         focus_target: None,
         tooltip: None,
         hit_identity: None,
@@ -1006,6 +1008,16 @@ impl Div {
     pub fn on_click_handler(mut self, handler: ClickHandler) -> Self {
         self.on_click_handler = Some(handler);
         self.cursor = CursorHint::Pointer;
+        self
+    }
+
+    /// Make this element capture the mouse: its hitbox uses `HitboxBehavior::BlockMouse`,
+    /// so hover resolution culls any overlapping hitbox registered *behind* it (lower in
+    /// the paint order). Use on elevated surfaces (cards, popovers) so hovering them does
+    /// not also highlight elements underneath, and on the topmost of two overlapping
+    /// controls so only it reports hover. Registers a hitbox even without `on_click`.
+    pub fn block_mouse(mut self) -> Self {
+        self.block_mouse = true;
         self
     }
 
@@ -1200,7 +1212,9 @@ impl Element for Div {
             cx.push_z_index(z);
         }
 
-        let hitbox_id = if self.on_click.is_some()
+        let hitbox_id = if self.block_mouse {
+            Some(cx.insert_hitbox(bounds, HitboxBehavior::BlockMouse))
+        } else if self.on_click.is_some()
             || self.on_click_handler.is_some()
             || self.hover_style.is_some()
         {

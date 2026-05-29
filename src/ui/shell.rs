@@ -348,17 +348,64 @@ pub fn build_ui_frame(
                 None
             };
             let mut editor_snap = state.editor.snapshot(&state.store);
+            editor_snap.review_enabled = state.pull_request_review_enabled();
             if let Some(doc) = viewport_document.as_ref().filter(|doc| doc.is_continuous()) {
                 editor_snap.scroll_top_px = state
                     .global_scroll_position_px()
                     .saturating_sub(doc.start_offset_px);
             }
 
-            if !viewport_document
-                .as_ref()
-                .is_some_and(|doc| doc.is_continuous())
-                && let Some(active_file) = active_file_snapshot.as_ref()
-            {
+            // Pinned card width: derived from vp_bounds with the same inset prepare
+            // applies, so it equals content_bounds.width this frame and is identical at
+            // measure (here) and render (overlay loop). Reused by both.
+            let review_card_width = editor.content_width_for_bounds(vp_bounds, text_metrics);
+
+            // Precompute pass: measure each visible-file thread card's natural height via
+            // compute_layout BEFORE borrowing blocks_mut, so the block can reserve the
+            // exact height the overlay will render. Keyed by thread id (globally unique).
+            // The gather paths below mirror the populate branches exactly so every block
+            // created has a measured height (the fallback is only a safety net).
+            let mut review_card_heights: std::collections::HashMap<
+                crate::core::review::ReviewThreadId,
+                u16,
+            > = std::collections::HashMap::new();
+            if state.pull_request_review_enabled() {
+                let mut threads_to_measure: Vec<crate::core::review::ReviewThread> = Vec::new();
+                if let Some(doc) = viewport_document.as_ref().filter(|doc| doc.is_continuous()) {
+                    for slot in doc.slot_indices.iter().copied() {
+                        if let Some(file) = state.viewport_file_snapshot(slot) {
+                            threads_to_measure
+                                .extend(state.active_pr_review_threads_for_file(&file.carbon_file));
+                        }
+                    }
+                } else if let Some(active_file) = active_file_snapshot.as_ref() {
+                    threads_to_measure =
+                        state.active_pr_review_threads_for_file(&active_file.carbon_file);
+                }
+                for thread in &threads_to_measure {
+                    let expanded = state.review_thread_expanded(thread);
+                    let h = crate::ui::editor::review::measure_review_thread_card_height(
+                        thread,
+                        expanded,
+                        theme,
+                        ui_scale,
+                        review_card_width,
+                        cx,
+                    );
+                    review_card_heights.insert(thread.id.clone(), h);
+                }
+            }
+
+            if let Some(doc) = viewport_document.as_ref().filter(|doc| doc.is_continuous()) {
+                editor.blocks_mut().clear();
+                populate_continuous_review_blocks(
+                    state,
+                    editor.blocks_mut(),
+                    doc,
+                    &review_card_heights,
+                );
+                editor.set_hunk_expand_caps(Vec::new());
+            } else if let Some(active_file) = active_file_snapshot.as_ref() {
                 let expansion = state
                     .workspace
                     .expansions
@@ -370,13 +417,26 @@ pub fn build_ui_frame(
                     &active_file.render_doc,
                     &expansion,
                 );
-                let review_comments =
-                    state.active_pr_review_comments_for_file(&active_file.carbon_file);
-                crate::ui::editor::review::populate_review_comment_blocks(
-                    editor.blocks_mut(),
-                    &active_file.render_doc,
-                    &review_comments,
-                );
+                let review_threads =
+                    state.active_pr_review_threads_for_file(&active_file.carbon_file);
+                if review_threads.is_empty() {
+                    let review_comments =
+                        state.active_pr_review_comments_for_file(&active_file.carbon_file);
+                    crate::ui::editor::review::populate_review_comment_blocks(
+                        editor.blocks_mut(),
+                        &active_file.render_doc,
+                        &review_comments,
+                    );
+                } else {
+                    crate::ui::editor::review::populate_review_thread_blocks(
+                        editor.blocks_mut(),
+                        &active_file.render_doc,
+                        &active_file.carbon_file,
+                        &review_threads,
+                        &review_card_heights,
+                        |thread| state.review_thread_expanded(thread),
+                    );
+                }
                 editor.set_hunk_expand_caps(caps);
             } else {
                 editor.blocks_mut().clear();
@@ -565,6 +625,73 @@ pub fn build_ui_frame(
                 editor_scroll_builder,
             );
 
+            // Review thread cards: the blocks reserve height but paint nothing; render
+            // each as a real view! element overlay at its on-screen rect, clipped to the
+            // viewport band (minus any sticky file header) so partly-scrolled cards don't
+            // paint or capture clicks over the chrome above.
+            if state.pull_request_review_enabled() {
+                // The width the card is measured AND rendered at must match the editor's
+                // content column, or wrapped line counts (hence reserved height) would
+                // diverge from what is painted. Guard against future inset drift.
+                debug_assert!(
+                    (review_card_width - editor.layout.content_bounds.width).abs() < 1.5,
+                    "review_card_width {} drifted from content_bounds.width {}",
+                    review_card_width,
+                    editor.layout.content_bounds.width
+                );
+                let band = match editor.sticky_header_rect() {
+                    Some(h) => Rect {
+                        x: vp_bounds.x,
+                        y: h.bottom(),
+                        width: vp_bounds.width,
+                        height: (vp_bounds.bottom() - h.bottom()).max(0.0),
+                    },
+                    None => vp_bounds,
+                };
+                let cards = editor.visible_review_card_rows();
+                if !cards.is_empty() {
+                    scene.clip(band);
+                    for (idx, rect) in cards {
+                        let Some((thread, expanded)) = editor
+                            .blocks()
+                            .get(idx)
+                            .and_then(|block| block.review_card())
+                            .map(|(thread, expanded)| (thread.clone(), expanded))
+                        else {
+                            continue;
+                        };
+                        let mut card = crate::ui::editor::review::build_review_thread_card(
+                            &thread,
+                            expanded,
+                            theme,
+                            ui_scale,
+                            review_card_width,
+                            cx.font_system,
+                        );
+                        let hit_start = cx.hits.len();
+                        render_element_at(
+                            &mut card,
+                            &mut scene,
+                            cx,
+                            rect.x,
+                            rect.y,
+                            review_card_width,
+                            rect.height,
+                        );
+                        // Clip the card's freshly-registered hit rects to the visible band
+                        // so a partly-off-screen card cannot steal clicks over the chrome.
+                        let tail = cx.hits.split_off(hit_start);
+                        for mut region in tail {
+                            if let Some(clipped) = region.rect.intersection(band) {
+                                region.rect = clipped;
+                                cx.hits.push(region);
+                            }
+                        }
+                    }
+                    scene.pop_clip();
+                }
+            }
+
             if editor.layout.show_staging_controls {
                 if let EditorDocument::Text { doc, .. } = document {
                     let is_staged = editor.layout.file_is_staged;
@@ -654,7 +781,7 @@ pub fn build_ui_frame(
                 }
             }
 
-            if state.pull_request_review_enabled() && !using_continuous_doc {
+            if state.pull_request_review_enabled() {
                 if let EditorDocument::Text { doc, .. } = document {
                     let has_line_selection = !editor_snap.line_selection.is_empty();
                     let line_bar_rect = if has_line_selection {
@@ -838,6 +965,49 @@ fn update_continuous_slot_heights(
         }
     }
     changed
+}
+
+fn populate_continuous_review_blocks(
+    state: &AppState,
+    blocks: &mut crate::ui::editor::decoration::BlockRegistry,
+    viewport: &ViewportDocument,
+    heights: &std::collections::HashMap<crate::core::review::ReviewThreadId, u16>,
+) {
+    if !state.pull_request_review_enabled() {
+        return;
+    }
+
+    let render_doc = viewport.doc.as_ref();
+    for slot_index in viewport.slot_indices.iter().copied() {
+        let Some(file) = state.viewport_file_snapshot(slot_index) else {
+            continue;
+        };
+        let Some(line_range) =
+            crate::ui::editor::review::render_doc_file_line_range(render_doc, &file.path)
+        else {
+            continue;
+        };
+        let review_threads = state.active_pr_review_threads_for_file(&file.carbon_file);
+        if review_threads.is_empty() {
+            let review_comments = state.active_pr_review_comments_for_file(&file.carbon_file);
+            crate::ui::editor::review::populate_review_comment_blocks_in_range(
+                blocks,
+                render_doc,
+                line_range,
+                &review_comments,
+            );
+        } else {
+            crate::ui::editor::review::populate_review_thread_blocks_in_range(
+                blocks,
+                render_doc,
+                &file.carbon_file,
+                line_range,
+                &review_threads,
+                heights,
+                |thread| state.review_thread_expanded(thread),
+            );
+        }
+    }
 }
 
 fn build_review_bar(theme: &Theme, ui_scale: f32, bar_rect: Rect) -> AnyElement {

@@ -1,11 +1,11 @@
 use crate::core::compare::RendererKind;
+use crate::core::review::ReviewSessionStatus;
 use crate::core::vcs::model::RefKind;
 use crate::ui::design::{Alpha, Ico, Rad, Sp};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
-use crate::ui::state::WorkspaceSource;
-use crate::ui::state::{AppState, AsyncStatus};
+use crate::ui::state::{ActiveReviewStatus, AppState, AsyncStatus, WorkspaceSource};
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
 use crate::ui::vcs::{
@@ -93,6 +93,9 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
             <text class="text-xs" color={tc.text_muted}>{format!("Hunk {}/{}", idx + 1, total)}</text>
         }
     });
+    let review_child = state
+        .active_pr_review_status()
+        .map(|summary| review_status(summary, theme, scale));
     let syntax_pack_child = state
         .syntax_pack_installs
         .with(&state.store, |active| !active.is_empty())
@@ -124,11 +127,106 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
             </div>
             <spacer />
             <div class="flex-row shrink-0 items-center" gap={Sp::MD}>
+                {?review_child}
                 {?hunk_child}
                 <text class="text-xs" color={tc.text_muted}>{right_text}</text>
                 {?syntax_pack_child}
             </div>
         </div>
+    }
+}
+
+fn review_status(summary: ActiveReviewStatus, theme: &Theme, scale: f32) -> AnyElement {
+    let tc = &theme.colors;
+    let (icon, color) = match summary.status {
+        ReviewSessionStatus::Loading => (lucide::LOADER, tc.text_muted),
+        ReviewSessionStatus::Failed => (lucide::ALERT_CIRCLE, tc.status_error),
+        ReviewSessionStatus::Idle => (lucide::GIT_PULL_REQUEST, tc.text_muted),
+        ReviewSessionStatus::Ready => {
+            if summary.unresolved_threads > 0 || summary.failed_drafts > 0 {
+                (lucide::GIT_PULL_REQUEST, tc.status_warning)
+            } else {
+                (lucide::GIT_PULL_REQUEST, tc.line_add_text)
+            }
+        }
+    };
+    let label = review_status_label(&summary);
+    view! { scale,
+        <div class="flex-row items-center overflow-hidden" gap={Sp::XS} min_w={0.0}>
+            <icon svg={icon} size={Ico::XS} color={color} />
+            <text class="text-xs truncate" color={tc.text_muted}>{label}</text>
+        </div>
+    }
+    .into_any()
+}
+
+fn review_status_label(summary: &ActiveReviewStatus) -> String {
+    match summary.status {
+        ReviewSessionStatus::Loading => "reviews loading".to_owned(),
+        ReviewSessionStatus::Failed => summary
+            .message
+            .as_deref()
+            .filter(|message| !message.trim().is_empty())
+            .map(|message| format!("reviews failed: {message}"))
+            .unwrap_or_else(|| "reviews failed".to_owned()),
+        ReviewSessionStatus::Idle => "reviews idle".to_owned(),
+        ReviewSessionStatus::Ready => {
+            let mut parts = Vec::with_capacity(4);
+            if summary.unresolved_threads > 0 {
+                parts.push(count_label(summary.unresolved_threads, "unresolved"));
+            } else if summary.resolved_threads > 0 {
+                parts.push(count_label(summary.resolved_threads, "resolved"));
+            } else {
+                parts.push("no review threads".to_owned());
+            }
+
+            if summary.pending_drafts > 0 {
+                parts.push(count_noun(summary.pending_drafts, "draft", "drafts"));
+            }
+            if summary.failed_drafts > 0 {
+                parts.push(count_noun(
+                    summary.failed_drafts,
+                    "failed draft",
+                    "failed drafts",
+                ));
+            }
+            if summary.outdated_threads > 0 && parts.len() < 3 {
+                parts.push(count_label(summary.outdated_threads, "outdated"));
+            }
+            if parts.len() < 3
+                && let Some(label) = summary
+                    .review_decision
+                    .as_deref()
+                    .or(summary.viewer_latest_review_state.as_deref())
+                    .and_then(review_decision_label)
+            {
+                parts.push(label.to_owned());
+            }
+            parts.join(" / ")
+        }
+    }
+}
+
+fn review_decision_label(value: &str) -> Option<&'static str> {
+    match value {
+        "APPROVED" => Some("approved"),
+        "CHANGES_REQUESTED" => Some("changes requested"),
+        "REVIEW_REQUIRED" => Some("review required"),
+        "COMMENTED" => Some("commented"),
+        "PENDING" => Some("pending"),
+        _ => None,
+    }
+}
+
+fn count_label(count: usize, noun: &str) -> String {
+    format!("{count} {noun}")
+}
+
+fn count_noun(count: usize, singular: &str, plural: &str) -> String {
+    if count == 1 {
+        format!("1 {singular}")
+    } else {
+        format!("{count} {plural}")
     }
 }
 

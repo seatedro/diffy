@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::actions::{Action, ContextMenuEntry};
 use crate::render::scene::{IconPrimitive, Primitive, RichTextPrimitive, RichTextSpan};
 use crate::render::{FontKind, FontWeight, Rect, RectPrimitive, Scene, TextPrimitive};
 use crate::ui::icons::lucide;
@@ -368,16 +369,37 @@ pub struct BlockPaintCtx<'a> {
     pub hovered: bool,
 }
 
+pub struct BlockActionCtx<'a> {
+    pub layout: &'a EditorLayout,
+    pub row_rect: Rect,
+}
+
 pub trait BlockDecoration: std::fmt::Debug {
     fn height(&self, metrics: &DisplayLayoutMetrics) -> u16;
 
     fn paint(&self, _ctx: &mut BlockPaintCtx) {}
 
-    fn on_click(&self) -> Option<crate::actions::Action> {
+    fn on_click(&self) -> Option<Action> {
+        None
+    }
+
+    fn on_click_at(&self, _ctx: &BlockActionCtx, _x: f32, _y: f32) -> Option<Action> {
+        self.on_click()
+    }
+
+    fn context_menu_entries(&self) -> Option<Vec<ContextMenuEntry>> {
         None
     }
 
     fn accessibility_label(&self) -> Option<String> {
+        None
+    }
+
+    /// Review-thread blocks return their thread + expanded state so the shell can
+    /// render the card as a real `view!` element overlay (positioned at this block's
+    /// reserved on-screen rect) instead of hand-painting it. Non-review blocks return
+    /// `None`.
+    fn review_card(&self) -> Option<(&crate::core::review::ReviewThread, bool)> {
         None
     }
 }
@@ -398,6 +420,21 @@ impl BlockRegistry {
 
     pub fn push(&mut self, placement: BlockPlacement, decoration: Box<dyn BlockDecoration>) {
         self.blocks.push((placement, decoration));
+    }
+
+    pub fn layout_signature(&self, metrics: DisplayLayoutMetrics) -> u64 {
+        let mut sig = 0xcbf2_9ce4_8422_2325_u64;
+        sig = mix_layout_signature(sig, self.blocks.len() as u64);
+        for (placement, decoration) in &self.blocks {
+            let (placement_tag, anchor) = match *placement {
+                BlockPlacement::Above(anchor) => (1_u64, anchor),
+                BlockPlacement::Below(anchor) => (2_u64, anchor),
+            };
+            sig = mix_layout_signature(sig, placement_tag);
+            sig = mix_layout_signature(sig, u64::from(anchor));
+            sig = mix_layout_signature(sig, u64::from(decoration.height(&metrics)));
+        }
+        sig
     }
 
     pub fn len(&self) -> usize {
@@ -423,6 +460,10 @@ impl BlockRegistry {
             .filter(move |(_, (p, _))| *p == placement)
             .map(|(i, _)| i as u16)
     }
+}
+
+fn mix_layout_signature(sig: u64, value: u64) -> u64 {
+    sig ^ value.wrapping_add(0x9e37_79b9_7f4a_7c15).rotate_left(6) ^ (sig >> 2)
 }
 
 #[cfg(test)]

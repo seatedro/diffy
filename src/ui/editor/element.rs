@@ -1,7 +1,9 @@
 use std::{collections::HashMap, ops::Range, sync::Arc};
 
+use crate::actions::{Action, ContextMenuEntry};
 use crate::core::compare::LayoutMode;
 use crate::core::text::SyntaxTokenKind;
+use crate::render::scene::{IconPrimitive, Primitive};
 use crate::render::{
     FontKind, FontStyle, FontWeight, Rect, RectPrimitive, RichTextPrimitive, RichTextSpan,
     RoundedRectPrimitive, Scene, TextMetrics, TextPrimitive,
@@ -9,12 +11,13 @@ use crate::render::{
 use crate::ui::accessibility::{AccessibilityAction, AccessibilityFrame, AccessibilityNode};
 use crate::ui::design::{Alpha, Sz};
 use crate::ui::element::ScrollActionBuilder;
+use crate::ui::icons::lucide;
 use crate::ui::state::FocusTarget;
 use crate::ui::theme::{Color, Theme};
 use accesskit::Role;
 
 use super::decoration::{
-    BlockPaintCtx, BlockRegistry, FileHeaderDecoration, RowDecoration, RowPaintCtx,
+    BlockActionCtx, BlockPaintCtx, BlockRegistry, FileHeaderDecoration, RowDecoration, RowPaintCtx,
     decoration_for_kind,
 };
 use super::display_layout::{
@@ -47,6 +50,15 @@ const INLINE_CHANGE_BG_Y_INSET_RATIO: f32 = 0.10;
 
 fn editor_scale(text_metrics: TextMetrics) -> f32 {
     (text_metrics.mono_font_size_px / BASE_MONO_FONT_SIZE).max(0.5)
+}
+
+fn display_layout_metrics(text_metrics: TextMetrics) -> DisplayLayoutMetrics {
+    let body_h = text_metrics.mono_line_height_px.round().max(1.0) as u16;
+    DisplayLayoutMetrics {
+        body_row_height_px: body_h,
+        file_header_height_px: body_h * FILE_HEADER_ROW_MULTIPLE,
+        hunk_height_px: body_h * HUNK_ROW_MULTIPLE,
+    }
 }
 
 fn scaled(base: f32, scale: f32) -> f32 {
@@ -135,6 +147,7 @@ struct EditorLayoutKey {
     mono_line_height_bits: u32,
     doc_line_count: u32,
     doc_text_len: u32,
+    block_layout_signature: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -413,6 +426,9 @@ impl EditorElement {
                     mono_line_height_bits: text_metrics.mono_line_height_px.to_bits(),
                     doc_line_count: doc.line_count() as u32,
                     doc_text_len: doc.text_bytes.len().min(u32::MAX as usize) as u32,
+                    block_layout_signature: self
+                        .blocks
+                        .layout_signature(display_layout_metrics(text_metrics)),
                 };
 
                 if self.layout_key != Some(key) {
@@ -478,6 +494,44 @@ impl EditorElement {
         &mut self.blocks
     }
 
+    pub fn blocks(&self) -> &BlockRegistry {
+        &self.blocks
+    }
+
+    /// Pins the single card-width formula used by the review-thread overlay. Mirrors
+    /// the inset `build_spatial_layout` applies to produce `content_bounds.width`, so a
+    /// caller can derive the width BEFORE `prepare` runs (it needs the width to measure
+    /// card heights before blocks are populated). `text_metrics` is passed explicitly
+    /// rather than read from `self` so it does not depend on prepare-ordering.
+    pub fn content_width_for_bounds(&self, bounds: Rect, text_metrics: TextMetrics) -> f32 {
+        bounds
+            .inset(scaled(BASE_VIEWPORT_PADDING, editor_scale(text_metrics)))
+            .width
+    }
+
+    /// Top edge band occupied by the sticky file header, if any, so overlays can avoid
+    /// painting/clicking over it.
+    pub fn sticky_header_rect(&self) -> Option<Rect> {
+        self.sticky_header_hit.as_ref().map(|(rect, _)| *rect)
+    }
+
+    /// One `(block_index, on-screen rect)` per visible review-thread block row, so the
+    /// shell can render each thread card as a `view!` overlay at its scrolled position.
+    pub fn visible_review_card_rows(&self) -> Vec<(usize, Rect)> {
+        let mut out = Vec::new();
+        for row in &self.rows {
+            if !row.is_block() {
+                continue;
+            }
+            let rect = self.row_rect_for(row);
+            if !self.row_in_viewport(&rect) {
+                continue;
+            }
+            out.push((row.block_index as usize, rect));
+        }
+        out
+    }
+
     pub fn set_hunk_expand_caps(&mut self, caps: Vec<super::expansion::HunkGapBudget>) {
         self.hunk_expand_caps = caps;
     }
@@ -496,12 +550,66 @@ impl EditorElement {
             .is_some_and(|row| row.is_block())
     }
 
-    pub fn block_action_for_row(&self, display_row_index: usize) -> Option<crate::actions::Action> {
+    pub fn review_comment_line_for_row(
+        &self,
+        doc: &RenderDoc,
+        display_row_index: usize,
+    ) -> Option<usize> {
+        let row = self.rows.get(display_row_index)?;
+        if row.is_block() {
+            return None;
+        }
+        let line = doc.lines.get(row.line_index as usize)?;
+        review_comment_gutter_rect(&self.layout, line)?;
+        Some(row.line_index as usize)
+    }
+
+    pub fn review_add_comment_button_at(
+        &self,
+        state: &EditorState,
+        doc: &RenderDoc,
+        x: f32,
+        y: f32,
+    ) -> Option<usize> {
+        let row_index = self.hit_test_row(state, x, y)?;
+        let row = self.rows.get(row_index).copied()?;
+        let line = doc.lines.get(row.line_index as usize)?;
+        let rect = self.review_add_comment_button_rect_for_row(line, &row)?;
+        rect.contains(x, y).then_some(row.line_index as usize)
+    }
+
+    pub fn block_action_for_row_at(
+        &self,
+        display_row_index: usize,
+        x: f32,
+        y: f32,
+    ) -> Option<Action> {
         let row = self.rows.get(display_row_index)?;
         if !row.is_block() {
             return None;
         }
-        self.blocks.get(row.block_index as usize)?.on_click()
+        let block = self.blocks.get(row.block_index as usize)?;
+        block.on_click_at(
+            &BlockActionCtx {
+                layout: &self.layout,
+                row_rect: self.row_rect_for(row),
+            },
+            x,
+            y,
+        )
+    }
+
+    pub fn block_context_menu_for_row(
+        &self,
+        display_row_index: usize,
+    ) -> Option<Vec<ContextMenuEntry>> {
+        let row = self.rows.get(display_row_index)?;
+        if !row.is_block() {
+            return None;
+        }
+        self.blocks
+            .get(row.block_index as usize)?
+            .context_menu_entries()
     }
 
     pub fn hunk_action_bar_rect(&self, doc: &RenderDoc) -> Option<(Rect, i16)> {
@@ -656,12 +764,7 @@ impl EditorElement {
         text_metrics: TextMetrics,
         show_file_headers: bool,
     ) {
-        let body_h = text_metrics.mono_line_height_px.round().max(1.0) as u16;
-        self.metrics = DisplayLayoutMetrics {
-            body_row_height_px: body_h,
-            file_header_height_px: body_h * FILE_HEADER_ROW_MULTIPLE,
-            hunk_height_px: body_h * HUNK_ROW_MULTIPLE,
-        };
+        self.metrics = display_layout_metrics(text_metrics);
         self.config = DisplayLayoutConfig {
             split_mode: state.layout == LayoutMode::Split,
             wrap_enabled: state.wrap_enabled,
@@ -795,6 +898,7 @@ impl EditorElement {
                 self.paint_inline_change_backgrounds(scene, theme, doc);
                 self.paint_line_highlights(scene, theme);
                 self.paint_line_selection(scene, theme, _state, doc);
+                self.paint_review_add_affordance(scene, theme, _state, doc);
                 self.paint_viewport_text_selection(scene, theme, _state, doc, compare_generation);
                 self.paint_search_highlights(scene, theme, _state, doc);
                 self.paint_gutter_diff_indicators(scene, theme, doc);
@@ -1119,6 +1223,25 @@ impl EditorElement {
     fn row_in_viewport(&self, row_rect: &Rect) -> bool {
         row_rect.bottom() >= self.layout.content_bounds.y
             && row_rect.y <= self.layout.content_bounds.bottom()
+    }
+
+    fn review_add_comment_button_rect_for_row(
+        &self,
+        line: &RenderLine,
+        display_row: &DisplayRow,
+    ) -> Option<Rect> {
+        let gutter = review_comment_gutter_rect(&self.layout, line)?;
+        let row_rect = self.row_rect_for(display_row);
+        if !self.row_in_viewport(&row_rect) {
+            return None;
+        }
+        let size = (self.layout.line_height * 0.72).clamp(14.0, 20.0);
+        Some(Rect {
+            x: gutter.x + scaled(2.0, editor_scale(self.text_metrics)),
+            y: row_rect.y + (self.layout.line_height - size).max(0.0) * 0.5,
+            width: size,
+            height: size,
+        })
     }
 
     fn paint_sticky_file_header(
@@ -1791,6 +1914,12 @@ impl EditorElement {
         let Some(display_row) = self.rows.get(hovered).copied() else {
             return;
         };
+        // Block rows (review thread cards, expand chips) manage their own hover feedback
+        // via element hit regions / their own paint. Blanket-highlighting the whole row
+        // rect would tint the entire card, so skip them here.
+        if display_row.is_block() {
+            return;
+        }
         let rr = self.row_rect_for(&display_row);
         if !self.row_in_viewport(&rr) {
             return;
@@ -1876,6 +2005,47 @@ impl EditorElement {
                 color: theme.colors.accent,
             });
         }
+    }
+
+    fn paint_review_add_affordance(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        state: &EditorState,
+        doc: &RenderDoc,
+    ) {
+        if !state.review_enabled {
+            return;
+        }
+        let Some(row_index) = self.layout.highlighted_row else {
+            return;
+        };
+        let Some(display_row) = self.rows.get(row_index).copied() else {
+            return;
+        };
+        if display_row.is_block() {
+            return;
+        }
+        let Some(line) = doc.lines.get(display_row.line_index as usize) else {
+            return;
+        };
+        let Some(rect) = self.review_add_comment_button_rect_for_row(line, &display_row) else {
+            return;
+        };
+        let selected = !state.line_selection.is_empty()
+            && line_selection_contains_line(&state.line_selection, line);
+        let bg = if selected {
+            theme.colors.accent_strong
+        } else {
+            theme.colors.accent
+        };
+        let radius = (rect.height * 0.3).round();
+        scene.rounded_rect(RoundedRectPrimitive::uniform(rect, radius, bg));
+        scene.push(Primitive::Icon(IconPrimitive {
+            rect: rect.inset((rect.width * 0.22).round()),
+            name: lucide::PLUS.to_owned(),
+            color: Color::rgba(255, 255, 255, 255),
+        }));
     }
 
     fn paint_viewport_text_selection(
@@ -2828,6 +2998,22 @@ fn line_selection_contains_line(
         && selection.contains(hunk_id, carbon::DiffSide::Old, line.old_line_index as u32))
         || (line.new_line_index >= 0
             && selection.contains(hunk_id, carbon::DiffSide::New, line.new_line_index as u32))
+}
+
+fn review_comment_gutter_rect(layout: &EditorLayout, line: &RenderLine) -> Option<Rect> {
+    if line.hunk_index < 0 {
+        return None;
+    }
+    match line.row_kind() {
+        RenderRowKind::Added | RenderRowKind::Modified if layout.split_mode => {
+            Some(layout.right_gutter_rect)
+        }
+        RenderRowKind::Removed if layout.split_mode => Some(layout.left_gutter_rect),
+        RenderRowKind::Added | RenderRowKind::Removed | RenderRowKind::Modified => {
+            Some(layout.unified_gutter_rect)
+        }
+        _ => None,
+    }
 }
 
 fn distance_to_text_block_x(block: TextBlock, x: f32) -> f32 {

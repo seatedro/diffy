@@ -295,6 +295,7 @@ pub struct InputSystem {
     mouse_position: Option<(f32, f32)>,
     mouse_drag_target: Option<FocusTarget>,
     viewport_text_drag_active: bool,
+    review_line_drag_anchor: Option<usize>,
     pointer_capture: Option<Box<dyn DragHandler>>,
     file_list_scroll_remainder_px: f32,
     overlay_scroll_remainder_px: f32,
@@ -311,6 +312,7 @@ impl Default for InputSystem {
             mouse_position: None,
             mouse_drag_target: None,
             viewport_text_drag_active: false,
+            review_line_drag_anchor: None,
             pointer_capture: None,
             file_list_scroll_remainder_px: 0.0,
             overlay_scroll_remainder_px: 0.0,
@@ -518,6 +520,7 @@ impl InputSystem {
                     self.pending_g = false;
                     self.mouse_drag_target = None;
                     self.viewport_text_drag_active = false;
+                    self.review_line_drag_anchor = None;
                     self.pointer_capture = None;
                     self.ime_composing = false;
                 }

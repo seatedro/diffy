@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use accesskit::{
     Action as AxAction, Node, NodeId, Rect as AxRect, Role, Toggled, Tree, TreeId, TreeUpdate,
@@ -160,6 +160,7 @@ impl AccessibilityNode {
 #[derive(Debug, Clone, Default)]
 pub struct AccessibilityFrame {
     nodes: Vec<AccessibilityNode>,
+    node_ids: HashSet<NodeId>,
     actions: HashMap<NodeId, AccessibilityAction>,
     focused: Option<NodeId>,
     root_bounds: Rect,
@@ -178,7 +179,8 @@ impl AccessibilityFrame {
         }
     }
 
-    pub fn push(&mut self, node: AccessibilityNode) {
+    pub fn push(&mut self, mut node: AccessibilityNode) {
+        self.ensure_unique_id(&mut node);
         if let Some(action) = node.action.clone() {
             self.actions.insert(node.id, action);
         }
@@ -193,6 +195,25 @@ impl AccessibilityFrame {
             self.focused.get_or_insert(node.id);
         }
         self.nodes.push(node);
+    }
+
+    fn ensure_unique_id(&mut self, node: &mut AccessibilityNode) {
+        if self.node_ids.insert(node.id) {
+            return;
+        }
+
+        let base_author_id = node.author_id.clone();
+        let mut suffix = 2usize;
+        loop {
+            let author_id = format!("{base_author_id}#{suffix}");
+            let id = stable_node_id(&author_id);
+            if self.node_ids.insert(id) {
+                node.id = id;
+                node.author_id = author_id;
+                return;
+            }
+            suffix += 1;
+        }
     }
 
     pub fn action_for(&self, id: NodeId) -> Option<&AccessibilityAction> {
@@ -258,4 +279,38 @@ fn stable_node_id(key: &str) -> NodeId {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     NodeId(hash.max(2))
+}
+
+#[cfg(test)]
+mod tests {
+    use accesskit::Role;
+
+    use super::*;
+
+    fn rect() -> Rect {
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+        }
+    }
+
+    #[test]
+    fn duplicate_node_keys_are_disambiguated() {
+        let mut frame = AccessibilityFrame::new(100.0, 100.0);
+        frame.push(AccessibilityNode::new("same", Role::Label, rect()).label("One"));
+        frame.push(AccessibilityNode::new("same", Role::Label, rect()).label("Two"));
+
+        let update = frame.tree_update(None);
+        let root = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == ROOT_ID)
+            .map(|(_, node)| node)
+            .expect("root node");
+        let children = root.children();
+        assert_eq!(children.len(), 2);
+        assert_ne!(children[0], children[1]);
+    }
 }

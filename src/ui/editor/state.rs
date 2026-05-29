@@ -102,6 +102,7 @@ pub struct EditorState {
     pub visible_row_start: Option<usize>,
     pub visible_row_end: Option<usize>,
     pub focused: bool,
+    pub review_enabled: bool,
     pub hunk_positions: Vec<u32>,
     pub file_positions: Vec<u32>,
     #[store(flatten)]
@@ -178,6 +179,7 @@ impl Default for EditorState {
             visible_row_start: None,
             visible_row_end: None,
             focused: false,
+            review_enabled: false,
             hunk_positions: Vec::new(),
             file_positions: Vec::new(),
             search: SearchState::default(),
@@ -197,6 +199,7 @@ impl EditorState {
         self.hovered_hunk_index = None;
         self.visible_row_start = None;
         self.visible_row_end = None;
+        self.review_enabled = false;
         self.hunk_positions.clear();
         self.file_positions.clear();
         self.search_match_y_positions.clear();

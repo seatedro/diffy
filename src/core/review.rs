@@ -293,6 +293,13 @@ impl ReviewThreadId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ReviewReactionGroup {
+    pub content: String,
+    pub count: u32,
+    pub viewer_has_reacted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ReviewComment {
     pub id: ReviewCommentId,
     pub backend_id: Option<i64>,
@@ -301,6 +308,8 @@ pub struct ReviewComment {
     pub in_reply_to: Option<ReviewCommentId>,
     pub in_reply_to_node_id: Option<String>,
     pub author_login: Option<String>,
+    #[serde(default)]
+    pub author_avatar_url: Option<String>,
     pub body: String,
     pub anchor: Option<ReviewAnchor>,
     pub html_url: Option<String>,
@@ -310,6 +319,8 @@ pub struct ReviewComment {
     pub state: Option<String>,
     pub viewer_can_update: bool,
     pub viewer_can_delete: bool,
+    #[serde(default)]
+    pub reactions: Vec<ReviewReactionGroup>,
 }
 
 impl ReviewComment {
@@ -328,6 +339,10 @@ impl ReviewComment {
                 .user
                 .as_ref()
                 .and_then(|user| non_empty(&user.login)),
+            author_avatar_url: comment
+                .user
+                .as_ref()
+                .and_then(|user| non_empty(&user.avatar_url)),
             body: comment.body.clone(),
             anchor,
             html_url: non_empty(&comment.html_url),
@@ -337,6 +352,7 @@ impl ReviewComment {
             state: None,
             viewer_can_update: false,
             viewer_can_delete: false,
+            reactions: Vec::new(),
         }
     }
 
@@ -367,6 +383,7 @@ impl ReviewComment {
             in_reply_to,
             in_reply_to_node_id: comment.reply_to_node_id.clone(),
             author_login: non_empty(&comment.author_login),
+            author_avatar_url: non_empty(&comment.author_avatar_url),
             body: comment.body.clone(),
             anchor,
             html_url: non_empty(&comment.url),
@@ -376,6 +393,15 @@ impl ReviewComment {
             state: non_empty(&comment.state),
             viewer_can_update: comment.viewer_can_update,
             viewer_can_delete: comment.viewer_can_delete,
+            reactions: comment
+                .reactions
+                .iter()
+                .map(|reaction| ReviewReactionGroup {
+                    content: reaction.content.clone(),
+                    count: reaction.count,
+                    viewer_has_reacted: reaction.viewer_has_reacted,
+                })
+                .collect(),
         }
     }
 }

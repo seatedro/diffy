@@ -42,6 +42,13 @@ pub struct GitHubReviewCommentUser {
     pub avatar_url: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct GitHubReactionGroup {
+    pub content: String,
+    pub count: u32,
+    pub viewer_has_reacted: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PullRequestReviewComment {
     pub id: i64,
@@ -145,6 +152,7 @@ pub struct GitHubPullRequestReviewThreadComment {
     pub reply_to_node_id: Option<String>,
     pub reply_to_database_id: Option<i64>,
     pub author_login: String,
+    pub author_avatar_url: String,
     pub body: String,
     pub path: String,
     pub line: Option<u32>,
@@ -159,6 +167,7 @@ pub struct GitHubPullRequestReviewThreadComment {
     pub state: String,
     pub viewer_can_update: bool,
     pub viewer_can_delete: bool,
+    pub reactions: Vec<GitHubReactionGroup>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -856,10 +865,15 @@ const REVIEW_COMMENT_FIELDS: &str = r#"
     state
     viewerCanUpdate
     viewerCanDelete
-    author { login }
+    author { login avatarUrl }
     replyTo {
       id
       fullDatabaseId
+    }
+    reactionGroups {
+      content
+      viewerHasReacted
+      users { totalCount }
     }
 "#;
 
@@ -1215,6 +1229,10 @@ fn parse_thread_comment(value: &Value) -> GitHubPullRequestReviewThreadComment {
             .get("author")
             .map(|author| string_field(author, "login"))
             .unwrap_or_default(),
+        author_avatar_url: value
+            .get("author")
+            .map(|author| string_field(author, "avatarUrl"))
+            .unwrap_or_default(),
         body: string_field(value, "body"),
         path: string_field(value, "path"),
         line: optional_u32_field(value, "line"),
@@ -1229,6 +1247,22 @@ fn parse_thread_comment(value: &Value) -> GitHubPullRequestReviewThreadComment {
         state: string_field(value, "state"),
         viewer_can_update: bool_field(value, "viewerCanUpdate"),
         viewer_can_delete: bool_field(value, "viewerCanDelete"),
+        reactions: value
+            .get("reactionGroups")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|group| GitHubReactionGroup {
+                content: string_field(group, "content"),
+                count: group
+                    .pointer("/users/totalCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    .min(u64::from(u32::MAX)) as u32,
+                viewer_has_reacted: bool_field(group, "viewerHasReacted"),
+            })
+            .filter(|group| group.count > 0)
+            .collect(),
     }
 }
 

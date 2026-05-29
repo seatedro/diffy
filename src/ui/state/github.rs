@@ -1,5 +1,5 @@
 use crate::actions::GitHubAction;
-use crate::core::review::{ReviewResolution, ReviewThreadId};
+use crate::core::review::{ReviewResolution, ReviewThread, ReviewThreadId};
 use crate::effects::{Effect, GitHubEffect, UiEffect};
 use crate::events::GitHubEvent;
 use crate::ui::editor::render_doc::{INVALID_U32, RenderLine};
@@ -990,6 +990,13 @@ impl AppState {
                 self.set_focus(Some(FocusTarget::Editor));
                 Vec::new()
             }
+            GitHubAction::ToggleReviewThread(id) => {
+                self.toggle_review_thread(id);
+                Vec::new()
+            }
+            GitHubAction::SetReviewThreadResolved { id, resolved } => {
+                self.set_review_thread_resolved(id, resolved)
+            }
         }
     }
 }
@@ -1030,6 +1037,149 @@ impl AppState {
                             .collect()
                     })
                     .unwrap_or_default()
+            })
+    }
+
+    pub(crate) fn review_thread_expanded(&self, thread: &ReviewThread) -> bool {
+        let default = thread.status.resolution != ReviewResolution::Resolved;
+        self.github
+            .pull_request
+            .review_thread_expanded
+            .with(&self.store, |overrides| {
+                overrides.get(&thread.id).copied().unwrap_or(default)
+            })
+    }
+
+    fn review_thread_default_expanded(&self, id: &ReviewThreadId) -> bool {
+        let Some(key) = self.active_pull_request_key() else {
+            return true;
+        };
+        self.github
+            .pull_request
+            .review_sessions
+            .with(&self.store, |sessions| {
+                sessions
+                    .get(&key)
+                    .and_then(|session| session.threads.iter().find(|thread| &thread.id == id))
+                    .map(|thread| thread.status.resolution != ReviewResolution::Resolved)
+                    .unwrap_or(true)
+            })
+    }
+
+    fn toggle_review_thread(&mut self, id: ReviewThreadId) {
+        let default = self.review_thread_default_expanded(&id);
+        let current = self
+            .github
+            .pull_request
+            .review_thread_expanded
+            .with(&self.store, |overrides| overrides.get(&id).copied())
+            .unwrap_or(default);
+        self.github
+            .pull_request
+            .review_thread_expanded
+            .update(&self.store, |overrides| {
+                overrides.insert(id, !current);
+            });
+    }
+
+    fn set_review_thread_resolved(&mut self, id: ReviewThreadId, resolved: bool) -> Vec<Effect> {
+        let token = match self.github_access_token.clone() {
+            Some(token) if !token.is_empty() => token,
+            _ => {
+                self.push_overlay(
+                    OverlaySurface::GitHubAuthModal,
+                    Some(FocusTarget::AuthPrimaryAction),
+                );
+                self.push_info("Sign in to update review threads.");
+                return Vec::new();
+            }
+        };
+        let Some((owner, repo, number)) = self.active_pull_request_key() else {
+            return Vec::new();
+        };
+        let thread_node_id =
+            self.github
+                .pull_request
+                .review_sessions
+                .with(&self.store, |sessions| {
+                    sessions
+                        .get(&(owner.clone(), repo.clone(), number))
+                        .and_then(|session| {
+                            session
+                                .threads
+                                .iter()
+                                .find(|thread| thread.id == id)
+                                .and_then(|thread| thread.backend_node_id.clone())
+                        })
+                });
+        let Some(thread_node_id) = thread_node_id else {
+            self.push_error("This review thread cannot be updated.");
+            return Vec::new();
+        };
+        vec![
+            GitHubEffect::SetPullRequestReviewThreadResolution {
+                owner,
+                repo,
+                number,
+                thread_node_id,
+                github_token: Some(token),
+                resolved,
+            }
+            .into(),
+        ]
+    }
+
+    pub(crate) fn active_pr_review_threads_for_file(
+        &self,
+        file: &carbon::FileDiff,
+    ) -> Vec<ReviewThread> {
+        let Some(key) = self.active_pull_request_key() else {
+            return Vec::new();
+        };
+        self.github
+            .pull_request
+            .review_sessions
+            .with(&self.store, |sessions| {
+                sessions
+                    .get(&key)
+                    .map(|session| {
+                        session
+                            .threads
+                            .iter()
+                            .filter(|thread| review_thread_matches_file(thread, file))
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            })
+    }
+
+    pub(crate) fn active_pr_review_status(&self) -> Option<ActiveReviewStatus> {
+        let key = self.active_pull_request_key()?;
+        self.github
+            .pull_request
+            .review_sessions
+            .with(&self.store, |sessions| {
+                sessions.get(&key).map(|session| {
+                    let metrics = session.metrics();
+                    ActiveReviewStatus {
+                        status: session.status,
+                        message: session.status_message.clone(),
+                        unresolved_threads: metrics.unresolved_threads,
+                        resolved_threads: metrics.resolved_threads,
+                        outdated_threads: metrics.outdated_threads,
+                        pending_drafts: metrics.pending_drafts,
+                        failed_drafts: metrics.failed_drafts,
+                        review_decision: session
+                            .metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.review_decision.clone()),
+                        viewer_latest_review_state: session
+                            .metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.viewer_latest_review_state.clone()),
+                    }
+                })
             })
     }
 
@@ -1149,6 +1299,21 @@ impl AppState {
             },
         })
     }
+}
+
+fn review_thread_matches_file(thread: &ReviewThread, file: &carbon::FileDiff) -> bool {
+    if thread
+        .anchor
+        .as_ref()
+        .is_some_and(|anchor| anchor.to_carbon_anchor(file).is_some())
+    {
+        return true;
+    }
+
+    let Some(path) = thread.path() else {
+        return false;
+    };
+    file.old_path.as_deref() == Some(path) || file.new_path.as_deref() == Some(path)
 }
 
 fn selected_review_range(

@@ -32,7 +32,7 @@ use crate::core::forge::github::{
     PullRequestReviewComment,
 };
 use crate::core::frecency::FrecencyStore;
-use crate::core::review::{ReviewSession, ReviewTarget};
+use crate::core::review::{ReviewSession, ReviewSessionStatus, ReviewTarget, ReviewThreadId};
 use crate::core::syntax::Highlighter;
 use crate::core::syntax::annotator::{SyntaxLineTokens, SyntaxRowWindow};
 use crate::core::text::TokenBuffer;
@@ -1692,6 +1692,17 @@ impl AppState {
             .with(&self.store, |files| files.get(&index).cloned())
     }
 
+    pub(crate) fn viewport_file_snapshot(&self, index: usize) -> Option<ActiveFile> {
+        if let Some(active) = self.workspace.active_file.with(&self.store, |file| {
+            file.as_ref()
+                .filter(|active| active.index == index)
+                .cloned()
+        }) {
+            return Some(active);
+        }
+        self.cached_file_at(index)
+    }
+
     fn file_load_pending_priority(&self, index: usize, path: &str) -> Option<CompareWorkPriority> {
         self.workspace
             .active_file_loading
@@ -2666,6 +2677,19 @@ pub struct ReviewCommentComposerState {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveReviewStatus {
+    pub status: ReviewSessionStatus,
+    pub message: Option<String>,
+    pub unresolved_threads: usize,
+    pub resolved_threads: usize,
+    pub outdated_threads: usize,
+    pub pending_drafts: usize,
+    pub failed_drafts: usize,
+    pub review_decision: Option<String>,
+    pub viewer_latest_review_state: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
 pub struct PullRequestState {
     pub status: AsyncStatus,
@@ -2675,6 +2699,10 @@ pub struct PullRequestState {
     pub review_comments: HashMap<PrKey, PrReviewCommentsEntry>,
     pub review_sessions: HashMap<PrKey, ReviewSession>,
     pub review_composer: ReviewCommentComposerState,
+    /// Ephemeral, UI-only expand/collapse override per thread. Takes precedence
+    /// over the default (unresolved=expanded, resolved=collapsed). Not persisted
+    /// and intentionally separate from the backend `ReviewThreadStatus.collapsed`.
+    pub review_thread_expanded: HashMap<ReviewThreadId, bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9031,6 +9059,14 @@ impl AppState {
     }
 
     fn toggle_line_selection_range(&mut self, row: usize, anchor: usize) {
+        self.insert_line_selection_range(row, anchor, false);
+    }
+
+    fn set_line_selection_range(&mut self, row: usize, anchor: usize) {
+        self.insert_line_selection_range(row, anchor, true);
+    }
+
+    fn insert_line_selection_range(&mut self, row: usize, anchor: usize, clear_first: bool) {
         let (start, end) = if row <= anchor {
             (row, anchor)
         } else {
@@ -9048,6 +9084,9 @@ impl AppState {
             return;
         }
         self.editor.line_selection.update(&self.store, |ls| {
+            if clear_first {
+                ls.clear();
+            }
             for line in &lines {
                 let kind = line.row_kind();
                 if !matches!(

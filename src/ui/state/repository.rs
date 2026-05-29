@@ -302,6 +302,10 @@ impl AppState {
                 self.toggle_line_selection_range(row, anchor);
                 Vec::new()
             }
+            SetLineSelectionRange { row, anchor } => {
+                self.set_line_selection_range(row, anchor);
+                Vec::new()
+            }
             ToggleCurrentLineSelection => {
                 self.toggle_current_line_selection();
                 Vec::new()

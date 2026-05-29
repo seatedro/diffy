@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
+use crate::core::review::ReviewThreadId;
 use crate::core::vcs::model::{PublishAction, VcsOperation};
 use crate::input::ShortcutCommand;
 use crate::platform::secrets::AiKeyKind;
@@ -59,6 +60,10 @@ impl ContextMenuEntry {
             *disabled = true;
         }
         self
+    }
+
+    pub fn disabled_if(self, disabled: bool) -> Self {
+        if disabled { self.disabled() } else { self }
     }
 
     pub fn separator() -> Self {
@@ -129,6 +134,7 @@ pub enum RepositoryAction {
     DiscardHunkAt(i16),
     ToggleLineSelection(usize),
     ToggleLineSelectionRange(usize, usize),
+    SetLineSelectionRange { row: usize, anchor: usize },
     ToggleCurrentLineSelection,
     ToggleCurrentLineSelectionRange,
     StageSelectedLines,
@@ -303,6 +309,8 @@ pub enum GitHubAction {
     OpenReviewCommentComposer,
     SubmitReviewComment,
     CancelReviewComment,
+    ToggleReviewThread(ReviewThreadId),
+    SetReviewThreadResolved { id: ReviewThreadId, resolved: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -6,6 +6,10 @@ pub mod design;
 pub mod editor;
 pub mod editor_element;
 pub mod element;
+// Dev/test-only verification substrate (fixtures + no-GPU render path). Gated so
+// its fixture data never compiles into a shipping binary; the headless example
+// enables `headless-render`, tests get it via `cfg(test)`.
+#[cfg(any(test, feature = "headless-render"))]
 pub mod harness;
 pub mod icons;
 pub mod overlays;

@@ -25,6 +25,9 @@ use crate::ui::window_chrome;
 
 pub use halogen::CursorHint;
 
+/// Unscaled height reserved for the open review-comment composer block.
+const COMPOSER_H_BASE: f32 = 248.0;
+
 #[derive(Debug, Clone, Default)]
 pub struct UiFrame {
     pub scene: Scene,
@@ -441,6 +444,36 @@ pub fn build_ui_frame(
                         |thread| state.review_thread_expanded(thread),
                     );
                 }
+                // Reserve a block for the open composer so it pushes the lines below
+                // down (rather than overlaying them), then render it in the overlay loop.
+                if let Some((path, side, line)) =
+                    state
+                        .github
+                        .pull_request
+                        .review_composer
+                        .with(&state.store, |c| {
+                            c.draft
+                                .as_ref()
+                                .map(|d| (d.request.path.clone(), d.request.side, d.request.line))
+                        })
+                    && path == active_file.path
+                {
+                    let rside = match side {
+                        crate::core::forge::github::GitHubReviewSide::Left => {
+                            crate::core::review::ReviewSide::Old
+                        }
+                        crate::core::forge::github::GitHubReviewSide::Right => {
+                            crate::core::review::ReviewSide::New
+                        }
+                    };
+                    crate::ui::editor::review::push_review_composer_block(
+                        editor.blocks_mut(),
+                        &active_file.render_doc,
+                        rside,
+                        line,
+                        (COMPOSER_H_BASE * ui_scale).round() as u16,
+                    );
+                }
                 editor.set_hunk_expand_caps(caps);
             } else {
                 editor.blocks_mut().clear();
@@ -686,34 +719,57 @@ pub fn build_ui_frame(
                         .with(&state.store, Clone::clone);
                     scene.clip(band);
                     for (idx, rect) in cards {
-                        let Some((thread, expanded)) = editor
+                        let is_composer = editor
+                            .blocks()
+                            .get(idx)
+                            .is_some_and(|block| block.is_composer());
+                        let hit_start = cx.hits.len();
+                        let stext_start = cx.selectable_text_runs.len();
+                        if is_composer {
+                            let composer_rect = Rect {
+                                x: rect.x,
+                                y: rect.y,
+                                width: review_card_width,
+                                height: rect.height,
+                            };
+                            let mut composer =
+                                build_review_composer(state, theme, ui_scale, composer_rect);
+                            render_element_at(
+                                &mut composer,
+                                &mut scene,
+                                cx,
+                                rect.x,
+                                rect.y,
+                                review_card_width,
+                                rect.height,
+                            );
+                        } else if let Some((thread, expanded)) = editor
                             .blocks()
                             .get(idx)
                             .and_then(|block| block.review_card())
                             .map(|(thread, expanded)| (thread.clone(), expanded))
-                        else {
+                        {
+                            let mut card = crate::ui::editor::review::build_review_thread_card(
+                                &thread,
+                                expanded,
+                                theme,
+                                ui_scale,
+                                review_card_width,
+                                &review_avatars,
+                                card_selection.as_ref(),
+                            );
+                            render_element_at(
+                                &mut card,
+                                &mut scene,
+                                cx,
+                                rect.x,
+                                rect.y,
+                                review_card_width,
+                                rect.height,
+                            );
+                        } else {
                             continue;
-                        };
-                        let mut card = crate::ui::editor::review::build_review_thread_card(
-                            &thread,
-                            expanded,
-                            theme,
-                            ui_scale,
-                            review_card_width,
-                            &review_avatars,
-                            card_selection.as_ref(),
-                        );
-                        let hit_start = cx.hits.len();
-                        let stext_start = cx.selectable_text_runs.len();
-                        render_element_at(
-                            &mut card,
-                            &mut scene,
-                            cx,
-                            rect.x,
-                            rect.y,
-                            review_card_width,
-                            rect.height,
-                        );
+                        }
                         // Clip the card's freshly-registered hit rects to the visible band
                         // so a partly-off-screen card cannot steal clicks over the chrome.
                         let tail = cx.hits.split_off(hit_start);
@@ -834,39 +890,14 @@ pub fn build_ui_frame(
                     } else {
                         None
                     };
+                    // The composer is rendered inline as a block (above), pushing the
+                    // diff down; so the line action bar shows only when it's closed.
                     let composer_open = state
                         .github
                         .pull_request
                         .review_composer
                         .with(&state.store, |composer| composer.draft.is_some());
-                    if composer_open {
-                        if let Some(anchor_rect) = line_bar_rect {
-                            let composer_h = (248.0 * ui_scale).round();
-                            let y = (anchor_rect.y + anchor_rect.height)
-                                .min(vp_bounds.bottom() - composer_h)
-                                .max(vp_bounds.y);
-                            // Full content-column width, left-aligned (like the thread
-                            // card) instead of a narrow box floated to the right that
-                            // overlaps the code — matches GitHub's inline composer.
-                            let composer_rect = Rect {
-                                x: editor.layout.content_bounds.x,
-                                y,
-                                width: review_card_width,
-                                height: composer_h,
-                            };
-                            let mut composer =
-                                build_review_composer(state, theme, ui_scale, composer_rect);
-                            render_element_at(
-                                &mut composer,
-                                &mut scene,
-                                cx,
-                                composer_rect.x,
-                                composer_rect.y,
-                                composer_rect.width,
-                                composer_rect.height,
-                            );
-                        }
-                    } else if let Some(bar_rect) = line_bar_rect {
+                    if !composer_open && let Some(bar_rect) = line_bar_rect {
                         let mut bar = build_review_bar(theme, ui_scale, bar_rect);
                         render_element_at(
                             &mut bar,

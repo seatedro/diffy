@@ -402,6 +402,12 @@ pub trait BlockDecoration: std::fmt::Debug {
     fn review_card(&self) -> Option<(&crate::core::review::ReviewThread, bool)> {
         None
     }
+
+    /// The review-comment composer block returns `true` so the shell renders the
+    /// composer `view!` overlay at this block's reserved rect (like `review_card`).
+    fn is_composer(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Default)]

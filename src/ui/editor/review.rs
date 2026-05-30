@@ -680,6 +680,51 @@ impl BlockDecoration for ReviewCommentBlock {
     }
 }
 
+/// Block that reserves space in the diff flow for the open comment composer, so the
+/// composer pushes the lines below down (like a thread card) instead of overlaying
+/// them. The shell renders the composer `view!` at this block's reserved rect.
+#[derive(Debug)]
+struct ComposerBlock {
+    height: u16,
+}
+
+impl BlockDecoration for ComposerBlock {
+    fn height(&self, _metrics: &DisplayLayoutMetrics) -> u16 {
+        self.height
+    }
+    fn paint(&self, _ctx: &mut BlockPaintCtx) {}
+    fn is_composer(&self) -> bool {
+        true
+    }
+    fn accessibility_label(&self) -> Option<String> {
+        Some("Review comment composer".to_owned())
+    }
+}
+
+/// Pushes the composer block below the diff line identified by `side`/`line` (a
+/// GitHub line number on that side). No-op if the line isn't visible in the doc.
+pub fn push_review_composer_block(
+    blocks: &mut BlockRegistry,
+    render_doc: &RenderDoc,
+    side: ReviewSide,
+    line: u32,
+    height: u16,
+) {
+    let anchor = render_doc.lines.iter().enumerate().find_map(|(idx, l)| {
+        let hit = match side {
+            ReviewSide::New => l.new_line_no == line,
+            ReviewSide::Old => l.old_line_no == line,
+        };
+        (hit && l.hunk_index >= 0).then_some(idx as u32)
+    });
+    if let Some(anchor) = anchor {
+        blocks.push(
+            BlockPlacement::Below(anchor),
+            Box::new(ComposerBlock { height }),
+        );
+    }
+}
+
 pub fn populate_review_thread_blocks(
     blocks: &mut BlockRegistry,
     render_doc: &RenderDoc,

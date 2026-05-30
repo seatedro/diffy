@@ -238,6 +238,7 @@ pub struct ElementContext<'a> {
     pub clock_ms: u64,
     pub debug_wireframe: bool,
     pub text_input_hit_areas: Vec<TextInputHitArea>,
+    pub selectable_text_runs: Vec<SelectableTextRegion>,
     pub scrollbar_tracks: Vec<ScrollbarTrack>,
     pub tooltip_regions: Vec<TooltipRegion>,
     pub accessibility: AccessibilityFrame,
@@ -271,6 +272,7 @@ impl<'a> ElementContext<'a> {
             clock_ms: 0,
             debug_wireframe: false,
             text_input_hit_areas: Vec::new(),
+            selectable_text_runs: Vec::new(),
             scrollbar_tracks: Vec::new(),
             tooltip_regions: Vec::new(),
             accessibility: AccessibilityFrame::default(),
@@ -2305,6 +2307,251 @@ impl IntoAnyElement for TextInput {
 }
 
 // ---------------------------------------------------------------------------
+// SelectableText — multi-line, mouse-selectable static text
+// ---------------------------------------------------------------------------
+
+/// Per-frame record of a painted selectable-text block, mirroring
+/// `TextInputHitArea`. Carries the exact wrapped runs that were painted so
+/// `pointer.rs` maps a click onto the same visual lines (no re-shape → no
+/// divergence) and on to a byte offset into `text`. `source_key` identifies which
+/// logical text this is, so a selection survives re-wrap and only highlights its
+/// own block.
+#[derive(Debug, Clone)]
+pub struct SelectableTextRegion {
+    pub bounds: Rect,
+    pub text_origin: (f32, f32),
+    pub text: String,
+    pub runs: Vec<WrappedRun>,
+    pub line_height: f32,
+    pub font_size: f32,
+    pub font_kind: FontKind,
+    pub font_weight: FontWeight,
+    pub source_key: u64,
+}
+
+/// Static text that wraps to `width` and supports mouse drag-selection + copy.
+/// Selection state lives in app state (keyed by byte offsets into the source
+/// string, which survive re-wrap); the element renders the highlight from a
+/// resolved `selection` range and registers a `SelectableTextRegion` for input.
+pub struct SelectableText {
+    text: String,
+    width: f32,
+    font_size: f32,
+    font_kind: FontKind,
+    font_weight: FontWeight,
+    color: Option<Color>,
+    max_lines: usize,
+    source_key: u64,
+    selection: Option<(usize, usize)>,
+}
+
+pub fn selectable_text(text: impl Into<String>) -> SelectableText {
+    SelectableText {
+        text: text.into(),
+        width: 0.0,
+        font_size: 0.0,
+        font_kind: FontKind::Ui,
+        font_weight: FontWeight::Normal,
+        color: None,
+        max_lines: 64,
+        source_key: 0,
+        selection: None,
+    }
+}
+
+impl SelectableText {
+    pub fn width(mut self, w: f32) -> Self {
+        self.width = w;
+        self
+    }
+    pub fn size(mut self, s: f32) -> Self {
+        self.font_size = s;
+        self
+    }
+    pub fn color(mut self, c: Color) -> Self {
+        self.color = Some(c);
+        self
+    }
+    pub fn weight(mut self, w: FontWeight) -> Self {
+        self.font_weight = w;
+        self
+    }
+    pub fn max_lines(mut self, n: usize) -> Self {
+        self.max_lines = n;
+        self
+    }
+    pub fn source(mut self, key: u64) -> Self {
+        self.source_key = key;
+        self
+    }
+    /// Resolved (normalized) byte range to highlight, or `None` when this block
+    /// is not the selected one. Highlight is painted behind the text, so passing
+    /// a selection never alters layout (measure == render).
+    pub fn selection(mut self, selection: Option<(usize, usize)>) -> Self {
+        self.selection = selection;
+        self
+    }
+}
+
+impl Element for SelectableText {
+    type LayoutState = (Vec<WrappedRun>, f32); // (wrapped runs, line_height)
+    type PrepaintState = ();
+
+    fn request_layout(
+        &mut self,
+        engine: &mut LayoutEngine,
+        cx: &mut ElementContext,
+    ) -> (LayoutId, Self::LayoutState) {
+        let line_height = self.font_size * 1.35;
+        let runs = wrap_text_to_runs(
+            cx.font_system,
+            &self.text,
+            self.font_size,
+            self.font_kind,
+            self.font_weight,
+            self.width.max(1.0),
+            self.max_lines,
+        );
+        let n = runs.len().max(1);
+        let height = (n as f32 * line_height).ceil();
+        let id = engine.request_layout(
+            taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::length(self.width),
+                    height: taffy::Dimension::length(height),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+            &[],
+        );
+        (id, (runs, line_height))
+    }
+
+    fn prepaint(
+        &mut self,
+        _bounds: Bounds,
+        _layout_state: &mut Self::LayoutState,
+        _engine: &LayoutEngine,
+        _cx: &mut ElementContext,
+    ) {
+    }
+
+    fn paint(
+        &mut self,
+        bounds: Bounds,
+        state: &mut (Vec<WrappedRun>, f32),
+        _prepaint_state: &mut (),
+        _engine: &LayoutEngine,
+        scene: &mut Scene,
+        cx: &mut ElementContext,
+    ) {
+        let (runs, line_height) = state;
+        let line_height = *line_height;
+        let color = cx
+            .text_color_override()
+            .or(self.color)
+            .unwrap_or(cx.theme.colors.text);
+
+        // Selection highlight (behind text). Per run, slice the *same* substring
+        // the renderer draws and prefix-measure with `measure_text_width` — the
+        // identical single-line shaping — so highlight edges land on glyph edges.
+        if let Some((lo, hi)) = self.selection.filter(|(a, b)| a < b) {
+            let hl = cx.theme.colors.accent.with_alpha(Alpha::SOFT);
+            for run in runs.iter() {
+                let l = lo.max(run.start);
+                let r = hi.min(run.end);
+                // Defensive: if the body changed since the selection was captured the
+                // stored offsets may not land on char boundaries — skip rather than panic.
+                if l >= r || !self.text.is_char_boundary(l) || !self.text.is_char_boundary(r) {
+                    continue;
+                }
+                let sub = &self.text[run.start..run.end];
+                let x0 = measure_text_width(
+                    cx.font_system,
+                    &sub[..l - run.start],
+                    self.font_size,
+                    self.font_kind,
+                    self.font_weight,
+                );
+                let x1 = measure_text_width(
+                    cx.font_system,
+                    &sub[..r - run.start],
+                    self.font_size,
+                    self.font_kind,
+                    self.font_weight,
+                );
+                scene.rounded_rect(RoundedRectPrimitive::uniform(
+                    Rect {
+                        x: bounds.x + x0,
+                        y: bounds.y + run.line_top,
+                        width: (x1 - x0).max(1.0),
+                        height: line_height,
+                    },
+                    2.0,
+                    hl,
+                ));
+            }
+        }
+
+        // One single-line TextPrimitive per visual line (matches the prior per-line
+        // rendering; the renderer re-shapes each substring single-line, no wrap).
+        for run in runs.iter() {
+            let sub = self.text[run.start..run.end].to_owned();
+            scene.text(TextPrimitive {
+                rect: Rect {
+                    x: bounds.x,
+                    y: bounds.y + run.line_top,
+                    width: self.width,
+                    height: line_height,
+                },
+                text: sub.into(),
+                color,
+                font_size: self.font_size,
+                font_kind: self.font_kind,
+                font_weight: self.font_weight,
+            });
+        }
+
+        if !self.text.is_empty()
+            && !cx.accessibility_text_hidden()
+            && bounds.width > 0.0
+            && bounds.height > 0.0
+        {
+            cx.accessibility.push(
+                AccessibilityNode::new(
+                    format!(
+                        "selectable-text:{:?}:{:.0}:{:.0}",
+                        self.source_key, bounds.x, bounds.y
+                    ),
+                    AccessibilityRole::Label,
+                    bounds,
+                )
+                .label(self.text.clone()),
+            );
+        }
+
+        cx.selectable_text_runs.push(SelectableTextRegion {
+            bounds,
+            text_origin: (bounds.x, bounds.y),
+            text: std::mem::take(&mut self.text),
+            runs: std::mem::take(runs),
+            line_height,
+            font_size: self.font_size,
+            font_kind: self.font_kind,
+            font_weight: self.font_weight,
+            source_key: self.source_key,
+        });
+    }
+}
+
+impl IntoAnyElement for SelectableText {
+    fn into_any(self) -> AnyElement {
+        element_into_any(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Canvas — custom painting element
 // ---------------------------------------------------------------------------
 
@@ -2394,6 +2641,11 @@ pub struct SvgIcon {
     color: Option<Color>,
 }
 
+/// `size` is a BASE (logical, pre-`ui_scale`) value — pass an `Ico::*` token or a base
+/// pixel size. `SvgIcon` multiplies it by `ui_scale` internally so it matches scaled
+/// text/spacing. Do NOT pass an already-scaled value like `theme.metrics.ui_small_font_size`
+/// (which is post-scale) — that double-scales and renders jumbo. To match `text-sm`,
+/// use `Ico::SM`, not `ui_small_font_size`.
 pub fn svg_icon(svg: &'static str, size: f32) -> SvgIcon {
     SvgIcon {
         svg,
@@ -2683,6 +2935,81 @@ pub(crate) fn wrap_text_to_lines(
         lines.push(text.to_owned());
     }
     lines
+}
+
+/// One visual (wrapped) line of a shaped paragraph: the byte range `[start, end)`
+/// into the source string and the y offset to the top of the line. Used by
+/// `SelectableText` to render, hit-test, and highlight from a single shaping so
+/// every consumer agrees on where each character is.
+#[derive(Debug, Clone, Copy)]
+pub struct WrappedRun {
+    pub start: usize,
+    pub end: usize,
+    pub line_top: f32,
+}
+
+/// Like `wrap_text_to_lines` but returns each visual line's source byte range and
+/// top offset instead of an owned substring, so callers can map byte offsets
+/// (selection, hit-test) onto visual lines. Same shaping config as
+/// `wrap_text_to_lines` so the wrap points are identical.
+pub(crate) fn wrap_text_to_runs(
+    font_system: &mut glyphon::FontSystem,
+    text: &str,
+    font_size: f32,
+    font_kind: FontKind,
+    font_weight: FontWeight,
+    max_width: f32,
+    max_lines: usize,
+) -> Vec<WrappedRun> {
+    if text.is_empty() || max_lines == 0 {
+        return Vec::new();
+    }
+
+    let metrics = glyphon::Metrics::new(font_size, font_size * 1.35);
+    let mut buffer = glyphon::Buffer::new(font_system, metrics);
+    let family = match font_kind {
+        FontKind::Ui => glyphon::Family::SansSerif,
+        FontKind::Mono => glyphon::Family::Monospace,
+    };
+    let weight = glyphon_weight_for_font(font_kind, font_weight);
+    let attrs = glyphon::Attrs::new().family(family).weight(weight);
+    buffer.set_size(font_system, Some(max_width.max(1.0)), None);
+    buffer.set_text(font_system, text, &attrs, glyphon::Shaping::Advanced, None);
+    buffer.shape_until_scroll(font_system, false);
+
+    let mut out: Vec<WrappedRun> = Vec::new();
+    let runs: Vec<_> = buffer.layout_runs().collect();
+    for (i, run) in runs.iter().enumerate() {
+        let start = run.glyphs.first().map(|g| g.start).unwrap_or(0);
+        if out.len() + 1 >= max_lines && i + 1 < runs.len() {
+            // Absorb the remaining runs into the last allowed line.
+            let end = runs
+                .last()
+                .and_then(|r| r.glyphs.last())
+                .map(|g| g.end)
+                .unwrap_or(text.len());
+            out.push(WrappedRun {
+                start,
+                end: end.min(text.len()),
+                line_top: run.line_top,
+            });
+            break;
+        }
+        let end = run.glyphs.last().map(|g| g.end).unwrap_or(text.len());
+        out.push(WrappedRun {
+            start,
+            end: end.min(text.len()),
+            line_top: run.line_top,
+        });
+    }
+    if out.is_empty() {
+        out.push(WrappedRun {
+            start: 0,
+            end: text.len(),
+            line_top: 0.0,
+        });
+    }
+    out
 }
 
 fn glyphon_weight_for_font(font_kind: FontKind, font_weight: FontWeight) -> glyphon::Weight {
@@ -4232,5 +4559,51 @@ mod tests {
 
         assert!(cx.is_hovered(high_id), "z=10 should be hovered");
         assert!(!cx.is_hovered(low_id), "z=0 should be blocked by z=10");
+    }
+
+    #[test]
+    fn wrap_text_to_runs_covers_source_in_order() {
+        let mut font_system = glyphon::FontSystem::new();
+        let text = "the quick brown fox jumps over the lazy dog repeatedly today";
+        // Narrow width forces several wrapped runs.
+        let runs = wrap_text_to_runs(
+            &mut font_system,
+            text,
+            13.0,
+            FontKind::Ui,
+            FontWeight::Normal,
+            80.0,
+            64,
+        );
+        assert!(runs.len() > 1, "narrow width should wrap to multiple runs");
+        // Byte ranges are valid, ordered, and non-overlapping; line tops ascend.
+        let mut prev_end = 0usize;
+        let mut prev_top = -1.0f32;
+        for run in &runs {
+            assert!(run.start <= run.end && run.end <= text.len());
+            assert!(text.is_char_boundary(run.start) && text.is_char_boundary(run.end));
+            assert!(run.start >= prev_end, "runs must not overlap");
+            assert!(run.line_top > prev_top, "line tops must ascend");
+            prev_end = run.end;
+            prev_top = run.line_top;
+        }
+    }
+
+    #[test]
+    fn wrap_text_to_runs_single_line_spans_full_text() {
+        let mut font_system = glyphon::FontSystem::new();
+        let text = "short";
+        let runs = wrap_text_to_runs(
+            &mut font_system,
+            text,
+            13.0,
+            FontKind::Ui,
+            FontWeight::Normal,
+            10_000.0,
+            64,
+        );
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].start, 0);
+        assert_eq!(runs[0].end, text.len());
     }
 }

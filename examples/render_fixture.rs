@@ -16,17 +16,36 @@ fn main() {
 fn main() {
     use diffy::fonts::FontSettings;
     use diffy::render::Renderer;
-    use diffy::ui::harness::{render_review_card, sample_review_thread};
+    use diffy::ui::harness::{render_review_card_sized, sample_card_selection, sample_review_thread};
+
+    // Render at a moderate width and scale so the PNG comes back full-resolution
+    // (large images get downscaled on the way back). The card scene already bakes
+    // this scale into its geometry, so render_to_png rasterizes 1:1 (scale_factor 1).
+    let card_scale = std::env::var("CARD_SCALE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1.0_f32);
+    let card_width = std::env::var("CARD_WIDTH")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(760.0_f32);
+
+    // CARD_SELECT=1 draws a sample selection across comment 1's code/normal boundary
+    // so the highlight rendering on a styled line can be eyeballed.
+    let selection = (std::env::var("CARD_SELECT").as_deref() == Ok("1"))
+        .then(sample_card_selection)
+        .flatten();
 
     let thread = sample_review_thread();
-    let rendered = render_review_card(&thread, true, None);
+    let rendered =
+        render_review_card_sized(&thread, true, selection.as_ref(), card_width, card_scale);
 
-    // `render_review_card` already bakes the ui-scale into the scene geometry, so the
-    // scene is in final device pixels — rasterize 1:1. Passing the ui-scale again would
-    // shape/position content for a 2x-larger canvas and clip the right/bottom edges.
+    // The card is drawn at the origin; give the canvas extra room on the right and
+    // bottom so its drop shadow and the footer button aren't clipped at the edge.
+    let margin = 56u32;
     let scale = 1.0_f32;
-    let width = rendered.width.ceil() as u32;
-    let height = rendered.height.ceil() as u32;
+    let width = rendered.width.ceil() as u32 + margin;
+    let height = rendered.height.ceil() as u32 + margin;
 
     let font_settings = FontSettings::default();
     let mut renderer = match Renderer::new_headless(width, height, scale as f64, &font_settings) {

@@ -265,21 +265,21 @@ pub(crate) fn build_review_thread_card(
             // avatar, and the avatar→text gap. Wrapping at this width matches the painted
             // column so lines never run past the card edge.
             let text_w = (card_width - pad * 2.0 - indent - avatar_px - gap).max(40.0);
-            let cleaned = clean_comment_body(&comment.body).join(" ");
-            // One selectable, self-wrapping text block per comment body. Selection
-            // state keys on byte offsets into `cleaned` (re-wrap stable) and is wired
-            // in from app state; `None` here renders identically to plain text.
+            // Parse inline markdown (code/bold/italic/links) into styled spans. The
+            // concatenation of the span texts is the plain body that selection state
+            // keys on (byte offsets, re-wrap stable) and that copy yields.
+            let spans = comment_body_styled_spans(&comment.body, tc);
             let source_key = card_source_key(&thread.id, idx);
             let selected_range = selection
                 .filter(|sel| sel.source_key == source_key)
                 .map(|sel| sel.normalized());
-            let body_element: AnyElement = if cleaned.is_empty() {
+            let body_element: AnyElement = if spans.is_empty() {
                 text("(empty comment)")
                     .size(small)
                     .color(tc.text_muted)
                     .into_any()
             } else {
-                selectable_text(cleaned)
+                selectable_rich_text(spans)
                     .width(text_w)
                     .size(small)
                     .color(body_color)
@@ -444,13 +444,7 @@ pub(crate) fn measure_review_thread_card_height(
     // highlight behind text, so measure with neither — height is identical.
     let avatars = HashMap::new();
     let mut card = build_review_thread_card(
-        thread,
-        expanded,
-        theme,
-        ui_scale,
-        card_width,
-        &avatars,
-        None,
+        thread, expanded, theme, ui_scale, card_width, &avatars, None,
     );
     let mut engine = LayoutEngine::new();
     let root = card.request_layout(&mut engine, cx);
@@ -806,6 +800,196 @@ pub(crate) fn clean_comment_body(body: &str) -> Vec<String> {
         .filter(|line| !line.is_empty())
         .take(MAX_BODY_LINES_PER_COMMENT)
         .collect()
+}
+
+/// Inline emphasis carried by a span of comment text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InlineStyle {
+    Normal,
+    Bold,
+    Italic,
+    Code,
+    Link,
+}
+
+/// A run of comment text with a single inline style. The concatenation of all
+/// span texts is the plain body used for selection/copy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InlineSpan {
+    pub text: String,
+    pub style: InlineStyle,
+}
+
+/// Parses a comment body into styled inline spans for rich rendering: strips HTML
+/// comments and block markers (quotes/lists/headings/fences) but preserves inline
+/// emphasis (`` `code` ``, `**bold**`, `*italic*`, `[link](url)`). Lines are joined
+/// with spaces and the total is length-bounded so a card stays compact.
+pub(crate) fn parse_comment_body_rich(body: &str) -> Vec<InlineSpan> {
+    const MAX_CHARS: usize = 600;
+    let stripped = strip_html_comments(body);
+    let mut joined = String::new();
+    for line in stripped.lines() {
+        let cleaned = block_strip_keep_inline(line);
+        if cleaned.is_empty() {
+            continue;
+        }
+        if !joined.is_empty() {
+            joined.push(' ');
+        }
+        joined.push_str(&cleaned);
+        if joined.chars().count() >= MAX_CHARS {
+            break;
+        }
+    }
+    parse_inline(&joined)
+}
+
+/// Maps the parsed inline spans to display-styled spans for `selectable_rich_text`:
+/// code → mono on a subtle pill, bold → semibold, italic → italic, link text →
+/// accent color. The plain text (span concatenation) is unchanged, so copy still
+/// yields the body without markers.
+fn comment_body_styled_spans(body: &str, tc: &crate::ui::theme::ThemeColors) -> Vec<StyledSpan> {
+    parse_comment_body_rich(body)
+        .into_iter()
+        .map(|span| {
+            let mut styled = StyledSpan::plain(span.text);
+            match span.style {
+                InlineStyle::Normal => {}
+                InlineStyle::Bold => styled.font_weight = FontWeight::Semibold,
+                InlineStyle::Italic => styled.italic = true,
+                InlineStyle::Code => {
+                    styled.font_kind = FontKind::Mono;
+                    styled.color = Some(tc.text);
+                    styled.pill = Some(tc.element_background);
+                }
+                InlineStyle::Link => styled.color = Some(tc.accent),
+            }
+            styled
+        })
+        .collect()
+}
+
+/// Like `clean_markdown_line` but keeps inline markup (only block prefixes and
+/// fences are removed), so the inline parser can recover emphasis.
+fn block_strip_keep_inline(line: &str) -> String {
+    let mut s = line.trim();
+    if s.starts_with("```") || s.starts_with("~~~") {
+        return String::new();
+    }
+    loop {
+        let next = s
+            .strip_prefix("> ")
+            .or_else(|| s.strip_prefix('>'))
+            .or_else(|| s.strip_prefix("- "))
+            .or_else(|| s.strip_prefix("* "))
+            .or_else(|| s.strip_prefix("+ "))
+            .or_else(|| s.strip_prefix('#'))
+            .map(str::trim_start);
+        match next {
+            Some(n) if n != s => s = n,
+            _ => break,
+        }
+    }
+    collapse_whitespace(strip_ordered_list_marker(s))
+}
+
+fn flush_normal(normal: &mut String, spans: &mut Vec<InlineSpan>) {
+    if !normal.is_empty() {
+        spans.push(InlineSpan {
+            text: std::mem::take(normal),
+            style: InlineStyle::Normal,
+        });
+    }
+}
+
+fn find_double(chars: &[char], start: usize, marker: char) -> Option<usize> {
+    let mut i = start;
+    while i + 1 < chars.len() {
+        if chars[i] == marker && chars[i + 1] == marker {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Flat inline-markdown scanner: emphasis does not nest (first match wins), and an
+/// unbalanced marker is emitted as literal text.
+fn parse_inline(s: &str) -> Vec<InlineSpan> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut spans: Vec<InlineSpan> = Vec::new();
+    let mut normal = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        // `code`
+        if c == '`'
+            && let Some(close) = find_char(&chars, i + 1, '`')
+            && close > i + 1
+        {
+            flush_normal(&mut normal, &mut spans);
+            spans.push(InlineSpan {
+                text: chars[i + 1..close].iter().collect(),
+                style: InlineStyle::Code,
+            });
+            i = close + 1;
+            continue;
+        }
+        // **bold** / __bold__
+        if (c == '*' || c == '_')
+            && chars.get(i + 1) == Some(&c)
+            && let Some(close) = find_double(&chars, i + 2, c)
+            && close > i + 2
+        {
+            flush_normal(&mut normal, &mut spans);
+            spans.push(InlineSpan {
+                text: chars[i + 2..close].iter().collect(),
+                style: InlineStyle::Bold,
+            });
+            i = close + 2;
+            continue;
+        }
+        // *italic* / _italic_ (no space right after the marker)
+        if (c == '*' || c == '_')
+            && chars
+                .get(i + 1)
+                .is_some_and(|n| !n.is_whitespace() && *n != c)
+            && let Some(close) = find_char(&chars, i + 1, c)
+        {
+            flush_normal(&mut normal, &mut spans);
+            spans.push(InlineSpan {
+                text: chars[i + 1..close].iter().collect(),
+                style: InlineStyle::Italic,
+            });
+            i = close + 1;
+            continue;
+        }
+        // [text](url) — keep the text, styled as a link
+        if c == '['
+            && let Some(close) = find_char(&chars, i + 1, ']')
+            && close > i + 1
+            && chars.get(close + 1) == Some(&'(')
+            && let Some(end) = find_char(&chars, close + 2, ')')
+        {
+            flush_normal(&mut normal, &mut spans);
+            spans.push(InlineSpan {
+                text: chars[i + 1..close].iter().collect(),
+                style: InlineStyle::Link,
+            });
+            i = end + 1;
+            continue;
+        }
+        normal.push(c);
+        i += 1;
+    }
+    flush_normal(&mut normal, &mut spans);
+    if spans.is_empty() {
+        spans.push(InlineSpan {
+            text: String::new(),
+            style: InlineStyle::Normal,
+        });
+    }
+    spans
 }
 
 fn strip_html_comments(body: &str) -> String {
@@ -1317,6 +1501,160 @@ mod tests {
     fn caps_body_lines() {
         let body = "one\ntwo\nthree\nfour\nfive";
         assert_eq!(clean_comment_body(body).len(), MAX_BODY_LINES_PER_COMMENT);
+    }
+
+    #[test]
+    fn parses_inline_emphasis_into_styled_spans() {
+        let spans = parse_comment_body_rich(
+            "Use `withDeepSerpConfigs` but it **hard-codes** team to *null*; see [the docs](https://x).",
+        );
+        let styled: Vec<(InlineStyle, &str)> =
+            spans.iter().map(|s| (s.style, s.text.as_str())).collect();
+        assert_eq!(
+            styled,
+            vec![
+                (InlineStyle::Normal, "Use "),
+                (InlineStyle::Code, "withDeepSerpConfigs"),
+                (InlineStyle::Normal, " but it "),
+                (InlineStyle::Bold, "hard-codes"),
+                (InlineStyle::Normal, " team to "),
+                (InlineStyle::Italic, "null"),
+                (InlineStyle::Normal, "; see "),
+                (InlineStyle::Link, "the docs"),
+                (InlineStyle::Normal, "."),
+            ]
+        );
+    }
+
+    #[test]
+    fn rich_parse_strips_block_markers_and_html_comments() {
+        let spans =
+            parse_comment_body_rich("<!-- meta -->\n> ## Heading with `code`\n- a bullet point");
+        let plain: String = spans.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(plain, "Heading with code a bullet point");
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.style == InlineStyle::Code && s.text == "code")
+        );
+    }
+
+    #[test]
+    fn rich_parse_emits_literal_for_unbalanced_markers() {
+        let spans = parse_comment_body_rich("a * lone star and `unclosed code");
+        let plain: String = spans.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(plain, "a * lone star and `unclosed code");
+        assert!(spans.iter().all(|s| s.style == InlineStyle::Normal));
+    }
+
+    #[test]
+    fn rich_parse_concatenation_is_the_plain_body() {
+        // The concatenated span texts are the rendered *visible* text — links drop
+        // the URL, code/emphasis drop their markers — and that exact string is what
+        // selection/copy operate on. Hold the invariant across every inline form,
+        // including the `_`/`__` syntax the other tests never exercise.
+        let cases = [
+            ("Fix **the** `bug` now", "Fix the bug now"),
+            ("Fix __the__ `bug` now", "Fix the bug now"),
+            ("use _this_ not `that`", "use this not that"),
+            ("see [the docs](https://x/y?z=1) here", "see the docs here"),
+            ("regex `a*b_c` stays literal", "regex a*b_c stays literal"),
+        ];
+        for (body, want) in cases {
+            let plain: String = parse_comment_body_rich(body)
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect();
+            assert_eq!(
+                plain, want,
+                "concatenation must equal visible text for {body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rich_parse_handles_underscore_emphasis_syntax() {
+        let spans = parse_comment_body_rich("make __it__ _bold_ please");
+        let styled: Vec<(InlineStyle, &str)> =
+            spans.iter().map(|s| (s.style, s.text.as_str())).collect();
+        assert_eq!(
+            styled,
+            vec![
+                (InlineStyle::Normal, "make "),
+                (InlineStyle::Bold, "it"),
+                (InlineStyle::Normal, " "),
+                (InlineStyle::Italic, "bold"),
+                (InlineStyle::Normal, " please"),
+            ]
+        );
+    }
+
+    #[test]
+    fn rich_parse_code_span_wins_over_inline_markers() {
+        // Code is scanned first, so emphasis/link markers inside backticks stay
+        // literal — the renderer must show `a*b*c`, not an italic run, and the
+        // bracket text must not become a link.
+        let spans = parse_comment_body_rich("call `fn(a*b*c)` and `[x](y)` now");
+        let code: Vec<&str> = spans
+            .iter()
+            .filter(|s| s.style == InlineStyle::Code)
+            .map(|s| s.text.as_str())
+            .collect();
+        assert_eq!(code, vec!["fn(a*b*c)", "[x](y)"]);
+        assert!(
+            !spans
+                .iter()
+                .any(|s| matches!(s.style, InlineStyle::Italic | InlineStyle::Link)),
+            "markers inside a code span must not produce italic/link runs: {spans:?}"
+        );
+    }
+
+    #[test]
+    fn rich_parse_emits_no_empty_spans_between_adjacent_runs() {
+        // Adjacent styled runs must not be separated by an empty Normal span, and no
+        // span of any style may be empty — empty spans become zero-width positioning
+        // artifacts once each piece is laid out individually.
+        let spans = parse_comment_body_rich("`a`*b*__c__[d](e)");
+        let styled: Vec<(InlineStyle, &str)> =
+            spans.iter().map(|s| (s.style, s.text.as_str())).collect();
+        assert_eq!(
+            styled,
+            vec![
+                (InlineStyle::Code, "a"),
+                (InlineStyle::Italic, "b"),
+                (InlineStyle::Bold, "c"),
+                (InlineStyle::Link, "d"),
+            ]
+        );
+        assert!(
+            spans.iter().all(|s| !s.text.is_empty()),
+            "no span may be empty: {spans:?}"
+        );
+    }
+
+    #[test]
+    fn rich_parse_empty_link_text_is_literal_not_an_empty_run() {
+        // `[](url)` has no visible text; rather than emit an empty Link span the
+        // scanner falls through and keeps the source literally.
+        let spans = parse_comment_body_rich("before [](https://x) after");
+        let plain: String = spans.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(plain, "before [](https://x) after");
+        assert!(
+            !spans.iter().any(|s| s.style == InlineStyle::Link),
+            "empty-text link must not become a Link run: {spans:?}"
+        );
+    }
+
+    #[test]
+    fn rich_parse_caps_total_length() {
+        // The cap engages as lines are joined, so a many-line body is what bounds.
+        let body = "word\n".repeat(400);
+        let spans = parse_comment_body_rich(&body);
+        let chars: usize = spans.iter().map(|s| s.text.chars().count()).sum();
+        assert!(
+            (600..=610).contains(&chars),
+            "joined body must be bounded near MAX_CHARS=600; got {chars} chars"
+        );
     }
 
     #[test]

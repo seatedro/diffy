@@ -53,8 +53,10 @@ fn fixture_comment(
     }
 }
 
-/// A deterministic, neutral fixture thread with three plain-prose comments whose
-/// bodies wrap across several visual lines at ~520px. Unresolved + not collapsed
+/// A deterministic, neutral fixture thread whose comment bodies wrap across
+/// several visual lines. Comment 0 is plain prose (the regression guard for the
+/// selectable-text drag/copy paths); comment 1 carries inline markdown
+/// (code/bold/italic/link) to exercise rich rendering. Unresolved + not collapsed
 /// so the card renders expanded.
 pub fn sample_review_thread() -> ReviewThread {
     let id = ReviewThreadId::github_node("harness-thread-1");
@@ -78,9 +80,10 @@ pub fn sample_review_thread() -> ReviewThread {
             1002,
             "bravo",
             "2026-01-01T00:05:00Z",
-            "Good catch. The height is stable as long as the card width is pinned, \
-             so memoizing it behind a small dirty flag should be safe here and would \
-             remove the redundant measure pass entirely.",
+            "Good catch. Prefer `memoize_height()` over recomputing each frame: it \
+             stays **stable** while the card width is *pinned*, so a small dirty flag \
+             is enough to drop the redundant measure pass. See [the perf notes]\
+             (https://example.com/perf) for the trade-offs.",
         ),
         fixture_comment(
             &id,
@@ -109,6 +112,25 @@ pub fn sample_review_thread() -> ReviewThread {
     }
 }
 
+/// A sample selection over comment 1's body, spanning from inside the inline-code
+/// run into the following normal text, so the highlight render can be eyeballed
+/// across a mono/UI style boundary. Returns `None` if the fixture lacks the code
+/// text (it shouldn't). Byte offsets index the plain (marker-free) body.
+pub fn sample_card_selection() -> Option<CardTextSelection> {
+    let thread = sample_review_thread();
+    let key = crate::ui::editor::review::card_source_key(&thread.id, 1);
+    let card = render_review_card(&thread, true, None);
+    let region = card.selectable.iter().find(|r| r.source_key == key)?;
+    let anchor = region.text.find("memoize")?;
+    let after_code = region.text.find("while")? + "while".len();
+    Some(CardTextSelection {
+        source_key: key,
+        text: region.text.clone(),
+        anchor,
+        focus: after_code,
+    })
+}
+
 /// Outputs captured from rendering a review-thread card without a GPU.
 pub struct RenderedCard {
     pub scene: Scene,
@@ -127,31 +149,47 @@ pub fn render_review_card(
     expanded: bool,
     selection: Option<&CardTextSelection>,
 ) -> RenderedCard {
-    render_review_card_with_avatars(thread, expanded, selection, &HashMap::new())
+    render_review_card_sized(
+        thread,
+        expanded,
+        selection,
+        HARNESS_CARD_WIDTH,
+        HARNESS_UI_SCALE,
+    )
 }
 
-/// Same as [`render_review_card`] but with a caller-supplied avatar map, so tests
-/// can exercise the fetched-image avatar path (keyed by `avatar_cache_key`).
+/// Render at a caller-chosen physical `width` and `scale`. The example uses a small
+/// size so the PNG comes back full-resolution; tests use the constants.
+pub fn render_review_card_sized(
+    thread: &ReviewThread,
+    expanded: bool,
+    selection: Option<&CardTextSelection>,
+    width: f32,
+    scale: f32,
+) -> RenderedCard {
+    render_review_card_with_avatars(thread, expanded, selection, &HashMap::new(), width, scale)
+}
+
+/// Same as [`render_review_card_sized`] but with a caller-supplied avatar map, so
+/// tests can exercise the fetched-image avatar path (keyed by `avatar_cache_key`).
 fn render_review_card_with_avatars(
     thread: &ReviewThread,
     expanded: bool,
     selection: Option<&CardTextSelection>,
     avatars: &HashMap<u64, crate::ui::components::avatar::AvatarImage>,
+    width: f32,
+    scale: f32,
 ) -> RenderedCard {
-    // Scale the theme's metrics like the live app does (`Theme::scaled`), so that
+    // Scale the theme's metrics like the live app does (`Theme::with_ui_scale`), so
     // elements which read `cx.theme.metrics.ui_scale()` (avatars, icons) scale
     // consistently with spacing/fonts that take the explicit `scale` — otherwise the
     // render mixes 1x icons/avatars with 2x spacing.
-    let theme = Theme::default_dark().with_ui_scale(HARNESS_UI_SCALE);
+    let theme = Theme::default_dark().with_ui_scale(scale);
     let mut font_system = glyphon::FontSystem::new();
     let store = SignalStore::new();
 
-    let width = HARNESS_CARD_WIDTH;
-    let scale = HARNESS_UI_SCALE;
-
     let height = {
-        let mut measure_cx =
-            ElementContext::new(&theme, scale, &mut font_system, None, &store);
+        let mut measure_cx = ElementContext::new(&theme, scale, &mut font_system, None, &store);
         f32::from(measure_review_thread_card_height(
             thread,
             expanded,
@@ -222,11 +260,7 @@ impl UiHarness {
     }
 
     /// The selectable region for comment `index`, matched by its source key.
-    pub fn region_for_comment(
-        &self,
-        thread: &ReviewThread,
-        index: usize,
-    ) -> &SelectableTextRegion {
+    pub fn region_for_comment(&self, thread: &ReviewThread, index: usize) -> &SelectableTextRegion {
         let key = crate::ui::editor::review::card_source_key(&thread.id, index);
         self.card
             .selectable
@@ -370,7 +404,10 @@ mod tests {
         let mut got: HashSet<&str> = HashSet::new();
         for line in dump.lines().filter(|l| l.starts_with("selectable-text:")) {
             let parts: Vec<&str> = line.split(" | ").collect();
-            assert_eq!(parts[1], "Label", "selectable body must be a Label:\n{line}");
+            assert_eq!(
+                parts[1], "Label",
+                "selectable body must be a Label:\n{line}"
+            );
             got.insert(parts[2]);
         }
 
@@ -472,7 +509,14 @@ mod tests {
             },
         );
 
-        let rendered = render_review_card_with_avatars(&thread, true, None, &avatars);
+        let rendered = render_review_card_with_avatars(
+            &thread,
+            true,
+            None,
+            &avatars,
+            HARNESS_CARD_WIDTH,
+            HARNESS_UI_SCALE,
+        );
         // The card also rasterizes the chevron/menu SVGs to Image primitives, so
         // identify the avatar by its cache_key rather than assuming it's the only one.
         let avatar_img = rendered
@@ -509,8 +553,11 @@ mod tests {
 
         let line0 = &region.text[region.runs[0].start..region.runs[0].end];
         let first_space = line0.find(' ').expect("line 0 has a first space");
-        let second_space =
-            line0[first_space + 1..].find(' ').expect("line 0 has a second word") + first_space + 1;
+        let second_space = line0[first_space + 1..]
+            .find(' ')
+            .expect("line 0 has a second word")
+            + first_space
+            + 1;
         let target_byte = region.runs[0].start + second_space;
 
         let prefix = &region.text[region.runs[0].start..target_byte];
@@ -553,6 +600,72 @@ mod tests {
         assert!(
             region.text.starts_with(&selected),
             "selection must be a prefix of the comment body"
+        );
+    }
+
+    /// Rich comment bodies render each inline style as its own scene piece (mono
+    /// code, semibold bold, italic span) while selection/copy keep operating on the
+    /// marker-free plain concatenation — so a drag across a mixed-font line copies
+    /// exactly that text with no backticks/asterisks.
+    #[test]
+    fn rich_comment_body_renders_styled_pieces_and_copies_plain_text() {
+        use crate::actions::AppAction;
+        use crate::render::{FontKind, FontStyle, FontWeight, Primitive};
+
+        let thread = sample_review_thread();
+        let mut harness = UiHarness::new(&thread);
+        let region = harness.region_for_comment(&thread, 1).clone();
+
+        // The plain body (what selection/copy see) has the markup markers stripped.
+        assert!(
+            region.text.contains("memoize_height()"),
+            "plain body should contain the code text: {:?}",
+            region.text
+        );
+        assert!(
+            !region.text.contains('`') && !region.text.contains('*'),
+            "copy source must not contain markdown markers: {:?}",
+            region.text
+        );
+
+        let scene = &harness.card.scene;
+        let has_mono_code = scene.primitives.iter().any(|p| {
+            matches!(p, Primitive::TextRun(t)
+                if t.font_kind == FontKind::Mono && t.text.as_ref() == "memoize_height()")
+        });
+        assert!(has_mono_code, "inline code must render as a mono piece");
+
+        let has_bold = scene.primitives.iter().any(|p| {
+            matches!(p, Primitive::TextRun(t)
+                if t.font_weight == FontWeight::Semibold && t.text.as_ref() == "stable")
+        });
+        assert!(has_bold, "**bold** must render as a semibold piece");
+
+        let has_italic = scene.primitives.iter().any(|p| {
+            matches!(p, Primitive::RichTextRun(r)
+                if r.spans.iter().any(|s|
+                    s.font_style == Some(FontStyle::Italic) && s.text.as_ref() == "pinned"))
+        });
+        assert!(has_italic, "*italic* must render as an italic span");
+
+        // Drag the first visual line to the saturation edge; Cmd+C copies exactly
+        // that line, markers-free, even though it mixes mono and UI glyphs.
+        let first_line_end = region.runs[0].end;
+        let expected = region.text[..first_line_end].to_owned();
+        let y = region.text_origin.1 + region.line_height * 0.5;
+        harness.drag(
+            (region.text_origin.0, y),
+            &[(region.bounds.x + region.bounds.width + 200.0, y)],
+        );
+        let actions = harness.key(UiHarness::cmd_key("c"));
+        assert_eq!(
+            actions,
+            vec![AppAction::CopyText(expected.clone()).into()],
+            "Cmd+C must copy the dragged plain-text line"
+        );
+        assert!(
+            !expected.contains('`'),
+            "copied text must not contain backticks: {expected:?}"
         );
     }
 
@@ -632,7 +745,10 @@ mod tests {
 
         // Mouse down at the text origin (x maps to byte 0), drag past the right
         // edge of the first visual line, release.
-        let start = (region.text_origin.0, region.text_origin.1 + region.line_height * 0.5);
+        let start = (
+            region.text_origin.0,
+            region.text_origin.1 + region.line_height * 0.5,
+        );
         let line0_y = region.text_origin.1 + region.line_height * 0.5;
         harness.drag(
             start,
@@ -691,16 +807,16 @@ mod tests {
 
         // Reverse exclusivity: starting a viewport text selection clears the card
         // selection.
-        harness.state.apply_action(
-            crate::actions::EditorAction::BeginViewportTextSelection {
+        harness
+            .state
+            .apply_action(crate::actions::EditorAction::BeginViewportTextSelection {
                 point: crate::ui::editor::state::ViewportTextPoint {
                     line_index: 0,
                     side: crate::ui::editor::state::ViewportTextSide::Right,
                     byte_offset: 0,
                 },
                 generation: 1,
-            },
-        );
+            });
         assert!(
             harness
                 .state

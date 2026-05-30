@@ -2310,6 +2310,36 @@ impl IntoAnyElement for TextInput {
 // SelectableText — multi-line, mouse-selectable static text
 // ---------------------------------------------------------------------------
 
+use crate::render::scene::{FontStyle, RichTextPrimitive, RichTextSpan};
+
+/// One run of comment text with a single display style. The concatenation of
+/// every span's `text` is the plain string selection and copy operate on, so the
+/// markup markers (backticks, asterisks, link URLs) must already be stripped.
+#[derive(Debug, Clone)]
+pub struct StyledSpan {
+    pub text: String,
+    pub font_kind: FontKind,
+    pub font_weight: FontWeight,
+    pub italic: bool,
+    /// `None` paints in the block's default color.
+    pub color: Option<Color>,
+    /// `Some(bg)` paints a rounded background pill behind the run (inline code).
+    pub pill: Option<Color>,
+}
+
+impl StyledSpan {
+    pub fn plain(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            font_kind: FontKind::Ui,
+            font_weight: FontWeight::Normal,
+            italic: false,
+            color: None,
+            pill: None,
+        }
+    }
+}
+
 /// Per-frame record of a painted selectable-text block, mirroring
 /// `TextInputHitArea`. Carries the exact wrapped runs that were painted so
 /// `pointer.rs` maps a click onto the same visual lines (no re-shape → no
@@ -2334,9 +2364,11 @@ pub struct SelectableTextRegion {
 /// string, which survive re-wrap); the element renders the highlight from a
 /// resolved `selection` range and registers a `SelectableTextRegion` for input.
 pub struct SelectableText {
-    text: String,
+    spans: Vec<StyledSpan>,
     width: f32,
     font_size: f32,
+    /// Base font used for the region's (approximate) hit-test and for plain text.
+    /// Rich spans carry their own kind/weight; this is the fallback/normal style.
     font_kind: FontKind,
     font_weight: FontWeight,
     color: Option<Color>,
@@ -2346,8 +2378,15 @@ pub struct SelectableText {
 }
 
 pub fn selectable_text(text: impl Into<String>) -> SelectableText {
+    selectable_rich_text(vec![StyledSpan::plain(text)])
+}
+
+/// Selectable text whose runs carry inline styles (code/bold/italic/link). The
+/// concatenation of the span texts is the plain body; selection/copy/a11y all
+/// operate on that string, so styling never changes what gets copied.
+pub fn selectable_rich_text(spans: Vec<StyledSpan>) -> SelectableText {
     SelectableText {
-        text: text.into(),
+        spans,
         width: 0.0,
         font_size: 0.0,
         font_kind: FontKind::Ui,
@@ -2403,9 +2442,12 @@ impl Element for SelectableText {
         cx: &mut ElementContext,
     ) -> (LayoutId, Self::LayoutState) {
         let line_height = self.font_size * 1.35;
-        let runs = wrap_text_to_runs(
+        // Wrap from a RICH shaping so wrap points respect each span's font (a mono
+        // code run is wider than UI text), then map the glyph byte ranges back onto
+        // the concatenated plain string.
+        let runs = wrap_rich_text_to_runs(
             cx.font_system,
-            &self.text,
+            &self.spans,
             self.font_size,
             self.font_kind,
             self.font_weight,
@@ -2448,72 +2490,160 @@ impl Element for SelectableText {
     ) {
         let (runs, line_height) = state;
         let line_height = *line_height;
-        let color = cx
+        let default_color = cx
             .text_color_override()
             .or(self.color)
             .unwrap_or(cx.theme.colors.text);
 
-        // Selection highlight (behind text). Per run, slice the *same* substring
-        // the renderer draws and prefix-measure with `measure_text_width` — the
-        // identical single-line shaping — so highlight edges land on glyph edges.
-        if let Some((lo, hi)) = self.selection.filter(|(a, b)| a < b) {
-            let hl = cx.theme.colors.accent.with_alpha(Alpha::SOFT);
-            for run in runs.iter() {
-                let l = lo.max(run.start);
-                let r = hi.min(run.end);
-                // Defensive: if the body changed since the selection was captured the
-                // stored offsets may not land on char boundaries — skip rather than panic.
-                if l >= r || !self.text.is_char_boundary(l) || !self.text.is_char_boundary(r) {
-                    continue;
-                }
-                let sub = &self.text[run.start..run.end];
-                let x0 = measure_text_width(
-                    cx.font_system,
-                    &sub[..l - run.start],
-                    self.font_size,
-                    self.font_kind,
-                    self.font_weight,
-                );
-                let x1 = measure_text_width(
-                    cx.font_system,
-                    &sub[..r - run.start],
-                    self.font_size,
-                    self.font_kind,
-                    self.font_weight,
-                );
-                scene.rounded_rect(RoundedRectPrimitive::uniform(
-                    Rect {
-                        x: bounds.x + x0,
-                        y: bounds.y + run.line_top,
-                        width: (x1 - x0).max(1.0),
-                        height: line_height,
-                    },
-                    2.0,
-                    hl,
-                ));
+        // Plain string (markers already stripped) + each span's byte range within it.
+        let text: String = self.spans.iter().map(|s| s.text.as_str()).collect();
+        let mut span_ranges: Vec<(usize, usize)> = Vec::with_capacity(self.spans.len());
+        {
+            let mut off = 0usize;
+            for s in &self.spans {
+                let end = off + s.text.len();
+                span_ranges.push((off, end));
+                off = end;
             }
         }
 
-        // One single-line TextPrimitive per visual line (matches the prior per-line
-        // rendering; the renderer re-shapes each substring single-line, no wrap).
+        let selection = self.selection.filter(|(a, b)| a < b);
+        let hl = cx.theme.colors.accent.with_alpha(Alpha::SOFT);
+
+        // Paint each visual line as a sequence of single-style pieces, positioning
+        // each piece by accumulating `measure_text_width` from the line's left edge.
+        // The renderer draws each piece at exactly these offsets, so the pill,
+        // highlight, and text all share one coordinate system (no drift).
         for run in runs.iter() {
-            let sub = self.text[run.start..run.end].to_owned();
-            scene.text(TextPrimitive {
-                rect: Rect {
-                    x: bounds.x,
-                    y: bounds.y + run.line_top,
-                    width: self.width,
-                    height: line_height,
-                },
-                text: sub.into(),
-                color,
-                font_size: self.font_size,
-                font_kind: self.font_kind,
-                font_weight: self.font_weight,
-            });
+            let mut pen = 0.0f32;
+            for (span, &(ss, se)) in self.spans.iter().zip(span_ranges.iter()) {
+                let lo = ss.max(run.start);
+                let hi = se.min(run.end);
+                if lo >= hi || !text.is_char_boundary(lo) || !text.is_char_boundary(hi) {
+                    continue;
+                }
+                let sub = &text[lo..hi];
+                // True pen advance (includes trailing spaces, which `line_w` trims) so
+                // a span ending in a space doesn't make the next piece abut its word.
+                let piece_adv = measure_text_advance(
+                    cx.font_system,
+                    sub,
+                    self.font_size,
+                    span.font_kind,
+                    span.font_weight,
+                );
+                let x = bounds.x + pen;
+                let y = bounds.y + run.line_top;
+
+                // Inline-code background pill: drawn snug around the run without
+                // advancing the pen, so byte→x mapping for selection stays linear.
+                if let Some(bg) = span.pill {
+                    scene.rounded_rect(RoundedRectPrimitive::uniform(
+                        Rect {
+                            x: x - 2.0,
+                            y: y + line_height * 0.1,
+                            width: piece_adv + 4.0,
+                            height: line_height * 0.8,
+                        },
+                        4.0,
+                        bg,
+                    ));
+                }
+
+                // Selection highlight (above the pill, behind the glyphs), measured
+                // within this piece's own font so edges land on glyph edges.
+                if let Some((slo, shi)) = selection {
+                    let l = slo.max(lo);
+                    let r = shi.min(hi);
+                    if l < r && text.is_char_boundary(l) && text.is_char_boundary(r) {
+                        let x0 = measure_text_advance(
+                            cx.font_system,
+                            &text[lo..l],
+                            self.font_size,
+                            span.font_kind,
+                            span.font_weight,
+                        );
+                        let x1 = measure_text_advance(
+                            cx.font_system,
+                            &text[lo..r],
+                            self.font_size,
+                            span.font_kind,
+                            span.font_weight,
+                        );
+                        scene.rounded_rect(RoundedRectPrimitive::uniform(
+                            Rect {
+                                x: x + x0,
+                                y,
+                                width: (x1 - x0).max(1.0),
+                                height: line_height,
+                            },
+                            2.0,
+                            hl,
+                        ));
+                    }
+                }
+
+                // Shapers drop a buffer's leading whitespace, so a piece that starts
+                // with a space would abut the previous word. Trim the leading space
+                // from the rendered text and shift the draw position by its advance —
+                // the pen still moves by the full width, keeping the gap intact.
+                let trimmed = sub.trim_start();
+                if !trimmed.is_empty() {
+                    let lead = sub.len() - trimmed.len();
+                    let lead_adv = if lead > 0 {
+                        measure_text_advance(
+                            cx.font_system,
+                            &text[lo..lo + lead],
+                            self.font_size,
+                            span.font_kind,
+                            span.font_weight,
+                        )
+                    } else {
+                        0.0
+                    };
+                    let piece_color = span.color.unwrap_or(default_color);
+                    // Position is fixed by the pen; give the piece the rest of the
+                    // column as width so the renderer (which clips the buffer to rect
+                    // width) never shaves the last glyph — italic slant under-measures.
+                    let rect = Rect {
+                        x: x + lead_adv,
+                        y,
+                        width: (self.width - pen - lead_adv).max(piece_adv + 2.0),
+                        height: line_height,
+                    };
+                    if span.italic {
+                        // `TextPrimitive` has no style field; italic needs a rich span.
+                        scene.rich_text(RichTextPrimitive {
+                            rect,
+                            spans: vec![RichTextSpan {
+                                text: trimmed.into(),
+                                color: piece_color,
+                                font_weight: Some(span.font_weight),
+                                font_style: Some(FontStyle::Italic),
+                            }]
+                            .into(),
+                            default_color: piece_color,
+                            font_size: self.font_size,
+                            font_kind: span.font_kind,
+                            font_weight: span.font_weight,
+                        });
+                    } else {
+                        scene.text(TextPrimitive {
+                            rect,
+                            text: trimmed.into(),
+                            color: piece_color,
+                            font_size: self.font_size,
+                            font_kind: span.font_kind,
+                            font_weight: span.font_weight,
+                        });
+                    }
+                }
+
+                pen += piece_adv;
+            }
         }
 
-        if !self.text.is_empty()
+        if !text.is_empty()
             && !cx.accessibility_text_hidden()
             && bounds.width > 0.0
             && bounds.height > 0.0
@@ -2527,14 +2657,14 @@ impl Element for SelectableText {
                     AccessibilityRole::Label,
                     bounds,
                 )
-                .label(self.text.clone()),
+                .label(text.clone()),
             );
         }
 
         cx.selectable_text_runs.push(SelectableTextRegion {
             bounds,
             text_origin: (bounds.x, bounds.y),
-            text: std::mem::take(&mut self.text),
+            text,
             runs: std::mem::take(runs),
             line_height,
             font_size: self.font_size,
@@ -2848,7 +2978,40 @@ pub(crate) fn measure_text_width(
     if text.is_empty() {
         return 0.0;
     }
+    // Ceil to avoid sub-pixel truncation. `line_w` is the line advance width, not the
+    // visible ink bounds — bounding boxes (`glyph.x + glyph.w`) under-measure strings
+    // and make glyphon clip button labels into garbled fragments in the GPU renderer.
+    shaped_line_w(font_system, text, font_size, font_kind, font_weight).ceil()
+}
 
+/// Like `measure_text_width` but counts a trailing space's advance, which `line_w`
+/// trims. Used to position adjacent styled pieces: a span that ends in a space must
+/// advance the pen by that space, or the next piece abuts the previous word. Done by
+/// appending a sentinel (so the trailing space becomes interior) and subtracting it.
+pub(crate) fn measure_text_advance(
+    font_system: &mut glyphon::FontSystem,
+    text: &str,
+    font_size: f32,
+    font_kind: FontKind,
+    font_weight: FontWeight,
+) -> f32 {
+    if text.is_empty() {
+        return 0.0;
+    }
+    let probe = format!("{text}.");
+    let with = shaped_line_w(font_system, &probe, font_size, font_kind, font_weight);
+    let sentinel = shaped_line_w(font_system, ".", font_size, font_kind, font_weight);
+    (with - sentinel).max(0.0).ceil()
+}
+
+/// Shapes `text` on a single unbounded line and returns its raw `line_w` advance.
+fn shaped_line_w(
+    font_system: &mut glyphon::FontSystem,
+    text: &str,
+    font_size: f32,
+    font_kind: FontKind,
+    font_weight: FontWeight,
+) -> f32 {
     let metrics = glyphon::Metrics::new(font_size, font_size * 1.2);
     let mut buffer = glyphon::Buffer::new(font_system, metrics);
 
@@ -2859,21 +3022,13 @@ pub(crate) fn measure_text_width(
     let weight = glyphon_weight_for_font(font_kind, font_weight);
     let attrs = glyphon::Attrs::new().family(family).weight(weight);
 
-    // Set an unbounded width so glyphon shapes onto a single line.
     buffer.set_size(font_system, None, None);
     buffer.set_text(font_system, text, &attrs, glyphon::Shaping::Advanced, None);
     buffer.shape_until_scroll(font_system, false);
 
-    // Use the line advance width rather than the visible ink bounds.
-    // Bounding boxes like `glyph.x + glyph.w` can under-measure strings and
-    // make glyphon clip button labels into garbled fragments in the live GPU
-    // renderer.
-    let width = buffer
+    buffer
         .layout_runs()
-        .fold(0.0f32, |width, run| width.max(run.line_w));
-
-    // Ceil to avoid sub-pixel truncation.
-    width.ceil()
+        .fold(0.0f32, |width, run| width.max(run.line_w))
 }
 
 /// Word-wrap `text` to fit within `max_width`. Returns the visual lines in
@@ -2948,64 +3103,91 @@ pub struct WrappedRun {
     pub line_top: f32,
 }
 
-/// Like `wrap_text_to_lines` but returns each visual line's source byte range and
-/// top offset instead of an owned substring, so callers can map byte offsets
-/// (selection, hit-test) onto visual lines. Same shaping config as
-/// `wrap_text_to_lines` so the wrap points are identical.
-pub(crate) fn wrap_text_to_runs(
+/// Shapes a styled paragraph via `set_rich_text` so
+/// each span uses its own font, then returns the visual lines' byte ranges into
+/// the concatenated plain string (`spans` joined). Mixed mono/UI runs wrap at the
+/// correct points; the byte ranges line up with selection/copy, which operate on
+/// that same concatenation.
+pub(crate) fn wrap_rich_text_to_runs(
     font_system: &mut glyphon::FontSystem,
-    text: &str,
+    spans: &[StyledSpan],
     font_size: f32,
-    font_kind: FontKind,
-    font_weight: FontWeight,
+    base_kind: FontKind,
+    base_weight: FontWeight,
     max_width: f32,
     max_lines: usize,
 ) -> Vec<WrappedRun> {
-    if text.is_empty() || max_lines == 0 {
+    let total: usize = spans.iter().map(|s| s.text.len()).sum();
+    if total == 0 || max_lines == 0 {
         return Vec::new();
     }
 
     let metrics = glyphon::Metrics::new(font_size, font_size * 1.35);
     let mut buffer = glyphon::Buffer::new(font_system, metrics);
-    let family = match font_kind {
+
+    let attr_list: Vec<(&str, glyphon::Attrs)> = spans
+        .iter()
+        .map(|s| {
+            let family = match s.font_kind {
+                FontKind::Ui => glyphon::Family::SansSerif,
+                FontKind::Mono => glyphon::Family::Monospace,
+            };
+            let mut attrs = glyphon::Attrs::new()
+                .family(family)
+                .weight(glyphon_weight_for_font(s.font_kind, s.font_weight));
+            if s.italic {
+                attrs = attrs.style(glyphon::Style::Italic);
+            }
+            (s.text.as_str(), attrs)
+        })
+        .collect();
+
+    let default_family = match base_kind {
         FontKind::Ui => glyphon::Family::SansSerif,
         FontKind::Mono => glyphon::Family::Monospace,
     };
-    let weight = glyphon_weight_for_font(font_kind, font_weight);
-    let attrs = glyphon::Attrs::new().family(family).weight(weight);
+    let default_attrs = glyphon::Attrs::new()
+        .family(default_family)
+        .weight(glyphon_weight_for_font(base_kind, base_weight));
+
     buffer.set_size(font_system, Some(max_width.max(1.0)), None);
-    buffer.set_text(font_system, text, &attrs, glyphon::Shaping::Advanced, None);
+    buffer.set_rich_text(
+        font_system,
+        attr_list.iter().map(|(t, a)| (*t, a.clone())),
+        &default_attrs,
+        glyphon::Shaping::Advanced,
+        None,
+    );
     buffer.shape_until_scroll(font_system, false);
 
     let mut out: Vec<WrappedRun> = Vec::new();
-    let runs: Vec<_> = buffer.layout_runs().collect();
-    for (i, run) in runs.iter().enumerate() {
+    let layout: Vec<_> = buffer.layout_runs().collect();
+    for (i, run) in layout.iter().enumerate() {
         let start = run.glyphs.first().map(|g| g.start).unwrap_or(0);
-        if out.len() + 1 >= max_lines && i + 1 < runs.len() {
-            // Absorb the remaining runs into the last allowed line.
-            let end = runs
+        if out.len() + 1 >= max_lines && i + 1 < layout.len() {
+            let end = layout
                 .last()
                 .and_then(|r| r.glyphs.last())
                 .map(|g| g.end)
-                .unwrap_or(text.len());
+                .unwrap_or(total);
             out.push(WrappedRun {
                 start,
-                end: end.min(text.len()),
+                end: end.min(total),
                 line_top: run.line_top,
             });
             break;
         }
-        let end = run.glyphs.last().map(|g| g.end).unwrap_or(text.len());
+        let end = run.glyphs.last().map(|g| g.end).unwrap_or(total);
         out.push(WrappedRun {
             start,
-            end: end.min(text.len()),
+            end: end.min(total),
             line_top: run.line_top,
         });
     }
     if out.is_empty() {
         out.push(WrappedRun {
             start: 0,
-            end: text.len(),
+            end: total,
             line_top: 0.0,
         });
     }
@@ -4566,9 +4748,9 @@ mod tests {
         let mut font_system = glyphon::FontSystem::new();
         let text = "the quick brown fox jumps over the lazy dog repeatedly today";
         // Narrow width forces several wrapped runs.
-        let runs = wrap_text_to_runs(
+        let runs = wrap_rich_text_to_runs(
             &mut font_system,
-            text,
+            &[StyledSpan::plain(text)],
             13.0,
             FontKind::Ui,
             FontWeight::Normal,
@@ -4593,9 +4775,9 @@ mod tests {
     fn wrap_text_to_runs_single_line_spans_full_text() {
         let mut font_system = glyphon::FontSystem::new();
         let text = "short";
-        let runs = wrap_text_to_runs(
+        let runs = wrap_rich_text_to_runs(
             &mut font_system,
-            text,
+            &[StyledSpan::plain(text)],
             13.0,
             FontKind::Ui,
             FontWeight::Normal,

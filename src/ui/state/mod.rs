@@ -9181,21 +9181,25 @@ impl AppState {
         if lines.is_empty() {
             return;
         }
+        // Staging only selects changed lines; in PR review mode a comment can anchor
+        // to any line (incl. context), like GitHub.
+        let review = self.pull_request_review_enabled();
         self.editor.line_selection.update(&self.store, |ls| {
             if clear_first {
                 ls.clear();
             }
             for line in &lines {
+                use crate::ui::editor::render_doc::RenderRowKind;
                 let kind = line.row_kind();
-                if !matches!(
-                    kind,
-                    crate::ui::editor::render_doc::RenderRowKind::Added
-                        | crate::ui::editor::render_doc::RenderRowKind::Removed
-                        | crate::ui::editor::render_doc::RenderRowKind::Modified
-                ) {
+                if !kind.is_body() || line.hunk_index < 0 {
                     continue;
                 }
-                if line.hunk_index < 0 {
+                if !review
+                    && !matches!(
+                        kind,
+                        RenderRowKind::Added | RenderRowKind::Removed | RenderRowKind::Modified
+                    )
+                {
                     continue;
                 }
                 let hunk_id = line.hunk_index as u32;

@@ -997,6 +997,45 @@ impl AppState {
             GitHubAction::SetReviewThreadResolved { id, resolved } => {
                 self.set_review_thread_resolved(id, resolved)
             }
+            GitHubAction::BeginCardTextSelection {
+                source_key,
+                text,
+                byte,
+            } => {
+                // Card and viewport selections are mutually exclusive — starting one
+                // clears the other so only a single selection ever owns the clipboard.
+                self.editor.text_selection.set(&self.store, None);
+                self.github.pull_request.card_text_selection.set(
+                    &self.store,
+                    Some(CardTextSelection::new(source_key, text, byte)),
+                );
+                Vec::new()
+            }
+            GitHubAction::ExtendCardTextSelection { byte } => {
+                self.github
+                    .pull_request
+                    .card_text_selection
+                    .update(&self.store, |selection| {
+                        if let Some(selection) = selection {
+                            selection.focus = byte.min(selection.text.len());
+                        }
+                    });
+                Vec::new()
+            }
+            GitHubAction::ClearCardTextSelection => {
+                if self
+                    .github
+                    .pull_request
+                    .card_text_selection
+                    .with(&self.store, Option::is_some)
+                {
+                    self.github
+                        .pull_request
+                        .card_text_selection
+                        .set(&self.store, None);
+                }
+                Vec::new()
+            }
         }
     }
 }

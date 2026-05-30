@@ -92,6 +92,28 @@ impl InputSystem {
             ]);
         }
 
+        // Selectable comment-body text. Scanned before the generic hit list so a
+        // drag over body text begins a text selection rather than hitting the card
+        // root behind it (which is inert when expanded). Topmost region wins.
+        if let Some(region) = ui_frame
+            .selectable_text_runs
+            .iter()
+            .rev()
+            .find(|region| region.bounds.contains(x, y))
+        {
+            let byte = card_text_byte_at(region, x, y, renderer.map(Renderer::font_system));
+            self.card_text_drag_active = true;
+            return InputOutcome::actions(vec![
+                EditorAction::FocusViewport.into(),
+                GitHubAction::BeginCardTextSelection {
+                    source_key: region.source_key,
+                    text: region.text.clone(),
+                    byte,
+                }
+                .into(),
+            ]);
+        }
+
         if let Some(idx) = ui_frame
             .hits
             .iter()
@@ -414,6 +436,10 @@ impl InputSystem {
     ) -> InputOutcome {
         self.mouse_position = Some((x, y));
 
+        // Borrowed once so it can be reused across the input-drag and card-selection
+        // drag branches below (an `Option<&mut _>` is not `Copy`).
+        let mut font_system = renderer.map(Renderer::font_system);
+
         let mut actions = Vec::new();
         if let Some(ref mut capture) = self.pointer_capture {
             actions.extend(capture.on_move(x, y));
@@ -449,7 +475,7 @@ impl InputSystem {
                 actions.push(EditorAction::EditorDrag(drag_x, drag_y).into());
             } else {
                 let byte_offset = hit_test_text_offset(
-                    renderer.map(Renderer::font_system),
+                    font_system.as_deref_mut(),
                     &hit_area.value,
                     hit_area.font_size,
                     x - hit_area.text_x,
@@ -476,6 +502,26 @@ impl InputSystem {
             }
         }
 
+        // Extend an in-progress comment-body selection. Stay on the region the drag
+        // began on (matched by source_key), not whichever is under the cursor, so a
+        // drag past the card edge clamps to this comment's text.
+        if self.card_text_drag_active {
+            let active_key = state
+                .github
+                .pull_request
+                .card_text_selection
+                .with(&state.store, |sel| sel.as_ref().map(|sel| sel.source_key));
+            if let Some(key) = active_key
+                && let Some(region) = ui_frame
+                    .selectable_text_runs
+                    .iter()
+                    .find(|region| region.source_key == key)
+            {
+                let byte = card_text_byte_at(region, x, y, font_system);
+                actions.push(GitHubAction::ExtendCardTextSelection { byte }.into());
+            }
+        }
+
         let hovered_hit = ui_frame
             .hits
             .iter()
@@ -499,12 +545,15 @@ impl InputSystem {
             let from_hits = hovered_hit
                 .map(|hit| hit.cursor)
                 .unwrap_or(crate::ui::shell::CursorHint::Default);
-            if from_hits == crate::ui::shell::CursorHint::Default
-                && ui_frame
-                    .text_input_hit_areas
+            let over_text = ui_frame
+                .text_input_hit_areas
+                .iter()
+                .any(|ha| ha.bounds.contains(x, y))
+                || ui_frame
+                    .selectable_text_runs
                     .iter()
-                    .any(|ha| ha.bounds.contains(x, y))
-            {
+                    .any(|region| region.bounds.contains(x, y));
+            if from_hits == crate::ui::shell::CursorHint::Default && over_text {
                 crate::ui::shell::CursorHint::Text
             } else {
                 from_hits
@@ -524,12 +573,19 @@ impl InputSystem {
             actions.push(AppAction::HoverToast(hovered_toast).into());
         }
 
-        let hovered_row = if input_is_blocked_by_overlay(state, ui_frame, x, y) {
-            None
-        } else {
-            let editor_snap = state.editor.snapshot(&state.store);
-            editor.hit_test_row(&editor_snap, x, y)
-        };
+        // The context menu floats over the editor but isn't part of the overlay stack,
+        // and its disabled rows register no hit region — so without this its bounds would
+        // let the editor compute (and highlight) the row behind it. Block hover across the
+        // whole menu.
+        let blocked_by_context_menu =
+            state.context_menu.visible && state.context_menu.contains(x, y);
+        let hovered_row =
+            if input_is_blocked_by_overlay(state, ui_frame, x, y) || blocked_by_context_menu {
+                None
+            } else {
+                let editor_snap = state.editor.snapshot(&state.store);
+                editor.hit_test_row(&editor_snap, x, y)
+            };
         if hovered_row != state.editor.hovered_row.get(&state.store) {
             actions.push(EditorAction::HoverViewportRow(hovered_row).into());
         }
@@ -628,6 +684,7 @@ impl InputSystem {
         }
         self.mouse_drag_target = None;
         self.viewport_text_drag_active = false;
+        self.card_text_drag_active = false;
         outcome
     }
 }
@@ -639,6 +696,37 @@ fn input_is_blocked_by_overlay(state: &AppState, ui_frame: &UiFrame, x: f32, y: 
             .iter()
             .rev()
             .any(|hit| hit.rect.contains(x, y))
+}
+
+/// Maps a point inside a selectable-text region to a byte offset into its source
+/// string. Picks the visual line by `y` against the painted runs (no re-shape, so
+/// it agrees with what's on screen), then resolves the byte within that line's
+/// substring via the same single-line shaping used for text inputs.
+fn card_text_byte_at(
+    region: &crate::ui::element::SelectableTextRegion,
+    x: f32,
+    y: f32,
+    font_system: Option<&mut glyphon::FontSystem>,
+) -> usize {
+    if region.runs.is_empty() {
+        return 0;
+    }
+    let local_y = y - region.text_origin.1;
+    let idx = region
+        .runs
+        .iter()
+        .position(|run| local_y >= run.line_top && local_y < run.line_top + region.line_height)
+        .unwrap_or_else(|| {
+            if local_y < region.runs[0].line_top {
+                0
+            } else {
+                region.runs.len() - 1
+            }
+        });
+    let run = region.runs[idx];
+    let sub = &region.text[run.start..run.end.min(region.text.len())];
+    let byte_in_sub = hit_test_text_offset(font_system, sub, region.font_size, x - region.text_origin.0);
+    run.start + byte_in_sub.min(sub.len())
 }
 
 pub fn hit_test_text_offset(

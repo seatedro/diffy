@@ -31,6 +31,7 @@ pub struct UiFrame {
     pub hits: Vec<HitRegion>,
     pub scroll_regions: Vec<ScrollRegion>,
     pub text_input_hit_areas: Vec<TextInputHitArea>,
+    pub selectable_text_runs: Vec<crate::ui::element::SelectableTextRegion>,
     pub scrollbar_tracks: Vec<ScrollbarTrack>,
     pub tooltip_regions: Vec<TooltipRegion>,
     pub accessibility: crate::ui::accessibility::AccessibilityFrame,
@@ -873,6 +874,7 @@ pub fn build_ui_frame(
     let hits = std::mem::take(&mut cx.hits);
     let scroll_regions = std::mem::take(&mut cx.scroll_regions);
     let text_input_hit_areas = std::mem::take(&mut cx.text_input_hit_areas);
+    let selectable_text_runs = std::mem::take(&mut cx.selectable_text_runs);
     let tooltip_regions = std::mem::take(&mut cx.tooltip_regions);
     let accessibility = std::mem::take(&mut cx.accessibility);
     let file_list_rect = scroll_regions.iter().find_map(|region| {
@@ -884,6 +886,7 @@ pub fn build_ui_frame(
         hits,
         scroll_regions,
         text_input_hit_areas,
+        selectable_text_runs,
         scrollbar_tracks,
         tooltip_regions,
         accessibility,

@@ -91,6 +91,20 @@ fn viewport_clipboard_shortcut_actions(
     if !matches!(ctx.owner, InputOwner::Editor | InputOwner::Workspace) {
         return None;
     }
+    // A review-card text selection takes the clipboard (it is mutually exclusive
+    // with the viewport selection, so at most one is ever non-empty).
+    if let Some(text) = state
+        .github
+        .pull_request
+        .card_text_selection
+        .with(&state.store, |sel| sel.as_ref().and_then(|sel| sel.selected_text()))
+    {
+        let mut actions = vec![AppAction::CopyText(text).into()];
+        if state.context_menu.visible {
+            actions.push(AppAction::CloseContextMenu.into());
+        }
+        return Some(actions);
+    }
     let document = ui_frame.viewport_document.as_ref()?;
     let selection = state.editor.text_selection.get(&state.store)?;
     if selection.generation != document.generation {

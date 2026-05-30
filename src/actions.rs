@@ -311,6 +311,18 @@ pub enum GitHubAction {
     CancelReviewComment,
     ToggleReviewThread(ReviewThreadId),
     SetReviewThreadResolved { id: ReviewThreadId, resolved: bool },
+    /// Begin a drag-selection in a review comment body. `text` is the cleaned body
+    /// snapshot; `byte` is the offset under the cursor at mouse-down.
+    BeginCardTextSelection {
+        source_key: u64,
+        text: String,
+        byte: usize,
+    },
+    /// Move the focus end of the active card selection to `byte`.
+    ExtendCardTextSelection {
+        byte: usize,
+    },
+    ClearCardTextSelection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

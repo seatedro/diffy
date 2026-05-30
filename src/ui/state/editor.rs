@@ -163,6 +163,11 @@ impl AppState {
                 Vec::new()
             }
             BeginViewportTextSelection { point, generation } => {
+                // Mutually exclusive with a review-card text selection.
+                self.github
+                    .pull_request
+                    .card_text_selection
+                    .set(&self.store, None);
                 self.editor.text_selection.set(
                     &self.store,
                     Some(crate::ui::editor::state::ViewportTextSelection::new(
@@ -181,6 +186,10 @@ impl AppState {
             }
             ClearViewportTextSelection => {
                 self.editor.text_selection.set(&self.store, None);
+                self.github
+                    .pull_request
+                    .card_text_selection
+                    .set(&self.store, None);
                 Vec::new()
             }
             ExpandContextAbove(hunk_index, amount) => self.expand_context(

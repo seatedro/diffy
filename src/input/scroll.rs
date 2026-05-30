@@ -1,6 +1,6 @@
 use winit::event::{MouseScrollDelta, TouchPhase};
 
-use crate::actions::{Action, EditorAction, FileListAction, SettingsAction};
+use crate::actions::{Action, AppAction, EditorAction, FileListAction, SettingsAction};
 use crate::ui::editor::element::EditorElement;
 use crate::ui::element::ScrollActionBuilder;
 use crate::ui::shell::UiFrame;
@@ -57,6 +57,11 @@ impl InputSystem {
         };
 
         let mut actions = Vec::new();
+        // A scroll gesture dismisses an open context menu — otherwise it stays pinned to
+        // stale coordinates while the content moves underneath it.
+        if state.context_menu.visible {
+            actions.push(AppAction::CloseContextMenu.into());
+        }
         if rounded_delta_px != 0 {
             match target {
                 ScrollTarget::Region(ScrollActionBuilder::FileList) => {

@@ -2703,6 +2703,50 @@ pub struct PullRequestState {
     /// over the default (unresolved=expanded, resolved=collapsed). Not persisted
     /// and intentionally separate from the backend `ReviewThreadStatus.collapsed`.
     pub review_thread_expanded: HashMap<ReviewThreadId, bool>,
+    /// Active drag-selection within a single review comment body, or `None`.
+    /// Mutually exclusive with the editor's viewport text selection.
+    pub card_text_selection: Option<CardTextSelection>,
+}
+
+/// Drag-selection within one review comment body. Offsets are byte indices into
+/// `text` (a snapshot of the cleaned, wrapped-source body), so they remain valid
+/// across re-wrap; `text` is stored so copy never has to re-derive it. Only the
+/// comment whose `source_key` matches renders the highlight.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardTextSelection {
+    pub source_key: u64,
+    pub text: String,
+    pub anchor: usize,
+    pub focus: usize,
+}
+
+impl CardTextSelection {
+    pub fn new(source_key: u64, text: String, byte: usize) -> Self {
+        let byte = byte.min(text.len());
+        Self {
+            source_key,
+            text,
+            anchor: byte,
+            focus: byte,
+        }
+    }
+
+    pub fn normalized(&self) -> (usize, usize) {
+        (self.anchor.min(self.focus), self.anchor.max(self.focus))
+    }
+
+    pub fn is_collapsed(&self) -> bool {
+        self.anchor == self.focus
+    }
+
+    /// The selected substring, or `None` when the selection is empty/invalid.
+    pub fn selected_text(&self) -> Option<String> {
+        let (lo, hi) = self.normalized();
+        if lo >= hi {
+            return None;
+        }
+        self.text.get(lo..hi).map(str::to_owned)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11246,10 +11290,10 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        ActiveFile, ActiveFileLoading, AppState, AsyncStatus, CarbonStyleOverlays, CompareField,
-        FILE_HEIGHT_SPARSE_MIN_COUNT, FileHeightIndex, FileListEntry, FocusTarget, OverlayEntry,
-        OverlaySurface, PickerItem, PickerLabelStyle, PreparedActiveFile, SidebarMode, SidebarTab,
-        WorkspaceMode, WorkspaceSource, prepare_active_file, vcs_compare_request,
+        ActiveFile, ActiveFileLoading, AppState, AsyncStatus, CarbonStyleOverlays, CardTextSelection,
+        CompareField, FILE_HEIGHT_SPARSE_MIN_COUNT, FileHeightIndex, FileListEntry, FocusTarget,
+        OverlayEntry, OverlaySurface, PickerItem, PickerLabelStyle, PreparedActiveFile, SidebarMode,
+        SidebarTab, WorkspaceMode, WorkspaceSource, prepare_active_file, vcs_compare_request,
     };
     use crate::core::compare::{
         CompareFileSummary, CompareMode, CompareOutput, LayoutMode, RendererKind,
@@ -12930,6 +12974,32 @@ diff --git a/src/lib.rs b/src/lib.rs
             Some("https://avatars.githubusercontent.com/u/1?v=4&s=128".to_owned())
         );
         assert_eq!(avatar_url_sized("", 128), None);
+    }
+
+    #[test]
+    fn card_text_selection_slices_normalized_range() {
+        let body = "the quick brown fox".to_owned();
+        // Forward selection.
+        let mut sel = CardTextSelection::new(7, body.clone(), 4);
+        sel.focus = 9;
+        assert_eq!(sel.normalized(), (4, 9));
+        assert_eq!(sel.selected_text().as_deref(), Some("quick"));
+        assert!(!sel.is_collapsed());
+
+        // Reversed drag yields the same substring.
+        let mut rev = CardTextSelection::new(7, body.clone(), 9);
+        rev.focus = 4;
+        assert_eq!(rev.normalized(), (4, 9));
+        assert_eq!(rev.selected_text().as_deref(), Some("quick"));
+
+        // Collapsed selection copies nothing.
+        let collapsed = CardTextSelection::new(7, body.clone(), 4);
+        assert!(collapsed.is_collapsed());
+        assert_eq!(collapsed.selected_text(), None);
+
+        // Out-of-range anchor is clamped at construction (no panic / no copy).
+        let clamped = CardTextSelection::new(7, body, 999);
+        assert!(clamped.is_collapsed());
     }
 
     #[test]

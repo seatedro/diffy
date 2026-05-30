@@ -1345,25 +1345,26 @@ pub(crate) fn build_review_composer(
     });
 
     use crate::actions::{ComposerFormat, GitHubAction};
-    let fmt = |format: ComposerFormat, icon: &'static str| {
+    let fmt = |format: ComposerFormat, icon: &'static str, tip: &'static str| {
         view! { ui_scale,
             <Button action={GitHubAction::FormatReviewComment(format).into()}
                     style={ButtonStyle::Ghost}
-                    size={ButtonSize::Compact}>
+                    size={ButtonSize::Compact}
+                    tooltip={tip}>
                 <Icon>{icon}</Icon>
             </Button>
         }
     };
-    // Toolbar only in Write mode; the body is the editor (Write) or rendered
-    // markdown (Preview).
+    // Toolbar shows only in Write mode (right side of the tab row); the body is the
+    // editor (Write) or rendered markdown (Preview).
     let toolbar = (!preview).then(|| {
         view! { ui_scale,
             <div class="flex-row items-center" gap={Sp::XXS}>
-                {fmt(ComposerFormat::Bold, lucide::BOLD)}
-                {fmt(ComposerFormat::Italic, lucide::ITALIC)}
-                {fmt(ComposerFormat::Code, lucide::CODE)}
-                {fmt(ComposerFormat::Link, lucide::LINK)}
-                {fmt(ComposerFormat::BulletList, lucide::LIST)}
+                {fmt(ComposerFormat::Bold, lucide::BOLD, "Bold")}
+                {fmt(ComposerFormat::Italic, lucide::ITALIC, "Italic")}
+                {fmt(ComposerFormat::Code, lucide::CODE, "Code")}
+                {fmt(ComposerFormat::Link, lucide::LINK, "Link")}
+                {fmt(ComposerFormat::BulletList, lucide::LIST, "Bulleted list")}
             </div>
         }
     });
@@ -1389,13 +1390,19 @@ pub(crate) fn build_review_composer(
         }
     };
 
+    let group_border = if focused {
+        tc.accent
+    } else {
+        tc.border_variant
+    };
+
     view! { ui_scale,
         <div class="flex-col"
              w={rect.width}
              h={rect.height}
              z_index={60}
              bg={tc.modal_surface}
-             border_t={if focused { tc.accent } else { tc.border }}
+             border_t={tc.border}
              border_b={tc.border}
              border_l={tc.border}
              border_r={tc.border}
@@ -1404,24 +1411,36 @@ pub(crate) fn build_review_composer(
              on_click={Action::Noop}
              p={Sp::SM}
              gap={Sp::XS}>
-            <div class="flex-row items-center w-full" gap={Sp::SM}>
+            <div class="flex-row items-center w-full">
                 {text(header_label).size(small).color(tc.text_strong).medium()}
-                <spacer />
-                {tab("Write", !preview, false)}
-                {tab("Preview", preview, true)}
             </div>
-            {?toolbar}
             {?failed_row}
-            <div class="flex-1 w-full"
+            <div class="flex-col flex-1 w-full"
                  min_h={0.0}
-                 px={Sp::SM}
-                 py={Sp::XS}
                  rounded={Rad::MD}
                  bg={tc.surface}
-                 border={if focused && !preview { tc.accent } else { tc.border_variant }}
-                 on_click={crate::actions::AppAction::SetFocus(Some(crate::ui::state::FocusTarget::ReviewCommentEditor)).into()}
-                 cursor={CursorHint::Text}>
-                {body_content}
+                 border_t={group_border}
+                 border_b={group_border}
+                 border_l={group_border}
+                 border_r={group_border}>
+                <div class="flex-row items-center w-full"
+                     gap={Sp::SM}
+                     px={Sp::SM}
+                     py={Sp::XXS}
+                     border_b={tc.border_variant}>
+                    {tab("Write", !preview, false)}
+                    {tab("Preview", preview, true)}
+                    <spacer />
+                    {?toolbar}
+                </div>
+                <div class="flex-1 w-full"
+                     min_h={0.0}
+                     px={Sp::SM}
+                     py={Sp::XS}
+                     on_click={crate::actions::AppAction::SetFocus(Some(crate::ui::state::FocusTarget::ReviewCommentEditor)).into()}
+                     cursor={CursorHint::Text}>
+                    {body_content}
+                </div>
             </div>
             <div class="flex-row items-center" gap={Sp::XS}>
                 <spacer />

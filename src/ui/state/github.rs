@@ -1036,6 +1036,10 @@ impl AppState {
             GitHubAction::SetReviewThreadResolved { id, resolved } => {
                 self.set_review_thread_resolved(id, resolved)
             }
+            GitHubAction::OpenPullRequestInBrowser => match self.active_pull_request_web_url() {
+                Some(url) => vec![UiEffect::OpenBrowser { url }.into()],
+                None => Vec::new(),
+            },
             GitHubAction::BeginCardTextSelection {
                 source_key,
                 text,
@@ -1082,6 +1086,23 @@ impl AppState {
 impl AppState {
     pub(crate) fn active_pull_request_key(&self) -> Option<PrKey> {
         self.github.pull_request.active.get(&self.store)
+    }
+
+    /// Web URL of the active pull request (the URL it was opened with), for "Open in
+    /// GitHub". Falls back to constructing the canonical github.com URL from the key.
+    pub(crate) fn active_pull_request_web_url(&self) -> Option<String> {
+        let key = self.active_pull_request_key()?;
+        let stored = self.github.pull_request.cache.with(&self.store, |cache| {
+            cache.get(&key).and_then(|entry| match &entry.diff {
+                PrPeekDiff::Ready { url, .. } => Some(url.clone()),
+                _ => None,
+            })
+        });
+        stored.or_else(|| {
+            let (owner, repo, number) = key;
+            (!owner.is_empty() && !repo.is_empty())
+                .then(|| format!("https://github.com/{owner}/{repo}/pull/{number}"))
+        })
     }
 
     pub(crate) fn pull_request_review_enabled(&self) -> bool {

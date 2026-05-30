@@ -11,6 +11,19 @@ const GIT_WORKDIR_REF: &str = "@workdir";
 const JJ_BASE_REF: &str = "@-";
 const JJ_WORKING_COPY_REF: &str = "@";
 
+/// Friendly label for a compare ref: synthetic PR refs like
+/// `refs/diffy/pr/44374/capy/migrate-deep-to-canon` collapse to just the branch
+/// (`capy/migrate-deep-to-canon`), dropping the noisy bookkeeping prefix the way
+/// Chrome's address bar hides the scheme/host boilerplate. Other refs pass through.
+fn pretty_ref_label(value: &str) -> String {
+    if let Some(rest) = value.strip_prefix(crate::core::vcs::git::service::PR_REF_PREFIX)
+        && let Some(idx) = rest.find('/')
+    {
+        return rest[idx + 1..].to_owned();
+    }
+    value.to_owned()
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct VcsUiProfile {
     descriptor: &'static VcsUiDescriptor,
@@ -273,7 +286,7 @@ impl VcsUiProfile {
         } else if self.is_working_copy_ref(value) {
             self.descriptor.working_copy_ref_label.to_ascii_lowercase()
         } else {
-            value.to_owned()
+            pretty_ref_label(value)
         }
     }
 
@@ -625,5 +638,25 @@ fn jj_change_ref_entry(change: &VcsChange) -> ChangeRefUi {
         default_highlights: Vec::new(),
         prefix_len: change.short_change_id_prefix_len,
         working_copy: change.flags.working_copy,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pretty_ref_label;
+
+    #[test]
+    fn pr_ref_collapses_to_branch() {
+        assert_eq!(pretty_ref_label("refs/diffy/pr/44374/master"), "master");
+        assert_eq!(
+            pretty_ref_label("refs/diffy/pr/44374/capy/migrate-deep-to-canon"),
+            "capy/migrate-deep-to-canon"
+        );
+    }
+
+    #[test]
+    fn non_pr_ref_passes_through() {
+        assert_eq!(pretty_ref_label("main"), "main");
+        assert_eq!(pretty_ref_label("origin/feature/x"), "origin/feature/x");
     }
 }

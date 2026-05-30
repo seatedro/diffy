@@ -24,7 +24,7 @@ pub(crate) fn compare_cluster_view(state: &AppState, theme: &Theme) -> Option<An
         let left_label = if left_ref_value.is_empty() {
             "base".to_owned()
         } else {
-            left_ref_value.clone()
+            profile.compare_ref_display_label(&left_ref_value)
         };
         let right_label = if right_ref_value.is_empty() {
             "head".to_owned()

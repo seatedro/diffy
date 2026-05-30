@@ -2501,6 +2501,7 @@ pub enum PaletteCommand {
     ClearLineSelection,
     GenerateCommitMessage,
     OpenReviewComment,
+    OpenPullRequestInGitHub,
     CheckForUpdates,
     InstallUpdate,
     RestartToUpdate,
@@ -7259,6 +7260,9 @@ impl AppState {
                     PaletteCommand::OpenReviewComment => {
                         self.apply_action(crate::actions::GitHubAction::OpenReviewCommentComposer)
                     }
+                    PaletteCommand::OpenPullRequestInGitHub => {
+                        self.apply_action(crate::actions::GitHubAction::OpenPullRequestInBrowser)
+                    }
                     PaletteCommand::CheckForUpdates => {
                         self.apply_action(crate::actions::UpdateAction::CheckForUpdates)
                     }
@@ -8324,6 +8328,15 @@ impl AppState {
                 label: "Comment on Selected Lines".to_owned(),
                 detail: "Open the pull request review comment composer".to_owned(),
                 kind: PaletteEntryKind::Command(PaletteCommand::OpenReviewComment),
+            });
+        }
+
+        if self.active_pull_request_web_url().is_some() {
+            all_candidates.push(PaletteCandidate {
+                search_text: "Open pull request in GitHub browser web PR".to_owned(),
+                label: "Open Pull Request in GitHub".to_owned(),
+                detail: "Open the active pull request on github.com".to_owned(),
+                kind: PaletteEntryKind::Command(PaletteCommand::OpenPullRequestInGitHub),
             });
         }
 

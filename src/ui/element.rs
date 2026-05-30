@@ -2720,10 +2720,14 @@ impl CodeBlock {
     fn line_height(&self) -> f32 {
         self.font_size * 1.4
     }
+    // Padding scales with the font so the panel reads the same at any ui_scale.
+    fn pad_x(&self) -> f32 {
+        self.font_size * 0.6
+    }
+    fn pad_y(&self) -> f32 {
+        self.font_size * 0.5
+    }
 }
-
-const CODE_BLOCK_PAD_X: f32 = 10.0;
-const CODE_BLOCK_PAD_Y: f32 = 8.0;
 
 impl Element for CodeBlock {
     type LayoutState = f32; // line_height
@@ -2736,7 +2740,7 @@ impl Element for CodeBlock {
     ) -> (LayoutId, Self::LayoutState) {
         let line_height = self.line_height();
         let n = self.lines.len().max(1);
-        let height = (n as f32 * line_height + CODE_BLOCK_PAD_Y * 2.0).ceil();
+        let height = (n as f32 * line_height + self.pad_y() * 2.0).ceil();
         let id = engine.request_layout(
             taffy::Style {
                 size: taffy::Size {
@@ -2771,16 +2775,29 @@ impl Element for CodeBlock {
     ) {
         let line_height = *state;
         let default_color = cx.text_color_override().unwrap_or(cx.theme.colors.text);
+        let radius = (self.font_size * 0.35).min(8.0);
+        let pad_x = self.pad_x();
+        let pad_y = self.pad_y();
 
+        // Inset panel: darker than the card with a hairline border so it reads as
+        // a code block, and clipped so long lines truncate at its edge rather than
+        // bleeding past the card.
         scene.rounded_rect(RoundedRectPrimitive::uniform(
             bounds,
-            6.0,
-            cx.theme.colors.element_background,
+            radius,
+            cx.theme.colors.background,
         ));
+        scene.border(BorderPrimitive::uniform(
+            bounds,
+            1.0,
+            radius,
+            cx.theme.colors.border,
+        ));
+        scene.clip_rounded(bounds, [radius; 4]);
 
-        let text_left = bounds.x + CODE_BLOCK_PAD_X;
+        let text_left = bounds.x + pad_x;
         for (i, line) in self.lines.iter().enumerate() {
-            let y = bounds.y + CODE_BLOCK_PAD_Y + i as f32 * line_height;
+            let y = bounds.y + pad_y + i as f32 * line_height;
             let line_text: String = line.iter().map(|s| s.text.as_str()).collect();
             let mut off = 0usize;
             let mut pen = 0.0f32;
@@ -2821,8 +2838,7 @@ impl Element for CodeBlock {
                     let rect = Rect {
                         x: x + lead_adv,
                         y,
-                        width: (self.width - CODE_BLOCK_PAD_X - pen - lead_adv)
-                            .max(piece_adv + 2.0),
+                        width: (self.width - pad_x - pen - lead_adv).max(piece_adv + 2.0),
                         height: line_height,
                     };
                     if span.italic {
@@ -2855,6 +2871,7 @@ impl Element for CodeBlock {
                 pen += piece_adv;
             }
         }
+        scene.pop_clip();
 
         if !cx.accessibility_text_hidden() && bounds.width > 0.0 && bounds.height > 0.0 {
             let body: String = self

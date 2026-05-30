@@ -312,7 +312,7 @@ pub(crate) fn build_review_thread_card(
                         block_elements.push(
                             code_block(highlighted)
                                 .width(text_w)
-                                .size(small)
+                                .size(small * 0.9)
                                 .source(block_source)
                                 .into_any(),
                         );

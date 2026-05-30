@@ -1237,8 +1237,11 @@ impl EditorElement {
         }
         let s = editor_scale(self.text_metrics);
         let size = (self.layout.line_height * 0.72).clamp(scaled(14.0, s), scaled(20.0, s));
+        // Straddle the gutter→code divider like GitHub: centered on the boundary,
+        // but never reaching left past the line number's right edge.
+        let x = (gutter.right() - size * 0.5).max(gutter.right() - self.layout.gutter_padding);
         Some(Rect {
-            x: gutter.x + scaled(2.0, s),
+            x,
             y: row_rect.y + (self.layout.line_height - size).max(0.0) * 0.5,
             width: size,
             height: size,

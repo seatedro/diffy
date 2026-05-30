@@ -848,8 +848,13 @@ impl Renderer {
             0,
             bytemuck::bytes_of(&ViewportUniform::new(w, h)),
         );
-        self.viewport
-            .update(&self.queue, Resolution { width: w, height: h });
+        self.viewport.update(
+            &self.queue,
+            Resolution {
+                width: w,
+                height: h,
+            },
+        );
 
         let flattened = flatten_scene(scene, viewport_rect);
 

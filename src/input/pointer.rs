@@ -720,7 +720,8 @@ fn card_text_byte_at(
         });
     let run = region.runs[idx];
     let sub = &region.text[run.start..run.end.min(region.text.len())];
-    let byte_in_sub = hit_test_text_offset(font_system, sub, region.font_size, x - region.text_origin.0);
+    let byte_in_sub =
+        hit_test_text_offset(font_system, sub, region.font_size, x - region.text_origin.0);
     run.start + byte_in_sub.min(sub.len())
 }
 

@@ -11316,10 +11316,11 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        ActiveFile, ActiveFileLoading, AppState, AsyncStatus, CarbonStyleOverlays, CardTextSelection,
-        CompareField, FILE_HEIGHT_SPARSE_MIN_COUNT, FileHeightIndex, FileListEntry, FocusTarget,
-        OverlayEntry, OverlaySurface, PickerItem, PickerLabelStyle, PreparedActiveFile, SidebarMode,
-        SidebarTab, WorkspaceMode, WorkspaceSource, prepare_active_file, vcs_compare_request,
+        ActiveFile, ActiveFileLoading, AppState, AsyncStatus, CarbonStyleOverlays,
+        CardTextSelection, CompareField, FILE_HEIGHT_SPARSE_MIN_COUNT, FileHeightIndex,
+        FileListEntry, FocusTarget, OverlayEntry, OverlaySurface, PickerItem, PickerLabelStyle,
+        PreparedActiveFile, SidebarMode, SidebarTab, WorkspaceMode, WorkspaceSource,
+        prepare_active_file, vcs_compare_request,
     };
     use crate::core::compare::{
         CompareFileSummary, CompareMode, CompareOutput, LayoutMode, RendererKind,

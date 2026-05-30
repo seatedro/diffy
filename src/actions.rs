@@ -310,7 +310,10 @@ pub enum GitHubAction {
     SubmitReviewComment,
     CancelReviewComment,
     ToggleReviewThread(ReviewThreadId),
-    SetReviewThreadResolved { id: ReviewThreadId, resolved: bool },
+    SetReviewThreadResolved {
+        id: ReviewThreadId,
+        resolved: bool,
+    },
     OpenPullRequestInBrowser,
     /// Begin a drag-selection in a review comment body. `text` is the cleaned body
     /// snapshot; `byte` is the offset under the cursor at mouse-down.

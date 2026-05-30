@@ -97,7 +97,9 @@ fn viewport_clipboard_shortcut_actions(
         .github
         .pull_request
         .card_text_selection
-        .with(&state.store, |sel| sel.as_ref().and_then(|sel| sel.selected_text()))
+        .with(&state.store, |sel| {
+            sel.as_ref().and_then(|sel| sel.selected_text())
+        })
     {
         let mut actions = vec![AppAction::CopyText(text).into()];
         if state.context_menu.visible {

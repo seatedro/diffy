@@ -1467,31 +1467,32 @@ fn selected_review_range(
 /// than to the account avatar. The sized URL + cache key must match the render-side
 /// lookup in `resolve_review_avatar`, so both use `REVIEW_AVATAR_FETCH_PX`.
 fn enqueue_review_avatar_fetches(state: &mut AppState, key: &PrKey) -> Vec<Effect> {
-    let urls: Vec<String> = state
-        .github
-        .pull_request
-        .review_sessions
-        .with(&state.store, |sessions| {
-            let Some(session) = sessions.get(key) else {
-                return Vec::new();
-            };
-            let mut seen = std::collections::HashSet::new();
-            let mut out = Vec::new();
-            for thread in &session.threads {
-                for comment in &thread.comments {
-                    if let Some(raw) = comment.author_avatar_url.as_deref()
-                        && let Some(url) = avatar_url_sized(
-                            raw,
-                            crate::ui::editor::review::REVIEW_AVATAR_FETCH_PX,
-                        )
-                        && seen.insert(url.clone())
-                    {
-                        out.push(url);
+    let urls: Vec<String> =
+        state
+            .github
+            .pull_request
+            .review_sessions
+            .with(&state.store, |sessions| {
+                let Some(session) = sessions.get(key) else {
+                    return Vec::new();
+                };
+                let mut seen = std::collections::HashSet::new();
+                let mut out = Vec::new();
+                for thread in &session.threads {
+                    for comment in &thread.comments {
+                        if let Some(raw) = comment.author_avatar_url.as_deref()
+                            && let Some(url) = avatar_url_sized(
+                                raw,
+                                crate::ui::editor::review::REVIEW_AVATAR_FETCH_PX,
+                            )
+                            && seen.insert(url.clone())
+                        {
+                            out.push(url);
+                        }
                     }
                 }
-            }
-            out
-        });
+                out
+            });
 
     let needed: Vec<String> = state
         .github

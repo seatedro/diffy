@@ -659,9 +659,11 @@ pub fn build_ui_frame(
                     let review_avatars: std::collections::HashMap<
                         u64,
                         crate::ui::components::avatar::AvatarImage,
-                    > = state.github.pull_request.review_avatars.with(
-                        &state.store,
-                        |map| {
+                    > = state
+                        .github
+                        .pull_request
+                        .review_avatars
+                        .with(&state.store, |map| {
                             map.iter()
                                 .filter_map(|(key, entry)| match entry {
                                     crate::ui::state::ReviewAvatar::Ready(b) => Some((
@@ -676,8 +678,7 @@ pub fn build_ui_frame(
                                     _ => None,
                                 })
                                 .collect()
-                        },
-                    );
+                        });
                     let card_selection = state
                         .github
                         .pull_request

@@ -1072,6 +1072,13 @@ impl AppState {
             GitHubAction::SubmitReview { decision } => self.submit_review(decision),
             GitHubAction::DiscardReviewDrafts => self.discard_review_drafts(),
             GitHubAction::FormatReviewComment(format) => self.format_review_comment(format),
+            GitHubAction::SetComposerPreview(preview) => {
+                self.github
+                    .pull_request
+                    .review_composer
+                    .update(&self.store, |c| c.preview = preview);
+                Vec::new()
+            }
             GitHubAction::CancelReviewComment => {
                 self.github
                     .pull_request
@@ -1360,6 +1367,7 @@ impl AppState {
                 message: None,
                 reply_target: None,
                 edit_target: None,
+                preview: false,
             },
         );
         self.review_comment_editor.request_clear();
@@ -1391,6 +1399,7 @@ impl AppState {
                 message: None,
                 reply_target: Some(thread_id),
                 edit_target: None,
+                preview: false,
             },
         );
         self.review_comment_editor.request_clear();
@@ -1441,6 +1450,7 @@ impl AppState {
                 message: None,
                 reply_target: None,
                 edit_target: Some(comment_node_id),
+                preview: false,
             },
         );
         self.review_comment_editor.set_text(&body);

@@ -320,6 +320,7 @@ pub enum GitHubAction {
     SubmitReviewComment,
     CancelReviewComment,
     FormatReviewComment(ComposerFormat),
+    SetComposerPreview(bool),
     ReplyToReviewThread(ReviewThreadId),
     EditReviewComment {
         comment_node_id: String,

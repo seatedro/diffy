@@ -318,7 +318,8 @@ fn render_review_card_with_avatars(
 }
 
 /// Render the review-comment composer with a sample open draft, for eyeballing.
-pub fn render_review_composer(width: f32, scale: f32) -> RenderedCard {
+/// `preview` switches to the Preview tab (rendered markdown).
+pub fn render_review_composer(width: f32, scale: f32, preview: bool) -> RenderedCard {
     use crate::core::forge::github::{CreatePullRequestReviewComment, GitHubReviewSide};
     use crate::render::Rect;
     use crate::ui::state::{
@@ -349,6 +350,7 @@ pub fn render_review_composer(width: f32, scale: f32) -> RenderedCard {
             message: None,
             reply_target: None,
             edit_target: None,
+            preview,
         },
     );
     state
@@ -362,9 +364,9 @@ pub fn render_review_composer(width: f32, scale: f32) -> RenderedCard {
     state
         .review_comment_editor
         .set_size(&mut font_system, inner_w, 120.0 * scale);
-    state
-        .review_comment_editor
-        .set_text("Consider memoizing this height so we don't recompute it every frame.");
+    state.review_comment_editor.set_text(
+        "Prefer `memoize_height()` here — it's **stable** while *pinned*:\n```rust\nfn cached_height(w: u32) -> u16 {\n    cache.entry(w).or_insert(measure(w))\n}\n```",
+    );
 
     let height = (248.0 * scale).round();
     let rect = Rect {

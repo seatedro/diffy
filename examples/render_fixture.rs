@@ -36,7 +36,8 @@ fn main() {
     // CARD_KIND=composer renders the review-comment composer instead of the card.
     let thread = sample_review_thread();
     let rendered = if std::env::var("CARD_KIND").as_deref() == Ok("composer") {
-        render_review_composer(card_width, card_scale)
+        let preview = std::env::var("CARD_PREVIEW").as_deref() == Ok("1");
+        render_review_composer(card_width, card_scale, preview)
     } else {
         // CARD_SELECT=1 draws a sample selection across comment 1's code/normal
         // boundary so the highlight rendering on a styled line can be eyeballed.

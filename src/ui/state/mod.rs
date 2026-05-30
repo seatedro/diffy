@@ -2682,6 +2682,8 @@ pub struct ReviewCommentComposerState {
     /// When set, submitting the composer edits this comment (by GraphQL node id)
     /// instead of creating a new draft.
     pub edit_target: Option<String>,
+    /// Write (false) vs Preview (true) tab — Preview renders the markdown.
+    pub preview: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

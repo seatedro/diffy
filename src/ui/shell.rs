@@ -1256,7 +1256,7 @@ pub(crate) fn build_review_composer(
     let tc = &theme.colors;
     let focused =
         state.focus.get(&state.store) == Some(crate::ui::state::FocusTarget::ReviewCommentEditor);
-    let (header_label, submit_label, failed_message) = state
+    let (header_label, submit_label, failed_message, preview) = state
         .github
         .pull_request
         .review_composer
@@ -1284,7 +1284,7 @@ pub(crate) fn build_review_composer(
             let failed_message = (composer.status == crate::ui::state::AsyncStatus::Failed)
                 .then(|| composer.message.clone())
                 .flatten();
-            (header, primary, failed_message)
+            (header, primary, failed_message, composer.preview)
         });
     let cursor = CursorSnapshot {
         x: state.review_comment_editor.cursor_pos.x,
@@ -1325,6 +1325,40 @@ pub(crate) fn build_review_composer(
             </Button>
         }
     };
+    // Toolbar only in Write mode; the body is the editor (Write) or rendered
+    // markdown (Preview).
+    let toolbar = (!preview).then(|| {
+        view! { ui_scale,
+            <div class="flex-row items-center" gap={Sp::XXS}>
+                {fmt(ComposerFormat::Bold, lucide::BOLD)}
+                {fmt(ComposerFormat::Italic, lucide::ITALIC)}
+                {fmt(ComposerFormat::Code, lucide::CODE)}
+                {fmt(ComposerFormat::Link, lucide::LINK)}
+                {fmt(ComposerFormat::BulletList, lucide::LIST)}
+            </div>
+        }
+    });
+    let body_content: AnyElement = if preview {
+        crate::ui::editor::review::render_markdown_body(
+            &state.review_comment_editor.text(),
+            theme,
+            ui_scale,
+            (rect.width - Sp::SM * ui_scale * 4.0).max(40.0),
+        )
+    } else {
+        editor.into_any()
+    };
+    let tab = |label: &'static str, active: bool, to_preview: bool| {
+        view! { ui_scale,
+            <div class="flex-row items-center"
+                 px={Sp::XS}
+                 on_click={GitHubAction::SetComposerPreview(to_preview).into()}
+                 cursor={CursorHint::Pointer}>
+                {text(label).size(small).medium()
+                    .color(if active { tc.text_strong } else { tc.text_muted })}
+            </div>
+        }
+    };
 
     view! { ui_scale,
         <div class="flex-col"
@@ -1341,16 +1375,13 @@ pub(crate) fn build_review_composer(
              on_click={Action::Noop}
              p={Sp::SM}
              gap={Sp::XS}>
-            <div class="flex-row items-center w-full" gap={Sp::XS}>
+            <div class="flex-row items-center w-full" gap={Sp::SM}>
                 {text(header_label).size(small).color(tc.text_strong).medium()}
+                <spacer />
+                {tab("Write", !preview, false)}
+                {tab("Preview", preview, true)}
             </div>
-            <div class="flex-row items-center" gap={Sp::XXS}>
-                {fmt(ComposerFormat::Bold, lucide::BOLD)}
-                {fmt(ComposerFormat::Italic, lucide::ITALIC)}
-                {fmt(ComposerFormat::Code, lucide::CODE)}
-                {fmt(ComposerFormat::Link, lucide::LINK)}
-                {fmt(ComposerFormat::BulletList, lucide::LIST)}
-            </div>
+            {?toolbar}
             {?failed_row}
             <div class="flex-1 w-full"
                  min_h={0.0}
@@ -1358,10 +1389,10 @@ pub(crate) fn build_review_composer(
                  py={Sp::XS}
                  rounded={Rad::MD}
                  bg={tc.surface}
-                 border={if focused { tc.accent } else { tc.border_variant }}
+                 border={if focused && !preview { tc.accent } else { tc.border_variant }}
                  on_click={crate::actions::AppAction::SetFocus(Some(crate::ui::state::FocusTarget::ReviewCommentEditor)).into()}
                  cursor={CursorHint::Text}>
-                {editor}
+                {body_content}
             </div>
             <div class="flex-row items-center" gap={Sp::XS}>
                 <spacer />

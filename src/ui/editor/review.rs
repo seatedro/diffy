@@ -1133,6 +1133,65 @@ fn highlight_code_lines(
     lines
 }
 
+/// Renders a markdown `body` to the same prose/code-block elements a comment uses,
+/// for the composer's Preview tab. No selection (read-only preview).
+pub(crate) fn render_markdown_body(
+    body: &str,
+    theme: &Theme,
+    ui_scale: f32,
+    text_w: f32,
+) -> AnyElement {
+    let tc = &theme.colors;
+    let small = theme.metrics.ui_small_font_size;
+    let mut els: Vec<AnyElement> = Vec::new();
+    for block in segment_comment_blocks(body) {
+        match block {
+            CommentBlock::Prose(inline) => {
+                let spans: Vec<StyledSpan> = inline
+                    .into_iter()
+                    .map(|s| inline_span_to_styled(s, tc))
+                    .collect();
+                if spans.iter().all(|s| s.text.is_empty()) {
+                    continue;
+                }
+                els.push(
+                    selectable_rich_text(spans)
+                        .width(text_w)
+                        .size(small)
+                        .color(tc.text)
+                        .max_lines(64)
+                        .into_any(),
+                );
+            }
+            CommentBlock::Code { lang, source } => {
+                if source.is_empty() {
+                    continue;
+                }
+                let highlighted = highlight_code_lines(lang.as_deref(), &source, tc);
+                els.push(
+                    code_block(highlighted)
+                        .width(text_w)
+                        .size(small * 0.9)
+                        .into_any(),
+                );
+            }
+        }
+    }
+    if els.is_empty() {
+        els.push(
+            text("Nothing to preview")
+                .size(small)
+                .color(tc.text_muted)
+                .into_any(),
+        );
+    }
+    view! { ui_scale,
+        <div class="flex-col" gap={Sp::XXS} min_w={0.0}>
+            {...els}
+        </div>
+    }
+}
+
 /// Like `clean_markdown_line` but keeps inline markup (only block prefixes and
 /// fences are removed), so the inline parser can recover emphasis.
 fn block_strip_keep_inline(line: &str) -> String {

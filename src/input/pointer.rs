@@ -8,6 +8,7 @@ use crate::actions::{
     RepositoryAction, TextEditAction,
 };
 use crate::ui::components::{TooltipSide, TooltipState};
+use crate::ui::editor::anchor::EditorOverlayKind;
 use crate::ui::editor::element::EditorElement;
 use crate::ui::element::{ClickEvent, ClickResult, DragHandler, HitIdentity};
 use crate::ui::icons::lucide;
@@ -151,7 +152,7 @@ impl InputSystem {
                 }
                 return InputOutcome::actions(actions);
             }
-            let editor_snap = state.editor.snapshot(&state.store);
+            let mut editor_snap = state.editor.snapshot(&state.store);
             let hovered = editor.hit_test_row(&editor_snap, x, y);
             if let Some(row) = hovered
                 && editor.is_block_row(row)
@@ -166,14 +167,29 @@ impl InputSystem {
             }
             let status_source = state.workspace.source.get(&state.store) == WorkspaceSource::Status;
             let review_source = state.pull_request_review_enabled();
+            editor_snap.review_enabled = review_source;
             let review_add_hit = if review_source {
                 ui_frame.viewport_document.as_ref().and_then(|document| {
-                    editor.review_add_comment_button_at(&editor_snap, document.doc.as_ref(), x, y)
+                    let clip = ui_frame
+                        .viewport_rect
+                        .map(|rect| editor.overlay_clip_rect(rect))
+                        .unwrap_or_else(|| editor.body_bounds());
+                    editor.review_add_button_overlay_at(
+                        &editor_snap,
+                        document.doc.as_ref(),
+                        x,
+                        y,
+                        clip,
+                    )
                 })
             } else {
                 None
             };
-            if let Some(review_line) = review_add_hit {
+            if let Some(EditorOverlayKind::ReviewAddButton {
+                line_index: review_line,
+                ..
+            }) = review_add_hit.map(|overlay| overlay.kind)
+            {
                 self.review_line_drag_anchor = Some(review_line);
                 return InputOutcome::actions(vec![
                     EditorAction::FocusViewport.into(),
@@ -586,9 +602,14 @@ impl InputSystem {
 
         let review_add_hover = state.pull_request_review_enabled()
             && ui_frame.viewport_document.as_ref().is_some_and(|document| {
-                let editor_snap = state.editor.snapshot(&state.store);
+                let mut editor_snap = state.editor.snapshot(&state.store);
+                editor_snap.review_enabled = true;
+                let clip = ui_frame
+                    .viewport_rect
+                    .map(|rect| editor.overlay_clip_rect(rect))
+                    .unwrap_or_else(|| editor.body_bounds());
                 editor
-                    .review_add_comment_button_at(&editor_snap, document.doc.as_ref(), x, y)
+                    .review_add_button_overlay_at(&editor_snap, document.doc.as_ref(), x, y, clip)
                     .is_some()
             });
         if review_add_hover != state.editor.review_add_hovered.get(&state.store) {

@@ -14,6 +14,7 @@ use crate::ui::state::FocusTarget;
 use crate::ui::theme::{Color, Theme};
 use accesskit::Role;
 
+use super::anchor::{EditorOverlayKind, ResolvedEditorOverlay};
 use super::decoration::{
     BlockActionCtx, BlockPaintCtx, BlockRegistry, FileHeaderDecoration, RowDecoration, RowPaintCtx,
     decoration_for_kind,
@@ -513,9 +514,25 @@ impl EditorElement {
         self.sticky_header_hit.as_ref().map(|(rect, _)| *rect)
     }
 
-    /// One `(block_index, on-screen rect)` per visible review-thread block row, so the
-    /// shell can render each thread card as a `view!` overlay at its scrolled position.
-    pub fn visible_review_card_rows(&self) -> Vec<(usize, Rect)> {
+    pub fn overlay_clip_rect(&self, viewport_bounds: Rect) -> Rect {
+        match self.sticky_header_rect() {
+            Some(header) => Rect {
+                x: viewport_bounds.x,
+                y: header.bottom(),
+                width: viewport_bounds.width,
+                height: (viewport_bounds.bottom() - header.bottom()).max(0.0),
+            },
+            None => viewport_bounds,
+        }
+    }
+
+    /// Visible review block rows resolved into the same overlay rects used for both
+    /// rendering and clipping their element hit regions.
+    pub fn visible_review_block_overlays(
+        &self,
+        overlay_width: f32,
+        clip: Rect,
+    ) -> Vec<ResolvedEditorOverlay> {
         let mut out = Vec::new();
         for row in &self.rows {
             if !row.is_block() {
@@ -525,7 +542,33 @@ impl EditorElement {
             if !self.row_in_viewport(&rect) {
                 continue;
             }
-            out.push((row.block_index as usize, rect));
+            let block_index = row.block_index as usize;
+            let Some(block) = self.blocks.get(block_index) else {
+                continue;
+            };
+            let kind = if block.is_composer() {
+                EditorOverlayKind::ReviewComposerBlock { block_index }
+            } else if block.review_card().is_some() {
+                EditorOverlayKind::ReviewThreadBlock { block_index }
+            } else {
+                continue;
+            };
+            // Start the card/composer at the code column so the line-number gutter
+            // stays visible beside it (like GitHub), rather than covering it.
+            let code_x = if self.layout.split_mode {
+                self.layout.left_text_rect.x
+            } else {
+                self.layout.unified_text_rect.x
+            };
+            let overlay_rect = Rect {
+                x: code_x.max(rect.x),
+                y: rect.y,
+                width: overlay_width,
+                height: rect.height,
+            };
+            if let Some(overlay) = ResolvedEditorOverlay::new(kind, overlay_rect, clip) {
+                out.push(overlay);
+            }
         }
         out
     }
@@ -562,18 +605,33 @@ impl EditorElement {
         Some(row.line_index as usize)
     }
 
-    pub fn review_add_comment_button_at(
+    pub fn review_add_button_overlay(
+        &self,
+        state: &EditorState,
+        doc: &RenderDoc,
+        clip: Rect,
+    ) -> Option<ResolvedEditorOverlay> {
+        if !state.review_enabled {
+            return None;
+        }
+        let row_index = self.layout.highlighted_row?;
+        self.review_add_button_overlay_for_row(state, doc, row_index, clip)
+    }
+
+    pub fn review_add_button_overlay_at(
         &self,
         state: &EditorState,
         doc: &RenderDoc,
         x: f32,
         y: f32,
-    ) -> Option<usize> {
+        clip: Rect,
+    ) -> Option<ResolvedEditorOverlay> {
+        if !state.review_enabled {
+            return None;
+        }
         let row_index = self.hit_test_row(state, x, y)?;
-        let row = self.rows.get(row_index).copied()?;
-        let line = doc.lines.get(row.line_index as usize)?;
-        let rect = self.review_add_comment_button_rect_for_row(line, &row)?;
-        rect.contains(x, y).then_some(row.line_index as usize)
+        let overlay = self.review_add_button_overlay_for_row(state, doc, row_index, clip)?;
+        overlay.contains(x, y).then_some(overlay)
     }
 
     pub fn block_action_for_row_at(
@@ -902,8 +960,8 @@ impl EditorElement {
                 self.paint_gutter_decorations(scene, theme);
                 self.paint_gutter_text(scene, theme, doc);
                 self.paint_body_text(scene, theme, path, doc);
-                // The add-comment "+" is rendered as a view! element overlay by the
-                // shell (review_add_button_layout), not hand-painted here.
+                // The add-comment "+" is resolved as an editor overlay and rendered by
+                // the shell, not hand-painted here.
                 if show_file_headers {
                     self.paint_sticky_file_header(scene, theme, path, doc);
                 }
@@ -1245,6 +1303,32 @@ impl EditorElement {
             width: size,
             height: size,
         })
+    }
+
+    fn review_add_button_overlay_for_row(
+        &self,
+        state: &EditorState,
+        doc: &RenderDoc,
+        row_index: usize,
+        clip: Rect,
+    ) -> Option<ResolvedEditorOverlay> {
+        let display_row = self.rows.get(row_index).copied()?;
+        if display_row.is_block() {
+            return None;
+        }
+        let line = doc.lines.get(display_row.line_index as usize)?;
+        let rect = self.review_add_comment_button_rect_for_row(line, &display_row)?;
+        let emphasised = state.review_add_hovered
+            || (!state.line_selection.is_empty()
+                && line_selection_contains_line(&state.line_selection, line));
+        ResolvedEditorOverlay::new(
+            EditorOverlayKind::ReviewAddButton {
+                line_index: display_row.line_index as usize,
+                emphasised,
+            },
+            rect,
+            clip,
+        )
     }
 
     fn paint_sticky_file_header(
@@ -2008,42 +2092,6 @@ impl EditorElement {
                 color: theme.colors.accent,
             });
         }
-    }
-
-    /// On-screen rect + emphasised flag for the hovered row's add-comment "+", or
-    /// `None` when it shouldn't show. The shell renders the "+" as a `view!` element
-    /// overlay at this rect (the diff body is imperative, but chrome stays declarative).
-    pub fn review_add_button_layout(&self, state: &EditorState, doc: &RenderDoc) -> Option<Rect> {
-        if !state.review_enabled {
-            return None;
-        }
-        let row_index = self.layout.highlighted_row?;
-        let display_row = self.rows.get(row_index).copied()?;
-        if display_row.is_block() {
-            return None;
-        }
-        let line = doc.lines.get(display_row.line_index as usize)?;
-        self.review_add_comment_button_rect_for_row(line, &display_row)
-    }
-
-    /// Whether the hovered add-comment "+" should be emphasised (pointer directly
-    /// over it, or its line is in the current selection).
-    pub fn review_add_button_emphasised(&self, state: &EditorState, doc: &RenderDoc) -> bool {
-        if state.review_add_hovered {
-            return true;
-        }
-        let Some(row_index) = self.layout.highlighted_row else {
-            return false;
-        };
-        let Some(display_row) = self.rows.get(row_index).copied() else {
-            return false;
-        };
-        doc.lines
-            .get(display_row.line_index as usize)
-            .is_some_and(|line| {
-                !state.line_selection.is_empty()
-                    && line_selection_contains_line(&state.line_selection, line)
-            })
     }
 
     fn paint_viewport_text_selection(

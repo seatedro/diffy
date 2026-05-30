@@ -8,6 +8,7 @@ use crate::effects::Effect;
 use crate::render::{Rect, Scene, TextMetrics};
 use crate::ui::components::{Button, ButtonSize, ButtonStyle, ToastStack};
 use crate::ui::design::{Bp, Rad, Shadow, Sp, Sz};
+use crate::ui::editor::anchor::EditorOverlayKind;
 use crate::ui::editor::element::{EditorDocument, EditorElement, ScrollbarOverride};
 use crate::ui::editor_element::{CursorSnapshot, text_editor_element};
 use crate::ui::element::*;
@@ -651,22 +652,25 @@ pub fn build_ui_frame(
             scene.clip(vp_bounds);
             editor.paint(&mut scene, theme, &editor_snap, document);
             scene.pop_clip();
-            // Add-comment "+" rendered as a view! element overlay (the diff body is
-            // imperative for perf, but its chrome stays in the element system).
             if let EditorDocument::Text { doc, .. } = document
-                && let Some(add_rect) = editor.review_add_button_layout(&editor_snap, doc)
+                && let Some(overlay) = editor.review_add_button_overlay(
+                    &editor_snap,
+                    doc,
+                    editor.overlay_clip_rect(vp_bounds),
+                )
+                && let EditorOverlayKind::ReviewAddButton { emphasised, .. } = overlay.kind
             {
-                let strong = editor.review_add_button_emphasised(&editor_snap, doc);
-                let mut add_btn = build_review_add_button(theme, ui_scale, add_rect, strong);
-                scene.clip(vp_bounds);
+                let mut add_btn =
+                    build_review_add_button(theme, ui_scale, overlay.rect, emphasised);
+                scene.clip(overlay.clip);
                 render_element_at(
                     &mut add_btn,
                     &mut scene,
                     cx,
-                    add_rect.x,
-                    add_rect.y,
-                    add_rect.width,
-                    add_rect.height,
+                    overlay.rect.x,
+                    overlay.rect.y,
+                    overlay.rect.width,
+                    overlay.rect.height,
                 );
                 scene.pop_clip();
             }
@@ -696,17 +700,9 @@ pub fn build_ui_frame(
                     review_card_width,
                     editor.layout.content_bounds.width
                 );
-                let band = match editor.sticky_header_rect() {
-                    Some(h) => Rect {
-                        x: vp_bounds.x,
-                        y: h.bottom(),
-                        width: vp_bounds.width,
-                        height: (vp_bounds.bottom() - h.bottom()).max(0.0),
-                    },
-                    None => vp_bounds,
-                };
-                let cards = editor.visible_review_card_rows();
-                if !cards.is_empty() {
+                let band = editor.overlay_clip_rect(vp_bounds);
+                let overlays = editor.visible_review_block_overlays(review_card_width, band);
+                if !overlays.is_empty() {
                     // Resolve fetched comment-author avatars into render-ready bitmaps,
                     // keyed by cache_key (matching `resolve_review_avatar`'s lookup).
                     let review_avatars: std::collections::HashMap<
@@ -737,64 +733,64 @@ pub fn build_ui_frame(
                         .pull_request
                         .card_text_selection
                         .with(&state.store, Clone::clone);
-                    scene.clip(band);
-                    for (idx, rect) in cards {
-                        let is_composer = editor
-                            .blocks()
-                            .get(idx)
-                            .is_some_and(|block| block.is_composer());
+                    for overlay in overlays {
                         let hit_start = cx.hits.len();
                         let stext_start = cx.selectable_text_runs.len();
-                        if is_composer {
-                            let composer_rect = Rect {
-                                x: rect.x,
-                                y: rect.y,
-                                width: review_card_width,
-                                height: rect.height,
-                            };
-                            let mut composer =
-                                build_review_composer(state, theme, ui_scale, composer_rect);
-                            render_element_at(
-                                &mut composer,
-                                &mut scene,
-                                cx,
-                                rect.x,
-                                rect.y,
-                                review_card_width,
-                                rect.height,
-                            );
-                        } else if let Some((thread, expanded)) = editor
-                            .blocks()
-                            .get(idx)
-                            .and_then(|block| block.review_card())
-                            .map(|(thread, expanded)| (thread.clone(), expanded))
-                        {
-                            let mut card = crate::ui::editor::review::build_review_thread_card(
-                                &thread,
-                                expanded,
-                                theme,
-                                ui_scale,
-                                review_card_width,
-                                &review_avatars,
-                                card_selection.as_ref(),
-                            );
-                            render_element_at(
-                                &mut card,
-                                &mut scene,
-                                cx,
-                                rect.x,
-                                rect.y,
-                                review_card_width,
-                                rect.height,
-                            );
-                        } else {
-                            continue;
+                        scene.clip(overlay.clip);
+                        match overlay.kind {
+                            EditorOverlayKind::ReviewComposerBlock { .. } => {
+                                let mut composer =
+                                    build_review_composer(state, theme, ui_scale, overlay.rect);
+                                render_element_at(
+                                    &mut composer,
+                                    &mut scene,
+                                    cx,
+                                    overlay.rect.x,
+                                    overlay.rect.y,
+                                    overlay.rect.width,
+                                    overlay.rect.height,
+                                );
+                            }
+                            EditorOverlayKind::ReviewThreadBlock { block_index } => {
+                                let Some((thread, expanded)) = editor
+                                    .blocks()
+                                    .get(block_index)
+                                    .and_then(|block| block.review_card())
+                                    .map(|(thread, expanded)| (thread.clone(), expanded))
+                                else {
+                                    scene.pop_clip();
+                                    continue;
+                                };
+                                let mut card = crate::ui::editor::review::build_review_thread_card(
+                                    &thread,
+                                    expanded,
+                                    theme,
+                                    ui_scale,
+                                    review_card_width,
+                                    &review_avatars,
+                                    card_selection.as_ref(),
+                                );
+                                render_element_at(
+                                    &mut card,
+                                    &mut scene,
+                                    cx,
+                                    overlay.rect.x,
+                                    overlay.rect.y,
+                                    overlay.rect.width,
+                                    overlay.rect.height,
+                                );
+                            }
+                            EditorOverlayKind::ReviewAddButton { .. } => {
+                                scene.pop_clip();
+                                continue;
+                            }
                         }
+                        scene.pop_clip();
                         // Clip the card's freshly-registered hit rects to the visible band
                         // so a partly-off-screen card cannot steal clicks over the chrome.
                         let tail = cx.hits.split_off(hit_start);
                         for mut region in tail {
-                            if let Some(clipped) = region.rect.intersection(band) {
+                            if let Some(clipped) = region.rect.intersection(overlay.clip) {
                                 region.rect = clipped;
                                 cx.hits.push(region);
                             }
@@ -803,13 +799,12 @@ pub fn build_ui_frame(
                         // card cannot capture text-selection clicks over the chrome above.
                         let stext_tail = cx.selectable_text_runs.split_off(stext_start);
                         for mut region in stext_tail {
-                            if let Some(clipped) = region.bounds.intersection(band) {
+                            if let Some(clipped) = region.bounds.intersection(overlay.clip) {
                                 region.bounds = clipped;
                                 cx.selectable_text_runs.push(region);
                             }
                         }
                     }
-                    scene.pop_clip();
                 }
             }
 

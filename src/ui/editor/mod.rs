@@ -1,3 +1,4 @@
+pub mod anchor;
 pub mod decoration;
 pub mod display_layout;
 pub mod element;

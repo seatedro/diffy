@@ -650,6 +650,25 @@ pub fn build_ui_frame(
             scene.clip(vp_bounds);
             editor.paint(&mut scene, theme, &editor_snap, document);
             scene.pop_clip();
+            // Add-comment "+" rendered as a view! element overlay (the diff body is
+            // imperative for perf, but its chrome stays in the element system).
+            if let EditorDocument::Text { doc, .. } = document
+                && let Some(add_rect) = editor.review_add_button_layout(&editor_snap, doc)
+            {
+                let strong = editor.review_add_button_emphasised(&editor_snap, doc);
+                let mut add_btn = build_review_add_button(theme, ui_scale, add_rect, strong);
+                scene.clip(vp_bounds);
+                render_element_at(
+                    &mut add_btn,
+                    &mut scene,
+                    cx,
+                    add_rect.x,
+                    add_rect.y,
+                    add_rect.width,
+                    add_rect.height,
+                );
+                scene.pop_clip();
+            }
             let editor_scroll_builder = if continuous_scroll {
                 ScrollActionBuilder::ViewportGlobal
             } else {
@@ -1208,6 +1227,22 @@ fn build_review_submit_bar(
                     <Label>{"Discard"}</Label>
                 </Button>
             </div>
+        </div>
+    }
+}
+
+/// The gutter add-comment "+" as a view! element. Positioned by the shell at the
+/// editor-computed rect; click/drag is still handled by the editor's hit-test.
+fn build_review_add_button(theme: &Theme, ui_scale: f32, rect: Rect, strong: bool) -> AnyElement {
+    let tc = &theme.colors;
+    let bg = if strong { tc.accent_strong } else { tc.accent };
+    let icon_base = (rect.height * 0.5 / ui_scale).max(1.0);
+    view! { ui_scale,
+        <div class="flex-row items-center" w={rect.width} h={rect.height} bg={bg} rounded={Rad::SM}>
+            <spacer />
+            <icon svg={lucide::PLUS} size={icon_base}
+                  color={crate::ui::theme::Color::rgba(255, 255, 255, 255)} />
+            <spacer />
         </div>
     }
 }

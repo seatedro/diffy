@@ -3,15 +3,13 @@ use std::{collections::HashMap, ops::Range, sync::Arc};
 use crate::actions::{Action, ContextMenuEntry};
 use crate::core::compare::LayoutMode;
 use crate::core::text::SyntaxTokenKind;
-use crate::render::scene::{IconPrimitive, Primitive};
 use crate::render::{
     FontKind, FontStyle, FontWeight, Rect, RectPrimitive, RichTextPrimitive, RichTextSpan,
-    RoundedRectPrimitive, Scene, ShadowPrimitive, TextMetrics, TextPrimitive,
+    RoundedRectPrimitive, Scene, TextMetrics, TextPrimitive,
 };
 use crate::ui::accessibility::{AccessibilityAction, AccessibilityFrame, AccessibilityNode};
 use crate::ui::design::{Alpha, Sz};
 use crate::ui::element::ScrollActionBuilder;
-use crate::ui::icons::lucide;
 use crate::ui::state::FocusTarget;
 use crate::ui::theme::{Color, Theme};
 use accesskit::Role;
@@ -904,9 +902,8 @@ impl EditorElement {
                 self.paint_gutter_decorations(scene, theme);
                 self.paint_gutter_text(scene, theme, doc);
                 self.paint_body_text(scene, theme, path, doc);
-                // On top of the gutter strip/numbers and the code so the hover "+"
-                // is never occluded by the divider it straddles.
-                self.paint_review_add_affordance(scene, theme, _state, doc);
+                // The add-comment "+" is rendered as a view! element overlay by the
+                // shell (review_add_button_layout), not hand-painted here.
                 if show_file_headers {
                     self.paint_sticky_file_header(scene, theme, path, doc);
                 }
@@ -2013,53 +2010,40 @@ impl EditorElement {
         }
     }
 
-    fn paint_review_add_affordance(
-        &self,
-        scene: &mut Scene,
-        theme: &Theme,
-        state: &EditorState,
-        doc: &RenderDoc,
-    ) {
+    /// On-screen rect + emphasised flag for the hovered row's add-comment "+", or
+    /// `None` when it shouldn't show. The shell renders the "+" as a `view!` element
+    /// overlay at this rect (the diff body is imperative, but chrome stays declarative).
+    pub fn review_add_button_layout(&self, state: &EditorState, doc: &RenderDoc) -> Option<Rect> {
         if !state.review_enabled {
-            return;
+            return None;
+        }
+        let row_index = self.layout.highlighted_row?;
+        let display_row = self.rows.get(row_index).copied()?;
+        if display_row.is_block() {
+            return None;
+        }
+        let line = doc.lines.get(display_row.line_index as usize)?;
+        self.review_add_comment_button_rect_for_row(line, &display_row)
+    }
+
+    /// Whether the hovered add-comment "+" should be emphasised (pointer directly
+    /// over it, or its line is in the current selection).
+    pub fn review_add_button_emphasised(&self, state: &EditorState, doc: &RenderDoc) -> bool {
+        if state.review_add_hovered {
+            return true;
         }
         let Some(row_index) = self.layout.highlighted_row else {
-            return;
+            return false;
         };
         let Some(display_row) = self.rows.get(row_index).copied() else {
-            return;
+            return false;
         };
-        if display_row.is_block() {
-            return;
-        }
-        let Some(line) = doc.lines.get(display_row.line_index as usize) else {
-            return;
-        };
-        let Some(rect) = self.review_add_comment_button_rect_for_row(line, &display_row) else {
-            return;
-        };
-        let selected = !state.line_selection.is_empty()
-            && line_selection_contains_line(&state.line_selection, line);
-        let bg = if selected || state.review_add_hovered {
-            theme.colors.accent_strong
-        } else {
-            theme.colors.accent
-        };
-        let radius = (rect.height * 0.3).round();
-        let s = editor_scale(self.text_metrics);
-        scene.shadow(ShadowPrimitive {
-            rect,
-            blur_radius: scaled(3.0, s),
-            corner_radius: radius,
-            offset: [0.0, scaled(1.0, s)],
-            color: Color::rgba(0, 0, 0, 70),
-        });
-        scene.rounded_rect(RoundedRectPrimitive::uniform(rect, radius, bg));
-        scene.push(Primitive::Icon(IconPrimitive {
-            rect: rect.inset((rect.width * 0.22).round()),
-            name: lucide::PLUS.to_owned(),
-            color: Color::rgba(255, 255, 255, 255),
-        }));
+        doc.lines
+            .get(display_row.line_index as usize)
+            .is_some_and(|line| {
+                !state.line_selection.is_empty()
+                    && line_selection_contains_line(&state.line_selection, line)
+            })
     }
 
     fn paint_viewport_text_selection(

@@ -6,6 +6,7 @@ pub mod design;
 pub mod editor;
 pub mod editor_element;
 pub mod element;
+pub mod harness;
 pub mod icons;
 pub mod overlays;
 pub mod palette;

@@ -1,0 +1,715 @@
+//! Shared dev/test substrate for the GPU-UI "browser devtools": deterministic
+//! fixtures plus a no-GPU path to render the review-thread card into a scene and
+//! capture its selectable-text regions, accessibility tree, and hit regions.
+
+use std::collections::HashMap;
+
+use crate::core::review::{
+    ReviewAnchor, ReviewComment, ReviewCommentId, ReviewLineRange, ReviewResolution, ReviewSide,
+    ReviewThread, ReviewThreadId, ReviewThreadPermissions, ReviewThreadStatus,
+};
+use crate::render::Scene;
+use crate::ui::accessibility::AccessibilityFrame;
+use crate::ui::editor::review::{build_review_thread_card, measure_review_thread_card_height};
+use crate::ui::element::{ElementContext, HitRegion, SelectableTextRegion, render_element_at};
+use crate::ui::state::CardTextSelection;
+use crate::ui::theme::Theme;
+use halogen::reactive::SignalStore;
+
+/// Physical card width for the harness render. Wide enough that the header line
+/// reference doesn't truncate at `HARNESS_UI_SCALE` (a real review column is wider
+/// still); the body bodies wrap to several lines for selection coverage.
+pub const HARNESS_CARD_WIDTH: f32 = 1040.0;
+/// Must be != 1.0 so the avatar/icon `ui_scale` multiply is exercised — the avatar
+/// double-scale bug is invisible at 1.0 (bug and fix both yield the base size).
+pub const HARNESS_UI_SCALE: f32 = 2.0;
+
+fn fixture_comment(
+    thread_id: &ReviewThreadId,
+    backend_id: i64,
+    author: &str,
+    created_at: &str,
+    body: &str,
+) -> ReviewComment {
+    ReviewComment {
+        id: ReviewCommentId::github(backend_id),
+        backend_id: Some(backend_id),
+        backend_node_id: Some(format!("node-{backend_id}")),
+        thread_id: thread_id.clone(),
+        in_reply_to: None,
+        in_reply_to_node_id: None,
+        author_login: Some(author.to_owned()),
+        author_avatar_url: None,
+        body: body.to_owned(),
+        anchor: None,
+        html_url: None,
+        created_at: Some(created_at.to_owned()),
+        updated_at: None,
+        outdated: false,
+        state: None,
+        viewer_can_update: false,
+        viewer_can_delete: false,
+        reactions: Vec::new(),
+    }
+}
+
+/// A deterministic, neutral fixture thread with three plain-prose comments whose
+/// bodies wrap across several visual lines at ~520px. Unresolved + not collapsed
+/// so the card renders expanded.
+pub fn sample_review_thread() -> ReviewThread {
+    let id = ReviewThreadId::github_node("harness-thread-1");
+    let anchor = ReviewAnchor::inline(
+        "src/widget.rs",
+        ReviewSide::New,
+        ReviewLineRange::new(120, 1),
+    );
+    let comments = vec![
+        fixture_comment(
+            &id,
+            1001,
+            "alpha",
+            "2026-01-01T00:00:00Z",
+            "This routine recomputes the layout on every frame even when nothing \
+             changed, which makes scrolling feel heavier than it should on larger \
+             documents. Could we cache the measured height across frames instead?",
+        ),
+        fixture_comment(
+            &id,
+            1002,
+            "bravo",
+            "2026-01-01T00:05:00Z",
+            "Good catch. The height is stable as long as the card width is pinned, \
+             so memoizing it behind a small dirty flag should be safe here and would \
+             remove the redundant measure pass entirely.",
+        ),
+        fixture_comment(
+            &id,
+            1003,
+            "alpha",
+            "2026-01-01T00:10:00Z",
+            "Agreed. I will wire a per-thread cache keyed by the pinned width and \
+             invalidate it whenever the comment bodies or expansion state change.",
+        ),
+    ];
+    ReviewThread {
+        id,
+        backend_node_id: Some("harness-thread-1".to_owned()),
+        anchor: Some(anchor),
+        comments,
+        status: ReviewThreadStatus {
+            resolution: ReviewResolution::Unresolved,
+            outdated: false,
+            collapsed: false,
+        },
+        permissions: ReviewThreadPermissions {
+            can_reply: true,
+            can_resolve: true,
+            can_unresolve: false,
+        },
+    }
+}
+
+/// Outputs captured from rendering a review-thread card without a GPU.
+pub struct RenderedCard {
+    pub scene: Scene,
+    pub selectable: Vec<SelectableTextRegion>,
+    pub accessibility: AccessibilityFrame,
+    pub hits: Vec<HitRegion>,
+    pub width: f32,
+    pub height: f32,
+}
+
+/// Build a dark-theme `ElementContext`, render the review-thread card at a fixed
+/// width/scale with an empty avatar map and the given selection, and return the
+/// resulting scene plus the captured devtools outputs.
+pub fn render_review_card(
+    thread: &ReviewThread,
+    expanded: bool,
+    selection: Option<&CardTextSelection>,
+) -> RenderedCard {
+    render_review_card_with_avatars(thread, expanded, selection, &HashMap::new())
+}
+
+/// Same as [`render_review_card`] but with a caller-supplied avatar map, so tests
+/// can exercise the fetched-image avatar path (keyed by `avatar_cache_key`).
+fn render_review_card_with_avatars(
+    thread: &ReviewThread,
+    expanded: bool,
+    selection: Option<&CardTextSelection>,
+    avatars: &HashMap<u64, crate::ui::components::avatar::AvatarImage>,
+) -> RenderedCard {
+    // Scale the theme's metrics like the live app does (`Theme::scaled`), so that
+    // elements which read `cx.theme.metrics.ui_scale()` (avatars, icons) scale
+    // consistently with spacing/fonts that take the explicit `scale` — otherwise the
+    // render mixes 1x icons/avatars with 2x spacing.
+    let theme = Theme::default_dark().with_ui_scale(HARNESS_UI_SCALE);
+    let mut font_system = glyphon::FontSystem::new();
+    let store = SignalStore::new();
+
+    let width = HARNESS_CARD_WIDTH;
+    let scale = HARNESS_UI_SCALE;
+
+    let height = {
+        let mut measure_cx =
+            ElementContext::new(&theme, scale, &mut font_system, None, &store);
+        f32::from(measure_review_thread_card_height(
+            thread,
+            expanded,
+            &theme,
+            scale,
+            width,
+            &mut measure_cx,
+        ))
+    };
+
+    let mut scene = Scene::default();
+    let mut cx = ElementContext::new(&theme, scale, &mut font_system, None, &store);
+    let mut card =
+        build_review_thread_card(thread, expanded, &theme, scale, width, avatars, selection);
+    render_element_at(&mut card, &mut scene, &mut cx, 0.0, 0.0, width, height);
+
+    RenderedCard {
+        scene,
+        selectable: std::mem::take(&mut cx.selectable_text_runs),
+        accessibility: std::mem::take(&mut cx.accessibility),
+        hits: std::mem::take(&mut cx.hits),
+        width,
+        height,
+    }
+}
+
+/// A no-GPU input driver: owns the application state, an `InputSystem`, a CPU
+/// `FontSystem`, and a minimal `UiFrame` whose `selectable_text_runs` come from
+/// rendering the fixture review card. It feeds synthetic pointer/key events
+/// through the real input layer and applies every emitted action to `state`, so
+/// tests can exercise selection + clipboard behaviour end to end without a window.
+#[cfg(test)]
+pub struct UiHarness {
+    pub state: crate::ui::state::AppState,
+    input: crate::input::InputSystem,
+    font_system: glyphon::FontSystem,
+    editor: crate::ui::editor::element::EditorElement,
+    tooltip: crate::ui::components::TooltipState,
+    launch_at: std::time::Instant,
+    ui_frame: crate::ui::shell::UiFrame,
+    pub card: RenderedCard,
+}
+
+#[cfg(test)]
+impl UiHarness {
+    /// Build a harness around the sample review-thread card. The minimal
+    /// `UiFrame` carries only the card's selectable-text runs and scene (no
+    /// viewport), which is all the card-selection input paths read.
+    pub fn new(thread: &ReviewThread) -> Self {
+        let card = render_review_card(thread, true, None);
+        let ui_frame = crate::ui::shell::UiFrame {
+            selectable_text_runs: card.selectable.clone(),
+            scene: card.scene.clone(),
+            accessibility: card.accessibility.clone(),
+            hits: card.hits.clone(),
+            ..crate::ui::shell::UiFrame::default()
+        };
+        Self {
+            state: crate::ui::state::AppState::default(),
+            input: crate::input::InputSystem::default(),
+            font_system: glyphon::FontSystem::new(),
+            editor: crate::ui::editor::element::EditorElement::default(),
+            tooltip: crate::ui::components::TooltipState::default(),
+            launch_at: std::time::Instant::now(),
+            ui_frame,
+            card,
+        }
+    }
+
+    /// The selectable region for comment `index`, matched by its source key.
+    pub fn region_for_comment(
+        &self,
+        thread: &ReviewThread,
+        index: usize,
+    ) -> &SelectableTextRegion {
+        let key = crate::ui::editor::review::card_source_key(&thread.id, index);
+        self.card
+            .selectable
+            .iter()
+            .find(|region| region.source_key == key)
+            .expect("selectable region for comment index")
+    }
+
+    fn feed(&mut self, event: crate::input::InputEvent) -> crate::input::InputOutcome {
+        let outcome = self.input.handle_input_event_for_test(
+            &mut self.state,
+            &mut self.ui_frame,
+            &self.editor,
+            Some(&mut self.font_system),
+            None,
+            &mut self.tooltip,
+            self.launch_at,
+            event,
+        );
+        for action in &outcome.actions {
+            self.state.apply_action(action.clone());
+        }
+        outcome
+    }
+
+    /// Move the pointer to `(x, y)`, applying any emitted actions.
+    pub fn pointer_move(&mut self, x: f32, y: f32) -> crate::input::InputOutcome {
+        self.feed(crate::input::InputEvent::PointerMoved { x, y })
+    }
+
+    fn left_button(&mut self, pressed: bool) -> crate::input::InputOutcome {
+        let state = if pressed {
+            winit::event::ElementState::Pressed
+        } else {
+            winit::event::ElementState::Released
+        };
+        self.feed(crate::input::InputEvent::PointerButton {
+            button: winit::event::MouseButton::Left,
+            state,
+        })
+    }
+
+    /// Press the left button at `(x, y)` (moves the pointer there first so the
+    /// click reads the current position).
+    pub fn mouse_down(&mut self, x: f32, y: f32) -> crate::input::InputOutcome {
+        self.pointer_move(x, y);
+        self.left_button(true)
+    }
+
+    /// Release the left button, ending any in-progress drag.
+    pub fn mouse_up(&mut self) -> crate::input::InputOutcome {
+        self.left_button(false)
+    }
+
+    /// A full press-and-release click at `(x, y)`.
+    pub fn click(&mut self, x: f32, y: f32) {
+        self.mouse_down(x, y);
+        self.mouse_up();
+    }
+
+    /// Press down at `from`, drag through each waypoint, then release. Actions
+    /// are applied after every event so the in-progress selection is visible to
+    /// subsequent move events.
+    pub fn drag(&mut self, from: (f32, f32), waypoints: &[(f32, f32)]) {
+        self.mouse_down(from.0, from.1);
+        for &(x, y) in waypoints {
+            self.pointer_move(x, y);
+        }
+        self.mouse_up();
+    }
+
+    /// Route a key chord through the keyboard layer and return the emitted
+    /// actions (the harness does not apply them, so callers can inspect e.g. a
+    /// `CopyText` payload).
+    pub fn key(&mut self, chord: crate::input::KeyChord) -> Vec<crate::actions::Action> {
+        self.input
+            .handle_input_event_for_test(
+                &mut self.state,
+                &mut self.ui_frame,
+                &self.editor,
+                Some(&mut self.font_system),
+                None,
+                &mut self.tooltip,
+                self.launch_at,
+                crate::input::InputEvent::KeyPress(chord),
+            )
+            .actions
+    }
+
+    /// A Cmd/Super + key chord (e.g. `cmd_key("c")` for copy).
+    pub fn cmd_key(key: &str) -> crate::input::KeyChord {
+        crate::input::KeyChord {
+            logical: crate::input::KeyKind::Character(key.to_owned()),
+            physical: None,
+            modifiers: winit::keyboard::ModifiersState::SUPER,
+            repeat: false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::*;
+    use crate::ui::accessibility::dump_accessibility;
+
+    #[test]
+    fn render_review_card_emits_selectable_text_and_a11y() {
+        let thread = sample_review_thread();
+        let rendered = render_review_card(&thread, true, None);
+
+        assert!(
+            !rendered.selectable.is_empty(),
+            "expected at least one selectable text region"
+        );
+
+        let dump = dump_accessibility(&rendered.accessibility);
+        assert!(!dump.is_empty(), "accessibility dump should be non-empty");
+        assert!(
+            dump.contains("selectable-text:"),
+            "dump should include a selectable-text node:\n{dump}"
+        );
+    }
+
+    /// (a) Every selectable comment body has a corresponding `Label` a11y node
+    /// whose label text is exactly the body string.
+    #[test]
+    fn every_selectable_body_has_matching_label_node() {
+        let thread = sample_review_thread();
+        let rendered = render_review_card(&thread, true, None);
+        let dump = dump_accessibility(&rendered.accessibility);
+
+        let want: HashSet<&str> = rendered
+            .selectable
+            .iter()
+            .map(|region| region.text.as_str())
+            .collect();
+        assert_eq!(want.len(), 3, "fixture has three comment bodies");
+
+        let mut got: HashSet<&str> = HashSet::new();
+        for line in dump.lines().filter(|l| l.starts_with("selectable-text:")) {
+            let parts: Vec<&str> = line.split(" | ").collect();
+            assert_eq!(parts[1], "Label", "selectable body must be a Label:\n{line}");
+            got.insert(parts[2]);
+        }
+
+        assert_eq!(
+            got, want,
+            "every selectable body must map to a Label node with that text:\n{dump}"
+        );
+    }
+
+    /// (b) The card exposes its summary node (the inline-comment line reference)
+    /// and its actionable role node (the Resolve button).
+    #[test]
+    fn card_exposes_summary_and_role_nodes() {
+        let thread = sample_review_thread();
+        let rendered = render_review_card(&thread, true, None);
+        let dump = dump_accessibility(&rendered.accessibility);
+
+        assert!(
+            dump.contains("Comment on line R120"),
+            "expected the inline summary node:\n{dump}"
+        );
+        let has_resolve_button = dump
+            .lines()
+            .any(|l| l.contains("| Button |") && l.contains("Resolve"));
+        assert!(
+            has_resolve_button,
+            "expected a Resolve button role node:\n{dump}"
+        );
+    }
+
+    /// (c) Regression guard for the duplicate-node-id bug (commit 9c88722).
+    #[test]
+    fn node_ids_are_unique_across_the_frame() {
+        let thread = sample_review_thread();
+        let rendered = render_review_card(&thread, true, None);
+
+        // Post-dedup uniqueness in the shipped tree (cheap invariant).
+        let update = rendered.accessibility.tree_update(None);
+        let ids: Vec<_> = update.nodes.iter().map(|(id, _)| *id).collect();
+        let unique: HashSet<_> = ids.iter().copied().collect();
+        assert_eq!(
+            ids.len(),
+            unique.len(),
+            "accessibility NodeIds must be unique; {} duplicate(s) found",
+            ids.len() - unique.len()
+        );
+
+        // The real guard: the card's NATURAL author keys are already unique, so
+        // `ensure_unique_id` never had to disambiguate. It suffixes collisions with
+        // `#N`; if two card elements ever collide (the 9c88722 bug) this fires —
+        // unlike (1), which `ensure_unique_id` makes pass unconditionally.
+        let dump = dump_accessibility(&rendered.accessibility);
+        let disambiguated: Vec<&str> = dump
+            .lines()
+            .filter(|line| {
+                line.split(" | ")
+                    .next()
+                    .and_then(|author_id| author_id.rsplit_once('#'))
+                    .is_some_and(|(_, suffix)| {
+                        !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
+                    })
+            })
+            .collect();
+        assert!(
+            disambiguated.is_empty(),
+            "no card node should need id disambiguation, but these did:\n{}",
+            disambiguated.join("\n")
+        );
+    }
+
+    /// Regression guard for the avatar double-scale bug: a fetched avatar image must
+    /// render at `REVIEW_AVATAR_PX * ui_scale`, NOT a multiple of it. `RasterImage`
+    /// scales its size by `ui_scale` internally, so passing an already-scaled size
+    /// (the original bug) produced a ~4x-oversized avatar. No GPU needed — assert on
+    /// the emitted `ImagePrimitive` rect in the scene.
+    #[test]
+    fn fetched_avatar_renders_at_review_avatar_px() {
+        use std::sync::Arc;
+
+        use crate::render::Primitive;
+        use crate::ui::components::avatar::AvatarImage;
+        use crate::ui::editor::review::{REVIEW_AVATAR_FETCH_PX, REVIEW_AVATAR_PX};
+        use crate::ui::state::{avatar_cache_key, avatar_url_sized};
+
+        let mut thread = sample_review_thread();
+        let raw = "https://avatars.example.com/u/1.png";
+        thread.comments[0].author_avatar_url = Some(raw.to_owned());
+
+        let sized = avatar_url_sized(raw, REVIEW_AVATAR_FETCH_PX).expect("sized url");
+        let key = avatar_cache_key(&sized);
+        let mut avatars = HashMap::new();
+        avatars.insert(
+            key,
+            AvatarImage {
+                rgba: Arc::new(vec![255u8; 4]),
+                width: 1,
+                height: 1,
+                cache_key: key,
+            },
+        );
+
+        let rendered = render_review_card_with_avatars(&thread, true, None, &avatars);
+        // The card also rasterizes the chevron/menu SVGs to Image primitives, so
+        // identify the avatar by its cache_key rather than assuming it's the only one.
+        let avatar_img = rendered
+            .scene
+            .primitives
+            .iter()
+            .find_map(|p| match p {
+                Primitive::Image(img) if img.cache_key == key => Some(img),
+                _ => None,
+            })
+            .expect("the fetched comment-0 avatar must emit an ImagePrimitive");
+
+        let expected = REVIEW_AVATAR_PX * HARNESS_UI_SCALE;
+        assert!(
+            (avatar_img.rect.width - expected).abs() <= 1.5
+                && (avatar_img.rect.height - expected).abs() <= 1.5,
+            "avatar must render at REVIEW_AVATAR_PX*scale = {expected}px; got {}x{} \
+             (a double-scale regression would be ~{}px)",
+            avatar_img.rect.width,
+            avatar_img.rect.height,
+            expected * HARNESS_UI_SCALE
+        );
+    }
+
+    /// Strengthens the drag test: drive the drag to a KNOWN interior x (the second
+    /// word boundary on line 0) so the byte resolution goes through the glyph-distance
+    /// loop, not the `x<=0` / far-right saturation guards. Catches off-by-one / sign
+    /// errors in `card_text_byte_at` that the full-line drag cannot see.
+    #[test]
+    fn interior_drag_maps_x_to_the_word_under_the_cursor() {
+        let thread = sample_review_thread();
+        let mut harness = UiHarness::new(&thread);
+        let region = harness.region_for_comment(&thread, 0).clone();
+
+        let line0 = &region.text[region.runs[0].start..region.runs[0].end];
+        let first_space = line0.find(' ').expect("line 0 has a first space");
+        let second_space =
+            line0[first_space + 1..].find(' ').expect("line 0 has a second word") + first_space + 1;
+        let target_byte = region.runs[0].start + second_space;
+
+        let prefix = &region.text[region.runs[0].start..target_byte];
+        let mut fs = glyphon::FontSystem::new();
+        let target_x = region.text_origin.0
+            + crate::ui::element::measure_text_width(
+                &mut fs,
+                prefix,
+                region.font_size,
+                region.font_kind,
+                region.font_weight,
+            );
+        let y = region.text_origin.1 + region.line_height * 0.5;
+        harness.drag((region.text_origin.0, y), &[(target_x, y)]);
+
+        let selection = harness
+            .state
+            .github
+            .pull_request
+            .card_text_selection
+            .get(&harness.state.store)
+            .expect("card selection after interior drag");
+        let selected = selection.selected_text().expect("non-empty selection");
+
+        // Must land in the interior: past the first word (not the x<=0 guard) and
+        // short of the whole line (not the saturation guard), near the target.
+        assert!(
+            selected.len() > first_space,
+            "interior drag must select past the first word; got {selected:?}"
+        );
+        assert!(
+            selected.len() < line0.len(),
+            "interior drag must not select the whole line; got {selected:?}"
+        );
+        assert!(
+            (selected.len() as i32 - target_byte as i32).abs() <= 4,
+            "selection should end near the targeted word boundary (~{target_byte}); got {}",
+            selected.len()
+        );
+        assert!(
+            region.text.starts_with(&selected),
+            "selection must be a prefix of the comment body"
+        );
+    }
+
+    /// (d) The dump is deterministic: two independent renders of the same fixture
+    /// produce byte-identical accessibility snapshots.
+    #[test]
+    fn dump_is_stable_across_renders() {
+        let thread = sample_review_thread();
+        let first = dump_accessibility(&render_review_card(&thread, true, None).accessibility);
+        let second = dump_accessibility(&render_review_card(&thread, true, None).accessibility);
+        assert_eq!(first, second, "accessibility dump must be deterministic");
+    }
+
+    /// Reading order: a comment's author/header node precedes its body node, so a
+    /// screen reader announces who is speaking before what they said.
+    #[test]
+    fn reading_order_places_header_before_body() {
+        let thread = sample_review_thread();
+        let rendered = render_review_card(&thread, true, None);
+        let dump = dump_accessibility(&rendered.accessibility);
+
+        let lines: Vec<&str> = dump.lines().collect();
+        let first_author = lines
+            .iter()
+            .position(|l| l.contains("@alpha"))
+            .expect("an author header node");
+        let first_body = lines
+            .iter()
+            .position(|l| l.starts_with("selectable-text:"))
+            .expect("a comment body node");
+        assert!(
+            first_author < first_body,
+            "author header must come before the comment body:\n{dump}"
+        );
+    }
+
+    /// End-to-end proof of the selectable comment-body feature with NO GPU:
+    /// a drag across comment 0's first wrapped line produces a non-collapsed
+    /// `CardTextSelection` whose substring is comment 0's first visual line, that
+    /// drag clears any pre-existing viewport selection (mutual exclusivity), and
+    /// Cmd+C copies exactly the dragged substring. A subsequent viewport-text
+    /// selection clears the card selection (the reverse exclusivity direction).
+    #[test]
+    fn drag_selects_comment_text_and_cmd_c_copies_it() {
+        use crate::actions::AppAction;
+        use crate::ui::state::FocusTarget;
+
+        let thread = sample_review_thread();
+        let mut harness = UiHarness::new(&thread);
+
+        // Pre-seed a viewport text selection; the card drag must clear it.
+        harness.state.editor.text_selection.set(
+            &harness.state.store,
+            Some(crate::ui::editor::state::ViewportTextSelection {
+                generation: 1,
+                anchor: crate::ui::editor::state::ViewportTextPoint {
+                    line_index: 0,
+                    side: crate::ui::editor::state::ViewportTextSide::Right,
+                    byte_offset: 0,
+                },
+                focus: crate::ui::editor::state::ViewportTextPoint {
+                    line_index: 0,
+                    side: crate::ui::editor::state::ViewportTextSide::Right,
+                    byte_offset: 3,
+                },
+            }),
+        );
+
+        let region = harness.region_for_comment(&thread, 0).clone();
+        assert!(
+            region.runs.len() >= 2,
+            "fixture comment 0 must wrap to >= 2 visual lines; got {}",
+            region.runs.len()
+        );
+        let first_line_end = region.runs[0].end;
+        let expected = region.text[..first_line_end].to_owned();
+
+        // Mouse down at the text origin (x maps to byte 0), drag past the right
+        // edge of the first visual line, release.
+        let start = (region.text_origin.0, region.text_origin.1 + region.line_height * 0.5);
+        let line0_y = region.text_origin.1 + region.line_height * 0.5;
+        harness.drag(
+            start,
+            &[
+                (region.bounds.x + region.bounds.width * 0.5, line0_y),
+                (region.bounds.x + region.bounds.width + 200.0, line0_y),
+            ],
+        );
+
+        // Mutual exclusivity: the card drag cleared the viewport selection.
+        assert!(
+            harness
+                .state
+                .editor
+                .text_selection
+                .get(&harness.state.store)
+                .is_none(),
+            "card drag must clear the viewport text selection"
+        );
+
+        // The card selection is present, non-collapsed, and equals line 0's text.
+        let selection = harness
+            .state
+            .github
+            .pull_request
+            .card_text_selection
+            .get(&harness.state.store)
+            .expect("card text selection after drag");
+        assert!(
+            !selection.is_collapsed(),
+            "dragged selection must be non-collapsed"
+        );
+        let selected = selection.selected_text().expect("non-empty selected text");
+        assert_eq!(
+            selected, expected,
+            "drag across the first visual line must select exactly that line"
+        );
+        assert!(
+            region.text.starts_with(&selected),
+            "selection must be a prefix of the comment body"
+        );
+
+        // The card mousedown emitted FocusViewport (applied by the harness), so
+        // input owner resolves to Editor and Cmd+C takes the card-copy branch.
+        assert_eq!(
+            harness.state.focus.get(&harness.state.store),
+            Some(FocusTarget::Editor),
+            "card mousedown must focus the viewport/editor"
+        );
+        let actions = harness.key(UiHarness::cmd_key("c"));
+        assert_eq!(
+            actions,
+            vec![AppAction::CopyText(selected.clone()).into()],
+            "Cmd+C must copy exactly the dragged substring"
+        );
+
+        // Reverse exclusivity: starting a viewport text selection clears the card
+        // selection.
+        harness.state.apply_action(
+            crate::actions::EditorAction::BeginViewportTextSelection {
+                point: crate::ui::editor::state::ViewportTextPoint {
+                    line_index: 0,
+                    side: crate::ui::editor::state::ViewportTextSide::Right,
+                    byte_offset: 0,
+                },
+                generation: 1,
+            },
+        );
+        assert!(
+            harness
+                .state
+                .github
+                .pull_request
+                .card_text_selection
+                .get(&harness.state.store)
+                .is_none(),
+            "beginning a viewport text selection must clear the card selection"
+        );
+    }
+}

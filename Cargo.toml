@@ -52,6 +52,7 @@ appdata-paths = ["$LOCALAPPDATA/$PUBLISHER/$PRODUCTNAME"]
 [features]
 hot-reload = ["dep:tungstenite", "dep:subsecond"]
 difftastic = ["dep:vendored_difftastic"]
+headless-render = []
 
 [dependencies]
 accesskit = "0.24"

@@ -263,6 +263,30 @@ pub fn empty_tree_update() -> TreeUpdate {
     AccessibilityFrame::new(1.0, 1.0).tree_update(None)
 }
 
+/// One stable line per node, in tree order:
+/// `author_id | role | label | value | x,y,w,h` (bounds rounded to ints, `-` for None).
+/// Used by the devtools harness to snapshot the accessibility "DOM".
+pub fn dump_accessibility(frame: &AccessibilityFrame) -> String {
+    let mut out = String::new();
+    for node in &frame.nodes {
+        let label = node.label.as_deref().unwrap_or("-");
+        let value = node.value.as_deref().unwrap_or("-");
+        let b = node.bounds;
+        out.push_str(&format!(
+            "{} | {:?} | {} | {} | {},{},{},{}\n",
+            node.author_id,
+            node.role,
+            label,
+            value,
+            b.x.round() as i64,
+            b.y.round() as i64,
+            b.width.round() as i64,
+            b.height.round() as i64,
+        ));
+    }
+    out
+}
+
 fn ax_rect(rect: Rect) -> AxRect {
     AxRect::new(
         f64::from(rect.x),

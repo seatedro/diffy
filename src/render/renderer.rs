@@ -59,6 +59,10 @@ pub enum RenderError {
     RenderText(#[from] glyphon::RenderError),
     #[error("surface acquisition failed")]
     SurfaceAcquire,
+    #[error("buffer map failed")]
+    BufferMap,
+    #[error("png encode/write failed: {0}")]
+    PngWrite(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +239,7 @@ impl TexturePool {
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    surface: wgpu::Surface<'static>,
+    surface: Option<wgpu::Surface<'static>>,
     surface_config: wgpu::SurfaceConfiguration,
     size: PhysicalSize<u32>,
     scale_factor: f64,
@@ -317,6 +321,105 @@ impl Renderer {
             });
         surface.configure(&device, &surface_config);
 
+        Self::assemble(
+            device,
+            queue,
+            surface_format,
+            surface_config,
+            size,
+            scale_factor,
+            Some(surface),
+            font_settings,
+        )
+    }
+
+    /// Build a windowless renderer that targets `OffscreenTarget`s only. Requests
+    /// an adapter with no compatible surface, creates a device+queue, and shares
+    /// the same pipeline/atlas setup as the windowed path. No swapchain is created.
+    #[cfg(any(test, feature = "headless-render"))]
+    pub fn new_headless(
+        width: u32,
+        height: u32,
+        scale_factor: f64,
+        font_settings: &FontSettings,
+    ) -> Result<Self, RenderError> {
+        pollster::block_on(Self::new_headless_async(
+            width,
+            height,
+            scale_factor,
+            font_settings,
+        ))
+    }
+
+    #[cfg(any(test, feature = "headless-render"))]
+    async fn new_headless_async(
+        width: u32,
+        height: u32,
+        scale_factor: f64,
+        font_settings: &FontSettings,
+    ) -> Result<Self, RenderError> {
+        let size = PhysicalSize::new(width.max(1), height.max(1));
+
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let adapter = match instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                compatible_surface: None,
+                ..wgpu::RequestAdapterOptions::default()
+            })
+            .await
+        {
+            Ok(adapter) => adapter,
+            Err(_) => instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    force_fallback_adapter: true,
+                    compatible_surface: None,
+                    ..wgpu::RequestAdapterOptions::default()
+                })
+                .await
+                .map_err(|_| RenderError::NoAdapter)?,
+        };
+
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor::default())
+            .await?;
+
+        // Match the on-screen path: an sRGB target so colors and PNG bytes agree.
+        let surface_format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let surface_config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_format,
+            width: size.width,
+            height: size.height,
+            desired_maximum_frame_latency: 2,
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+            view_formats: vec![],
+        };
+
+        Self::assemble(
+            device,
+            queue,
+            surface_format,
+            surface_config,
+            size,
+            scale_factor,
+            None,
+            font_settings,
+        )
+    }
+
+    /// Shared pipeline/atlas/font setup for both the windowed and headless paths.
+    #[allow(clippy::too_many_arguments)]
+    fn assemble(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        surface_format: wgpu::TextureFormat,
+        surface_config: wgpu::SurfaceConfiguration,
+        size: PhysicalSize<u32>,
+        scale_factor: f64,
+        surface: Option<wgpu::Surface<'static>>,
+        font_settings: &FontSettings,
+    ) -> Result<Self, RenderError> {
         let viewport_uniform = ViewportUniform::new(surface_config.width, surface_config.height);
         let viewport_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("diffy_viewport_uniform"),
@@ -625,7 +728,9 @@ impl Renderer {
         self.scale_factor = scale_factor;
         self.surface_config.width = width;
         self.surface_config.height = height;
-        self.surface.configure(&self.device, &self.surface_config);
+        if let Some(surface) = &self.surface {
+            surface.configure(&self.device, &self.surface_config);
+        }
         self.queue.write_buffer(
             &self.viewport_buffer,
             0,
@@ -710,6 +815,299 @@ impl Renderer {
         self.texture_pool.release(target);
     }
 
+    /// Render `scene` into an offscreen sRGB texture at the given physical
+    /// `width`/`height` and `scale_factor` (which must match the scale used to
+    /// build the scene), read the pixels back, and write them as a PNG to `path`.
+    ///
+    /// This is a self-contained, no-swapchain draw flow (no blur) used by the
+    /// dev/test "screenshot" leg. Pixel readback honours the wgpu 256-byte
+    /// `bytes_per_row` alignment by padding rows on copy and unpadding on read.
+    #[cfg(any(test, feature = "headless-render"))]
+    pub fn render_to_png(
+        &mut self,
+        scene: &Scene,
+        width: u32,
+        height: u32,
+        scale_factor: f32,
+        path: &std::path::Path,
+    ) -> Result<(), RenderError> {
+        let w = width.max(1);
+        let h = height.max(1);
+
+        self.texture_pool.begin_frame();
+        self.instance_buffer_pool.begin_frame();
+
+        let viewport_rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: w as f32,
+            height: h as f32,
+        };
+        self.queue.write_buffer(
+            &self.viewport_buffer,
+            0,
+            bytemuck::bytes_of(&ViewportUniform::new(w, h)),
+        );
+        self.viewport
+            .update(&self.queue, Resolution { width: w, height: h });
+
+        let flattened = flatten_scene(scene, viewport_rect);
+
+        // Owned target texture (COPY_SRC so we can read it back). Format matches
+        // the surface format the pipelines were built against.
+        let target = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("diffy_png_target"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.texture_pool.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Pre-upload any cached images referenced by the scene.
+        for zl in &flattened.z_layers {
+            for img in &zl.images {
+                let key = img.primitive.cache_key;
+                if key != 0
+                    && !self.image_cache.contains_key(&key)
+                    && !img.primitive.rgba.is_empty()
+                    && img.primitive.width > 0
+                    && img.primitive.height > 0
+                {
+                    let texture = self.device.create_texture_with_data(
+                        &self.queue,
+                        &wgpu::TextureDescriptor {
+                            label: Some("diffy_cached_image"),
+                            size: wgpu::Extent3d {
+                                width: img.primitive.width,
+                                height: img.primitive.height,
+                                depth_or_array_layers: 1,
+                            },
+                            mip_level_count: 1,
+                            sample_count: 1,
+                            dimension: wgpu::TextureDimension::D2,
+                            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                            view_formats: &[],
+                        },
+                        wgpu::util::TextureDataOrder::LayerMajor,
+                        &img.primitive.rgba,
+                    );
+                    let tview = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("diffy_cached_image_bind"),
+                        layout: &self.texture_bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(&tview),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(&self.sampler),
+                            },
+                        ],
+                    });
+                    self.image_cache.insert(key, (texture, tview, bind_group));
+                }
+            }
+        }
+
+        let device = &self.device;
+        let queue = &self.queue;
+        let buffer_pool = &mut self.instance_buffer_pool;
+        let z_layer_buffers: Vec<Vec<LayerBuffers>> = flattened
+            .z_layers
+            .iter()
+            .map(|zl| {
+                zl.draw_layers
+                    .iter()
+                    .map(|layer| {
+                        let (si, sc) = build_shadow_instances(&layer.shadows);
+                        let sb = buffer_pool.upload(device, queue, "diffy_shadow_instances", &si);
+                        let (qi, qc) = build_quad_instances(&layer.quads);
+                        let qb = buffer_pool.upload(device, queue, "diffy_quad_instances", &qi);
+                        let (ei, ec) = build_effect_quad_instances(&layer.effect_quads);
+                        let eb =
+                            buffer_pool.upload(device, queue, "diffy_effect_quad_instances", &ei);
+                        LayerBuffers {
+                            shadow_buffer: sb,
+                            shadow_commands: sc,
+                            quad_buffer: qb,
+                            quad_commands: qc,
+                            effect_buffer: eb,
+                            effect_commands: ec,
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("diffy_png_encoder"),
+            });
+
+        let mut first = true;
+        for (zl, layer_buffers) in flattened.z_layers.iter().zip(z_layer_buffers.iter()) {
+            let mut text_areas = prepare_text_areas(
+                &mut self.font_system,
+                &mut self.text_cache,
+                &mut self.text_cache_frame,
+                &zl.texts,
+                &zl.rich_texts,
+                scale_factor as f64,
+            );
+            append_editor_text_areas(&mut text_areas, &zl.editor_slots, &[]);
+
+            self.text_renderer.prepare(
+                &self.device,
+                &self.queue,
+                &mut self.font_system,
+                &mut self.atlas,
+                &self.viewport,
+                text_areas,
+                &mut self.swash_cache,
+            )?;
+
+            {
+                let load = if first {
+                    first = false;
+                    wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                } else {
+                    wgpu::LoadOp::Load
+                };
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("diffy_png_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+
+                draw_layers(
+                    &mut pass,
+                    layer_buffers,
+                    &self.shadow_pipeline,
+                    &self.effect_quad_pipeline,
+                    &self.quad_pipeline,
+                    &self.viewport_bind_group,
+                    w,
+                    h,
+                );
+                draw_images(
+                    &mut pass,
+                    &zl.images,
+                    &mut self.instance_buffer_pool,
+                    &self.device,
+                    &self.queue,
+                    &self.blit_pipeline,
+                    &self.viewport_bind_group,
+                    &self.image_cache,
+                    w,
+                    h,
+                );
+                pass.set_scissor_rect(0, 0, w, h);
+                self.text_renderer
+                    .render(&self.atlas, &self.viewport, &mut pass)?;
+            }
+
+            self.queue.submit(Some(encoder.finish()));
+            encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("diffy_png_encoder"),
+                });
+        }
+
+        // Copy the rendered texture into a readback buffer (256-byte row align).
+        let bytes_per_pixel = 4u32;
+        let unpadded_bytes_per_row = w * bytes_per_pixel;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align) * align;
+        let buffer_size = (padded_bytes_per_row * h) as u64;
+
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("diffy_png_readback"),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(Some(encoder.finish()));
+
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = tx.send(res);
+        });
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        rx.recv()
+            .map_err(|_| RenderError::BufferMap)?
+            .map_err(|_| RenderError::BufferMap)?;
+
+        let mut pixels = Vec::with_capacity((unpadded_bytes_per_row * h) as usize);
+        {
+            let data = slice.get_mapped_range();
+            for row in 0..h {
+                let start = (row * padded_bytes_per_row) as usize;
+                let end = start + unpadded_bytes_per_row as usize;
+                pixels.extend_from_slice(&data[start..end]);
+            }
+        }
+        readback.unmap();
+
+        let buffer = image::RgbaImage::from_raw(w, h, pixels)
+            .expect("readback pixel buffer matches dimensions");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        buffer
+            .save(path)
+            .map_err(|e| RenderError::PngWrite(e.to_string()))?;
+
+        self.texture_pool.trim_unused();
+        Ok(())
+    }
+
     pub fn render(
         &mut self,
         scene: &Scene,
@@ -745,10 +1143,14 @@ impl Renderer {
 
         let flattened = flatten_scene(scene, viewport_rect);
 
-        let frame = match self.surface.get_current_texture() {
+        let surface = self
+            .surface
+            .as_ref()
+            .expect("render() requires a window surface; use render_to_png for headless");
+        let frame = match surface.get_current_texture() {
             Ok(frame) => frame,
             Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
-                self.surface.configure(&self.device, &self.surface_config);
+                surface.configure(&self.device, &self.surface_config);
                 return Err(RenderError::SurfaceAcquire);
             }
             Err(wgpu::SurfaceError::Timeout) => return Err(RenderError::SurfaceAcquire),

@@ -286,7 +286,7 @@ fn render_review_card_with_avatars(
     // consistently with spacing/fonts that take the explicit `scale` — otherwise the
     // render mixes 1x icons/avatars with 2x spacing.
     let theme = Theme::default_dark().with_ui_scale(scale);
-    let mut font_system = glyphon::FontSystem::new();
+    let mut font_system = crate::fonts::new_font_system();
     let store = SignalStore::new();
 
     let height = {
@@ -326,7 +326,7 @@ pub fn render_review_composer(width: f32, scale: f32) -> RenderedCard {
     };
 
     let theme = Theme::default_dark().with_ui_scale(scale);
-    let mut font_system = glyphon::FontSystem::new();
+    let mut font_system = crate::fonts::new_font_system();
     let mut state = AppState::default();
     let small = theme.metrics.ui_small_font_size;
 
@@ -422,7 +422,7 @@ impl UiHarness {
         Self {
             state: crate::ui::state::AppState::default(),
             input: crate::input::InputSystem::default(),
-            font_system: glyphon::FontSystem::new(),
+            font_system: crate::fonts::new_font_system(),
             editor: crate::ui::editor::element::EditorElement::default(),
             tooltip: crate::ui::components::TooltipState::default(),
             launch_at: std::time::Instant::now(),
@@ -733,7 +733,7 @@ mod tests {
         let target_byte = region.runs[0].start + second_space;
 
         let prefix = &region.text[region.runs[0].start..target_byte];
-        let mut fs = glyphon::FontSystem::new();
+        let mut fs = crate::fonts::new_font_system();
         let target_x = region.text_origin.0
             + crate::ui::element::measure_text_width(
                 &mut fs,
@@ -843,7 +843,7 @@ mod tests {
     fn text_pieces_do_not_overlap_on_a_line() {
         let thread = sample_review_thread();
         let card = render_review_card(&thread, true, None);
-        let mut fs = glyphon::FontSystem::new();
+        let mut fs = crate::fonts::new_font_system();
 
         for line in text_lines(&card.scene) {
             for pair in line.windows(2) {
@@ -872,7 +872,7 @@ mod tests {
     fn rich_body_pieces_are_spaced_across_style_boundaries() {
         let thread = sample_review_thread();
         let card = render_review_card(&thread, true, None);
-        let mut fs = glyphon::FontSystem::new();
+        let mut fs = crate::fonts::new_font_system();
         let pieces = text_pieces(&card.scene);
 
         // The code/bold/italic pieces and the normal text immediately after them.

@@ -410,6 +410,7 @@ pub fn build_ui_frame(
                     editor.blocks_mut(),
                     doc,
                     &review_card_heights,
+                    (COMPOSER_H_BASE * ui_scale).round() as u16,
                 );
                 editor.set_hunk_expand_caps(Vec::new());
             } else if let Some(active_file) = active_file_snapshot.as_ref() {
@@ -1095,10 +1096,21 @@ fn populate_continuous_review_blocks(
     blocks: &mut crate::ui::editor::decoration::BlockRegistry,
     viewport: &ViewportDocument,
     heights: &std::collections::HashMap<crate::core::review::ReviewThreadId, u16>,
+    composer_height: u16,
 ) {
     if !state.pull_request_review_enabled() {
         return;
     }
+
+    let composer = state
+        .github
+        .pull_request
+        .review_composer
+        .with(&state.store, |c| {
+            c.draft
+                .as_ref()
+                .map(|d| (d.request.path.clone(), d.request.side, d.request.line))
+        });
 
     let render_doc = viewport.doc.as_ref();
     for slot_index in viewport.slot_indices.iter().copied() {
@@ -1116,7 +1128,7 @@ fn populate_continuous_review_blocks(
             crate::ui::editor::review::populate_review_comment_blocks_in_range(
                 blocks,
                 render_doc,
-                line_range,
+                line_range.clone(),
                 &review_comments,
             );
         } else {
@@ -1124,10 +1136,32 @@ fn populate_continuous_review_blocks(
                 blocks,
                 render_doc,
                 &file.carbon_file,
-                line_range,
+                line_range.clone(),
                 &review_threads,
                 heights,
                 |thread| state.review_thread_expanded(thread),
+            );
+        }
+        // The open composer pushes its own block below the anchored line, within
+        // this file's slice of the continuous doc.
+        if let Some((path, side, line)) = composer.as_ref()
+            && *path == file.path
+        {
+            let rside = match side {
+                crate::core::forge::github::GitHubReviewSide::Left => {
+                    crate::core::review::ReviewSide::Old
+                }
+                crate::core::forge::github::GitHubReviewSide::Right => {
+                    crate::core::review::ReviewSide::New
+                }
+            };
+            crate::ui::editor::review::push_review_composer_block_in_range(
+                blocks,
+                render_doc,
+                line_range,
+                rside,
+                *line,
+                composer_height,
             );
         }
     }

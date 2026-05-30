@@ -710,13 +710,37 @@ pub fn push_review_composer_block(
     line: u32,
     height: u16,
 ) {
-    let anchor = render_doc.lines.iter().enumerate().find_map(|(idx, l)| {
-        let hit = match side {
-            ReviewSide::New => l.new_line_no == line,
-            ReviewSide::Old => l.old_line_no == line,
-        };
-        (hit && l.hunk_index >= 0).then_some(idx as u32)
-    });
+    push_review_composer_block_in_range(
+        blocks,
+        render_doc,
+        0..render_doc.lines.len(),
+        side,
+        line,
+        height,
+    );
+}
+
+/// Like [`push_review_composer_block`] but only scans `line_range` — needed for the
+/// continuous (all-files) doc, where the same GitHub line number recurs per file.
+pub fn push_review_composer_block_in_range(
+    blocks: &mut BlockRegistry,
+    render_doc: &RenderDoc,
+    line_range: Range<usize>,
+    side: ReviewSide,
+    line: u32,
+    height: u16,
+) {
+    let range = clamp_line_range(render_doc, line_range);
+    let anchor = render_doc.lines[range.clone()]
+        .iter()
+        .enumerate()
+        .find_map(|(idx, l)| {
+            let hit = match side {
+                ReviewSide::New => l.new_line_no == line,
+                ReviewSide::Old => l.old_line_no == line,
+            };
+            (hit && l.hunk_index >= 0).then_some((range.start + idx) as u32)
+        });
     if let Some(anchor) = anchor {
         blocks.push(
             BlockPlacement::Below(anchor),

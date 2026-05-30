@@ -1698,7 +1698,7 @@ impl AppState {
         };
         let key = draft.key.clone();
         let Some(anchor) = review_anchor_from_request(&draft.request) else {
-            self.push_error("Select one or more changed lines on one side of the diff.");
+            self.push_error("Select a line in the diff to comment on.");
             return Vec::new();
         };
 
@@ -1742,7 +1742,7 @@ impl AppState {
                 )
             })
         else {
-            self.push_error("Select one or more changed lines on one side of the diff.");
+            self.push_error("Select a line in the diff to comment on.");
             return None;
         };
 
@@ -1794,38 +1794,40 @@ fn selected_review_range(
     lines: &[RenderLine],
     selection: &LineSelection,
 ) -> Option<(String, GitHubReviewSide, u32, Option<u32>)> {
-    let mut selected = Vec::new();
+    // Collect the selected line numbers on each side. Ranges may span hunks
+    // (GitHub allows it); a comment just can't straddle both versions, so we never
+    // reject — we anchor to the new side when any new-side line is selected (where
+    // review comments normally land) and fall back to the old side otherwise.
+    let mut new_lines = Vec::new();
+    let mut old_lines = Vec::new();
     for line in lines {
         if line.hunk_index < 0 {
             continue;
         }
         let hunk_id = line.hunk_index as u32;
-        let new_selected = line.new_line_index >= 0
+        if line.new_line_index >= 0
             && selection.contains(hunk_id, carbon::DiffSide::New, line.new_line_index as u32)
-            && line.new_line_no != INVALID_U32;
-        let old_selected = line.old_line_index >= 0
+            && line.new_line_no != INVALID_U32
+        {
+            new_lines.push(line.new_line_no);
+        }
+        if line.old_line_index >= 0
             && selection.contains(hunk_id, carbon::DiffSide::Old, line.old_line_index as u32)
-            && line.old_line_no != INVALID_U32;
-
-        if new_selected {
-            selected.push((hunk_id, GitHubReviewSide::Right, line.new_line_no));
-        } else if old_selected {
-            selected.push((hunk_id, GitHubReviewSide::Left, line.old_line_no));
+            && line.old_line_no != INVALID_U32
+        {
+            old_lines.push(line.old_line_no);
         }
     }
 
-    selected.sort_unstable();
-    selected.dedup();
-    let (hunk_id, side, first_line) = selected.first().copied()?;
-    if selected.iter().any(|(candidate_hunk, candidate_side, _)| {
-        *candidate_hunk != hunk_id || *candidate_side != side
-    }) {
+    let (side, lines_on_side) = if !new_lines.is_empty() {
+        (GitHubReviewSide::Right, new_lines)
+    } else if !old_lines.is_empty() {
+        (GitHubReviewSide::Left, old_lines)
+    } else {
         return None;
-    }
-    let line = selected
-        .last()
-        .map(|(_, _, line)| *line)
-        .unwrap_or(first_line);
+    };
+    let first_line = *lines_on_side.iter().min()?;
+    let line = *lines_on_side.iter().max().unwrap_or(&first_line);
     let start_line = (first_line != line).then_some(first_line);
     let path = match side {
         GitHubReviewSide::Right => file.new_path.as_ref().or(file.old_path.as_ref()),

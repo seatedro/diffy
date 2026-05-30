@@ -2703,6 +2703,10 @@ pub struct PullRequestState {
     /// over the default (unresolved=expanded, resolved=collapsed). Not persisted
     /// and intentionally separate from the backend `ReviewThreadStatus.collapsed`.
     pub review_thread_expanded: HashMap<ReviewThreadId, bool>,
+    /// Fetched comment-author avatars, keyed by `avatar_cache_key` of the sized
+    /// URL. Shared across PRs (avatars are immutable per URL); populated by the
+    /// shared `AvatarFetched` handler and read by the review card overlay.
+    pub review_avatars: HashMap<u64, ReviewAvatar>,
     /// Active drag-selection within a single review comment body, or `None`.
     /// Mutually exclusive with the editor's viewport text selection.
     pub card_text_selection: Option<CardTextSelection>,
@@ -2747,6 +2751,15 @@ impl CardTextSelection {
         }
         self.text.get(lo..hi).map(str::to_owned)
     }
+}
+
+/// Lifecycle of a single comment-author avatar fetch. `Failed` is terminal (no
+/// retry) so a persistently-broken URL falls back to initials without re-fetching.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewAvatar {
+    Fetching,
+    Ready(AvatarBitmap),
+    Failed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

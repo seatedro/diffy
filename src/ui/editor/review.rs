@@ -1,18 +1,19 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::actions::{Action, AppAction, ContextMenuEntry, GitHubAction};
 use crate::core::forge::github::{GitHubReviewSide, PullRequestReviewComment};
 use crate::core::review::{
-    ReviewComment, ReviewReactionGroup, ReviewResolution, ReviewSide, ReviewThread,
+    ReviewComment, ReviewReactionGroup, ReviewResolution, ReviewSide, ReviewThread, ReviewThreadId,
 };
 use crate::render::{
     BorderPrimitive, FontKind, FontWeight, Rect, RoundedRectPrimitive, ShadowPrimitive,
     TextPrimitive,
 };
+use crate::ui::components::avatar::AvatarImage;
 use crate::ui::components::{Button, ButtonSize, ButtonStyle, avatar};
-use crate::ui::design::{Rad, Shadow, Sp};
+use crate::ui::design::{Ico, Rad, Shadow, Sp};
 use crate::ui::editor::decoration::{
     BlockDecoration, BlockPaintCtx, BlockPlacement, BlockRegistry,
 };
@@ -28,7 +29,11 @@ use halogen::view;
 pub(crate) const MAX_VISIBLE_COMMENTS_PER_THREAD: usize = 3;
 pub(crate) const MAX_BODY_LINES_PER_COMMENT: usize = 3;
 pub(crate) const PANEL_MAX_WIDTH: f32 = 760.0;
-pub(crate) const REVIEW_AVATAR_PX: f32 = 18.0;
+pub(crate) const REVIEW_AVATAR_PX: f32 = 22.0;
+/// Pixel size requested when fetching comment-author avatars. Must be used at BOTH
+/// the fetch site (`enqueue_review_avatar_fetches`) and the render lookup so the
+/// `avatar_cache_key` matches; the bitmap is downscaled to `REVIEW_AVATAR_PX`.
+pub(crate) const REVIEW_AVATAR_FETCH_PX: u32 = 128;
 
 #[derive(Debug, Clone)]
 pub struct ReviewThreadBlock {
@@ -166,19 +171,45 @@ fn build_reaction_chips(
 /// horizontal rows) so `compute_layout` against a tall sentinel returns the true
 /// summed height instead of saturating. `card_width` is the pinned width used
 /// identically at measure and render so wrapped line counts match.
+/// Stable identity for a single comment's selectable body, surviving re-wrap and
+/// re-render. Combines the thread id with the comment's index in the thread.
+pub(crate) fn card_source_key(thread_id: &ReviewThreadId, comment_index: usize) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    thread_id.hash(&mut hasher);
+    comment_index.hash(&mut hasher);
+    hasher.finish()
+}
+
 pub(crate) fn build_review_thread_card(
     thread: &ReviewThread,
     expanded: bool,
     theme: &Theme,
     ui_scale: f32,
     card_width: f32,
-    fs: &mut glyphon::FontSystem,
+    avatars: &HashMap<u64, AvatarImage>,
+    selection: Option<&crate::ui::state::CardTextSelection>,
 ) -> AnyElement {
     let tc = &theme.colors;
     let small = theme.metrics.ui_small_font_size;
     let resolved = thread.status.resolution == ReviewResolution::Resolved;
     let status_color = resolution_color(thread.status.resolution, tc);
+    let status_bg = Color::rgba(status_color.r, status_color.g, status_color.b, 30);
     let (status_word, _meta) = thread_status_parts(thread);
+
+    // Discoverable actions menu (the `…` button) — opens the same entries as right-click,
+    // anchored at the click position via a position-aware handler.
+    let menu_entries = review_context_menu_entries(thread);
+    let menu_handler = ClickHandler::new(move |e: ClickEvent| {
+        ClickResult::Actions(vec![
+            AppAction::OpenContextMenu {
+                entries: menu_entries.clone(),
+                x: e.x.round() as i32,
+                y: e.y.round() as i32,
+            }
+            .into(),
+        ])
+    });
     let line_label = thread_line_label(thread);
     let header_label = if thread.status.outdated {
         format!("{line_label} · outdated")
@@ -190,11 +221,17 @@ pub(crate) fn build_review_thread_card(
     } else {
         lucide::CHEVRON_RIGHT
     };
+    // Square chevron button (icon + even padding), pre-scaled because `w`/`h` are not
+    // auto-scaled by the macro. The icon (Ico::SM, scaled internally) centers within it.
+    let chevron_box = ((Ico::SM + Sp::SM) * ui_scale).round();
 
     // Body wrap column: card minus horizontal padding, avatar, gaps, reply indent.
-    let pad = Sp::SM * ui_scale;
+    // Match the view! macro, which scales AND rounds spatial attrs (p/gap/pl); `w` is
+    // not scaled, so card_width is used as-is. Rounding here keeps the wrap column equal
+    // to the painted column so line counts match exactly.
+    let pad = (Sp::SM * ui_scale).round();
     let avatar_px = REVIEW_AVATAR_PX * ui_scale;
-    let body_w = (card_width - pad * 2.0 - avatar_px - Sp::MD * ui_scale).max(40.0);
+    let gap = (Sp::XS * ui_scale).round();
 
     let body: Vec<AnyElement> = if expanded {
         let mut rows: Vec<AnyElement> = Vec::new();
@@ -219,38 +256,47 @@ pub(crate) fn build_review_thread_card(
                 tc.text_strong
             };
             let body_color = if resolved { tc.text_muted } else { tc.text };
-            let cleaned = clean_comment_body(&comment.body).join(" ");
-            let wrapped = wrap_text_to_lines(
-                fs,
-                &cleaned,
-                small,
-                FontKind::Ui,
-                FontWeight::Normal,
-                body_w,
-                8,
-            );
-            let body_lines: Vec<AnyElement> = if wrapped.is_empty() {
-                vec![
-                    text("(empty comment)")
-                        .size(small)
-                        .color(tc.text_muted)
-                        .into_any(),
-                ]
+            let indent = if idx == 0 {
+                0.0
             } else {
-                wrapped
-                    .into_iter()
-                    .map(|l| text(l).size(small).color(body_color).into_any())
-                    .collect()
+                (Sp::MD * ui_scale).round()
+            };
+            // Exact text-column width for THIS row: card inner minus reply indent, the
+            // avatar, and the avatar→text gap. Wrapping at this width matches the painted
+            // column so lines never run past the card edge.
+            let text_w = (card_width - pad * 2.0 - indent - avatar_px - gap).max(40.0);
+            let cleaned = clean_comment_body(&comment.body).join(" ");
+            // One selectable, self-wrapping text block per comment body. Selection
+            // state keys on byte offsets into `cleaned` (re-wrap stable) and is wired
+            // in from app state; `None` here renders identically to plain text.
+            let source_key = card_source_key(&thread.id, idx);
+            let selected_range = selection
+                .filter(|sel| sel.source_key == source_key)
+                .map(|sel| sel.normalized());
+            let body_element: AnyElement = if cleaned.is_empty() {
+                text("(empty comment)")
+                    .size(small)
+                    .color(tc.text_muted)
+                    .into_any()
+            } else {
+                selectable_text(cleaned)
+                    .width(text_w)
+                    .size(small)
+                    .color(body_color)
+                    .max_lines(8)
+                    .source(source_key)
+                    .selection(selected_range)
+                    .into_any()
             };
             let reactions = (!comment.reactions.is_empty())
                 .then(|| build_reaction_chips(&comment.reactions, theme, ui_scale));
-            let indent = if idx == 0 { 0.0 } else { Sp::MD };
+            let avatar_image = resolve_review_avatar(comment.author_avatar_url.as_deref(), avatars);
             rows.push(view! { ui_scale,
                 <div class="flex-row items-start" gap={Sp::XS} pl={indent}>
-                    {avatar(author).size(avatar_px)}
+                    {avatar(author).image(avatar_image).size(REVIEW_AVATAR_PX)}
                     <div class="flex-col" gap={Sp::XXS} min_w={0.0}>
                         {text(header).size(small).color(header_color).medium()}
-                        {...body_lines}
+                        {body_element}
                         {?reactions}
                     </div>
                 </div>
@@ -284,8 +330,10 @@ pub(crate) fn build_review_thread_card(
         .flatten()
         .map(|(target, label)| {
             view! { ui_scale,
-                <div class="flex-row items-center" gap={Sp::XS}>
-                    <spacer />
+                // Just the action, sitting below the conversation with a little breathing
+                // room. No divider: a horizontal line inside the bordered card frames the
+                // sparse footer row into what looks like an empty text box.
+                <div class="flex-row items-center" gap={Sp::XS} pt={Sp::XXS}>
                     <Button action={GitHubAction::SetReviewThreadResolved {
                                 id: thread.id.clone(),
                                 resolved: target,
@@ -294,6 +342,7 @@ pub(crate) fn build_review_thread_card(
                             size={ButtonSize::Compact}>
                         <Label>{label}</Label>
                     </Button>
+                    <spacer />
                 </div>
             }
         });
@@ -304,12 +353,13 @@ pub(crate) fn build_review_thread_card(
     // element hit-test registers parents before children and searches in reverse),
     // so the Resolve button and header still win over the root within their bounds.
     let toggle: Action = GitHubAction::ToggleReviewThread(thread.id.clone()).into();
-    // Collapsed: the whole card is the click target, so it brightens on hover. Expanded:
-    // the root is inert (transparent hover) and only the header row brightens.
-    let (root_action, root_cursor, root_hover) = if expanded {
-        (Action::Noop, CursorHint::Default, Color::rgba(0, 0, 0, 0))
+    // Only the chevron toggles and highlights on hover. Collapsed: the whole card is still
+    // a click target (convenience), but it does NOT highlight — the chevron is the sole
+    // hover affordance. Expanded: the card is fully inert; only the chevron collapses it.
+    let (root_action, root_cursor) = if expanded {
+        (Action::Noop, CursorHint::Default)
     } else {
-        (toggle.clone(), CursorHint::Pointer, tc.element_hover)
+        (toggle.clone(), CursorHint::Pointer)
     };
 
     view! { ui_scale,
@@ -324,27 +374,58 @@ pub(crate) fn build_review_thread_card(
              gap={Sp::XS}
              on_click={root_action}
              cursor={root_cursor}
-             hover_bg={root_hover}
              block_mouse>
             // Header row collapses the card when expanded (and also expands when
             // collapsed). The thread action menu is reached via right-click
             // (BlockDecoration::context_menu_entries, preserved). A dedicated left-click
             // menu button is omitted until it can open at the cursor — a button that
             // instead collapsed the card would read as broken.
-            <div class="flex-row items-center" gap={Sp::XS}
-                 on_click={toggle}
-                 cursor={CursorHint::Pointer}
-                 rounded={Rad::SM}
-                 hover_bg={tc.element_hover}>
-                <icon svg={chevron} size={(small * 0.9).max(8.0)} color={tc.text_muted} />
+            <div class="flex-row items-center" gap={Sp::XS}>
+                // Only the chevron is the collapse/expand target and the only header
+                // element that highlights on hover. A fixed square with the glyph centered
+                // (justify-center) keeps it aligned with the header text like GitHub.
+                <div class="flex-row items-center justify-center shrink-0"
+                     w={chevron_box} h={chevron_box}
+                     rounded={Rad::SM}
+                     on_click={toggle}
+                     cursor={CursorHint::Pointer}
+                     hover_bg={tc.element_hover}>
+                    <icon svg={chevron} size={Ico::SM} color={tc.text_muted} />
+                </div>
                 {text(header_label).size(small).color(tc.text_strong).medium().truncate()}
                 <spacer />
-                {text(status_word).size(small).color(status_color).medium()}
+                <div class="flex-row items-center"
+                     px={Sp::SM} py={Sp::XXS}
+                     rounded={Rad::SM}
+                     bg={status_bg}>
+                    {text(status_word).size(small * 0.9).color(status_color).medium()}
+                </div>
+                <div class="flex-row items-center"
+                     px={Sp::XXS} py={Sp::XXS}
+                     rounded={Rad::SM}
+                     cursor={CursorHint::Pointer}
+                     hover_bg={tc.element_hover}
+                     on_click_handler={menu_handler}>
+                    <icon svg={lucide::MORE_HORIZONTAL} size={Ico::SM} color={tc.text_muted} />
+                </div>
             </div>
             {...body}
             {?footer}
         </div>
     }
+}
+
+/// Resolves the fetched avatar bitmap for a comment author, keyed by the same
+/// sized URL + cache key used at the fetch site so a hit is found. Returns `None`
+/// (initials fallback) until the bitmap arrives. Avatars are fixed-size, so this
+/// never affects layout — measure and render produce identical heights regardless.
+fn resolve_review_avatar(
+    raw_url: Option<&str>,
+    avatars: &HashMap<u64, AvatarImage>,
+) -> Option<AvatarImage> {
+    let url = crate::ui::state::avatar_url_sized(raw_url?, REVIEW_AVATAR_FETCH_PX)?;
+    let key = crate::ui::state::avatar_cache_key(&url);
+    avatars.get(&key).cloned()
 }
 
 /// Measures the natural pixel height of the card tree by laying it out against a
@@ -359,13 +440,17 @@ pub(crate) fn measure_review_thread_card_height(
     cx: &mut ElementContext,
 ) -> u16 {
     const LARGE_SENTINEL: f32 = 100_000.0;
+    // Avatars do not affect layout (fixed size) and selection only paints a
+    // highlight behind text, so measure with neither — height is identical.
+    let avatars = HashMap::new();
     let mut card = build_review_thread_card(
         thread,
         expanded,
         theme,
         ui_scale,
         card_width,
-        cx.font_system,
+        &avatars,
+        None,
     );
     let mut engine = LayoutEngine::new();
     let root = card.request_layout(&mut engine, cx);
@@ -894,7 +979,10 @@ pub(crate) fn review_context_menu_entries(thread: &ReviewThread) -> Vec<ContextM
     let link_missing = link.is_empty();
     let markdown = review_comment_markdown(thread);
     let quote = first.map(markdown_quote).unwrap_or_else(|| "> ".to_owned());
-    vec![
+    let can_edit = first.is_some_and(|comment| comment.viewer_can_update);
+    let can_delete = first.is_some_and(|comment| comment.viewer_can_delete);
+
+    let mut entries = vec![
         ContextMenuEntry::item(
             "Copy link",
             if link.is_empty() {
@@ -916,18 +1004,35 @@ pub(crate) fn review_context_menu_entries(thread: &ReviewThread) -> Vec<ContextM
         ContextMenuEntry::item("Reference in a new issue", Action::Noop)
             .icon(lucide::CIRCLE_DOT)
             .disabled(),
-        ContextMenuEntry::separator(),
-        ContextMenuEntry::item("Edit", Action::Noop)
-            .icon(lucide::PENCIL)
-            .disabled(),
-        ContextMenuEntry::item("Hide", Action::Noop)
-            .icon(lucide::EYE_OFF)
-            .disabled(),
-        ContextMenuEntry::item("Delete", Action::Noop)
-            .icon(lucide::X)
-            .destructive()
-            .disabled(),
-    ]
+    ];
+
+    // Author-only actions, surfaced only when the viewer has the permission so the menu
+    // mirrors what they could do on GitHub. Disabled until the edit/hide/delete effects
+    // are wired (no GitHubAction yet) — shown-but-disabled rather than dead-active.
+    if can_edit || can_delete {
+        entries.push(ContextMenuEntry::separator());
+        if can_edit {
+            entries.push(
+                ContextMenuEntry::item("Edit", Action::Noop)
+                    .icon(lucide::PENCIL)
+                    .disabled(),
+            );
+            entries.push(
+                ContextMenuEntry::item("Hide", Action::Noop)
+                    .icon(lucide::EYE_OFF)
+                    .disabled(),
+            );
+        }
+        if can_delete {
+            entries.push(
+                ContextMenuEntry::item("Delete", Action::Noop)
+                    .icon(lucide::X)
+                    .destructive()
+                    .disabled(),
+            );
+        }
+    }
+    entries
 }
 
 fn review_comment_markdown(thread: &ReviewThread) -> String {

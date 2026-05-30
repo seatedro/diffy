@@ -356,10 +356,13 @@ pub fn build_ui_frame(
                     .saturating_sub(doc.start_offset_px);
             }
 
-            // Pinned card width: derived from vp_bounds with the same inset prepare
-            // applies, so it equals content_bounds.width this frame and is identical at
-            // measure (here) and render (overlay loop). Reused by both.
-            let review_card_width = editor.content_width_for_bounds(vp_bounds, text_metrics);
+            // Pinned card width: the content column, but capped to a readable max so the
+            // card reads as a contained thread (like GitHub) instead of a full-width diff
+            // band, and so body text wraps at a sane column. Identical at measure (here)
+            // and render (overlay loop) so reserved height matches.
+            let review_card_width = editor
+                .content_width_for_bounds(vp_bounds, text_metrics)
+                .min(crate::ui::editor::review::PANEL_MAX_WIDTH * ui_scale);
 
             // Precompute pass: measure each visible-file thread card's natural height via
             // compute_layout BEFORE borrowing blocks_mut, so the block can reserve the
@@ -631,12 +634,12 @@ pub fn build_ui_frame(
             // viewport band (minus any sticky file header) so partly-scrolled cards don't
             // paint or capture clicks over the chrome above.
             if state.pull_request_review_enabled() {
-                // The width the card is measured AND rendered at must match the editor's
-                // content column, or wrapped line counts (hence reserved height) would
-                // diverge from what is painted. Guard against future inset drift.
+                // The card must fit within the content column; measure and render share
+                // `review_card_width` so wrapped line counts (hence reserved height) match
+                // what is painted regardless of the exact value.
                 debug_assert!(
-                    (review_card_width - editor.layout.content_bounds.width).abs() < 1.5,
-                    "review_card_width {} drifted from content_bounds.width {}",
+                    review_card_width <= editor.layout.content_bounds.width + 1.5,
+                    "review_card_width {} exceeds content_bounds.width {}",
                     review_card_width,
                     editor.layout.content_bounds.width
                 );
@@ -651,6 +654,35 @@ pub fn build_ui_frame(
                 };
                 let cards = editor.visible_review_card_rows();
                 if !cards.is_empty() {
+                    // Resolve fetched comment-author avatars into render-ready bitmaps,
+                    // keyed by cache_key (matching `resolve_review_avatar`'s lookup).
+                    let review_avatars: std::collections::HashMap<
+                        u64,
+                        crate::ui::components::avatar::AvatarImage,
+                    > = state.github.pull_request.review_avatars.with(
+                        &state.store,
+                        |map| {
+                            map.iter()
+                                .filter_map(|(key, entry)| match entry {
+                                    crate::ui::state::ReviewAvatar::Ready(b) => Some((
+                                        *key,
+                                        crate::ui::components::avatar::AvatarImage {
+                                            rgba: b.rgba.clone(),
+                                            width: b.width,
+                                            height: b.height,
+                                            cache_key: b.cache_key,
+                                        },
+                                    )),
+                                    _ => None,
+                                })
+                                .collect()
+                        },
+                    );
+                    let card_selection = state
+                        .github
+                        .pull_request
+                        .card_text_selection
+                        .with(&state.store, Clone::clone);
                     scene.clip(band);
                     for (idx, rect) in cards {
                         let Some((thread, expanded)) = editor
@@ -667,9 +699,11 @@ pub fn build_ui_frame(
                             theme,
                             ui_scale,
                             review_card_width,
-                            cx.font_system,
+                            &review_avatars,
+                            card_selection.as_ref(),
                         );
                         let hit_start = cx.hits.len();
+                        let stext_start = cx.selectable_text_runs.len();
                         render_element_at(
                             &mut card,
                             &mut scene,
@@ -686,6 +720,15 @@ pub fn build_ui_frame(
                             if let Some(clipped) = region.rect.intersection(band) {
                                 region.rect = clipped;
                                 cx.hits.push(region);
+                            }
+                        }
+                        // Same band-clip for selectable-text regions so a partly-scrolled
+                        // card cannot capture text-selection clicks over the chrome above.
+                        let stext_tail = cx.selectable_text_runs.split_off(stext_start);
+                        for mut region in stext_tail {
+                            if let Some(clipped) = region.bounds.intersection(band) {
+                                region.bounds = clipped;
+                                cx.selectable_text_runs.push(region);
                             }
                         }
                     }
@@ -801,10 +844,13 @@ pub fn build_ui_frame(
                             let y = (anchor_rect.y + anchor_rect.height)
                                 .min(vp_bounds.bottom() - composer_h)
                                 .max(vp_bounds.y);
+                            // Full content-column width, left-aligned (like the thread
+                            // card) instead of a narrow box floated to the right that
+                            // overlaps the code — matches GitHub's inline composer.
                             let composer_rect = Rect {
-                                x: anchor_rect.x,
+                                x: editor.layout.content_bounds.x,
                                 y,
-                                width: anchor_rect.width,
+                                width: review_card_width,
                                 height: composer_h,
                             };
                             let mut composer =

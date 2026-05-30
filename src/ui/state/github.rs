@@ -211,7 +211,9 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
                         session.replace_github_comments(session_comments);
                     });
             }
-            save_review_session_effect(state, &key)
+            let mut effects = save_review_session_effect(state, &key);
+            effects.extend(enqueue_review_avatar_fetches(state, &key));
+            effects
         }
         GitHubEvent::PullRequestReviewDataLoaded {
             owner,
@@ -242,7 +244,9 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
                         sessions.insert(key.clone(), session);
                     }
                 });
-            save_review_session_effect(state, &key)
+            let mut effects = save_review_session_effect(state, &key);
+            effects.extend(enqueue_review_avatar_fetches(state, &key));
+            effects
         }
         GitHubEvent::PullRequestReviewDataLoadFailed {
             owner,
@@ -718,10 +722,13 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
                     if let Some(current) = sessions.get_mut(&key) {
                         current.merge_persisted_state(session);
                     } else {
-                        sessions.insert(key, session);
+                        sessions.insert(key.clone(), session);
                     }
                 });
-            Vec::new()
+            // Restored/cached threads carry comment authors too, and arrive without
+            // going through the fetch handlers — enqueue their avatars here as well,
+            // else a session loaded from disk would show initials forever.
+            enqueue_review_avatar_fetches(state, &key)
         }
         GitHubEvent::ReviewSessionLoadFailed { target: _, message } => {
             tracing::warn!("failed to load review session: {message}");
@@ -880,22 +887,54 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
             width,
             height,
         } => {
-            state.github.auth.avatar_fetching.set(&state.store, false);
             let cache_key = avatar_cache_key(&url);
-            state.github.auth.avatar.set(
-                &state.store,
-                Some(AvatarBitmap {
-                    url,
-                    rgba,
-                    width,
-                    height,
-                    cache_key,
-                }),
-            );
+            let bitmap = AvatarBitmap {
+                url,
+                rgba,
+                width,
+                height,
+                cache_key,
+            };
+            // Route by which fetch this is: a comment-author avatar was registered as
+            // `Fetching` in `review_avatars` before its effect was dispatched, so a hit
+            // there means this is NOT the account avatar and must not clobber it.
+            let is_review = state
+                .github
+                .pull_request
+                .review_avatars
+                .with(&state.store, |map| map.contains_key(&cache_key));
+            if is_review {
+                state
+                    .github
+                    .pull_request
+                    .review_avatars
+                    .update(&state.store, |map| {
+                        map.insert(cache_key, ReviewAvatar::Ready(bitmap));
+                    });
+            } else {
+                state.github.auth.avatar_fetching.set(&state.store, false);
+                state.github.auth.avatar.set(&state.store, Some(bitmap));
+            }
             Vec::new()
         }
         GitHubEvent::AvatarFetchFailed { url, message } => {
-            state.github.auth.avatar_fetching.set(&state.store, false);
+            let cache_key = avatar_cache_key(&url);
+            let is_review = state
+                .github
+                .pull_request
+                .review_avatars
+                .with(&state.store, |map| map.contains_key(&cache_key));
+            if is_review {
+                state
+                    .github
+                    .pull_request
+                    .review_avatars
+                    .update(&state.store, |map| {
+                        map.insert(cache_key, ReviewAvatar::Failed);
+                    });
+            } else {
+                state.github.auth.avatar_fetching.set(&state.store, false);
+            }
             tracing::warn!("failed to fetch avatar {url}: {message}");
             Vec::new()
         }
@@ -1399,6 +1438,65 @@ fn selected_review_range(
     }?
     .clone();
     Some((path, side, line, start_line))
+}
+
+/// Enqueues avatar fetches for every distinct comment author in the session's
+/// threads that has not already been fetched (or is in flight). Marks each as
+/// `Fetching` so the shared `AvatarFetched` handler routes the result here rather
+/// than to the account avatar. The sized URL + cache key must match the render-side
+/// lookup in `resolve_review_avatar`, so both use `REVIEW_AVATAR_FETCH_PX`.
+fn enqueue_review_avatar_fetches(state: &mut AppState, key: &PrKey) -> Vec<Effect> {
+    let urls: Vec<String> = state
+        .github
+        .pull_request
+        .review_sessions
+        .with(&state.store, |sessions| {
+            let Some(session) = sessions.get(key) else {
+                return Vec::new();
+            };
+            let mut seen = std::collections::HashSet::new();
+            let mut out = Vec::new();
+            for thread in &session.threads {
+                for comment in &thread.comments {
+                    if let Some(raw) = comment.author_avatar_url.as_deref()
+                        && let Some(url) = avatar_url_sized(
+                            raw,
+                            crate::ui::editor::review::REVIEW_AVATAR_FETCH_PX,
+                        )
+                        && seen.insert(url.clone())
+                    {
+                        out.push(url);
+                    }
+                }
+            }
+            out
+        });
+
+    let needed: Vec<String> = state
+        .github
+        .pull_request
+        .review_avatars
+        .with(&state.store, |map| {
+            urls.into_iter()
+                .filter(|url| !map.contains_key(&avatar_cache_key(url)))
+                .collect()
+        });
+    if needed.is_empty() {
+        return Vec::new();
+    }
+    state
+        .github
+        .pull_request
+        .review_avatars
+        .update(&state.store, |map| {
+            for url in &needed {
+                map.insert(avatar_cache_key(url), ReviewAvatar::Fetching);
+            }
+        });
+    needed
+        .into_iter()
+        .map(|url| GitHubEffect::FetchAvatar { url }.into())
+        .collect()
 }
 
 fn save_review_session_effect(state: &AppState, key: &PrKey) -> Vec<Effect> {

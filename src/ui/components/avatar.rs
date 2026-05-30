@@ -77,20 +77,26 @@ fn name_to_color(name: &str) -> Color {
 }
 
 impl RenderOnce for Avatar {
-    fn render(self, _cx: &ElementContext) -> AnyElement {
+    fn render(self, cx: &ElementContext) -> AnyElement {
+        // `.size()` is a BASE (logical) value. The image path scales it by `ui_scale`
+        // inside `raster_image` (like `SvgIcon`), so the initials path must scale too —
+        // otherwise the two paths render at different physical sizes for the same
+        // `.size()`, and a pre-scaled caller double-scales the image.
+        let scale = cx.theme.metrics.ui_scale();
         if let Some(img) = self.image {
             return raster_image(img.rgba, img.width, img.height, img.cache_key, self.size)
                 .into_any();
         }
 
+        let px = self.size * scale;
         let bg = self.bg_color.unwrap_or_else(|| name_to_color(&self.name));
         let inits = initials(&self.name);
-        let font_size = (self.size * 0.4).round();
+        let font_size = (px * 0.4).round();
 
         view! {
             <div class="shrink-0 items-center justify-center"
-                 w={self.size} h={self.size}
-                 bg={bg} rounded={self.size / 2.0}>
+                 w={px} h={px}
+                 bg={bg} rounded={px / 2.0}>
                 <text class="bold text-center" size={font_size}
                       color={Color::rgba(255, 255, 255, 255)}>{inits}</text>
             </div>
@@ -127,10 +133,14 @@ impl AvatarGroup {
 impl RenderOnce for AvatarGroup {
     fn render(self, cx: &ElementContext) -> AnyElement {
         let tc = &cx.theme.colors;
-        let overlap = -(self.size * 0.25).round();
+        // Match `Avatar`: `.size()` is base; scale the ring/overlap/count chip to the
+        // physical avatar size so the group stays consistent with its members.
+        let scale = cx.theme.metrics.ui_scale();
+        let px = self.size * scale;
+        let overlap = -(px * 0.25).round();
         let shown = self.names.len().min(self.max_show);
         let remaining = self.names.len().saturating_sub(self.max_show);
-        let count_size = self.size;
+        let count_size = px;
         let font_size = (count_size * 0.35).round();
 
         view! {
@@ -138,7 +148,7 @@ impl RenderOnce for AvatarGroup {
                 for (i, name) in self.names.into_iter().take(shown).enumerate() {
                     <div class="shrink-0"
                          border={tc.background}
-                         rounded={self.size / 2.0}
+                         rounded={px / 2.0}
                          @when {i > 0} { margin_left={overlap} }>
                         {avatar(name).size(self.size)}
                     </div>

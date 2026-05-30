@@ -2,7 +2,7 @@ use halogen::view;
 
 use crate::actions::{Action, ContextMenuEntry};
 use crate::render::Rect;
-use crate::ui::design::{Shadow, Sp, Sz};
+use crate::ui::design::{Ico, Shadow, Sp, Sz};
 use crate::ui::element::{AnyElement, IntoAnyElement, div, svg_icon, text};
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
@@ -43,7 +43,11 @@ pub fn context_menu_layer(
                         } else {
                             tc.icon
                         };
-                        let icon_size = m.ui_small_font_size;
+                        // Base icon size (SvgIcon scales it by ui_scale internally). The
+                        // empty placeholder must match the *rendered* size, so it is the
+                        // base size pre-multiplied by scale.
+                        let icon_size = Ico::SM;
+                        let icon_box = icon_size * scale;
                         view! {
                             <div class="flex-row items-center"
                                  gap={m.spacing_sm} px={m.spacing_md}
@@ -56,7 +60,7 @@ pub fn context_menu_layer(
                                 if let Some(svg) = icon {
                                     <icon svg={svg} size={icon_size} color={icon_color} />
                                 } else {
-                                    <div class="shrink-0" w={icon_size} h={icon_size} />
+                                    <div class="shrink-0" w={icon_box} h={icon_box} />
                                 }
                                 <div class="flex-1">
                                     <text class="text-sm" color={fg}>{label}</text>

@@ -175,6 +175,35 @@ Use `cua start`, `cua launch`, `cua wait-window`, `cua shot-window`, and
 `cua upload` for interactive UI loops. Keep captures under `/tmp/cua/` so
 validation does not dirty the repository.
 
+### Headless UI verification loop
+
+For UI surfaces with a headless fixture (currently the review-thread card via
+`src/ui/harness.rs`), iterate without launching the app. Three legs, each
+answering a different question:
+
+- See it (layout + color): `cargo run --example render_fixture --features
+  headless-render` writes `target/ui/review_card.png`. `CARD_WIDTH` and
+  `CARD_SCALE` env vars vary the geometry; the scene bakes the scale, so the PNG
+  is full-resolution. Read the image to judge spacing, alignment, weight, and
+  color.
+- Read the text (content ground truth): `dump_accessibility(frame)` emits one
+  line per node (`author_id | role | label | value | x,y,w,h`). This is the
+  source of truth for what a string says and where its bounds are. Do not read
+  text content off rendered glyphs — small text in a PNG is misread-prone, and
+  that has produced phantom "bugs" before. Confirm content and clipping against
+  the dump, use the image only for visual quality.
+- Drive it (behavior, no GPU): the `#[cfg(test)]` `UiHarness` replays
+  `.drag(...)` / `.key(...)` against frame-built hit regions and asserts on the
+  resulting `AppState` / emitted actions (e.g. drag-select then Cmd+C copies the
+  exact substring). The input layer takes `Option<&mut glyphon::FontSystem>`, not
+  a `Renderer`, so it runs without a GPU.
+
+One iteration: change, then `cargo test --lib <surface>::` (deterministic, fast,
+asserts behavior + invariants), then render the PNG and look at it for what tests
+cannot assert (kerning, pill padding, vertical centering), checking the a11y dump
+if any text looks off. Lean on the test leg first; treat the image as the last
+mile. Keep PNGs under `target/`; never commit them.
+
 If a command cannot be run in the current environment, say so in the final
 response and explain what was not verified.
 

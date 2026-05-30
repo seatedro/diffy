@@ -1071,6 +1071,7 @@ impl AppState {
             }
             GitHubAction::SubmitReview { decision } => self.submit_review(decision),
             GitHubAction::DiscardReviewDrafts => self.discard_review_drafts(),
+            GitHubAction::FormatReviewComment(format) => self.format_review_comment(format),
             GitHubAction::CancelReviewComment => {
                 self.github
                     .pull_request
@@ -1565,6 +1566,25 @@ impl AppState {
                 }
             });
         save_review_session_effect(self, &key)
+    }
+
+    fn format_review_comment(&mut self, format: crate::actions::ComposerFormat) -> Vec<Effect> {
+        use crate::actions::ComposerFormat::*;
+        let sel = self
+            .review_comment_editor
+            .selected_text()
+            .unwrap_or_default();
+        let s = sel.as_str();
+        let insert = match format {
+            Bold => format!("**{}**", if s.is_empty() { "bold" } else { s }),
+            Italic => format!("*{}*", if s.is_empty() { "italic" } else { s }),
+            Code => format!("`{}`", if s.is_empty() { "code" } else { s }),
+            Link => format!("[{}](url)", if s.is_empty() { "text" } else { s }),
+            BulletList => format!("\n- {s}"),
+        };
+        self.review_comment_editor.insert_text(&insert);
+        self.set_focus(Some(FocusTarget::ReviewCommentEditor));
+        Vec::new()
     }
 
     fn submit_review_comment(&mut self) -> Vec<Effect> {

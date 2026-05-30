@@ -317,6 +317,77 @@ fn render_review_card_with_avatars(
     }
 }
 
+/// Render the review-comment composer with a sample open draft, for eyeballing.
+pub fn render_review_composer(width: f32, scale: f32) -> RenderedCard {
+    use crate::core::forge::github::{CreatePullRequestReviewComment, GitHubReviewSide};
+    use crate::render::Rect;
+    use crate::ui::state::{
+        AppState, AsyncStatus, FocusTarget, ReviewCommentComposerState, ReviewCommentDraft,
+    };
+
+    let theme = Theme::default_dark().with_ui_scale(scale);
+    let mut font_system = glyphon::FontSystem::new();
+    let mut state = AppState::default();
+    let small = theme.metrics.ui_small_font_size;
+
+    state.github.pull_request.review_composer.set(
+        &state.store,
+        ReviewCommentComposerState {
+            draft: Some(ReviewCommentDraft {
+                key: ("owner".to_owned(), "repo".to_owned(), 1),
+                request: CreatePullRequestReviewComment {
+                    body: String::new(),
+                    commit_id: "deadbeef".to_owned(),
+                    path: "src/widget.rs".to_owned(),
+                    line: 263,
+                    side: GitHubReviewSide::Right,
+                    start_line: None,
+                    start_side: None,
+                },
+            }),
+            status: AsyncStatus::Ready,
+            message: None,
+            reply_target: None,
+            edit_target: None,
+        },
+    );
+    state
+        .focus
+        .set(&state.store, Some(FocusTarget::ReviewCommentEditor));
+
+    state
+        .review_comment_editor
+        .set_font_size(&mut font_system, small);
+    let inner_w = (width - 64.0 * scale).max(50.0);
+    state
+        .review_comment_editor
+        .set_size(&mut font_system, inner_w, 120.0 * scale);
+    state
+        .review_comment_editor
+        .set_text("Consider memoizing this height so we don't recompute it every frame.");
+
+    let height = (248.0 * scale).round();
+    let rect = Rect {
+        x: 0.0,
+        y: 0.0,
+        width,
+        height,
+    };
+    let mut scene = Scene::default();
+    let mut cx = ElementContext::new(&theme, scale, &mut font_system, None, &state.store);
+    let mut element = crate::ui::shell::build_review_composer(&state, &theme, scale, rect);
+    render_element_at(&mut element, &mut scene, &mut cx, 0.0, 0.0, width, height);
+
+    RenderedCard {
+        scene,
+        selectable: std::mem::take(&mut cx.selectable_text_runs),
+        accessibility: std::mem::take(&mut cx.accessibility),
+        hits: std::mem::take(&mut cx.hits),
+        width,
+        height,
+    }
+}
+
 /// A no-GPU input driver: owns the application state, an `InputSystem`, a CPU
 /// `FontSystem`, and a minimal `UiFrame` whose `selectable_text_runs` come from
 /// rendering the fixture review card. It feeds synthetic pointer/key events

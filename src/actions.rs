@@ -301,6 +301,15 @@ pub enum SettingsAction {
     ScrollKeymapsToPx(u32),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposerFormat {
+    Bold,
+    Italic,
+    Code,
+    Link,
+    BulletList,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GitHubAction {
     StartGitHubDeviceFlow,
@@ -310,6 +319,7 @@ pub enum GitHubAction {
     OpenReviewCommentComposer,
     SubmitReviewComment,
     CancelReviewComment,
+    FormatReviewComment(ComposerFormat),
     ReplyToReviewThread(ReviewThreadId),
     EditReviewComment {
         comment_node_id: String,

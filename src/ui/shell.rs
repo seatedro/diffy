@@ -841,7 +841,7 @@ pub fn build_ui_frame(
                         .with(&state.store, |composer| composer.draft.is_some());
                     if composer_open {
                         if let Some(anchor_rect) = line_bar_rect {
-                            let composer_h = (190.0 * ui_scale).round();
+                            let composer_h = (248.0 * ui_scale).round();
                             let y = (anchor_rect.y + anchor_rect.height)
                                 .min(vp_bounds.bottom() - composer_h)
                                 .max(vp_bounds.y);
@@ -1181,54 +1181,45 @@ fn build_review_submit_bar(
     }
 }
 
-fn build_review_composer(state: &AppState, theme: &Theme, ui_scale: f32, rect: Rect) -> AnyElement {
+pub(crate) fn build_review_composer(
+    state: &AppState,
+    theme: &Theme,
+    ui_scale: f32,
+    rect: Rect,
+) -> AnyElement {
     let tc = &theme.colors;
     let focused =
         state.focus.get(&state.store) == Some(crate::ui::state::FocusTarget::ReviewCommentEditor);
-    let (submitting, header_label, failed_message) = state
+    let (header_label, submit_label, failed_message) = state
         .github
         .pull_request
         .review_composer
         .with(&state.store, |composer| {
-            let header = if composer.reply_target.is_some() {
-                "Replying to thread".to_owned()
+            let (header, primary) = if composer.reply_target.is_some() {
+                ("Reply".to_owned(), "Reply")
             } else if composer.edit_target.is_some() {
-                "Editing comment".to_owned()
+                ("Edit comment".to_owned(), "Save")
             } else if let Some(draft) = composer.draft.as_ref() {
-                let request = &draft.request;
-                let side = match request.side {
-                    crate::core::forge::github::GitHubReviewSide::Left => "old",
-                    crate::core::forge::github::GitHubReviewSide::Right => "new",
+                let r = &draft.request;
+                let letter = match r.side {
+                    crate::core::forge::github::GitHubReviewSide::Left => "L",
+                    crate::core::forge::github::GitHubReviewSide::Right => "R",
                 };
-                let lines = match request.start_line {
-                    Some(start) if start != request.line => {
-                        format!("L{start}-L{}", request.line)
+                let target = match r.start_line {
+                    Some(start) if start != r.line => {
+                        format!("lines {letter}{start}–{letter}{}", r.line)
                     }
-                    _ => format!("L{}", request.line),
+                    _ => format!("line {letter}{}", r.line),
                 };
-                format!("{} · {lines} · {side}", request.path)
+                (format!("Add a comment on {target}"), "Add comment")
             } else {
-                "New comment".to_owned()
+                ("Add a comment".to_owned(), "Add comment")
             };
             let failed_message = (composer.status == crate::ui::state::AsyncStatus::Failed)
                 .then(|| composer.message.clone())
                 .flatten();
-            (
-                composer.status == crate::ui::state::AsyncStatus::Loading,
-                header,
-                failed_message,
-            )
+            (header, primary, failed_message)
         });
-    let submit_icon = if submitting {
-        lucide::LOADER
-    } else {
-        lucide::CHECK
-    };
-    let submit_label = if submitting {
-        "Posting"
-    } else {
-        "Post Comment"
-    };
     let cursor = CursorSnapshot {
         x: state.review_comment_editor.cursor_pos.x,
         y: state.review_comment_editor.cursor_pos.y,
@@ -1258,56 +1249,67 @@ fn build_review_composer(state: &AppState, theme: &Theme, ui_scale: f32, rect: R
         }
     });
 
+    use crate::actions::{ComposerFormat, GitHubAction};
+    let fmt = |format: ComposerFormat, icon: &'static str| {
+        view! { ui_scale,
+            <Button action={GitHubAction::FormatReviewComment(format).into()}
+                    style={ButtonStyle::Ghost}
+                    size={ButtonSize::Compact}>
+                <Icon>{icon}</Icon>
+            </Button>
+        }
+    };
+
     view! { ui_scale,
-        <div class="flex-row"
-             w={rect.width} h={rect.height}
+        <div class="flex-col"
+             w={rect.width}
+             h={rect.height}
              z_index={60}
-             pr={Sp::SM}>
-            <spacer />
-            <div class="flex-col"
-                 w={rect.width.min(620.0)}
-                 h={rect.height}
-                 bg={tc.modal_surface}
-                 border_b={tc.border}
-                 border_l={tc.border}
-                 border_r={tc.border}
-                 border_t={tc.border}
-                 rounded={Rad::LG}
-                 shadow_preset={Shadow::DROPDOWN}
-                 on_click={Action::Noop}
-                 p={Sp::SM}
-                 gap={Sp::SM}>
-                <div class="flex-row items-center w-full" gap={Sp::XS}>
-                    {text(header_label).size(small).color(tc.text_muted).medium().truncate()}
-                </div>
-                {?failed_row}
-                <div class="flex-1 w-full"
-                     min_h={0.0}
-                     px={Sp::SM}
-                     py={Sp::XS}
-                     rounded={Rad::MD}
-                     border={if focused { tc.accent } else { tc.border_variant }}
-                     on_click={crate::actions::AppAction::SetFocus(Some(crate::ui::state::FocusTarget::ReviewCommentEditor)).into()}
-                     cursor={CursorHint::Text}>
-                    {editor}
-                </div>
-                <div class="flex-row items-center" gap={Sp::XS}>
-                    <spacer />
-                    <Button action={crate::actions::GitHubAction::CancelReviewComment.into()}
-                            style={ButtonStyle::Ghost}
-                            size={ButtonSize::Compact}
-                            disabled={submitting}>
-                        <Icon>{lucide::X}</Icon>
-                        <Label>{"Cancel"}</Label>
-                    </Button>
-                    <Button action={crate::actions::GitHubAction::SubmitReviewComment.into()}
-                            style={ButtonStyle::Subtle}
-                            size={ButtonSize::Compact}
-                            disabled={submitting}>
-                        <Icon>{submit_icon}</Icon>
-                        <Label>{submit_label}</Label>
-                    </Button>
-                </div>
+             bg={tc.modal_surface}
+             border_t={if focused { tc.accent } else { tc.border }}
+             border_b={tc.border}
+             border_l={tc.border}
+             border_r={tc.border}
+             rounded={Rad::LG}
+             shadow_preset={Shadow::DROPDOWN}
+             on_click={Action::Noop}
+             p={Sp::SM}
+             gap={Sp::XS}>
+            <div class="flex-row items-center w-full" gap={Sp::XS}>
+                {text(header_label).size(small).color(tc.text_strong).medium()}
+            </div>
+            <div class="flex-row items-center" gap={Sp::XXS}>
+                {fmt(ComposerFormat::Bold, lucide::BOLD)}
+                {fmt(ComposerFormat::Italic, lucide::ITALIC)}
+                {fmt(ComposerFormat::Code, lucide::CODE)}
+                {fmt(ComposerFormat::Link, lucide::LINK)}
+                {fmt(ComposerFormat::BulletList, lucide::LIST)}
+            </div>
+            {?failed_row}
+            <div class="flex-1 w-full"
+                 min_h={0.0}
+                 px={Sp::SM}
+                 py={Sp::XS}
+                 rounded={Rad::MD}
+                 bg={tc.surface}
+                 border={if focused { tc.accent } else { tc.border_variant }}
+                 on_click={crate::actions::AppAction::SetFocus(Some(crate::ui::state::FocusTarget::ReviewCommentEditor)).into()}
+                 cursor={CursorHint::Text}>
+                {editor}
+            </div>
+            <div class="flex-row items-center" gap={Sp::XS}>
+                <spacer />
+                <Button action={GitHubAction::CancelReviewComment.into()}
+                        style={ButtonStyle::Ghost}
+                        size={ButtonSize::Compact}>
+                    <Label>{"Cancel"}</Label>
+                </Button>
+                <Button action={GitHubAction::SubmitReviewComment.into()}
+                        style={ButtonStyle::Filled}
+                        size={ButtonSize::Compact}>
+                    <Icon>{lucide::CHECK}</Icon>
+                    <Label>{submit_label}</Label>
+                </Button>
             </div>
         </div>
     }

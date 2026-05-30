@@ -17,7 +17,8 @@ fn main() {
     use diffy::fonts::FontSettings;
     use diffy::render::Renderer;
     use diffy::ui::harness::{
-        render_review_card_sized, sample_card_selection, sample_review_thread,
+        render_review_card_sized, render_review_composer, sample_card_selection,
+        sample_review_thread,
     };
 
     // Render at a moderate width and scale so the PNG comes back full-resolution
@@ -32,15 +33,18 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(760.0_f32);
 
-    // CARD_SELECT=1 draws a sample selection across comment 1's code/normal boundary
-    // so the highlight rendering on a styled line can be eyeballed.
-    let selection = (std::env::var("CARD_SELECT").as_deref() == Ok("1"))
-        .then(sample_card_selection)
-        .flatten();
-
+    // CARD_KIND=composer renders the review-comment composer instead of the card.
     let thread = sample_review_thread();
-    let rendered =
-        render_review_card_sized(&thread, true, selection.as_ref(), card_width, card_scale);
+    let rendered = if std::env::var("CARD_KIND").as_deref() == Ok("composer") {
+        render_review_composer(card_width, card_scale)
+    } else {
+        // CARD_SELECT=1 draws a sample selection across comment 1's code/normal
+        // boundary so the highlight rendering on a styled line can be eyeballed.
+        let selection = (std::env::var("CARD_SELECT").as_deref() == Ok("1"))
+            .then(sample_card_selection)
+            .flatten();
+        render_review_card_sized(&thread, true, selection.as_ref(), card_width, card_scale)
+    };
 
     // The card is drawn at the origin; give the canvas extra room on the right and
     // bottom so its drop shadow and the footer button aren't clipped at the edge.

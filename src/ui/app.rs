@@ -894,7 +894,7 @@ impl ApplicationHandler for NativeApp {
                     &mut self.state,
                     &mut self.ui_frame,
                     &self.editor,
-                    self.renderer.as_mut(),
+                    self.renderer.as_mut().map(Renderer::font_system),
                     self.window.as_ref(),
                     &mut self.tooltip_state,
                     self.launch_at,
@@ -1057,7 +1057,9 @@ mod tests {
             &mut app.state,
             &mut app.ui_frame,
             &app.editor,
-            app.renderer.as_mut(),
+            app.renderer
+                .as_mut()
+                .map(crate::render::Renderer::font_system),
             app.window.as_ref(),
             &mut app.tooltip_state,
             app.launch_at,

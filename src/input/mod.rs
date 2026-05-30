@@ -14,7 +14,6 @@ use winit::window::Window;
 
 use crate::actions::Action;
 use crate::effects::Effect;
-use crate::render::Renderer;
 use crate::ui::components::TooltipState;
 use crate::ui::editor::element::EditorElement;
 use crate::ui::element::DragHandler;
@@ -340,7 +339,7 @@ impl InputSystem {
         state: &mut AppState,
         ui_frame: &mut UiFrame,
         editor: &EditorElement,
-        renderer: Option<&mut Renderer>,
+        mut font_system: Option<&mut glyphon::FontSystem>,
         window: Option<&Arc<Window>>,
         tooltip_state: &mut TooltipState,
         launch_at: Instant,
@@ -351,14 +350,13 @@ impl InputSystem {
             return None;
         }
 
-        let mut renderer = renderer;
         let mut outcome = InputOutcome::default();
         for event in events {
             let next = self.route_input_event(
                 state,
                 ui_frame,
                 editor,
-                renderer.as_deref_mut(),
+                font_system.as_deref_mut(),
                 window,
                 tooltip_state,
                 launch_at,
@@ -375,7 +373,7 @@ impl InputSystem {
         state: &mut AppState,
         ui_frame: &mut UiFrame,
         editor: &EditorElement,
-        renderer: Option<&mut Renderer>,
+        font_system: Option<&mut glyphon::FontSystem>,
         window: Option<&Arc<Window>>,
         tooltip_state: &mut TooltipState,
         launch_at: Instant,
@@ -385,7 +383,7 @@ impl InputSystem {
             state,
             ui_frame,
             editor,
-            renderer,
+            font_system,
             window,
             tooltip_state,
             launch_at,
@@ -465,7 +463,7 @@ impl InputSystem {
         state: &mut AppState,
         ui_frame: &mut UiFrame,
         editor: &EditorElement,
-        renderer: Option<&mut Renderer>,
+        font_system: Option<&mut glyphon::FontSystem>,
         window: Option<&Arc<Window>>,
         tooltip_state: &mut TooltipState,
         launch_at: Instant,
@@ -484,7 +482,7 @@ impl InputSystem {
                 state,
                 ui_frame,
                 editor,
-                renderer,
+                font_system,
                 window,
                 tooltip_state,
                 launch_at,
@@ -498,7 +496,7 @@ impl InputSystem {
                 let Some((x, y)) = self.mouse_position else {
                     return InputOutcome::default();
                 };
-                self.handle_left_click(state, ui_frame, editor, renderer, x, y)
+                self.handle_left_click(state, ui_frame, editor, font_system, x, y)
             }
             InputEvent::PointerButton {
                 button: MouseButton::Left,

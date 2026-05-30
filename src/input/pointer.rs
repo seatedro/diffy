@@ -7,7 +7,6 @@ use crate::actions::{
     AppAction, ContextMenuEntry, EditorAction, FileListAction, GitHubAction, OverlayAction,
     RepositoryAction, TextEditAction,
 };
-use crate::render::Renderer;
 use crate::ui::components::{TooltipSide, TooltipState};
 use crate::ui::editor::element::EditorElement;
 use crate::ui::element::{ClickEvent, ClickResult, DragHandler, HitIdentity};
@@ -23,7 +22,7 @@ impl InputSystem {
         state: &AppState,
         ui_frame: &mut UiFrame,
         editor: &EditorElement,
-        renderer: Option<&mut Renderer>,
+        mut font_system: Option<&mut glyphon::FontSystem>,
         x: f32,
         y: f32,
     ) -> InputOutcome {
@@ -80,7 +79,7 @@ impl InputSystem {
                 ]);
             }
             let byte_offset = hit_test_text_offset(
-                renderer.map(Renderer::font_system),
+                font_system.as_deref_mut(),
                 &hit_area.value,
                 hit_area.font_size,
                 x - hit_area.text_x,
@@ -101,7 +100,7 @@ impl InputSystem {
             .rev()
             .find(|region| region.bounds.contains(x, y))
         {
-            let byte = card_text_byte_at(region, x, y, renderer.map(Renderer::font_system));
+            let byte = card_text_byte_at(region, x, y, font_system);
             self.card_text_drag_active = true;
             return InputOutcome::actions(vec![
                 EditorAction::FocusViewport.into(),
@@ -427,7 +426,7 @@ impl InputSystem {
         state: &AppState,
         ui_frame: &UiFrame,
         editor: &EditorElement,
-        renderer: Option<&mut Renderer>,
+        mut font_system: Option<&mut glyphon::FontSystem>,
         window: Option<&Arc<Window>>,
         tooltip_state: &mut TooltipState,
         launch_at: Instant,
@@ -435,10 +434,6 @@ impl InputSystem {
         y: f32,
     ) -> InputOutcome {
         self.mouse_position = Some((x, y));
-
-        // Borrowed once so it can be reused across the input-drag and card-selection
-        // drag branches below (an `Option<&mut _>` is not `Copy`).
-        let mut font_system = renderer.map(Renderer::font_system);
 
         let mut actions = Vec::new();
         if let Some(ref mut capture) = self.pointer_capture {

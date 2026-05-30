@@ -6,7 +6,7 @@ use crate::core::text::SyntaxTokenKind;
 use crate::render::scene::{IconPrimitive, Primitive};
 use crate::render::{
     FontKind, FontStyle, FontWeight, Rect, RectPrimitive, RichTextPrimitive, RichTextSpan,
-    RoundedRectPrimitive, Scene, TextMetrics, TextPrimitive,
+    RoundedRectPrimitive, Scene, ShadowPrimitive, TextMetrics, TextPrimitive,
 };
 use crate::ui::accessibility::{AccessibilityAction, AccessibilityFrame, AccessibilityNode};
 use crate::ui::design::{Alpha, Sz};
@@ -1235,9 +1235,10 @@ impl EditorElement {
         if !self.row_in_viewport(&row_rect) {
             return None;
         }
-        let size = (self.layout.line_height * 0.72).clamp(14.0, 20.0);
+        let s = editor_scale(self.text_metrics);
+        let size = (self.layout.line_height * 0.72).clamp(scaled(14.0, s), scaled(20.0, s));
         Some(Rect {
-            x: gutter.x + scaled(2.0, editor_scale(self.text_metrics)),
+            x: gutter.x + scaled(2.0, s),
             y: row_rect.y + (self.layout.line_height - size).max(0.0) * 0.5,
             width: size,
             height: size,
@@ -2040,6 +2041,14 @@ impl EditorElement {
             theme.colors.accent
         };
         let radius = (rect.height * 0.3).round();
+        let s = editor_scale(self.text_metrics);
+        scene.shadow(ShadowPrimitive {
+            rect,
+            blur_radius: scaled(3.0, s),
+            corner_radius: radius,
+            offset: [0.0, scaled(1.0, s)],
+            color: Color::rgba(0, 0, 0, 70),
+        });
         scene.rounded_rect(RoundedRectPrimitive::uniform(rect, radius, bg));
         scene.push(Primitive::Icon(IconPrimitive {
             rect: rect.inset((rect.width * 0.22).round()),

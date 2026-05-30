@@ -592,6 +592,9 @@ impl InputSystem {
                     .review_add_comment_button_at(&editor_snap, document.doc.as_ref(), x, y)
                     .is_some()
             });
+        if review_add_hover != state.editor.review_add_hovered.get(&state.store) {
+            actions.push(EditorAction::HoverReviewAddButton(review_add_hover).into());
+        }
 
         let block_row = hovered_row.filter(|&row| editor.is_block_row(row));
         let cursor_hint = if ui_frame

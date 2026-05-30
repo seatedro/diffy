@@ -97,6 +97,7 @@ pub struct EditorState {
     pub viewport_width_px: u32,
     pub viewport_height_px: u32,
     pub hovered_row: Option<usize>,
+    pub review_add_hovered: bool,
     pub hovered_render_line_index: Option<usize>,
     pub hovered_hunk_index: Option<i16>,
     pub visible_row_start: Option<usize>,
@@ -174,6 +175,7 @@ impl Default for EditorState {
             viewport_width_px: 0,
             viewport_height_px: 0,
             hovered_row: None,
+            review_add_hovered: false,
             hovered_render_line_index: None,
             hovered_hunk_index: None,
             visible_row_start: None,
@@ -195,6 +197,7 @@ impl EditorState {
         self.scroll_top_px = 0;
         self.content_height_px = 0;
         self.hovered_row = None;
+        self.review_add_hovered = false;
         self.hovered_render_line_index = None;
         self.hovered_hunk_index = None;
         self.visible_row_start = None;

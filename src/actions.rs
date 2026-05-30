@@ -205,6 +205,7 @@ pub enum EditorAction {
     },
     EndViewportScrollbarDrag,
     HoverViewportRow(Option<usize>),
+    HoverReviewAddButton(bool),
     GoToNextHunk,
     GoToPreviousHunk,
     GoToNextFile,

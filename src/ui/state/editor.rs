@@ -60,6 +60,12 @@ impl AppState {
                 effects.extend(self.request_active_file_syntax_effect());
                 effects
             }
+            HoverReviewAddButton(hovered) => {
+                self.editor
+                    .review_add_hovered
+                    .set_if_changed(&self.store, hovered);
+                Vec::new()
+            }
             HoverViewportRow(row) => {
                 self.editor.hovered_row.set(&self.store, row);
                 if row.is_none() {

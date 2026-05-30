@@ -898,13 +898,15 @@ impl EditorElement {
                 self.paint_inline_change_backgrounds(scene, theme, doc);
                 self.paint_line_highlights(scene, theme);
                 self.paint_line_selection(scene, theme, _state, doc);
-                self.paint_review_add_affordance(scene, theme, _state, doc);
                 self.paint_viewport_text_selection(scene, theme, _state, doc, compare_generation);
                 self.paint_search_highlights(scene, theme, _state, doc);
                 self.paint_gutter_diff_indicators(scene, theme, doc);
                 self.paint_gutter_decorations(scene, theme);
                 self.paint_gutter_text(scene, theme, doc);
                 self.paint_body_text(scene, theme, path, doc);
+                // On top of the gutter strip/numbers and the code so the hover "+"
+                // is never occluded by the divider it straddles.
+                self.paint_review_add_affordance(scene, theme, _state, doc);
                 if show_file_headers {
                     self.paint_sticky_file_header(scene, theme, path, doc);
                 }
@@ -2038,7 +2040,7 @@ impl EditorElement {
         };
         let selected = !state.line_selection.is_empty()
             && line_selection_contains_line(&state.line_selection, line);
-        let bg = if selected {
+        let bg = if selected || state.review_add_hovered {
             theme.colors.accent_strong
         } else {
             theme.colors.accent
@@ -3013,18 +3015,15 @@ fn line_selection_contains_line(
 }
 
 fn review_comment_gutter_rect(layout: &EditorLayout, line: &RenderLine) -> Option<Rect> {
-    if line.hunk_index < 0 {
+    // Any body line is commentable (incl. context) — selected_review_range maps it
+    // to the new side, or the old side for removed-only lines.
+    if line.hunk_index < 0 || !line.row_kind().is_body() {
         return None;
     }
     match line.row_kind() {
-        RenderRowKind::Added | RenderRowKind::Modified if layout.split_mode => {
-            Some(layout.right_gutter_rect)
-        }
         RenderRowKind::Removed if layout.split_mode => Some(layout.left_gutter_rect),
-        RenderRowKind::Added | RenderRowKind::Removed | RenderRowKind::Modified => {
-            Some(layout.unified_gutter_rect)
-        }
-        _ => None,
+        _ if layout.split_mode => Some(layout.right_gutter_rect),
+        _ => Some(layout.unified_gutter_rect),
     }
 }
 

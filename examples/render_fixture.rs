@@ -16,7 +16,9 @@ fn main() {
 fn main() {
     use diffy::fonts::FontSettings;
     use diffy::render::Renderer;
-    use diffy::ui::harness::{render_review_card_sized, sample_card_selection, sample_review_thread};
+    use diffy::ui::harness::{
+        render_review_card_sized, sample_card_selection, sample_review_thread,
+    };
 
     // Render at a moderate width and scale so the PNG comes back full-resolution
     // (large images get downscaled on the way back). The card scene already bakes

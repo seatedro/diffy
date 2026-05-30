@@ -131,6 +131,126 @@ pub fn sample_card_selection() -> Option<CardTextSelection> {
     })
 }
 
+/// One painted text run from the scene: a single inline-style piece with its pen
+/// position. `text_pieces` returns these in reading order so geometry questions
+/// ("is there a space between these two words?", "do they overlap?") are answered
+/// numerically instead of by eyeballing an antialiased PNG.
+#[derive(Debug, Clone)]
+pub struct TextPiece {
+    pub x: f32,
+    pub y: f32,
+    pub height: f32,
+    pub font_size: f32,
+    pub font_kind: crate::render::FontKind,
+    pub font_weight: crate::render::FontWeight,
+    pub italic: bool,
+    pub text: String,
+}
+
+/// Every `TextRun`/`RichTextRun` in the scene as a [`TextPiece`], sorted top-to-
+/// bottom then left-to-right (reading order).
+pub fn text_pieces(scene: &Scene) -> Vec<TextPiece> {
+    use crate::render::{FontStyle, Primitive};
+
+    let mut out = Vec::new();
+    for primitive in &scene.primitives {
+        match primitive {
+            Primitive::TextRun(t) => out.push(TextPiece {
+                x: t.rect.x,
+                y: t.rect.y,
+                height: t.rect.height,
+                font_size: t.font_size,
+                font_kind: t.font_kind,
+                font_weight: t.font_weight,
+                italic: false,
+                text: t.text.to_string(),
+            }),
+            Primitive::RichTextRun(r) => {
+                let text: String = r.spans.iter().map(|s| s.text.as_ref()).collect();
+                let italic = r
+                    .spans
+                    .iter()
+                    .any(|s| s.font_style == Some(FontStyle::Italic));
+                let weight = r
+                    .spans
+                    .iter()
+                    .find_map(|s| s.font_weight)
+                    .unwrap_or(r.font_weight);
+                out.push(TextPiece {
+                    x: r.rect.x,
+                    y: r.rect.y,
+                    height: r.rect.height,
+                    font_size: r.font_size,
+                    font_kind: r.font_kind,
+                    font_weight: weight,
+                    italic,
+                    text,
+                });
+            }
+            _ => {}
+        }
+    }
+    out.sort_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)));
+    out
+}
+
+/// [`text_pieces`] grouped into visual lines (pieces whose `y` falls within a line
+/// band), each line sorted left-to-right. Use this for any "same line" reasoning so
+/// a left-column avatar initial isn't mistaken for text that follows the header.
+pub fn text_lines(scene: &Scene) -> Vec<Vec<TextPiece>> {
+    let mut lines: Vec<Vec<TextPiece>> = Vec::new();
+    for piece in text_pieces(scene) {
+        match lines.last_mut() {
+            Some(line) if (piece.y - line[0].y).abs() < line[0].height * 0.6 => line.push(piece),
+            _ => lines.push(vec![piece]),
+        }
+    }
+    for line in &mut lines {
+        line.sort_by(|a, b| a.x.total_cmp(&b.x));
+    }
+    lines
+}
+
+/// Geometry sibling of `dump_accessibility`: one line per painted text piece with
+/// its position, *measured* advance, and the gap to the next piece on the same
+/// visual line. The gap is the source of truth for spacing — `+N` is a space N px
+/// wide, `+0` means the pieces abut (no space), a negative gap means they overlap.
+/// Reach for this before eyeballing a PNG for whether two glyphs touch. A scene
+/// primitive's `rect.width` is the layout box, not the ink, so the advance is
+/// measured here rather than read off the rect.
+pub fn dump_text_layout(scene: &Scene, font_system: &mut glyphon::FontSystem) -> String {
+    let mut out = String::new();
+    for line in text_lines(scene) {
+        for (i, p) in line.iter().enumerate() {
+            let adv = crate::ui::element::measure_text_advance(
+                font_system,
+                &p.text,
+                p.font_size,
+                p.font_kind,
+                p.font_weight,
+            );
+            let gap = line
+                .get(i + 1)
+                .map(|q| format!("{:+.0}", q.x - (p.x + adv)))
+                .unwrap_or_else(|| "·".to_owned());
+            let kind = match p.font_kind {
+                crate::render::FontKind::Ui => "ui",
+                crate::render::FontKind::Mono => "mono",
+            };
+            let style = format!(
+                "{kind}/{:?}{}",
+                p.font_weight,
+                if p.italic { "+i" } else { "" }
+            );
+            out.push_str(&format!(
+                "y={:.0} x={:.0} adv={adv:.0} gap={gap} {style} {:?}\n",
+                p.y, p.x, p.text
+            ));
+        }
+    }
+    out
+}
+
 /// Outputs captured from rendering a review-thread card without a GPU.
 pub struct RenderedCard {
     pub scene: Scene,
@@ -667,6 +787,89 @@ mod tests {
             !expected.contains('`'),
             "copied text must not contain backticks: {expected:?}"
         );
+    }
+
+    /// Geometry guard: no two text pieces on the same visual line overlap. This is
+    /// the invariant whose absence sent a phantom "merged words" misread chasing
+    /// non-bugs — the gap between adjacent pieces is computed, not eyeballed. A real
+    /// regression that mis-positions a styled piece on top of its neighbour fires
+    /// here; harmless abutting (gap ≈ 0) and normal spaces (gap > 0) pass.
+    #[test]
+    fn text_pieces_do_not_overlap_on_a_line() {
+        let thread = sample_review_thread();
+        let card = render_review_card(&thread, true, None);
+        let mut fs = glyphon::FontSystem::new();
+
+        for line in text_lines(&card.scene) {
+            for pair in line.windows(2) {
+                let (a, b) = (&pair[0], &pair[1]);
+                let adv = crate::ui::element::measure_text_advance(
+                    &mut fs,
+                    &a.text,
+                    a.font_size,
+                    a.font_kind,
+                    a.font_weight,
+                );
+                let gap = b.x - (a.x + adv);
+                assert!(
+                    gap >= -2.0,
+                    "text pieces overlap on a line (gap {gap:.1}px): {:?} then {:?}\n{}",
+                    a.text,
+                    b.text,
+                    dump_text_layout(&card.scene, &mut fs)
+                );
+            }
+        }
+    }
+
+    /// The rich body's styled pieces sit in source order with real spaces between
+    /// words across the mono/bold/italic boundaries — locks the spacing the layout
+    /// dump now makes inspectable (and that a misread once cast doubt on).
+    #[test]
+    fn rich_body_pieces_are_spaced_across_style_boundaries() {
+        let thread = sample_review_thread();
+        let card = render_review_card(&thread, true, None);
+        let mut fs = glyphon::FontSystem::new();
+        let pieces = text_pieces(&card.scene);
+
+        // The code/bold/italic pieces and the normal text immediately after them.
+        for (left, right) in [("memoize_height()", "over"), ("stable", "while")] {
+            let li = pieces
+                .iter()
+                .position(|p| p.text.trim() == left)
+                .unwrap_or_else(|| panic!("missing piece {left:?}"));
+            let a = &pieces[li];
+            let b = pieces[li + 1..]
+                .iter()
+                .find(|p| (p.y - a.y).abs() < a.height * 0.5)
+                .unwrap_or_else(|| panic!("no piece after {left:?} on its line"));
+            assert!(
+                b.text.trim_start().starts_with(right),
+                "expected {right:?} after {left:?}, got {:?}",
+                b.text
+            );
+            let adv = crate::ui::element::measure_text_advance(
+                &mut fs,
+                &a.text,
+                a.font_size,
+                a.font_kind,
+                a.font_weight,
+            );
+            let space = crate::ui::element::measure_text_advance(
+                &mut fs,
+                " ",
+                a.font_size,
+                crate::render::FontKind::Ui,
+                crate::render::FontWeight::Normal,
+            );
+            let gap = b.x - (a.x + adv);
+            assert!(
+                gap >= space * 0.5,
+                "{left:?}→{right:?} should have ~a space between them (gap {gap:.1}px, \
+                 space {space:.1}px)\n{}",
+                dump_text_layout(&card.scene, &mut fs)
+            );
+        }
     }
 
     /// (d) The dump is deterministic: two independent renders of the same fixture

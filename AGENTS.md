@@ -178,7 +178,7 @@ validation does not dirty the repository.
 ### Headless UI verification loop
 
 For UI surfaces with a headless fixture (currently the review-thread card via
-`src/ui/harness.rs`), iterate without launching the app. Three legs, each
+`src/ui/harness.rs`), iterate without launching the app. Four legs, each
 answering a different question:
 
 - See it (layout + color): `cargo run --example render_fixture --features
@@ -192,6 +192,15 @@ answering a different question:
   text content off rendered glyphs — small text in a PNG is misread-prone, and
   that has produced phantom "bugs" before. Confirm content and clipping against
   the dump, use the image only for visual quality.
+- Measure it (geometry ground truth): `dump_text_layout(scene, font_system)` emits
+  one line per painted text piece — `y x adv gap kind/weight "text"` — where `gap`
+  is the *measured* distance to the next piece on the same visual line (`text_pieces`
+  / `text_lines` expose the same data structurally). This is the source of truth for
+  spacing, overlap, and alignment: `+N` is a space N px wide, `+0` means the pieces
+  abut, a negative gap means they overlap. NEVER eyeball a PNG to decide whether two
+  glyphs touch — antialiased same-color text reads as merged at small sizes and has
+  burned hours chasing non-bugs. Compute the gap. (A primitive's `rect.width` is its
+  layout box, not the ink, so the advance is measured, not read off the rect.)
 - Drive it (behavior, no GPU): the `#[cfg(test)]` `UiHarness` replays
   `.drag(...)` / `.key(...)` against frame-built hit regions and asserts on the
   resulting `AppState` / emitted actions (e.g. drag-select then Cmd+C copies the
@@ -200,9 +209,14 @@ answering a different question:
 
 One iteration: change, then `cargo test --lib <surface>::` (deterministic, fast,
 asserts behavior + invariants), then render the PNG and look at it for what tests
-cannot assert (kerning, pill padding, vertical centering), checking the a11y dump
-if any text looks off. Lean on the test leg first; treat the image as the last
-mile. Keep PNGs under `target/`; never commit them.
+cannot assert (kerning, pill padding, vertical centering), checking the a11y and
+text-layout dumps if any text looks off. Lean on the test leg first; treat the
+image as the last mile. For spacing/overlap/alignment specifically, the
+text-layout dump is the answer, not the image. When a glyph diagnostic is genuinely
+visual (does a face render bold? does a pill sit behind the right run?), tint each
+piece a distinct color and crop+zoom the boundary (`magick … -crop … -resize`) —
+color separation cuts through antialiasing where a same-color zoom cannot. Keep
+PNGs under `target/`; never commit them.
 
 If a command cannot be run in the current environment, say so in the final
 response and explain what was not verified.

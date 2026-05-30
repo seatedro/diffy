@@ -34,6 +34,8 @@ use crate::platform::review_store::ReviewStore;
 use crate::platform::secrets::{self, AiKeyKind};
 use crate::ui::state::prepare_active_file;
 
+const DEV_GITHUB_TOKEN_FILE_NAME: &str = "github-token.dev";
+
 #[derive(Debug, Clone)]
 pub struct AppServices {
     settings_store: SettingsStore,
@@ -478,6 +480,28 @@ impl AppServices {
 
     pub fn clear_github_token(&self) -> Result<()> {
         secrets::clear_github_token()
+    }
+
+    pub fn load_dev_github_token(&self) -> Result<Option<String>> {
+        secrets::load_github_token_file(&self.dev_github_token_path()?)
+    }
+
+    pub fn save_dev_github_token(&self, token: &str) -> Result<()> {
+        secrets::save_github_token_file(&self.dev_github_token_path()?, token)
+    }
+
+    pub fn clear_dev_github_token(&self) -> Result<()> {
+        secrets::clear_github_token_file(&self.dev_github_token_path()?)
+    }
+
+    fn dev_github_token_path(&self) -> Result<PathBuf> {
+        let parent = self.settings_store.path().parent().ok_or_else(|| {
+            DiffyError::General(format!(
+                "settings path has no parent directory: {}",
+                self.settings_store.path().display()
+            ))
+        })?;
+        Ok(parent.join(DEV_GITHUB_TOKEN_FILE_NAME))
     }
 
     pub fn check_for_updates(

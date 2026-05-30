@@ -17,6 +17,7 @@ use crate::events::{
     UiEvent, UpdateEvent,
 };
 use crate::platform::persistence::Settings;
+use crate::platform::startup::GitHubTokenStore;
 use winit::event_loop::EventLoopProxy;
 
 const SETTINGS_SAVE_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -31,6 +32,7 @@ impl AppRuntime {
         services: AppServices,
         wake_proxy: Option<EventLoopProxy<()>>,
         keyring_enabled: bool,
+        github_token_store: GitHubTokenStore,
     ) -> Self {
         let (sender, receiver) = mpsc::channel();
         let event_sender = RuntimeEventSender::new(sender, wake_proxy);
@@ -50,6 +52,7 @@ impl AppRuntime {
                 syntax_scheduler,
                 repo_watch_worker,
                 keyring_enabled,
+                github_token_store,
             },
         }
     }
@@ -74,6 +77,7 @@ struct EffectRunner {
     syntax_scheduler: SyntaxScheduler,
     repo_watch_worker: RepoWatchWorker,
     keyring_enabled: bool,
+    github_token_store: GitHubTokenStore,
 }
 
 struct SaveWorker {
@@ -323,15 +327,21 @@ impl EffectRunner {
                 });
             }
             Effect::GitHub(GitHubEffect::LoadGitHubToken) => {
-                if !self.keyring_enabled {
+                if self.github_token_store == GitHubTokenStore::Disabled {
                     self.event_sender
                         .send(GitHubEvent::GitHubTokenLoaded { token: None });
                     return;
                 }
                 let services = self.services.clone();
+                let store = self.github_token_store;
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
-                    let event = match services.load_github_token() {
+                    let result = match store {
+                        GitHubTokenStore::Keyring => services.load_github_token(),
+                        GitHubTokenStore::DevFile => services.load_dev_github_token(),
+                        GitHubTokenStore::Disabled => Ok(None),
+                    };
+                    let event = match result {
                         Ok(token) => GitHubEvent::GitHubTokenLoaded { token },
                         Err(error) => GitHubEvent::GitHubTokenLoadFailed {
                             message: error.to_string(),
@@ -341,13 +351,19 @@ impl EffectRunner {
                 });
             }
             Effect::GitHub(GitHubEffect::SaveGitHubToken(token)) => {
-                if !self.keyring_enabled {
+                if self.github_token_store == GitHubTokenStore::Disabled {
                     return;
                 }
                 let services = self.services.clone();
+                let store = self.github_token_store;
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
-                    if let Err(error) = services.save_github_token(&token) {
+                    let result = match store {
+                        GitHubTokenStore::Keyring => services.save_github_token(&token),
+                        GitHubTokenStore::DevFile => services.save_dev_github_token(&token),
+                        GitHubTokenStore::Disabled => Ok(()),
+                    };
+                    if let Err(error) = result {
                         event_sender.send(GitHubEvent::GitHubTokenSaveFailed {
                             message: error.to_string(),
                         });
@@ -355,12 +371,18 @@ impl EffectRunner {
                 });
             }
             Effect::GitHub(GitHubEffect::ClearGitHubToken) => {
-                if !self.keyring_enabled {
+                if self.github_token_store == GitHubTokenStore::Disabled {
                     return;
                 }
                 let services = self.services.clone();
+                let store = self.github_token_store;
                 thread::spawn(move || {
-                    if let Err(error) = services.clear_github_token() {
+                    let result = match store {
+                        GitHubTokenStore::Keyring => services.clear_github_token(),
+                        GitHubTokenStore::DevFile => services.clear_dev_github_token(),
+                        GitHubTokenStore::Disabled => Ok(()),
+                    };
+                    if let Err(error) = result {
                         tracing::warn!("failed to clear GitHub token: {error}");
                     }
                 });
@@ -1252,6 +1274,7 @@ mod tests {
     use crate::effects::SettingsEffect;
     use crate::events::{AppEvent, SettingsEvent};
     use crate::platform::persistence::{Settings, SettingsStore};
+    use crate::platform::startup::GitHubTokenStore;
 
     fn wait_for<P>(mut predicate: P)
     where
@@ -1271,7 +1294,12 @@ mod tests {
     fn save_settings_coalesces_rapid_updates_and_keeps_latest() {
         let dir = TempDir::new().unwrap();
         let store = SettingsStore::new_in(dir.path());
-        let runtime = AppRuntime::new(AppServices::new(store.clone()), None, true);
+        let runtime = AppRuntime::new(
+            AppServices::new(store.clone()),
+            None,
+            true,
+            GitHubTokenStore::Keyring,
+        );
 
         let mut settings = Settings::default();
         settings.theme_name = "One".to_owned();
@@ -1302,7 +1330,12 @@ mod tests {
     fn save_settings_skips_duplicate_snapshots() {
         let dir = TempDir::new().unwrap();
         let store = SettingsStore::new_in(dir.path());
-        let runtime = AppRuntime::new(AppServices::new(store.clone()), None, true);
+        let runtime = AppRuntime::new(
+            AppServices::new(store.clone()),
+            None,
+            true,
+            GitHubTokenStore::Keyring,
+        );
 
         let mut settings = Settings::default();
         settings.theme_name = "Gruvbox Hard".to_owned();

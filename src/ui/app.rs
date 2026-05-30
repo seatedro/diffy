@@ -36,6 +36,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let startup = StartupOptions::load();
     init_logging(startup.log_debug);
     let keyring_enabled = startup.keyring_enabled;
+    let github_token_store = startup.github_token_store;
 
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Wait);
@@ -55,6 +56,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         AppServices::new(settings_store),
         Some(wake_proxy.clone()),
         keyring_enabled,
+        github_token_store,
     );
     runtime.dispatch_all(initial_effects);
 
@@ -1037,6 +1039,7 @@ mod tests {
         InputEvent, InputOutcome, KeyChord, KeyKind, quantize_scroll_delta_px, scroll_delta_to_px,
     };
     use crate::platform::persistence::SettingsStore;
+    use crate::platform::startup::GitHubTokenStore;
     use crate::ui::state::{
         AppState, AppView, FileListEntry, FocusTarget, OverlayEntry, OverlaySurface,
         SettingsSection, WorkspaceMode, WorkspaceSource,
@@ -1048,6 +1051,7 @@ mod tests {
             AppServices::new(SettingsStore::new_in(dir.path())),
             None,
             true,
+            GitHubTokenStore::Keyring,
         );
         NativeApp::new(state, runtime, ThemeRegistry::load(), None)
     }

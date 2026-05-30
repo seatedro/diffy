@@ -149,8 +149,10 @@ risk crosses module boundaries.
 
 `Diffy Dev.app` is intentionally ad-hoc signed and wrapped for local
 automation: no release cert is required, the window title prefix is `diffy dev`,
-and keyring is disabled by default in the wrapper. Pass startup args after `--`,
-for example `scripts/dev-loop.sh app -- --repo /Users/ro/personal/diffy`.
+and keyring is disabled by default in the wrapper. GitHub auth uses a local dev
+token file in Diffy's config directory so restarts do not require Keychain
+prompts. Pass startup args after `--`, for example
+`scripts/dev-loop.sh app -- --repo /Users/ro/personal/diffy`.
 
 The native accessibility tree is built with AccessKit. Shared controls should
 expose stable roles, labels, and actions so Computer Use can inspect and operate

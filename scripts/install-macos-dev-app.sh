@@ -125,6 +125,7 @@ DIR="\$(cd "\$(dirname "\$0")" && pwd)"
 export DIFFY_APP_DISPLAY_NAME="\${DIFFY_APP_DISPLAY_NAME:-$APP_NAME}"
 export DIFFY_WINDOW_TITLE_PREFIX="\${DIFFY_WINDOW_TITLE_PREFIX:-diffy dev}"
 export DIFFY_DISABLE_KEYRING="\${DIFFY_DISABLE_KEYRING:-1}"
+export DIFFY_DEV_GITHUB_TOKEN_FILE="\${DIFFY_DEV_GITHUB_TOKEN_FILE:-1}"
 exec "\$DIR/diffy-bin" "\$@"
 EOF
 chmod +x "$MACOS_DIR/diffy-dev"

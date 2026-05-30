@@ -166,6 +166,26 @@ impl InputSystem {
             }
             let status_source = state.workspace.source.get(&state.store) == WorkspaceSource::Status;
             let review_source = state.pull_request_review_enabled();
+            let review_add_hit = if review_source {
+                ui_frame.viewport_document.as_ref().and_then(|document| {
+                    editor.review_add_comment_button_at(&editor_snap, document.doc.as_ref(), x, y)
+                })
+            } else {
+                None
+            };
+            if let Some(review_line) = review_add_hit {
+                self.review_line_drag_anchor = Some(review_line);
+                return InputOutcome::actions(vec![
+                    EditorAction::FocusViewport.into(),
+                    EditorAction::HoverViewportRow(hovered).into(),
+                    EditorAction::ClearViewportTextSelection.into(),
+                    RepositoryAction::SetLineSelectionRange {
+                        row: review_line,
+                        anchor: review_line,
+                    }
+                    .into(),
+                ]);
+            }
             let supports_hunk_mutation =
                 state
                     .repository
@@ -199,18 +219,6 @@ impl InputSystem {
                         EditorAction::HoverViewportRow(hovered).into(),
                         EditorAction::ClearViewportTextSelection.into(),
                     ];
-                    let review_add_hit = if review_source {
-                        ui_frame.viewport_document.as_ref().and_then(|document| {
-                            editor.review_add_comment_button_at(
-                                &editor_snap,
-                                document.doc.as_ref(),
-                                x,
-                                y,
-                            )
-                        })
-                    } else {
-                        None
-                    };
                     if is_hunk_sep && single_file_status_actions {
                         let is_staged = matches!(
                             state.workspace.selected_change_bucket.get(&state.store),
@@ -221,15 +229,6 @@ impl InputSystem {
                         } else {
                             RepositoryAction::StageHunk.into()
                         });
-                    } else if let Some(review_line) = review_add_hit {
-                        self.review_line_drag_anchor = Some(review_line);
-                        actions.push(
-                            RepositoryAction::SetLineSelectionRange {
-                                row: review_line,
-                                anchor: review_line,
-                            }
-                            .into(),
-                        );
                     } else if is_hunk_sep {
                         // Hunk headers are not review-comment anchors.
                     } else if status_source && !single_file_status_actions {

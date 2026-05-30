@@ -60,7 +60,7 @@ use crate::events::{
 use crate::fonts::{FontFamilyEntry, FontRole};
 use crate::platform::persistence::{PersistedCompare, Settings};
 use crate::platform::secrets::AiKeyKind;
-use crate::platform::startup::StartupOptions;
+use crate::platform::startup::{GitHubTokenStore, StartupOptions};
 use crate::ui::components::ContextMenuState;
 use crate::ui::design::{Sp, Sz};
 use crate::ui::editor::render_doc::{
@@ -2977,6 +2977,7 @@ pub enum UpdateState {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StartupState {
     pub keyring_enabled: bool,
+    pub github_token_store: GitHubTokenStore,
     pub auto_compare_pending: bool,
     pub bootstrap_compare_started: bool,
     pub pending_pr_url: Option<String>,
@@ -3588,6 +3589,7 @@ impl AppState {
             settings,
             startup: StartupState {
                 keyring_enabled: startup.keyring_enabled,
+                github_token_store: startup.github_token_store,
                 auto_compare_pending: auto_compare_pending && !bootstrap_compare_started,
                 bootstrap_compare_started,
                 pending_pr_url: startup.args.open_pr.clone(),
@@ -3718,10 +3720,10 @@ impl AppState {
         if let Some(token) = startup.github_token.clone() {
             state.github_access_token = Some(token.clone());
             state.github.auth.token_present.set(&state.store, true);
-            if startup.keyring_enabled {
+            if startup.github_token_store.is_enabled() {
                 effects.push(GitHubEffect::SaveGitHubToken(token).into());
             }
-        } else if startup.keyring_enabled {
+        } else if startup.github_token_store.is_enabled() {
             effects.push(GitHubEffect::LoadGitHubToken.into());
         }
 

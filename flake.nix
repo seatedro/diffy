@@ -249,6 +249,7 @@
                 }''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               '')
               + ''
+                export DIFFY_DEV_GITHUB_TOKEN_FILE="''${DIFFY_DEV_GITHUB_TOKEN_FILE:-1}"
                 echo "Diffy dev shell ready"
                 echo "Build: cargo build"
                 echo "Test: cargo test"

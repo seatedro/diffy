@@ -1,3 +1,7 @@
+use std::fs;
+use std::io::Write;
+use std::path::Path;
+
 use keyring::Entry;
 
 use crate::core::error::{DiffyError, Result};
@@ -48,6 +52,51 @@ pub fn clear_github_token() -> Result<()> {
     clear(GITHUB_ACCOUNT)
 }
 
+pub fn load_github_token_file(path: &Path) -> Result<Option<String>> {
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let token = contents.trim().to_owned();
+    Ok((!token.is_empty()).then_some(token))
+}
+
+pub fn save_github_token_file(path: &Path, token: &str) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        DiffyError::General(format!(
+            "GitHub token file path has no parent directory: {}",
+            path.display()
+        ))
+    })?;
+    fs::create_dir_all(parent)?;
+
+    let mut options = fs::OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(token.trim().as_bytes())?;
+    file.write_all(b"\n")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+pub fn clear_github_token_file(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiKeyKind {
     OpenAi,
@@ -73,4 +122,24 @@ pub fn save_ai_key(kind: AiKeyKind, value: &str) -> Result<()> {
 
 pub fn clear_ai_key(kind: AiKeyKind) -> Result<()> {
     clear(kind.account())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clear_github_token_file, load_github_token_file, save_github_token_file};
+
+    #[test]
+    fn github_token_file_round_trips() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("github-token.dev");
+
+        assert_eq!(load_github_token_file(&path).unwrap(), None);
+        save_github_token_file(&path, "  gho_test_token  ").unwrap();
+        assert_eq!(
+            load_github_token_file(&path).unwrap().as_deref(),
+            Some("gho_test_token")
+        );
+        clear_github_token_file(&path).unwrap();
+        assert_eq!(load_github_token_file(&path).unwrap(), None);
+    }
 }

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
-use crate::core::review::ReviewThreadId;
+use crate::core::review::{ReviewDecision, ReviewThreadId};
 use crate::core::vcs::model::{PublishAction, VcsOperation};
 use crate::input::ShortcutCommand;
 use crate::platform::secrets::AiKeyKind;
@@ -309,6 +309,17 @@ pub enum GitHubAction {
     OpenReviewCommentComposer,
     SubmitReviewComment,
     CancelReviewComment,
+    ReplyToReviewThread(ReviewThreadId),
+    EditReviewComment {
+        comment_node_id: String,
+    },
+    DeleteReviewComment {
+        comment_node_id: String,
+    },
+    SubmitReview {
+        decision: ReviewDecision,
+    },
+    DiscardReviewDrafts,
     ToggleReviewThread(ReviewThreadId),
     SetReviewThreadResolved {
         id: ReviewThreadId,

@@ -265,28 +265,71 @@ pub(crate) fn build_review_thread_card(
             // avatar, and the avatar→text gap. Wrapping at this width matches the painted
             // column so lines never run past the card edge.
             let text_w = (card_width - pad * 2.0 - indent - avatar_px - gap).max(40.0);
-            // Parse inline markdown (code/bold/italic/links) into styled spans. The
-            // concatenation of the span texts is the plain body that selection state
-            // keys on (byte offsets, re-wrap stable) and that copy yields.
-            let spans = comment_body_styled_spans(&comment.body, tc);
+            // Segment the body into ordered prose/code blocks. Prose runs reuse the
+            // inline markdown parser (code/bold/italic/links → styled spans); fenced
+            // code becomes a syntax-highlighted code_block. The concatenation of a
+            // prose run's span texts is the plain body that selection state keys on
+            // (byte offsets, re-wrap stable) and that copy yields.
             let source_key = card_source_key(&thread.id, idx);
-            let selected_range = selection
-                .filter(|sel| sel.source_key == source_key)
-                .map(|sel| sel.normalized());
-            let body_element: AnyElement = if spans.is_empty() {
+            let blocks = segment_comment_blocks(&comment.body);
+            let mut block_elements: Vec<AnyElement> = Vec::new();
+            for (block_idx, block) in blocks.into_iter().enumerate() {
+                // Distinct selection key per block so sibling prose runs don't
+                // mirror each other's highlight; block 0 keeps the comment's key.
+                let block_source = if block_idx == 0 {
+                    source_key
+                } else {
+                    source_key ^ (block_idx as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                };
+                let block_selection = selection
+                    .filter(|sel| sel.source_key == block_source)
+                    .map(|sel| sel.normalized());
+                match block {
+                    CommentBlock::Prose(inline) => {
+                        let spans: Vec<StyledSpan> = inline
+                            .into_iter()
+                            .map(|span| inline_span_to_styled(span, tc))
+                            .collect();
+                        if spans.iter().all(|s| s.text.is_empty()) {
+                            continue;
+                        }
+                        block_elements.push(
+                            selectable_rich_text(spans)
+                                .width(text_w)
+                                .size(small)
+                                .color(body_color)
+                                .max_lines(8)
+                                .source(block_source)
+                                .selection(block_selection)
+                                .into_any(),
+                        );
+                    }
+                    CommentBlock::Code { lang, source } => {
+                        if source.is_empty() {
+                            continue;
+                        }
+                        let highlighted = highlight_code_lines(lang.as_deref(), &source, tc);
+                        block_elements.push(
+                            code_block(highlighted)
+                                .width(text_w)
+                                .size(small)
+                                .source(block_source)
+                                .into_any(),
+                        );
+                    }
+                }
+            }
+            let body_element: AnyElement = if block_elements.is_empty() {
                 text("(empty comment)")
                     .size(small)
                     .color(tc.text_muted)
                     .into_any()
             } else {
-                selectable_rich_text(spans)
-                    .width(text_w)
-                    .size(small)
-                    .color(body_color)
-                    .max_lines(8)
-                    .source(source_key)
-                    .selection(selected_range)
-                    .into_any()
+                view! { ui_scale,
+                    <div class="flex-col" gap={Sp::XXS} min_w={0.0}>
+                        {...block_elements}
+                    </div>
+                }
             };
             let reactions = (!comment.reactions.is_empty())
                 .then(|| build_reaction_chips(&comment.reactions, theme, ui_scale));
@@ -326,14 +369,19 @@ pub(crate) fn build_review_thread_card(
     };
 
     let footer = expanded
-        .then(|| review_resolution_action(thread))
-        .flatten()
-        .map(|(target, label)| {
-            view! { ui_scale,
-                // Just the action, sitting below the conversation with a little breathing
-                // room. No divider: a horizontal line inside the bordered card frames the
-                // sparse footer row into what looks like an empty text box.
-                <div class="flex-row items-center" gap={Sp::XS} pt={Sp::XXS}>
+        .then(|| {
+            let mut buttons: Vec<AnyElement> = Vec::new();
+            if thread.permissions.can_reply {
+                buttons.push(view! { ui_scale,
+                    <Button action={GitHubAction::ReplyToReviewThread(thread.id.clone()).into()}
+                            style={ButtonStyle::Subtle}
+                            size={ButtonSize::Compact}>
+                        <Label>{"Reply"}</Label>
+                    </Button>
+                });
+            }
+            if let Some((target, label)) = review_resolution_action(thread) {
+                buttons.push(view! { ui_scale,
                     <Button action={GitHubAction::SetReviewThreadResolved {
                                 id: thread.id.clone(),
                                 resolved: target,
@@ -342,6 +390,18 @@ pub(crate) fn build_review_thread_card(
                             size={ButtonSize::Compact}>
                         <Label>{label}</Label>
                     </Button>
+                });
+            }
+            buttons
+        })
+        .filter(|buttons| !buttons.is_empty())
+        .map(|buttons| {
+            view! { ui_scale,
+                // The thread actions, sitting below the conversation with a little
+                // breathing room. No divider: a horizontal line inside the bordered card
+                // frames the sparse footer row into what looks like an empty text box.
+                <div class="flex-row items-center" gap={Sp::XS} pt={Sp::XXS}>
+                    {...buttons}
                     <spacer />
                 </div>
             }
@@ -820,11 +880,12 @@ pub(crate) struct InlineSpan {
     pub style: InlineStyle,
 }
 
-/// Parses a comment body into styled inline spans for rich rendering: strips HTML
-/// comments and block markers (quotes/lists/headings/fences) but preserves inline
-/// emphasis (`` `code` ``, `**bold**`, `*italic*`, `[link](url)`). Lines are joined
-/// with spaces and the total is length-bounded so a card stays compact.
-pub(crate) fn parse_comment_body_rich(body: &str) -> Vec<InlineSpan> {
+/// Parses a comment body into styled inline spans (no fences): strips HTML comments
+/// and block markers but preserves inline emphasis. Superseded in production by
+/// [`segment_comment_blocks`] (which handles fenced code too); kept under `cfg(test)`
+/// as the focused subject of the inline-parser edge-case tests below.
+#[cfg(test)]
+fn parse_comment_body_rich(body: &str) -> Vec<InlineSpan> {
     const MAX_CHARS: usize = 600;
     let stripped = strip_html_comments(body);
     let mut joined = String::new();
@@ -844,29 +905,187 @@ pub(crate) fn parse_comment_body_rich(body: &str) -> Vec<InlineSpan> {
     parse_inline(&joined)
 }
 
-/// Maps the parsed inline spans to display-styled spans for `selectable_rich_text`:
-/// code → mono on a subtle pill, bold → semibold, italic → italic, link text →
-/// accent color. The plain text (span concatenation) is unchanged, so copy still
-/// yields the body without markers.
-fn comment_body_styled_spans(body: &str, tc: &crate::ui::theme::ThemeColors) -> Vec<StyledSpan> {
-    parse_comment_body_rich(body)
-        .into_iter()
-        .map(|span| {
-            let mut styled = StyledSpan::plain(span.text);
-            match span.style {
-                InlineStyle::Normal => {}
-                InlineStyle::Bold => styled.font_weight = FontWeight::Semibold,
-                InlineStyle::Italic => styled.italic = true,
-                InlineStyle::Code => {
-                    styled.font_kind = FontKind::Mono;
-                    styled.color = Some(tc.text);
-                    styled.pill = Some(tc.element_background);
+/// Maps a parsed inline span to its display style (code/bold/italic/link).
+fn inline_span_to_styled(span: InlineSpan, tc: &crate::ui::theme::ThemeColors) -> StyledSpan {
+    let mut styled = StyledSpan::plain(span.text);
+    match span.style {
+        InlineStyle::Normal => {}
+        InlineStyle::Bold => styled.font_weight = FontWeight::Semibold,
+        InlineStyle::Italic => styled.italic = true,
+        InlineStyle::Code => {
+            styled.font_kind = FontKind::Mono;
+            styled.color = Some(tc.text);
+            styled.pill = Some(tc.element_background);
+        }
+        InlineStyle::Link => styled.color = Some(tc.accent),
+    }
+    styled
+}
+
+/// An ordered block of comment content: inline prose or fenced code.
+#[derive(Debug, Clone)]
+pub(crate) enum CommentBlock {
+    Prose(Vec<InlineSpan>),
+    Code {
+        lang: Option<String>,
+        source: String,
+    },
+}
+
+/// Segments a body into ordered prose/code blocks; ``` / ~~~ fences delimit code
+/// (info string → `lang`). Total visible length is bounded by `MAX_CHARS`.
+pub(crate) fn segment_comment_blocks(body: &str) -> Vec<CommentBlock> {
+    const MAX_CHARS: usize = 600;
+    let stripped = strip_html_comments(body);
+    let mut blocks: Vec<CommentBlock> = Vec::new();
+    let mut prose = String::new();
+    let mut code: Option<(Option<String>, String)> = None;
+    let mut budget = MAX_CHARS;
+
+    let flush_prose = |prose: &mut String, blocks: &mut Vec<CommentBlock>| {
+        if !prose.is_empty() {
+            let spans = parse_inline(&std::mem::take(prose));
+            blocks.push(CommentBlock::Prose(spans));
+        }
+    };
+
+    for line in stripped.lines() {
+        if budget == 0 {
+            break;
+        }
+        let trimmed = line.trim_start();
+        let fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
+        if code.is_some() {
+            if fence {
+                let (lang, source) = code.take().unwrap();
+                blocks.push(CommentBlock::Code { lang, source });
+            } else {
+                let source = &mut code.as_mut().unwrap().1;
+                if !source.is_empty() {
+                    source.push('\n');
                 }
-                InlineStyle::Link => styled.color = Some(tc.accent),
+                let take = line.chars().take(budget).collect::<String>();
+                budget = budget.saturating_sub(take.chars().count());
+                source.push_str(&take);
             }
-            styled
-        })
-        .collect()
+        } else if fence {
+            flush_prose(&mut prose, &mut blocks);
+            let marker = if trimmed.starts_with("```") {
+                "```"
+            } else {
+                "~~~"
+            };
+            let info = trimmed[marker.len()..].trim();
+            let lang = (!info.is_empty()).then(|| info.to_owned());
+            code = Some((lang, String::new()));
+        } else {
+            let cleaned = block_strip_keep_inline(line);
+            if cleaned.is_empty() {
+                continue;
+            }
+            if !prose.is_empty() {
+                prose.push(' ');
+            }
+            let take = cleaned.chars().take(budget).collect::<String>();
+            budget = budget.saturating_sub(take.chars().count());
+            prose.push_str(&take);
+        }
+    }
+    // An unterminated fence still emits its accumulated source as a code block.
+    if let Some((lang, source)) = code.take() {
+        blocks.push(CommentBlock::Code { lang, source });
+    }
+    flush_prose(&mut prose, &mut blocks);
+    blocks
+}
+
+/// Maps a fence tag (`rust`, `ts`, …) to a file extension so phosphor's
+/// extension-only `guess_language` resolves it. `None` for unknown/empty tags.
+fn fence_lang_extension(tag: &str) -> Option<&'static str> {
+    let tag = tag
+        .split(|c: char| c.is_whitespace() || c == ',' || c == ';')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let ext = match tag.as_str() {
+        "rust" | "rs" => "rs",
+        "python" | "py" => "py",
+        "typescript" | "ts" => "ts",
+        "tsx" => "tsx",
+        "javascript" | "js" | "jsx" | "mjs" => "js",
+        "go" | "golang" => "go",
+        "c" | "h" => "c",
+        "cpp" | "c++" | "cc" | "cxx" | "hpp" => "cpp",
+        "json" => "json",
+        "toml" => "toml",
+        "sh" | "bash" | "shell" | "zsh" => "sh",
+        "nix" => "nix",
+        "zig" => "zig",
+        _ => return None,
+    };
+    Some(ext)
+}
+
+/// Highlights fenced code synchronously into one `Vec<StyledSpan>` per source line.
+/// Spans tile each line exactly. Unknown language or parse error → plain mono.
+fn highlight_code_lines(
+    lang: Option<&str>,
+    source: &str,
+    tc: &crate::ui::theme::ThemeColors,
+) -> Vec<Vec<StyledSpan>> {
+    let highlighter = phosphor::Highlighter::new();
+    let language = lang
+        .and_then(fence_lang_extension)
+        .map(|ext| std::path::PathBuf::from(format!("snippet.{ext}")))
+        .and_then(|path| highlighter.guess_language(&path))
+        .filter(|language| highlighter.is_parser_available(*language));
+    let mut kinds = vec![phosphor::HighlightKind::Normal; source.len()];
+    if let Some(language) = language
+        && let Ok(spans) = highlighter.highlight_language(language, source)
+    {
+        for span in spans {
+            let start = (span.offset as usize).min(source.len());
+            let end = (start + span.length as usize).min(source.len());
+            for k in &mut kinds[start..end] {
+                *k = span.kind;
+            }
+        }
+    }
+
+    let mut lines: Vec<Vec<StyledSpan>> = Vec::new();
+    let mut line: Vec<StyledSpan> = Vec::new();
+    let mut run = String::new();
+    let mut run_kind: Option<phosphor::HighlightKind> = None;
+
+    let flush_run = |run: &mut String,
+                     run_kind: &mut Option<phosphor::HighlightKind>,
+                     line: &mut Vec<StyledSpan>| {
+        if let Some(kind) = run_kind.take()
+            && !run.is_empty()
+        {
+            let mut styled = StyledSpan::plain(std::mem::take(run));
+            styled.font_kind = FontKind::Mono;
+            styled.color = Some(syntax_kind_color(kind, tc));
+            line.push(styled);
+        }
+    };
+
+    for (idx, ch) in source.char_indices() {
+        if ch == '\n' {
+            flush_run(&mut run, &mut run_kind, &mut line);
+            lines.push(std::mem::take(&mut line));
+            continue;
+        }
+        let kind = kinds[idx];
+        if run_kind != Some(kind) {
+            flush_run(&mut run, &mut run_kind, &mut line);
+            run_kind = Some(kind);
+        }
+        run.push(ch);
+    }
+    flush_run(&mut run, &mut run_kind, &mut line);
+    lines.push(line);
+    lines
 }
 
 /// Like `clean_markdown_line` but keeps inline markup (only block prefixes and
@@ -1165,6 +1384,7 @@ pub(crate) fn review_context_menu_entries(thread: &ReviewThread) -> Vec<ContextM
     let quote = first.map(markdown_quote).unwrap_or_else(|| "> ".to_owned());
     let can_edit = first.is_some_and(|comment| comment.viewer_can_update);
     let can_delete = first.is_some_and(|comment| comment.viewer_can_delete);
+    let node_id = first.and_then(|comment| comment.backend_node_id.clone());
 
     let mut entries = vec![
         ContextMenuEntry::item(
@@ -1190,17 +1410,21 @@ pub(crate) fn review_context_menu_entries(thread: &ReviewThread) -> Vec<ContextM
             .disabled(),
     ];
 
-    // Author-only actions, surfaced only when the viewer has the permission so the menu
-    // mirrors what they could do on GitHub. Disabled until the edit/hide/delete effects
-    // are wired (no GitHubAction yet) — shown-but-disabled rather than dead-active.
+    // Author-only actions. Edit/Delete need the comment's node id; Hide has no
+    // backend yet, so it stays disabled.
     if can_edit || can_delete {
         entries.push(ContextMenuEntry::separator());
         if can_edit {
-            entries.push(
-                ContextMenuEntry::item("Edit", Action::Noop)
+            entries.push(match node_id.clone() {
+                Some(comment_node_id) => ContextMenuEntry::item(
+                    "Edit",
+                    GitHubAction::EditReviewComment { comment_node_id }.into(),
+                )
+                .icon(lucide::PENCIL),
+                None => ContextMenuEntry::item("Edit", Action::Noop)
                     .icon(lucide::PENCIL)
                     .disabled(),
-            );
+            });
             entries.push(
                 ContextMenuEntry::item("Hide", Action::Noop)
                     .icon(lucide::EYE_OFF)
@@ -1208,12 +1432,18 @@ pub(crate) fn review_context_menu_entries(thread: &ReviewThread) -> Vec<ContextM
             );
         }
         if can_delete {
-            entries.push(
-                ContextMenuEntry::item("Delete", Action::Noop)
+            entries.push(match node_id {
+                Some(comment_node_id) => ContextMenuEntry::item(
+                    "Delete",
+                    GitHubAction::DeleteReviewComment { comment_node_id }.into(),
+                )
+                .icon(lucide::X)
+                .destructive(),
+                None => ContextMenuEntry::item("Delete", Action::Noop)
                     .icon(lucide::X)
                     .destructive()
                     .disabled(),
-            );
+            });
         }
     }
     entries
@@ -1664,5 +1894,57 @@ mod tests {
         let cleaned = clean_comment_body(body);
         assert_eq!(cleaned.len(), 1);
         assert_eq!(cleaned[0], "Heading with code and trailing words");
+    }
+
+    #[test]
+    fn segments_prose_code_prose_in_order() {
+        let body = "before text\n```rust\nlet x = 1;\nlet y = 2;\n```\nafter text";
+        let blocks = segment_comment_blocks(body);
+        assert_eq!(blocks.len(), 3);
+        match &blocks[0] {
+            CommentBlock::Prose(spans) => {
+                let plain: String = spans.iter().map(|s| s.text.as_str()).collect();
+                assert_eq!(plain, "before text");
+            }
+            other => panic!("expected prose, got {other:?}"),
+        }
+        match &blocks[1] {
+            CommentBlock::Code { lang, source } => {
+                assert_eq!(lang.as_deref(), Some("rust"));
+                assert_eq!(source, "let x = 1;\nlet y = 2;");
+            }
+            other => panic!("expected code, got {other:?}"),
+        }
+        match &blocks[2] {
+            CommentBlock::Prose(spans) => {
+                let plain: String = spans.iter().map(|s| s.text.as_str()).collect();
+                assert_eq!(plain, "after text");
+            }
+            other => panic!("expected prose, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn code_lines_tile_their_source_exactly() {
+        // Per-line spans must concatenate back to the exact source line.
+        let theme = Theme::default_dark();
+        let source = "fn main() {\n    let x = 1;\n}";
+        let lines = highlight_code_lines(Some("rust"), source, &theme.colors);
+        let rebuilt: Vec<String> = lines
+            .iter()
+            .map(|line| line.iter().map(|s| s.text.as_str()).collect())
+            .collect();
+        assert_eq!(
+            rebuilt,
+            vec!["fn main() {", "    let x = 1;", "}"],
+            "concatenated spans must equal each source line"
+        );
+        assert!(
+            lines
+                .iter()
+                .flatten()
+                .all(|s| s.font_kind == FontKind::Mono),
+            "every code span renders in the mono font"
+        );
     }
 }

@@ -2682,6 +2682,230 @@ impl IntoAnyElement for SelectableText {
 }
 
 // ---------------------------------------------------------------------------
+// CodeBlock — fenced syntax-highlighted code (no wrapping)
+// ---------------------------------------------------------------------------
+
+/// A rounded panel of monospace code. Each inner `Vec<StyledSpan>` is one source
+/// line; lines are never wrapped, so height is exact (`n*line_height + padding`).
+pub struct CodeBlock {
+    lines: Vec<Vec<StyledSpan>>,
+    width: f32,
+    font_size: f32,
+    source_key: u64,
+}
+
+pub fn code_block(lines: Vec<Vec<StyledSpan>>) -> CodeBlock {
+    CodeBlock {
+        lines,
+        width: 0.0,
+        font_size: 0.0,
+        source_key: 0,
+    }
+}
+
+impl CodeBlock {
+    pub fn width(mut self, w: f32) -> Self {
+        self.width = w;
+        self
+    }
+    pub fn size(mut self, s: f32) -> Self {
+        self.font_size = s;
+        self
+    }
+    pub fn source(mut self, key: u64) -> Self {
+        self.source_key = key;
+        self
+    }
+
+    fn line_height(&self) -> f32 {
+        self.font_size * 1.4
+    }
+}
+
+const CODE_BLOCK_PAD_X: f32 = 10.0;
+const CODE_BLOCK_PAD_Y: f32 = 8.0;
+
+impl Element for CodeBlock {
+    type LayoutState = f32; // line_height
+    type PrepaintState = ();
+
+    fn request_layout(
+        &mut self,
+        engine: &mut LayoutEngine,
+        _cx: &mut ElementContext,
+    ) -> (LayoutId, Self::LayoutState) {
+        let line_height = self.line_height();
+        let n = self.lines.len().max(1);
+        let height = (n as f32 * line_height + CODE_BLOCK_PAD_Y * 2.0).ceil();
+        let id = engine.request_layout(
+            taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::length(self.width),
+                    height: taffy::Dimension::length(height),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+            &[],
+        );
+        (id, line_height)
+    }
+
+    fn prepaint(
+        &mut self,
+        _bounds: Bounds,
+        _layout_state: &mut Self::LayoutState,
+        _engine: &LayoutEngine,
+        _cx: &mut ElementContext,
+    ) {
+    }
+
+    fn paint(
+        &mut self,
+        bounds: Bounds,
+        state: &mut f32,
+        _prepaint_state: &mut (),
+        _engine: &LayoutEngine,
+        scene: &mut Scene,
+        cx: &mut ElementContext,
+    ) {
+        let line_height = *state;
+        let default_color = cx.text_color_override().unwrap_or(cx.theme.colors.text);
+
+        scene.rounded_rect(RoundedRectPrimitive::uniform(
+            bounds,
+            6.0,
+            cx.theme.colors.element_background,
+        ));
+
+        let text_left = bounds.x + CODE_BLOCK_PAD_X;
+        for (i, line) in self.lines.iter().enumerate() {
+            let y = bounds.y + CODE_BLOCK_PAD_Y + i as f32 * line_height;
+            let line_text: String = line.iter().map(|s| s.text.as_str()).collect();
+            let mut off = 0usize;
+            let mut pen = 0.0f32;
+            for span in line {
+                let lo = off;
+                let hi = off + span.text.len();
+                off = hi;
+                let sub = &line_text[lo..hi];
+                if sub.is_empty() {
+                    continue;
+                }
+                let piece_adv = measure_text_advance(
+                    cx.font_system,
+                    sub,
+                    self.font_size,
+                    span.font_kind,
+                    span.font_weight,
+                );
+                let x = text_left + pen;
+
+                // Trim leading whitespace (shapers drop a buffer's leading space)
+                // and re-add it as a positional offset; see SelectableText::paint.
+                let trimmed = sub.trim_start();
+                if !trimmed.is_empty() {
+                    let lead = sub.len() - trimmed.len();
+                    let lead_adv = if lead > 0 {
+                        measure_text_advance(
+                            cx.font_system,
+                            &sub[..lead],
+                            self.font_size,
+                            span.font_kind,
+                            span.font_weight,
+                        )
+                    } else {
+                        0.0
+                    };
+                    let piece_color = span.color.unwrap_or(default_color);
+                    let rect = Rect {
+                        x: x + lead_adv,
+                        y,
+                        width: (self.width - CODE_BLOCK_PAD_X - pen - lead_adv)
+                            .max(piece_adv + 2.0),
+                        height: line_height,
+                    };
+                    if span.italic {
+                        scene.rich_text(RichTextPrimitive {
+                            rect,
+                            spans: vec![RichTextSpan {
+                                text: trimmed.into(),
+                                color: piece_color,
+                                font_weight: Some(span.font_weight),
+                                font_style: Some(FontStyle::Italic),
+                            }]
+                            .into(),
+                            default_color: piece_color,
+                            font_size: self.font_size,
+                            font_kind: span.font_kind,
+                            font_weight: span.font_weight,
+                        });
+                    } else {
+                        scene.text(TextPrimitive {
+                            rect,
+                            text: trimmed.into(),
+                            color: piece_color,
+                            font_size: self.font_size,
+                            font_kind: span.font_kind,
+                            font_weight: span.font_weight,
+                        });
+                    }
+                }
+
+                pen += piece_adv;
+            }
+        }
+
+        if !cx.accessibility_text_hidden() && bounds.width > 0.0 && bounds.height > 0.0 {
+            let body: String = self
+                .lines
+                .iter()
+                .map(|line| line.iter().map(|s| s.text.as_str()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !body.is_empty() {
+                cx.accessibility.push(
+                    AccessibilityNode::new(
+                        format!(
+                            "code-block:{:?}:{:.0}:{:.0}",
+                            self.source_key, bounds.x, bounds.y
+                        ),
+                        AccessibilityRole::Label,
+                        bounds,
+                    )
+                    .label(body),
+                );
+            }
+        }
+    }
+}
+
+impl IntoAnyElement for CodeBlock {
+    fn into_any(self) -> AnyElement {
+        element_into_any(self)
+    }
+}
+
+/// Map a phosphor highlight kind onto the theme's `syntax_*` palette.
+pub fn syntax_kind_color(
+    kind: phosphor::HighlightKind,
+    tc: &crate::ui::theme::ThemeColors,
+) -> Color {
+    use phosphor::HighlightKind::*;
+    match kind {
+        Keyword | Builtin => tc.syntax_keyword,
+        String => tc.syntax_string,
+        Comment | Label | Preprocessor => tc.syntax_comment,
+        Function => tc.syntax_function,
+        Number | Constant => tc.syntax_number,
+        Type | Namespace | Tag => tc.syntax_type,
+        Attribute | Property => tc.syntax_property,
+        Operator | Punctuation => tc.syntax_operator,
+        Normal | Variable => tc.text,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Canvas — custom painting element
 // ---------------------------------------------------------------------------
 

@@ -879,6 +879,29 @@ pub fn build_ui_frame(
                         );
                     }
                 }
+
+                // Submit bar: floats at the viewport bottom while drafts are pending.
+                let (pending, failed) = state.active_review_draft_metrics();
+                if pending > 0 {
+                    let bar_h = (Sz::ROW * ui_scale).round();
+                    let bar_rect = Rect {
+                        x: vp_bounds.x,
+                        y: (vp_bounds.bottom() - bar_h - Sp::SM * ui_scale).max(vp_bounds.y),
+                        width: vp_bounds.width,
+                        height: bar_h,
+                    };
+                    let mut bar =
+                        build_review_submit_bar(theme, ui_scale, bar_rect, pending, failed);
+                    render_element_at(
+                        &mut bar,
+                        &mut scene,
+                        cx,
+                        bar_rect.x,
+                        bar_rect.y,
+                        bar_rect.width,
+                        bar_rect.height,
+                    );
+                }
             }
 
             let continuous_scroll = state.settings.continuous_scroll;
@@ -1096,16 +1119,105 @@ fn build_review_bar(theme: &Theme, ui_scale: f32, bar_rect: Rect) -> AnyElement 
     }
 }
 
+fn build_review_submit_bar(
+    theme: &Theme,
+    ui_scale: f32,
+    bar_rect: Rect,
+    pending: usize,
+    failed: usize,
+) -> AnyElement {
+    use crate::core::review::ReviewDecision;
+    let tc = &theme.colors;
+    let label = if failed > 0 {
+        format!("Submit review ({pending} pending, {failed} failed)")
+    } else {
+        format!("Submit review ({pending} pending)")
+    };
+    view! { ui_scale,
+        <div class="flex-row items-center"
+             w={bar_rect.width} h={bar_rect.height}
+             z_index={55}
+             pr={Sp::SM}>
+            <spacer />
+            <div class="flex-row items-center"
+                 bg={tc.modal_surface}
+                 border_b={tc.border}
+                 border_l={tc.border}
+                 border_r={tc.border}
+                 border_t={tc.border}
+                 rounded={Rad::MD}
+                 shadow_preset={Shadow::DROPDOWN}
+                 on_click={Action::Noop}
+                 gap={Sp::XS}
+                 px={Sp::SM}
+                 py={Sp::XXS}>
+                {text(label).size(theme.metrics.ui_small_font_size).color(tc.text_muted).medium()}
+                <Button action={crate::actions::GitHubAction::SubmitReview { decision: ReviewDecision::Comment }.into()}
+                        style={ButtonStyle::Ghost}
+                        size={ButtonSize::Compact}>
+                    <Icon>{lucide::PENCIL}</Icon>
+                    <Label>{"Comment"}</Label>
+                </Button>
+                <Button action={crate::actions::GitHubAction::SubmitReview { decision: ReviewDecision::Approve }.into()}
+                        style={ButtonStyle::Subtle}
+                        size={ButtonSize::Compact}>
+                    <Icon>{lucide::CHECK}</Icon>
+                    <Label>{"Approve"}</Label>
+                </Button>
+                <Button action={crate::actions::GitHubAction::SubmitReview { decision: ReviewDecision::RequestChanges }.into()}
+                        style={ButtonStyle::Ghost}
+                        size={ButtonSize::Compact}>
+                    <Icon>{lucide::ALERT_CIRCLE}</Icon>
+                    <Label>{"Request changes"}</Label>
+                </Button>
+                <Button action={crate::actions::GitHubAction::DiscardReviewDrafts.into()}
+                        style={ButtonStyle::Danger}
+                        size={ButtonSize::Compact}>
+                    <Icon>{lucide::X}</Icon>
+                    <Label>{"Discard"}</Label>
+                </Button>
+            </div>
+        </div>
+    }
+}
+
 fn build_review_composer(state: &AppState, theme: &Theme, ui_scale: f32, rect: Rect) -> AnyElement {
     let tc = &theme.colors;
     let focused =
         state.focus.get(&state.store) == Some(crate::ui::state::FocusTarget::ReviewCommentEditor);
-    let submitting = state
+    let (submitting, header_label, failed_message) = state
         .github
         .pull_request
         .review_composer
         .with(&state.store, |composer| {
-            composer.status == crate::ui::state::AsyncStatus::Loading
+            let header = if composer.reply_target.is_some() {
+                "Replying to thread".to_owned()
+            } else if composer.edit_target.is_some() {
+                "Editing comment".to_owned()
+            } else if let Some(draft) = composer.draft.as_ref() {
+                let request = &draft.request;
+                let side = match request.side {
+                    crate::core::forge::github::GitHubReviewSide::Left => "old",
+                    crate::core::forge::github::GitHubReviewSide::Right => "new",
+                };
+                let lines = match request.start_line {
+                    Some(start) if start != request.line => {
+                        format!("L{start}-L{}", request.line)
+                    }
+                    _ => format!("L{}", request.line),
+                };
+                format!("{} · {lines} · {side}", request.path)
+            } else {
+                "New comment".to_owned()
+            };
+            let failed_message = (composer.status == crate::ui::state::AsyncStatus::Failed)
+                .then(|| composer.message.clone())
+                .flatten();
+            (
+                composer.status == crate::ui::state::AsyncStatus::Loading,
+                header,
+                failed_message,
+            )
         });
     let submit_icon = if submitting {
         lucide::LOADER
@@ -1137,6 +1249,15 @@ fn build_review_composer(state: &AppState, theme: &Theme, ui_scale: f32, rect: R
         .w_full()
         .flex_1();
 
+    let small = theme.metrics.ui_small_font_size;
+    let failed_row = failed_message.map(|message| {
+        view! { ui_scale,
+            <div class="flex-row w-full">
+                {text(message).size(small).color(tc.status_error)}
+            </div>
+        }
+    });
+
     view! { ui_scale,
         <div class="flex-row"
              w={rect.width} h={rect.height}
@@ -1156,6 +1277,10 @@ fn build_review_composer(state: &AppState, theme: &Theme, ui_scale: f32, rect: R
                  on_click={Action::Noop}
                  p={Sp::SM}
                  gap={Sp::SM}>
+                <div class="flex-row items-center w-full" gap={Sp::XS}>
+                    {text(header_label).size(small).color(tc.text_muted).medium().truncate()}
+                </div>
+                {?failed_row}
                 <div class="flex-1 w-full"
                      min_h={0.0}
                      px={Sp::SM}

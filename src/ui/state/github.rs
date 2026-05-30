@@ -1,5 +1,8 @@
 use crate::actions::GitHubAction;
-use crate::core::review::{ReviewResolution, ReviewThread, ReviewThreadId};
+use crate::core::review::{
+    ReviewAnchor, ReviewDecision, ReviewLineRange, ReviewResolution, ReviewSide, ReviewThread,
+    ReviewThreadId,
+};
 use crate::effects::{Effect, GitHubEffect, UiEffect};
 use crate::events::GitHubEvent;
 use crate::ui::editor::render_doc::{INVALID_U32, RenderLine};
@@ -474,17 +477,40 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
             review: _,
         } => {
             let key: PrKey = (owner, repo, number);
+            // No draft ids on this event: settle every Submitting draft.
             state
                 .github
                 .pull_request
                 .review_sessions
                 .update(&state.store, |sessions| {
                     if let Some(session) = sessions.get_mut(&key) {
+                        let submitting_ids = session
+                            .drafts
+                            .values()
+                            .filter(|draft| {
+                                matches!(
+                                    draft.state,
+                                    crate::core::review::ReviewDraftState::Submitting
+                                )
+                            })
+                            .map(|draft| draft.id)
+                            .collect::<Vec<_>>();
+                        for id in submitting_ids {
+                            session.mark_draft_submitted(id, None);
+                        }
                         session.status = crate::core::review::ReviewSessionStatus::Ready;
                         session.status_message = None;
                     }
                 });
-            vec![
+            state
+                .github
+                .pull_request
+                .review_composer
+                .set(&state.store, ReviewCommentComposerState::default());
+            state.review_comment_editor.request_clear();
+            state.push_info("Review submitted.");
+            let mut effects = save_review_session_effect(state, &key);
+            effects.push(
                 GitHubEffect::FetchPullRequestReviewData {
                     owner: key.0.clone(),
                     repo: key.1.clone(),
@@ -492,7 +518,8 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
                     github_token: state.github_access_token.clone(),
                 }
                 .into(),
-            ]
+            );
+            effects
         }
         GitHubEvent::PullRequestReviewCreateFailed {
             owner,
@@ -501,18 +528,33 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
             message,
         } => {
             let key: PrKey = (owner, repo, number);
+            // Return Submitting drafts to Failed so they reappear and can be resubmitted.
             state
                 .github
                 .pull_request
                 .review_sessions
                 .update(&state.store, |sessions| {
                     if let Some(session) = sessions.get_mut(&key) {
+                        let submitting_ids = session
+                            .drafts
+                            .values()
+                            .filter(|draft| {
+                                matches!(
+                                    draft.state,
+                                    crate::core::review::ReviewDraftState::Submitting
+                                )
+                            })
+                            .map(|draft| draft.id)
+                            .collect::<Vec<_>>();
+                        for id in submitting_ids {
+                            session.mark_draft_failed(id, message.clone());
+                        }
                         session.status = crate::core::review::ReviewSessionStatus::Failed;
                         session.status_message = Some(message.clone());
                     }
                 });
             state.push_error(&message);
-            Vec::new()
+            save_review_session_effect(state, &key)
         }
         GitHubEvent::PullRequestReviewDraftsSubmitted {
             owner,
@@ -1020,6 +1062,15 @@ impl AppState {
             }
             GitHubAction::OpenReviewCommentComposer => self.open_review_comment_composer(),
             GitHubAction::SubmitReviewComment => self.submit_review_comment(),
+            GitHubAction::ReplyToReviewThread(id) => self.open_review_thread_reply(id),
+            GitHubAction::EditReviewComment { comment_node_id } => {
+                self.open_review_comment_edit(comment_node_id)
+            }
+            GitHubAction::DeleteReviewComment { comment_node_id } => {
+                self.delete_review_comment(comment_node_id)
+            }
+            GitHubAction::SubmitReview { decision } => self.submit_review(decision),
+            GitHubAction::DiscardReviewDrafts => self.discard_review_drafts(),
             GitHubAction::CancelReviewComment => {
                 self.github
                     .pull_request
@@ -1306,11 +1357,214 @@ impl AppState {
                 draft: Some(draft),
                 status: AsyncStatus::Ready,
                 message: None,
+                reply_target: None,
+                edit_target: None,
             },
         );
         self.review_comment_editor.request_clear();
         self.set_focus(Some(FocusTarget::ReviewCommentEditor));
         Vec::new()
+    }
+
+    /// Opens the composer in reply mode; submit posts directly (reply drafts can't
+    /// ride a batched review).
+    fn open_review_thread_reply(&mut self, thread_id: ReviewThreadId) -> Vec<Effect> {
+        if self
+            .github_access_token
+            .as_deref()
+            .unwrap_or_default()
+            .is_empty()
+        {
+            self.push_overlay(
+                OverlaySurface::GitHubAuthModal,
+                Some(FocusTarget::AuthPrimaryAction),
+            );
+            self.push_info("Sign in to reply to review threads.");
+            return Vec::new();
+        }
+        self.github.pull_request.review_composer.set(
+            &self.store,
+            ReviewCommentComposerState {
+                draft: None,
+                status: AsyncStatus::Ready,
+                message: None,
+                reply_target: Some(thread_id),
+                edit_target: None,
+            },
+        );
+        self.review_comment_editor.request_clear();
+        self.set_focus(Some(FocusTarget::ReviewCommentEditor));
+        Vec::new()
+    }
+
+    /// Opens the composer prefilled to edit `comment_node_id`; submit updates it.
+    fn open_review_comment_edit(&mut self, comment_node_id: String) -> Vec<Effect> {
+        if self
+            .github_access_token
+            .as_deref()
+            .unwrap_or_default()
+            .is_empty()
+        {
+            self.push_overlay(
+                OverlaySurface::GitHubAuthModal,
+                Some(FocusTarget::AuthPrimaryAction),
+            );
+            self.push_info("Sign in to edit review comments.");
+            return Vec::new();
+        }
+        let Some(key) = self.active_pull_request_key() else {
+            return Vec::new();
+        };
+        let body = self
+            .github
+            .pull_request
+            .review_sessions
+            .with(&self.store, |sessions| {
+                sessions.get(&key).and_then(|session| {
+                    session
+                        .threads
+                        .iter()
+                        .flat_map(|thread| thread.comments.iter())
+                        .find(|comment| {
+                            comment.backend_node_id.as_deref() == Some(comment_node_id.as_str())
+                        })
+                        .map(|comment| comment.body.clone())
+                })
+            })
+            .unwrap_or_default();
+        self.github.pull_request.review_composer.set(
+            &self.store,
+            ReviewCommentComposerState {
+                draft: None,
+                status: AsyncStatus::Ready,
+                message: None,
+                reply_target: None,
+                edit_target: Some(comment_node_id),
+            },
+        );
+        self.review_comment_editor.set_text(&body);
+        self.set_focus(Some(FocusTarget::ReviewCommentEditor));
+        Vec::new()
+    }
+
+    fn delete_review_comment(&mut self, comment_node_id: String) -> Vec<Effect> {
+        let token = match self.github_access_token.clone() {
+            Some(token) if !token.is_empty() => token,
+            _ => {
+                self.push_overlay(
+                    OverlaySurface::GitHubAuthModal,
+                    Some(FocusTarget::AuthPrimaryAction),
+                );
+                self.push_info("Sign in to delete review comments.");
+                return Vec::new();
+            }
+        };
+        let Some((owner, repo, number)) = self.active_pull_request_key() else {
+            return Vec::new();
+        };
+        vec![
+            GitHubEffect::DeletePullRequestReviewCommentGraphql {
+                owner,
+                repo,
+                number,
+                comment_node_id,
+                github_token: Some(token),
+            }
+            .into(),
+        ]
+    }
+
+    /// Submits the pending drafts as one review with `decision`. Marks them
+    /// `Submitting` after building (the builder filters on `Pending`); the
+    /// created/failed handlers settle them.
+    fn submit_review(&mut self, decision: ReviewDecision) -> Vec<Effect> {
+        let token = match self.github_access_token.clone() {
+            Some(token) if !token.is_empty() => token,
+            _ => {
+                self.push_overlay(
+                    OverlaySurface::GitHubAuthModal,
+                    Some(FocusTarget::AuthPrimaryAction),
+                );
+                self.push_info("Sign in to submit a review.");
+                return Vec::new();
+            }
+        };
+        let Some((owner, repo, number)) = self.active_pull_request_key() else {
+            return Vec::new();
+        };
+        let key: PrKey = (owner.clone(), repo.clone(), number);
+
+        let built = self
+            .github
+            .pull_request
+            .review_sessions
+            .with(&self.store, |sessions| {
+                sessions.get(&key).map(|session| {
+                    let request = session.build_github_review_request(decision, None);
+                    let pending_ids = session
+                        .pending_drafts()
+                        .map(|draft| draft.id)
+                        .collect::<Vec<_>>();
+                    (request, pending_ids)
+                })
+            });
+        let Some((request, pending_ids)) = built else {
+            return Vec::new();
+        };
+        let review = match request {
+            Ok(review) => review,
+            Err(error) => {
+                self.push_error(&error.to_string());
+                return Vec::new();
+            }
+        };
+
+        self.github
+            .pull_request
+            .review_sessions
+            .update(&self.store, |sessions| {
+                if let Some(session) = sessions.get_mut(&key) {
+                    for id in &pending_ids {
+                        session.mark_draft_submitting(*id);
+                    }
+                    session.status = crate::core::review::ReviewSessionStatus::Loading;
+                    session.status_message = None;
+                }
+            });
+
+        let mut effects = save_review_session_effect(self, &key);
+        effects.push(
+            GitHubEffect::CreatePullRequestReview {
+                owner,
+                repo,
+                number,
+                github_token: Some(token),
+                review,
+            }
+            .into(),
+        );
+        effects
+    }
+
+    fn discard_review_drafts(&mut self) -> Vec<Effect> {
+        let Some(key) = self.active_pull_request_key() else {
+            return Vec::new();
+        };
+        self.github
+            .pull_request
+            .review_sessions
+            .update(&self.store, |sessions| {
+                if let Some(session) = sessions.get_mut(&key) {
+                    let pending_ids = session
+                        .pending_drafts()
+                        .map(|draft| draft.id)
+                        .collect::<Vec<_>>();
+                    for id in pending_ids {
+                        session.remove_draft(id);
+                    }
+                }
+            });
+        save_review_session_effect(self, &key)
     }
 
     fn submit_review_comment(&mut self) -> Vec<Effect> {
@@ -1331,7 +1585,79 @@ impl AppState {
             }
         };
 
-        let Some(mut draft) = self
+        let (reply_target, edit_target) = self
+            .github
+            .pull_request
+            .review_composer
+            .with(&self.store, |composer| {
+                (composer.reply_target.clone(), composer.edit_target.clone())
+            });
+
+        // Edit mode: update the existing comment in place via GraphQL.
+        if let Some(comment_node_id) = edit_target {
+            let Some((owner, repo, number)) = self.active_pull_request_key() else {
+                return Vec::new();
+            };
+            self.github
+                .pull_request
+                .review_composer
+                .set(&self.store, ReviewCommentComposerState::default());
+            self.review_comment_editor.request_clear();
+            self.set_focus(Some(FocusTarget::Editor));
+            return vec![
+                GitHubEffect::UpdatePullRequestReviewCommentGraphql {
+                    owner,
+                    repo,
+                    number,
+                    comment_node_id,
+                    github_token: Some(token),
+                    body,
+                }
+                .into(),
+            ];
+        }
+
+        // Reply mode: post directly (reply drafts can't be batched).
+        if let Some(thread_id) = reply_target {
+            let Some((owner, repo, number)) = self.active_pull_request_key() else {
+                return Vec::new();
+            };
+            let key: PrKey = (owner.clone(), repo.clone(), number);
+            let thread_node_id =
+                self.github
+                    .pull_request
+                    .review_sessions
+                    .with(&self.store, |sessions| {
+                        sessions
+                            .get(&key)
+                            .and_then(|session| session.thread_node_id(&thread_id))
+                    });
+            let Some(thread_node_id) = thread_node_id else {
+                self.push_error("This review thread cannot be replied to.");
+                return Vec::new();
+            };
+            self.github
+                .pull_request
+                .review_composer
+                .set(&self.store, ReviewCommentComposerState::default());
+            self.review_comment_editor.request_clear();
+            self.set_focus(Some(FocusTarget::Editor));
+            return vec![
+                GitHubEffect::AddPullRequestReviewThreadReply {
+                    owner,
+                    repo,
+                    number,
+                    thread_node_id,
+                    review_node_id: None,
+                    github_token: Some(token),
+                    body,
+                }
+                .into(),
+            ];
+        }
+
+        // Default: stage a pending inline draft for the next batched review.
+        let Some(draft) = self
             .github
             .pull_request
             .review_composer
@@ -1340,26 +1666,31 @@ impl AppState {
         else {
             return Vec::new();
         };
-        draft.request.body = body;
-        let (owner, repo, number) = draft.key.clone();
+        let key = draft.key.clone();
+        let Some(anchor) = review_anchor_from_request(&draft.request) else {
+            self.push_error("Select one or more changed lines on one side of the diff.");
+            return Vec::new();
+        };
+
+        self.github
+            .pull_request
+            .review_sessions
+            .update(&self.store, |sessions| {
+                if let Some(session) = sessions.get_mut(&key) {
+                    session.create_inline_draft(anchor, body);
+                }
+            });
         self.github
             .pull_request
             .review_composer
-            .update(&self.store, |composer| {
-                composer.draft = Some(draft.clone());
-                composer.status = AsyncStatus::Loading;
-                composer.message = None;
-            });
-        vec![
-            GitHubEffect::CreatePullRequestReviewComment {
-                owner,
-                repo,
-                number,
-                github_token: Some(token),
-                comment: draft.request,
-            }
-            .into(),
-        ]
+            .set(&self.store, ReviewCommentComposerState::default());
+        self.review_comment_editor.request_clear();
+        self.editor
+            .line_selection
+            .update(&self.store, |ls| ls.clear());
+        self.set_focus(Some(FocusTarget::Editor));
+        self.push_info("Review comment staged.");
+        save_review_session_effect(self, &key)
     }
 
     fn build_review_comment_draft(&mut self, body: String) -> Option<ReviewCommentDraft> {
@@ -1413,6 +1744,19 @@ fn review_thread_matches_file(thread: &ReviewThread, file: &carbon::FileDiff) ->
         return false;
     };
     file.old_path.as_deref() == Some(path) || file.new_path.as_deref() == Some(path)
+}
+
+/// Rebuilds the inline `ReviewAnchor` from a composed request so it can be staged.
+fn review_anchor_from_request(request: &CreatePullRequestReviewComment) -> Option<ReviewAnchor> {
+    if request.path.is_empty() {
+        return None;
+    }
+    let side = ReviewSide::from(request.side);
+    let line_range = match request.start_line {
+        Some(start) => ReviewLineRange::from_inclusive(start, request.line),
+        None => ReviewLineRange::new(request.line, 1),
+    };
+    Some(ReviewAnchor::inline(request.path.clone(), side, line_range))
 }
 
 fn selected_review_range(

@@ -53,11 +53,8 @@ fn fixture_comment(
     }
 }
 
-/// A deterministic, neutral fixture thread whose comment bodies wrap across
-/// several visual lines. Comment 0 is plain prose (the regression guard for the
-/// selectable-text drag/copy paths); comment 1 carries inline markdown
-/// (code/bold/italic/link) to exercise rich rendering. Unresolved + not collapsed
-/// so the card renders expanded.
+/// Neutral fixture thread: comment 0 plain (drag/copy guard), comment 1 inline
+/// markdown, comment 2 prose + a fenced code block.
 pub fn sample_review_thread() -> ReviewThread {
     let id = ReviewThreadId::github_node("harness-thread-1");
     let anchor = ReviewAnchor::inline(
@@ -71,27 +68,23 @@ pub fn sample_review_thread() -> ReviewThread {
             1001,
             "alpha",
             "2026-01-01T00:00:00Z",
-            "This routine recomputes the layout on every frame even when nothing \
-             changed, which makes scrolling feel heavier than it should on larger \
-             documents. Could we cache the measured height across frames instead?",
+            "This recomputes the layout every frame even when nothing changed, which \
+             makes scrolling heavier than it should be on larger documents.",
         ),
         fixture_comment(
             &id,
             1002,
             "bravo",
             "2026-01-01T00:05:00Z",
-            "Good catch. Prefer `memoize_height()` over recomputing each frame: it \
-             stays **stable** while the card width is *pinned*, so a small dirty flag \
-             is enough to drop the redundant measure pass. See [the perf notes]\
-             (https://example.com/perf) for the trade-offs.",
+            "`memoize_height()` over recompute keeps it **stable** while *pinned*; \
+             see [the notes](https://example.com/perf).",
         ),
         fixture_comment(
             &id,
             1003,
             "alpha",
             "2026-01-01T00:10:00Z",
-            "Agreed. I will wire a per-thread cache keyed by the pinned width and \
-             invalidate it whenever the comment bodies or expansion state change.",
+            "Cache it behind a dirty flag:\n```rust\nfn cached_height(w: u32) -> u16 {\n    cache.entry(w).or_insert(measure(w))\n}\n```",
         ),
     ];
     ReviewThread {
@@ -112,10 +105,8 @@ pub fn sample_review_thread() -> ReviewThread {
     }
 }
 
-/// A sample selection over comment 1's body, spanning from inside the inline-code
-/// run into the following normal text, so the highlight render can be eyeballed
-/// across a mono/UI style boundary. Returns `None` if the fixture lacks the code
-/// text (it shouldn't). Byte offsets index the plain (marker-free) body.
+/// A selection over comment 1 spanning the code run into normal text, for
+/// eyeballing the highlight across a style boundary.
 pub fn sample_card_selection() -> Option<CardTextSelection> {
     let thread = sample_review_thread();
     let key = crate::ui::editor::review::card_source_key(&thread.id, 1);
@@ -131,10 +122,7 @@ pub fn sample_card_selection() -> Option<CardTextSelection> {
     })
 }
 
-/// One painted text run from the scene: a single inline-style piece with its pen
-/// position. `text_pieces` returns these in reading order so geometry questions
-/// ("is there a space between these two words?", "do they overlap?") are answered
-/// numerically instead of by eyeballing an antialiased PNG.
+/// A painted text run with its pen position, for numeric geometry checks.
 #[derive(Debug, Clone)]
 pub struct TextPiece {
     pub x: f32,
@@ -194,9 +182,7 @@ pub fn text_pieces(scene: &Scene) -> Vec<TextPiece> {
     out
 }
 
-/// [`text_pieces`] grouped into visual lines (pieces whose `y` falls within a line
-/// band), each line sorted left-to-right. Use this for any "same line" reasoning so
-/// a left-column avatar initial isn't mistaken for text that follows the header.
+/// [`text_pieces`] grouped into visual lines (by `y` band), each sorted by `x`.
 pub fn text_lines(scene: &Scene) -> Vec<Vec<TextPiece>> {
     let mut lines: Vec<Vec<TextPiece>> = Vec::new();
     for piece in text_pieces(scene) {
@@ -211,13 +197,8 @@ pub fn text_lines(scene: &Scene) -> Vec<Vec<TextPiece>> {
     lines
 }
 
-/// Geometry sibling of `dump_accessibility`: one line per painted text piece with
-/// its position, *measured* advance, and the gap to the next piece on the same
-/// visual line. The gap is the source of truth for spacing — `+N` is a space N px
-/// wide, `+0` means the pieces abut (no space), a negative gap means they overlap.
-/// Reach for this before eyeballing a PNG for whether two glyphs touch. A scene
-/// primitive's `rect.width` is the layout box, not the ink, so the advance is
-/// measured here rather than read off the rect.
+/// Geometry dump: one line per text piece with its measured advance and gap to the
+/// next on the line. Gap `+N` = an N-px space, `+0` = abutting, negative = overlap.
 pub fn dump_text_layout(scene: &Scene, font_system: &mut glyphon::FontSystem) -> String {
     let mut out = String::new();
     for line in text_lines(scene) {
@@ -723,10 +704,7 @@ mod tests {
         );
     }
 
-    /// Rich comment bodies render each inline style as its own scene piece (mono
-    /// code, semibold bold, italic span) while selection/copy keep operating on the
-    /// marker-free plain concatenation — so a drag across a mixed-font line copies
-    /// exactly that text with no backticks/asterisks.
+    /// Inline styles render as distinct scene pieces; drag+Cmd+C copies marker-free text.
     #[test]
     fn rich_comment_body_renders_styled_pieces_and_copies_plain_text() {
         use crate::actions::AppAction;
@@ -789,11 +767,7 @@ mod tests {
         );
     }
 
-    /// Geometry guard: no two text pieces on the same visual line overlap. This is
-    /// the invariant whose absence sent a phantom "merged words" misread chasing
-    /// non-bugs — the gap between adjacent pieces is computed, not eyeballed. A real
-    /// regression that mis-positions a styled piece on top of its neighbour fires
-    /// here; harmless abutting (gap ≈ 0) and normal spaces (gap > 0) pass.
+    /// No two text pieces on the same visual line overlap (computed gap, not eyeballed).
     #[test]
     fn text_pieces_do_not_overlap_on_a_line() {
         let thread = sample_review_thread();
@@ -822,9 +796,7 @@ mod tests {
         }
     }
 
-    /// The rich body's styled pieces sit in source order with real spaces between
-    /// words across the mono/bold/italic boundaries — locks the spacing the layout
-    /// dump now makes inspectable (and that a misread once cast doubt on).
+    /// Styled pieces keep a real space across the mono/bold/italic boundaries.
     #[test]
     fn rich_body_pieces_are_spaced_across_style_boundaries() {
         let thread = sample_review_thread();

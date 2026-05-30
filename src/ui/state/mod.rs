@@ -2676,6 +2676,12 @@ pub struct ReviewCommentComposerState {
     pub draft: Option<ReviewCommentDraft>,
     pub status: AsyncStatus,
     pub message: Option<String>,
+    /// When set, submitting the composer replies to this thread instead of
+    /// creating a new inline draft.
+    pub reply_target: Option<ReviewThreadId>,
+    /// When set, submitting the composer edits this comment (by GraphQL node id)
+    /// instead of creating a new draft.
+    pub edit_target: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2848,6 +2854,26 @@ impl AppState {
 
     pub fn overlays_active_name(&self) -> Option<&'static str> {
         self.overlays_top().map(overlay_name)
+    }
+
+    /// `(pending, failed)` draft counts for the active pull request's review
+    /// session, for the submit bar. Zeroes when no PR/session is active.
+    pub fn active_review_draft_metrics(&self) -> (usize, usize) {
+        let Some(key) = self.active_pull_request_key() else {
+            return (0, 0);
+        };
+        self.github
+            .pull_request
+            .review_sessions
+            .with(&self.store, |sessions| {
+                sessions
+                    .get(&key)
+                    .map(|session| {
+                        let metrics = session.metrics();
+                        (metrics.pending_drafts, metrics.failed_drafts)
+                    })
+                    .unwrap_or((0, 0))
+            })
     }
 
     pub fn reset_picker(&mut self) {

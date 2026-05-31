@@ -891,9 +891,8 @@ fn has_commit_tab(state: &AppState) -> bool {
 }
 
 fn can_select_diff_lines(state: &AppState) -> bool {
-    state.pull_request_review_enabled()
-        || (state.workspace.source.get(&state.store) == WorkspaceSource::Status
-            && !state.settings.continuous_scroll)
+    state.workspace.source.get(&state.store) == WorkspaceSource::Status
+        && !state.settings.continuous_scroll
 }
 
 fn scroll_to_top_action(state: &AppState) -> EditorAction {

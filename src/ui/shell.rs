@@ -898,34 +898,6 @@ pub fn build_ui_frame(
             }
 
             if state.pull_request_review_enabled() {
-                if let EditorDocument::Text { doc, .. } = document {
-                    let has_line_selection = !editor_snap.line_selection.is_empty();
-                    let line_bar_rect = if has_line_selection {
-                        editor.line_selection_bar_rect(doc, &editor_snap)
-                    } else {
-                        None
-                    };
-                    // The composer is rendered inline as a block (above), pushing the
-                    // diff down; so the line action bar shows only when it's closed.
-                    let composer_open = state
-                        .github
-                        .pull_request
-                        .review_composer
-                        .with(&state.store, |composer| composer.draft.is_some());
-                    if !composer_open && let Some(bar_rect) = line_bar_rect {
-                        let mut bar = build_review_bar(theme, ui_scale, bar_rect);
-                        render_element_at(
-                            &mut bar,
-                            &mut scene,
-                            cx,
-                            bar_rect.x,
-                            bar_rect.y,
-                            bar_rect.width,
-                            bar_rect.height,
-                        );
-                    }
-                }
-
                 // Submit bar: floats at the viewport bottom while drafts are pending.
                 let (pending, failed) = state.active_review_draft_metrics();
                 if pending > 0 {
@@ -1162,42 +1134,6 @@ fn populate_continuous_review_blocks(
     }
 }
 
-fn build_review_bar(theme: &Theme, ui_scale: f32, bar_rect: Rect) -> AnyElement {
-    let tc = &theme.colors;
-    view! { ui_scale,
-        <div class="flex-row items-center"
-             w={bar_rect.width} h={bar_rect.height}
-             z_index={50}
-             pr={Sp::SM}>
-            <spacer />
-            <div class="flex-row items-center"
-                 bg={tc.modal_surface}
-                 border_b={tc.border}
-                 border_l={tc.border}
-                 border_r={tc.border}
-                 border_t={tc.border}
-                 rounded={Rad::MD}
-                 shadow_preset={Shadow::DROPDOWN}
-                 on_click={Action::Noop}
-                 gap={Sp::XXS}
-                 px={Sp::XXS}
-                 py={Sp::XXS}>
-                <Button action={crate::actions::GitHubAction::OpenReviewCommentComposer.into()}
-                        style={ButtonStyle::Ghost}
-                        size={ButtonSize::Compact}>
-                    <Icon>{lucide::PENCIL}</Icon>
-                    <Label>{"Comment"}</Label>
-                </Button>
-                <Button action={crate::actions::RepositoryAction::ClearLineSelection.into()}
-                        style={ButtonStyle::Ghost}
-                        size={ButtonSize::Compact}>
-                    <Icon>{lucide::X}</Icon>
-                </Button>
-            </div>
-        </div>
-    }
-}
-
 fn build_review_submit_bar(
     theme: &Theme,
     ui_scale: f32,
@@ -1326,7 +1262,7 @@ pub(crate) fn build_review_composer(
         .focused(focused)
         .focus_target(crate::ui::state::FocusTarget::ReviewCommentEditor)
         .editor_id(2)
-        .font_size(theme.metrics.ui_small_font_size)
+        .font_size(theme.metrics.ui_font_size)
         .text_color(tc.text)
         .cursor(cursor)
         .selection(state.review_comment_editor.selection_rects())
@@ -1336,6 +1272,7 @@ pub(crate) fn build_review_composer(
         .flex_1();
 
     let small = theme.metrics.ui_small_font_size;
+    let base = theme.metrics.ui_font_size;
     let failed_row = failed_message.map(|message| {
         view! { ui_scale,
             <div class="flex-row w-full">
@@ -1349,7 +1286,7 @@ pub(crate) fn build_review_composer(
         view! { ui_scale,
             <Button action={GitHubAction::FormatReviewComment(format).into()}
                     style={ButtonStyle::Ghost}
-                    size={ButtonSize::Compact}
+                    size={ButtonSize::Default}
                     tooltip={tip}>
                 <Icon>{icon}</Icon>
             </Button>
@@ -1384,7 +1321,7 @@ pub(crate) fn build_review_composer(
                  px={Sp::XS}
                  on_click={GitHubAction::SetComposerPreview(to_preview).into()}
                  cursor={CursorHint::Pointer}>
-                {text(label).size(small).medium()
+                {text(label).size(base).medium()
                     .color(if active { tc.text_strong } else { tc.text_muted })}
             </div>
         }
@@ -1412,7 +1349,7 @@ pub(crate) fn build_review_composer(
              p={Sp::SM}
              gap={Sp::XS}>
             <div class="flex-row items-center w-full">
-                {text(header_label).size(small).color(tc.text_strong).medium()}
+                {text(header_label).size(base).color(tc.text_strong).medium()}
             </div>
             {?failed_row}
             <div class="flex-col flex-1 w-full"
@@ -1446,12 +1383,12 @@ pub(crate) fn build_review_composer(
                 <spacer />
                 <Button action={GitHubAction::CancelReviewComment.into()}
                         style={ButtonStyle::Ghost}
-                        size={ButtonSize::Compact}>
+                        size={ButtonSize::Default}>
                     <Label>{"Cancel"}</Label>
                 </Button>
                 <Button action={GitHubAction::SubmitReviewComment.into()}
                         style={ButtonStyle::Filled}
-                        size={ButtonSize::Compact}>
+                        size={ButtonSize::Default}>
                     <Icon>{lucide::CHECK}</Icon>
                     <Label>{submit_label}</Label>
                 </Button>

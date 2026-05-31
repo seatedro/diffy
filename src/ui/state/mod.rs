@@ -9155,7 +9155,6 @@ impl AppState {
                 ls.toggle(hunk_id, carbon::DiffSide::New, line.new_line_index as u32);
             }
             ls.last_toggled_row = Some(row);
-            ls.review_target = None;
         });
     }
 
@@ -9226,7 +9225,6 @@ impl AppState {
                 }
             }
             ls.last_toggled_row = Some(row);
-            ls.review_target = None;
         });
     }
 

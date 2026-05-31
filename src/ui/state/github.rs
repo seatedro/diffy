@@ -1087,6 +1087,9 @@ impl AppState {
                     .pull_request
                     .review_composer
                     .set(&self.store, ReviewCommentComposerState::default());
+                self.editor
+                    .line_selection
+                    .update(&self.store, |selection| selection.clear());
                 self.review_comment_editor.request_clear();
                 self.set_focus(Some(FocusTarget::Editor));
                 Vec::new()
@@ -1370,11 +1373,6 @@ impl AppState {
             return Vec::new();
         }
 
-        let target = target.or_else(|| {
-            self.editor
-                .line_selection
-                .with(&self.store, |selection| selection.review_target.clone())
-        });
         let draft = match target {
             Some(target) => self.build_review_comment_draft_for_target(target, String::new()),
             None => self.build_review_comment_draft(String::new()),

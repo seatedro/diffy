@@ -141,7 +141,6 @@ pub enum RepositoryAction {
     SetLineSelectionFromDocument {
         entries: Vec<LineSelectionKey>,
         last_row: usize,
-        review_target: Option<ReviewCommentTarget>,
     },
     ToggleCurrentLineSelection,
     ToggleCurrentLineSelectionRange,

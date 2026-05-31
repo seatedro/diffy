@@ -126,7 +126,6 @@ pub struct EditorState {
 pub struct LineSelection {
     pub entries: BTreeSet<LineSelectionKey>,
     pub last_toggled_row: Option<usize>,
-    pub review_target: Option<ReviewCommentTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -141,7 +140,6 @@ impl LineSelection {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.last_toggled_row = None;
-        self.review_target = None;
     }
 
     pub fn is_empty(&self) -> bool {

@@ -1359,7 +1359,7 @@ pub(crate) fn build_review_composer(
              p={Sp::MD}
              gap={Sp::SM}>
             <div class="flex-row items-center w-full">
-                {text(header_label).size(base).color(tc.text_strong).bold()}
+                {text(header_label).size(small).color(tc.text_strong).semibold()}
             </div>
             {?failed_row}
             <div class="flex-col flex-1 w-full"

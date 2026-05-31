@@ -2747,7 +2747,7 @@ impl Element for CodeBlock {
                     width: taffy::Dimension::length(self.width),
                     height: taffy::Dimension::length(height),
                 },
-                flex_shrink: 0.0,
+                flex_shrink: 1.0,
                 ..Default::default()
             },
             &[],
@@ -2796,6 +2796,7 @@ impl Element for CodeBlock {
         scene.clip_rounded(bounds, [radius; 4]);
 
         let text_left = bounds.x + pad_x;
+        let text_width = (bounds.width - pad_x * 2.0).max(1.0);
         for (i, line) in self.lines.iter().enumerate() {
             let y = bounds.y + pad_y + i as f32 * line_height;
             let line_text: String = line.iter().map(|s| s.text.as_str()).collect();
@@ -2835,10 +2836,11 @@ impl Element for CodeBlock {
                         0.0
                     };
                     let piece_color = span.color.unwrap_or(default_color);
+                    let remaining = (text_width - pen - lead_adv).max(0.0);
                     let rect = Rect {
                         x: x + lead_adv,
                         y,
-                        width: (self.width - pad_x - pen - lead_adv).max(piece_adv + 2.0),
+                        width: remaining,
                         height: line_height,
                     };
                     if span.italic {

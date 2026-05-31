@@ -365,7 +365,7 @@ pub fn render_review_composer(width: f32, scale: f32, preview: bool) -> Rendered
         .review_comment_editor
         .set_size(&mut font_system, inner_w, 120.0 * scale);
     state.review_comment_editor.set_text(
-        "Prefer `memoize_height()` here — it's **stable** while *pinned*:\n```rust\nfn cached_height(w: u32) -> u16 {\n    cache.entry(w).or_insert(measure(w))\n}\n```",
+        "Prefer `memoize_height()` here — it's **stable** while *pinned*:\n```js\nimport { cachedHeight } from \"./layout\";\n```",
     );
 
     let height = (248.0 * scale).round();

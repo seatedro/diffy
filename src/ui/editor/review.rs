@@ -25,6 +25,7 @@ use crate::ui::shell::CursorHint;
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme};
 use halogen::view;
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 pub(crate) const MAX_VISIBLE_COMMENTS_PER_THREAD: usize = 3;
 pub(crate) const MAX_BODY_LINES_PER_COMMENT: usize = 3;
@@ -304,11 +305,37 @@ pub(crate) fn build_review_thread_card(
                                 .into_any(),
                         );
                     }
+                    CommentBlock::Heading { level, inline } => {
+                        let spans: Vec<StyledSpan> = inline
+                            .into_iter()
+                            .map(|span| {
+                                inline_span_to_styled_with_weight(span, tc, FontWeight::Semibold)
+                            })
+                            .collect();
+                        if spans.iter().all(|s| s.text.is_empty()) {
+                            continue;
+                        }
+                        block_elements.push(
+                            selectable_rich_text(spans)
+                                .width(text_w)
+                                .size(heading_font_size(level, small))
+                                .color(if resolved {
+                                    tc.text_muted
+                                } else {
+                                    tc.text_strong
+                                })
+                                .max_lines(2)
+                                .source(block_source)
+                                .selection(block_selection)
+                                .into_any(),
+                        );
+                    }
                     CommentBlock::Code { lang, source } => {
                         if source.is_empty() {
                             continue;
                         }
-                        let highlighted = highlight_code_lines(lang.as_deref(), &source, tc);
+                        let highlighted =
+                            highlight_code_lines(lang.as_deref(), &source, tc, thread.path());
                         block_elements.push(
                             code_block(highlighted)
                                 .width(text_w)
@@ -976,7 +1003,16 @@ fn parse_comment_body_rich(body: &str) -> Vec<InlineSpan> {
 
 /// Maps a parsed inline span to its display style (code/bold/italic/link).
 fn inline_span_to_styled(span: InlineSpan, tc: &crate::ui::theme::ThemeColors) -> StyledSpan {
+    inline_span_to_styled_with_weight(span, tc, FontWeight::Normal)
+}
+
+fn inline_span_to_styled_with_weight(
+    span: InlineSpan,
+    tc: &crate::ui::theme::ThemeColors,
+    base_weight: FontWeight,
+) -> StyledSpan {
     let mut styled = StyledSpan::plain(span.text);
+    styled.font_weight = base_weight;
     match span.style {
         InlineStyle::Normal => {}
         InlineStyle::Bold => styled.font_weight = FontWeight::Semibold,
@@ -991,108 +1027,419 @@ fn inline_span_to_styled(span: InlineSpan, tc: &crate::ui::theme::ThemeColors) -
     styled
 }
 
-/// An ordered block of comment content: inline prose or fenced code.
+/// An ordered block of comment content: inline prose, heading, or fenced code.
 #[derive(Debug, Clone)]
 pub(crate) enum CommentBlock {
     Prose(Vec<InlineSpan>),
+    Heading {
+        level: u8,
+        inline: Vec<InlineSpan>,
+    },
     Code {
         lang: Option<String>,
         source: String,
     },
 }
 
-/// Segments a body into ordered prose/code blocks; ``` / ~~~ fences delimit code
-/// (info string → `lang`). Total visible length is bounded by `MAX_CHARS`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MarkdownInlineKind {
+    Prose,
+    Heading(u8),
+}
+
+/// Segments a body into ordered markdown blocks. A real markdown parser owns block
+/// structure and inline emphasis; fenced code still feeds Diffy's syntax highlighter.
+/// Total visible length is bounded by `MAX_CHARS`.
 pub(crate) fn segment_comment_blocks(body: &str) -> Vec<CommentBlock> {
     const MAX_CHARS: usize = 600;
     let stripped = strip_html_comments(body);
+    let parser = Parser::new_ext(
+        &stripped,
+        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS,
+    );
     let mut blocks: Vec<CommentBlock> = Vec::new();
-    let mut prose = String::new();
+    let mut inline: Option<(MarkdownInlineKind, Vec<InlineSpan>)> = None;
     let mut code: Option<(Option<String>, String)> = None;
+    let mut list_stack: Vec<Option<u64>> = Vec::new();
+    let mut pending_item_prefix: Option<String> = None;
+    let mut block_quote_depth = 0usize;
+    let mut strong_depth = 0usize;
+    let mut emphasis_depth = 0usize;
+    let mut link_depth = 0usize;
     let mut budget = MAX_CHARS;
 
-    let flush_prose = |prose: &mut String, blocks: &mut Vec<CommentBlock>| {
-        if !prose.is_empty() {
-            let spans = parse_inline(&std::mem::take(prose));
-            blocks.push(CommentBlock::Prose(spans));
+    for event in parser {
+        match event {
+            Event::Start(Tag::Paragraph) => {
+                start_inline_block(
+                    &mut inline,
+                    MarkdownInlineKind::Prose,
+                    &mut budget,
+                    block_quote_depth,
+                    pending_item_prefix.take(),
+                );
+            }
+            Event::End(TagEnd::Paragraph) => flush_inline_block(&mut inline, &mut blocks),
+            Event::Start(Tag::Heading { level, .. }) => {
+                start_inline_block(
+                    &mut inline,
+                    MarkdownInlineKind::Heading(heading_level_u8(level)),
+                    &mut budget,
+                    block_quote_depth,
+                    None,
+                );
+            }
+            Event::End(TagEnd::Heading(_)) => flush_inline_block(&mut inline, &mut blocks),
+            Event::Start(Tag::CodeBlock(kind)) => {
+                flush_inline_block(&mut inline, &mut blocks);
+                let lang = match kind {
+                    CodeBlockKind::Fenced(info) => {
+                        let tag = info
+                            .split(|c: char| c.is_whitespace() || c == ',' || c == ';')
+                            .next()
+                            .unwrap_or("");
+                        (!tag.is_empty()).then(|| tag.to_owned())
+                    }
+                    CodeBlockKind::Indented => None,
+                };
+                code = Some((lang, String::new()));
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                if let Some((lang, mut source)) = code.take() {
+                    if source.ends_with('\n') {
+                        source.pop();
+                        if source.ends_with('\r') {
+                            source.pop();
+                        }
+                    }
+                    blocks.push(CommentBlock::Code { lang, source });
+                }
+            }
+            Event::Start(Tag::List(start)) => list_stack.push(start),
+            Event::End(TagEnd::List(_)) => {
+                list_stack.pop();
+            }
+            Event::Start(Tag::Item) => {
+                pending_item_prefix = Some(next_list_item_prefix(&mut list_stack));
+            }
+            Event::End(TagEnd::Item) => flush_inline_block(&mut inline, &mut blocks),
+            Event::Start(Tag::BlockQuote(_)) => {
+                block_quote_depth = block_quote_depth.saturating_add(1)
+            }
+            Event::End(TagEnd::BlockQuote(_)) => {
+                block_quote_depth = block_quote_depth.saturating_sub(1)
+            }
+            Event::Start(Tag::Strong) => strong_depth = strong_depth.saturating_add(1),
+            Event::End(TagEnd::Strong) => strong_depth = strong_depth.saturating_sub(1),
+            Event::Start(Tag::Emphasis) => emphasis_depth = emphasis_depth.saturating_add(1),
+            Event::End(TagEnd::Emphasis) => emphasis_depth = emphasis_depth.saturating_sub(1),
+            Event::Start(Tag::Link { .. }) => link_depth = link_depth.saturating_add(1),
+            Event::End(TagEnd::Link) => link_depth = link_depth.saturating_sub(1),
+            Event::Text(text) => {
+                if let Some((_, source)) = code.as_mut() {
+                    push_code_text(source, text.as_ref(), &mut budget);
+                } else {
+                    if inline.is_none() {
+                        start_inline_block(
+                            &mut inline,
+                            MarkdownInlineKind::Prose,
+                            &mut budget,
+                            block_quote_depth,
+                            pending_item_prefix.take(),
+                        );
+                    }
+                    let style = current_inline_style(strong_depth, emphasis_depth, link_depth);
+                    push_inline_text(&mut inline, text.as_ref(), style, &mut budget);
+                }
+            }
+            Event::Code(text) => {
+                if inline.is_none() {
+                    start_inline_block(
+                        &mut inline,
+                        MarkdownInlineKind::Prose,
+                        &mut budget,
+                        block_quote_depth,
+                        pending_item_prefix.take(),
+                    );
+                }
+                push_inline_text(&mut inline, text.as_ref(), InlineStyle::Code, &mut budget);
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                if let Some((_, source)) = code.as_mut() {
+                    push_code_text(source, "\n", &mut budget);
+                } else {
+                    push_inline_text(
+                        &mut inline,
+                        " ",
+                        current_inline_style(strong_depth, emphasis_depth, link_depth),
+                        &mut budget,
+                    );
+                }
+            }
+            Event::TaskListMarker(checked) => {
+                if inline.is_none() {
+                    start_inline_block(
+                        &mut inline,
+                        MarkdownInlineKind::Prose,
+                        &mut budget,
+                        block_quote_depth,
+                        pending_item_prefix.take(),
+                    );
+                }
+                let marker = if checked { "[x] " } else { "[ ] " };
+                push_inline_text(&mut inline, marker, InlineStyle::Normal, &mut budget);
+            }
+            Event::Rule => flush_inline_block(&mut inline, &mut blocks),
+            Event::Html(_)
+            | Event::InlineHtml(_)
+            | Event::FootnoteReference(_)
+            | Event::InlineMath(_)
+            | Event::DisplayMath(_) => {}
+            Event::Start(_) | Event::End(_) => {}
         }
-    };
-
-    for line in stripped.lines() {
-        if budget == 0 {
+        if budget == 0 && code.is_none() {
             break;
         }
-        let trimmed = line.trim_start();
-        let fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
-        if code.is_some() {
-            if fence {
-                let (lang, source) = code.take().unwrap();
-                blocks.push(CommentBlock::Code { lang, source });
-            } else {
-                let source = &mut code.as_mut().unwrap().1;
-                if !source.is_empty() {
-                    source.push('\n');
-                }
-                let take = line.chars().take(budget).collect::<String>();
-                budget = budget.saturating_sub(take.chars().count());
-                source.push_str(&take);
-            }
-        } else if fence {
-            flush_prose(&mut prose, &mut blocks);
-            let marker = if trimmed.starts_with("```") {
-                "```"
-            } else {
-                "~~~"
-            };
-            let info = trimmed[marker.len()..].trim();
-            let lang = (!info.is_empty()).then(|| info.to_owned());
-            code = Some((lang, String::new()));
-        } else {
-            let cleaned = block_strip_keep_inline(line);
-            if cleaned.is_empty() {
-                continue;
-            }
-            if !prose.is_empty() {
-                prose.push(' ');
-            }
-            let take = cleaned.chars().take(budget).collect::<String>();
-            budget = budget.saturating_sub(take.chars().count());
-            prose.push_str(&take);
-        }
     }
-    // An unterminated fence still emits its accumulated source as a code block.
+
     if let Some((lang, source)) = code.take() {
         blocks.push(CommentBlock::Code { lang, source });
     }
-    flush_prose(&mut prose, &mut blocks);
+    flush_inline_block(&mut inline, &mut blocks);
     blocks
 }
 
-/// Maps a fence tag (`rust`, `ts`, …) to a file extension so phosphor's
-/// extension-only `guess_language` resolves it. `None` for unknown/empty tags.
-fn fence_lang_extension(tag: &str) -> Option<&'static str> {
+fn heading_level_u8(level: HeadingLevel) -> u8 {
+    match level {
+        HeadingLevel::H1 => 1,
+        HeadingLevel::H2 => 2,
+        HeadingLevel::H3 => 3,
+        HeadingLevel::H4 => 4,
+        HeadingLevel::H5 => 5,
+        HeadingLevel::H6 => 6,
+    }
+}
+
+fn current_inline_style(
+    strong_depth: usize,
+    emphasis_depth: usize,
+    link_depth: usize,
+) -> InlineStyle {
+    if link_depth > 0 {
+        InlineStyle::Link
+    } else if strong_depth > 0 {
+        InlineStyle::Bold
+    } else if emphasis_depth > 0 {
+        InlineStyle::Italic
+    } else {
+        InlineStyle::Normal
+    }
+}
+
+fn start_inline_block(
+    inline: &mut Option<(MarkdownInlineKind, Vec<InlineSpan>)>,
+    kind: MarkdownInlineKind,
+    budget: &mut usize,
+    block_quote_depth: usize,
+    prefix: Option<String>,
+) {
+    *inline = Some((kind, Vec::new()));
+    if block_quote_depth > 0 {
+        push_inline_text(inline, "> ", InlineStyle::Normal, budget);
+    }
+    if let Some(prefix) = prefix {
+        push_inline_text(inline, &prefix, InlineStyle::Normal, budget);
+    }
+}
+
+fn flush_inline_block(
+    inline: &mut Option<(MarkdownInlineKind, Vec<InlineSpan>)>,
+    blocks: &mut Vec<CommentBlock>,
+) {
+    let Some((kind, spans)) = inline.take() else {
+        return;
+    };
+    if spans.iter().all(|span| span.text.trim().is_empty()) {
+        return;
+    }
+    match kind {
+        MarkdownInlineKind::Prose => blocks.push(CommentBlock::Prose(spans)),
+        MarkdownInlineKind::Heading(level) => blocks.push(CommentBlock::Heading {
+            level,
+            inline: spans,
+        }),
+    }
+}
+
+fn push_inline_text(
+    inline: &mut Option<(MarkdownInlineKind, Vec<InlineSpan>)>,
+    text: &str,
+    style: InlineStyle,
+    budget: &mut usize,
+) {
+    if *budget == 0 || text.is_empty() {
+        return;
+    }
+    let Some((_, spans)) = inline.as_mut() else {
+        return;
+    };
+    let take: String = text.chars().take(*budget).collect();
+    *budget = budget.saturating_sub(take.chars().count());
+    if take.is_empty() {
+        return;
+    }
+    if let Some(last) = spans.last_mut()
+        && last.style == style
+    {
+        last.text.push_str(&take);
+        return;
+    }
+    spans.push(InlineSpan { text: take, style });
+}
+
+fn push_code_text(source: &mut String, text: &str, budget: &mut usize) {
+    if *budget == 0 || text.is_empty() {
+        return;
+    }
+    let take: String = text.chars().take(*budget).collect();
+    *budget = budget.saturating_sub(take.chars().count());
+    source.push_str(&take);
+}
+
+fn next_list_item_prefix(list_stack: &mut [Option<u64>]) -> String {
+    match list_stack.last_mut() {
+        Some(Some(next)) => {
+            let current = *next;
+            *next = next.saturating_add(1);
+            format!("{current}. ")
+        }
+        _ => "• ".to_owned(),
+    }
+}
+
+fn heading_font_size(level: u8, small: f32) -> f32 {
+    match level {
+        1 => small * 1.18,
+        2 => small * 1.1,
+        3 => small * 1.04,
+        _ => small,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodeLanguageHint {
+    Rust,
+    Python,
+    TypeScript,
+    TypeScriptTsx,
+    JavaScript,
+    Go,
+    C,
+    Cpp,
+    Json,
+    Toml,
+    Shell,
+    Nix,
+    Zig,
+}
+
+fn code_language_from_tag(tag: &str) -> Option<CodeLanguageHint> {
     let tag = tag
         .split(|c: char| c.is_whitespace() || c == ',' || c == ';')
         .next()
         .unwrap_or("")
         .to_ascii_lowercase();
-    let ext = match tag.as_str() {
-        "rust" | "rs" => "rs",
-        "python" | "py" => "py",
-        "typescript" | "ts" => "ts",
-        "tsx" => "tsx",
-        "javascript" | "js" | "jsx" | "mjs" => "js",
-        "go" | "golang" => "go",
-        "c" | "h" => "c",
-        "cpp" | "c++" | "cc" | "cxx" | "hpp" => "cpp",
-        "json" => "json",
-        "toml" => "toml",
-        "sh" | "bash" | "shell" | "zsh" => "sh",
-        "nix" => "nix",
-        "zig" => "zig",
+    match tag.as_str() {
+        "rust" | "rs" => Some(CodeLanguageHint::Rust),
+        "python" | "py" => Some(CodeLanguageHint::Python),
+        "typescript" | "ts" => Some(CodeLanguageHint::TypeScript),
+        "tsx" => Some(CodeLanguageHint::TypeScriptTsx),
+        "javascript" | "js" | "mjs" => Some(CodeLanguageHint::JavaScript),
+        "jsx" => Some(CodeLanguageHint::TypeScriptTsx),
+        "go" | "golang" => Some(CodeLanguageHint::Go),
+        "c" | "h" => Some(CodeLanguageHint::C),
+        "cpp" | "c++" | "cc" | "cxx" | "hpp" => Some(CodeLanguageHint::Cpp),
+        "json" => Some(CodeLanguageHint::Json),
+        "toml" => Some(CodeLanguageHint::Toml),
+        "sh" | "bash" | "shell" | "zsh" => Some(CodeLanguageHint::Shell),
+        "nix" => Some(CodeLanguageHint::Nix),
+        "zig" => Some(CodeLanguageHint::Zig),
         _ => return None,
-    };
-    Some(ext)
+    }
+}
+
+fn code_language_from_path(path: &str) -> Option<CodeLanguageHint> {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)?
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "rs" => Some(CodeLanguageHint::Rust),
+        "py" | "pyi" => Some(CodeLanguageHint::Python),
+        "ts" => Some(CodeLanguageHint::TypeScript),
+        "tsx" => Some(CodeLanguageHint::TypeScriptTsx),
+        "js" | "mjs" => Some(CodeLanguageHint::JavaScript),
+        "jsx" => Some(CodeLanguageHint::TypeScriptTsx),
+        "go" => Some(CodeLanguageHint::Go),
+        "c" | "h" => Some(CodeLanguageHint::C),
+        "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => Some(CodeLanguageHint::Cpp),
+        "json" => Some(CodeLanguageHint::Json),
+        "toml" => Some(CodeLanguageHint::Toml),
+        "bash" | "sh" | "zsh" => Some(CodeLanguageHint::Shell),
+        "nix" => Some(CodeLanguageHint::Nix),
+        "zig" => Some(CodeLanguageHint::Zig),
+        _ => None,
+    }
+}
+
+fn infer_code_language(source: &str) -> Option<CodeLanguageHint> {
+    let sample = source.trim_start();
+    if sample.starts_with("import ")
+        || sample.starts_with("export ")
+        || sample.contains(" from \"")
+        || sample.contains(" from '")
+        || sample.contains("=>")
+    {
+        return Some(CodeLanguageHint::TypeScript);
+    }
+    if sample.starts_with("fn ") || sample.contains("let mut ") || sample.contains("use crate::") {
+        return Some(CodeLanguageHint::Rust);
+    }
+    if sample.starts_with("def ") || sample.contains(":\n    ") {
+        return Some(CodeLanguageHint::Python);
+    }
+    None
+}
+
+fn code_language_hint(
+    lang: Option<&str>,
+    source: &str,
+    fallback_path: Option<&str>,
+) -> Option<CodeLanguageHint> {
+    lang.and_then(code_language_from_tag)
+        .or_else(|| fallback_path.and_then(code_language_from_path))
+        .or_else(|| infer_code_language(source))
+}
+
+fn highlighter_candidate_paths(hint: CodeLanguageHint) -> &'static [&'static str] {
+    match hint {
+        CodeLanguageHint::Rust => &["snippet.rs"],
+        CodeLanguageHint::Python => &["snippet.py"],
+        CodeLanguageHint::TypeScript => &["snippet.ts"],
+        // The bundled javascript query currently relies on inherited ecma rules;
+        // TypeScript is a useful superset for snippets and gives imports/strings
+        // real colors in review cards.
+        CodeLanguageHint::JavaScript => &["snippet.ts", "snippet.js"],
+        CodeLanguageHint::TypeScriptTsx => &["snippet.tsx", "snippet.ts"],
+        CodeLanguageHint::Go => &["snippet.go"],
+        CodeLanguageHint::C => &["snippet.c"],
+        CodeLanguageHint::Cpp => &["snippet.cpp"],
+        CodeLanguageHint::Json => &["snippet.json"],
+        CodeLanguageHint::Toml => &["snippet.toml"],
+        CodeLanguageHint::Shell => &["snippet.sh"],
+        CodeLanguageHint::Nix => &["snippet.nix"],
+        CodeLanguageHint::Zig => &["snippet.zig"],
+    }
 }
 
 /// Highlights fenced code synchronously into one `Vec<StyledSpan>` per source line.
@@ -1101,24 +1448,39 @@ fn highlight_code_lines(
     lang: Option<&str>,
     source: &str,
     tc: &crate::ui::theme::ThemeColors,
+    fallback_path: Option<&str>,
 ) -> Vec<Vec<StyledSpan>> {
     let highlighter = phosphor::Highlighter::new();
-    let language = lang
-        .and_then(fence_lang_extension)
-        .map(|ext| std::path::PathBuf::from(format!("snippet.{ext}")))
-        .and_then(|path| highlighter.guess_language(&path))
-        .filter(|language| highlighter.is_parser_available(*language));
+    let hint = code_language_hint(lang, source, fallback_path);
+    let language = hint.and_then(|hint| {
+        highlighter_candidate_paths(hint)
+            .iter()
+            .filter_map(|path| highlighter.guess_language(std::path::Path::new(path)))
+            .find(|language| highlighter.is_parser_available(*language))
+    });
     let mut kinds = vec![phosphor::HighlightKind::Normal; source.len()];
+    let mut semantic_tokens = false;
     if let Some(language) = language
         && let Ok(spans) = highlighter.highlight_language(language, source)
     {
         for span in spans {
             let start = (span.offset as usize).min(source.len());
             let end = (start + span.length as usize).min(source.len());
+            if !matches!(
+                span.kind,
+                phosphor::HighlightKind::Normal
+                    | phosphor::HighlightKind::Operator
+                    | phosphor::HighlightKind::Punctuation
+            ) {
+                semantic_tokens = true;
+            }
             for k in &mut kinds[start..end] {
                 *k = span.kind;
             }
         }
+    }
+    if !semantic_tokens && let Some(hint) = hint {
+        apply_fallback_code_highlighting(hint, source, &mut kinds);
     }
 
     let mut lines: Vec<Vec<StyledSpan>> = Vec::new();
@@ -1157,6 +1519,231 @@ fn highlight_code_lines(
     lines
 }
 
+fn apply_fallback_code_highlighting(
+    hint: CodeLanguageHint,
+    source: &str,
+    kinds: &mut [phosphor::HighlightKind],
+) {
+    use phosphor::HighlightKind;
+
+    let bytes = source.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        if ch.is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        if supports_slash_comments(hint) && source[i..].starts_with("//") {
+            let end = source[i..]
+                .find('\n')
+                .map(|offset| i + offset)
+                .unwrap_or(source.len());
+            fill_kind(kinds, i, end, HighlightKind::Comment);
+            i = end;
+            continue;
+        }
+        if supports_slash_comments(hint) && source[i..].starts_with("/*") {
+            let end = source[i + 2..]
+                .find("*/")
+                .map(|offset| i + 2 + offset + 2)
+                .unwrap_or(source.len());
+            fill_kind(kinds, i, end, HighlightKind::Comment);
+            i = end;
+            continue;
+        }
+        if supports_hash_comments(hint) && ch == '#' {
+            let end = source[i..]
+                .find('\n')
+                .map(|offset| i + offset)
+                .unwrap_or(source.len());
+            fill_kind(kinds, i, end, HighlightKind::Comment);
+            i = end;
+            continue;
+        }
+        if ch == '"' || ch == '\'' || (ch == '`' && supports_backtick_strings(hint)) {
+            let end = quoted_string_end(bytes, i, bytes[i]);
+            fill_kind(kinds, i, end, HighlightKind::String);
+            i = end;
+            continue;
+        }
+        if ch.is_ascii_digit() {
+            let end = scan_number(bytes, i);
+            fill_kind(kinds, i, end, HighlightKind::Number);
+            i = end;
+            continue;
+        }
+        if is_ident_start(ch) {
+            let end = scan_identifier(bytes, i);
+            if let Some(kind) = fallback_keyword_kind(hint, &source[i..end]) {
+                fill_kind(kinds, i, end, kind);
+            }
+            i = end;
+            continue;
+        }
+        if is_operator_byte(bytes[i]) {
+            kinds[i] = HighlightKind::Operator;
+            i += 1;
+            continue;
+        }
+        i += source[i..].chars().next().map(char::len_utf8).unwrap_or(1);
+    }
+}
+
+fn fill_kind(
+    kinds: &mut [phosphor::HighlightKind],
+    start: usize,
+    end: usize,
+    kind: phosphor::HighlightKind,
+) {
+    let len = kinds.len();
+    let start = start.min(len);
+    let end = end.min(len);
+    for slot in &mut kinds[start..end] {
+        *slot = kind;
+    }
+}
+
+fn supports_slash_comments(hint: CodeLanguageHint) -> bool {
+    !matches!(
+        hint,
+        CodeLanguageHint::Python | CodeLanguageHint::Shell | CodeLanguageHint::Toml
+    )
+}
+
+fn supports_hash_comments(hint: CodeLanguageHint) -> bool {
+    matches!(
+        hint,
+        CodeLanguageHint::Python | CodeLanguageHint::Shell | CodeLanguageHint::Nix
+    )
+}
+
+fn supports_backtick_strings(hint: CodeLanguageHint) -> bool {
+    matches!(
+        hint,
+        CodeLanguageHint::JavaScript
+            | CodeLanguageHint::TypeScript
+            | CodeLanguageHint::TypeScriptTsx
+    )
+}
+
+fn quoted_string_end(bytes: &[u8], start: usize, quote: u8) -> usize {
+    let mut i = start + 1;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i = (i + 2).min(bytes.len());
+            continue;
+        }
+        if bytes[i] == quote {
+            return i + 1;
+        }
+        i += 1;
+    }
+    bytes.len()
+}
+
+fn scan_number(bytes: &[u8], start: usize) -> usize {
+    let mut i = start;
+    while i < bytes.len()
+        && ((bytes[i] as char).is_ascii_alphanumeric() || matches!(bytes[i], b'.' | b'_'))
+    {
+        i += 1;
+    }
+    i
+}
+
+fn is_ident_start(ch: char) -> bool {
+    ch == '_' || ch == '$' || ch.is_ascii_alphabetic()
+}
+
+fn is_ident_continue(ch: char) -> bool {
+    is_ident_start(ch) || ch.is_ascii_digit()
+}
+
+fn scan_identifier(bytes: &[u8], start: usize) -> usize {
+    let mut i = start;
+    while i < bytes.len() && is_ident_continue(bytes[i] as char) {
+        i += 1;
+    }
+    i
+}
+
+fn is_operator_byte(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'=' | b'+'
+            | b'-'
+            | b'*'
+            | b'/'
+            | b'%'
+            | b'!'
+            | b'<'
+            | b'>'
+            | b'&'
+            | b'|'
+            | b'^'
+            | b'?'
+            | b':'
+            | b'.'
+            | b','
+            | b';'
+            | b'('
+            | b')'
+            | b'{'
+            | b'}'
+            | b'['
+            | b']'
+    )
+}
+
+fn fallback_keyword_kind(hint: CodeLanguageHint, word: &str) -> Option<phosphor::HighlightKind> {
+    use phosphor::HighlightKind;
+    match hint {
+        CodeLanguageHint::JavaScript
+        | CodeLanguageHint::TypeScript
+        | CodeLanguageHint::TypeScriptTsx => match word {
+            "import" | "from" | "export" | "default" | "const" | "let" | "var" | "function"
+            | "return" | "if" | "else" | "for" | "while" | "do" | "switch" | "case" | "break"
+            | "continue" | "class" | "extends" | "implements" | "new" | "try" | "catch"
+            | "finally" | "throw" | "async" | "await" | "yield" | "of" | "in" | "as" | "type"
+            | "interface" | "enum" | "namespace" | "private" | "public" | "protected"
+            | "readonly" | "static" => Some(HighlightKind::Keyword),
+            "true" | "false" | "null" | "undefined" | "NaN" | "Infinity" => {
+                Some(HighlightKind::Constant)
+            }
+            "Array" | "Boolean" | "Error" | "Map" | "Number" | "Object" | "Promise" | "Record"
+            | "Set" | "String" | "Symbol" | "unknown" | "never" | "void" => {
+                Some(HighlightKind::Type)
+            }
+            "console" | "JSON" | "Math" | "Date" | "RegExp" => Some(HighlightKind::Builtin),
+            _ => None,
+        },
+        CodeLanguageHint::Rust => match word {
+            "as" | "async" | "await" | "break" | "const" | "continue" | "crate" | "else"
+            | "enum" | "extern" | "false" | "fn" | "for" | "if" | "impl" | "in" | "let"
+            | "loop" | "match" | "mod" | "move" | "mut" | "pub" | "ref" | "return" | "self"
+            | "Self" | "static" | "struct" | "super" | "trait" | "true" | "type" | "unsafe"
+            | "use" | "where" | "while" => Some(HighlightKind::Keyword),
+            _ => None,
+        },
+        CodeLanguageHint::Python => match word {
+            "and" | "as" | "assert" | "async" | "await" | "break" | "class" | "continue"
+            | "def" | "del" | "elif" | "else" | "except" | "finally" | "for" | "from"
+            | "global" | "if" | "import" | "in" | "is" | "lambda" | "nonlocal" | "not" | "or"
+            | "pass" | "raise" | "return" | "try" | "while" | "with" | "yield" => {
+                Some(HighlightKind::Keyword)
+            }
+            "True" | "False" | "None" => Some(HighlightKind::Constant),
+            _ => None,
+        },
+        CodeLanguageHint::Json => match word {
+            "true" | "false" | "null" => Some(HighlightKind::Constant),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Renders a markdown `body` to the same prose/code-block elements a comment uses,
 /// for the composer's Preview tab. No selection (read-only preview).
 pub(crate) fn render_markdown_body(
@@ -1164,6 +1751,7 @@ pub(crate) fn render_markdown_body(
     theme: &Theme,
     ui_scale: f32,
     text_w: f32,
+    fallback_path: Option<&str>,
 ) -> AnyElement {
     let tc = &theme.colors;
     let small = theme.metrics.ui_small_font_size;
@@ -1187,11 +1775,28 @@ pub(crate) fn render_markdown_body(
                         .into_any(),
                 );
             }
+            CommentBlock::Heading { level, inline } => {
+                let spans: Vec<StyledSpan> = inline
+                    .into_iter()
+                    .map(|s| inline_span_to_styled_with_weight(s, tc, FontWeight::Semibold))
+                    .collect();
+                if spans.iter().all(|s| s.text.is_empty()) {
+                    continue;
+                }
+                els.push(
+                    selectable_rich_text(spans)
+                        .width(text_w)
+                        .size(heading_font_size(level, small))
+                        .color(tc.text_strong)
+                        .max_lines(3)
+                        .into_any(),
+                );
+            }
             CommentBlock::Code { lang, source } => {
                 if source.is_empty() {
                     continue;
                 }
-                let highlighted = highlight_code_lines(lang.as_deref(), &source, tc);
+                let highlighted = highlight_code_lines(lang.as_deref(), &source, tc, fallback_path);
                 els.push(
                     code_block(highlighted)
                         .width(text_w)
@@ -1218,6 +1823,7 @@ pub(crate) fn render_markdown_body(
 
 /// Like `clean_markdown_line` but keeps inline markup (only block prefixes and
 /// fences are removed), so the inline parser can recover emphasis.
+#[cfg(test)]
 fn block_strip_keep_inline(line: &str) -> String {
     let mut s = line.trim();
     if s.starts_with("```") || s.starts_with("~~~") {
@@ -1240,6 +1846,7 @@ fn block_strip_keep_inline(line: &str) -> String {
     collapse_whitespace(strip_ordered_list_marker(s))
 }
 
+#[cfg(test)]
 fn flush_normal(normal: &mut String, spans: &mut Vec<InlineSpan>) {
     if !normal.is_empty() {
         spans.push(InlineSpan {
@@ -1249,6 +1856,7 @@ fn flush_normal(normal: &mut String, spans: &mut Vec<InlineSpan>) {
     }
 }
 
+#[cfg(test)]
 fn find_double(chars: &[char], start: usize, marker: char) -> Option<usize> {
     let mut i = start;
     while i + 1 < chars.len() {
@@ -1262,6 +1870,7 @@ fn find_double(chars: &[char], start: usize, marker: char) -> Option<usize> {
 
 /// Flat inline-markdown scanner: emphasis does not nest (first match wins), and an
 /// unbalanced marker is emitted as literal text.
+#[cfg(test)]
 fn parse_inline(s: &str) -> Vec<InlineSpan> {
     let chars: Vec<char> = s.chars().collect();
     let mut spans: Vec<InlineSpan> = Vec::new();
@@ -2053,11 +2662,70 @@ mod tests {
     }
 
     #[test]
+    fn segments_markdown_headings_with_levels() {
+        let body = "# Top\n\n## Mid with `code`\n\n### Low\n\nplain text";
+        let blocks = segment_comment_blocks(body);
+        assert_eq!(blocks.len(), 4);
+
+        let plain =
+            |inline: &[InlineSpan]| -> String { inline.iter().map(|s| s.text.as_str()).collect() };
+
+        match &blocks[0] {
+            CommentBlock::Heading { level, inline } => {
+                assert_eq!(*level, 1);
+                assert_eq!(plain(inline), "Top");
+            }
+            other => panic!("expected h1, got {other:?}"),
+        }
+        match &blocks[1] {
+            CommentBlock::Heading { level, inline } => {
+                assert_eq!(*level, 2);
+                assert_eq!(plain(inline), "Mid with code");
+                assert!(
+                    inline
+                        .iter()
+                        .any(|s| s.style == InlineStyle::Code && s.text == "code")
+                );
+            }
+            other => panic!("expected h2, got {other:?}"),
+        }
+        match &blocks[2] {
+            CommentBlock::Heading { level, inline } => {
+                assert_eq!(*level, 3);
+                assert_eq!(plain(inline), "Low");
+            }
+            other => panic!("expected h3, got {other:?}"),
+        }
+        match &blocks[3] {
+            CommentBlock::Prose(inline) => assert_eq!(plain(inline), "plain text"),
+            other => panic!("expected prose, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn segments_markdown_lists_into_visible_prefixes() {
+        let body = "- first\n- second\n\n3. third\n4. fourth";
+        let blocks = segment_comment_blocks(body);
+        assert_eq!(blocks.len(), 4);
+        let visible: Vec<String> = blocks
+            .iter()
+            .map(|block| match block {
+                CommentBlock::Prose(inline) => inline.iter().map(|s| s.text.as_str()).collect(),
+                other => panic!("expected prose, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            visible,
+            vec!["• first", "• second", "3. third", "4. fourth"]
+        );
+    }
+
+    #[test]
     fn code_lines_tile_their_source_exactly() {
         // Per-line spans must concatenate back to the exact source line.
         let theme = Theme::default_dark();
         let source = "fn main() {\n    let x = 1;\n}";
-        let lines = highlight_code_lines(Some("rust"), source, &theme.colors);
+        let lines = highlight_code_lines(Some("rust"), source, &theme.colors, None);
         let rebuilt: Vec<String> = lines
             .iter()
             .map(|line| line.iter().map(|s| s.text.as_str()).collect())
@@ -2074,5 +2742,44 @@ mod tests {
                 .all(|s| s.font_kind == FontKind::Mono),
             "every code span renders in the mono font"
         );
+    }
+
+    #[test]
+    fn javascript_code_fence_gets_visible_keyword_and_string_colors() {
+        let theme = Theme::default_dark();
+        let source = "import { x } from \"y\";";
+        let lines = highlight_code_lines(Some("js"), source, &theme.colors, None);
+        let spans: Vec<&StyledSpan> = lines.iter().flatten().collect();
+
+        assert!(spans.iter().any(|span| {
+            span.text == "import" && span.color == Some(theme.colors.syntax_keyword)
+        }));
+        assert!(spans.iter().any(|span| {
+            span.text == "\"y\"" && span.color == Some(theme.colors.syntax_string)
+        }));
+    }
+
+    #[test]
+    fn unlabeled_code_fence_can_fall_back_to_review_file_path() {
+        let theme = Theme::default_dark();
+        let source = "import { x } from \"y\";";
+        let lines = highlight_code_lines(None, source, &theme.colors, Some("src/app.ts"));
+        let spans: Vec<&StyledSpan> = lines.iter().flatten().collect();
+
+        assert!(spans.iter().any(|span| {
+            span.text == "import" && span.color == Some(theme.colors.syntax_keyword)
+        }));
+    }
+
+    #[test]
+    fn typoed_javascript_fence_can_still_infer_from_source() {
+        let theme = Theme::default_dark();
+        let source = "import { x } from \"y\";";
+        let lines = highlight_code_lines(Some("javascrpt"), source, &theme.colors, None);
+        let spans: Vec<&StyledSpan> = lines.iter().flatten().collect();
+
+        assert!(spans.iter().any(|span| {
+            span.text == "import" && span.color == Some(theme.colors.syntax_keyword)
+        }));
     }
 }

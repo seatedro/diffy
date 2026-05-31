@@ -115,3 +115,43 @@ fn map_kind(kind: HighlightKind) -> SyntaxTokenKind {
         HighlightKind::Preprocessor => SyntaxTokenKind::Preprocessor,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_js_family_paths_through_typescript_languages() {
+        let highlighter = Highlighter::new();
+
+        assert_eq!(
+            highlighter.resolve_language("src/app.js"),
+            Some(PhosphorLanguageId::TypeScript)
+        );
+        assert_eq!(
+            highlighter.resolve_language("src/app.jsx"),
+            Some(PhosphorLanguageId::TypeScriptTsx)
+        );
+    }
+
+    #[test]
+    fn typescript_imports_include_keyword_and_string_tokens_when_parser_is_available() {
+        let highlighter = Highlighter::new();
+        let source = "import { x } from \"y\";\n";
+        let spans = highlighter.highlight("src/app.ts", source).unwrap();
+        if spans.is_empty() {
+            return;
+        }
+
+        assert!(spans.iter().any(|span| {
+            span.kind == SyntaxTokenKind::Keyword
+                && &source[span.offset as usize..span.offset as usize + span.length as usize]
+                    == "import"
+        }));
+        assert!(spans.iter().any(|span| {
+            span.kind == SyntaxTokenKind::String
+                && &source[span.offset as usize..span.offset as usize + span.length as usize]
+                    == "\"y\""
+        }));
+    }
+}

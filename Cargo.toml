@@ -73,6 +73,7 @@ arboard = { version = "3", default-features = false, features = ["wayland-data-c
 neo_frizbee = { version = "0.8", features = ["match_end_col"] }
 heed = "0.22"
 parking_lot = "0.12"
+pulldown-cmark = { version = "0.13", default-features = false }
 rayon = "1.10"
 tempfile = "3.14"
 webbrowser = "1.0"

@@ -1221,7 +1221,7 @@ pub(crate) fn build_review_composer(
     let tc = &theme.colors;
     let focused =
         state.focus.get(&state.store) == Some(crate::ui::state::FocusTarget::ReviewCommentEditor);
-    let (header_label, submit_label, failed_message, preview) = state
+    let (header_label, submit_label, failed_message, preview, preview_path) = state
         .github
         .pull_request
         .review_composer
@@ -1249,8 +1249,25 @@ pub(crate) fn build_review_composer(
             let failed_message = (composer.status == crate::ui::state::AsyncStatus::Failed)
                 .then(|| composer.message.clone())
                 .flatten();
-            (header, primary, failed_message, composer.preview)
+            let preview_path = composer
+                .draft
+                .as_ref()
+                .map(|draft| draft.request.path.clone());
+            (
+                header,
+                primary,
+                failed_message,
+                composer.preview,
+                preview_path,
+            )
         });
+    let preview_path = preview_path.or_else(|| {
+        state
+            .workspace
+            .active_file
+            .get(&state.store)
+            .map(|file| file.path)
+    });
     let cursor = CursorSnapshot {
         x: state.review_comment_editor.cursor_pos.x,
         y: state.review_comment_editor.cursor_pos.y,
@@ -1312,12 +1329,18 @@ pub(crate) fn build_review_composer(
             </div>
         }
     });
+    let preview_text_w = {
+        let composer_pad = (Sp::MD * ui_scale).round();
+        let body_pad = (Sp::SM * ui_scale).round();
+        (rect.width - composer_pad * 2.0 - body_pad * 2.0).max(40.0)
+    };
     let body_content: AnyElement = if preview {
         crate::ui::editor::review::render_markdown_body(
             &state.review_comment_editor.text(),
             theme,
             ui_scale,
-            (rect.width - Sp::SM * ui_scale * 4.0).max(40.0),
+            preview_text_w,
+            preview_path.as_deref(),
         )
     } else {
         editor.into_any()

@@ -114,6 +114,16 @@ pub(crate) fn is_parser_available(language: LanguageId) -> bool {
 
 pub(crate) fn guess_language(path: &Path) -> Option<LanguageId> {
     let extension = path.extension().and_then(OsStr::to_str)?;
+    let extension_lower = extension.to_ascii_lowercase();
+    match extension_lower.as_str() {
+        // The javascript pack currently carries query files that depend on
+        // inherited ecma/jsx rules which are not present in installed packs.
+        // TypeScript/TSX are useful supersets for these file types and produce
+        // semantic highlighting for normal JS-family code.
+        "js" | "mjs" => return Some(LanguageId::TypeScript),
+        "jsx" => return Some(LanguageId::TypeScriptTsx),
+        _ => {}
+    }
     LANGUAGE_REGISTRY
         .iter()
         .find(|language| {
@@ -210,7 +220,7 @@ fn compile_language(language: LanguageId) -> Result<CompiledLanguage> {
         return Err(PhosphorError::MissingParser { language });
     };
     let tree_sitter_language = pack.language;
-    let query_source = pack.query_fragments.concat();
+    let query_source = query_source_with_inherits(language, &pack.query_fragments)?;
     let pack_library = Some(pack._library);
 
     let query = ts::Query::new(&tree_sitter_language, &query_source).map_err(|error| {
@@ -437,10 +447,289 @@ fn compact_spans(
     Ok(spans)
 }
 
+fn query_source_with_inherits(language: LanguageId, fragments: &[String]) -> Result<String> {
+    let mut query_source = String::new();
+    for inherited in inherited_query_names(fragments) {
+        append_inherited_query(&mut query_source, language, inherited)?;
+    }
+    query_source.push_str(&fragments.concat());
+    Ok(query_source)
+}
+
+fn append_inherited_query(
+    query_source: &mut String,
+    language: LanguageId,
+    inherited: &str,
+) -> Result<()> {
+    match inherited {
+        "ecma" => {
+            query_source.push_str(ECMA_HIGHLIGHTS);
+            query_source.push('\n');
+        }
+        "typescript" if language == LanguageId::TypeScriptTsx => {
+            let Some(pack) = crate::pack::load_pack(LanguageId::TypeScript).map_err(|error| {
+                PhosphorError::LoadParserPack {
+                    language: LanguageId::TypeScript,
+                    message: error.to_string(),
+                }
+            })?
+            else {
+                return Ok(());
+            };
+            query_source.push_str(&query_source_with_inherits(
+                LanguageId::TypeScript,
+                &pack.query_fragments,
+            )?);
+            query_source.push('\n');
+        }
+        // `jsx` is a real nvim/tree-sitter inheritance target, but current packs
+        // do not ship a separate JSX query file. Keep loading the rest of the
+        // query instead of failing the whole language.
+        "jsx" => {}
+        _ => {}
+    }
+    Ok(())
+}
+
+fn inherited_query_names(fragments: &[String]) -> Vec<&str> {
+    fragments
+        .iter()
+        .flat_map(|fragment| {
+            fragment
+                .lines()
+                .take_while(|line| line.trim_start().starts_with(';'))
+        })
+        .filter_map(|line| line.trim_start().strip_prefix("; inherits:"))
+        .flat_map(|names| names.split(','))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+const ECMA_HIGHLIGHTS: &str = r#"
+; Base JavaScript/ECMAScript captures used by javascript/typescript queries.
+(identifier) @variable
+
+[
+  (property_identifier)
+  (shorthand_property_identifier)
+  (private_property_identifier)
+] @variable.member
+
+(object_pattern
+  (shorthand_property_identifier_pattern) @variable)
+
+(object_pattern
+  (object_assignment_pattern
+    (shorthand_property_identifier_pattern) @variable))
+
+(function_expression
+  name: (identifier) @function)
+
+(function_declaration
+  name: (identifier) @function)
+
+(generator_function
+  name: (identifier) @function)
+
+(generator_function_declaration
+  name: (identifier) @function)
+
+(method_definition
+  name: [
+    (property_identifier)
+    (private_property_identifier)
+  ] @function.method)
+
+(pair
+  key: (property_identifier) @function.method
+  value: (function_expression))
+
+(pair
+  key: (property_identifier) @function.method
+  value: (arrow_function))
+
+(variable_declarator
+  name: (identifier) @function
+  value: (arrow_function))
+
+(variable_declarator
+  name: (identifier) @function
+  value: (function_expression))
+
+(assignment_expression
+  left: (identifier) @function
+  right: (arrow_function))
+
+(assignment_expression
+  left: (identifier) @function
+  right: (function_expression))
+
+(assignment_expression
+  left: (member_expression
+    property: [
+      (property_identifier)
+      (private_property_identifier)
+    ] @function.method)
+  right: (arrow_function))
+
+(assignment_expression
+  left: (member_expression
+    property: [
+      (property_identifier)
+      (private_property_identifier)
+    ] @function.method)
+  right: (function_expression))
+
+(member_expression
+  property: [
+    (property_identifier)
+    (private_property_identifier)
+  ] @variable.member)
+
+(call_expression
+  function: (identifier) @function.call)
+
+(call_expression
+  function: (member_expression
+    property: [
+      (property_identifier)
+      (private_property_identifier)
+    ] @function.method.call))
+
+(new_expression
+  constructor: (identifier) @constructor)
+
+(decorator
+  "@" @attribute
+  (identifier) @attribute)
+
+(decorator
+  "@" @attribute
+  (call_expression
+    (identifier) @attribute))
+
+(decorator
+  "@" @attribute
+  (member_expression
+    (property_identifier) @attribute))
+
+[
+  "import"
+  "from"
+  "export"
+  "default"
+  "const"
+  "let"
+  "var"
+  "function"
+  "return"
+  "if"
+  "else"
+  "for"
+  "while"
+  "do"
+  "switch"
+  "case"
+  "break"
+  "continue"
+  "class"
+  "extends"
+  "new"
+  "try"
+  "catch"
+  "finally"
+  "throw"
+  "await"
+  "async"
+] @keyword
+
+(string) @string
+(template_string) @string
+(number) @number
+(comment) @comment
+
+[
+  ";"
+  "."
+  ","
+  ":"
+] @punctuation.delimiter
+
+[
+  "("
+  ")"
+  "["
+  "]"
+  "{"
+  "}"
+] @punctuation.bracket
+
+[
+  "--"
+  "-"
+  "-="
+  "&&"
+  "+"
+  "++"
+  "+="
+  "&="
+  "/="
+  "**="
+  "<<="
+  "<"
+  "<="
+  "<<"
+  "="
+  "=="
+  "==="
+  "!="
+  "!=="
+  "=>"
+  ">"
+  ">="
+  ">>"
+  "||"
+  "%"
+  "%="
+  "*"
+  "**"
+  ">>>"
+  "&"
+  "|"
+  "^"
+  "??"
+  "*="
+  ">>="
+  ">>>="
+  "^="
+  "|="
+  "&&="
+  "||="
+  "??="
+  "~"
+  "!"
+  "/"
+] @operator
+"#;
+
 fn capture_name_to_highlight_kind(name: &str) -> HighlightKind {
-    if name.starts_with("keyword") {
+    if name.starts_with("variable.builtin") || name.starts_with("function.builtin") {
+        HighlightKind::Builtin
+    } else if name.starts_with("variable.member") {
+        HighlightKind::Property
+    } else if name.starts_with("function") {
+        HighlightKind::Function
+    } else if name.starts_with("module.builtin") {
+        HighlightKind::Builtin
+    } else if name.starts_with("module") {
+        HighlightKind::Namespace
+    } else if name.starts_with("keyword") {
         HighlightKind::Keyword
-    } else if name.starts_with("string") || name.starts_with("escape") {
+    } else if name.starts_with("string")
+        || name.starts_with("escape")
+        || name.starts_with("character")
+    {
         HighlightKind::String
     } else if name.starts_with("comment") {
         HighlightKind::Comment
@@ -448,8 +737,6 @@ fn capture_name_to_highlight_kind(name: &str) -> HighlightKind {
         HighlightKind::Number
     } else if name.starts_with("type") || name.starts_with("constructor") {
         HighlightKind::Type
-    } else if name.starts_with("function") {
-        HighlightKind::Function
     } else if name.starts_with("operator") {
         HighlightKind::Operator
     } else if name.starts_with("punctuation") {

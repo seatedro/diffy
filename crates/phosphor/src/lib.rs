@@ -144,7 +144,7 @@ impl Highlighter {
 
 #[cfg(test)]
 mod tests {
-    use super::Highlighter;
+    use super::{HighlightKind, Highlighter, LanguageId};
     use carbon::{
         DiffSide, ExpansionState, LineId, ProjectionMode, ProjectionOptions, ProjectionRowKind,
         TextByteRange, TextStore, parse_unified_patch, project_file, projected_row_byte_range,
@@ -153,6 +153,9 @@ mod tests {
     #[test]
     fn known_paths_without_installed_packs_return_no_tokens() {
         let highlighter = Highlighter::new();
+        if highlighter.is_parser_available(LanguageId::Json) {
+            return;
+        }
         let spans = highlighter
             .highlight_path(
                 std::path::Path::new("data.json"),
@@ -164,24 +167,34 @@ mod tests {
     }
 
     #[test]
-    fn common_registry_includes_unbundled_languages() {
+    fn common_registry_includes_js_family_aliases() {
         let highlighter = Highlighter::new();
 
         assert_eq!(
             highlighter.guess_language(std::path::Path::new("src/app.ts")),
             Some(super::LanguageId::TypeScript)
         );
+        assert_eq!(
+            highlighter.guess_language(std::path::Path::new("src/app.js")),
+            Some(super::LanguageId::TypeScript)
+        );
+        assert_eq!(
+            highlighter.guess_language(std::path::Path::new("src/app.jsx")),
+            Some(super::LanguageId::TypeScriptTsx)
+        );
         assert!(
             highlighter
                 .common_languages()
                 .any(|language| language == super::LanguageId::TypeScript)
         );
-        assert!(!highlighter.is_parser_available(super::LanguageId::TypeScript));
     }
 
     #[test]
     fn missing_packs_return_no_tokens() {
         let highlighter = Highlighter::new();
+        if highlighter.is_parser_available(LanguageId::TypeScript) {
+            return;
+        }
         let spans = highlighter
             .highlight_path(
                 std::path::Path::new("src/app.ts"),
@@ -205,6 +218,9 @@ mod tests {
     #[test]
     fn text_store_path_highlighting_uses_carbon_text_coordinates() {
         let highlighter = Highlighter::new();
+        if highlighter.is_parser_available(LanguageId::TypeScript) {
+            return;
+        }
         let text = TextStore::from_text("export const greeting = \"hello\";\n");
         let range = text.line_range(LineId(0)).unwrap();
         let spans = highlighter
@@ -212,6 +228,62 @@ mod tests {
             .unwrap();
 
         assert!(spans.is_empty());
+    }
+
+    #[test]
+    fn typescript_highlighting_loads_ecma_inherited_tokens_when_pack_is_available() {
+        let highlighter = Highlighter::new();
+        if !highlighter.is_parser_available(LanguageId::TypeScript) {
+            return;
+        }
+        let source = "import { x } from \"y\";\n";
+        let spans = highlighter
+            .highlight_path(std::path::Path::new("src/app.ts"), source)
+            .unwrap();
+
+        assert!(spans.iter().any(|span| {
+            span.kind == HighlightKind::Keyword
+                && &source[span.offset as usize..span.offset as usize + span.length as usize]
+                    == "import"
+        }));
+        assert!(spans.iter().any(|span| {
+            span.kind == HighlightKind::String
+                && &source[span.offset as usize..span.offset as usize + span.length as usize]
+                    == "\"y\""
+        }));
+    }
+
+    #[test]
+    fn typescript_ecma_inheritance_covers_function_calls_and_properties() {
+        let highlighter = Highlighter::new();
+        if !highlighter.is_parser_available(LanguageId::TypeScript) {
+            return;
+        }
+        let source = "function searchBodyForDeepInternalSearch(req: DeepCanonSearchRequest): SearchBody {\n  const filters = filterForStrategy(req.env, req.strategy);\n  return { query: req.query, stream: false };\n}\n";
+        let spans = highlighter
+            .highlight_path(std::path::Path::new("src/app.ts"), source)
+            .unwrap();
+
+        assert!(spans.iter().any(|span| {
+            span.kind == HighlightKind::Function
+                && &source[span.offset as usize..span.offset as usize + span.length as usize]
+                    == "searchBodyForDeepInternalSearch"
+        }));
+        assert!(spans.iter().any(|span| {
+            span.kind == HighlightKind::Function
+                && &source[span.offset as usize..span.offset as usize + span.length as usize]
+                    == "filterForStrategy"
+        }));
+        assert!(spans.iter().any(|span| {
+            span.kind == HighlightKind::Property
+                && &source[span.offset as usize..span.offset as usize + span.length as usize]
+                    == "query"
+        }));
+        assert!(spans.iter().any(|span| {
+            span.kind == HighlightKind::Type
+                && &source[span.offset as usize..span.offset as usize + span.length as usize]
+                    == "SearchBody"
+        }));
     }
 
     #[test]
@@ -290,7 +362,11 @@ index 1111111..2222222 100644
         let spans = highlighter
             .highlight_text_store_path_ranges(std::path::Path::new("src/app.rs"), new_text, &ranges)
             .unwrap();
-        assert!(spans.is_empty());
+        if highlighter.is_parser_available(LanguageId::Rust) {
+            assert!(!spans.is_empty());
+        } else {
+            assert!(spans.is_empty());
+        }
     }
 
     #[test]

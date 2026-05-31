@@ -13,9 +13,11 @@ struct CachedIcon {
 
 pub fn cache_key(svg: &str, size: u32, color: Color) -> u64 {
     use std::hash::{Hash, Hasher};
+    // Hash the FULL svg: every lucide icon shares the same `<svg xmlns=…>` prefix,
+    // so hashing only a prefix + length collides any two same-length icons (e.g.
+    // italic vs external-link), handing back the wrong cached bitmap.
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    svg.len().hash(&mut h);
-    svg.as_bytes().get(..32.min(svg.len())).hash(&mut h);
+    svg.hash(&mut h);
     size.hash(&mut h);
     color.r.hash(&mut h);
     color.g.hash(&mut h);
@@ -140,4 +142,23 @@ pub mod lucide {
     pub const CODE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>"#;
     pub const LINK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>"#;
     pub const LIST: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h.01"/><path d="M3 18h.01"/><path d="M3 6h.01"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M8 6h13"/></svg>"#;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn distinct_icons_get_distinct_cache_keys() {
+        // ITALIC and EXTERNAL_LINK are the same byte length with the same `<svg …>`
+        // prefix — the exact case a length-or-prefix-only key collided on, handing
+        // back the wrong rasterized bitmap.
+        let c = Color::rgba(200, 200, 200, 255);
+        assert_eq!(lucide::ITALIC.len(), lucide::EXTERNAL_LINK.len());
+        assert_ne!(
+            cache_key(lucide::ITALIC, 16, c),
+            cache_key(lucide::EXTERNAL_LINK, 16, c),
+            "same-length icons must not share a cache key"
+        );
+    }
 }

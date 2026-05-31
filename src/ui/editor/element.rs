@@ -64,6 +64,14 @@ fn scaled(base: f32, scale: f32) -> f32 {
     base * scale
 }
 
+fn content_bounds_for_viewport(bounds: Rect, text_metrics: TextMetrics) -> Rect {
+    bounds.inset(scaled(BASE_VIEWPORT_PADDING, editor_scale(text_metrics)))
+}
+
+fn editor_bottom_padding_px(metrics: DisplayLayoutMetrics) -> u32 {
+    u32::from(metrics.body_row_height_px)
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct EditorLayout {
     pub outer_bounds: Rect,
@@ -436,7 +444,10 @@ impl EditorElement {
                     self.layout_key = Some(key);
                 }
 
-                state.content_height_px = self.summary.content_height_px;
+                state.content_height_px = self
+                    .summary
+                    .content_height_px
+                    .saturating_add(editor_bottom_padding_px(self.metrics));
                 self.rebuild_navigation_positions(state);
                 state.clamp_scroll();
                 self.update_visible_ranges(state);
@@ -503,9 +514,11 @@ impl EditorElement {
     /// card heights before blocks are populated). `text_metrics` is passed explicitly
     /// rather than read from `self` so it does not depend on prepare-ordering.
     pub fn content_width_for_bounds(&self, bounds: Rect, text_metrics: TextMetrics) -> f32 {
-        bounds
-            .inset(scaled(BASE_VIEWPORT_PADDING, editor_scale(text_metrics)))
-            .width
+        content_bounds_for_viewport(bounds, text_metrics).width
+    }
+
+    pub fn content_height_for_bounds(&self, bounds: Rect, text_metrics: TextMetrics) -> f32 {
+        content_bounds_for_viewport(bounds, text_metrics).height
     }
 
     /// Top edge band occupied by the sticky file header, if any, so overlays can avoid
@@ -3279,13 +3292,12 @@ fn build_spatial_layout(
     text_metrics: TextMetrics,
 ) -> EditorLayout {
     let s = editor_scale(text_metrics);
-    let viewport_padding = scaled(BASE_VIEWPORT_PADDING, s);
     let column_gap = scaled(BASE_COLUMN_GAP, s);
     let gutter_padding = scaled(BASE_GUTTER_PADDING, s);
     let scrollbar_width = scaled(BASE_SCROLLBAR_WIDTH, s);
     let scrollbar_margin = scaled(BASE_SCROLLBAR_MARGIN, s);
 
-    let content_bounds = bounds.inset(viewport_padding);
+    let content_bounds = content_bounds_for_viewport(bounds, text_metrics);
     let usable_width = (content_bounds.width - scrollbar_width - scrollbar_margin).max(0.0);
     let gutter_width =
         gutter_digits as f32 * text_metrics.mono_char_width_px + gutter_padding * 2.0;
@@ -4007,7 +4019,8 @@ fn syntax_kind_from_style_id(style_id: u16) -> SyntaxTokenKind {
 mod tests {
     use super::{
         CachedTextLayout, EditorDocument, EditorElement, build_wrapped_rich_text,
-        render_cols_for_width, visible_segment_range_for_block, wrapped_byte_slice,
+        editor_bottom_padding_px, render_cols_for_width, visible_segment_range_for_block,
+        wrapped_byte_slice,
     };
     use crate::core::compare::LayoutMode;
     use crate::render::{FontStyle, FontWeight, Rect, TextMetrics};
@@ -4258,6 +4271,104 @@ mod tests {
             runtime.hit_test_row(&state, body.x + 20.0, body.y + 5.0),
             Some(0)
         );
+    }
+
+    #[test]
+    fn prepare_adds_bottom_padding_to_keep_last_row_above_viewport_clip() {
+        let mut state = EditorState {
+            layout: LayoutMode::Unified,
+            ..EditorState::default()
+        };
+        let doc = RenderDoc {
+            file_metadata: Vec::new(),
+            text_bytes: b"last".to_vec(),
+            style_runs: Vec::new(),
+            lines: vec![RenderLine {
+                kind: RenderRowKind::Context as u8,
+                old_line_no: 1,
+                new_line_no: 1,
+                right_text: ByteRange { start: 0, len: 4 },
+                right_cols: 4,
+                ..RenderLine::default()
+            }],
+        };
+        let mut runtime = EditorElement::default();
+        runtime.prepare(
+            &mut state,
+            EditorDocument::Text {
+                compare_generation: 1,
+                file_index: 0,
+                path: "demo.txt",
+                doc: &doc,
+                show_file_headers: false,
+            },
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 16.0,
+            },
+            TextMetrics::default(),
+        );
+
+        let bottom_padding = editor_bottom_padding_px(runtime.metrics);
+        assert_eq!(
+            state.content_height_px,
+            runtime.summary.content_height_px + bottom_padding
+        );
+        let unpadded_max = runtime
+            .summary
+            .content_height_px
+            .saturating_sub(state.viewport_height_px.max(1));
+        assert_eq!(state.max_scroll_top_px(), unpadded_max + bottom_padding);
+    }
+
+    #[test]
+    fn preprepare_content_height_matches_prepared_viewport_height() {
+        let mut state = EditorState {
+            layout: LayoutMode::Unified,
+            ..EditorState::default()
+        };
+        let doc = RenderDoc {
+            file_metadata: Vec::new(),
+            text_bytes: b"last".to_vec(),
+            style_runs: Vec::new(),
+            lines: vec![RenderLine {
+                kind: RenderRowKind::Context as u8,
+                old_line_no: 1,
+                new_line_no: 1,
+                right_text: ByteRange { start: 0, len: 4 },
+                right_cols: 4,
+                ..RenderLine::default()
+            }],
+        };
+        let mut runtime = EditorElement::default();
+        let bounds = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 600.0,
+        };
+        let text_metrics = TextMetrics::default();
+        let expected_height = runtime
+            .content_height_for_bounds(bounds, text_metrics)
+            .max(0.0)
+            .round() as u32;
+
+        runtime.prepare(
+            &mut state,
+            EditorDocument::Text {
+                compare_generation: 1,
+                file_index: 0,
+                path: "demo.txt",
+                doc: &doc,
+                show_file_headers: false,
+            },
+            bounds,
+            text_metrics,
+        );
+
+        assert_eq!(state.viewport_height_px, expected_height);
     }
 
     #[test]

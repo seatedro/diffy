@@ -64,7 +64,8 @@ use crate::platform::startup::{GitHubTokenStore, StartupOptions};
 use crate::ui::components::ContextMenuState;
 use crate::ui::design::{Sp, Sz};
 use crate::ui::editor::render_doc::{
-    CarbonStyleOverlays, RenderDoc, build_placeholder_render_doc, build_render_doc_from_carbon,
+    CarbonStyleOverlays, RenderDoc, RenderLine, RenderRowKind, build_placeholder_render_doc,
+    build_render_doc_from_carbon,
 };
 use crate::ui::editor::state::{EditorState, EditorStateStore, SearchMatch};
 use crate::ui::icons::lucide;
@@ -87,6 +88,7 @@ const COMPARE_WORKING_SET_MIN_FILES: usize = 24;
 const COMPARE_WORKING_SET_BYTE_BUDGET: usize = 64 * 1024 * 1024;
 const COMPARE_WORKING_SET_PREFETCH_PAGES: u32 = 3;
 const COMPARE_WORKING_SET_TRAILING_PAGES: u32 = 1;
+const CONTINUOUS_BOTTOM_ANCHOR_TOLERANCE_PX: u32 = 2;
 
 fn build_pr_palette_entry(
     cache: &HashMap<PrKey, PrCacheEntry>,
@@ -469,7 +471,10 @@ pub struct ViewportDocument {
     pub generation: u64,
     pub start_index: usize,
     pub start_offset_px: u32,
+    pub scroll_top_px: u32,
     pub slot_indices: Vec<usize>,
+    pub slot_item_ids: Vec<VirtualDiffItemId>,
+    pub stream_items: Vec<VirtualDiffStreamItem>,
     pub slot_loading: Vec<bool>,
     pub path: String,
 }
@@ -482,7 +487,14 @@ impl ViewportDocument {
             generation,
             start_index: file_index,
             start_offset_px: 0,
+            scroll_top_px: 0,
             slot_indices: vec![file_index],
+            slot_item_ids: vec![VirtualDiffItemId::file(
+                WorkspaceSource::None,
+                generation,
+                file_index,
+            )],
+            stream_items: Vec::new(),
             slot_loading: vec![false],
             path,
         }
@@ -491,6 +503,124 @@ impl ViewportDocument {
     pub fn is_continuous(&self) -> bool {
         self.mode == ViewportDocumentMode::Continuous
     }
+
+    pub fn insert_stream_item(&mut self, item: VirtualDiffStreamItem) {
+        let index = self
+            .stream_items
+            .partition_point(|existing| existing.sort_key <= item.sort_key);
+        self.stream_items.insert(index, item);
+    }
+}
+
+fn virtual_stream_item_kind(
+    slot: &ViewportSlotKey,
+    line: &RenderLine,
+) -> Option<VirtualDiffItemKind> {
+    match line.row_kind() {
+        RenderRowKind::FileHeader => Some(VirtualDiffItemKind::FileHeader),
+        RenderRowKind::HunkSeparator
+            if matches!(slot.kind, ViewportSlotKind::Loading) || line.hunk_index < 0 =>
+        {
+            Some(VirtualDiffItemKind::LoadingPlaceholder)
+        }
+        RenderRowKind::HunkSeparator => Some(VirtualDiffItemKind::Hunk),
+        RenderRowKind::Context
+        | RenderRowKind::Added
+        | RenderRowKind::Removed
+        | RenderRowKind::Modified => Some(VirtualDiffItemKind::DiffRow),
+        RenderRowKind::Block => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VirtualDiffItemKind {
+    File,
+    FileHeader,
+    Hunk,
+    DiffRow,
+    ReviewThread,
+    ReviewComment,
+    Composer,
+    LoadingPlaceholder,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VirtualDiffItemId {
+    pub source: WorkspaceSource,
+    pub generation: u64,
+    pub kind: VirtualDiffItemKind,
+    pub index: usize,
+    pub ordinal: u32,
+    pub stable_key: u64,
+}
+
+impl VirtualDiffItemId {
+    fn file(source: WorkspaceSource, generation: u64, index: usize) -> Self {
+        Self {
+            source,
+            generation,
+            kind: VirtualDiffItemKind::File,
+            index,
+            ordinal: 0,
+            stable_key: 0,
+        }
+    }
+
+    pub fn new(
+        source: WorkspaceSource,
+        generation: u64,
+        kind: VirtualDiffItemKind,
+        index: usize,
+        ordinal: u32,
+        stable_key: u64,
+    ) -> Self {
+        Self {
+            source,
+            generation,
+            kind,
+            index,
+            ordinal,
+            stable_key,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VirtualDiffStreamItem {
+    pub id: VirtualDiffItemId,
+    pub sort_key: u64,
+    pub estimated_height_px: u32,
+    pub measured_height_px: Option<u32>,
+}
+
+impl VirtualDiffStreamItem {
+    pub fn new(
+        id: VirtualDiffItemId,
+        sort_key: u64,
+        estimated_height_px: u32,
+        measured_height_px: Option<u32>,
+    ) -> Self {
+        Self {
+            id,
+            sort_key,
+            estimated_height_px,
+            measured_height_px,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewportAnchorBias {
+    PreserveTop,
+    PreserveBottom,
+    FollowEnd,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewportAnchor {
+    pub item_id: VirtualDiffItemId,
+    pub intra_item_offset_px: u32,
+    pub bias: ViewportAnchorBias,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1522,7 +1652,7 @@ impl AppState {
             .file_cache_loading
             .set(&self.store, HashMap::new());
         self.viewport_document_cache = None;
-        self.last_continuous_scroll_top_px = None;
+        self.last_virtual_scroll_top_px = None;
         self.file_working_set.reset();
     }
 
@@ -3188,6 +3318,153 @@ impl FileHeightIndex {
     }
 }
 
+#[derive(Debug, Default)]
+struct VirtualDiffDocument {
+    source: WorkspaceSource,
+    generation: u64,
+    file_count: usize,
+    height_index: FileHeightIndex,
+}
+
+impl VirtualDiffDocument {
+    fn sync_identity(
+        &mut self,
+        source: WorkspaceSource,
+        generation: u64,
+        file_count: usize,
+    ) -> bool {
+        let changed =
+            self.source != source || self.generation != generation || self.file_count != file_count;
+        if changed {
+            self.source = source;
+            self.generation = generation;
+            self.file_count = file_count;
+            self.height_index.clear();
+        }
+        changed
+    }
+
+    fn clear(&mut self) {
+        self.source = WorkspaceSource::None;
+        self.generation = 0;
+        self.file_count = 0;
+        self.height_index.clear();
+    }
+
+    fn rebuild_heights(&mut self, heights: Vec<u32>) {
+        self.file_count = heights.len();
+        self.height_index.rebuild(heights);
+    }
+
+    fn item_id(&self, index: usize) -> Option<VirtualDiffItemId> {
+        (index < self.file_count)
+            .then(|| VirtualDiffItemId::file(self.source, self.generation, index))
+    }
+
+    fn anchor_is_current(&self, anchor: ViewportAnchor) -> bool {
+        anchor.item_id.source == self.source
+            && anchor.item_id.generation == self.generation
+            && anchor.item_id.kind == VirtualDiffItemKind::File
+            && anchor.item_id.index < self.file_count
+    }
+
+    fn len(&self) -> usize {
+        self.height_index.len()
+    }
+
+    fn total_u32(&self) -> u32 {
+        self.height_index.total_u32()
+    }
+
+    fn prefix_u32(&self, index: usize) -> u32 {
+        self.height_index.prefix_u32(index)
+    }
+
+    fn locate(&self, target_px: u32) -> Option<(usize, u32)> {
+        self.height_index.locate(target_px)
+    }
+
+    fn height_at(&self, index: usize) -> u32 {
+        self.height_index.height_at(index)
+    }
+
+    fn update_height(&mut self, index: usize, height: u32) {
+        self.height_index.update(index, height);
+    }
+}
+
+#[derive(Debug, Default)]
+struct VirtualScrollModel {
+    anchor: Option<ViewportAnchor>,
+}
+
+impl VirtualScrollModel {
+    fn clear(&mut self) {
+        self.anchor = None;
+    }
+
+    fn set_anchor(&mut self, anchor: ViewportAnchor) {
+        self.anchor = Some(anchor);
+    }
+}
+
+const VIRTUAL_STREAM_SORT_STRIDE: u64 = 1024;
+const VIRTUAL_STREAM_ROW_OFFSET: u64 = 512;
+const VIRTUAL_STREAM_BLOCK_BELOW_OFFSET: u64 = 768;
+
+fn virtual_row_sort_key(line_index: usize) -> u64 {
+    (line_index as u64)
+        .saturating_mul(VIRTUAL_STREAM_SORT_STRIDE)
+        .saturating_add(VIRTUAL_STREAM_ROW_OFFSET)
+}
+
+pub fn virtual_block_below_sort_key(anchor_line_index: u32, block_order: usize) -> u64 {
+    u64::from(anchor_line_index)
+        .saturating_mul(VIRTUAL_STREAM_SORT_STRIDE)
+        .saturating_add(VIRTUAL_STREAM_BLOCK_BELOW_OFFSET)
+        .saturating_add(block_order.min(255) as u64)
+}
+
+pub fn stable_virtual_key(text: &str) -> u64 {
+    let mut key = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in text.as_bytes() {
+        key ^= u64::from(*byte);
+        key = key.wrapping_mul(0x100_0000_01b3);
+    }
+    key
+}
+
+fn estimated_virtual_item_height_px(kind: VirtualDiffItemKind) -> u32 {
+    match kind {
+        VirtualDiffItemKind::File => 192,
+        VirtualDiffItemKind::FileHeader => 40,
+        VirtualDiffItemKind::Hunk => 28,
+        VirtualDiffItemKind::DiffRow => 24,
+        VirtualDiffItemKind::ReviewThread => 160,
+        VirtualDiffItemKind::ReviewComment => 96,
+        VirtualDiffItemKind::Composer => 248,
+        VirtualDiffItemKind::LoadingPlaceholder => 48,
+    }
+}
+
+fn virtual_row_stable_key(line: &RenderLine, local_ordinal: u32) -> u64 {
+    let mut key = u64::from(line.kind);
+    key = key
+        .wrapping_mul(1_099_511_628_211)
+        .wrapping_add(line.hunk_index as i64 as u64);
+    key = key
+        .wrapping_mul(1_099_511_628_211)
+        .wrapping_add(u64::from(line.old_line_no));
+    key = key
+        .wrapping_mul(1_099_511_628_211)
+        .wrapping_add(u64::from(line.new_line_no));
+    key = key
+        .wrapping_mul(1_099_511_628_211)
+        .wrapping_add(line.line_index as i64 as u64);
+    key.wrapping_mul(1_099_511_628_211)
+        .wrapping_add(u64::from(local_ordinal))
+}
+
 fn sparse_height_index_parts(heights: &[u32]) -> Option<(u32, BTreeMap<usize, u32>, u64)> {
     if heights.len() < FILE_HEIGHT_SPARSE_MIN_COUNT {
         return None;
@@ -3371,10 +3648,11 @@ pub struct AppState {
     pub theme_preview_original: Signal<Option<String>>,
     pub github_access_token: Option<String>,
     viewport_document_cache: Option<ViewportDocumentCache>,
-    file_height_index: FileHeightIndex,
+    virtual_diff_document: VirtualDiffDocument,
+    virtual_scroll: VirtualScrollModel,
     file_working_set: FileWorkingSet,
     syntax_requests: SyntaxRequestTracker,
-    last_continuous_scroll_top_px: Option<u32>,
+    last_virtual_scroll_top_px: Option<u32>,
 }
 
 impl Default for AppState {
@@ -3454,10 +3732,11 @@ impl Default for AppState {
             theme_preview_original,
             github_access_token: None,
             viewport_document_cache: None,
-            file_height_index: FileHeightIndex::default(),
+            virtual_diff_document: VirtualDiffDocument::default(),
+            virtual_scroll: VirtualScrollModel::default(),
             file_working_set: FileWorkingSet::default(),
             syntax_requests: SyntaxRequestTracker::default(),
-            last_continuous_scroll_top_px: None,
+            last_virtual_scroll_top_px: None,
         }
     }
 }
@@ -3624,10 +3903,11 @@ impl AppState {
             theme_preview_original,
             github_access_token: None,
             viewport_document_cache: None,
-            file_height_index: FileHeightIndex::default(),
+            virtual_diff_document: VirtualDiffDocument::default(),
+            virtual_scroll: VirtualScrollModel::default(),
             file_working_set: FileWorkingSet::default(),
             syntax_requests: SyntaxRequestTracker::default(),
-            last_continuous_scroll_top_px: None,
+            last_virtual_scroll_top_px: None,
         };
         let seed_prompt = if state.settings.ai_steering_prompt.trim().is_empty() {
             crate::ai::DEFAULT_STEERING_PROMPT
@@ -8542,6 +8822,7 @@ impl AppState {
             let target = self
                 .file_start_offset_px(index)
                 .min(self.global_max_scroll_top_px());
+            self.set_viewport_anchor_for_global(target, ViewportAnchorBias::PreserveTop);
             self.workspace.global_scroll_top_px.set(&self.store, target);
         }
         self.select_file_inner(index, reveal)
@@ -9407,7 +9688,9 @@ impl AppState {
         self.workspace
             .viewport_scrollbar_drag
             .set(&self.store, None);
-        self.file_height_index.clear();
+        self.virtual_diff_document.clear();
+        self.virtual_scroll.clear();
+        self.last_virtual_scroll_top_px = None;
     }
 
     fn reset_file_scroll_layout(&mut self) {
@@ -9423,11 +9706,22 @@ impl AppState {
         self.workspace
             .viewport_scrollbar_drag
             .set(&self.store, None);
+        self.virtual_scroll.clear();
+        self.last_virtual_scroll_top_px = None;
         self.recompute_file_scroll_total_height_px();
     }
 
     pub fn recompute_file_scroll_total_height_px(&mut self) {
         let count = self.workspace_file_count();
+        let source = self.workspace.source.get(&self.store);
+        let generation = self.workspace_render_generation();
+        if self
+            .virtual_diff_document
+            .sync_identity(source, generation, count)
+        {
+            self.virtual_scroll.clear();
+            self.last_virtual_scroll_top_px = None;
+        }
         self.workspace
             .file_content_heights
             .update(&self.store, |heights| {
@@ -9439,8 +9733,8 @@ impl AppState {
         let heights = (0..count)
             .map(|index| self.file_scroll_height_px(index).max(1))
             .collect::<Vec<_>>();
-        self.file_height_index.rebuild(heights);
-        let total = self.file_height_index.total_u32();
+        self.virtual_diff_document.rebuild_heights(heights);
+        let total = self.virtual_diff_document.total_u32();
         self.workspace
             .file_scroll_total_height_px
             .set(&self.store, total);
@@ -9448,7 +9742,7 @@ impl AppState {
 
     fn update_file_scroll_heights(&mut self, old_heights: Vec<(usize, u32)>) {
         let count = self.workspace_file_count();
-        if self.file_height_index.len() != count {
+        if self.virtual_diff_document.len() != count {
             self.recompute_file_scroll_total_height_px();
             return;
         }
@@ -9460,7 +9754,7 @@ impl AppState {
             }
             let new_height = self.file_scroll_height_px(index).max(1);
             total = total.saturating_sub(old_height).saturating_add(new_height);
-            self.file_height_index.update(index, new_height);
+            self.virtual_diff_document.update_height(index, new_height);
         }
         self.workspace
             .file_scroll_total_height_px
@@ -9486,11 +9780,17 @@ impl AppState {
                 });
             return false;
         }
+        if self.virtual_diff_document.len() != count {
+            self.recompute_file_scroll_total_height_px();
+        }
 
         let old_slot_height = self.file_scroll_height_px(index);
         let old_total = self.total_diff_height_px();
-        let old_file_start = self.file_start_offset_px(index);
-        let old_scroll_top = self.workspace.global_scroll_top_px.get(&self.store);
+        let anchor = self
+            .settings
+            .continuous_scroll
+            .then(|| self.current_or_derived_viewport_anchor())
+            .flatten();
         let row_count = self.workspace_file_row_count(index);
         let mut recorded_changed = false;
         self.workspace
@@ -9528,42 +9828,117 @@ impl AppState {
 
         if recorded_changed {
             let new_slot_height = self.file_scroll_height_px(index);
-            let next_total = old_total
-                .saturating_sub(old_slot_height)
-                .saturating_add(new_slot_height);
-            self.workspace
-                .file_scroll_total_height_px
-                .set(&self.store, next_total);
-            self.file_height_index.update(index, new_slot_height.max(1));
-
-            if self.settings.continuous_scroll && new_slot_height != old_slot_height {
-                let local_within_file = old_scroll_top.saturating_sub(old_file_start);
-                let next_scroll_top = if old_scroll_top <= old_file_start {
-                    // Viewport is above this file — unaffected by the height change.
-                    old_scroll_top
-                } else if local_within_file < old_slot_height {
-                    // Viewport is inside this file — keep the same local offset
-                    // so the user's view doesn't jump.
-                    old_file_start.saturating_add(local_within_file.min(new_slot_height))
-                } else {
-                    // Viewport is past this file — shift by the height delta so
-                    // the user's logical position stays anchored to the same
-                    // content downstream.
-                    let delta = new_slot_height as i64 - old_slot_height as i64;
-                    if delta >= 0 {
-                        old_scroll_top.saturating_add(delta as u32)
-                    } else {
-                        old_scroll_top.saturating_sub((-delta) as u32)
-                    }
-                };
-                let max = self.global_max_scroll_top_px();
+            let slot_height_changed = new_slot_height != old_slot_height;
+            if calibration_initialized {
                 self.workspace
-                    .global_scroll_top_px
-                    .set(&self.store, next_scroll_top.min(max));
+                    .file_scroll_total_height_px
+                    .set(&self.store, self.virtual_diff_document.total_u32());
+            } else {
+                let next_total = old_total
+                    .saturating_sub(old_slot_height)
+                    .saturating_add(new_slot_height);
+                self.workspace
+                    .file_scroll_total_height_px
+                    .set(&self.store, next_total);
+                self.virtual_diff_document
+                    .update_height(index, new_slot_height.max(1));
+            }
+
+            if self.settings.continuous_scroll
+                && slot_height_changed
+                && let Some(anchor) = anchor
+            {
+                self.rebase_viewport_anchor(anchor);
             }
         }
 
-        recorded_changed && old_slot_height != height
+        recorded_changed && old_slot_height != self.file_scroll_height_px(index)
+    }
+
+    pub fn update_virtual_diff_item_height_px(
+        &mut self,
+        item_id: VirtualDiffItemId,
+        height: u32,
+    ) -> bool {
+        if item_id.kind != VirtualDiffItemKind::File
+            || item_id.source != self.workspace.source.get(&self.store)
+            || item_id.generation != self.workspace_render_generation()
+        {
+            return false;
+        }
+        self.update_file_content_height_px(item_id.index, height)
+    }
+
+    pub fn virtual_stream_item(
+        &self,
+        file_index: usize,
+        kind: VirtualDiffItemKind,
+        ordinal: u32,
+        stable_key: u64,
+        sort_key: u64,
+        measured_height_px: Option<u32>,
+    ) -> VirtualDiffStreamItem {
+        VirtualDiffStreamItem::new(
+            VirtualDiffItemId::new(
+                self.workspace.source.get(&self.store),
+                self.workspace_render_generation(),
+                kind,
+                file_index,
+                ordinal,
+                stable_key,
+            ),
+            sort_key,
+            measured_height_px.unwrap_or_else(|| estimated_virtual_item_height_px(kind)),
+            measured_height_px,
+        )
+    }
+
+    fn virtual_stream_items_for_viewport_doc(
+        &self,
+        source: WorkspaceSource,
+        generation: u64,
+        slots: &[ViewportSlotKey],
+        doc: &RenderDoc,
+    ) -> Vec<VirtualDiffStreamItem> {
+        let mut items = Vec::new();
+        let mut slot_pos = None::<usize>;
+        let mut local_ordinal = 0_u32;
+
+        for (line_index, line) in doc.lines.iter().enumerate() {
+            if line.row_kind() == RenderRowKind::FileHeader {
+                slot_pos = Some(slot_pos.map_or(0, |pos| pos.saturating_add(1)));
+                local_ordinal = 0;
+            }
+
+            let Some(slot) = slot_pos.and_then(|pos| slots.get(pos)) else {
+                continue;
+            };
+            let Some(kind) = virtual_stream_item_kind(slot, line) else {
+                continue;
+            };
+            let ordinal = match kind {
+                VirtualDiffItemKind::FileHeader => 0,
+                VirtualDiffItemKind::Hunk if line.hunk_index >= 0 => line.hunk_index as u32,
+                _ => local_ordinal,
+            };
+
+            items.push(VirtualDiffStreamItem::new(
+                VirtualDiffItemId::new(
+                    source,
+                    generation,
+                    kind,
+                    slot.index,
+                    ordinal,
+                    virtual_row_stable_key(line, ordinal),
+                ),
+                virtual_row_sort_key(line_index),
+                estimated_virtual_item_height_px(kind),
+                None,
+            ));
+            local_ordinal = local_ordinal.saturating_add(1);
+        }
+
+        items
     }
 
     fn file_scroll_height_px(&self, index: usize) -> u32 {
@@ -9593,11 +9968,7 @@ impl AppState {
                 let count = self.workspace.compare_output.with(&self.store, |output| {
                     output.as_ref().map(CompareOutput::file_count).unwrap_or(0)
                 });
-                if count == 0 {
-                    self.workspace.files.with(&self.store, |f| f.len())
-                } else {
-                    count
-                }
+                count.max(self.workspace.files.with(&self.store, |f| f.len()))
             }
             WorkspaceSource::Status => self
                 .workspace
@@ -9712,7 +10083,7 @@ impl AppState {
             return cached;
         }
 
-        self.file_height_index.total_u32()
+        self.virtual_diff_document.total_u32()
     }
 
     pub fn file_start_offset_px(&self, index: usize) -> u32 {
@@ -9720,9 +10091,9 @@ impl AppState {
             .workspace
             .viewport_scrollbar_drag
             .with(&self.store, |drag| drag.is_none())
-            && self.file_height_index.len() == self.workspace_file_count()
+            && self.virtual_diff_document.len() == self.workspace_file_count()
         {
-            return self.file_height_index.prefix_u32(index);
+            return self.virtual_diff_document.prefix_u32(index);
         }
         let mut total: u32 = 0;
         for slot in 0..index.min(self.workspace_file_count()) {
@@ -9745,7 +10116,116 @@ impl AppState {
         self.total_diff_height_px().saturating_sub(viewport.max(1))
     }
 
+    fn viewport_anchor_bias_for_global(&self, scroll_top_px: u32) -> ViewportAnchorBias {
+        let max = self.global_max_scroll_top_px();
+        if max > 0 && scroll_top_px.saturating_add(CONTINUOUS_BOTTOM_ANCHOR_TOLERANCE_PX) >= max {
+            ViewportAnchorBias::FollowEnd
+        } else {
+            ViewportAnchorBias::PreserveTop
+        }
+    }
+
+    fn viewport_anchor_for_file_offset(
+        &self,
+        index: usize,
+        local_offset_px: u32,
+        bias: ViewportAnchorBias,
+    ) -> Option<ViewportAnchor> {
+        let item_id = self.virtual_diff_document.item_id(index)?;
+        Some(ViewportAnchor {
+            item_id,
+            intra_item_offset_px: local_offset_px,
+            bias,
+        })
+    }
+
+    fn viewport_anchor_for_global(
+        &self,
+        scroll_top_px: u32,
+        bias: ViewportAnchorBias,
+    ) -> Option<ViewportAnchor> {
+        let target_px = match bias {
+            ViewportAnchorBias::PreserveBottom => {
+                scroll_top_px.saturating_add(self.editor.viewport_height_px.get(&self.store).max(1))
+            }
+            ViewportAnchorBias::PreserveTop | ViewportAnchorBias::FollowEnd => scroll_top_px,
+        };
+        let (index, local_offset_px) = self.locate_global_scroll_px(target_px)?;
+        self.viewport_anchor_for_file_offset(index, local_offset_px, bias)
+    }
+
+    fn current_or_derived_viewport_anchor(&self) -> Option<ViewportAnchor> {
+        if let Some(anchor) = self.virtual_scroll.anchor
+            && self.virtual_diff_document.anchor_is_current(anchor)
+        {
+            return Some(anchor);
+        }
+        let scroll_top_px = self.workspace.global_scroll_top_px.get(&self.store);
+        let bias = self.viewport_anchor_bias_for_global(scroll_top_px);
+        self.viewport_anchor_for_global(scroll_top_px, bias)
+    }
+
+    fn scroll_top_for_viewport_anchor(&self, anchor: ViewportAnchor) -> Option<u32> {
+        if !self.virtual_diff_document.anchor_is_current(anchor) {
+            return None;
+        }
+        if anchor.bias == ViewportAnchorBias::FollowEnd {
+            return Some(self.global_max_scroll_top_px());
+        }
+
+        let index = anchor.item_id.index;
+        let item_height = self
+            .viewport_file_scroll_height_px(index)
+            .max(self.virtual_diff_document.height_at(index))
+            .max(1);
+        let local_offset = anchor
+            .intra_item_offset_px
+            .min(item_height.saturating_sub(1));
+        let item_top = self.file_start_offset_px(index);
+        let target = match anchor.bias {
+            ViewportAnchorBias::PreserveTop => item_top.saturating_add(local_offset),
+            ViewportAnchorBias::PreserveBottom => item_top
+                .saturating_add(local_offset)
+                .saturating_sub(self.editor.viewport_height_px.get(&self.store).max(1)),
+            ViewportAnchorBias::FollowEnd => unreachable!(),
+        };
+        Some(target.min(self.global_max_scroll_top_px()))
+    }
+
+    fn set_viewport_anchor(&mut self, anchor: ViewportAnchor) {
+        if let Some(scroll_top_px) = self.scroll_top_for_viewport_anchor(anchor) {
+            self.workspace
+                .global_scroll_top_px
+                .set(&self.store, scroll_top_px);
+            self.virtual_scroll.set_anchor(anchor);
+        } else {
+            self.virtual_scroll.clear();
+            self.clamp_global_scroll_top_px();
+        }
+    }
+
+    fn set_viewport_anchor_for_global(&mut self, scroll_top_px: u32, bias: ViewportAnchorBias) {
+        if let Some(anchor) = self.viewport_anchor_for_global(scroll_top_px, bias) {
+            self.set_viewport_anchor(anchor);
+        } else {
+            self.virtual_scroll.clear();
+            self.workspace.global_scroll_top_px.set(&self.store, 0);
+        }
+    }
+
+    fn rebase_viewport_anchor(&mut self, anchor: ViewportAnchor) {
+        self.set_viewport_anchor(anchor);
+    }
+
     fn clamp_global_scroll_top_px(&mut self) {
+        if let Some(anchor) = self.virtual_scroll.anchor
+            && let Some(scroll_top_px) = self.scroll_top_for_viewport_anchor(anchor)
+        {
+            self.workspace
+                .global_scroll_top_px
+                .set(&self.store, scroll_top_px);
+            return;
+        }
         let max = self.global_max_scroll_top_px();
         let current = self.workspace.global_scroll_top_px.get(&self.store);
         self.workspace
@@ -9762,9 +10242,9 @@ impl AppState {
             .workspace
             .viewport_scrollbar_drag
             .with(&self.store, |drag| drag.is_none())
-            && self.file_height_index.len() == count
+            && self.virtual_diff_document.len() == count
         {
-            return self.file_height_index.locate(target_px);
+            return self.virtual_diff_document.locate(target_px);
         }
         let mut prior: u32 = 0;
         for index in 0..count {
@@ -9779,9 +10259,16 @@ impl AppState {
     }
 
     fn scroll_viewport_to_global(&mut self, target_px: u32) -> Vec<Effect> {
+        if self.virtual_diff_document.len() != self.workspace_file_count() {
+            self.recompute_file_scroll_total_height_px();
+        }
         let target_px = target_px.min(self.global_max_scroll_top_px());
+        let bias = self.viewport_anchor_bias_for_global(target_px);
+        self.set_viewport_anchor_for_global(target_px, bias);
+        let target_px = self.workspace.global_scroll_top_px.get(&self.store);
         let Some((target_index, local_offset)) = self.locate_global_scroll_px(target_px) else {
             self.workspace.global_scroll_top_px.set(&self.store, 0);
+            self.virtual_scroll.clear();
             return Vec::new();
         };
         self.workspace
@@ -9905,6 +10392,7 @@ impl AppState {
         let target = self.workspace.global_scroll_top_px.get(&self.store);
         let Some((_, local_offset)) = self.locate_global_scroll_px(target) else {
             self.workspace.global_scroll_top_px.set(&self.store, 0);
+            self.virtual_scroll.clear();
             return Vec::new();
         };
         let max = self.editor_max_scroll_top_px();
@@ -9917,6 +10405,7 @@ impl AppState {
     pub fn sync_global_scroll_from_editor(&mut self) {
         let Some(selected_index) = self.reconcile_selected_file_index_from_path() else {
             self.workspace.global_scroll_top_px.set(&self.store, 0);
+            self.virtual_scroll.clear();
             return;
         };
         let start = self.file_start_offset_px(selected_index);
@@ -9925,6 +10414,17 @@ impl AppState {
             .saturating_add(local)
             .min(self.global_max_scroll_top_px());
         self.workspace.global_scroll_top_px.set(&self.store, target);
+        if self.settings.continuous_scroll {
+            if let Some(anchor) = self.viewport_anchor_for_file_offset(
+                selected_index,
+                local,
+                self.viewport_anchor_bias_for_global(target),
+            ) {
+                self.virtual_scroll.set_anchor(anchor);
+            } else {
+                self.virtual_scroll.clear();
+            }
+        }
     }
 
     fn prefetch_compare_working_set(
@@ -10018,14 +10518,17 @@ impl AppState {
         if !self.settings.continuous_scroll {
             return (None, Vec::new());
         }
+        if self.virtual_diff_document.len() != self.workspace_file_count() {
+            self.recompute_file_scroll_total_height_px();
+        }
         self.clamp_global_scroll_top_px();
         let scroll_top_px = self.workspace.global_scroll_top_px.get(&self.store);
-        let scroll_direction = match self.last_continuous_scroll_top_px {
+        let scroll_direction = match self.last_virtual_scroll_top_px {
             Some(previous) if scroll_top_px < previous => ScrollDirection::Backward,
             _ => ScrollDirection::Forward,
         };
-        self.last_continuous_scroll_top_px = Some(scroll_top_px);
-        let Some((start_index, _)) = self.locate_global_scroll_px(scroll_top_px) else {
+        self.last_virtual_scroll_top_px = Some(scroll_top_px);
+        let Some((anchor_index, _)) = self.locate_global_scroll_px(scroll_top_px) else {
             return (None, Vec::new());
         };
 
@@ -10040,16 +10543,46 @@ impl AppState {
 
         let count = self.workspace_file_count();
         let viewport = self.editor.viewport_height_px.get(&self.store).max(1);
-        let start_offset = self.file_start_offset_px(start_index);
-        let local_top = self
-            .workspace
-            .global_scroll_top_px
-            .get(&self.store)
-            .saturating_sub(start_offset);
-        let target_height = local_top
-            .saturating_add(viewport)
-            .saturating_add(viewport / 2)
-            .max(1);
+        let follow_end = self.virtual_scroll.anchor.is_some_and(|anchor| {
+            anchor.bias == ViewportAnchorBias::FollowEnd
+                && self.virtual_diff_document.anchor_is_current(anchor)
+        }) || self.viewport_anchor_bias_for_global(scroll_top_px)
+            == ViewportAnchorBias::FollowEnd;
+        let (start_index, start_offset, local_top, target_height) = if follow_end {
+            let mut start_index = count.saturating_sub(1);
+            let mut tail_height = self.viewport_file_scroll_height_px(start_index).max(1);
+            let target_tail_height = viewport.saturating_mul(2).max(viewport);
+            while start_index > 0 && tail_height < target_tail_height {
+                start_index -= 1;
+                tail_height = tail_height
+                    .saturating_add(self.viewport_file_scroll_height_px(start_index).max(1));
+            }
+            (
+                start_index,
+                self.file_start_offset_px(start_index),
+                tail_height.saturating_sub(viewport),
+                tail_height.max(1),
+            )
+        } else {
+            let mut start_index = anchor_index;
+            let mut before_viewport_px = 0_u32;
+            while start_index > 0 && before_viewport_px < viewport {
+                start_index -= 1;
+                before_viewport_px = before_viewport_px
+                    .saturating_add(self.viewport_file_scroll_height_px(start_index).max(1));
+            }
+            let start_offset = self.file_start_offset_px(start_index);
+            let local_top = self
+                .workspace
+                .global_scroll_top_px
+                .get(&self.store)
+                .saturating_sub(start_offset);
+            let target_height = local_top
+                .saturating_add(viewport)
+                .saturating_add(viewport / 2)
+                .max(1);
+            (start_index, start_offset, local_top, target_height)
+        };
 
         let mut effects = Vec::new();
         let mut slot_keys = Vec::new();
@@ -10153,6 +10686,27 @@ impl AppState {
             doc
         };
         let slot_indices = key.slots.iter().map(|slot| slot.index).collect();
+        let slot_item_ids = key
+            .slots
+            .iter()
+            .map(|slot| {
+                self.virtual_diff_document
+                    .item_id(slot.index)
+                    .unwrap_or_else(|| {
+                        VirtualDiffItemId::file(
+                            source,
+                            self.workspace_render_generation(),
+                            slot.index,
+                        )
+                    })
+            })
+            .collect();
+        let stream_items = self.virtual_stream_items_for_viewport_doc(
+            source,
+            self.workspace_render_generation(),
+            &key.slots,
+            doc.as_ref(),
+        );
 
         (
             Some(ViewportDocument {
@@ -10161,7 +10715,10 @@ impl AppState {
                 generation: self.workspace_render_generation(),
                 start_index,
                 start_offset_px: start_offset,
+                scroll_top_px: local_top,
                 slot_indices,
+                slot_item_ids,
+                stream_items,
                 slot_loading,
                 path: String::new(),
             }),
@@ -11355,8 +11912,8 @@ mod tests {
         ActiveFile, ActiveFileLoading, AppState, AsyncStatus, CarbonStyleOverlays,
         CardTextSelection, CompareField, FILE_HEIGHT_SPARSE_MIN_COUNT, FileHeightIndex,
         FileListEntry, FocusTarget, OverlayEntry, OverlaySurface, PickerItem, PickerLabelStyle,
-        PreparedActiveFile, SidebarMode, SidebarTab, WorkspaceMode, WorkspaceSource,
-        prepare_active_file, vcs_compare_request,
+        PreparedActiveFile, SidebarMode, SidebarTab, ViewportAnchorBias, VirtualDiffItemKind,
+        WorkspaceMode, WorkspaceSource, prepare_active_file, vcs_compare_request,
     };
     use crate::core::compare::{
         CompareFileSummary, CompareMode, CompareOutput, LayoutMode, RendererKind,
@@ -11806,6 +12363,380 @@ diff --git a/src/lib.rs b/src/lib.rs
         state.editor.viewport_height_px.set(&state.store, 10_000);
 
         assert_eq!(state.global_max_scroll_top_px(), 0);
+    }
+
+    #[test]
+    fn continuous_scroll_first_height_measurement_keeps_total_cache_in_sync_with_index() {
+        let mut state = loaded_state_with_files(&["a.rs", "b.rs", "c.rs"]);
+        state.settings.continuous_scroll = true;
+        state.recompute_file_scroll_total_height_px();
+
+        assert_eq!(state.workspace.measured_px_per_row_q16.get(&state.store), 0);
+
+        assert!(state.update_file_content_height_px(0, 1_200));
+
+        assert_eq!(
+            state
+                .workspace
+                .file_scroll_total_height_px
+                .get(&state.store),
+            state.virtual_diff_document.total_u32()
+        );
+    }
+
+    #[test]
+    fn continuous_scroll_keeps_bottom_anchor_when_visible_file_height_grows() {
+        let mut state = loaded_state_with_files(&["a.rs", "b.rs", "c.rs"]);
+        state.settings.continuous_scroll = true;
+        state.editor.viewport_height_px.set(&state.store, 100);
+        state
+            .workspace
+            .file_content_heights
+            .set(&state.store, vec![Some(200), Some(200), Some(200)]);
+        state.recompute_file_scroll_total_height_px();
+
+        let old_max = state.global_max_scroll_top_px();
+        assert_eq!(old_max, 500);
+        state
+            .workspace
+            .global_scroll_top_px
+            .set(&state.store, old_max);
+
+        assert!(state.update_file_content_height_px(2, 350));
+
+        assert_eq!(state.global_max_scroll_top_px(), 650);
+        assert_eq!(
+            state.workspace.global_scroll_top_px.get(&state.store),
+            state.global_max_scroll_top_px()
+        );
+    }
+
+    #[test]
+    fn continuous_scroll_follow_end_anchor_is_explicit_after_scrolling_to_bottom() {
+        let mut state = loaded_state_with_files(&["a.rs", "b.rs", "c.rs"]);
+        state.settings.continuous_scroll = true;
+        state.editor.viewport_height_px.set(&state.store, 100);
+        state
+            .workspace
+            .file_content_heights
+            .set(&state.store, vec![Some(200), Some(200), Some(200)]);
+        state.recompute_file_scroll_total_height_px();
+
+        let old_max = state.global_max_scroll_top_px();
+        state.scroll_viewport_to_global(old_max);
+
+        let anchor = state.virtual_scroll.anchor.expect("bottom anchor");
+        assert_eq!(anchor.bias, ViewportAnchorBias::FollowEnd);
+
+        assert!(state.update_file_content_height_px(2, 350));
+
+        assert_eq!(
+            state.workspace.global_scroll_top_px.get(&state.store),
+            state.global_max_scroll_top_px()
+        );
+    }
+
+    #[test]
+    fn continuous_scroll_preserves_top_anchor_when_prior_file_height_changes() {
+        let mut state = loaded_state_with_files(&["a.rs", "b.rs", "c.rs"]);
+        state.settings.continuous_scroll = true;
+        state.editor.viewport_height_px.set(&state.store, 100);
+        state
+            .workspace
+            .file_content_heights
+            .set(&state.store, vec![Some(200), Some(200), Some(200)]);
+        state.recompute_file_scroll_total_height_px();
+
+        state.scroll_viewport_to_global(250);
+        let anchor = state.virtual_scroll.anchor.expect("top anchor");
+        assert_eq!(anchor.item_id.index, 1);
+        assert_eq!(anchor.intra_item_offset_px, 50);
+        assert_eq!(anchor.bias, ViewportAnchorBias::PreserveTop);
+
+        assert!(state.update_file_content_height_px(0, 300));
+
+        assert_eq!(state.workspace.global_scroll_top_px.get(&state.store), 350);
+        let anchor = state.virtual_scroll.anchor.expect("rebased anchor");
+        assert_eq!(anchor.item_id.index, 1);
+        assert_eq!(anchor.intra_item_offset_px, 50);
+    }
+
+    #[test]
+    fn continuous_scroll_preserves_bottom_anchor_when_prior_file_height_changes() {
+        let mut state = loaded_state_with_files(&["a.rs", "b.rs", "c.rs"]);
+        state.settings.continuous_scroll = true;
+        state.editor.viewport_height_px.set(&state.store, 100);
+        state
+            .workspace
+            .file_content_heights
+            .set(&state.store, vec![Some(200), Some(200), Some(200)]);
+        state.recompute_file_scroll_total_height_px();
+
+        state.set_viewport_anchor_for_global(350, ViewportAnchorBias::PreserveBottom);
+        let anchor = state.virtual_scroll.anchor.expect("bottom-edge anchor");
+        assert_eq!(anchor.item_id.index, 2);
+        assert_eq!(anchor.intra_item_offset_px, 50);
+
+        assert!(state.update_file_content_height_px(0, 300));
+
+        assert_eq!(state.workspace.global_scroll_top_px.get(&state.store), 450);
+        let anchor = state.virtual_scroll.anchor.expect("rebased anchor");
+        assert_eq!(anchor.bias, ViewportAnchorBias::PreserveBottom);
+        assert_eq!(anchor.item_id.index, 2);
+        assert_eq!(anchor.intra_item_offset_px, 50);
+    }
+
+    #[test]
+    fn continuous_scroll_keeps_bottom_anchor_after_pending_scrollbar_drag_height_update() {
+        let mut state = loaded_state_with_files(&["a.rs", "b.rs", "c.rs"]);
+        state.settings.continuous_scroll = true;
+        state.editor.viewport_height_px.set(&state.store, 100);
+        state
+            .workspace
+            .file_content_heights
+            .set(&state.store, vec![Some(200), Some(200), Some(200)]);
+        state.recompute_file_scroll_total_height_px();
+
+        let old_max = state.global_max_scroll_top_px();
+        assert_eq!(old_max, 500);
+        state
+            .workspace
+            .global_scroll_top_px
+            .set(&state.store, old_max);
+        state.begin_viewport_scrollbar_drag(600, 100, old_max, old_max);
+
+        assert!(!state.update_file_content_height_px(2, 350));
+        state.end_viewport_scrollbar_drag();
+
+        assert_eq!(state.global_max_scroll_top_px(), 650);
+        assert_eq!(
+            state.workspace.global_scroll_top_px.get(&state.store),
+            state.global_max_scroll_top_px()
+        );
+    }
+
+    #[test]
+    fn continuous_scroll_does_not_treat_zero_max_as_bottom_anchor() {
+        let mut state = loaded_state_with_files(&["a.rs", "b.rs", "c.rs"]);
+        state.settings.continuous_scroll = true;
+        state.editor.viewport_height_px.set(&state.store, 1_000);
+        state
+            .workspace
+            .file_content_heights
+            .set(&state.store, vec![Some(200), Some(200), Some(200)]);
+        state.recompute_file_scroll_total_height_px();
+
+        assert_eq!(state.global_max_scroll_top_px(), 0);
+        assert!(state.update_file_content_height_px(2, 700));
+
+        assert_eq!(state.global_max_scroll_top_px(), 100);
+        assert_eq!(state.workspace.global_scroll_top_px.get(&state.store), 0);
+    }
+
+    #[test]
+    fn virtual_diff_document_keeps_large_compare_ranges_sparse_and_anchorable() {
+        let count = FILE_HEIGHT_SPARSE_MIN_COUNT + 32;
+        let summaries = (0..count)
+            .map(|index| {
+                let path = format!("kernel/file_{index}.c");
+                CompareFileSummary::from_paths_status(
+                    Some(&path),
+                    Some(&path),
+                    carbon::FileStatus::Modified,
+                    true,
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut state = AppState::default();
+        state.settings.continuous_scroll = true;
+        state.editor.viewport_height_px.set(&state.store, 900);
+        state
+            .workspace
+            .source
+            .set(&state.store, WorkspaceSource::Compare);
+        state.workspace.compare_output.set(
+            &state.store,
+            Some(CompareOutput {
+                file_summaries: summaries,
+                ..CompareOutput::default()
+            }),
+        );
+        state.recompute_file_scroll_total_height_px();
+
+        assert!(matches!(
+            state.virtual_diff_document.height_index,
+            FileHeightIndex::Sparse { .. }
+        ));
+
+        let target = state.global_max_scroll_top_px() / 2;
+        state.scroll_viewport_to_global(target);
+        let anchor = state.virtual_scroll.anchor.expect("compare anchor");
+
+        assert_eq!(anchor.item_id.source, WorkspaceSource::Compare);
+        assert_eq!(
+            anchor.item_id.generation,
+            state.workspace_render_generation()
+        );
+        assert!(anchor.item_id.index < count);
+    }
+
+    #[test]
+    fn virtual_diff_document_rejects_stale_measurement_item_ids() {
+        let mut state = loaded_state_with_files(&["a.rs", "b.rs"]);
+        state.settings.continuous_scroll = true;
+        state.recompute_file_scroll_total_height_px();
+        let item_id = state.virtual_diff_document.item_id(1).expect("item id");
+
+        assert!(state.update_virtual_diff_item_height_px(item_id, 300));
+        state.workspace.compare_generation.set(&state.store, 1);
+
+        assert!(!state.update_virtual_diff_item_height_px(item_id, 500));
+        assert_eq!(
+            state
+                .workspace
+                .file_content_heights
+                .with(&state.store, |heights| heights.get(1).copied().flatten()),
+            Some(300)
+        );
+    }
+
+    #[test]
+    fn continuous_compare_count_keeps_sidebar_files_when_output_is_partially_hydrated() {
+        let mut state = AppState::default();
+        state.settings.continuous_scroll = true;
+        state.editor.viewport_height_px.set(&state.store, 10_000);
+        state
+            .workspace
+            .source
+            .set(&state.store, WorkspaceSource::Compare);
+        state.workspace.compare_output.set(
+            &state.store,
+            Some(CompareOutput {
+                carbon: carbon::DiffDocument {
+                    files: vec![carbon_context_file(0, "a.rs", "loaded")],
+                },
+                ..CompareOutput::default()
+            }),
+        );
+        state.workspace.files.set(
+            &state.store,
+            vec![
+                FileListEntry {
+                    path: "a.rs".into(),
+                },
+                FileListEntry {
+                    path: "b.rs".into(),
+                },
+                FileListEntry {
+                    path: "c.rs".into(),
+                },
+            ],
+        );
+
+        assert_eq!(state.workspace_file_count(), 3);
+
+        let (doc, _effects) = state.build_continuous_viewport_document();
+        let doc = doc.expect("viewport doc");
+
+        assert_eq!(doc.slot_indices, vec![0, 1, 2]);
+        assert_eq!(doc.slot_loading, vec![false, true, true]);
+    }
+
+    #[test]
+    fn continuous_viewport_document_exposes_virtual_stream_rows() {
+        let mut state = loaded_state_with_files(&["a.rs", "b.rs"]);
+        state.settings.continuous_scroll = true;
+        state.editor.viewport_height_px.set(&state.store, 900);
+        state
+            .cache_compare_file_from_output(0, "a.rs")
+            .expect("cached first file");
+        state
+            .cache_compare_file_from_output(1, "b.rs")
+            .expect("cached second file");
+
+        let (doc, _effects) = state.build_continuous_viewport_document();
+        let doc = doc.expect("viewport doc");
+
+        assert!(
+            doc.stream_items
+                .iter()
+                .any(|item| item.id.kind == VirtualDiffItemKind::FileHeader)
+        );
+        assert!(
+            doc.stream_items
+                .iter()
+                .any(|item| item.id.kind == VirtualDiffItemKind::Hunk)
+        );
+        assert!(
+            doc.stream_items
+                .iter()
+                .any(|item| item.id.kind == VirtualDiffItemKind::DiffRow)
+        );
+        assert!(
+            doc.stream_items
+                .windows(2)
+                .all(|items| items[0].sort_key <= items[1].sort_key)
+        );
+        assert!(
+            doc.stream_items
+                .iter()
+                .all(|item| item.estimated_height_px > 0)
+        );
+    }
+
+    #[test]
+    fn continuous_viewport_document_backfills_before_tail_file() {
+        let mut state = loaded_state_with_files(&["a.rs", "b.rs", "c.rs"]);
+        state.settings.continuous_scroll = true;
+        state.editor.viewport_height_px.set(&state.store, 500);
+        state
+            .workspace
+            .file_content_heights
+            .set(&state.store, vec![Some(800), Some(800), Some(800)]);
+        state.recompute_file_scroll_total_height_px();
+        state
+            .workspace
+            .global_scroll_top_px
+            .set(&state.store, 1_700);
+
+        let (doc, _effects) = state.build_continuous_viewport_document();
+        let doc = doc.expect("viewport doc");
+
+        assert_eq!(doc.slot_indices, vec![1, 2]);
+        assert_eq!(doc.start_index, 1);
+        assert_eq!(doc.start_offset_px, 800);
+        assert_eq!(doc.scroll_top_px, 900);
+    }
+
+    #[test]
+    fn continuous_viewport_document_follow_end_builds_from_tail() {
+        let mut state =
+            loaded_state_with_files(&["a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs", "tail.rs"]);
+        state.settings.continuous_scroll = true;
+        state.editor.viewport_height_px.set(&state.store, 500);
+        state.workspace.file_content_heights.set(
+            &state.store,
+            vec![
+                Some(1_000),
+                Some(1_000),
+                Some(1_000),
+                Some(1_000),
+                Some(1_000),
+                Some(1_000),
+                Some(100),
+            ],
+        );
+        state.recompute_file_scroll_total_height_px();
+
+        state.scroll_viewport_to_global(state.global_max_scroll_top_px());
+
+        let (doc, _effects) = state.build_continuous_viewport_document();
+        let doc = doc.expect("viewport doc");
+
+        assert_eq!(doc.slot_indices, vec![5, 6]);
+        assert_eq!(doc.start_index, 5);
+        assert_eq!(doc.start_offset_px, 5_000);
+        assert_eq!(doc.scroll_top_px, 600);
     }
 
     #[test]

@@ -931,10 +931,6 @@ query DiffyPullRequestReviewData($owner: String!, $repo: String!, $number: Int!,
               login
               name
             }
-            ... on Team {
-              name
-              slug
-            }
           }
         }
       }

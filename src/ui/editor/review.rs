@@ -190,7 +190,12 @@ pub(crate) fn build_review_thread_card(
     card_width: f32,
     avatars: &HashMap<u64, AvatarImage>,
     selection: Option<&crate::ui::state::CardTextSelection>,
+    reply_composer: Option<AnyElement>,
 ) -> AnyElement {
+    // The inline reply composer only renders when the thread is expanded — it is
+    // reached via the footer Reply button, which itself only shows when expanded.
+    let reply_composer = if expanded { reply_composer } else { None };
+    let has_composer = reply_composer.is_some();
     let tc = &theme.colors;
     let small = theme.metrics.ui_small_font_size;
     let resolved = thread.status.resolution == ReviewResolution::Resolved;
@@ -398,7 +403,7 @@ pub(crate) fn build_review_thread_card(
     let footer = expanded
         .then(|| {
             let mut buttons: Vec<AnyElement> = Vec::new();
-            if thread.permissions.can_reply {
+            if thread.permissions.can_reply && !has_composer {
                 buttons.push(view! { ui_scale,
                     <Button action={GitHubAction::ReplyToReviewThread(thread.id.clone()).into()}
                             style={ButtonStyle::Subtle}
@@ -497,6 +502,7 @@ pub(crate) fn build_review_thread_card(
                 </div>
             </div>
             {...body}
+            {?reply_composer}
             {?footer}
         </div>
     }
@@ -525,13 +531,24 @@ pub(crate) fn measure_review_thread_card_height(
     ui_scale: f32,
     card_width: f32,
     cx: &mut ElementContext,
+    reply_composer: Option<AnyElement>,
 ) -> u16 {
     const LARGE_SENTINEL: f32 = 100_000.0;
     // Avatars do not affect layout (fixed size) and selection only paints a
-    // highlight behind text, so measure with neither — height is identical.
+    // highlight behind text, so measure with neither — height is identical. The
+    // reply composer, when present, must be the SAME element the overlay paints so
+    // the reserved height matches; the editor inside is fixed-height so layout is
+    // determinate under the sentinel.
     let avatars = HashMap::new();
     let mut card = build_review_thread_card(
-        thread, expanded, theme, ui_scale, card_width, &avatars, None,
+        thread,
+        expanded,
+        theme,
+        ui_scale,
+        card_width,
+        &avatars,
+        None,
+        reply_composer,
     );
     let mut engine = LayoutEngine::new();
     let root = card.request_layout(&mut engine, cx);
@@ -806,6 +823,9 @@ pub fn populate_review_thread_blocks_in_range(
 ) {
     let mut grouped: BTreeMap<u32, Vec<ReviewThread>> = BTreeMap::new();
     for thread in threads {
+        if thread.status.outdated {
+            continue;
+        }
         let Some(anchor) = thread_anchor_line_index(render_doc, file, line_range.clone(), thread)
         else {
             continue;

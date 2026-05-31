@@ -298,13 +298,15 @@ fn render_review_card_with_avatars(
             scale,
             width,
             &mut measure_cx,
+            None,
         ))
     };
 
     let mut scene = Scene::default();
     let mut cx = ElementContext::new(&theme, scale, &mut font_system, None, &store);
-    let mut card =
-        build_review_thread_card(thread, expanded, &theme, scale, width, avatars, selection);
+    let mut card = build_review_thread_card(
+        thread, expanded, &theme, scale, width, avatars, selection, None,
+    );
     render_element_at(&mut card, &mut scene, &mut cx, 0.0, 0.0, width, height);
 
     RenderedCard {
@@ -1074,6 +1076,101 @@ mod tests {
                 .get(&harness.state.store)
                 .is_none(),
             "beginning a viewport text selection must clear the card selection"
+        );
+    }
+
+    /// The inline reply composer grows the card (reserved height includes it) and
+    /// paints the shared comment editor inside the card — exercising the measure
+    /// and paint paths the overlay relies on.
+    #[test]
+    fn inline_reply_composer_grows_card_and_renders_editor() {
+        use crate::ui::editor::review::{
+            build_review_thread_card, measure_review_thread_card_height,
+        };
+        use crate::ui::shell::build_inline_reply_composer;
+        use crate::ui::state::{AppState, AsyncStatus, FocusTarget, ReviewCommentComposerState};
+
+        let scale = 2.0;
+        let width = 520.0;
+        let theme = Theme::default_dark().with_ui_scale(scale);
+        let mut font_system = crate::fonts::new_font_system();
+        let mut state = AppState::default();
+        let thread = sample_review_thread();
+
+        state.github.pull_request.review_composer.set(
+            &state.store,
+            ReviewCommentComposerState {
+                draft: None,
+                status: AsyncStatus::Ready,
+                message: None,
+                reply_target: Some(thread.id.clone()),
+                edit_target: None,
+                preview: false,
+            },
+        );
+        state
+            .focus
+            .set(&state.store, Some(FocusTarget::ReviewCommentEditor));
+        let small = theme.metrics.ui_small_font_size;
+        state
+            .review_comment_editor
+            .set_font_size(&mut font_system, small);
+        let inner_w = (width - 64.0 * scale).max(50.0);
+        state
+            .review_comment_editor
+            .set_size(&mut font_system, inner_w, 120.0 * scale);
+        state.review_comment_editor.set_text("Looks good to me.");
+
+        let (without, with) = {
+            let mut cx = ElementContext::new(&theme, scale, &mut font_system, None, &state.store);
+            let without = measure_review_thread_card_height(
+                &thread, true, &theme, scale, width, &mut cx, None,
+            );
+            let composer = build_inline_reply_composer(&state, &theme, scale, inner_w);
+            let with = measure_review_thread_card_height(
+                &thread,
+                true,
+                &theme,
+                scale,
+                width,
+                &mut cx,
+                Some(composer),
+            );
+            (without, with)
+        };
+        assert!(
+            with > without,
+            "card with inline composer ({with}) must be taller than without ({without})"
+        );
+
+        let composer = build_inline_reply_composer(&state, &theme, scale, inner_w);
+        let avatars = HashMap::new();
+        let mut card = build_review_thread_card(
+            &thread,
+            true,
+            &theme,
+            scale,
+            width,
+            &avatars,
+            None,
+            Some(composer),
+        );
+        let mut scene = Scene::default();
+        let mut cx = ElementContext::new(&theme, scale, &mut font_system, None, &state.store);
+        render_element_at(
+            &mut card,
+            &mut scene,
+            &mut cx,
+            0.0,
+            0.0,
+            width,
+            f32::from(with),
+        );
+
+        let dump = crate::ui::accessibility::dump_accessibility(&cx.accessibility);
+        assert!(
+            dump.contains("text-editor:ReviewCommentEditor"),
+            "inline composer must paint the review comment editor:\n{dump}"
         );
     }
 }

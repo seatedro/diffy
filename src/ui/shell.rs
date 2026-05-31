@@ -10,14 +10,15 @@ use crate::ui::components::{Button, ButtonSize, ButtonStyle, ToastStack};
 use crate::ui::design::{Bp, Rad, Shadow, Sp, Sz};
 use crate::ui::editor::anchor::EditorOverlayKind;
 use crate::ui::editor::element::{EditorDocument, EditorElement, ScrollbarOverride};
-use crate::ui::editor_element::{CursorSnapshot, text_editor_element};
+use crate::ui::editor_element::{CursorSnapshot, TextEditorElement, text_editor_element};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::overlays;
 use crate::ui::settings_page;
 use crate::ui::sidebar as sidebar_mod;
 use crate::ui::state::{
-    ActiveFile, ActiveFileLoading, AppState, AppView, ViewportDocument, WorkspaceSource,
+    ActiveFile, ActiveFileLoading, AppState, AppView, ViewportDocument, VirtualDiffItemKind,
+    WorkspaceSource, stable_virtual_key, virtual_block_below_sort_key,
 };
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
@@ -28,6 +29,10 @@ pub use halogen::CursorHint;
 
 /// Unscaled height reserved for the open review-comment composer block.
 const COMPOSER_H_BASE: f32 = 248.0;
+
+/// Unscaled height of the editor/preview body region inside the inline reply
+/// composer. Fixed (not flex) so the card's measured height is determinate.
+const INLINE_REPLY_BODY_H: f32 = 112.0;
 
 #[derive(Debug, Clone, Default)]
 pub struct UiFrame {
@@ -313,14 +318,22 @@ pub fn build_ui_frame(
     if state.is_workspace_ready() {
         if let Some(vp_bounds) = viewport_bounds.get() {
             let continuous_scroll = state.settings.continuous_scroll;
+            let editor_viewport_width = editor
+                .content_width_for_bounds(vp_bounds, text_metrics)
+                .max(0.0)
+                .round() as u32;
+            let editor_viewport_height = editor
+                .content_height_for_bounds(vp_bounds, text_metrics)
+                .max(0.0)
+                .round() as u32;
             state
                 .editor
                 .viewport_width_px
-                .set_if_changed(&state.store, vp_bounds.width.max(0.0).round() as u32);
+                .set_if_changed(&state.store, editor_viewport_width);
             state
                 .editor
                 .viewport_height_px
-                .set_if_changed(&state.store, vp_bounds.height.max(0.0).round() as u32);
+                .set_if_changed(&state.store, editor_viewport_height);
             if continuous_scroll {
                 effects.extend(state.sync_editor_scroll_from_global());
             }
@@ -355,9 +368,7 @@ pub fn build_ui_frame(
             let mut editor_snap = state.editor.snapshot(&state.store);
             editor_snap.review_enabled = state.pull_request_review_enabled();
             if let Some(doc) = viewport_document.as_ref().filter(|doc| doc.is_continuous()) {
-                editor_snap.scroll_top_px = state
-                    .global_scroll_position_px()
-                    .saturating_sub(doc.start_offset_px);
+                editor_snap.scroll_top_px = doc.scroll_top_px;
             }
 
             // Pinned card width: the content column, but capped to a readable max so the
@@ -392,6 +403,13 @@ pub fn build_ui_frame(
                 }
                 for thread in &threads_to_measure {
                     let expanded = state.review_thread_expanded(thread);
+                    let reply_composer = inline_reply_composer_for(
+                        state,
+                        theme,
+                        ui_scale,
+                        thread,
+                        review_card_width,
+                    );
                     let h = crate::ui::editor::review::measure_review_thread_card_height(
                         thread,
                         expanded,
@@ -399,12 +417,13 @@ pub fn build_ui_frame(
                         ui_scale,
                         review_card_width,
                         cx,
+                        reply_composer,
                     );
                     review_card_heights.insert(thread.id.clone(), h);
                 }
             }
 
-            if let Some(doc) = viewport_document.as_ref().filter(|doc| doc.is_continuous()) {
+            if let Some(doc) = viewport_document.as_mut().filter(|doc| doc.is_continuous()) {
                 editor.blocks_mut().clear();
                 populate_continuous_review_blocks(
                     state,
@@ -527,9 +546,7 @@ pub fn build_ui_frame(
                 effects.extend(doc_effects);
                 viewport_document = doc;
                 if let Some(doc) = viewport_document.as_ref() {
-                    editor_snap.scroll_top_px = state
-                        .global_scroll_position_px()
-                        .saturating_sub(doc.start_offset_px);
+                    editor_snap.scroll_top_px = doc.scroll_top_px;
                 }
                 let scrollbar = state.continuous_viewport_scrollbar_metrics();
                 editor.set_scrollbar_override(Some(ScrollbarOverride {
@@ -761,6 +778,13 @@ pub fn build_ui_frame(
                                     scene.pop_clip();
                                     continue;
                                 };
+                                let reply_composer = inline_reply_composer_for(
+                                    state,
+                                    theme,
+                                    ui_scale,
+                                    &thread,
+                                    review_card_width,
+                                );
                                 let mut card = crate::ui::editor::review::build_review_thread_card(
                                     &thread,
                                     expanded,
@@ -769,6 +793,7 @@ pub fn build_ui_frame(
                                     review_card_width,
                                     &review_avatars,
                                     card_selection.as_ref(),
+                                    reply_composer,
                                 );
                                 render_element_at(
                                     &mut card,
@@ -1052,7 +1077,11 @@ fn update_continuous_slot_heights(
             .unwrap_or(editor_snap.content_height_px);
         let height = end.saturating_sub(start);
         if height > 0 {
-            changed |= state.update_file_content_height_px(slot_index, height);
+            if let Some(item_id) = continuous.slot_item_ids.get(position_index).copied() {
+                changed |= state.update_virtual_diff_item_height_px(item_id, height);
+            } else {
+                changed |= state.update_file_content_height_px(slot_index, height);
+            }
         }
     }
     changed
@@ -1061,7 +1090,7 @@ fn update_continuous_slot_heights(
 fn populate_continuous_review_blocks(
     state: &AppState,
     blocks: &mut crate::ui::editor::decoration::BlockRegistry,
-    viewport: &ViewportDocument,
+    viewport: &mut ViewportDocument,
     heights: &std::collections::HashMap<crate::core::review::ReviewThreadId, u16>,
     composer_height: u16,
 ) {
@@ -1079,8 +1108,10 @@ fn populate_continuous_review_blocks(
                 .map(|d| (d.request.path.clone(), d.request.side, d.request.line))
         });
 
-    let render_doc = viewport.doc.as_ref();
-    for slot_index in viewport.slot_indices.iter().copied() {
+    let render_doc = viewport.doc.clone();
+    let render_doc = render_doc.as_ref();
+    let slot_indices = viewport.slot_indices.clone();
+    for slot_index in slot_indices {
         let Some(file) = state.viewport_file_snapshot(slot_index) else {
             continue;
         };
@@ -1089,6 +1120,8 @@ fn populate_continuous_review_blocks(
         else {
             continue;
         };
+
+        let block_start = blocks.len();
         let review_threads = state.active_pr_review_threads_for_file(&file.carbon_file);
         if review_threads.is_empty() {
             let review_comments = state.active_pr_review_comments_for_file(&file.carbon_file);
@@ -1130,6 +1163,64 @@ fn populate_continuous_review_blocks(
                 *line,
                 composer_height,
             );
+        }
+        append_virtual_block_stream_items(
+            state,
+            viewport,
+            blocks,
+            slot_index,
+            block_start..blocks.len(),
+            heights,
+            composer_height,
+        );
+    }
+}
+
+fn append_virtual_block_stream_items(
+    state: &AppState,
+    viewport: &mut ViewportDocument,
+    blocks: &crate::ui::editor::decoration::BlockRegistry,
+    file_index: usize,
+    block_range: std::ops::Range<usize>,
+    heights: &std::collections::HashMap<crate::core::review::ReviewThreadId, u16>,
+    composer_height: u16,
+) {
+    for block_index in block_range {
+        let Some(placement) = blocks.placement(block_index) else {
+            continue;
+        };
+        let Some(block) = blocks.get(block_index) else {
+            continue;
+        };
+        let anchor = placement.anchor_line_index();
+        let sort_key = virtual_block_below_sort_key(anchor, block_index);
+        if let Some((thread, _expanded)) = block.review_card() {
+            viewport.insert_stream_item(state.virtual_stream_item(
+                file_index,
+                VirtualDiffItemKind::ReviewThread,
+                anchor,
+                stable_virtual_key(&thread.id.0),
+                sort_key,
+                heights.get(&thread.id).copied().map(u32::from),
+            ));
+        } else if block.is_composer() {
+            viewport.insert_stream_item(state.virtual_stream_item(
+                file_index,
+                VirtualDiffItemKind::Composer,
+                anchor,
+                u64::from(anchor),
+                sort_key,
+                Some(u32::from(composer_height)),
+            ));
+        } else if let Some(label) = block.accessibility_label() {
+            viewport.insert_stream_item(state.virtual_stream_item(
+                file_index,
+                VirtualDiffItemKind::ReviewComment,
+                anchor,
+                stable_virtual_key(&label),
+                sort_key,
+                None,
+            ));
         }
     }
 }
@@ -1212,6 +1303,255 @@ fn build_review_add_button(theme: &Theme, ui_scale: f32, rect: Rect, strong: boo
     }
 }
 
+/// The configured shared comment editor (cursor/selection/scroll/focus all read
+/// from `state.review_comment_editor`). Caller sizes it (`.flex_1()`) and converts.
+fn composer_text_editor(state: &AppState, theme: &Theme) -> TextEditorElement {
+    let tc = &theme.colors;
+    let focused =
+        state.focus.get(&state.store) == Some(crate::ui::state::FocusTarget::ReviewCommentEditor);
+    let cursor = CursorSnapshot {
+        x: state.review_comment_editor.cursor_pos.x,
+        y: state.review_comment_editor.cursor_pos.y,
+        moved_at_ms: state.review_comment_editor.cursor_moved_at_ms,
+    };
+    text_editor_element()
+        .placeholder("Leave a review comment")
+        .is_empty(state.review_comment_editor.is_empty())
+        .focused(focused)
+        .focus_target(crate::ui::state::FocusTarget::ReviewCommentEditor)
+        .editor_id(2)
+        .font_size(theme.metrics.ui_font_size)
+        .text_color(tc.text)
+        .cursor(cursor)
+        .selection(state.review_comment_editor.selection_rects())
+        .content_height(state.review_comment_editor.content_height())
+        .scroll_y(state.review_comment_editor.scroll_y)
+        .w_full()
+}
+
+/// Markdown format toolbar — shows only in Write mode (right side of the tab row).
+fn composer_format_toolbar(ui_scale: f32, theme: &Theme, preview: bool) -> Option<AnyElement> {
+    use crate::actions::{ComposerFormat, GitHubAction};
+    let tc = &theme.colors;
+    let base = theme.metrics.ui_font_size;
+    let fmt = |format: ComposerFormat, icon: &'static str, tip: &'static str| {
+        view! { ui_scale,
+            <Button action={GitHubAction::FormatReviewComment(format).into()}
+                    style={ButtonStyle::Ghost}
+                    size={ButtonSize::Default}
+                    tooltip={tip}>
+                <Icon>{icon}</Icon>
+            </Button>
+        }
+    };
+    let divider = || {
+        view! { ui_scale,
+            <div w={1.0} h={base} bg={tc.border_variant} />
+        }
+    };
+    (!preview).then(|| {
+        view! { ui_scale,
+            <div class="flex-row items-center" gap={Sp::XXS}>
+                {fmt(ComposerFormat::Bold, lucide::BOLD, "Bold")}
+                {fmt(ComposerFormat::Italic, lucide::ITALIC, "Italic")}
+                {divider()}
+                {fmt(ComposerFormat::Code, lucide::CODE, "Code")}
+                {fmt(ComposerFormat::Link, lucide::LINK, "Link")}
+                {divider()}
+                {fmt(ComposerFormat::BulletList, lucide::LIST, "Bulleted list")}
+            </div>
+        }
+    })
+}
+
+/// One Write/Preview tab button.
+fn composer_tab(
+    ui_scale: f32,
+    theme: &Theme,
+    label: &'static str,
+    active: bool,
+    to_preview: bool,
+) -> AnyElement {
+    use crate::actions::GitHubAction;
+    let tc = &theme.colors;
+    let small = theme.metrics.ui_small_font_size;
+    view! { ui_scale,
+        <div class="flex-row items-center"
+             px={Sp::SM}
+             py={Sp::XS}
+             rounded={Rad::SM}
+             bg={if active { tc.elevated_surface } else { halogen::Color::TRANSPARENT }}
+             on_click={GitHubAction::SetComposerPreview(to_preview).into()}
+             cursor={CursorHint::Pointer}>
+            {text(label).size(small).medium()
+                .color(if active { tc.text_strong } else { tc.text_muted })}
+        </div>
+    }
+}
+
+/// Cancel + submit footer row shared by the block and inline composers.
+fn composer_footer(ui_scale: f32, submit_label: &str) -> AnyElement {
+    use crate::actions::GitHubAction;
+    view! { ui_scale,
+        <div class="flex-row items-center" gap={Sp::XS}>
+            <spacer />
+            <Button action={GitHubAction::CancelReviewComment.into()}
+                    style={ButtonStyle::Ghost}
+                    size={ButtonSize::Compact}>
+                <Label>{"Cancel"}</Label>
+            </Button>
+            <Button action={GitHubAction::SubmitReviewComment.into()}
+                    style={ButtonStyle::Filled}
+                    size={ButtonSize::Compact}>
+                <Icon>{lucide::CHECK}</Icon>
+                <Label>{submit_label.to_owned()}</Label>
+            </Button>
+        </div>
+    }
+}
+
+/// The bordered editor box: tab row (+ toolbar) over the Write editor or the
+/// Preview markdown. `body_height` is `None` for the block composer (flex, fills a
+/// fixed-height outer) and `Some(px)` for the inline composer (fixed, so a
+/// content-sized card measures determinately).
+fn composer_editor_box(
+    state: &AppState,
+    theme: &Theme,
+    ui_scale: f32,
+    width: f32,
+    preview: bool,
+    preview_path: Option<&str>,
+    body_height: Option<f32>,
+) -> AnyElement {
+    let tc = &theme.colors;
+    let focused =
+        state.focus.get(&state.store) == Some(crate::ui::state::FocusTarget::ReviewCommentEditor);
+    let group_border = if focused {
+        tc.accent
+    } else {
+        tc.border_variant
+    };
+    let toolbar = composer_format_toolbar(ui_scale, theme, preview);
+    let preview_text_w = {
+        let body_pad = (Sp::SM * ui_scale).round();
+        (width - body_pad * 2.0).max(40.0)
+    };
+    let body_content: AnyElement = if preview {
+        crate::ui::editor::review::render_markdown_body(
+            &state.review_comment_editor.text(),
+            theme,
+            ui_scale,
+            preview_text_w,
+            preview_path,
+        )
+    } else {
+        composer_text_editor(state, theme).flex_1().into_any()
+    };
+    let focus_body = crate::actions::AppAction::SetFocus(Some(
+        crate::ui::state::FocusTarget::ReviewCommentEditor,
+    ))
+    .into();
+    let body_region = match body_height {
+        Some(h) => view! { ui_scale,
+            <div class="w-full" h={h} min_h={0.0} px={Sp::SM} py={Sp::XS}
+                 on_click={focus_body} cursor={CursorHint::Text}>
+                {body_content}
+            </div>
+        },
+        None => view! { ui_scale,
+            <div class="flex-1 w-full" min_h={0.0} px={Sp::SM} py={Sp::XS}
+                 on_click={focus_body} cursor={CursorHint::Text}>
+                {body_content}
+            </div>
+        },
+    };
+    let tab_row = view! { ui_scale,
+        <div class="flex-row items-center w-full"
+             gap={Sp::XS}
+             px={Sp::SM}
+             py={Sp::XS}
+             border_b={tc.border_variant}>
+            {composer_tab(ui_scale, theme, "Write", !preview, false)}
+            {composer_tab(ui_scale, theme, "Preview", preview, true)}
+            <spacer />
+            {?toolbar}
+        </div>
+    };
+    match body_height {
+        Some(_) => view! { ui_scale,
+            <div class="flex-col w-full"
+                 rounded={Rad::MD}
+                 bg={tc.surface}
+                 border_t={group_border} border_b={group_border}
+                 border_l={group_border} border_r={group_border}>
+                {tab_row}
+                {body_region}
+            </div>
+        },
+        None => view! { ui_scale,
+            <div class="flex-col flex-1 w-full"
+                 min_h={0.0}
+                 rounded={Rad::MD}
+                 bg={tc.surface}
+                 border_t={group_border} border_b={group_border}
+                 border_l={group_border} border_r={group_border}>
+                {tab_row}
+                {body_region}
+            </div>
+        },
+    }
+}
+
+/// The inline reply composer rendered inside a thread card (no header/shadow — the
+/// card frames it). Built identically at measure and paint so reserved height matches.
+pub(crate) fn build_inline_reply_composer(
+    state: &AppState,
+    theme: &Theme,
+    ui_scale: f32,
+    width: f32,
+) -> AnyElement {
+    let preview = state
+        .github
+        .pull_request
+        .review_composer
+        .with(&state.store, |c| c.preview);
+    let preview_path = state
+        .workspace
+        .active_file
+        .get(&state.store)
+        .map(|file| file.path);
+    let body_h = (INLINE_REPLY_BODY_H * ui_scale).round();
+    view! { ui_scale,
+        <div class="flex-col w-full" gap={Sp::XS}>
+            {composer_editor_box(state, theme, ui_scale, width, preview, preview_path.as_deref(), Some(body_h))}
+            {composer_footer(ui_scale, "Reply")}
+        </div>
+    }
+}
+
+/// Builds the inline reply composer for `thread`, but only when it is the active
+/// reply target. The card width minus its padding is the composer's content width.
+fn inline_reply_composer_for(
+    state: &AppState,
+    theme: &Theme,
+    ui_scale: f32,
+    thread: &crate::core::review::ReviewThread,
+    card_width: f32,
+) -> Option<AnyElement> {
+    let is_target = state
+        .github
+        .pull_request
+        .review_composer
+        .with(&state.store, |c| {
+            c.reply_target.as_ref() == Some(&thread.id)
+        });
+    if !is_target {
+        return None;
+    }
+    let inner_w = (card_width - 2.0 * (Sp::SM * ui_scale).round()).max(40.0);
+    Some(build_inline_reply_composer(state, theme, ui_scale, inner_w))
+}
+
 pub(crate) fn build_review_composer(
     state: &AppState,
     theme: &Theme,
@@ -1219,8 +1559,6 @@ pub(crate) fn build_review_composer(
     rect: Rect,
 ) -> AnyElement {
     let tc = &theme.colors;
-    let focused =
-        state.focus.get(&state.store) == Some(crate::ui::state::FocusTarget::ReviewCommentEditor);
     let (header_label, submit_label, failed_message, preview, preview_path) = state
         .github
         .pull_request
@@ -1268,28 +1606,7 @@ pub(crate) fn build_review_composer(
             .get(&state.store)
             .map(|file| file.path)
     });
-    let cursor = CursorSnapshot {
-        x: state.review_comment_editor.cursor_pos.x,
-        y: state.review_comment_editor.cursor_pos.y,
-        moved_at_ms: state.review_comment_editor.cursor_moved_at_ms,
-    };
-    let editor = text_editor_element()
-        .placeholder("Leave a review comment")
-        .is_empty(state.review_comment_editor.is_empty())
-        .focused(focused)
-        .focus_target(crate::ui::state::FocusTarget::ReviewCommentEditor)
-        .editor_id(2)
-        .font_size(theme.metrics.ui_font_size)
-        .text_color(tc.text)
-        .cursor(cursor)
-        .selection(state.review_comment_editor.selection_rects())
-        .content_height(state.review_comment_editor.content_height())
-        .scroll_y(state.review_comment_editor.scroll_y)
-        .w_full()
-        .flex_1();
-
     let small = theme.metrics.ui_small_font_size;
-    let base = theme.metrics.ui_font_size;
     let failed_row = failed_message.map(|message| {
         view! { ui_scale,
             <div class="flex-row w-full">
@@ -1297,74 +1614,15 @@ pub(crate) fn build_review_composer(
             </div>
         }
     });
-
-    use crate::actions::{ComposerFormat, GitHubAction};
-    let fmt = |format: ComposerFormat, icon: &'static str, tip: &'static str| {
-        view! { ui_scale,
-            <Button action={GitHubAction::FormatReviewComment(format).into()}
-                    style={ButtonStyle::Ghost}
-                    size={ButtonSize::Default}
-                    tooltip={tip}>
-                <Icon>{icon}</Icon>
-            </Button>
-        }
-    };
-    // Toolbar shows only in Write mode (right side of the tab row); the body is the
-    // editor (Write) or rendered markdown (Preview).
-    let divider = || {
-        view! { ui_scale,
-            <div w={1.0} h={base} bg={tc.border_variant} />
-        }
-    };
-    let toolbar = (!preview).then(|| {
-        view! { ui_scale,
-            <div class="flex-row items-center" gap={Sp::XXS}>
-                {fmt(ComposerFormat::Bold, lucide::BOLD, "Bold")}
-                {fmt(ComposerFormat::Italic, lucide::ITALIC, "Italic")}
-                {divider()}
-                {fmt(ComposerFormat::Code, lucide::CODE, "Code")}
-                {fmt(ComposerFormat::Link, lucide::LINK, "Link")}
-                {divider()}
-                {fmt(ComposerFormat::BulletList, lucide::LIST, "Bulleted list")}
-            </div>
-        }
-    });
-    let preview_text_w = {
-        let composer_pad = (Sp::MD * ui_scale).round();
-        let body_pad = (Sp::SM * ui_scale).round();
-        (rect.width - composer_pad * 2.0 - body_pad * 2.0).max(40.0)
-    };
-    let body_content: AnyElement = if preview {
-        crate::ui::editor::review::render_markdown_body(
-            &state.review_comment_editor.text(),
-            theme,
-            ui_scale,
-            preview_text_w,
-            preview_path.as_deref(),
-        )
-    } else {
-        editor.into_any()
-    };
-    let tab = |label: &'static str, active: bool, to_preview: bool| {
-        view! { ui_scale,
-            <div class="flex-row items-center"
-                 px={Sp::SM}
-                 py={Sp::XS}
-                 rounded={Rad::SM}
-                 bg={if active { tc.elevated_surface } else { halogen::Color::TRANSPARENT }}
-                 on_click={GitHubAction::SetComposerPreview(to_preview).into()}
-                 cursor={CursorHint::Pointer}>
-                {text(label).size(small).medium()
-                    .color(if active { tc.text_strong } else { tc.text_muted })}
-            </div>
-        }
-    };
-
-    let group_border = if focused {
-        tc.accent
-    } else {
-        tc.border_variant
-    };
+    let editor_box = composer_editor_box(
+        state,
+        theme,
+        ui_scale,
+        rect.width - 2.0 * (Sp::MD * ui_scale).round(),
+        preview,
+        preview_path.as_deref(),
+        None,
+    );
 
     view! { ui_scale,
         <div class="flex-col"
@@ -1385,47 +1643,8 @@ pub(crate) fn build_review_composer(
                 {text(header_label).size(small).color(tc.text_strong).semibold()}
             </div>
             {?failed_row}
-            <div class="flex-col flex-1 w-full"
-                 min_h={0.0}
-                 rounded={Rad::MD}
-                 bg={tc.surface}
-                 border_t={group_border}
-                 border_b={group_border}
-                 border_l={group_border}
-                 border_r={group_border}>
-                <div class="flex-row items-center w-full"
-                     gap={Sp::XS}
-                     px={Sp::SM}
-                     py={Sp::XS}
-                     border_b={tc.border_variant}>
-                    {tab("Write", !preview, false)}
-                    {tab("Preview", preview, true)}
-                    <spacer />
-                    {?toolbar}
-                </div>
-                <div class="flex-1 w-full"
-                     min_h={0.0}
-                     px={Sp::SM}
-                     py={Sp::XS}
-                     on_click={crate::actions::AppAction::SetFocus(Some(crate::ui::state::FocusTarget::ReviewCommentEditor)).into()}
-                     cursor={CursorHint::Text}>
-                    {body_content}
-                </div>
-            </div>
-            <div class="flex-row items-center" gap={Sp::XS}>
-                <spacer />
-                <Button action={GitHubAction::CancelReviewComment.into()}
-                        style={ButtonStyle::Ghost}
-                        size={ButtonSize::Compact}>
-                    <Label>{"Cancel"}</Label>
-                </Button>
-                <Button action={GitHubAction::SubmitReviewComment.into()}
-                        style={ButtonStyle::Filled}
-                        size={ButtonSize::Compact}>
-                    <Icon>{lucide::CHECK}</Icon>
-                    <Label>{submit_label}</Label>
-                </Button>
-            </div>
+            {editor_box}
+            {composer_footer(ui_scale, submit_label)}
         </div>
     }
 }
@@ -1473,5 +1692,77 @@ fn build_staging_bar(
                 </Button>
             </div>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use crate::ui::editor::decoration::{BlockDecoration, BlockPlacement, BlockRegistry};
+    use crate::ui::editor::display_layout::DisplayLayoutMetrics;
+    use crate::ui::editor::render_doc::RenderDoc;
+    use crate::ui::editor::review::ReviewThreadBlock;
+    use crate::ui::harness::sample_review_thread;
+    use crate::ui::state::{AppState, ViewportDocument, VirtualDiffItemKind};
+
+    use super::append_virtual_block_stream_items;
+
+    #[derive(Debug)]
+    struct TestComposer;
+
+    impl BlockDecoration for TestComposer {
+        fn height(&self, _metrics: &DisplayLayoutMetrics) -> u16 {
+            42
+        }
+
+        fn is_composer(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn virtual_stream_items_include_review_thread_and_composer_blocks() {
+        let state = AppState::default();
+        let thread = sample_review_thread();
+        let thread_id = thread.id.clone();
+        let mut viewport =
+            ViewportDocument::single(Arc::new(RenderDoc::default()), 0, 0, "x.rs".to_owned());
+        let mut blocks = BlockRegistry::new();
+        blocks.push(
+            BlockPlacement::Below(3),
+            Box::new(ReviewThreadBlock::new(thread, true, 80)),
+        );
+        blocks.push(BlockPlacement::Below(3), Box::new(TestComposer));
+        let mut heights = HashMap::new();
+        heights.insert(thread_id, 80);
+
+        append_virtual_block_stream_items(
+            &state,
+            &mut viewport,
+            &blocks,
+            0,
+            0..blocks.len(),
+            &heights,
+            42,
+        );
+
+        assert!(viewport.stream_items.iter().any(|item| {
+            item.id.kind == VirtualDiffItemKind::ReviewThread
+                && item.measured_height_px == Some(80)
+                && item.estimated_height_px == 80
+        }));
+        assert!(viewport.stream_items.iter().any(|item| {
+            item.id.kind == VirtualDiffItemKind::Composer
+                && item.measured_height_px == Some(42)
+                && item.estimated_height_px == 42
+        }));
+        assert!(
+            viewport
+                .stream_items
+                .windows(2)
+                .all(|items| items[0].sort_key <= items[1].sort_key)
+        );
     }
 }

@@ -306,6 +306,19 @@ impl AppState {
                 self.set_line_selection_range(row, anchor);
                 Vec::new()
             }
+            SetLineSelectionFromDocument {
+                entries,
+                last_row,
+                review_target,
+            } => {
+                self.editor.line_selection.update(&self.store, |selection| {
+                    selection.entries.clear();
+                    selection.entries.extend(entries);
+                    selection.last_toggled_row = Some(last_row);
+                    selection.review_target = review_target;
+                });
+                Vec::new()
+            }
             ToggleCurrentLineSelection => {
                 self.toggle_current_line_selection();
                 Vec::new()

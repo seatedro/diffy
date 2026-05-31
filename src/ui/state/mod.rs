@@ -9155,6 +9155,7 @@ impl AppState {
                 ls.toggle(hunk_id, carbon::DiffSide::New, line.new_line_index as u32);
             }
             ls.last_toggled_row = Some(row);
+            ls.review_target = None;
         });
     }
 
@@ -9208,6 +9209,7 @@ impl AppState {
                 if line.old_line_index >= 0 {
                     ls.entries
                         .insert(crate::ui::editor::state::LineSelectionKey {
+                            file_path: None,
                             hunk_id,
                             side: carbon::DiffSide::Old,
                             source_index: line.old_line_index as u32,
@@ -9216,6 +9218,7 @@ impl AppState {
                 if line.new_line_index >= 0 {
                     ls.entries
                         .insert(crate::ui::editor::state::LineSelectionKey {
+                            file_path: None,
                             hunk_id,
                             side: carbon::DiffSide::New,
                             source_index: line.new_line_index as u32,
@@ -9223,6 +9226,7 @@ impl AppState {
                 }
             }
             ls.last_toggled_row = Some(row);
+            ls.review_target = None;
         });
     }
 

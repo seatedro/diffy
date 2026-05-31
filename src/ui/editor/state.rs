@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use halogen::Store;
 
 use crate::core::compare::LayoutMode;
+use crate::core::forge::github::GitHubReviewSide;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SearchMatch {
@@ -29,6 +30,14 @@ pub struct ViewportTextPoint {
     pub line_index: u32,
     pub side: ViewportTextSide,
     pub byte_offset: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewCommentTarget {
+    pub path: String,
+    pub side: GitHubReviewSide,
+    pub line: u32,
+    pub start_line: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,10 +126,12 @@ pub struct EditorState {
 pub struct LineSelection {
     pub entries: BTreeSet<LineSelectionKey>,
     pub last_toggled_row: Option<usize>,
+    pub review_target: Option<ReviewCommentTarget>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LineSelectionKey {
+    pub file_path: Option<String>,
     pub hunk_id: u32,
     pub side: carbon::DiffSide,
     pub source_index: u32,
@@ -130,6 +141,7 @@ impl LineSelection {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.last_toggled_row = None;
+        self.review_target = None;
     }
 
     pub fn is_empty(&self) -> bool {
@@ -137,15 +149,30 @@ impl LineSelection {
     }
 
     pub fn contains(&self, hunk_id: u32, side: carbon::DiffSide, source_index: u32) -> bool {
-        self.entries.contains(&LineSelectionKey {
-            hunk_id,
-            side,
-            source_index,
+        self.contains_in_file(None, hunk_id, side, source_index)
+    }
+
+    pub fn contains_in_file(
+        &self,
+        file_path: Option<&str>,
+        hunk_id: u32,
+        side: carbon::DiffSide,
+        source_index: u32,
+    ) -> bool {
+        self.entries.iter().any(|key| {
+            key.hunk_id == hunk_id
+                && key.side == side
+                && key.source_index == source_index
+                && match key.file_path.as_deref() {
+                    Some(path) => file_path == Some(path),
+                    None => true,
+                }
         })
     }
 
     pub fn toggle(&mut self, hunk_id: u32, side: carbon::DiffSide, source_index: u32) {
         let key = LineSelectionKey {
+            file_path: None,
             hunk_id,
             side,
             source_index,
@@ -159,7 +186,7 @@ impl LineSelection {
         self.entries
             .iter()
             .filter(|key| key.hunk_id == hunk_id)
-            .copied()
+            .cloned()
             .collect()
     }
 }

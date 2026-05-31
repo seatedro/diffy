@@ -5,7 +5,7 @@ use crate::core::review::{ReviewDecision, ReviewThreadId};
 use crate::core::vcs::model::{PublishAction, VcsOperation};
 use crate::input::ShortcutCommand;
 use crate::platform::secrets::AiKeyKind;
-use crate::ui::editor::state::ViewportTextPoint;
+use crate::ui::editor::state::{LineSelectionKey, ReviewCommentTarget, ViewportTextPoint};
 use crate::ui::state::{CompareField, FocusTarget, SettingsSection, SidebarTab};
 use crate::ui::theme::ThemeMode;
 
@@ -134,7 +134,15 @@ pub enum RepositoryAction {
     DiscardHunkAt(i16),
     ToggleLineSelection(usize),
     ToggleLineSelectionRange(usize, usize),
-    SetLineSelectionRange { row: usize, anchor: usize },
+    SetLineSelectionRange {
+        row: usize,
+        anchor: usize,
+    },
+    SetLineSelectionFromDocument {
+        entries: Vec<LineSelectionKey>,
+        last_row: usize,
+        review_target: Option<ReviewCommentTarget>,
+    },
     ToggleCurrentLineSelection,
     ToggleCurrentLineSelectionRange,
     StageSelectedLines,
@@ -145,7 +153,9 @@ pub enum RepositoryAction {
     RunOperation(VcsOperation),
     FetchRemote(String),
     FetchAllRemotes,
-    PushCurrentBranch { force_with_lease: bool },
+    PushCurrentBranch {
+        force_with_lease: bool,
+    },
     PublishDefault,
     OpenPublishMenu,
     Publish(PublishAction),
@@ -317,6 +327,7 @@ pub enum GitHubAction {
     OpenAccountMenu,
     SignOutGitHub,
     OpenReviewCommentComposer,
+    OpenReviewCommentComposerAt(ReviewCommentTarget),
     SubmitReviewComment,
     CancelReviewComment,
     FormatReviewComment(ComposerFormat),

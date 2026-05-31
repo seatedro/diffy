@@ -16,6 +16,7 @@ use crate::actions::Action;
 use crate::effects::Effect;
 use crate::ui::components::TooltipState;
 use crate::ui::editor::element::EditorElement;
+use crate::ui::editor::state::ReviewCommentTarget;
 use crate::ui::element::DragHandler;
 use crate::ui::shell::UiFrame;
 use crate::ui::state::{AppState, FocusTarget, OverlaySurface, WorkspaceMode};
@@ -296,6 +297,7 @@ pub struct InputSystem {
     viewport_text_drag_active: bool,
     card_text_drag_active: bool,
     review_line_drag_anchor: Option<usize>,
+    review_line_drag_target: Option<ReviewCommentTarget>,
     pointer_capture: Option<Box<dyn DragHandler>>,
     file_list_scroll_remainder_px: f32,
     overlay_scroll_remainder_px: f32,
@@ -314,6 +316,7 @@ impl Default for InputSystem {
             viewport_text_drag_active: false,
             card_text_drag_active: false,
             review_line_drag_anchor: None,
+            review_line_drag_target: None,
             pointer_capture: None,
             file_list_scroll_remainder_px: 0.0,
             overlay_scroll_remainder_px: 0.0,
@@ -522,6 +525,7 @@ impl InputSystem {
                     self.viewport_text_drag_active = false;
                     self.card_text_drag_active = false;
                     self.review_line_drag_anchor = None;
+                    self.review_line_drag_target = None;
                     self.pointer_capture = None;
                     self.ime_composing = false;
                 }

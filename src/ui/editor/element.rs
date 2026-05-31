@@ -764,7 +764,11 @@ impl EditorElement {
             ) {
                 return false;
             }
-            line_selection_contains_line(&state.line_selection, line)
+            line_selection_contains_line(
+                &state.line_selection,
+                file_path_for_line(doc, row.line_index as usize),
+                line,
+            )
         };
 
         let first = self.rows.iter().find(|r| is_selected(r))?;
@@ -1198,7 +1202,7 @@ impl EditorElement {
         row_rect: Rect,
     ) {
         let selected = !state.line_selection.is_empty()
-            && line_selection_contains_line(&state.line_selection, line);
+            && line_selection_contains_line(&state.line_selection, Some(path), line);
         for block in self.text_blocks_for_line(line, display_row, row_rect) {
             let Some(block) = block else {
                 continue;
@@ -1320,7 +1324,11 @@ impl EditorElement {
         let rect = self.review_add_comment_button_rect_for_row(line, &display_row)?;
         let emphasised = state.review_add_hovered
             || (!state.line_selection.is_empty()
-                && line_selection_contains_line(&state.line_selection, line));
+                && line_selection_contains_line(
+                    &state.line_selection,
+                    file_path_for_line(doc, display_row.line_index as usize),
+                    line,
+                ));
         ResolvedEditorOverlay::new(
             EditorOverlayKind::ReviewAddButton {
                 line_index: display_row.line_index as usize,
@@ -2059,7 +2067,11 @@ impl EditorElement {
             ) {
                 continue;
             }
-            let selected = line_selection_contains_line(&state.line_selection, line);
+            let selected = line_selection_contains_line(
+                &state.line_selection,
+                file_path_for_line(doc, display_row.line_index as usize),
+                line,
+            );
             if !selected {
                 continue;
             }
@@ -3035,15 +3047,36 @@ impl EditorElement {
 
 fn line_selection_contains_line(
     selection: &super::state::LineSelection,
+    file_path: Option<&str>,
     line: &RenderLine,
 ) -> bool {
     let Ok(hunk_id) = u32::try_from(line.hunk_index) else {
         return false;
     };
     (line.old_line_index >= 0
-        && selection.contains(hunk_id, carbon::DiffSide::Old, line.old_line_index as u32))
+        && selection.contains_in_file(
+            file_path,
+            hunk_id,
+            carbon::DiffSide::Old,
+            line.old_line_index as u32,
+        ))
         || (line.new_line_index >= 0
-            && selection.contains(hunk_id, carbon::DiffSide::New, line.new_line_index as u32))
+            && selection.contains_in_file(
+                file_path,
+                hunk_id,
+                carbon::DiffSide::New,
+                line.new_line_index as u32,
+            ))
+}
+
+fn file_path_for_line(doc: &RenderDoc, line_index: usize) -> Option<&str> {
+    doc.lines.get(..=line_index)?.iter().rev().find_map(|line| {
+        if line.row_kind() == RenderRowKind::FileHeader {
+            doc.file_meta(line).map(|meta| meta.path.as_str())
+        } else {
+            None
+        }
+    })
 }
 
 fn review_comment_gutter_rect(layout: &EditorLayout, line: &RenderLine) -> Option<Rect> {

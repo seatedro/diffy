@@ -7,9 +7,12 @@ use crate::actions::{
     AppAction, ContextMenuEntry, EditorAction, FileListAction, GitHubAction, OverlayAction,
     RepositoryAction, TextEditAction,
 };
+use crate::core::forge::github::GitHubReviewSide;
 use crate::ui::components::{TooltipSide, TooltipState};
 use crate::ui::editor::anchor::EditorOverlayKind;
 use crate::ui::editor::element::EditorElement;
+use crate::ui::editor::render_doc::{FileHeaderMeta, INVALID_U32, RenderDoc, RenderRowKind};
+use crate::ui::editor::state::{LineSelectionKey, ReviewCommentTarget};
 use crate::ui::element::{ClickEvent, ClickResult, DragHandler, HitIdentity};
 use crate::ui::icons::lucide;
 use crate::ui::shell::UiFrame;
@@ -191,15 +194,31 @@ impl InputSystem {
             }) = review_add_hit.map(|overlay| overlay.kind)
             {
                 self.review_line_drag_anchor = Some(review_line);
+                let review_selection = ui_frame.viewport_document.as_ref().and_then(|document| {
+                    review_line_selection_for_doc_range(
+                        document.doc.as_ref(),
+                        review_line,
+                        review_line,
+                    )
+                });
+                self.review_line_drag_target = review_selection
+                    .as_ref()
+                    .map(|selection| selection.target.clone());
+                let line_selection_action = review_selection
+                    .map(|selection| RepositoryAction::SetLineSelectionFromDocument {
+                        entries: selection.entries,
+                        last_row: review_line,
+                        review_target: Some(selection.target),
+                    })
+                    .unwrap_or(RepositoryAction::SetLineSelectionRange {
+                        row: review_line,
+                        anchor: review_line,
+                    });
                 return InputOutcome::actions(vec![
                     EditorAction::FocusViewport.into(),
                     EditorAction::HoverViewportRow(hovered).into(),
                     EditorAction::ClearViewportTextSelection.into(),
-                    RepositoryAction::SetLineSelectionRange {
-                        row: review_line,
-                        anchor: review_line,
-                    }
-                    .into(),
+                    line_selection_action.into(),
                 ]);
             }
             let supports_hunk_mutation =
@@ -222,14 +241,21 @@ impl InputSystem {
                     }
                     let line_idx =
                         editor.render_line_index_for_row(row).unwrap_or(u32::MAX) as usize;
-                    let is_hunk_sep = state.workspace.active_file.with(&state.store, |af| {
-                        af.as_ref()
-                            .and_then(|a| a.render_doc.lines.get(line_idx).copied())
-                            .is_some_and(|line| {
-                                line.row_kind()
-                                    == crate::ui::editor::render_doc::RenderRowKind::HunkSeparator
+                    let viewport_doc = ui_frame
+                        .viewport_document
+                        .as_ref()
+                        .map(|document| document.doc.as_ref());
+                    let is_hunk_sep = viewport_doc
+                        .and_then(|doc| doc.lines.get(line_idx))
+                        .map(|line| line.row_kind())
+                        .or_else(|| {
+                            state.workspace.active_file.with(&state.store, |af| {
+                                af.as_ref()
+                                    .and_then(|a| a.render_doc.lines.get(line_idx))
+                                    .map(|line| line.row_kind())
                             })
-                    });
+                        })
+                        .is_some_and(|kind| kind == RenderRowKind::HunkSeparator);
                     let mut actions = vec![
                         EditorAction::FocusViewport.into(),
                         EditorAction::HoverViewportRow(hovered).into(),
@@ -249,6 +275,38 @@ impl InputSystem {
                         // Hunk headers are not review-comment anchors.
                     } else if status_source && !single_file_status_actions {
                         // Continuous status rows are not single-file line anchors.
+                    } else if review_source {
+                        let anchor = if self.modifiers.shift_key() {
+                            state
+                                .editor
+                                .line_selection
+                                .with(&state.store, |ls| ls.last_toggled_row)
+                                .unwrap_or(line_idx)
+                        } else {
+                            line_idx
+                        };
+                        if let Some(selection) = viewport_doc.and_then(|doc| {
+                            review_line_selection_for_doc_range(doc, anchor, line_idx)
+                        }) {
+                            actions.push(
+                                RepositoryAction::SetLineSelectionFromDocument {
+                                    entries: selection.entries,
+                                    last_row: line_idx,
+                                    review_target: Some(selection.target),
+                                }
+                                .into(),
+                            );
+                        } else if self.modifiers.shift_key() {
+                            actions.push(
+                                RepositoryAction::SetLineSelectionRange {
+                                    row: line_idx,
+                                    anchor,
+                                }
+                                .into(),
+                            );
+                        } else {
+                            actions.push(RepositoryAction::ToggleLineSelection(line_idx).into());
+                        }
                     } else if self.modifiers.shift_key() {
                         let anchor = state
                             .editor
@@ -304,6 +362,7 @@ impl InputSystem {
         self.mouse_drag_target = None;
         self.viewport_text_drag_active = false;
         self.review_line_drag_anchor = None;
+        self.review_line_drag_target = None;
 
         if input_is_blocked_by_overlay(state, ui_frame, x, y)
             || !ui_frame
@@ -463,13 +522,25 @@ impl InputSystem {
                 && let Some(line_index) =
                     editor.review_comment_line_for_row(document.doc.as_ref(), row)
             {
-                actions.push(
+                let review_selection =
+                    review_line_selection_for_doc_range(document.doc.as_ref(), anchor, line_index);
+                self.review_line_drag_target = review_selection
+                    .as_ref()
+                    .map(|selection| selection.target.clone());
+                actions.push(if let Some(selection) = review_selection {
+                    RepositoryAction::SetLineSelectionFromDocument {
+                        entries: selection.entries,
+                        last_row: line_index,
+                        review_target: Some(selection.target),
+                    }
+                    .into()
+                } else {
                     RepositoryAction::SetLineSelectionRange {
                         row: line_index,
                         anchor,
                     }
-                    .into(),
-                );
+                    .into()
+                });
             }
         }
 
@@ -694,11 +765,17 @@ impl InputSystem {
             outcome.effects = result.effects;
             outcome.dirty = true;
         }
-        if self.review_line_drag_anchor.take().is_some() && state.pull_request_review_enabled() {
-            outcome
-                .actions
-                .push(GitHubAction::OpenReviewCommentComposer.into());
+        let review_drag_anchor = self.review_line_drag_anchor.take();
+        if review_drag_anchor.is_some() && state.pull_request_review_enabled() {
+            let action = self
+                .review_line_drag_target
+                .take()
+                .map(GitHubAction::OpenReviewCommentComposerAt)
+                .unwrap_or(GitHubAction::OpenReviewCommentComposer);
+            outcome.actions.push(action.into());
             outcome.dirty = true;
+        } else {
+            self.review_line_drag_target = None;
         }
         self.mouse_drag_target = None;
         self.viewport_text_drag_active = false;
@@ -714,6 +791,102 @@ fn input_is_blocked_by_overlay(state: &AppState, ui_frame: &UiFrame, x: f32, y: 
             .iter()
             .rev()
             .any(|hit| hit.rect.contains(x, y))
+}
+
+struct ReviewLineSelection {
+    entries: Vec<LineSelectionKey>,
+    target: ReviewCommentTarget,
+}
+
+fn review_line_selection_for_doc_range(
+    doc: &RenderDoc,
+    anchor_line: usize,
+    focus_line: usize,
+) -> Option<ReviewLineSelection> {
+    let file_meta = file_meta_for_line(doc, anchor_line)?;
+    let path = file_meta.path.as_str();
+    let (start, end) = if anchor_line <= focus_line {
+        (anchor_line, focus_line)
+    } else {
+        (focus_line, anchor_line)
+    };
+    let mut new_lines = Vec::new();
+    let mut old_lines = Vec::new();
+    let mut entries = Vec::new();
+    let mut current_path = file_path_for_line(doc, start);
+
+    for line in doc.lines.iter().take(end + 1).skip(start) {
+        if line.row_kind() == RenderRowKind::FileHeader {
+            current_path = doc.file_meta(line).map(|meta| meta.path.as_str());
+            continue;
+        }
+        if current_path != Some(path) {
+            continue;
+        }
+        if line.row_kind().is_body() && line.hunk_index >= 0 {
+            let hunk_id = line.hunk_index as u32;
+            if line.new_line_no != INVALID_U32 {
+                new_lines.push(line.new_line_no);
+            }
+            if line.old_line_no != INVALID_U32 {
+                old_lines.push(line.old_line_no);
+            }
+            if line.old_line_index >= 0 {
+                entries.push(LineSelectionKey {
+                    file_path: Some(path.to_owned()),
+                    hunk_id,
+                    side: carbon::DiffSide::Old,
+                    source_index: line.old_line_index as u32,
+                });
+            }
+            if line.new_line_index >= 0 {
+                entries.push(LineSelectionKey {
+                    file_path: Some(path.to_owned()),
+                    hunk_id,
+                    side: carbon::DiffSide::New,
+                    source_index: line.new_line_index as u32,
+                });
+            }
+        }
+    }
+
+    let (side, lines) = if !new_lines.is_empty() {
+        (GitHubReviewSide::Right, new_lines)
+    } else if !old_lines.is_empty() {
+        (GitHubReviewSide::Left, old_lines)
+    } else {
+        return None;
+    };
+    let first_line = *lines.iter().min()?;
+    let line = *lines.iter().max().unwrap_or(&first_line);
+    let target_path = match side {
+        GitHubReviewSide::Right => path,
+        GitHubReviewSide::Left => file_meta.old_path.as_deref().unwrap_or(path),
+    };
+
+    Some(ReviewLineSelection {
+        entries,
+        target: ReviewCommentTarget {
+            path: target_path.to_owned(),
+            side,
+            line,
+            start_line: (first_line != line).then_some(first_line),
+        },
+    })
+}
+
+fn file_path_for_line(doc: &RenderDoc, line_index: usize) -> Option<&str> {
+    file_meta_for_line(doc, line_index).map(|meta| meta.path.as_str())
+}
+
+fn file_meta_for_line(doc: &RenderDoc, line_index: usize) -> Option<&FileHeaderMeta> {
+    doc.lines.get(..=line_index)?.iter().rev().find_map(|line| {
+        if line.row_kind() == RenderRowKind::FileHeader {
+            doc.file_meta(line)
+        } else {
+            None
+        }
+    })
 }
 
 /// Maps a point inside a selectable-text region to a byte offset into its source

@@ -6,7 +6,7 @@ use crate::core::review::{
 use crate::effects::{Effect, GitHubEffect, UiEffect};
 use crate::events::GitHubEvent;
 use crate::ui::editor::render_doc::{INVALID_U32, RenderLine};
-use crate::ui::editor::state::LineSelection;
+use crate::ui::editor::state::{LineSelection, ReviewCommentTarget};
 
 use super::*;
 
@@ -1061,6 +1061,9 @@ impl AppState {
                 effects
             }
             GitHubAction::OpenReviewCommentComposer => self.open_review_comment_composer(),
+            GitHubAction::OpenReviewCommentComposerAt(target) => {
+                self.open_review_comment_composer_at(target)
+            }
             GitHubAction::SubmitReviewComment => self.submit_review_comment(),
             GitHubAction::ReplyToReviewThread(id) => self.open_review_thread_reply(id),
             GitHubAction::EditReviewComment { comment_node_id } => {
@@ -1342,6 +1345,17 @@ impl AppState {
     }
 
     fn open_review_comment_composer(&mut self) -> Vec<Effect> {
+        self.open_review_comment_composer_with(None)
+    }
+
+    fn open_review_comment_composer_at(&mut self, target: ReviewCommentTarget) -> Vec<Effect> {
+        self.open_review_comment_composer_with(Some(target))
+    }
+
+    fn open_review_comment_composer_with(
+        &mut self,
+        target: Option<ReviewCommentTarget>,
+    ) -> Vec<Effect> {
         if self
             .github_access_token
             .as_deref()
@@ -1356,7 +1370,16 @@ impl AppState {
             return Vec::new();
         }
 
-        let Some(draft) = self.build_review_comment_draft(String::new()) else {
+        let target = target.or_else(|| {
+            self.editor
+                .line_selection
+                .with(&self.store, |selection| selection.review_target.clone())
+        });
+        let draft = match target {
+            Some(target) => self.build_review_comment_draft_for_target(target, String::new()),
+            None => self.build_review_comment_draft(String::new()),
+        };
+        let Some(draft) = draft else {
             return Vec::new();
         };
         self.github.pull_request.review_composer.set(
@@ -1759,6 +1782,37 @@ impl AppState {
             },
         })
     }
+
+    fn build_review_comment_draft_for_target(
+        &mut self,
+        target: ReviewCommentTarget,
+        body: String,
+    ) -> Option<ReviewCommentDraft> {
+        let key = self.active_pull_request_key()?;
+        let info = self.github.pull_request.cache.with(&self.store, |cache| {
+            match cache.get(&key).map(|entry| &entry.meta) {
+                Some(PrPeekMeta::Ready(info)) => Some(info.clone()),
+                _ => None,
+            }
+        })?;
+        if target.path.is_empty() || target.line == INVALID_U32 {
+            self.push_error("Select a line in the diff to comment on.");
+            return None;
+        }
+
+        Some(ReviewCommentDraft {
+            key,
+            request: CreatePullRequestReviewComment {
+                body,
+                commit_id: info.head_sha,
+                path: target.path,
+                line: target.line,
+                side: target.side,
+                start_line: target.start_line,
+                start_side: target.start_line.map(|_| target.side),
+            },
+        })
+    }
 }
 
 fn review_thread_matches_file(thread: &ReviewThread, file: &carbon::FileDiff) -> bool {
@@ -1800,19 +1854,30 @@ fn selected_review_range(
     // review comments normally land) and fall back to the old side otherwise.
     let mut new_lines = Vec::new();
     let mut old_lines = Vec::new();
+    let file_path = file.path();
     for line in lines {
         if line.hunk_index < 0 {
             continue;
         }
         let hunk_id = line.hunk_index as u32;
         if line.new_line_index >= 0
-            && selection.contains(hunk_id, carbon::DiffSide::New, line.new_line_index as u32)
+            && selection.contains_in_file(
+                Some(file_path),
+                hunk_id,
+                carbon::DiffSide::New,
+                line.new_line_index as u32,
+            )
             && line.new_line_no != INVALID_U32
         {
             new_lines.push(line.new_line_no);
         }
         if line.old_line_index >= 0
-            && selection.contains(hunk_id, carbon::DiffSide::Old, line.old_line_index as u32)
+            && selection.contains_in_file(
+                Some(file_path),
+                hunk_id,
+                carbon::DiffSide::Old,
+                line.old_line_index as u32,
+            )
             && line.old_line_no != INVALID_U32
         {
             old_lines.push(line.old_line_no);
@@ -1939,11 +2004,13 @@ mod tests {
         }];
         let mut selection = LineSelection::default();
         selection.entries.insert(LineSelectionKey {
+            file_path: None,
             hunk_id: 0,
             side: carbon::DiffSide::Old,
             source_index: 9,
         });
         selection.entries.insert(LineSelectionKey {
+            file_path: None,
             hunk_id: 0,
             side: carbon::DiffSide::New,
             source_index: 11,
@@ -1981,11 +2048,13 @@ mod tests {
         ];
         let mut selection = LineSelection::default();
         selection.entries.insert(LineSelectionKey {
+            file_path: None,
             hunk_id: 0,
             side: carbon::DiffSide::Old,
             source_index: 4,
         });
         selection.entries.insert(LineSelectionKey {
+            file_path: None,
             hunk_id: 0,
             side: carbon::DiffSide::Old,
             source_index: 5,

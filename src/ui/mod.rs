@@ -25,6 +25,7 @@ pub mod theme;
 pub mod title_bar;
 pub mod toolbar;
 pub mod vcs;
+pub mod virtual_list;
 pub mod window_chrome;
 
 pub use app::run;

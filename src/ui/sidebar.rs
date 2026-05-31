@@ -1,5 +1,4 @@
 use std::cell::Cell;
-use std::ops::Range;
 use std::rc::Rc;
 
 use halogen::view;
@@ -23,6 +22,7 @@ use crate::ui::state::{
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme};
 use crate::ui::vcs::change_summary_label;
+use crate::ui::virtual_list::virtual_list_window;
 
 pub(crate) struct SidebarResizeDrag {
     origin_x: f32,
@@ -66,39 +66,6 @@ impl DragHandler for SidebarResizeDrag {
     fn cursor(&self) -> CursorHint {
         CursorHint::ResizeCol
     }
-}
-
-fn visible_sidebar_window(
-    scroll_px: f32,
-    viewport_px: f32,
-    stride: f32,
-    len: usize,
-) -> Range<usize> {
-    if len == 0 || stride <= 0.0 {
-        return 0..0;
-    }
-
-    let first = (scroll_px / stride).floor().max(0.0) as usize;
-    let visible = (viewport_px / stride).ceil().max(1.0) as usize;
-    let start = first.saturating_sub(SIDEBAR_OVERSCAN_ROWS);
-    let end = (first + visible + SIDEBAR_OVERSCAN_ROWS).min(len);
-    start..end
-}
-
-fn virtual_sidebar_spacer_heights(
-    total_rows: usize,
-    window: &Range<usize>,
-    stride: f32,
-    gap: f32,
-) -> (f32, f32) {
-    let top = window.start as f32 * stride;
-    let remaining = total_rows.saturating_sub(window.end);
-    let bottom = if remaining == 0 {
-        0.0
-    } else {
-        remaining as f32 * stride - gap
-    };
-    (top, bottom)
 }
 
 fn build_sidebar_rows<'a>(
@@ -146,10 +113,13 @@ fn render_sidebar_row(
     tc: &crate::ui::theme::ThemeColors,
     scale: f32,
     row_h: f32,
+    selected_index: Option<usize>,
 ) -> AnyElement {
     match row {
         SidebarRow::Section(scope) => status_section_row(scope, state, tc, scale, row_h),
-        SidebarRow::File { index, entry } => file_row(entry, index, state, tc, scale),
+        SidebarRow::File { index, entry } => {
+            file_row(entry, index, state, tc, scale, selected_index)
+        }
     }
 }
 
@@ -389,6 +359,7 @@ pub(crate) fn sidebar(
     let filter = state.file_list.filter.get(&state.store);
     let has_filter = !filter.is_empty();
     let row_h = theme.metrics.ui_row_height.round();
+    let selected_index = state.selected_workspace_file_index();
 
     let range_commits = state.workspace.range_commits.get(&state.store);
     let history_pending = state
@@ -653,14 +624,22 @@ pub(crate) fn sidebar(
             </div>
         })
     } else if workspace_source == WorkspaceSource::Compare && !has_filter && !is_tree {
-        let total_height = state.file_list_total_content_height(file_count);
         let scroll_px = state.file_list.scroll_offset_px.get(&state.store);
         let stride = state.file_list_row_stride();
         let viewport_height = state.file_list.viewport_height.get(&state.store);
-        let window = visible_sidebar_window(scroll_px, viewport_height, stride, file_count);
         let gap = state.file_list.gap.get(&state.store);
-        let (top_pad, bottom_pad) =
-            virtual_sidebar_spacer_heights(file_count, &window, stride, gap);
+        let virtual_window = virtual_list_window(
+            file_count,
+            scroll_px,
+            viewport_height,
+            row_h,
+            gap,
+            SIDEBAR_OVERSCAN_ROWS,
+        );
+        let total_height = virtual_window.total_extent;
+        let top_pad = virtual_window.top_spacer;
+        let bottom_pad = virtual_window.bottom_spacer;
+        let window = virtual_window.range;
         let visible_files = window
             .clone()
             .filter_map(|index| {
@@ -676,7 +655,7 @@ pub(crate) fn sidebar(
                 let wrapper_height = sidebar_row_wrapper_height(*index, file_count, row_h, stride);
                 view! { scale,
                     <div class="w-full shrink-0 overflow-hidden" h={wrapper_height}>
-                        {file_row(entry, *index, state, tc, scale)}
+                        {file_row(entry, *index, state, tc, scale, selected_index)}
                     </div>
                 }
                 .into_any()
@@ -741,20 +720,23 @@ pub(crate) fn sidebar(
                     });
 
             let expanded_folders = state.file_list.expanded_folders.get(&state.store);
-            let layout = components::file_tree_layout(
-                entries,
-                &expanded_folders,
-                state.selected_workspace_file_index(),
-            );
+            let layout = components::file_tree_layout(entries, &expanded_folders, selected_index);
             let row_count = layout.len();
-            let total_height = state.file_list_total_content_height(row_count);
             let scroll_px = state.file_list.scroll_offset_px.get(&state.store);
-            let stride = state.file_list_row_stride();
             let viewport_height = state.file_list.viewport_height.get(&state.store);
-            let window = visible_sidebar_window(scroll_px, viewport_height, stride, row_count);
             let gap = state.file_list.gap.get(&state.store);
-            let (top_pad, bottom_pad) =
-                virtual_sidebar_spacer_heights(row_count, &window, stride, gap);
+            let virtual_window = virtual_list_window(
+                row_count,
+                scroll_px,
+                viewport_height,
+                row_h,
+                gap,
+                SIDEBAR_OVERSCAN_ROWS,
+            );
+            let total_height = virtual_window.total_extent;
+            let top_pad = virtual_window.top_spacer;
+            let bottom_pad = virtual_window.bottom_spacer;
+            let window = virtual_window.range;
             let tree = layout
                 .render_window(window.clone())
                 .row_gap(gap)
@@ -794,14 +776,22 @@ pub(crate) fn sidebar(
                     })
                     .collect()
             };
-            let total_height = state.file_list_total_content_height(rows.len());
             let scroll_px = state.file_list.scroll_offset_px.get(&state.store);
             let stride = state.file_list_row_stride();
             let viewport_height = state.file_list.viewport_height.get(&state.store);
-            let window = visible_sidebar_window(scroll_px, viewport_height, stride, rows.len());
             let gap = state.file_list.gap.get(&state.store);
-            let (top_pad, bottom_pad) =
-                virtual_sidebar_spacer_heights(rows.len(), &window, stride, gap);
+            let virtual_window = virtual_list_window(
+                rows.len(),
+                scroll_px,
+                viewport_height,
+                row_h,
+                gap,
+                SIDEBAR_OVERSCAN_ROWS,
+            );
+            let total_height = virtual_window.total_extent;
+            let top_pad = virtual_window.top_spacer;
+            let bottom_pad = virtual_window.bottom_spacer;
+            let window = virtual_window.range;
 
             let rendered_rows: Vec<AnyElement> = rows[window.clone()]
                 .iter()
@@ -812,7 +802,7 @@ pub(crate) fn sidebar(
                         sidebar_row_wrapper_height(global_index, rows.len(), row_h, stride);
                     view! { scale,
                         <div class="w-full shrink-0 overflow-hidden" h={wrapper_height}>
-                            {render_sidebar_row(*row, state, tc, scale, row_h)}
+                            {render_sidebar_row(*row, state, tc, scale, row_h, selected_index)}
                         </div>
                     }
                     .into_any()
@@ -1046,8 +1036,9 @@ fn file_row(
     state: &AppState,
     tc: &crate::ui::theme::ThemeColors,
     scale: f32,
+    selected_index: Option<usize>,
 ) -> AnyElement {
-    let selected = state.selected_workspace_file_index() == Some(index);
+    let selected = selected_index == Some(index);
     let viewed = state
         .file_list
         .viewed_files
@@ -1211,29 +1202,8 @@ fn commit_row(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        SidebarTotalStats, sidebar_total_stats, virtual_sidebar_spacer_heights,
-        visible_sidebar_window,
-    };
+    use super::{SidebarTotalStats, sidebar_total_stats};
     use crate::ui::state::{AppState, WorkspaceSource};
-
-    #[test]
-    fn visible_sidebar_window_overscans_and_clamps() {
-        let window = visible_sidebar_window(120.0, 80.0, 40.0, 100);
-        assert_eq!(window, 0..13);
-
-        let near_end = visible_sidebar_window(3_760.0, 80.0, 40.0, 100);
-        assert_eq!(near_end, 86..100);
-    }
-
-    #[test]
-    fn virtual_sidebar_spacers_preserve_total_height() {
-        let window = 10..15;
-        let (top, bottom) = virtual_sidebar_spacer_heights(30, &window, 40.0, 4.0);
-
-        assert_eq!(top, 400.0);
-        assert_eq!(bottom, 596.0);
-    }
 
     #[test]
     fn compare_total_stats_ready_unhides_sidebar_totals() {

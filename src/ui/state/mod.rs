@@ -9984,21 +9984,27 @@ impl AppState {
     }
 
     pub fn selected_workspace_file_index(&self) -> Option<usize> {
-        if let Some(index) = self
-            .workspace
-            .selected_file_path
-            .get(&self.store)
-            .as_deref()
-            .and_then(|path| self.workspace_file_index_for_path(path))
-        {
-            return Some(index);
-        }
-
         let count = self.workspace_file_count();
-        self.workspace
+        let selected_index = self
+            .workspace
             .selected_file_index
             .get(&self.store)
-            .filter(|index| *index < count)
+            .filter(|index| *index < count);
+
+        if let Some(path) = self.workspace.selected_file_path.get(&self.store) {
+            if let Some(index) = selected_index
+                && self
+                    .workspace_file_entry_at(index)
+                    .is_some_and(|entry| entry.path == path.as_str())
+            {
+                return Some(index);
+            }
+            if let Some(index) = self.workspace_file_index_for_path(&path) {
+                return Some(index);
+            }
+        }
+
+        selected_index
     }
 
     fn reconcile_selected_file_index_from_path(&mut self) -> Option<usize> {

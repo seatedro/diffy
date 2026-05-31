@@ -1294,13 +1294,20 @@ pub(crate) fn build_review_composer(
     };
     // Toolbar shows only in Write mode (right side of the tab row); the body is the
     // editor (Write) or rendered markdown (Preview).
+    let divider = || {
+        view! { ui_scale,
+            <div w={1.0} h={base} bg={tc.border_variant} />
+        }
+    };
     let toolbar = (!preview).then(|| {
         view! { ui_scale,
             <div class="flex-row items-center" gap={Sp::XXS}>
                 {fmt(ComposerFormat::Bold, lucide::BOLD, "Bold")}
                 {fmt(ComposerFormat::Italic, lucide::ITALIC, "Italic")}
+                {divider()}
                 {fmt(ComposerFormat::Code, lucide::CODE, "Code")}
                 {fmt(ComposerFormat::Link, lucide::LINK, "Link")}
+                {divider()}
                 {fmt(ComposerFormat::BulletList, lucide::LIST, "Bulleted list")}
             </div>
         }
@@ -1318,7 +1325,10 @@ pub(crate) fn build_review_composer(
     let tab = |label: &'static str, active: bool, to_preview: bool| {
         view! { ui_scale,
             <div class="flex-row items-center"
-                 px={Sp::XS}
+                 px={Sp::SM}
+                 py={Sp::XS}
+                 rounded={Rad::SM}
+                 bg={if active { tc.elevated_surface } else { halogen::Color::TRANSPARENT }}
                  on_click={GitHubAction::SetComposerPreview(to_preview).into()}
                  cursor={CursorHint::Pointer}>
                 {text(label).size(base).medium()
@@ -1346,10 +1356,10 @@ pub(crate) fn build_review_composer(
              rounded={Rad::LG}
              shadow_preset={Shadow::DROPDOWN}
              on_click={Action::Noop}
-             p={Sp::SM}
-             gap={Sp::XS}>
+             p={Sp::MD}
+             gap={Sp::SM}>
             <div class="flex-row items-center w-full">
-                {text(header_label).size(base).color(tc.text_strong).medium()}
+                {text(header_label).size(base).color(tc.text_strong).bold()}
             </div>
             {?failed_row}
             <div class="flex-col flex-1 w-full"
@@ -1361,9 +1371,9 @@ pub(crate) fn build_review_composer(
                  border_l={group_border}
                  border_r={group_border}>
                 <div class="flex-row items-center w-full"
-                     gap={Sp::SM}
+                     gap={Sp::XS}
                      px={Sp::SM}
-                     py={Sp::XXS}
+                     py={Sp::XS}
                      border_b={tc.border_variant}>
                     {tab("Write", !preview, false)}
                     {tab("Preview", preview, true)}

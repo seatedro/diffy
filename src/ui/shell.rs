@@ -1331,7 +1331,7 @@ pub(crate) fn build_review_composer(
                  bg={if active { tc.elevated_surface } else { halogen::Color::TRANSPARENT }}
                  on_click={GitHubAction::SetComposerPreview(to_preview).into()}
                  cursor={CursorHint::Pointer}>
-                {text(label).size(base).medium()
+                {text(label).size(small).medium()
                     .color(if active { tc.text_strong } else { tc.text_muted })}
             </div>
         }
@@ -1393,12 +1393,12 @@ pub(crate) fn build_review_composer(
                 <spacer />
                 <Button action={GitHubAction::CancelReviewComment.into()}
                         style={ButtonStyle::Ghost}
-                        size={ButtonSize::Default}>
+                        size={ButtonSize::Compact}>
                     <Label>{"Cancel"}</Label>
                 </Button>
                 <Button action={GitHubAction::SubmitReviewComment.into()}
                         style={ButtonStyle::Filled}
-                        size={ButtonSize::Default}>
+                        size={ButtonSize::Compact}>
                     <Icon>{lucide::CHECK}</Icon>
                     <Label>{submit_label}</Label>
                 </Button>

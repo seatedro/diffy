@@ -1049,12 +1049,11 @@ enum MarkdownInlineKind {
 
 /// Segments a body into ordered markdown blocks. A real markdown parser owns block
 /// structure and inline emphasis; fenced code still feeds Diffy's syntax highlighter.
-/// Total visible length is bounded by `MAX_CHARS`.
 pub(crate) fn segment_comment_blocks(body: &str) -> Vec<CommentBlock> {
-    const MAX_CHARS: usize = 600;
     let stripped = strip_html_comments(body);
+    let normalized = normalize_inline_fences(&stripped);
     let parser = Parser::new_ext(
-        &stripped,
+        &normalized,
         Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS,
     );
     let mut blocks: Vec<CommentBlock> = Vec::new();
@@ -1066,7 +1065,6 @@ pub(crate) fn segment_comment_blocks(body: &str) -> Vec<CommentBlock> {
     let mut strong_depth = 0usize;
     let mut emphasis_depth = 0usize;
     let mut link_depth = 0usize;
-    let mut budget = MAX_CHARS;
 
     for event in parser {
         match event {
@@ -1074,7 +1072,6 @@ pub(crate) fn segment_comment_blocks(body: &str) -> Vec<CommentBlock> {
                 start_inline_block(
                     &mut inline,
                     MarkdownInlineKind::Prose,
-                    &mut budget,
                     block_quote_depth,
                     pending_item_prefix.take(),
                 );
@@ -1084,7 +1081,6 @@ pub(crate) fn segment_comment_blocks(body: &str) -> Vec<CommentBlock> {
                 start_inline_block(
                     &mut inline,
                     MarkdownInlineKind::Heading(heading_level_u8(level)),
-                    &mut budget,
                     block_quote_depth,
                     None,
                 );
@@ -1137,19 +1133,18 @@ pub(crate) fn segment_comment_blocks(body: &str) -> Vec<CommentBlock> {
             Event::End(TagEnd::Link) => link_depth = link_depth.saturating_sub(1),
             Event::Text(text) => {
                 if let Some((_, source)) = code.as_mut() {
-                    push_code_text(source, text.as_ref(), &mut budget);
+                    push_code_text(source, text.as_ref());
                 } else {
                     if inline.is_none() {
                         start_inline_block(
                             &mut inline,
                             MarkdownInlineKind::Prose,
-                            &mut budget,
                             block_quote_depth,
                             pending_item_prefix.take(),
                         );
                     }
                     let style = current_inline_style(strong_depth, emphasis_depth, link_depth);
-                    push_inline_text(&mut inline, text.as_ref(), style, &mut budget);
+                    push_inline_text(&mut inline, text.as_ref(), style);
                 }
             }
             Event::Code(text) => {
@@ -1157,22 +1152,20 @@ pub(crate) fn segment_comment_blocks(body: &str) -> Vec<CommentBlock> {
                     start_inline_block(
                         &mut inline,
                         MarkdownInlineKind::Prose,
-                        &mut budget,
                         block_quote_depth,
                         pending_item_prefix.take(),
                     );
                 }
-                push_inline_text(&mut inline, text.as_ref(), InlineStyle::Code, &mut budget);
+                push_inline_text(&mut inline, text.as_ref(), InlineStyle::Code);
             }
             Event::SoftBreak | Event::HardBreak => {
                 if let Some((_, source)) = code.as_mut() {
-                    push_code_text(source, "\n", &mut budget);
+                    push_code_text(source, "\n");
                 } else {
                     push_inline_text(
                         &mut inline,
                         " ",
                         current_inline_style(strong_depth, emphasis_depth, link_depth),
-                        &mut budget,
                     );
                 }
             }
@@ -1181,13 +1174,12 @@ pub(crate) fn segment_comment_blocks(body: &str) -> Vec<CommentBlock> {
                     start_inline_block(
                         &mut inline,
                         MarkdownInlineKind::Prose,
-                        &mut budget,
                         block_quote_depth,
                         pending_item_prefix.take(),
                     );
                 }
                 let marker = if checked { "[x] " } else { "[ ] " };
-                push_inline_text(&mut inline, marker, InlineStyle::Normal, &mut budget);
+                push_inline_text(&mut inline, marker, InlineStyle::Normal);
             }
             Event::Rule => flush_inline_block(&mut inline, &mut blocks),
             Event::Html(_)
@@ -1197,9 +1189,6 @@ pub(crate) fn segment_comment_blocks(body: &str) -> Vec<CommentBlock> {
             | Event::DisplayMath(_) => {}
             Event::Start(_) | Event::End(_) => {}
         }
-        if budget == 0 && code.is_none() {
-            break;
-        }
     }
 
     if let Some((lang, source)) = code.take() {
@@ -1207,6 +1196,64 @@ pub(crate) fn segment_comment_blocks(body: &str) -> Vec<CommentBlock> {
     }
     flush_inline_block(&mut inline, &mut blocks);
     blocks
+}
+
+fn normalize_inline_fences(body: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    for (idx, line) in body.lines().enumerate() {
+        if idx > 0 {
+            out.push('\n');
+        }
+        let Some(fence_idx) = inline_block_fence_index(line) else {
+            out.push_str(line);
+            continue;
+        };
+        let before = line[..fence_idx].trim_end();
+        if !before.is_empty() {
+            out.push_str(before);
+            out.push('\n');
+        }
+        out.push_str(line[fence_idx..].trim_start());
+    }
+    if body.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+fn inline_block_fence_index(line: &str) -> Option<usize> {
+    let backtick = line.find("```");
+    let tilde = line.find("~~~");
+    let idx = match (backtick, tilde) {
+        (Some(a), Some(b)) => a.min(b),
+        (Some(a), None) | (None, Some(a)) => a,
+        (None, None) => return None,
+    };
+    if line[..idx].trim().is_empty() {
+        return None;
+    }
+    let rest = &line[idx..];
+    if !rest.starts_with("```") && !rest.starts_with("~~~") {
+        return None;
+    }
+    let marker = rest.as_bytes()[0];
+    let fence_len = rest
+        .as_bytes()
+        .iter()
+        .take_while(|&&byte| byte == marker)
+        .count();
+    if fence_len < 3 {
+        return None;
+    }
+    let info = rest[fence_len..].trim_start();
+    if info.is_empty() {
+        return Some(idx);
+    }
+    let tag = info
+        .split(|c: char| c.is_whitespace() || c == ',' || c == ';')
+        .next()
+        .unwrap_or("");
+    code_language_from_tag(tag).is_some().then_some(idx)
 }
 
 fn heading_level_u8(level: HeadingLevel) -> u8 {
@@ -1239,16 +1286,15 @@ fn current_inline_style(
 fn start_inline_block(
     inline: &mut Option<(MarkdownInlineKind, Vec<InlineSpan>)>,
     kind: MarkdownInlineKind,
-    budget: &mut usize,
     block_quote_depth: usize,
     prefix: Option<String>,
 ) {
     *inline = Some((kind, Vec::new()));
     if block_quote_depth > 0 {
-        push_inline_text(inline, "> ", InlineStyle::Normal, budget);
+        push_inline_text(inline, "> ", InlineStyle::Normal);
     }
     if let Some(prefix) = prefix {
-        push_inline_text(inline, &prefix, InlineStyle::Normal, budget);
+        push_inline_text(inline, &prefix, InlineStyle::Normal);
     }
 }
 
@@ -1275,35 +1321,27 @@ fn push_inline_text(
     inline: &mut Option<(MarkdownInlineKind, Vec<InlineSpan>)>,
     text: &str,
     style: InlineStyle,
-    budget: &mut usize,
 ) {
-    if *budget == 0 || text.is_empty() {
+    if text.is_empty() {
         return;
     }
     let Some((_, spans)) = inline.as_mut() else {
         return;
     };
-    let take: String = text.chars().take(*budget).collect();
-    *budget = budget.saturating_sub(take.chars().count());
-    if take.is_empty() {
-        return;
-    }
     if let Some(last) = spans.last_mut()
         && last.style == style
     {
-        last.text.push_str(&take);
+        last.text.push_str(text);
         return;
     }
-    spans.push(InlineSpan { text: take, style });
+    spans.push(InlineSpan {
+        text: text.to_owned(),
+        style,
+    });
 }
 
-fn push_code_text(source: &mut String, text: &str, budget: &mut usize) {
-    if *budget == 0 || text.is_empty() {
-        return;
-    }
-    let take: String = text.chars().take(*budget).collect();
-    *budget = budget.saturating_sub(take.chars().count());
-    source.push_str(&take);
+fn push_code_text(source: &mut String, text: &str) {
+    source.push_str(text);
 }
 
 fn next_list_item_prefix(list_stack: &mut [Option<u64>]) -> String {
@@ -2659,6 +2697,87 @@ mod tests {
             }
             other => panic!("expected prose, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn segments_long_markdown_code_without_truncation() {
+        let prefix = "Execution keeps going after cancellation. ".repeat(20);
+        let code = "const graph = compileDeepCanonSearchGraph({ ...req, featureFlags });\n\
+const result = await processCanonGraphRequest(graph, new AbortController().signal, {\n\
+  featureFlags,\n\
+  searchEnv: req.env,\n\
+});\n\
+\n\
+const requestScopedResult = await processCanonGraphRequest(graph, req.signal, {\n\
+  featureFlags,\n\
+  searchEnv: req.env,\n\
+});";
+        let body = format!("{prefix}\n```ts\n{code}\n```\nafter text");
+        assert!(body.chars().count() > 600);
+
+        let blocks = segment_comment_blocks(&body);
+        let code_block = blocks
+            .iter()
+            .find_map(|block| match block {
+                CommentBlock::Code { lang, source } => Some((lang, source)),
+                _ => None,
+            })
+            .expect("code block");
+
+        assert_eq!(code_block.0.as_deref(), Some("ts"));
+        assert_eq!(code_block.1, code);
+        assert!(blocks.iter().any(|block| {
+            match block {
+                CommentBlock::Prose(inline) => {
+                    inline
+                        .iter()
+                        .map(|span| span.text.as_str())
+                        .collect::<String>()
+                        == "after text"
+                }
+                _ => false,
+            }
+        }));
+    }
+
+    #[test]
+    fn segments_inline_opening_fence_as_code_block() {
+        let body = "[🟡 Medium] [🔵 Bug]\n\
+withDeepSerpConfigs rebuilds flags and changes behavior. ```ts // typescript/vulcan/vulcan/src/services/deep/deep-canon-search.ts\n\
+return new FeatureFlags({ team: null, posthogFlags: flags.posthogFlags });\n\
+```\n\
+Preserve the original team metadata when cloning.";
+        let blocks = segment_comment_blocks(body);
+        let code_blocks = blocks
+            .iter()
+            .filter(|block| matches!(block, CommentBlock::Code { .. }))
+            .count();
+        assert_eq!(code_blocks, 1);
+
+        let code_block = blocks
+            .iter()
+            .find_map(|block| match block {
+                CommentBlock::Code { lang, source } => Some((lang, source)),
+                _ => None,
+            })
+            .expect("code block");
+        assert_eq!(code_block.0.as_deref(), Some("ts"));
+        assert_eq!(
+            code_block.1,
+            "return new FeatureFlags({ team: null, posthogFlags: flags.posthogFlags });"
+        );
+        assert!(blocks.iter().any(|block| {
+            match block {
+                CommentBlock::Prose(inline) => {
+                    inline
+                        .iter()
+                        .map(|span| span.text.as_str())
+                        .collect::<String>()
+                        == "Preserve the original team metadata when cloning."
+                }
+                _ => false,
+            }
+        }));
     }
 
     #[test]

@@ -1854,10 +1854,10 @@ impl AppState {
     }
 
     pub(super) fn confirm_pr_entry(&mut self, key: PrKey) -> Vec<Effect> {
-        if self.compare.repo_path.with(&self.store, |p| p.is_none()) {
+        let Some(repo_path) = self.compare.repo_path.get(&self.store) else {
             self.push_error("Open a repository before loading a pull request.");
             return Vec::new();
-        }
+        };
         let diff_state = self
             .github
             .pull_request
@@ -1876,7 +1876,7 @@ impl AppState {
                 self.github.pull_request.active.set(&self.store, Some(key));
                 self.apply_pr_compare(left_ref, right_ref)
             }
-            Some(PrPeekDiff::Loading) | Some(PrPeekDiff::Idle) => {
+            Some(PrPeekDiff::Loading) => {
                 self.github
                     .pull_request
                     .pending_confirm
@@ -1884,12 +1884,35 @@ impl AppState {
                 self.push_info(&format!("Preparing PR #{}\u{2026}", key.2));
                 Vec::new()
             }
+            Some(PrPeekDiff::Idle) | None => {
+                self.github
+                    .pull_request
+                    .pending_confirm
+                    .set(&self.store, Some(key.clone()));
+                self.github
+                    .pull_request
+                    .status
+                    .set(&self.store, AsyncStatus::Loading);
+                self.github.pull_request.cache.update(&self.store, |c| {
+                    let entry = c.entry(key.clone()).or_insert_with(|| PrCacheEntry {
+                        meta: PrPeekMeta::Loading,
+                        diff: PrPeekDiff::Idle,
+                        last_peek_ms: self.clock_ms,
+                    });
+                    entry.diff = PrPeekDiff::Loading;
+                });
+                self.push_info(&format!("Preparing PR #{}\u{2026}", key.2));
+                vec![
+                    GitHubEffect::LoadPullRequest {
+                        url: format!("https://github.com/{}/{}/pull/{}", key.0, key.1, key.2),
+                        repo_path,
+                        github_token: self.github_access_token.clone(),
+                    }
+                    .into(),
+                ]
+            }
             Some(PrPeekDiff::Failed(message)) => {
                 self.push_error(&message);
-                Vec::new()
-            }
-            None => {
-                self.push_error("Pull request not available.");
                 Vec::new()
             }
         }
@@ -2416,33 +2439,6 @@ impl AppState {
                     }
                     .into(),
                 );
-            }
-
-            // Speculative diff load — kick off as soon as we know the key, provided
-            // a repo is open. Dedupe via the cache's diff state.
-            if supports_github_prs && let Some(repo_path) = repo_path.clone() {
-                let diff_idle = self.github.pull_request.cache.with(&self.store, |c| {
-                    matches!(c.get(&key).map(|e| &e.diff), Some(PrPeekDiff::Idle) | None)
-                });
-                if diff_idle {
-                    self.github.pull_request.cache.update(&self.store, |c| {
-                        if let Some(e) = c.get_mut(&key) {
-                            e.diff = PrPeekDiff::Loading;
-                        }
-                    });
-                    let url = format!(
-                        "https://github.com/{}/{}/pull/{}",
-                        parsed.owner, parsed.repo, parsed.number
-                    );
-                    out_effects.push(
-                        GitHubEffect::LoadPullRequest {
-                            url,
-                            repo_path,
-                            github_token: token,
-                        }
-                        .into(),
-                    );
-                }
             }
 
             pr_entry = Some(build_pr_palette_entry(

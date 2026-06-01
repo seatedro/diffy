@@ -144,17 +144,33 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
                     info,
                 };
             });
-            state
+            let pending_match = state
                 .github
                 .pull_request
                 .pending_confirm
-                .set(&state.store, None);
-            state
+                .with(&state.store, |p| p.as_ref() == Some(&key));
+            let active_match = state
                 .github
                 .pull_request
                 .active
-                .set(&state.store, Some(key));
-            state.apply_pr_compare(left_ref, right_ref)
+                .with(&state.store, |active| active.as_ref() == Some(&key));
+            let current_compare_matches = state.compare.left_ref.get(&state.store) == left_ref
+                && state.compare.right_ref.get(&state.store) == right_ref;
+            if pending_match || (active_match && !current_compare_matches) {
+                state
+                    .github
+                    .pull_request
+                    .pending_confirm
+                    .set(&state.store, None);
+                state
+                    .github
+                    .pull_request
+                    .active
+                    .set(&state.store, Some(key));
+                state.apply_pr_compare(left_ref, right_ref)
+            } else {
+                state.rebuild_command_palette_if_open()
+            }
         }
         GitHubEvent::PullRequestLoadFailed { url, message } => {
             state
@@ -2175,7 +2191,7 @@ pub(super) fn build_pr_palette_entry(
                 PrPeekDiff::Failed(msg) => format!("Diff load failed: {msg}"),
                 PrPeekDiff::Idle => {
                     if has_repo {
-                        "Queued".to_owned()
+                        "Press Enter to open".to_owned()
                     } else {
                         "Open a repo to view this diff".to_owned()
                     }

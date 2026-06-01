@@ -2389,6 +2389,57 @@ fn command_palette_detects_pr_url_and_emits_peek_effect() {
 }
 
 #[test]
+fn command_palette_pr_url_waits_for_confirm_before_loading_diff() {
+    let mut state = AppState::default();
+    let repo_path = PathBuf::from("/repo");
+    state
+        .compare
+        .repo_path
+        .set(&state.store, Some(repo_path.clone()));
+    state
+        .repository
+        .capabilities
+        .set(&state.store, Some(RepoCapabilities::git()));
+    state.overlays.command_palette.query.set(
+        &state.store,
+        "https://github.com/foo/bar/pull/42".to_owned(),
+    );
+
+    let effects = state.rebuild_command_palette();
+
+    assert!(
+        !effects
+            .iter()
+            .any(|e| { matches!(e, Effect::GitHub(GitHubEffect::LoadPullRequest { .. })) })
+    );
+    let key = ("foo".to_owned(), "bar".to_owned(), 42);
+    let cached = state.github.pull_request.cache.with(&state.store, |c| {
+        c.get(&key).map(|entry| entry.diff.clone())
+    });
+    assert!(matches!(cached, Some(super::PrPeekDiff::Idle)));
+
+    let effects = state.confirm_pr_entry(key.clone());
+
+    assert!(effects.iter().any(|e| matches!(
+        e,
+        Effect::GitHub(GitHubEffect::LoadPullRequest {
+            url,
+            repo_path: loaded_repo_path,
+            ..
+        }) if url == "https://github.com/foo/bar/pull/42"
+            && loaded_repo_path == &repo_path
+    )));
+    assert_eq!(
+        state.github.pull_request.pending_confirm.get(&state.store),
+        Some(key.clone())
+    );
+    let cached = state.github.pull_request.cache.with(&state.store, |c| {
+        c.get(&key).map(|entry| entry.diff.clone())
+    });
+    assert!(matches!(cached, Some(super::PrPeekDiff::Loading)));
+}
+
+#[test]
 fn pr_peeked_event_transitions_cache_meta_to_ready() {
     use crate::core::forge::github::PullRequestInfo;
     use crate::events::AppEvent;

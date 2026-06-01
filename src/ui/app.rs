@@ -26,6 +26,7 @@ use crate::platform::startup::StartupOptions;
 use crate::render::Renderer;
 use crate::ui::components::TooltipState;
 use crate::ui::editor::element::EditorElement;
+use crate::ui::element::TextMeasureCache;
 use crate::ui::hud::{HudSample, HudState};
 use crate::ui::shell::{UiFrame, build_ui_frame};
 use crate::ui::state::{AppState, FocusTarget};
@@ -101,6 +102,7 @@ struct NativeApp {
     skip_next_focus_regain_rescan: bool,
     rescan_on_next_focus: bool,
     tooltip_state: TooltipState,
+    text_measure_cache: TextMeasureCache,
     hud: HudState,
     #[cfg(feature = "hot-reload")]
     hot_reload_pending: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -149,6 +151,7 @@ impl NativeApp {
             skip_next_focus_regain_rescan: true,
             rescan_on_next_focus: false,
             tooltip_state: TooltipState::default(),
+            text_measure_cache: TextMeasureCache::default(),
             hud: HudState::default(),
             #[cfg(feature = "hot-reload")]
             hot_reload_pending: None,
@@ -502,6 +505,7 @@ impl NativeApp {
         self.state.commit_editor.invalidate_font();
         self.state.review_comment_editor.invalidate_font();
         self.state.steering_prompt_editor.invalidate_font();
+        self.text_measure_cache.clear();
 
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.set_font_settings(&self.font_settings);
@@ -777,6 +781,7 @@ impl NativeApp {
             self.input.mouse_position(),
             &store,
         )
+        .with_text_measure_cache(&mut self.text_measure_cache)
         .with_focus(store.read(self.state.focus))
         .with_clock(self.state.clock_ms);
         cx.debug_wireframe = std::env::var("DIFFY_DEBUG_WIREFRAME").is_ok();

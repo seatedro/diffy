@@ -59,7 +59,18 @@ pub(super) fn reduce_event(state: &mut AppState, event: CompareEvent) -> Vec<Eff
                     return Vec::new();
                 }
                 if let Some(effect) = state.start_compare_stats_hydration_if_idle() {
-                    return vec![effect];
+                    let is_background_stats = matches!(
+                        &effect,
+                        Effect::Compare(CompareEffect::LoadFileStats(task))
+                            if task.request.priority == CompareWorkPriority::Warmup
+                    );
+                    let mut effects = vec![effect];
+                    if is_background_stats
+                        && let Some(effect) = state.take_pending_compare_history_effect()
+                    {
+                        effects.push(effect);
+                    }
+                    return effects;
                 }
                 if !state.compare_stats_hydration_running()
                     && let Some(effect) = state.take_pending_compare_history_effect()

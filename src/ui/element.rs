@@ -7,7 +7,7 @@
 //! 2. **prepaint** — register hitboxes, resolve interaction state.
 //! 3. **paint** — emit scene primitives using resolved hover/hit state.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use crate::actions::Action;
 use crate::effects::Effect;
@@ -251,7 +251,8 @@ pub struct ElementContext<'a> {
     element_offset_stack: Vec<(f32, f32)>,
     text_color_stack: Vec<Color>,
     icon_color_stack: Vec<Color>,
-    text_measure_cache: HashMap<TextMeasureKey, f32>,
+    frame_text_measure_cache: HashMap<TextMeasureKey, f32>,
+    persistent_text_measure_cache: Option<&'a mut TextMeasureCache>,
     accessibility_text_hidden_stack: Vec<bool>,
 }
 
@@ -261,6 +262,38 @@ struct TextMeasureKey {
     font_size_bits: u32,
     font_kind: u8,
     font_weight: u8,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct TextMeasureCache {
+    widths: HashMap<TextMeasureKey, f32>,
+    order: VecDeque<TextMeasureKey>,
+}
+
+impl TextMeasureCache {
+    const MAX_ENTRIES: usize = 65_536;
+
+    pub(crate) fn clear(&mut self) {
+        self.widths.clear();
+        self.order.clear();
+    }
+
+    fn get(&self, key: &TextMeasureKey) -> Option<f32> {
+        self.widths.get(key).copied()
+    }
+
+    fn insert(&mut self, key: TextMeasureKey, width: f32) {
+        if !self.widths.contains_key(&key) {
+            self.order.push_back(key.clone());
+            while self.widths.len() >= Self::MAX_ENTRIES {
+                let Some(oldest) = self.order.pop_front() else {
+                    break;
+                };
+                self.widths.remove(&oldest);
+            }
+        }
+        self.widths.insert(key, width);
+    }
 }
 
 impl<'a> ElementContext<'a> {
@@ -294,9 +327,15 @@ impl<'a> ElementContext<'a> {
             element_offset_stack: vec![(0.0, 0.0)],
             text_color_stack: Vec::new(),
             icon_color_stack: Vec::new(),
-            text_measure_cache: HashMap::new(),
+            frame_text_measure_cache: HashMap::new(),
+            persistent_text_measure_cache: None,
             accessibility_text_hidden_stack: Vec::new(),
         }
+    }
+
+    pub(crate) fn with_text_measure_cache(mut self, cache: &'a mut TextMeasureCache) -> Self {
+        self.persistent_text_measure_cache = Some(cache);
+        self
     }
 
     pub fn measure_text_width(
@@ -315,11 +354,20 @@ impl<'a> ElementContext<'a> {
             font_kind: font_kind_measure_tag(font_kind),
             font_weight: font_weight_measure_tag(font_weight),
         };
-        if let Some(width) = self.text_measure_cache.get(&key).copied() {
+        if let Some(cache) = self.persistent_text_measure_cache.as_ref()
+            && let Some(width) = cache.get(&key)
+        {
+            return width;
+        }
+        if let Some(width) = self.frame_text_measure_cache.get(&key).copied() {
             return width;
         }
         let width = measure_text_width(self.font_system, text, font_size, font_kind, font_weight);
-        self.text_measure_cache.insert(key, width);
+        if let Some(cache) = self.persistent_text_measure_cache.as_mut() {
+            cache.insert(key, width);
+        } else {
+            self.frame_text_measure_cache.insert(key, width);
+        }
         width
     }
 

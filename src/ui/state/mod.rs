@@ -1178,6 +1178,9 @@ pub struct WorkspaceState {
     pub selected_change_bucket: Option<ChangeBucket>,
     pub compare_output: Option<CompareOutput>,
     pub compare_total_stats: Option<(i32, i32)>,
+    pub compare_hydrated_stats: Option<(i32, i32)>,
+    pub compare_deferred_stats_remaining: Option<usize>,
+    pub compare_deferred_stats_cursor: usize,
     pub compare_total_stats_loading: bool,
     pub compare_stats_hydration: CompareStatsHydrationState,
     pub active_file: Option<ActiveFile>,
@@ -4279,6 +4282,13 @@ impl AppState {
         self.workspace.selected_change_bucket.set(&self.store, None);
         self.workspace.compare_output.set(&self.store, None);
         self.workspace.compare_total_stats.set(&self.store, None);
+        self.workspace.compare_hydrated_stats.set(&self.store, None);
+        self.workspace
+            .compare_deferred_stats_remaining
+            .set(&self.store, None);
+        self.workspace
+            .compare_deferred_stats_cursor
+            .set(&self.store, 0);
         self.workspace
             .compare_total_stats_loading
             .set(&self.store, false);
@@ -4714,18 +4724,9 @@ impl AppState {
             .fallback_message
             .set(&self.store, payload.output.fallback_message.clone());
         let total_files = payload.output.file_count() as u32;
-        let has_deferred_stats = compare_output_has_deferred_stats(&payload.output);
-        let eager_total_stats = (!has_deferred_stats).then(|| {
-            let mut total = (0_i32, 0_i32);
-            payload.output.for_each_summary(|_, summary| {
-                let stats = summary.fallback_stats();
-                total = (
-                    total.0.saturating_add(stats.0),
-                    total.1.saturating_add(stats.1),
-                );
-            });
-            total
-        });
+        let stats_snapshot = compare_output_stats_snapshot(&payload.output);
+        let has_deferred_stats = stats_snapshot.deferred_count > 0;
+        let eager_total_stats = (!has_deferred_stats).then_some(stats_snapshot.hydrated_total);
         self.workspace
             .compare_output
             .set(&self.store, Some(payload.output));
@@ -4733,6 +4734,16 @@ impl AppState {
         self.workspace
             .compare_total_stats
             .set(&self.store, eager_total_stats);
+        self.workspace.compare_hydrated_stats.set(
+            &self.store,
+            has_deferred_stats.then_some(stats_snapshot.hydrated_total),
+        );
+        self.workspace
+            .compare_deferred_stats_remaining
+            .set(&self.store, Some(stats_snapshot.deferred_count));
+        self.workspace
+            .compare_deferred_stats_cursor
+            .set(&self.store, 0);
         self.workspace
             .compare_total_stats_loading
             .set(&self.store, false);
@@ -4951,6 +4962,18 @@ impl AppState {
             .raw_diff_len
             .set(&self.store, output.raw_diff.len());
         self.workspace.compare_output.set(&self.store, None);
+        self.workspace.compare_total_stats.set(&self.store, None);
+        self.workspace.compare_hydrated_stats.set(&self.store, None);
+        self.workspace
+            .compare_deferred_stats_remaining
+            .set(&self.store, None);
+        self.workspace
+            .compare_deferred_stats_cursor
+            .set(&self.store, 0);
+        self.workspace
+            .compare_total_stats_loading
+            .set(&self.store, false);
+        self.set_compare_stats_hydration(CompareStatsHydrationState::Idle);
         self.workspace.active_file_loading.set(&self.store, None);
 
         self.workspace
@@ -5068,7 +5091,16 @@ impl AppState {
             .set(&self.store, false);
         let mut effects = Vec::new();
         if let Some(effect) = self.start_compare_stats_hydration_if_idle() {
+            let is_background_stats = matches!(
+                &effect,
+                Effect::Compare(CompareEffect::LoadFileStats(task))
+                    if task.request.priority == CompareWorkPriority::Warmup
+            );
             effects.push(effect);
+            if is_background_stats && let Some(effect) = self.take_pending_compare_history_effect()
+            {
+                effects.push(effect);
+            }
         } else if !self.compare_stats_hydration_running()
             && let Some(effect) = self.take_pending_compare_history_effect()
         {
@@ -5159,6 +5191,9 @@ impl AppState {
             return self.start_compare_stats_hydration_if_idle();
         }
         let visible_files = self.visible_compare_stats_hydration_items();
+        if visible_files.is_empty() {
+            return self.start_compare_stats_hydration_if_idle();
+        }
         let effect = self.compare_file_stats_hydration_effect(
             visible_files,
             CompareWorkPriority::VisibleSidebarStats,
@@ -5215,7 +5250,10 @@ impl AppState {
             if !visible_files.is_empty() {
                 (visible_files, CompareWorkPriority::VisibleSidebarStats)
             } else {
-                return None;
+                (
+                    self.next_deferred_compare_stats_items(COMPARE_STATS_BACKGROUND_CHUNK_SIZE),
+                    CompareWorkPriority::Warmup,
+                )
             }
         } else {
             (
@@ -5298,18 +5336,53 @@ impl AppState {
     }
 
     fn next_deferred_compare_stats_items(&self, limit: usize) -> Vec<CompareFileStatsItem> {
-        self.workspace
-            .compare_output
-            .with(&self.store, |maybe_output| {
-                let Some(output) = maybe_output.as_ref() else {
-                    return Vec::new();
-                };
-                let mut items = Vec::new();
-                output.for_each_deferred_stats_target(limit, |index, target| {
-                    items.push(CompareFileStatsItem { index, target });
+        if limit == 0
+            || self
+                .workspace
+                .compare_deferred_stats_remaining
+                .get(&self.store)
+                == Some(0)
+        {
+            return Vec::new();
+        }
+
+        let cursor = self
+            .workspace
+            .compare_deferred_stats_cursor
+            .get(&self.store);
+        let (items, next_cursor) =
+            self.workspace
+                .compare_output
+                .with(&self.store, |maybe_output| {
+                    let Some(output) = maybe_output.as_ref() else {
+                        return (Vec::new(), None);
+                    };
+                    let file_count = output.file_count();
+                    if file_count == 0 {
+                        return (Vec::new(), None);
+                    }
+                    let mut items = Vec::new();
+                    let mut index = cursor.min(file_count - 1);
+                    let mut scanned = 0_usize;
+                    while scanned < file_count && items.len() < limit {
+                        if let Some(target) = output.deferred_stats_target_at(index) {
+                            items.push(CompareFileStatsItem { index, target });
+                        }
+                        index = if index + 1 == file_count {
+                            0
+                        } else {
+                            index + 1
+                        };
+                        scanned += 1;
+                    }
+                    (items, Some(index))
                 });
-                items
-            })
+        if let Some(next_cursor) = next_cursor {
+            self.workspace
+                .compare_deferred_stats_cursor
+                .set(&self.store, next_cursor);
+        }
+        items
     }
 
     fn visible_compare_stats_hydration_items(&self) -> Vec<CompareFileStatsItem> {
@@ -5390,6 +5463,19 @@ impl AppState {
     }
 
     fn exact_compare_total_stats_if_ready(&self) -> Option<(i32, i32)> {
+        if let Some(remaining) = self
+            .workspace
+            .compare_deferred_stats_remaining
+            .get(&self.store)
+        {
+            if remaining > 0 {
+                return None;
+            }
+            if let Some(total) = self.workspace.compare_hydrated_stats.get(&self.store) {
+                return Some(total);
+            }
+        }
+
         let ready = self.workspace.compare_output.with(&self.store, |output| {
             output
                 .as_ref()
@@ -5422,6 +5508,8 @@ impl AppState {
             .map(|stat| (stat.index, self.file_scroll_height_px(stat.index)))
             .collect::<Vec<_>>();
 
+        let mut stats_delta = (0_i32, 0_i32);
+        let mut newly_hydrated = 0_usize;
         self.workspace
             .compare_output
             .update(&self.store, |maybe_output| {
@@ -5432,25 +5520,71 @@ impl AppState {
                     let additions = i32_to_u32_nonnegative(stat.additions);
                     let deletions = i32_to_u32_nonnegative(stat.deletions);
 
+                    if !output.file_summaries.is_empty() {
+                        let Some(summary) = output.file_summaries.get_mut(stat.index) else {
+                            continue;
+                        };
+                        if summary.path() != stat.path {
+                            continue;
+                        }
+                        let old_stats = summary.fallback_stats();
+                        let was_deferred = summary.stats_deferred;
+                        summary.additions = additions;
+                        summary.deletions = deletions;
+                        summary.stats_deferred = false;
+                        stats_delta = (
+                            stats_delta
+                                .0
+                                .saturating_add(stat.additions.saturating_sub(old_stats.0)),
+                            stats_delta
+                                .1
+                                .saturating_add(stat.deletions.saturating_sub(old_stats.1)),
+                        );
+                        newly_hydrated = newly_hydrated.saturating_add(was_deferred as usize);
+                        continue;
+                    }
+
                     if let Some(file) = output.carbon.files.get_mut(stat.index)
                         && file.path() == stat.path
                     {
+                        let old_stats = carbon_file_stats(file);
+                        let was_deferred = file.stats_deferred;
                         file.additions = additions;
                         file.deletions = deletions;
                         file.stats_deferred = false;
+                        stats_delta = (
+                            stats_delta
+                                .0
+                                .saturating_add(stat.additions.saturating_sub(old_stats.0)),
+                            stats_delta
+                                .1
+                                .saturating_add(stat.deletions.saturating_sub(old_stats.1)),
+                        );
+                        newly_hydrated = newly_hydrated.saturating_add(was_deferred as usize);
                     }
-
-                    let Some(summary) = output.file_summaries.get_mut(stat.index) else {
-                        continue;
-                    };
-                    if summary.path() != stat.path {
-                        continue;
-                    }
-                    summary.additions = additions;
-                    summary.deletions = deletions;
-                    summary.stats_deferred = false;
                 }
             });
+
+        if stats_delta != (0, 0) {
+            self.workspace
+                .compare_hydrated_stats
+                .update(&self.store, |total| {
+                    let current = total.get_or_insert((0, 0));
+                    *current = (
+                        current.0.saturating_add(stats_delta.0),
+                        current.1.saturating_add(stats_delta.1),
+                    );
+                });
+        }
+        if newly_hydrated > 0 {
+            self.workspace
+                .compare_deferred_stats_remaining
+                .update(&self.store, |remaining| {
+                    if let Some(count) = remaining.as_mut() {
+                        *count = count.saturating_sub(newly_hydrated);
+                    }
+                });
+        }
 
         let mut rebuilt_viewport_doc = false;
         self.workspace.active_file.update(&self.store, |slot| {
@@ -5829,6 +5963,18 @@ impl AppState {
         self.workspace.status.set(&self.store, AsyncStatus::Ready);
         self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
         self.workspace.compare_output.set(&self.store, None);
+        self.workspace.compare_total_stats.set(&self.store, None);
+        self.workspace.compare_hydrated_stats.set(&self.store, None);
+        self.workspace
+            .compare_deferred_stats_remaining
+            .set(&self.store, None);
+        self.workspace
+            .compare_deferred_stats_cursor
+            .set(&self.store, 0);
+        self.workspace
+            .compare_total_stats_loading
+            .set(&self.store, false);
+        self.set_compare_stats_hydration(CompareStatsHydrationState::Idle);
         self.workspace.active_file_loading.set(&self.store, None);
         let new_files = self
             .workspace
@@ -5975,6 +6121,13 @@ impl AppState {
         self.workspace.compare_generation.set(&self.store, next_gen);
         let syntax_epoch_effect = self.invalidate_syntax_epoch_effect();
         self.workspace.compare_total_stats.set(&self.store, None);
+        self.workspace.compare_hydrated_stats.set(&self.store, None);
+        self.workspace
+            .compare_deferred_stats_remaining
+            .set(&self.store, None);
+        self.workspace
+            .compare_deferred_stats_cursor
+            .set(&self.store, 0);
         self.workspace
             .compare_total_stats_loading
             .set(&self.store, false);
@@ -11655,6 +11808,28 @@ fn compare_output_deferred_summary(
         .map(CompareFileSummary::from_file)
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct CompareStatsSnapshot {
+    hydrated_total: (i32, i32),
+    deferred_count: usize,
+}
+
+fn compare_output_stats_snapshot(output: &CompareOutput) -> CompareStatsSnapshot {
+    let mut snapshot = CompareStatsSnapshot::default();
+    output.for_each_summary(|_, summary| {
+        if summary.stats_deferred {
+            snapshot.deferred_count = snapshot.deferred_count.saturating_add(1);
+        } else {
+            let stats = summary.fallback_stats();
+            snapshot.hydrated_total = (
+                snapshot.hydrated_total.0.saturating_add(stats.0),
+                snapshot.hydrated_total.1.saturating_add(stats.1),
+            );
+        }
+    });
+    snapshot
+}
+
 fn compare_output_has_deferred_stats(output: &CompareOutput) -> bool {
     if output.file_summaries.is_empty() {
         output.carbon.files.iter().any(|file| file.stats_deferred)
@@ -14365,7 +14540,7 @@ diff --git a/src/lib.rs b/src/lib.rs
     }
 
     #[test]
-    fn large_compare_stats_do_not_hydrate_offscreen_background_rows() {
+    fn large_compare_stats_stream_offscreen_background_rows_after_visible_rows() {
         let state = compare_ready_state();
         state
             .workspace
@@ -14403,10 +14578,17 @@ diff --git a/src/lib.rs b/src/lib.rs
             }),
         );
 
-        assert!(
-            state.next_compare_stats_hydration_effect().is_none(),
-            "huge compares should not chew through offscreen stats in the background"
-        );
+        let effect = state
+            .next_compare_stats_hydration_effect()
+            .expect("huge compares should keep streaming offscreen stats");
+
+        match effect {
+            Effect::Compare(CompareEffect::LoadFileStats(task)) => {
+                assert_eq!(task.request.priority, CompareWorkPriority::Warmup);
+                assert_eq!(task.request.files.first().map(|item| item.index), Some(128));
+            }
+            other => panic!("expected LoadFileStats effect, got {other:?}"),
+        }
     }
 
     #[test]

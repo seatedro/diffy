@@ -942,17 +942,19 @@ fn sidebar_total_stats(
             .workspace
             .compare_total_stats_loading
             .get(&state.store);
-    let (additions, deletions) = match compare_total_stats {
-        Some(stats) => stats,
-        None => (0..file_count)
+    let hydrated_stats = (workspace_source == WorkspaceSource::Compare)
+        .then(|| state.workspace.compare_hydrated_stats.get(&state.store))
+        .flatten();
+    let (additions, deletions) = compare_total_stats.or(hydrated_stats).unwrap_or_else(|| {
+        (0..file_count)
             .map(|index| state.file_list_entry_meta(index))
             .fold((0_i32, 0_i32), |acc, meta| {
                 (
                     acc.0.saturating_add(meta.additions),
                     acc.1.saturating_add(meta.deletions),
                 )
-            }),
-    };
+            })
+    });
 
     SidebarTotalStats {
         additions: additions.unsigned_abs(),

@@ -49,8 +49,18 @@ pub(crate) fn window_chrome(
             crate::ui::vcs::profile(location.as_ref()).is_working_copy_ref(&right_ref)
         });
     // When a PR is actively open for review, the "PR preview" affordance is replaced by
-    // a direct "Open in GitHub" link.
+    // a compact direct link to that pull request.
     let pr_open = state.pull_request_review_enabled();
+    let pr_button = if pr_open {
+        state.active_pull_request_key().map(|(_, _, number)| {
+            (
+                format!("#{number}"),
+                format!("Open PR #{number} on github.com"),
+            )
+        })
+    } else {
+        None
+    };
     let sidebar_icon = if sidebar_visible > 0.5 {
         lucide::PANEL_LEFT_CLOSE
     } else {
@@ -124,12 +134,12 @@ pub(crate) fn window_chrome(
             // right — working tree, update, account, window controls
             <div class="flex-1 flex-row items-center justify-end" min_w={0.0} gap={Sp::XS}>
                 if is_ready && !is_text_compare {
-                    if pr_open {
+                    if let Some((pr_label, pr_tooltip)) = pr_button {
                         <Button action={crate::actions::GitHubAction::OpenPullRequestInBrowser.into()}
                                 size={ButtonSize::Compact}
-                                tooltip={"Open this pull request on github.com"}>
+                                tooltip={pr_tooltip}>
                             <Icon>{lucide::EXTERNAL_LINK}</Icon>
-                            <Label>{"Open in GitHub"}</Label>
+                            <Label>{pr_label}</Label>
                         </Button>
                     } else if supports_pr_preview {
                         <Button action={crate::actions::CompareAction::PreviewPullRequest.into()}

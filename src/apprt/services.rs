@@ -2,12 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::ai::{self, GenerateRequest, StreamMessage};
 use crate::apprt::ProgressReporter;
 use crate::apprt::runtime::RuntimeEventSender;
-use crate::core::compare::{ComparePhase, ProgressSink};
+use crate::core::compare::{ComparePhase, LayoutMode, ProgressSink, RendererKind};
 use crate::core::error::{DiffyError, Result};
 use crate::core::forge::github::{
     CreatePullRequestReview, CreatePullRequestReviewComment, CreatePullRequestReviewReply,
@@ -20,7 +20,9 @@ use crate::core::http;
 use crate::core::review::{ReviewDecision, ReviewSession, ReviewSessionKey, ReviewTarget};
 use crate::core::syntax::annotator::FullFileSyntax;
 use crate::core::vcs::discovery;
+use crate::core::vcs::git::pr_ref_path;
 use crate::core::vcs::model::RevisionId;
+use crate::core::vcs::model::{VcsCompareRequest, VcsCompareSpec};
 use crate::effects::{
     CompareFileRequest, CompareFileStatsRequest, CompareHistoryRequest, CompareRequest,
     CompareStatsRequest, GenerateCommitMessageRequest, LoadFileSyntaxRequest, StatusDiffRequest,
@@ -143,20 +145,41 @@ impl AppServices {
         request: CompareRequest,
         reporter: Option<&ProgressReporter>,
     ) -> Result<CompareFinished> {
+        let total_started = Instant::now();
         if let Some(r) = reporter {
             r.phase(ComparePhase::OpeningRepo);
         }
+        let stage_started = Instant::now();
         let mut repo = discovery::open_repository(&request.repo_path)?;
+        tracing::info!(
+            generation,
+            elapsed_ms = stage_started.elapsed().as_millis(),
+            "compare: open repository"
+        );
 
         if let Some(r) = reporter {
             r.phase(ComparePhase::ResolvingRefs);
         }
+        let stage_started = Instant::now();
         let (resolved_left, resolved_right) = repo.resolve_compare_request(&request.request)?;
+        tracing::info!(
+            generation,
+            elapsed_ms = stage_started.elapsed().as_millis(),
+            "compare: resolve refs"
+        );
 
         // Phase labels are now driven from inside the backend (see
         // `EnumeratingChanges` + per-file `LoadingFiles`), so we just pass
         // the reporter through and let it speak for itself.
+        let stage_started = Instant::now();
         let output = repo.compare(&request.request, reporter.map(|r| r as &dyn ProgressSink))?;
+        tracing::info!(
+            generation,
+            files = output.file_count(),
+            elapsed_ms = stage_started.elapsed().as_millis(),
+            total_elapsed_ms = total_started.elapsed().as_millis(),
+            "compare: built output"
+        );
 
         Ok(CompareFinished {
             generation,
@@ -450,24 +473,85 @@ impl AppServices {
         repo_path: &Path,
         github_token: Option<String>,
     ) -> Result<(PullRequestInfo, String, String)> {
+        let total_started = Instant::now();
         let parsed = parse_pr_url(url)
             .ok_or_else(|| DiffyError::Parse("not a valid GitHub pull request URL".to_owned()))?;
         let token = github_token.unwrap_or_default();
-        let info = GitHubApi::with_token(token.clone()).fetch_pull_request(
-            &parsed.owner,
-            &parsed.repo,
-            parsed.number,
-        )?;
 
+        let stage_started = Instant::now();
         let mut repo = discovery::open_repository(repo_path)?;
+        tracing::info!(
+            owner = %parsed.owner,
+            repo = %parsed.repo,
+            number = parsed.number,
+            elapsed_ms = stage_started.elapsed().as_millis(),
+            "github-pr: opened repository"
+        );
         if !repo.capabilities().github_pull_requests {
             return Err(DiffyError::General(
                 "this repository backend does not support GitHub pull request comparisons"
                     .to_owned(),
             ));
         }
-        let (left_ref, right_ref) = repo.resolve_pull_request_comparison(url, &token)?;
+        let stage_started = Instant::now();
+        let (info, left_ref, right_ref) = repo.resolve_pull_request_comparison(url, &token)?;
+        tracing::info!(
+            owner = %parsed.owner,
+            repo = %parsed.repo,
+            number = parsed.number,
+            changed_files = info.changed_files,
+            elapsed_ms = stage_started.elapsed().as_millis(),
+            total_elapsed_ms = total_started.elapsed().as_millis(),
+            "github-pr: resolved comparison refs"
+        );
         Ok((info, left_ref, right_ref))
+    }
+
+    pub fn cached_pull_request_comparison(
+        &self,
+        url: &str,
+        repo_path: &Path,
+    ) -> Result<Option<(PullRequestInfo, String, String)>> {
+        let parsed = parse_pr_url(url)
+            .ok_or_else(|| DiffyError::Parse("not a valid GitHub pull request URL".to_owned()))?;
+        let target = ReviewTarget::github(parsed.owner, parsed.repo, parsed.number);
+        let sessions = self.review_store.load_sessions_for_target(&target)?;
+        if sessions.is_empty() {
+            return Ok(None);
+        }
+
+        let mut repo = discovery::open_repository(repo_path)?;
+        if !repo.capabilities().github_pull_requests {
+            return Ok(None);
+        }
+
+        for session in sessions.into_iter().rev() {
+            let info = session.pull_request;
+            if info.base_branch.is_empty() || info.head_branch.is_empty() {
+                continue;
+            }
+            let left_ref = pr_ref_path(info.number, &info.base_branch);
+            let right_ref = pr_ref_path(info.number, &info.head_branch);
+            let request = VcsCompareRequest {
+                spec: VcsCompareSpec::MergeBaseRange {
+                    base: left_ref.clone(),
+                    head: right_ref.clone(),
+                },
+                layout: LayoutMode::default(),
+                renderer: RendererKind::default(),
+            };
+            if repo.resolve_compare_request(&request).is_ok() {
+                tracing::info!(
+                    owner = %target.owner,
+                    repo = %target.repo,
+                    number = target.number,
+                    "github-pr: using cached comparison refs"
+                );
+                return Ok(Some((info, left_ref, right_ref)));
+            }
+        }
+
+        Ok(None)
     }
 
     pub fn start_device_flow(&self, client_id: &str) -> Result<DeviceFlowState> {

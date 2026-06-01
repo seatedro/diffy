@@ -81,6 +81,16 @@ impl ReviewStore {
         Ok(data.sessions.get(&key).cloned())
     }
 
+    pub fn load_sessions_for_target(&self, target: &ReviewTarget) -> Result<Vec<ReviewSession>> {
+        let data = self.lock_data()?;
+        Ok(data
+            .sessions
+            .values()
+            .filter(|session| &session.target == target)
+            .cloned()
+            .collect())
+    }
+
     pub fn save_session(&self, session: &ReviewSession) -> Result<()> {
         let mut data = self.lock_data()?;
         data.sessions

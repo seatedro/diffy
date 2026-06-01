@@ -97,7 +97,14 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
                 .pull_request
                 .pending_confirm
                 .with(&state.store, |p| p.as_ref() == Some(&key));
-            if pending_match {
+            let active_match = state
+                .github
+                .pull_request
+                .active
+                .with(&state.store, |active| active.as_ref() == Some(&key));
+            let current_compare_matches = state.compare.left_ref.get(&state.store) == left_ref
+                && state.compare.right_ref.get(&state.store) == right_ref;
+            if pending_match || (active_match && !current_compare_matches) {
                 state
                     .github
                     .pull_request
@@ -113,6 +120,41 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
             }
             effects.extend(state.rebuild_command_palette_if_open());
             effects
+        }
+        GitHubEvent::PullRequestCachedComparisonLoaded {
+            url,
+            info,
+            left_ref,
+            right_ref,
+        } => {
+            let key: PrKey = crate::core::forge::github::parse_pr_url(&url)
+                .map(|p| (p.owner, p.repo, p.number))
+                .unwrap_or_else(|| (String::new(), String::new(), info.number));
+            state.github.pull_request.cache.update(&state.store, |c| {
+                let entry = c.entry(key.clone()).or_insert_with(|| PrCacheEntry {
+                    meta: PrPeekMeta::Ready(info.clone()),
+                    diff: PrPeekDiff::Idle,
+                    last_peek_ms: 0,
+                });
+                entry.meta = PrPeekMeta::Ready(info.clone());
+                entry.diff = PrPeekDiff::Ready {
+                    url,
+                    left_ref: left_ref.clone(),
+                    right_ref: right_ref.clone(),
+                    info,
+                };
+            });
+            state
+                .github
+                .pull_request
+                .pending_confirm
+                .set(&state.store, None);
+            state
+                .github
+                .pull_request
+                .active
+                .set(&state.store, Some(key));
+            state.apply_pr_compare(left_ref, right_ref)
         }
         GitHubEvent::PullRequestLoadFailed { url, message } => {
             state
@@ -852,6 +894,41 @@ pub(super) fn reduce_event(state: &mut AppState, event: GitHubEvent) -> Vec<Effe
                 && state.github.auth.user.with(&state.store, |u| u.is_none())
             {
                 effects.push(GitHubEffect::FetchGitHubUser { token }.into());
+            }
+            if let Some(url) = state.startup.pending_pr_url.clone()
+                && let Some(repo_path) = state.compare.repo_path.get(&state.store)
+            {
+                state.startup.pending_pr_url = None;
+                state.startup.auto_compare_pending = false;
+                state.startup.bootstrap_compare_started = true;
+                state
+                    .github
+                    .pull_request
+                    .status
+                    .set(&state.store, AsyncStatus::Loading);
+                if let Some(parsed) = crate::core::forge::github::parse_pr_url(&url) {
+                    let key: PrKey = (parsed.owner, parsed.repo, parsed.number);
+                    state.github.pull_request.cache.update(&state.store, |c| {
+                        c.entry(key.clone()).or_insert_with(|| PrCacheEntry {
+                            meta: PrPeekMeta::Loading,
+                            diff: PrPeekDiff::Loading,
+                            last_peek_ms: 0,
+                        });
+                    });
+                    state
+                        .github
+                        .pull_request
+                        .pending_confirm
+                        .set(&state.store, Some(key));
+                }
+                effects.push(
+                    GitHubEffect::LoadPullRequest {
+                        url,
+                        repo_path,
+                        github_token: state.github_access_token.clone(),
+                    }
+                    .into(),
+                );
             }
             effects
         }

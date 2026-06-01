@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Instant;
 
 use gix::bstr::ByteSlice;
 use serde::Serialize;
@@ -12,7 +13,7 @@ use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::CompareMode;
 use crate::core::compare::stats::COMPARE_SUMMARY_FILE_LIMIT;
 use crate::core::error::{DiffyError, Result};
-use crate::core::forge::github::{GitHubApi, parse_pr_url};
+use crate::core::forge::github::{GitHubApi, PullRequestInfo, parse_pr_url};
 use crate::core::vcs::git::status::{StatusBits, StatusItem, StatusOperation, StatusScope};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1030,7 +1031,22 @@ impl GitService {
         args.push(OsString::from("fetch"));
         args.push(OsString::from(repo_url));
         args.extend(refspecs.iter().map(OsString::from));
-        run_system_git(self.repo_path_ref()?, &args)
+        let started = Instant::now();
+        let result = run_system_git(self.repo_path_ref()?, &args);
+        tracing::info!(
+            refspecs = refspecs.len(),
+            elapsed_ms = started.elapsed().as_millis(),
+            success = result.is_ok(),
+            "git: fetch refspecs"
+        );
+        result
+    }
+
+    fn ref_matches_oid(&self, reference: &str, expected_oid: &str) -> bool {
+        !expected_oid.is_empty()
+            && self
+                .resolve_commit_oid(reference)
+                .is_ok_and(|resolved| resolved == expected_oid)
     }
 
     /// Fetch a named remote using the remote's configured refspecs.
@@ -1194,11 +1210,20 @@ impl GitService {
         &self,
         pull_request_url: &str,
         github_token: &str,
-    ) -> Result<(String, String)> {
+    ) -> Result<(PullRequestInfo, String, String)> {
+        let total_started = Instant::now();
         let parsed = parse_pr_url(pull_request_url)
             .ok_or_else(|| DiffyError::Parse("not a valid GitHub pull request URL".to_owned()))?;
         let api = GitHubApi::with_token(github_token.to_owned());
+        let stage_started = Instant::now();
         let info = api.fetch_pull_request(&parsed.owner, &parsed.repo, parsed.number)?;
+        tracing::info!(
+            owner = %parsed.owner,
+            repo = %parsed.repo,
+            number = parsed.number,
+            elapsed_ms = stage_started.elapsed().as_millis(),
+            "github-pr: ref resolver fetched metadata"
+        );
         let fetch_source = github_fetch_source_for_repo(
             self.repo_path_ref()?,
             &parsed.owner,
@@ -1213,20 +1238,37 @@ impl GitService {
         let head_source = format!("refs/pull/{}/head", parsed.number);
         let base_target = pr_ref_path(parsed.number, &info.base_branch);
         let head_target = pr_ref_path(parsed.number, &info.head_branch);
-        self.fetch_refspecs(
-            &fetch_source,
-            &[
-                format!("+{base_source}:{base_target}"),
-                format!("+{head_source}:{head_target}"),
-            ],
-        )?;
+        let mut refspecs = Vec::with_capacity(2);
+        if !self.ref_matches_oid(&base_target, &info.base_sha) {
+            refspecs.push(format!("+{base_source}:{base_target}"));
+        }
+        if !self.ref_matches_oid(&head_target, &info.head_sha) {
+            refspecs.push(format!("+{head_source}:{head_target}"));
+        }
+        if refspecs.is_empty() {
+            tracing::info!(
+                owner = %parsed.owner,
+                repo = %parsed.repo,
+                number = parsed.number,
+                "github-pr: cached refs are current"
+            );
+        } else {
+            self.fetch_refspecs(&fetch_source, &refspecs)?;
+        }
+        tracing::info!(
+            owner = %parsed.owner,
+            repo = %parsed.repo,
+            number = parsed.number,
+            elapsed_ms = total_started.elapsed().as_millis(),
+            "github-pr: git resolver complete"
+        );
         prune_stale_pr_refs(
             self.repo_path_ref()?,
             parsed.number,
             &base_target,
             &head_target,
         );
-        Ok((base_target, head_target))
+        Ok((info, base_target, head_target))
     }
 
     fn diff_between_refs(&self, left: &str, right: &str) -> Result<String> {

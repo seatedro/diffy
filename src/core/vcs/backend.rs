@@ -6,6 +6,7 @@ use crate::core::compare::{
     CompareFileStatsTarget, CompareFileSummary, CompareOutput, ProgressSink, RendererKind,
 };
 use crate::core::error::Result;
+use crate::core::forge::github::PullRequestInfo;
 use crate::core::vcs::model::{
     FileChange, FileOperation, PublishAction, PublishOutcome, PublishPlan, PullFastForwardOutcome,
     RepoCapabilities, RepoLocation, RevisionId, VcsChange, VcsCompareRequest, VcsKind,
@@ -152,7 +153,7 @@ pub trait VcsRepository: Send {
         &mut self,
         _pull_request_url: &str,
         _github_token: &str,
-    ) -> Result<(String, String)> {
+    ) -> Result<(PullRequestInfo, String, String)> {
         Err(crate::core::error::DiffyError::General(
             "GitHub pull request comparison unsupported by this backend".to_owned(),
         ))

@@ -304,6 +304,12 @@ pub enum GitHubEvent {
         left_ref: String,
         right_ref: String,
     },
+    PullRequestCachedComparisonLoaded {
+        url: String,
+        info: PullRequestInfo,
+        left_ref: String,
+        right_ref: String,
+    },
     PullRequestLoadFailed {
         url: String,
         message: String,

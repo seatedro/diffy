@@ -295,6 +295,16 @@ impl EffectRunner {
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
+                    if let Ok(Some((info, left_ref, right_ref))) =
+                        services.cached_pull_request_comparison(&url, &repo_path)
+                    {
+                        event_sender.send(GitHubEvent::PullRequestCachedComparisonLoaded {
+                            url: url.clone(),
+                            info,
+                            left_ref,
+                            right_ref,
+                        });
+                    }
                     let event = match services.load_pull_request(&url, &repo_path, github_token) {
                         Ok((info, left_ref, right_ref)) => GitHubEvent::PullRequestLoaded {
                             url,

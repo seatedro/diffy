@@ -4549,6 +4549,7 @@ impl AppState {
                 let mut effects = self.persist_settings_effect();
                 if let Some(url) = self.startup.pending_pr_url.clone() {
                     self.startup.pending_pr_url = None;
+                    self.startup.auto_compare_pending = false;
                     self.github
                         .pull_request
                         .status

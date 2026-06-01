@@ -84,14 +84,19 @@ find_actool() {
 # Render a single PNG at the given pixel size from AppIcon.icon using ictool.
 render_icon_png() {
   local ictool="$1" out="$2" base="$3" scale="$4"
-  "$ictool" "$ICON_SOURCE" \
+  if "$ictool" "$ICON_SOURCE" \
     --export-image \
     --output-file "$out" \
     --platform macOS \
     --rendition Default \
     --width "$base" \
     --height "$base" \
-    --scale "$scale" >/dev/null
+    --scale "$scale" >/dev/null 2>/dev/null; then
+    return 0
+  fi
+
+  "$ictool" "$ICON_SOURCE" \
+    --export-preview macOS Default "$base" "$base" "$scale" "$out" >/dev/null
 }
 
 # Build AppIcon.icns by rendering every required size from AppIcon.icon

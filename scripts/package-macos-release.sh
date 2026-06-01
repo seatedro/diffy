@@ -5,6 +5,7 @@ APP_NAME="Diffy"
 APP_BUNDLE_NAME="${APP_NAME}.app"
 PACKAGES_DIR="dist/packages"
 PACKAGE_ARCH="${DIFFY_MACOS_PACKAGE_ARCH:-$(uname -m)}"
+ENTITLEMENTS_PATH="${DIFFY_MACOS_ENTITLEMENTS_PATH:-assets/packaging/macos/release.entitlements}"
 
 die() {
   echo "package-macos-release: $*" >&2
@@ -16,6 +17,11 @@ require_env() {
   if [[ -z "${!name:-}" ]]; then
     die "${name} is required"
   fi
+}
+
+require_file() {
+  local path="$1"
+  [[ -f "$path" ]] || die "missing required file: ${path}"
 }
 
 artifact_arch() {
@@ -62,28 +68,43 @@ submit_for_notarization() {
 
 sign_macho_files() {
   local app="$1"
+  local main_executable="$2"
 
   while IFS= read -r -d '' path; do
     if file "$path" | grep -q 'Mach-O'; then
+      local entitlements_args=()
+      if [[ "$path" == "$main_executable" ]]; then
+        entitlements_args=(--entitlements "$ENTITLEMENTS_PATH")
+      fi
       /usr/bin/codesign \
         --force \
         --timestamp \
         --options runtime \
+        "${entitlements_args[@]}" \
         --sign "$APPLE_CODESIGN_IDENTITY" \
         "$path"
     fi
   done < <(find "$app/Contents" -type f -print0)
 }
 
+main_executable_path() {
+  local app="$1"
+  local executable
+  executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")"
+  printf '%s\n' "$app/Contents/MacOS/$executable"
+}
+
 require_env APPLE_CODESIGN_IDENTITY
 require_env APPLE_NOTARY_KEY_ID
 require_env APPLE_NOTARY_ISSUER_ID
+require_file "$ENTITLEMENTS_PATH"
 
 [[ "$(uname -s)" == "Darwin" ]] || die "macOS packaging must run on macOS"
 command -v cargo >/dev/null 2>&1 || die "cargo not found"
 command -v node >/dev/null 2>&1 || die "node not found"
 xcrun --find notarytool >/dev/null
 xcrun --find stapler >/dev/null
+plutil -lint "$ENTITLEMENTS_PATH" >/dev/null
 
 version="$(package_version)"
 arch="$(artifact_arch)"
@@ -102,11 +123,15 @@ if [[ -z "$app_path" ]]; then
 fi
 [[ -n "$app_path" && -d "$app_path" ]] || die "no .app bundle found in ${PACKAGES_DIR}"
 
-sign_macho_files "$app_path"
+main_executable="$(main_executable_path "$app_path")"
+[[ -x "$main_executable" ]] || die "main executable not found: ${main_executable}"
+
+sign_macho_files "$app_path" "$main_executable"
 /usr/bin/codesign \
   --force \
   --timestamp \
   --options runtime \
+  --entitlements "$ENTITLEMENTS_PATH" \
   --sign "$APPLE_CODESIGN_IDENTITY" \
   "$app_path"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_path"

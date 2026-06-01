@@ -85,6 +85,7 @@ pub enum AppAction {
     CloseContextMenu,
     DismissToast(usize),
     HoverToast(Option<usize>),
+    ToggleDebugOverlay,
     Noop,
 }
 

@@ -65,6 +65,7 @@ pub enum ShortcutCommand {
     OpenPublishMenu,
     ConfirmOverlay,
     CloseOverlay,
+    ToggleDebugOverlay,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -319,6 +320,12 @@ const REPOSITORY: &[ShortcutEntry] = &[
     ),
 ];
 
+const DEBUG: &[ShortcutEntry] = &[global_entry(
+    ShortcutCommand::ToggleDebugOverlay,
+    &["mod+shift+d"],
+    "Toggle debug overlay",
+)];
+
 const GROUPS: &[ShortcutGroup] = &[
     ShortcutGroup {
         title: "Navigation",
@@ -347,6 +354,10 @@ const GROUPS: &[ShortcutGroup] = &[
     ShortcutGroup {
         title: "Repository",
         entries: REPOSITORY,
+    },
+    ShortcutGroup {
+        title: "Debug",
+        entries: DEBUG,
     },
 ];
 

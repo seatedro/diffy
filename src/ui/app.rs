@@ -26,6 +26,7 @@ use crate::platform::startup::StartupOptions;
 use crate::render::Renderer;
 use crate::ui::components::TooltipState;
 use crate::ui::editor::element::EditorElement;
+use crate::ui::hud::{HudSample, HudState};
 use crate::ui::shell::{UiFrame, build_ui_frame};
 use crate::ui::state::{AppState, FocusTarget};
 use crate::ui::theme::Theme;
@@ -100,6 +101,7 @@ struct NativeApp {
     skip_next_focus_regain_rescan: bool,
     rescan_on_next_focus: bool,
     tooltip_state: TooltipState,
+    hud: HudState,
     #[cfg(feature = "hot-reload")]
     hot_reload_pending: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
@@ -147,6 +149,7 @@ impl NativeApp {
             skip_next_focus_regain_rescan: true,
             rescan_on_next_focus: false,
             tooltip_state: TooltipState::default(),
+            hud: HudState::default(),
             #[cfg(feature = "hot-reload")]
             hot_reload_pending: None,
         }
@@ -236,6 +239,241 @@ impl NativeApp {
             font_size,
             font_kind: FontKind::Ui,
             font_weight: FontWeight::Normal,
+        });
+        scene.pop_z_index();
+    }
+
+    fn paint_debug_overlay(&mut self) {
+        use crate::render::{
+            BorderPrimitive, FontKind, FontWeight, Rect, RectPrimitive, RoundedRectPrimitive,
+            Scene, TextPrimitive,
+        };
+        use crate::ui::design::{Rad, Sp};
+        use crate::ui::hud::BUDGET_120_US;
+        use crate::ui::theme::Color;
+        use std::sync::Arc;
+
+        if !self.state.debug.overlay_visible.get(&self.state.store) {
+            return;
+        }
+        let renderer = match self.renderer.as_mut() {
+            Some(r) => r,
+            None => return,
+        };
+        let window_w = self
+            .window
+            .as_ref()
+            .map(|w| w.inner_size().width as f32)
+            .unwrap_or(1320.0);
+
+        let tc = &self.theme.colors;
+        let m = &self.theme.metrics;
+        let scale = m.ui_scale();
+        let font_size = m.mono_font_size;
+        let line_height = (font_size * 1.35).round();
+
+        let hud = &self.hud;
+        let s = hud.last;
+        let cpu_us = hud.cpu_ema_us();
+        let to_ms = |us: u64| us as f32 / 1000.0;
+        let budget_ms = BUDGET_120_US as f32 / 1000.0;
+        let frac = cpu_us as f32 / BUDGET_120_US as f32;
+
+        let lines = [
+            (
+                FontWeight::Semibold,
+                tc.text_strong,
+                "DEBUG · 120 budget".to_owned(),
+            ),
+            (
+                FontWeight::Normal,
+                tc.text,
+                format!("fps   {:>6.1}", hud.fps()),
+            ),
+            (
+                FontWeight::Normal,
+                tc.text,
+                format!(
+                    "cpu   {:>5.2}/{:.2}ms {:>3.0}%",
+                    to_ms(cpu_us),
+                    budget_ms,
+                    frac * 100.0
+                ),
+            ),
+            (
+                FontWeight::Normal,
+                tc.text_muted,
+                format!(
+                    "build {:>5.2}  paint {:>5.2}",
+                    to_ms(s.build_us),
+                    to_ms(s.paint_us)
+                ),
+            ),
+            (
+                FontWeight::Normal,
+                tc.text_muted,
+                format!(
+                    "rcpu  {:>5.2}  vsync {:>5.2}",
+                    to_ms(s.render_cpu_us),
+                    to_ms(s.acquire_us)
+                ),
+            ),
+            (
+                FontWeight::Normal,
+                tc.text_muted,
+                format!("prims {}", s.primitive_count),
+            ),
+        ];
+
+        let fs = renderer.font_system();
+        let mut content_w = 0.0_f32;
+        for (weight, _, text) in &lines {
+            let w = crate::ui::element::measure_text_width(
+                fs,
+                text,
+                font_size,
+                FontKind::Mono,
+                *weight,
+            );
+            content_w = content_w.max(w);
+        }
+
+        let pad = (Sp::SM * scale).round();
+        let gap = (Sp::XS * scale).round();
+        let bar_h = (Sp::XS * scale).round();
+        let r = (Rad::MD * scale).round();
+        let margin = (Sp::SM * scale).round();
+        let graph_h = (line_height * 3.0).round();
+
+        let content_h = lines.len() as f32 * line_height + gap + bar_h + gap + graph_h;
+        let panel_w = content_w + pad * 2.0;
+        let panel_h = content_h + pad * 2.0;
+        let x = (window_w - panel_w - margin).max(margin);
+        let y = m.title_bar_height + margin;
+
+        let color_for = |f: f32| {
+            if f >= 1.0 {
+                tc.status_error
+            } else if f >= 0.8 {
+                tc.status_warning
+            } else {
+                tc.line_add
+            }
+        };
+
+        let scene = &mut self.ui_frame.scene;
+        scene.push_z_index(600);
+        scene.rounded_rect(RoundedRectPrimitive::uniform(
+            Rect {
+                x,
+                y,
+                width: panel_w,
+                height: panel_h,
+            },
+            r,
+            tc.elevated_surface,
+        ));
+        scene.border(BorderPrimitive {
+            rect: Rect {
+                x,
+                y,
+                width: panel_w,
+                height: panel_h,
+            },
+            widths: [1.0; 4],
+            corner_radii: [r; 4],
+            color: tc.border,
+        });
+
+        let cx = x + pad;
+        let mut cy = y + pad;
+        let emit = |scene: &mut Scene, cy: f32, weight: FontWeight, color: Color, text: &str| {
+            scene.text(TextPrimitive {
+                rect: Rect {
+                    x: cx,
+                    y: cy,
+                    width: content_w,
+                    height: line_height,
+                },
+                text: Arc::from(text),
+                color,
+                font_size,
+                font_kind: FontKind::Mono,
+                font_weight: weight,
+            });
+        };
+
+        for (i, (weight, color, text)) in lines.iter().enumerate() {
+            emit(scene, cy, *weight, *color, text);
+            cy += line_height;
+            if i == 2 {
+                let track = Rect {
+                    x: cx,
+                    y: cy,
+                    width: content_w,
+                    height: bar_h,
+                };
+                scene.rounded_rect(RoundedRectPrimitive::uniform(
+                    track,
+                    bar_h / 2.0,
+                    tc.border_variant,
+                ));
+                let fill_w = (content_w * frac.clamp(0.0, 1.0)).round();
+                if fill_w > 0.0 {
+                    scene.rounded_rect(RoundedRectPrimitive::uniform(
+                        Rect {
+                            x: cx,
+                            y: cy,
+                            width: fill_w,
+                            height: bar_h,
+                        },
+                        bar_h / 2.0,
+                        color_for(frac),
+                    ));
+                }
+                cy += bar_h + gap;
+            }
+        }
+
+        let graph = Rect {
+            x: cx,
+            y: cy,
+            width: content_w,
+            height: graph_h,
+        };
+        scene.rounded_rect(RoundedRectPrimitive::uniform(
+            graph,
+            (Rad::SM * scale).round(),
+            tc.element_background,
+        ));
+        let cap = hud.history_capacity() as f32;
+        let bar_w = content_w / cap;
+        let peak = hud.history_peak_us().max(BUDGET_120_US) as f32;
+        let unit = graph_h / peak;
+        for (i, sample) in hud.samples().enumerate() {
+            let h = (sample as f32 * unit).min(graph_h);
+            if h <= 0.0 {
+                continue;
+            }
+            scene.rect(RectPrimitive {
+                rect: Rect {
+                    x: cx + i as f32 * bar_w,
+                    y: cy + graph_h - h,
+                    width: bar_w.max(1.0),
+                    height: h,
+                },
+                color: color_for(sample as f32 / BUDGET_120_US as f32),
+            });
+        }
+        let budget_y = cy + graph_h - (BUDGET_120_US as f32 * unit);
+        scene.rect(RectPrimitive {
+            rect: Rect {
+                x: cx,
+                y: budget_y,
+                width: content_w,
+                height: 1.0,
+            },
+            color: tc.text_muted,
         });
         scene.pop_z_index();
     }
@@ -824,11 +1062,16 @@ impl ApplicationHandler for NativeApp {
             }
             WindowEvent::RedrawRequested => {
                 let frame_started_at = Instant::now();
+                let frame_interval_us = self.hud.frame_started(frame_started_at);
                 let now_ms = self.launch_at.elapsed().as_millis() as u64;
                 self.tooltip_state.tick(now_ms);
+                let build_started_at = Instant::now();
                 let frame = self.build_frame();
                 self.ui_frame = frame;
+                let build_us = build_started_at.elapsed().as_micros() as u64;
+                let paint_started_at = Instant::now();
                 self.paint_tooltip();
+                self.paint_debug_overlay();
                 self.publish_accessibility_update();
                 for (target, editor) in [
                     (FocusTarget::CommitEditor, &mut self.state.commit_editor),
@@ -857,6 +1100,7 @@ impl ApplicationHandler for NativeApp {
                         }
                     }
                 }
+                let paint_us = paint_started_at.elapsed().as_micros() as u64;
                 if let Some(renderer) = self.renderer.as_mut() {
                     let time_seconds = self.launch_at.elapsed().as_secs_f32();
                     let editors: [Option<&crate::editor::Editor>; 3] = [
@@ -866,19 +1110,15 @@ impl ApplicationHandler for NativeApp {
                     ];
                     match renderer.render(&self.ui_frame.scene, time_seconds, &editors) {
                         Ok(frame) => {
-                            let store = &self.state.store;
-                            store.write(
-                                self.state.debug.last_scene_primitive_count,
-                                frame.primitive_count,
-                            );
-                            store.write(
-                                self.state.debug.last_frame_time_us,
-                                frame_started_at
-                                    .elapsed()
-                                    .as_micros()
-                                    .min(u128::from(u64::MAX))
-                                    as u64,
-                            );
+                            self.hud.record(HudSample {
+                                build_us,
+                                paint_us,
+                                render_cpu_us: frame.cpu_us,
+                                acquire_us: frame.acquire_us,
+                                present_us: frame.present_us,
+                                primitive_count: frame.primitive_count,
+                                frame_interval_us,
+                            });
                         }
                         Err(error) => {
                             eprintln!("render failed: {error}");
@@ -946,7 +1186,10 @@ impl ApplicationHandler for NativeApp {
         let animating = self.state.animation.has_active();
         let syntax_pack_installing = self.state.syntax_pack_install_active();
         let cursor_blink_changed = self.state.cursor_blink_epoch() != prior_cursor_blink_epoch;
-        let next_wake = if animating || syntax_pack_installing {
+        let debug_overlay = self.state.debug.overlay_visible.get(&self.state.store);
+        let next_wake = if debug_overlay {
+            Some(now + Duration::from_millis(8))
+        } else if animating || syntax_pack_installing {
             Some(now + Duration::from_millis(16))
         } else {
             let next_cursor_blink = self
@@ -1001,7 +1244,8 @@ impl ApplicationHandler for NativeApp {
                 || animating
                 || syntax_pack_installing
                 || cursor_blink_changed
-                || tooltip_changed)
+                || tooltip_changed
+                || debug_overlay)
         {
             window.request_redraw();
         }

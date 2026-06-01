@@ -7,6 +7,8 @@
 //! 2. **prepaint** — register hitboxes, resolve interaction state.
 //! 3. **paint** — emit scene primitives using resolved hover/hit state.
 
+use std::collections::HashMap;
+
 use crate::actions::Action;
 use crate::effects::Effect;
 use crate::render::Scene;
@@ -249,7 +251,16 @@ pub struct ElementContext<'a> {
     element_offset_stack: Vec<(f32, f32)>,
     text_color_stack: Vec<Color>,
     icon_color_stack: Vec<Color>,
+    text_measure_cache: HashMap<TextMeasureKey, f32>,
     accessibility_text_hidden_stack: Vec<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TextMeasureKey {
+    text: String,
+    font_size_bits: u32,
+    font_kind: u8,
+    font_weight: u8,
 }
 
 impl<'a> ElementContext<'a> {
@@ -283,8 +294,33 @@ impl<'a> ElementContext<'a> {
             element_offset_stack: vec![(0.0, 0.0)],
             text_color_stack: Vec::new(),
             icon_color_stack: Vec::new(),
+            text_measure_cache: HashMap::new(),
             accessibility_text_hidden_stack: Vec::new(),
         }
+    }
+
+    pub fn measure_text_width(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        font_kind: crate::render::FontKind,
+        font_weight: crate::render::FontWeight,
+    ) -> f32 {
+        if text.is_empty() {
+            return 0.0;
+        }
+        let key = TextMeasureKey {
+            text: text.to_owned(),
+            font_size_bits: font_size.to_bits(),
+            font_kind: font_kind_measure_tag(font_kind),
+            font_weight: font_weight_measure_tag(font_weight),
+        };
+        if let Some(width) = self.text_measure_cache.get(&key).copied() {
+            return width;
+        }
+        let width = measure_text_width(self.font_system, text, font_size, font_kind, font_weight);
+        self.text_measure_cache.insert(key, width);
+        width
     }
 
     /// Read a signal's value (clones it out). Tracked by the current observer scope.
@@ -1763,13 +1799,8 @@ impl Element for TextElement {
         let font_size = self.resolve_font_size(cx.theme);
         let line_height = font_size * self.line_height_factor;
 
-        let text_width = measure_text_width(
-            cx.font_system,
-            &self.content,
-            font_size,
-            self.font_kind,
-            self.font_weight,
-        );
+        let text_width =
+            cx.measure_text_width(&self.content, font_size, self.font_kind, self.font_weight);
 
         // Only allow shrinking when `.truncate()` is set; otherwise the text
         // holds its natural width so it isn't crushed next to flex_shrink:0 siblings
@@ -1819,11 +1850,12 @@ impl Element for TextElement {
 
         if self.truncate && bounds.width > 0.0 {
             let (truncated, truncated_width) = truncate_text_to_fit(
-                cx.font_system,
+                cx,
                 &content,
                 font_size,
                 self.font_kind,
                 self.font_weight,
+                natural_width,
                 bounds.width,
             );
             content = truncated;
@@ -1882,13 +1914,8 @@ impl Element for TextElement {
 
         // Debug wireframe: red rect around text + log measurement vs bounds
         if cx.debug_wireframe {
-            let measured = measure_text_width(
-                cx.font_system,
-                &content,
-                font_size,
-                self.font_kind,
-                self.font_weight,
-            );
+            let measured =
+                cx.measure_text_width(&content, font_size, self.font_kind, self.font_weight);
             let crushed = bounds.width > 0.0 && bounds.width < measured * 0.9;
             let wire_color = if crushed {
                 Color::rgba(255, 40, 40, 200) // red = text is crushed
@@ -3447,12 +3474,29 @@ fn glyphon_weight_for_font(font_kind: FontKind, font_weight: FontWeight) -> glyp
     }
 }
 
+fn font_kind_measure_tag(font_kind: FontKind) -> u8 {
+    match font_kind {
+        FontKind::Ui => 0,
+        FontKind::Mono => 1,
+    }
+}
+
+fn font_weight_measure_tag(font_weight: FontWeight) -> u8 {
+    match font_weight {
+        FontWeight::Normal => 0,
+        FontWeight::Medium => 1,
+        FontWeight::Semibold => 2,
+        FontWeight::Bold => 3,
+    }
+}
+
 fn truncate_text_to_fit(
-    font_system: &mut glyphon::FontSystem,
+    cx: &mut ElementContext<'_>,
     text: &str,
     font_size: f32,
     font_kind: FontKind,
     font_weight: FontWeight,
+    full_width: f32,
     max_width: f32,
 ) -> (String, f32) {
     const ELLIPSIS: &str = "\u{2026}";
@@ -3461,13 +3505,11 @@ fn truncate_text_to_fit(
         return (String::new(), 0.0);
     }
 
-    let full_width = measure_text_width(font_system, text, font_size, font_kind, font_weight);
     if full_width <= max_width {
         return (text.to_owned(), full_width);
     }
 
-    let ellipsis_width =
-        measure_text_width(font_system, ELLIPSIS, font_size, font_kind, font_weight);
+    let ellipsis_width = cx.measure_text_width(ELLIPSIS, font_size, font_kind, font_weight);
     if ellipsis_width > max_width {
         return (String::new(), 0.0);
     }
@@ -3488,8 +3530,7 @@ fn truncate_text_to_fit(
         let mut candidate = String::with_capacity(prefix.len() + ELLIPSIS.len());
         candidate.push_str(prefix);
         candidate.push_str(ELLIPSIS);
-        let candidate_width =
-            measure_text_width(font_system, &candidate, font_size, font_kind, font_weight);
+        let candidate_width = cx.measure_text_width(&candidate, font_size, font_kind, font_weight);
         if candidate_width <= max_width {
             low = mid;
             best_width = candidate_width;
@@ -3968,13 +4009,17 @@ mod tests {
             FontKind::Ui,
             FontWeight::Medium,
         );
+        let mut store = SignalStore::new();
+        let mut cx = test_cx(&mut font_system, &mut store);
+        let full_width = cx.measure_text_width(text, font_size, FontKind::Ui, FontWeight::Medium);
 
         let (truncated, truncated_width) = truncate_text_to_fit(
-            &mut font_system,
+            &mut cx,
             text,
             font_size,
             FontKind::Ui,
             FontWeight::Medium,
+            full_width,
             max_width,
         );
 

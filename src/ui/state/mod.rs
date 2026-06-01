@@ -3117,8 +3117,7 @@ pub struct StartupState {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
 pub struct DebugState {
-    pub last_scene_primitive_count: usize,
-    pub last_frame_time_us: u64,
+    pub overlay_visible: bool,
 }
 
 const FILE_HEIGHT_SPARSE_MIN_COUNT: usize = 4096;
@@ -3135,6 +3134,7 @@ enum FileHeightIndex {
         default_height: u32,
         total: u64,
         overrides: BTreeMap<usize, u32>,
+        tree: Vec<u64>,
     },
 }
 
@@ -3152,11 +3152,16 @@ impl FileHeightIndex {
         }
 
         if let Some((default_height, overrides, total)) = sparse_height_index_parts(&heights) {
+            let mut tree = vec![0; heights.len() + 1];
+            for (index, height) in heights.iter().copied().enumerate() {
+                height_tree_add(&mut tree, index, u64::from(height));
+            }
             *self = Self::Sparse {
                 count: heights.len(),
                 default_height,
                 total,
                 overrides,
+                tree,
             };
             return;
         }
@@ -3219,6 +3224,7 @@ impl FileHeightIndex {
                 default_height,
                 total,
                 overrides,
+                tree,
             } => {
                 if index >= *count {
                     return;
@@ -3235,6 +3241,11 @@ impl FileHeightIndex {
                 *total = total
                     .saturating_sub(u64::from(old))
                     .saturating_add(u64::from(height));
+                if height >= old {
+                    height_tree_add(tree, index, u64::from(height - old));
+                } else {
+                    height_tree_sub(tree, index, u64::from(old - height));
+                }
                 if overrides.len() > *count / 4 {
                     self.promote_sparse_to_dense();
                 }
@@ -3247,11 +3258,8 @@ impl FileHeightIndex {
             Self::Empty => None,
             Self::Dense { heights, tree } => locate_dense_height(heights, tree, target_px),
             Self::Sparse {
-                count,
-                default_height,
-                total,
-                ..
-            } => locate_sparse_height(self, *count, *default_height, *total, target_px),
+                count, total, tree, ..
+            } => locate_sparse_height(self, *count, *total, tree, target_px),
         }
     }
 
@@ -3259,23 +3267,7 @@ impl FileHeightIndex {
         match self {
             Self::Empty => 0,
             Self::Dense { heights, tree } => dense_prefix_u64(heights, tree, index),
-            Self::Sparse {
-                count,
-                default_height,
-                overrides,
-                ..
-            } => {
-                let index = index.min(*count);
-                let mut sum = (index as u64).saturating_mul(u64::from(*default_height));
-                for (_, height) in overrides.range(..index) {
-                    if *height >= *default_height {
-                        sum = sum.saturating_add(u64::from(*height - *default_height));
-                    } else {
-                        sum = sum.saturating_sub(u64::from(*default_height - *height));
-                    }
-                }
-                sum
-            }
+            Self::Sparse { count, tree, .. } => height_tree_prefix_u64(tree, index.min(*count)),
         }
     }
 
@@ -3519,11 +3511,37 @@ fn dense_tree_sub(tree: &mut [u32], index: usize, delta: u32) {
     }
 }
 
+fn height_tree_add(tree: &mut [u64], index: usize, delta: u64) {
+    let mut idx = index + 1;
+    while idx < tree.len() {
+        tree[idx] = tree[idx].saturating_add(delta);
+        idx += idx & idx.wrapping_neg();
+    }
+}
+
+fn height_tree_sub(tree: &mut [u64], index: usize, delta: u64) {
+    let mut idx = index + 1;
+    while idx < tree.len() {
+        tree[idx] = tree[idx].saturating_sub(delta);
+        idx += idx & idx.wrapping_neg();
+    }
+}
+
 fn dense_prefix_u64(heights: &[u32], tree: &[u32], index: usize) -> u64 {
     let mut idx = index.min(heights.len());
     let mut sum = 0_u64;
     while idx > 0 {
         sum = sum.saturating_add(u64::from(tree[idx]));
+        idx &= idx - 1;
+    }
+    sum
+}
+
+fn height_tree_prefix_u64(tree: &[u64], index: usize) -> u64 {
+    let mut idx = index.min(tree.len().saturating_sub(1));
+    let mut sum = 0_u64;
+    while idx > 0 {
+        sum = sum.saturating_add(tree[idx]);
         idx &= idx - 1;
     }
     sum
@@ -3567,8 +3585,8 @@ fn locate_dense_height(heights: &[u32], tree: &[u32], target_px: u32) -> Option<
 fn locate_sparse_height(
     index: &FileHeightIndex,
     count: usize,
-    default_height: u32,
     total: u64,
+    tree: &[u64],
     target_px: u32,
 ) -> Option<(usize, u32)> {
     if count == 0 {
@@ -3580,18 +3598,27 @@ fn locate_sparse_height(
         return Some((slot, index.height_at(slot).saturating_sub(1)));
     }
 
-    let default_height = default_height.max(1);
-    let mut slot = ((target / u64::from(default_height)) as usize).min(count - 1);
-    while slot + 1 < count && index.prefix_u64(slot + 1) <= target {
-        slot += 1;
+    let mut slot = 0_usize;
+    let mut bit = 1_usize;
+    while bit < tree.len() {
+        bit <<= 1;
     }
-    while slot > 0 && index.prefix_u64(slot) > target {
-        slot -= 1;
+    let mut sum = 0_u64;
+    while bit > 0 {
+        let next = slot + bit;
+        if next < tree.len() {
+            let next_sum = sum.saturating_add(tree[next]);
+            if next_sum <= target {
+                slot = next;
+                sum = next_sum;
+            }
+        }
+        bit >>= 1;
     }
-    let start = index.prefix_u64(slot);
+    let slot = slot.min(count.saturating_sub(1));
     Some((
         slot,
-        target.saturating_sub(start).min(u64::from(u32::MAX)) as u32,
+        target.saturating_sub(sum).min(u64::from(u32::MAX)) as u32,
     ))
 }
 

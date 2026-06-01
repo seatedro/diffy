@@ -137,6 +137,8 @@ fn global_shortcut_action(state: &AppState, chord: &KeyChord) -> Option<Action> 
         Some(SettingsAction::OpenSettings.into())
     } else if matches_binding(overrides, ShortcutCommand::ShowKeymaps, &binding) {
         Some(SettingsAction::OpenKeymaps.into())
+    } else if matches_binding(overrides, ShortcutCommand::ToggleDebugOverlay, &binding) {
+        Some(AppAction::ToggleDebugOverlay.into())
     } else {
         None
     }

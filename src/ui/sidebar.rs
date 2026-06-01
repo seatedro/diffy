@@ -182,8 +182,7 @@ pub(crate) fn preferred_sidebar_width(
     let intrinsic_width = if let Some(width) = cached_intrinsic_width {
         width
     } else {
-        let header_label_width = measure_text_width(
-            cx.font_system,
+        let header_label_width = cx.measure_text_width(
             "FILES",
             theme.metrics.ui_small_font_size - 1.0,
             crate::render::FontKind::Ui,
@@ -192,8 +191,7 @@ pub(crate) fn preferred_sidebar_width(
         let header_badge_width = if file_count == 0 {
             0.0
         } else {
-            let count_width = measure_text_width(
-                cx.font_system,
+            let count_width = cx.measure_text_width(
                 &file_count.to_string(),
                 theme.metrics.ui_small_font_size - 1.0,
                 crate::render::FontKind::Ui,
@@ -213,8 +211,7 @@ pub(crate) fn preferred_sidebar_width(
                 .map(|(index, file)| {
                     let meta = state.file_list_entry_meta(index);
                     let path = file.path.path();
-                    let path_width = measure_text_width(
-                        cx.font_system,
+                    let path_width = cx.measure_text_width(
                         path.as_ref(),
                         theme.metrics.ui_small_font_size,
                         crate::render::FontKind::Ui,
@@ -222,15 +219,13 @@ pub(crate) fn preferred_sidebar_width(
                     );
 
                     let stats_width = if meta.additions > 0 || meta.deletions > 0 {
-                        let additions_width = measure_text_width(
-                            cx.font_system,
+                        let additions_width = cx.measure_text_width(
                             &format!("+{}", meta.additions),
                             theme.metrics.ui_small_font_size - 1.0,
                             crate::render::FontKind::Ui,
                             crate::render::FontWeight::Normal,
                         );
-                        let deletions_width = measure_text_width(
-                            cx.font_system,
+                        let deletions_width = cx.measure_text_width(
                             &format!("\u{2212}{}", meta.deletions),
                             theme.metrics.ui_small_font_size - 1.0,
                             crate::render::FontKind::Ui,

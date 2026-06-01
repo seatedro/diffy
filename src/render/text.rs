@@ -23,66 +23,89 @@ pub(super) fn prepare_text_areas<'a>(
 ) -> Vec<TextArea<'a>> {
     *text_cache_frame = text_cache_frame.wrapping_add(1);
     let frame = *text_cache_frame;
-    let mut keys = Vec::with_capacity(texts.len() + rich_texts.len());
+    let mut placements = Vec::with_capacity(texts.len() + rich_texts.len());
 
     for text in texts {
-        let key = plain_text_cache_key(&text.primitive, text.clip, scale_factor);
+        let key = plain_text_cache_key(&text.primitive, scale_factor);
         if !text_cache.contains_key(&key) {
-            let prepared = build_plain_text_buffer(
-                font_system,
-                &text.primitive,
-                text.clip,
-                scale_factor,
-                frame,
-            );
+            let prepared =
+                build_plain_text_buffer(font_system, &text.primitive, scale_factor, frame);
             text_cache.insert(key, prepared);
         }
         if let Some(entry) = text_cache.get_mut(&key) {
             entry.last_used_frame = frame;
         }
-        keys.push(key);
+        placements.push(TextPlacement {
+            key,
+            rect: text.primitive.rect,
+            clip: text.clip,
+            default_color: text.primitive.color,
+        });
     }
 
     for text in rich_texts {
-        let key = rich_text_cache_key(&text.primitive, text.clip, scale_factor);
+        let key = rich_text_cache_key(&text.primitive, scale_factor);
         if !text_cache.contains_key(&key) {
-            let prepared = build_rich_text_buffer(
-                font_system,
-                &text.primitive,
-                text.clip,
-                scale_factor,
-                frame,
-            );
+            let prepared =
+                build_rich_text_buffer(font_system, &text.primitive, scale_factor, frame);
             text_cache.insert(key, prepared);
         }
         if let Some(entry) = text_cache.get_mut(&key) {
             entry.last_used_frame = frame;
         }
-        keys.push(key);
+        placements.push(TextPlacement {
+            key,
+            rect: text.primitive.rect,
+            clip: text.clip,
+            default_color: text.primitive.default_color,
+        });
     }
 
     if frame % 240 == 0 {
         trim_text_cache(text_cache, frame);
     }
 
-    keys.iter()
-        .filter_map(|key| text_cache.get(key).map(text_area_from_cache))
+    placements
+        .iter()
+        .filter_map(|placement| {
+            text_cache.get(&placement.key).map(|prepared| {
+                text_area_from_cache(
+                    prepared,
+                    placement.rect,
+                    placement.clip,
+                    placement.default_color,
+                )
+            })
+        })
         .collect()
 }
 
-fn text_area_from_cache(prepared: &CachedTextBuffer) -> TextArea<'_> {
+#[derive(Debug, Clone, Copy)]
+struct TextPlacement {
+    key: u64,
+    rect: Rect,
+    clip: Rect,
+    default_color: Color,
+}
+
+fn text_area_from_cache(
+    prepared: &CachedTextBuffer,
+    rect: Rect,
+    clip: Rect,
+    default_color: Color,
+) -> TextArea<'_> {
     TextArea {
         buffer: &prepared.buffer,
-        left: prepared.left,
-        top: prepared.top,
+        left: rect.x,
+        top: rect.y,
         scale: 1.0,
         bounds: TextBounds {
-            left: prepared.clip.x.round() as i32,
-            top: prepared.clip.y.round() as i32,
-            right: prepared.clip.right().round() as i32,
-            bottom: prepared.clip.bottom().round() as i32,
+            left: clip.x.round() as i32,
+            top: clip.y.round() as i32,
+            right: clip.right().round() as i32,
+            bottom: clip.bottom().round() as i32,
         },
-        default_color: prepared.default_color,
+        default_color: glyphon_color(default_color),
         custom_glyphs: &[],
     }
 }
@@ -90,7 +113,6 @@ fn text_area_from_cache(prepared: &CachedTextBuffer) -> TextArea<'_> {
 fn build_plain_text_buffer(
     font_system: &mut FontSystem,
     primitive: &TextPrimitive,
-    clip: Rect,
     scale_factor: f64,
     last_used_frame: u64,
 ) -> CachedTextBuffer {
@@ -111,16 +133,12 @@ fn build_plain_text_buffer(
         font_system,
         primitive.text.as_ref(),
         &attrs,
-        Shaping::Advanced,
+        shaping_for_font(primitive.font_kind),
         None,
     );
     buffer.shape_until_scroll(font_system, false);
     CachedTextBuffer {
         buffer,
-        left: primitive.rect.x,
-        top: primitive.rect.y,
-        clip,
-        default_color: glyphon_color(primitive.color),
         last_used_frame,
     }
 }
@@ -128,7 +146,6 @@ fn build_plain_text_buffer(
 fn build_rich_text_buffer(
     font_system: &mut FontSystem,
     primitive: &RichTextPrimitive,
-    clip: Rect,
     scale_factor: f64,
     last_used_frame: u64,
 ) -> CachedTextBuffer {
@@ -158,23 +175,25 @@ fn build_rich_text_buffer(
         })
         .collect::<Vec<_>>();
     if spans.is_empty() {
-        buffer.set_text(font_system, "", &default_attrs, Shaping::Advanced, None);
+        buffer.set_text(
+            font_system,
+            "",
+            &default_attrs,
+            shaping_for_font(primitive.font_kind),
+            None,
+        );
     } else {
         buffer.set_rich_text(
             font_system,
             spans.iter().map(|(text, attrs)| (*text, attrs.clone())),
             &default_attrs,
-            Shaping::Advanced,
+            shaping_for_font(primitive.font_kind),
             None,
         );
     }
     buffer.shape_until_scroll(font_system, false);
     CachedTextBuffer {
         buffer,
-        left: primitive.rect.x,
-        top: primitive.rect.y,
-        clip,
-        default_color: glyphon_color(primitive.default_color),
         last_used_frame,
     }
 }
@@ -184,11 +203,10 @@ fn trim_text_cache(cache: &mut HashMap<u64, CachedTextBuffer>, frame: u64) {
     cache.retain(|_, entry| frame.saturating_sub(entry.last_used_frame) <= KEEP_UNUSED_FRAMES);
 }
 
-fn plain_text_cache_key(primitive: &TextPrimitive, clip: Rect, scale_factor: f64) -> u64 {
+fn plain_text_cache_key(primitive: &TextPrimitive, scale_factor: f64) -> u64 {
     let mut hasher = DefaultHasher::new();
     hasher.write_u8(0);
-    hash_rect(&mut hasher, primitive.rect);
-    hash_rect(&mut hasher, clip);
+    hash_rect_size(&mut hasher, primitive.rect);
     hasher.write_u32(primitive.font_size.to_bits());
     hasher.write_u64(scale_factor.to_bits());
     hasher.write_u8(font_kind_tag(primitive.font_kind));
@@ -198,11 +216,10 @@ fn plain_text_cache_key(primitive: &TextPrimitive, clip: Rect, scale_factor: f64
     hasher.finish()
 }
 
-fn rich_text_cache_key(primitive: &RichTextPrimitive, clip: Rect, scale_factor: f64) -> u64 {
+fn rich_text_cache_key(primitive: &RichTextPrimitive, scale_factor: f64) -> u64 {
     let mut hasher = DefaultHasher::new();
     hasher.write_u8(1);
-    hash_rect(&mut hasher, primitive.rect);
-    hash_rect(&mut hasher, clip);
+    hash_rect_size(&mut hasher, primitive.rect);
     hasher.write_u32(primitive.font_size.to_bits());
     hasher.write_u64(scale_factor.to_bits());
     hasher.write_u8(font_kind_tag(primitive.font_kind));
@@ -218,9 +235,7 @@ fn rich_text_cache_key(primitive: &RichTextPrimitive, clip: Rect, scale_factor: 
     hasher.finish()
 }
 
-fn hash_rect(hasher: &mut DefaultHasher, rect: Rect) {
-    hasher.write_u32(rect.x.to_bits());
-    hasher.write_u32(rect.y.to_bits());
+fn hash_rect_size(hasher: &mut DefaultHasher, rect: Rect) {
     hasher.write_u32(rect.width.to_bits());
     hasher.write_u32(rect.height.to_bits());
 }
@@ -285,6 +300,13 @@ fn attrs_for_font(
         .color(glyphon_text_color(color))
 }
 
+fn shaping_for_font(font_kind: FontKind) -> Shaping {
+    match font_kind {
+        FontKind::Ui => Shaping::Advanced,
+        FontKind::Mono => Shaping::Basic,
+    }
+}
+
 fn glyphon_weight_for_font(font_kind: FontKind, font_weight: FontWeight) -> glyphon::Weight {
     match (font_kind, font_weight) {
         (FontKind::Ui, FontWeight::Normal) => glyphon::Weight(450),
@@ -301,7 +323,7 @@ pub(super) fn measure_mono_char_width(font_system: &mut FontSystem, font_size: f
     buffer.set_size(font_system, Some(font_size * 100.0), Some(font_size * 2.0));
     let attrs = Attrs::new().family(Family::Monospace);
     let sample = "0000000000";
-    buffer.set_text(font_system, sample, &attrs, Shaping::Advanced, None);
+    buffer.set_text(font_system, sample, &attrs, Shaping::Basic, None);
     buffer.shape_until_scroll(font_system, false);
     let mut total_w = 0.0_f32;
     let mut glyph_count = 0_u32;

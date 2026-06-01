@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use bytemuck::{Pod, Zeroable};
 use glyphon::{
@@ -43,6 +43,9 @@ pub struct FrameStats {
     pub primitive_count: usize,
     pub viewport_width: u32,
     pub viewport_height: u32,
+    pub cpu_us: u64,
+    pub acquire_us: u64,
+    pub present_us: u64,
 }
 
 #[derive(Debug, Error)]
@@ -1122,6 +1125,7 @@ impl Renderer {
         if self.surface_config.width == 0 || self.surface_config.height == 0 {
             return Ok(FrameStats::default());
         }
+        let render_started_at = Instant::now();
         self.texture_pool.begin_frame();
 
         let viewport_rect = Rect {
@@ -1152,6 +1156,7 @@ impl Renderer {
             .surface
             .as_ref()
             .expect("render() requires a window surface; use render_to_png for headless");
+        let acquire_started_at = Instant::now();
         let frame = match surface.get_current_texture() {
             Ok(frame) => frame,
             Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
@@ -1161,6 +1166,7 @@ impl Renderer {
             Err(wgpu::SurfaceError::Timeout) => return Err(RenderError::SurfaceAcquire),
             Err(_) => return Err(RenderError::SurfaceAcquire),
         };
+        let acquire_us = acquire_started_at.elapsed().as_micros() as u64;
 
         self.viewport.update(
             &self.queue,
@@ -1698,15 +1704,23 @@ impl Renderer {
             self.texture_pool.release(v_target);
         }
 
+        let present_started_at = Instant::now();
         self.queue.submit(Some(encoder.finish()));
         frame.present();
+        let present_us = present_started_at.elapsed().as_micros() as u64;
         self.atlas.trim();
         self.texture_pool.trim_unused();
 
+        let cpu_us = (render_started_at.elapsed().as_micros() as u64)
+            .saturating_sub(acquire_us)
+            .saturating_sub(present_us);
         Ok(FrameStats {
             primitive_count: scene.len(),
             viewport_width: self.surface_config.width,
             viewport_height: self.surface_config.height,
+            cpu_us,
+            acquire_us,
+            present_us,
         })
     }
 }
@@ -2244,10 +2258,6 @@ struct QuadDrawCommand {
 #[derive(Debug)]
 pub(super) struct CachedTextBuffer {
     pub(super) buffer: Buffer,
-    pub(super) left: f32,
-    pub(super) top: f32,
-    pub(super) clip: Rect,
-    pub(super) default_color: GlyphonColor,
     pub(super) last_used_frame: u64,
 }
 

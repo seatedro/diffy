@@ -72,6 +72,11 @@ impl AppState {
                 }
                 Vec::new()
             }
+            AppAction::ToggleDebugOverlay => {
+                let visible = self.debug.overlay_visible.get(&self.store);
+                self.store.write(self.debug.overlay_visible, !visible);
+                Vec::new()
+            }
             AppAction::Noop => Vec::new(),
         }
     }

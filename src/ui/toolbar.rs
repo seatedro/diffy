@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use halogen::view;
+use halogen::{SemanticRole, view};
 
 use crate::render::{Rect, TextMetrics};
 use crate::ui::components::{self, Button, ButtonStyle, SegmentedControl, SegmentedItem};
@@ -451,6 +451,10 @@ fn repo_row(repo: &std::path::Path, tc: &crate::ui::theme::ThemeColors, scale: f
     let accessibility_label = format!("{repo_name}, {repo_path}");
     view! { scale,
         <div class="w-full flex-row items-center"
+             id={format!("recent-repo:{repo_path}")}
+             key={repo_path.clone()}
+             test_id={"recent-repo-row"}
+             semantic_role={SemanticRole::Button}
              py={Sp::SM} px={Sp::SM}
              rounded={Rad::MD} gap={Sp::SM}
              hover_bg={tc.sidebar_row_hover}

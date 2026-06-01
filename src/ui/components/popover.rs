@@ -1,3 +1,5 @@
+use halogen::SemanticRole;
+
 use crate::ui::design::{Shadow, Sp, Sz};
 use crate::ui::element::{Div, div};
 use crate::ui::style::Styled;
@@ -36,6 +38,11 @@ pub fn popover_panel(
         .top(y)
         .z_index(200)
         .flex_col()
+        .id("popover")
+        .test_id("popover")
+        .semantic_role(SemanticRole::Group)
+        .focus_scope("popover")
+        .key_context("popover")
         .bg(tc.elevated_surface)
         .border(tc.border)
         .rounded(m.panel_radius)

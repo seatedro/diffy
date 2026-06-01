@@ -1,4 +1,4 @@
-use halogen::view;
+use halogen::{SemanticRole, view};
 
 use crate::actions::Action;
 use crate::ui::design::{Rad, Shadow, Sp, Sz};
@@ -67,9 +67,14 @@ impl RenderOnce for TabBar {
         let fill = self.fill;
 
         view! {
-            <div class="flex-row items-end" border_b={tc.border_variant}>
+            <div class="flex-row items-end" border_b={tc.border_variant}
+                 id={"tab-bar"} test_id={"tab-bar"}>
                 for item in self.items {
                     <div class="flex-col items-center"
+                         id={format!("tab:{:?}:{}", item.action, item.label)}
+                         key={item.label.clone()}
+                         test_id={"tab"}
+                         semantic_role={SemanticRole::Tab}
                          on_click={item.action.clone()}
                          accessibility_role={accesskit::Role::Tab}
                          accessibility_id={format!("tab:{:?}:{}", item.action, item.label)}
@@ -122,10 +127,16 @@ impl RenderOnce for SegmentedTabs {
 
         view! {
             <div class="flex-row items-center"
+                 id={"segmented-tabs"}
+                 test_id={"segmented-tabs"}
                  gap={seg_gap} p={seg_gap}
                  bg={tc.element_background} rounded={m.control_radius}>
                 for item in self.items {
                     <div class="flex-row flex-1 items-center justify-center"
+                         id={format!("segmented-tab:{:?}:{}", item.action, item.label)}
+                         key={item.label.clone()}
+                         test_id={"segmented-tab"}
+                         semantic_role={SemanticRole::Tab}
                          px={m.spacing_md} py={m.spacing_xs}
                          rounded={inner_radius}
                          on_click={item.action.clone()}

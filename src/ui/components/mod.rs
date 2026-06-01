@@ -1,5 +1,6 @@
 pub mod avatar;
 pub mod badge;
+pub mod behavior;
 pub mod breadcrumb;
 pub mod button;
 pub mod checkbox;
@@ -25,6 +26,7 @@ pub mod tooltip;
 
 pub use avatar::*;
 pub use badge::*;
+pub use behavior::*;
 pub use breadcrumb::*;
 pub use button::{Button, ButtonSize, ButtonStyle};
 pub use checkbox::*;

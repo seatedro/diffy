@@ -44,6 +44,7 @@ pub struct UiFrame {
     pub scrollbar_tracks: Vec<ScrollbarTrack>,
     pub tooltip_regions: Vec<TooltipRegion>,
     pub accessibility: crate::ui::accessibility::AccessibilityFrame,
+    pub semantic: halogen::SemanticFrame,
     pub effects: Vec<Effect>,
     pub file_list_rect: Option<Rect>,
     pub sidebar_resize_handle_rect: Option<Rect>,
@@ -63,6 +64,7 @@ pub fn build_ui_frame(
 ) -> UiFrame {
     let mut effects = Vec::new();
     cx.accessibility = crate::ui::accessibility::AccessibilityFrame::new(width, height);
+    cx.semantic = halogen::SemanticFrame::new(width, height);
     let viewport_bounds: Rc<Cell<Option<Rect>>> = Rc::new(Cell::new(None));
     let file_list_bounds: Rc<Cell<Option<Rect>>> = Rc::new(Cell::new(None));
     let sidebar_resize_bounds: Rc<Cell<Option<Rect>>> = Rc::new(Cell::new(None));
@@ -169,7 +171,10 @@ pub fn build_ui_frame(
     let progress_visible = state.compare_progress.with(&state.store, |p| {
         p.as_ref().is_some_and(|p| state.clock_ms >= p.reveal_at_ms)
     });
-    let sidebar_slot_visible = sidebar_width_factor > 0.001 && width >= Bp::COMPACT * ui_scale;
+    let text_compare_source =
+        state.workspace.source.get(&state.store) == WorkspaceSource::TextCompare;
+    let sidebar_slot_visible =
+        !text_compare_source && sidebar_width_factor > 0.001 && width >= Bp::COMPACT * ui_scale;
     let show_real_sidebar = state.is_workspace_ready() && !progress_visible;
     let show_skeleton_sidebar = progress_visible;
 
@@ -990,6 +995,7 @@ pub fn build_ui_frame(
     let selectable_text_runs = std::mem::take(&mut cx.selectable_text_runs);
     let tooltip_regions = std::mem::take(&mut cx.tooltip_regions);
     let accessibility = std::mem::take(&mut cx.accessibility);
+    let semantic = std::mem::take(&mut cx.semantic);
     let file_list_rect = scroll_regions.iter().find_map(|region| {
         matches!(region.action_builder, ScrollActionBuilder::FileList).then_some(region.bounds)
     });
@@ -1003,6 +1009,7 @@ pub fn build_ui_frame(
         scrollbar_tracks,
         tooltip_regions,
         accessibility,
+        semantic,
         effects,
         file_list_rect: file_list_rect.or_else(|| file_list_bounds.get()),
         sidebar_resize_handle_rect: sidebar_resize_bounds.get(),

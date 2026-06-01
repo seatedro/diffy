@@ -1,4 +1,4 @@
-use halogen::view;
+use halogen::{SemanticRole, view};
 
 use crate::actions::Action;
 use crate::ui::design::Sp;
@@ -47,6 +47,10 @@ impl RenderOnce for Breadcrumb {
                              rounded={m.control_radius - Sp::XS * scale}
                              @when {i != last && self.on_click_segment.is_some()} { on_click={(self.on_click_segment.unwrap())(i)} }
                              @when {i != last && self.on_click_segment.is_some()} {
+                                 id={format!("breadcrumb:{i}:{segment}")}
+                                 key={segment.clone()}
+                                 test_id={"breadcrumb-segment"}
+                                 semantic_role={SemanticRole::Button}
                                  accessibility_role={accesskit::Role::Button}
                                  accessibility_id={format!("breadcrumb:{i}:{segment}")}
                                  accessibility_label={segment.clone()}

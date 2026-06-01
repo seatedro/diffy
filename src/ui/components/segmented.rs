@@ -3,7 +3,7 @@ use crate::ui::design::{Rad, Sp};
 use crate::ui::element::*;
 use crate::ui::shell::CursorHint;
 use crate::ui::style::Styled;
-use halogen::view;
+use halogen::{SemanticRole, view};
 
 pub struct SegmentedItem {
     pub label: String,
@@ -45,11 +45,17 @@ impl RenderOnce for SegmentedControl {
 
         view! { scale,
             <div class="flex-row shrink-0 items-center overflow-hidden"
+                 id={"segmented-control"}
+                 test_id={"segmented-control"}
                  bg={tc.element_background}
                  rounded={Rad::XL}
                  p={Sp::XXS} gap={Sp::XXS}>
                 for item in self.items {
                     <div class="flex-1 items-center justify-center"
+                         id={format!("segmented:{:?}:{}", item.action, item.label)}
+                         key={item.label.clone()}
+                         test_id={"segmented-item"}
+                         semantic_role={SemanticRole::RadioButton}
                          px={Sp::MD} py={Sp::XXS}
                          rounded={Rad::LG}
                          bg={if item.selected { tc.ghost_element_hover }}

@@ -11,7 +11,10 @@ use crate::core::review::{
 use crate::render::Scene;
 use crate::ui::accessibility::AccessibilityFrame;
 use crate::ui::editor::review::{build_review_thread_card, measure_review_thread_card_height};
-use crate::ui::element::{ElementContext, HitRegion, SelectableTextRegion, render_element_at};
+use crate::ui::element::{
+    ElementContext, HitRegion, IntoAnyElement, ScrollRegion, SelectableTextRegion,
+    TextInputHitArea, TooltipRegion, render_element_at,
+};
 use crate::ui::state::CardTextSelection;
 use crate::ui::theme::Theme;
 use halogen::reactive::SignalStore;
@@ -237,9 +240,48 @@ pub struct RenderedCard {
     pub scene: Scene,
     pub selectable: Vec<SelectableTextRegion>,
     pub accessibility: AccessibilityFrame,
+    pub semantic: halogen::SemanticFrame,
     pub hits: Vec<HitRegion>,
+    pub scroll_regions: Vec<ScrollRegion>,
+    pub text_input_hit_areas: Vec<TextInputHitArea>,
+    pub tooltip_regions: Vec<TooltipRegion>,
     pub width: f32,
     pub height: f32,
+}
+
+/// Render any element fixture headlessly and collect the native devtools outputs.
+pub fn render_element_fixture(
+    root: impl IntoAnyElement,
+    width: f32,
+    height: f32,
+    scale: f32,
+) -> RenderedCard {
+    let theme = Theme::default_dark().with_ui_scale(scale);
+    let mut font_system = crate::fonts::new_font_system();
+    let store = SignalStore::new();
+    let mut scene = Scene::default();
+    let mut cx = ElementContext::new(&theme, scale, &mut font_system, None, &store);
+    cx.accessibility = AccessibilityFrame::new(width, height);
+    cx.semantic = halogen::SemanticFrame::new(width, height);
+    let mut root = root.into_any();
+    render_element_at(&mut root, &mut scene, &mut cx, 0.0, 0.0, width, height);
+
+    RenderedCard {
+        scene,
+        selectable: std::mem::take(&mut cx.selectable_text_runs),
+        accessibility: std::mem::take(&mut cx.accessibility),
+        semantic: std::mem::take(&mut cx.semantic),
+        hits: std::mem::take(&mut cx.hits),
+        scroll_regions: std::mem::take(&mut cx.scroll_regions),
+        text_input_hit_areas: std::mem::take(&mut cx.text_input_hit_areas),
+        tooltip_regions: std::mem::take(&mut cx.tooltip_regions),
+        width,
+        height,
+    }
+}
+
+pub fn dump_semantic(frame: &halogen::SemanticFrame) -> String {
+    halogen::dump_semantic(frame)
 }
 
 /// Build a dark-theme `ElementContext`, render the review-thread card at a fixed
@@ -304,6 +346,8 @@ fn render_review_card_with_avatars(
 
     let mut scene = Scene::default();
     let mut cx = ElementContext::new(&theme, scale, &mut font_system, None, &store);
+    cx.accessibility = AccessibilityFrame::new(width, height);
+    cx.semantic = halogen::SemanticFrame::new(width, height);
     let mut card = build_review_thread_card(
         thread, expanded, &theme, scale, width, avatars, selection, None,
     );
@@ -313,7 +357,11 @@ fn render_review_card_with_avatars(
         scene,
         selectable: std::mem::take(&mut cx.selectable_text_runs),
         accessibility: std::mem::take(&mut cx.accessibility),
+        semantic: std::mem::take(&mut cx.semantic),
         hits: std::mem::take(&mut cx.hits),
+        scroll_regions: std::mem::take(&mut cx.scroll_regions),
+        text_input_hit_areas: std::mem::take(&mut cx.text_input_hit_areas),
+        tooltip_regions: std::mem::take(&mut cx.tooltip_regions),
         width,
         height,
     }
@@ -379,6 +427,8 @@ pub fn render_review_composer(width: f32, scale: f32, preview: bool) -> Rendered
     };
     let mut scene = Scene::default();
     let mut cx = ElementContext::new(&theme, scale, &mut font_system, None, &state.store);
+    cx.accessibility = AccessibilityFrame::new(width, height);
+    cx.semantic = halogen::SemanticFrame::new(width, height);
     let mut element = crate::ui::shell::build_review_composer(&state, &theme, scale, rect);
     render_element_at(&mut element, &mut scene, &mut cx, 0.0, 0.0, width, height);
 
@@ -386,7 +436,11 @@ pub fn render_review_composer(width: f32, scale: f32, preview: bool) -> Rendered
         scene,
         selectable: std::mem::take(&mut cx.selectable_text_runs),
         accessibility: std::mem::take(&mut cx.accessibility),
+        semantic: std::mem::take(&mut cx.semantic),
         hits: std::mem::take(&mut cx.hits),
+        scroll_regions: std::mem::take(&mut cx.scroll_regions),
+        text_input_hit_areas: std::mem::take(&mut cx.text_input_hit_areas),
+        tooltip_regions: std::mem::take(&mut cx.tooltip_regions),
         width,
         height,
     }
@@ -420,6 +474,7 @@ impl UiHarness {
             selectable_text_runs: card.selectable.clone(),
             scene: card.scene.clone(),
             accessibility: card.accessibility.clone(),
+            semantic: card.semantic.clone(),
             hits: card.hits.clone(),
             ..crate::ui::shell::UiFrame::default()
         };
@@ -542,7 +597,15 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+    use crate::actions::{Action, AppAction};
     use crate::ui::accessibility::dump_accessibility;
+    use crate::ui::components::{
+        Button, ButtonStyle, DropdownItem, FileTreeEntry, Modal, SegmentedControl, SegmentedItem,
+        TabItem, checkbox, dropdown, file_tree, tab_bar, toggle,
+    };
+    use crate::ui::element::div;
+    use crate::ui::icons::lucide;
+    use crate::ui::style::Styled;
 
     #[test]
     fn render_review_card_emits_selectable_text_and_a11y() {
@@ -559,6 +622,160 @@ mod tests {
         assert!(
             dump.contains("selectable-text:"),
             "dump should include a selectable-text node:\n{dump}"
+        );
+    }
+
+    #[test]
+    fn generic_fixture_captures_button_semantics() {
+        let rendered = render_element_fixture(
+            Button::new(AppAction::ToggleDebugOverlay.into())
+                .label("Debug")
+                .style(ButtonStyle::Filled),
+            180.0,
+            48.0,
+            1.0,
+        );
+
+        let button = rendered
+            .semantic
+            .nodes()
+            .iter()
+            .find(|node| node.role == Some(halogen::SemanticRole::Button))
+            .expect("button semantic node");
+        assert_eq!(button.label.as_deref(), Some("Debug"));
+        assert!(button.actions.click);
+        assert!(
+            dump_semantic(&rendered.semantic).contains("button"),
+            "semantic dump should include the fixture button"
+        );
+    }
+
+    #[test]
+    fn generic_fixture_captures_text_input_semantics() {
+        let rendered = render_element_fixture(
+            crate::ui::element::text_input("Search", "needle")
+                .focus_target(crate::ui::state::FocusTarget::SearchInput)
+                .focused(true)
+                .w(240.0)
+                .h(56.0),
+            260.0,
+            80.0,
+            1.0,
+        );
+
+        let input = rendered
+            .semantic
+            .nodes()
+            .iter()
+            .find(|node| node.role == Some(halogen::SemanticRole::TextInput))
+            .expect("text input semantic node");
+        assert_eq!(input.label.as_deref(), Some("Search"));
+        assert_eq!(input.value.as_deref(), Some("needle"));
+        assert!(input.actions.text_value);
+    }
+
+    #[test]
+    fn modal_semantics_are_nested_under_backdrop() {
+        let rendered = render_element_fixture(
+            Modal::new("Preferences", "", lucide::SETTINGS, 360.0, 500.0, 320.0)
+                .body_child(crate::ui::element::text("Body").text_sm()),
+            500.0,
+            320.0,
+            1.0,
+        );
+
+        let dialog = rendered
+            .semantic
+            .nodes()
+            .iter()
+            .find(|node| node.role == Some(halogen::SemanticRole::Dialog))
+            .expect("dialog semantic node");
+        assert_eq!(dialog.label.as_deref(), Some("Preferences"));
+        assert!(
+            dialog.parent.is_some(),
+            "dialog should be nested in the modal backdrop semantic tree"
+        );
+    }
+
+    #[test]
+    fn migrated_common_controls_emit_semantic_contracts() {
+        let action: Action = AppAction::ToggleDebugOverlay.into();
+        let root = div()
+            .flex_col()
+            .w(520.0)
+            .h(420.0)
+            .child(checkbox(false).label("Include").on_toggle(action.clone()))
+            .child(toggle(true).label("Live").on_toggle(action.clone()))
+            .child(SegmentedControl::new(vec![
+                SegmentedItem::new("Edit", action.clone(), true),
+                SegmentedItem::new("Diff", action.clone(), false),
+            ]))
+            .child(
+                dropdown(
+                    "Mode",
+                    vec![
+                        DropdownItem::new("Fast", action.clone()).selected(true),
+                        DropdownItem::new("Exact", action.clone()),
+                    ],
+                )
+                .open(true)
+                .on_toggle(action.clone()),
+            )
+            .child(tab_bar(vec![
+                TabItem::new("Files", action.clone()).active(true),
+                TabItem::new("History", action.clone()),
+            ]))
+            .child(file_tree(vec![FileTreeEntry {
+                path: "main.rs".to_owned(),
+                status: "M".to_owned(),
+                scope: None,
+                additions: 1,
+                deletions: 0,
+            }]));
+
+        let rendered = render_element_fixture(root, 520.0, 420.0, 1.0);
+        let roles: HashSet<_> = rendered
+            .semantic
+            .nodes()
+            .iter()
+            .filter_map(|node| node.role)
+            .collect();
+
+        for role in [
+            halogen::SemanticRole::CheckBox,
+            halogen::SemanticRole::Switch,
+            halogen::SemanticRole::RadioButton,
+            halogen::SemanticRole::ComboBox,
+            halogen::SemanticRole::MenuItem,
+            halogen::SemanticRole::Tab,
+            halogen::SemanticRole::TreeItem,
+        ] {
+            assert!(roles.contains(&role), "missing semantic role {role:?}");
+        }
+
+        let test_ids: HashSet<_> = rendered
+            .semantic
+            .nodes()
+            .iter()
+            .filter_map(|node| node.test_id.as_ref().map(|id| id.as_str().to_owned()))
+            .collect();
+        for test_id in [
+            "checkbox",
+            "toggle",
+            "segmented-item",
+            "dropdown-item",
+            "tab",
+            "file-tree-file",
+        ] {
+            assert!(test_ids.contains(test_id), "missing test_id {test_id}");
+        }
+        assert!(
+            rendered
+                .semantic
+                .nodes()
+                .iter()
+                .any(|node| node.key.is_some()),
+            "migrated repeated controls should expose keys"
         );
     }
 

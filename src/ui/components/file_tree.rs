@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::ops::Range;
 
-use halogen::view;
+use halogen::{SemanticRole, view};
 
 use crate::actions::Action;
 use crate::ui::design::Ico;
@@ -390,6 +390,10 @@ impl RenderOnce for FileTree {
                         .h(row_height)
                         .gap(m.spacing_xs)
                         .px(m.spacing_sm)
+                        .id(accessibility_id.clone())
+                        .key(path.clone())
+                        .test_id("file-tree-folder")
+                        .semantic_role(SemanticRole::TreeItem)
                         .accessibility_role(accesskit::Role::TreeItem)
                         .accessibility_id(accessibility_id)
                         .accessibility_label(accessibility_label)
@@ -446,6 +450,10 @@ impl RenderOnce for FileTree {
                         .gap(m.spacing_xs)
                         .px(m.spacing_sm)
                         .bg(bg)
+                        .id(accessibility_id.clone())
+                        .key(format!("{original_index}:{name}"))
+                        .test_id("file-tree-file")
+                        .semantic_role(SemanticRole::TreeItem)
                         .accessibility_role(accesskit::Role::TreeItem)
                         .accessibility_id(accessibility_id)
                         .accessibility_label(accessibility_label)

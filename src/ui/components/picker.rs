@@ -1,4 +1,4 @@
-use halogen::view;
+use halogen::{SemanticRole, view};
 
 use crate::ui::design::{Ico, Rad, Sp};
 use crate::ui::element::*;
@@ -35,6 +35,9 @@ pub fn picker_list<T: PickerItem>(
 
     view! { scale,
         <div class="w-full flex-col" gap={Sp::XS} h={list_h}
+             id={"picker-list"}
+             test_id={"picker-list"}
+             semantic_role={SemanticRole::ScrollArea}
              overflow_hidden scroll_y={scroll} scroll_total={total_h}
              on_scroll={ScrollActionBuilder::Custom(crate::actions::scroll_active_overlay_list_px)}
              hide_scrollbar>
@@ -81,6 +84,10 @@ fn picker_row<T: PickerItem>(
     let disabled = entry.is_disabled();
     view! { scale,
         <div class="w-full shrink-0 flex-row items-center"
+             id={format!("picker-row:{i}:{}", entry.label())}
+             key={format!("{i}:{}", entry.label())}
+             test_id={"picker-row"}
+             semantic_role={SemanticRole::ListBoxOption}
              h={row_h} gap={Sp::SM} px={Sp::MD} rounded={Rad::MD}
              bg={row_bg}
              @when {!selected && !disabled} { hover_bg={tc.sidebar_row_hover} }

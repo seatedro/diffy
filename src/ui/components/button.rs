@@ -1,3 +1,4 @@
+use halogen::SemanticRole;
 use halogen::view;
 
 use crate::actions::Action;
@@ -175,9 +176,13 @@ impl RenderOnce for Button {
         view! { scale,
             <div class="shrink-0" bg={bg}
                  cursor={cursor}
+                 id={accessibility_id.clone()}
+                 test_id={"button"}
+                 semantic_role={SemanticRole::Button}
                  accessibility_role={accesskit::Role::Button}
                  accessibility_label={accessibility_label}
                  accessibility_id={accessibility_id}
+                 accessibility_selected={self.active}
                  accessibility_disabled={disabled}
                  @when { !disabled } { on_click={action} }
                  @when { fixed.is_some() } {

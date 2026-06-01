@@ -19,6 +19,11 @@ use crate::ui::theme::Theme;
 use accesskit::Role as AccessibilityRole;
 pub use halogen::hit::{ClickEvent, CursorHint, HitIdentity, Hitbox, HitboxBehavior, HitboxId};
 use halogen::reactive::{Signal, SignalStore};
+use halogen::{
+    FocusScopeId, KeyContext, SemanticActions, SemanticFrame, SemanticNode, SemanticNodeState,
+    SemanticRole, StyleState, TabStop, TestId, UiEventBinding, UiEventKind, UiEventPhase,
+    UiEventResult, UiKey, UiNodeId,
+};
 
 pub use taffy::NodeId as LayoutId;
 
@@ -244,6 +249,7 @@ pub struct ElementContext<'a> {
     pub scrollbar_tracks: Vec<ScrollbarTrack>,
     pub tooltip_regions: Vec<TooltipRegion>,
     pub accessibility: AccessibilityFrame,
+    pub semantic: SemanticFrame,
     hitboxes: Vec<Hitbox>,
     hovered_hitboxes: Vec<HitboxId>,
     next_hitbox_id: usize,
@@ -254,6 +260,7 @@ pub struct ElementContext<'a> {
     frame_text_measure_cache: HashMap<TextMeasureKey, f32>,
     persistent_text_measure_cache: Option<&'a mut TextMeasureCache>,
     accessibility_text_hidden_stack: Vec<bool>,
+    semantic_parent_stack: Vec<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -320,6 +327,7 @@ impl<'a> ElementContext<'a> {
             scrollbar_tracks: Vec::new(),
             tooltip_regions: Vec::new(),
             accessibility: AccessibilityFrame::default(),
+            semantic: SemanticFrame::default(),
             hitboxes: Vec::new(),
             hovered_hitboxes: Vec::new(),
             next_hitbox_id: 0,
@@ -330,6 +338,7 @@ impl<'a> ElementContext<'a> {
             frame_text_measure_cache: HashMap::new(),
             persistent_text_measure_cache: None,
             accessibility_text_hidden_stack: Vec::new(),
+            semantic_parent_stack: Vec::new(),
         }
     }
 
@@ -467,6 +476,18 @@ impl<'a> ElementContext<'a> {
             .last()
             .copied()
             .unwrap_or(false)
+    }
+
+    pub fn current_semantic_parent(&self) -> Option<usize> {
+        self.semantic_parent_stack.last().copied()
+    }
+
+    pub fn push_semantic_parent(&mut self, index: usize) {
+        self.semantic_parent_stack.push(index);
+    }
+
+    pub fn pop_semantic_parent(&mut self) {
+        self.semantic_parent_stack.pop();
     }
 
     pub fn current_element_offset(&self) -> (f32, f32) {
@@ -983,6 +1004,14 @@ pub struct Div {
     focus_target: Option<crate::ui::state::FocusTarget>,
     tooltip: Option<String>,
     hit_identity: Option<HitIdentity>,
+    semantic_id: Option<UiNodeId>,
+    semantic_key: Option<UiKey>,
+    test_id: Option<TestId>,
+    semantic_role: Option<SemanticRole>,
+    focus_scope: Option<FocusScopeId>,
+    tab_stop: Option<TabStop>,
+    key_context: Option<KeyContext>,
+    event_bindings: Vec<UiEventBinding>,
     accessibility_id: Option<String>,
     accessibility_role: Option<AccessibilityRole>,
     accessibility_label: Option<String>,
@@ -1013,6 +1042,14 @@ pub fn div() -> Div {
         focus_target: None,
         tooltip: None,
         hit_identity: None,
+        semantic_id: None,
+        semantic_key: None,
+        test_id: None,
+        semantic_role: None,
+        focus_scope: None,
+        tab_stop: None,
+        key_context: None,
+        event_bindings: Vec::new(),
         accessibility_id: None,
         accessibility_role: None,
         accessibility_label: None,
@@ -1044,6 +1081,55 @@ fn role_labels_descendant_text(role: AccessibilityRole) -> bool {
             | AccessibilityRole::ComboBox
             | AccessibilityRole::EditableComboBox
     )
+}
+
+fn semantic_role_to_accessibility(role: SemanticRole) -> Option<AccessibilityRole> {
+    match role {
+        SemanticRole::Button => Some(AccessibilityRole::Button),
+        SemanticRole::Dialog => Some(AccessibilityRole::Dialog),
+        SemanticRole::CheckBox => Some(AccessibilityRole::CheckBox),
+        SemanticRole::Switch => Some(AccessibilityRole::Switch),
+        SemanticRole::RadioButton => Some(AccessibilityRole::RadioButton),
+        SemanticRole::Tab => Some(AccessibilityRole::Tab),
+        SemanticRole::TreeItem => Some(AccessibilityRole::TreeItem),
+        SemanticRole::ListItem => Some(AccessibilityRole::ListItem),
+        SemanticRole::ListBoxOption => Some(AccessibilityRole::ListBoxOption),
+        SemanticRole::MenuItem => Some(AccessibilityRole::MenuItem),
+        SemanticRole::ComboBox => Some(AccessibilityRole::ComboBox),
+        SemanticRole::TextInput => Some(AccessibilityRole::TextInput),
+        SemanticRole::Label => Some(AccessibilityRole::Label),
+        SemanticRole::ScrollArea | SemanticRole::Group => None,
+    }
+}
+
+fn accessibility_role_to_semantic(role: AccessibilityRole) -> Option<SemanticRole> {
+    match role {
+        AccessibilityRole::Button | AccessibilityRole::DefaultButton => Some(SemanticRole::Button),
+        AccessibilityRole::Dialog => Some(SemanticRole::Dialog),
+        AccessibilityRole::CheckBox | AccessibilityRole::MenuItemCheckBox => {
+            Some(SemanticRole::CheckBox)
+        }
+        AccessibilityRole::Switch => Some(SemanticRole::Switch),
+        AccessibilityRole::RadioButton | AccessibilityRole::MenuItemRadio => {
+            Some(SemanticRole::RadioButton)
+        }
+        AccessibilityRole::Tab => Some(SemanticRole::Tab),
+        AccessibilityRole::TreeItem => Some(SemanticRole::TreeItem),
+        AccessibilityRole::ListItem => Some(SemanticRole::ListItem),
+        AccessibilityRole::ListBoxOption | AccessibilityRole::MenuListOption => {
+            Some(SemanticRole::ListBoxOption)
+        }
+        AccessibilityRole::MenuItem => Some(SemanticRole::MenuItem),
+        AccessibilityRole::ComboBox | AccessibilityRole::EditableComboBox => {
+            Some(SemanticRole::ComboBox)
+        }
+        AccessibilityRole::TextInput
+        | AccessibilityRole::SearchInput
+        | AccessibilityRole::PasswordInput => Some(SemanticRole::TextInput),
+        AccessibilityRole::Label => Some(SemanticRole::Label),
+        AccessibilityRole::ScrollView => Some(SemanticRole::ScrollArea),
+        _ => None,
+    }
 }
 
 impl Styled for Div {
@@ -1114,6 +1200,29 @@ impl Div {
         self
     }
 
+    pub fn id(mut self, id: impl Into<UiNodeId>) -> Self {
+        self.semantic_id = Some(id.into());
+        self
+    }
+
+    pub fn key(mut self, key: impl Into<UiKey>) -> Self {
+        self.semantic_key = Some(key.into());
+        self
+    }
+
+    pub fn test_id(mut self, id: impl Into<TestId>) -> Self {
+        self.test_id = Some(id.into());
+        self
+    }
+
+    pub fn semantic_role(mut self, role: SemanticRole) -> Self {
+        self.accessibility_role = self
+            .accessibility_role
+            .or(semantic_role_to_accessibility(role));
+        self.semantic_role = Some(role);
+        self
+    }
+
     pub fn cursor(mut self, cursor: CursorHint) -> Self {
         self.cursor = cursor;
         self
@@ -1175,6 +1284,37 @@ impl Div {
 
     pub fn focus_ring(mut self, target: crate::ui::state::FocusTarget) -> Self {
         self.focus_target = Some(target);
+        self
+    }
+
+    pub fn focus_scope(mut self, scope: impl Into<FocusScopeId>) -> Self {
+        self.focus_scope = Some(scope.into());
+        self
+    }
+
+    pub fn tab_stop(mut self, tab_stop: impl Into<TabStop>) -> Self {
+        self.tab_stop = Some(tab_stop.into());
+        self
+    }
+
+    pub fn track_focus(self, target: crate::ui::state::FocusTarget) -> Self {
+        self.focus_ring(target)
+    }
+
+    pub fn key_context(mut self, context: impl Into<KeyContext>) -> Self {
+        self.key_context = Some(context.into());
+        self
+    }
+
+    pub fn on_event_capture(mut self, kind: UiEventKind, result: UiEventResult) -> Self {
+        self.event_bindings
+            .push(UiEventBinding::new(kind, UiEventPhase::Capture).with_result(result));
+        self
+    }
+
+    pub fn on_event(mut self, kind: UiEventKind, result: UiEventResult) -> Self {
+        self.event_bindings
+            .push(UiEventBinding::new(kind, UiEventPhase::Target).with_result(result));
         self
     }
 
@@ -1453,6 +1593,9 @@ impl Element for Div {
         }
 
         let click_action = self.on_click.clone();
+        let has_click_action = click_action
+            .as_ref()
+            .is_some_and(|action| !matches!(action, Action::Noop));
         let accessibility_label = self
             .accessibility_label
             .clone()
@@ -1461,8 +1604,94 @@ impl Element for Div {
             (click_action.is_some() && accessibility_label.is_some())
                 .then_some(AccessibilityRole::Button)
         });
+        let semantic_role = self
+            .semantic_role
+            .or_else(|| accessibility_role.and_then(accessibility_role_to_semantic))
+            .or_else(|| self.on_scroll.is_some().then_some(SemanticRole::ScrollArea));
         let suppress_descendant_accessibility_text =
             accessibility_role.is_some_and(role_labels_descendant_text);
+
+        let mut semantic_actions = SemanticActions::default();
+        if has_click_action || self.on_click_handler.is_some() {
+            semantic_actions = semantic_actions.clickable().focusable();
+        }
+        if self.focus_target.is_some() {
+            semantic_actions = semantic_actions.focusable();
+        }
+        if self.on_scroll.is_some() {
+            semantic_actions = semantic_actions.scrollable();
+        }
+        if self.tooltip.is_some() {
+            semantic_actions = semantic_actions.tooltip();
+        }
+        if self.block_mouse || self.hit_identity.is_some() {
+            semantic_actions = semantic_actions.hit_test();
+        }
+
+        let mut style_state = StyleState::empty();
+        if hovered {
+            style_state.insert(StyleState::HOVER);
+        }
+        if let Some(target) = self.focus_target {
+            if cx.is_focused(target) {
+                style_state.insert(StyleState::FOCUS_VISIBLE);
+            }
+        }
+        if self.accessibility_disabled {
+            style_state.insert(StyleState::DISABLED);
+        }
+        if self.accessibility_selected.unwrap_or(false) {
+            style_state.insert(StyleState::SELECTED);
+        }
+        if self.accessibility_toggled.unwrap_or(false) {
+            style_state.insert(StyleState::CHECKED);
+        }
+        if self.accessibility_expanded.unwrap_or(false) {
+            style_state.insert(StyleState::EXPANDED);
+        }
+
+        let semantic_id = self
+            .semantic_id
+            .clone()
+            .or_else(|| self.accessibility_id.clone().map(UiNodeId::from));
+        let should_emit_semantic = semantic_id.is_some()
+            || self.semantic_key.is_some()
+            || self.test_id.is_some()
+            || semantic_role.is_some()
+            || !semantic_actions.is_empty()
+            || self.focus_scope.is_some()
+            || self.tab_stop.is_some()
+            || self.key_context.is_some()
+            || !self.event_bindings.is_empty()
+            || !style_state.is_empty();
+        let semantic_parent = if should_emit_semantic {
+            let mut node = SemanticNode::new(bounds);
+            node.id = semantic_id;
+            node.key = self.semantic_key.clone();
+            node.test_id = self.test_id.clone();
+            node.parent = cx.current_semantic_parent();
+            node.role = semantic_role;
+            node.label = accessibility_label.clone();
+            node.value = self.accessibility_value.clone();
+            node.description = self.accessibility_description.clone();
+            node.tooltip = self.tooltip.clone();
+            node.actions = semantic_actions;
+            node.state = SemanticNodeState {
+                disabled: self.accessibility_disabled,
+                selected: self.accessibility_selected,
+                toggled: self.accessibility_toggled,
+                expanded: self.accessibility_expanded,
+                style_state,
+            };
+            node.focus_scope = self.focus_scope.clone();
+            node.tab_stop = self.tab_stop;
+            node.key_context = self.key_context.clone();
+            node.event_bindings = self.event_bindings.clone();
+            Some(cx.semantic.push(node))
+        } else {
+            None
+        };
+
         if let Some(role) = accessibility_role {
             let key = self.accessibility_id.clone().unwrap_or_else(|| {
                 format!(
@@ -1553,6 +1782,9 @@ impl Element for Div {
             cx.push_icon_color(ic);
         }
         cx.push_accessibility_text_hidden(suppress_descendant_accessibility_text);
+        if let Some(index) = semantic_parent {
+            cx.push_semantic_parent(index);
+        }
 
         if self.scroll_y != 0.0 {
             for child in &mut self.children {
@@ -1564,6 +1796,9 @@ impl Element for Div {
             }
         }
 
+        if semantic_parent.is_some() {
+            cx.pop_semantic_parent();
+        }
         cx.pop_accessibility_text_hidden();
         if pushed_icon_color.is_some() {
             cx.pop_icon_color();
@@ -2354,8 +2589,25 @@ impl Element for TextInput {
             } else {
                 value.clone()
             };
+            let semantic_id = format!("text-input:{target:?}");
+            let mut style_state = StyleState::empty();
+            if self.focused {
+                style_state.insert(StyleState::FOCUS_VISIBLE);
+            }
+            let mut semantic_node = SemanticNode::new(bounds)
+                .id(semantic_id.clone())
+                .role(SemanticRole::TextInput)
+                .label(accessibility_label.clone())
+                .value(accessible_value.clone());
+            semantic_node.parent = cx.current_semantic_parent();
+            semantic_node.actions = SemanticActions::default().text_value().hit_test();
+            semantic_node.state = SemanticNodeState {
+                style_state,
+                ..SemanticNodeState::default()
+            };
+            cx.semantic.push(semantic_node);
             cx.accessibility.push(
-                AccessibilityNode::new(format!("text-input:{target:?}"), role, bounds)
+                AccessibilityNode::new(semantic_id, role, bounds)
                     .label(accessibility_label)
                     .value(accessible_value)
                     .action(AccessibilityAction::TextValue(target)),

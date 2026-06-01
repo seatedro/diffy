@@ -1,3 +1,4 @@
+use halogen::SemanticRole;
 use halogen::view;
 
 use crate::actions::Action;
@@ -113,6 +114,10 @@ impl RenderOnce for Modal {
                  bg={tc.elevated_surface} rounded={Rad::XXXL}
                  border_b={tc.border} shadow_preset={Shadow::MODAL}
                  on_click={Action::Noop}
+                 id={format!("modal:{accessibility_label}")}
+                 test_id={"modal"}
+                 semantic_role={SemanticRole::Dialog}
+                 focus_scope={accessibility_label.clone()}
                  accessibility_role={accesskit::Role::Dialog}
                  accessibility_id={format!("modal:{accessibility_label}")}
                  accessibility_label={accessibility_label}
@@ -134,6 +139,8 @@ impl RenderOnce for Modal {
                  w={self.window_width} h={self.window_height}
                  z_index={100}
                  bg={tc.overlay_scrim}
+                 id={"overlay.backdrop"}
+                 test_id={"modal-backdrop"}
                  on_click={crate::actions::OverlayAction::CloseOverlay.into()}
                  hit_identity={HitIdentity::OverlayBackdrop}
                  @when {self.align == ModalAlign::Center} { justify_center }

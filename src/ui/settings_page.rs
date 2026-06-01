@@ -1,4 +1,4 @@
-use halogen::view;
+use halogen::{SemanticRole, view};
 
 use crate::actions::Action;
 use crate::ai::stream::{ANTHROPIC_MODEL, OPENAI_MODEL};
@@ -90,6 +90,10 @@ fn nav_row(theme: &Theme, section: SettingsSection, selected: bool) -> AnyElemen
 
     view! { scale,
         <div class="flex-row items-center"
+             id={format!("settings-section:{accessibility_label}")}
+             key={accessibility_label.to_owned()}
+             test_id={"settings-section"}
+             semantic_role={SemanticRole::Tab}
              gap={Sp::SM}
              px={Sp::SM} py={Sp::XS + Sp::XXS}
              rounded={Rad::MD}

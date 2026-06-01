@@ -1,4 +1,4 @@
-use halogen::view;
+use halogen::{SemanticRole, view};
 
 use crate::ui::design::{Ico, Sp, Sz};
 use crate::ui::element::*;
@@ -31,6 +31,10 @@ impl<'a> FileListItem<'a> {
 
         view! {
             <div class="w-full flex-row items-center" gap_2
+                 id={format!("file-list:{}", self.entry.path)}
+                 key={self.entry.path.to_string()}
+                 test_id={"file-list-row"}
+                 semantic_role={SemanticRole::ListBoxOption}
                  h={theme.metrics.ui_row_height.round()}
                  px={Sp::SM}
                  on_click={crate::actions::FileListAction::SelectFile(self.index).into()}
@@ -99,6 +103,8 @@ impl<'a> Sidebar<'a> {
 
         view! { scale,
             <div class="flex-col flex-shrink-0 overflow-hidden h-full"
+                 id={"sidebar"}
+                 test_id={"sidebar"}
                  w={sidebar_width}
                  bg={tc.sidebar_background}
                  border_r={tc.border_variant}>
@@ -124,6 +130,9 @@ impl<'a> Sidebar<'a> {
                     </div>
                 } else {
                     <div class="flex-1 flex-col" clip
+                         id={"file-list"}
+                         test_id={"file-list"}
+                         semantic_role={SemanticRole::ScrollArea}
                          px={Sp::LG / Sp::XXS}
                          gap={Sp::XS}
                          scroll_y={scroll_px}

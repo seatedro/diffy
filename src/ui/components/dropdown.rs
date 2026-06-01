@@ -1,4 +1,4 @@
-use halogen::view;
+use halogen::{SemanticRole, view};
 
 use crate::actions::Action;
 use crate::ui::design::{Shadow, Sp};
@@ -98,12 +98,17 @@ impl RenderOnce for Dropdown {
         view! {
             <div class="flex-col">
                 <div class="flex-row items-center"
+                     id={trigger_id.clone()}
+                     test_id={"dropdown-trigger"}
+                     semantic_role={SemanticRole::ComboBox}
+                     focus_scope={trigger_label.clone()}
+                     key_context={"dropdown"}
                      gap={m.spacing_sm} px={m.spacing_md} py={trigger_py}
                      bg={tc.element_background} border={tc.border_variant}
                      rounded={m.control_radius} hover_bg={tc.element_hover}
                      accessibility_role={accesskit::Role::ComboBox}
                      accessibility_id={trigger_id}
-                     accessibility_label={trigger_label}
+                     accessibility_label={trigger_label.clone()}
                      accessibility_expanded={self.open}
                      @when {self.width.is_some()} { w={self.width.unwrap()} }
                      @when {self.on_toggle.is_some()} { on_click={self.on_toggle.unwrap()} }>
@@ -114,6 +119,10 @@ impl RenderOnce for Dropdown {
                 </div>
                 if self.open {
                     <div class="flex-col w-full"
+                         id={format!("dropdown-menu:{trigger_label}")}
+                         test_id={"dropdown-menu"}
+                         focus_scope={trigger_label.clone()}
+                         key_context={"dropdown"}
                          py={m.spacing_xs}
                          bg={tc.elevated_surface}
                          border={tc.border}
@@ -121,6 +130,10 @@ impl RenderOnce for Dropdown {
                          shadow_preset={Shadow::DROPDOWN}>
                         for item in self.items {
                             <div class="flex-row items-center"
+                                 id={format!("dropdown-item:{:?}:{}", item.action, item.label)}
+                                 key={item.label.clone()}
+                                 test_id={"dropdown-item"}
+                                 semantic_role={SemanticRole::MenuItem}
                                  gap={m.spacing_sm} px={m.spacing_md}
                                  py={m.spacing_xs + (Sp::XXS * scale).round()}
                                  bg={if item.selected { tc.ghost_element_selected } else { Color::TRANSPARENT }}

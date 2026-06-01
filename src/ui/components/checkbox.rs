@@ -1,4 +1,4 @@
-use halogen::view;
+use halogen::{SemanticRole, view};
 
 use crate::actions::Action;
 use crate::ui::design::{Shadow, Sp, Sz};
@@ -83,6 +83,10 @@ impl RenderOnce for Checkbox {
 
         view! {
             <div class="flex-row items-center" gap={m.spacing_sm}
+                 id={accessibility_id.clone()}
+                 key={accessibility_label.clone()}
+                 test_id={"checkbox"}
+                 semantic_role={SemanticRole::CheckBox}
                  accessibility_role={accesskit::Role::CheckBox}
                  accessibility_id={accessibility_id}
                  accessibility_label={accessibility_label}
@@ -192,6 +196,10 @@ impl RenderOnce for Toggle {
 
         view! {
             <div class="flex-row items-center" gap={m.spacing_sm}
+                 id={accessibility_id.clone()}
+                 key={accessibility_label.clone()}
+                 test_id={"toggle"}
+                 semantic_role={SemanticRole::Switch}
                  accessibility_role={accesskit::Role::Switch}
                  accessibility_id={accessibility_id}
                  accessibility_label={accessibility_label}

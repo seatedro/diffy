@@ -77,7 +77,7 @@ const TOAST_ANIM_MS: u64 = 150;
 const CURSOR_BLINK_INTERVAL_MS: u64 = 530;
 const LARGE_COMPARE_FILE_LINES: i32 = 1_500;
 const COMPARE_STATS_CHUNK_SIZE: usize = 64;
-const COMPARE_STATS_BACKGROUND_CHUNK_SIZE: usize = 512;
+const COMPARE_STATS_BACKGROUND_CHUNK_SIZE: usize = 128 * 1024;
 const COMPARE_STATS_VISIBLE_ONLY_FILE_LIMIT: usize = 10_000;
 const COMPARE_STATS_VISIBLE_OVERSCAN_ROWS: usize = 32;
 const SYNTAX_INITIAL_ROWS: usize = 200;
@@ -12137,8 +12137,8 @@ mod tests {
         SettingsEffect, SyntaxEffect,
     };
     use crate::events::{
-        AppEvent, CompareEvent, CompareFileFinished, CompareStatsReady, GitHubEvent,
-        RepositoryEvent,
+        AppEvent, CompareEvent, CompareFileFinished, CompareFileStat, CompareFileStatsReady,
+        CompareStatsReady, GitHubEvent, RepositoryEvent,
     };
     use crate::platform::persistence::Settings;
     use crate::platform::startup::{Args, StartupOptions};
@@ -14730,6 +14730,56 @@ diff --git a/src/lib.rs b/src/lib.rs
 
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].index, 40);
+    }
+
+    #[test]
+    fn loaded_compare_stats_update_sidebar_meta() {
+        let mut state = compare_ready_state();
+        state
+            .workspace
+            .source
+            .set(&state.store, WorkspaceSource::Compare);
+        state
+            .file_list
+            .mode
+            .set(&state.store, SidebarMode::TreeView);
+        state.workspace.compare_output.set(
+            &state.store,
+            Some(CompareOutput {
+                file_summaries: vec![CompareFileSummary::from_paths_status(
+                    None,
+                    Some("arch/arm64/boot/dts/mediatek/mt8183-kukui-jacuzzi-kenzo.dts"),
+                    carbon::FileStatus::Added,
+                    true,
+                )],
+                ..CompareOutput::default()
+            }),
+        );
+
+        let effects = state.handle_compare_file_stats_ready(CompareFileStatsReady {
+            generation: state.workspace.compare_generation.get(&state.store),
+            stats: vec![CompareFileStat {
+                index: 0,
+                path: "arch/arm64/boot/dts/mediatek/mt8183-kukui-jacuzzi-kenzo.dts".to_owned(),
+                additions: 13,
+                deletions: 0,
+            }],
+            request_complete: false,
+        });
+
+        assert!(effects.is_empty());
+        let meta = state.file_list_entry_meta(0);
+        assert_eq!(meta.additions, 13);
+        assert_eq!(meta.deletions, 0);
+        assert!(
+            !state.workspace.compare_output.with(&state.store, |output| {
+                output
+                    .as_ref()
+                    .and_then(|output| output.file_summaries.first())
+                    .is_none_or(|summary| summary.stats_deferred)
+            }),
+            "loaded stats must clear the deferred marker used by sidebar rows",
+        );
     }
 
     #[test]

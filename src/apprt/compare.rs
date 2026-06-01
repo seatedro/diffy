@@ -208,49 +208,44 @@ fn run_load_file_stats(
 ) {
     let generation = task.generation;
     let request = task.request;
-    if request.files.len() <= FILE_STATS_STREAM_CHUNK_SIZE {
-        let event = match services.load_compare_file_stats(generation, request) {
-            Ok(payload) => CompareEvent::CompareFileStatsReady(payload),
-            Err(error) => CompareEvent::CompareFileStatsFailed {
+    let payload = match services.load_compare_file_stats(generation, request) {
+        Ok(payload) => payload,
+        Err(error) => {
+            event_sender.send(CompareEvent::CompareFileStatsFailed {
                 generation,
                 message: error.to_string(),
-            },
-        };
-        event_sender.send(event);
+            });
+            return;
+        }
+    };
+    send_file_stats_payload(generation, payload, event_sender);
+}
+
+fn send_file_stats_payload(
+    generation: u64,
+    payload: CompareFileStatsReady,
+    event_sender: &RuntimeEventSender,
+) {
+    if payload.stats.len() <= FILE_STATS_STREAM_CHUNK_SIZE {
+        event_sender.send(CompareEvent::CompareFileStatsReady(payload));
         return;
     }
 
-    let repo_path = request.repo_path;
-    let compare_request = request.request;
-    let priority = request.priority;
-    thread::scope(|scope| {
-        for files in request.files.chunks(FILE_STATS_STREAM_CHUNK_SIZE) {
-            let services = services.clone();
-            let event_sender = event_sender.clone();
-            let repo_path = repo_path.clone();
-            let compare_request = compare_request.clone();
-            let files = files.to_vec();
-            scope.spawn(move || {
-                let request = CompareFileStatsRequest {
-                    repo_path,
-                    request: compare_request,
-                    files,
-                    priority,
-                };
-                let event = match services.load_compare_file_stats(generation, request) {
-                    Ok(mut payload) => {
-                        payload.request_complete = false;
-                        CompareEvent::CompareFileStatsReady(payload)
-                    }
-                    Err(error) => CompareEvent::CompareFileStatsFailed {
-                        generation,
-                        message: error.to_string(),
-                    },
-                };
-                event_sender.send(event);
-            });
+    let mut stats = payload.stats.into_iter();
+    loop {
+        let chunk = stats
+            .by_ref()
+            .take(FILE_STATS_STREAM_CHUNK_SIZE)
+            .collect::<Vec<_>>();
+        if chunk.is_empty() {
+            break;
         }
-    });
+        event_sender.send(CompareEvent::CompareFileStatsReady(CompareFileStatsReady {
+            generation,
+            stats: chunk,
+            request_complete: false,
+        }));
+    }
     event_sender.send(CompareEvent::CompareFileStatsReady(CompareFileStatsReady {
         generation,
         stats: Vec::new(),

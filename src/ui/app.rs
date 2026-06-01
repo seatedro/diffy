@@ -17,6 +17,7 @@ use winit::window::{Icon, Window, WindowAttributes, WindowId};
 use crate::actions::{Action, AppAction, TextEditAction};
 use crate::apprt::{AppRuntime, AppServices};
 use crate::core::themes::ThemeRegistry;
+use crate::editor::diff::element::EditorElement;
 use crate::effects::{RepositoryEffect, UpdateEffect};
 use crate::events::RepositorySyncReason;
 use crate::fonts::FontSettings;
@@ -25,7 +26,6 @@ use crate::platform::persistence::SettingsStore;
 use crate::platform::startup::StartupOptions;
 use crate::render::Renderer;
 use crate::ui::components::TooltipState;
-use crate::ui::editor::element::EditorElement;
 use crate::ui::element::TextMeasureCache;
 use crate::ui::hud::{HudSample, HudState};
 use crate::ui::shell::{UiFrame, build_ui_frame};
@@ -505,6 +505,8 @@ impl NativeApp {
         self.state.commit_editor.invalidate_font();
         self.state.review_comment_editor.invalidate_font();
         self.state.steering_prompt_editor.invalidate_font();
+        self.state.text_compare.left_editor.invalidate_font();
+        self.state.text_compare.right_editor.invalidate_font();
         self.text_measure_cache.clear();
 
         if let Some(renderer) = self.renderer.as_mut() {
@@ -849,6 +851,14 @@ impl NativeApp {
             self.state
                 .steering_prompt_editor
                 .flush(renderer.font_system_mut());
+            self.state
+                .text_compare
+                .left_editor
+                .flush(renderer.font_system_mut());
+            self.state
+                .text_compare
+                .right_editor
+                .flush(renderer.font_system_mut());
         }
         self.runtime.dispatch_all(effects);
         self.sync_theme();
@@ -1088,6 +1098,14 @@ impl ApplicationHandler for NativeApp {
                         FocusTarget::SettingsSteeringPrompt,
                         &mut self.state.steering_prompt_editor,
                     ),
+                    (
+                        FocusTarget::TextCompareLeft,
+                        &mut self.state.text_compare.left_editor,
+                    ),
+                    (
+                        FocusTarget::TextCompareRight,
+                        &mut self.state.text_compare.right_editor,
+                    ),
                 ] {
                     if let Some(ha) = self
                         .ui_frame
@@ -1108,12 +1126,7 @@ impl ApplicationHandler for NativeApp {
                 let paint_us = paint_started_at.elapsed().as_micros() as u64;
                 if let Some(renderer) = self.renderer.as_mut() {
                     let time_seconds = self.launch_at.elapsed().as_secs_f32();
-                    let editors: [Option<&crate::editor::Editor>; 3] = [
-                        Some(&self.state.commit_editor),
-                        Some(&self.state.steering_prompt_editor),
-                        Some(&self.state.review_comment_editor),
-                    ];
-                    match renderer.render(&self.ui_frame.scene, time_seconds, &editors) {
+                    match renderer.render(&self.ui_frame.scene, time_seconds) {
                         Ok(frame) => {
                             self.hud.record(HudSample {
                                 build_us,

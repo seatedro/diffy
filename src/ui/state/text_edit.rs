@@ -398,6 +398,12 @@ impl AppState {
         if self.focus.get(&self.store) == Some(FocusTarget::SettingsSteeringPrompt) {
             return self.apply_steering_prompt_action(action);
         }
+        if matches!(
+            self.focus.get(&self.store),
+            Some(FocusTarget::TextCompareLeft | FocusTarget::TextCompareRight)
+        ) {
+            return self.apply_text_compare_editor_action(action);
+        }
         match action {
             InsertText(value) => self.insert_text(value),
             Backspace => self.backspace(),
@@ -701,6 +707,95 @@ impl AppState {
                 self.settings.ai_steering_prompt = snapshot;
                 return self.persist_settings_effect();
             }
+        }
+        Vec::new()
+    }
+
+    fn apply_text_compare_editor_action(&mut self, action: TextEditAction) -> Vec<Effect> {
+        let target = self.focus.get(&self.store);
+        let changed = {
+            let Some(editor) = (match target {
+                Some(FocusTarget::TextCompareLeft) => Some(&mut self.text_compare.left_editor),
+                Some(FocusTarget::TextCompareRight) => Some(&mut self.text_compare.right_editor),
+                _ => None,
+            }) else {
+                return Vec::new();
+            };
+
+            let mut changed = false;
+            use TextEditAction::*;
+            match action {
+                InsertText(value) => {
+                    editor.insert_text(&value);
+                    changed = !value.is_empty();
+                }
+                Backspace => {
+                    editor.delete_backward();
+                    changed = true;
+                }
+                BackspaceWord => {
+                    editor.delete_backward_word();
+                    changed = true;
+                }
+                BackspaceLine => {
+                    editor.delete_backward_line();
+                    changed = true;
+                }
+                DeleteForward => {
+                    editor.delete_forward();
+                    changed = true;
+                }
+                DeleteForwardWord => {
+                    editor.delete_forward_word();
+                    changed = true;
+                }
+                CursorLeft => editor.move_left(false),
+                CursorRight => editor.move_right(false),
+                CursorUp => editor.move_up(false),
+                CursorDown => editor.move_down(false),
+                CursorWordLeft => editor.move_word_left(false),
+                CursorWordRight => editor.move_word_right(false),
+                CursorHome => editor.move_home(false),
+                CursorEnd => editor.move_end(false),
+                CursorSoftHome => editor.move_soft_home(false),
+                CursorSoftEnd => editor.move_soft_end(false),
+                SelectLeft => editor.move_left(true),
+                SelectRight => editor.move_right(true),
+                SelectUp => editor.move_up(true),
+                SelectDown => editor.move_down(true),
+                SelectWordLeft => editor.move_word_left(true),
+                SelectWordRight => editor.move_word_right(true),
+                SelectHome => editor.move_home(true),
+                SelectEnd => editor.move_end(true),
+                SelectSoftHome => editor.move_soft_home(true),
+                SelectSoftEnd => editor.move_soft_end(true),
+                SelectAll => editor.select_all(),
+                Copy => {
+                    if let Some(text) = editor.selected_text()
+                        && let Ok(mut clipboard) = arboard::Clipboard::new()
+                    {
+                        let _ = clipboard.set_text(text);
+                    }
+                }
+                Cut => {
+                    if let Some(text) = editor.selected_text() {
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            let _ = clipboard.set_text(text);
+                        }
+                        editor.delete_backward();
+                        changed = true;
+                    }
+                }
+                Paste(value) => {
+                    editor.insert_text(&value);
+                    changed = !value.is_empty();
+                }
+                _ => {}
+            }
+            changed
+        };
+        if changed {
+            self.mark_text_compare_dirty();
         }
         Vec::new()
     }

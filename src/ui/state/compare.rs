@@ -11,6 +11,7 @@ pub(super) fn reduce_action(state: &mut AppState, action: CompareAction) -> Vec<
 pub(super) fn reduce_event(state: &mut AppState, event: CompareEvent) -> Vec<Effect> {
     match event {
         CompareEvent::CompareHistoryReady(payload) => state.handle_compare_history_ready(payload),
+        CompareEvent::TextCompareFinished(payload) => state.handle_text_compare_finished(payload),
         CompareEvent::CompareHistoryFailed {
             generation: _,
             message: _,
@@ -31,6 +32,10 @@ pub(super) fn reduce_event(state: &mut AppState, event: CompareEvent) -> Vec<Eff
             }
             Vec::new()
         }
+        CompareEvent::TextCompareFailed {
+            generation,
+            message,
+        } => state.handle_text_compare_failed(generation, message),
         CompareEvent::CompareProgressUpdate { generation, phase } => {
             state.handle_compare_progress_update(generation, phase);
             Vec::new()
@@ -253,6 +258,9 @@ impl AppState {
             }
             SetRenderer(renderer) => {
                 self.compare.renderer.set(&self.store, renderer);
+                if self.workspace.source.get(&self.store) == WorkspaceSource::TextCompare {
+                    self.mark_text_compare_dirty();
+                }
                 self.persist_settings_effect()
             }
             StartCompare => {

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::ai::Provider;
-use crate::core::compare::{CompareFileStatsTarget, CompareFileSummary, RendererKind};
+use crate::core::compare::{CompareFileStatsTarget, CompareFileSummary, LayoutMode, RendererKind};
 use crate::core::forge::github::{
     CreatePullRequestReview, CreatePullRequestReviewComment, CreatePullRequestReviewReply,
     SubmitPullRequestReview, UpdatePullRequestReviewComment,
@@ -22,6 +22,15 @@ pub struct CompareRequest {
     pub repo_path: PathBuf,
     pub request: VcsCompareRequest,
     pub github_token: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextCompareRequest {
+    pub left_text: String,
+    pub right_text: String,
+    pub display_path: String,
+    pub renderer: RendererKind,
+    pub layout: LayoutMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,6 +231,7 @@ pub enum RepositoryEffect {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompareEffect {
     Run(Task<CompareRequest>),
+    RunText(Task<TextCompareRequest>),
     LoadStats(Task<CompareStatsRequest>),
     LoadHistory(Task<CompareHistoryRequest>),
     LoadFile(Task<CompareFileRequest>),

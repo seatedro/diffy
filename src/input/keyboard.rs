@@ -6,7 +6,7 @@ use crate::actions::{
     RepositoryAction, SettingsAction, TextEditAction, UpdateAction, WorkspaceAction,
 };
 use crate::core::vcs::model::RefKind;
-use crate::ui::editor::element::EditorElement;
+use crate::editor::diff::element::EditorElement;
 use crate::ui::shell::UiFrame;
 use crate::ui::state::{
     AppState, AppView, FocusTarget, OverlaySurface, SettingsSection, SidebarTab, WorkspaceMode,
@@ -722,7 +722,11 @@ fn workspace_key_actions_inner(
             } else if matches_binding(overrides, ShortcutCommand::OpenCompareMenu, &binding) {
                 Some(vec![CompareAction::OpenCompareMenu.into()])
             } else if matches_binding(overrides, ShortcutCommand::RefreshView, &binding) {
-                Some(vec![WorkspaceAction::RefreshRepository.into()])
+                if state.workspace.source.get(&state.store) == WorkspaceSource::TextCompare {
+                    Some(vec![crate::actions::TextCompareAction::CompareNow.into()])
+                } else {
+                    Some(vec![WorkspaceAction::RefreshRepository.into()])
+                }
             } else if matches_binding(overrides, ShortcutCommand::ToggleFileTree, &binding) {
                 Some(vec![FileListAction::ToggleSidebarMode.into()])
             } else if matches_binding(overrides, ShortcutCommand::ExpandFolders, &binding) {
@@ -1035,10 +1039,10 @@ mod tests {
     use winit::keyboard::ModifiersState;
 
     use super::*;
+    use crate::editor::diff::element::EditorElement;
+    use crate::editor::diff::render_doc::{ByteRange, RenderDoc, RenderLine, RenderRowKind};
+    use crate::editor::diff::state::{ViewportTextPoint, ViewportTextSelection, ViewportTextSide};
     use crate::input::KeyKind;
-    use crate::ui::editor::element::EditorElement;
-    use crate::ui::editor::render_doc::{ByteRange, RenderDoc, RenderLine, RenderRowKind};
-    use crate::ui::editor::state::{ViewportTextPoint, ViewportTextSelection, ViewportTextSide};
     use crate::ui::shell::UiFrame;
     use crate::ui::state::ViewportDocument;
 

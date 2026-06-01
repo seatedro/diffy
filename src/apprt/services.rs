@@ -24,10 +24,11 @@ use crate::core::vcs::model::RevisionId;
 use crate::effects::{
     CompareFileRequest, CompareFileStatsRequest, CompareHistoryRequest, CompareRequest,
     CompareStatsRequest, GenerateCommitMessageRequest, LoadFileSyntaxRequest, StatusDiffRequest,
+    TextCompareRequest,
 };
 use crate::events::{
     AiEvent, CompareFileFinished, CompareFileStat, CompareFileStatsReady, CompareFinished,
-    CompareHistoryReady, CompareStatsReady, StatusDiffFinished,
+    CompareHistoryReady, CompareStatsReady, StatusDiffFinished, TextCompareFinished,
 };
 use crate::platform::persistence::{Settings, SettingsStore};
 use crate::platform::review_store::ReviewStore;
@@ -164,6 +165,28 @@ impl AppServices {
             resolved_right,
             output,
             range_commits: Vec::new(),
+        })
+    }
+
+    pub fn run_text_compare(
+        &self,
+        generation: u64,
+        request: TextCompareRequest,
+    ) -> Result<TextCompareFinished> {
+        let output = crate::core::compare::compare_text(
+            &request.left_text,
+            &request.right_text,
+            &request.display_path,
+            request.renderer,
+            request.layout,
+        )?;
+
+        Ok(TextCompareFinished {
+            generation,
+            display_path: request.display_path,
+            renderer: request.renderer,
+            layout: request.layout,
+            output,
         })
     }
 

@@ -134,6 +134,12 @@ impl AppState {
                     Some(FocusTarget::ReviewCommentEditor) => {
                         self.review_comment_editor.click(x, y);
                     }
+                    Some(FocusTarget::TextCompareLeft) => {
+                        self.text_compare.left_editor.click(x, y);
+                    }
+                    Some(FocusTarget::TextCompareRight) => {
+                        self.text_compare.right_editor.click(x, y);
+                    }
                     _ => {
                         self.commit_editor.click(x, y);
                     }
@@ -147,6 +153,12 @@ impl AppState {
                     }
                     Some(FocusTarget::ReviewCommentEditor) => {
                         self.review_comment_editor.drag(x, y);
+                    }
+                    Some(FocusTarget::TextCompareLeft) => {
+                        self.text_compare.left_editor.drag(x, y);
+                    }
+                    Some(FocusTarget::TextCompareRight) => {
+                        self.text_compare.right_editor.drag(x, y);
                     }
                     _ => {
                         self.commit_editor.drag(x, y);
@@ -162,6 +174,12 @@ impl AppState {
                     Some(FocusTarget::ReviewCommentEditor) => {
                         self.review_comment_editor.scroll(delta as f32);
                     }
+                    Some(FocusTarget::TextCompareLeft) => {
+                        self.text_compare.left_editor.scroll(delta as f32);
+                    }
+                    Some(FocusTarget::TextCompareRight) => {
+                        self.text_compare.right_editor.scroll(delta as f32);
+                    }
                     _ => {
                         self.commit_editor.scroll(delta as f32);
                     }
@@ -176,7 +194,7 @@ impl AppState {
                     .set(&self.store, None);
                 self.editor.text_selection.set(
                     &self.store,
-                    Some(crate::ui::editor::state::ViewportTextSelection::new(
+                    Some(crate::editor::diff::state::ViewportTextSelection::new(
                         generation, point,
                     )),
                 );
@@ -200,12 +218,12 @@ impl AppState {
             }
             ExpandContextAbove(hunk_index, amount) => self.expand_context(
                 hunk_index,
-                crate::ui::editor::expansion::ExpandDirection::Above,
+                crate::editor::diff::expansion::ExpandDirection::Above,
                 amount,
             ),
             ExpandContextBelow(hunk_index, amount) => self.expand_context(
                 hunk_index,
-                crate::ui::editor::expansion::ExpandDirection::Below,
+                crate::editor::diff::expansion::ExpandDirection::Below,
                 amount,
             ),
             ExpandAllContext => self.expand_all_context(),

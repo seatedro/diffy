@@ -161,6 +161,33 @@ pub(crate) fn compare_changed_paths(
     Ok(output)
 }
 
+pub(crate) fn compare_text_difftastic(
+    left_text: &str,
+    right_text: &str,
+    display_path: &str,
+) -> Result<Option<CompareOutput>> {
+    if left_text == right_text {
+        return Ok(Some(CompareOutput::default()));
+    }
+
+    let status = if left_text.is_empty() {
+        "A"
+    } else if right_text.is_empty() {
+        "D"
+    } else {
+        "M"
+    };
+    let changed = DifftasticChangedPath {
+        status: status.to_owned(),
+        old_path: (status != "A").then(|| display_path.to_owned()),
+        new_path: (status != "D").then(|| display_path.to_owned()),
+        old_content: left_text.as_bytes().to_vec(),
+        new_content: right_text.as_bytes().to_vec(),
+        is_binary: false,
+    };
+    compare_changed_paths(vec![changed], None).map(Some)
+}
+
 fn difftastic_worker_count(file_count: usize) -> usize {
     if file_count < DIFFTASTIC_MIN_FILES_FOR_PARALLEL {
         return 1;

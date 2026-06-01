@@ -17,9 +17,11 @@ pub(crate) const RENAME_DETECTION_LIMIT: usize = 1000;
 #[cfg(feature = "difftastic")]
 pub use difftastic::DifftasticBackend;
 #[cfg(feature = "difftastic")]
-pub(crate) use difftastic::{DifftasticChangedPath, compare_changed_paths};
+pub(crate) use difftastic::{
+    DifftasticChangedPath, compare_changed_paths, compare_text_difftastic,
+};
 pub use git_diff::GitDiffBackend;
-pub(crate) use git_diff::compare_output_from_raw_patch;
+pub(crate) use git_diff::{compare_output_from_raw_patch, compare_text_builtin};
 
 pub trait DiffBackend: Send + Sync {
     fn compare(
@@ -60,4 +62,13 @@ impl DiffBackend for DifftasticBackend {
     ) -> Result<Option<CompareOutput>> {
         Ok(None)
     }
+}
+
+#[cfg(not(feature = "difftastic"))]
+pub(crate) fn compare_text_difftastic(
+    _left_text: &str,
+    _right_text: &str,
+    _display_path: &str,
+) -> Result<Option<CompareOutput>> {
+    Ok(None)
 }

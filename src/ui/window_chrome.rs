@@ -24,7 +24,8 @@ pub(crate) fn window_chrome(
     let bar_h = theme.metrics.title_bar_height;
     let drag_action: Action = WindowAction::BeginDrag.into();
 
-    let has_repo = state.compare.repo_path.with(&state.store, |p| p.is_some());
+    let is_text_compare = state.workspace.source.get(&state.store) == WorkspaceSource::TextCompare;
+    let has_repo = !is_text_compare && state.compare.repo_path.with(&state.store, |p| p.is_some());
     let is_ready = state.is_workspace_ready();
     let ref_picker_open = state.overlays_top() == Some(OverlaySurface::RefPicker);
     let repo_label = state.compare.repo_path.with(&state.store, |p| {
@@ -99,7 +100,7 @@ pub(crate) fn window_chrome(
                         <icon svg={lucide::GIT_COMPARE} size={Ico::SM} color={tc.accent} />
                     </div>
                 }
-                if is_ready {
+                if is_ready && !is_text_compare {
                     {chrome_icon_button(
                         sidebar_icon,
                         crate::actions::FileListAction::ToggleSidebar.into(),
@@ -122,7 +123,7 @@ pub(crate) fn window_chrome(
 
             // right — working tree, update, account, window controls
             <div class="flex-1 flex-row items-center justify-end" min_w={0.0} gap={Sp::XS}>
-                if is_ready {
+                if is_ready && !is_text_compare {
                     if pr_open {
                         <Button action={crate::actions::GitHubAction::OpenPullRequestInBrowser.into()}
                                 size={ButtonSize::Compact}

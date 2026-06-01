@@ -16,7 +16,13 @@ use halogen::view;
 pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
-    let (status_icon, status_color, status_text) = match state.repository.status.get(&state.store) {
+    let workspace_source = state.workspace.source.get(&state.store);
+    let status = if workspace_source == WorkspaceSource::TextCompare {
+        state.text_compare.status
+    } else {
+        state.repository.status.get(&state.store)
+    };
+    let (status_icon, status_color, status_text) = match status {
         AsyncStatus::Ready => (lucide::CHECK, tc.line_add_text, "ready"),
         AsyncStatus::Loading => (lucide::LOADER, tc.text_muted, "loading"),
         AsyncStatus::Failed => (lucide::ALERT_CIRCLE, tc.status_error, "error"),
@@ -53,7 +59,9 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
         });
     let publish_status = profile.publish_status_ui(&changes, &refs, has_remotes);
 
-    let branch_children = if let Some(identity) = vcs_identity {
+    let branch_children = if workspace_source == WorkspaceSource::TextCompare {
+        None
+    } else if let Some(identity) = vcs_identity {
         let icon_color = repository_identity_icon_color(&identity, tc);
         let label = repository_identity_label(&identity, tc);
         let ref_chips = publish_ref_chips(&publish_status.ref_chips, tc, scale);
@@ -101,10 +109,14 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
         .with(&state.store, |active| !active.is_empty())
         .then(|| syntax_pack_status(state.clock_ms, theme, scale));
 
-    let right_text = match state.workspace.source.get(&state.store) {
+    let right_text = match workspace_source {
         WorkspaceSource::Status => {
             profile.status_view_label(state.workspace.selected_change_bucket.get(&state.store))
         }
+        WorkspaceSource::TextCompare => format!(
+            "Text Compare  \u{00b7}  {}",
+            renderer_label(state.compare.renderer.get(&state.store)),
+        ),
         _ => format!(
             "{}  \u{00b7}  {}",
             profile

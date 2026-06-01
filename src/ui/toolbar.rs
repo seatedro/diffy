@@ -3,13 +3,19 @@ use std::rc::Rc;
 
 use halogen::{SemanticRole, view};
 
+use crate::editor::input_element::text_editor_element;
 use crate::render::{Rect, TextMetrics};
-use crate::ui::components::{self, Button, ButtonStyle, SegmentedControl, SegmentedItem};
+use crate::ui::components::{
+    self, Button, ButtonSize, ButtonStyle, SegmentedControl, SegmentedItem,
+};
 use crate::ui::design::{Alpha, Ico, Rad, Shadow, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
-use crate::ui::state::{AppState, FocusTarget, WorkspaceMode, WorkspaceSource};
+use crate::ui::state::{
+    AppState, AsyncStatus, FocusTarget, TextCompareLanguage, TextCompareSide, TextCompareView,
+    WorkspaceMode, WorkspaceSource,
+};
 use crate::ui::style::Styled;
 use crate::ui::theme::Theme;
 
@@ -22,6 +28,9 @@ pub(crate) fn main_surface(
     viewport_bounds: Rc<Cell<Option<Rect>>>,
 ) -> AnyElement {
     let tc = &theme.colors;
+    if state.workspace.source.get(&state.store) == WorkspaceSource::TextCompare {
+        return text_compare_surface(state, theme, viewport_bounds);
+    }
 
     // Prefer the compare progress panel whenever a compare is in flight
     // AND the reveal delay has elapsed — sub-half-second diffs never
@@ -285,6 +294,332 @@ fn viewport_toolbar(state: &AppState, theme: &Theme, file_label: Option<&str>) -
     }
 }
 
+fn text_compare_surface(
+    state: &AppState,
+    theme: &Theme,
+    viewport_bounds: Rc<Cell<Option<Rect>>>,
+) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = theme.metrics.ui_scale();
+    let view = state.text_compare.view;
+    let status = state.text_compare.status;
+    let compare_disabled = status == AsyncStatus::Loading;
+    let diff_file_label = state.workspace.selected_file_path.get(&state.store);
+
+    let status_label = match status {
+        AsyncStatus::Loading => "Comparing",
+        AsyncStatus::Failed => "Failed",
+        AsyncStatus::Ready if !state.text_compare_is_stale() => "Compared",
+        _ => "Ready",
+    };
+    let status_color = match status {
+        AsyncStatus::Failed => tc.status_error,
+        AsyncStatus::Ready if !state.text_compare_is_stale() => tc.accent,
+        _ => tc.text_muted,
+    };
+
+    let controls = if view == TextCompareView::Edit {
+        view! { scale,
+            <div class="flex-row items-center" gap={Sp::SM}>
+                <Button action={crate::actions::TextCompareAction::SwapSides.into()}
+                        size={ButtonSize::Compact}
+                        tooltip={"Swap sides"}>
+                    <Icon>{lucide::ARROW_LEFT_RIGHT}</Icon>
+                    <Label>{"Swap"}</Label>
+                </Button>
+                <Button action={crate::actions::TextCompareAction::CompareNow.into()}
+                        style={ButtonStyle::Filled}
+                        size={ButtonSize::Compact}
+                        disabled={compare_disabled}
+                        tooltip={"Compare text"}>
+                    <Icon>{lucide::GIT_COMPARE}</Icon>
+                    <Label>{"Compare"}</Label>
+                </Button>
+            </div>
+        }
+    } else {
+        view! { scale,
+            <div class="flex-row items-center" gap={Sp::SM}>
+                <Button action={crate::actions::TextCompareAction::SetView(TextCompareView::Edit).into()}
+                        style={ButtonStyle::Filled}
+                        size={ButtonSize::Compact}
+                        tooltip={"Back to edit"}>
+                    <Icon>{lucide::PENCIL}</Icon>
+                    <Label>{"Edit"}</Label>
+                </Button>
+            </div>
+        }
+    };
+
+    let top_bar = view! { scale,
+        <div class="w-full flex-row items-center"
+             h={theme.metrics.ui_row_height.round()}
+             px={Sp::MD} border_b={tc.border_variant}
+             bg={tc.editor_surface}>
+            <div class="flex-row items-center flex-1" gap={Sp::SM} min_w={0.0}>
+                <icon svg={lucide::FILE_DIFF} size={Ico::SM} color={status_color} />
+                <text class="text-sm font-medium" color={status_color}>{status_label}</text>
+            </div>
+            {controls}
+        </div>
+    };
+
+    let body = match view {
+        TextCompareView::Edit => text_compare_edit_body(state, theme),
+        TextCompareView::Diff => {
+            let vb = viewport_bounds.clone();
+            let viewport_canvas = state
+                .workspace
+                .active_file
+                .with(&state.store, |af| af.is_some())
+                .then(|| {
+                    canvas(move |bounds, _scene, _cx| {
+                        vb.set(Some(bounds));
+                    })
+                    .flex_1()
+                    .into_any()
+                });
+            let hint = if viewport_canvas.is_none() {
+                Some(text_compare_diff_hint(state, theme))
+            } else {
+                None
+            };
+            view! { scale,
+                <div class="flex-1 flex-col" min_h={0.0}>
+                    {viewport_toolbar(state, theme, diff_file_label.as_deref())}
+                    {?viewport_canvas}
+                    {?hint}
+                </div>
+            }
+            .into_any()
+        }
+    };
+
+    view! { scale,
+        <div class="flex-1 flex-col h-full" min_h={0.0} bg={tc.editor_surface}>
+            {top_bar}
+            {body}
+        </div>
+    }
+}
+
+fn text_compare_edit_body(state: &AppState, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = theme.metrics.ui_scale();
+    let left_lines = state.text_compare.left_editor.line_count();
+    let right_lines = state.text_compare.right_editor.line_count();
+    let total_stats = state.workspace.compare_total_stats.get(&state.store);
+    let stats_label = total_stats
+        .map(|(additions, deletions)| format!("+{} -{}", additions, deletions))
+        .unwrap_or_else(|| "\u{2014}".to_owned());
+
+    view! { scale,
+        <div class="flex-1 flex-row" min_h={0.0}>
+            <div class="flex-col shrink-0"
+                   w={(220.0 * scale).round()}
+                   p={Sp::MD}
+                   gap={Sp::LG}
+                   bg={tc.sidebar_background}
+                   border_r={tc.border_variant}>
+                <div class="flex-col" gap={Sp::SM}>
+                    {text_compare_stat_row("Original", &format!("{} lines", left_lines), tc, scale)}
+                    {text_compare_stat_row("Changed", &format!("{} lines", right_lines), tc, scale)}
+                    {text_compare_stat_row("Language", &text_compare_language_label(state), tc, scale)}
+                    {text_compare_stat_row("Last diff", &stats_label, tc, scale)}
+                </div>
+                {text_compare_language_picker(state, theme)}
+            </div>
+            <div class="flex-1 flex-row" min_w={0.0} min_h={0.0} gap={1.0} bg={tc.border_variant}>
+                {text_compare_editor_pane(
+                    state,
+                    theme,
+                    TextCompareSide::Left,
+                    FocusTarget::TextCompareLeft,
+                    "Original",
+                )}
+                {text_compare_editor_pane(
+                    state,
+                    theme,
+                    TextCompareSide::Right,
+                    FocusTarget::TextCompareRight,
+                    "Changed",
+                )}
+            </div>
+        </div>
+    }
+}
+
+fn text_compare_language_label(state: &AppState) -> String {
+    match (
+        state.text_compare.language,
+        state.text_compare.detected_language,
+    ) {
+        (TextCompareLanguage::Auto, Some(detected)) => format!("Auto: {}", detected.label()),
+        (language, _) => language.label().to_owned(),
+    }
+}
+
+fn text_compare_language_picker(state: &AppState, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = theme.metrics.ui_scale();
+    view! { scale,
+        <div class="flex-col" gap={Sp::XS}>
+            <text class="text-xs font-medium" color={tc.text_muted}>{"Language"}</text>
+            <div class="flex-col" gap={Sp::XXS}>
+                <div class="flex-row" gap={Sp::XXS}>
+                    {text_compare_language_chip(state, theme, TextCompareLanguage::Auto)}
+                    {text_compare_language_chip(state, theme, TextCompareLanguage::Rust)}
+                    {text_compare_language_chip(state, theme, TextCompareLanguage::TypeScript)}
+                </div>
+                <div class="flex-row" gap={Sp::XXS}>
+                    {text_compare_language_chip(state, theme, TextCompareLanguage::Python)}
+                    {text_compare_language_chip(state, theme, TextCompareLanguage::JavaScript)}
+                    {text_compare_language_chip(state, theme, TextCompareLanguage::Json)}
+                </div>
+                <div class="flex-row" gap={Sp::XXS}>
+                    {text_compare_language_chip(state, theme, TextCompareLanguage::Shell)}
+                    {text_compare_language_chip(state, theme, TextCompareLanguage::Toml)}
+                    {text_compare_language_chip(state, theme, TextCompareLanguage::Nix)}
+                </div>
+                <div class="flex-row" gap={Sp::XXS}>
+                    {text_compare_language_chip(state, theme, TextCompareLanguage::C)}
+                    {text_compare_language_chip(state, theme, TextCompareLanguage::Cpp)}
+                    {text_compare_language_chip(state, theme, TextCompareLanguage::Go)}
+                </div>
+                <div class="flex-row" gap={Sp::XXS}>
+                    {text_compare_language_chip(state, theme, TextCompareLanguage::Zig)}
+                    {text_compare_language_chip(state, theme, TextCompareLanguage::PlainText)}
+                </div>
+            </div>
+        </div>
+    }
+}
+
+fn text_compare_language_chip(
+    state: &AppState,
+    theme: &Theme,
+    language: TextCompareLanguage,
+) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = theme.metrics.ui_scale();
+    let selected = state.text_compare.language == language;
+    view! { scale,
+        <div class="flex-1 items-center justify-center"
+             min_w={0.0}
+             px={Sp::XS} py={Sp::XXS}
+             rounded={Rad::SM}
+             bg={if selected { tc.ghost_element_selected } else { tc.element_background }}
+             border={if selected { tc.accent } else { tc.border_variant }}
+             hover_bg={tc.ghost_element_hover}
+             semantic_role={SemanticRole::RadioButton}
+             accessibility_role={accesskit::Role::RadioButton}
+             accessibility_id={format!("text-compare-language:{}", language.label())}
+             accessibility_label={language.label()}
+             accessibility_selected={selected}
+             accessibility_toggled={selected}
+             on_click={crate::actions::TextCompareAction::SetLanguage(language).into()}
+             cursor={CursorHint::Pointer}>
+            <text class="text-xs font-medium"
+                  color={if selected { tc.text_strong } else { tc.text_muted }}>
+                {language.short_label()}
+            </text>
+        </div>
+    }
+}
+
+fn text_compare_stat_row(
+    label: &str,
+    value: &str,
+    tc: &crate::ui::theme::ThemeColors,
+    scale: f32,
+) -> AnyElement {
+    view! { scale,
+        <div class="flex-row items-center" gap={Sp::SM}>
+            <text class="text-xs" color={tc.text_muted}>{label}</text>
+            <spacer />
+            <text class="text-xs font-mono" color={tc.text}>{value}</text>
+        </div>
+    }
+}
+
+fn text_compare_editor_pane(
+    state: &AppState,
+    theme: &Theme,
+    side: TextCompareSide,
+    focus_target: FocusTarget,
+    label: &'static str,
+) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = theme.metrics.ui_scale();
+    let focused = state.focus.get(&state.store) == Some(focus_target);
+    let editor = match side {
+        TextCompareSide::Left => &state.text_compare.left_editor,
+        TextCompareSide::Right => &state.text_compare.right_editor,
+    };
+    let line_label = format!("{} lines", editor.line_count());
+    let accent = match side {
+        TextCompareSide::Left => tc.status_error,
+        TextCompareSide::Right => tc.line_add_text,
+    };
+    let editor_el = text_editor_element()
+        .placeholder(label)
+        .editor_snapshot(editor)
+        .focused(focused)
+        .focus_target(focus_target)
+        .font_size(theme.metrics.mono_font_size)
+        .text_color(tc.text)
+        .w_full()
+        .flex_1();
+
+    view! { scale,
+        <div class="flex-1 flex-col" min_w={0.0} min_h={0.0} bg={tc.editor_surface}>
+            <div class="flex-row items-center shrink-0"
+                    h={theme.metrics.ui_row_height.round()}
+                    px={Sp::MD}
+                    gap={Sp::SM}
+                    border_b={tc.border_variant}>
+                <div w={(3.0 * scale).round()} h={(18.0 * scale).round()} rounded={Rad::SM} bg={accent} />
+                <text class="text-sm font-medium" color={tc.text}>{label}</text>
+                <text class="text-xs" color={tc.text_muted}>{line_label}</text>
+                <spacer />
+                <Button action={crate::actions::TextCompareAction::ClearSide(side).into()}
+                        size={ButtonSize::Compact}
+                        tooltip={format!("Clear {}", label.to_lowercase())}>
+                    <Icon>{lucide::X}</Icon>
+                </Button>
+            </div>
+            <div class="flex-1 w-full" min_h={0.0}
+                 px={Sp::MD} py={Sp::SM}
+                 border={if focused { tc.accent } else { crate::ui::theme::Color::TRANSPARENT }}
+                 on_click={crate::actions::AppAction::SetFocus(Some(focus_target)).into()}
+                 cursor={CursorHint::Text}>
+                {editor_el}
+            </div>
+        </div>
+    }
+}
+
+fn text_compare_diff_hint(state: &AppState, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = theme.metrics.ui_scale();
+    let label = if state.text_compare.status == AsyncStatus::Ready
+        && !state.text_compare_is_stale()
+        && state.workspace_file_count() == 0
+    {
+        "No differences"
+    } else {
+        "No diff yet"
+    };
+    view! { scale,
+        <div class="flex-1 items-center justify-center" p={Sp::XL}>
+            <div class="flex-col items-center" gap={Sp::SM}>
+                <icon svg={lucide::FILE_DIFF} size={Ico::XL} color={tc.text_muted} />
+                <text class="text-sm font-medium" color={tc.text_muted}>{label}</text>
+            </div>
+        </div>
+    }
+}
+
 fn search_bar(state: &AppState, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
@@ -428,12 +763,18 @@ fn empty_state(state: &AppState, theme: &Theme) -> AnyElement {
                     <text class="font-semibold" color={tc.text_strong}>{"diffy"}</text>
                 </div>
                 {?recent_section}
-                <div pt={Sp::XS}>
+                <div class="flex-row items-center" pt={Sp::XS} gap={Sp::SM}>
                     <Button action={crate::actions::OverlayAction::OpenRepoPicker.into()}
                             tooltip={"Open a repository folder"}
                             style={ButtonStyle::Subtle}>
                         <Icon>{lucide::FOLDER_OPEN}</Icon>
                         <Label>{"Open Folder"}</Label>
+                    </Button>
+                    <Button action={crate::actions::WorkspaceAction::NewTextCompare.into()}
+                            tooltip={"Compare pasted text"}
+                            style={ButtonStyle::Subtle}>
+                        <Icon>{lucide::FILE_DIFF}</Icon>
+                        <Label>{"Compare Text"}</Label>
                     </Button>
                 </div>
                 <text class="text-xs" color={tc.text_muted}>{"or drop a folder here"}</text>

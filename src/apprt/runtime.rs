@@ -223,6 +223,22 @@ impl EffectRunner {
                     event_sender.send(event);
                 });
             }
+            Effect::Compare(CompareEffect::RunText(task)) => {
+                let generation = task.generation;
+                let request = task.request;
+                let services = self.services.clone();
+                let event_sender = self.event_sender.clone();
+                thread::spawn(move || {
+                    let event = match services.run_text_compare(generation, request) {
+                        Ok(payload) => CompareEvent::TextCompareFinished(payload),
+                        Err(error) => CompareEvent::TextCompareFailed {
+                            generation,
+                            message: error.to_string(),
+                        },
+                    };
+                    event_sender.send(event);
+                });
+            }
             Effect::Compare(CompareEffect::LoadStats(task)) => {
                 self.compare_scheduler.dispatch_load_stats(task);
             }

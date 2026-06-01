@@ -8,6 +8,7 @@ mod overlay;
 mod repository;
 mod settings;
 mod syntax;
+mod text_compare;
 mod text_edit;
 mod update;
 mod working_set;
@@ -43,19 +44,24 @@ use crate::core::vcs::model::{
     VcsChange, VcsCompareRequest, VcsCompareSpec, VcsOperation, VcsOperationLogEntry, VcsRef,
 };
 use crate::core::vcs::patch;
-use crate::editor::Editor;
+use crate::editor::diff::render_doc::{
+    CarbonStyleOverlays, RenderDoc, RenderLine, RenderRowKind, build_placeholder_render_doc,
+    build_render_doc_from_carbon,
+};
+use crate::editor::diff::state::{EditorState, EditorStateStore, SearchMatch};
+use crate::editor::{Editor, EditorMode};
 use crate::effects::{
     AiEffect, BatchFileOperationRequest, CommitRequest, CompareEffect, CompareFileRequest,
     CompareFileStatsItem, CompareFileStatsRequest, CompareHistoryRequest, CompareRequest,
     CompareStatsRequest, CompareWorkPriority, Effect, FetchRemoteRequest, FileOperationRequest,
     GitHubEffect, LoadFileSyntaxRequest, PatchOperationRequest, PublishPlanRequest, PublishRequest,
     PullFfRequest, PushRequest, RepositoryEffect, SettingsEffect, StatusDiffRequest, SyntaxEffect,
-    Task, UiEffect, UpdateEffect, VcsOperationRequest,
+    Task, TextCompareRequest, UiEffect, UpdateEffect, VcsOperationRequest,
 };
 use crate::events::{
     AppEvent, CompareFileFinished, CompareFileStat, CompareFileStatsReady, CompareFinished,
     CompareHistoryReady, CompareStatsReady, FileSyntaxReady, RepositoryChangeKind,
-    RepositorySnapshot, RepositorySyncReason, StatusDiffFinished,
+    RepositorySnapshot, RepositorySyncReason, StatusDiffFinished, TextCompareFinished,
 };
 use crate::fonts::{FontFamilyEntry, FontRole};
 use crate::platform::persistence::{PersistedCompare, Settings};
@@ -63,11 +69,6 @@ use crate::platform::secrets::AiKeyKind;
 use crate::platform::startup::{GitHubTokenStore, StartupOptions};
 use crate::ui::components::ContextMenuState;
 use crate::ui::design::{Sp, Sz};
-use crate::ui::editor::render_doc::{
-    CarbonStyleOverlays, RenderDoc, RenderLine, RenderRowKind, build_placeholder_render_doc,
-    build_render_doc_from_carbon,
-};
-use crate::ui::editor::state::{EditorState, EditorStateStore, SearchMatch};
 use crate::ui::icons::lucide;
 use crate::ui::theme::ThemeMode;
 
@@ -243,6 +244,7 @@ pub enum WorkspaceSource {
     None,
     Status,
     Compare,
+    TextCompare,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -261,6 +263,113 @@ pub enum CompareField {
     Right,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TextCompareView {
+    #[default]
+    Edit,
+    Diff,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextCompareSide {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TextCompareLanguage {
+    #[default]
+    Auto,
+    PlainText,
+    Rust,
+    TypeScript,
+    JavaScript,
+    Python,
+    Go,
+    Json,
+    Toml,
+    Shell,
+    Nix,
+    C,
+    Cpp,
+    Zig,
+}
+
+impl TextCompareLanguage {
+    pub const OPTIONS: &'static [Self] = &[
+        Self::Auto,
+        Self::PlainText,
+        Self::Rust,
+        Self::TypeScript,
+        Self::JavaScript,
+        Self::Python,
+        Self::Go,
+        Self::Json,
+        Self::Toml,
+        Self::Shell,
+        Self::Nix,
+        Self::C,
+        Self::Cpp,
+        Self::Zig,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::PlainText => "Plain text",
+            Self::Rust => "Rust",
+            Self::TypeScript => "TypeScript",
+            Self::JavaScript => "JavaScript",
+            Self::Python => "Python",
+            Self::Go => "Go",
+            Self::Json => "JSON",
+            Self::Toml => "TOML",
+            Self::Shell => "Shell",
+            Self::Nix => "Nix",
+            Self::C => "C",
+            Self::Cpp => "C++",
+            Self::Zig => "Zig",
+        }
+    }
+
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::PlainText => "Text",
+            Self::Rust => "Rust",
+            Self::TypeScript => "TS",
+            Self::JavaScript => "JS",
+            Self::Python => "Py",
+            Self::Go => "Go",
+            Self::Json => "JSON",
+            Self::Toml => "TOML",
+            Self::Shell => "Sh",
+            Self::Nix => "Nix",
+            Self::C => "C",
+            Self::Cpp => "C++",
+            Self::Zig => "Zig",
+        }
+    }
+
+    pub fn scratch_path(self) -> &'static str {
+        match self {
+            Self::Auto | Self::PlainText => "text.txt",
+            Self::Rust => "scratch.rs",
+            Self::TypeScript => "scratch.ts",
+            Self::JavaScript => "scratch.js",
+            Self::Python => "scratch.py",
+            Self::Go => "scratch.go",
+            Self::Json => "scratch.json",
+            Self::Toml => "scratch.toml",
+            Self::Shell => "scratch.sh",
+            Self::Nix => "scratch.nix",
+            Self::C => "scratch.c",
+            Self::Cpp => "scratch.cpp",
+            Self::Zig => "scratch.zig",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusTarget {
     WorkspacePrimaryButton,
@@ -277,6 +386,8 @@ pub enum FocusTarget {
     SearchInput,
     CommitEditor,
     ReviewCommentEditor,
+    TextCompareLeft,
+    TextCompareRight,
     SettingsOpenAiKey,
     SettingsAnthropicKey,
     SettingsSteeringPrompt,
@@ -292,6 +403,8 @@ impl FocusTarget {
                 | Self::SearchInput
                 | Self::CommitEditor
                 | Self::ReviewCommentEditor
+                | Self::TextCompareLeft
+                | Self::TextCompareRight
                 | Self::SettingsOpenAiKey
                 | Self::SettingsAnthropicKey
                 | Self::SettingsSteeringPrompt
@@ -335,6 +448,39 @@ impl Default for CompareState {
             renderer: RendererKind::default(),
             resolved_left: None,
             resolved_right: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TextCompareState {
+    pub left_editor: Editor,
+    pub right_editor: Editor,
+    pub language: TextCompareLanguage,
+    pub detected_language: Option<TextCompareLanguage>,
+    pub path_hint: String,
+    pub view: TextCompareView,
+    pub generation: u64,
+    pub last_compared_generation: Option<u64>,
+    pub status: AsyncStatus,
+}
+
+impl Default for TextCompareState {
+    fn default() -> Self {
+        let mut left_editor = Editor::new(EditorMode::CodeInput);
+        let mut right_editor = Editor::new(EditorMode::CodeInput);
+        left_editor.set_syntax_path("text.txt");
+        right_editor.set_syntax_path("text.txt");
+        Self {
+            left_editor,
+            right_editor,
+            language: TextCompareLanguage::Auto,
+            detected_language: None,
+            path_hint: "text.txt".to_owned(),
+            view: TextCompareView::default(),
+            generation: 0,
+            last_compared_generation: None,
+            status: AsyncStatus::Idle,
         }
     }
 }
@@ -999,10 +1145,10 @@ fn render_doc_estimated_bytes(doc: &RenderDoc) -> usize {
     doc.text_bytes
         .len()
         .saturating_add(
-            doc.style_runs.len() * std::mem::size_of::<crate::ui::editor::render_doc::StyleRun>(),
+            doc.style_runs.len() * std::mem::size_of::<crate::editor::diff::render_doc::StyleRun>(),
         )
         .saturating_add(
-            doc.lines.len() * std::mem::size_of::<crate::ui::editor::render_doc::RenderLine>(),
+            doc.lines.len() * std::mem::size_of::<crate::editor::diff::render_doc::RenderLine>(),
         )
         .saturating_add(
             doc.file_metadata
@@ -1254,7 +1400,7 @@ impl Default for FileListState {
 impl AppState {
     pub fn workspace_file_entry_at(&self, index: usize) -> Option<FileListEntry> {
         match self.workspace.source.get(&self.store) {
-            WorkspaceSource::Compare => {
+            WorkspaceSource::Compare | WorkspaceSource::TextCompare => {
                 if let Some(entry) = self.workspace.compare_output.with(&self.store, |output| {
                     output.as_ref().and_then(|output| {
                         output
@@ -1288,7 +1434,7 @@ impl AppState {
 
     pub fn for_each_workspace_file_path(&self, mut visit: impl FnMut(usize, &str)) {
         match self.workspace.source.get(&self.store) {
-            WorkspaceSource::Compare => {
+            WorkspaceSource::Compare | WorkspaceSource::TextCompare => {
                 let visited = self.workspace.compare_output.with(&self.store, |output| {
                     let Some(output) = output.as_ref() else {
                         return false;
@@ -1326,7 +1472,10 @@ impl AppState {
     }
 
     pub fn workspace_max_file_path_chars(&self) -> usize {
-        if self.workspace.source.get(&self.store) == WorkspaceSource::Compare {
+        if matches!(
+            self.workspace.source.get(&self.store),
+            WorkspaceSource::Compare | WorkspaceSource::TextCompare
+        ) {
             let chars = self.workspace.compare_output.with(&self.store, |output| {
                 output
                     .as_ref()
@@ -1351,7 +1500,7 @@ impl AppState {
             ..Default::default()
         };
         match self.workspace.source.get(&self.store) {
-            WorkspaceSource::Compare => {
+            WorkspaceSource::Compare | WorkspaceSource::TextCompare => {
                 let matches = self.workspace.compare_output.with(&self.store, |output| {
                     let Some(output) = output.as_ref() else {
                         return None;
@@ -1439,7 +1588,7 @@ impl AppState {
 
     pub fn workspace_file_index_for_path(&self, path: &str) -> Option<usize> {
         match self.workspace.source.get(&self.store) {
-            WorkspaceSource::Compare => {
+            WorkspaceSource::Compare | WorkspaceSource::TextCompare => {
                 if let Some(index) = self.workspace.compare_output.with(&self.store, |output| {
                     let output = output.as_ref()?;
                     let mut found = None;
@@ -1552,8 +1701,10 @@ impl AppState {
     }
 
     pub fn sidebar_row_count(&self) -> usize {
-        if self.workspace.source.get(&self.store) == WorkspaceSource::Compare
-            && self.file_list.tab.get(&self.store) == SidebarTab::Files
+        if matches!(
+            self.workspace.source.get(&self.store),
+            WorkspaceSource::Compare | WorkspaceSource::TextCompare
+        ) && self.file_list.tab.get(&self.store) == SidebarTab::Files
             && self.file_list.mode.get(&self.store) == SidebarMode::TreeView
             && self.file_list.filter.with(&self.store, |s| s.is_empty())
         {
@@ -1576,12 +1727,14 @@ impl AppState {
 
     pub fn file_list_entry_meta(&self, index: usize) -> FileListEntryMeta {
         match self.workspace.source.get(&self.store) {
-            WorkspaceSource::Compare => self.workspace.compare_output.with(&self.store, |output| {
-                output
-                    .as_ref()
-                    .and_then(|output| compare_output_file_entry_meta(output, index))
-                    .unwrap_or_default()
-            }),
+            WorkspaceSource::Compare | WorkspaceSource::TextCompare => {
+                self.workspace.compare_output.with(&self.store, |output| {
+                    output
+                        .as_ref()
+                        .and_then(|output| compare_output_file_entry_meta(output, index))
+                        .unwrap_or_default()
+                })
+            }
             WorkspaceSource::Status => {
                 self.workspace
                     .status_file_changes
@@ -1610,6 +1763,9 @@ impl AppState {
     }
 
     fn compare_file_is_large(&self, index: usize) -> bool {
+        if self.workspace.source.get(&self.store) == WorkspaceSource::TextCompare {
+            return false;
+        }
         if self.workspace.compare_output.with(&self.store, |output| {
             output
                 .as_ref()
@@ -2007,6 +2163,10 @@ impl AppState {
     }
 
     fn compare_slot_key_at(&self, index: usize, path: &str) -> ViewportSlotKey {
+        let source = match self.workspace.source.get(&self.store) {
+            WorkspaceSource::TextCompare => WorkspaceSource::TextCompare,
+            _ => WorkspaceSource::Compare,
+        };
         let (left_ref, right_ref) = self.compare_refs();
         if let Some(key) = self.workspace.active_file.with(&self.store, |file| {
             file.as_ref()
@@ -2016,7 +2176,7 @@ impl AppState {
                         && file.left_ref == left_ref
                         && file.right_ref == right_ref
                 })
-                .map(|file| self.active_file_slot_key(WorkspaceSource::Compare, file))
+                .map(|file| self.active_file_slot_key(source, file))
         }) {
             return key;
         }
@@ -2029,11 +2189,11 @@ impl AppState {
                         && file.left_ref == left_ref
                         && file.right_ref == right_ref
                 })
-                .map(|file| self.active_file_slot_key(WorkspaceSource::Compare, file))
+                .map(|file| self.active_file_slot_key(source, file))
         }) {
             return key;
         }
-        self.loading_slot_key(WorkspaceSource::Compare, index, path, left_ref, right_ref)
+        self.loading_slot_key(source, index, path, left_ref, right_ref)
     }
 
     fn status_slot_key_at(&self, index: usize, change: &FileChange) -> ViewportSlotKey {
@@ -2282,6 +2442,17 @@ impl AppState {
         priority: CompareWorkPriority,
     ) -> Vec<Effect> {
         if self.cached_compare_file_at(index, path).is_some() {
+            return Vec::new();
+        }
+        if self.workspace.source.get(&self.store) == WorkspaceSource::TextCompare {
+            if self.cache_compare_file_from_output(index, path).is_some() {
+                return vec![
+                    SyntaxEffect::EnsureSyntaxPackForPath {
+                        path: path.to_owned(),
+                    }
+                    .into(),
+                ];
+            }
             return Vec::new();
         }
         if !self.compare_file_is_large(index)
@@ -2599,6 +2770,7 @@ pub struct PickerState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaletteCommand {
     OpenRepoPicker,
+    NewTextCompare,
     OpenGitHubAuthModal,
     OpenGitHubAccountMenu,
     SignOutGitHub,
@@ -3657,6 +3829,7 @@ pub struct AppState {
     pub commit_editor: Editor,
     pub review_comment_editor: Editor,
     pub steering_prompt_editor: Editor,
+    pub text_compare: TextCompareState,
     pub ai_openai_key: String,
     pub ai_anthropic_key: String,
     pub ai_openai_editing: bool,
@@ -3744,6 +3917,7 @@ impl Default for AppState {
             commit_editor: Editor::default(),
             review_comment_editor: Editor::default(),
             steering_prompt_editor: Editor::default(),
+            text_compare: TextCompareState::default(),
             ai_openai_key: String::new(),
             ai_anthropic_key: String::new(),
             ai_openai_editing: false,
@@ -3915,6 +4089,7 @@ impl AppState {
             commit_editor: Editor::default(),
             review_comment_editor: Editor::default(),
             steering_prompt_editor: Editor::default(),
+            text_compare: TextCompareState::default(),
             ai_openai_key: String::new(),
             ai_anthropic_key: String::new(),
             ai_openai_editing: false,
@@ -4060,6 +4235,7 @@ impl AppState {
         match action {
             Action::App(action) => app::reduce_action(self, action),
             Action::Workspace(action) => workspace::reduce_action(self, action),
+            Action::TextCompare(action) => text_compare::reduce_action(self, action),
             Action::Compare(action) => compare::reduce_action(self, action),
             Action::Repository(action) => repository::reduce_action(self, action),
             Action::FileList(action) => file_list::reduce_action(self, action),
@@ -4095,6 +4271,10 @@ impl AppState {
         } else {
             workspace_mode_name(self.workspace_mode.get(&self.store))
         };
+        let title_prefix = crate::platform::startup::window_title_prefix();
+        if self.workspace.source.get(&self.store) == WorkspaceSource::TextCompare {
+            return format!("{title_prefix} - Text Compare [{workspace_mode}]");
+        }
         let repo = self.compare.repo_path.with(&self.store, |p| {
             p.as_deref()
                 .and_then(Path::file_name)
@@ -4103,7 +4283,6 @@ impl AppState {
                 .to_owned()
         });
         let selected_path = self.workspace.selected_file_path.get(&self.store);
-        let title_prefix = crate::platform::startup::window_title_prefix();
         if let Some(path) = selected_path.as_deref() {
             format!("{title_prefix} - {repo} [{workspace_mode}] {path}")
         } else {
@@ -4455,11 +4634,11 @@ impl AppState {
     fn expand_context(
         &mut self,
         hunk_index: usize,
-        direction: crate::ui::editor::expansion::ExpandDirection,
+        direction: crate::editor::diff::expansion::ExpandDirection,
         amount: u32,
     ) -> Vec<Effect> {
+        use crate::editor::diff::expansion::ExpandDirection;
         use crate::events::ContextDirection;
-        use crate::ui::editor::expansion::ExpandDirection;
 
         if amount == 0 {
             return Vec::new();
@@ -6461,6 +6640,7 @@ impl AppState {
             FocusTarget::SettingsOpenAiKey => Some(f(&self.ai_openai_key)),
             FocusTarget::SettingsAnthropicKey => Some(f(&self.ai_anthropic_key)),
             FocusTarget::SettingsSteeringPrompt => None,
+            FocusTarget::TextCompareLeft | FocusTarget::TextCompareRight => None,
             _ => None,
         }
     }
@@ -7641,6 +7821,9 @@ impl AppState {
                         self.open_repo_picker();
                         Vec::new()
                     }
+                    PaletteCommand::NewTextCompare => {
+                        self.apply_action(crate::actions::WorkspaceAction::NewTextCompare)
+                    }
                     PaletteCommand::OpenGitHubAuthModal => {
                         self.push_overlay(
                             OverlaySurface::GitHubAuthModal,
@@ -8421,6 +8604,11 @@ impl AppState {
                 PaletteCommand::OpenRepoPicker,
             ),
             (
+                "New Text Compare".to_owned(),
+                "Compare arbitrary pasted text".to_owned(),
+                PaletteCommand::NewTextCompare,
+            ),
+            (
                 "GitHub Sign In".to_owned(),
                 "Start device flow".to_owned(),
                 PaletteCommand::OpenGitHubAuthModal,
@@ -9011,6 +9199,7 @@ impl AppState {
     fn select_file_inner(&mut self, index: usize, reveal: bool) -> Vec<Effect> {
         match self.workspace.source.get(&self.store) {
             WorkspaceSource::Compare => self.select_compare_file(index, reveal),
+            WorkspaceSource::TextCompare => self.select_text_compare_file(index, reveal),
             WorkspaceSource::Status => self.select_status_item(index, reveal),
             WorkspaceSource::None => {
                 self.startup.preferred_file_index = Some(index);
@@ -9035,11 +9224,26 @@ impl AppState {
                         let (left_ref, right_ref) = self.status_refs_for_bucket(bucket);
                         active.left_ref == left_ref && active.right_ref == right_ref
                     }),
-                    WorkspaceSource::Compare => true,
+                    WorkspaceSource::Compare | WorkspaceSource::TextCompare => true,
                     WorkspaceSource::None => false,
                 }
             })
         })
+    }
+
+    fn select_text_compare_file(&mut self, index: usize, reveal: bool) -> Vec<Effect> {
+        let Some(entry) = self.workspace_file_entry_at(index) else {
+            self.push_error("Selected file index is out of range.");
+            return Vec::new();
+        };
+        let mut effects = vec![
+            SyntaxEffect::EnsureSyntaxPackForPath {
+                path: entry.path.to_string(),
+            }
+            .into(),
+        ];
+        effects.extend(self.select_loaded_compare_file(index, reveal));
+        effects
     }
 
     fn select_compare_file(&mut self, index: usize, reveal: bool) -> Vec<Effect> {
@@ -9598,9 +9802,9 @@ impl AppState {
         let kind = line.row_kind();
         if !matches!(
             kind,
-            crate::ui::editor::render_doc::RenderRowKind::Added
-                | crate::ui::editor::render_doc::RenderRowKind::Removed
-                | crate::ui::editor::render_doc::RenderRowKind::Modified
+            crate::editor::diff::render_doc::RenderRowKind::Added
+                | crate::editor::diff::render_doc::RenderRowKind::Removed
+                | crate::editor::diff::render_doc::RenderRowKind::Modified
         ) {
             return;
         }
@@ -9652,7 +9856,7 @@ impl AppState {
                 ls.clear();
             }
             for line in &lines {
-                use crate::ui::editor::render_doc::RenderRowKind;
+                use crate::editor::diff::render_doc::RenderRowKind;
                 let kind = line.row_kind();
                 if !kind.is_body() || line.hunk_index < 0 {
                     continue;
@@ -9668,7 +9872,7 @@ impl AppState {
                 let hunk_id = line.hunk_index as u32;
                 if line.old_line_index >= 0 {
                     ls.entries
-                        .insert(crate::ui::editor::state::LineSelectionKey {
+                        .insert(crate::editor::diff::state::LineSelectionKey {
                             file_path: None,
                             hunk_id,
                             side: carbon::DiffSide::Old,
@@ -9677,7 +9881,7 @@ impl AppState {
                 }
                 if line.new_line_index >= 0 {
                     ls.entries
-                        .insert(crate::ui::editor::state::LineSelectionKey {
+                        .insert(crate::editor::diff::state::LineSelectionKey {
                             file_path: None,
                             hunk_id,
                             side: carbon::DiffSide::New,
@@ -10144,7 +10348,7 @@ impl AppState {
 
     pub fn workspace_file_count(&self) -> usize {
         match self.workspace.source.get(&self.store) {
-            WorkspaceSource::Compare => {
+            WorkspaceSource::Compare | WorkspaceSource::TextCompare => {
                 let count = self.workspace.compare_output.with(&self.store, |output| {
                     output.as_ref().map(CompareOutput::file_count).unwrap_or(0)
                 });
@@ -10202,6 +10406,7 @@ impl AppState {
     pub fn workspace_render_generation(&self) -> u64 {
         match self.workspace.source.get(&self.store) {
             WorkspaceSource::Compare => self.workspace.compare_generation.get(&self.store),
+            WorkspaceSource::TextCompare => self.text_compare.generation,
             WorkspaceSource::Status => self.workspace.status_generation.get(&self.store),
             WorkspaceSource::None => 0,
         }
@@ -10216,19 +10421,20 @@ impl AppState {
         let row_height_px =
             |rows: u32| ((u64::from(rows) * u64::from(row_height_q16)) >> 16) as u32;
 
-        if self.workspace.source.get(&self.store) == WorkspaceSource::Compare
-            && let Some(rows) = self.workspace.compare_output.with(&self.store, |output| {
-                output
-                    .as_ref()
-                    .and_then(|output| output.carbon.files.get(index))
-                    .map(estimated_carbon_file_rows_with_overhead)
-            })
-        {
+        if matches!(
+            self.workspace.source.get(&self.store),
+            WorkspaceSource::Compare | WorkspaceSource::TextCompare
+        ) && let Some(rows) = self.workspace.compare_output.with(&self.store, |output| {
+            output
+                .as_ref()
+                .and_then(|output| output.carbon.files.get(index))
+                .map(estimated_carbon_file_rows_with_overhead)
+        }) {
             return row_height_px(rows);
         }
 
         let line_count = match self.workspace.source.get(&self.store) {
-            WorkspaceSource::Compare => {
+            WorkspaceSource::Compare | WorkspaceSource::TextCompare => {
                 if index < self.workspace_file_count() {
                     let meta = self.file_list_entry_meta(index);
                     meta.additions.saturating_add(meta.deletions).max(1) as u32 + BASELINE_ROWS
@@ -10243,7 +10449,10 @@ impl AppState {
     }
 
     fn workspace_file_row_count(&self, index: usize) -> Option<u32> {
-        if self.workspace.source.get(&self.store) != WorkspaceSource::Compare {
+        if !matches!(
+            self.workspace.source.get(&self.store),
+            WorkspaceSource::Compare | WorkspaceSource::TextCompare
+        ) {
             return None;
         }
         self.workspace.compare_output.with(&self.store, |output| {
@@ -10780,7 +10989,7 @@ impl AppState {
                 .workspace_file_path_at(index)
                 .unwrap_or_else(|| format!("File {}", index + 1));
             let slot_key = match source {
-                WorkspaceSource::Compare => {
+                WorkspaceSource::Compare | WorkspaceSource::TextCompare => {
                     effects.extend(self.ensure_compare_file_cached_for_viewport(
                         index,
                         &path,
@@ -11453,7 +11662,7 @@ impl AppState {
     }
 
     fn recompute_search_matches(&mut self) {
-        use crate::ui::editor::state::MatchSide;
+        use crate::editor::diff::state::MatchSide;
 
         self.editor
             .search
@@ -12120,8 +12329,9 @@ mod tests {
         ActiveFile, ActiveFileLoading, AppState, AsyncStatus, CarbonStyleOverlays,
         CardTextSelection, CompareField, FILE_HEIGHT_SPARSE_MIN_COUNT, FileHeightIndex,
         FileListEntry, FocusTarget, OverlayEntry, OverlaySurface, PickerItem, PickerLabelStyle,
-        PreparedActiveFile, SidebarMode, SidebarTab, ViewportAnchorBias, VirtualDiffItemKind,
-        WorkspaceMode, WorkspaceSource, prepare_active_file, vcs_compare_request,
+        PreparedActiveFile, SidebarMode, SidebarTab, TextCompareLanguage, TextCompareView,
+        ViewportAnchorBias, VirtualDiffItemKind, WorkspaceMode, WorkspaceSource,
+        prepare_active_file, vcs_compare_request,
     };
     use crate::core::compare::{
         CompareFileSummary, CompareMode, CompareOutput, LayoutMode, RendererKind,
@@ -12132,17 +12342,18 @@ mod tests {
         RepoCapabilities, RepoLocation, RevisionId, VcsChange, VcsKind, VcsOperation,
         VcsOperationLogEntry, VcsRef,
     };
+    use crate::editor::EditorMode;
+    use crate::editor::diff::render_doc::{RenderDoc, build_render_doc_from_carbon};
     use crate::effects::{
         AiEffect, CompareEffect, CompareWorkPriority, Effect, GitHubEffect, RepositoryEffect,
         SettingsEffect, SyntaxEffect,
     };
     use crate::events::{
         AppEvent, CompareEvent, CompareFileFinished, CompareFileStat, CompareFileStatsReady,
-        CompareStatsReady, GitHubEvent, RepositoryEvent,
+        CompareStatsReady, GitHubEvent, RepositoryEvent, TextCompareFinished,
     };
     use crate::platform::persistence::Settings;
     use crate::platform::startup::{Args, StartupOptions};
-    use crate::ui::editor::render_doc::{RenderDoc, build_render_doc_from_carbon};
 
     fn carbon_summary_for_path(index: usize, path: &str) -> carbon::FileDiff {
         carbon::FileDiff {
@@ -12167,6 +12378,183 @@ mod tests {
             file
         })
         .unwrap()
+    }
+
+    #[test]
+    fn new_text_compare_enters_text_workspace_with_left_focus() {
+        let mut state = AppState::default();
+
+        state.apply_action(crate::actions::WorkspaceAction::NewTextCompare);
+
+        assert_eq!(
+            state.workspace.source.get(&state.store),
+            WorkspaceSource::TextCompare
+        );
+        assert_eq!(state.text_compare.view, TextCompareView::Edit);
+        assert_eq!(state.text_compare.left_editor.mode(), EditorMode::CodeInput);
+        assert_eq!(
+            state.text_compare.right_editor.mode(),
+            EditorMode::CodeInput
+        );
+        assert_eq!(state.text_compare.language, TextCompareLanguage::Auto);
+        assert_eq!(state.text_compare.path_hint, "text.txt");
+        assert_eq!(
+            state.focus.get(&state.store),
+            Some(FocusTarget::TextCompareLeft)
+        );
+    }
+
+    #[test]
+    fn text_compare_paste_routes_to_focused_side() {
+        let mut state = AppState::default();
+        state.apply_action(crate::actions::WorkspaceAction::NewTextCompare);
+
+        state.apply_action(crate::actions::TextEditAction::Paste("left".to_owned()));
+        state.apply_action(crate::actions::AppAction::SetFocus(Some(
+            FocusTarget::TextCompareRight,
+        )));
+        state.apply_action(crate::actions::TextEditAction::Paste("right".to_owned()));
+
+        assert_eq!(state.text_compare.left_editor.text(), "left");
+        assert_eq!(state.text_compare.right_editor.text(), "right");
+        assert_eq!(state.text_compare.left_editor.line_count(), 1);
+        assert_eq!(state.text_compare.right_editor.line_count(), 1);
+    }
+
+    #[test]
+    fn text_compare_auto_language_detects_pasted_rust() {
+        let mut state = AppState::default();
+        state.apply_action(crate::actions::WorkspaceAction::NewTextCompare);
+
+        state.apply_action(crate::actions::TextEditAction::Paste(
+            "pub fn main() {\n    println!(\"hi\");\n}\n".to_owned(),
+        ));
+
+        assert_eq!(
+            state.text_compare.detected_language,
+            Some(TextCompareLanguage::Rust)
+        );
+        assert_eq!(state.text_compare.path_hint, "scratch.rs");
+    }
+
+    #[test]
+    fn text_compare_auto_language_detects_pasted_typescript() {
+        let mut state = AppState::default();
+        state.apply_action(crate::actions::WorkspaceAction::NewTextCompare);
+
+        state.apply_action(crate::actions::TextEditAction::Paste(
+            "const answer: number = 42;\nexport { answer };\n".to_owned(),
+        ));
+
+        assert_eq!(
+            state.text_compare.detected_language,
+            Some(TextCompareLanguage::TypeScript)
+        );
+        assert_eq!(state.text_compare.path_hint, "scratch.ts");
+    }
+
+    #[test]
+    fn text_compare_language_override_sets_compare_path() {
+        let mut state = AppState::default();
+        state.apply_action(crate::actions::WorkspaceAction::NewTextCompare);
+
+        state.apply_action(crate::actions::TextCompareAction::SetLanguage(
+            TextCompareLanguage::TypeScript,
+        ));
+        state.apply_action(crate::actions::TextEditAction::Paste(
+            "pub fn main() {}\n".to_owned(),
+        ));
+        let effects = state.apply_action(crate::actions::TextCompareAction::CompareNow);
+        let request_path = effects
+            .iter()
+            .find_map(|effect| match effect {
+                Effect::Compare(CompareEffect::RunText(task)) => {
+                    Some(task.request.display_path.as_str())
+                }
+                _ => None,
+            })
+            .unwrap();
+
+        assert_eq!(state.text_compare.language, TextCompareLanguage::TypeScript);
+        assert_eq!(state.text_compare.path_hint, "scratch.ts");
+        assert_eq!(request_path, "scratch.ts");
+    }
+
+    #[test]
+    fn text_compare_swap_sides_preserves_text_and_marks_stale() {
+        let mut state = AppState::default();
+        state.apply_action(crate::actions::WorkspaceAction::NewTextCompare);
+        state.text_compare.left_editor.set_text("old");
+        state.text_compare.right_editor.set_text("new");
+        let generation = state.text_compare.generation;
+
+        state.apply_action(crate::actions::TextCompareAction::SwapSides);
+
+        assert_eq!(state.text_compare.left_editor.text(), "new");
+        assert_eq!(state.text_compare.right_editor.text(), "old");
+        assert!(state.text_compare.generation > generation);
+        assert!(state.text_compare_is_stale());
+    }
+
+    #[test]
+    fn stale_text_compare_finished_event_is_ignored() {
+        let mut state = AppState::default();
+        state.apply_action(crate::actions::WorkspaceAction::NewTextCompare);
+        let effects = state.apply_action(crate::actions::TextCompareAction::CompareNow);
+        let generation = effects
+            .iter()
+            .find_map(|effect| match effect {
+                Effect::Compare(CompareEffect::RunText(task)) => Some(task.generation),
+                _ => None,
+            })
+            .unwrap();
+        state.apply_action(crate::actions::TextEditAction::Paste("newer".to_owned()));
+
+        state.apply_event(AppEvent::from(CompareEvent::TextCompareFinished(
+            TextCompareFinished {
+                generation,
+                display_path: "text.txt".to_owned(),
+                renderer: RendererKind::Builtin,
+                layout: LayoutMode::Unified,
+                output: CompareOutput::default(),
+            },
+        )));
+
+        assert!(state.workspace.compare_output.get(&state.store).is_none());
+        assert_eq!(state.text_compare.view, TextCompareView::Edit);
+    }
+
+    #[test]
+    fn text_compare_finished_installs_diff_view() {
+        let mut state = AppState::default();
+        state.apply_action(crate::actions::WorkspaceAction::NewTextCompare);
+        let generation = state.text_compare.generation.saturating_add(1);
+        state.text_compare.generation = generation;
+        let output = crate::core::compare::compare_text(
+            "old\n",
+            "new\n",
+            "text.txt",
+            RendererKind::Builtin,
+            LayoutMode::Unified,
+        )
+        .unwrap();
+
+        state.apply_event(AppEvent::from(CompareEvent::TextCompareFinished(
+            TextCompareFinished {
+                generation,
+                display_path: "text.txt".to_owned(),
+                renderer: RendererKind::Builtin,
+                layout: LayoutMode::Unified,
+                output,
+            },
+        )));
+
+        assert_eq!(state.text_compare.view, TextCompareView::Diff);
+        assert_eq!(
+            state.workspace.source.get(&state.store),
+            WorkspaceSource::TextCompare
+        );
+        assert!(state.workspace.active_file.get(&state.store).is_some());
     }
 
     fn status_state_with_two_hunks() -> AppState {

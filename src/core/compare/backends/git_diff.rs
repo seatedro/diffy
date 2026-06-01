@@ -298,6 +298,65 @@ pub(crate) fn compare_output_from_raw_patch(raw_diff: &str) -> Result<CompareOut
     Ok(output)
 }
 
+pub(crate) fn compare_text_builtin(
+    left_text: &str,
+    right_text: &str,
+    display_path: &str,
+) -> Result<CompareOutput> {
+    if left_text == right_text {
+        return Ok(CompareOutput::default());
+    }
+
+    let status = if left_text.is_empty() {
+        carbon::FileStatus::Added
+    } else if right_text.is_empty() {
+        carbon::FileStatus::Deleted
+    } else {
+        carbon::FileStatus::Modified
+    };
+    let old_path = (status != carbon::FileStatus::Added).then_some(display_path);
+    let new_path = (status != carbon::FileStatus::Deleted).then_some(display_path);
+    let mut raw = raw_patch_header(
+        old_path,
+        new_path,
+        None,
+        None,
+        Some("100644"),
+        Some("100644"),
+        status,
+    );
+    raw.push_str(&render_gix_unified_hunks(
+        left_text.as_bytes(),
+        right_text.as_bytes(),
+        3,
+    )?);
+    let mut output = compare_output_from_raw_patch(&raw)?;
+    hydrate_text_compare_sources(&mut output, left_text, right_text);
+    Ok(output)
+}
+
+fn hydrate_text_compare_sources(output: &mut CompareOutput, left_text: &str, right_text: &str) {
+    let Some(file) = output.carbon.files.first_mut() else {
+        return;
+    };
+    if !left_text.is_empty() {
+        file.old_text = Some(carbon::TextStore::from_text(left_text.to_owned()));
+    }
+    if !right_text.is_empty() {
+        file.new_text = Some(carbon::TextStore::from_text(right_text.to_owned()));
+    }
+    if !left_text.is_empty() && !left_text.ends_with('\n') {
+        if let Some(block) = file.blocks.iter_mut().rev().find(|block| block.old.len > 0) {
+            block.old_no_newline_at_end = true;
+        }
+    }
+    if !right_text.is_empty() && !right_text.ends_with('\n') {
+        if let Some(block) = file.blocks.iter_mut().rev().find(|block| block.new.len > 0) {
+            block.new_no_newline_at_end = true;
+        }
+    }
+}
+
 type GixChange = gix::object::tree::diff::ChangeDetached;
 
 fn open_gix_repo(git: &GitService) -> Result<gix::Repository> {

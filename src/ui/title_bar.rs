@@ -5,12 +5,26 @@ use crate::ui::design::{Ico, Rad, Sp, Sz};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
-use crate::ui::state::{AppState, AsyncStatus, CompareField, OverlaySurface, WorkspaceMode};
+use crate::ui::state::{
+    AppState, AsyncStatus, CompareField, OverlaySurface, WorkspaceMode, WorkspaceSource,
+};
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme, ThemeColors};
 
 pub(crate) fn compare_cluster_view(state: &AppState, theme: &Theme) -> Option<AnyElement> {
     let tc = &theme.colors;
+    if state.workspace.source.get(&state.store) == WorkspaceSource::TextCompare {
+        let scale = theme.metrics.ui_scale();
+        return Some(view! { scale,
+            <div class="flex-row items-center" gap={Sp::XS}
+                 px={Sp::SM} py={Sp::XXS}
+                 rounded={Rad::SM}
+                 bg={tc.element_background}>
+                <icon svg={lucide::FILE_DIFF} size={Ico::XS} color={tc.accent} />
+                <text class="text-sm font-medium" color={tc.text}>{"Text Compare"}</text>
+            </div>
+        });
+    }
     let has_repo = state.compare.repo_path.with(&state.store, |p| p.is_some());
     let repo_loaded = state.repository.status.get(&state.store) == AsyncStatus::Ready;
     let ref_picker_open = state.overlays_top() == Some(OverlaySurface::RefPicker);

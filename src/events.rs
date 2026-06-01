@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::core::compare::CompareOutput;
+use crate::core::compare::{CompareOutput, LayoutMode, RendererKind};
 use crate::core::forge::github::{
     DeviceFlowState, GitHubPullRequestReviewData, GitHubPullRequestReviewThreadComment,
     GitHubReviewThreadResolution, GitHubUser, PullRequestInfo, PullRequestReview,
@@ -78,6 +78,15 @@ pub struct CompareFinished {
     pub resolved_right: String,
     pub output: CompareOutput,
     pub range_commits: Vec<VcsChange>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TextCompareFinished {
+    pub generation: u64,
+    pub display_path: String,
+    pub renderer: RendererKind,
+    pub layout: LayoutMode,
+    pub output: CompareOutput,
 }
 
 #[derive(Debug, Clone)]
@@ -236,12 +245,17 @@ pub enum RepositoryEvent {
 #[derive(Debug, Clone)]
 pub enum CompareEvent {
     CompareFinished(CompareFinished),
+    TextCompareFinished(TextCompareFinished),
     CompareHistoryReady(CompareHistoryReady),
     CompareHistoryFailed {
         generation: u64,
         message: String,
     },
     CompareFailed {
+        generation: u64,
+        message: String,
+    },
+    TextCompareFailed {
         generation: u64,
         message: String,
     },

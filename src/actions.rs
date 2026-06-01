@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 use crate::core::review::{ReviewDecision, ReviewThreadId};
 use crate::core::vcs::model::{PublishAction, VcsOperation};
+use crate::editor::diff::state::{LineSelectionKey, ReviewCommentTarget, ViewportTextPoint};
 use crate::input::ShortcutCommand;
 use crate::platform::secrets::AiKeyKind;
-use crate::ui::editor::state::{LineSelectionKey, ReviewCommentTarget, ViewportTextPoint};
 use crate::ui::state::{CompareField, FocusTarget, SettingsSection, SidebarTab};
 use crate::ui::theme::ThemeMode;
 
@@ -92,8 +92,18 @@ pub enum AppAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceAction {
     OpenRepository(PathBuf),
+    NewTextCompare,
     ShowWorkingTree,
     RefreshRepository,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextCompareAction {
+    SetView(crate::ui::state::TextCompareView),
+    SwapSides,
+    ClearSide(crate::ui::state::TextCompareSide),
+    CompareNow,
+    SetLanguage(crate::ui::state::TextCompareLanguage),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -406,6 +416,7 @@ pub enum AiAction {
 pub enum Action {
     App(AppAction),
     Workspace(WorkspaceAction),
+    TextCompare(TextCompareAction),
     Compare(CompareAction),
     Repository(RepositoryAction),
     FileList(FileListAction),
@@ -430,6 +441,12 @@ impl From<AppAction> for Action {
 impl From<WorkspaceAction> for Action {
     fn from(action: WorkspaceAction) -> Self {
         Self::Workspace(action)
+    }
+}
+
+impl From<TextCompareAction> for Action {
+    fn from(action: TextCompareAction) -> Self {
+        Self::TextCompare(action)
     }
 }
 

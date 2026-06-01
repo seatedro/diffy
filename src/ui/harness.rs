@@ -8,9 +8,9 @@ use crate::core::review::{
     ReviewAnchor, ReviewComment, ReviewCommentId, ReviewLineRange, ReviewResolution, ReviewSide,
     ReviewThread, ReviewThreadId, ReviewThreadPermissions, ReviewThreadStatus,
 };
+use crate::editor::diff::review::{build_review_thread_card, measure_review_thread_card_height};
 use crate::render::Scene;
 use crate::ui::accessibility::AccessibilityFrame;
-use crate::ui::editor::review::{build_review_thread_card, measure_review_thread_card_height};
 use crate::ui::element::{
     ElementContext, HitRegion, IntoAnyElement, ScrollRegion, SelectableTextRegion,
     TextInputHitArea, TooltipRegion, render_element_at,
@@ -112,7 +112,7 @@ pub fn sample_review_thread() -> ReviewThread {
 /// eyeballing the highlight across a style boundary.
 pub fn sample_card_selection() -> Option<CardTextSelection> {
     let thread = sample_review_thread();
-    let key = crate::ui::editor::review::card_source_key(&thread.id, 1);
+    let key = crate::editor::diff::review::card_source_key(&thread.id, 1);
     let card = render_review_card(&thread, true, None);
     let region = card.selectable.iter().find(|r| r.source_key == key)?;
     let anchor = region.text.find("memoize")?;
@@ -456,7 +456,7 @@ pub struct UiHarness {
     pub state: crate::ui::state::AppState,
     input: crate::input::InputSystem,
     font_system: glyphon::FontSystem,
-    editor: crate::ui::editor::element::EditorElement,
+    editor: crate::editor::diff::element::EditorElement,
     tooltip: crate::ui::components::TooltipState,
     launch_at: std::time::Instant,
     ui_frame: crate::ui::shell::UiFrame,
@@ -482,7 +482,7 @@ impl UiHarness {
             state: crate::ui::state::AppState::default(),
             input: crate::input::InputSystem::default(),
             font_system: crate::fonts::new_font_system(),
-            editor: crate::ui::editor::element::EditorElement::default(),
+            editor: crate::editor::diff::element::EditorElement::default(),
             tooltip: crate::ui::components::TooltipState::default(),
             launch_at: std::time::Instant::now(),
             ui_frame,
@@ -492,7 +492,7 @@ impl UiHarness {
 
     /// The selectable region for comment `index`, matched by its source key.
     pub fn region_for_comment(&self, thread: &ReviewThread, index: usize) -> &SelectableTextRegion {
-        let key = crate::ui::editor::review::card_source_key(&thread.id, index);
+        let key = crate::editor::diff::review::card_source_key(&thread.id, index);
         self.card
             .selectable
             .iter()
@@ -880,9 +880,9 @@ mod tests {
     fn fetched_avatar_renders_at_review_avatar_px() {
         use std::sync::Arc;
 
+        use crate::editor::diff::review::{REVIEW_AVATAR_FETCH_PX, REVIEW_AVATAR_PX};
         use crate::render::Primitive;
         use crate::ui::components::avatar::AvatarImage;
-        use crate::ui::editor::review::{REVIEW_AVATAR_FETCH_PX, REVIEW_AVATAR_PX};
         use crate::ui::state::{avatar_cache_key, avatar_url_sized};
 
         let mut thread = sample_review_thread();
@@ -1186,16 +1186,16 @@ mod tests {
         // Pre-seed a viewport text selection; the card drag must clear it.
         harness.state.editor.text_selection.set(
             &harness.state.store,
-            Some(crate::ui::editor::state::ViewportTextSelection {
+            Some(crate::editor::diff::state::ViewportTextSelection {
                 generation: 1,
-                anchor: crate::ui::editor::state::ViewportTextPoint {
+                anchor: crate::editor::diff::state::ViewportTextPoint {
                     line_index: 0,
-                    side: crate::ui::editor::state::ViewportTextSide::Right,
+                    side: crate::editor::diff::state::ViewportTextSide::Right,
                     byte_offset: 0,
                 },
-                focus: crate::ui::editor::state::ViewportTextPoint {
+                focus: crate::editor::diff::state::ViewportTextPoint {
                     line_index: 0,
-                    side: crate::ui::editor::state::ViewportTextSide::Right,
+                    side: crate::editor::diff::state::ViewportTextSide::Right,
                     byte_offset: 3,
                 },
             }),
@@ -1277,9 +1277,9 @@ mod tests {
         harness
             .state
             .apply_action(crate::actions::EditorAction::BeginViewportTextSelection {
-                point: crate::ui::editor::state::ViewportTextPoint {
+                point: crate::editor::diff::state::ViewportTextPoint {
                     line_index: 0,
-                    side: crate::ui::editor::state::ViewportTextSide::Right,
+                    side: crate::editor::diff::state::ViewportTextSide::Right,
                     byte_offset: 0,
                 },
                 generation: 1,
@@ -1301,7 +1301,7 @@ mod tests {
     /// and paint paths the overlay relies on.
     #[test]
     fn inline_reply_composer_grows_card_and_renders_editor() {
-        use crate::ui::editor::review::{
+        use crate::editor::diff::review::{
             build_review_thread_card, measure_review_thread_card_height,
         };
         use crate::ui::shell::build_inline_reply_composer;

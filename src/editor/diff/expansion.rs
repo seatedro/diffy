@@ -1,11 +1,11 @@
 use crate::actions::Action;
-use crate::render::Rect;
-use crate::render::scene::{FontKind, FontWeight, IconPrimitive, Primitive, TextPrimitive};
-use crate::ui::editor::decoration::{
+use crate::editor::diff::decoration::{
     BlockDecoration, BlockPaintCtx, BlockPlacement, BlockRegistry,
 };
-use crate::ui::editor::display_layout::DisplayLayoutMetrics;
-use crate::ui::editor::render_doc::{RenderDoc, RenderRowKind};
+use crate::editor::diff::display_layout::DisplayLayoutMetrics;
+use crate::editor::diff::render_doc::{RenderDoc, RenderRowKind};
+use crate::render::Rect;
+use crate::render::scene::{FontKind, FontWeight, IconPrimitive, Primitive, TextPrimitive};
 use crate::ui::icons::lucide;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,7 +241,7 @@ fn above_block_anchor(
 mod tests {
     use super::*;
     use crate::core::text::TokenBuffer;
-    use crate::ui::editor::render_doc::build_render_doc_from_carbon;
+    use crate::editor::diff::render_doc::build_render_doc_from_carbon;
 
     #[test]
     fn above_context_chip_moves_above_revealed_context() {

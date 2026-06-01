@@ -1,7 +1,7 @@
 use winit::event::{MouseScrollDelta, TouchPhase};
 
 use crate::actions::{Action, AppAction, EditorAction, FileListAction, SettingsAction};
-use crate::ui::editor::element::EditorElement;
+use crate::editor::diff::element::EditorElement;
 use crate::ui::element::ScrollActionBuilder;
 use crate::ui::shell::UiFrame;
 use crate::ui::state::AppState;
@@ -186,7 +186,7 @@ pub fn quantize_scroll_delta_px(remainder_px: &mut f32, delta_px: f32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::editor::element::EditorElement;
+    use crate::editor::diff::element::EditorElement;
 
     #[test]
     fn commit_editor_scroll_uses_editor_line_height() {

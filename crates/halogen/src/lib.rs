@@ -37,9 +37,9 @@ pub use hit::{
 pub use identity::{TestId, UiKey, UiNodeId};
 pub use retained::{DisposedNode, RetainedNode, RetainedTree};
 pub use scene::{
-    BlurRegionPrimitive, BorderPrimitive, ClipPrimitive, EditorTextSlot, EffectQuadPrimitive,
-    EffectType, FontKind, FontWeight, IconPrimitive, ImagePrimitive, Primitive, RectPrimitive,
-    RichTextPrimitive, RichTextSpan, RoundedRectPrimitive, Scene, ShadowPrimitive, TextPrimitive,
+    BlurRegionPrimitive, BorderPrimitive, ClipPrimitive, EffectQuadPrimitive, EffectType, FontKind,
+    FontWeight, IconPrimitive, ImagePrimitive, Primitive, RectPrimitive, RichTextPrimitive,
+    RichTextSpan, RoundedRectPrimitive, Scene, ShadowPrimitive, TextPrimitive,
 };
 pub use semantic::{
     SemanticActions, SemanticFrame, SemanticNode, SemanticNodeState, SemanticRole, dump_semantic,

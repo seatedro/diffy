@@ -4,13 +4,13 @@ use std::rc::Rc;
 use halogen::view;
 
 use crate::actions::Action;
+use crate::editor::diff::anchor::EditorOverlayKind;
+use crate::editor::diff::element::{EditorDocument, EditorElement, ScrollbarOverride};
+use crate::editor::input_element::{TextEditorElement, text_editor_element};
 use crate::effects::Effect;
 use crate::render::{Rect, Scene, TextMetrics};
 use crate::ui::components::{Button, ButtonSize, ButtonStyle, ToastStack};
 use crate::ui::design::{Bp, Rad, Shadow, Sp, Sz};
-use crate::ui::editor::anchor::EditorOverlayKind;
-use crate::ui::editor::element::{EditorDocument, EditorElement, ScrollbarOverride};
-use crate::ui::editor_element::{CursorSnapshot, TextEditorElement, text_editor_element};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::overlays;
@@ -382,7 +382,7 @@ pub fn build_ui_frame(
             // and render (overlay loop) so reserved height matches.
             let review_card_width = editor
                 .content_width_for_bounds(vp_bounds, text_metrics)
-                .min(crate::ui::editor::review::PANEL_MAX_WIDTH * ui_scale);
+                .min(crate::editor::diff::review::PANEL_MAX_WIDTH * ui_scale);
 
             // Precompute pass: measure each visible-file thread card's natural height via
             // compute_layout BEFORE borrowing blocks_mut, so the block can reserve the
@@ -415,7 +415,7 @@ pub fn build_ui_frame(
                         thread,
                         review_card_width,
                     );
-                    let h = crate::ui::editor::review::measure_review_thread_card_height(
+                    let h = crate::editor::diff::review::measure_review_thread_card_height(
                         thread,
                         expanded,
                         theme,
@@ -444,7 +444,7 @@ pub fn build_ui_frame(
                     .expansions
                     .with(&state.store, |m| m.get(&active_file.path).cloned())
                     .unwrap_or_default();
-                let caps = crate::ui::editor::expansion::populate_expand_blocks(
+                let caps = crate::editor::diff::expansion::populate_expand_blocks(
                     editor.blocks_mut(),
                     &active_file.carbon_file,
                     &active_file.render_doc,
@@ -455,13 +455,13 @@ pub fn build_ui_frame(
                 if review_threads.is_empty() {
                     let review_comments =
                         state.active_pr_review_comments_for_file(&active_file.carbon_file);
-                    crate::ui::editor::review::populate_review_comment_blocks(
+                    crate::editor::diff::review::populate_review_comment_blocks(
                         editor.blocks_mut(),
                         &active_file.render_doc,
                         &review_comments,
                     );
                 } else {
-                    crate::ui::editor::review::populate_review_thread_blocks(
+                    crate::editor::diff::review::populate_review_thread_blocks(
                         editor.blocks_mut(),
                         &active_file.render_doc,
                         &active_file.carbon_file,
@@ -492,7 +492,7 @@ pub fn build_ui_frame(
                             crate::core::review::ReviewSide::New
                         }
                     };
-                    crate::ui::editor::review::push_review_composer_block(
+                    crate::editor::diff::review::push_review_composer_block(
                         editor.blocks_mut(),
                         &active_file.render_doc,
                         rside,
@@ -790,16 +790,17 @@ pub fn build_ui_frame(
                                     &thread,
                                     review_card_width,
                                 );
-                                let mut card = crate::ui::editor::review::build_review_thread_card(
-                                    &thread,
-                                    expanded,
-                                    theme,
-                                    ui_scale,
-                                    review_card_width,
-                                    &review_avatars,
-                                    card_selection.as_ref(),
-                                    reply_composer,
-                                );
+                                let mut card =
+                                    crate::editor::diff::review::build_review_thread_card(
+                                        &thread,
+                                        expanded,
+                                        theme,
+                                        ui_scale,
+                                        review_card_width,
+                                        &review_avatars,
+                                        card_selection.as_ref(),
+                                        reply_composer,
+                                    );
                                 render_element_at(
                                     &mut card,
                                     &mut scene,
@@ -1062,7 +1063,7 @@ fn editor_document_for<'a>(
 fn update_continuous_slot_heights(
     state: &mut AppState,
     continuous: &ViewportDocument,
-    editor_snap: &crate::ui::editor::state::EditorState,
+    editor_snap: &crate::editor::diff::state::EditorState,
 ) -> bool {
     let mut changed = false;
     for (position_index, slot_index) in continuous.slot_indices.iter().copied().enumerate() {
@@ -1096,7 +1097,7 @@ fn update_continuous_slot_heights(
 
 fn populate_continuous_review_blocks(
     state: &AppState,
-    blocks: &mut crate::ui::editor::decoration::BlockRegistry,
+    blocks: &mut crate::editor::diff::decoration::BlockRegistry,
     viewport: &mut ViewportDocument,
     heights: &std::collections::HashMap<crate::core::review::ReviewThreadId, u16>,
     composer_height: u16,
@@ -1123,7 +1124,7 @@ fn populate_continuous_review_blocks(
             continue;
         };
         let Some(line_range) =
-            crate::ui::editor::review::render_doc_file_line_range(render_doc, &file.path)
+            crate::editor::diff::review::render_doc_file_line_range(render_doc, &file.path)
         else {
             continue;
         };
@@ -1132,14 +1133,14 @@ fn populate_continuous_review_blocks(
         let review_threads = state.active_pr_review_threads_for_file(&file.carbon_file);
         if review_threads.is_empty() {
             let review_comments = state.active_pr_review_comments_for_file(&file.carbon_file);
-            crate::ui::editor::review::populate_review_comment_blocks_in_range(
+            crate::editor::diff::review::populate_review_comment_blocks_in_range(
                 blocks,
                 render_doc,
                 line_range.clone(),
                 &review_comments,
             );
         } else {
-            crate::ui::editor::review::populate_review_thread_blocks_in_range(
+            crate::editor::diff::review::populate_review_thread_blocks_in_range(
                 blocks,
                 render_doc,
                 &file.carbon_file,
@@ -1162,7 +1163,7 @@ fn populate_continuous_review_blocks(
                     crate::core::review::ReviewSide::New
                 }
             };
-            crate::ui::editor::review::push_review_composer_block_in_range(
+            crate::editor::diff::review::push_review_composer_block_in_range(
                 blocks,
                 render_doc,
                 line_range,
@@ -1186,7 +1187,7 @@ fn populate_continuous_review_blocks(
 fn append_virtual_block_stream_items(
     state: &AppState,
     viewport: &mut ViewportDocument,
-    blocks: &crate::ui::editor::decoration::BlockRegistry,
+    blocks: &crate::editor::diff::decoration::BlockRegistry,
     file_index: usize,
     block_range: std::ops::Range<usize>,
     heights: &std::collections::HashMap<crate::core::review::ReviewThreadId, u16>,
@@ -1316,23 +1317,13 @@ fn composer_text_editor(state: &AppState, theme: &Theme) -> TextEditorElement {
     let tc = &theme.colors;
     let focused =
         state.focus.get(&state.store) == Some(crate::ui::state::FocusTarget::ReviewCommentEditor);
-    let cursor = CursorSnapshot {
-        x: state.review_comment_editor.cursor_pos.x,
-        y: state.review_comment_editor.cursor_pos.y,
-        moved_at_ms: state.review_comment_editor.cursor_moved_at_ms,
-    };
     text_editor_element()
         .placeholder("Leave a review comment")
-        .is_empty(state.review_comment_editor.is_empty())
+        .editor_snapshot(&state.review_comment_editor)
         .focused(focused)
         .focus_target(crate::ui::state::FocusTarget::ReviewCommentEditor)
-        .editor_id(2)
         .font_size(theme.metrics.ui_font_size)
         .text_color(tc.text)
-        .cursor(cursor)
-        .selection(state.review_comment_editor.selection_rects())
-        .content_height(state.review_comment_editor.content_height())
-        .scroll_y(state.review_comment_editor.scroll_y)
         .w_full()
 }
 
@@ -1444,7 +1435,7 @@ fn composer_editor_box(
         (width - body_pad * 2.0).max(40.0)
     };
     let body_content: AnyElement = if preview {
-        crate::ui::editor::review::render_markdown_body(
+        crate::editor::diff::review::render_markdown_body(
             &state.review_comment_editor.text(),
             theme,
             ui_scale,
@@ -1707,10 +1698,10 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use crate::ui::editor::decoration::{BlockDecoration, BlockPlacement, BlockRegistry};
-    use crate::ui::editor::display_layout::DisplayLayoutMetrics;
-    use crate::ui::editor::render_doc::RenderDoc;
-    use crate::ui::editor::review::ReviewThreadBlock;
+    use crate::editor::diff::decoration::{BlockDecoration, BlockPlacement, BlockRegistry};
+    use crate::editor::diff::display_layout::DisplayLayoutMetrics;
+    use crate::editor::diff::render_doc::RenderDoc;
+    use crate::editor::diff::review::ReviewThreadBlock;
     use crate::ui::harness::sample_review_thread;
     use crate::ui::state::{AppState, ViewportDocument, VirtualDiffItemKind};
 

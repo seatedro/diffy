@@ -7,6 +7,11 @@ use crate::core::forge::github::{GitHubReviewSide, PullRequestReviewComment};
 use crate::core::review::{
     ReviewComment, ReviewReactionGroup, ReviewResolution, ReviewSide, ReviewThread, ReviewThreadId,
 };
+use crate::editor::diff::decoration::{
+    BlockDecoration, BlockPaintCtx, BlockPlacement, BlockRegistry,
+};
+use crate::editor::diff::display_layout::DisplayLayoutMetrics;
+use crate::editor::diff::render_doc::{INVALID_U32, RenderDoc, RenderRowKind};
 use crate::render::{
     BorderPrimitive, FontKind, FontWeight, Rect, RoundedRectPrimitive, ShadowPrimitive,
     TextPrimitive,
@@ -14,11 +19,6 @@ use crate::render::{
 use crate::ui::components::avatar::AvatarImage;
 use crate::ui::components::{Button, ButtonSize, ButtonStyle, avatar};
 use crate::ui::design::{Ico, Rad, Shadow, Sp};
-use crate::ui::editor::decoration::{
-    BlockDecoration, BlockPaintCtx, BlockPlacement, BlockRegistry,
-};
-use crate::ui::editor::display_layout::DisplayLayoutMetrics;
-use crate::ui::editor::render_doc::{INVALID_U32, RenderDoc, RenderRowKind};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;

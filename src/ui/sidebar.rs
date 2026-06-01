@@ -5,13 +5,13 @@ use halogen::view;
 
 use crate::actions::Action;
 use crate::core::vcs::model::{ChangeBucket, FileChange, VcsChange};
+use crate::editor::input_element::text_editor_element;
 use crate::effects::SettingsEffect;
 use crate::render::{Rect, RectPrimitive, RoundedRectPrimitive};
 use crate::ui::components::{
     self, Button, ButtonSize, ButtonStyle, SegmentedControl, SegmentedItem,
 };
 use crate::ui::design::{Alpha, Ico, Rad, Sp, Sz};
-use crate::ui::editor_element::{CursorSnapshot, text_editor_element};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
@@ -847,23 +847,13 @@ pub(crate) fn sidebar(
                 });
         let can_commit = has_committable_changes && !state.commit_editor.text().trim().is_empty();
         let box_h = (Sz::COMMIT_BOX_H * scale).round();
-        let cursor_snap = CursorSnapshot {
-            x: state.commit_editor.cursor_pos.x,
-            y: state.commit_editor.cursor_pos.y,
-            moved_at_ms: state.commit_editor.cursor_moved_at_ms,
-        };
-        let sel_rects = state.commit_editor.selection_rects();
         let editor_el = text_editor_element()
             .placeholder("Enter commit message")
-            .is_empty(state.commit_editor.is_empty())
+            .editor_snapshot(&state.commit_editor)
             .focused(commit_focused)
             .focus_target(FocusTarget::CommitEditor)
             .font_size(theme.metrics.ui_small_font_size)
             .text_color(tc.text)
-            .cursor(cursor_snap)
-            .selection(sel_rects)
-            .content_height(state.commit_editor.content_height())
-            .scroll_y(state.commit_editor.scroll_y)
             .w_full()
             .flex_1();
         Some(view! { scale,

@@ -13,10 +13,10 @@ use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::Window;
 
 use crate::actions::Action;
+use crate::editor::diff::element::EditorElement;
+use crate::editor::diff::state::ReviewCommentTarget;
 use crate::effects::Effect;
 use crate::ui::components::TooltipState;
-use crate::ui::editor::element::EditorElement;
-use crate::ui::editor::state::ReviewCommentTarget;
 use crate::ui::element::DragHandler;
 use crate::ui::shell::UiFrame;
 use crate::ui::state::{AppState, FocusTarget, OverlaySurface, WorkspaceMode};

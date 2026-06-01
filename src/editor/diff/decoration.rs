@@ -475,8 +475,8 @@ fn mix_layout_signature(sig: u64, value: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{BlockPlacement, RowDecoration, decoration_for_kind};
-    use crate::ui::editor::display_layout::DisplayLayoutMetrics;
-    use crate::ui::editor::render_doc::RenderRowKind;
+    use crate::editor::diff::display_layout::DisplayLayoutMetrics;
+    use crate::editor::diff::render_doc::RenderRowKind;
 
     #[test]
     fn hunk_separator_and_file_header_have_decoration_body_rows_do_not() {

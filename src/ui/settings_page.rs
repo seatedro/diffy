@@ -4,6 +4,7 @@ use crate::actions::Action;
 use crate::ai::stream::{ANTHROPIC_MODEL, OPENAI_MODEL};
 use crate::core::compare::backends::DifftasticBackend;
 use crate::core::compare::{LayoutMode, RendererKind};
+use crate::editor::input_element::text_editor_element;
 use crate::fonts::FontRole;
 use crate::input::{
     ShortcutCommand, ShortcutEntry, active_bindings, binding_conflict, format_binding,
@@ -14,7 +15,6 @@ use crate::ui::components::{
     Button, ButtonSize, ButtonStyle, SegmentedControl, SegmentedItem, toggle,
 };
 use crate::ui::design::{Ico, Rad, Sp, Sz};
-use crate::ui::editor_element::{CursorSnapshot, text_editor_element};
 use crate::ui::element::*;
 use crate::ui::icons::lucide;
 use crate::ui::shell::CursorHint;
@@ -805,26 +805,15 @@ fn clankers_section(state: &AppState, theme: &Theme) -> AnyElement {
     }
     .into_any();
 
-    let prompt_cursor = CursorSnapshot {
-        x: state.steering_prompt_editor.cursor_pos.x,
-        y: state.steering_prompt_editor.cursor_pos.y,
-        moved_at_ms: state.steering_prompt_editor.cursor_moved_at_ms,
-    };
-    let prompt_selection = state.steering_prompt_editor.selection_rects();
     let prompt_box_h = (160.0 * scale).round();
 
     let prompt_editor = text_editor_element()
         .placeholder("Custom steering for commit messages (optional)\u{2026}")
-        .is_empty(state.steering_prompt_editor.is_empty())
+        .editor_snapshot(&state.steering_prompt_editor)
         .focused(prompt_focused)
         .focus_target(FocusTarget::SettingsSteeringPrompt)
-        .editor_id(1)
         .font_size(theme.metrics.ui_small_font_size)
         .text_color(tc.text)
-        .cursor(prompt_cursor)
-        .selection(prompt_selection)
-        .content_height(state.steering_prompt_editor.content_height())
-        .scroll_y(state.steering_prompt_editor.scroll_y)
         .w_full()
         .flex_1();
 

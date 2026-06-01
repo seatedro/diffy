@@ -3,10 +3,10 @@ use crate::core::review::{
     ReviewAnchor, ReviewDecision, ReviewLineRange, ReviewResolution, ReviewSide, ReviewThread,
     ReviewThreadId,
 };
+use crate::editor::diff::render_doc::{INVALID_U32, RenderLine};
+use crate::editor::diff::state::{LineSelection, ReviewCommentTarget};
 use crate::effects::{Effect, GitHubEffect, UiEffect};
 use crate::events::GitHubEvent;
-use crate::ui::editor::render_doc::{INVALID_U32, RenderLine};
-use crate::ui::editor::state::{LineSelection, ReviewCommentTarget};
 
 use super::*;
 
@@ -1922,7 +1922,7 @@ fn enqueue_review_avatar_fetches(state: &mut AppState, key: &PrKey) -> Vec<Effec
                         if let Some(raw) = comment.author_avatar_url.as_deref()
                             && let Some(url) = avatar_url_sized(
                                 raw,
-                                crate::ui::editor::review::REVIEW_AVATAR_FETCH_PX,
+                                crate::editor::diff::review::REVIEW_AVATAR_FETCH_PX,
                             )
                             && seen.insert(url.clone())
                         {
@@ -1978,8 +1978,8 @@ fn save_review_session_effect(state: &AppState, key: &PrKey) -> Vec<Effect> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::editor::render_doc::RenderRowKind;
-    use crate::ui::editor::state::LineSelectionKey;
+    use crate::editor::diff::render_doc::RenderRowKind;
+    use crate::editor::diff::state::LineSelectionKey;
 
     fn file() -> carbon::FileDiff {
         carbon::FileDiff {

@@ -224,10 +224,10 @@ mod tests {
         DisplayLayoutConfig, DisplayLayoutMetrics, compute_gutter_digits, effective_wrap_cols,
         rebuild_display_rows, wrap_count,
     };
-    use crate::ui::editor::decoration::{
+    use crate::editor::diff::decoration::{
         BlockDecoration, BlockPaintCtx, BlockPlacement, BlockRegistry,
     };
-    use crate::ui::editor::render_doc::{
+    use crate::editor::diff::render_doc::{
         ByteRange, INVALID_U32, RenderDoc, RenderLine, RenderRowKind,
     };
 

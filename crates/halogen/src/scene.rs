@@ -73,10 +73,6 @@ impl Scene {
         self.push(Primitive::BlurRegion(blur));
     }
 
-    pub fn editor_text(&mut self, slot: EditorTextSlot) {
-        self.push(Primitive::EditorText(slot));
-    }
-
     pub fn effect_quad(&mut self, effect: EffectQuadPrimitive) {
         self.push(Primitive::EffectQuad(effect));
     }
@@ -131,7 +127,6 @@ pub enum Primitive {
     /// Pop the current z-index context.
     ZIndexPop,
     LayerBoundary,
-    EditorText(EditorTextSlot),
 }
 
 impl Primitive {
@@ -148,20 +143,9 @@ impl Primitive {
             Self::EffectQuad(p) => p.rect = p.rect.offset(dx, dy),
             Self::BlurRegion(p) => p.rect = p.rect.offset(dx, dy),
             Self::ClipStart(p) => p.rect = p.rect.offset(dx, dy),
-            Self::EditorText(p) => p.rect = p.rect.offset(dx, dy),
             Self::ClipEnd | Self::ZIndexPush(_) | Self::ZIndexPop | Self::LayerBoundary => {}
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct EditorTextSlot {
-    pub rect: Rect,
-    pub color: Color,
-    pub font_size: f32,
-    pub scroll_y: f32,
-    /// Index into the caller-supplied editor slice for rendering. 0 by default.
-    pub editor_id: u8,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]

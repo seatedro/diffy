@@ -8,11 +8,11 @@ use crate::actions::{
     RepositoryAction, TextEditAction,
 };
 use crate::core::forge::github::GitHubReviewSide;
+use crate::editor::diff::anchor::EditorOverlayKind;
+use crate::editor::diff::element::EditorElement;
+use crate::editor::diff::render_doc::{FileHeaderMeta, INVALID_U32, RenderDoc, RenderRowKind};
+use crate::editor::diff::state::{LineSelectionKey, ReviewCommentTarget};
 use crate::ui::components::{TooltipSide, TooltipState};
-use crate::ui::editor::anchor::EditorOverlayKind;
-use crate::ui::editor::element::EditorElement;
-use crate::ui::editor::render_doc::{FileHeaderMeta, INVALID_U32, RenderDoc, RenderRowKind};
-use crate::ui::editor::state::{LineSelectionKey, ReviewCommentTarget};
 use crate::ui::element::{ClickEvent, ClickResult, DragHandler, HitIdentity};
 use crate::ui::icons::lucide;
 use crate::ui::shell::UiFrame;

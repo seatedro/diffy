@@ -1,6 +1,48 @@
+use std::sync::Arc;
+
+use crate::core::text::DiffTokenSpan;
+
 use glyphon::{Attrs, Buffer, Family, Metrics, Shaping, Wrap};
 
+pub mod diff;
+pub mod input_element;
+
 const LINE_HEIGHT_FACTOR: f32 = 1.35;
+const SYNTAX_HIGHLIGHT_MAX_BYTES: usize = 256 * 1024;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EditorMode {
+    #[default]
+    ProseInput,
+    CodeInput,
+    DiffReadOnly,
+}
+
+impl EditorMode {
+    pub fn is_editable(self) -> bool {
+        !matches!(self, Self::DiffReadOnly)
+    }
+
+    pub fn is_code(self) -> bool {
+        matches!(self, Self::CodeInput | Self::DiffReadOnly)
+    }
+
+    fn family(self) -> Family<'static> {
+        if self.is_code() {
+            Family::Monospace
+        } else {
+            Family::SansSerif
+        }
+    }
+
+    fn shaping(self) -> Shaping {
+        if self.is_code() {
+            Shaping::Basic
+        } else {
+            Shaping::Advanced
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct SelectionRect {
@@ -17,11 +59,15 @@ pub struct CursorState {
 }
 
 pub struct Editor {
+    mode: EditorMode,
     text: String,
     cursor: usize,
     anchor: usize,
     buffer: Option<Buffer>,
     dirty: bool,
+    syntax_dirty: bool,
+    syntax_path: Option<String>,
+    syntax_spans: Vec<DiffTokenSpan>,
     desired_x: Option<f32>,
     reveal_cursor_on_flush: bool,
     pub scroll_y: f32,
@@ -35,11 +81,15 @@ pub struct Editor {
 impl Default for Editor {
     fn default() -> Self {
         Self {
+            mode: EditorMode::default(),
             text: String::new(),
             cursor: 0,
             anchor: 0,
             buffer: None,
             dirty: true,
+            syntax_dirty: true,
+            syntax_path: None,
+            syntax_spans: Vec::new(),
             desired_x: None,
             reveal_cursor_on_flush: false,
             scroll_y: 0.0,
@@ -55,11 +105,15 @@ impl Default for Editor {
 impl Clone for Editor {
     fn clone(&self) -> Self {
         Self {
+            mode: self.mode,
             text: self.text.clone(),
             cursor: self.cursor,
             anchor: self.anchor,
             buffer: None,
             dirty: true,
+            syntax_dirty: true,
+            syntax_path: self.syntax_path.clone(),
+            syntax_spans: self.syntax_spans.clone(),
             desired_x: self.desired_x,
             reveal_cursor_on_flush: self.reveal_cursor_on_flush,
             scroll_y: self.scroll_y,
@@ -76,6 +130,7 @@ impl std::fmt::Debug for Editor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Editor")
             .field("initialized", &self.buffer.is_some())
+            .field("mode", &self.mode)
             .field("cursor", &self.cursor)
             .field("anchor", &self.anchor)
             .field("scroll_y", &self.scroll_y)
@@ -156,6 +211,48 @@ fn next_word_boundary(text: &str, offset: usize) -> usize {
 }
 
 impl Editor {
+    pub fn new(mode: EditorMode) -> Self {
+        Self {
+            mode,
+            ..Self::default()
+        }
+    }
+
+    pub fn mode(&self) -> EditorMode {
+        self.mode
+    }
+
+    pub fn set_mode(&mut self, mode: EditorMode) {
+        if self.mode == mode {
+            return;
+        }
+        let family_changed = self.mode.is_code() != mode.is_code();
+        self.mode = mode;
+        self.dirty = true;
+        self.syntax_dirty = true;
+        if family_changed {
+            self.buffer = None;
+        }
+    }
+
+    pub fn set_syntax_path(&mut self, path: impl Into<String>) {
+        let path = path.into();
+        if self.syntax_path.as_deref() == Some(path.as_str()) {
+            return;
+        }
+        self.syntax_path = (!path.is_empty()).then_some(path);
+        self.syntax_dirty = true;
+    }
+
+    pub fn clear_syntax_path(&mut self) {
+        if self.syntax_path.is_none() && self.syntax_spans.is_empty() {
+            return;
+        }
+        self.syntax_path = None;
+        self.syntax_spans.clear();
+        self.syntax_dirty = false;
+    }
+
     fn line_height(&self) -> f32 {
         self.font_size * LINE_HEIGHT_FACTOR
     }
@@ -237,6 +334,9 @@ impl Editor {
     }
 
     fn delete_selection(&mut self) -> bool {
+        if !self.mode.is_editable() {
+            return false;
+        }
         if !self.has_selection() {
             return false;
         }
@@ -245,6 +345,7 @@ impl Editor {
         self.cursor = start;
         self.anchor = start;
         self.dirty = true;
+        self.syntax_dirty = true;
         true
     }
 
@@ -407,6 +508,24 @@ impl Editor {
         ys
     }
 
+    fn refresh_syntax(&mut self) {
+        if !self.syntax_dirty {
+            return;
+        }
+        self.syntax_dirty = false;
+        self.syntax_spans.clear();
+        if !self.mode.is_code() || self.text.len() > SYNTAX_HIGHLIGHT_MAX_BYTES {
+            return;
+        }
+        let Some(path) = self.syntax_path.as_deref() else {
+            return;
+        };
+        let highlighter = crate::core::syntax::Highlighter::new();
+        if let Ok(spans) = highlighter.highlight(path, &self.text) {
+            self.syntax_spans = spans;
+        }
+    }
+
     pub fn set_font_size(&mut self, font_system: &mut glyphon::FontSystem, font_size: f32) {
         if (self.font_size - font_size).abs() < 0.01 {
             return;
@@ -439,6 +558,7 @@ impl Editor {
         self.scroll_y = 0.0;
         self.desired_x = None;
         self.dirty = true;
+        self.syntax_dirty = true;
         self.note_cursor_activity();
     }
 
@@ -450,6 +570,7 @@ impl Editor {
         self.scroll_y = 0.0;
         self.desired_x = None;
         self.dirty = true;
+        self.syntax_dirty = true;
         self.note_cursor_activity();
     }
 
@@ -462,6 +583,7 @@ impl Editor {
         }
         self.reveal_cursor_on_flush = true;
         self.dirty = true;
+        self.syntax_dirty = true;
         self.desired_x = None;
     }
 
@@ -481,11 +603,12 @@ impl Editor {
         if self.last_width > 0.0 {
             self.set_size(font_system, self.last_width, self.last_height);
         }
+        self.refresh_syntax();
         let buffer = self.buffer.as_mut().unwrap();
         if self.dirty {
             self.dirty = false;
-            let attrs = Attrs::new().family(Family::SansSerif);
-            buffer.set_text(font_system, &self.text, &attrs, Shaping::Advanced, None);
+            let attrs = Attrs::new().family(self.mode.family());
+            buffer.set_text(font_system, &self.text, &attrs, self.mode.shaping(), None);
         }
         buffer.shape_until_scroll(font_system, false);
         let (x, y) = self.offset_to_point(self.cursor);
@@ -518,6 +641,31 @@ impl Editor {
         self.text.clone()
     }
 
+    pub fn text_str(&self) -> &str {
+        &self.text
+    }
+
+    pub fn text_arc(&self) -> Arc<str> {
+        Arc::from(self.text.as_str())
+    }
+
+    pub fn syntax_spans(&self) -> &[DiffTokenSpan] {
+        &self.syntax_spans
+    }
+
+    pub fn byte_len(&self) -> usize {
+        self.text.len()
+    }
+
+    pub fn line_count(&self) -> usize {
+        if self.text.is_empty() {
+            0
+        } else {
+            self.text.as_bytes().iter().filter(|&&b| b == b'\n').count()
+                + usize::from(!self.text.ends_with('\n'))
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.text.is_empty()
     }
@@ -540,6 +688,29 @@ impl Editor {
 
     pub fn scroll_line_height_px(&self) -> f32 {
         self.line_height()
+    }
+
+    pub fn logical_line_tops(&self) -> Vec<(usize, f32)> {
+        let Some(buffer) = &self.buffer else {
+            return if self.text.is_empty() {
+                Vec::new()
+            } else {
+                vec![(1, 0.0)]
+            };
+        };
+        let line_height = self.line_height();
+        let mut out = Vec::new();
+        let mut y = 0.0_f32;
+        for (line_idx, line) in buffer.lines.iter().enumerate() {
+            out.push((line_idx + 1, y));
+            let visual_lines = line
+                .layout_opt()
+                .map(|lines| lines.len())
+                .unwrap_or(1)
+                .max(1);
+            y += visual_lines as f32 * line_height;
+        }
+        out
     }
 
     pub fn selected_text(&self) -> Option<String> {
@@ -637,11 +808,15 @@ impl Editor {
     }
 
     pub fn insert_char(&mut self, ch: char) {
+        if !self.mode.is_editable() {
+            return;
+        }
         self.delete_selection();
         self.text.insert(self.cursor, ch);
         self.cursor += ch.len_utf8();
         self.anchor = self.cursor;
         self.dirty = true;
+        self.syntax_dirty = true;
         self.desired_x = None;
         self.note_cursor_activity();
     }
@@ -651,16 +826,23 @@ impl Editor {
     }
 
     pub fn insert_text(&mut self, s: &str) {
+        if !self.mode.is_editable() {
+            return;
+        }
         self.delete_selection();
         self.text.insert_str(self.cursor, s);
         self.cursor += s.len();
         self.anchor = self.cursor;
         self.dirty = true;
+        self.syntax_dirty = true;
         self.desired_x = None;
         self.note_cursor_activity();
     }
 
     pub fn delete_backward(&mut self) {
+        if !self.mode.is_editable() {
+            return;
+        }
         if self.delete_selection() {
             self.desired_x = None;
             self.note_cursor_activity();
@@ -674,11 +856,15 @@ impl Editor {
         self.cursor = prev;
         self.anchor = prev;
         self.dirty = true;
+        self.syntax_dirty = true;
         self.desired_x = None;
         self.note_cursor_activity();
     }
 
     pub fn delete_forward(&mut self) {
+        if !self.mode.is_editable() {
+            return;
+        }
         if self.delete_selection() {
             self.desired_x = None;
             self.note_cursor_activity();
@@ -690,11 +876,15 @@ impl Editor {
         let next = next_char_boundary(&self.text, self.cursor);
         self.text.drain(self.cursor..next);
         self.dirty = true;
+        self.syntax_dirty = true;
         self.desired_x = None;
         self.note_cursor_activity();
     }
 
     pub fn delete_backward_word(&mut self) {
+        if !self.mode.is_editable() {
+            return;
+        }
         if self.delete_selection() {
             self.desired_x = None;
             self.note_cursor_activity();
@@ -708,11 +898,15 @@ impl Editor {
         self.cursor = target;
         self.anchor = target;
         self.dirty = true;
+        self.syntax_dirty = true;
         self.desired_x = None;
         self.note_cursor_activity();
     }
 
     pub fn delete_forward_word(&mut self) {
+        if !self.mode.is_editable() {
+            return;
+        }
         if self.delete_selection() {
             self.desired_x = None;
             self.note_cursor_activity();
@@ -724,11 +918,15 @@ impl Editor {
         }
         self.text.drain(self.cursor..target);
         self.dirty = true;
+        self.syntax_dirty = true;
         self.desired_x = None;
         self.note_cursor_activity();
     }
 
     pub fn delete_backward_line(&mut self) {
+        if !self.mode.is_editable() {
+            return;
+        }
         if self.delete_selection() {
             self.desired_x = None;
             self.note_cursor_activity();
@@ -743,6 +941,7 @@ impl Editor {
         self.cursor = start;
         self.anchor = start;
         self.dirty = true;
+        self.syntax_dirty = true;
         self.desired_x = None;
         self.note_cursor_activity();
     }
@@ -1147,5 +1346,38 @@ mod tests {
         editor.flush(&mut font_system);
 
         assert_eq!(editor.cursor, target_offset);
+    }
+
+    #[test]
+    fn default_editor_uses_prose_mode() {
+        let editor = Editor::default();
+
+        assert_eq!(editor.mode(), EditorMode::ProseInput);
+        assert!(!editor.mode().is_code());
+    }
+
+    #[test]
+    fn code_input_mode_keeps_editing_enabled() {
+        let (_font_system, mut editor) = make_editor(220.0, 80.0);
+        editor.set_mode(EditorMode::CodeInput);
+
+        editor.insert_text("fn main() {}\n");
+
+        assert_eq!(editor.mode(), EditorMode::CodeInput);
+        assert_eq!(editor.text(), "fn main() {}\n");
+        assert_eq!(editor.line_count(), 1);
+    }
+
+    #[test]
+    fn diff_read_only_mode_blocks_user_mutations() {
+        let (_font_system, mut editor) = make_editor(220.0, 80.0);
+        editor.set_mode(EditorMode::DiffReadOnly);
+        editor.set_text("unchanged");
+
+        editor.insert_text(" edited");
+        editor.delete_backward();
+
+        assert_eq!(editor.text(), "unchanged");
+        assert_eq!(editor.mode(), EditorMode::DiffReadOnly);
     }
 }

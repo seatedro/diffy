@@ -2209,7 +2209,7 @@ impl EditorElement {
         state: &EditorState,
         doc: &RenderDoc,
     ) {
-        use crate::ui::editor::state::MatchSide;
+        use crate::editor::diff::state::MatchSide;
 
         if !state.search.open || state.search.matches.is_empty() {
             return;
@@ -4023,13 +4023,13 @@ mod tests {
         wrapped_byte_slice,
     };
     use crate::core::compare::LayoutMode;
-    use crate::render::{FontStyle, FontWeight, Rect, TextMetrics};
-    use crate::ui::editor::render_doc::{
+    use crate::editor::diff::render_doc::{
         ByteRange, RenderDoc, RenderLine, RenderRowKind, RunRange,
     };
-    use crate::ui::editor::state::{
+    use crate::editor::diff::state::{
         EditorState, ViewportTextPoint, ViewportTextSelection, ViewportTextSide,
     };
+    use crate::render::{FontStyle, FontWeight, Rect, TextMetrics};
     use crate::ui::theme::Theme;
 
     #[test]
@@ -4057,19 +4057,19 @@ mod tests {
             file_metadata: Vec::new(),
             text_bytes: b"keyword // comment".to_vec(),
             style_runs: vec![
-                crate::ui::editor::render_doc::StyleRun {
+                crate::editor::diff::render_doc::StyleRun {
                     byte_start: 0,
                     byte_len: 7,
                     style_id: 1,
                     flags: 0,
                 },
-                crate::ui::editor::render_doc::StyleRun {
+                crate::editor::diff::render_doc::StyleRun {
                     byte_start: 7,
                     byte_len: 1,
                     style_id: 0,
                     flags: 0,
                 },
-                crate::ui::editor::render_doc::StyleRun {
+                crate::editor::diff::render_doc::StyleRun {
                     byte_start: 8,
                     byte_len: 10,
                     style_id: 3,
@@ -4120,7 +4120,7 @@ mod tests {
         let doc = RenderDoc {
             file_metadata: Vec::new(),
             text_bytes: b"\tabc".to_vec(),
-            style_runs: vec![crate::ui::editor::render_doc::StyleRun {
+            style_runs: vec![crate::editor::diff::render_doc::StyleRun {
                 byte_start: 0,
                 byte_len: 4,
                 style_id: 0,

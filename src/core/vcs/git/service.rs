@@ -10,6 +10,7 @@ use serde::Serialize;
 use crate::core::compare::backends::{RENAME_DETECTION_LIMIT, compare_output_from_raw_patch};
 use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::CompareMode;
+use crate::core::compare::stats::COMPARE_SUMMARY_FILE_LIMIT;
 use crate::core::error::{DiffyError, Result};
 use crate::core::forge::github::{GitHubApi, parse_pr_url};
 use crate::core::vcs::git::status::{StatusBits, StatusItem, StatusOperation, StatusScope};
@@ -912,7 +913,16 @@ impl GitService {
         if right != WORKDIR_REF {
             let left = self.resolve_commit_oid(left)?;
             let right = self.resolve_commit_oid(right)?;
-            return self.gix_diff_name_status(&left, &right, only_path);
+            let track_rewrites = only_path.is_some();
+            let mut entries =
+                self.gix_diff_name_status(&left, &right, only_path, track_rewrites)?;
+            if only_path.is_none()
+                && entries.len() <= COMPARE_SUMMARY_FILE_LIMIT
+                && name_status_may_include_rewrites(&entries)
+            {
+                entries = self.gix_diff_name_status(&left, &right, only_path, true)?;
+            }
+            return Ok(entries);
         }
 
         let mut args = vec![
@@ -953,16 +963,21 @@ impl GitService {
         left: &str,
         right: &str,
         only_path: Option<&str>,
+        track_rewrites: bool,
     ) -> Result<Vec<(String, Option<String>, Option<String>)>> {
         let repo = self.repo()?.clone();
         let left_tree = gix_tree_for_oid(&repo, left)?;
         let right_tree = gix_tree_for_oid(&repo, right)?;
         let mut options = gix::diff::Options::default();
         options.track_path();
-        options.track_rewrites(Some(gix::diff::Rewrites {
-            limit: RENAME_DETECTION_LIMIT,
-            ..Default::default()
-        }));
+        if track_rewrites {
+            options.track_rewrites(Some(gix::diff::Rewrites {
+                limit: RENAME_DETECTION_LIMIT,
+                ..Default::default()
+            }));
+        } else {
+            options.track_rewrites(None);
+        }
         let mut changes = repo
             .diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(options))
             .map_err(gix_error)?;
@@ -1559,6 +1574,22 @@ fn parse_name_status(bytes: &[u8]) -> Vec<(String, Option<String>, Option<String
         }
     }
     out
+}
+
+fn name_status_may_include_rewrites(entries: &[(String, Option<String>, Option<String>)]) -> bool {
+    let mut has_addition = false;
+    let mut has_deletion = false;
+    for (status, _, _) in entries {
+        match status.as_bytes().first().copied() {
+            Some(b'A') => has_addition = true,
+            Some(b'D') => has_deletion = true,
+            _ => {}
+        }
+        if has_addition && has_deletion {
+            return true;
+        }
+    }
+    false
 }
 
 fn parse_shortstat(bytes: &[u8]) -> Option<(i32, i32)> {

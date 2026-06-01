@@ -4716,7 +4716,7 @@ impl AppState {
             .set(&self.store, Some(payload.resolved_right));
         self.workspace
             .raw_diff_len
-            .set(&self.store, payload.output.raw_diff.len());
+            .set(&self.store, payload.output.raw_diff_len);
         self.workspace
             .used_fallback
             .set(&self.store, payload.output.used_fallback);
@@ -4960,7 +4960,7 @@ impl AppState {
             .set(&self.store, output.fallback_message.clone());
         self.workspace
             .raw_diff_len
-            .set(&self.store, output.raw_diff.len());
+            .set(&self.store, output.raw_diff_len);
         self.workspace.compare_output.set(&self.store, None);
         self.workspace.compare_total_stats.set(&self.store, None);
         self.workspace.compare_hydrated_stats.set(&self.store, None);

@@ -11,7 +11,7 @@ use crate::core::vcs::git::GitService;
 pub struct CompareOutput {
     pub carbon: carbon::DiffDocument,
     pub file_summaries: Vec<CompareFileSummary>,
-    pub raw_diff: String,
+    pub raw_diff_len: usize,
     pub used_fallback: bool,
     pub fallback_message: String,
 }

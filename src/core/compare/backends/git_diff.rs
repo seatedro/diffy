@@ -71,7 +71,7 @@ impl GitDiffBackend {
         let mut output = CompareOutput::default();
         let carbon_file =
             carbon_file_from_raw_diff(&raw_diff, output.carbon.files.len(), Some(file))?;
-        output.raw_diff.push_str(&raw_diff);
+        output.raw_diff_len = output.raw_diff_len.saturating_add(raw_diff.len());
         output.carbon.files.push(carbon_file);
         Ok(Some(output))
     }
@@ -293,7 +293,7 @@ pub(crate) fn compare_output_from_raw_patch(raw_diff: &str) -> Result<CompareOut
         file.id = carbon::FileId(usize_to_u32_saturating(index));
         file.is_partial = false;
     }
-    output.raw_diff.push_str(raw_diff);
+    output.raw_diff_len = raw_diff.len();
     output.carbon = document;
     Ok(output)
 }
@@ -443,7 +443,7 @@ fn compare_output_from_gix_changes(
         let raw_diff =
             raw_patch_from_gix_change(change, old_content.as_bytes(), new_content.as_bytes(), 3)?;
         let carbon_file = carbon_file_from_raw_diff(&raw_diff, output.carbon.files.len(), None)?;
-        output.raw_diff.push_str(&raw_diff);
+        output.raw_diff_len = output.raw_diff_len.saturating_add(raw_diff.len());
         output.carbon.files.push(carbon_file);
     }
 
@@ -946,7 +946,7 @@ mod tests {
 
         assert_eq!(output.carbon.files.len(), 1);
         assert_eq!(output.carbon.files[0].path(), "src/example.rs");
-        assert!(output.raw_diff.contains("diff --git"));
+        assert!(output.raw_diff_len > 0);
         let removed = output.carbon.files[0]
             .blocks
             .iter()

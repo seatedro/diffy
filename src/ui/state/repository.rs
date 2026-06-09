@@ -43,6 +43,14 @@ pub(super) fn reduce_event(state: &mut AppState, event: RepositoryEvent) -> Vec<
             }
             Vec::new()
         }
+        RepositoryEvent::WorkerStopped => {
+            state
+                .workspace
+                .status_operation_pending
+                .set(&state.store, false);
+            state.push_error("Version control worker stopped. Restart Diffy.");
+            Vec::new()
+        }
         RepositoryEvent::FileOperationFailed { path, message } => {
             if state
                 .compare

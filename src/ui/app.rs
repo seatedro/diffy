@@ -75,6 +75,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         app.hot_reload_pending = Some(hot_reload_pending);
     }
     event_loop.run_app(&mut app)?;
+    if let Some(message) = app.startup_failure.take() {
+        return Err(message.into());
+    }
     Ok(())
 }
 
@@ -98,6 +101,7 @@ struct NativeApp {
     next_update_check_at: Option<Instant>,
     needs_redraw: bool,
     exit_requested: bool,
+    startup_failure: Option<String>,
     has_seen_focus: bool,
     skip_next_focus_regain_rescan: bool,
     rescan_on_next_focus: bool,
@@ -147,6 +151,7 @@ impl NativeApp {
                 .then(|| Instant::now() + UPDATE_POLL_INTERVAL),
             needs_redraw: true,
             exit_requested: false,
+            startup_failure: None,
             has_seen_focus: false,
             skip_next_focus_regain_rescan: true,
             rescan_on_next_focus: false,
@@ -160,6 +165,20 @@ impl NativeApp {
 
     fn mark_dirty(&mut self) {
         self.needs_redraw = true;
+    }
+
+    /// Window or renderer setup failed before anything can be drawn, so there
+    /// is no in-app surface for the error. Show a native message box, then
+    /// exit the loop; `run()` turns the stored failure into a non-zero exit.
+    fn fail_startup(&mut self, event_loop: &ActiveEventLoop, message: String) {
+        tracing::error!("startup failed: {message}");
+        rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title("Diffy failed to start")
+            .set_description(message.as_str())
+            .show();
+        self.startup_failure = Some(message);
+        event_loop.exit();
     }
 
     fn paint_tooltip(&mut self) {
@@ -998,8 +1017,10 @@ impl ApplicationHandler for NativeApp {
                         self.window = Some(window);
                     }
                     Err(error) => {
-                        eprintln!("failed to create renderer: {error}");
-                        event_loop.exit();
+                        self.fail_startup(
+                            event_loop,
+                            format!("Could not initialize the GPU renderer: {error}"),
+                        );
                         return;
                     }
                 }
@@ -1009,8 +1030,10 @@ impl ApplicationHandler for NativeApp {
                 self.position_traffic_lights();
             }
             Err(error) => {
-                eprintln!("failed to create native window: {error}");
-                event_loop.exit();
+                self.fail_startup(
+                    event_loop,
+                    format!("Could not create the native window: {error}"),
+                );
             }
         }
     }

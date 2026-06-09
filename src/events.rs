@@ -240,6 +240,9 @@ pub enum RepositoryEvent {
         branch: String,
         message: String,
     },
+    /// The VCS worker thread is gone, so dispatched repository commands are
+    /// being dropped. Surfaced so the user knows repo operations stopped.
+    WorkerStopped,
 }
 
 #[derive(Debug, Clone)]

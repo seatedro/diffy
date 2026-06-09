@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 
 use carbon::TextStore;
 
@@ -9,6 +10,8 @@ use crate::core::compare::{
 };
 use crate::core::error::{DiffyError, Result, VcsBackendKind};
 use crate::core::vcs::backend::{VcsBackend, VcsRepository, VcsWatchPaths};
+use crate::core::vcs::cache::VcsReadCache;
+use crate::core::vcs::git::service::is_full_hex_oid;
 use crate::core::vcs::git::status::StatusBits;
 use crate::core::vcs::git::{
     BranchInfo, CommitInfo, GitService, PatchApplyTarget, PullOutcome, StatusItem, StatusOperation,
@@ -74,6 +77,32 @@ impl VcsBackend for GitBackend {
     }
 }
 
+/// Process-wide cache for Git reads whose results are immutable: compares
+/// and file reads addressed entirely by full commit OIDs. Such results are
+/// content-addressed by the object store and can never go stale — not even
+/// across writes, fetches, or ref updates — so no invalidation is needed and
+/// it is safe to share across the short-lived `GitRepository` instances the
+/// runtime opens per operation. The cache epoch slot carries the workspace
+/// root so entries never leak across repositories. Anything involving
+/// movable refs, the index, or the working tree is deliberately not cached
+/// (see the staleness note in `VcsReadCache`).
+static IMMUTABLE_READ_CACHE: LazyLock<Mutex<VcsReadCache>> =
+    LazyLock::new(|| Mutex::new(VcsReadCache::new()));
+
+/// True when every revision in the request is a full hex OID, making the
+/// compare result content-addressed: parents, trees, and merge bases of
+/// fixed commits are themselves fixed.
+fn compare_request_is_immutable(request: &VcsCompareRequest) -> bool {
+    match &request.spec {
+        VcsCompareSpec::WorkingCopy => false,
+        VcsCompareSpec::Change { revision } => is_full_hex_oid(revision),
+        VcsCompareSpec::Range { from, to } => is_full_hex_oid(from) && is_full_hex_oid(to),
+        VcsCompareSpec::MergeBaseRange { base, head } => {
+            is_full_hex_oid(base) && is_full_hex_oid(head)
+        }
+    }
+}
+
 pub struct GitRepository {
     service: GitService,
     location: RepoLocation,
@@ -85,118 +114,13 @@ impl GitRepository {
         service.open(location.workspace_root.to_string_lossy().as_ref())?;
         Ok(Self { service, location })
     }
-}
 
-impl VcsRepository for GitRepository {
-    fn location(&self) -> &RepoLocation {
-        &self.location
+    /// Epoch for [`IMMUTABLE_READ_CACHE`]: scopes entries to this repository.
+    fn immutable_cache_epoch(&self) -> String {
+        self.location.workspace_root.to_string_lossy().into_owned()
     }
 
-    fn capabilities(&self) -> RepoCapabilities {
-        git_capabilities()
-    }
-
-    fn resolve_ref(&mut self, reference: &str) -> Result<(String, String)> {
-        let normalized;
-        let reference =
-            if reference == "@" || reference.starts_with("@~") || reference.starts_with("@^") {
-                normalized = format!("HEAD{}", &reference[1..]);
-                &normalized
-            } else {
-                reference
-            };
-        let oid = self.service.resolve_commit_oid(reference)?;
-        let short_oid = self
-            .service
-            .abbreviate_oid(&oid)
-            .unwrap_or_else(|_| oid[..7].to_owned());
-        let summary = self
-            .service
-            .commits(&oid, 1)
-            .ok()
-            .and_then(|mut commits| commits.pop())
-            .map(|commit| commit.summary)
-            .unwrap_or_default();
-        Ok((short_oid, summary))
-    }
-
-    fn snapshot(
-        &mut self,
-        reason: RepositorySyncReason,
-        reporter: Option<&dyn ProgressSink>,
-    ) -> Result<VcsSnapshot> {
-        if let Some(reporter) = reporter {
-            reporter.phase(ComparePhase::ResolvingRefs);
-        }
-        let branches = self.service.branches()?;
-        let tags = self.service.tags()?;
-        if let Some(reporter) = reporter {
-            reporter.phase(ComparePhase::FetchingHistory);
-        }
-        let commits = self.service.commits("HEAD", 200).unwrap_or_default();
-        let status_items = git_status_items(&self.service)?;
-        Ok(git_snapshot_from_parts(
-            self.location.workspace_root.clone(),
-            reason,
-            None,
-            &branches,
-            &tags,
-            &commits,
-            &status_items,
-        ))
-    }
-
-    fn resolve_compare_request(&mut self, request: &VcsCompareRequest) -> Result<(String, String)> {
-        let spec = git_compare_spec(request);
-        self.service
-            .resolve_comparison(&spec.left_ref, &spec.right_ref, spec.mode)
-    }
-
-    fn compare(
-        &mut self,
-        request: &VcsCompareRequest,
-        reporter: Option<&dyn ProgressSink>,
-    ) -> Result<crate::core::compare::CompareOutput> {
-        let spec = git_compare_spec(request);
-        CompareService::default().compare(&spec, &self.service, reporter)
-    }
-
-    fn compare_stats(&mut self, request: &VcsCompareRequest) -> Result<(i32, i32)> {
-        let spec = git_compare_spec(request);
-        GitDiffBackend
-            .compare_stats(&spec, &self.service)?
-            .ok_or_else(|| DiffyError::General("compare stats returned no result".to_owned()))
-    }
-
-    fn compare_history(
-        &mut self,
-        left_ref: &str,
-        right_ref: &str,
-        limit: usize,
-    ) -> Result<Vec<VcsChange>> {
-        let commits = self
-            .service
-            .commits_in_range(left_ref, right_ref, limit)
-            .unwrap_or_default();
-        Ok(git_changes(&commits, &[]))
-    }
-
-    fn compare_file_stats(
-        &mut self,
-        request: &VcsCompareRequest,
-        files: &[CompareFileStatsTarget],
-    ) -> Result<Vec<(i32, i32)>> {
-        let spec = git_compare_spec(request);
-        let file_stats =
-            GitDiffBackend.deferred_file_line_stats_batch_for_request(&spec, &self.service, files);
-        Ok(files
-            .iter()
-            .zip(file_stats)
-            .map(|(file, stat)| stat.unwrap_or_else(|| file.fallback_stats()))
-            .collect())
-    }
-
-    fn compare_path(
+    fn compare_path_uncached(
         &mut self,
         request: &VcsCompareRequest,
         path: &str,
@@ -258,6 +182,162 @@ impl VcsRepository for GitRepository {
                 }
             }
         }
+    }
+}
+
+impl VcsRepository for GitRepository {
+    fn location(&self) -> &RepoLocation {
+        &self.location
+    }
+
+    fn capabilities(&self) -> RepoCapabilities {
+        git_capabilities()
+    }
+
+    fn resolve_ref(&mut self, reference: &str) -> Result<(String, String)> {
+        let normalized;
+        let reference =
+            if reference == "@" || reference.starts_with("@~") || reference.starts_with("@^") {
+                normalized = format!("HEAD{}", &reference[1..]);
+                &normalized
+            } else {
+                reference
+            };
+        let oid = self.service.resolve_commit_oid(reference)?;
+        let short_oid = self
+            .service
+            .abbreviate_oid(&oid)
+            .unwrap_or_else(|_| oid[..7].to_owned());
+        let summary = self.service.commit_summary(&oid).unwrap_or_default();
+        Ok((short_oid, summary))
+    }
+
+    fn snapshot(
+        &mut self,
+        reason: RepositorySyncReason,
+        reporter: Option<&dyn ProgressSink>,
+    ) -> Result<VcsSnapshot> {
+        if let Some(reporter) = reporter {
+            reporter.phase(ComparePhase::ResolvingRefs);
+        }
+        let (branches, tags) = self.service.branches_and_tags()?;
+        if let Some(reporter) = reporter {
+            reporter.phase(ComparePhase::FetchingHistory);
+        }
+        let commits = self.service.commits("HEAD", 200).unwrap_or_default();
+        let status_items = git_status_items(&self.service)?;
+        Ok(git_snapshot_from_parts(
+            self.location.workspace_root.clone(),
+            reason,
+            None,
+            &branches,
+            &tags,
+            &commits,
+            &status_items,
+        ))
+    }
+
+    fn resolve_compare_request(&mut self, request: &VcsCompareRequest) -> Result<(String, String)> {
+        let spec = git_compare_spec(request);
+        self.service
+            .resolve_comparison(&spec.left_ref, &spec.right_ref, spec.mode)
+    }
+
+    fn compare(
+        &mut self,
+        request: &VcsCompareRequest,
+        reporter: Option<&dyn ProgressSink>,
+    ) -> Result<crate::core::compare::CompareOutput> {
+        let cacheable = compare_request_is_immutable(request);
+        let epoch = self.immutable_cache_epoch();
+        if cacheable
+            && let Ok(cache) = IMMUTABLE_READ_CACHE.lock()
+            && let Some(output) = cache.cached_diff(Some(&epoch), request, None)
+        {
+            return Ok(output);
+        }
+        let spec = git_compare_spec(request);
+        let output = CompareService::default().compare(&spec, &self.service, reporter)?;
+        if cacheable && let Ok(mut cache) = IMMUTABLE_READ_CACHE.lock() {
+            cache.insert_diff(Some(epoch), request.clone(), None, output.clone());
+        }
+        Ok(output)
+    }
+
+    fn compare_stats(&mut self, request: &VcsCompareRequest) -> Result<(i32, i32)> {
+        let cacheable = compare_request_is_immutable(request);
+        let epoch = self.immutable_cache_epoch();
+        if cacheable
+            && let Ok(cache) = IMMUTABLE_READ_CACHE.lock()
+            && let Some(stats) = cache.cached_stats(Some(&epoch), request)
+        {
+            return Ok(stats);
+        }
+        let spec = git_compare_spec(request);
+        let stats = GitDiffBackend
+            .compare_stats(&spec, &self.service)?
+            .ok_or_else(|| DiffyError::General("compare stats returned no result".to_owned()))?;
+        if cacheable && let Ok(mut cache) = IMMUTABLE_READ_CACHE.lock() {
+            cache.insert_stats(Some(epoch), request.clone(), stats);
+        }
+        Ok(stats)
+    }
+
+    fn compare_history(
+        &mut self,
+        left_ref: &str,
+        right_ref: &str,
+        limit: usize,
+    ) -> Result<Vec<VcsChange>> {
+        let commits = self
+            .service
+            .commits_in_range(left_ref, right_ref, limit)
+            .unwrap_or_default();
+        Ok(git_changes(&commits, &[]))
+    }
+
+    fn compare_file_stats(
+        &mut self,
+        request: &VcsCompareRequest,
+        files: &[CompareFileStatsTarget],
+    ) -> Result<Vec<(i32, i32)>> {
+        let spec = git_compare_spec(request);
+        let file_stats =
+            GitDiffBackend.deferred_file_line_stats_batch_for_request(&spec, &self.service, files);
+        Ok(files
+            .iter()
+            .zip(file_stats)
+            .map(|(file, stat)| stat.unwrap_or_else(|| file.fallback_stats()))
+            .collect())
+    }
+
+    fn compare_path(
+        &mut self,
+        request: &VcsCompareRequest,
+        path: &str,
+        deferred_file: Option<&CompareFileSummary>,
+    ) -> Result<crate::core::compare::CompareOutput> {
+        // Only the summary-less path shells out to `git diff`; deferred-file
+        // compares already run in-process on gix blobs, and their rename
+        // handling differs, so they are not folded into the same cache key.
+        let cacheable = deferred_file.is_none() && compare_request_is_immutable(request);
+        let epoch = self.immutable_cache_epoch();
+        if cacheable
+            && let Ok(cache) = IMMUTABLE_READ_CACHE.lock()
+            && let Some(output) = cache.cached_diff(Some(&epoch), request, Some(path))
+        {
+            return Ok(output);
+        }
+        let output = self.compare_path_uncached(request, path, deferred_file)?;
+        if cacheable && let Ok(mut cache) = IMMUTABLE_READ_CACHE.lock() {
+            cache.insert_diff(
+                Some(epoch),
+                request.clone(),
+                Some(path.to_owned()),
+                output.clone(),
+            );
+        }
+        Ok(output)
     }
 
     fn file_change_diff(
@@ -410,7 +490,21 @@ impl VcsRepository for GitRepository {
     }
 
     fn read_file_text(&mut self, revision: &RevisionId, path: &str) -> Result<TextStore> {
-        self.service.read_file_text_store_at(&revision.id, path)
+        // Blob content at a fixed commit OID is immutable; workdir, index,
+        // and symbolic refs are not and bypass the cache.
+        let cacheable = is_full_hex_oid(&revision.id);
+        let epoch = self.immutable_cache_epoch();
+        if cacheable
+            && let Ok(cache) = IMMUTABLE_READ_CACHE.lock()
+            && let Some(text) = cache.cached_file_text(Some(&epoch), revision, path)
+        {
+            return Ok(text);
+        }
+        let text = self.service.read_file_text_store_at(&revision.id, path)?;
+        if cacheable && let Ok(mut cache) = IMMUTABLE_READ_CACHE.lock() {
+            cache.insert_file_text(Some(epoch), revision.clone(), path.to_owned(), text.clone());
+        }
+        Ok(text)
     }
 }
 

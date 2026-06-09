@@ -1,7 +1,7 @@
 //! Shared epoch-keyed read caches for VCS backend services.
 //!
 //! Backends that re-run expensive reads (whole-compare diffs, per-path
-//! diffs, file text at a revision) can memoize them here, keyed on an opaque
+//! diffs, diff stats, file text at a revision) can memoize them here, keyed on an opaque
 //! read epoch. The epoch identifies the repository state the read was
 //! produced under — for jj this is the operation id — so cache hits require
 //! an exact epoch match and a `None` epoch only matches entries inserted
@@ -19,6 +19,7 @@ use crate::core::vcs::model::{RevisionId, VcsCompareRequest};
 
 const MAX_DIFF_CACHE_ENTRIES: usize = 8;
 const MAX_FILE_TEXT_CACHE_ENTRIES: usize = 16;
+const MAX_STATS_CACHE_ENTRIES: usize = 16;
 
 #[derive(Clone)]
 struct DiffCacheEntry {
@@ -29,6 +30,13 @@ struct DiffCacheEntry {
 }
 
 #[derive(Clone)]
+struct StatsCacheEntry {
+    epoch: Option<String>,
+    request: VcsCompareRequest,
+    stats: (i32, i32),
+}
+
+#[derive(Clone)]
 struct FileTextCacheEntry {
     epoch: Option<String>,
     revision: RevisionId,
@@ -36,11 +44,13 @@ struct FileTextCacheEntry {
     text: TextStore,
 }
 
-/// Bounded diff and file-text caches for a VCS repository service.
+/// Bounded diff, diff-stat, and file-text caches for a VCS repository
+/// service.
 #[derive(Default)]
 pub struct VcsReadCache {
     diffs: Vec<DiffCacheEntry>,
     file_texts: Vec<FileTextCacheEntry>,
+    stats: Vec<StatsCacheEntry>,
 }
 
 impl VcsReadCache {
@@ -82,6 +92,33 @@ impl VcsReadCache {
         });
     }
 
+    pub fn cached_stats(
+        &self,
+        epoch: Option<&str>,
+        request: &VcsCompareRequest,
+    ) -> Option<(i32, i32)> {
+        self.stats
+            .iter()
+            .find(|entry| entry.epoch.as_deref() == epoch && entry.request == *request)
+            .map(|entry| entry.stats)
+    }
+
+    pub fn insert_stats(
+        &mut self,
+        epoch: Option<String>,
+        request: VcsCompareRequest,
+        stats: (i32, i32),
+    ) {
+        if self.stats.len() >= MAX_STATS_CACHE_ENTRIES {
+            self.stats.remove(0);
+        }
+        self.stats.push(StatsCacheEntry {
+            epoch,
+            request,
+            stats,
+        });
+    }
+
     pub fn cached_file_text(
         &self,
         epoch: Option<&str>,
@@ -117,6 +154,7 @@ impl VcsReadCache {
     pub fn clear(&mut self) {
         self.diffs.clear();
         self.file_texts.clear();
+        self.stats.clear();
     }
 }
 
@@ -233,7 +271,21 @@ mod tests {
     }
 
     #[test]
-    fn clear_drops_both_caches() {
+    fn stats_hits_require_matching_epoch_and_request() {
+        let mut cache = VcsReadCache::new();
+        cache.insert_stats(Some("op-1".to_owned()), request("abc"), (3, 1));
+
+        assert_eq!(
+            cache.cached_stats(Some("op-1"), &request("abc")),
+            Some((3, 1))
+        );
+        assert!(cache.cached_stats(Some("op-2"), &request("abc")).is_none());
+        assert!(cache.cached_stats(None, &request("abc")).is_none());
+        assert!(cache.cached_stats(Some("op-1"), &request("def")).is_none());
+    }
+
+    #[test]
+    fn clear_drops_all_caches() {
         let mut cache = VcsReadCache::new();
         cache.insert_diff(None, request("abc"), None, CompareOutput::default());
         cache.insert_file_text(
@@ -242,6 +294,7 @@ mod tests {
             "src/lib.rs".to_owned(),
             TextStore::from_text(String::new()),
         );
+        cache.insert_stats(None, request("abc"), (1, 2));
         cache.clear();
         assert!(cache.cached_diff(None, &request("abc"), None).is_none());
         assert!(
@@ -249,5 +302,6 @@ mod tests {
                 .cached_file_text(None, &revision("abc"), "src/lib.rs")
                 .is_none()
         );
+        assert!(cache.cached_stats(None, &request("abc")).is_none());
     }
 }

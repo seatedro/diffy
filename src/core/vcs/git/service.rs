@@ -482,41 +482,68 @@ impl GitService {
     }
 
     pub fn branches(&self) -> Result<Vec<BranchInfo>> {
+        Ok(self.branches_and_tags()?.0)
+    }
+
+    pub fn tags(&self) -> Result<Vec<TagInfo>> {
+        Ok(self.branches_and_tags()?.1)
+    }
+
+    /// List branches and tags with a single `for-each-ref` invocation. The
+    /// snapshot path needs both, and one subprocess per refresh is cheaper
+    /// than two on repositories with many refs.
+    pub fn branches_and_tags(&self) -> Result<(Vec<BranchInfo>, Vec<TagInfo>)> {
         let output = run_system_git_capture(
             self.repo_path_ref()?,
             &[
                 OsString::from("for-each-ref"),
                 OsString::from(
-                    "--format=%(refname)%00%(refname:short)%00%(objectname)%00%(upstream:short)%00%(upstream:track)%00%(HEAD)",
+                    "--format=%(refname)%00%(refname:short)%00%(objectname)%00%(*objectname)%00%(upstream:short)%00%(upstream:track)%00%(HEAD)",
                 ),
                 OsString::from("refs/heads"),
                 OsString::from("refs/remotes"),
+                OsString::from("refs/tags"),
             ],
         )?;
         let mut branches = Vec::new();
+        let mut tags = Vec::new();
         for line in output.stdout.split(|byte| *byte == b'\n') {
             if line.is_empty() {
                 continue;
             }
             let fields = line.split(|byte| *byte == 0).collect::<Vec<_>>();
-            if fields.len() < 6 {
+            if fields.len() < 7 {
                 continue;
             }
             let full_name = String::from_utf8_lossy(fields[0]);
             let name = String::from_utf8_lossy(fields[1]).to_string();
-            let target_oid = String::from_utf8_lossy(fields[2]).to_string();
+            if full_name.starts_with("refs/tags/") {
+                // Annotated tags carry the peeled commit in `%(*objectname)`;
+                // lightweight tags only fill `%(objectname)`.
+                let peeled = if fields[3].is_empty() {
+                    fields[2]
+                } else {
+                    fields[3]
+                };
+                tags.push(TagInfo {
+                    name,
+                    target_oid: String::from_utf8_lossy(peeled).to_string(),
+                });
+                continue;
+            }
             if name.ends_with("/HEAD") {
                 continue;
             }
             let is_remote = full_name.starts_with("refs/remotes/");
+            let target_oid = String::from_utf8_lossy(fields[2]).to_string();
             let upstream =
-                (!fields[3].is_empty()).then(|| String::from_utf8_lossy(fields[3]).to_string());
+                (!fields[4].is_empty()).then(|| String::from_utf8_lossy(fields[4]).to_string());
             let ahead_behind = if is_remote {
                 None
             } else {
-                parse_upstream_track(upstream.as_ref(), &String::from_utf8_lossy(fields[4]))
+                parse_upstream_track(upstream.as_ref(), &String::from_utf8_lossy(fields[5]))
             };
-            let is_head = !is_remote && fields[5] == b"*";
+            let is_head = !is_remote && fields[6] == b"*";
             branches.push(BranchInfo {
                 name,
                 is_remote,
@@ -533,42 +560,8 @@ impl GitService {
             },
             other => other,
         });
-        Ok(branches)
-    }
-
-    pub fn tags(&self) -> Result<Vec<TagInfo>> {
-        let output = run_system_git_capture(
-            self.repo_path_ref()?,
-            &[
-                OsString::from("for-each-ref"),
-                OsString::from("--format=%(refname:short)%00%(*objectname)%00%(objectname)"),
-                OsString::from("refs/tags"),
-            ],
-        )?;
-        let mut tags = output
-            .stdout
-            .split(|byte| *byte == b'\n')
-            .filter_map(|line| {
-                if line.is_empty() {
-                    return None;
-                }
-                let fields = line.split(|byte| *byte == 0).collect::<Vec<_>>();
-                if fields.len() < 3 {
-                    return None;
-                }
-                let peeled = if fields[1].is_empty() {
-                    fields[2]
-                } else {
-                    fields[1]
-                };
-                Some(TagInfo {
-                    name: String::from_utf8_lossy(fields[0]).to_string(),
-                    target_oid: String::from_utf8_lossy(peeled).to_string(),
-                })
-            })
-            .collect::<Vec<_>>();
         tags.sort_by(|left, right| left.name.cmp(&right.name));
-        Ok(tags)
+        Ok((branches, tags))
     }
 
     pub fn commits(&self, reference: &str, max_count: usize) -> Result<Vec<CommitInfo>> {
@@ -1378,6 +1371,17 @@ impl GitService {
         Ok(id)
     }
 
+    /// Subject line of the commit at `oid`, equivalent to
+    /// `git log -n1 --format=%s` (whitespace in the title folded to single
+    /// spaces) but answered from the gix object store without a subprocess.
+    pub fn commit_summary(&self, oid: &str) -> Result<String> {
+        let commit = self
+            .repo()?
+            .find_commit(gix_object_id(oid)?)
+            .map_err(gix_error)?;
+        Ok(commit.message().map_err(gix_error)?.summary().to_string())
+    }
+
     pub fn repo(&self) -> Result<&gix::Repository> {
         self.repo
             .as_ref()
@@ -1839,7 +1843,7 @@ fn fixed_short_oid(oid: &str) -> &str {
     oid.get(..8).unwrap_or(oid)
 }
 
-fn is_full_hex_oid(value: &str) -> bool {
+pub(crate) fn is_full_hex_oid(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 

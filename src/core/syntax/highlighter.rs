@@ -65,6 +65,20 @@ impl Highlighter {
         self.highlight_resolved(language, source)
     }
 
+    pub fn highlight_text_store_resolved_ranges(
+        &self,
+        language: Option<PhosphorLanguageId>,
+        text: &TextStore,
+        byte_ranges: &[TextByteRange],
+    ) -> Result<Vec<DiffTokenSpan>> {
+        let Some(source) = text.as_str() else {
+            return Err(DiffyError::Syntax(
+                "syntax source is not valid UTF-8".to_owned(),
+            ));
+        };
+        self.highlight_resolved_ranges(language, source, byte_ranges)
+    }
+
     pub fn highlight_resolved_ranges(
         &self,
         language: Option<PhosphorLanguageId>,

@@ -71,6 +71,7 @@ use crate::ui::components::ContextMenuState;
 use crate::ui::design::{Sp, Sz};
 use crate::ui::icons::lucide;
 use crate::ui::theme::ThemeMode;
+use crate::ui::virtual_list::{build_sectioned_rows, step_selection};
 
 const MAX_VISIBLE_TOASTS: usize = 5;
 const TOAST_LIFETIME_MS: u64 = 5_000;
@@ -6924,36 +6925,29 @@ impl AppState {
             section_header: true,
         };
 
-        let mut dual = Vec::new();
-        let mut dark = Vec::new();
-        let mut light = Vec::new();
-        for (i, name) in self.theme_names.iter().enumerate() {
-            let variant = self
-                .theme_variants
-                .get(i)
+        let variant_of = |index: usize| {
+            self.theme_variants
+                .get(index)
                 .copied()
-                .unwrap_or(ThemeVariant::Dark);
-            match variant {
-                ThemeVariant::Dual => dual.push(make_entry(name)),
-                ThemeVariant::Dark => dark.push(make_entry(name)),
-                ThemeVariant::Light => light.push(make_entry(name)),
-            }
+                .unwrap_or(ThemeVariant::Dark)
+        };
+        let mut ordered: Vec<usize> = Vec::with_capacity(self.theme_names.len());
+        for group in [ThemeVariant::Dual, ThemeVariant::Dark, ThemeVariant::Light] {
+            ordered.extend((0..self.theme_names.len()).filter(|&index| variant_of(index) == group));
         }
 
-        let mut entries = Vec::with_capacity(dual.len() + dark.len() + light.len() + 3);
-        if !dual.is_empty() {
-            entries.push(make_header("Dark & Light"));
-            entries.extend(dual);
-        }
-        if !dark.is_empty() {
-            entries.push(make_header("Dark"));
-            entries.extend(dark);
-        }
-        if !light.is_empty() {
-            entries.push(make_header("Light"));
-            entries.extend(light);
-        }
-        entries
+        build_sectioned_rows(
+            &ordered,
+            |index| Some(variant_of(index)),
+            |variant| {
+                make_header(match variant {
+                    ThemeVariant::Dual => "Dark & Light",
+                    ThemeVariant::Dark => "Dark",
+                    ThemeVariant::Light => "Light",
+                })
+            },
+            |index| self.theme_names.get(index).map(make_entry),
+        )
     }
 
     fn rebuild_theme_picker(&mut self) {
@@ -7264,30 +7258,18 @@ impl AppState {
                 let current = self.overlays.picker.selected_index.get(&self.store);
                 let (idx, len, value) = self.overlays.picker.entries.with(&self.store, |entries| {
                     let len = entries.len();
-                    if len == 0 {
-                        return (current, len, None);
-                    }
-                    let max = len.saturating_sub(1) as i32;
-                    let mut idx = (current as i32 + delta).clamp(0, max) as usize;
-                    while idx < len && entries[idx].section_header {
-                        if delta > 0 {
-                            idx = (idx + 1).min(len.saturating_sub(1));
-                        } else {
-                            if idx == 0 {
-                                break;
-                            }
-                            idx -= 1;
-                        }
-                    }
-                    let value = entries
-                        .get(idx)
-                        .filter(|e| !e.section_header)
-                        .map(|e| e.value.clone());
+                    let idx = step_selection(current, delta, len, |i| entries[i].section_header);
+                    let value = idx.and_then(|idx| {
+                        entries
+                            .get(idx)
+                            .filter(|e| !e.section_header)
+                            .map(|e| e.value.clone())
+                    });
                     (idx, len, value)
                 });
-                if len == 0 {
+                let Some(idx) = idx else {
                     return;
-                }
+                };
                 self.overlays.picker.selected_index.set(&self.store, idx);
                 self.overlays
                     .picker
@@ -7304,26 +7286,12 @@ impl AppState {
                 let current = self.overlays.picker.selected_index.get(&self.store);
                 let (idx, len) = self.overlays.picker.entries.with(&self.store, |entries| {
                     let len = entries.len();
-                    if len == 0 {
-                        return (current, len);
-                    }
-                    let max = len.saturating_sub(1) as i32;
-                    let mut idx = (current as i32 + delta).clamp(0, max) as usize;
-                    while idx < len && entries[idx].section_header {
-                        if delta > 0 {
-                            idx = (idx + 1).min(len.saturating_sub(1));
-                        } else {
-                            if idx == 0 {
-                                break;
-                            }
-                            idx -= 1;
-                        }
-                    }
+                    let idx = step_selection(current, delta, len, |i| entries[i].section_header);
                     (idx, len)
                 });
-                if len == 0 {
+                let Some(idx) = idx else {
                     return;
-                }
+                };
                 self.overlays.picker.selected_index.set(&self.store, idx);
                 self.overlays
                     .picker
@@ -7336,13 +7304,14 @@ impl AppState {
                     .command_palette
                     .entries
                     .with(&self.store, |e| e.len());
-                let max = entry_count.saturating_sub(1) as i32;
                 let current = self
                     .overlays
                     .command_palette
                     .selected_index
                     .get(&self.store);
-                let idx = (current as i32 + delta).clamp(0, max.max(0)) as usize;
+                // Palette entries have no section headers; an empty palette
+                // still pins the selection to row zero.
+                let idx = step_selection(current, delta, entry_count, |_| false).unwrap_or(0);
                 self.overlays
                     .command_palette
                     .selected_index

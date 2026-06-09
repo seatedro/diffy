@@ -11,6 +11,7 @@ use crate::ui::element::{
 use crate::ui::icons::lucide;
 use crate::ui::style::Styled;
 use crate::ui::theme::Color;
+use crate::ui::virtual_list::virtual_row_wrapper_extent;
 
 pub struct FileTreeEntry {
     pub path: String,
@@ -358,11 +359,12 @@ impl RenderOnce for FileTree {
 
         for (offset, row) in rows.into_iter().enumerate() {
             let global_index = window_start + offset;
-            let wrapper_height = if global_index + 1 == total_rows {
-                row_height
-            } else {
-                row_height + row_gap
-            };
+            let wrapper_height = virtual_row_wrapper_extent(
+                global_index,
+                total_rows,
+                row_height,
+                row_height + row_gap,
+            );
             let row_element = match row {
                 FlatRow::Folder {
                     name,

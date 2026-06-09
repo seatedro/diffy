@@ -81,3 +81,19 @@ impl AppState {
         }
     }
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StartupState {
+    pub keyring_enabled: bool,
+    pub github_token_store: GitHubTokenStore,
+    pub auto_compare_pending: bool,
+    pub bootstrap_compare_started: bool,
+    pub pending_pr_url: Option<String>,
+    pub preferred_file_index: Option<usize>,
+    pub preferred_file_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
+pub struct DebugState {
+    pub overlay_visible: bool,
+}

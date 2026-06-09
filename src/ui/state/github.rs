@@ -2143,3 +2143,342 @@ mod tests {
         assert_eq!(range.3, Some(5));
     }
 }
+
+pub(super) fn build_pr_palette_entry(
+    cache: &HashMap<PrKey, PrCacheEntry>,
+    key: &PrKey,
+    has_repo: bool,
+) -> PaletteEntry {
+    let (owner, repo, number) = key;
+    let fallback_label = format!("#{number} in {owner}/{repo}");
+    let entry = cache.get(key);
+    let (label, rhs, detail, disabled) = match entry.map(|e| (&e.meta, &e.diff)) {
+        None | Some((PrPeekMeta::Loading, _)) => (
+            fallback_label,
+            Some("Resolving\u{2026}".to_owned()),
+            if has_repo {
+                "Fetching PR metadata".to_owned()
+            } else {
+                "Open a repo to view this diff".to_owned()
+            },
+            false,
+        ),
+        Some((PrPeekMeta::Ready(info), diff)) => {
+            let label = format!("#{} {}", info.number, info.title);
+            let rhs = format!(
+                "{} \u{00B7} +{} \u{2212}{} \u{00B7} @{}",
+                info.state, info.additions, info.deletions, info.author_login
+            );
+            let detail = match diff {
+                PrPeekDiff::Ready { .. } => "Ready \u{2014} press Enter to open".to_owned(),
+                PrPeekDiff::Loading => "Preparing diff\u{2026}".to_owned(),
+                PrPeekDiff::Failed(msg) => format!("Diff load failed: {msg}"),
+                PrPeekDiff::Idle => {
+                    if has_repo {
+                        "Queued".to_owned()
+                    } else {
+                        "Open a repo to view this diff".to_owned()
+                    }
+                }
+            };
+            let disabled = !has_repo;
+            (label, Some(rhs), detail, disabled)
+        }
+        Some((PrPeekMeta::Failed(msg), _)) => {
+            (fallback_label, Some("error".to_owned()), msg.clone(), true)
+        }
+    };
+    PaletteEntry {
+        label,
+        detail,
+        kind: PaletteEntryKind::PullRequest(key.clone()),
+        highlights: Vec::new(),
+        rhs,
+        disabled,
+    }
+}
+pub type PrKey = (String, String, i32);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrPeekMeta {
+    Loading,
+    Ready(PullRequestInfo),
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrPeekDiff {
+    Idle,
+    Loading,
+    Ready {
+        url: String,
+        left_ref: String,
+        right_ref: String,
+        info: PullRequestInfo,
+    },
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrCacheEntry {
+    pub meta: PrPeekMeta,
+    pub diff: PrPeekDiff,
+    pub last_peek_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PrReviewCommentsEntry {
+    pub status: AsyncStatus,
+    pub comments: Vec<PullRequestReviewComment>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewCommentDraft {
+    pub key: PrKey,
+    pub request: CreatePullRequestReviewComment,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReviewCommentComposerState {
+    pub draft: Option<ReviewCommentDraft>,
+    pub status: AsyncStatus,
+    pub message: Option<String>,
+    /// When set, submitting the composer replies to this thread instead of
+    /// creating a new inline draft.
+    pub reply_target: Option<ReviewThreadId>,
+    /// When set, submitting the composer edits this comment (by GraphQL node id)
+    /// instead of creating a new draft.
+    pub edit_target: Option<String>,
+    /// Write (false) vs Preview (true) tab — Preview renders the markdown.
+    pub preview: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveReviewStatus {
+    pub status: ReviewSessionStatus,
+    pub message: Option<String>,
+    pub unresolved_threads: usize,
+    pub resolved_threads: usize,
+    pub outdated_threads: usize,
+    pub pending_drafts: usize,
+    pub failed_drafts: usize,
+    pub review_decision: Option<String>,
+    pub viewer_latest_review_state: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
+pub struct PullRequestState {
+    pub status: AsyncStatus,
+    pub cache: HashMap<PrKey, PrCacheEntry>,
+    pub pending_confirm: Option<PrKey>,
+    pub active: Option<PrKey>,
+    pub review_comments: HashMap<PrKey, PrReviewCommentsEntry>,
+    pub review_sessions: HashMap<PrKey, ReviewSession>,
+    pub review_composer: ReviewCommentComposerState,
+    /// Ephemeral, UI-only expand/collapse override per thread. Takes precedence
+    /// over the default (unresolved=expanded, resolved=collapsed). Not persisted
+    /// and intentionally separate from the backend `ReviewThreadStatus.collapsed`.
+    pub review_thread_expanded: HashMap<ReviewThreadId, bool>,
+    /// Fetched comment-author avatars, keyed by `avatar_cache_key` of the sized
+    /// URL. Shared across PRs (avatars are immutable per URL); populated by the
+    /// shared `AvatarFetched` handler and read by the review card overlay.
+    pub review_avatars: HashMap<u64, ReviewAvatar>,
+    /// Active drag-selection within a single review comment body, or `None`.
+    /// Mutually exclusive with the editor's viewport text selection.
+    pub card_text_selection: Option<CardTextSelection>,
+}
+
+/// Drag-selection within one review comment body. Offsets are byte indices into
+/// `text` (a snapshot of the cleaned, wrapped-source body), so they remain valid
+/// across re-wrap; `text` is stored so copy never has to re-derive it. Only the
+/// comment whose `source_key` matches renders the highlight.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardTextSelection {
+    pub source_key: u64,
+    pub text: String,
+    pub anchor: usize,
+    pub focus: usize,
+}
+
+impl CardTextSelection {
+    pub fn new(source_key: u64, text: String, byte: usize) -> Self {
+        let byte = byte.min(text.len());
+        Self {
+            source_key,
+            text,
+            anchor: byte,
+            focus: byte,
+        }
+    }
+
+    pub fn normalized(&self) -> (usize, usize) {
+        (self.anchor.min(self.focus), self.anchor.max(self.focus))
+    }
+
+    pub fn is_collapsed(&self) -> bool {
+        self.anchor == self.focus
+    }
+
+    /// The selected substring, or `None` when the selection is empty/invalid.
+    pub fn selected_text(&self) -> Option<String> {
+        let (lo, hi) = self.normalized();
+        if lo >= hi {
+            return None;
+        }
+        self.text.get(lo..hi).map(str::to_owned)
+    }
+}
+
+/// Lifecycle of a single comment-author avatar fetch. `Failed` is terminal (no
+/// retry) so a persistently-broken URL falls back to initials without re-fetching.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewAvatar {
+    Fetching,
+    Ready(AvatarBitmap),
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AvatarBitmap {
+    pub url: String,
+    pub rgba: Arc<Vec<u8>>,
+    pub width: u32,
+    pub height: u32,
+    pub cache_key: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
+pub struct GitHubAuthState {
+    pub status: AsyncStatus,
+    pub device_flow: Option<DeviceFlowState>,
+    pub token_present: bool,
+    pub user: Option<GitHubUser>,
+    pub avatar: Option<AvatarBitmap>,
+    pub avatar_fetching: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
+pub struct GitHubState {
+    pub client_id: String,
+    #[store(flatten)]
+    pub auth: GitHubAuthState,
+    #[store(flatten)]
+    pub pull_request: PullRequestState,
+}
+
+/// Request a fixed-size avatar from GitHub by rewriting (or appending) the `s=` query
+/// parameter. Returns `None` if the input URL is empty.
+pub(crate) fn avatar_url_sized(base: &str, size: u32) -> Option<String> {
+    let base = base.trim();
+    if base.is_empty() {
+        return None;
+    }
+    let (path, query) = match base.split_once('?') {
+        Some((p, q)) => (p, q),
+        None => (base, ""),
+    };
+    let mut parts: Vec<String> = query
+        .split('&')
+        .filter(|part| !part.is_empty() && !part.starts_with("s="))
+        .map(|part| part.to_owned())
+        .collect();
+    parts.push(format!("s={size}"));
+    Some(format!("{path}?{}", parts.join("&")))
+}
+
+/// Deterministic cache key for an avatar URL so the GPU texture cache dedupes it.
+pub(crate) fn avatar_cache_key(url: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    "avatar".hash(&mut h);
+    url.hash(&mut h);
+    h.finish()
+}
+
+impl AppState {
+    pub(super) fn preview_pull_request(&mut self) -> Vec<Effect> {
+        let profile = self.vcs_ui_profile();
+        if !profile.accepts_compare_mode(CompareMode::ThreeDot)
+            || self.repository.location.with(&self.store, |location| {
+                !location
+                    .as_ref()
+                    .is_some_and(|location| location.profile == VCS_PROFILE_GIT)
+            })
+        {
+            self.push_error("PR preview is only available for Git repositories.");
+            return Vec::new();
+        }
+        let Some(base_ref) = self.default_pull_request_base_ref() else {
+            self.push_error("No default branch found for PR preview.");
+            return Vec::new();
+        };
+        let (_, workdir_ref, _) = profile.working_copy_compare();
+        self.workspace.pre_drill_compare.set(&self.store, None);
+        self.compare.left_ref.set(&self.store, base_ref);
+        self.compare
+            .right_ref
+            .set(&self.store, workdir_ref.to_owned());
+        self.compare.resolved_left.set(&self.store, None);
+        self.compare.resolved_right.set(&self.store, None);
+        self.compare.mode.set(&self.store, CompareMode::ThreeDot);
+        let mut effects = self.persist_settings_effect();
+        effects.extend(self.kickoff_compare());
+        effects
+    }
+
+    pub(super) fn default_pull_request_base_ref(&self) -> Option<String> {
+        let refs = self.repository.refs.get(&self.store);
+        let active = refs
+            .iter()
+            .find(|reference| reference.active && reference.kind == RefKind::Branch)
+            .map(|reference| reference.name.as_str());
+        let branch_ref = |name: &str| {
+            refs.iter()
+                .find(|reference| {
+                    reference.name == name
+                        && active != Some(reference.name.as_str())
+                        && matches!(reference.kind, RefKind::Branch | RefKind::RemoteBranch)
+                })
+                .map(|reference| reference.name.clone())
+        };
+        for name in [
+            "origin/main",
+            "origin/master",
+            "upstream/main",
+            "upstream/master",
+            "origin/develop",
+            "origin/development",
+            "main",
+            "master",
+            "develop",
+            "development",
+        ] {
+            if let Some(reference) = branch_ref(name) {
+                return Some(reference);
+            }
+        }
+        for trunk in ["main", "master", "develop", "development"] {
+            let suffix = format!("/{trunk}");
+            if let Some(reference) = refs
+                .iter()
+                .find(|reference| {
+                    reference.name.ends_with(&suffix)
+                        && active != Some(reference.name.as_str())
+                        && reference.kind == RefKind::RemoteBranch
+                })
+                .map(|reference| reference.name.clone())
+            {
+                return Some(reference);
+            }
+        }
+        None
+    }
+
+    pub(super) fn apply_pr_compare(&mut self, left: String, right: String) -> Vec<Effect> {
+        let _ = self.update_compare_field(CompareField::Left, left);
+        let _ = self.update_compare_field(CompareField::Right, right);
+        self.compare.mode.set(&self.store, CompareMode::ThreeDot);
+        self.kickoff_compare()
+    }
+}

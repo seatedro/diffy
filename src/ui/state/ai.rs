@@ -207,3 +207,12 @@ impl AppState {
         ]
     }
 }
+
+impl AppState {
+    pub(super) fn ai_key_editable(&self, kind: AiKeyKind) -> bool {
+        match kind {
+            AiKeyKind::OpenAi => self.ai_openai_key.is_empty() || self.ai_openai_editing,
+            AiKeyKind::Anthropic => self.ai_anthropic_key.is_empty() || self.ai_anthropic_editing,
+        }
+    }
+}

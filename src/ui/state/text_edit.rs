@@ -4,7 +4,7 @@ use crate::actions::TextEditAction;
 use crate::effects::{AiEffect, Effect, UiEffect};
 use crate::platform::secrets::AiKeyKind;
 
-use super::{AppState, CompareField, FocusTarget, PickerKind};
+use super::*;
 
 pub(super) fn reduce_action(state: &mut AppState, action: TextEditAction) -> Vec<Effect> {
     state.apply_text_edit_action(action)
@@ -798,5 +798,165 @@ impl AppState {
             self.mark_text_compare_dirty();
         }
         Vec::new()
+    }
+}
+
+/// Cursor/selection state for the currently focused text field.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
+pub struct TextEditState {
+    /// Byte offset of the caret.
+    pub cursor: usize,
+    /// Byte offset of the selection anchor.  Equal to `cursor` when nothing is selected.
+    pub anchor: usize,
+    /// Timestamp (clock_ms) when the cursor last moved — used to reset blink phase.
+    pub cursor_moved_at_ms: u64,
+}
+
+impl AppState {
+    /// Set cursor and anchor to the same offset and refresh the blink timestamp.
+    pub(super) fn reset_text_edit(&mut self, offset: usize) {
+        self.text_edit.cursor.set(&self.store, offset);
+        self.text_edit.anchor.set(&self.store, offset);
+        self.text_edit
+            .cursor_moved_at_ms
+            .set(&self.store, self.clock_ms);
+    }
+
+    /// Run `f` against the text string for the given focus target, if it's a text field.
+    pub(super) fn with_text_for_focus<R>(
+        &self,
+        target: FocusTarget,
+        f: impl FnOnce(&str) -> R,
+    ) -> Option<R> {
+        match target {
+            FocusTarget::PickerInput => match self.overlays.picker.kind.get(&self.store) {
+                PickerKind::Repository
+                | PickerKind::Theme
+                | PickerKind::UiFont
+                | PickerKind::MonoFont => {
+                    Some(self.overlays.picker.query.with(&self.store, |s| f(s)))
+                }
+                PickerKind::LeftRef => Some(self.compare.left_ref.with(&self.store, |s| f(s))),
+                PickerKind::RightRef => Some(self.compare.right_ref.with(&self.store, |s| f(s))),
+            },
+            FocusTarget::CommandPaletteInput => Some(
+                self.overlays
+                    .command_palette
+                    .query
+                    .with(&self.store, |s| f(s)),
+            ),
+            FocusTarget::SidebarSearch => Some(self.file_list.filter.with(&self.store, |s| f(s))),
+            FocusTarget::SearchInput => Some(self.editor.search.query.with(&self.store, |s| f(s))),
+            FocusTarget::CommitEditor => None,
+            FocusTarget::SettingsOpenAiKey => Some(f(&self.ai_openai_key)),
+            FocusTarget::SettingsAnthropicKey => Some(f(&self.ai_anthropic_key)),
+            FocusTarget::SettingsSteeringPrompt => None,
+            FocusTarget::TextCompareLeft | FocusTarget::TextCompareRight => None,
+            _ => None,
+        }
+    }
+
+    pub(super) fn with_focused_text<R>(&self, f: impl FnOnce(&str) -> R) -> Option<R> {
+        let target = self.focus.get(&self.store)?;
+        self.with_text_for_focus(target, f)
+    }
+
+    pub(super) fn update_focused_text<R>(&mut self, f: impl FnOnce(&mut String) -> R) -> Option<R> {
+        match self.focus.get(&self.store) {
+            Some(FocusTarget::PickerInput) => match self.overlays.picker.kind.get(&self.store) {
+                PickerKind::Repository
+                | PickerKind::Theme
+                | PickerKind::UiFont
+                | PickerKind::MonoFont => {
+                    let mut out = None;
+                    self.overlays
+                        .picker
+                        .query
+                        .update(&self.store, |s| out = Some(f(s)));
+                    out
+                }
+                PickerKind::LeftRef => {
+                    let mut out = None;
+                    self.compare
+                        .left_ref
+                        .update(&self.store, |s| out = Some(f(s)));
+                    out
+                }
+                PickerKind::RightRef => {
+                    let mut out = None;
+                    self.compare
+                        .right_ref
+                        .update(&self.store, |s| out = Some(f(s)));
+                    out
+                }
+            },
+            Some(FocusTarget::CommandPaletteInput) => {
+                let mut out = None;
+                self.overlays
+                    .command_palette
+                    .query
+                    .update(&self.store, |s| out = Some(f(s)));
+                out
+            }
+            Some(FocusTarget::SidebarSearch) => {
+                let mut out = None;
+                self.file_list
+                    .filter
+                    .update(&self.store, |s| out = Some(f(s)));
+                out
+            }
+            Some(FocusTarget::SearchInput) => {
+                let mut out = None;
+                self.editor
+                    .search
+                    .query
+                    .update(&self.store, |s| out = Some(f(s)));
+                out
+            }
+            Some(FocusTarget::CommitEditor) => None,
+            Some(FocusTarget::SettingsOpenAiKey) => {
+                if !self.ai_key_editable(AiKeyKind::OpenAi) {
+                    return None;
+                }
+                let result = f(&mut self.ai_openai_key);
+                Some(result)
+            }
+            Some(FocusTarget::SettingsAnthropicKey) => {
+                if !self.ai_key_editable(AiKeyKind::Anthropic) {
+                    return None;
+                }
+                let result = f(&mut self.ai_anthropic_key);
+                Some(result)
+            }
+            Some(FocusTarget::SettingsSteeringPrompt) => None,
+            _ => None,
+        }
+    }
+
+    pub(super) fn touch_cursor(&mut self) {
+        self.text_edit
+            .cursor_moved_at_ms
+            .set(&self.store, self.clock_ms);
+    }
+
+    pub(super) fn clamp_cursor(&mut self) {
+        let cursor_now = self.text_edit.cursor.get(&self.store);
+        let anchor_now = self.text_edit.anchor.get(&self.store);
+        let Some((cursor, anchor)) = self.with_focused_text(|text| {
+            let len = text.len();
+            let mut cursor = cursor_now.min(len);
+            while cursor > 0 && !text.is_char_boundary(cursor) {
+                cursor -= 1;
+            }
+            let mut anchor = anchor_now.min(len);
+            while anchor > 0 && !text.is_char_boundary(anchor) {
+                anchor -= 1;
+            }
+            (cursor, anchor)
+        }) else {
+            return;
+        };
+        self.text_edit.cursor.set(&self.store, cursor);
+        self.text_edit.anchor.set(&self.store, anchor);
     }
 }

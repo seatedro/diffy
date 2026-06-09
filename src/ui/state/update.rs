@@ -95,3 +95,15 @@ impl AppState {
         }
     }
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum UpdateState {
+    #[default]
+    Idle,
+    Checking,
+    Available(AvailableUpdate),
+    Downloading(AvailableUpdate),
+    ReadyToRestart(StagedUpdate),
+    Restarting(StagedUpdate),
+    Failed(String),
+}

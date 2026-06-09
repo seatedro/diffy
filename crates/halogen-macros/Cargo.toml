@@ -10,3 +10,8 @@ proc-macro = true
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full", "extra-traits"] }
+
+[dev-dependencies]
+# Dev-only cycle (halogen depends on this crate) is allowed by cargo and gives
+# `{@sig}` integration coverage against the real `SignalStore`.
+halogen = { path = "../halogen" }

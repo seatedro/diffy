@@ -2848,6 +2848,7 @@ dependencies = [
 name = "halogen-macros"
 version = "0.1.11"
 dependencies = [
+ "halogen",
  "proc-macro2",
  "quote",
  "syn",

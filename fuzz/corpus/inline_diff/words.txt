@@ -1,0 +1,2 @@
+fn render(frame: &mut Frame) -> Result<(), Error>
+fn render(scene: &mut Scene) -> Result<(), RenderError>

@@ -33,3 +33,17 @@ path = "fuzz_targets/inline_diff.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "patch_parse"
+path = "fuzz_targets/patch_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "review_anchor"
+path = "fuzz_targets/review_anchor.rs"
+test = false
+doc = false
+bench = false

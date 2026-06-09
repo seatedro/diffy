@@ -11,7 +11,7 @@ use crate::core::compare::{
     COMPARE_SUMMARY_FILE_LIMIT, CompareFileStatsTarget, CompareFileSummary, CompareOutput,
     ProgressSink, RendererKind,
 };
-use crate::core::error::{DiffyError, Result};
+use crate::core::error::{DiffyError, Result, VcsBackendKind};
 use crate::core::vcs::backend::{VcsBackend, VcsRepository, VcsWatchPaths};
 use crate::core::vcs::jj::cli::JjCli;
 use crate::core::vcs::jj::parse::{
@@ -389,9 +389,7 @@ impl JjRepository {
             .find(|remote| remote.as_str() == "origin")
             .cloned()
             .or_else(|| remotes.first().cloned())
-            .ok_or_else(|| {
-                DiffyError::General("No remotes are configured for this repository.".to_owned())
-            })
+            .ok_or_else(|| jj_error("publish", "no remotes are configured for this repository"))
     }
 
     fn default_publish_target(&self) -> Result<JjPublishTarget> {
@@ -403,8 +401,9 @@ impl JjRepository {
         let head_target = self.publish_target("@")?;
         let target = if head_target.summary.trim().is_empty() {
             let mut parent = self.publish_target("@-").map_err(|_| {
-                DiffyError::General(
-                    "Describe the current jj change before publishing it.".to_owned(),
+                jj_error(
+                    "publish",
+                    "describe the current jj change before publishing it",
                 )
             })?;
             parent.fell_back_from_empty_working_copy = true;
@@ -413,8 +412,9 @@ impl JjRepository {
             head_target
         };
         if target.summary.trim().is_empty() {
-            Err(DiffyError::General(
-                "Describe the jj change before publishing it.".to_owned(),
+            Err(jj_error(
+                "publish",
+                "describe the jj change before publishing it",
             ))
         } else {
             Ok(target)
@@ -439,9 +439,10 @@ impl JjRepository {
         let change_id_rest = fields.next().unwrap_or_default();
         let summary = fields.next().unwrap_or_default().to_owned();
         if commit_id.is_empty() {
-            return Err(DiffyError::General(format!(
-                "Could not resolve jj revision {revision} for publishing."
-            )));
+            return Err(jj_error(
+                "publish",
+                format!("could not resolve jj revision {revision} for publishing"),
+            ));
         }
         let short_change_id = format!("{change_id_prefix}{change_id_rest}");
         let short_change_id_prefix_len = change_id_prefix.len();
@@ -866,8 +867,9 @@ impl VcsRepository for JjRepository {
         operation: FileOperation,
     ) -> Result<()> {
         if operation != FileOperation::Discard {
-            return Err(DiffyError::General(
-                "jj does not support stage or unstage operations".to_owned(),
+            return Err(jj_error_fatal(
+                "stage",
+                "jj does not support stage or unstage operations",
             ));
         }
         let mut args = vec![OsString::from("restore")];
@@ -985,7 +987,7 @@ impl VcsRepository for JjRepository {
 
     fn push(&mut self, remote: &str, refspec: &str, _force_with_lease: bool) -> Result<()> {
         let bookmark = bookmark_from_refspec(refspec)
-            .ok_or_else(|| DiffyError::General("jj push requires a bookmark refspec".to_owned()))?;
+            .ok_or_else(|| jj_error_fatal("push", "jj push requires a bookmark refspec"))?;
         self.cli.run(&[
             OsString::from("git"),
             OsString::from("push"),
@@ -1202,8 +1204,9 @@ impl VcsRepository for JjRepository {
                 ])?;
             }
             PublishActionKind::PushRef { .. } => {
-                return Err(DiffyError::General(
-                    "jj cannot run a Git refspec publish action".to_owned(),
+                return Err(jj_error_fatal(
+                    "publish",
+                    "jj cannot run a Git refspec publish action",
                 ));
             }
         }
@@ -1256,6 +1259,14 @@ impl VcsRepository for JjRepository {
         );
         Ok(text)
     }
+}
+
+fn jj_error(op: impl Into<String>, details: impl Into<String>) -> DiffyError {
+    DiffyError::vcs(VcsBackendKind::Jj, op, details)
+}
+
+fn jj_error_fatal(op: impl Into<String>, details: impl Into<String>) -> DiffyError {
+    DiffyError::vcs_fatal(VcsBackendKind::Jj, op, details)
 }
 
 fn u32_to_i32_saturating(value: u32) -> i32 {

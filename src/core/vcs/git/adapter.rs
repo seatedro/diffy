@@ -7,7 +7,7 @@ use crate::core::compare::{
     CompareFileStatsTarget, CompareFileSummary, CompareMode, ComparePhase, CompareService,
     CompareSpec, ProgressSink, RendererKind,
 };
-use crate::core::error::{DiffyError, Result};
+use crate::core::error::{DiffyError, Result, VcsBackendKind};
 use crate::core::vcs::backend::{VcsBackend, VcsRepository, VcsWatchPaths};
 use crate::core::vcs::git::status::StatusBits;
 use crate::core::vcs::git::{
@@ -54,7 +54,7 @@ impl VcsBackend for GitBackend {
 
     fn watch_paths(&self, location: &RepoLocation) -> Result<VcsWatchPaths> {
         let repo = gix::open(&location.workspace_root)
-            .map_err(|error| DiffyError::General(error.to_string()))?;
+            .map_err(|error| DiffyError::vcs(VcsBackendKind::Git, "open", error.to_string()))?;
         let metadata_dir = repo.git_dir().to_path_buf();
         let workdir = repo.workdir().map(Path::to_path_buf);
         let watched_paths = match workdir.as_ref() {
@@ -334,7 +334,9 @@ impl VcsRepository for GitRepository {
         let branch = branches
             .iter()
             .find(|branch| branch.is_head && !branch.is_remote)
-            .ok_or_else(|| DiffyError::General("No current branch to push.".to_owned()))?;
+            .ok_or_else(|| {
+                DiffyError::vcs(VcsBackendKind::Git, "publish", "no current branch to push")
+            })?;
         let (remote, upstream_branch) = branch
             .upstream
             .as_deref()
@@ -372,8 +374,10 @@ impl VcsRepository for GitRepository {
                     label: completed_publish_label(&action.label),
                 })
             }
-            _ => Err(DiffyError::General(
-                "Git cannot run this publish action".to_owned(),
+            _ => Err(DiffyError::vcs_fatal(
+                VcsBackendKind::Git,
+                "publish",
+                "Git cannot run this publish action",
             )),
         }
     }
@@ -387,7 +391,7 @@ impl VcsRepository for GitRepository {
                     PullFastForwardOutcome::FastForwarded { behind }
                 }
             })
-            .map_err(|error| DiffyError::General(error.to_string()))
+            .map_err(|error| DiffyError::vcs(VcsBackendKind::Git, "pull", error.to_string()))
     }
 
     fn resolve_pull_request_comparison(

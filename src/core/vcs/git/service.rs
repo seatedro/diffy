@@ -12,7 +12,7 @@ use crate::core::compare::backends::{RENAME_DETECTION_LIMIT, compare_output_from
 use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::CompareMode;
 use crate::core::compare::stats::COMPARE_SUMMARY_FILE_LIMIT;
-use crate::core::error::{DiffyError, Result};
+use crate::core::error::{DiffyError, Result, VcsBackendKind};
 use crate::core::forge::github::{GitHubApi, PullRequestInfo, parse_pr_url};
 use crate::core::vcs::git::status::{StatusBits, StatusItem, StatusOperation, StatusScope};
 
@@ -164,7 +164,7 @@ fn git_workdir(repo: &gix::Repository) -> Result<PathBuf> {
     repo.workdir()
         .map(Path::to_path_buf)
         .or_else(|| repo.git_dir().parent().map(Path::to_path_buf))
-        .ok_or_else(|| DiffyError::General("repository has no working directory".to_owned()))
+        .ok_or_else(|| git_error_fatal("open", "repository has no working directory"))
 }
 
 struct GitOutput {
@@ -196,7 +196,7 @@ fn run_system_git_inner(
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .output()
-        .map_err(|e| DiffyError::General(format!("failed to run git: {e}")))?;
+        .map_err(|e| git_error_fatal(git_command_label(args), format!("failed to run git: {e}")))?;
 
     if output.status.success() || (allow_diff_exit && output.status.code() == Some(1)) {
         return Ok(GitOutput {
@@ -214,9 +214,30 @@ fn run_system_git_inner(
         .map(str::to_owned)
         .unwrap_or_else(|| format!("git exited with {}", output.status));
     let command = git_command_label(args);
-    Err(DiffyError::General(format!(
-        "git {command} failed: {detail}"
-    )))
+    if failure_is_network(&detail) {
+        return Err(DiffyError::network(format!(
+            "git {command} failed: {detail}"
+        )));
+    }
+    Err(git_error(command, detail))
+}
+
+/// Heuristic for remote-operation failures (fetch/push/pull) caused by the
+/// network rather than repository state, so the UI can suggest retrying.
+fn failure_is_network(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    [
+        "could not resolve host",
+        "connection refused",
+        "connection reset",
+        "connection timed out",
+        "operation timed out",
+        "network is unreachable",
+        "could not read from remote repository",
+        "unable to access",
+    ]
+    .iter()
+    .any(|needle| detail.contains(needle))
 }
 
 fn git_command_label(args: &[OsString]) -> String {
@@ -256,8 +277,16 @@ fn sanitize_git_arg(arg: &str) -> String {
     }
 }
 
+fn git_error(op: impl Into<String>, details: impl Into<String>) -> DiffyError {
+    DiffyError::vcs(VcsBackendKind::Git, op, details)
+}
+
+fn git_error_fatal(op: impl Into<String>, details: impl Into<String>) -> DiffyError {
+    DiffyError::vcs_fatal(VcsBackendKind::Git, op, details)
+}
+
 fn gix_error(error: impl std::fmt::Display) -> DiffyError {
-    DiffyError::General(format!("Gitoxide error: {error}"))
+    git_error("repository read", error.to_string())
 }
 
 fn github_repo_key_from_remote_url(url: &str) -> Option<(String, String)> {
@@ -615,7 +644,10 @@ impl GitService {
         let entry = index
             .entry_by_path(path.as_bytes().as_bstr())
             .ok_or_else(|| {
-                DiffyError::General(format!("path {path} is not present at {INDEX_REF}"))
+                git_error(
+                    "read file",
+                    format!("path {path} is not present at {INDEX_REF}"),
+                )
             })?;
         Ok(self
             .repo()?
@@ -648,10 +680,16 @@ impl GitService {
             .lookup_entry_by_path(path)
             .map_err(gix_error)?
             .ok_or_else(|| {
-                DiffyError::General(format!("path {path} is not present at {reference}"))
+                git_error(
+                    "read file",
+                    format!("path {path} is not present at {reference}"),
+                )
             })?;
         if !entry.mode().is_blob_or_symlink() {
-            return Err(DiffyError::General(format!("path {path} is not a file")));
+            return Err(git_error_fatal(
+                "read file",
+                format!("path {path} is not a file"),
+            ));
         }
         Ok(self
             .repo()?
@@ -702,15 +740,17 @@ impl GitService {
 
     fn validate_text_bytes(reference: &str, path: &str, bytes: &[u8]) -> Result<()> {
         if bytes.contains(&0u8) {
-            return Err(DiffyError::General(format!(
-                "path {path} is binary at {reference}",
-            )));
+            return Err(git_error_fatal(
+                "read file",
+                format!("path {path} is binary at {reference}"),
+            ));
         }
 
         std::str::from_utf8(bytes).map_err(|e| {
-            DiffyError::General(format!(
-                "path {path} at {reference} is not valid UTF-8: {e}"
-            ))
+            git_error_fatal(
+                "read file",
+                format!("path {path} at {reference} is not valid UTF-8: {e}"),
+            )
         })?;
         Ok(())
     }
@@ -1341,12 +1381,12 @@ impl GitService {
     pub fn repo(&self) -> Result<&gix::Repository> {
         self.repo
             .as_ref()
-            .ok_or_else(|| DiffyError::General("repository is not open".to_owned()))
+            .ok_or_else(|| git_error_fatal("open", "repository is not open"))
     }
 
     fn repo_path_ref(&self) -> Result<&Path> {
         if self.repo_path.is_empty() {
-            return Err(DiffyError::General("repository is not open".to_owned()));
+            return Err(git_error_fatal("open", "repository is not open"));
         }
         Ok(Path::new(&self.repo_path))
     }
@@ -1430,22 +1470,19 @@ impl GitService {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .map_err(|e| DiffyError::General(format!("failed to run git apply: {e}")))?;
+            .map_err(|e| git_error_fatal("apply", format!("failed to run git apply: {e}")))?;
         use std::io::Write;
         child
             .stdin
             .as_mut()
-            .ok_or_else(|| DiffyError::General("failed to open git apply stdin".to_owned()))?
+            .ok_or_else(|| git_error_fatal("apply", "failed to open git apply stdin"))?
             .write_all(patch_text.as_bytes())?;
         let output = child.wait_with_output()?;
         if output.status.success() {
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(DiffyError::General(format!(
-                "git apply failed: {}",
-                stderr.trim()
-            )))
+            Err(git_error("apply", stderr.trim()))
         }
     }
 

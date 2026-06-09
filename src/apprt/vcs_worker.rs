@@ -404,7 +404,7 @@ fn apply_status_operation(
     if let Err(error) = result {
         event_sender.send(RepositoryEvent::FileOperationFailed {
             path: path.clone(),
-            message: error.to_string(),
+            message: error.user_message(),
         });
         return;
     }
@@ -424,7 +424,7 @@ fn apply_batch_status_operation(
     if let Err(error) = result {
         event_sender.send(RepositoryEvent::FileOperationFailed {
             path: path.clone(),
-            message: error.to_string(),
+            message: error.user_message(),
         });
         return;
     }
@@ -471,7 +471,7 @@ fn apply_commit(
     {
         event_sender.send(RepositoryEvent::CommitFailed {
             path,
-            message: error.to_string(),
+            message: error.user_message(),
         });
         return;
     }
@@ -521,7 +521,7 @@ fn apply_vcs_operation(
             event_sender.send(RepositoryEvent::VcsOperationFailed {
                 toast_id,
                 operation,
-                message: error.to_string(),
+                message: error.user_message(),
             });
         }
     }
@@ -552,7 +552,7 @@ fn apply_fetch(
             event_sender.send(RepositoryEvent::FetchFailed {
                 toast_id,
                 remote,
-                message: error.to_string(),
+                message: error.user_message(),
             });
         }
     }
@@ -603,7 +603,7 @@ fn apply_push(
             event_sender.send(RepositoryEvent::PushFailed {
                 toast_id,
                 remote,
-                message: error.to_string(),
+                message: error.user_message(),
             });
         }
     }
@@ -639,7 +639,7 @@ fn apply_publish(
             tracing::warn!(path = %path.display(), %error, "vcs: publish failed");
             event_sender.send(RepositoryEvent::PublishFailed {
                 toast_id,
-                message: error.to_string(),
+                message: error.user_message(),
             });
         }
     }
@@ -662,7 +662,7 @@ fn apply_publish_plan(event_sender: &RuntimeEventSender, path: PathBuf, toast_id
             tracing::warn!(path = %path.display(), %error, "vcs: publish-plan failed");
             event_sender.send(RepositoryEvent::PublishPlanFailed {
                 toast_id,
-                message: error.to_string(),
+                message: error.user_message(),
             });
         }
     }
@@ -722,7 +722,7 @@ fn apply_pull_ff(
                 toast_id,
                 remote,
                 branch,
-                message: error.to_string(),
+                message: error.user_message(),
             });
         }
     }
@@ -786,7 +786,7 @@ fn sync_repository_inner(
             event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
                 path,
                 reason,
-                message: error.to_string(),
+                message: error.user_message(),
             });
             return;
         }
@@ -829,7 +829,7 @@ fn sync_vcs_repository(
                 event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
                     path,
                     reason,
-                    message: error.to_string(),
+                    message: error.user_message(),
                 });
                 return;
             }
@@ -849,7 +849,7 @@ fn sync_vcs_repository(
             event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
                 path,
                 reason,
-                message: error.to_string(),
+                message: error.user_message(),
             });
             return;
         }

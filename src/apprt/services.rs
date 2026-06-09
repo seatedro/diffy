@@ -841,7 +841,7 @@ impl AppServices {
                 .header("User-Agent", "diffy/0.1")
                 .send()
                 .await
-                .map_err(|error| DiffyError::Http(format!("avatar fetch failed: {error}")))?;
+                .map_err(|error| DiffyError::network(format!("avatar fetch failed: {error}")))?;
             http::response_bytes(response, "avatar fetch").await
         })?;
         let img = image::load_from_memory(&bytes)

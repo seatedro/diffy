@@ -201,12 +201,44 @@ fn stale_text_compare_finished_event_is_ignored() {
     assert_eq!(state.text_compare.view, TextCompareView::Edit);
 }
 
+// Regression test: `CompareScheduler` keeps a monotonic epoch high-water
+// mark, so a text compare that rewinds `workspace.compare_generation` below
+// it makes every later repo file/stats job get dropped silently (perpetual
+// "Loading diff..."). Text compares must bump the shared counter forward.
+#[test]
+fn text_compare_generation_never_rewinds_workspace_generation() {
+    let mut state = AppState::default();
+    // Simulate prior repo compares having advanced the shared counter (and
+    // with it the scheduler epoch).
+    state.workspace.compare_generation.set(&state.store, 5);
+    state.apply_action(crate::actions::WorkspaceAction::NewTextCompare);
+    let effects = state.apply_action(crate::actions::TextCompareAction::CompareNow);
+    let generation = effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::Compare(CompareEffect::RunText(task)) => Some(task.generation),
+            _ => None,
+        })
+        .unwrap();
+
+    assert!(generation > 5);
+    assert_eq!(
+        state.workspace.compare_generation.get(&state.store),
+        generation
+    );
+    assert_eq!(state.text_compare.generation, generation);
+}
+
 #[test]
 fn text_compare_finished_installs_diff_view() {
     let mut state = AppState::default();
     state.apply_action(crate::actions::WorkspaceAction::NewTextCompare);
     let generation = state.text_compare.generation.saturating_add(1);
     state.text_compare.generation = generation;
+    state
+        .workspace
+        .compare_generation
+        .set(&state.store, generation);
     let output = crate::core::compare::compare_text(
         "old\n",
         "new\n",

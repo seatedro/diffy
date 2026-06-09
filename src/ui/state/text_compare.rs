@@ -102,7 +102,17 @@ impl AppState {
                 .source
                 .set(&self.store, WorkspaceSource::TextCompare);
         }
-        let generation = self.text_compare.generation.saturating_add(1);
+        // Text and repo compares share one workspace-wide generation space:
+        // `CompareScheduler`'s epoch is a monotonic high-water mark, so seed
+        // the bump from whichever counter is ahead. Deriving it from
+        // `text_compare.generation` alone would rewind
+        // `workspace.compare_generation` below the scheduler epoch and every
+        // later repo file/stats job would be silently dropped as stale.
+        let generation = self
+            .text_compare
+            .generation
+            .max(self.workspace.compare_generation.get(&self.store))
+            .saturating_add(1);
         self.text_compare.generation = generation;
         self.text_compare.status = AsyncStatus::Loading;
         self.workspace
@@ -137,7 +147,14 @@ impl AppState {
         &mut self,
         payload: TextCompareFinished,
     ) -> Vec<Effect> {
-        if payload.generation != self.text_compare.generation {
+        // Drop results superseded by a newer text compare (text generation
+        // moved on) or by any newer workspace compare (repo compare, cancel,
+        // or repo open bumped `compare_generation` past us). Rewinding the
+        // workspace generation here would strand it below the scheduler's
+        // monotonic epoch.
+        if payload.generation != self.text_compare.generation
+            || payload.generation != self.workspace.compare_generation.get(&self.store)
+        {
             return Vec::new();
         }
 
@@ -150,9 +167,6 @@ impl AppState {
             .set(&self.store, WorkspaceSource::TextCompare);
         self.workspace.status.set(&self.store, AsyncStatus::Ready);
         self.workspace.mode.set(&self.store, WorkspaceMode::Ready);
-        self.workspace
-            .compare_generation
-            .set(&self.store, payload.generation);
         self.compare.layout.set(&self.store, payload.layout);
         self.compare.renderer.set(&self.store, payload.renderer);
         self.compare

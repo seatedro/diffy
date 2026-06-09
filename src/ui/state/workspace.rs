@@ -64,6 +64,11 @@ pub struct WorkspaceState {
     pub source: WorkspaceSource,
     pub status: AsyncStatus,
     pub status_operation_pending: bool,
+    /// Shared generation counter for repo *and* text compares. Must only move
+    /// forward within a session: `CompareScheduler` keeps a monotonic epoch
+    /// high-water mark and silently drops jobs stamped below it, so any path
+    /// that writes this signal must bump from the current value (or take a
+    /// max), never assign an independent counter.
     pub compare_generation: u64,
     pub status_generation: u64,
     pub files: Vec<FileListEntry>,

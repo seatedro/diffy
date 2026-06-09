@@ -167,8 +167,7 @@ fn keymaps_layout(state: &AppState, theme: &Theme) -> AnyElement {
     let scale = theme.metrics.ui_scale();
     let inner_max_w = (Sz::SETTINGS_KEYMAPS_MAX_W * scale).round();
     let capture = state.ui.keymap_capture.get(&state.store);
-    let scroll_px = state.ui.keymaps_scroll_top_px.get(&state.store);
-    let total_h = state.ui.keymaps_content_height_px.get(&state.store);
+    let cx = &*state.store;
 
     let groups: Vec<AnyElement> = shortcut_groups()
         .iter()
@@ -189,8 +188,8 @@ fn keymaps_layout(state: &AppState, theme: &Theme) -> AnyElement {
             </div>
             <div class="flex-1 flex-col w-full" min_h={0.0}
                  clip
-                 scroll_y={scroll_px}
-                 scroll_total={total_h}
+                 scroll_y={@state.ui.keymaps_scroll_top_px}
+                 scroll_total={@state.ui.keymaps_content_height_px}
                  on_scroll={ScrollActionBuilder::SettingsKeymaps}>
                 <div class="flex-col"
                      px={Sp::XXL}

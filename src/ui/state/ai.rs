@@ -111,7 +111,7 @@ impl AppState {
         };
         if editing {
             self.set_focus(Some(target));
-        } else if self.focus.get(&self.store) == Some(target) {
+        } else if self.ui.focus.get(&self.store) == Some(target) {
             self.set_focus(None);
         }
         Vec::new()

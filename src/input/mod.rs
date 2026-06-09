@@ -538,6 +538,7 @@ impl InputSystem {
 
 pub fn resolve_input_context(state: &AppState, ime_active: bool) -> InputContext {
     let owner = if let Some(target) = state
+        .ui
         .focus
         .get(&state.store)
         .filter(|_| state.is_text_focused())
@@ -545,7 +546,7 @@ pub fn resolve_input_context(state: &AppState, ime_active: bool) -> InputContext
         InputOwner::TextField(target)
     } else if let Some(overlay) = state.overlays_top() {
         InputOwner::Overlay(overlay)
-    } else if state.focus.get(&state.store) == Some(FocusTarget::Editor) {
+    } else if state.ui.focus.get(&state.store) == Some(FocusTarget::Editor) {
         InputOwner::Editor
     } else {
         InputOwner::Workspace
@@ -553,8 +554,8 @@ pub fn resolve_input_context(state: &AppState, ime_active: bool) -> InputContext
     InputContext {
         owner,
         overlay: state.overlays_top(),
-        focus: state.focus.get(&state.store),
-        workspace_mode: state.workspace_mode.get(&state.store),
+        focus: state.ui.focus.get(&state.store),
+        workspace_mode: state.workspace.mode.get(&state.store),
         ime_active,
     }
 }

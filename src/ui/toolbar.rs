@@ -36,7 +36,10 @@ pub(crate) fn main_surface(
     // AND the reveal delay has elapsed — sub-half-second diffs never
     // flash a loading state. Before reveal, fall through to whatever the
     // workspace was showing (old diff, empty state, etc.).
-    let compare_progress_snapshot = state.compare_progress.with(&state.store, |p| p.clone());
+    let compare_progress_snapshot = state
+        .workspace
+        .compare_progress
+        .with(&state.store, |p| p.clone());
     let progress_visible = compare_progress_snapshot
         .as_ref()
         .is_some_and(|p| state.clock_ms >= p.reveal_at_ms);
@@ -91,7 +94,7 @@ pub(crate) fn main_surface(
             progress, state, theme,
         ))
     } else {
-        match state.workspace_mode.get(&state.store) {
+        match state.workspace.mode.get(&state.store) {
             // Loading mode is now always accompanied by a `compare_progress`
             // entry (either compare or repo-open). Reaching this arm means
             // the reveal delay hasn't elapsed — preserve the current view
@@ -551,7 +554,7 @@ fn text_compare_editor_pane(
 ) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
-    let focused = state.focus.get(&state.store) == Some(focus_target);
+    let focused = state.ui.focus.get(&state.store) == Some(focus_target);
     let editor = match side {
         TextCompareSide::Left => &state.text_compare.left_editor,
         TextCompareSide::Right => &state.text_compare.right_editor,
@@ -626,7 +629,7 @@ fn search_bar(state: &AppState, theme: &Theme) -> AnyElement {
     let search_query = state.editor.search.query.with(&state.store, |s| s.clone());
     let match_count = state.editor.search.matches.with(&state.store, |m| m.len());
     let active_index = state.editor.search.active_index.get(&state.store);
-    let search_focused = state.focus.get(&state.store) == Some(FocusTarget::SearchInput);
+    let search_focused = state.ui.focus.get(&state.store) == Some(FocusTarget::SearchInput);
 
     let input = text_input("", &search_query)
         .placeholder("Find in diff\u{2026}")

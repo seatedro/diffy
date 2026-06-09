@@ -57,6 +57,10 @@ pub enum WorkspaceSource {
 
 #[derive(Debug, Clone, Default, Store)]
 pub struct WorkspaceState {
+    pub mode: WorkspaceMode,
+    /// Arc-wrapped so per-frame UI snapshots clone a pointer, not the
+    /// label strings inside.
+    pub compare_progress: Option<Arc<CompareProgress>>,
     pub source: WorkspaceSource,
     pub status: AsyncStatus,
     pub status_operation_pending: bool,
@@ -106,6 +110,6 @@ pub fn workspace_mode_name(mode: WorkspaceMode) -> &'static str {
 impl AppState {
     /// Returns true when the workspace is in `Ready` mode.
     pub fn is_workspace_ready(&self) -> bool {
-        self.workspace_mode.get(&self.store) == WorkspaceMode::Ready
+        self.workspace.mode.get(&self.store) == WorkspaceMode::Ready
     }
 }

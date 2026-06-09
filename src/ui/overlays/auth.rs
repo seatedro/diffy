@@ -20,7 +20,7 @@ pub fn auth_modal(
     let token_present = state.github.auth.token_present.get(&state.store);
     let device_flow = state.github.auth.device_flow.get(&state.store);
     let status = state.github.auth.status.get(&state.store);
-    let last_error = state.last_error.get(&state.store);
+    let last_error = state.ui.last_error.get(&state.store);
 
     let phase = if token_present {
         AuthPhase::Success

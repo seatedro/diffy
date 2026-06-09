@@ -62,8 +62,9 @@ impl AppState {
             }
             ShowKeyboardShortcuts => {
                 self.clear_overlays();
-                self.app_view.set(&self.store, AppView::Settings);
-                self.settings_section
+                self.ui.app_view.set(&self.store, AppView::Settings);
+                self.ui
+                    .settings_section
                     .set(&self.store, SettingsSection::Keymaps);
                 Vec::new()
             }
@@ -745,7 +746,8 @@ impl AppState {
 
     pub(super) fn open_theme_picker(&mut self) {
         let scale = self.ui_scale_factor();
-        self.theme_preview_original
+        self.ui
+            .theme_preview_original
             .set(&self.store, Some(self.settings.theme_name.clone()));
         self.overlays
             .picker
@@ -771,6 +773,7 @@ impl AppState {
         use crate::core::themes::ThemeVariant;
 
         let original = self
+            .ui
             .theme_preview_original
             .get(&self.store)
             .unwrap_or_else(|| self.settings.theme_name.clone());
@@ -829,6 +832,7 @@ impl AppState {
             .query
             .with(&self.store, |q| q.trim().to_owned());
         let original = self
+            .ui
             .theme_preview_original
             .get(&self.store)
             .unwrap_or_else(|| self.settings.theme_name.clone());
@@ -1058,7 +1062,7 @@ impl AppState {
             self.set_focus(focus_target);
             return;
         }
-        let focus_return = self.focus.get(&self.store);
+        let focus_return = self.ui.focus.get(&self.store);
         self.overlays.stack.update(&self.store, |stack| {
             stack.push(OverlayEntry {
                 surface,
@@ -1078,8 +1082,8 @@ impl AppState {
         };
         match entry.surface {
             OverlaySurface::ThemePicker => {
-                let original = self.theme_preview_original.get(&self.store);
-                self.theme_preview_original.set(&self.store, None);
+                let original = self.ui.theme_preview_original.get(&self.store);
+                self.ui.theme_preview_original.set(&self.store, None);
                 if let Some(original) = original {
                     self.settings.theme_name = original;
                 }
@@ -1276,7 +1280,7 @@ impl AppState {
                     tracing::info!(theme = %value, "theme confirmed");
                     self.settings.theme_name = value;
                 }
-                self.theme_preview_original.set(&self.store, None);
+                self.ui.theme_preview_original.set(&self.store, None);
                 self.pop_overlay();
                 self.persist_settings_effect()
             }
@@ -2728,7 +2732,7 @@ impl AppState {
             detail: "Check Diffy's release channel now".to_owned(),
             kind: PaletteEntryKind::Command(PaletteCommand::CheckForUpdates),
         });
-        match self.update.get(&self.store) {
+        match self.ui.update.get(&self.store) {
             UpdateState::Available(update) => {
                 let label = format!("Install Update {}", update.version);
                 let detail = "Download and verify the available update".to_owned();

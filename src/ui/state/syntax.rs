@@ -475,7 +475,7 @@ impl AppState {
     }
 
     pub(super) fn handle_syntax_pack_install_started(&mut self, language: &str) {
-        self.syntax_pack_installs.update(&self.store, |active| {
+        self.ui.syntax_pack_installs.update(&self.store, |active| {
             if !active.iter().any(|item| item == language) {
                 active.push(language.to_owned());
             }
@@ -483,12 +483,14 @@ impl AppState {
     }
 
     pub(super) fn handle_syntax_pack_install_finished(&mut self, language: &str) {
-        self.syntax_pack_installs
+        self.ui
+            .syntax_pack_installs
             .update(&self.store, |active| active.retain(|item| item != language));
     }
 
     pub fn syntax_pack_install_active(&self) -> bool {
-        self.syntax_pack_installs
+        self.ui
+            .syntax_pack_installs
             .with(&self.store, |active| !active.is_empty())
     }
 
@@ -501,7 +503,7 @@ impl AppState {
             .iter()
             .filter_map(|path| highlighter.guess_language(Path::new(path)))
             .collect::<HashSet<_>>();
-        let active_languages = self.syntax_pack_installs.with(&self.store, |active| {
+        let active_languages = self.ui.syntax_pack_installs.with(&self.store, |active| {
             active.iter().cloned().collect::<HashSet<_>>()
         });
 
@@ -549,7 +551,7 @@ impl AppState {
             .iter()
             .filter_map(|path| highlighter.guess_language(Path::new(path)))
             .collect::<HashSet<_>>();
-        let active_languages = self.syntax_pack_installs.with(&self.store, |active| {
+        let active_languages = self.ui.syntax_pack_installs.with(&self.store, |active| {
             active.iter().cloned().collect::<HashSet<_>>()
         });
 

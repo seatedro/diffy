@@ -107,7 +107,7 @@ pub fn picker_with_header<T: PickerItem>(
                 <div class="w-full" px={Sp::MD}>
                     {text_input("", query)
                         .placeholder(placeholder)
-                        .focused(state.focus.get(&state.store) == Some(focus_target))
+                        .focused(state.ui.focus.get(&state.store) == Some(focus_target))
                         .on_click(
                             crate::actions::AppAction::SetFocus(Some(focus_target)).into(),
                         )

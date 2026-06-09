@@ -26,8 +26,8 @@ pub(super) fn reduce_event(state: &mut AppState, event: CompareEvent) -> Vec<Eff
                     .workspace
                     .status
                     .set(&state.store, AsyncStatus::Failed);
-                state.workspace_mode.set(&state.store, WorkspaceMode::Empty);
-                state.compare_progress.set(&state.store, None);
+                state.workspace.mode.set(&state.store, WorkspaceMode::Empty);
+                state.workspace.compare_progress.set(&state.store, None);
                 state.push_error(&message);
             }
             Vec::new()
@@ -120,7 +120,7 @@ pub(super) fn reduce_event(state: &mut AppState, event: CompareEvent) -> Vec<Eff
                     });
                 if matches_loading {
                     state.workspace.active_file_loading.set(&state.store, None);
-                    state.compare_progress.set(&state.store, None);
+                    state.workspace.compare_progress.set(&state.store, None);
                     state.push_error(&message);
                 }
             }
@@ -733,7 +733,7 @@ impl AppState {
             .source
             .set(&self.store, WorkspaceSource::Compare);
         self.workspace.status.set(&self.store, AsyncStatus::Ready);
-        self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
+        self.workspace.mode.set(&self.store, WorkspaceMode::Ready);
         self.compare.layout.set(&self.store, payload.request.layout);
         self.compare
             .renderer
@@ -786,7 +786,7 @@ impl AppState {
         // Record the discovered file count + advance the phase. The progress
         // panel stays up until the first file finishes mounting (or, for
         // small-file fast paths, is cleared by install_compare_active_file).
-        self.compare_progress.update(&self.store, |slot| {
+        self.workspace.compare_progress.update(&self.store, |slot| {
             if let Some(p) = slot.as_mut() {
                 let p = Arc::make_mut(p);
                 p.file_count_total = Some(total_files);
@@ -868,7 +868,7 @@ impl AppState {
             self.workspace.active_file_loading.set(&self.store, None);
             // No files to select — the compare succeeded but has no diffs.
             // Tear down the progress panel; the "repo ready" hint takes over.
-            self.compare_progress.set(&self.store, None);
+            self.workspace.compare_progress.set(&self.store, None);
             self.editor_clear_document();
         }
         if let Some(effect) = self.syntax_pack_warmup_effect_for_compare(&selected_syntax_paths) {
@@ -1604,14 +1604,14 @@ impl AppState {
                 .with(&self.store, |af| af.is_some());
 
         if !has_prior_state {
-            self.workspace_mode.set(&self.store, WorkspaceMode::Loading);
+            self.workspace.mode.set(&self.store, WorkspaceMode::Loading);
             self.workspace.status.set(&self.store, AsyncStatus::Loading);
         }
 
         let profile = self.vcs_ui_profile();
         let left_label = profile.compare_ref_display_label(&left_ref);
         let right_label = profile.compare_ref_display_label(&right_ref);
-        self.compare_progress.set(
+        self.workspace.compare_progress.set(
             &self.store,
             Some(Arc::new(CompareProgress {
                 generation: next_gen,
@@ -1650,7 +1650,11 @@ impl AppState {
     /// We do not attempt to interrupt backend work mid-flight; stale-result
     /// guards keep late answers from mutating newer state.
     pub(super) fn cancel_compare(&mut self) -> Vec<Effect> {
-        if self.compare_progress.with(&self.store, |p| p.is_none()) {
+        if self
+            .workspace
+            .compare_progress
+            .with(&self.store, |p| p.is_none())
+        {
             return Vec::new();
         }
         let next_gen = self
@@ -1660,13 +1664,13 @@ impl AppState {
             .saturating_add(1);
         self.workspace.compare_generation.set(&self.store, next_gen);
         let syntax_epoch_effect = self.invalidate_syntax_epoch_effect();
-        self.compare_progress.set(&self.store, None);
+        self.workspace.compare_progress.set(&self.store, None);
         self.workspace.active_file_loading.set(&self.store, None);
         // Only revert the workspace mode if kickoff flipped it to Loading
         // (i.e. no prior state was preserved). When the user cancels a
         // re-compare, the old diff is still mounted and should stay visible.
-        if self.workspace_mode.get(&self.store) == WorkspaceMode::Loading {
-            self.workspace_mode.set(&self.store, WorkspaceMode::Empty);
+        if self.workspace.mode.get(&self.store) == WorkspaceMode::Loading {
+            self.workspace.mode.set(&self.store, WorkspaceMode::Empty);
             self.workspace.status.set(&self.store, AsyncStatus::Idle);
         }
         vec![syntax_epoch_effect]
@@ -1675,7 +1679,7 @@ impl AppState {
     pub(super) fn handle_compare_progress_update(&mut self, generation: u64, phase: ComparePhase) {
         // Only apply when the progress slot matches the reporter's
         // generation — stale workers silently lose their updates.
-        self.compare_progress.update(&self.store, |slot| {
+        self.workspace.compare_progress.update(&self.store, |slot| {
             if let Some(p) = slot.as_mut()
                 && p.generation == generation
             {

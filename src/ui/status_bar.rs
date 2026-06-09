@@ -105,6 +105,7 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
         .active_pr_review_status()
         .map(|summary| review_status(summary, theme, scale));
     let syntax_pack_child = state
+        .ui
         .syntax_pack_installs
         .with(&state.store, |active| !active.is_empty())
         .then(|| syntax_pack_status(state.clock_ms, theme, scale));

@@ -28,17 +28,20 @@ pub(super) fn reduce_event(state: &mut AppState, event: RepositoryEvent) -> Vec<
                         .repository
                         .status
                         .set(&state.store, AsyncStatus::Failed);
-                    state.workspace_mode.set(&state.store, WorkspaceMode::Empty);
-                    state.compare_progress.update(&state.store, |slot| {
-                        if let Some(p) = slot.as_ref()
-                            && matches!(p.subject, LoadingSubject::RepoOpen { .. })
-                        {
-                            *slot = None;
-                        }
-                    });
+                    state.workspace.mode.set(&state.store, WorkspaceMode::Empty);
+                    state
+                        .workspace
+                        .compare_progress
+                        .update(&state.store, |slot| {
+                            if let Some(p) = slot.as_ref()
+                                && matches!(p.subject, LoadingSubject::RepoOpen { .. })
+                            {
+                                *slot = None;
+                            }
+                        });
                     state.push_error(&message);
                 } else {
-                    state.last_error.set(&state.store, Some(message));
+                    state.ui.last_error.set(&state.store, Some(message));
                 }
             }
             Vec::new()
@@ -473,7 +476,7 @@ impl AppState {
 impl AppState {
     pub(super) fn open_repository(&mut self, path: PathBuf) -> Vec<Effect> {
         let path = normalize_repository_open_path(path);
-        self.workspace_mode.set(&self.store, WorkspaceMode::Loading);
+        self.workspace.mode.set(&self.store, WorkspaceMode::Loading);
         self.compare.repo_path.set(&self.store, Some(path.clone()));
         self.compare.left_ref.set(&self.store, String::new());
         self.compare.right_ref.set(&self.store, String::new());
@@ -494,7 +497,7 @@ impl AppState {
         self.reset_file_list();
         self.editor_clear_document();
         self.editor.focused.set(&self.store, false);
-        self.last_error.set(&self.store, None);
+        self.ui.last_error.set(&self.store, None);
         self.github.pull_request.cache.update(&self.store, |c| {
             c.clear();
         });
@@ -503,7 +506,7 @@ impl AppState {
             .pending_confirm
             .set(&self.store, None);
         self.clear_overlays();
-        self.focus.set(&self.store, Some(FocusTarget::TitleBar));
+        self.ui.focus.set(&self.store, Some(FocusTarget::TitleBar));
         self.sync_settings_snapshot();
 
         // Seed the progress panel with a repo-open subject. We piggy-back
@@ -531,7 +534,7 @@ impl AppState {
         // for 500ms, which is a cheap price for zero flash on fast ops.
         let started_at_ms = self.clock_ms;
         let reveal_at_ms = started_at_ms.saturating_add(COMPARE_REVEAL_DELAY_MS);
-        self.compare_progress.set(
+        self.workspace.compare_progress.set(
             &self.store,
             Some(Arc::new(CompareProgress {
                 generation: next_gen,
@@ -602,7 +605,7 @@ impl AppState {
         // Tear down a repo-open progress panel. Compare-subject progress
         // survives — a kickoff_compare may be queued below and will
         // replace it atomically via its own seeding path.
-        self.compare_progress.update(&self.store, |slot| {
+        self.workspace.compare_progress.update(&self.store, |slot| {
             if let Some(p) = slot.as_ref()
                 && matches!(p.subject, LoadingSubject::RepoOpen { .. })
             {
@@ -783,7 +786,7 @@ impl AppState {
             .status_operation_pending
             .set(&self.store, false);
         self.workspace.status.set(&self.store, AsyncStatus::Ready);
-        self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
+        self.workspace.mode.set(&self.store, WorkspaceMode::Ready);
         self.workspace
             .used_fallback
             .set(&self.store, output.used_fallback);
@@ -859,7 +862,7 @@ impl AppState {
             .source
             .set(&self.store, WorkspaceSource::Status);
         self.workspace.status.set(&self.store, AsyncStatus::Ready);
-        self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
+        self.workspace.mode.set(&self.store, WorkspaceMode::Ready);
         self.workspace.compare_output.set(&self.store, None);
         self.workspace.compare_total_stats.set(&self.store, None);
         self.workspace.compare_hydrated_stats.set(&self.store, None);

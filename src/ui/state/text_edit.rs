@@ -38,7 +38,7 @@ impl AppState {
 
     /// Called after text mutation to sync compare fields and rebuild pickers.
     pub(super) fn after_text_mutation(&mut self) -> Vec<Effect> {
-        match self.focus.get(&self.store) {
+        match self.ui.focus.get(&self.store) {
             Some(FocusTarget::PickerInput) => match self.overlays.picker.kind.get(&self.store) {
                 PickerKind::Repository => self.rebuild_repo_picker(),
                 PickerKind::LeftRef => {
@@ -77,7 +77,7 @@ impl AppState {
     /// Should we persist settings after editing the current field?
     pub(super) fn needs_persist(&self) -> bool {
         matches!(
-            self.focus.get(&self.store),
+            self.ui.focus.get(&self.store),
             Some(FocusTarget::PickerInput)
                 if matches!(self.overlays.picker.kind.get(&self.store), PickerKind::LeftRef | PickerKind::RightRef)
         )
@@ -264,7 +264,10 @@ impl AppState {
             }
         }
         // No text selection — copy the selected picker/palette entry's value.
-        if matches!(self.focus.get(&self.store), Some(FocusTarget::PickerInput)) {
+        if matches!(
+            self.ui.focus.get(&self.store),
+            Some(FocusTarget::PickerInput)
+        ) {
             let selected = self.overlays.picker.selected_index.get(&self.store);
             let value = self.overlays.picker.entries.with(&self.store, |entries| {
                 entries.get(selected).map(|e| e.value.clone())
@@ -277,7 +280,7 @@ impl AppState {
             }
         }
         if matches!(
-            self.focus.get(&self.store),
+            self.ui.focus.get(&self.store),
             Some(FocusTarget::CommandPaletteInput)
         ) {
             let selected = self
@@ -389,17 +392,17 @@ fn ai_key_save_effect(kind: AiKeyKind, value: &str) -> Effect {
 impl AppState {
     pub(super) fn apply_text_edit_action(&mut self, action: TextEditAction) -> Vec<Effect> {
         use TextEditAction::*;
-        if self.focus.get(&self.store) == Some(FocusTarget::CommitEditor) {
+        if self.ui.focus.get(&self.store) == Some(FocusTarget::CommitEditor) {
             return self.apply_commit_editor_action(action);
         }
-        if self.focus.get(&self.store) == Some(FocusTarget::ReviewCommentEditor) {
+        if self.ui.focus.get(&self.store) == Some(FocusTarget::ReviewCommentEditor) {
             return self.apply_review_comment_editor_action(action);
         }
-        if self.focus.get(&self.store) == Some(FocusTarget::SettingsSteeringPrompt) {
+        if self.ui.focus.get(&self.store) == Some(FocusTarget::SettingsSteeringPrompt) {
             return self.apply_steering_prompt_action(action);
         }
         if matches!(
-            self.focus.get(&self.store),
+            self.ui.focus.get(&self.store),
             Some(FocusTarget::TextCompareLeft | FocusTarget::TextCompareRight)
         ) {
             return self.apply_text_compare_editor_action(action);
@@ -712,7 +715,7 @@ impl AppState {
     }
 
     fn apply_text_compare_editor_action(&mut self, action: TextEditAction) -> Vec<Effect> {
-        let target = self.focus.get(&self.store);
+        let target = self.ui.focus.get(&self.store);
         let changed = {
             let Some(editor) = (match target {
                 Some(FocusTarget::TextCompareLeft) => Some(&mut self.text_compare.left_editor),
@@ -857,12 +860,12 @@ impl AppState {
     }
 
     pub(super) fn with_focused_text<R>(&self, f: impl FnOnce(&str) -> R) -> Option<R> {
-        let target = self.focus.get(&self.store)?;
+        let target = self.ui.focus.get(&self.store)?;
         self.with_text_for_focus(target, f)
     }
 
     pub(super) fn update_focused_text<R>(&mut self, f: impl FnOnce(&mut String) -> R) -> Option<R> {
-        match self.focus.get(&self.store) {
+        match self.ui.focus.get(&self.store) {
             Some(FocusTarget::PickerInput) => match self.overlays.picker.kind.get(&self.store) {
                 PickerKind::Repository
                 | PickerKind::Theme

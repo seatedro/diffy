@@ -24,7 +24,7 @@ use crate::ui::theme::{Color, Theme, ThemeMode};
 
 pub fn settings_page(state: &AppState, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
-    let active = state.settings_section.get(&state.store);
+    let active = state.ui.settings_section.get(&state.store);
 
     let nav = nav_panel(state, theme, active);
     let content = section_content(state, theme, active);
@@ -166,9 +166,9 @@ fn keymaps_layout(state: &AppState, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let inner_max_w = (Sz::SETTINGS_KEYMAPS_MAX_W * scale).round();
-    let capture = state.keymap_capture.get(&state.store);
-    let scroll_px = state.keymaps_scroll_top_px.get(&state.store);
-    let total_h = state.keymaps_content_height_px.get(&state.store);
+    let capture = state.ui.keymap_capture.get(&state.store);
+    let scroll_px = state.ui.keymaps_scroll_top_px.get(&state.store);
+    let total_h = state.ui.keymaps_content_height_px.get(&state.store);
 
     let groups: Vec<AnyElement> = shortcut_groups()
         .iter()
@@ -732,14 +732,17 @@ fn clankers_section(state: &AppState, theme: &Theme) -> AnyElement {
     let scale = theme.metrics.ui_scale();
 
     let openai_focused = state
+        .ui
         .focus
         .get(&state.store)
         .is_some_and(|t| t == FocusTarget::SettingsOpenAiKey);
     let anthropic_focused = state
+        .ui
         .focus
         .get(&state.store)
         .is_some_and(|t| t == FocusTarget::SettingsAnthropicKey);
     let prompt_focused = state
+        .ui
         .focus
         .get(&state.store)
         .is_some_and(|t| t == FocusTarget::SettingsSteeringPrompt);
@@ -937,7 +940,7 @@ fn about_section(state: &AppState, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let version = crate::APP_VERSION;
-    let update_state = state.update.get(&state.store);
+    let update_state = state.ui.update.get(&state.store);
     let auto_update_toggle = toggle(state.settings.auto_update)
         .on_toggle(crate::actions::SettingsAction::ToggleAutoUpdate.into())
         .into_any();

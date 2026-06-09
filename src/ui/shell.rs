@@ -140,13 +140,15 @@ pub fn build_ui_frame(
         - Sp::LG * ui_scale)
         .max(0.0);
     state
+        .ui
         .keymaps_viewport_height_px
         .set(&state.store, keymaps_viewport_h);
     state
+        .ui
         .keymaps_content_height_px
         .set(&state.store, settings_page::keymaps_content_height(theme));
     state.clamp_keymaps_scroll();
-    let sidebar_width_factor = if state.sidebar_visible.get(&state.store) {
+    let sidebar_width_factor = if state.ui.sidebar_visible.get(&state.store) {
         1.0
     } else {
         0.0
@@ -154,14 +156,14 @@ pub fn build_ui_frame(
     let sidebar_width =
         sidebar_mod::preferred_sidebar_width(state, theme, cx, width) * sidebar_width_factor;
 
-    let in_settings = state.app_view.get(&state.store) == AppView::Settings;
+    let in_settings = state.ui.app_view.get(&state.store) == AppView::Settings;
 
     // Once the reveal delay has elapsed we want the skeleton to take the
     // sidebar slot even if `workspace_mode` is still Ready — a re-compare
     // keeps the old file list around as scaffolding during the grace
     // window, but after the grace window we're committed to showing the
     // loading view, so blow the old sidebar away.
-    let progress_visible = state.compare_progress.with(&state.store, |p| {
+    let progress_visible = state.workspace.compare_progress.with(&state.store, |p| {
         p.as_ref().is_some_and(|p| state.clock_ms >= p.reveal_at_ms)
     });
     let text_compare_source =
@@ -240,7 +242,7 @@ pub fn build_ui_frame(
         root = root.child(edges);
     }
 
-    let toast_stack = state.toasts.with(&state.store, |toasts| {
+    let toast_stack = state.ui.toasts.with(&state.store, |toasts| {
         if toasts.is_empty() {
             None
         } else {
@@ -1312,8 +1314,8 @@ fn build_review_add_button(theme: &Theme, ui_scale: f32, rect: Rect, strong: boo
 /// from `state.review_comment_editor`). Caller sizes it (`.flex_1()`) and converts.
 fn composer_text_editor(state: &AppState, theme: &Theme) -> TextEditorElement {
     let tc = &theme.colors;
-    let focused =
-        state.focus.get(&state.store) == Some(crate::ui::state::FocusTarget::ReviewCommentEditor);
+    let focused = state.ui.focus.get(&state.store)
+        == Some(crate::ui::state::FocusTarget::ReviewCommentEditor);
     text_editor_element()
         .placeholder("Leave a review comment")
         .editor_snapshot(&state.review_comment_editor)
@@ -1419,8 +1421,8 @@ fn composer_editor_box(
     body_height: Option<f32>,
 ) -> AnyElement {
     let tc = &theme.colors;
-    let focused =
-        state.focus.get(&state.store) == Some(crate::ui::state::FocusTarget::ReviewCommentEditor);
+    let focused = state.ui.focus.get(&state.store)
+        == Some(crate::ui::state::FocusTarget::ReviewCommentEditor);
     let group_border = if focused {
         tc.accent
     } else {

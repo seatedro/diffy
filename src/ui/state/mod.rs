@@ -99,37 +99,24 @@ pub enum AsyncStatus {
     Failed,
 }
 
-// Focus is stored directly as a Signal on AppState — no wrapper struct.
+// App-chrome signals (focus, toasts, view routing, ...) live in the
+// derived `UiStateStore` at `AppState::ui`.
 
 #[derive(Debug)]
 pub struct AppState {
-    pub workspace_mode: Signal<WorkspaceMode>,
-    /// Arc-wrapped so per-frame UI snapshots clone a pointer, not the
-    /// label strings inside.
-    pub compare_progress: Signal<Option<Arc<CompareProgress>>>,
-    pub app_view: Signal<AppView>,
-    pub settings_section: Signal<SettingsSection>,
-    pub keymap_capture: Signal<Option<crate::input::ShortcutCommand>>,
-    pub keymaps_scroll_top_px: Signal<f32>,
-    pub keymaps_viewport_height_px: Signal<f32>,
-    pub keymaps_content_height_px: Signal<f32>,
+    pub ui: UiStateStore,
     pub compare: CompareStateStore,
     pub repository: RepositoryStateStore,
     pub workspace: WorkspaceStateStore,
     pub file_list: FileListStateStore,
     pub overlays: OverlayStackStateStore,
-    pub focus: Signal<Option<FocusTarget>>,
     pub text_edit: TextEditStateStore,
     pub editor: EditorStateStore,
     pub github: GitHubStateStore,
     pub settings: Settings,
     pub startup: StartupState,
-    pub last_error: Signal<Option<String>>,
-    pub toasts: Signal<Vec<Toast>>,
-    pub syntax_pack_installs: Signal<Vec<String>>,
-    pub update: Signal<UpdateState>,
     pub context_menu: ContextMenuState,
-    /// Memoized: `true` when `focus` targets a text-editing field.
+    /// Memoized: `true` when `ui.focus` targets a text-editing field.
     pub text_focused: Signal<bool>,
     pub animation: crate::ui::animation::AnimationState,
     pub commit_editor: Editor,
@@ -143,18 +130,16 @@ pub struct AppState {
     pub ai_generation_id: u64,
     pub ai_generation_active: bool,
     pub ai_generation_error: Option<String>,
-    /// Shared reactive store. Signals (like `sidebar_visible`) are handles
+    /// Shared reactive store. Signals (like `ui.sidebar_visible`) are handles
     /// into this store. Kept in `AppState` so state methods (apply_action etc.)
     /// can freely read/write signals without threading a store parameter.
     pub store: Rc<SignalStore>,
-    pub sidebar_visible: Signal<bool>,
     pub debug: DebugStateStore,
     pub clock_ms: u64,
     pub next_toast_id: u64,
     pub frecency: Option<FrecencyStore>,
     pub theme_names: Vec<String>,
     pub theme_variants: Vec<crate::core::themes::ThemeVariant>,
-    pub theme_preview_original: Signal<Option<String>>,
     pub github_access_token: Option<String>,
     viewport_document_cache: Option<ViewportDocumentCache>,
     virtual_diff_document: VirtualDiffDocument,
@@ -167,23 +152,10 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         let store = Rc::new(SignalStore::default());
-        let sidebar_visible = store.create(true);
-        let focus = store.create(None::<FocusTarget>);
+        let ui = UiStateStore::new_default(&store);
+        let focus = ui.focus;
         let text_focused =
             store.create_memo(move |s| s.read(focus).is_some_and(|t| t.is_text_field()));
-        let workspace_mode = store.create(WorkspaceMode::default());
-        let compare_progress = store.create(None::<Arc<CompareProgress>>);
-        let app_view = store.create(AppView::default());
-        let settings_section = store.create(SettingsSection::default());
-        let keymap_capture = store.create(None::<crate::input::ShortcutCommand>);
-        let keymaps_scroll_top_px = store.create(0.0_f32);
-        let keymaps_viewport_height_px = store.create(0.0_f32);
-        let keymaps_content_height_px = store.create(0.0_f32);
-        let last_error = store.create(None::<String>);
-        let theme_preview_original = store.create(None::<String>);
-        let toasts = store.create(Vec::<Toast>::new());
-        let syntax_pack_installs = store.create(Vec::<String>::new());
-        let update = store.create(UpdateState::default());
         let debug = DebugStateStore::new(&store, DebugState::default());
         let file_list = FileListStateStore::new_default(&store);
         let editor = EditorStateStore::new_default(&store);
@@ -194,29 +166,17 @@ impl Default for AppState {
         let text_edit = TextEditStateStore::new_default(&store);
         let github = GitHubStateStore::new_default(&store);
         Self {
-            workspace_mode,
-            compare_progress,
-            app_view,
-            settings_section,
-            keymap_capture,
-            keymaps_scroll_top_px,
-            keymaps_viewport_height_px,
-            keymaps_content_height_px,
+            ui,
             compare,
             repository,
             workspace,
             file_list,
             overlays,
-            focus,
             text_edit,
             editor,
             github,
             settings: Settings::default(),
             startup: StartupState::default(),
-            last_error,
-            toasts,
-            syntax_pack_installs,
-            update,
             context_menu: ContextMenuState::default(),
             text_focused,
             animation: crate::ui::animation::AnimationState::default(),
@@ -231,7 +191,6 @@ impl Default for AppState {
             ai_generation_id: 0,
             ai_generation_active: false,
             ai_generation_error: None,
-            sidebar_visible,
             debug,
             store,
             clock_ms: 0,
@@ -239,7 +198,6 @@ impl Default for AppState {
             frecency: None,
             theme_names: Vec::new(),
             theme_variants: Vec::new(),
-            theme_preview_original,
             github_access_token: None,
             viewport_document_cache: None,
             virtual_diff_document: VirtualDiffDocument::default(),
@@ -291,31 +249,20 @@ impl AppState {
                 || startup.args.compare_mode.is_some());
 
         let store = Rc::new(SignalStore::default());
-        let sidebar_visible = store.create(true);
-        let focus = store.create(if repo_path.is_some() {
-            Some(FocusTarget::TitleBar)
-        } else {
-            Some(FocusTarget::WorkspacePrimaryButton)
-        });
+        let ui = UiStateStore::new(
+            &store,
+            UiState {
+                focus: Some(if repo_path.is_some() {
+                    FocusTarget::TitleBar
+                } else {
+                    FocusTarget::WorkspacePrimaryButton
+                }),
+                ..UiState::default()
+            },
+        );
+        let focus = ui.focus;
         let text_focused =
             store.create_memo(move |s| s.read(focus).is_some_and(|t| t.is_text_field()));
-        let workspace_mode = store.create(if repo_path.is_some() && auto_compare_pending {
-            WorkspaceMode::Loading
-        } else {
-            WorkspaceMode::Empty
-        });
-        let compare_progress = store.create(None::<Arc<CompareProgress>>);
-        let app_view = store.create(AppView::default());
-        let settings_section = store.create(SettingsSection::default());
-        let keymap_capture = store.create(None::<crate::input::ShortcutCommand>);
-        let keymaps_scroll_top_px = store.create(0.0_f32);
-        let keymaps_viewport_height_px = store.create(0.0_f32);
-        let keymaps_content_height_px = store.create(0.0_f32);
-        let last_error = store.create(None::<String>);
-        let theme_preview_original = store.create(None::<String>);
-        let toasts = store.create(Vec::<Toast>::new());
-        let syntax_pack_installs = store.create(Vec::<String>::new());
-        let update = store.create(UpdateState::default());
         let debug = DebugStateStore::new(&store, DebugState::default());
         let file_list = FileListStateStore::new_default(&store);
         let editor = EditorStateStore::new(
@@ -342,7 +289,17 @@ impl AppState {
             },
         );
         let repository = RepositoryStateStore::new_default(&store);
-        let workspace = WorkspaceStateStore::new_default(&store);
+        let workspace = WorkspaceStateStore::new(
+            &store,
+            WorkspaceState {
+                mode: if repo_path.is_some() && auto_compare_pending {
+                    WorkspaceMode::Loading
+                } else {
+                    WorkspaceMode::Empty
+                },
+                ..WorkspaceState::default()
+            },
+        );
         let text_edit = TextEditStateStore::new_default(&store);
         let initial_token_present = settings.github_user.is_some();
         let github = GitHubStateStore::new(
@@ -358,20 +315,12 @@ impl AppState {
             },
         );
         let mut state = Self {
-            workspace_mode,
-            compare_progress,
-            app_view,
-            settings_section,
-            keymap_capture,
-            keymaps_scroll_top_px,
-            keymaps_viewport_height_px,
-            keymaps_content_height_px,
+            ui,
             compare,
             repository,
             workspace,
             file_list,
             overlays,
-            focus,
             text_edit,
             editor,
             github,
@@ -385,10 +334,6 @@ impl AppState {
                 preferred_file_index: startup.args.file_index,
                 preferred_file_path: startup.args.file_path.clone(),
             },
-            last_error,
-            toasts,
-            syntax_pack_installs,
-            update,
             context_menu: ContextMenuState::default(),
             text_focused,
             animation: crate::ui::animation::AnimationState::default(),
@@ -403,7 +348,6 @@ impl AppState {
             ai_generation_id: 0,
             ai_generation_active: false,
             ai_generation_error: None,
-            sidebar_visible,
             debug,
             store,
             clock_ms: 0,
@@ -411,7 +355,6 @@ impl AppState {
             frecency: crate::core::frecency::open_default_store(),
             theme_names: Vec::new(),
             theme_variants: Vec::new(),
-            theme_preview_original,
             github_access_token: None,
             viewport_document_cache: None,
             virtual_diff_document: VirtualDiffDocument::default(),
@@ -455,7 +398,7 @@ impl AppState {
                 .and_then(|n| n.to_str())
                 .unwrap_or("repository")
                 .to_owned();
-            state.compare_progress.set(
+            state.workspace.compare_progress.set(
                 &state.store,
                 Some(Arc::new(CompareProgress {
                     generation: boot_gen,

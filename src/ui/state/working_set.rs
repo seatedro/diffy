@@ -618,7 +618,7 @@ impl AppState {
         self.apply_compare_file_stats(&[stats]);
         // The first real file has landed — tear down the progress panel.
         // Subsequent file loads use the sidebar row spinner, not this.
-        self.compare_progress.set(&self.store, None);
+        self.workspace.compare_progress.set(&self.store, None);
         self.editor_clear_document();
         self.editor
             .line_selection

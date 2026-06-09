@@ -76,7 +76,7 @@ fn new_text_compare_enters_text_workspace_with_left_focus() {
     assert_eq!(state.text_compare.language, TextCompareLanguage::Auto);
     assert_eq!(state.text_compare.path_hint, "text.txt");
     assert_eq!(
-        state.focus.get(&state.store),
+        state.ui.focus.get(&state.store),
         Some(FocusTarget::TextCompareLeft)
     );
 }
@@ -284,7 +284,7 @@ diff --git a/src/lib.rs b/src/lib.rs
         .workspace
         .status_operation_pending
         .set(&state.store, false);
-    state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+    state.workspace.mode.set(&state.store, WorkspaceMode::Ready);
     state.workspace.files.set(
         &state.store,
         vec![FileListEntry {
@@ -364,7 +364,7 @@ fn loaded_state_with_files(paths: &[&str]) -> AppState {
         .source
         .set(&state.store, WorkspaceSource::Compare);
     state.workspace.files.set(&state.store, entries);
-    state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+    state.workspace.mode.set(&state.store, WorkspaceMode::Ready);
     state.file_list.row_height.set(&state.store, 36.0);
     state.file_list.gap.set(&state.store, 4.0);
     state.file_list.viewport_height.set(&state.store, 80.0);
@@ -381,9 +381,9 @@ fn bootstrap_with_no_repo_starts_empty_workspace() {
     );
 
     let (state, effects) = AppState::bootstrap(startup, Settings::default());
-    assert_eq!(state.workspace_mode.get(&state.store), WorkspaceMode::Empty);
+    assert_eq!(state.workspace.mode.get(&state.store), WorkspaceMode::Empty);
     assert_eq!(
-        state.focus.get(&state.store),
+        state.ui.focus.get(&state.store),
         Some(FocusTarget::WorkspacePrimaryButton)
     );
     assert!(effects.iter().all(|e| matches!(
@@ -414,7 +414,7 @@ fn bootstrap_with_repo_starts_repo_sync() {
     );
 
     let (state, effects) = AppState::bootstrap(startup, Settings::default());
-    assert_eq!(state.workspace_mode.get(&state.store), WorkspaceMode::Empty);
+    assert_eq!(state.workspace.mode.get(&state.store), WorkspaceMode::Empty);
     assert_eq!(state.active_overlay_name(), None);
     assert_eq!(
         effects
@@ -444,7 +444,10 @@ fn overlay_close_restores_prior_focus() {
     state.apply_action(crate::actions::OverlayAction::OpenCommandPalette);
     assert_eq!(state.overlays_top(), Some(OverlaySurface::CommandPalette));
     state.apply_action(crate::actions::OverlayAction::CloseOverlay);
-    assert_eq!(state.focus.get(&state.store), Some(FocusTarget::TitleBar));
+    assert_eq!(
+        state.ui.focus.get(&state.store),
+        Some(FocusTarget::TitleBar)
+    );
 }
 
 #[test]
@@ -1075,7 +1078,7 @@ fn selecting_a_file_requests_async_syntax_without_mutating_compare_output() {
         .compare
         .repo_path
         .set(&state.store, Some(PathBuf::from("/tmp/repo")));
-    state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+    state.workspace.mode.set(&state.store, WorkspaceMode::Ready);
 
     let effects = state.apply_action(crate::actions::FileListAction::SelectFile(0));
 
@@ -1144,7 +1147,7 @@ fn small_compare_file_selection_stays_synchronous() {
             path: "src/lib.rs".into(),
         }],
     );
-    state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+    state.workspace.mode.set(&state.store, WorkspaceMode::Ready);
     state
         .compare
         .repo_path
@@ -1624,27 +1627,30 @@ fn closing_overlays_restores_previous_focus() {
 
     state.apply_action(crate::actions::OverlayAction::OpenCommandPalette);
     assert_eq!(
-        state.focus.get(&state.store),
+        state.ui.focus.get(&state.store),
         Some(FocusTarget::CommandPaletteInput)
     );
 
     // Each nested overlay records its own restore target.
     state.apply_action(crate::actions::OverlayAction::OpenGitHubAuthModal);
     assert_eq!(
-        state.focus.get(&state.store),
+        state.ui.focus.get(&state.store),
         Some(FocusTarget::AuthPrimaryAction)
     );
 
     state.apply_action(crate::actions::OverlayAction::CloseOverlay);
     assert_eq!(state.overlays_top(), Some(OverlaySurface::CommandPalette));
     assert_eq!(
-        state.focus.get(&state.store),
+        state.ui.focus.get(&state.store),
         Some(FocusTarget::CommandPaletteInput)
     );
 
     state.apply_action(crate::actions::OverlayAction::CloseOverlay);
     assert_eq!(state.overlays_top(), None);
-    assert_eq!(state.focus.get(&state.store), Some(FocusTarget::FileList));
+    assert_eq!(
+        state.ui.focus.get(&state.store),
+        Some(FocusTarget::FileList)
+    );
 }
 
 #[test]
@@ -1659,7 +1665,10 @@ fn clearing_overlay_stack_restores_pre_overlay_focus() {
     state.clear_overlays();
 
     assert_eq!(state.overlays_top(), None);
-    assert_eq!(state.focus.get(&state.store), Some(FocusTarget::FileList));
+    assert_eq!(
+        state.ui.focus.get(&state.store),
+        Some(FocusTarget::FileList)
+    );
 }
 
 #[test]
@@ -2415,6 +2424,7 @@ fn kickoff_compare_seeds_progress_with_labels_and_started_at() {
     let _ = state.kickoff_compare();
 
     let progress = state
+        .workspace
         .compare_progress
         .with(&state.store, |p| p.clone())
         .expect("progress should be populated");
@@ -2432,7 +2442,7 @@ fn kickoff_compare_seeds_progress_with_labels_and_started_at() {
     assert_eq!(progress.phase, ComparePhase::OpeningRepo);
     assert_eq!(progress.file_count_total, None);
     assert_eq!(
-        state.workspace_mode.get(&state.store),
+        state.workspace.mode.get(&state.store),
         WorkspaceMode::Loading,
         "viewport should flip to loading so the panel actually renders"
     );
@@ -2451,6 +2461,7 @@ fn compare_progress_update_applies_only_when_generation_matches() {
     }));
     assert_eq!(
         state
+            .workspace
             .compare_progress
             .with(&state.store, |p| p.as_ref().unwrap().phase),
         ComparePhase::OpeningRepo,
@@ -2464,6 +2475,7 @@ fn compare_progress_update_applies_only_when_generation_matches() {
     }));
     assert_eq!(
         state
+            .workspace
             .compare_progress
             .with(&state.store, |p| p.as_ref().unwrap().phase),
         ComparePhase::EnumeratingChanges,
@@ -2485,6 +2497,7 @@ fn loading_files_phase_updates_counts_on_struct() {
     }));
 
     let progress = state
+        .workspace
         .compare_progress
         .with(&state.store, |p| p.clone())
         .expect("progress exists");
@@ -2507,6 +2520,7 @@ fn kickoff_with_prior_state_reveals_loading_immediately() {
 
     let _ = state.kickoff_compare();
     let progress = state
+        .workspace
         .compare_progress
         .with(&state.store, |p| p.clone())
         .expect("progress populated");
@@ -2516,7 +2530,7 @@ fn kickoff_with_prior_state_reveals_loading_immediately() {
         "compare loading should be visible immediately"
     );
     assert_ne!(
-        state.workspace_mode.get(&state.store),
+        state.workspace.mode.get(&state.store),
         WorkspaceMode::Loading
     );
     // Prior files are preserved so fast compares don't cause a flash.
@@ -2531,6 +2545,7 @@ fn open_repository_seeds_repo_subject_progress() {
     let effects = state.open_repository(PathBuf::from("/tmp/linux"));
 
     let progress = state
+        .workspace
         .compare_progress
         .with(&state.store, |p| p.clone())
         .expect("progress seeded for repo open");
@@ -2572,6 +2587,7 @@ fn open_repository_with_prior_diff_delays_reveal() {
     let _ = state.open_repository(PathBuf::from("/tmp/other"));
 
     let progress = state
+        .workspace
         .compare_progress
         .with(&state.store, |p| p.clone())
         .expect("progress seeded");
@@ -2648,7 +2664,7 @@ fn large_compare_stats_stream_offscreen_background_rows_after_visible_rows() {
         .workspace
         .source
         .set(&state.store, WorkspaceSource::Compare);
-    state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+    state.workspace.mode.set(&state.store, WorkspaceMode::Ready);
     state
         .compare
         .repo_path
@@ -3054,7 +3070,12 @@ fn repository_snapshot_ready_clears_repo_open_progress() {
     let mut state = AppState::default();
     let path = PathBuf::from("/tmp/linux");
     let _ = state.open_repository(path.clone());
-    assert!(state.compare_progress.with(&state.store, |p| p.is_some()));
+    assert!(
+        state
+            .workspace
+            .compare_progress
+            .with(&state.store, |p| p.is_some())
+    );
 
     state.apply_event(AppEvent::from(RepositoryEvent::RepositorySnapshotReady(
         crate::events::RepositorySnapshot::from_vcs_snapshot(
@@ -3077,7 +3098,10 @@ fn repository_snapshot_ready_clears_repo_open_progress() {
     )));
 
     assert!(
-        state.compare_progress.with(&state.store, |p| p.is_none()),
+        state
+            .workspace
+            .compare_progress
+            .with(&state.store, |p| p.is_none()),
         "snapshot-ready must tear down the repo-open progress panel"
     );
 }
@@ -3089,6 +3113,7 @@ fn kickoff_without_prior_state_reveals_loading_immediately() {
 
     let _ = state.kickoff_compare();
     let progress = state
+        .workspace
         .compare_progress
         .with(&state.store, |p| p.clone())
         .expect("progress populated");
@@ -3100,7 +3125,7 @@ fn kickoff_without_prior_state_reveals_loading_immediately() {
     // With no prior state to preserve, workspace_mode flips to Loading
     // up front so the editor/ready-hint stops rendering in the background.
     assert_eq!(
-        state.workspace_mode.get(&state.store),
+        state.workspace.mode.get(&state.store),
         WorkspaceMode::Loading
     );
 }
@@ -3114,13 +3139,16 @@ fn cancel_compare_bumps_generation_and_drops_stale_result() {
     let _ = state.cancel_compare();
 
     assert!(
-        state.compare_progress.with(&state.store, |p| p.is_none()),
+        state
+            .workspace
+            .compare_progress
+            .with(&state.store, |p| p.is_none()),
         "progress should be cleared after cancel"
     );
     let new_gen = state.workspace.compare_generation.get(&state.store);
     assert!(new_gen > generation, "generation should be bumped");
     assert_eq!(
-        state.workspace_mode.get(&state.store),
+        state.workspace.mode.get(&state.store),
         WorkspaceMode::Empty,
         "fresh-state cancel should revert the Loading flip"
     );
@@ -3143,12 +3171,15 @@ fn cancel_compare_bumps_generation_and_drops_stale_result() {
         },
     )));
     assert_eq!(
-        state.workspace_mode.get(&state.store),
+        state.workspace.mode.get(&state.store),
         WorkspaceMode::Empty,
         "stale finished result must not promote workspace to Ready",
     );
     assert!(
-        state.compare_progress.with(&state.store, |p| p.is_none()),
+        state
+            .workspace
+            .compare_progress
+            .with(&state.store, |p| p.is_none()),
         "stale finished result must not re-seed progress",
     );
 }
@@ -3163,17 +3194,20 @@ fn cancel_compare_preserves_previous_diff_on_recompare() {
             path: "old.rs".into(),
         }],
     );
-    state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+    state.workspace.mode.set(&state.store, WorkspaceMode::Ready);
 
     let _ = state.kickoff_compare();
     let _ = state.cancel_compare();
 
     assert!(
-        state.compare_progress.with(&state.store, |p| p.is_none()),
+        state
+            .workspace
+            .compare_progress
+            .with(&state.store, |p| p.is_none()),
         "progress cleared on cancel"
     );
     assert_eq!(
-        state.workspace_mode.get(&state.store),
+        state.workspace.mode.get(&state.store),
         WorkspaceMode::Ready,
         "previous workspace state is preserved on cancel — no blanking"
     );
@@ -3223,7 +3257,7 @@ fn compare_finished_advances_phase_and_records_file_count() {
     // Small files load synchronously, so progress is already cleared by the
     // time handle_compare_finished returns. We at least know the workspace
     // is Ready and the compare file view is populated from CompareOutput.
-    assert_eq!(state.workspace_mode.get(&state.store), WorkspaceMode::Ready,);
+    assert_eq!(state.workspace.mode.get(&state.store), WorkspaceMode::Ready,);
     assert_eq!(state.workspace_file_count(), 3);
 }
 
@@ -3238,9 +3272,12 @@ fn compare_failed_clears_progress_and_marks_workspace_empty() {
         message: "boom".to_owned(),
     }));
 
-    assert_eq!(state.workspace_mode.get(&state.store), WorkspaceMode::Empty,);
+    assert_eq!(state.workspace.mode.get(&state.store), WorkspaceMode::Empty,);
     assert!(
-        state.compare_progress.with(&state.store, |p| p.is_none()),
+        state
+            .workspace
+            .compare_progress
+            .with(&state.store, |p| p.is_none()),
         "progress panel must tear down on compare failure",
     );
 }

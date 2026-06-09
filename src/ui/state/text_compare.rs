@@ -57,8 +57,8 @@ impl AppState {
             .source
             .set(&self.store, WorkspaceSource::TextCompare);
         self.workspace.status.set(&self.store, AsyncStatus::Ready);
-        self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
-        self.compare_progress.set(&self.store, None);
+        self.workspace.mode.set(&self.store, WorkspaceMode::Ready);
+        self.workspace.compare_progress.set(&self.store, None);
         self.github.pull_request.active.set(&self.store, None);
         self.github
             .pull_request
@@ -109,9 +109,9 @@ impl AppState {
             .compare_generation
             .set(&self.store, generation);
         self.workspace.status.set(&self.store, AsyncStatus::Loading);
-        self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
+        self.workspace.mode.set(&self.store, WorkspaceMode::Ready);
         self.workspace.active_file_loading.set(&self.store, None);
-        self.compare_progress.set(&self.store, None);
+        self.workspace.compare_progress.set(&self.store, None);
         self.clear_overlays();
         self.sync_text_compare_syntax_paths();
 
@@ -149,7 +149,7 @@ impl AppState {
             .source
             .set(&self.store, WorkspaceSource::TextCompare);
         self.workspace.status.set(&self.store, AsyncStatus::Ready);
-        self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
+        self.workspace.mode.set(&self.store, WorkspaceMode::Ready);
         self.workspace
             .compare_generation
             .set(&self.store, payload.generation);

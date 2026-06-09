@@ -131,12 +131,57 @@ pub enum ToastKind {
     Error,
 }
 
+/// App-chrome reactive state: view routing, focus, toasts, errors,
+/// settings-page scroll metrics, theme preview, and the update lifecycle.
+/// `#[derive(Store)]` turns every field into a `Signal` in the generated
+/// `UiStateStore` held by `AppState`.
+#[derive(Debug, Clone, Store)]
+pub struct UiState {
+    pub app_view: AppView,
+    pub settings_section: SettingsSection,
+    pub keymap_capture: Option<crate::input::ShortcutCommand>,
+    pub keymaps_scroll_top_px: f32,
+    pub keymaps_viewport_height_px: f32,
+    pub keymaps_content_height_px: f32,
+    pub focus: Option<FocusTarget>,
+    pub last_error: Option<String>,
+    pub toasts: Vec<Toast>,
+    pub syntax_pack_installs: Vec<String>,
+    pub update: UpdateState,
+    pub sidebar_visible: bool,
+    pub theme_preview_original: Option<String>,
+}
+
+impl Default for UiState {
+    fn default() -> Self {
+        Self {
+            app_view: AppView::default(),
+            settings_section: SettingsSection::default(),
+            keymap_capture: None,
+            keymaps_scroll_top_px: 0.0,
+            keymaps_viewport_height_px: 0.0,
+            keymaps_content_height_px: 0.0,
+            focus: None,
+            last_error: None,
+            toasts: Vec::new(),
+            syntax_pack_installs: Vec::new(),
+            update: UpdateState::default(),
+            sidebar_visible: true,
+            theme_preview_original: None,
+        }
+    }
+}
+
 impl AppState {
     pub fn window_title(&self) -> String {
-        let workspace_mode = if self.compare_progress.with(&self.store, |p| p.is_some()) {
+        let workspace_mode = if self
+            .workspace
+            .compare_progress
+            .with(&self.store, |p| p.is_some())
+        {
             "loading"
         } else {
-            workspace_mode_name(self.workspace_mode.get(&self.store))
+            workspace_mode_name(self.workspace.mode.get(&self.store))
         };
         let title_prefix = crate::platform::startup::window_title_prefix();
         if self.workspace.source.get(&self.store) == WorkspaceSource::TextCompare {
@@ -160,7 +205,7 @@ impl AppState {
     pub fn update_time(&mut self, now_ms: u64) {
         self.clock_ms = now_ms;
         self.animation.tick(now_ms);
-        let has_expired_toast = self.toasts.with(&self.store, |toasts| {
+        let has_expired_toast = self.ui.toasts.with(&self.store, |toasts| {
             toasts.iter().any(|toast| {
                 !toast.hovered
                     && toast.progress.is_none()
@@ -168,7 +213,7 @@ impl AppState {
             })
         });
         if has_expired_toast {
-            self.toasts.update(&self.store, |toasts| {
+            self.ui.toasts.update(&self.store, |toasts| {
                 toasts.retain(|toast| {
                     toast.hovered
                         || toast.progress.is_some()
@@ -183,7 +228,7 @@ impl AppState {
             && crate::core::update::updates_configured()
             && !cfg!(debug_assertions)
             && !matches!(
-                self.update.get(&self.store),
+                self.ui.update.get(&self.store),
                 UpdateState::Downloading(_)
                     | UpdateState::ReadyToRestart(_)
                     | UpdateState::Restarting(_)
@@ -208,7 +253,7 @@ impl AppState {
     }
 
     pub fn next_toast_expiry_at_ms(&self) -> Option<u64> {
-        self.toasts.with(&self.store, |toasts| {
+        self.ui.toasts.with(&self.store, |toasts| {
             toasts
                 .iter()
                 .filter(|toast| !toast.hovered && toast.progress.is_none())
@@ -218,14 +263,14 @@ impl AppState {
     }
 
     pub(super) fn set_focus(&mut self, target: Option<FocusTarget>) {
-        if target != self.focus.get(&self.store) {
+        if target != self.ui.focus.get(&self.store) {
             // Reset cursor to end of the new field
             let len = target
                 .and_then(|t| self.with_text_for_focus(t, |s| s.len()))
                 .unwrap_or(0);
             self.reset_text_edit(len);
         }
-        self.focus.set(&self.store, target);
+        self.ui.focus.set(&self.store, target);
         self.editor
             .focused
             .set(&self.store, target == Some(FocusTarget::Editor));
@@ -238,7 +283,9 @@ impl AppState {
     }
 
     pub(super) fn push_error(&mut self, message: &str) -> u64 {
-        self.last_error.set(&self.store, Some(message.to_owned()));
+        self.ui
+            .last_error
+            .set(&self.store, Some(message.to_owned()));
         self.push_toast(ToastKind::Error, message, None, None)
     }
 
@@ -248,7 +295,9 @@ impl AppState {
 
     #[allow(dead_code)]
     pub(super) fn push_error_with_description(&mut self, message: &str, description: &str) -> u64 {
-        self.last_error.set(&self.store, Some(message.to_owned()));
+        self.ui
+            .last_error
+            .set(&self.store, Some(message.to_owned()));
         self.push_toast(
             ToastKind::Error,
             message,
@@ -278,7 +327,7 @@ impl AppState {
         description: Option<String>,
     ) {
         let now = self.clock_ms;
-        self.toasts.update(&self.store, |toasts| {
+        self.ui.toasts.update(&self.store, |toasts| {
             if let Some(toast) = toasts.iter_mut().find(|t| t.id == toast_id) {
                 toast.kind = ToastKind::Info;
                 toast.message = message.to_owned();
@@ -297,8 +346,10 @@ impl AppState {
         description: Option<String>,
     ) {
         let now = self.clock_ms;
-        self.last_error.set(&self.store, Some(message.to_owned()));
-        self.toasts.update(&self.store, |toasts| {
+        self.ui
+            .last_error
+            .set(&self.store, Some(message.to_owned()));
+        self.ui.toasts.update(&self.store, |toasts| {
             if let Some(toast) = toasts.iter_mut().find(|t| t.id == toast_id) {
                 toast.kind = ToastKind::Error;
                 toast.message = message.to_owned();
@@ -311,7 +362,7 @@ impl AppState {
 
     pub(super) fn update_toast_progress(&mut self, toast_id: u64, fraction: f32) {
         let clamped = fraction.clamp(0.0, 1.0);
-        self.toasts.update(&self.store, |toasts| {
+        self.ui.toasts.update(&self.store, |toasts| {
             if let Some(toast) = toasts.iter_mut().find(|t| t.id == toast_id) {
                 toast.progress = Some(clamped);
             }
@@ -319,7 +370,7 @@ impl AppState {
     }
 
     pub(super) fn update_toast_message(&mut self, toast_id: u64, message: &str) {
-        self.toasts.update(&self.store, |toasts| {
+        self.ui.toasts.update(&self.store, |toasts| {
             if let Some(toast) = toasts.iter_mut().find(|t| t.id == toast_id) {
                 toast.message = message.to_owned();
             }
@@ -343,7 +394,7 @@ impl AppState {
             self.clock_ms,
         );
         let now = self.clock_ms;
-        self.toasts.update(&self.store, |toasts| {
+        self.ui.toasts.update(&self.store, |toasts| {
             toasts.push(Toast {
                 id,
                 kind,

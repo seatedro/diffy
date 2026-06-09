@@ -112,7 +112,7 @@ impl AppState {
                     .collect()
             }
             ToggleSidebar => {
-                self.store.update(self.sidebar_visible, |v| *v = !*v);
+                self.store.update(self.ui.sidebar_visible, |v| *v = !*v);
                 Vec::new()
             }
             ToggleSidebarMode => {
@@ -817,7 +817,7 @@ impl AppState {
                 .active_file
                 .set(&self.store, Some(active_file.clone()));
             self.cache_active_file(active_file);
-            self.compare_progress.set(&self.store, None);
+            self.workspace.compare_progress.set(&self.store, None);
             self.editor_clear_document();
             self.file_list.hovered_index.set(&self.store, Some(index));
             if reveal {
@@ -838,7 +838,7 @@ impl AppState {
         // If we're mid-compare (first file selection post-CompareFinished),
         // flip the phase so the progress panel reports "Preparing first
         // file…". Subsequent selections don't touch compare_progress.
-        self.compare_progress.update(&self.store, |slot| {
+        self.workspace.compare_progress.update(&self.store, |slot| {
             if let Some(p) = slot.as_mut() {
                 Arc::make_mut(p).phase = ComparePhase::RenderingFirstFile;
             }

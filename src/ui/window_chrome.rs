@@ -198,7 +198,7 @@ fn repo_chip(label: &str, tc: &ThemeColors, scale: f32) -> AnyElement {
 }
 
 fn update_chip(state: &AppState) -> Option<AnyElement> {
-    match state.update.get(&state.store) {
+    match state.ui.update.get(&state.store) {
         UpdateState::Available(update) => Some(
             Button::new(crate::actions::UpdateAction::InstallUpdate.into())
                 .icon(lucide::ARROW_DOWN)

@@ -127,7 +127,7 @@ impl AppState {
                 Vec::new()
             }
             EditorClick(x, y) => {
-                match self.focus.get(&self.store) {
+                match self.ui.focus.get(&self.store) {
                     Some(FocusTarget::SettingsSteeringPrompt) => {
                         self.steering_prompt_editor.click(x, y);
                     }
@@ -147,7 +147,7 @@ impl AppState {
                 Vec::new()
             }
             EditorDrag(x, y) => {
-                match self.focus.get(&self.store) {
+                match self.ui.focus.get(&self.store) {
                     Some(FocusTarget::SettingsSteeringPrompt) => {
                         self.steering_prompt_editor.drag(x, y);
                     }
@@ -167,7 +167,7 @@ impl AppState {
                 Vec::new()
             }
             EditorScrollPx(delta) => {
-                match self.focus.get(&self.store) {
+                match self.ui.focus.get(&self.store) {
                     Some(FocusTarget::SettingsSteeringPrompt) => {
                         self.steering_prompt_editor.scroll(delta as f32);
                     }
@@ -843,7 +843,9 @@ impl AppState {
         self.text_edit
             .cursor_moved_at_ms
             .set(&self.store, self.clock_ms);
-        self.focus.set(&self.store, Some(FocusTarget::SearchInput));
+        self.ui
+            .focus
+            .set(&self.store, Some(FocusTarget::SearchInput));
         self.editor.focused.set(&self.store, false);
         self.recompute_search_matches();
     }

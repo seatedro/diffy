@@ -3239,12 +3239,19 @@ impl AppState {
     }
 
     pub fn clear_overlays(&mut self) {
-        self.overlays
-            .stack
-            .update(&self.store, |stack| stack.clear());
+        // The bottom-most entry recorded the focus from before any overlay
+        // opened; restore it so focus never dangles on a dismissed surface.
+        let mut focus_return: Option<Option<FocusTarget>> = None;
+        self.overlays.stack.update(&self.store, |stack| {
+            focus_return = stack.first().map(|entry| entry.focus_return);
+            stack.clear();
+        });
         self.reset_picker();
         self.reset_command_palette();
         self.reset_confirmation();
+        if let Some(target) = focus_return {
+            self.set_focus(target);
+        }
     }
 }
 
@@ -4958,9 +4965,11 @@ impl AppState {
         self.file_list
             .commits_scroll_offset_px
             .set(&self.store, 0.0);
-        self.set_focus(Some(FocusTarget::FileList));
         self.editor_clear_document();
+        // Clear overlays before claiming focus so the overlay restore target
+        // does not clobber the file list focus below.
         self.clear_overlays();
+        self.set_focus(Some(FocusTarget::FileList));
 
         let preferred_index = self
             .startup
@@ -7243,7 +7252,9 @@ impl AppState {
             .confirmation
             .action
             .set(&self.store, Some(action));
-        self.set_focus(None);
+        // Let push_overlay snapshot the current focus as the restore target
+        // before it moves focus off the field; closing the confirmation then
+        // returns focus (and IME state) to wherever the user was.
         self.push_overlay(OverlaySurface::Confirmation, None);
     }
 
@@ -13937,6 +13948,53 @@ diff --git a/src/lib.rs b/src/lib.rs
                 .with(&state.store, |l| l.scroll_top_px),
             0
         );
+    }
+
+    #[test]
+    fn closing_overlays_restores_previous_focus() {
+        let mut state = AppState::default();
+        state.apply_action(crate::actions::AppAction::SetFocus(Some(
+            FocusTarget::FileList,
+        )));
+
+        state.apply_action(crate::actions::OverlayAction::OpenCommandPalette);
+        assert_eq!(
+            state.focus.get(&state.store),
+            Some(FocusTarget::CommandPaletteInput)
+        );
+
+        // Each nested overlay records its own restore target.
+        state.apply_action(crate::actions::OverlayAction::OpenGitHubAuthModal);
+        assert_eq!(
+            state.focus.get(&state.store),
+            Some(FocusTarget::AuthPrimaryAction)
+        );
+
+        state.apply_action(crate::actions::OverlayAction::CloseOverlay);
+        assert_eq!(state.overlays_top(), Some(OverlaySurface::CommandPalette));
+        assert_eq!(
+            state.focus.get(&state.store),
+            Some(FocusTarget::CommandPaletteInput)
+        );
+
+        state.apply_action(crate::actions::OverlayAction::CloseOverlay);
+        assert_eq!(state.overlays_top(), None);
+        assert_eq!(state.focus.get(&state.store), Some(FocusTarget::FileList));
+    }
+
+    #[test]
+    fn clearing_overlay_stack_restores_pre_overlay_focus() {
+        let mut state = AppState::default();
+        state.apply_action(crate::actions::AppAction::SetFocus(Some(
+            FocusTarget::FileList,
+        )));
+        state.apply_action(crate::actions::OverlayAction::OpenCommandPalette);
+        state.apply_action(crate::actions::OverlayAction::OpenGitHubAuthModal);
+
+        state.clear_overlays();
+
+        assert_eq!(state.overlays_top(), None);
+        assert_eq!(state.focus.get(&state.store), Some(FocusTarget::FileList));
     }
 
     #[test]

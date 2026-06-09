@@ -22,10 +22,6 @@ use crate::ui::state::{AppState, FocusTarget, SettingsSection, UpdateState};
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme, ThemeMode};
 
-const NAV_WIDTH: f32 = 220.0;
-const CONTENT_MAX_WIDTH: f32 = 720.0;
-const KEYMAPS_MAX_WIDTH: f32 = 1500.0;
-
 pub fn settings_page(state: &AppState, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let active = state.settings_section.get(&state.store);
@@ -46,7 +42,7 @@ pub fn settings_page(state: &AppState, theme: &Theme) -> AnyElement {
 fn nav_panel(_state: &AppState, theme: &Theme, active: SettingsSection) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
-    let nav_w = (NAV_WIDTH * scale).round();
+    let nav_w = (Sz::SETTINGS_NAV_W * scale).round();
 
     let entries: Vec<AnyElement> = SettingsSection::ALL
         .iter()
@@ -118,7 +114,7 @@ fn section_content(state: &AppState, theme: &Theme, section: SettingsSection) ->
 
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
-    let max_w = (CONTENT_MAX_WIDTH * scale).round();
+    let max_w = (Sz::SETTINGS_CONTENT_MAX_W * scale).round();
 
     let (title, description, body) = match section {
         SettingsSection::Appearance => (
@@ -169,7 +165,7 @@ fn section_content(state: &AppState, theme: &Theme, section: SettingsSection) ->
 fn keymaps_layout(state: &AppState, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
-    let inner_max_w = (KEYMAPS_MAX_WIDTH * scale).round();
+    let inner_max_w = (Sz::SETTINGS_KEYMAPS_MAX_W * scale).round();
     let capture = state.keymap_capture.get(&state.store);
     let scroll_px = state.keymaps_scroll_top_px.get(&state.store);
     let total_h = state.keymaps_content_height_px.get(&state.store);

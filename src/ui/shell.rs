@@ -27,13 +27,6 @@ use crate::ui::window_chrome;
 
 pub use halogen::CursorHint;
 
-/// Unscaled height reserved for the open review-comment composer block.
-const COMPOSER_H_BASE: f32 = 248.0;
-
-/// Unscaled height of the editor/preview body region inside the inline reply
-/// composer. Fixed (not flex) so the card's measured height is determinate.
-const INLINE_REPLY_BODY_H: f32 = 112.0;
-
 #[derive(Debug, Clone, Default)]
 pub struct UiFrame {
     pub scene: Scene,
@@ -435,7 +428,7 @@ pub fn build_ui_frame(
                     editor.blocks_mut(),
                     doc,
                     &review_card_heights,
-                    (COMPOSER_H_BASE * ui_scale).round() as u16,
+                    (Sz::COMPOSER_H * ui_scale).round() as u16,
                 );
                 editor.set_hunk_expand_caps(Vec::new());
             } else if let Some(active_file) = active_file_snapshot.as_ref() {
@@ -497,7 +490,7 @@ pub fn build_ui_frame(
                         &active_file.render_doc,
                         rside,
                         line,
-                        (COMPOSER_H_BASE * ui_scale).round() as u16,
+                        (Sz::COMPOSER_H * ui_scale).round() as u16,
                     );
                 }
                 editor.set_hunk_expand_caps(caps);
@@ -1518,7 +1511,7 @@ pub(crate) fn build_inline_reply_composer(
         .active_file
         .get(&state.store)
         .map(|file| file.path);
-    let body_h = (INLINE_REPLY_BODY_H * ui_scale).round();
+    let body_h = (Sz::INLINE_REPLY_BODY_H * ui_scale).round();
     view! { ui_scale,
         <div class="flex-col w-full" gap={Sp::XS}>
             {composer_editor_box(state, theme, ui_scale, width, preview, preview_path.as_deref(), Some(body_h))}

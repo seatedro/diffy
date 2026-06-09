@@ -3800,7 +3800,9 @@ fn locate_sparse_height(
 #[derive(Debug)]
 pub struct AppState {
     pub workspace_mode: Signal<WorkspaceMode>,
-    pub compare_progress: Signal<Option<CompareProgress>>,
+    /// Arc-wrapped so per-frame UI snapshots clone a pointer, not the
+    /// label strings inside.
+    pub compare_progress: Signal<Option<Arc<CompareProgress>>>,
     pub app_view: Signal<AppView>,
     pub settings_section: Signal<SettingsSection>,
     pub keymap_capture: Signal<Option<crate::input::ShortcutCommand>>,
@@ -3866,7 +3868,7 @@ impl Default for AppState {
         let text_focused =
             store.create_memo(move |s| s.read(focus).is_some_and(|t| t.is_text_field()));
         let workspace_mode = store.create(WorkspaceMode::default());
-        let compare_progress = store.create(None::<CompareProgress>);
+        let compare_progress = store.create(None::<Arc<CompareProgress>>);
         let app_view = store.create(AppView::default());
         let settings_section = store.create(SettingsSection::default());
         let keymap_capture = store.create(None::<crate::input::ShortcutCommand>);
@@ -3998,7 +4000,7 @@ impl AppState {
         } else {
             WorkspaceMode::Empty
         });
-        let compare_progress = store.create(None::<CompareProgress>);
+        let compare_progress = store.create(None::<Arc<CompareProgress>>);
         let app_view = store.create(AppView::default());
         let settings_section = store.create(SettingsSection::default());
         let keymap_capture = store.create(None::<crate::input::ShortcutCommand>);
@@ -4151,7 +4153,7 @@ impl AppState {
                 .to_owned();
             state.compare_progress.set(
                 &state.store,
-                Some(CompareProgress {
+                Some(Arc::new(CompareProgress {
                     generation: boot_gen,
                     phase: ComparePhase::OpeningRepo,
                     subject: if bootstrap_compare_started {
@@ -4170,7 +4172,7 @@ impl AppState {
                     reveal_at_ms: COMPARE_REVEAL_DELAY_MS,
                     file_count_total: None,
                     files_loaded: 0,
-                }),
+                })),
             );
 
             effects.push(
@@ -4416,7 +4418,7 @@ impl AppState {
         let reveal_at_ms = started_at_ms.saturating_add(COMPARE_REVEAL_DELAY_MS);
         self.compare_progress.set(
             &self.store,
-            Some(CompareProgress {
+            Some(Arc::new(CompareProgress {
                 generation: next_gen,
                 phase: ComparePhase::OpeningRepo,
                 subject: LoadingSubject::RepoOpen { name: repo_name },
@@ -4424,7 +4426,7 @@ impl AppState {
                 reveal_at_ms,
                 file_count_total: None,
                 files_loaded: 0,
-            }),
+            })),
         );
 
         vec![
@@ -4938,6 +4940,7 @@ impl AppState {
         // small-file fast paths, is cleared by install_compare_active_file).
         self.compare_progress.update(&self.store, |slot| {
             if let Some(p) = slot.as_mut() {
+                let p = Arc::make_mut(p);
                 p.file_count_total = Some(total_files);
                 p.phase = ComparePhase::PopulatingList;
             }
@@ -6334,7 +6337,7 @@ impl AppState {
         let right_label = profile.compare_ref_display_label(&right_ref);
         self.compare_progress.set(
             &self.store,
-            Some(CompareProgress {
+            Some(Arc::new(CompareProgress {
                 generation: next_gen,
                 phase: ComparePhase::OpeningRepo,
                 subject: LoadingSubject::Compare {
@@ -6345,7 +6348,7 @@ impl AppState {
                 reveal_at_ms,
                 file_count_total: None,
                 files_loaded: 0,
-            }),
+            })),
         );
 
         let renderer = self.compare.renderer.get(&self.store);
@@ -6400,6 +6403,7 @@ impl AppState {
             if let Some(p) = slot.as_mut()
                 && p.generation == generation
             {
+                let p = Arc::make_mut(p);
                 // Pull counts out of LoadingFiles so the determinate bar
                 // reads directly from durable struct fields (cheaper than
                 // pattern-matching in the render path, and lets the total
@@ -9303,7 +9307,7 @@ impl AppState {
         // file…". Subsequent selections don't touch compare_progress.
         self.compare_progress.update(&self.store, |slot| {
             if let Some(p) = slot.as_mut() {
-                p.phase = ComparePhase::RenderingFirstFile;
+                Arc::make_mut(p).phase = ComparePhase::RenderingFirstFile;
             }
         });
 
@@ -11654,10 +11658,7 @@ impl AppState {
 
     fn close_search(&mut self) {
         self.editor.search.open.set(&self.store, false);
-        self.editor
-            .search
-            .matches
-            .update(&self.store, |matches| matches.clear());
+        self.editor.search.matches.set(&self.store, Arc::default());
         self.editor.search.active_index.set(&self.store, None);
         self.set_focus(Some(FocusTarget::Editor));
     }
@@ -11665,10 +11666,7 @@ impl AppState {
     fn recompute_search_matches(&mut self) {
         use crate::editor::diff::state::MatchSide;
 
-        self.editor
-            .search
-            .matches
-            .update(&self.store, |matches| matches.clear());
+        self.editor.search.matches.set(&self.store, Arc::default());
         self.editor.search.active_index.set(&self.store, None);
 
         let query = self
@@ -11723,7 +11721,10 @@ impl AppState {
         });
 
         let has_matches = !new_matches.is_empty();
-        self.editor.search.matches.set(&self.store, new_matches);
+        self.editor
+            .search
+            .matches
+            .set(&self.store, Arc::new(new_matches));
         if has_matches {
             self.editor.search.active_index.set(&self.store, Some(0));
         }
@@ -11805,15 +11806,11 @@ impl AppState {
         self.editor.hovered_hunk_index.set(&self.store, None);
         self.editor.visible_row_start.set(&self.store, None);
         self.editor.visible_row_end.set(&self.store, None);
-        self.editor
-            .hunk_positions
-            .update(&self.store, |v| v.clear());
-        self.editor
-            .file_positions
-            .update(&self.store, |v| v.clear());
+        self.editor.hunk_positions.set(&self.store, Arc::default());
+        self.editor.file_positions.set(&self.store, Arc::default());
         self.editor
             .search_match_y_positions
-            .update(&self.store, |v| v.clear());
+            .set(&self.store, Arc::default());
         self.editor
             .line_selection
             .update(&self.store, |ls| ls.clear());
@@ -14819,8 +14816,8 @@ diff --git a/src/lib.rs b/src/lib.rs
             .compare_progress
             .with(&state.store, |p| p.clone())
             .expect("progress seeded for repo open");
-        match progress.subject {
-            LoadingSubject::RepoOpen { ref name } => {
+        match &progress.subject {
+            LoadingSubject::RepoOpen { name } => {
                 assert_eq!(name, "linux");
             }
             other => panic!("expected RepoOpen subject, got {other:?}"),

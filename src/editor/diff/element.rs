@@ -28,7 +28,9 @@ use super::render_doc::{
     RenderLine, RenderRowKind, RunRange, STYLE_FLAG_CHANGE, STYLE_FLAG_UNCHANGED_CTX, StyleRun,
     advance_display_col,
 };
-use super::state::{EditorState, ViewportTextPoint, ViewportTextSelection, ViewportTextSide};
+use super::state::{
+    EditorState, SearchMatch, ViewportTextPoint, ViewportTextSelection, ViewportTextSide,
+};
 use super::strip_layout::{StripLayout, build_strip_layouts, visible_strip_range};
 
 const BASE_VIEWPORT_PADDING: f32 = 14.0;
@@ -324,6 +326,16 @@ pub struct EditorElement {
     sticky_header_hit: Option<(Rect, String)>,
     file_header_hits: Vec<FileHeaderHit>,
     mouse_pos: Option<(f32, f32)>,
+    /// Memoized navigation positions. Hunk/file positions depend only on
+    /// `rows` (rebuilt when `layout_key` changes); search Y positions
+    /// additionally depend on the search match set. Recomputing these every
+    /// frame meant iterating every row per frame, so cache and hand out
+    /// shared Arcs instead.
+    nav_positions_valid: bool,
+    nav_hunk_positions: Arc<Vec<u32>>,
+    nav_file_positions: Arc<Vec<u32>>,
+    nav_search_matches: Option<Arc<Vec<SearchMatch>>>,
+    nav_search_y_positions: Arc<Vec<u32>>,
 }
 
 #[derive(Debug, Clone)]
@@ -366,6 +378,11 @@ impl Default for EditorElement {
             sticky_header_hit: None,
             file_header_hits: Vec::new(),
             mouse_pos: None,
+            nav_positions_valid: false,
+            nav_hunk_positions: Arc::default(),
+            nav_file_positions: Arc::default(),
+            nav_search_matches: None,
+            nav_search_y_positions: Arc::default(),
         }
     }
 }
@@ -870,27 +887,50 @@ impl EditorElement {
         }
     }
 
-    fn rebuild_navigation_positions(&self, state: &mut EditorState) {
-        state.hunk_positions.clear();
-        state.file_positions.clear();
-        for row in &self.rows {
-            if row.kind == RenderRowKind::HunkSeparator as u8 {
-                state.hunk_positions.push(row.y_px);
-            } else if row.kind == RenderRowKind::FileHeader as u8 {
-                state.file_positions.push(row.y_px);
+    fn rebuild_navigation_positions(&mut self, state: &mut EditorState) {
+        if !self.nav_positions_valid {
+            let mut hunk_positions = Vec::new();
+            let mut file_positions = Vec::new();
+            for row in &self.rows {
+                if row.kind == RenderRowKind::HunkSeparator as u8 {
+                    hunk_positions.push(row.y_px);
+                } else if row.kind == RenderRowKind::FileHeader as u8 {
+                    file_positions.push(row.y_px);
+                }
             }
+            self.nav_hunk_positions = Arc::new(hunk_positions);
+            self.nav_file_positions = Arc::new(file_positions);
+            // Search Y positions are derived from row geometry too.
+            self.nav_search_matches = None;
+            self.nav_positions_valid = true;
         }
+        state.hunk_positions = Arc::clone(&self.nav_hunk_positions);
+        state.file_positions = Arc::clone(&self.nav_file_positions);
 
-        state.search_match_y_positions.clear();
         if state.search.open && !state.search.matches.is_empty() {
-            for m in &state.search.matches {
-                let y = self
-                    .rows
-                    .iter()
-                    .find(|r| !r.is_block() && r.line_index == m.line_index)
-                    .map(|r| r.y_px)
-                    .unwrap_or(0);
-                state.search_match_y_positions.push(y);
+            let cached = self
+                .nav_search_matches
+                .as_ref()
+                .is_some_and(|matches| Arc::ptr_eq(matches, &state.search.matches));
+            if !cached {
+                let mut y_positions = Vec::with_capacity(state.search.matches.len());
+                for m in state.search.matches.iter() {
+                    let y = self
+                        .rows
+                        .iter()
+                        .find(|r| !r.is_block() && r.line_index == m.line_index)
+                        .map(|r| r.y_px)
+                        .unwrap_or(0);
+                    y_positions.push(y);
+                }
+                self.nav_search_y_positions = Arc::new(y_positions);
+                self.nav_search_matches = Some(Arc::clone(&state.search.matches));
+            }
+            state.search_match_y_positions = Arc::clone(&self.nav_search_y_positions);
+        } else {
+            self.nav_search_matches = None;
+            if !state.search_match_y_positions.is_empty() {
+                state.search_match_y_positions = Arc::default();
             }
         }
     }
@@ -2924,6 +2964,10 @@ impl EditorElement {
         self.wrapped_text_cache.clear();
         self.text_layout_cache.clear();
         self.gutter_text_cache.clear();
+        // Rows changed (or went away) — navigation positions must be
+        // recomputed from the new row geometry.
+        self.nav_positions_valid = false;
+        self.nav_search_matches = None;
     }
 
     fn sync_theme_cache(&mut self, theme: &Theme) {

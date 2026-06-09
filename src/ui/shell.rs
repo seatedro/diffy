@@ -599,6 +599,10 @@ pub fn build_ui_frame(
             // Write back every field prepare may have mutated.
             state
                 .editor
+                .doc_generation
+                .set_if_changed(&state.store, editor_snap.doc_generation);
+            state
+                .editor
                 .viewport_width_px
                 .set_if_changed(&state.store, editor_snap.viewport_width_px);
             state

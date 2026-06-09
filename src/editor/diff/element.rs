@@ -461,6 +461,16 @@ impl EditorElement {
                     self.layout_key = Some(key);
                 }
 
+                // Stamp the generation this geometry belongs to. When a new
+                // compare generation replaces the document, the carried-over
+                // scroll offset may point past geometry that no longer
+                // exists; the `clamp_scroll` below re-clamps it against the
+                // freshly built layout. Scroll is intentionally not reset
+                // here: per-file resets (and continuous-scroll restore) are
+                // owned by the reducer so a recompare of the same file keeps
+                // the user's place.
+                state.doc_generation = compare_generation;
+
                 state.content_height_px = self
                     .summary
                     .content_height_px
@@ -998,11 +1008,29 @@ impl EditorElement {
             }
             EditorDocument::Text {
                 compare_generation,
+                file_index,
                 path,
                 doc,
                 show_file_headers,
-                ..
             } => {
+                // Row geometry is only valid for the exact document `prepare`
+                // built it from. If a stale document (older compare
+                // generation or different file) reaches paint, skip the body
+                // for this frame instead of painting mismatched geometry;
+                // the next prepare/paint pass recovers.
+                let layout_matches = self.layout_key.is_some_and(|key| {
+                    key.compare_generation == compare_generation && key.file_index == file_index
+                });
+                if !layout_matches || _state.doc_generation != compare_generation {
+                    tracing::warn!(
+                        compare_generation,
+                        file_index,
+                        layout_generation = ?self.layout_key.map(|key| key.compare_generation),
+                        state_generation = _state.doc_generation,
+                        "editor layout/document generation mismatch; skipping paint"
+                    );
+                    return;
+                }
                 self.sync_theme_cache(theme);
                 scene.clip(self.layout.content_bounds);
 

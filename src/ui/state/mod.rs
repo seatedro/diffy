@@ -11810,6 +11810,7 @@ impl AppState {
 
     /// Clear document-specific editor state (scroll, content, hunks, etc.)
     pub fn editor_clear_document(&mut self) {
+        self.editor.doc_generation.set(&self.store, 0);
         self.editor.scroll_top_px.set(&self.store, 0);
         self.editor.content_height_px.set(&self.store, 0);
         self.editor.hovered_row.set(&self.store, None);

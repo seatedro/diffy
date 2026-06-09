@@ -207,6 +207,10 @@ impl EffectRunner {
             }
             Effect::Compare(CompareEffect::Run(task)) => {
                 let generation = task.generation;
+                // A new compare supersedes any queued/in-flight scheduler work
+                // from older generations; drop it instead of racing the new
+                // results.
+                self.compare_scheduler.set_epoch(generation);
                 let request = task.request;
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
@@ -225,6 +229,7 @@ impl EffectRunner {
             }
             Effect::Compare(CompareEffect::RunText(task)) => {
                 let generation = task.generation;
+                self.compare_scheduler.set_epoch(generation);
                 let request = task.request;
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();

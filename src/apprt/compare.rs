@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
@@ -18,6 +19,10 @@ pub(crate) struct CompareScheduler {
 struct CompareQueue {
     state: Mutex<CompareQueueState>,
     ready: Condvar,
+    /// Highest compare generation observed. Jobs and results stamped with an
+    /// older generation are stale (a newer compare superseded them) and are
+    /// dropped instead of being run or emitted, mirroring `SyntaxScheduler`.
+    current_epoch: AtomicU64,
 }
 
 #[derive(Default)]
@@ -60,6 +65,7 @@ impl CompareScheduler {
         let queue = Arc::new(CompareQueue {
             state: Mutex::new(CompareQueueState::default()),
             ready: Condvar::new(),
+            current_epoch: AtomicU64::new(0),
         });
         let worker_count = std::thread::available_parallelism()
             .map(usize::from)
@@ -86,10 +92,31 @@ impl CompareScheduler {
         self.enqueue(CompareJob::FileStats(task));
     }
 
+    /// Mark every compare job older than `epoch` stale. Called when a new
+    /// compare request starts so rapid file/rev switching cannot leave older
+    /// queued work racing newer state.
+    pub(crate) fn set_epoch(&self, epoch: u64) {
+        let previous = self.queue.current_epoch.fetch_max(epoch, Ordering::AcqRel);
+        if epoch < previous {
+            return;
+        }
+        let mut state = self.queue.state.lock().expect("compare queue poisoned");
+        let current = self.queue.current_epoch.load(Ordering::Acquire);
+        state.jobs.retain(|job| job.job.generation() >= current);
+    }
+
     fn enqueue(&self, job: CompareJob) {
+        let epoch = job.generation();
+        let previous = self.queue.current_epoch.fetch_max(epoch, Ordering::AcqRel);
+
         let key = job.key();
         let priority = job.priority();
         let mut state = self.queue.state.lock().expect("compare queue poisoned");
+        let current = self.queue.current_epoch.load(Ordering::Acquire);
+        state.jobs.retain(|job| job.job.generation() >= current);
+        if epoch < previous || epoch < current {
+            return;
+        }
         state.jobs.retain(|job| job.key != key);
         let sequence = state.next_sequence;
         state.next_sequence = state.next_sequence.saturating_add(1);
@@ -105,6 +132,14 @@ impl CompareScheduler {
 }
 
 impl CompareJob {
+    fn generation(&self) -> u64 {
+        match self {
+            CompareJob::Stats(task) => task.generation,
+            CompareJob::File(task) => task.generation,
+            CompareJob::FileStats(task) => task.generation,
+        }
+    }
+
     fn priority(&self) -> CompareWorkPriority {
         match self {
             CompareJob::Stats(task) => task.request.priority,
@@ -140,13 +175,20 @@ fn compare_worker_loop(
         let job = {
             let mut state = queue.state.lock().expect("compare queue poisoned");
             loop {
+                let current_epoch = queue.current_epoch.load(Ordering::Acquire);
+                state
+                    .jobs
+                    .retain(|job| job.job.generation() >= current_epoch);
                 if let Some(index) = next_job_index(&state.jobs) {
                     break state.jobs.swap_remove(index);
                 }
                 state = queue.ready.wait(state).expect("compare queue poisoned");
             }
         };
-        run_job(job, &services, &event_sender);
+        if job.job.generation() < queue.current_epoch.load(Ordering::Acquire) {
+            continue;
+        }
+        run_job(job, &services, &event_sender, &queue.current_epoch);
     }
 }
 
@@ -157,18 +199,30 @@ fn next_job_index(jobs: &[QueuedCompareJob]) -> Option<usize> {
         .map(|(index, _)| index)
 }
 
-fn run_job(job: QueuedCompareJob, services: &AppServices, event_sender: &RuntimeEventSender) {
+fn run_job(
+    job: QueuedCompareJob,
+    services: &AppServices,
+    event_sender: &RuntimeEventSender,
+    current_epoch: &AtomicU64,
+) {
     match job.job {
-        CompareJob::Stats(task) => run_load_stats(task, services, event_sender),
-        CompareJob::File(task) => run_load_file(task, services, event_sender),
-        CompareJob::FileStats(task) => run_load_file_stats(task, services, event_sender),
+        CompareJob::Stats(task) => run_load_stats(task, services, event_sender, current_epoch),
+        CompareJob::File(task) => run_load_file(task, services, event_sender, current_epoch),
+        CompareJob::FileStats(task) => {
+            run_load_file_stats(task, services, event_sender, current_epoch)
+        }
     }
+}
+
+fn is_stale(generation: u64, current_epoch: &AtomicU64) -> bool {
+    generation < current_epoch.load(Ordering::Acquire)
 }
 
 fn run_load_stats(
     task: Task<CompareStatsRequest>,
     services: &AppServices,
     event_sender: &RuntimeEventSender,
+    current_epoch: &AtomicU64,
 ) {
     let generation = task.generation;
     let request = task.request;
@@ -179,6 +233,10 @@ fn run_load_stats(
             message: error.to_string(),
         },
     };
+    if is_stale(generation, current_epoch) {
+        tracing::debug!(generation, "stale compare stats result dropped");
+        return;
+    }
     event_sender.send(event);
 }
 
@@ -186,6 +244,7 @@ fn run_load_file(
     task: Task<CompareFileRequest>,
     services: &AppServices,
     event_sender: &RuntimeEventSender,
+    current_epoch: &AtomicU64,
 ) {
     let generation = task.generation;
     let request = task.request;
@@ -194,10 +253,14 @@ fn run_load_file(
         Ok(payload) => CompareEvent::CompareFileFinished(payload),
         Err(error) => CompareEvent::CompareFileFailed {
             generation,
-            path,
+            path: path.clone(),
             message: error.to_string(),
         },
     };
+    if is_stale(generation, current_epoch) {
+        tracing::debug!(generation, path = %path, "stale compare file result dropped");
+        return;
+    }
     event_sender.send(event);
 }
 
@@ -205,12 +268,16 @@ fn run_load_file_stats(
     task: Task<CompareFileStatsRequest>,
     services: &AppServices,
     event_sender: &RuntimeEventSender,
+    current_epoch: &AtomicU64,
 ) {
     let generation = task.generation;
     let request = task.request;
     let payload = match services.load_compare_file_stats(generation, request) {
         Ok(payload) => payload,
         Err(error) => {
+            if is_stale(generation, current_epoch) {
+                return;
+            }
             event_sender.send(CompareEvent::CompareFileStatsFailed {
                 generation,
                 message: error.to_string(),
@@ -218,13 +285,18 @@ fn run_load_file_stats(
             return;
         }
     };
-    send_file_stats_payload(generation, payload, event_sender);
+    if is_stale(generation, current_epoch) {
+        tracing::debug!(generation, "stale compare file stats result dropped");
+        return;
+    }
+    send_file_stats_payload(generation, payload, event_sender, current_epoch);
 }
 
 fn send_file_stats_payload(
     generation: u64,
     payload: CompareFileStatsReady,
     event_sender: &RuntimeEventSender,
+    current_epoch: &AtomicU64,
 ) {
     if payload.stats.len() <= FILE_STATS_STREAM_CHUNK_SIZE {
         event_sender.send(CompareEvent::CompareFileStatsReady(payload));
@@ -233,6 +305,12 @@ fn send_file_stats_payload(
 
     let mut stats = payload.stats.into_iter();
     loop {
+        // A newer compare invalidates the remainder of the stream; the
+        // state-side generation guard ignores any chunks already sent.
+        if is_stale(generation, current_epoch) {
+            tracing::debug!(generation, "stale compare file stats stream dropped");
+            return;
+        }
         let chunk = stats
             .by_ref()
             .take(FILE_STATS_STREAM_CHUNK_SIZE)
@@ -255,7 +333,82 @@ fn send_file_stats_payload(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::core::compare::{LayoutMode, RendererKind};
+    use crate::core::vcs::model::{VcsCompareRequest, VcsCompareSpec};
     use crate::effects::CompareWorkPriority;
+
+    fn scheduler_for_test() -> CompareScheduler {
+        CompareScheduler {
+            queue: Arc::new(CompareQueue {
+                state: Mutex::new(CompareQueueState::default()),
+                ready: Condvar::new(),
+                current_epoch: AtomicU64::new(0),
+            }),
+        }
+    }
+
+    fn file_task(generation: u64, index: usize) -> Task<CompareFileRequest> {
+        Task {
+            generation,
+            request: CompareFileRequest {
+                repo_path: PathBuf::from("/repo"),
+                request: VcsCompareRequest {
+                    spec: VcsCompareSpec::WorkingCopy,
+                    layout: LayoutMode::Unified,
+                    renderer: RendererKind::Builtin,
+                },
+                path: format!("src/file-{index}.rs"),
+                index,
+                deferred_file: None,
+                priority: CompareWorkPriority::InteractiveSelectedFile,
+            },
+        }
+    }
+
+    #[test]
+    fn newer_compare_generation_drops_queued_older_jobs() {
+        let scheduler = scheduler_for_test();
+        scheduler.dispatch_load_file(file_task(1, 1));
+        scheduler.dispatch_load_file(file_task(1, 2));
+
+        scheduler.dispatch_load_file(file_task(2, 3));
+
+        let state = scheduler
+            .queue
+            .state
+            .lock()
+            .expect("compare queue poisoned");
+        assert_eq!(scheduler.queue.current_epoch.load(Ordering::Acquire), 2);
+        assert_eq!(state.jobs.len(), 1);
+        assert_eq!(state.jobs[0].job.generation(), 2);
+    }
+
+    #[test]
+    fn explicit_compare_epoch_drops_queued_older_jobs() {
+        let scheduler = scheduler_for_test();
+        scheduler.dispatch_load_file(file_task(1, 1));
+        scheduler.dispatch_load_file(file_task(1, 2));
+
+        scheduler.set_epoch(2);
+        scheduler.dispatch_load_file(file_task(1, 3));
+        scheduler.dispatch_load_file(file_task(2, 4));
+
+        let state = scheduler
+            .queue
+            .state
+            .lock()
+            .expect("compare queue poisoned");
+        assert_eq!(scheduler.queue.current_epoch.load(Ordering::Acquire), 2);
+        assert_eq!(state.jobs.len(), 1);
+        assert_eq!(state.jobs[0].job.generation(), 2);
+        match &state.jobs[0].job {
+            CompareJob::File(task) => assert_eq!(task.request.index, 4),
+            other => panic!("unexpected job kind: {:?}", other.key()),
+        }
+    }
 
     #[test]
     fn visible_diff_work_outprioritizes_stats_work() {

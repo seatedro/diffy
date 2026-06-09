@@ -13,6 +13,7 @@ use crate::core::compare::{
 };
 use crate::core::error::{DiffyError, Result, VcsBackendKind};
 use crate::core::vcs::backend::{VcsBackend, VcsRepository, VcsWatchPaths};
+use crate::core::vcs::cache::VcsReadCache;
 use crate::core::vcs::jj::cli::JjCli;
 use crate::core::vcs::jj::parse::{
     parse_bookmark_list, parse_change_log, parse_conflict_list, parse_diff_summary,
@@ -70,24 +71,8 @@ pub struct JjRepository {
     location: RepoLocation,
     last_operation_id: Option<String>,
     last_snapshot: Option<VcsSnapshot>,
-    diff_cache: Vec<DiffCacheEntry>,
-    file_text_cache: Vec<FileTextCacheEntry>,
-}
-
-#[derive(Clone)]
-struct DiffCacheEntry {
-    operation_id: Option<String>,
-    request: VcsCompareRequest,
-    path: Option<String>,
-    output: CompareOutput,
-}
-
-#[derive(Clone)]
-struct FileTextCacheEntry {
-    operation_id: Option<String>,
-    revision: RevisionId,
-    path: String,
-    text: TextStore,
+    /// Reads cached per operation id; see [`VcsReadCache`].
+    read_cache: VcsReadCache,
 }
 
 #[derive(Debug, Clone)]
@@ -115,8 +100,7 @@ impl JjRepository {
             location,
             last_operation_id: None,
             last_snapshot: None,
-            diff_cache: Vec::new(),
-            file_text_cache: Vec::new(),
+            read_cache: VcsReadCache::new(),
         }
     }
 
@@ -267,8 +251,7 @@ impl JjRepository {
 
     fn set_operation_id(&mut self, operation_id: String) {
         if self.last_operation_id.as_deref() != Some(operation_id.as_str()) {
-            self.diff_cache.clear();
-            self.file_text_cache.clear();
+            self.read_cache.clear();
             self.last_snapshot = None;
         }
         self.last_operation_id = Some(operation_id);
@@ -281,76 +264,6 @@ impl JjRepository {
             self.set_operation_id(operation_id);
         }
         Ok(self.last_operation_id.clone())
-    }
-
-    fn cached_diff(
-        &self,
-        operation_id: Option<&str>,
-        request: &VcsCompareRequest,
-        path: Option<&str>,
-    ) -> Option<CompareOutput> {
-        self.diff_cache
-            .iter()
-            .find(|entry| {
-                entry.operation_id.as_deref() == operation_id
-                    && entry.request == *request
-                    && entry.path.as_deref() == path
-            })
-            .map(|entry| entry.output.clone())
-    }
-
-    fn insert_diff_cache(
-        &mut self,
-        operation_id: Option<String>,
-        request: VcsCompareRequest,
-        path: Option<String>,
-        output: CompareOutput,
-    ) {
-        const MAX_DIFF_CACHE_ENTRIES: usize = 8;
-        if self.diff_cache.len() >= MAX_DIFF_CACHE_ENTRIES {
-            self.diff_cache.remove(0);
-        }
-        self.diff_cache.push(DiffCacheEntry {
-            operation_id,
-            request,
-            path,
-            output,
-        });
-    }
-
-    fn cached_file_text(
-        &self,
-        operation_id: Option<&str>,
-        revision: &RevisionId,
-        path: &str,
-    ) -> Option<TextStore> {
-        self.file_text_cache
-            .iter()
-            .find(|entry| {
-                entry.operation_id.as_deref() == operation_id
-                    && entry.revision == *revision
-                    && entry.path == path
-            })
-            .map(|entry| entry.text.clone())
-    }
-
-    fn insert_file_text_cache(
-        &mut self,
-        operation_id: Option<String>,
-        revision: RevisionId,
-        path: String,
-        text: TextStore,
-    ) {
-        const MAX_FILE_TEXT_CACHE_ENTRIES: usize = 16;
-        if self.file_text_cache.len() >= MAX_FILE_TEXT_CACHE_ENTRIES {
-            self.file_text_cache.remove(0);
-        }
-        self.file_text_cache.push(FileTextCacheEntry {
-            operation_id,
-            revision,
-            path,
-            text,
-        });
     }
 
     fn conflict_list(&self) -> Result<String> {
@@ -369,8 +282,7 @@ impl JjRepository {
     fn clear_after_write(&mut self) {
         self.last_operation_id = None;
         self.last_snapshot = None;
-        self.diff_cache.clear();
-        self.file_text_cache.clear();
+        self.read_cache.clear();
     }
 
     fn remote_names(&self) -> Result<Vec<String>> {
@@ -715,13 +627,17 @@ impl VcsRepository for JjRepository {
         _reporter: Option<&dyn ProgressSink>,
     ) -> Result<CompareOutput> {
         let operation_id = self.ensure_read_epoch()?;
-        if let Some(output) = self.cached_diff(operation_id.as_deref(), request, None) {
+        if let Some(output) = self
+            .read_cache
+            .cached_diff(operation_id.as_deref(), request, None)
+        {
             return Ok(output);
         }
         #[cfg(feature = "difftastic")]
         if request.renderer == RendererKind::Difftastic {
             let output = self.compare_difftastic(request, _reporter, None)?;
-            self.insert_diff_cache(operation_id, request.clone(), None, output.clone());
+            self.read_cache
+                .insert_diff(operation_id, request.clone(), None, output.clone());
             return Ok(output);
         }
 
@@ -734,13 +650,15 @@ impl VcsRepository for JjRepository {
                 ..CompareOutput::default()
             };
             output.compact_file_summaries();
-            self.insert_diff_cache(operation_id, request.clone(), None, output.clone());
+            self.read_cache
+                .insert_diff(operation_id, request.clone(), None, output.clone());
             return Ok(output);
         }
         let args = self.diff_args_for_spec(&request.spec)?;
         let raw_diff = self.cli.run_ignored_wc(&args)?;
         let output = compare_output_from_raw_patch(&raw_diff)?;
-        self.insert_diff_cache(operation_id, request.clone(), None, output.clone());
+        self.read_cache
+            .insert_diff(operation_id, request.clone(), None, output.clone());
         Ok(output)
     }
 
@@ -815,13 +733,16 @@ impl VcsRepository for JjRepository {
         _deferred_file: Option<&CompareFileSummary>,
     ) -> Result<CompareOutput> {
         let operation_id = self.ensure_read_epoch()?;
-        if let Some(output) = self.cached_diff(operation_id.as_deref(), request, Some(path)) {
+        if let Some(output) =
+            self.read_cache
+                .cached_diff(operation_id.as_deref(), request, Some(path))
+        {
             return Ok(output);
         }
         #[cfg(feature = "difftastic")]
         if request.renderer == RendererKind::Difftastic {
             let output = self.compare_difftastic(request, None, Some(path))?;
-            self.insert_diff_cache(
+            self.read_cache.insert_diff(
                 operation_id,
                 request.clone(),
                 Some(path.to_owned()),
@@ -834,7 +755,7 @@ impl VcsRepository for JjRepository {
         args.push(jj_root_pathspec(path));
         let raw_diff = self.cli.run_ignored_wc(&args)?;
         let output = compare_output_from_raw_patch(&raw_diff)?;
-        self.insert_diff_cache(
+        self.read_cache.insert_diff(
             operation_id,
             request.clone(),
             Some(path.to_owned()),
@@ -1223,7 +1144,10 @@ impl VcsRepository for JjRepository {
             layout: crate::core::compare::LayoutMode::Unified,
             renderer: RendererKind::Builtin,
         };
-        if let Some(output) = self.cached_diff(operation_id.as_deref(), &request, Some(path)) {
+        if let Some(output) =
+            self.read_cache
+                .cached_diff(operation_id.as_deref(), &request, Some(path))
+        {
             return Ok(output);
         }
         let raw_diff = self.cli.run_ignored_wc(&[
@@ -1234,13 +1158,17 @@ impl VcsRepository for JjRepository {
             jj_root_pathspec(path),
         ])?;
         let output = compare_output_from_raw_patch(&raw_diff)?;
-        self.insert_diff_cache(operation_id, request, Some(path.to_owned()), output.clone());
+        self.read_cache
+            .insert_diff(operation_id, request, Some(path.to_owned()), output.clone());
         Ok(output)
     }
 
     fn read_file_text(&mut self, revision: &RevisionId, path: &str) -> Result<TextStore> {
         let operation_id = self.ensure_read_epoch()?;
-        if let Some(text) = self.cached_file_text(operation_id.as_deref(), revision, path) {
+        if let Some(text) =
+            self.read_cache
+                .cached_file_text(operation_id.as_deref(), revision, path)
+        {
             return Ok(text);
         }
         let output = self.cli.run_ignored_wc(&[
@@ -1251,7 +1179,7 @@ impl VcsRepository for JjRepository {
             jj_root_pathspec(path),
         ])?;
         let text = TextStore::from_text(output);
-        self.insert_file_text_cache(
+        self.read_cache.insert_file_text(
             operation_id,
             revision.clone(),
             path.to_owned(),

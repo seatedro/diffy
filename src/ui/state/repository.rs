@@ -597,7 +597,9 @@ impl AppState {
         self.repository
             .file_changes
             .set(&self.store, file_changes.clone());
-        self.repository.publish_plan.set(&self.store, None);
+        self.repository
+            .publish_plan
+            .set(&self.store, payload.publish_plan);
         self.workspace
             .status_file_changes
             .set(&self.store, file_changes);

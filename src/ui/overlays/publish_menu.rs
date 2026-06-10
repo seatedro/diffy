@@ -366,13 +366,5 @@ fn publish_ref_chips(state: &AppState) -> Vec<PublishRefChipUi> {
         .repository
         .refs
         .with(&state.store, |refs| refs.clone());
-    let has_remotes = state
-        .repository
-        .capabilities
-        .with(&state.store, |capabilities| {
-            capabilities.is_some_and(|capabilities| capabilities.remotes)
-        });
-    profile
-        .publish_status_ui(&changes, &refs, has_remotes)
-        .ref_chips
+    profile.publish_status_ui(&changes, &refs, None).ref_chips
 }

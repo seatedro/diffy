@@ -877,9 +877,14 @@ fn sync_vcs_repository(
                 None
             })
         };
-        event_sender.send(RepositoryEvent::RepositorySnapshotReady(
-            RepositorySnapshot::from_vcs_snapshot(snapshot.clone()),
-        ));
+        let mut payload = RepositorySnapshot::from_vcs_snapshot(snapshot.clone());
+        payload.publish_plan = repo
+            .publish_plan()
+            .map_err(|error| {
+                tracing::debug!(path = %path.display(), %error, "vcs: no publish plan for snapshot");
+            })
+            .ok();
+        event_sender.send(RepositoryEvent::RepositorySnapshotReady(payload));
     }
     state.last_snapshot = Some(snapshot);
 }

@@ -203,7 +203,10 @@ impl FileBuilder {
             return;
         };
 
-        if line == r"\ No newline at end of file" {
+        // Any `\`-prefixed hunk line is a "no newline at end of file" marker;
+        // the message text is localized by diff/git, so only the prefix is
+        // structural.
+        if line.starts_with('\\') {
             match hunk.last_side {
                 Some(DiffSide::Old) => {
                     hunk.mark_old_no_newline();
@@ -483,6 +486,12 @@ fn strip_patch_path(path: &str) -> Option<&str> {
 }
 
 fn push_text_line(text: &mut String, content: &str) {
+    // Malformed input can append lines after a no-newline marker already
+    // trimmed the trailing separator; restore it so stored line counts stay
+    // in sync with the block ranges counted by the hunk builder.
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
     text.push_str(content);
     text.push('\n');
 }
@@ -556,5 +565,59 @@ diff --git a/a.txt b/a.txt
         assert!(block.new_no_newline_at_end);
         assert!(file.old_text.as_ref().unwrap().no_newline_at_eof());
         assert!(file.new_text.as_ref().unwrap().no_newline_at_eof());
+    }
+
+    #[test]
+    fn parses_localized_no_newline_marker() {
+        let patch = "\
+diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1 +1 @@
+-old
+\\ Pas de fin de ligne a la fin du fichier
++new
+\\ Kein Zeilenumbruch am Dateiende
+";
+        let document = parse_unified_patch(patch).unwrap();
+        let file = &document.files[0];
+        let block = &file.blocks[0];
+
+        assert!(block.old_no_newline_at_end);
+        assert!(block.new_no_newline_at_end);
+        assert!(file.old_text.as_ref().unwrap().no_newline_at_eof());
+        assert!(file.new_text.as_ref().unwrap().no_newline_at_eof());
+    }
+
+    // Regression for a fuzz-found inconsistency: a malformed `\` line after a
+    // no-newline marker was pushed as a context line into a store whose
+    // trailing separator had been trimmed, so block ranges pointed one line
+    // past the stored text.
+    #[test]
+    fn block_ranges_stay_within_text_stores_for_malformed_marker() {
+        let patch = "\
+diff --git a/a.txt b/a.txt
+index 3333333..4444444 100644
+--- a/a.txt
++++ b/a.txt
+@@ -1,2 +1,2 @@
+ first
+-old end
+\\ No newline at end of file
++new end
+\\ N[ newline at end of file
+";
+        let document = parse_unified_patch(patch).unwrap();
+        let file = &document.files[0];
+        for block in &file.blocks {
+            if block.old.len > 0 {
+                let text = file.old_text.as_ref().unwrap();
+                assert!(block.old.end() <= text.line_count());
+            }
+            if block.new.len > 0 {
+                let text = file.new_text.as_ref().unwrap();
+                assert!(block.new.end() <= text.line_count());
+            }
+        }
     }
 }

@@ -1,0 +1,8 @@
+diff --git a/x b/x
+index 1234567..89abcde 100644
+--- a/x
++++ b/x
+@@ -3,0 +4,0 @@ empty counts
+@@ -5 +6 @@ implicit counts
+-five
++six

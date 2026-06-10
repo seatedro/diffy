@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -18,11 +19,14 @@ use crate::core::forge::github::{
 };
 use crate::core::http;
 use crate::core::review::{ReviewDecision, ReviewSession, ReviewSessionKey, ReviewTarget};
-use crate::core::syntax::annotator::FullFileSyntax;
+use crate::core::syntax::annotator::{
+    FullFileSyntax, SourceLineWindow, carbon_window_source_line_bounds,
+};
+use crate::core::vcs::backend::VcsRepository;
 use crate::core::vcs::discovery;
-use crate::core::vcs::git::pr_ref_path;
+use crate::core::vcs::git::{is_pr_ref, pr_ref_path};
 use crate::core::vcs::model::RevisionId;
-use crate::core::vcs::model::{VcsCompareRequest, VcsCompareSpec};
+use crate::core::vcs::model::{VcsCompareRequest, VcsCompareSpec, VcsKind};
 use crate::effects::{
     CompareFileRequest, CompareFileStatsRequest, CompareHistoryRequest, CompareRequest,
     CompareStatsRequest, GenerateCommitMessageRequest, LoadFileSyntaxRequest, StatusDiffRequest,
@@ -39,45 +43,140 @@ use crate::ui::state::prepare_active_file;
 
 const DEV_GITHUB_TOKEN_FILE_NAME: &str = "github-token.dev";
 
+/// Files at or below this size are highlighted in full and cached once; above
+/// it, span extraction is windowed to the requested source-line bucket so
+/// huge files never pay (or cache) full-file query extraction.
+const SYNTAX_FULL_HIGHLIGHT_BYTE_LIMIT: usize = 512 * 1024;
+/// Quantization for windowed cache entries, in source lines. Buckets are
+/// large relative to viewport tiles so scrolling reuses cached windows.
+const SYNTAX_WINDOW_BUCKET_LINES: usize = 2048;
+
+/// PR comparison refs live in the git ref namespace (`refs/diffy/pr/...`),
+/// which jj revsets cannot resolve. Route those comparisons through the git
+/// backend, which in colocated jj checkouts operates on the same `.git` store.
+fn open_compare_repository<'a>(
+    repo_path: &Path,
+    refs: impl IntoIterator<Item = &'a str>,
+) -> Result<Box<dyn VcsRepository>> {
+    if refs.into_iter().any(is_pr_ref) {
+        discovery::open_git_repository(repo_path)
+    } else {
+        discovery::open_repository(repo_path)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AppServices {
     settings_store: SettingsStore,
     review_store: ReviewStore,
     syntax_cache: Arc<Mutex<FileSyntaxCache>>,
     syntax_cache_ready: Arc<Condvar>,
+    syntax_cache_stats: Arc<FileSyntaxCacheStats>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Lock-free hit/miss counters for the file syntax cache, readable for
+/// debugging without taking the cache mutex.
+#[derive(Debug, Default)]
+pub struct FileSyntaxCacheStats {
+    hits: AtomicU64,
+    misses: AtomicU64,
+}
+
+impl FileSyntaxCacheStats {
+    pub fn hits(&self) -> u64 {
+        self.hits.load(Ordering::Relaxed)
+    }
+
+    pub fn misses(&self) -> u64 {
+        self.misses.load(Ordering::Relaxed)
+    }
+
+    fn record_hit(&self) {
+        self.hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_miss(&self) {
+        self.misses.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 struct FileSyntaxCacheKey {
     repo_path: String,
     reference: String,
     path: String,
     generation: u64,
     epoch: u64,
+    /// Quantized source-line window for large files; `None` means the entry
+    /// covers the whole file.
+    line_window: Option<(u32, u32)>,
 }
 
-#[derive(Debug, Default)]
+const LRU_NIL: usize = usize::MAX;
+
+/// LRU cache of highlighted file syntax. Recency is tracked with an intrusive
+/// doubly-linked list over slot indices, so lookups, inserts, and evictions
+/// are all O(1) instead of scanning every entry on insert.
+#[derive(Debug)]
 struct FileSyntaxCache {
-    entries: HashMap<FileSyntaxCacheKey, FileSyntaxCacheEntry>,
+    map: HashMap<FileSyntaxCacheKey, usize>,
+    slots: Vec<FileSyntaxCacheSlot>,
+    free_slots: Vec<usize>,
+    /// Most recently used slot index, or `LRU_NIL` when empty.
+    head: usize,
+    /// Least recently used slot index, or `LRU_NIL` when empty.
+    tail: usize,
     inflight: HashSet<FileSyntaxCacheKey>,
     bytes: usize,
-    tick: u64,
     epoch: u64,
 }
 
 #[derive(Debug)]
-struct FileSyntaxCacheEntry {
-    syntax: Arc<FullFileSyntax>,
+struct FileSyntaxCacheSlot {
+    key: FileSyntaxCacheKey,
+    syntax: Option<Arc<FullFileSyntax>>,
     bytes: usize,
-    last_used: u64,
+    prev: usize,
+    next: usize,
+}
+
+impl Default for FileSyntaxCache {
+    fn default() -> Self {
+        Self {
+            map: HashMap::new(),
+            slots: Vec::new(),
+            free_slots: Vec::new(),
+            head: LRU_NIL,
+            tail: LRU_NIL,
+            inflight: HashSet::new(),
+            bytes: 0,
+            epoch: 0,
+        }
+    }
+}
+
+/// Expands a requested source-line window to stable bucket boundaries so
+/// nearby viewport requests share one cached windowed entry.
+fn bucketed_line_window(lines: SourceLineWindow) -> (u32, u32) {
+    let bucket = SYNTAX_WINDOW_BUCKET_LINES.max(1);
+    let start = (lines.start / bucket).saturating_mul(bucket);
+    let end = lines
+        .end
+        .max(lines.start.saturating_add(1))
+        .div_ceil(bucket)
+        .saturating_mul(bucket);
+    (
+        carbon::usize_to_u32_saturating(start),
+        carbon::usize_to_u32_saturating(end),
+    )
 }
 
 impl FileSyntaxCache {
     fn get(&mut self, key: &FileSyntaxCacheKey) -> Option<Arc<FullFileSyntax>> {
-        let tick = self.next_tick();
-        let entry = self.entries.get_mut(key)?;
-        entry.last_used = tick;
-        Some(entry.syntax.clone())
+        let index = self.map.get(key).copied()?;
+        self.detach(index);
+        self.attach_front(index);
+        self.slots.get(index).and_then(|slot| slot.syntax.clone())
     }
 
     fn insert(&mut self, key: FileSyntaxCacheKey, syntax: Arc<FullFileSyntax>) {
@@ -85,43 +184,108 @@ impl FileSyntaxCache {
         const BYTE_BUDGET: usize = 48 * 1024 * 1024;
 
         let bytes = syntax.estimated_bytes().max(1);
-        let tick = self.next_tick();
-        if let Some(previous) = self.entries.insert(
-            key,
-            FileSyntaxCacheEntry {
-                syntax,
+        if let Some(index) = self.map.get(&key).copied() {
+            if let Some(slot) = self.slots.get_mut(index) {
+                let previous = std::mem::replace(&mut slot.bytes, bytes);
+                slot.syntax = Some(syntax);
+                self.bytes = self.bytes.saturating_sub(previous).saturating_add(bytes);
+            }
+            self.detach(index);
+            self.attach_front(index);
+        } else {
+            let slot = FileSyntaxCacheSlot {
+                key: key.clone(),
+                syntax: Some(syntax),
                 bytes,
-                last_used: tick,
-            },
-        ) {
-            self.bytes = self.bytes.saturating_sub(previous.bytes);
-        }
-        self.bytes = self.bytes.saturating_add(bytes);
-
-        while self.entries.len() > MAX_ENTRIES
-            || (self.entries.len() > 1 && self.bytes > BYTE_BUDGET)
-        {
-            let Some(victim) = self
-                .entries
-                .iter()
-                .min_by_key(|(_, entry)| entry.last_used)
-                .map(|(key, _)| key.clone())
-            else {
-                break;
+                prev: LRU_NIL,
+                next: LRU_NIL,
             };
-            if let Some(entry) = self.entries.remove(&victim) {
-                self.bytes = self.bytes.saturating_sub(entry.bytes);
+            let index = match self.free_slots.pop() {
+                Some(free) if free < self.slots.len() => {
+                    self.slots[free] = slot;
+                    free
+                }
+                _ => {
+                    self.slots.push(slot);
+                    self.slots.len().saturating_sub(1)
+                }
+            };
+            self.map.insert(key, index);
+            self.attach_front(index);
+            self.bytes = self.bytes.saturating_add(bytes);
+        }
+
+        while self.map.len() > MAX_ENTRIES || (self.map.len() > 1 && self.bytes > BYTE_BUDGET) {
+            if !self.evict_lru() {
+                break;
             }
         }
     }
 
-    fn next_tick(&mut self) -> u64 {
-        self.tick = self.tick.saturating_add(1);
-        self.tick
+    fn evict_lru(&mut self) -> bool {
+        let index = self.tail;
+        if index == LRU_NIL {
+            return false;
+        }
+        self.detach(index);
+        let Some(slot) = self.slots.get_mut(index) else {
+            return false;
+        };
+        let key = std::mem::take(&mut slot.key);
+        slot.syntax = None;
+        let freed = std::mem::take(&mut slot.bytes);
+        self.bytes = self.bytes.saturating_sub(freed);
+        self.map.remove(&key);
+        self.free_slots.push(index);
+        true
+    }
+
+    fn detach(&mut self, index: usize) {
+        let (prev, next) = match self.slots.get(index) {
+            Some(slot) => (slot.prev, slot.next),
+            None => return,
+        };
+        if prev == LRU_NIL {
+            if self.head == index {
+                self.head = next;
+            }
+        } else if let Some(prev_slot) = self.slots.get_mut(prev) {
+            prev_slot.next = next;
+        }
+        if next == LRU_NIL {
+            if self.tail == index {
+                self.tail = prev;
+            }
+        } else if let Some(next_slot) = self.slots.get_mut(next) {
+            next_slot.prev = prev;
+        }
+        if let Some(slot) = self.slots.get_mut(index) {
+            slot.prev = LRU_NIL;
+            slot.next = LRU_NIL;
+        }
+    }
+
+    fn attach_front(&mut self, index: usize) {
+        let old_head = self.head;
+        let Some(slot) = self.slots.get_mut(index) else {
+            return;
+        };
+        slot.prev = LRU_NIL;
+        slot.next = old_head;
+        if old_head == LRU_NIL {
+            self.tail = index;
+        } else if let Some(head_slot) = self.slots.get_mut(old_head) {
+            head_slot.prev = index;
+        }
+        self.head = index;
     }
 
     fn clear(&mut self) {
-        self.entries.clear();
+        self.map.clear();
+        self.slots.clear();
+        self.free_slots.clear();
+        self.head = LRU_NIL;
+        self.tail = LRU_NIL;
         self.inflight.clear();
         self.bytes = 0;
         self.epoch = self.epoch.saturating_add(1);
@@ -136,7 +300,12 @@ impl AppServices {
             review_store,
             syntax_cache: Arc::new(Mutex::new(FileSyntaxCache::default())),
             syntax_cache_ready: Arc::new(Condvar::new()),
+            syntax_cache_stats: Arc::new(FileSyntaxCacheStats::default()),
         }
+    }
+
+    pub fn file_syntax_cache_stats(&self) -> &FileSyntaxCacheStats {
+        &self.syntax_cache_stats
     }
 
     pub fn run_compare(
@@ -150,7 +319,7 @@ impl AppServices {
             r.phase(ComparePhase::OpeningRepo);
         }
         let stage_started = Instant::now();
-        let mut repo = discovery::open_repository(&request.repo_path)?;
+        let mut repo = open_compare_repository(&request.repo_path, request.request.spec.refs())?;
         tracing::info!(
             generation,
             elapsed_ms = stage_started.elapsed().as_millis(),
@@ -235,7 +404,7 @@ impl AppServices {
         generation: u64,
         request: CompareFileRequest,
     ) -> Result<CompareFileFinished> {
-        let mut repo = discovery::open_repository(&request.repo_path)?;
+        let mut repo = open_compare_repository(&request.repo_path, request.request.spec.refs())?;
         let mut output = repo.compare_path(
             &request.request,
             &request.path,
@@ -259,7 +428,7 @@ impl AppServices {
         generation: u64,
         request: CompareStatsRequest,
     ) -> Result<CompareStatsReady> {
-        let mut repo = discovery::open_repository(&request.repo_path)?;
+        let mut repo = open_compare_repository(&request.repo_path, request.request.spec.refs())?;
         let (additions, deletions) = repo.compare_stats(&request.request)?;
 
         Ok(CompareStatsReady {
@@ -274,7 +443,10 @@ impl AppServices {
         generation: u64,
         request: CompareHistoryRequest,
     ) -> Result<CompareHistoryReady> {
-        let mut repo = discovery::open_repository(&request.repo_path)?;
+        let mut repo = open_compare_repository(
+            &request.repo_path,
+            [request.left_ref.as_str(), request.right_ref.as_str()],
+        )?;
         let range_commits = repo.compare_history(&request.left_ref, &request.right_ref, 500)?;
 
         Ok(CompareHistoryReady {
@@ -288,7 +460,7 @@ impl AppServices {
         generation: u64,
         request: CompareFileStatsRequest,
     ) -> Result<CompareFileStatsReady> {
-        let mut repo = discovery::open_repository(&request.repo_path)?;
+        let mut repo = open_compare_repository(&request.repo_path, request.request.spec.refs())?;
         let files = request
             .files
             .iter()
@@ -324,11 +496,19 @@ impl AppServices {
         if !is_current() {
             return Vec::new();
         }
-        let Ok(mut repo) = discovery::open_repository(&request.repo_path) else {
+        let Ok(mut repo) = open_compare_repository(
+            &request.repo_path,
+            [request.left_ref.as_str(), request.right_ref.as_str()],
+        ) else {
             return Vec::new();
         };
 
         let annotator = crate::core::syntax::DiffSyntaxAnnotator::new();
+        let (old_lines, new_lines) = carbon_window_source_line_bounds(
+            &request.carbon_file,
+            &request.carbon_expansion,
+            request.window,
+        );
         let old_syntax = request
             .carbon_file
             .old_path
@@ -339,6 +519,7 @@ impl AppServices {
                     request,
                     &request.left_ref,
                     old_path,
+                    old_lines,
                     &annotator,
                     is_current,
                 )
@@ -356,6 +537,7 @@ impl AppServices {
                     request,
                     &request.right_ref,
                     new_path,
+                    new_lines,
                     &annotator,
                     is_current,
                 )
@@ -374,12 +556,14 @@ impl AppServices {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn cached_file_syntax<F>(
         &self,
         repo: &mut dyn crate::core::vcs::backend::VcsRepository,
         request: &LoadFileSyntaxRequest,
         reference: &str,
         source_path: &str,
+        lines: Option<SourceLineWindow>,
         annotator: &crate::core::syntax::DiffSyntaxAnnotator,
         is_current: &F,
     ) -> Option<Arc<FullFileSyntax>>
@@ -389,22 +573,38 @@ impl AppServices {
         if reference.is_empty() || !is_current() {
             return None;
         }
+        // No rows from this side fall inside the requested window, so no
+        // tokens are needed for it.
+        let lines = lines?;
+        let bucket = bucketed_line_window(lines);
         let mut cache = self.syntax_cache.lock().ok()?;
-        let key = FileSyntaxCacheKey {
+        let whole_key = FileSyntaxCacheKey {
             repo_path: request.repo_path.to_string_lossy().into_owned(),
             reference: reference.to_owned(),
             path: source_path.to_owned(),
             generation: request.cache_generation,
             epoch: cache.epoch,
+            line_window: None,
+        };
+        let window_key = FileSyntaxCacheKey {
+            line_window: Some(bucket),
+            ..whole_key.clone()
         };
         loop {
-            if cache.epoch != key.epoch {
+            if cache.epoch != whole_key.epoch {
                 return None;
             }
-            if let Some(cached) = cache.get(&key) {
+            // A whole-file entry covers every window, so prefer it.
+            if let Some(cached) = cache.get(&whole_key).or_else(|| cache.get(&window_key)) {
+                self.syntax_cache_stats.record_hit();
                 return Some(cached);
             }
-            if cache.inflight.insert(key.clone()) {
+            // Mark both keys in flight: until the file size is known we do
+            // not know whether the result will be whole-file or windowed, and
+            // this also serializes overlapping work on the same file.
+            if !cache.inflight.contains(&whole_key) && !cache.inflight.contains(&window_key) {
+                cache.inflight.insert(whole_key.clone());
+                cache.inflight.insert(window_key.clone());
                 break;
             }
             cache = self
@@ -412,16 +612,18 @@ impl AppServices {
                 .wait_timeout(cache, Duration::from_millis(25))
                 .ok()?
                 .0;
-            if cache.epoch != key.epoch || !is_current() {
+            if cache.epoch != whole_key.epoch || !is_current() {
                 return None;
             }
         }
-        if cache.epoch != key.epoch || !is_current() {
-            cache.inflight.remove(&key);
+        if cache.epoch != whole_key.epoch || !is_current() {
+            cache.inflight.remove(&whole_key);
+            cache.inflight.remove(&window_key);
             self.syntax_cache_ready.notify_all();
             return None;
         }
         drop(cache);
+        self.syntax_cache_stats.record_miss();
 
         let revision = RevisionId {
             backend: repo.location().kind,
@@ -430,29 +632,36 @@ impl AppServices {
         let text = match repo.read_file_text(&revision, source_path) {
             Ok(text) => text,
             Err(_) => {
-                if let Ok(mut cache) = self.syntax_cache.lock() {
-                    cache.inflight.remove(&key);
-                    self.syntax_cache_ready.notify_all();
-                }
+                self.release_syntax_inflight(&whole_key, &window_key);
                 return None;
             }
         };
         if !is_current() {
-            if let Ok(mut cache) = self.syntax_cache.lock() {
-                cache.inflight.remove(&key);
-                self.syntax_cache_ready.notify_all();
-            }
+            self.release_syntax_inflight(&whole_key, &window_key);
             return None;
         }
-        let syntax = Arc::new(annotator.highlight_full_text_store(source_path, &text));
+        let windowed =
+            carbon::u32_to_usize_saturating(text.len()) > SYNTAX_FULL_HIGHLIGHT_BYTE_LIMIT;
+        let (store_key, syntax) = if windowed {
+            let window = SourceLineWindow {
+                start: carbon::u32_to_usize_saturating(bucket.0),
+                end: carbon::u32_to_usize_saturating(bucket.1),
+            };
+            let syntax = annotator.highlight_window_text_store(source_path, &text, window);
+            (window_key.clone(), Arc::new(syntax))
+        } else {
+            let syntax = annotator.highlight_full_text_store(source_path, &text);
+            (whole_key.clone(), Arc::new(syntax))
+        };
         match self.syntax_cache.lock() {
             Ok(mut cache) => {
-                cache.inflight.remove(&key);
-                if cache.epoch != key.epoch || !is_current() {
+                cache.inflight.remove(&whole_key);
+                cache.inflight.remove(&window_key);
+                if cache.epoch != whole_key.epoch || !is_current() {
                     self.syntax_cache_ready.notify_all();
                     return None;
                 }
-                cache.insert(key, syntax.clone());
+                cache.insert(store_key, syntax.clone());
                 self.syntax_cache_ready.notify_all();
             }
             Err(_) => self.syntax_cache_ready.notify_all(),
@@ -460,11 +669,28 @@ impl AppServices {
         Some(syntax)
     }
 
+    fn release_syntax_inflight(
+        &self,
+        whole_key: &FileSyntaxCacheKey,
+        window_key: &FileSyntaxCacheKey,
+    ) {
+        if let Ok(mut cache) = self.syntax_cache.lock() {
+            cache.inflight.remove(whole_key);
+            cache.inflight.remove(window_key);
+        }
+        self.syntax_cache_ready.notify_all();
+    }
+
     pub fn clear_file_syntax_cache(&self) {
         if let Ok(mut cache) = self.syntax_cache.lock() {
             cache.clear();
             self.syntax_cache_ready.notify_all();
         }
+        tracing::debug!(
+            hits = self.syntax_cache_stats.hits(),
+            misses = self.syntax_cache_stats.misses(),
+            "syntax: file syntax cache cleared"
+        );
     }
 
     pub fn load_pull_request(
@@ -492,6 +718,9 @@ impl AppServices {
                 "this repository backend does not support GitHub pull request comparisons"
                     .to_owned(),
             ));
+        }
+        if repo.location().kind != VcsKind::GIT {
+            repo = discovery::open_git_repository(repo_path)?;
         }
         let stage_started = Instant::now();
         let (info, left_ref, right_ref) = repo.resolve_pull_request_comparison(url, &token)?;
@@ -523,6 +752,12 @@ impl AppServices {
         let mut repo = discovery::open_repository(repo_path)?;
         if !repo.capabilities().github_pull_requests {
             return Ok(None);
+        }
+        if repo.location().kind != VcsKind::GIT {
+            let Ok(git_repo) = discovery::open_git_repository(repo_path) else {
+                return Ok(None);
+            };
+            repo = git_repo;
         }
 
         for session in sessions.into_iter().rev() {
@@ -841,7 +1076,7 @@ impl AppServices {
                 .header("User-Agent", "diffy/0.1")
                 .send()
                 .await
-                .map_err(|error| DiffyError::Http(format!("avatar fetch failed: {error}")))?;
+                .map_err(|error| DiffyError::network(format!("avatar fetch failed: {error}")))?;
             http::response_bytes(response, "avatar fetch").await
         })?;
         let img = image::load_from_memory(&bytes)

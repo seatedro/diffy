@@ -6,6 +6,7 @@ use crate::ui::shell::CursorHint;
 use crate::ui::state::{PickerItem, PickerLabelStyle};
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme, ThemeColors};
+use crate::ui::virtual_list::virtual_list_total_extent;
 
 pub fn picker_list<T: PickerItem>(
     entries: &[T],
@@ -19,18 +20,9 @@ pub fn picker_list<T: PickerItem>(
     let row_h = theme.metrics.ui_row_height.round();
     let gap = (Sp::XS * scale).round();
     let icon_size = Ico::XS;
-    let stride = row_h + gap;
     let visible_count = entries.len().min(max_visible);
-    let list_h = if visible_count == 0 {
-        0.0
-    } else {
-        visible_count as f32 * stride - gap
-    };
-    let total_h = if entries.is_empty() {
-        0.0
-    } else {
-        entries.len() as f32 * stride - gap
-    };
+    let list_h = virtual_list_total_extent(visible_count, row_h, gap);
+    let total_h = virtual_list_total_extent(entries.len(), row_h, gap);
     let scroll = scroll_top_px.min((total_h - list_h).max(0.0));
 
     view! { scale,

@@ -27,13 +27,6 @@ use crate::ui::window_chrome;
 
 pub use halogen::CursorHint;
 
-/// Unscaled height reserved for the open review-comment composer block.
-const COMPOSER_H_BASE: f32 = 248.0;
-
-/// Unscaled height of the editor/preview body region inside the inline reply
-/// composer. Fixed (not flex) so the card's measured height is determinate.
-const INLINE_REPLY_BODY_H: f32 = 112.0;
-
 #[derive(Debug, Clone, Default)]
 pub struct UiFrame {
     pub scene: Scene,
@@ -147,13 +140,15 @@ pub fn build_ui_frame(
         - Sp::LG * ui_scale)
         .max(0.0);
     state
+        .ui
         .keymaps_viewport_height_px
         .set(&state.store, keymaps_viewport_h);
     state
+        .ui
         .keymaps_content_height_px
         .set(&state.store, settings_page::keymaps_content_height(theme));
     state.clamp_keymaps_scroll();
-    let sidebar_width_factor = if state.sidebar_visible.get(&state.store) {
+    let sidebar_width_factor = if state.ui.sidebar_visible.get(&state.store) {
         1.0
     } else {
         0.0
@@ -161,14 +156,14 @@ pub fn build_ui_frame(
     let sidebar_width =
         sidebar_mod::preferred_sidebar_width(state, theme, cx, width) * sidebar_width_factor;
 
-    let in_settings = state.app_view.get(&state.store) == AppView::Settings;
+    let in_settings = state.ui.app_view.get(&state.store) == AppView::Settings;
 
     // Once the reveal delay has elapsed we want the skeleton to take the
     // sidebar slot even if `workspace_mode` is still Ready — a re-compare
     // keeps the old file list around as scaffolding during the grace
     // window, but after the grace window we're committed to showing the
     // loading view, so blow the old sidebar away.
-    let progress_visible = state.compare_progress.with(&state.store, |p| {
+    let progress_visible = state.workspace.compare_progress.with(&state.store, |p| {
         p.as_ref().is_some_and(|p| state.clock_ms >= p.reveal_at_ms)
     });
     let text_compare_source =
@@ -247,7 +242,7 @@ pub fn build_ui_frame(
         root = root.child(edges);
     }
 
-    let toast_stack = state.toasts.with(&state.store, |toasts| {
+    let toast_stack = state.ui.toasts.with(&state.store, |toasts| {
         if toasts.is_empty() {
             None
         } else {
@@ -435,7 +430,7 @@ pub fn build_ui_frame(
                     editor.blocks_mut(),
                     doc,
                     &review_card_heights,
-                    (COMPOSER_H_BASE * ui_scale).round() as u16,
+                    (Sz::COMPOSER_H * ui_scale).round() as u16,
                 );
                 editor.set_hunk_expand_caps(Vec::new());
             } else if let Some(active_file) = active_file_snapshot.as_ref() {
@@ -497,7 +492,7 @@ pub fn build_ui_frame(
                         &active_file.render_doc,
                         rside,
                         line,
-                        (COMPOSER_H_BASE * ui_scale).round() as u16,
+                        (Sz::COMPOSER_H * ui_scale).round() as u16,
                     );
                 }
                 editor.set_hunk_expand_caps(caps);
@@ -604,6 +599,10 @@ pub fn build_ui_frame(
                 }
             };
             // Write back every field prepare may have mutated.
+            state
+                .editor
+                .doc_generation
+                .set_if_changed(&state.store, editor_snap.doc_generation);
             state
                 .editor
                 .viewport_width_px
@@ -1315,8 +1314,8 @@ fn build_review_add_button(theme: &Theme, ui_scale: f32, rect: Rect, strong: boo
 /// from `state.review_comment_editor`). Caller sizes it (`.flex_1()`) and converts.
 fn composer_text_editor(state: &AppState, theme: &Theme) -> TextEditorElement {
     let tc = &theme.colors;
-    let focused =
-        state.focus.get(&state.store) == Some(crate::ui::state::FocusTarget::ReviewCommentEditor);
+    let focused = state.ui.focus.get(&state.store)
+        == Some(crate::ui::state::FocusTarget::ReviewCommentEditor);
     text_editor_element()
         .placeholder("Leave a review comment")
         .editor_snapshot(&state.review_comment_editor)
@@ -1422,8 +1421,8 @@ fn composer_editor_box(
     body_height: Option<f32>,
 ) -> AnyElement {
     let tc = &theme.colors;
-    let focused =
-        state.focus.get(&state.store) == Some(crate::ui::state::FocusTarget::ReviewCommentEditor);
+    let focused = state.ui.focus.get(&state.store)
+        == Some(crate::ui::state::FocusTarget::ReviewCommentEditor);
     let group_border = if focused {
         tc.accent
     } else {
@@ -1518,7 +1517,7 @@ pub(crate) fn build_inline_reply_composer(
         .active_file
         .get(&state.store)
         .map(|file| file.path);
-    let body_h = (INLINE_REPLY_BODY_H * ui_scale).round();
+    let body_h = (Sz::INLINE_REPLY_BODY_H * ui_scale).round();
     view! { ui_scale,
         <div class="flex-col w-full" gap={Sp::XS}>
             {composer_editor_box(state, theme, ui_scale, width, preview, preview_path.as_deref(), Some(body_h))}

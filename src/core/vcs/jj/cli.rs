@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-use crate::core::error::{DiffyError, Result};
+use crate::core::error::{DiffyError, Result, VcsBackendKind};
 
 #[derive(Debug, Clone)]
 pub struct JjCli {
@@ -42,7 +42,7 @@ impl JjCli {
     fn run_inner(&self, args: &[OsString], ignore_working_copy: bool) -> Result<String> {
         let stdout = self.run_inner_bytes(args, ignore_working_copy)?;
         String::from_utf8(stdout)
-            .map_err(|error| DiffyError::General(format!("jj emitted non-UTF8 output: {error}")))
+            .map_err(|error| DiffyError::Parse(format!("jj emitted non-UTF8 output: {error}")))
     }
 
     fn run_inner_bytes(&self, args: &[OsString], ignore_working_copy: bool) -> Result<Vec<u8>> {
@@ -60,9 +60,13 @@ impl JjCli {
         }
         command.args(args);
 
-        let output = command
-            .output()
-            .map_err(|error| DiffyError::General(format!("failed to run jj: {error}")))?;
+        let output = command.output().map_err(|error| {
+            DiffyError::vcs_fatal(
+                VcsBackendKind::Jj,
+                command_label(args),
+                format!("failed to run jj: {error}"),
+            )
+        })?;
         let command_label = command_label(args);
         let elapsed = started.elapsed();
         if output.status.success() {
@@ -85,10 +89,7 @@ impl JjCli {
             .or_else(|| stdout.trim().lines().last())
             .map(str::to_owned)
             .unwrap_or_else(|| format!("jj exited with {}", output.status));
-        Err(DiffyError::General(format!(
-            "jj {} failed: {detail}",
-            command_label
-        )))
+        Err(DiffyError::vcs(VcsBackendKind::Jj, command_label, detail))
     }
 }
 

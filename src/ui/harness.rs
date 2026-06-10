@@ -404,6 +404,7 @@ pub fn render_review_composer(width: f32, scale: f32, preview: bool) -> Rendered
         },
     );
     state
+        .ui
         .focus
         .set(&state.store, Some(FocusTarget::ReviewCommentEditor));
 
@@ -1261,7 +1262,7 @@ mod tests {
         // The card mousedown emitted FocusViewport (applied by the harness), so
         // input owner resolves to Editor and Cmd+C takes the card-copy branch.
         assert_eq!(
-            harness.state.focus.get(&harness.state.store),
+            harness.state.ui.focus.get(&harness.state.store),
             Some(FocusTarget::Editor),
             "card mousedown must focus the viewport/editor"
         );
@@ -1326,6 +1327,7 @@ mod tests {
             },
         );
         state
+            .ui
             .focus
             .set(&state.store, Some(FocusTarget::ReviewCommentEditor));
         let small = theme.metrics.ui_small_font_size;

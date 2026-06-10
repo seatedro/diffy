@@ -75,6 +75,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         app.hot_reload_pending = Some(hot_reload_pending);
     }
     event_loop.run_app(&mut app)?;
+    if let Some(message) = app.startup_failure.take() {
+        return Err(message.into());
+    }
     Ok(())
 }
 
@@ -98,6 +101,7 @@ struct NativeApp {
     next_update_check_at: Option<Instant>,
     needs_redraw: bool,
     exit_requested: bool,
+    startup_failure: Option<String>,
     has_seen_focus: bool,
     skip_next_focus_regain_rescan: bool,
     rescan_on_next_focus: bool,
@@ -147,6 +151,7 @@ impl NativeApp {
                 .then(|| Instant::now() + UPDATE_POLL_INTERVAL),
             needs_redraw: true,
             exit_requested: false,
+            startup_failure: None,
             has_seen_focus: false,
             skip_next_focus_regain_rescan: true,
             rescan_on_next_focus: false,
@@ -160,6 +165,20 @@ impl NativeApp {
 
     fn mark_dirty(&mut self) {
         self.needs_redraw = true;
+    }
+
+    /// Window or renderer setup failed before anything can be drawn, so there
+    /// is no in-app surface for the error. Show a native message box, then
+    /// exit the loop; `run()` turns the stored failure into a non-zero exit.
+    fn fail_startup(&mut self, event_loop: &ActiveEventLoop, message: String) {
+        tracing::error!("startup failed: {message}");
+        rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title("Diffy failed to start")
+            .set_description(message.as_str())
+            .show();
+        self.startup_failure = Some(message);
+        event_loop.exit();
     }
 
     fn paint_tooltip(&mut self) {
@@ -617,7 +636,7 @@ impl NativeApp {
         let update = self
             .ui_frame
             .accessibility
-            .tree_update(self.state.focus.get(&self.state.store));
+            .tree_update(self.state.ui.focus.get(&self.state.store));
         if let Ok(mut latest) = self.accessibility_latest_tree.lock() {
             *latest = update.clone();
         }
@@ -784,7 +803,7 @@ impl NativeApp {
             &store,
         )
         .with_text_measure_cache(&mut self.text_measure_cache)
-        .with_focus(store.read(self.state.focus))
+        .with_focus(store.read(self.state.ui.focus))
         .with_clock(self.state.clock_ms);
         cx.debug_wireframe = std::env::var("DIFFY_DEBUG_WIREFRAME").is_ok();
 
@@ -998,8 +1017,10 @@ impl ApplicationHandler for NativeApp {
                         self.window = Some(window);
                     }
                     Err(error) => {
-                        eprintln!("failed to create renderer: {error}");
-                        event_loop.exit();
+                        self.fail_startup(
+                            event_loop,
+                            format!("Could not initialize the GPU renderer: {error}"),
+                        );
                         return;
                     }
                 }
@@ -1009,8 +1030,10 @@ impl ApplicationHandler for NativeApp {
                 self.position_traffic_lights();
             }
             Err(error) => {
-                eprintln!("failed to create native window: {error}");
-                event_loop.exit();
+                self.fail_startup(
+                    event_loop,
+                    format!("Could not create the native window: {error}"),
+                );
             }
         }
     }
@@ -1141,6 +1164,7 @@ impl ApplicationHandler for NativeApp {
                         Err(error) => {
                             eprintln!("render failed: {error}");
                             self.state
+                                .ui
                                 .last_error
                                 .set(&self.state.store, Some(error.to_string()));
                         }
@@ -1220,6 +1244,7 @@ impl ApplicationHandler for NativeApp {
                 .map(|ms| self.launch_at + std::time::Duration::from_millis(ms));
             let next_compare_progress_reveal =
                 self.state
+                    .workspace
                     .compare_progress
                     .with(&self.state.store, |progress| {
                         progress.as_ref().and_then(|progress| {
@@ -1427,7 +1452,7 @@ mod tests {
     #[test]
     fn file_list_scroll_region_wins_over_viewport_fallback() {
         let state = AppState::default();
-        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+        state.workspace.mode.set(&state.store, WorkspaceMode::Ready);
         state.workspace.files.set(
             &state.store,
             (0..32)
@@ -1478,7 +1503,7 @@ mod tests {
     #[test]
     fn file_list_wheel_scroll_moves_sidebar_contents() {
         let state = AppState::default();
-        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+        state.workspace.mode.set(&state.store, WorkspaceMode::Ready);
         state.workspace.files.set(
             &state.store,
             (0..32)
@@ -1527,7 +1552,7 @@ mod tests {
     #[test]
     fn overlay_blocks_viewport_scroll_fallback() {
         let state = AppState::default();
-        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+        state.workspace.mode.set(&state.store, WorkspaceMode::Ready);
         state.workspace.files.set(
             &state.store,
             vec![FileListEntry {
@@ -1633,7 +1658,7 @@ mod tests {
     #[test]
     fn clicking_file_row_selects_exact_file() {
         let state = AppState::default();
-        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+        state.workspace.mode.set(&state.store, WorkspaceMode::Ready);
         state
             .workspace
             .source
@@ -1696,7 +1721,7 @@ mod tests {
             Some("src/ui/state/text_edit.rs".to_owned())
         );
         assert_eq!(
-            app.state.focus.get(&app.state.store),
+            app.state.ui.focus.get(&app.state.store),
             Some(FocusTarget::FileList)
         );
     }
@@ -1705,7 +1730,7 @@ mod tests {
     fn clicking_continuous_file_header_selects_exact_file() {
         let mut state = AppState::default();
         state.settings.continuous_scroll = true;
-        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+        state.workspace.mode.set(&state.store, WorkspaceMode::Ready);
         state
             .workspace
             .source
@@ -1760,7 +1785,7 @@ mod tests {
             Some("src/ui/state/text_edit.rs".to_owned())
         );
         assert_eq!(
-            app.state.focus.get(&app.state.store),
+            app.state.ui.focus.get(&app.state.store),
             Some(FocusTarget::Editor)
         );
 
@@ -1784,7 +1809,7 @@ mod tests {
 
         assert!(!app.state.editor.search.open.get(&app.state.store));
         assert_eq!(
-            app.state.focus.get(&app.state.store),
+            app.state.ui.focus.get(&app.state.store),
             Some(FocusTarget::Editor)
         );
     }
@@ -1794,9 +1819,12 @@ mod tests {
         let mut app = test_app(AppState::default());
 
         dispatch_input_event(&mut app, keypress("?", ModifiersState::empty()));
-        assert_eq!(app.state.app_view.get(&app.state.store), AppView::Settings);
         assert_eq!(
-            app.state.settings_section.get(&app.state.store),
+            app.state.ui.app_view.get(&app.state.store),
+            AppView::Settings
+        );
+        assert_eq!(
+            app.state.ui.settings_section.get(&app.state.store),
             SettingsSection::Keymaps
         );
     }
@@ -1825,7 +1853,7 @@ mod tests {
     fn sidebar_tab_keys_switch_files_and_commits() {
         let repo_dir = TempDir::new().unwrap();
         let state = AppState::default();
-        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+        state.workspace.mode.set(&state.store, WorkspaceMode::Ready);
         state
             .workspace
             .source
@@ -2021,8 +2049,8 @@ mod tests {
     #[test]
     fn row_cursor_keys_move_visible_editor_cursor() {
         let state = AppState::default();
-        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
-        state.focus.set(&state.store, Some(FocusTarget::Editor));
+        state.workspace.mode.set(&state.store, WorkspaceMode::Ready);
+        state.ui.focus.set(&state.store, Some(FocusTarget::Editor));
         state.editor.visible_row_start.set(&state.store, Some(4));
         state.editor.visible_row_end.set(&state.store, Some(8));
         let mut app = test_app(state);
@@ -2040,12 +2068,12 @@ mod tests {
     #[test]
     fn line_selection_keys_dispatch_current_line_actions() {
         let state = AppState::default();
-        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
+        state.workspace.mode.set(&state.store, WorkspaceMode::Ready);
         state
             .workspace
             .source
             .set(&state.store, crate::ui::state::WorkspaceSource::Status);
-        state.focus.set(&state.store, Some(FocusTarget::Editor));
+        state.ui.focus.set(&state.store, Some(FocusTarget::Editor));
         let mut app = test_app(state);
 
         let toggle = route_input_event(&mut app, keypress("v", ModifiersState::empty()));
@@ -2065,6 +2093,7 @@ mod tests {
     fn review_comment_editor_keyboard_submit_and_cancel() {
         let state = AppState::default();
         state
+            .ui
             .focus
             .set(&state.store, Some(FocusTarget::ReviewCommentEditor));
         let mut app = test_app(state);
@@ -2091,18 +2120,18 @@ mod tests {
     #[test]
     fn settings_number_and_navigation_keys_switch_sections() {
         let state = AppState::default();
-        state.app_view.set(&state.store, AppView::Settings);
+        state.ui.app_view.set(&state.store, AppView::Settings);
         let mut app = test_app(state);
 
         dispatch_input_event(&mut app, keypress("3", ModifiersState::empty()));
         assert_eq!(
-            app.state.settings_section.get(&app.state.store),
+            app.state.ui.settings_section.get(&app.state.store),
             SettingsSection::Behavior
         );
 
         dispatch_input_event(&mut app, keypress("j", ModifiersState::empty()));
         assert_eq!(
-            app.state.settings_section.get(&app.state.store),
+            app.state.ui.settings_section.get(&app.state.store),
             SettingsSection::Keymaps
         );
 
@@ -2111,7 +2140,7 @@ mod tests {
             named_keypress(NamedKey::ArrowUp, ModifiersState::empty()),
         );
         assert_eq!(
-            app.state.settings_section.get(&app.state.store),
+            app.state.ui.settings_section.get(&app.state.store),
             SettingsSection::Behavior
         );
     }
@@ -2119,7 +2148,7 @@ mod tests {
     #[test]
     fn settings_control_keys_dispatch_existing_actions() {
         let state = AppState::default();
-        state.app_view.set(&state.store, AppView::Settings);
+        state.ui.app_view.set(&state.store, AppView::Settings);
         let mut app = test_app(state);
 
         dispatch_input_event(&mut app, keypress("w", ModifiersState::empty()));
@@ -2138,11 +2167,12 @@ mod tests {
     #[test]
     fn keymap_rebind_overrides_default_shortcut() {
         let state = AppState::default();
-        state.app_view.set(&state.store, AppView::Settings);
+        state.ui.app_view.set(&state.store, AppView::Settings);
         state
+            .ui
             .settings_section
             .set(&state.store, SettingsSection::Keymaps);
-        state.keymap_capture.set(
+        state.ui.keymap_capture.set(
             &state.store,
             Some(crate::input::ShortcutCommand::ToggleWrap),
         );
@@ -2161,19 +2191,22 @@ mod tests {
     #[test]
     fn vim_focus_keys_switch_file_list_and_editor_focus() {
         let state = AppState::default();
-        state.workspace_mode.set(&state.store, WorkspaceMode::Ready);
-        state.focus.set(&state.store, Some(FocusTarget::FileList));
+        state.workspace.mode.set(&state.store, WorkspaceMode::Ready);
+        state
+            .ui
+            .focus
+            .set(&state.store, Some(FocusTarget::FileList));
         let mut app = test_app(state);
 
         dispatch_input_event(&mut app, keypress("l", ModifiersState::empty()));
         assert_eq!(
-            app.state.focus.get(&app.state.store),
+            app.state.ui.focus.get(&app.state.store),
             Some(FocusTarget::Editor)
         );
 
         dispatch_input_event(&mut app, keypress("h", ModifiersState::empty()));
         assert_eq!(
-            app.state.focus.get(&app.state.store),
+            app.state.ui.focus.get(&app.state.store),
             Some(FocusTarget::FileList)
         );
     }

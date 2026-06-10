@@ -610,6 +610,7 @@ impl InputSystem {
             actions.push(OverlayAction::HoverOverlayEntry(hovered_overlay_entry).into());
         }
         let current_hovered_toast = state
+            .ui
             .toasts
             .with(&state.store, |toasts| toasts.iter().position(|t| t.hovered));
         if hovered_toast != current_hovered_toast {

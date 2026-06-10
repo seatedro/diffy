@@ -20,7 +20,7 @@ pub fn start_device_flow(client_id: &str) -> Result<DeviceFlowState> {
             .form(&[("client_id", client_id), ("scope", "repo")])
             .send()
             .await
-            .map_err(|error| DiffyError::Http(format!("GitHub device flow failed: {error}")))?;
+            .map_err(|error| DiffyError::network(format!("GitHub device flow failed: {error}")))?;
         http::response_text(response, "GitHub device flow").await
     })?;
 
@@ -62,19 +62,19 @@ pub fn poll_for_token(client_id: &str, device_code: &str) -> Result<Option<Strin
             ])
             .send()
             .await
-            .map_err(|error| DiffyError::Http(format!("GitHub token poll failed: {error}")))?;
+            .map_err(|error| DiffyError::network(format!("GitHub token poll failed: {error}")))?;
         http::response_text(response, "GitHub token poll").await
     })?;
 
     match form_value(&body, "error") {
         Some("authorization_pending") | Some("slow_down") => Ok(None),
-        Some("expired_token") => Err(DiffyError::Http("device code expired".to_owned())),
+        Some("expired_token") => Err(DiffyError::auth("device code expired")),
         Some(other) => {
             let description = form_value(&body, "error_description")
                 .map(decode_form_value)
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| other.to_owned());
-            Err(DiffyError::Http(description))
+            Err(DiffyError::auth(description))
         }
         None => {
             let token = form_value(&body, "access_token").unwrap_or_default();

@@ -51,6 +51,10 @@ pub struct RepositorySnapshot {
     pub changes: Vec<VcsChange>,
     pub operation_log: Vec<VcsOperationLogEntry>,
     pub file_changes: Vec<FileChange>,
+    /// The publish plan computed against this exact snapshot, so plan and
+    /// refs update atomically. `None` when the backend has nothing
+    /// publishable (no remotes, nothing described).
+    pub publish_plan: Option<PublishPlan>,
 }
 
 impl RepositorySnapshot {
@@ -66,6 +70,7 @@ impl RepositorySnapshot {
             changes: snapshot.changes,
             operation_log: snapshot.operation_log,
             file_changes: snapshot.file_changes,
+            publish_plan: None,
         }
     }
 }
@@ -240,6 +245,9 @@ pub enum RepositoryEvent {
         branch: String,
         message: String,
     },
+    /// The VCS worker thread is gone, so dispatched repository commands are
+    /// being dropped. Surfaced so the user knows repo operations stopped.
+    WorkerStopped,
 }
 
 #[derive(Debug, Clone)]

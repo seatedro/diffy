@@ -1,0 +1,54 @@
+name: Fuzz
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "crates/carbon/**"
+      - "fuzz/**"
+      - ".github/workflows/fuzz.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz-smoke:
+    name: Carbon fuzz smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # cargo-fuzz needs nightly for -Z sanitizer flags; rust-toolchain.toml
+      # already pins nightly, so rustup resolves it from the checkout.
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Build fuzz targets
+        run: cargo fuzz build
+
+      - name: Run each fuzz target briefly
+        run: |
+          for target in $(cargo fuzz list); do
+            echo "::group::fuzz $target"
+            cargo fuzz run "$target" -- -max_total_time=60 -rss_limit_mb=4096
+            echo "::endgroup::"
+          done
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore

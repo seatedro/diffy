@@ -415,6 +415,9 @@ pub enum PublishActionKind {
         bookmark: String,
         revision: String,
         allow_backwards: bool,
+        /// When the bookmark only exists on this remote, track it first so a
+        /// local bookmark exists to move (jj's analog of a checked-out branch).
+        track_remote: Option<String>,
     },
     CreateBookmarkAndPush {
         remote: String,
@@ -444,6 +447,18 @@ pub enum VcsCompareSpec {
     Change { revision: String },
     Range { from: String, to: String },
     MergeBaseRange { base: String, head: String },
+}
+
+impl VcsCompareSpec {
+    pub fn refs(&self) -> impl Iterator<Item = &str> {
+        let (left, right) = match self {
+            Self::WorkingCopy => (None, None),
+            Self::Change { revision } => (Some(revision.as_str()), None),
+            Self::Range { from, to } => (Some(from.as_str()), Some(to.as_str())),
+            Self::MergeBaseRange { base, head } => (Some(base.as_str()), Some(head.as_str())),
+        };
+        left.into_iter().chain(right)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

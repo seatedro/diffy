@@ -67,12 +67,20 @@ pub enum RenderError {
     PngWrite(String),
 }
 
+/// GPU-resident images keyed by content hash (icons, avatars).
+type ImageCache = HashMap<u64, (wgpu::Texture, wgpu::TextureView, wgpu::BindGroup)>;
+
 // ---------------------------------------------------------------------------
 // TexturePool — reusable offscreen render targets
 // ---------------------------------------------------------------------------
 
 struct PooledTexture {
     view: wgpu::TextureView,
+    /// Lazily created bind group for sampling this texture. The view is
+    /// immutable for the entry's lifetime and the layout/sampler never change,
+    /// so the bind group is created once and reused across frames. It is
+    /// dropped together with the entry when `trim_unused` evicts it.
+    bind_group: Option<wgpu::BindGroup>,
     width: u32,
     height: u32,
     in_use: bool,
@@ -206,6 +214,7 @@ impl TexturePool {
         let _ = texture;
         self.textures.push(PooledTexture {
             view,
+            bind_group: None,
             width: w,
             height: h,
             in_use: true,
@@ -220,6 +229,24 @@ impl TexturePool {
 
     fn view(&self, target: &OffscreenTarget) -> &wgpu::TextureView {
         &self.textures[target.pool_index].view
+    }
+
+    /// Get the cached bind group for sampling `target`, creating it on first
+    /// use. Returns an owned handle (`wgpu::BindGroup` is internally
+    /// refcounted) so multiple targets can be bound in the same pass.
+    fn bind_group(
+        &mut self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        target: &OffscreenTarget,
+    ) -> wgpu::BindGroup {
+        let entry = &mut self.textures[target.pool_index];
+        let view = &entry.view;
+        entry
+            .bind_group
+            .get_or_insert_with(|| create_texture_bind_group(device, layout, view, sampler))
+            .clone()
     }
 
     fn release(&mut self, target: OffscreenTarget) {
@@ -254,7 +281,7 @@ pub struct Renderer {
     sampler: wgpu::Sampler,
     texture_pool: TexturePool,
     instance_buffer_pool: TransientBufferPool,
-    image_cache: HashMap<u64, (wgpu::Texture, wgpu::TextureView, wgpu::BindGroup)>,
+    image_cache: ImageCache,
     viewport_buffer: wgpu::Buffer,
     viewport_bind_group: wgpu::BindGroup,
     font_system: FontSystem,
@@ -858,7 +885,7 @@ impl Renderer {
             },
         );
 
-        let flattened = flatten_scene(scene, viewport_rect);
+        let flattened = flatten_scene(scene, viewport_rect, &self.image_cache);
 
         // Owned target texture (COPY_SRC so we can read it back). Format matches
         // the surface format the pipelines were built against.
@@ -1142,7 +1169,7 @@ impl Renderer {
             bytemuck::bytes_of(&viewport_uniform),
         );
 
-        let flattened = flatten_scene(scene, viewport_rect);
+        let flattened = flatten_scene(scene, viewport_rect, &self.image_cache);
 
         let surface = self
             .surface
@@ -1448,23 +1475,25 @@ impl Renderer {
             let h_target = self.texture_pool.acquire(&self.device, sw, sh);
             let v_target = self.texture_pool.acquire(&self.device, sw, sh);
 
-            let scene_bind = create_texture_bind_group(
+            // Bind groups are cached per pooled texture: layout and sampler
+            // never change, so a steady-state blur frame creates none.
+            let scene_bind = self.texture_pool.bind_group(
                 &self.device,
                 &self.texture_bind_group_layout,
-                self.texture_pool.view(&scene_target),
                 &self.sampler,
+                &scene_target,
             );
-            let h_bind = create_texture_bind_group(
+            let h_bind = self.texture_pool.bind_group(
                 &self.device,
                 &self.texture_bind_group_layout,
-                self.texture_pool.view(&h_target),
                 &self.sampler,
+                &h_target,
             );
-            let v_bind = create_texture_bind_group(
+            let v_bind = self.texture_pool.bind_group(
                 &self.device,
                 &self.texture_bind_group_layout,
-                self.texture_pool.view(&v_target),
                 &self.sampler,
+                &v_target,
             );
 
             let sigma = (blur.blur_radius * 0.5).max(0.5);
@@ -1739,7 +1768,7 @@ fn draw_layers<'pass>(
                     continue;
                 };
                 pass.set_scissor_rect(sx, sy, sw, sh);
-                pass.draw(0..4, command.instance_range.clone());
+                pass.draw(0..4, command.instance_range());
             }
         }
 
@@ -1753,7 +1782,7 @@ fn draw_layers<'pass>(
                     continue;
                 };
                 pass.set_scissor_rect(sx, sy, sw, sh);
-                pass.draw(0..4, command.instance_range.clone());
+                pass.draw(0..4, command.instance_range());
             }
         }
 
@@ -1767,7 +1796,7 @@ fn draw_layers<'pass>(
                     continue;
                 };
                 pass.set_scissor_rect(sx, sy, sw, sh);
-                pass.draw(0..4, command.instance_range.clone());
+                pass.draw(0..4, command.instance_range());
             }
         }
     }
@@ -1781,15 +1810,15 @@ fn draw_images<'pass>(
     queue: &wgpu::Queue,
     blit_pipeline: &'pass wgpu::RenderPipeline,
     viewport_bind_group: &'pass wgpu::BindGroup,
-    image_cache: &'pass HashMap<u64, (wgpu::Texture, wgpu::TextureView, wgpu::BindGroup)>,
+    image_cache: &'pass ImageCache,
     viewport_w: u32,
     viewport_h: u32,
 ) {
     for img in images {
-        if img.primitive.rgba.is_empty() || img.primitive.width == 0 || img.primitive.height == 0 {
-            continue;
-        }
-
+        // The cache lookup is the gate: icons resolved from a prior frame
+        // carry an empty `rgba` (rasterization skipped) but still draw via
+        // their uploaded texture. Images that were never uploadable simply
+        // miss the cache.
         let bind_group = match image_cache.get(&img.primitive.cache_key) {
             Some((_, _, bg)) => bg,
             None => continue,
@@ -2223,9 +2252,17 @@ pub(super) struct ClippedRichText {
     pub(super) clip: Rect,
 }
 
+#[derive(Clone, Copy)]
 struct QuadDrawCommand {
-    instance_range: std::ops::Range<u32>,
+    instance_start: u32,
+    instance_end: u32,
     clip: Rect,
+}
+
+impl QuadDrawCommand {
+    fn instance_range(&self) -> std::ops::Range<u32> {
+        self.instance_start..self.instance_end
+    }
 }
 
 #[derive(Debug)]
@@ -2303,7 +2340,7 @@ impl ActiveClip {
     }
 }
 
-fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
+fn flatten_scene(scene: &Scene, viewport: Rect, image_cache: &ImageCache) -> FlattenedScene {
     use std::collections::BTreeMap;
 
     let mut clips = vec![ActiveClip::root(viewport)];
@@ -2515,8 +2552,14 @@ fn flatten_scene(scene: &Scene, viewport: Rect) -> FlattenedScene {
                         let px_size = icon.rect.width.max(icon.rect.height).ceil() as u32;
                         let cache_key =
                             crate::ui::icons::cache_key(&icon.name, px_size, icon.color);
-                        let (rgba, w, h) =
-                            crate::ui::icons::rasterize_svg(&icon.name, px_size, icon.color);
+                        // Only rasterize (and copy RGBA out of the icon cache)
+                        // when the texture is not on the GPU yet; once
+                        // uploaded, the cache key alone is enough to draw.
+                        let (rgba, w, h) = if image_cache.contains_key(&cache_key) {
+                            (Vec::new(), 0, 0)
+                        } else {
+                            crate::ui::icons::rasterize_svg(&icon.name, px_size, icon.color)
+                        };
                         let zl = current_z!();
                         zl.images.push(ClippedImage {
                             primitive: crate::render::scene::ImagePrimitive {
@@ -2617,7 +2660,8 @@ fn build_quad_instances(quads: &[ClippedQuad]) -> (Vec<QuadInstance>, Vec<QuadDr
         }
 
         commands.push(QuadDrawCommand {
-            instance_range: start..i as u32,
+            instance_start: start,
+            instance_end: i as u32,
             clip,
         });
     }
@@ -2644,7 +2688,8 @@ fn build_shadow_instances(
         }
 
         commands.push(QuadDrawCommand {
-            instance_range: start..i as u32,
+            instance_start: start,
+            instance_end: i as u32,
             clip,
         });
     }
@@ -2671,7 +2716,8 @@ fn build_effect_quad_instances(
         }
 
         commands.push(QuadDrawCommand {
-            instance_range: start..i as u32,
+            instance_start: start,
+            instance_end: i as u32,
             clip,
         });
     }
@@ -2755,7 +2801,7 @@ mod tests {
         }));
         scene.push(Primitive::ClipEnd);
 
-        let flat = flatten_scene(&scene, viewport);
+        let flat = flatten_scene(&scene, viewport, &ImageCache::new());
         let quads: Vec<&QuadInstance> = flat
             .z_layers
             .iter()

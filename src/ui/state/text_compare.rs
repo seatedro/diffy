@@ -57,8 +57,8 @@ impl AppState {
             .source
             .set(&self.store, WorkspaceSource::TextCompare);
         self.workspace.status.set(&self.store, AsyncStatus::Ready);
-        self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
-        self.compare_progress.set(&self.store, None);
+        self.workspace.mode.set(&self.store, WorkspaceMode::Ready);
+        self.workspace.compare_progress.set(&self.store, None);
         self.github.pull_request.active.set(&self.store, None);
         self.github
             .pull_request
@@ -102,16 +102,26 @@ impl AppState {
                 .source
                 .set(&self.store, WorkspaceSource::TextCompare);
         }
-        let generation = self.text_compare.generation.saturating_add(1);
+        // Text and repo compares share one workspace-wide generation space:
+        // `CompareScheduler`'s epoch is a monotonic high-water mark, so seed
+        // the bump from whichever counter is ahead. Deriving it from
+        // `text_compare.generation` alone would rewind
+        // `workspace.compare_generation` below the scheduler epoch and every
+        // later repo file/stats job would be silently dropped as stale.
+        let generation = self
+            .text_compare
+            .generation
+            .max(self.workspace.compare_generation.get(&self.store))
+            .saturating_add(1);
         self.text_compare.generation = generation;
         self.text_compare.status = AsyncStatus::Loading;
         self.workspace
             .compare_generation
             .set(&self.store, generation);
         self.workspace.status.set(&self.store, AsyncStatus::Loading);
-        self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
+        self.workspace.mode.set(&self.store, WorkspaceMode::Ready);
         self.workspace.active_file_loading.set(&self.store, None);
-        self.compare_progress.set(&self.store, None);
+        self.workspace.compare_progress.set(&self.store, None);
         self.clear_overlays();
         self.sync_text_compare_syntax_paths();
 
@@ -137,7 +147,14 @@ impl AppState {
         &mut self,
         payload: TextCompareFinished,
     ) -> Vec<Effect> {
-        if payload.generation != self.text_compare.generation {
+        // Drop results superseded by a newer text compare (text generation
+        // moved on) or by any newer workspace compare (repo compare, cancel,
+        // or repo open bumped `compare_generation` past us). Rewinding the
+        // workspace generation here would strand it below the scheduler's
+        // monotonic epoch.
+        if payload.generation != self.text_compare.generation
+            || payload.generation != self.workspace.compare_generation.get(&self.store)
+        {
             return Vec::new();
         }
 
@@ -149,10 +166,7 @@ impl AppState {
             .source
             .set(&self.store, WorkspaceSource::TextCompare);
         self.workspace.status.set(&self.store, AsyncStatus::Ready);
-        self.workspace_mode.set(&self.store, WorkspaceMode::Ready);
-        self.workspace
-            .compare_generation
-            .set(&self.store, payload.generation);
+        self.workspace.mode.set(&self.store, WorkspaceMode::Ready);
         self.compare.layout.set(&self.store, payload.layout);
         self.compare.renderer.set(&self.store, payload.renderer);
         self.compare
@@ -308,4 +322,144 @@ fn looks_like_json(source: &str) -> bool {
         || trimmed.starts_with('[') && trimmed.ends_with(']'))
         && trimmed.contains(':')
         && trimmed.contains('"')
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TextCompareView {
+    #[default]
+    Edit,
+    Diff,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextCompareSide {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TextCompareLanguage {
+    #[default]
+    Auto,
+    PlainText,
+    Rust,
+    TypeScript,
+    JavaScript,
+    Python,
+    Go,
+    Json,
+    Toml,
+    Shell,
+    Nix,
+    C,
+    Cpp,
+    Zig,
+}
+
+impl TextCompareLanguage {
+    pub const OPTIONS: &'static [Self] = &[
+        Self::Auto,
+        Self::PlainText,
+        Self::Rust,
+        Self::TypeScript,
+        Self::JavaScript,
+        Self::Python,
+        Self::Go,
+        Self::Json,
+        Self::Toml,
+        Self::Shell,
+        Self::Nix,
+        Self::C,
+        Self::Cpp,
+        Self::Zig,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::PlainText => "Plain text",
+            Self::Rust => "Rust",
+            Self::TypeScript => "TypeScript",
+            Self::JavaScript => "JavaScript",
+            Self::Python => "Python",
+            Self::Go => "Go",
+            Self::Json => "JSON",
+            Self::Toml => "TOML",
+            Self::Shell => "Shell",
+            Self::Nix => "Nix",
+            Self::C => "C",
+            Self::Cpp => "C++",
+            Self::Zig => "Zig",
+        }
+    }
+
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::PlainText => "Text",
+            Self::Rust => "Rust",
+            Self::TypeScript => "TS",
+            Self::JavaScript => "JS",
+            Self::Python => "Py",
+            Self::Go => "Go",
+            Self::Json => "JSON",
+            Self::Toml => "TOML",
+            Self::Shell => "Sh",
+            Self::Nix => "Nix",
+            Self::C => "C",
+            Self::Cpp => "C++",
+            Self::Zig => "Zig",
+        }
+    }
+
+    pub fn scratch_path(self) -> &'static str {
+        match self {
+            Self::Auto | Self::PlainText => "text.txt",
+            Self::Rust => "scratch.rs",
+            Self::TypeScript => "scratch.ts",
+            Self::JavaScript => "scratch.js",
+            Self::Python => "scratch.py",
+            Self::Go => "scratch.go",
+            Self::Json => "scratch.json",
+            Self::Toml => "scratch.toml",
+            Self::Shell => "scratch.sh",
+            Self::Nix => "scratch.nix",
+            Self::C => "scratch.c",
+            Self::Cpp => "scratch.cpp",
+            Self::Zig => "scratch.zig",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TextCompareState {
+    pub left_editor: Editor,
+    pub right_editor: Editor,
+    pub language: TextCompareLanguage,
+    pub detected_language: Option<TextCompareLanguage>,
+    pub path_hint: String,
+    pub view: TextCompareView,
+    pub generation: u64,
+    pub last_compared_generation: Option<u64>,
+    pub status: AsyncStatus,
+}
+
+impl Default for TextCompareState {
+    fn default() -> Self {
+        let mut left_editor = Editor::new(EditorMode::CodeInput);
+        let mut right_editor = Editor::new(EditorMode::CodeInput);
+        left_editor.set_syntax_path("text.txt");
+        right_editor.set_syntax_path("text.txt");
+        Self {
+            left_editor,
+            right_editor,
+            language: TextCompareLanguage::Auto,
+            detected_language: None,
+            path_hint: "text.txt".to_owned(),
+            view: TextCompareView::default(),
+            generation: 0,
+            last_compared_generation: None,
+            status: AsyncStatus::Idle,
+        }
+    }
 }

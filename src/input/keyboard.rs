@@ -145,7 +145,7 @@ fn global_shortcut_action(state: &AppState, chord: &KeyChord) -> Option<Action> 
 }
 
 fn keymap_capture_actions(state: &AppState, chord: &KeyChord) -> Option<Vec<Action>> {
-    let command = state.keymap_capture.get(&state.store)?;
+    let command = state.ui.keymap_capture.get(&state.store)?;
     if chord.named() == Some(NamedKey::Escape) {
         return Some(vec![SettingsAction::CancelKeymapRebind.into()]);
     }
@@ -552,11 +552,11 @@ fn workspace_key_actions_inner(
         Some(NamedKey::Escape) => {
             if state.overlays_top().is_some() {
                 Some(vec![OverlayAction::CloseOverlay.into()])
-            } else if state.app_view.get(&state.store) == AppView::Settings {
+            } else if state.ui.app_view.get(&state.store) == AppView::Settings {
                 Some(vec![SettingsAction::CloseSettings.into()])
             } else if state.editor.search.open.get(&state.store) {
                 Some(vec![EditorAction::CloseSearch.into()])
-            } else if state.focus.get(&state.store) == Some(FocusTarget::SidebarSearch) {
+            } else if state.ui.focus.get(&state.store) == Some(FocusTarget::SidebarSearch) {
                 Some(vec![
                     FileListAction::ClearSidebarFilter.into(),
                     AppAction::SetFocus(None).into(),
@@ -579,7 +579,7 @@ fn workspace_key_actions_inner(
         }
         Some(NamedKey::Tab) => Some(vec![AppAction::SetFocus(cycle_focus_target(state)).into()]),
         Some(NamedKey::Enter) => {
-            if state.focus.get(&state.store) == Some(FocusTarget::SearchInput) {
+            if state.ui.focus.get(&state.store) == Some(FocusTarget::SearchInput) {
                 Some(vec![if chord.shift() {
                     EditorAction::SearchPrevious.into()
                 } else {
@@ -590,11 +590,11 @@ fn workspace_key_actions_inner(
             }
         }
         Some(NamedKey::ArrowDown) => {
-            if state.app_view.get(&state.store) == AppView::Settings {
+            if state.ui.app_view.get(&state.store) == AppView::Settings {
                 Some(vec![
                     SettingsAction::SetSettingsSection(adjacent_settings_section(state, 1)).into(),
                 ])
-            } else if state.focus.get(&state.store) == Some(FocusTarget::Editor) {
+            } else if state.ui.focus.get(&state.store) == Some(FocusTarget::Editor) {
                 Some(vec![EditorAction::ScrollViewportLines(1).into()])
             } else if state.is_workspace_ready() {
                 Some(vec![FileListAction::SelectNextFile.into()])
@@ -603,11 +603,11 @@ fn workspace_key_actions_inner(
             }
         }
         Some(NamedKey::ArrowUp) => {
-            if state.app_view.get(&state.store) == AppView::Settings {
+            if state.ui.app_view.get(&state.store) == AppView::Settings {
                 Some(vec![
                     SettingsAction::SetSettingsSection(adjacent_settings_section(state, -1)).into(),
                 ])
-            } else if state.focus.get(&state.store) == Some(FocusTarget::Editor) {
+            } else if state.ui.focus.get(&state.store) == Some(FocusTarget::Editor) {
                 Some(vec![EditorAction::ScrollViewportLines(-1).into()])
             } else if state.is_workspace_ready() {
                 Some(vec![FileListAction::SelectPreviousFile.into()])
@@ -616,14 +616,14 @@ fn workspace_key_actions_inner(
             }
         }
         Some(NamedKey::PageDown) if state.is_workspace_ready() => {
-            if state.focus.get(&state.store) == Some(FocusTarget::Editor) {
+            if state.ui.focus.get(&state.store) == Some(FocusTarget::Editor) {
                 Some(vec![EditorAction::ScrollViewportPages(1).into()])
             } else {
                 Some(vec![FileListAction::ScrollFileList(10).into()])
             }
         }
         Some(NamedKey::PageUp) if state.is_workspace_ready() => {
-            if state.focus.get(&state.store) == Some(FocusTarget::Editor) {
+            if state.ui.focus.get(&state.store) == Some(FocusTarget::Editor) {
                 Some(vec![EditorAction::ScrollViewportPages(-1).into()])
             } else {
                 Some(vec![FileListAction::ScrollFileList(-10).into()])
@@ -648,11 +648,11 @@ fn workspace_key_actions_inner(
         _ => {
             let ch = chord.logical_char()?;
             let binding = chord.binding_string()?;
-            if state.app_view.get(&state.store) == AppView::Settings {
+            if state.ui.app_view.get(&state.store) == AppView::Settings {
                 return settings_key_actions(state, &binding);
             }
             if state.overlays_top().is_some()
-                || state.workspace_mode.get(&state.store) != WorkspaceMode::Ready
+                || state.workspace.mode.get(&state.store) != WorkspaceMode::Ready
             {
                 return None;
             }
@@ -676,11 +676,11 @@ fn workspace_key_actions_inner(
             } else if matches_binding(overrides, ShortcutCommand::PreviousFile, &binding) {
                 Some(vec![EditorAction::GoToPreviousFile.into()])
             } else if matches_binding(overrides, ShortcutCommand::MoveDown, &binding)
-                && state.focus.get(&state.store) == Some(FocusTarget::FileList)
+                && state.ui.focus.get(&state.store) == Some(FocusTarget::FileList)
             {
                 Some(vec![FileListAction::SelectNextFile.into()])
             } else if matches_binding(overrides, ShortcutCommand::MoveUp, &binding)
-                && state.focus.get(&state.store) == Some(FocusTarget::FileList)
+                && state.ui.focus.get(&state.store) == Some(FocusTarget::FileList)
             {
                 Some(vec![FileListAction::SelectPreviousFile.into()])
             } else if matches_binding(overrides, ShortcutCommand::MoveDown, &binding) {
@@ -695,7 +695,7 @@ fn workspace_key_actions_inner(
                 Some(vec![EditorAction::ScrollViewportHalfPage(1).into()])
             } else if matches_binding(overrides, ShortcutCommand::Unstage, &binding)
                 && state.workspace.source.get(&state.store) == WorkspaceSource::Status
-                && state.focus.get(&state.store) == Some(FocusTarget::FileList)
+                && state.ui.focus.get(&state.store) == Some(FocusTarget::FileList)
             {
                 Some(vec![RepositoryAction::UnstageSelectedFile.into()])
             } else if matches_binding(overrides, ShortcutCommand::ScrollHalfPageUp, &binding) {
@@ -871,7 +871,7 @@ fn settings_key_actions(state: &AppState, binding: &str) -> Option<Vec<Action>> 
 }
 
 fn adjacent_settings_section(state: &AppState, delta: i32) -> SettingsSection {
-    let current = state.settings_section.get(&state.store);
+    let current = state.ui.settings_section.get(&state.store);
     let sections = SettingsSection::ALL;
     let current_index = sections
         .iter()
@@ -926,7 +926,7 @@ fn status_operation_actions(
     if state.workspace.source.get(&state.store) != WorkspaceSource::Status {
         return None;
     }
-    if state.focus.get(&state.store) == Some(FocusTarget::FileList) {
+    if state.ui.focus.get(&state.store) == Some(FocusTarget::FileList) {
         return Some(vec![file_action.into()]);
     }
     if state
@@ -943,17 +943,17 @@ fn status_operation_actions(
 fn cycle_focus_target(state: &AppState) -> Option<FocusTarget> {
     match state.overlays_top() {
         Some(OverlaySurface::RepoPicker | OverlaySurface::RefPicker) => {
-            match state.focus.get(&state.store) {
+            match state.ui.focus.get(&state.store) {
                 Some(FocusTarget::PickerInput) => Some(FocusTarget::PickerList),
                 _ => Some(FocusTarget::PickerInput),
             }
         }
-        Some(OverlaySurface::CommandPalette) => match state.focus.get(&state.store) {
+        Some(OverlaySurface::CommandPalette) => match state.ui.focus.get(&state.store) {
             Some(FocusTarget::CommandPaletteInput) => Some(FocusTarget::CommandPaletteList),
             _ => Some(FocusTarget::CommandPaletteInput),
         },
         Some(OverlaySurface::ThemePicker | OverlaySurface::FontPicker) => {
-            match state.focus.get(&state.store) {
+            match state.ui.focus.get(&state.store) {
                 Some(FocusTarget::PickerInput) => Some(FocusTarget::PickerList),
                 _ => Some(FocusTarget::PickerInput),
             }
@@ -966,7 +966,7 @@ fn cycle_focus_target(state: &AppState) -> Option<FocusTarget> {
             | OverlaySurface::PublishMenu
             | OverlaySurface::Confirmation,
         ) => None,
-        None => match state.focus.get(&state.store) {
+        None => match state.ui.focus.get(&state.store) {
             Some(FocusTarget::FileList) => Some(FocusTarget::Editor),
             Some(FocusTarget::Editor) => Some(FocusTarget::FileList),
             Some(FocusTarget::WorkspacePrimaryButton) => Some(FocusTarget::TitleBar),
@@ -1007,7 +1007,7 @@ fn activate_current_focus_actions(state: &AppState) -> Option<Vec<Action>> {
             | OverlaySurface::AccountMenu
             | OverlaySurface::PublishMenu,
         ) => Some(Vec::new()),
-        None => match state.focus.get(&state.store) {
+        None => match state.ui.focus.get(&state.store) {
             Some(FocusTarget::WorkspacePrimaryButton) => {
                 Some(vec![OverlayAction::OpenRepoPicker.into()])
             }
@@ -1049,7 +1049,7 @@ mod tests {
     #[test]
     fn viewport_copy_shortcut_copies_current_text_selection() {
         let state = AppState::default();
-        state.focus.set(&state.store, Some(FocusTarget::Editor));
+        state.ui.focus.set(&state.store, Some(FocusTarget::Editor));
         state.editor.text_selection.set(
             &state.store,
             Some(ViewportTextSelection {

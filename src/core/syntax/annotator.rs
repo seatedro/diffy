@@ -1,6 +1,6 @@
 use crate::core::syntax::Highlighter;
 use crate::core::text::DiffTokenSpan;
-use carbon::{LineId, TextStore};
+use carbon::{LineId, TextByteRange, TextStore};
 
 #[derive(Debug, Clone, Copy)]
 struct LineRef {
@@ -22,6 +22,13 @@ impl SyntaxRowWindow {
     pub const fn contains(self, other: Self) -> bool {
         self.start <= other.start && self.end >= other.end
     }
+}
+
+/// Half-open window of 0-based source lines on one diff side.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SourceLineWindow {
+    pub start: usize,
+    pub end: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +118,58 @@ impl DiffSyntaxAnnotator {
         }
     }
 
+    /// Highlights only the given source-line window of `text`. Tree-sitter
+    /// still parses the full source (windowed parsing would lose syntactic
+    /// context), but query/span extraction — the expensive part on very large
+    /// files — is restricted to the window's byte range. The returned value
+    /// keeps full-file line tables so byte mapping works for any line, while
+    /// tokens only cover the window.
+    pub fn highlight_window_text_store(
+        &self,
+        path: &str,
+        text: &TextStore,
+        lines: SourceLineWindow,
+    ) -> FullFileSyntax {
+        let (line_offsets, line_lengths) = line_ranges_from_text_store(text);
+        let line_count = line_lengths.len();
+        let start_line = lines.start.min(line_count);
+        let end_line = lines.end.clamp(start_line, line_count);
+        let text_len = carbon::u32_to_usize_saturating(text.len());
+        let start_byte = line_offsets.get(start_line).copied().unwrap_or(text_len);
+        // `line_offsets` carries a trailing entry at `text.len()`, so the
+        // exclusive end line maps to the byte just past the window.
+        let end_byte = line_offsets.get(end_line).copied().unwrap_or(text_len);
+
+        let mut tokens = Vec::new();
+        if end_byte > start_byte {
+            let language = self.highlighter.resolve_language(path);
+            let range = TextByteRange {
+                start: usize_to_u32_saturating(start_byte),
+                len: usize_to_u32_saturating(end_byte - start_byte),
+            };
+            match self
+                .highlighter
+                .highlight_text_store_resolved_ranges(language, text, &[range])
+            {
+                Ok(spans) => tokens = spans,
+                Err(error) => {
+                    tracing::warn!(
+                        path = %path,
+                        ?language,
+                        %error,
+                        "windowed syntax highlight failed"
+                    );
+                }
+            }
+        }
+
+        FullFileSyntax {
+            line_offsets,
+            line_lengths,
+            tokens,
+        }
+    }
+
     pub fn annotate_carbon_full_file_window_from_cache(
         &self,
         file: &carbon::FileDiff,
@@ -136,6 +195,31 @@ impl DiffSyntaxAnnotator {
         }
         out
     }
+}
+
+/// Returns the (old, new) source-line bounds touched by a projected-row
+/// window, so callers can request windowed highlighting per side. `None`
+/// means the side has no content rows inside the window.
+pub fn carbon_window_source_line_bounds(
+    file: &carbon::FileDiff,
+    expansion: &carbon::ExpansionState,
+    window: SyntaxRowWindow,
+) -> (Option<SourceLineWindow>, Option<SourceLineWindow>) {
+    if file.is_binary || window.end <= window.start {
+        return (None, None);
+    }
+    let (old_refs, new_refs) = build_carbon_full_file_refs(file, expansion, 0, window);
+    (source_line_bounds(&old_refs), source_line_bounds(&new_refs))
+}
+
+fn source_line_bounds(refs: &[LineRef]) -> Option<SourceLineWindow> {
+    // At this stage `content_offset` holds the 0-based source line index.
+    let min = refs.iter().map(|r| r.content_offset).min()?;
+    let max = refs.iter().map(|r| r.content_offset).max()?;
+    Some(SourceLineWindow {
+        start: min,
+        end: max.saturating_add(1),
+    })
 }
 
 fn build_carbon_full_file_refs(

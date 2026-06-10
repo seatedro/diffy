@@ -60,8 +60,8 @@ pub(crate) fn compare_cluster_view(state: &AppState, theme: &Theme) -> Option<An
             mode_tooltip,
             ref_picker_open,
         ))
-    } else if state.workspace_mode.get(&state.store) == WorkspaceMode::Loading {
-        let label = state.compare_progress.with(&state.store, |p| {
+    } else if state.workspace.mode.get(&state.store) == WorkspaceMode::Loading {
+        let label = state.workspace.compare_progress.with(&state.store, |p| {
             p.as_ref()
                 .map(|p| p.phase.label().to_owned())
                 .unwrap_or_else(|| "Comparing\u{2026}".to_owned())

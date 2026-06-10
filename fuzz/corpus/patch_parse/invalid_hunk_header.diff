@@ -1,0 +1,6 @@
+diff --git a/x b/x
+--- a/x
++++ b/x
+@@ -1,oops +1 @@
+-bad
++good

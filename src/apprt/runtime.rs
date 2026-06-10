@@ -207,6 +207,10 @@ impl EffectRunner {
             }
             Effect::Compare(CompareEffect::Run(task)) => {
                 let generation = task.generation;
+                // A new compare supersedes any queued/in-flight scheduler work
+                // from older generations; drop it instead of racing the new
+                // results.
+                self.compare_scheduler.set_epoch(generation);
                 let request = task.request;
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
@@ -217,7 +221,7 @@ impl EffectRunner {
                         Ok(payload) => CompareEvent::CompareFinished(payload),
                         Err(error) => CompareEvent::CompareFailed {
                             generation,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -225,6 +229,7 @@ impl EffectRunner {
             }
             Effect::Compare(CompareEffect::RunText(task)) => {
                 let generation = task.generation;
+                self.compare_scheduler.set_epoch(generation);
                 let request = task.request;
                 let services = self.services.clone();
                 let event_sender = self.event_sender.clone();
@@ -233,7 +238,7 @@ impl EffectRunner {
                         Ok(payload) => CompareEvent::TextCompareFinished(payload),
                         Err(error) => CompareEvent::TextCompareFailed {
                             generation,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -252,7 +257,7 @@ impl EffectRunner {
                         Ok(payload) => CompareEvent::CompareHistoryReady(payload),
                         Err(error) => CompareEvent::CompareHistoryFailed {
                             generation,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -275,7 +280,7 @@ impl EffectRunner {
                         Err(error) => CompareEvent::StatusDiffFailed {
                             generation,
                             index,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -314,7 +319,7 @@ impl EffectRunner {
                         },
                         Err(error) => GitHubEvent::PullRequestLoadFailed {
                             url,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -327,7 +332,7 @@ impl EffectRunner {
                     let event = match services.start_device_flow(&client_id) {
                         Ok(state) => GitHubEvent::DeviceFlowStarted(state),
                         Err(error) => GitHubEvent::DeviceFlowStartFailed {
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -346,7 +351,7 @@ impl EffectRunner {
                         {
                             Ok(token) => GitHubEvent::DeviceFlowCompleted { token },
                             Err(error) => GitHubEvent::DeviceFlowFailed {
-                                message: error.to_string(),
+                                message: error.user_message(),
                             },
                         };
                     event_sender.send(event);
@@ -370,7 +375,7 @@ impl EffectRunner {
                     let event = match result {
                         Ok(token) => GitHubEvent::GitHubTokenLoaded { token },
                         Err(error) => GitHubEvent::GitHubTokenLoadFailed {
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -391,7 +396,7 @@ impl EffectRunner {
                     };
                     if let Err(error) = result {
                         event_sender.send(GitHubEvent::GitHubTokenSaveFailed {
-                            message: error.to_string(),
+                            message: error.user_message(),
                         });
                     }
                 });
@@ -420,7 +425,7 @@ impl EffectRunner {
                     let event = match services.fetch_github_user(&token) {
                         Ok(user) => GitHubEvent::GitHubUserFetched { user },
                         Err(error) => GitHubEvent::GitHubUserFetchFailed {
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -447,7 +452,7 @@ impl EffectRunner {
                                 owner,
                                 repo,
                                 number,
-                                message: error.to_string(),
+                                message: error.user_message(),
                             },
                         };
                     event_sender.send(event);
@@ -478,7 +483,7 @@ impl EffectRunner {
                             owner,
                             repo,
                             number,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -509,7 +514,7 @@ impl EffectRunner {
                             owner,
                             repo,
                             number,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -542,7 +547,7 @@ impl EffectRunner {
                             owner,
                             repo,
                             number,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -577,7 +582,7 @@ impl EffectRunner {
                             owner,
                             repo,
                             number,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -612,7 +617,7 @@ impl EffectRunner {
                             repo,
                             number,
                             comment_id,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -645,7 +650,7 @@ impl EffectRunner {
                             repo,
                             number,
                             comment_id,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -678,7 +683,7 @@ impl EffectRunner {
                             owner,
                             repo,
                             number,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -718,7 +723,7 @@ impl EffectRunner {
                             repo,
                             number,
                             draft_ids,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -754,7 +759,7 @@ impl EffectRunner {
                             repo,
                             number,
                             thread_node_id,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -787,7 +792,7 @@ impl EffectRunner {
                             repo,
                             number,
                             comment_node_id,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -818,7 +823,7 @@ impl EffectRunner {
                             repo,
                             number,
                             comment_node_id,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -851,7 +856,7 @@ impl EffectRunner {
                             repo,
                             number,
                             thread_node_id,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -887,7 +892,7 @@ impl EffectRunner {
                             repo,
                             number,
                             review_id,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -904,7 +909,7 @@ impl EffectRunner {
                         Ok(session) => GitHubEvent::ReviewSessionLoaded { target, session },
                         Err(error) => GitHubEvent::ReviewSessionLoadFailed {
                             target,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -919,7 +924,7 @@ impl EffectRunner {
                         Ok(key) => GitHubEvent::ReviewSessionSaved { key },
                         Err(error) => GitHubEvent::ReviewSessionSaveFailed {
                             key,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -938,7 +943,7 @@ impl EffectRunner {
                         },
                         Err(error) => GitHubEvent::AvatarFetchFailed {
                             url,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -979,7 +984,7 @@ impl EffectRunner {
                             UpdateEvent::UpdateNotAvailable { silent }
                         }
                         Err(error) => UpdateEvent::UpdateCheckFailed {
-                            message: error.to_string(),
+                            message: error.user_message(),
                             silent,
                         },
                     };
@@ -992,7 +997,7 @@ impl EffectRunner {
                 thread::spawn(move || match services.stage_update(&update) {
                     Ok(staged) => event_sender.send(UpdateEvent::UpdateStaged { staged, silent }),
                     Err(error) => event_sender.send(UpdateEvent::UpdateInstallFailed {
-                        message: error.to_string(),
+                        message: error.user_message(),
                         silent,
                     }),
                 });
@@ -1003,7 +1008,7 @@ impl EffectRunner {
                 thread::spawn(move || {
                     if let Err(error) = services.apply_staged_update(&staged) {
                         event_sender.send(UpdateEvent::UpdateInstallFailed {
-                            message: error.to_string(),
+                            message: error.user_message(),
                             silent: false,
                         });
                     }
@@ -1015,7 +1020,7 @@ impl EffectRunner {
                 thread::spawn(move || {
                     if let Err(error) = services.open_browser(&url) {
                         event_sender.send(UiEvent::BrowserOpenFailed {
-                            message: error.to_string(),
+                            message: error.user_message(),
                         });
                     }
                 });
@@ -1047,7 +1052,7 @@ impl EffectRunner {
                         Err(error) => RepositoryEvent::ContextLinesFailed {
                             generation: request.generation,
                             file_index: request.file_index,
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -1192,7 +1197,7 @@ impl EffectRunner {
                     let event = match crate::apprt::services::load_ai_keys() {
                         Ok((openai, anthropic)) => AiEvent::AiKeysLoaded { openai, anthropic },
                         Err(error) => AiEvent::AiKeysLoadFailed {
-                            message: error.to_string(),
+                            message: error.user_message(),
                         },
                     };
                     event_sender.send(event);
@@ -1206,7 +1211,7 @@ impl EffectRunner {
                 thread::spawn(move || {
                     if let Err(error) = crate::platform::secrets::save_ai_key(kind, &value) {
                         event_sender.send(AiEvent::AiKeySaveFailed {
-                            message: error.to_string(),
+                            message: error.user_message(),
                         });
                     }
                 });
@@ -1282,7 +1287,7 @@ fn persist_settings(
             SettingsEvent::SettingsSaved
         }
         Err(error) => SettingsEvent::SettingsSaveFailed {
-            message: error.to_string(),
+            message: error.user_message(),
         },
     };
     event_sender.send(event);

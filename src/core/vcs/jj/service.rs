@@ -11,8 +11,9 @@ use crate::core::compare::{
     COMPARE_SUMMARY_FILE_LIMIT, CompareFileStatsTarget, CompareFileSummary, CompareOutput,
     ProgressSink, RendererKind,
 };
-use crate::core::error::{DiffyError, Result};
+use crate::core::error::{DiffyError, Result, VcsBackendKind};
 use crate::core::vcs::backend::{VcsBackend, VcsRepository, VcsWatchPaths};
+use crate::core::vcs::cache::VcsReadCache;
 use crate::core::vcs::jj::cli::JjCli;
 use crate::core::vcs::jj::parse::{
     parse_bookmark_list, parse_change_log, parse_conflict_list, parse_diff_summary,
@@ -70,24 +71,8 @@ pub struct JjRepository {
     location: RepoLocation,
     last_operation_id: Option<String>,
     last_snapshot: Option<VcsSnapshot>,
-    diff_cache: Vec<DiffCacheEntry>,
-    file_text_cache: Vec<FileTextCacheEntry>,
-}
-
-#[derive(Clone)]
-struct DiffCacheEntry {
-    operation_id: Option<String>,
-    request: VcsCompareRequest,
-    path: Option<String>,
-    output: CompareOutput,
-}
-
-#[derive(Clone)]
-struct FileTextCacheEntry {
-    operation_id: Option<String>,
-    revision: RevisionId,
-    path: String,
-    text: TextStore,
+    /// Reads cached per operation id; see [`VcsReadCache`].
+    read_cache: VcsReadCache,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +91,9 @@ struct MovableBookmark {
     name: String,
     target: String,
     allow_backwards: bool,
+    /// Set when the bookmark only exists on this remote (untracked); moving it
+    /// requires tracking it first to create the local bookmark.
+    track_remote: Option<String>,
 }
 
 impl JjRepository {
@@ -115,9 +103,12 @@ impl JjRepository {
             location,
             last_operation_id: None,
             last_snapshot: None,
-            diff_cache: Vec::new(),
-            file_text_cache: Vec::new(),
+            read_cache: VcsReadCache::new(),
         }
+    }
+
+    fn is_colocated(&self) -> bool {
+        self.location.workspace_root.join(".git").exists()
     }
 
     fn diff_args_for_spec(&self, spec: &VcsCompareSpec) -> Result<Vec<OsString>> {
@@ -267,8 +258,7 @@ impl JjRepository {
 
     fn set_operation_id(&mut self, operation_id: String) {
         if self.last_operation_id.as_deref() != Some(operation_id.as_str()) {
-            self.diff_cache.clear();
-            self.file_text_cache.clear();
+            self.read_cache.clear();
             self.last_snapshot = None;
         }
         self.last_operation_id = Some(operation_id);
@@ -281,76 +271,6 @@ impl JjRepository {
             self.set_operation_id(operation_id);
         }
         Ok(self.last_operation_id.clone())
-    }
-
-    fn cached_diff(
-        &self,
-        operation_id: Option<&str>,
-        request: &VcsCompareRequest,
-        path: Option<&str>,
-    ) -> Option<CompareOutput> {
-        self.diff_cache
-            .iter()
-            .find(|entry| {
-                entry.operation_id.as_deref() == operation_id
-                    && entry.request == *request
-                    && entry.path.as_deref() == path
-            })
-            .map(|entry| entry.output.clone())
-    }
-
-    fn insert_diff_cache(
-        &mut self,
-        operation_id: Option<String>,
-        request: VcsCompareRequest,
-        path: Option<String>,
-        output: CompareOutput,
-    ) {
-        const MAX_DIFF_CACHE_ENTRIES: usize = 8;
-        if self.diff_cache.len() >= MAX_DIFF_CACHE_ENTRIES {
-            self.diff_cache.remove(0);
-        }
-        self.diff_cache.push(DiffCacheEntry {
-            operation_id,
-            request,
-            path,
-            output,
-        });
-    }
-
-    fn cached_file_text(
-        &self,
-        operation_id: Option<&str>,
-        revision: &RevisionId,
-        path: &str,
-    ) -> Option<TextStore> {
-        self.file_text_cache
-            .iter()
-            .find(|entry| {
-                entry.operation_id.as_deref() == operation_id
-                    && entry.revision == *revision
-                    && entry.path == path
-            })
-            .map(|entry| entry.text.clone())
-    }
-
-    fn insert_file_text_cache(
-        &mut self,
-        operation_id: Option<String>,
-        revision: RevisionId,
-        path: String,
-        text: TextStore,
-    ) {
-        const MAX_FILE_TEXT_CACHE_ENTRIES: usize = 16;
-        if self.file_text_cache.len() >= MAX_FILE_TEXT_CACHE_ENTRIES {
-            self.file_text_cache.remove(0);
-        }
-        self.file_text_cache.push(FileTextCacheEntry {
-            operation_id,
-            revision,
-            path,
-            text,
-        });
     }
 
     fn conflict_list(&self) -> Result<String> {
@@ -369,8 +289,7 @@ impl JjRepository {
     fn clear_after_write(&mut self) {
         self.last_operation_id = None;
         self.last_snapshot = None;
-        self.diff_cache.clear();
-        self.file_text_cache.clear();
+        self.read_cache.clear();
     }
 
     fn remote_names(&self) -> Result<Vec<String>> {
@@ -389,9 +308,7 @@ impl JjRepository {
             .find(|remote| remote.as_str() == "origin")
             .cloned()
             .or_else(|| remotes.first().cloned())
-            .ok_or_else(|| {
-                DiffyError::General("No remotes are configured for this repository.".to_owned())
-            })
+            .ok_or_else(|| jj_error("publish", "no remotes are configured for this repository"))
     }
 
     fn default_publish_target(&self) -> Result<JjPublishTarget> {
@@ -403,8 +320,9 @@ impl JjRepository {
         let head_target = self.publish_target("@")?;
         let target = if head_target.summary.trim().is_empty() {
             let mut parent = self.publish_target("@-").map_err(|_| {
-                DiffyError::General(
-                    "Describe the current jj change before publishing it.".to_owned(),
+                jj_error(
+                    "publish",
+                    "describe the current jj change before publishing it",
                 )
             })?;
             parent.fell_back_from_empty_working_copy = true;
@@ -413,8 +331,9 @@ impl JjRepository {
             head_target
         };
         if target.summary.trim().is_empty() {
-            Err(DiffyError::General(
-                "Describe the jj change before publishing it.".to_owned(),
+            Err(jj_error(
+                "publish",
+                "describe the jj change before publishing it",
             ))
         } else {
             Ok(target)
@@ -439,9 +358,10 @@ impl JjRepository {
         let change_id_rest = fields.next().unwrap_or_default();
         let summary = fields.next().unwrap_or_default().to_owned();
         if commit_id.is_empty() {
-            return Err(DiffyError::General(format!(
-                "Could not resolve jj revision {revision} for publishing."
-            )));
+            return Err(jj_error(
+                "publish",
+                format!("could not resolve jj revision {revision} for publishing"),
+            ));
         }
         let short_change_id = format!("{change_id_prefix}{change_id_rest}");
         let short_change_id_prefix_len = change_id_prefix.len();
@@ -483,29 +403,48 @@ impl JjRepository {
             .collect())
     }
 
-    fn movable_bookmarks(&self, revision: &str) -> Result<Vec<MovableBookmark>> {
-        let revset_after = format!("{revision}::");
-        let revset = format!("::{revision} | {revset_after}");
+    fn movable_bookmarks(&self, revision: &str, remote: &str) -> Result<Vec<MovableBookmark>> {
+        // `bookmark list -r` only matches local bookmark targets, which would
+        // hide remote-only bookmarks entirely; list everything and let the
+        // template report ancestor/descendant containment instead.
         let output = self.cli.run_ignored_wc(&[
             OsString::from("bookmark"),
             OsString::from("list"),
-            OsString::from("-r"),
-            OsString::from(revset),
+            OsString::from("--all-remotes"),
             OsString::from("-T"),
             OsString::from(format!(
-                "name ++ \"\\t\" ++ normal_target.commit_id() ++ \"\\t\" ++ normal_target.contained_in(\"{revset_after}\") ++ \"\\n\""
+                "name ++ \"\\t\" ++ if(self.remote(), self.remote(), \"\") ++ \"\\t\" ++ if(self.tracked(), \"true\", \"false\") ++ \"\\t\" ++ normal_target.commit_id() ++ \"\\t\" ++ normal_target.contained_in(\"::({revision})\") ++ \"\\t\" ++ normal_target.contained_in(\"({revision})::\") ++ \"\\n\""
             )),
         ])?;
-        let mut bookmarks = output
-            .lines()
-            .filter_map(parse_movable_bookmark_line)
-            .collect::<Vec<_>>();
+        let mut bookmarks = parse_movable_bookmark_list(&output, remote);
         bookmarks.sort_by(|left, right| {
             bookmark_priority(&left.name)
                 .cmp(&bookmark_priority(&right.name))
                 .then(left.name.cmp(&right.name))
         });
         Ok(bookmarks)
+    }
+
+    /// Commit ids of the closest ancestor commits of `revision` that carry a
+    /// bookmark — jj's analog of "the branch you are on" in git.
+    fn nearest_bookmark_targets(&self, revision: &str, remote: &str) -> Result<Vec<String>> {
+        let escaped_remote = remote.replace('\\', "\\\\").replace('"', "\\\"");
+        let output = self.cli.run_ignored_wc(&[
+            OsString::from("log"),
+            OsString::from("--no-graph"),
+            OsString::from("-r"),
+            OsString::from(format!(
+                "heads(::(({revision})-) & (bookmarks() | remote_bookmarks(remote=\"{escaped_remote}\")))"
+            )),
+            OsString::from("-T"),
+            OsString::from("commit_id ++ \"\\n\""),
+        ])?;
+        Ok(output
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect())
     }
 
     fn generated_bookmark_name(target: &JjPublishTarget) -> String {
@@ -531,6 +470,23 @@ impl JjRepository {
         }
     }
 
+    fn move_bookmark_description(
+        bookmark: &MovableBookmark,
+        target: &JjPublishTarget,
+        remote: &str,
+    ) -> String {
+        match &bookmark.track_remote {
+            Some(tracked) => format!(
+                "Track {}@{tracked}, move it to {}, and push it to {remote}",
+                bookmark.name, target.short_commit_id
+            ),
+            None => format!(
+                "Move jj bookmark {} to {} and push it to {remote}",
+                bookmark.name, target.short_commit_id
+            ),
+        }
+    }
+
     fn push_change_label(target: &JjPublishTarget) -> String {
         let id = if target.short_change_id.is_empty() {
             target.short_commit_id.as_str()
@@ -551,7 +507,7 @@ impl VcsRepository for JjRepository {
     }
 
     fn capabilities(&self) -> RepoCapabilities {
-        jj_capabilities()
+        jj_capabilities(self.is_colocated())
     }
 
     fn resolve_ref(&mut self, reference: &str) -> Result<(String, String)> {
@@ -689,7 +645,7 @@ impl VcsRepository for JjRepository {
             location: self.location.clone(),
             reason,
             change_kind: None,
-            capabilities: jj_capabilities(),
+            capabilities: jj_capabilities(self.is_colocated()),
             refs,
             changes,
             operation_log: parse_operation_log(&operation_log),
@@ -714,13 +670,17 @@ impl VcsRepository for JjRepository {
         _reporter: Option<&dyn ProgressSink>,
     ) -> Result<CompareOutput> {
         let operation_id = self.ensure_read_epoch()?;
-        if let Some(output) = self.cached_diff(operation_id.as_deref(), request, None) {
+        if let Some(output) = self
+            .read_cache
+            .cached_diff(operation_id.as_deref(), request, None)
+        {
             return Ok(output);
         }
         #[cfg(feature = "difftastic")]
         if request.renderer == RendererKind::Difftastic {
             let output = self.compare_difftastic(request, _reporter, None)?;
-            self.insert_diff_cache(operation_id, request.clone(), None, output.clone());
+            self.read_cache
+                .insert_diff(operation_id, request.clone(), None, output.clone());
             return Ok(output);
         }
 
@@ -733,13 +693,15 @@ impl VcsRepository for JjRepository {
                 ..CompareOutput::default()
             };
             output.compact_file_summaries();
-            self.insert_diff_cache(operation_id, request.clone(), None, output.clone());
+            self.read_cache
+                .insert_diff(operation_id, request.clone(), None, output.clone());
             return Ok(output);
         }
         let args = self.diff_args_for_spec(&request.spec)?;
         let raw_diff = self.cli.run_ignored_wc(&args)?;
         let output = compare_output_from_raw_patch(&raw_diff)?;
-        self.insert_diff_cache(operation_id, request.clone(), None, output.clone());
+        self.read_cache
+            .insert_diff(operation_id, request.clone(), None, output.clone());
         Ok(output)
     }
 
@@ -814,13 +776,16 @@ impl VcsRepository for JjRepository {
         _deferred_file: Option<&CompareFileSummary>,
     ) -> Result<CompareOutput> {
         let operation_id = self.ensure_read_epoch()?;
-        if let Some(output) = self.cached_diff(operation_id.as_deref(), request, Some(path)) {
+        if let Some(output) =
+            self.read_cache
+                .cached_diff(operation_id.as_deref(), request, Some(path))
+        {
             return Ok(output);
         }
         #[cfg(feature = "difftastic")]
         if request.renderer == RendererKind::Difftastic {
             let output = self.compare_difftastic(request, None, Some(path))?;
-            self.insert_diff_cache(
+            self.read_cache.insert_diff(
                 operation_id,
                 request.clone(),
                 Some(path.to_owned()),
@@ -833,7 +798,7 @@ impl VcsRepository for JjRepository {
         args.push(jj_root_pathspec(path));
         let raw_diff = self.cli.run_ignored_wc(&args)?;
         let output = compare_output_from_raw_patch(&raw_diff)?;
-        self.insert_diff_cache(
+        self.read_cache.insert_diff(
             operation_id,
             request.clone(),
             Some(path.to_owned()),
@@ -866,8 +831,9 @@ impl VcsRepository for JjRepository {
         operation: FileOperation,
     ) -> Result<()> {
         if operation != FileOperation::Discard {
-            return Err(DiffyError::General(
-                "jj does not support stage or unstage operations".to_owned(),
+            return Err(jj_error_fatal(
+                "stage",
+                "jj does not support stage or unstage operations",
             ));
         }
         let mut args = vec![OsString::from("restore")];
@@ -985,7 +951,7 @@ impl VcsRepository for JjRepository {
 
     fn push(&mut self, remote: &str, refspec: &str, _force_with_lease: bool) -> Result<()> {
         let bookmark = bookmark_from_refspec(refspec)
-            .ok_or_else(|| DiffyError::General("jj push requires a bookmark refspec".to_owned()))?;
+            .ok_or_else(|| jj_error_fatal("push", "jj push requires a bookmark refspec"))?;
         self.cli.run(&[
             OsString::from("git"),
             OsString::from("push"),
@@ -1018,12 +984,34 @@ impl VcsRepository for JjRepository {
             }
         });
         let mut movable_bookmarks = self
-            .movable_bookmarks(&target.revision)
+            .movable_bookmarks(&target.revision, &remote)
             .unwrap_or_default()
             .into_iter()
             .filter(|bookmark| bookmark.target != target.commit_id)
-            .take(6)
             .collect::<Vec<_>>();
+        // Mirror git's "push the branch you are on": when no bookmark sits on
+        // the target itself, advance the nearest ancestor bookmark forward.
+        let advance_bookmark = if bookmarks.is_empty() {
+            let nearest_targets = self
+                .nearest_bookmark_targets(&target.revision, &remote)
+                .unwrap_or_default();
+            movable_bookmarks
+                .iter()
+                .enumerate()
+                .filter(|(_, bookmark)| {
+                    !bookmark.allow_backwards && nearest_targets.contains(&bookmark.target)
+                })
+                // Prefer feature bookmarks over main/master when both sit on
+                // nearest ancestors (e.g. right after merging main in).
+                .min_by_key(|(_, bookmark)| {
+                    (bookmark_priority(&bookmark.name) == 0, bookmark.name.clone())
+                })
+                .map(|(index, _)| index)
+                .map(|index| movable_bookmarks.remove(index))
+        } else {
+            None
+        };
+        movable_bookmarks.truncate(6);
         let change_id_token = Self::change_id_token(&target);
         let primary = if let Some(bookmark) = bookmarks.first() {
             PublishAction {
@@ -1035,6 +1023,20 @@ impl VcsRepository for JjRepository {
                 kind: PublishActionKind::PushBookmark {
                     remote: remote.clone(),
                     bookmark: bookmark.clone(),
+                },
+                disabled_reason: target_disabled_reason.clone(),
+                change_id_token: None,
+            }
+        } else if let Some(bookmark) = &advance_bookmark {
+            PublishAction {
+                label: format!("Push bookmark {}", bookmark.name),
+                description: Self::move_bookmark_description(bookmark, &target, &remote),
+                kind: PublishActionKind::MoveBookmarkAndPush {
+                    remote: remote.clone(),
+                    bookmark: bookmark.name.clone(),
+                    revision: target.revision.clone(),
+                    allow_backwards: false,
+                    track_remote: bookmark.track_remote.clone(),
                 },
                 disabled_reason: target_disabled_reason.clone(),
                 change_id_token: None,
@@ -1090,15 +1092,13 @@ impl VcsRepository for JjRepository {
         for bookmark in movable_bookmarks.drain(..) {
             alternatives.push(PublishAction {
                 label: format!("Move bookmark {} here and push", bookmark.name),
-                description: format!(
-                    "Move jj bookmark {} to {} and push it to {remote}",
-                    bookmark.name, target.short_commit_id
-                ),
+                description: Self::move_bookmark_description(&bookmark, &target, &remote),
                 kind: PublishActionKind::MoveBookmarkAndPush {
                     remote: remote.clone(),
                     bookmark: bookmark.name,
                     revision: target.revision.clone(),
                     allow_backwards: bookmark.allow_backwards,
+                    track_remote: bookmark.track_remote,
                 },
                 disabled_reason: target_disabled_reason.clone(),
                 change_id_token: None,
@@ -1157,7 +1157,17 @@ impl VcsRepository for JjRepository {
                 bookmark,
                 revision,
                 allow_backwards,
+                track_remote,
             } => {
+                if let Some(track_remote) = track_remote {
+                    self.cli.run(&[
+                        OsString::from("bookmark"),
+                        OsString::from("track"),
+                        OsString::from(bookmark),
+                        OsString::from("--remote"),
+                        OsString::from(track_remote),
+                    ])?;
+                }
                 let mut move_args = vec![
                     OsString::from("bookmark"),
                     OsString::from("move"),
@@ -1202,8 +1212,9 @@ impl VcsRepository for JjRepository {
                 ])?;
             }
             PublishActionKind::PushRef { .. } => {
-                return Err(DiffyError::General(
-                    "jj cannot run a Git refspec publish action".to_owned(),
+                return Err(jj_error_fatal(
+                    "publish",
+                    "jj cannot run a Git refspec publish action",
                 ));
             }
         }
@@ -1220,7 +1231,10 @@ impl VcsRepository for JjRepository {
             layout: crate::core::compare::LayoutMode::Unified,
             renderer: RendererKind::Builtin,
         };
-        if let Some(output) = self.cached_diff(operation_id.as_deref(), &request, Some(path)) {
+        if let Some(output) =
+            self.read_cache
+                .cached_diff(operation_id.as_deref(), &request, Some(path))
+        {
             return Ok(output);
         }
         let raw_diff = self.cli.run_ignored_wc(&[
@@ -1231,13 +1245,17 @@ impl VcsRepository for JjRepository {
             jj_root_pathspec(path),
         ])?;
         let output = compare_output_from_raw_patch(&raw_diff)?;
-        self.insert_diff_cache(operation_id, request, Some(path.to_owned()), output.clone());
+        self.read_cache
+            .insert_diff(operation_id, request, Some(path.to_owned()), output.clone());
         Ok(output)
     }
 
     fn read_file_text(&mut self, revision: &RevisionId, path: &str) -> Result<TextStore> {
         let operation_id = self.ensure_read_epoch()?;
-        if let Some(text) = self.cached_file_text(operation_id.as_deref(), revision, path) {
+        if let Some(text) =
+            self.read_cache
+                .cached_file_text(operation_id.as_deref(), revision, path)
+        {
             return Ok(text);
         }
         let output = self.cli.run_ignored_wc(&[
@@ -1248,7 +1266,7 @@ impl VcsRepository for JjRepository {
             jj_root_pathspec(path),
         ])?;
         let text = TextStore::from_text(output);
-        self.insert_file_text_cache(
+        self.read_cache.insert_file_text(
             operation_id,
             revision.clone(),
             path.to_owned(),
@@ -1256,6 +1274,14 @@ impl VcsRepository for JjRepository {
         );
         Ok(text)
     }
+}
+
+fn jj_error(op: impl Into<String>, details: impl Into<String>) -> DiffyError {
+    DiffyError::vcs(VcsBackendKind::Jj, op, details)
+}
+
+fn jj_error_fatal(op: impl Into<String>, details: impl Into<String>) -> DiffyError {
+    DiffyError::vcs_fatal(VcsBackendKind::Jj, op, details)
 }
 
 fn u32_to_i32_saturating(value: u32) -> i32 {
@@ -1314,7 +1340,7 @@ fn parse_stat_count_before(line: &str, label: &str) -> Option<i32> {
     prefix[digits_start..].parse().ok()
 }
 
-pub fn jj_capabilities() -> RepoCapabilities {
+pub fn jj_capabilities(colocated: bool) -> RepoCapabilities {
     RepoCapabilities {
         staging_area: false,
         branches: false,
@@ -1326,7 +1352,9 @@ pub fn jj_capabilities() -> RepoCapabilities {
         partial_file_restore: true,
         partial_hunk_mutation: false,
         operation_log: true,
-        github_pull_requests: false,
+        // PR comparisons run through the git backend against the colocated
+        // .git store, so they are only available in colocated workspaces.
+        github_pull_requests: colocated,
     }
 }
 
@@ -1430,19 +1458,52 @@ fn looks_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(1024).any(|byte| *byte == 0)
 }
 
-fn parse_movable_bookmark_line(line: &str) -> Option<MovableBookmark> {
-    let mut fields = line.splitn(3, '\t');
-    let name = fields.next()?.trim();
-    let target = fields.next()?.trim();
-    let allow_backwards = fields.next()?.trim() == "true";
-    if name.is_empty() || target.is_empty() {
-        return None;
+/// Local bookmarks are always movable. Remote bookmarks are movable only when
+/// they live on the preferred remote and are untracked with no local
+/// counterpart — moving them means track + move. Tracked remote bookmarks
+/// without a local are deliberate deletions pending a push, so they are
+/// skipped.
+fn parse_movable_bookmark_list(output: &str, preferred_remote: &str) -> Vec<MovableBookmark> {
+    let mut locals = Vec::new();
+    let mut remote_only = Vec::new();
+    for line in output.lines() {
+        let mut fields = line.splitn(6, '\t');
+        let Some(name) = fields.next().map(str::trim) else {
+            continue;
+        };
+        let Some(remote) = fields.next().map(str::trim) else {
+            continue;
+        };
+        let Some(tracked) = fields.next().map(|field| field.trim() == "true") else {
+            continue;
+        };
+        let Some(target) = fields.next().map(str::trim) else {
+            continue;
+        };
+        let Some(is_ancestor) = fields.next().map(|field| field.trim() == "true") else {
+            continue;
+        };
+        let Some(is_descendant) = fields.next().map(|field| field.trim() == "true") else {
+            continue;
+        };
+        if name.is_empty() || target.is_empty() || (!is_ancestor && !is_descendant) {
+            continue;
+        }
+        let bookmark = MovableBookmark {
+            name: name.to_owned(),
+            target: target.to_owned(),
+            allow_backwards: is_descendant,
+            track_remote: (!remote.is_empty()).then(|| remote.to_owned()),
+        };
+        if remote.is_empty() {
+            locals.push(bookmark);
+        } else if remote == preferred_remote && !tracked {
+            remote_only.push(bookmark);
+        }
     }
-    Some(MovableBookmark {
-        name: name.to_owned(),
-        target: target.to_owned(),
-        allow_backwards,
-    })
+    remote_only.retain(|remote| !locals.iter().any(|local| local.name == remote.name));
+    locals.extend(remote_only);
+    locals
 }
 
 fn bookmark_priority(name: &str) -> usize {
@@ -1501,7 +1562,7 @@ mod tests {
 
     use super::{
         JjBackend, compare_summaries_from_jj_diff_summary, jj_fork_point_revset,
-        parse_jj_diff_stat_total,
+        parse_jj_diff_stat_total, parse_movable_bookmark_list,
     };
     use crate::core::compare::{CompareFileStatsTarget, LayoutMode, RendererKind};
     use crate::core::vcs::backend::VcsBackend;
@@ -1510,6 +1571,22 @@ mod tests {
         VcsCompareSpec, VcsKind,
     };
     use crate::events::RepositorySyncReason;
+
+    #[test]
+    fn jj_pr_support_follows_colocation() {
+        let Some(colocated) = init_jj_repo_with(true) else {
+            return;
+        };
+        let Some(plain) = init_jj_repo_with(false) else {
+            return;
+        };
+        let backend = JjBackend;
+        for (dir, expected) in [(&colocated, true), (&plain, false)] {
+            let location = backend.detect(dir.path()).unwrap().unwrap();
+            let repo = backend.open(location).unwrap();
+            assert_eq!(repo.capabilities().github_pull_requests, expected);
+        }
+    }
 
     #[test]
     fn jj_merge_base_revset_uses_fork_point() {
@@ -1583,6 +1660,7 @@ mod tests {
             .expect("jj snapshot");
         assert!(snapshot.capabilities.bookmarks);
         assert!(!snapshot.capabilities.staging_area);
+        assert!(snapshot.capabilities.github_pull_requests);
         assert!(snapshot.file_changes.iter().any(|file| {
             file.path == "README.md"
                 && file.status == FileChangeStatus::Added
@@ -1798,13 +1876,146 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn movable_bookmark_list_includes_untracked_remote_only_bookmarks() {
+        let output = "feat\t\tfalse\taaa\ttrue\tfalse\n\
+                      feat\torigin\ttrue\taaa\ttrue\tfalse\n\
+                      solo\torigin\tfalse\tbbb\ttrue\tfalse\n\
+                      gone\torigin\ttrue\tccc\ttrue\tfalse\n\
+                      other\tupstream\tfalse\tddd\ttrue\tfalse\n\
+                      desc\t\tfalse\teee\tfalse\ttrue\n\
+                      stray\t\tfalse\tfff\tfalse\tfalse\n";
+        let bookmarks = parse_movable_bookmark_list(output, "origin");
+        let names: Vec<&str> = bookmarks
+            .iter()
+            .map(|bookmark| bookmark.name.as_str())
+            .collect();
+        assert_eq!(names, ["feat", "desc", "solo"]);
+        assert_eq!(bookmarks[0].track_remote, None);
+        assert!(!bookmarks[0].allow_backwards);
+        assert!(bookmarks[1].allow_backwards);
+        assert_eq!(bookmarks[2].track_remote.as_deref(), Some("origin"));
+        assert!(!bookmarks[2].allow_backwards);
+    }
+
+    #[test]
+    fn jj_publish_plan_advances_nearest_remote_bookmark() {
+        let Some(repo_dir) = init_jj_repo() else {
+            return;
+        };
+        let remote_dir = TempDir::new().unwrap();
+        let status = Command::new("git")
+            .arg("init")
+            .arg("--bare")
+            .arg(remote_dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let status = Command::new("jj")
+            .arg("--quiet")
+            .arg("git")
+            .arg("remote")
+            .arg("add")
+            .arg("origin")
+            .arg(remote_dir.path())
+            .current_dir(repo_dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let backend = JjBackend;
+        let location = backend.detect(repo_dir.path()).unwrap().unwrap();
+        let mut repo = backend.open(location).unwrap();
+        fs::write(repo_dir.path().join("BASE.md"), "base\n").unwrap();
+        repo.create_commit("base").unwrap();
+
+        // Leave `feat` as a remote-only untracked bookmark on the parent — the
+        // state a fresh fetch of someone's branch (or a fetched PR head) is in.
+        for args in [
+            ["--quiet", "bookmark", "create", "feat", "-r", "@-"].as_slice(),
+            &[
+                "--quiet",
+                "git",
+                "push",
+                "--remote",
+                "origin",
+                "--bookmark",
+                "feat",
+                "--allow-new",
+            ],
+            &["--quiet", "bookmark", "untrack", "feat@origin"],
+            &["--quiet", "bookmark", "delete", "feat"],
+        ] {
+            let status = Command::new("jj")
+                .args(args)
+                .current_dir(repo_dir.path())
+                .status()
+                .unwrap();
+            assert!(status.success(), "jj {args:?} failed");
+        }
+
+        fs::write(repo_dir.path().join("NEXT.md"), "next\n").unwrap();
+        repo.create_commit("next").unwrap();
+
+        let plan = repo.publish_plan().unwrap();
+        match &plan.primary.kind {
+            PublishActionKind::MoveBookmarkAndPush {
+                remote,
+                bookmark,
+                revision,
+                allow_backwards,
+                track_remote,
+            } => {
+                assert_eq!(remote, "origin");
+                assert_eq!(bookmark, "feat");
+                assert_eq!(revision, "@-");
+                assert!(!allow_backwards);
+                assert_eq!(track_remote.as_deref(), Some("origin"));
+            }
+            other => panic!("expected move-bookmark publish, got {other:?}"),
+        }
+        assert!(plan.primary.disabled_reason.is_none());
+        assert_eq!(plan.primary.label, "Push bookmark feat");
+
+        repo.publish(&plan.primary).unwrap();
+
+        let remote_head = Command::new("git")
+            .arg("-C")
+            .arg(remote_dir.path())
+            .args(["rev-parse", "refs/heads/feat"])
+            .output()
+            .unwrap();
+        assert!(remote_head.status.success());
+        let local_head = Command::new("jj")
+            .args(["log", "--no-graph", "-r", "@-", "-T", "commit_id"])
+            .current_dir(repo_dir.path())
+            .output()
+            .unwrap();
+        assert!(local_head.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&remote_head.stdout).trim(),
+            String::from_utf8_lossy(&local_head.stdout).trim(),
+            "remote feat should fast-forward to the published commit"
+        );
+    }
+
     fn init_jj_repo() -> Option<TempDir> {
+        init_jj_repo_with(true)
+    }
+
+    fn init_jj_repo_with(colocate: bool) -> Option<TempDir> {
         if Command::new("jj").arg("--version").output().is_err() {
             return None;
         }
         let repo_dir = TempDir::new().unwrap();
-        let status = Command::new("jj")
-            .arg("--quiet")
+        let mut init = Command::new("jj");
+        init.arg("--quiet");
+        if colocate {
+            init.arg("--config").arg("git.colocate=true");
+        } else {
+            init.arg("--config").arg("git.colocate=false");
+        }
+        let status = init
             .arg("git")
             .arg("init")
             .arg(repo_dir.path())

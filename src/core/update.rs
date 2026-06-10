@@ -135,7 +135,7 @@ fn fetch_manifest() -> Result<SignedUpdateManifest> {
     let url = manifest_url();
     let text = http::block_on(async {
         let response = reqwest::get(&url).await.map_err(|error| {
-            DiffyError::Http(format!("update manifest request failed: {error}"))
+            DiffyError::network(format!("update manifest request failed: {error}"))
         })?;
         http::response_text(response, "update manifest").await
     })?;
@@ -146,10 +146,10 @@ fn download_file(url: &str, path: &Path) -> Result<()> {
     let bytes = http::block_on(async {
         let response = reqwest::get(url)
             .await
-            .map_err(|error| DiffyError::Http(format!("update download failed: {error}")))?;
+            .map_err(|error| DiffyError::network(format!("update download failed: {error}")))?;
         http::response_bytes(response, "update download").await
     })?;
-    fs::write(path, bytes)?;
+    fs::write(path, bytes).map_err(|error| DiffyError::io(path, "write", error))?;
     Ok(())
 }
 
@@ -228,9 +228,9 @@ fn persist_update_artifact(path: &Path) -> Result<PathBuf> {
         .file_name()
         .ok_or_else(|| DiffyError::General("update artifact has no file name".to_owned()))?;
     let dir = env::temp_dir().join(format!("diffy-update-{}", std::process::id()));
-    fs::create_dir_all(&dir)?;
+    fs::create_dir_all(&dir).map_err(|error| DiffyError::io(&dir, "create", error))?;
     let dest = dir.join(file_name);
-    fs::copy(path, &dest)?;
+    fs::copy(path, &dest).map_err(|error| DiffyError::io(&dest, "write", error))?;
     Ok(dest)
 }
 

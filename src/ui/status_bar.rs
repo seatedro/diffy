@@ -51,13 +51,9 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
             )
         });
     let vcs_identity = profile.repository_identity_from_changes(&changes);
-    let has_remotes = state
-        .repository
-        .capabilities
-        .with(&state.store, |capabilities| {
-            capabilities.is_some_and(|capabilities| capabilities.remotes)
-        });
-    let publish_status = profile.publish_status_ui(&changes, &refs, has_remotes);
+    let publish_status = state.repository.publish_plan.with(&state.store, |plan| {
+        profile.publish_status_ui(&changes, &refs, plan.as_ref())
+    });
 
     let branch_children = if workspace_source == WorkspaceSource::TextCompare {
         None
@@ -105,6 +101,7 @@ pub(crate) fn status_bar(state: &AppState, theme: &Theme) -> AnyElement {
         .active_pr_review_status()
         .map(|summary| review_status(summary, theme, scale));
     let syntax_pack_child = state
+        .ui
         .syntax_pack_installs
         .with(&state.store, |active| !active.is_empty())
         .then(|| syntax_pack_status(state.clock_ms, theme, scale));

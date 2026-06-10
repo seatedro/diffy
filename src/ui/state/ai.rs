@@ -111,7 +111,7 @@ impl AppState {
         };
         if editing {
             self.set_focus(Some(target));
-        } else if self.focus.get(&self.store) == Some(target) {
+        } else if self.ui.focus.get(&self.store) == Some(target) {
             self.set_focus(None);
         }
         Vec::new()
@@ -205,5 +205,14 @@ impl AppState {
             })
             .into(),
         ]
+    }
+}
+
+impl AppState {
+    pub(super) fn ai_key_editable(&self, kind: AiKeyKind) -> bool {
+        match kind {
+            AiKeyKind::OpenAi => self.ai_openai_key.is_empty() || self.ai_openai_editing,
+            AiKeyKind::Anthropic => self.ai_anthropic_key.is_empty() || self.ai_anthropic_editing,
+        }
     }
 }

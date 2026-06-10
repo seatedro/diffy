@@ -42,7 +42,7 @@ impl AppState {
                 Vec::new()
             }
             AppAction::DismissToast(index) => {
-                self.toasts.update(&self.store, |toasts| {
+                self.ui.toasts.update(&self.store, |toasts| {
                     if index < toasts.len() {
                         toasts.remove(index);
                     }
@@ -52,7 +52,7 @@ impl AppState {
             AppAction::HoverToast(index) => {
                 let mut was_any_hovered = false;
                 let mut is_any_hovered = false;
-                self.toasts.update(&self.store, |toasts| {
+                self.ui.toasts.update(&self.store, |toasts| {
                     was_any_hovered = toasts.iter().any(|t| t.hovered);
                     let hovered_id = index.and_then(|i| toasts.get(i)).map(|t| t.id);
                     for toast in toasts.iter_mut() {
@@ -80,4 +80,20 @@ impl AppState {
             AppAction::Noop => Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StartupState {
+    pub keyring_enabled: bool,
+    pub github_token_store: GitHubTokenStore,
+    pub auto_compare_pending: bool,
+    pub bootstrap_compare_started: bool,
+    pub pending_pr_url: Option<String>,
+    pub preferred_file_index: Option<usize>,
+    pub preferred_file_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Store)]
+pub struct DebugState {
+    pub overlay_visible: bool,
 }

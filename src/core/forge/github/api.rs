@@ -326,10 +326,9 @@ impl GitHubApi {
             if !self.token.is_empty() {
                 request = request.header("Authorization", &format!("Bearer {}", self.token));
             }
-            let response = request
-                .send()
-                .await
-                .map_err(|error| DiffyError::Http(format!("GitHub user fetch failed: {error}")))?;
+            let response = request.send().await.map_err(|error| {
+                DiffyError::network(format!("GitHub user fetch failed: {error}"))
+            })?;
             http::response_text(response, "GitHub user fetch").await
         })?;
         let json: Value = serde_json::from_str(&body)?;
@@ -367,7 +366,7 @@ impl GitHubApi {
                 request = request.header("Authorization", &format!("Bearer {}", self.token));
             }
             let response = request.send().await.map_err(|error| {
-                DiffyError::Http(format!("GitHub pull request fetch failed: {error}"))
+                DiffyError::network(format!("GitHub pull request fetch failed: {error}"))
             })?;
             http::response_text(response, "GitHub pull request fetch").await
         })?;
@@ -427,7 +426,7 @@ impl GitHubApi {
                     request = request.header("Authorization", &format!("Bearer {}", self.token));
                 }
                 let response = request.send().await.map_err(|error| {
-                    DiffyError::Http(format!("GitHub review comments fetch failed: {error}"))
+                    DiffyError::network(format!("GitHub review comments fetch failed: {error}"))
                 })?;
                 let body = http::response_text(response, "GitHub review comments fetch").await?;
                 let mut page_comments: Vec<PullRequestReviewComment> = serde_json::from_str(&body)?;
@@ -450,7 +449,7 @@ impl GitHubApi {
         number: i32,
     ) -> Result<GitHubPullRequestReviewData> {
         if self.token.trim().is_empty() {
-            return Err(DiffyError::General(
+            return Err(DiffyError::auth(
                 "GitHub authentication is required to fetch pull request review data".to_owned(),
             ));
         }
@@ -510,7 +509,7 @@ impl GitHubApi {
         comment: &CreatePullRequestReviewComment,
     ) -> Result<PullRequestReviewComment> {
         if self.token.trim().is_empty() {
-            return Err(DiffyError::General(
+            return Err(DiffyError::auth(
                 "GitHub authentication is required to add review comments".to_owned(),
             ));
         }
@@ -528,7 +527,7 @@ impl GitHubApi {
                 .send()
                 .await
                 .map_err(|error| {
-                    DiffyError::Http(format!("GitHub review comment create failed: {error}"))
+                    DiffyError::network(format!("GitHub review comment create failed: {error}"))
                 })?;
             http::response_text(response, "GitHub review comment create").await
         })?;
@@ -544,7 +543,7 @@ impl GitHubApi {
         reply: &CreatePullRequestReviewReply,
     ) -> Result<PullRequestReviewComment> {
         if self.token.trim().is_empty() {
-            return Err(DiffyError::General(
+            return Err(DiffyError::auth(
                 "GitHub authentication is required to reply to review comments".to_owned(),
             ));
         }
@@ -564,7 +563,7 @@ impl GitHubApi {
                 .send()
                 .await
                 .map_err(|error| {
-                    DiffyError::Http(format!("GitHub review comment reply failed: {error}"))
+                    DiffyError::network(format!("GitHub review comment reply failed: {error}"))
                 })?;
             http::response_text(response, "GitHub review comment reply").await
         })?;
@@ -579,7 +578,7 @@ impl GitHubApi {
         update: &UpdatePullRequestReviewComment,
     ) -> Result<PullRequestReviewComment> {
         if self.token.trim().is_empty() {
-            return Err(DiffyError::General(
+            return Err(DiffyError::auth(
                 "GitHub authentication is required to update review comments".to_owned(),
             ));
         }
@@ -598,7 +597,7 @@ impl GitHubApi {
                 .send()
                 .await
                 .map_err(|error| {
-                    DiffyError::Http(format!("GitHub review comment update failed: {error}"))
+                    DiffyError::network(format!("GitHub review comment update failed: {error}"))
                 })?;
             http::response_text(response, "GitHub review comment update").await
         })?;
@@ -612,7 +611,7 @@ impl GitHubApi {
         comment_id: i64,
     ) -> Result<()> {
         if self.token.trim().is_empty() {
-            return Err(DiffyError::General(
+            return Err(DiffyError::auth(
                 "GitHub authentication is required to delete review comments".to_owned(),
             ));
         }
@@ -628,7 +627,7 @@ impl GitHubApi {
                 .send()
                 .await
                 .map_err(|error| {
-                    DiffyError::Http(format!("GitHub review comment delete failed: {error}"))
+                    DiffyError::network(format!("GitHub review comment delete failed: {error}"))
                 })?;
             http::response_text(response, "GitHub review comment delete").await
         })?;
@@ -643,7 +642,7 @@ impl GitHubApi {
         review: &CreatePullRequestReview,
     ) -> Result<PullRequestReview> {
         if self.token.trim().is_empty() {
-            return Err(DiffyError::General(
+            return Err(DiffyError::auth(
                 "GitHub authentication is required to create pull request reviews".to_owned(),
             ));
         }
@@ -661,7 +660,9 @@ impl GitHubApi {
                 .send()
                 .await
                 .map_err(|error| {
-                    DiffyError::Http(format!("GitHub pull request review create failed: {error}"))
+                    DiffyError::network(format!(
+                        "GitHub pull request review create failed: {error}"
+                    ))
                 })?;
             http::response_text(response, "GitHub pull request review create").await
         })?;
@@ -677,7 +678,7 @@ impl GitHubApi {
         submit: &SubmitPullRequestReview,
     ) -> Result<PullRequestReview> {
         if self.token.trim().is_empty() {
-            return Err(DiffyError::General(
+            return Err(DiffyError::auth(
                 "GitHub authentication is required to submit pull request reviews".to_owned(),
             ));
         }
@@ -697,7 +698,9 @@ impl GitHubApi {
                 .send()
                 .await
                 .map_err(|error| {
-                    DiffyError::Http(format!("GitHub pull request review submit failed: {error}"))
+                    DiffyError::network(format!(
+                        "GitHub pull request review submit failed: {error}"
+                    ))
                 })?;
             http::response_text(response, "GitHub pull request review submit").await
         })?;
@@ -711,7 +714,7 @@ impl GitHubApi {
         body: &str,
     ) -> Result<GitHubPullRequestReviewThreadComment> {
         if self.token.trim().is_empty() {
-            return Err(DiffyError::General(
+            return Err(DiffyError::auth(
                 "GitHub authentication is required to reply to review threads".to_owned(),
             ));
         }
@@ -737,7 +740,7 @@ impl GitHubApi {
         body: &str,
     ) -> Result<GitHubPullRequestReviewThreadComment> {
         if self.token.trim().is_empty() {
-            return Err(DiffyError::General(
+            return Err(DiffyError::auth(
                 "GitHub authentication is required to update review comments".to_owned(),
             ));
         }
@@ -761,7 +764,7 @@ impl GitHubApi {
         comment_node_id: &str,
     ) -> Result<Option<GitHubPullRequestReviewThreadComment>> {
         if self.token.trim().is_empty() {
-            return Err(DiffyError::General(
+            return Err(DiffyError::auth(
                 "GitHub authentication is required to delete review comments".to_owned(),
             ));
         }
@@ -783,7 +786,7 @@ impl GitHubApi {
         resolved: bool,
     ) -> Result<GitHubReviewThreadResolution> {
         if self.token.trim().is_empty() {
-            return Err(DiffyError::General(
+            return Err(DiffyError::auth(
                 "GitHub authentication is required to update review thread resolution".to_owned(),
             ));
         }
@@ -831,7 +834,7 @@ impl GitHubApi {
                 .send()
                 .await
                 .map_err(|error| {
-                    DiffyError::Http(format!("GitHub GraphQL request failed: {error}"))
+                    DiffyError::network(format!("GitHub GraphQL request failed: {error}"))
                 })?;
             http::response_text(response, "GitHub GraphQL request").await
         })?;
@@ -839,7 +842,7 @@ impl GitHubApi {
         if let Some(errors) = value.get("errors").and_then(Value::as_array)
             && !errors.is_empty()
         {
-            return Err(DiffyError::Http(format!(
+            return Err(DiffyError::network_fatal(format!(
                 "GitHub GraphQL request failed: {}",
                 graphql_error_message(errors)
             )));

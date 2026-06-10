@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use halogen::Store;
 
@@ -81,7 +82,8 @@ impl ViewportTextSelection {
 pub struct SearchState {
     pub open: bool,
     pub query: String,
-    pub matches: Vec<SearchMatch>,
+    /// Shared so per-frame snapshots are pointer bumps, not Vec clones.
+    pub matches: Arc<Vec<SearchMatch>>,
     pub active_index: Option<usize>,
 }
 
@@ -90,7 +92,7 @@ impl Default for SearchState {
         Self {
             open: false,
             query: String::new(),
-            matches: Vec::new(),
+            matches: Arc::default(),
             active_index: None,
         }
     }
@@ -101,6 +103,12 @@ pub struct EditorState {
     pub layout: LayoutMode,
     pub wrap_enabled: bool,
     pub wrap_column: u32,
+    /// Compare generation the document geometry below (scroll, content
+    /// height, visible rows, hunk/file positions) was last prepared for.
+    /// `0` means "no document". Lets prepare re-clamp scroll when a new
+    /// compare generation replaces the active document and lets paint guard
+    /// against layout/state mismatches without panicking.
+    pub doc_generation: u64,
     pub scroll_top_px: u32,
     pub content_height_px: u32,
     pub viewport_width_px: u32,
@@ -113,11 +121,13 @@ pub struct EditorState {
     pub visible_row_end: Option<usize>,
     pub focused: bool,
     pub review_enabled: bool,
-    pub hunk_positions: Vec<u32>,
-    pub file_positions: Vec<u32>,
+    /// Arc-shared so per-frame snapshot reads and `set_if_changed`
+    /// write-backs are pointer swaps/compares instead of Vec clones.
+    pub hunk_positions: Arc<Vec<u32>>,
+    pub file_positions: Arc<Vec<u32>>,
     #[store(flatten)]
     pub search: SearchState,
-    pub search_match_y_positions: Vec<u32>,
+    pub search_match_y_positions: Arc<Vec<u32>>,
     pub line_selection: LineSelection,
     pub text_selection: Option<ViewportTextSelection>,
 }
@@ -195,6 +205,7 @@ impl Default for EditorState {
             layout: LayoutMode::Unified,
             wrap_enabled: false,
             wrap_column: 0,
+            doc_generation: 0,
             scroll_top_px: 0,
             content_height_px: 0,
             viewport_width_px: 0,
@@ -207,10 +218,10 @@ impl Default for EditorState {
             visible_row_end: None,
             focused: false,
             review_enabled: false,
-            hunk_positions: Vec::new(),
-            file_positions: Vec::new(),
+            hunk_positions: Arc::default(),
+            file_positions: Arc::default(),
             search: SearchState::default(),
-            search_match_y_positions: Vec::new(),
+            search_match_y_positions: Arc::default(),
             line_selection: LineSelection::default(),
             text_selection: None,
         }
@@ -219,6 +230,7 @@ impl Default for EditorState {
 
 impl EditorState {
     pub fn clear_document(&mut self) {
+        self.doc_generation = 0;
         self.scroll_top_px = 0;
         self.content_height_px = 0;
         self.hovered_row = None;
@@ -228,9 +240,17 @@ impl EditorState {
         self.visible_row_start = None;
         self.visible_row_end = None;
         self.review_enabled = false;
-        self.hunk_positions.clear();
-        self.file_positions.clear();
-        self.search_match_y_positions.clear();
+        // Swap in empty Arcs (only when non-empty, to avoid churning
+        // allocations when this runs every frame without a document).
+        if !self.hunk_positions.is_empty() {
+            self.hunk_positions = Arc::default();
+        }
+        if !self.file_positions.is_empty() {
+            self.file_positions = Arc::default();
+        }
+        if !self.search_match_y_positions.is_empty() {
+            self.search_match_y_positions = Arc::default();
+        }
         self.line_selection.clear();
         self.text_selection = None;
     }

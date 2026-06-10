@@ -12,6 +12,7 @@ pub(super) fn reduce_event(state: &mut AppState, event: UpdateEvent) -> Vec<Effe
     match event {
         UpdateEvent::UpdateAvailable { update, silent } => {
             state
+                .ui
                 .update
                 .set(&state.store, UpdateState::Downloading(update.clone()));
             if !silent {
@@ -20,7 +21,7 @@ pub(super) fn reduce_event(state: &mut AppState, event: UpdateEvent) -> Vec<Effe
             vec![UpdateEffect::StageUpdate { update, silent }.into()]
         }
         UpdateEvent::UpdateNotAvailable { silent } => {
-            state.update.set(&state.store, UpdateState::Idle);
+            state.ui.update.set(&state.store, UpdateState::Idle);
             if !silent {
                 state.push_info("Diffy is up to date.");
             }
@@ -29,6 +30,7 @@ pub(super) fn reduce_event(state: &mut AppState, event: UpdateEvent) -> Vec<Effe
         UpdateEvent::UpdateCheckFailed { message, silent } => {
             if !silent {
                 state
+                    .ui
                     .update
                     .set(&state.store, UpdateState::Failed(message.clone()));
                 state.push_error(&message);
@@ -38,6 +40,7 @@ pub(super) fn reduce_event(state: &mut AppState, event: UpdateEvent) -> Vec<Effe
         UpdateEvent::UpdateStaged { staged, silent } => {
             let version = staged.update.version.clone();
             state
+                .ui
                 .update
                 .set(&state.store, UpdateState::ReadyToRestart(staged));
             if !silent {
@@ -47,9 +50,10 @@ pub(super) fn reduce_event(state: &mut AppState, event: UpdateEvent) -> Vec<Effe
         }
         UpdateEvent::UpdateInstallFailed { message, silent } => {
             if silent {
-                state.update.set(&state.store, UpdateState::Idle);
+                state.ui.update.set(&state.store, UpdateState::Idle);
             } else {
                 state
+                    .ui
                     .update
                     .set(&state.store, UpdateState::Failed(message.clone()));
                 state.push_error(&message);
@@ -63,13 +67,14 @@ impl AppState {
     pub(super) fn apply_update_action(&mut self, action: UpdateAction) -> Vec<Effect> {
         match action {
             UpdateAction::CheckForUpdates => {
-                self.update.set(&self.store, UpdateState::Checking);
+                self.ui.update.set(&self.store, UpdateState::Checking);
                 vec![UpdateEffect::CheckForUpdates { silent: false }.into()]
             }
             UpdateAction::InstallUpdate => {
-                let update = self.update.get(&self.store);
+                let update = self.ui.update.get(&self.store);
                 if let UpdateState::Available(update) = update {
-                    self.update
+                    self.ui
+                        .update
                         .set(&self.store, UpdateState::Downloading(update.clone()));
                     vec![
                         UpdateEffect::StageUpdate {
@@ -83,9 +88,10 @@ impl AppState {
                 }
             }
             UpdateAction::RestartToUpdate => {
-                let update = self.update.get(&self.store);
+                let update = self.ui.update.get(&self.store);
                 if let UpdateState::ReadyToRestart(staged) = update {
-                    self.update
+                    self.ui
+                        .update
                         .set(&self.store, UpdateState::Restarting(staged.clone()));
                     vec![UpdateEffect::ApplyStagedUpdate(staged).into()]
                 } else {
@@ -94,4 +100,16 @@ impl AppState {
             }
         }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum UpdateState {
+    #[default]
+    Idle,
+    Checking,
+    Available(AvailableUpdate),
+    Downloading(AvailableUpdate),
+    ReadyToRestart(StagedUpdate),
+    Restarting(StagedUpdate),
+    Failed(String),
 }

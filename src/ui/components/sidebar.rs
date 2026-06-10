@@ -99,7 +99,7 @@ impl<'a> Sidebar<'a> {
         };
 
         let total_height = state.file_list_total_content_height(file_count);
-        let scroll_px = state.file_list.scroll_offset_px.get(&state.store);
+        let cx = &*state.store;
 
         view! { scale,
             <div class="flex-col flex-shrink-0 overflow-hidden h-full"
@@ -135,7 +135,7 @@ impl<'a> Sidebar<'a> {
                          semantic_role={SemanticRole::ScrollArea}
                          px={Sp::LG / Sp::XXS}
                          gap={Sp::XS}
-                         scroll_y={scroll_px}
+                         scroll_y={@state.file_list.scroll_offset_px}
                          scroll_total={total_height}
                          on_scroll={ScrollActionBuilder::FileList}>
                         for index in 0..file_count {

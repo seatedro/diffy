@@ -22,7 +22,9 @@ use crate::ui::state::{
 use crate::ui::style::Styled;
 use crate::ui::theme::{Color, Theme};
 use crate::ui::vcs::change_summary_label;
-use crate::ui::virtual_list::virtual_list_window;
+use crate::ui::virtual_list::{
+    build_sectioned_rows, virtual_list_window, virtual_row_wrapper_extent,
+};
 
 pub(crate) struct SidebarResizeDrag {
     origin_x: f32,
@@ -73,38 +75,16 @@ fn build_sidebar_rows<'a>(
     filtered_indices: &[usize],
     status_changes: Option<&[FileChange]>,
 ) -> Vec<SidebarRow<'a>> {
-    let mut rows = Vec::with_capacity(filtered_indices.len());
-    let mut last_bucket = None;
-
-    for &index in filtered_indices {
-        let Some(entry) = all_files.get(index) else {
-            continue;
-        };
-        let bucket =
-            status_changes.and_then(|changes| changes.get(index).map(|change| change.bucket));
-        if bucket != last_bucket {
-            if let Some(bucket) = bucket {
-                rows.push(SidebarRow::Section(bucket));
-            }
-            last_bucket = bucket;
-        }
-        rows.push(SidebarRow::File { index, entry });
-    }
-
-    rows
-}
-
-fn sidebar_row_wrapper_height(
-    global_index: usize,
-    total_rows: usize,
-    row_height: f32,
-    stride: f32,
-) -> f32 {
-    if global_index + 1 == total_rows {
-        row_height
-    } else {
-        stride
-    }
+    build_sectioned_rows(
+        filtered_indices,
+        |index| status_changes.and_then(|changes| changes.get(index).map(|change| change.bucket)),
+        |&bucket| SidebarRow::Section(bucket),
+        |index| {
+            all_files
+                .get(index)
+                .map(|entry| SidebarRow::File { index, entry })
+        },
+    )
 }
 
 fn render_sidebar_row(
@@ -647,7 +627,7 @@ pub(crate) fn sidebar(
         let rendered_rows: Vec<AnyElement> = visible_files
             .iter()
             .map(|(index, entry)| {
-                let wrapper_height = sidebar_row_wrapper_height(*index, file_count, row_h, stride);
+                let wrapper_height = virtual_row_wrapper_extent(*index, file_count, row_h, stride);
                 view! { scale,
                     <div class="w-full shrink-0 overflow-hidden" h={wrapper_height}>
                         {file_row(entry, *index, state, tc, scale, selected_index)}
@@ -759,18 +739,7 @@ pub(crate) fn sidebar(
             let all_files = (0..file_count)
                 .filter_map(|index| state.workspace_file_entry_at(index))
                 .collect::<Vec<_>>();
-            let rows = if grouped_status {
-                build_sidebar_rows(&all_files, &filtered_indices, status_rows.as_deref())
-            } else {
-                filtered_indices
-                    .iter()
-                    .filter_map(|&index| {
-                        all_files
-                            .get(index)
-                            .map(|entry| SidebarRow::File { index, entry })
-                    })
-                    .collect()
-            };
+            let rows = build_sidebar_rows(&all_files, &filtered_indices, status_rows.as_deref());
             let scroll_px = state.file_list.scroll_offset_px.get(&state.store);
             let stride = state.file_list_row_stride();
             let viewport_height = state.file_list.viewport_height.get(&state.store);
@@ -794,7 +763,7 @@ pub(crate) fn sidebar(
                 .map(|(offset, row)| {
                     let global_index = window.start + offset;
                     let wrapper_height =
-                        sidebar_row_wrapper_height(global_index, rows.len(), row_h, stride);
+                        virtual_row_wrapper_extent(global_index, rows.len(), row_h, stride);
                     view! { scale,
                         <div class="w-full shrink-0 overflow-hidden" h={wrapper_height}>
                             {render_sidebar_row(*row, state, tc, scale, row_h, selected_index)}

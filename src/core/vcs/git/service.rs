@@ -12,7 +12,7 @@ use crate::core::compare::backends::{RENAME_DETECTION_LIMIT, compare_output_from
 use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::CompareMode;
 use crate::core::compare::stats::COMPARE_SUMMARY_FILE_LIMIT;
-use crate::core::error::{DiffyError, Result};
+use crate::core::error::{DiffyError, Result, VcsBackendKind};
 use crate::core::forge::github::{GitHubApi, PullRequestInfo, parse_pr_url};
 use crate::core::vcs::git::status::{StatusBits, StatusItem, StatusOperation, StatusScope};
 
@@ -104,6 +104,10 @@ pub fn pr_ref_path(pr_number: i32, branch: &str) -> String {
     format!("{PR_REF_PREFIX}{pr_number}/{branch}")
 }
 
+pub fn is_pr_ref(reference: &str) -> bool {
+    reference.starts_with(PR_REF_PREFIX)
+}
+
 /// Remove stale refs from prior fetches for this PR. Keeps only the targets
 /// the latest fetch wrote, and also cleans up the old `refs/diffy/pull/{N}/*`
 /// scheme we used to use. Uses a prefix filter so branch names with slashes are
@@ -164,7 +168,7 @@ fn git_workdir(repo: &gix::Repository) -> Result<PathBuf> {
     repo.workdir()
         .map(Path::to_path_buf)
         .or_else(|| repo.git_dir().parent().map(Path::to_path_buf))
-        .ok_or_else(|| DiffyError::General("repository has no working directory".to_owned()))
+        .ok_or_else(|| git_error_fatal("open", "repository has no working directory"))
 }
 
 struct GitOutput {
@@ -196,7 +200,7 @@ fn run_system_git_inner(
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .output()
-        .map_err(|e| DiffyError::General(format!("failed to run git: {e}")))?;
+        .map_err(|e| git_error_fatal(git_command_label(args), format!("failed to run git: {e}")))?;
 
     if output.status.success() || (allow_diff_exit && output.status.code() == Some(1)) {
         return Ok(GitOutput {
@@ -214,9 +218,30 @@ fn run_system_git_inner(
         .map(str::to_owned)
         .unwrap_or_else(|| format!("git exited with {}", output.status));
     let command = git_command_label(args);
-    Err(DiffyError::General(format!(
-        "git {command} failed: {detail}"
-    )))
+    if failure_is_network(&detail) {
+        return Err(DiffyError::network(format!(
+            "git {command} failed: {detail}"
+        )));
+    }
+    Err(git_error(command, detail))
+}
+
+/// Heuristic for remote-operation failures (fetch/push/pull) caused by the
+/// network rather than repository state, so the UI can suggest retrying.
+fn failure_is_network(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    [
+        "could not resolve host",
+        "connection refused",
+        "connection reset",
+        "connection timed out",
+        "operation timed out",
+        "network is unreachable",
+        "could not read from remote repository",
+        "unable to access",
+    ]
+    .iter()
+    .any(|needle| detail.contains(needle))
 }
 
 fn git_command_label(args: &[OsString]) -> String {
@@ -256,8 +281,16 @@ fn sanitize_git_arg(arg: &str) -> String {
     }
 }
 
+fn git_error(op: impl Into<String>, details: impl Into<String>) -> DiffyError {
+    DiffyError::vcs(VcsBackendKind::Git, op, details)
+}
+
+fn git_error_fatal(op: impl Into<String>, details: impl Into<String>) -> DiffyError {
+    DiffyError::vcs_fatal(VcsBackendKind::Git, op, details)
+}
+
 fn gix_error(error: impl std::fmt::Display) -> DiffyError {
-    DiffyError::General(format!("Gitoxide error: {error}"))
+    git_error("repository read", error.to_string())
 }
 
 fn github_repo_key_from_remote_url(url: &str) -> Option<(String, String)> {
@@ -453,41 +486,68 @@ impl GitService {
     }
 
     pub fn branches(&self) -> Result<Vec<BranchInfo>> {
+        Ok(self.branches_and_tags()?.0)
+    }
+
+    pub fn tags(&self) -> Result<Vec<TagInfo>> {
+        Ok(self.branches_and_tags()?.1)
+    }
+
+    /// List branches and tags with a single `for-each-ref` invocation. The
+    /// snapshot path needs both, and one subprocess per refresh is cheaper
+    /// than two on repositories with many refs.
+    pub fn branches_and_tags(&self) -> Result<(Vec<BranchInfo>, Vec<TagInfo>)> {
         let output = run_system_git_capture(
             self.repo_path_ref()?,
             &[
                 OsString::from("for-each-ref"),
                 OsString::from(
-                    "--format=%(refname)%00%(refname:short)%00%(objectname)%00%(upstream:short)%00%(upstream:track)%00%(HEAD)",
+                    "--format=%(refname)%00%(refname:short)%00%(objectname)%00%(*objectname)%00%(upstream:short)%00%(upstream:track)%00%(HEAD)",
                 ),
                 OsString::from("refs/heads"),
                 OsString::from("refs/remotes"),
+                OsString::from("refs/tags"),
             ],
         )?;
         let mut branches = Vec::new();
+        let mut tags = Vec::new();
         for line in output.stdout.split(|byte| *byte == b'\n') {
             if line.is_empty() {
                 continue;
             }
             let fields = line.split(|byte| *byte == 0).collect::<Vec<_>>();
-            if fields.len() < 6 {
+            if fields.len() < 7 {
                 continue;
             }
             let full_name = String::from_utf8_lossy(fields[0]);
             let name = String::from_utf8_lossy(fields[1]).to_string();
-            let target_oid = String::from_utf8_lossy(fields[2]).to_string();
+            if full_name.starts_with("refs/tags/") {
+                // Annotated tags carry the peeled commit in `%(*objectname)`;
+                // lightweight tags only fill `%(objectname)`.
+                let peeled = if fields[3].is_empty() {
+                    fields[2]
+                } else {
+                    fields[3]
+                };
+                tags.push(TagInfo {
+                    name,
+                    target_oid: String::from_utf8_lossy(peeled).to_string(),
+                });
+                continue;
+            }
             if name.ends_with("/HEAD") {
                 continue;
             }
             let is_remote = full_name.starts_with("refs/remotes/");
+            let target_oid = String::from_utf8_lossy(fields[2]).to_string();
             let upstream =
-                (!fields[3].is_empty()).then(|| String::from_utf8_lossy(fields[3]).to_string());
+                (!fields[4].is_empty()).then(|| String::from_utf8_lossy(fields[4]).to_string());
             let ahead_behind = if is_remote {
                 None
             } else {
-                parse_upstream_track(upstream.as_ref(), &String::from_utf8_lossy(fields[4]))
+                parse_upstream_track(upstream.as_ref(), &String::from_utf8_lossy(fields[5]))
             };
-            let is_head = !is_remote && fields[5] == b"*";
+            let is_head = !is_remote && fields[6] == b"*";
             branches.push(BranchInfo {
                 name,
                 is_remote,
@@ -504,42 +564,8 @@ impl GitService {
             },
             other => other,
         });
-        Ok(branches)
-    }
-
-    pub fn tags(&self) -> Result<Vec<TagInfo>> {
-        let output = run_system_git_capture(
-            self.repo_path_ref()?,
-            &[
-                OsString::from("for-each-ref"),
-                OsString::from("--format=%(refname:short)%00%(*objectname)%00%(objectname)"),
-                OsString::from("refs/tags"),
-            ],
-        )?;
-        let mut tags = output
-            .stdout
-            .split(|byte| *byte == b'\n')
-            .filter_map(|line| {
-                if line.is_empty() {
-                    return None;
-                }
-                let fields = line.split(|byte| *byte == 0).collect::<Vec<_>>();
-                if fields.len() < 3 {
-                    return None;
-                }
-                let peeled = if fields[1].is_empty() {
-                    fields[2]
-                } else {
-                    fields[1]
-                };
-                Some(TagInfo {
-                    name: String::from_utf8_lossy(fields[0]).to_string(),
-                    target_oid: String::from_utf8_lossy(peeled).to_string(),
-                })
-            })
-            .collect::<Vec<_>>();
         tags.sort_by(|left, right| left.name.cmp(&right.name));
-        Ok(tags)
+        Ok((branches, tags))
     }
 
     pub fn commits(&self, reference: &str, max_count: usize) -> Result<Vec<CommitInfo>> {
@@ -615,7 +641,10 @@ impl GitService {
         let entry = index
             .entry_by_path(path.as_bytes().as_bstr())
             .ok_or_else(|| {
-                DiffyError::General(format!("path {path} is not present at {INDEX_REF}"))
+                git_error(
+                    "read file",
+                    format!("path {path} is not present at {INDEX_REF}"),
+                )
             })?;
         Ok(self
             .repo()?
@@ -648,10 +677,16 @@ impl GitService {
             .lookup_entry_by_path(path)
             .map_err(gix_error)?
             .ok_or_else(|| {
-                DiffyError::General(format!("path {path} is not present at {reference}"))
+                git_error(
+                    "read file",
+                    format!("path {path} is not present at {reference}"),
+                )
             })?;
         if !entry.mode().is_blob_or_symlink() {
-            return Err(DiffyError::General(format!("path {path} is not a file")));
+            return Err(git_error_fatal(
+                "read file",
+                format!("path {path} is not a file"),
+            ));
         }
         Ok(self
             .repo()?
@@ -702,15 +737,17 @@ impl GitService {
 
     fn validate_text_bytes(reference: &str, path: &str, bytes: &[u8]) -> Result<()> {
         if bytes.contains(&0u8) {
-            return Err(DiffyError::General(format!(
-                "path {path} is binary at {reference}",
-            )));
+            return Err(git_error_fatal(
+                "read file",
+                format!("path {path} is binary at {reference}"),
+            ));
         }
 
         std::str::from_utf8(bytes).map_err(|e| {
-            DiffyError::General(format!(
-                "path {path} at {reference} is not valid UTF-8: {e}"
-            ))
+            git_error_fatal(
+                "read file",
+                format!("path {path} at {reference} is not valid UTF-8: {e}"),
+            )
         })?;
         Ok(())
     }
@@ -1338,15 +1375,26 @@ impl GitService {
         Ok(id)
     }
 
+    /// Subject line of the commit at `oid`, equivalent to
+    /// `git log -n1 --format=%s` (whitespace in the title folded to single
+    /// spaces) but answered from the gix object store without a subprocess.
+    pub fn commit_summary(&self, oid: &str) -> Result<String> {
+        let commit = self
+            .repo()?
+            .find_commit(gix_object_id(oid)?)
+            .map_err(gix_error)?;
+        Ok(commit.message().map_err(gix_error)?.summary().to_string())
+    }
+
     pub fn repo(&self) -> Result<&gix::Repository> {
         self.repo
             .as_ref()
-            .ok_or_else(|| DiffyError::General("repository is not open".to_owned()))
+            .ok_or_else(|| git_error_fatal("open", "repository is not open"))
     }
 
     fn repo_path_ref(&self) -> Result<&Path> {
         if self.repo_path.is_empty() {
-            return Err(DiffyError::General("repository is not open".to_owned()));
+            return Err(git_error_fatal("open", "repository is not open"));
         }
         Ok(Path::new(&self.repo_path))
     }
@@ -1430,22 +1478,19 @@ impl GitService {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .map_err(|e| DiffyError::General(format!("failed to run git apply: {e}")))?;
+            .map_err(|e| git_error_fatal("apply", format!("failed to run git apply: {e}")))?;
         use std::io::Write;
         child
             .stdin
             .as_mut()
-            .ok_or_else(|| DiffyError::General("failed to open git apply stdin".to_owned()))?
+            .ok_or_else(|| git_error_fatal("apply", "failed to open git apply stdin"))?
             .write_all(patch_text.as_bytes())?;
         let output = child.wait_with_output()?;
         if output.status.success() {
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(DiffyError::General(format!(
-                "git apply failed: {}",
-                stderr.trim()
-            )))
+            Err(git_error("apply", stderr.trim()))
         }
     }
 
@@ -1802,7 +1847,7 @@ fn fixed_short_oid(oid: &str) -> &str {
     oid.get(..8).unwrap_or(oid)
 }
 
-fn is_full_hex_oid(value: &str) -> bool {
+pub(crate) fn is_full_hex_oid(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
@@ -1815,7 +1860,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        INDEX_REF, PR_REF_PREFIX, WORKDIR_REF, github_fetch_source_for_repo,
+        INDEX_REF, PR_REF_PREFIX, WORKDIR_REF, github_fetch_source_for_repo, is_pr_ref,
         github_repo_key_from_remote_url, github_repo_url_from_remote_transport,
         local_remote_for_github_repo, parse_porcelain_status, parse_shortstat, pr_ref_path,
     };
@@ -1915,6 +1960,9 @@ mod tests {
             "refs/diffy/pr/77/feat/new-thing"
         );
         assert!(pr_ref_path(1, "x").starts_with(PR_REF_PREFIX));
+        assert!(is_pr_ref(&pr_ref_path(12, "main")));
+        assert!(!is_pr_ref("refs/heads/main"));
+        assert!(!is_pr_ref("@workdir"));
     }
 
     #[test]

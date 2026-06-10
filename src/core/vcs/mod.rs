@@ -1,4 +1,5 @@
 pub mod backend;
+pub mod cache;
 pub mod discovery;
 pub mod git;
 pub mod jj;

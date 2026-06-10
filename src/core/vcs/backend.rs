@@ -5,7 +5,7 @@ use carbon::TextStore;
 use crate::core::compare::{
     CompareFileStatsTarget, CompareFileSummary, CompareOutput, ProgressSink, RendererKind,
 };
-use crate::core::error::Result;
+use crate::core::error::{DiffyError, Result, VcsBackendKind};
 use crate::core::forge::github::PullRequestInfo;
 use crate::core::vcs::model::{
     FileChange, FileOperation, PublishAction, PublishOutcome, PublishPlan, PullFastForwardOutcome,
@@ -13,6 +13,15 @@ use crate::core::vcs::model::{
     VcsOperation, VcsSnapshot,
 };
 use crate::events::RepositorySyncReason;
+
+fn unsupported_operation(location: &RepoLocation, op: &str) -> DiffyError {
+    let backend = if location.kind == VcsKind::JJ {
+        VcsBackendKind::Jj
+    } else {
+        VcsBackendKind::Git
+    };
+    DiffyError::vcs_fatal(backend, op, "not supported by this backend")
+}
 
 pub trait VcsBackend: Send + Sync {
     fn kind(&self) -> VcsKind;
@@ -77,23 +86,17 @@ pub trait VcsRepository: Send {
         _change: &FileChange,
         _renderer: RendererKind,
     ) -> Result<CompareOutput> {
-        Err(crate::core::error::DiffyError::General(
-            "file-change diff unsupported by this backend".to_owned(),
-        ))
+        Err(unsupported_operation(self.location(), "file-change diff"))
     }
     fn commit_diff(&mut self, _has_staged: bool) -> Result<String> {
-        Err(crate::core::error::DiffyError::General(
-            "commit diff unsupported by this backend".to_owned(),
-        ))
+        Err(unsupported_operation(self.location(), "commit diff"))
     }
     fn apply_file_operation(
         &mut self,
         _change: &FileChange,
         _operation: FileOperation,
     ) -> Result<()> {
-        Err(crate::core::error::DiffyError::General(
-            "file operation unsupported by this backend".to_owned(),
-        ))
+        Err(unsupported_operation(self.location(), "file operation"))
     }
     fn apply_batch_file_operation(
         &mut self,
@@ -106,56 +109,41 @@ pub trait VcsRepository: Send {
         Ok(())
     }
     fn apply_patch_operation(&mut self, _patch: &str, _operation: FileOperation) -> Result<()> {
-        Err(crate::core::error::DiffyError::General(
-            "patch operation unsupported by this backend".to_owned(),
-        ))
+        Err(unsupported_operation(self.location(), "patch operation"))
     }
     fn create_commit(&mut self, _message: &str) -> Result<()> {
-        Err(crate::core::error::DiffyError::General(
-            "commit unsupported by this backend".to_owned(),
-        ))
+        Err(unsupported_operation(self.location(), "commit"))
     }
     fn run_operation(&mut self, _operation: &VcsOperation) -> Result<String> {
-        Err(crate::core::error::DiffyError::General(
-            "operation unsupported by this backend".to_owned(),
-        ))
+        Err(unsupported_operation(self.location(), "operation"))
     }
     fn fetch_remote(&mut self, _remote: &str) -> Result<()> {
-        Err(crate::core::error::DiffyError::General(
-            "fetch unsupported by this backend".to_owned(),
-        ))
+        Err(unsupported_operation(self.location(), "fetch"))
     }
     fn push(&mut self, _remote: &str, _refspec: &str, _force_with_lease: bool) -> Result<()> {
-        Err(crate::core::error::DiffyError::General(
-            "push unsupported by this backend".to_owned(),
-        ))
+        Err(unsupported_operation(self.location(), "push"))
     }
     fn publish_plan(&mut self) -> Result<PublishPlan> {
-        Err(crate::core::error::DiffyError::General(
-            "publish unsupported by this backend".to_owned(),
-        ))
+        Err(unsupported_operation(self.location(), "publish"))
     }
     fn publish(&mut self, _action: &PublishAction) -> Result<PublishOutcome> {
-        Err(crate::core::error::DiffyError::General(
-            "publish unsupported by this backend".to_owned(),
-        ))
+        Err(unsupported_operation(self.location(), "publish"))
     }
     fn pull_fast_forward(
         &mut self,
         _remote: &str,
         _branch: &str,
     ) -> Result<PullFastForwardOutcome> {
-        Err(crate::core::error::DiffyError::General(
-            "fast-forward pull unsupported by this backend".to_owned(),
-        ))
+        Err(unsupported_operation(self.location(), "fast-forward pull"))
     }
     fn resolve_pull_request_comparison(
         &mut self,
         _pull_request_url: &str,
         _github_token: &str,
     ) -> Result<(PullRequestInfo, String, String)> {
-        Err(crate::core::error::DiffyError::General(
-            "GitHub pull request comparison unsupported by this backend".to_owned(),
+        Err(unsupported_operation(
+            self.location(),
+            "GitHub pull request comparison",
         ))
     }
     fn compare_working_file(&mut self, path: &str) -> Result<CompareOutput>;

@@ -22,13 +22,28 @@ const VCS_DIRTY_DEBOUNCE: Duration = Duration::from_millis(150);
 
 pub struct VcsWorker {
     sender: Sender<VcsWorkerCommand>,
+    event_sender: RuntimeEventSender,
 }
 
 impl VcsWorker {
     pub fn new(event_sender: RuntimeEventSender) -> Self {
         let (sender, receiver) = mpsc::channel();
-        thread::spawn(move || vcs_worker_loop(event_sender, receiver));
-        Self { sender }
+        let worker_events = event_sender.clone();
+        thread::spawn(move || vcs_worker_loop(worker_events, receiver));
+        Self {
+            sender,
+            event_sender,
+        }
+    }
+
+    /// Sends a command to the worker thread. If the thread died, every repo
+    /// operation would otherwise silently evaporate, so report it through the
+    /// runtime event loop where state turns it into a visible error.
+    fn send(&self, command: VcsWorkerCommand) {
+        if self.sender.send(command).is_err() {
+            tracing::error!("VCS worker thread stopped; dropping repository command");
+            self.event_sender.send(RepositoryEvent::WorkerStopped);
+        }
     }
 
     pub fn dispatch_sync(
@@ -37,7 +52,7 @@ impl VcsWorker {
         reason: RepositorySyncReason,
         reporter_generation: Option<u64>,
     ) {
-        let _ = self.sender.send(VcsWorkerCommand::Sync {
+        self.send(VcsWorkerCommand::Sync {
             path,
             reason,
             reporter_generation,
@@ -50,7 +65,7 @@ impl VcsWorker {
         file_change: FileChange,
         operation: FileOperation,
     ) {
-        let _ = self.sender.send(VcsWorkerCommand::ApplyOperation {
+        self.send(VcsWorkerCommand::ApplyOperation {
             path,
             file_change,
             operation,
@@ -63,7 +78,7 @@ impl VcsWorker {
         file_changes: Vec<FileChange>,
         operation: FileOperation,
     ) {
-        let _ = self.sender.send(VcsWorkerCommand::ApplyBatchOperation {
+        self.send(VcsWorkerCommand::ApplyBatchOperation {
             path,
             file_changes,
             operation,
@@ -77,7 +92,7 @@ impl VcsWorker {
         bucket: ChangeBucket,
         operation: FileOperation,
     ) {
-        let _ = self.sender.send(VcsWorkerCommand::ApplyPatch {
+        self.send(VcsWorkerCommand::ApplyPatch {
             path,
             patch,
             bucket,
@@ -86,7 +101,7 @@ impl VcsWorker {
     }
 
     pub fn dispatch_commit(&self, path: PathBuf, message: String) {
-        let _ = self.sender.send(VcsWorkerCommand::Commit { path, message });
+        self.send(VcsWorkerCommand::Commit { path, message });
     }
 
     pub fn dispatch_operation_command(
@@ -95,7 +110,7 @@ impl VcsWorker {
         operation: VcsOperation,
         toast_id: u64,
     ) {
-        let _ = self.sender.send(VcsWorkerCommand::RunOperation {
+        self.send(VcsWorkerCommand::RunOperation {
             path,
             operation,
             toast_id,
@@ -103,7 +118,7 @@ impl VcsWorker {
     }
 
     pub fn dispatch_fetch(&self, path: PathBuf, remote: String, toast_id: u64) {
-        let _ = self.sender.send(VcsWorkerCommand::Fetch {
+        self.send(VcsWorkerCommand::Fetch {
             path,
             remote,
             toast_id,
@@ -118,7 +133,7 @@ impl VcsWorker {
         force_with_lease: bool,
         toast_id: u64,
     ) {
-        let _ = self.sender.send(VcsWorkerCommand::Push {
+        self.send(VcsWorkerCommand::Push {
             path,
             remote,
             refspec,
@@ -128,7 +143,7 @@ impl VcsWorker {
     }
 
     pub fn dispatch_publish(&self, path: PathBuf, action: Option<PublishAction>, toast_id: u64) {
-        let _ = self.sender.send(VcsWorkerCommand::Publish {
+        self.send(VcsWorkerCommand::Publish {
             path,
             action,
             toast_id,
@@ -136,13 +151,11 @@ impl VcsWorker {
     }
 
     pub fn dispatch_publish_plan(&self, path: PathBuf, toast_id: Option<u64>) {
-        let _ = self
-            .sender
-            .send(VcsWorkerCommand::PublishPlan { path, toast_id });
+        self.send(VcsWorkerCommand::PublishPlan { path, toast_id });
     }
 
     pub fn dispatch_pull_ff(&self, path: PathBuf, remote: String, branch: String, toast_id: u64) {
-        let _ = self.sender.send(VcsWorkerCommand::PullFf {
+        self.send(VcsWorkerCommand::PullFf {
             path,
             remote,
             branch,
@@ -391,7 +404,7 @@ fn apply_status_operation(
     if let Err(error) = result {
         event_sender.send(RepositoryEvent::FileOperationFailed {
             path: path.clone(),
-            message: error.to_string(),
+            message: error.user_message(),
         });
         return;
     }
@@ -411,7 +424,7 @@ fn apply_batch_status_operation(
     if let Err(error) = result {
         event_sender.send(RepositoryEvent::FileOperationFailed {
             path: path.clone(),
-            message: error.to_string(),
+            message: error.user_message(),
         });
         return;
     }
@@ -458,7 +471,7 @@ fn apply_commit(
     {
         event_sender.send(RepositoryEvent::CommitFailed {
             path,
-            message: error.to_string(),
+            message: error.user_message(),
         });
         return;
     }
@@ -508,7 +521,7 @@ fn apply_vcs_operation(
             event_sender.send(RepositoryEvent::VcsOperationFailed {
                 toast_id,
                 operation,
-                message: error.to_string(),
+                message: error.user_message(),
             });
         }
     }
@@ -539,7 +552,7 @@ fn apply_fetch(
             event_sender.send(RepositoryEvent::FetchFailed {
                 toast_id,
                 remote,
-                message: error.to_string(),
+                message: error.user_message(),
             });
         }
     }
@@ -590,7 +603,7 @@ fn apply_push(
             event_sender.send(RepositoryEvent::PushFailed {
                 toast_id,
                 remote,
-                message: error.to_string(),
+                message: error.user_message(),
             });
         }
     }
@@ -626,7 +639,7 @@ fn apply_publish(
             tracing::warn!(path = %path.display(), %error, "vcs: publish failed");
             event_sender.send(RepositoryEvent::PublishFailed {
                 toast_id,
-                message: error.to_string(),
+                message: error.user_message(),
             });
         }
     }
@@ -649,7 +662,7 @@ fn apply_publish_plan(event_sender: &RuntimeEventSender, path: PathBuf, toast_id
             tracing::warn!(path = %path.display(), %error, "vcs: publish-plan failed");
             event_sender.send(RepositoryEvent::PublishPlanFailed {
                 toast_id,
-                message: error.to_string(),
+                message: error.user_message(),
             });
         }
     }
@@ -709,7 +722,7 @@ fn apply_pull_ff(
                 toast_id,
                 remote,
                 branch,
-                message: error.to_string(),
+                message: error.user_message(),
             });
         }
     }
@@ -773,7 +786,7 @@ fn sync_repository_inner(
             event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
                 path,
                 reason,
-                message: error.to_string(),
+                message: error.user_message(),
             });
             return;
         }
@@ -816,7 +829,7 @@ fn sync_vcs_repository(
                 event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
                     path,
                     reason,
-                    message: error.to_string(),
+                    message: error.user_message(),
                 });
                 return;
             }
@@ -836,7 +849,7 @@ fn sync_vcs_repository(
             event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
                 path,
                 reason,
-                message: error.to_string(),
+                message: error.user_message(),
             });
             return;
         }
@@ -864,9 +877,14 @@ fn sync_vcs_repository(
                 None
             })
         };
-        event_sender.send(RepositoryEvent::RepositorySnapshotReady(
-            RepositorySnapshot::from_vcs_snapshot(snapshot.clone()),
-        ));
+        let mut payload = RepositorySnapshot::from_vcs_snapshot(snapshot.clone());
+        payload.publish_plan = repo
+            .publish_plan()
+            .map_err(|error| {
+                tracing::debug!(path = %path.display(), %error, "vcs: no publish plan for snapshot");
+            })
+            .ok();
+        event_sender.send(RepositoryEvent::RepositorySnapshotReady(payload));
     }
     state.last_snapshot = Some(snapshot);
 }

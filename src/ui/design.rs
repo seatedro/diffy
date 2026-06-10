@@ -66,6 +66,15 @@ impl Sz {
     pub const COMMIT_BOX_H: f32 = 140.0;
     pub const MAIN_SURFACE_MIN_W: f32 = 320.0;
     pub const AUTH_MODAL_HEIGHT: f32 = 320.0;
+    pub const SETTINGS_NAV_W: f32 = 220.0;
+    pub const SETTINGS_CONTENT_MAX_W: f32 = 720.0;
+    pub const SETTINGS_KEYMAPS_MAX_W: f32 = 1500.0;
+    /// Unscaled height reserved for the open review-comment composer block.
+    pub const COMPOSER_H: f32 = 248.0;
+    /// Unscaled height of the editor/preview body region inside the inline
+    /// reply composer. Fixed (not flex) so the card's measured height is
+    /// determinate.
+    pub const INLINE_REPLY_BODY_H: f32 = 112.0;
     pub const PICKER_MAX_ROWS: usize = 8;
 }
 

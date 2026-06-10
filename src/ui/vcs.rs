@@ -1,7 +1,7 @@
 use crate::core::compare::CompareMode;
 use crate::core::vcs::model::{
-    ChangeBucket, ChangeIdToken, RefKind, RepoLocation, VCS_PROFILE_GIT, VCS_PROFILE_JJ, VcsChange,
-    VcsRef,
+    ChangeBucket, ChangeIdToken, PublishActionKind, PublishPlan, RefKind, RepoLocation,
+    VCS_PROFILE_GIT, VCS_PROFILE_JJ, VcsChange, VcsRef,
 };
 use crate::ui::icons::lucide;
 
@@ -49,7 +49,7 @@ struct VcsUiDescriptor {
     status_view_label: fn(Option<ChangeBucket>) -> String,
     current_change_preset_label: fn(&VcsChange) -> Option<String>,
     repository_identity_from_changes: fn(&[VcsChange]) -> Option<RepositoryIdentityUi>,
-    publish_status_ui: fn(&[VcsChange], &[VcsRef], bool) -> PublishStatusUi,
+    publish_status_ui: fn(&[VcsChange], &[VcsRef], Option<&PublishPlan>) -> PublishStatusUi,
     working_copy_ref_suffix: fn(&[VcsChange]) -> Option<(String, String)>,
     change_ref_entry: fn(&VcsChange) -> ChangeRefUi,
 }
@@ -317,9 +317,9 @@ impl VcsUiProfile {
         self,
         changes: &[VcsChange],
         refs: &[VcsRef],
-        has_remotes: bool,
+        plan: Option<&PublishPlan>,
     ) -> PublishStatusUi {
-        (self.descriptor.publish_status_ui)(changes, refs, has_remotes)
+        (self.descriptor.publish_status_ui)(changes, refs, plan)
     }
 
     pub fn working_copy_ref_suffix(self, changes: &[VcsChange]) -> Option<(String, String)> {
@@ -414,7 +414,7 @@ fn git_repository_identity_from_changes(_changes: &[VcsChange]) -> Option<Reposi
 fn git_publish_status_ui(
     _changes: &[VcsChange],
     _refs: &[VcsRef],
-    _has_remotes: bool,
+    _plan: Option<&PublishPlan>,
 ) -> PublishStatusUi {
     PublishStatusUi::default()
 }
@@ -459,11 +459,9 @@ fn jj_repository_identity_from_changes(changes: &[VcsChange]) -> Option<Reposito
 fn jj_publish_status_ui(
     changes: &[VcsChange],
     refs: &[VcsRef],
-    has_remotes: bool,
+    plan: Option<&PublishPlan>,
 ) -> PublishStatusUi {
-    let hint = has_remotes
-        .then(|| jj_publish_target_hint(changes, refs))
-        .flatten();
+    let hint = plan.and_then(publish_hint_from_plan);
     PublishStatusUi {
         show_menu: hint.is_some(),
         hint,
@@ -471,89 +469,33 @@ fn jj_publish_status_ui(
     }
 }
 
-fn jj_publish_target_hint(changes: &[VcsChange], refs: &[VcsRef]) -> Option<PublishHintUi> {
-    let wc_idx = changes
-        .iter()
-        .position(|change| change.flags.working_copy || change.flags.current)?;
-    // Mirror backend publish targeting: undescribed working-copy changes are
-    // not pushed directly, so `@-` becomes the target when possible.
-    let head_described = changes
-        .get(wc_idx)
-        .is_some_and(|change| !change.summary.trim().is_empty());
-    let (target, target_revision) = if head_described {
-        (changes.get(wc_idx)?, "@")
-    } else if let Some(parent) = changes.get(wc_idx + 1) {
-        (parent, "@-")
-    } else {
+/// Formats the backend's publish plan for the status bar. The plan is the
+/// single source of truth for what a push would do; this only shortens its
+/// primary action to a label. A disabled primary (e.g. already on the
+/// remote) hides the button.
+fn publish_hint_from_plan(plan: &PublishPlan) -> Option<PublishHintUi> {
+    let primary = &plan.primary;
+    if primary.disabled_reason.is_some() {
         return None;
+    }
+    let label = match &primary.kind {
+        PublishActionKind::PushBookmark { bookmark, .. }
+        | PublishActionKind::MoveBookmarkAndPush { bookmark, .. }
+        | PublishActionKind::CreateBookmarkAndPush { bookmark, .. } => bookmark.clone(),
+        PublishActionKind::PushChange { revision, .. } => primary
+            .change_id_token
+            .as_ref()
+            .map(|token| token.text.clone())
+            .unwrap_or_else(|| revision.clone()),
+        PublishActionKind::PushRef { .. } | PublishActionKind::PushTracked { .. } => {
+            primary.label.clone()
+        }
     };
-    if target.summary.trim().is_empty() {
-        return None;
-    }
-    let remote = default_remote_from_refs(refs).unwrap_or_else(|| "origin".to_owned());
-
-    let bookmark_name = refs
-        .iter()
-        .filter(|reference| matches!(reference.kind, RefKind::Bookmark))
-        .find(|reference| reference.target.id == target.revision.id)
-        .map(|reference| reference.name.clone());
-
-    if let Some(name) = bookmark_name {
-        return Some(PublishHintUi {
-            label: name.clone(),
-            change_id_token: None,
-            tooltip: format!("Push bookmark {name} at {target_revision} to {remote}"),
-        });
-    }
-
-    let short_id = target
-        .short_change_id
-        .clone()
-        .unwrap_or_else(|| target.short_revision.clone());
-    if short_id.is_empty() {
-        return None;
-    }
-    let prefix_len = target.short_change_id_prefix_len.unwrap_or(1).max(1);
     Some(PublishHintUi {
-        label: short_id.clone(),
-        change_id_token: Some(ChangeIdToken {
-            text: short_id.clone(),
-            prefix_len,
-        }),
-        tooltip: format!("Push change {short_id} at {target_revision} to {remote}"),
+        label,
+        change_id_token: primary.change_id_token.clone(),
+        tooltip: primary.description.clone(),
     })
-}
-
-fn default_remote_from_refs(refs: &[VcsRef]) -> Option<String> {
-    let mut remotes: Vec<String> = refs
-        .iter()
-        .filter_map(|reference| {
-            reference
-                .upstream
-                .as_deref()
-                .and_then(|u| u.split_once('/').map(|(remote, _)| remote.to_owned()))
-                .or_else(|| {
-                    matches!(
-                        reference.kind,
-                        RefKind::RemoteBranch | RefKind::RemoteBookmark
-                    )
-                    .then(|| {
-                        reference
-                            .name
-                            .split_once('/')
-                            .map(|(remote, _)| remote.to_owned())
-                    })
-                    .flatten()
-                })
-        })
-        .collect();
-    remotes.sort();
-    remotes.dedup();
-    remotes
-        .iter()
-        .find(|remote| remote.as_str() == "origin")
-        .cloned()
-        .or_else(|| remotes.into_iter().next())
 }
 
 fn publish_ref_chips(changes: &[VcsChange], refs: &[VcsRef]) -> Vec<PublishRefChipUi> {
@@ -643,7 +585,79 @@ fn jj_change_ref_entry(change: &VcsChange) -> ChangeRefUi {
 
 #[cfg(test)]
 mod tests {
-    use super::pretty_ref_label;
+    use super::{publish_hint_from_plan, pretty_ref_label};
+    use crate::core::vcs::model::{
+        ChangeIdToken, PublishAction, PublishActionKind, PublishPlan,
+    };
+
+    fn plan(kind: PublishActionKind, disabled: bool, token: Option<&str>) -> PublishPlan {
+        PublishPlan {
+            primary: PublishAction {
+                label: "Push bookmark feat".to_owned(),
+                description: "Move jj bookmark feat to abc123 and push it to origin".to_owned(),
+                kind,
+                disabled_reason: disabled.then(|| "feat is already on origin.".to_owned()),
+                change_id_token: token.map(|text| ChangeIdToken {
+                    text: text.to_owned(),
+                    prefix_len: 2,
+                }),
+            },
+            alternatives: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn publish_hint_hides_when_primary_is_disabled() {
+        let plan = plan(
+            PublishActionKind::PushBookmark {
+                remote: "origin".to_owned(),
+                bookmark: "feat".to_owned(),
+            },
+            true,
+            None,
+        );
+        assert!(publish_hint_from_plan(&plan).is_none());
+    }
+
+    #[test]
+    fn publish_hint_labels_bookmark_actions_with_the_bookmark() {
+        let plan = plan(
+            PublishActionKind::MoveBookmarkAndPush {
+                remote: "origin".to_owned(),
+                bookmark: "feat".to_owned(),
+                revision: "@-".to_owned(),
+                allow_backwards: false,
+                track_remote: Some("origin".to_owned()),
+            },
+            false,
+            None,
+        );
+        let hint = publish_hint_from_plan(&plan).expect("hint");
+        assert_eq!(hint.label, "feat");
+        assert!(hint.change_id_token.is_none());
+        assert_eq!(
+            hint.tooltip,
+            "Move jj bookmark feat to abc123 and push it to origin"
+        );
+    }
+
+    #[test]
+    fn publish_hint_labels_change_push_with_the_change_id() {
+        let plan = plan(
+            PublishActionKind::PushChange {
+                remote: "origin".to_owned(),
+                revision: "@-".to_owned(),
+            },
+            false,
+            Some("zuwkussw"),
+        );
+        let hint = publish_hint_from_plan(&plan).expect("hint");
+        assert_eq!(hint.label, "zuwkussw");
+        assert_eq!(
+            hint.change_id_token.expect("token").text,
+            "zuwkussw"
+        );
+    }
 
     #[test]
     fn pr_ref_collapses_to_branch() {

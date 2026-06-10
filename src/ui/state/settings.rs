@@ -117,20 +117,21 @@ impl AppState {
             }
             OpenSettings => {
                 self.clear_overlays();
-                self.app_view.set(&self.store, AppView::Settings);
+                self.ui.app_view.set(&self.store, AppView::Settings);
                 Vec::new()
             }
             OpenKeymaps => {
                 self.clear_overlays();
-                self.app_view.set(&self.store, AppView::Settings);
-                self.settings_section
+                self.ui.app_view.set(&self.store, AppView::Settings);
+                self.ui
+                    .settings_section
                     .set(&self.store, SettingsSection::Keymaps);
-                self.keymaps_scroll_top_px.set(&self.store, 0.0);
+                self.ui.keymaps_scroll_top_px.set(&self.store, 0.0);
                 Vec::new()
             }
             CloseSettings => {
-                self.keymap_capture.set(&self.store, None);
-                self.app_view.set(&self.store, AppView::Workspace);
+                self.ui.keymap_capture.set(&self.store, None);
+                self.ui.app_view.set(&self.store, AppView::Workspace);
                 Vec::new()
             }
             ToggleAutoUpdate => {
@@ -142,41 +143,107 @@ impl AppState {
                 effects
             }
             SetSettingsSection(section) => {
-                self.keymap_capture.set(&self.store, None);
-                self.settings_section.set(&self.store, section);
-                self.keymaps_scroll_top_px.set(&self.store, 0.0);
+                self.ui.keymap_capture.set(&self.store, None);
+                self.ui.settings_section.set(&self.store, section);
+                self.ui.keymaps_scroll_top_px.set(&self.store, 0.0);
                 Vec::new()
             }
             BeginKeymapRebind(command) => {
-                self.keymap_capture.set(&self.store, Some(command));
+                self.ui.keymap_capture.set(&self.store, Some(command));
                 Vec::new()
             }
             ApplyKeymapBinding { command, binding } => {
                 crate::input::set_override(&mut self.settings.keymap_overrides, command, binding);
-                self.keymap_capture.set(&self.store, None);
+                self.ui.keymap_capture.set(&self.store, None);
                 self.persist_settings_effect()
             }
             ResetKeymapBinding(command) => {
                 crate::input::reset_override(&mut self.settings.keymap_overrides, command);
-                self.keymap_capture.set(&self.store, None);
+                self.ui.keymap_capture.set(&self.store, None);
                 self.persist_settings_effect()
             }
             CancelKeymapRebind => {
-                self.keymap_capture.set(&self.store, None);
+                self.ui.keymap_capture.set(&self.store, None);
                 Vec::new()
             }
             ScrollKeymapsPx(delta) => {
-                let cur = self.keymaps_scroll_top_px.get(&self.store);
-                self.keymaps_scroll_top_px
+                let cur = self.ui.keymaps_scroll_top_px.get(&self.store);
+                self.ui
+                    .keymaps_scroll_top_px
                     .set(&self.store, cur + delta as f32);
                 self.clamp_keymaps_scroll();
                 Vec::new()
             }
             ScrollKeymapsToPx(target) => {
-                self.keymaps_scroll_top_px.set(&self.store, target as f32);
+                self.ui
+                    .keymaps_scroll_top_px
+                    .set(&self.store, target as f32);
                 self.clamp_keymaps_scroll();
                 Vec::new()
             }
         }
+    }
+}
+
+impl AppState {
+    pub fn keymaps_max_scroll_px(&self) -> f32 {
+        let content = self.ui.keymaps_content_height_px.get(&self.store);
+        let viewport = self.ui.keymaps_viewport_height_px.get(&self.store);
+        (content - viewport).max(0.0)
+    }
+
+    pub fn clamp_keymaps_scroll(&mut self) {
+        let max = self.keymaps_max_scroll_px();
+        let cur = self.ui.keymaps_scroll_top_px.get(&self.store);
+        self.ui
+            .keymaps_scroll_top_px
+            .set(&self.store, cur.clamp(0.0, max));
+    }
+}
+
+impl AppState {
+    pub(super) fn persist_settings_effect(&mut self) -> Vec<Effect> {
+        self.sync_settings_snapshot();
+        vec![SettingsEffect::SaveSettings(self.settings.clone()).into()]
+    }
+
+    pub(super) fn sync_settings_snapshot(&mut self) {
+        self.settings.ui_scale_pct = self.clamp_ui_scale_pct(self.settings.ui_scale_pct);
+        self.settings.fonts = self.settings.fonts.normalized();
+        self.settings.sidebar_width_px = self
+            .settings
+            .sidebar_width_px
+            .map(|width| self.clamp_sidebar_width_px(width));
+        self.settings.viewport.wrap_enabled = self.editor.wrap_enabled.get(&self.store);
+        self.settings.viewport.wrap_column = self.editor.wrap_column.get(&self.store);
+        self.settings.viewport.layout = self.compare.layout.get(&self.store);
+        self.settings.last_compare = Some(PersistedCompare {
+            repo_path: self.compare.repo_path.get(&self.store),
+            left_ref: self.compare.left_ref.get(&self.store),
+            right_ref: self.compare.right_ref.get(&self.store),
+            mode: self.compare.mode.get(&self.store),
+            layout: self.compare.layout.get(&self.store),
+            renderer: self.compare.renderer.get(&self.store),
+        });
+    }
+
+    pub fn ui_scale_factor(&self) -> f32 {
+        self.clamp_ui_scale_pct(self.settings.ui_scale_pct) as f32 / DEFAULT_UI_SCALE_PCT as f32
+    }
+
+    pub(super) fn clamp_ui_scale_pct(&self, scale_pct: u16) -> u16 {
+        scale_pct.clamp(MIN_UI_SCALE_PCT, MAX_UI_SCALE_PCT)
+    }
+
+    pub(super) fn adjust_ui_scale(&mut self, delta_pct: i16) -> Vec<Effect> {
+        let current = i32::from(self.clamp_ui_scale_pct(self.settings.ui_scale_pct));
+        let updated = (current + i32::from(delta_pct))
+            .clamp(i32::from(MIN_UI_SCALE_PCT), i32::from(MAX_UI_SCALE_PCT))
+            as u16;
+        if updated == self.settings.ui_scale_pct {
+            return Vec::new();
+        }
+        self.settings.ui_scale_pct = updated;
+        self.persist_settings_effect()
     }
 }

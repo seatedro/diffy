@@ -104,6 +104,10 @@ impl JjRepository {
         }
     }
 
+    fn is_colocated(&self) -> bool {
+        self.location.workspace_root.join(".git").exists()
+    }
+
     fn diff_args_for_spec(&self, spec: &VcsCompareSpec) -> Result<Vec<OsString>> {
         let mut args = vec![OsString::from("diff")];
         match spec {
@@ -464,7 +468,7 @@ impl VcsRepository for JjRepository {
     }
 
     fn capabilities(&self) -> RepoCapabilities {
-        jj_capabilities()
+        jj_capabilities(self.is_colocated())
     }
 
     fn resolve_ref(&mut self, reference: &str) -> Result<(String, String)> {
@@ -602,7 +606,7 @@ impl VcsRepository for JjRepository {
             location: self.location.clone(),
             reason,
             change_kind: None,
-            capabilities: jj_capabilities(),
+            capabilities: jj_capabilities(self.is_colocated()),
             refs,
             changes,
             operation_log: parse_operation_log(&operation_log),
@@ -1253,7 +1257,7 @@ fn parse_stat_count_before(line: &str, label: &str) -> Option<i32> {
     prefix[digits_start..].parse().ok()
 }
 
-pub fn jj_capabilities() -> RepoCapabilities {
+pub fn jj_capabilities(colocated: bool) -> RepoCapabilities {
     RepoCapabilities {
         staging_area: false,
         branches: false,
@@ -1265,7 +1269,9 @@ pub fn jj_capabilities() -> RepoCapabilities {
         partial_file_restore: true,
         partial_hunk_mutation: false,
         operation_log: true,
-        github_pull_requests: false,
+        // PR comparisons run through the git backend against the colocated
+        // .git store, so they are only available in colocated workspaces.
+        github_pull_requests: colocated,
     }
 }
 
@@ -1451,6 +1457,22 @@ mod tests {
     use crate::events::RepositorySyncReason;
 
     #[test]
+    fn jj_pr_support_follows_colocation() {
+        let Some(colocated) = init_jj_repo_with(true) else {
+            return;
+        };
+        let Some(plain) = init_jj_repo_with(false) else {
+            return;
+        };
+        let backend = JjBackend;
+        for (dir, expected) in [(&colocated, true), (&plain, false)] {
+            let location = backend.detect(dir.path()).unwrap().unwrap();
+            let repo = backend.open(location).unwrap();
+            assert_eq!(repo.capabilities().github_pull_requests, expected);
+        }
+    }
+
+    #[test]
     fn jj_merge_base_revset_uses_fork_point() {
         assert_eq!(
             jj_fork_point_revset("main", "feature"),
@@ -1522,6 +1544,7 @@ mod tests {
             .expect("jj snapshot");
         assert!(snapshot.capabilities.bookmarks);
         assert!(!snapshot.capabilities.staging_area);
+        assert!(snapshot.capabilities.github_pull_requests);
         assert!(snapshot.file_changes.iter().any(|file| {
             file.path == "README.md"
                 && file.status == FileChangeStatus::Added
@@ -1738,12 +1761,22 @@ mod tests {
     }
 
     fn init_jj_repo() -> Option<TempDir> {
+        init_jj_repo_with(true)
+    }
+
+    fn init_jj_repo_with(colocate: bool) -> Option<TempDir> {
         if Command::new("jj").arg("--version").output().is_err() {
             return None;
         }
         let repo_dir = TempDir::new().unwrap();
-        let status = Command::new("jj")
-            .arg("--quiet")
+        let mut init = Command::new("jj");
+        init.arg("--quiet");
+        if colocate {
+            init.arg("--config").arg("git.colocate=true");
+        } else {
+            init.arg("--config").arg("git.colocate=false");
+        }
+        let status = init
             .arg("git")
             .arg("init")
             .arg(repo_dir.path())

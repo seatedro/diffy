@@ -446,6 +446,18 @@ pub enum VcsCompareSpec {
     MergeBaseRange { base: String, head: String },
 }
 
+impl VcsCompareSpec {
+    pub fn refs(&self) -> impl Iterator<Item = &str> {
+        let (left, right) = match self {
+            Self::WorkingCopy => (None, None),
+            Self::Change { revision } => (Some(revision.as_str()), None),
+            Self::Range { from, to } => (Some(from.as_str()), Some(to.as_str())),
+            Self::MergeBaseRange { base, head } => (Some(base.as_str()), Some(head.as_str())),
+        };
+        left.into_iter().chain(right)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VcsCompareRequest {
     pub spec: VcsCompareSpec,

@@ -22,10 +22,11 @@ use crate::core::review::{ReviewDecision, ReviewSession, ReviewSessionKey, Revie
 use crate::core::syntax::annotator::{
     FullFileSyntax, SourceLineWindow, carbon_window_source_line_bounds,
 };
+use crate::core::vcs::backend::VcsRepository;
 use crate::core::vcs::discovery;
-use crate::core::vcs::git::pr_ref_path;
+use crate::core::vcs::git::{is_pr_ref, pr_ref_path};
 use crate::core::vcs::model::RevisionId;
-use crate::core::vcs::model::{VcsCompareRequest, VcsCompareSpec};
+use crate::core::vcs::model::{VcsCompareRequest, VcsCompareSpec, VcsKind};
 use crate::effects::{
     CompareFileRequest, CompareFileStatsRequest, CompareHistoryRequest, CompareRequest,
     CompareStatsRequest, GenerateCommitMessageRequest, LoadFileSyntaxRequest, StatusDiffRequest,
@@ -49,6 +50,20 @@ const SYNTAX_FULL_HIGHLIGHT_BYTE_LIMIT: usize = 512 * 1024;
 /// Quantization for windowed cache entries, in source lines. Buckets are
 /// large relative to viewport tiles so scrolling reuses cached windows.
 const SYNTAX_WINDOW_BUCKET_LINES: usize = 2048;
+
+/// PR comparison refs live in the git ref namespace (`refs/diffy/pr/...`),
+/// which jj revsets cannot resolve. Route those comparisons through the git
+/// backend, which in colocated jj checkouts operates on the same `.git` store.
+fn open_compare_repository<'a>(
+    repo_path: &Path,
+    refs: impl IntoIterator<Item = &'a str>,
+) -> Result<Box<dyn VcsRepository>> {
+    if refs.into_iter().any(is_pr_ref) {
+        discovery::open_git_repository(repo_path)
+    } else {
+        discovery::open_repository(repo_path)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct AppServices {
@@ -304,7 +319,7 @@ impl AppServices {
             r.phase(ComparePhase::OpeningRepo);
         }
         let stage_started = Instant::now();
-        let mut repo = discovery::open_repository(&request.repo_path)?;
+        let mut repo = open_compare_repository(&request.repo_path, request.request.spec.refs())?;
         tracing::info!(
             generation,
             elapsed_ms = stage_started.elapsed().as_millis(),
@@ -389,7 +404,7 @@ impl AppServices {
         generation: u64,
         request: CompareFileRequest,
     ) -> Result<CompareFileFinished> {
-        let mut repo = discovery::open_repository(&request.repo_path)?;
+        let mut repo = open_compare_repository(&request.repo_path, request.request.spec.refs())?;
         let mut output = repo.compare_path(
             &request.request,
             &request.path,
@@ -413,7 +428,7 @@ impl AppServices {
         generation: u64,
         request: CompareStatsRequest,
     ) -> Result<CompareStatsReady> {
-        let mut repo = discovery::open_repository(&request.repo_path)?;
+        let mut repo = open_compare_repository(&request.repo_path, request.request.spec.refs())?;
         let (additions, deletions) = repo.compare_stats(&request.request)?;
 
         Ok(CompareStatsReady {
@@ -428,7 +443,10 @@ impl AppServices {
         generation: u64,
         request: CompareHistoryRequest,
     ) -> Result<CompareHistoryReady> {
-        let mut repo = discovery::open_repository(&request.repo_path)?;
+        let mut repo = open_compare_repository(
+            &request.repo_path,
+            [request.left_ref.as_str(), request.right_ref.as_str()],
+        )?;
         let range_commits = repo.compare_history(&request.left_ref, &request.right_ref, 500)?;
 
         Ok(CompareHistoryReady {
@@ -442,7 +460,7 @@ impl AppServices {
         generation: u64,
         request: CompareFileStatsRequest,
     ) -> Result<CompareFileStatsReady> {
-        let mut repo = discovery::open_repository(&request.repo_path)?;
+        let mut repo = open_compare_repository(&request.repo_path, request.request.spec.refs())?;
         let files = request
             .files
             .iter()
@@ -478,7 +496,10 @@ impl AppServices {
         if !is_current() {
             return Vec::new();
         }
-        let Ok(mut repo) = discovery::open_repository(&request.repo_path) else {
+        let Ok(mut repo) = open_compare_repository(
+            &request.repo_path,
+            [request.left_ref.as_str(), request.right_ref.as_str()],
+        ) else {
             return Vec::new();
         };
 
@@ -698,6 +719,9 @@ impl AppServices {
                     .to_owned(),
             ));
         }
+        if repo.location().kind != VcsKind::GIT {
+            repo = discovery::open_git_repository(repo_path)?;
+        }
         let stage_started = Instant::now();
         let (info, left_ref, right_ref) = repo.resolve_pull_request_comparison(url, &token)?;
         tracing::info!(
@@ -728,6 +752,12 @@ impl AppServices {
         let mut repo = discovery::open_repository(repo_path)?;
         if !repo.capabilities().github_pull_requests {
             return Ok(None);
+        }
+        if repo.location().kind != VcsKind::GIT {
+            let Ok(git_repo) = discovery::open_git_repository(repo_path) else {
+                return Ok(None);
+            };
+            repo = git_repo;
         }
 
         for session in sessions.into_iter().rev() {

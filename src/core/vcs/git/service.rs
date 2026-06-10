@@ -104,6 +104,10 @@ pub fn pr_ref_path(pr_number: i32, branch: &str) -> String {
     format!("{PR_REF_PREFIX}{pr_number}/{branch}")
 }
 
+pub fn is_pr_ref(reference: &str) -> bool {
+    reference.starts_with(PR_REF_PREFIX)
+}
+
 /// Remove stale refs from prior fetches for this PR. Keeps only the targets
 /// the latest fetch wrote, and also cleans up the old `refs/diffy/pull/{N}/*`
 /// scheme we used to use. Uses a prefix filter so branch names with slashes are
@@ -1856,7 +1860,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        INDEX_REF, PR_REF_PREFIX, WORKDIR_REF, github_fetch_source_for_repo,
+        INDEX_REF, PR_REF_PREFIX, WORKDIR_REF, github_fetch_source_for_repo, is_pr_ref,
         github_repo_key_from_remote_url, github_repo_url_from_remote_transport,
         local_remote_for_github_repo, parse_porcelain_status, parse_shortstat, pr_ref_path,
     };
@@ -1956,6 +1960,9 @@ mod tests {
             "refs/diffy/pr/77/feat/new-thing"
         );
         assert!(pr_ref_path(1, "x").starts_with(PR_REF_PREFIX));
+        assert!(is_pr_ref(&pr_ref_path(12, "main")));
+        assert!(!is_pr_ref("refs/heads/main"));
+        assert!(!is_pr_ref("@workdir"));
     }
 
     #[test]

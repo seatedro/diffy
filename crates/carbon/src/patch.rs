@@ -209,12 +209,14 @@ impl FileBuilder {
         if line.starts_with('\\') {
             match hunk.last_side {
                 Some(DiffSide::Old) => {
-                    hunk.mark_old_no_newline();
-                    trim_trailing_newline(&mut self.old_text);
+                    if trim_trailing_newline(&mut self.old_text) {
+                        hunk.mark_old_no_newline();
+                    }
                 }
                 Some(DiffSide::New) => {
-                    hunk.mark_new_no_newline();
-                    trim_trailing_newline(&mut self.new_text);
+                    if trim_trailing_newline(&mut self.new_text) {
+                        hunk.mark_new_no_newline();
+                    }
                 }
                 None => {}
             }
@@ -496,9 +498,17 @@ fn push_text_line(text: &mut String, content: &str) {
     text.push('\n');
 }
 
-fn trim_trailing_newline(text: &mut String) {
-    if text.ends_with('\n') {
+/// Drops the trailing separator so the final line is stored without a
+/// newline. Leaves the text untouched and returns false when the final line
+/// is empty: popping its separator would erase the line entirely and desync
+/// stored line counts from the hunk's block ranges.
+fn trim_trailing_newline(text: &mut String) -> bool {
+    let bytes = text.as_bytes();
+    if bytes.len() >= 2 && bytes[bytes.len() - 1] == b'\n' && bytes[bytes.len() - 2] != b'\n' {
         text.pop();
+        true
+    } else {
+        false
     }
 }
 
@@ -606,6 +616,34 @@ index 3333333..4444444 100644
 \\ No newline at end of file
 +new end
 \\ N[ newline at end of file
+";
+        let document = parse_unified_patch(patch).unwrap();
+        let file = &document.files[0];
+        for block in &file.blocks {
+            if block.old.len > 0 {
+                let text = file.old_text.as_ref().unwrap();
+                assert!(block.old.end() <= text.line_count());
+            }
+            if block.new.len > 0 {
+                let text = file.new_text.as_ref().unwrap();
+                assert!(block.new.end() <= text.line_count());
+            }
+        }
+    }
+
+    // Regression for a fuzz-found inconsistency: a no-newline marker after an
+    // empty line trimmed the separator and erased the line from the text
+    // store, leaving block ranges one line past the stored text.
+    #[test]
+    fn no_newline_marker_after_empty_line_keeps_counts_in_sync() {
+        let patch = "\
+diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1,2 +1,2 @@
+ first
+
+\\ No newline at end of file
 ";
         let document = parse_unified_patch(patch).unwrap();
         let file = &document.files[0];

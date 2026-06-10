@@ -480,10 +480,10 @@ fn jj_publish_target_hint(changes: &[VcsChange], refs: &[VcsRef]) -> Option<Publ
     let head_described = changes
         .get(wc_idx)
         .is_some_and(|change| !change.summary.trim().is_empty());
-    let (target, target_revision) = if head_described {
-        (changes.get(wc_idx)?, "@")
+    let (target, target_revision, target_idx) = if head_described {
+        (changes.get(wc_idx)?, "@", wc_idx)
     } else if let Some(parent) = changes.get(wc_idx + 1) {
-        (parent, "@-")
+        (parent, "@-", wc_idx + 1)
     } else {
         return None;
     };
@@ -503,6 +503,30 @@ fn jj_publish_target_hint(changes: &[VcsChange], refs: &[VcsRef]) -> Option<Publ
             label: name.clone(),
             change_id_token: None,
             tooltip: format!("Push bookmark {name} at {target_revision} to {remote}"),
+        });
+    }
+
+    // Mirror the publish plan's git-like default: with no bookmark on the
+    // target itself, the nearest ancestor bookmark is what gets advanced.
+    let ancestor_bookmark = changes[target_idx + 1..].iter().find_map(|change| {
+        refs.iter()
+            .filter(|reference| {
+                matches!(reference.kind, RefKind::Bookmark | RefKind::RemoteBookmark)
+            })
+            .find(|reference| reference.target.id == change.revision.id)
+            .map(|reference| {
+                reference
+                    .name
+                    .rsplit_once('@')
+                    .map_or(reference.name.as_str(), |(name, _)| name)
+                    .to_owned()
+            })
+    });
+    if let Some(name) = ancestor_bookmark {
+        return Some(PublishHintUi {
+            label: name.clone(),
+            change_id_token: None,
+            tooltip: format!("Move bookmark {name} to {target_revision} and push to {remote}"),
         });
     }
 

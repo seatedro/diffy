@@ -91,6 +91,9 @@ struct MovableBookmark {
     name: String,
     target: String,
     allow_backwards: bool,
+    /// Set when the bookmark only exists on this remote (untracked); moving it
+    /// requires tracking it first to create the local bookmark.
+    track_remote: Option<String>,
 }
 
 impl JjRepository {
@@ -400,29 +403,48 @@ impl JjRepository {
             .collect())
     }
 
-    fn movable_bookmarks(&self, revision: &str) -> Result<Vec<MovableBookmark>> {
-        let revset_after = format!("{revision}::");
-        let revset = format!("::{revision} | {revset_after}");
+    fn movable_bookmarks(&self, revision: &str, remote: &str) -> Result<Vec<MovableBookmark>> {
+        // `bookmark list -r` only matches local bookmark targets, which would
+        // hide remote-only bookmarks entirely; list everything and let the
+        // template report ancestor/descendant containment instead.
         let output = self.cli.run_ignored_wc(&[
             OsString::from("bookmark"),
             OsString::from("list"),
-            OsString::from("-r"),
-            OsString::from(revset),
+            OsString::from("--all-remotes"),
             OsString::from("-T"),
             OsString::from(format!(
-                "name ++ \"\\t\" ++ normal_target.commit_id() ++ \"\\t\" ++ normal_target.contained_in(\"{revset_after}\") ++ \"\\n\""
+                "name ++ \"\\t\" ++ if(self.remote(), self.remote(), \"\") ++ \"\\t\" ++ if(self.tracked(), \"true\", \"false\") ++ \"\\t\" ++ normal_target.commit_id() ++ \"\\t\" ++ normal_target.contained_in(\"::({revision})\") ++ \"\\t\" ++ normal_target.contained_in(\"({revision})::\") ++ \"\\n\""
             )),
         ])?;
-        let mut bookmarks = output
-            .lines()
-            .filter_map(parse_movable_bookmark_line)
-            .collect::<Vec<_>>();
+        let mut bookmarks = parse_movable_bookmark_list(&output, remote);
         bookmarks.sort_by(|left, right| {
             bookmark_priority(&left.name)
                 .cmp(&bookmark_priority(&right.name))
                 .then(left.name.cmp(&right.name))
         });
         Ok(bookmarks)
+    }
+
+    /// Commit ids of the closest ancestor commits of `revision` that carry a
+    /// bookmark — jj's analog of "the branch you are on" in git.
+    fn nearest_bookmark_targets(&self, revision: &str, remote: &str) -> Result<Vec<String>> {
+        let escaped_remote = remote.replace('\\', "\\\\").replace('"', "\\\"");
+        let output = self.cli.run_ignored_wc(&[
+            OsString::from("log"),
+            OsString::from("--no-graph"),
+            OsString::from("-r"),
+            OsString::from(format!(
+                "heads(::(({revision})-) & (bookmarks() | remote_bookmarks(remote=\"{escaped_remote}\")))"
+            )),
+            OsString::from("-T"),
+            OsString::from("commit_id ++ \"\\n\""),
+        ])?;
+        Ok(output
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect())
     }
 
     fn generated_bookmark_name(target: &JjPublishTarget) -> String {
@@ -445,6 +467,23 @@ impl JjRepository {
                     .min(target.short_change_id.len())
                     .max(1),
             })
+        }
+    }
+
+    fn move_bookmark_description(
+        bookmark: &MovableBookmark,
+        target: &JjPublishTarget,
+        remote: &str,
+    ) -> String {
+        match &bookmark.track_remote {
+            Some(tracked) => format!(
+                "Track {}@{tracked}, move it to {}, and push it to {remote}",
+                bookmark.name, target.short_commit_id
+            ),
+            None => format!(
+                "Move jj bookmark {} to {} and push it to {remote}",
+                bookmark.name, target.short_commit_id
+            ),
         }
     }
 
@@ -945,12 +984,34 @@ impl VcsRepository for JjRepository {
             }
         });
         let mut movable_bookmarks = self
-            .movable_bookmarks(&target.revision)
+            .movable_bookmarks(&target.revision, &remote)
             .unwrap_or_default()
             .into_iter()
             .filter(|bookmark| bookmark.target != target.commit_id)
-            .take(6)
             .collect::<Vec<_>>();
+        // Mirror git's "push the branch you are on": when no bookmark sits on
+        // the target itself, advance the nearest ancestor bookmark forward.
+        let advance_bookmark = if bookmarks.is_empty() {
+            let nearest_targets = self
+                .nearest_bookmark_targets(&target.revision, &remote)
+                .unwrap_or_default();
+            movable_bookmarks
+                .iter()
+                .enumerate()
+                .filter(|(_, bookmark)| {
+                    !bookmark.allow_backwards && nearest_targets.contains(&bookmark.target)
+                })
+                // Prefer feature bookmarks over main/master when both sit on
+                // nearest ancestors (e.g. right after merging main in).
+                .min_by_key(|(_, bookmark)| {
+                    (bookmark_priority(&bookmark.name) == 0, bookmark.name.clone())
+                })
+                .map(|(index, _)| index)
+                .map(|index| movable_bookmarks.remove(index))
+        } else {
+            None
+        };
+        movable_bookmarks.truncate(6);
         let change_id_token = Self::change_id_token(&target);
         let primary = if let Some(bookmark) = bookmarks.first() {
             PublishAction {
@@ -962,6 +1023,20 @@ impl VcsRepository for JjRepository {
                 kind: PublishActionKind::PushBookmark {
                     remote: remote.clone(),
                     bookmark: bookmark.clone(),
+                },
+                disabled_reason: target_disabled_reason.clone(),
+                change_id_token: None,
+            }
+        } else if let Some(bookmark) = &advance_bookmark {
+            PublishAction {
+                label: format!("Push bookmark {}", bookmark.name),
+                description: Self::move_bookmark_description(bookmark, &target, &remote),
+                kind: PublishActionKind::MoveBookmarkAndPush {
+                    remote: remote.clone(),
+                    bookmark: bookmark.name.clone(),
+                    revision: target.revision.clone(),
+                    allow_backwards: false,
+                    track_remote: bookmark.track_remote.clone(),
                 },
                 disabled_reason: target_disabled_reason.clone(),
                 change_id_token: None,
@@ -1017,15 +1092,13 @@ impl VcsRepository for JjRepository {
         for bookmark in movable_bookmarks.drain(..) {
             alternatives.push(PublishAction {
                 label: format!("Move bookmark {} here and push", bookmark.name),
-                description: format!(
-                    "Move jj bookmark {} to {} and push it to {remote}",
-                    bookmark.name, target.short_commit_id
-                ),
+                description: Self::move_bookmark_description(&bookmark, &target, &remote),
                 kind: PublishActionKind::MoveBookmarkAndPush {
                     remote: remote.clone(),
                     bookmark: bookmark.name,
                     revision: target.revision.clone(),
                     allow_backwards: bookmark.allow_backwards,
+                    track_remote: bookmark.track_remote,
                 },
                 disabled_reason: target_disabled_reason.clone(),
                 change_id_token: None,
@@ -1084,7 +1157,17 @@ impl VcsRepository for JjRepository {
                 bookmark,
                 revision,
                 allow_backwards,
+                track_remote,
             } => {
+                if let Some(track_remote) = track_remote {
+                    self.cli.run(&[
+                        OsString::from("bookmark"),
+                        OsString::from("track"),
+                        OsString::from(bookmark),
+                        OsString::from("--remote"),
+                        OsString::from(track_remote),
+                    ])?;
+                }
                 let mut move_args = vec![
                     OsString::from("bookmark"),
                     OsString::from("move"),
@@ -1375,19 +1458,52 @@ fn looks_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(1024).any(|byte| *byte == 0)
 }
 
-fn parse_movable_bookmark_line(line: &str) -> Option<MovableBookmark> {
-    let mut fields = line.splitn(3, '\t');
-    let name = fields.next()?.trim();
-    let target = fields.next()?.trim();
-    let allow_backwards = fields.next()?.trim() == "true";
-    if name.is_empty() || target.is_empty() {
-        return None;
+/// Local bookmarks are always movable. Remote bookmarks are movable only when
+/// they live on the preferred remote and are untracked with no local
+/// counterpart — moving them means track + move. Tracked remote bookmarks
+/// without a local are deliberate deletions pending a push, so they are
+/// skipped.
+fn parse_movable_bookmark_list(output: &str, preferred_remote: &str) -> Vec<MovableBookmark> {
+    let mut locals = Vec::new();
+    let mut remote_only = Vec::new();
+    for line in output.lines() {
+        let mut fields = line.splitn(6, '\t');
+        let Some(name) = fields.next().map(str::trim) else {
+            continue;
+        };
+        let Some(remote) = fields.next().map(str::trim) else {
+            continue;
+        };
+        let Some(tracked) = fields.next().map(|field| field.trim() == "true") else {
+            continue;
+        };
+        let Some(target) = fields.next().map(str::trim) else {
+            continue;
+        };
+        let Some(is_ancestor) = fields.next().map(|field| field.trim() == "true") else {
+            continue;
+        };
+        let Some(is_descendant) = fields.next().map(|field| field.trim() == "true") else {
+            continue;
+        };
+        if name.is_empty() || target.is_empty() || (!is_ancestor && !is_descendant) {
+            continue;
+        }
+        let bookmark = MovableBookmark {
+            name: name.to_owned(),
+            target: target.to_owned(),
+            allow_backwards: is_descendant,
+            track_remote: (!remote.is_empty()).then(|| remote.to_owned()),
+        };
+        if remote.is_empty() {
+            locals.push(bookmark);
+        } else if remote == preferred_remote && !tracked {
+            remote_only.push(bookmark);
+        }
     }
-    Some(MovableBookmark {
-        name: name.to_owned(),
-        target: target.to_owned(),
-        allow_backwards,
-    })
+    remote_only.retain(|remote| !locals.iter().any(|local| local.name == remote.name));
+    locals.extend(remote_only);
+    locals
 }
 
 fn bookmark_priority(name: &str) -> usize {
@@ -1446,7 +1562,7 @@ mod tests {
 
     use super::{
         JjBackend, compare_summaries_from_jj_diff_summary, jj_fork_point_revset,
-        parse_jj_diff_stat_total,
+        parse_jj_diff_stat_total, parse_movable_bookmark_list,
     };
     use crate::core::compare::{CompareFileStatsTarget, LayoutMode, RendererKind};
     use crate::core::vcs::backend::VcsBackend;
@@ -1758,6 +1874,129 @@ mod tests {
             matches!(action.kind, PublishActionKind::PushTracked { .. })
                 && action.disabled_reason.is_none()
         }));
+    }
+
+    #[test]
+    fn movable_bookmark_list_includes_untracked_remote_only_bookmarks() {
+        let output = "feat\t\tfalse\taaa\ttrue\tfalse\n\
+                      feat\torigin\ttrue\taaa\ttrue\tfalse\n\
+                      solo\torigin\tfalse\tbbb\ttrue\tfalse\n\
+                      gone\torigin\ttrue\tccc\ttrue\tfalse\n\
+                      other\tupstream\tfalse\tddd\ttrue\tfalse\n\
+                      desc\t\tfalse\teee\tfalse\ttrue\n\
+                      stray\t\tfalse\tfff\tfalse\tfalse\n";
+        let bookmarks = parse_movable_bookmark_list(output, "origin");
+        let names: Vec<&str> = bookmarks
+            .iter()
+            .map(|bookmark| bookmark.name.as_str())
+            .collect();
+        assert_eq!(names, ["feat", "desc", "solo"]);
+        assert_eq!(bookmarks[0].track_remote, None);
+        assert!(!bookmarks[0].allow_backwards);
+        assert!(bookmarks[1].allow_backwards);
+        assert_eq!(bookmarks[2].track_remote.as_deref(), Some("origin"));
+        assert!(!bookmarks[2].allow_backwards);
+    }
+
+    #[test]
+    fn jj_publish_plan_advances_nearest_remote_bookmark() {
+        let Some(repo_dir) = init_jj_repo() else {
+            return;
+        };
+        let remote_dir = TempDir::new().unwrap();
+        let status = Command::new("git")
+            .arg("init")
+            .arg("--bare")
+            .arg(remote_dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let status = Command::new("jj")
+            .arg("--quiet")
+            .arg("git")
+            .arg("remote")
+            .arg("add")
+            .arg("origin")
+            .arg(remote_dir.path())
+            .current_dir(repo_dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let backend = JjBackend;
+        let location = backend.detect(repo_dir.path()).unwrap().unwrap();
+        let mut repo = backend.open(location).unwrap();
+        fs::write(repo_dir.path().join("BASE.md"), "base\n").unwrap();
+        repo.create_commit("base").unwrap();
+
+        // Leave `feat` as a remote-only untracked bookmark on the parent — the
+        // state a fresh fetch of someone's branch (or a fetched PR head) is in.
+        for args in [
+            ["--quiet", "bookmark", "create", "feat", "-r", "@-"].as_slice(),
+            &[
+                "--quiet",
+                "git",
+                "push",
+                "--remote",
+                "origin",
+                "--bookmark",
+                "feat",
+                "--allow-new",
+            ],
+            &["--quiet", "bookmark", "untrack", "feat@origin"],
+            &["--quiet", "bookmark", "delete", "feat"],
+        ] {
+            let status = Command::new("jj")
+                .args(args)
+                .current_dir(repo_dir.path())
+                .status()
+                .unwrap();
+            assert!(status.success(), "jj {args:?} failed");
+        }
+
+        fs::write(repo_dir.path().join("NEXT.md"), "next\n").unwrap();
+        repo.create_commit("next").unwrap();
+
+        let plan = repo.publish_plan().unwrap();
+        match &plan.primary.kind {
+            PublishActionKind::MoveBookmarkAndPush {
+                remote,
+                bookmark,
+                revision,
+                allow_backwards,
+                track_remote,
+            } => {
+                assert_eq!(remote, "origin");
+                assert_eq!(bookmark, "feat");
+                assert_eq!(revision, "@-");
+                assert!(!allow_backwards);
+                assert_eq!(track_remote.as_deref(), Some("origin"));
+            }
+            other => panic!("expected move-bookmark publish, got {other:?}"),
+        }
+        assert!(plan.primary.disabled_reason.is_none());
+        assert_eq!(plan.primary.label, "Push bookmark feat");
+
+        repo.publish(&plan.primary).unwrap();
+
+        let remote_head = Command::new("git")
+            .arg("-C")
+            .arg(remote_dir.path())
+            .args(["rev-parse", "refs/heads/feat"])
+            .output()
+            .unwrap();
+        assert!(remote_head.status.success());
+        let local_head = Command::new("jj")
+            .args(["log", "--no-graph", "-r", "@-", "-T", "commit_id"])
+            .current_dir(repo_dir.path())
+            .output()
+            .unwrap();
+        assert!(local_head.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&remote_head.stdout).trim(),
+            String::from_utf8_lossy(&local_head.stdout).trim(),
+            "remote feat should fast-forward to the published commit"
+        );
     }
 
     fn init_jj_repo() -> Option<TempDir> {

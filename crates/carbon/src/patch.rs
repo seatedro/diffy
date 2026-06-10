@@ -178,10 +178,20 @@ impl FileBuilder {
     fn start_hunk(&mut self, line: &str) -> Result<(), PatchError> {
         self.finish_hunk();
         let (old_start, old_count, new_start, new_count) = parse_hunk_header(line)?;
-        self.old_text
-            .reserve(u32_to_usize_saturating(old_count).saturating_mul(32));
-        self.new_text
-            .reserve(u32_to_usize_saturating(new_count).saturating_mul(32));
+        // Header counts are untrusted input; the reservation is only a
+        // warm-up, so cap it to keep a hostile count from forcing a huge
+        // allocation. Real content still grows the buffers as it is pushed.
+        const MAX_HUNK_RESERVE_BYTES: usize = 1 << 20;
+        self.old_text.reserve(
+            u32_to_usize_saturating(old_count)
+                .saturating_mul(32)
+                .min(MAX_HUNK_RESERVE_BYTES),
+        );
+        self.new_text.reserve(
+            u32_to_usize_saturating(new_count)
+                .saturating_mul(32)
+                .min(MAX_HUNK_RESERVE_BYTES),
+        );
         self.file.hunks.reserve(1);
         self.file.blocks.reserve(3);
         self.hunk = Some(HunkBuilder::new(

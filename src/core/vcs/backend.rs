@@ -117,10 +117,20 @@ pub trait VcsRepository: Send {
     fn run_operation(&mut self, _operation: &VcsOperation) -> Result<String> {
         Err(unsupported_operation(self.location(), "operation"))
     }
-    fn fetch_remote(&mut self, _remote: &str) -> Result<()> {
+    fn fetch_remote(
+        &mut self,
+        _remote: &str,
+        _progress: &mut dyn FnMut(usize, usize, usize),
+    ) -> Result<()> {
         Err(unsupported_operation(self.location(), "fetch"))
     }
-    fn push(&mut self, _remote: &str, _refspec: &str, _force_with_lease: bool) -> Result<()> {
+    fn push(
+        &mut self,
+        _remote: &str,
+        _refspec: &str,
+        _force_with_lease: bool,
+        _progress: &mut dyn FnMut(usize, usize, usize),
+    ) -> Result<()> {
         Err(unsupported_operation(self.location(), "push"))
     }
     fn publish_plan(&mut self) -> Result<PublishPlan> {

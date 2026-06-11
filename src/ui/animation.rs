@@ -11,6 +11,7 @@ pub enum AnimationKey {
     ToastEntrance(u64),
     ToastExit(u64),
     ToastStackFan,
+    ToastProgress(u64),
 }
 
 // ---------------------------------------------------------------------------
@@ -56,12 +57,24 @@ impl Default for AnimationState {
 
 impl AnimationState {
     pub fn set_target(&mut self, key: AnimationKey, target: f32, duration_ms: u64, clock_ms: u64) {
+        let initial = if target > 0.5 { 0.0 } else { 1.0 };
+        self.set_target_from(key, initial, target, duration_ms, clock_ms);
+    }
+
+    pub fn set_target_from(
+        &mut self,
+        key: AnimationKey,
+        initial: f32,
+        target: f32,
+        duration_ms: u64,
+        clock_ms: u64,
+    ) {
         let entry = self.transitions.entry(key).or_insert(Transition {
             target,
-            current: if target > 0.5 { 0.0 } else { 1.0 },
+            current: initial,
             started_at_ms: clock_ms,
             duration_ms,
-            start_value: if target > 0.5 { 0.0 } else { 1.0 },
+            start_value: initial,
         });
         if (entry.target - target).abs() > f32::EPSILON {
             entry.start_value = entry.current;

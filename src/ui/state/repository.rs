@@ -139,12 +139,14 @@ pub(super) fn reduce_event(state: &mut AppState, event: RepositoryEvent) -> Vec<
             state.update_toast_progress(toast_id, fraction);
             if total_objects > 0 {
                 let kib = received_bytes / 1024;
-                state.update_toast_message(
-                    toast_id,
-                    &format!(
+                let message = if kib > 0 {
+                    format!(
                         "Fetching {received_objects}/{total_objects} objects ({kib} KiB)\u{2026}"
-                    ),
-                );
+                    )
+                } else {
+                    format!("Fetching {received_objects}/{total_objects} objects\u{2026}")
+                };
+                state.update_toast_message(toast_id, &message);
             }
             Vec::new()
         }
@@ -182,10 +184,12 @@ pub(super) fn reduce_event(state: &mut AppState, event: RepositoryEvent) -> Vec<
             state.update_toast_progress(toast_id, fraction);
             if total > 0 {
                 let kib = bytes / 1024;
-                state.update_toast_message(
-                    toast_id,
-                    &format!("Pushing {current}/{total} objects ({kib} KiB)\u{2026}"),
-                );
+                let message = if kib > 0 {
+                    format!("Pushing {current}/{total} objects ({kib} KiB)\u{2026}")
+                } else {
+                    format!("Pushing {current}/{total} objects\u{2026}")
+                };
+                state.update_toast_message(toast_id, &message);
             }
             Vec::new()
         }

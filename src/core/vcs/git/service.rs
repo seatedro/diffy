@@ -189,6 +189,119 @@ fn run_system_git_capture(repo_path: &Path, args: &[OsString]) -> Result<GitOutp
     run_system_git_inner(repo_path, args, false)
 }
 
+/// Run git with stderr streamed live, invoking `on_progress` with
+/// `(current, total, bytes)` for each sideband update on the given phase
+/// (e.g. "Receiving objects" for fetch, "Writing objects" for push).
+fn run_system_git_progress(
+    repo_path: &Path,
+    args: &[OsString],
+    phase: &str,
+    on_progress: &mut dyn FnMut(usize, usize, usize),
+) -> Result<()> {
+    use std::io::BufReader;
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(repo_path)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| git_error_fatal(git_command_label(args), format!("failed to run git: {e}")))?;
+
+    let mut last_line = String::new();
+    if let Some(stderr) = child.stderr.take() {
+        let mut reader = BufReader::new(stderr);
+        let mut buf = Vec::new();
+        while matches!(read_stderr_chunk(&mut reader, &mut buf), Ok(n) if n > 0) {
+            let line = String::from_utf8_lossy(&buf);
+            let line = line.trim();
+            if !line.is_empty() {
+                if let Some((current, total, bytes)) = parse_objects_progress(line, phase) {
+                    on_progress(current, total, bytes);
+                }
+                last_line = line.to_owned();
+            }
+            buf.clear();
+        }
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| git_error_fatal(git_command_label(args), format!("failed to run git: {e}")))?;
+    if status.success() {
+        return Ok(());
+    }
+    let detail = if last_line.is_empty() {
+        format!("git exited with {status}")
+    } else {
+        last_line
+    };
+    let command = git_command_label(args);
+    if failure_is_network(&detail) {
+        return Err(DiffyError::network(format!(
+            "git {command} failed: {detail}"
+        )));
+    }
+    Err(git_error(command, detail))
+}
+
+/// Read one stderr chunk terminated by `\r` (in-place progress rewrite) or
+/// `\n`. Returns bytes consumed; 0 means EOF.
+fn read_stderr_chunk(
+    reader: &mut impl std::io::BufRead,
+    buf: &mut Vec<u8>,
+) -> std::io::Result<usize> {
+    let mut total = 0;
+    loop {
+        let available = match reader.fill_buf() {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if available.is_empty() {
+            return Ok(total);
+        }
+        if let Some(pos) = available.iter().position(|&b| b == b'\r' || b == b'\n') {
+            buf.extend_from_slice(&available[..pos]);
+            reader.consume(pos + 1);
+            return Ok(total + pos + 1);
+        }
+        buf.extend_from_slice(available);
+        let len = available.len();
+        reader.consume(len);
+        total += len;
+    }
+}
+
+/// Parse `<phase>:  42% (519/1234), 5.20 MiB | 10.40 MiB/s` into
+/// `(current, total, bytes)`. Bytes are 0 when the line has no size component.
+fn parse_objects_progress(line: &str, phase: &str) -> Option<(usize, usize, usize)> {
+    let rest = line.strip_prefix(phase)?.strip_prefix(':')?;
+    let open = rest.find('(')?;
+    let close = rest[open..].find(')')? + open;
+    let (current, total) = rest[open + 1..close].split_once('/')?;
+    let current = current.trim().parse().ok()?;
+    let total = total.trim().parse().ok()?;
+    let bytes = parse_transfer_bytes(&rest[close + 1..]).unwrap_or(0);
+    Some((current, total, bytes))
+}
+
+fn parse_transfer_bytes(rest: &str) -> Option<usize> {
+    let rest = rest.trim_start_matches(|c: char| c == ',' || c.is_whitespace());
+    let mut parts = rest.split_whitespace();
+    let value: f64 = parts.next()?.parse().ok()?;
+    let unit = match parts.next()? {
+        "bytes" | "B" => 1.0,
+        "KiB" => 1024.0,
+        "MiB" => 1024.0 * 1024.0,
+        "GiB" => 1024.0 * 1024.0 * 1024.0,
+        _ => return None,
+    };
+    Some((value * unit) as usize)
+}
+
 fn run_system_git_inner(
     repo_path: &Path,
     args: &[OsString],
@@ -1087,13 +1200,20 @@ impl GitService {
     }
 
     /// Fetch a named remote using the remote's configured refspecs.
-    pub fn fetch_remote<F>(&self, remote_name: &str, _progress: F) -> Result<()>
+    /// `progress` receives `(received_objects, total_objects, received_bytes)`.
+    pub fn fetch_remote<F>(&self, remote_name: &str, mut progress: F) -> Result<()>
     where
-        F: FnMut(usize, usize, usize) + Send + 'static,
+        F: FnMut(usize, usize, usize),
     {
-        run_system_git(
+        run_system_git_progress(
             self.repo_path_ref()?,
-            &[OsString::from("fetch"), OsString::from(remote_name)],
+            &[
+                OsString::from("fetch"),
+                OsString::from("--progress"),
+                OsString::from(remote_name),
+            ],
+            "Receiving objects",
+            &mut progress,
         )
     }
 
@@ -1153,19 +1273,25 @@ impl GitService {
         remote_name: &str,
         refspec: &str,
         force_with_lease: bool,
-        _progress: F,
+        mut progress: F,
     ) -> Result<()>
     where
-        F: FnMut(usize, usize, usize) + Send + 'static,
+        F: FnMut(usize, usize, usize),
     {
-        let mut args = Vec::with_capacity(4);
+        let mut args = Vec::with_capacity(5);
         args.push(OsString::from("push"));
+        args.push(OsString::from("--progress"));
         if force_with_lease {
             args.push(OsString::from("--force-with-lease"));
         }
         args.push(OsString::from(remote_name));
         args.push(OsString::from(refspec));
-        run_system_git(self.repo_path_ref()?, &args)
+        run_system_git_progress(
+            self.repo_path_ref()?,
+            &args,
+            "Writing objects",
+            &mut progress,
+        )
     }
 
     /// Fast-forward the named local branch to match its upstream on the given
@@ -1184,7 +1310,7 @@ impl GitService {
         progress: F,
     ) -> std::result::Result<PullOutcome, PullError>
     where
-        F: FnMut(usize, usize, usize) + Send + 'static,
+        F: FnMut(usize, usize, usize),
     {
         self.fetch_remote(remote_name, progress)
             .map_err(|e| PullError::Other(e.to_string()))?;
@@ -1860,9 +1986,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        INDEX_REF, PR_REF_PREFIX, WORKDIR_REF, github_fetch_source_for_repo, is_pr_ref,
-        github_repo_key_from_remote_url, github_repo_url_from_remote_transport,
-        local_remote_for_github_repo, parse_porcelain_status, parse_shortstat, pr_ref_path,
+        INDEX_REF, PR_REF_PREFIX, WORKDIR_REF, github_fetch_source_for_repo,
+        github_repo_key_from_remote_url, github_repo_url_from_remote_transport, is_pr_ref,
+        local_remote_for_github_repo, parse_objects_progress, parse_porcelain_status,
+        parse_shortstat, pr_ref_path,
     };
     use crate::core::vcs::git::{
         GitService, PatchApplyTarget, StatusItem, StatusOperation, StatusScope,
@@ -2313,6 +2440,40 @@ mod tests {
             Repository::clone(remote_dir.path().to_str().unwrap(), local_dir.path()).unwrap();
 
         (remote_dir, local_dir)
+    }
+
+    #[test]
+    fn parses_sideband_object_progress() {
+        assert_eq!(
+            parse_objects_progress(
+                "Receiving objects:  42% (519/1234), 5.20 MiB | 10.40 MiB/s",
+                "Receiving objects"
+            ),
+            Some((519, 1234, (5.20 * 1024.0 * 1024.0) as usize))
+        );
+        assert_eq!(
+            parse_objects_progress(
+                "Receiving objects: 100% (1234/1234), 12.00 KiB | 12.00 MiB/s, done.",
+                "Receiving objects"
+            ),
+            Some((1234, 1234, 12 * 1024))
+        );
+        assert_eq!(
+            parse_objects_progress("Writing objects:  50% (5/10)", "Writing objects"),
+            Some((5, 10, 0))
+        );
+        // Remote-side phases must not feed the local bar.
+        assert_eq!(
+            parse_objects_progress(
+                "remote: Counting objects:  31% (100/320)",
+                "Receiving objects"
+            ),
+            None
+        );
+        assert_eq!(
+            parse_objects_progress("Resolving deltas:  10% (5/50)", "Receiving objects"),
+            None
+        );
     }
 
     #[test]

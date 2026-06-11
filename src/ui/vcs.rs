@@ -585,10 +585,8 @@ fn jj_change_ref_entry(change: &VcsChange) -> ChangeRefUi {
 
 #[cfg(test)]
 mod tests {
-    use super::{publish_hint_from_plan, pretty_ref_label};
-    use crate::core::vcs::model::{
-        ChangeIdToken, PublishAction, PublishActionKind, PublishPlan,
-    };
+    use super::{pretty_ref_label, publish_hint_from_plan};
+    use crate::core::vcs::model::{ChangeIdToken, PublishAction, PublishActionKind, PublishPlan};
 
     fn plan(kind: PublishActionKind, disabled: bool, token: Option<&str>) -> PublishPlan {
         PublishPlan {
@@ -653,10 +651,7 @@ mod tests {
         );
         let hint = publish_hint_from_plan(&plan).expect("hint");
         assert_eq!(hint.label, "zuwkussw");
-        assert_eq!(
-            hint.change_id_token.expect("token").text,
-            "zuwkussw"
-        );
+        assert_eq!(hint.change_id_token.expect("token").text, "zuwkussw");
     }
 
     #[test]

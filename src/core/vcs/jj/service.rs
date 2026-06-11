@@ -938,7 +938,11 @@ impl VcsRepository for JjRepository {
         }
     }
 
-    fn fetch_remote(&mut self, remote: &str) -> Result<()> {
+    fn fetch_remote(
+        &mut self,
+        remote: &str,
+        _progress: &mut dyn FnMut(usize, usize, usize),
+    ) -> Result<()> {
         self.cli.run(&[
             OsString::from("git"),
             OsString::from("fetch"),
@@ -949,7 +953,13 @@ impl VcsRepository for JjRepository {
         Ok(())
     }
 
-    fn push(&mut self, remote: &str, refspec: &str, _force_with_lease: bool) -> Result<()> {
+    fn push(
+        &mut self,
+        remote: &str,
+        refspec: &str,
+        _force_with_lease: bool,
+        _progress: &mut dyn FnMut(usize, usize, usize),
+    ) -> Result<()> {
         let bookmark = bookmark_from_refspec(refspec)
             .ok_or_else(|| jj_error_fatal("push", "jj push requires a bookmark refspec"))?;
         self.cli.run(&[
@@ -1004,7 +1014,10 @@ impl VcsRepository for JjRepository {
                 // Prefer feature bookmarks over main/master when both sit on
                 // nearest ancestors (e.g. right after merging main in).
                 .min_by_key(|(_, bookmark)| {
-                    (bookmark_priority(&bookmark.name) == 0, bookmark.name.clone())
+                    (
+                        bookmark_priority(&bookmark.name) == 0,
+                        bookmark.name.clone(),
+                    )
                 })
                 .map(|(index, _)| index)
                 .map(|index| movable_bookmarks.remove(index))

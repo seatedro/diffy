@@ -535,7 +535,19 @@ fn apply_fetch(
     toast_id: u64,
 ) {
     tracing::debug!(path = %path.display(), %remote, toast_id, "vcs: fetch requested");
-    let result = discovery::open_repository(&path).and_then(|mut repo| repo.fetch_remote(&remote));
+    let result = discovery::open_repository(&path).and_then(|mut repo| {
+        repo.fetch_remote(
+            &remote,
+            &mut |received_objects, total_objects, received_bytes| {
+                event_sender.send(RepositoryEvent::FetchProgress {
+                    toast_id,
+                    received_objects,
+                    total_objects,
+                    received_bytes,
+                });
+            },
+        )
+    });
 
     match result {
         Ok(()) => {
@@ -584,8 +596,21 @@ fn apply_push(
         .unwrap_or("")
         .to_owned();
 
-    let result = discovery::open_repository(&path)
-        .and_then(|mut repo| repo.push(&remote, &refspec, force_with_lease));
+    let result = discovery::open_repository(&path).and_then(|mut repo| {
+        repo.push(
+            &remote,
+            &refspec,
+            force_with_lease,
+            &mut |current, total, bytes| {
+                event_sender.send(RepositoryEvent::PushProgress {
+                    toast_id,
+                    current,
+                    total,
+                    bytes,
+                });
+            },
+        )
+    });
 
     match result {
         Ok(()) => {

@@ -1226,21 +1226,18 @@ impl ApplicationHandler for NativeApp {
         let tooltip_changed = self.tooltip_state.visible != tooltip_was_visible;
 
         let animating = self.state.animation.has_active();
+        let toast_ticking = self.state.has_ticking_toast();
         let syntax_pack_installing = self.state.syntax_pack_install_active();
         let cursor_blink_changed = self.state.cursor_blink_epoch() != prior_cursor_blink_epoch;
         let debug_overlay = self.state.debug.overlay_visible.get(&self.state.store);
         let next_wake = if debug_overlay {
             Some(now + Duration::from_millis(8))
-        } else if animating || syntax_pack_installing {
+        } else if animating || syntax_pack_installing || toast_ticking {
             Some(now + Duration::from_millis(16))
         } else {
             let next_cursor_blink = self
                 .state
                 .next_cursor_blink_at_ms()
-                .map(|ms| self.launch_at + std::time::Duration::from_millis(ms));
-            let next_toast_expiry = self
-                .state
-                .next_toast_expiry_at_ms()
                 .map(|ms| self.launch_at + std::time::Duration::from_millis(ms));
             let next_compare_progress_reveal =
                 self.state
@@ -1265,7 +1262,6 @@ impl ApplicationHandler for NativeApp {
             };
             [
                 next_cursor_blink,
-                next_toast_expiry,
                 next_compare_progress_reveal,
                 next_tooltip,
                 self.next_update_check_at,
@@ -1285,6 +1281,7 @@ impl ApplicationHandler for NativeApp {
             && (self.needs_redraw
                 || self.state.store.any_dirty()
                 || animating
+                || toast_ticking
                 || syntax_pack_installing
                 || cursor_blink_changed
                 || tooltip_changed

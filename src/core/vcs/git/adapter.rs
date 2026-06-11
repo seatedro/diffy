@@ -400,13 +400,23 @@ impl VcsRepository for GitRepository {
         self.service.commit(message).map(|_| ())
     }
 
-    fn fetch_remote(&mut self, remote: &str) -> Result<()> {
-        self.service.fetch_remote(remote, |_, _, _| {})
+    fn fetch_remote(
+        &mut self,
+        remote: &str,
+        progress: &mut dyn FnMut(usize, usize, usize),
+    ) -> Result<()> {
+        self.service.fetch_remote(remote, progress)
     }
 
-    fn push(&mut self, remote: &str, refspec: &str, force_with_lease: bool) -> Result<()> {
+    fn push(
+        &mut self,
+        remote: &str,
+        refspec: &str,
+        force_with_lease: bool,
+        progress: &mut dyn FnMut(usize, usize, usize),
+    ) -> Result<()> {
         self.service
-            .push(remote, refspec, force_with_lease, |_, _, _| {})
+            .push(remote, refspec, force_with_lease, progress)
     }
 
     fn publish_plan(&mut self) -> Result<PublishPlan> {
@@ -449,7 +459,7 @@ impl VcsRepository for GitRepository {
                 refspec,
                 force_with_lease,
             } => {
-                self.push(remote, refspec, *force_with_lease)?;
+                self.push(remote, refspec, *force_with_lease, &mut |_, _, _| {})?;
                 Ok(PublishOutcome {
                     label: completed_publish_label(&action.label),
                 })

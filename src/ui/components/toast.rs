@@ -361,6 +361,11 @@ impl<'a> ToastStack<'a> {
             } else {
                 (elapsed as f32 / TOAST_LIFETIME_MS as f32).clamp(0.0, 1.0)
             };
+            let external_progress = toast.progress.map(|raw| {
+                self.animation
+                    .progress(AnimationKey::ToastProgress(toast.id))
+                    .unwrap_or(raw)
+            });
 
             let z = TOAST_Z_BASE + (visible - depth) as i32;
 
@@ -370,7 +375,7 @@ impl<'a> ToastStack<'a> {
                 title_lines: layout.title_lines,
                 description_lines: layout.description_lines,
                 time_progress,
-                external_progress: toast.progress,
+                external_progress,
                 bottom,
                 left,
                 width,

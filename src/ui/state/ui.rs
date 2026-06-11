@@ -8,6 +8,7 @@ pub(super) const MAX_VISIBLE_TOASTS: usize = 5;
 pub(super) const TOAST_LIFETIME_MS: u64 = 5_000;
 
 pub(super) const TOAST_ANIM_MS: u64 = 150;
+pub(super) const TOAST_PROGRESS_ANIM_MS: u64 = 250;
 
 pub(super) const CURSOR_BLINK_INTERVAL_MS: u64 = 530;
 
@@ -252,13 +253,13 @@ impl AppState {
         })
     }
 
-    pub fn next_toast_expiry_at_ms(&self) -> Option<u64> {
+    /// True while any toast lifetime bar is counting down and needs
+    /// per-frame redraws.
+    pub fn has_ticking_toast(&self) -> bool {
         self.ui.toasts.with(&self.store, |toasts| {
             toasts
                 .iter()
-                .filter(|toast| !toast.hovered && toast.progress.is_none())
-                .map(|toast| toast.created_at_ms.saturating_add(TOAST_LIFETIME_MS))
-                .min()
+                .any(|toast| !toast.hovered && toast.progress.is_none())
         })
     }
 
@@ -361,12 +362,20 @@ impl AppState {
     }
 
     pub(super) fn update_toast_progress(&mut self, toast_id: u64, fraction: f32) {
+        use crate::ui::animation::AnimationKey;
         let clamped = fraction.clamp(0.0, 1.0);
         self.ui.toasts.update(&self.store, |toasts| {
             if let Some(toast) = toasts.iter_mut().find(|t| t.id == toast_id) {
                 toast.progress = Some(clamped);
             }
         });
+        self.animation.set_target_from(
+            AnimationKey::ToastProgress(toast_id),
+            0.0,
+            clamped,
+            TOAST_PROGRESS_ANIM_MS,
+            self.clock_ms,
+        );
     }
 
     pub(super) fn update_toast_message(&mut self, toast_id: u64, message: &str) {

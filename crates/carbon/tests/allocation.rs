@@ -209,7 +209,7 @@ fn projection_count_emitter_allocates_zero() {
         },
     );
 
-    assert_eq!(count, 1_026);
+    assert_eq!(count, 1_025);
     assert_eq!(allocations().count, 0);
 }
 
@@ -252,7 +252,7 @@ fn projection_buffer_rebuild_allocates_zero_after_reserve() {
         &expansion,
     );
 
-    assert_eq!(buffer.len(), 1_026);
+    assert_eq!(buffer.len(), 1_025);
     assert_eq!(allocations().count, 0);
 }
 

@@ -207,7 +207,12 @@ pub fn expansion_caps(file: &FileDiff, hunk_id: HunkId) -> HunkExpansion {
         return HunkExpansion::default();
     };
     let hunk = &file.hunks[index];
-    let above = hunk.new_start_index();
+    let above_floor = index
+        .checked_sub(1)
+        .and_then(|prev| file.hunks.get(prev))
+        .map(Hunk::new_end_index)
+        .unwrap_or(0);
+    let above = hunk.new_start_index().saturating_sub(above_floor);
     let below = file
         .hunks
         .get(index + 1)
@@ -275,25 +280,34 @@ fn project_file_inner(
         }
     };
 
+    let mut gap_above_fully_visible = false;
     for (hunk_index, hunk) in file.hunks.iter().enumerate() {
         if hunk_index == 0 {
             let old_gap_start = 0;
             let new_gap_start = 0;
             let gap_len = hunk.old_start_index().min(hunk.new_start_index());
+            let expand_above = expansion.hunk(hunk.id).above;
             emit_gap(
                 file,
                 hunk.id,
                 old_gap_start,
                 new_gap_start,
                 gap_len,
-                expansion.hunk(hunk.id).above,
+                expand_above,
                 0,
                 options.collapsed_context_threshold,
                 &mut windowed_emit,
             );
+            gap_above_fully_visible = gap_fully_visible(
+                file,
+                gap_len,
+                expand_above,
+                0,
+                options.collapsed_context_threshold,
+            );
         }
 
-        if options.include_hunk_headers {
+        if options.include_hunk_headers && !gap_above_fully_visible {
             windowed_emit(ProjectionRow {
                 file_id: file.id,
                 kind: ProjectionRowKind::HunkHeader,
@@ -338,7 +352,35 @@ fn project_file_inner(
             options.collapsed_context_threshold,
             &mut windowed_emit,
         );
+        gap_above_fully_visible = gap_fully_visible(
+            file,
+            gap_len,
+            next_above,
+            this_expansion.below,
+            options.collapsed_context_threshold,
+        );
     }
+}
+
+/// Mirrors `emit_gap`: true when every line of the gap is rendered, so the
+/// following hunk is contiguous with the content above and needs no header.
+fn gap_fully_visible(
+    file: &FileDiff,
+    gap_len: u32,
+    expand_from_end: u32,
+    expand_from_start: u32,
+    collapsed_context_threshold: u32,
+) -> bool {
+    if file.is_partial {
+        return false;
+    }
+    if gap_len <= collapsed_context_threshold {
+        return true;
+    }
+    let from_start = expand_from_start.min(gap_len);
+    let remaining = gap_len.saturating_sub(from_start);
+    let from_end = expand_from_end.min(remaining);
+    gap_len.saturating_sub(from_start + from_end) <= collapsed_context_threshold
 }
 
 fn emit_context(file_id: FileId, hunk: &Hunk, block: &Block, emit: &mut impl FnMut(ProjectionRow)) {
@@ -601,8 +643,112 @@ mod tests {
         );
 
         assert_eq!(rows[0].kind, ProjectionRowKind::ContextExpanded);
-        assert_eq!(rows[0].new_line, Some(3));
+        assert_eq!(rows[0].new_line, Some(4));
         assert_eq!(file.hunks[0].new_count, 1);
+    }
+
+    fn two_hunk_file() -> FileDiff {
+        let mut file = FileDiff {
+            id: FileId(1),
+            old_text: Some(TextStore::from_text(
+                "a\nold1\nc\nd\ne\nf\ng\nh\nold2\nj\nk\nl\n",
+            )),
+            new_text: Some(TextStore::from_text(
+                "a\nnew1\nc\nd\ne\nf\ng\nh\nnew2\nj\nk\nl\n",
+            )),
+            ..FileDiff::default()
+        };
+        file.add_hunk(
+            Hunk::new(HunkId(0), 2, 1, 2, 1, BlockRange::default()),
+            [Block::change(
+                BlockId(0),
+                SourceRange::new(1, 1),
+                SourceRange::new(1, 1),
+            )],
+        );
+        file.add_hunk(
+            Hunk::new(HunkId(1), 9, 1, 9, 1, BlockRange::default()),
+            [Block::change(
+                BlockId(1),
+                SourceRange::new(8, 1),
+                SourceRange::new(8, 1),
+            )],
+        );
+        file
+    }
+
+    #[test]
+    fn expansion_caps_above_stops_at_previous_hunk() {
+        let file = two_hunk_file();
+        let first = super::expansion_caps(&file, HunkId(0));
+        let second = super::expansion_caps(&file, HunkId(1));
+
+        assert_eq!(first.above, 1);
+        assert_eq!(first.below, 6);
+        assert_eq!(second.above, 6);
+        assert_eq!(second.below, 3);
+    }
+
+    #[test]
+    fn fully_expanded_gap_suppresses_hunk_header() {
+        let file = two_hunk_file();
+        let options = ProjectionOptions {
+            collapsed_context_threshold: 0,
+            ..ProjectionOptions::default()
+        };
+        let header_count = |rows: &[super::ProjectionRow]| {
+            rows.iter()
+                .filter(|row| row.kind == ProjectionRowKind::HunkHeader)
+                .count()
+        };
+
+        let mut expansion = ExpansionState::default();
+        let mut rows = Vec::new();
+        project_file(&file, options, &expansion, |row| rows.push(row));
+        assert_eq!(header_count(&rows), 2);
+
+        expand_context(
+            &file,
+            &mut expansion,
+            HunkId(1),
+            ExpansionDirection::Above,
+            20,
+        );
+        rows.clear();
+        project_file(&file, options, &expansion, |row| rows.push(row));
+
+        assert_eq!(header_count(&rows), 1);
+        let revealed = rows
+            .iter()
+            .filter(|row| row.kind == ProjectionRowKind::ContextExpanded)
+            .filter_map(|row| row.new_line)
+            .collect::<Vec<_>>();
+        assert_eq!(revealed, vec![3, 4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn partially_expanded_gap_keeps_hunk_header() {
+        let file = two_hunk_file();
+        let options = ProjectionOptions {
+            collapsed_context_threshold: 0,
+            ..ProjectionOptions::default()
+        };
+        let mut expansion = ExpansionState::default();
+        expand_context(
+            &file,
+            &mut expansion,
+            HunkId(1),
+            ExpansionDirection::Above,
+            2,
+        );
+        let mut rows = Vec::new();
+        project_file(&file, options, &expansion, |row| rows.push(row));
+
+        let headers = rows
+            .iter()
+            .filter(|row| row.kind == ProjectionRowKind::HunkHeader)
+            .count();
+        assert_eq!(headers, 2);
     }
 
     #[test]

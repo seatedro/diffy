@@ -693,7 +693,7 @@ dependencies = [
 
 [[package]]
 name = "carbon"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "criterion",
  "proptest",
@@ -1272,7 +1272,7 @@ dependencies = [
 
 [[package]]
 name = "diffy"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -2837,7 +2837,7 @@ dependencies = [
 
 [[package]]
 name = "halogen"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "halogen-macros",
  "serde",
@@ -2846,7 +2846,7 @@ dependencies = [
 
 [[package]]
 name = "halogen-macros"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "halogen",
  "proc-macro2",
@@ -4648,7 +4648,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "carbon",
  "dirs",

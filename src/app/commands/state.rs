@@ -161,7 +161,11 @@ impl CommandsController {
         self.picker.as_ref()
     }
 
-    pub fn ref_picker(&self) -> Option<&RefPicker> {
+    pub fn editing_ref(&self) -> Option<CompareField> {
+        self.ref_picker.as_ref().map(RefPicker::side)
+    }
+
+    pub(super) fn ref_picker(&self) -> Option<&RefPicker> {
         self.ref_picker.as_ref()
     }
 

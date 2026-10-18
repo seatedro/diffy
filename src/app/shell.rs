@@ -346,6 +346,17 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             height,
         };
         let review = review::view(&mut self.controllers.review, &slot, cx);
+        let editing = self.controllers.commands.editing_ref();
+        let nav = &self.controllers.navigation;
+        let repo = match nav.repo_path() {
+            Some(_) => navigation::repo_chip(nav, theme),
+            None => view! {
+                <text size={TextStyle::Body.font_size(theme)} class="truncate font-semibold" color={tc.text_strong}>
+                    {label}
+                </text>
+            },
+        };
+        let compare = navigation::compare_bar(nav, editing, theme);
         view! {
             <div
                 w={width}
@@ -361,16 +372,9 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 aria-label="Title bar"
                 test_id="title"
             >
-                <div class="flex-1 flex-row items-center" min_w={0.0}>
-                    <text
-                        size={TextStyle::Body.font_size(theme)}
-                        class="truncate font-semibold"
-                        color={tc.text_strong}
-                    >
-                        {label}
-                    </text>
-                </div>
-                {review}
+                <div class="flex-1 flex-row items-center" min_w={0.0}>{repo}</div>
+                {?compare}
+                <div class="flex-1 flex-row items-center justify-end" min_w={0.0} gap={tokens::scaled(Sp::SM, scale)}>{review}</div>
             </div>
         }
     }

@@ -157,11 +157,6 @@ impl RefPicker {
         let results = self.results.clone();
         self.set_results(results);
     }
-
-    pub fn typed_revision(&self) -> Option<&str> {
-        let query = self.query.text().trim();
-        (!query.is_empty() && self.selected.is_none()).then_some(query)
-    }
 }
 
 pub fn is_working_tree(entry: &RefEntry) -> bool {

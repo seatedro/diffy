@@ -294,7 +294,12 @@ impl NavigationController {
                 .unwrap_or_else(|| "HEAD".to_owned());
             return (base, WORKING_TREE_LABEL.to_owned());
         }
-        (self.compare.left.clone(), self.compare.right.clone())
+        let shown = |reference: &str| match reference {
+            "" => String::new(),
+            r if is_working_copy_ref(r) => WORKING_TREE_LABEL.to_owned(),
+            r => r.to_owned(),
+        };
+        (shown(&self.compare.left), shown(&self.compare.right))
     }
 
     pub fn take_dispatch(&self) -> Vec<Action> {

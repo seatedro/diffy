@@ -34,6 +34,7 @@ use crate::platform::persistence::Settings;
 #[derive(Default)]
 struct NavApp {
     nav: NavigationController,
+    review: crate::app::review::ReviewController,
     shared: SharedContext,
     intents: Vec<Intent>,
     effects: Vec<Effect>,
@@ -95,7 +96,7 @@ impl UiApp for NavApp {
             width,
             height,
         };
-        super::view(&mut self.nav, &slot, cx)
+        super::view(&mut self.nav, &self.review, &slot, None, cx)
     }
 
     fn update(&mut self, action: Action, cx: &mut UiContext) {
@@ -203,7 +204,7 @@ fn cli_repository_activates_the_workspace_and_syncs_it() {
         "no saved refs opens the working tree"
     );
     ui.find(By::role_name(Role::Tab, "History"));
-    ui.find(By::role_name(Role::Tab, "Operation log"));
+    ui.find(By::role_name(Role::Tab, "Ops"));
 }
 
 #[test]
@@ -499,7 +500,11 @@ fn history_tab_loads_range_commits_and_drills_into_one() {
         Intent::RequestCompare(c) if c.request.spec == VcsCompareSpec::Change { revision: "e5aaaa".to_owned() }
     )));
 
-    ui.click_node(By::role_name(Role::Button, "Back to comparison"));
+    let reduction = ui.app_mut().nav.reduce_action(
+        NavigationAction::ClearHistoryCommit,
+        &SharedContext::default(),
+    );
+    ui.app_mut().reduce(reduction);
     assert_eq!(ui.app().nav.compare().mode, CompareMode::TwoDot);
     assert_eq!(ui.app().nav.compare().left, "main");
 }
@@ -560,7 +565,7 @@ fn operation_rows_expose_their_actions() {
         three_files(),
     )));
     ui.frame();
-    ui.click_node(By::role_name(Role::Tab, "Operation log"));
+    ui.click_node(By::role_name(Role::Tab, "Ops"));
     ui.click_node(By::role_name(Role::ListBoxOption, "snapshot working copy"));
     ui.find(By::role_name(Role::Button, "Undo last operation"));
 }
@@ -583,6 +588,7 @@ fn visible_rows_request_their_stats_once() {
     nav.set_metrics(ListMetrics {
         row_height: 20.0,
         viewport: 200.0,
+        history_row: 40.0,
     });
     let shared = SharedContext::default();
     let files: Vec<_> = (0..200)

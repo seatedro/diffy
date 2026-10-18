@@ -43,18 +43,35 @@ pub fn registry() -> &'static ThemeRegistry {
     REGISTRY.get_or_init(ThemeRegistry::load)
 }
 
-pub fn quark_mode(mode: crate::core::theme_types::ThemeMode) -> ThemeMode {
+pub fn quark_mode(mode: crate::core::theme_types::ThemeMode) -> Option<ThemeMode> {
     match mode {
-        crate::core::theme_types::ThemeMode::Dark => ThemeMode::Dark,
-        crate::core::theme_types::ThemeMode::Light => ThemeMode::Light,
+        crate::core::theme_types::ThemeMode::Dark => Some(ThemeMode::Dark),
+        crate::core::theme_types::ThemeMode::Light => Some(ThemeMode::Light),
+        crate::core::theme_types::ThemeMode::System => None,
     }
 }
 
-pub fn settings_theme(settings: &Settings) -> Theme {
+#[derive(Debug, Clone, PartialEq)]
+pub enum ThemeSelection {
+    Fixed(Theme),
+    System(ThemePair),
+}
+
+pub fn settings_theme(settings: &Settings) -> ThemeSelection {
+    let scale = f32::from(settings.ui_scale_pct) / 100.0;
+    match quark_mode(settings.theme_mode) {
+        Some(mode) => {
+            ThemeSelection::Fixed(theme_for(registry(), &settings.theme_name, mode, scale))
+        }
+        None => ThemeSelection::System(ThemePair::load(registry(), &settings.theme_name, scale)),
+    }
+}
+
+pub fn preview_theme(settings: &Settings, mode: ThemeMode) -> Theme {
     theme_for(
         registry(),
         &settings.theme_name,
-        quark_mode(settings.theme_mode),
+        mode,
         f32::from(settings.ui_scale_pct) / 100.0,
     )
 }

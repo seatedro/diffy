@@ -125,13 +125,16 @@ fn current_workspace_events_change_the_title_and_stale_ones_do_not() {
 
     let frames = ui.frame_count();
     deliver(&mut ui, WorkspaceEpoch(7), opened("/fixtures/stale"));
-    assert!(ui.try_find(By::name("stale")).is_none());
+    assert!(ui.try_find(By::name("Repository stale")).is_none());
     assert_eq!(ui.app().shared().workspace, WorkspaceEpoch(0));
     assert_eq!(ui.frame_count(), frames, "a dropped event does not redraw");
 
     deliver_current(&mut ui, opened("/fixtures/alpha"));
     let title = ui.find(By::test_id("title"));
-    assert!(contains(title.bounds, ui.find(By::name("alpha")).bounds));
+    assert!(contains(
+        title.bounds,
+        ui.find(By::name("Repository alpha")).bounds
+    ));
     assert!(ui.frame_count() > frames);
     assert_eq!(ui.app().shared().workspace, WorkspaceEpoch(1));
     assert_eq!(ui.app().shared().revision, 1);
@@ -139,8 +142,8 @@ fn current_workspace_events_change_the_title_and_stale_ones_do_not() {
 
     let frames = ui.frame_count();
     deliver(&mut ui, WorkspaceEpoch(0), opened("/fixtures/beta"));
-    assert!(ui.try_find(By::name("beta")).is_none());
-    ui.find(By::name("alpha"));
+    assert!(ui.try_find(By::name("Repository beta")).is_none());
+    ui.find(By::name("Repository alpha"));
     assert_eq!(ui.app().shared().workspace, WorkspaceEpoch(1));
     assert_eq!(ui.frame_count(), frames);
 }

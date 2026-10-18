@@ -1,23 +1,27 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use quark_components::{
-    CommandPalette, ContextMenuOutcome, ContextMenuState, PALETTE_INPUT, PaletteOutcome,
+    CommandPalette, ContextMenuOutcome, ContextMenuState, PALETTE_INPUT, PaletteEvent,
+    PaletteOutcome,
 };
 use quark_ui::FocusId;
 use quark_ui::element::{Binding, ScrollHandle};
-use quark_ui::text_input::{TextEditCommand, TextEditOutcome};
+use quark_ui::text_input::{TextEditCommand, TextEditOutcome, TextField};
 
 use super::keymap;
 use super::palette::{self, PaletteCommand, PaletteSource};
 use super::picker::{self, PickerCandidate, PickerChoice, PickerKind, PickerState};
 use super::platform::{self, PlatformRequest, ids};
+use super::ref_picker::{RefPicker, is_working_tree};
 use super::toasts::ToastHost;
-use crate::app::text_targets::{PICKER, SETTINGS, TextCx, TextHost};
+use crate::app::text_targets::{PICKER, SETTINGS, SETTINGS_SEARCH, TextCx, TextHost};
 use crate::contracts::commands::{
     CommandDescriptor, CommandsAction, CommandsEffect, CommandsEvent, ConfirmationRequest,
-    ContextMenuEntry, SettingsSection, SettingsSnapshot, ToastUpdate,
+    ContextMenuEntry, RefCatalogRequest, RefPickerAction, RefPickerRequest, SettingsSection,
+    SettingsSnapshot, ToastUpdate,
 };
 use crate::contracts::navigation::{
     CompareField, NavigationAction, RepositorySyncReason, SidebarTab,
@@ -26,10 +30,14 @@ use crate::contracts::shared::SharedContext;
 use crate::contracts::shell::{
     Action, Controller, Intent, LogicalFocus, Reduction, ShellAction, ShellEffect,
 };
+use crate::contracts::viewport::pipeline::{DiffSizeRequest, PipelineAction};
 use crate::core::compare::LayoutMode;
 use crate::core::frecency::{FrecencyStore, recent_repo_paths};
 use crate::core::keymap::{KeymapOverride, ShortcutCommand};
+use crate::core::ref_catalog::{RefCatalog, RefEntryKind, WORKING_TREE_LABEL};
 use crate::core::theme_types::ThemeMode;
+use crate::core::vcs::git::WORKDIR_REF;
+use crate::core::vcs::model::VcsKind;
 use crate::fonts::{FontFamilyEntry, FontRole, bundled_font_entries, normalize_font_selection};
 use crate::platform::persistence::Settings;
 
@@ -44,6 +52,7 @@ const RECENT_REPOSITORIES: usize = 12;
 const RECENT_COMMANDS: usize = 8;
 const PROJECT_URL: &str = "https://github.com/seatedro/diffy";
 const QUIT_BINDING: &str = "mod+q";
+const REF_FRECENCY_PREFIX: &str = "ref:";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayerKind {
@@ -51,6 +60,7 @@ pub enum LayerKind {
     Picker,
     Confirmation,
     ContextMenu,
+    RefPicker,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -65,6 +75,7 @@ pub struct SettingsPage {
     pub capture: Option<ShortcutCommand>,
     pub notice: Option<String>,
     pub scroll: ScrollHandle,
+    pub search: TextField,
     return_focus: Option<FocusId>,
 }
 
@@ -81,6 +92,9 @@ pub struct CommandsController {
     palette: CommandPalette<PaletteSource>,
     palette_source: PaletteSource,
     picker: Option<PickerState>,
+    ref_picker: Option<RefPicker>,
+    ref_generation: u64,
+    ref_catalog: Option<(usize, Arc<RefCatalog>)>,
     confirmation: Option<ConfirmationRequest>,
     context_menu: ContextMenuState,
     context_entries: Vec<Action>,
@@ -92,6 +106,7 @@ pub struct CommandsController {
     frecency: Option<FrecencyStore>,
     row_stride: f32,
     outbox: RefCell<Vec<PlatformRequest>>,
+    activation_click: Cell<bool>,
 }
 
 impl std::fmt::Debug for CommandsController {
@@ -118,6 +133,9 @@ impl Default for CommandsController {
             palette,
             palette_source: PaletteSource::default(),
             picker: None,
+            ref_picker: None,
+            ref_generation: 0,
+            ref_catalog: None,
             confirmation: None,
             context_menu: ContextMenuState::default(),
             context_entries: Vec::new(),
@@ -129,6 +147,7 @@ impl Default for CommandsController {
             frecency: None,
             row_stride: 0.0,
             outbox: RefCell::new(Vec::new()),
+            activation_click: Cell::new(false),
         }
     }
 }
@@ -144,6 +163,31 @@ impl CommandsController {
 
     pub fn picker(&self) -> Option<&PickerState> {
         self.picker.as_ref()
+    }
+
+    pub(super) fn observe_window_focus(&self, focused: bool) {
+        self.activation_click
+            .set(focused && !self.layers.is_empty());
+    }
+
+    pub(super) fn observe_key(&self) {
+        self.activation_click.set(false);
+    }
+
+    pub fn editing_ref(&self) -> Option<CompareField> {
+        self.ref_picker.as_ref().map(RefPicker::side)
+    }
+
+    pub(super) fn ref_picker(&self) -> Option<&RefPicker> {
+        self.ref_picker.as_ref()
+    }
+
+    pub(super) fn ref_picker_mut(&mut self) -> Option<&mut RefPicker> {
+        self.ref_picker.as_mut()
+    }
+
+    pub(super) fn picker_mut(&mut self) -> Option<&mut PickerState> {
+        self.picker.as_mut()
     }
 
     pub fn confirmation(&self) -> Option<&ConfirmationRequest> {
@@ -270,6 +314,7 @@ impl CommandsController {
                 self.palette.close();
             }
             LayerKind::Picker => self.picker = None,
+            LayerKind::RefPicker => self.ref_picker = None,
             LayerKind::Confirmation => self.confirmation = None,
             LayerKind::ContextMenu => {
                 self.context_menu.close();
@@ -430,46 +475,215 @@ impl CommandsController {
         Reduction::changed()
     }
 
-    fn open_ref_picker(&mut self, field: CompareField, cx: &SharedContext) -> Reduction {
-        let current = self
-            .settings
-            .settings
-            .last_compare
+    fn open_ref_picker(&mut self, request: RefPickerRequest, cx: &SharedContext) -> Reduction {
+        let Some(return_focus) = self.admit(LayerKind::RefPicker) else {
+            return Reduction::default();
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        self.ref_picker = Some(RefPicker::new(request, now));
+        self.push_layer(LayerKind::RefPicker, return_focus);
+        let Some(repo) = cx.repository.as_ref() else {
+            return Reduction::changed();
+        };
+        let identity = Arc::as_ptr(&repo.snapshot) as usize;
+        if let Some((cached, catalog)) = &self.ref_catalog
+            && *cached == identity
+        {
+            let catalog = catalog.clone();
+            return self.install_ref_catalog(catalog);
+        }
+        self.ref_generation += 1;
+        let recent = self
+            .frecency
             .as_ref()
-            .map(|c| match field {
-                CompareField::Left => c.left_ref.clone(),
-                CompareField::Right => c.right_ref.clone(),
-            });
-        let candidates = cx
-            .repository
-            .as_ref()
-            .map(|repo| {
-                let snapshot = &repo.snapshot;
-                let refs = snapshot.refs.iter().map(|r| {
-                    PickerCandidate::new(r.name.clone(), PickerChoice::Ref(r.name.clone()))
-                        .detail(format!("{:?}", r.kind).to_lowercase())
-                        .current(current.as_deref() == Some(r.name.as_str()))
-                });
-                let changes = snapshot.changes.iter().map(|change| {
-                    PickerCandidate::new(
-                        change.short_revision.clone(),
-                        PickerChoice::Ref(change.short_revision.clone()),
-                    )
-                    .detail(change.summary.clone())
-                });
-                refs.chain(changes).collect()
+            .map(|store| {
+                store
+                    .recent(64)
+                    .iter()
+                    .filter_map(|key| key.strip_prefix(REF_FRECENCY_PREFIX))
+                    .map(str::to_owned)
+                    .collect()
             })
             .unwrap_or_default();
-        self.open_picker(PickerKind::Ref(field), candidates)
+        if let Some(picker) = &mut self.ref_picker {
+            picker.catalog_generation = self.ref_generation;
+        }
+        Reduction::changed().effect(CommandsEffect::LoadRefCatalog(Box::new(
+            RefCatalogRequest {
+                generation: self.ref_generation,
+                repo_path: repo.snapshot.path.clone(),
+                snapshot: repo.snapshot.clone(),
+                recent,
+                git: repo.snapshot.location.kind == VcsKind::GIT,
+            },
+        )))
+    }
+
+    fn install_ref_catalog(&mut self, catalog: Arc<RefCatalog>) -> Reduction {
+        let Some(picker) = &mut self.ref_picker else {
+            return Reduction::default();
+        };
+        picker.catalog = Some(catalog);
+        self.filter_refs()
+    }
+
+    fn filter_refs(&mut self) -> Reduction {
+        let Some(picker) = &mut self.ref_picker else {
+            return Reduction::default();
+        };
+        let Some(catalog) = picker.catalog.clone() else {
+            return Reduction::changed();
+        };
+        picker.query_dirty = false;
+        self.ref_generation += 1;
+        picker.filter_generation = self.ref_generation;
+        Reduction::changed().effect(CommandsEffect::FilterRefs {
+            generation: self.ref_generation,
+            catalog,
+            query: picker.query.text().to_owned(),
+        })
+    }
+
+    fn request_diff_size(&mut self, cx: &SharedContext) -> Reduction {
+        let Some(repo) = cx.repository.as_ref() else {
+            return Reduction::default();
+        };
+        let Some(picker) = &mut self.ref_picker else {
+            return Reduction::default();
+        };
+        let Some(entry) = picker.selected_entry() else {
+            return Reduction::default();
+        };
+        if entry.kind == RefEntryKind::WorkingTree {
+            return Reduction::default();
+        }
+        let chosen = entry.name.clone();
+        let other = match picker.other_name() {
+            name if name.is_empty() || name == WORKING_TREE_LABEL => "HEAD".to_owned(),
+            name => name.to_owned(),
+        };
+        let (left, right) = match picker.side() {
+            CompareField::Left => (chosen, other),
+            CompareField::Right => (other, chosen),
+        };
+        self.ref_generation += 1;
+        picker.size_token = self.ref_generation;
+        picker.size = None;
+        Reduction::default().effect(CommandsEffect::LoadDiffSize(Box::new(DiffSizeRequest {
+            token: self.ref_generation,
+            repo_path: repo.snapshot.path.clone(),
+            left,
+            right,
+            mode: picker.request.mode,
+        })))
+    }
+
+    fn ref_picker_action(&mut self, action: RefPickerAction, cx: &SharedContext) -> Reduction {
+        let Some(picker) = &mut self.ref_picker else {
+            return Reduction::default();
+        };
+        let mut reduction = match action {
+            RefPickerAction::ToggleSide => {
+                let side = match picker.side() {
+                    CompareField::Left => CompareField::Right,
+                    CompareField::Right => CompareField::Left,
+                };
+                picker.switch_side(side);
+                self.request_diff_size(cx)
+            }
+            RefPickerAction::SetSide(side) => {
+                picker.switch_side(side);
+                self.request_diff_size(cx)
+            }
+            RefPickerAction::Choose(row) => return self.choose_ref(Some(row), cx),
+            RefPickerAction::SetMode(mode) => {
+                picker.request.mode = mode;
+                self.request(PlatformRequest::Dispatch(
+                    NavigationAction::SetCompareMode(mode).into(),
+                ));
+                self.request_diff_size(cx)
+            }
+            RefPickerAction::SetEngine(renderer) => {
+                picker.request.renderer = renderer;
+                self.request(PlatformRequest::Dispatch(
+                    PipelineAction::SetRenderer(renderer).into(),
+                ));
+                Reduction::default()
+            }
+            RefPickerAction::CopySha => match picker.selected_entry() {
+                Some(entry) if !entry.oid.is_empty() => {
+                    Reduction::default().effect(ShellEffect::SetClipboard(entry.oid.clone()))
+                }
+                _ => Reduction::default(),
+            },
+        };
+        reduction.changed = true;
+        reduction
+    }
+
+    fn choose_ref(&mut self, row: Option<usize>, cx: &SharedContext) -> Reduction {
+        let Some(picker) = &self.ref_picker else {
+            return Reduction::default();
+        };
+        let request = picker.request.clone();
+        let choice = match row.and_then(|row| picker.entry(row)) {
+            Some(entry) if is_working_tree(entry) => None,
+            Some(entry) => Some(entry.name.clone()),
+            None => match picker.query.text().trim() {
+                "" => return Reduction::default(),
+                typed => Some(typed.to_owned()),
+            },
+        };
+        self.pop_layer(LayerKind::RefPicker);
+        let Some(name) = choice else {
+            self.request(PlatformRequest::Dispatch(
+                NavigationAction::ShowWorkingTree.into(),
+            ));
+            return Reduction::changed();
+        };
+        if let Some(store) = &self.frecency {
+            store.record_access(&format!("{REF_FRECENCY_PREFIX}{name}"));
+        }
+        let workdir = match cx.repository.as_ref() {
+            Some(repo) if repo.snapshot.location.kind != VcsKind::GIT => "@",
+            _ => WORKDIR_REF,
+        };
+        let mut refs = Vec::with_capacity(2);
+        match (request.side, request.working_copy) {
+            (CompareField::Left, true) => {
+                refs.push((CompareField::Left, name));
+                refs.push((CompareField::Right, workdir.to_owned()));
+            }
+            (CompareField::Right, true) => {
+                refs.push((CompareField::Left, request.left));
+                refs.push((CompareField::Right, name));
+            }
+            (field, false) => refs.push((field, name)),
+        }
+        for (field, value) in refs {
+            self.request(PlatformRequest::Dispatch(
+                NavigationAction::SetRef { field, value }.into(),
+            ));
+        }
+        self.request(PlatformRequest::Dispatch(
+            NavigationAction::StartCompare.into(),
+        ));
+        Reduction::changed()
     }
 
     fn open_theme_picker(&mut self) -> Reduction {
         let registry = crate::app::theme::registry();
         let current = &self.settings.settings.theme_name;
-        let candidates = registry
-            .names()
+        let default = crate::app::theme::DEFAULT_THEME;
+        let builtin = registry.get(default).is_none().then_some(default);
+        let candidates = builtin
+            .into_iter()
+            .chain(registry.names())
             .map(|name| {
                 let detail = match registry.variant(name) {
+                    _ if builtin == Some(name) => "Light and dark",
                     crate::core::themes::ThemeVariant::Dual => "Light and dark",
                     crate::core::themes::ThemeVariant::Dark => "Dark",
                     crate::core::themes::ThemeVariant::Light => "Light",
@@ -566,6 +780,7 @@ impl CommandsController {
                     capture: None,
                     notice: None,
                     scroll: ScrollHandle::new(),
+                    search: TextField::new(""),
                     return_focus: self.view_focus,
                 });
             }
@@ -617,12 +832,22 @@ impl CommandsController {
         }
         if before.keymap_overrides != next.keymap_overrides {
             self.install_keymap(next);
+        } else if before.viewport.wrap_enabled != next.viewport.wrap_enabled
+            || before.continuous_scroll != next.continuous_scroll
+            || before.theme_mode != next.theme_mode
+        {
+            self.install_menus(next);
         }
     }
 
     fn install_keymap(&self, settings: &Settings) {
         let saved = &settings.keymap_overrides;
         self.request(PlatformRequest::KeyBindings(keymap::key_bindings(saved)));
+        self.install_menus(settings);
+    }
+
+    fn install_menus(&self, settings: &Settings) {
+        let saved = &settings.keymap_overrides;
         let commands = builtin_commands(settings);
         self.request(PlatformRequest::Menus(platform::menus(&commands, |c| {
             if c.id == ids::QUIT {
@@ -793,7 +1018,7 @@ impl CommandsController {
 fn layer_focus(kind: LayerKind) -> FocusId {
     match kind {
         LayerKind::Palette => PALETTE_INPUT,
-        LayerKind::Picker => PICKER,
+        LayerKind::Picker | LayerKind::RefPicker => PICKER,
         LayerKind::Confirmation => CONFIRM_CANCEL,
         LayerKind::ContextMenu => crate::app::text_targets::VIEWPORT,
     }
@@ -835,15 +1060,56 @@ fn step_scale(current: u16, delta: i32) -> u16 {
         as u16
 }
 
+fn command_detail(id: &str) -> Option<&'static str> {
+    Some(match id {
+        ids::OPEN_REPOSITORY => "Choose a folder to open",
+        ids::SWITCH_REPOSITORY => "Pick a recent repository",
+        ids::WORKING_TREE => "Compare HEAD with uncommitted changes",
+        ids::REFRESH => "Reload refs, status and the current compare",
+        "compare.base" => "Pick the ref to compare from",
+        "compare.head" => "Pick the ref to compare to",
+        "compare.swap" => "Exchange base and head",
+        "compare.start" => "Run the compare with the chosen refs",
+        "compare.menu" => "Mode, working tree and swap",
+        "review.open_pull_request" => "Load a GitHub pull request by URL",
+        ids::TOGGLE_SIDEBAR => "Show or hide the file list",
+        ids::TOGGLE_FILE_TREE => "Switch between a flat list and folders",
+        "view.expand_folders" => "Open every folder in the file tree",
+        "view.collapse_folders" => "Close every folder in the file tree",
+        "view.files_tab" => "Changed files in the sidebar",
+        "view.history_tab" => "Commits in the sidebar",
+        "focus.files" => "Move keyboard focus to the file list",
+        "focus.diff" => "Move keyboard focus to the diff",
+        ids::TOGGLE_WRAP => "Wrap long lines in the diff",
+        "view.unified" => "Old and new lines in one column",
+        "view.split" => "Old and new side by side",
+        ids::TOGGLE_CONTINUOUS => "Show every file in one scrolling view",
+        ids::TOGGLE_THEME_MODE => "Flip between light and dark",
+        ids::THEME => "Browse every installed theme",
+        "font.ui" => "Font for labels and menus",
+        "font.mono" => "Font for diffs and editors",
+        ids::SCALE_UP => "Make the interface larger",
+        ids::SCALE_DOWN => "Make the interface smaller",
+        ids::SCALE_RESET => "Interface at 100%",
+        ids::SETTINGS => "Appearance, diff, keyboard and more",
+        ids::KEYMAPS => "Every shortcut, rebindable",
+        "updates.auto" => "Check for new versions in the background",
+        ids::ABOUT => "Version and updates",
+        ids::WEBSITE => "Open the project page",
+        ids::QUIT => "Close every window and exit",
+        _ => return None,
+    })
+}
+
 pub fn builtin_commands(settings: &Settings) -> Vec<CommandDescriptor> {
     use CommandDescriptor as D;
     use ShortcutCommand as S;
     let other_mode = match settings.theme_mode {
         ThemeMode::Dark => "Switch to Light Mode",
-        ThemeMode::Light => "Switch to Dark Mode",
+        ThemeMode::Light | ThemeMode::System => "Switch to Dark Mode",
     };
     let name = crate::platform::startup::app_display_name();
-    vec![
+    let mut commands = vec![
         D::new(
             ids::PALETTE,
             "Command Palette",
@@ -1027,7 +1293,13 @@ pub fn builtin_commands(settings: &Settings) -> Vec<CommandDescriptor> {
             CommandsAction::OpenProjectPage,
         ),
         D::new(ids::QUIT, format!("Quit {name}"), CommandsAction::Quit),
-    ]
+    ];
+    for command in &mut commands {
+        if command.detail.is_none() {
+            command.detail = command_detail(command.id).map(str::to_owned);
+        }
+    }
+    commands
 }
 
 impl Controller for CommandsController {
@@ -1050,7 +1322,14 @@ impl Controller for CommandsController {
                 let candidates = picker::repository_candidates(&recent, current.as_deref());
                 self.open_picker(PickerKind::Repository, candidates)
             }
-            A::OpenRefPicker(field) => self.open_ref_picker(field, cx),
+            A::OpenRefPicker(field) => {
+                self.request(PlatformRequest::Dispatch(
+                    NavigationAction::ChooseRef(field).into(),
+                ));
+                Reduction::default()
+            }
+            A::ShowRefPicker(request) => self.open_ref_picker(*request, cx),
+            A::RefPicker(action) => self.ref_picker_action(action, cx),
             A::OpenCompareMenu => {
                 let mode = self
                     .settings
@@ -1072,7 +1351,22 @@ impl Controller for CommandsController {
                 self.open_settings(Some(SettingsSection::Keymaps))
             }
             A::CloseOverlay => self.close_top(),
+            A::BackdropDismiss => {
+                if self.activation_click.replace(false) {
+                    Reduction::default()
+                } else {
+                    self.close_top()
+                }
+            }
             A::DismissOverlays => self.dismiss_overlays(),
+            A::MoveOverlaySelection(delta) if self.ref_picker.is_some() => {
+                if let Some(picker) = &mut self.ref_picker {
+                    picker.move_selection(delta, self.row_stride);
+                }
+                let mut reduction = self.request_diff_size(cx);
+                reduction.changed = true;
+                reduction
+            }
             A::MoveOverlaySelection(delta) => match &mut self.picker {
                 Some(picker) => {
                     picker.move_selection(delta, self.row_stride);
@@ -1080,6 +1374,19 @@ impl Controller for CommandsController {
                 }
                 None => Reduction::default(),
             },
+            A::SelectOverlayEntry(row) if self.ref_picker.is_some() => {
+                self.choose_ref(Some(row), cx)
+            }
+            A::ConfirmOverlaySelection if self.ref_picker.is_some() => {
+                let row = self.ref_picker.as_ref().and_then(|p| p.selected);
+                self.choose_ref(row, cx)
+            }
+            A::ScrollOverlay(lines) if self.ref_picker.is_some() => {
+                if let Some(picker) = &mut self.ref_picker {
+                    picker.scroll(lines, self.row_stride);
+                }
+                Reduction::changed()
+            }
             A::SelectOverlayEntry(index) => {
                 let in_range = self.picker.as_mut().is_some_and(|picker| {
                     let ok = index < picker.rows.len();
@@ -1124,7 +1431,11 @@ impl Controller for CommandsController {
                 Some(LayerKind::ContextMenu) => self.context_menu_key(&binding, cx),
                 _ => Reduction::default(),
             },
+            A::Palette(PaletteEvent::Dismiss) if self.activation_click.replace(false) => {
+                Reduction::default()
+            }
             A::Palette(event) => {
+                self.activation_click.set(false);
                 let outcome = self.palette.apply(event);
                 self.palette_outcome(outcome, cx)
             }
@@ -1173,13 +1484,24 @@ impl Controller for CommandsController {
                 }
                 Reduction::changed()
             }
-            A::DismissToast(id) => {
-                if self.toasts.dismiss(id) {
+            A::DismissToast(id) => match self.toasts.take(id) {
+                Some(item) => {
+                    if let Some(expired) = item.expired {
+                        self.request(PlatformRequest::Dispatch(expired));
+                    }
                     Reduction::changed()
-                } else {
-                    Reduction::default()
                 }
-            }
+                None => Reduction::default(),
+            },
+            A::UndoToast(id) => match self.toasts.take(id) {
+                Some(item) => {
+                    if let Some(undo) = item.undo {
+                        self.request(PlatformRequest::Dispatch(undo));
+                    }
+                    Reduction::changed()
+                }
+                None => Reduction::default(),
+            },
             A::OpenSettings => self.open_settings(None),
             A::CloseSettings => self.close_settings(),
             A::SetSettingsSection(section) => match &mut self.settings_page {
@@ -1199,6 +1521,12 @@ impl Controller for CommandsController {
             }
             A::SetWrapColumn(column) => self.update_settings(|s| s.viewport.wrap_column = column),
             A::SetLayout(layout) => self.update_settings(|s| s.viewport.layout = layout),
+            A::SetEngine(renderer) => {
+                self.request(PlatformRequest::Dispatch(
+                    PipelineAction::SetRenderer(renderer).into(),
+                ));
+                Reduction::changed()
+            }
             A::SetSidebarWidth(width) => self.update_settings(|s| s.sidebar_width_px = Some(width)),
             A::IncreaseUiScale => self.update_settings(|s| {
                 s.ui_scale_pct = step_scale(s.ui_scale_pct, i32::from(UI_SCALE_STEP_PCT))
@@ -1210,7 +1538,7 @@ impl Controller for CommandsController {
             A::ToggleThemeMode => self.update_settings(|s| {
                 s.theme_mode = match s.theme_mode {
                     ThemeMode::Dark => ThemeMode::Light,
-                    ThemeMode::Light => ThemeMode::Dark,
+                    ThemeMode::Light | ThemeMode::System => ThemeMode::Dark,
                 }
             }),
             A::SetThemeMode(mode) => self.update_settings(|s| s.theme_mode = mode),
@@ -1259,7 +1587,7 @@ impl Controller for CommandsController {
                 }
                 _ => Reduction::default(),
             },
-            A::ShowAbout => self.open_settings(Some(SettingsSection::About)),
+            A::ShowAbout => self.open_settings(Some(SettingsSection::Updates)),
             A::OpenProjectPage => Reduction::default().effect(ShellEffect::OpenBrowser {
                 url: PROJECT_URL.to_owned(),
             }),
@@ -1270,7 +1598,7 @@ impl Controller for CommandsController {
         }
     }
 
-    fn reduce_event(&mut self, event: Self::Event, _cx: &SharedContext) -> Reduction {
+    fn reduce_event(&mut self, event: Self::Event, cx: &SharedContext) -> Reduction {
         match event {
             CommandsEvent::SettingsSaved => Reduction::default(),
             CommandsEvent::SettingsSaveFailed { message } => {
@@ -1279,6 +1607,51 @@ impl Controller for CommandsController {
                 )));
                 Reduction::changed()
             }
+            CommandsEvent::RefCatalogReady {
+                generation,
+                catalog,
+            } => {
+                let current = self
+                    .ref_picker
+                    .as_ref()
+                    .is_some_and(|p| p.catalog_generation == generation);
+                if !current {
+                    return Reduction::default();
+                }
+                if let Some(repo) = cx.repository.as_ref() {
+                    self.ref_catalog =
+                        Some((Arc::as_ptr(&repo.snapshot) as usize, catalog.clone()));
+                }
+                self.install_ref_catalog(catalog)
+            }
+            CommandsEvent::RefsFiltered {
+                generation,
+                results,
+            } => match &mut self.ref_picker {
+                Some(picker) if picker.filter_generation == generation => {
+                    picker.set_results(results);
+                    let mut reduction = self.request_diff_size(cx);
+                    reduction.changed = true;
+                    reduction
+                }
+                _ => Reduction::default(),
+            },
+            CommandsEvent::ToastExpired(job) => match self.toasts.take_by_job(job) {
+                Some(item) => {
+                    if let Some(expired) = item.expired {
+                        self.request(PlatformRequest::Dispatch(expired));
+                    }
+                    Reduction::changed()
+                }
+                None => Reduction::default(),
+            },
+            CommandsEvent::DiffSizeReady { token, size } => match &mut self.ref_picker {
+                Some(picker) if picker.size_token == token => {
+                    picker.size = size;
+                    Reduction::changed()
+                }
+                _ => Reduction::default(),
+            },
             CommandsEvent::FontCatalogReady { ui, mono } => {
                 self.fonts = Some(FontCatalog { ui, mono });
                 if let Some(PickerKind::Font(role)) = self.picker.as_ref().map(|p| p.kind) {
@@ -1316,8 +1689,15 @@ impl Controller for CommandsController {
                 Reduction::default()
             }
             Intent::Toast(update) => {
+                let mut reduction = Reduction::changed();
+                if let ToastUpdate::Undo { id, expires_ms, .. } = update {
+                    reduction = reduction.effect(CommandsEffect::ExpireToast {
+                        id: *id,
+                        after_ms: *expires_ms,
+                    });
+                }
                 self.toasts.apply(update.clone());
-                Reduction::changed()
+                reduction
             }
             Intent::RequestConfirmation(request) => {
                 let Some(return_focus) = self.admit(LayerKind::Confirmation) else {
@@ -1334,7 +1714,14 @@ impl Controller for CommandsController {
 
 impl TextHost for CommandsController {
     fn owns_text(&self, target: FocusId) -> bool {
-        target == PALETTE_INPUT || target == PICKER
+        target == PALETTE_INPUT || target == PICKER || target == SETTINGS_SEARCH
+    }
+
+    fn after_edit(&mut self, target: FocusId, _cx: &SharedContext) -> Reduction {
+        if target == PICKER && self.ref_picker.as_ref().is_some_and(|p| p.query_dirty) {
+            return self.filter_refs();
+        }
+        Reduction::default()
     }
 
     fn edit_text(
@@ -1345,6 +1732,19 @@ impl TextHost for CommandsController {
     ) -> Option<TextEditOutcome> {
         if target == PALETTE_INPUT {
             return Some(self.palette.edit(command, cx.now_ms));
+        }
+        if target == SETTINGS_SEARCH {
+            let page = self.settings_page.as_mut()?;
+            let outcome = page.search.apply_at(command, cx.now_ms);
+            if outcome.text_changed {
+                page.scroll.set_offset(0.0, 0.0);
+            }
+            return Some(outcome);
+        }
+        if let Some(picker) = &mut self.ref_picker {
+            let outcome = picker.query.apply_at(command, cx.now_ms);
+            picker.query_dirty |= outcome.text_changed;
+            return Some(outcome);
         }
         let picker = self.picker.as_mut()?;
         let outcome = picker.query.apply_at(command, cx.now_ms);
@@ -1362,6 +1762,19 @@ impl TextHost for CommandsController {
     ) -> bool {
         if target == PALETTE_INPUT {
             self.palette.set_preedit(text, cursor);
+            return true;
+        }
+        if target == SETTINGS_SEARCH {
+            return match &mut self.settings_page {
+                Some(page) => {
+                    page.search.set_preedit(text, cursor);
+                    true
+                }
+                None => false,
+            };
+        }
+        if let Some(picker) = &mut self.ref_picker {
+            picker.query.set_preedit(text, cursor);
             return true;
         }
         match &mut self.picker {
@@ -1383,6 +1796,26 @@ impl TextHost for CommandsController {
             self.palette.set_query(&value);
             return Some(TextEditOutcome {
                 text_changed: true,
+                ..TextEditOutcome::default()
+            });
+        }
+        if target == SETTINGS_SEARCH {
+            let page = self.settings_page.as_mut()?;
+            let changed = page.search.text() != value;
+            page.search.set_text(value);
+            return Some(TextEditOutcome {
+                text_changed: changed,
+                selection_changed: true,
+                ..TextEditOutcome::default()
+            });
+        }
+        if let Some(picker) = &mut self.ref_picker {
+            let changed = picker.query.text() != value;
+            picker.query.set_text(value);
+            picker.query_dirty |= changed;
+            return Some(TextEditOutcome {
+                text_changed: changed,
+                selection_changed: true,
                 ..TextEditOutcome::default()
             });
         }

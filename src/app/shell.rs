@@ -19,12 +19,14 @@ use crate::app::route::{self, Controllers, MAX_INTENTS_PER_TURN, Routed};
 use crate::app::text_targets::{self, TextCx};
 use crate::app::tokens::{self, Sp, TextStyle};
 use crate::app::{commands, delivery, mutations, navigation, review, viewport};
+use crate::contracts::commands::SettingsSection;
 use crate::contracts::commands::{CommandsAction, ToastUpdate};
 use crate::contracts::shared::{AccountEpoch, SharedContext, WorkspaceEpoch};
 use crate::contracts::shell::{
     Action, AppMessage, AppStartup, Effect, Intent, Reduction, ShellAction, ShellEffect, ShellEvent,
 };
 use crate::contracts::viewport::ViewportAction;
+use crate::core::compare::LayoutMode;
 
 pub trait EffectDispatcher: 'static {
     fn attach(&mut self, _sender: UiSender<AppMessage>) {}
@@ -347,6 +349,17 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             height,
         };
         let review = review::view(&mut self.controllers.review, &slot, cx);
+        let editing = self.controllers.commands.editing_ref();
+        let nav = &self.controllers.navigation;
+        let repo = match nav.repo_path() {
+            Some(_) => navigation::repo_chip(nav, theme),
+            None => view! {
+                <text size={TextStyle::Body.font_size(theme)} class="truncate font-semibold" color={tc.text_strong}>
+                    {label}
+                </text>
+            },
+        };
+        let compare = navigation::compare_bar(nav, editing, theme);
         view! {
             <div
                 w={width}
@@ -362,16 +375,9 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 aria-label="Title bar"
                 test_id="title"
             >
-                <div class="flex-1 flex-row items-center" min_w={0.0}>
-                    <text
-                        size={TextStyle::Body.font_size(theme)}
-                        class="truncate font-semibold"
-                        color={tc.text_strong}
-                    >
-                        {label}
-                    </text>
-                </div>
-                {review}
+                <div class="flex-1 flex-row items-center" min_w={0.0}>{repo}</div>
+                {?compare}
+                <div class="flex-1 flex-row items-center justify-end" min_w={0.0} gap={tokens::scaled(Sp::SM, scale)}>{review}</div>
             </div>
         }
     }
@@ -389,16 +395,28 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 width: files_w,
                 height,
             };
-            navigation::view(&mut self.controllers.navigation, &slot, cx)
+            navigation::view(
+                &mut self.controllers.navigation,
+                &self.controllers.review,
+                &slot,
+                None,
+                cx,
+            )
         });
         let presentation = self.controllers.review.presentation();
         self.controllers
             .viewport
             .interaction
             .sync_review(&presentation);
+        let unified = self.shared.settings.settings.viewport.layout == LayoutMode::Unified;
+        let banner =
+            self.controllers
+                .navigation
+                .decorator(&self.controllers.review, unified, theme);
         let decorator = self.slots.decorator(
             presentation,
             self.controllers.mutations.presentation(),
+            banner,
             tokens::ui_scale(theme),
         );
         let slot = Slot {
@@ -439,6 +457,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
         let compare = viewport::pipeline::view(&mut self.controllers.viewport.pipeline, &slot, cx);
         let changes = mutations::view(&mut self.controllers.mutations, &slot, cx);
         let delivery = delivery::view(&mut self.controllers.delivery, &slot, cx);
+        let viewing = navigation::viewing_status(&self.controllers.navigation, theme);
         view! {
             <div
                 w={width}
@@ -453,6 +472,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 test_id="status"
             >
                 <div class="flex-1 flex-row items-center" min_w={0.0}>{compare}</div>
+                {?viewing}
                 {changes}
                 {delivery}
             </div>
@@ -518,16 +538,26 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
         };
         let mutation_panel = mutations::panel(&mut self.controllers.mutations, &slot, cx);
         let review_overlay = review::overlay(&self.controllers.review, &slot, cx);
-        let clankers =
-            commands::clankers_slot(&self.controllers.commands, &slot, cx.theme).map(|width| {
-                mutations::clankers_settings(
+        let external = commands::settings_slot(&self.controllers.commands, &slot, cx.theme).map(
+            |(section, width)| match section {
+                SettingsSection::Clankers => mutations::clankers_settings(
                     &mut self.controllers.mutations,
                     &self.shared.settings,
                     width,
                     cx,
-                )
-            });
-        let overlays = commands::overlays(&mut self.controllers.commands, &slot, clankers, cx);
+                ),
+                SettingsSection::Accounts => {
+                    review::accounts_settings(&self.controllers.review, cx.theme)
+                }
+                _ => delivery::updates_settings(
+                    &self.controllers.delivery,
+                    &self.shared.settings,
+                    width,
+                    cx,
+                ),
+            },
+        );
+        let overlays = commands::overlays(&mut self.controllers.commands, &slot, external, cx);
         let languages = delivery::overlay(&mut self.controllers.delivery, &slot, cx);
         let toasts = commands::toasts(&mut self.controllers.commands, &slot, cx);
         view! {
@@ -630,6 +660,11 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
 
     fn event(&mut self, event: &InputEvent, cx: &mut UiContext) -> bool {
         self.tick(cx);
+        if let Some((target, command)) = commands::editor_command(cx.focus(), event) {
+            self.edit_text(target, command);
+            cx.window.request_redraw();
+            return true;
+        }
         let Some(action) = commands::key_action(&self.controllers, event) else {
             return false;
         };

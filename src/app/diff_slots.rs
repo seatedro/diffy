@@ -11,7 +11,7 @@ use quark_ui::style::Styled;
 
 use crate::app::tokens::Sp;
 
-type SlotKey = (u64, u64, *const (), *const (), u32);
+type SlotKey = (u64, u64, u64, *const (), *const (), *const (), u32);
 
 #[derive(Default)]
 pub struct DiffSlots {
@@ -25,13 +25,16 @@ impl DiffSlots {
         &mut self,
         review: Rc<dyn DiffDecorator>,
         mutations: Rc<dyn DiffDecorator>,
+        navigation: Rc<dyn DiffDecorator>,
         scale: f32,
     ) -> Rc<dyn DiffDecorator> {
         let key = (
             review.revision(),
             mutations.revision(),
+            navigation.revision(),
             Rc::as_ptr(&review).cast::<()>(),
             Rc::as_ptr(&mutations).cast::<()>(),
+            Rc::as_ptr(&navigation).cast::<()>(),
             scale.to_bits(),
         );
         if let Some((cached, decorator)) = &self.cached
@@ -44,6 +47,7 @@ impl DiffSlots {
             revision: self.revision,
             review,
             mutations,
+            navigation,
             scale,
         });
         self.cached = Some((key, decorator.clone()));
@@ -69,6 +73,7 @@ pub struct AppDiffDecorator {
     revision: u64,
     review: Rc<dyn DiffDecorator>,
     mutations: Rc<dyn DiffDecorator>,
+    navigation: Rc<dyn DiffDecorator>,
     scale: f32,
 }
 
@@ -146,6 +151,7 @@ impl DiffDecorator for AppDiffDecorator {
         self.review
             .banner(width)
             .or_else(|| self.mutations.banner(width))
+            .or_else(|| self.navigation.banner(width))
     }
 
     fn hunk_actions(&self, cx: &SeparatorContext) -> Option<AnyElement> {

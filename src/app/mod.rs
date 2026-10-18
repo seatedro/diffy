@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod delivery;
 pub mod diff_slots;
+pub mod icons;
 pub mod mutations;
 pub mod navigation;
 pub mod review;
@@ -59,10 +60,7 @@ pub fn start() -> Result<(), Box<dyn std::error::Error>> {
     );
     let run_options = RunOptions {
         theme_name: settings.theme_name.clone(),
-        theme_mode: Some(match settings.theme_mode {
-            crate::core::theme_types::ThemeMode::Dark => ThemeMode::Dark,
-            crate::core::theme_types::ThemeMode::Light => ThemeMode::Light,
-        }),
+        theme_mode: theme::quark_mode(settings.theme_mode),
         ui_scale: f32::from(settings.ui_scale_pct) / 100.0,
         ..RunOptions::default()
     };

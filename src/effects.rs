@@ -33,28 +33,7 @@ pub struct TextCompareRequest {
     pub layout: LayoutMode,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompareWorkPriority {
-    InteractiveSelectedFile,
-    VisibleSidebarStats,
-    VisibleViewportDiff,
-    Overscan,
-    TotalStats,
-    Warmup,
-}
-
-impl CompareWorkPriority {
-    pub const fn rank(self) -> u8 {
-        match self {
-            Self::InteractiveSelectedFile => 60,
-            Self::VisibleViewportDiff => 50,
-            Self::VisibleSidebarStats => 40,
-            Self::Overscan => 30,
-            Self::TotalStats => 20,
-            Self::Warmup => 10,
-        }
-    }
-}
+pub use crate::contracts::viewport::pipeline::CompareWorkPriority;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompareStatsRequest {

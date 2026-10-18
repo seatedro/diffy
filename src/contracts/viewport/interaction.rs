@@ -1,16 +1,127 @@
+use std::sync::Arc;
+
+use crate::contracts::shared::{FileKey, FileRevision, JobId, Side, SourceTarget};
+use crate::contracts::shell::{Action, AppEvent, Effect};
+use crate::contracts::viewport::pipeline::PreparedDiff;
+use crate::contracts::viewport::{ViewportAction, ViewportEffect, ViewportEvent};
+use crate::core::compare::LayoutMode;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ContextDirection {
+    Above,
+    Below,
+    All,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InteractionAction {
-    Noop,
+    ScrollLines(i32),
+    ScrollHalfPage(i32),
+    ScrollPages(i32),
+    ScrollToTop,
+    ScrollToBottom,
+    MoveRowCursor(i32),
+    GoToNextHunk,
+    GoToPreviousHunk,
+    GoToNextFile,
+    GoToPreviousFile,
+    OpenSearch,
+    CloseSearch,
+    SearchNext,
+    SearchPrevious,
+    CopySelection,
+    SetSourceSelection(Option<SourceTarget>),
+    ExpandContext {
+        file: FileKey,
+        hunk: u32,
+        direction: ContextDirection,
+        amount: u32,
+    },
+    ExpandAllContext,
+    SetLayout(LayoutMode),
+    SetTextCompareView(TextCompareView),
+    SwapTextCompareSides,
+    ClearTextCompareSide(TextCompareSide),
+    SetTextCompareLanguage(TextCompareLanguage),
+    CompareText,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchRequest {
+    pub job: JobId,
+    pub query: String,
+    pub case_sensitive: bool,
+    pub documents: Vec<PreparedDiff>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InteractionEffect {
-    Noop,
+    Search(Box<SearchRequest>),
+    CancelSearch(JobId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SearchMatch {
+    pub file: FileKey,
+    pub revision: FileRevision,
+    pub side: Side,
+    pub line: u32,
+    pub start_byte: u32,
+    pub end_byte: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InteractionFailure {
+    NotPorted,
+    Failed(String),
 }
 
 #[derive(Debug, Clone)]
 pub enum InteractionEvent {
-    Noop,
+    SearchFinished {
+        job: JobId,
+        matches: Arc<[SearchMatch]>,
+    },
+    SearchFailed {
+        job: JobId,
+        failure: InteractionFailure,
+    },
+}
+
+impl From<InteractionAction> for ViewportAction {
+    fn from(value: InteractionAction) -> Self {
+        Self::Interaction(value)
+    }
+}
+
+impl From<InteractionAction> for Action {
+    fn from(value: InteractionAction) -> Self {
+        Self::Viewport(ViewportAction::Interaction(value))
+    }
+}
+
+impl From<InteractionEffect> for ViewportEffect {
+    fn from(value: InteractionEffect) -> Self {
+        Self::Interaction(value)
+    }
+}
+
+impl From<InteractionEffect> for Effect {
+    fn from(value: InteractionEffect) -> Self {
+        Self::Viewport(ViewportEffect::Interaction(value))
+    }
+}
+
+impl From<InteractionEvent> for ViewportEvent {
+    fn from(value: InteractionEvent) -> Self {
+        Self::Interaction(value)
+    }
+}
+
+impl From<InteractionEvent> for AppEvent {
+    fn from(value: InteractionEvent) -> Self {
+        Self::Viewport(ViewportEvent::Interaction(value))
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -117,5 +228,33 @@ impl TextCompareLanguage {
             Self::Cpp => "scratch.cpp",
             Self::Zig => "scratch.zig",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn routes_through_root_contracts() {
+        assert_eq!(
+            Action::from(InteractionAction::GoToNextHunk),
+            Action::Viewport(ViewportAction::Interaction(InteractionAction::GoToNextHunk))
+        );
+        assert_eq!(
+            Effect::from(InteractionEffect::CancelSearch(JobId(3))),
+            Effect::Viewport(ViewportEffect::Interaction(
+                InteractionEffect::CancelSearch(JobId(3))
+            ))
+        );
+        assert!(matches!(
+            AppEvent::from(InteractionEvent::SearchFailed {
+                job: JobId(3),
+                failure: InteractionFailure::NotPorted
+            }),
+            AppEvent::Viewport(ViewportEvent::Interaction(
+                InteractionEvent::SearchFailed { .. }
+            ))
+        ));
     }
 }

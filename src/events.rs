@@ -10,70 +10,13 @@ use crate::core::review::{ReviewDraftId, ReviewSession, ReviewSessionKey, Review
 use crate::core::syntax::annotator::{SyntaxLineTokens, SyntaxRowWindow};
 use crate::core::update::{AvailableUpdate, StagedUpdate};
 use crate::core::vcs::model::{
-    FileChange, PublishPlan, RepoCapabilities, RepoLocation, VcsChange, VcsCompareRequest,
-    VcsOperation, VcsOperationLogEntry, VcsRef, VcsSnapshot,
+    FileChange, PublishPlan, VcsChange, VcsCompareRequest, VcsOperation,
 };
 use crate::ui::state::{ComparePhase, PreparedActiveFile};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RepositorySyncReason {
-    Open,
-    Dirty,
-    Rescan,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RepositoryChangeKind {
-    Worktree,
-    Metadata,
-    Both,
-}
-
-impl RepositoryChangeKind {
-    pub fn merge(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Both, _) | (_, Self::Both) => Self::Both,
-            (Self::Metadata, Self::Worktree) | (Self::Worktree, Self::Metadata) => Self::Both,
-            (Self::Metadata, Self::Metadata) => Self::Metadata,
-            (Self::Worktree, Self::Worktree) => Self::Worktree,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct RepositorySnapshot {
-    pub location: RepoLocation,
-    pub path: PathBuf,
-    pub reason: RepositorySyncReason,
-    pub change_kind: Option<RepositoryChangeKind>,
-    pub capabilities: RepoCapabilities,
-    pub refs: Vec<VcsRef>,
-    pub changes: Vec<VcsChange>,
-    pub operation_log: Vec<VcsOperationLogEntry>,
-    pub file_changes: Vec<FileChange>,
-    /// The publish plan computed against this exact snapshot, so plan and
-    /// refs update atomically. `None` when the backend has nothing
-    /// publishable (no remotes, nothing described).
-    pub publish_plan: Option<PublishPlan>,
-}
-
-impl RepositorySnapshot {
-    pub fn from_vcs_snapshot(snapshot: VcsSnapshot) -> Self {
-        let path = snapshot.location.workspace_root.clone();
-        Self {
-            location: snapshot.location,
-            path,
-            reason: snapshot.reason,
-            change_kind: snapshot.change_kind,
-            capabilities: snapshot.capabilities,
-            refs: snapshot.refs,
-            changes: snapshot.changes,
-            operation_log: snapshot.operation_log,
-            file_changes: snapshot.file_changes,
-            publish_plan: None,
-        }
-    }
-}
+pub use crate::contracts::navigation::{
+    RepositoryChangeKind, RepositorySnapshot, RepositorySyncReason,
+};
 
 #[derive(Debug, Clone)]
 pub struct CompareFinished {
@@ -688,12 +631,7 @@ pub struct ContextLinesReady {
     pub new_lines: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContextDirection {
-    Above,
-    Below,
-    All,
-}
+pub use crate::contracts::viewport::interaction::ContextDirection;
 
 #[derive(Debug, Clone)]
 pub struct FileSyntaxReady {

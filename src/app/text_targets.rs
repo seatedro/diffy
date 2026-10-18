@@ -4,7 +4,7 @@ use quark_ui::text_input::{TextEditCommand, TextEditOutcome};
 use crate::app::route::Controllers;
 use crate::app::viewport::ViewportController;
 use crate::contracts::shared::SharedContext;
-use crate::contracts::shell::LogicalFocus;
+use crate::contracts::shell::{LogicalFocus, Reduction};
 
 pub const VIEWPORT: FocusId = FocusId::from_key("diffy.viewport");
 pub const SIDEBAR: FocusId = FocusId::from_key("diffy.sidebar");
@@ -76,6 +76,10 @@ pub trait TextHost {
     ) -> Option<TextEditOutcome> {
         None
     }
+
+    fn after_edit(&mut self, _target: FocusId, _cx: &SharedContext) -> Reduction {
+        Reduction::default()
+    }
 }
 
 impl TextHost for ViewportController {
@@ -109,6 +113,10 @@ impl TextHost for ViewportController {
     ) -> Option<TextEditOutcome> {
         self.interaction.set_text_value(target, value, cx)
     }
+
+    fn after_edit(&mut self, target: FocusId, cx: &SharedContext) -> Reduction {
+        self.interaction.after_edit(target, cx)
+    }
 }
 
 impl Controllers {
@@ -131,6 +139,12 @@ impl Controllers {
         cx: &TextCx,
     ) -> Option<TextEditOutcome> {
         self.text_owner(target)?.edit_text(target, command, cx)
+    }
+
+    pub fn after_edit(&mut self, target: FocusId, cx: &SharedContext) -> Reduction {
+        self.text_owner(target)
+            .map(|host| host.after_edit(target, cx))
+            .unwrap_or_default()
     }
 
     pub fn set_preedit(

@@ -91,6 +91,7 @@ diffy-ui = { path = "crates/diffy-ui" }
 quark.workspace = true
 quark-app = { workspace = true, default-features = false, features = ["ui", "components", "dialogs"] }
 quark-components.workspace = true
+quark-text.workspace = true
 quark-ui.workspace = true
 vendored_difftastic = { package = "difftastic", path = "crates/difftastic", optional = true, default-features = false, features = ["dynamic-languages"] }
 winit = { version = "0.30" }

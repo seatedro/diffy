@@ -1209,6 +1209,7 @@ dependencies = [
  "quark",
  "quark-app",
  "quark-components",
+ "quark-text",
  "quark-ui",
  "rayon",
  "reqwest",

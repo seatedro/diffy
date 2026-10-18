@@ -239,6 +239,21 @@ impl<D: EffectDispatcher> DiffyApp<D> {
     }
 
     fn flush(&mut self, cx: &mut UiContext) {
+        for _ in 0..16 {
+            let requests = commands::take_requests(&self.controllers);
+            if requests.is_empty() {
+                break;
+            }
+            cx.window.request_redraw();
+            for action in commands::apply_platform(requests, cx) {
+                match self.controllers.route_action(action, &self.shared) {
+                    Routed::Shell(action) => self.shell_action(action, cx),
+                    Routed::Stream(reduction) => {
+                        self.reduce(reduction);
+                    }
+                }
+            }
+        }
         for effect in std::mem::take(&mut self.deferred) {
             match effect {
                 ShellEffect::OpenRepositoryDialog => {
@@ -347,7 +362,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
 
     fn body(&mut self, width: f32, height: f32, cx: &mut ViewContext) -> AnyElement {
         let theme = cx.theme;
-        let fits = tokens::sidebar_fits(theme, width);
+        let fits = tokens::sidebar_fits(theme, width) && self.controllers.navigation.visible();
         let (files_w, main_w) = match self.shell.sidebar.resolve(width).as_slice() {
             [files, main] if fits => (*files, *main),
             _ => (0.0, width),
@@ -537,6 +552,13 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
 
     fn app_event(&mut self, event: WindowEvent, cx: &mut UiContext) {
         self.tick(cx);
+        if let WindowEvent::Menu(id) = &event
+            && let Some(action) = commands::menu_action(&self.controllers, id)
+        {
+            self.update(action, cx);
+            cx.window.request_redraw();
+            return;
+        }
         if let WindowEvent::FileDialogClosed { id, paths } = event
             && self.shell.repository_dialog == Some(id)
         {
@@ -568,9 +590,14 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
         self.controllers.set_preedit(target, text, cursor);
     }
 
-    fn event(&mut self, _event: &InputEvent, cx: &mut UiContext) -> bool {
+    fn event(&mut self, event: &InputEvent, cx: &mut UiContext) -> bool {
         self.tick(cx);
-        false
+        let Some(action) = commands::key_action(&self.controllers, event) else {
+            return false;
+        };
+        self.update(action, cx);
+        cx.window.request_redraw();
+        true
     }
 
     fn set_text_value(&mut self, target: FocusId, value: String, cx: &mut UiContext) {

@@ -20,6 +20,8 @@ pub const TEXT_COMPARE_RIGHT: FocusId = FocusId::from_key("diffy.text_compare.ri
 pub const SETTINGS_OPENAI_KEY: FocusId = FocusId::from_key("diffy.settings.openai_key");
 pub const SETTINGS_ANTHROPIC_KEY: FocusId = FocusId::from_key("diffy.settings.anthropic_key");
 pub const SETTINGS_STEERING_PROMPT: FocusId = FocusId::from_key("diffy.settings.steering_prompt");
+pub const REVIEW_ACCOUNT: FocusId = FocusId::from_key("diffy.review.account");
+pub const REVIEW_DIALOG: FocusId = FocusId::from_key("diffy.review.dialog");
 
 pub fn focus_id(focus: LogicalFocus) -> FocusId {
     match focus {
@@ -37,6 +39,8 @@ pub fn focus_id(focus: LogicalFocus) -> FocusId {
         LogicalFocus::SettingsOpenAiKey => SETTINGS_OPENAI_KEY,
         LogicalFocus::SettingsAnthropicKey => SETTINGS_ANTHROPIC_KEY,
         LogicalFocus::SettingsSteeringPrompt => SETTINGS_STEERING_PROMPT,
+        LogicalFocus::ReviewAccount => REVIEW_ACCOUNT,
+        LogicalFocus::ReviewDialog => REVIEW_DIALOG,
     }
 }
 

@@ -34,8 +34,7 @@ use crate::contracts::shell::{
     ShellEffect,
 };
 use crate::contracts::viewport::CompareManifestSnapshot;
-use crate::contracts::viewport::pipeline::{FileStats, ManifestFile};
-use crate::core::compare::stats::CompareFilePaths;
+use crate::contracts::viewport::pipeline::ManifestFile;
 use crate::core::forge::github::{
     DeviceFlowState, GitHubPullRequestReviewData, GitHubPullRequestReviewThread,
     GitHubPullRequestReviewThreadComment, GitHubReviewSide, GitHubReviewThreadResolution,
@@ -93,6 +92,7 @@ fn graphql_thread() -> GitHubPullRequestReviewThread {
             node_id: "comment-1".to_owned(),
             database_id: Some(11),
             author_login: "alpha".to_owned(),
+            author_avatar_url: "https://avatars.test/u/alpha".to_owned(),
             body: "Consider caching this.".to_owned(),
             path: "src/widget.rs".to_owned(),
             line: Some(12),
@@ -174,14 +174,15 @@ fn manifest() -> Rc<CompareManifestSnapshot> {
         generation: CompareGeneration(1),
         resolved_left: "base".to_owned(),
         resolved_right: "head".to_owned(),
-        files: Arc::from([ManifestFile {
-            key: FileKey(5),
-            revision: FileRevision(2),
-            paths: CompareFilePaths::from_paths(Some("src/widget.rs"), Some("src/widget.rs")),
-            status: diffy_diff::FileStatus::Modified,
-            binary: false,
-            stats: FileStats::Pending,
-        }]),
+        files: Arc::from([ManifestFile::from_entry(
+            FileKey(5),
+            FileRevision(2),
+            &crate::core::compare::output::CompareEntry::deferred(
+                Some("src/widget.rs"),
+                Some("src/widget.rs"),
+                diffy_diff::FileStatus::Modified,
+            ),
+        )]),
     })
 }
 
@@ -315,6 +316,10 @@ impl GitHubBackend for FakeGitHub {
                 comment_node_id,
                 comment: None,
             }),
+            GitHubRequest::PeekPullRequest { pr, .. } => emit(GitHubResponse::PullRequestPeeked {
+                info: info(pr.number),
+                pr,
+            }),
             other => panic!("unexpected request {other:?}"),
         }
     }
@@ -324,6 +329,7 @@ struct Fake {
     github: FakeGitHub,
     services: ReviewServices,
     hold: bool,
+    avatars: bool,
     held: Vec<ReviewEffect>,
     effects: Vec<ReviewEffect>,
     _dir: Option<tempfile::TempDir>,
@@ -346,6 +352,7 @@ impl Fake {
             services: ReviewServices::new(settings, store, Arc::new(github.clone())),
             github,
             hold: false,
+            avatars: true,
             held: Vec::new(),
             effects: Vec::new(),
             _dir: None,
@@ -407,10 +414,12 @@ impl Fake {
                     },
                 },
             ),
-            ReviewEffect::SaveSession { scope, session } => {
+            ReviewEffect::SaveSession { scope, session }
+            | ReviewEffect::SaveSessionDraft { scope, session } => {
                 let key = self.services.save_session(&session).unwrap();
                 events.push(ReviewEvent::SessionSaved { scope, key });
             }
+            ReviewEffect::FetchAvatar { .. } if !self.avatars => {}
             ReviewEffect::FetchAvatar { url } => events.push(ReviewEvent::AvatarFetched {
                 url,
                 image: Arc::new(AvatarImage {
@@ -437,6 +446,7 @@ struct Driver {
     browser: Vec<String>,
     toasts: Vec<ToastUpdate>,
     compares: usize,
+    compare_requests: Vec<crate::contracts::viewport::CompareIntent>,
 }
 
 impl Driver {
@@ -450,6 +460,7 @@ impl Driver {
             browser: Vec::new(),
             toasts: Vec::new(),
             compares: 0,
+            compare_requests: Vec::new(),
         }
     }
 
@@ -499,7 +510,10 @@ impl Driver {
                     self.shared.repository = Some(repository.clone())
                 }
                 Intent::Toast(toast) => self.toasts.push(toast.clone()),
-                Intent::RequestCompare(_) => self.compares += 1,
+                Intent::RequestCompare(request) => {
+                    self.compares += 1;
+                    self.compare_requests.push(request.clone());
+                }
                 _ => {}
             }
             let follow = self.review.apply_intent(&intent, &self.shared);
@@ -559,6 +573,8 @@ impl Driver {
             TextEditCommand::InsertText(text.to_owned()),
             &cx,
         );
+        let reduction = self.review.after_edit(REVIEW_COMPOSER, &self.shared);
+        self.drive(reduction);
     }
 
     fn thread(&self) -> ReviewThreadId {
@@ -793,7 +809,6 @@ fn drafts_persist_across_a_simulated_restart() {
         driver.act(ReviewAction::SubmitComment);
         driver.act(ReviewAction::ReplyToThread(driver.thread()));
         driver.type_text("Half-written reply");
-        driver.act(ReviewAction::CloseOverlay);
     }
 
     let mut driver = Driver::new(Fake::at(dir.path()));
@@ -1054,8 +1069,13 @@ impl UiApp for App {
         let cards: Vec<AnyElement> = presentation
             .cards()
             .iter()
+            .filter(|card| {
+                card.file_level.is_none()
+                    && !(card.key == CardKey::NewComment && card.target.is_none())
+            })
             .filter_map(|card| presentation.card_element(&card.key, card_width))
             .collect();
+        let header = presentation.file_comments_element(Some(FileKey(5)), "src/widget.rs");
         let full = Slot {
             shared: &shared,
             width,
@@ -1065,6 +1085,7 @@ impl UiApp for App {
         view! {
             <div w={width} h={height} class="flex-col relative overflow-hidden">
                 <div w={width} h={title_height} class="flex-row items-center">{title}</div>
+                <div class="flex-row p-2">{?header}</div>
                 <div class="flex-col gap-2 p-2">{...cards}</div>
                 {?overlay}
             </div>
@@ -1085,10 +1106,14 @@ impl UiApp for App {
             shared: &self.driver.shared,
             now_ms: 0,
         };
-        self.driver
+        let outcome = self
+            .driver
             .review
             .edit_text(target, command, &cx)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let reduction = self.driver.review.after_edit(target, &self.driver.shared);
+        self.driver.drive(reduction);
+        outcome
     }
 
     fn set_preedit(&mut self, target: FocusId, text: String, cursor: Option<(usize, usize)>) {
@@ -1274,10 +1299,16 @@ fn staged_drafts_render_cards_and_submit_review() {
     assert!(card.bounds.height > 0.0);
     assert!(ui.painted_text().contains("Pending"));
     ui.click_node(By::role_name(Role::Button, "Submit review"));
+    ui.find(By::role_name(Role::Dialog, "Submit review"));
+    assert!(
+        ui.painted_text()
+            .contains("1 pending comments will be submitted")
+    );
+    ui.click_node(By::role_name(Role::Button, "Comment"));
 
     assert!(ui.try_find(By::test_id("review.draft.1")).is_none());
     assert!(
-        ui.try_find(By::role_name(Role::Button, "Submit review"))
+        ui.try_find(By::role_name(Role::Dialog, "Submit review"))
             .is_none()
     );
 }
@@ -1323,4 +1354,574 @@ fn copy_shortcut_copies_the_card_selection() {
         .driver
         .act(ReviewAction::CopyCardSelection(card));
     assert_eq!(ui.app().driver.clipboard.last(), Some(&selected));
+}
+
+fn file_thread() -> GitHubPullRequestReviewThread {
+    GitHubPullRequestReviewThread {
+        node_id: "file-thread".to_owned(),
+        path: "src/widget.rs".to_owned(),
+        subject_type: "FILE".to_owned(),
+        viewer_can_reply: true,
+        comments: vec![GitHubPullRequestReviewThreadComment {
+            node_id: "file-comment".to_owned(),
+            database_id: Some(21),
+            author_login: "charlie".to_owned(),
+            body: "Split this file in two.".to_owned(),
+            path: "src/widget.rs".to_owned(),
+            ..GitHubPullRequestReviewThreadComment::default()
+        }],
+        ..GitHubPullRequestReviewThread::default()
+    }
+}
+
+#[test]
+fn open_pull_request_intent_loads_like_the_action() {
+    let mut driver = Driver::signed_in_with_pr();
+
+    driver.intent(Intent::OpenPullRequest {
+        url: OTHER_URL.to_owned(),
+    });
+
+    assert_eq!(driver.review.active_pull_request().unwrap().pr.number, 7);
+    assert_eq!(
+        driver.shared.review.as_ref().unwrap().pull_request.number,
+        7
+    );
+}
+
+#[test]
+fn unsent_comments_survive_quitting_right_after_typing() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut driver = Driver::new(Fake::at(dir.path()));
+        driver.startup(Some(URL));
+        driver.open_repository();
+        driver.act(ReviewAction::OpenComposerAt(target(7..8)));
+        driver.type_text("Typed, never staged");
+        assert!(
+            driver
+                .fake
+                .effects
+                .iter()
+                .any(|effect| matches!(effect, ReviewEffect::SaveSessionDraft { .. }))
+        );
+    }
+
+    let driver = {
+        let mut driver = Driver::new(Fake::at(dir.path()));
+        driver.startup(Some(URL));
+        driver.open_repository();
+        driver
+    };
+
+    let draft = driver.session().drafts.values().next().unwrap();
+    assert_eq!(draft.body, "Typed, never staged");
+    assert_eq!(draft.kind, ReviewDraftKind::InlineComment);
+    let card = driver
+        .review
+        .presentation()
+        .card(&CardKey::Draft(draft.id))
+        .cloned()
+        .unwrap();
+    assert_eq!(card.target, Some(target(7..8)));
+}
+
+#[test]
+fn composing_draft_is_not_submitted_or_counted() {
+    let mut driver = Driver::signed_in_with_pr();
+    driver.act(ReviewAction::OpenComposerAt(target(7..8)));
+    driver.type_text("Still writing");
+
+    assert_eq!(driver.review.review_counts(), Some((1, 0, 0)));
+    assert!(
+        driver
+            .review
+            .presentation()
+            .card(&CardKey::NewComment)
+            .is_some()
+    );
+    assert_eq!(driver.review.presentation().cards().len(), 2);
+
+    driver.act(ReviewAction::CancelComment);
+    assert!(driver.session().drafts.is_empty());
+}
+
+#[test]
+fn submit_menu_approves_without_pending_comments() {
+    let mut driver = Driver::signed_in_with_pr();
+
+    driver.act(ReviewAction::OpenSubmitMenu);
+    assert_eq!(
+        driver.review.overlay_open(),
+        Some(ReviewOverlay::SubmitReview)
+    );
+    driver.act(ReviewAction::SubmitReview {
+        decision: ReviewDecision::Approve,
+    });
+
+    assert_eq!(driver.review.overlay_open(), None);
+    let submitted = driver
+        .fake
+        .requests()
+        .into_iter()
+        .find_map(|request| match request {
+            GitHubRequest::SubmitSessionDrafts {
+                decision, session, ..
+            } => Some((decision, session.drafts.len())),
+            _ => None,
+        });
+    assert_eq!(submitted, Some((ReviewDecision::Approve, 0)));
+}
+
+#[test]
+fn submit_menu_offers_every_decision_and_a_summary() {
+    let mut ui = harness(Driver::signed_in_with_pr());
+    ui.click_node(By::role_name(Role::Button, "Submit review"));
+
+    let dialog = ui.find(By::role_name(Role::Dialog, "Submit review"));
+    for label in ["Comment", "Approve", "Request changes"] {
+        let button = ui.find(By::role_name(Role::Button, label));
+        assert!(
+            contains(dialog.bounds, button.bounds),
+            "{label} inside the menu"
+        );
+    }
+    assert!(ui.painted_text().contains("No pending comments"));
+    ui.click_node(By::role_name(Role::Button, "Add summary"));
+    ui.type_text("Looks good overall.");
+    let composer = ui.find(By::role_name(Role::MultilineTextInput, "Review comment"));
+    assert!(contains(dialog.bounds, composer.bounds) || composer.bounds.y >= dialog.bounds.y);
+    ui.click_node(By::role_name(Role::Button, "Request changes"));
+
+    let request = ui
+        .app()
+        .driver
+        .fake
+        .requests()
+        .into_iter()
+        .find_map(|request| match request {
+            GitHubRequest::SubmitSessionDrafts {
+                decision, session, ..
+            } => Some((decision, session)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(request.0, ReviewDecision::RequestChanges);
+    assert_eq!(
+        request
+            .1
+            .build_github_review_request(request.0, None)
+            .unwrap()
+            .body
+            .as_deref(),
+        Some("Looks good overall.")
+    );
+}
+
+#[test]
+fn pull_request_peeks_are_cached() {
+    let mut driver = Driver::signed_in_with_pr();
+    let pr = PullRequestRef {
+        owner: "owner".to_owned(),
+        repo: "repo".to_owned(),
+        number: 7,
+    };
+
+    driver.act(ReviewAction::PeekPullRequest {
+        url: OTHER_URL.to_owned(),
+    });
+    driver.act(ReviewAction::PeekPullRequest {
+        url: OTHER_URL.to_owned(),
+    });
+
+    assert!(matches!(
+        driver.review.peek(&pr),
+        Some(super::state::PeekState::Ready(info)) if info.number == 7
+    ));
+    let peeks = driver
+        .fake
+        .requests()
+        .iter()
+        .filter(|r| matches!(r, GitHubRequest::PeekPullRequest { .. }))
+        .count();
+    assert_eq!(peeks, 1);
+}
+
+#[test]
+fn preview_pull_request_compares_the_default_branch_with_the_worktree() {
+    let mut driver = Driver::signed_in_with_pr();
+    let mut snapshot = repository_snapshot(PathBuf::from("/tmp/repo"));
+    let reference = |name: &str, kind, active| crate::core::vcs::model::VcsRef {
+        name: name.to_owned(),
+        kind,
+        target: crate::core::vcs::model::RevisionId {
+            backend: crate::core::vcs::model::VcsKind::GIT,
+            id: "abc".to_owned(),
+        },
+        active,
+        upstream: None,
+        ahead_behind: None,
+    };
+    snapshot.refs = vec![
+        reference("feature", crate::core::vcs::model::RefKind::Branch, true),
+        reference(
+            "origin/main",
+            crate::core::vcs::model::RefKind::RemoteBranch,
+            false,
+        ),
+    ];
+    driver.intent(Intent::RepositoryChanged(Rc::new(RepositoryContext {
+        revision: RepositoryRevision(2),
+        snapshot: Arc::new(snapshot),
+    })));
+    let before = driver.compare_requests.len();
+
+    driver.act(ReviewAction::PreviewPullRequest);
+
+    let request = &driver.compare_requests[before];
+    assert_eq!(
+        request.request.spec,
+        crate::core::vcs::model::VcsCompareSpec::MergeBaseRange {
+            base: "origin/main".to_owned(),
+            head: crate::core::vcs::git::WORKDIR_REF.to_owned(),
+        }
+    );
+}
+
+#[test]
+fn author_avatars_load_into_a_bounded_cache() {
+    let driver = Driver::signed_in_with_pr();
+    let url = super::state::avatar_url_sized(
+        "https://avatars.test/u/alpha",
+        super::state::REVIEW_AVATAR_PX,
+    )
+    .unwrap();
+
+    assert!(
+        driver
+            .fake
+            .effects
+            .contains(&ReviewEffect::FetchAvatar { url })
+    );
+    assert_eq!(driver.review.avatar_cache_len(), 1);
+
+    let mut driver = Driver::signed_in_with_pr();
+    driver.fake.avatars = false;
+    let session = driver.review.pr.as_mut().unwrap().session.as_mut().unwrap();
+    let thread = session.threads[0].clone();
+    session.threads = (0..300)
+        .map(|n| {
+            let mut thread = thread.clone();
+            thread.id = ReviewThreadId::github_node(format!("t{n}"));
+            thread.comments[0].author_login = Some(format!("user{n}"));
+            thread.comments[0].author_avatar_url = Some(format!("https://avatars.test/u/{n}"));
+            thread
+        })
+        .collect();
+    driver.act(ReviewAction::CloseOverlay);
+
+    assert_eq!(
+        driver.review.avatar_cache_len(),
+        super::state::AVATAR_CACHE_LIMIT
+    );
+}
+
+fn images(ui: &UiTestHarness<App>) -> usize {
+    ui.scene()
+        .primitives
+        .iter()
+        .filter(|p| matches!(p, quark::scene::Primitive::Image(_)))
+        .count()
+}
+
+#[test]
+fn author_avatars_show_initials_until_loaded() {
+    let fake = Fake::new();
+    let mut driver = Driver::new(fake);
+    driver.fake.avatars = false;
+    driver.startup(Some(URL));
+    driver.open_repository();
+    let mut ui = harness(driver);
+    let before = images(&ui);
+    ui.find(By::test_id("review.avatar.alpha"));
+
+    let url = super::state::avatar_url_sized(
+        "https://avatars.test/u/alpha",
+        super::state::REVIEW_AVATAR_PX,
+    )
+    .unwrap();
+    ui.send_message(ReviewEvent::AvatarFetched {
+        url,
+        image: Arc::new(AvatarImage {
+            rgba: vec![255; 16],
+            width: 2,
+            height: 2,
+        }),
+    });
+
+    assert_eq!(images(&ui), before + 1);
+}
+
+#[test]
+fn file_level_comments_live_in_the_file_header_slot() {
+    let fake = Fake::new();
+    fake.github
+        .with(|s| s.data = vec![graphql_thread(), file_thread()]);
+    let mut driver = Driver::new(fake);
+    driver.startup(Some(URL));
+    driver.open_repository();
+    let presentation = driver.review.presentation();
+    let file_card = CardKey::Thread(ReviewThreadId::github_node("file-thread"));
+
+    assert!(
+        presentation
+            .annotations()
+            .iter()
+            .all(|a| a.card != file_card)
+    );
+    let (path, keys) = presentation
+        .file_comments(Some(FileKey(5)), "renamed.rs")
+        .unwrap();
+    assert_eq!((path, keys), ("src/widget.rs", &[file_card.clone()][..]));
+    assert!(
+        presentation
+            .file_comments(None, "old.rs \u{2192} src/widget.rs")
+            .is_some()
+    );
+    assert!(
+        presentation
+            .file_comments(Some(FileKey(9)), "src/widget.rs")
+            .is_none()
+    );
+    let header = diffy_ui::diff_view::decorator::HeaderContext {
+        file: 0,
+        source: Some(diffy_ui::diff_view::decorator::FileSource {
+            id: FileKey(5),
+            revision: diffy_diff::Revision(2),
+        }),
+        title: "src/widget.rs",
+        status: diffy_diff::FileStatus::Modified,
+        additions: 1,
+        deletions: 0,
+        binary: false,
+        width: 800.0,
+        height: 32.0,
+    };
+    assert!(
+        presentation
+            .header_slot(
+                diffy_ui::diff_view::decorator::HeaderSlot::Metadata,
+                &header
+            )
+            .is_some()
+    );
+    assert!(
+        presentation
+            .header_slot(diffy_ui::diff_view::decorator::HeaderSlot::Actions, &header)
+            .is_none()
+    );
+
+    let mut ui = harness(driver);
+    assert!(!ui.painted_text().contains("Split this file in two."));
+    ui.click_node(By::role_name(Role::Button, "1 file comment"));
+
+    let group = ui.find(By::role_name(Role::Group, "File comments on src/widget.rs"));
+    assert!(group.bounds.height > 0.0);
+    assert!(ui.painted_text().contains("Split this file in two."));
+    assert!(ui.painted_text().contains("Comment on file"));
+}
+
+fn contains(outer: quark::Rect, inner: quark::Rect) -> bool {
+    inner.x >= outer.x - 0.5
+        && inner.y >= outer.y - 0.5
+        && inner.x + inner.width <= outer.x + outer.width + 0.5
+        && inner.y + inner.height <= outer.y + outer.height + 0.5
+}
+
+fn bottom(rect: quark::Rect) -> f32 {
+    rect.y + rect.height
+}
+
+const SAMPLE_CARD: &str = "review.thread.github-thread-node:harness-thread-1";
+
+#[test]
+fn card_geometry_stays_inside_its_width() {
+    let ui = harness(sample_driver());
+    let card = ui.find(By::test_id(SAMPLE_CARD));
+    let expected = default_card_width(1100.0, ui.theme());
+
+    assert!((card.bounds.width - expected).abs() < 1.0, "{card:?}");
+    for (role, name) in [
+        (Role::Button, "Reply"),
+        (Role::Button, "Resolve thread"),
+        (Role::Button, "Collapse thread"),
+        (Role::Label, "Comment on line R120"),
+    ] {
+        let node = ui.find(By::role_name(role, name));
+        assert!(
+            contains(card.bounds, node.bounds),
+            "{name} {:?} in {:?}",
+            node.bounds,
+            card.bounds
+        );
+    }
+    for text in ui.painted_texts() {
+        let center_y = text.bounds.y + text.bounds.height / 2.0;
+        if center_y > card.bounds.y && center_y < bottom(card.bounds) && !text.text.contains('\n') {
+            assert!(
+                text.bounds.x + text.bounds.width <= card.bounds.x + card.bounds.width + 1.0,
+                "{:?} overflows the card",
+                text.text
+            );
+        }
+    }
+}
+
+#[test]
+fn card_sections_stack_header_body_footer() {
+    let ui = harness(sample_driver());
+    let title = ui.find(By::role_name(Role::Label, "Comment on line R120"));
+    let comments = ui.find(By::role_name(Role::List, "Comment on line R120"));
+    let reply = ui.find(By::role_name(Role::Button, "Reply"));
+    let resolve = ui.find(By::role_name(Role::Button, "Resolve thread"));
+
+    assert!(bottom(title.bounds) <= comments.bounds.y + 0.5);
+    assert!(bottom(comments.bounds) <= reply.bounds.y + 0.5);
+    assert!(
+        (reply.bounds.y - resolve.bounds.y).abs() < 1.0,
+        "footer buttons share a row"
+    );
+    assert!(
+        reply.bounds.x + reply.bounds.width <= resolve.bounds.x + 0.5,
+        "footer buttons do not overlap"
+    );
+}
+
+#[test]
+fn card_text_pieces_do_not_overlap_on_a_line() {
+    let ui = harness(sample_driver());
+    let card = ui.find(By::test_id(SAMPLE_CARD)).bounds;
+    let mut pieces: Vec<_> = ui
+        .painted_texts()
+        .into_iter()
+        .filter(|t| contains(card, t.bounds) && !t.text.trim().is_empty())
+        .collect();
+    pieces.retain(|t| !t.text.contains('\n'));
+    for (i, a) in pieces.iter().enumerate() {
+        for b in &pieces[i + 1..] {
+            let same_line =
+                (a.bounds.y - b.bounds.y).abs() < a.bounds.height.min(b.bounds.height) * 0.5;
+            if !same_line {
+                continue;
+            }
+            let overlap = (a.bounds.x + a.bounds.width).min(b.bounds.x + b.bounds.width)
+                - a.bounds.x.max(b.bounds.x);
+            assert!(
+                overlap <= 2.0,
+                "{:?} overlaps {:?} by {overlap:.1}",
+                a.text,
+                b.text
+            );
+        }
+    }
+}
+
+#[test]
+fn comment_headers_precede_their_bodies() {
+    let ui = harness(sample_driver());
+    let texts = ui.painted_texts();
+    let find = |needle: &str| {
+        texts
+            .iter()
+            .find(|t| t.text.contains(needle))
+            .unwrap_or_else(|| panic!("no painted {needle:?}"))
+            .bounds
+    };
+
+    assert!(bottom(find("@alpha")) <= find("This recomputes").y + 0.5);
+    assert!(bottom(find("@bravo replied")) <= find("memoize_height()").y + 0.5);
+    assert!(find("This recomputes").y < find("@bravo replied").y);
+}
+
+#[test]
+fn reply_composer_sits_between_body_and_actions() {
+    let mut ui = harness(Driver::signed_in_with_pr());
+    ui.click_node(By::role_name(Role::Button, "Reply"));
+    let card = ui.find(By::test_id("review.thread.github-thread-node:thread-1"));
+    let comments = ui.find(By::role_name(Role::List, "Comment on line R12"));
+    let editor = ui.find(By::role_name(Role::MultilineTextInput, "Review comment"));
+    let cancel = ui.find(By::role_name(Role::Button, "Cancel"));
+
+    assert!(contains(card.bounds, editor.bounds));
+    assert!(bottom(comments.bounds) <= editor.bounds.y + 0.5);
+    assert!(bottom(editor.bounds) <= cancel.bounds.y + 0.5);
+    let before = editor.bounds.height;
+    ui.type_text(&"a long review comment that keeps going ".repeat(12));
+    let grown = ui.find(By::role_name(Role::MultilineTextInput, "Review comment"));
+    assert!(grown.bounds.height > before, "composer grows with its text");
+    assert_eq!(ui.focus(), Some(REVIEW_COMPOSER));
+}
+
+#[test]
+fn command_source_offers_review_commands() {
+    use crate::contracts::commands::CommandSource;
+
+    let mut driver = Driver::signed_in_with_pr();
+    let ids = |driver: &Driver| {
+        let mut out = Vec::new();
+        driver.review.commands(&driver.shared, &mut out);
+        out.into_iter()
+            .map(|c| (c.id, c.enabled))
+            .collect::<Vec<_>>()
+    };
+
+    let commands = ids(&driver);
+    assert!(commands.contains(&("review.submit", true)));
+    assert!(commands.contains(&("review.approve", true)));
+    assert!(commands.contains(&("review.sign_out", true)));
+    assert!(commands.contains(&("review.preview_pull_request", true)));
+
+    driver.act(ReviewAction::SignOut);
+    let commands = ids(&driver);
+    assert!(commands.contains(&("review.sign_in", true)));
+    assert!(commands.contains(&("review.submit", false)));
+}
+
+#[test]
+fn sign_in_modal_closes_with_cancel_or_escape() {
+    let mut driver = Driver::new(Fake::new());
+    driver.startup(None);
+    driver.act(ReviewAction::SignOut);
+    let mut ui = harness(driver);
+
+    ui.click_node(By::role_name(Role::Button, "Sign in to GitHub"));
+    ui.find(By::role_name(Role::Dialog, "Sign in to GitHub"));
+    assert!(ui.app().driver.review.is_modal_open());
+    assert_eq!(ui.focus(), Some(crate::app::text_targets::REVIEW_DIALOG));
+    ui.click_node(By::role_name(Role::Button, "Cancel"));
+    assert_eq!(ui.focus(), Some(crate::app::text_targets::REVIEW_ACCOUNT));
+    assert!(
+        ui.try_find(By::role_name(Role::Dialog, "Sign in to GitHub"))
+            .is_none()
+    );
+    assert!(!ui.app().driver.review.is_modal_open());
+
+    ui.click_node(By::role_name(Role::Button, "Sign in to GitHub"));
+    ui.find(By::role_name(Role::Dialog, "Sign in to GitHub"));
+    ui.key("escape");
+    assert!(
+        ui.try_find(By::role_name(Role::Dialog, "Sign in to GitHub"))
+            .is_none()
+    );
+
+    ui.click_node(By::role_name(Role::Button, "Sign in to GitHub"));
+    ui.key("tab");
+    ui.key("escape");
+    assert!(
+        ui.try_find(By::role_name(Role::Dialog, "Sign in to GitHub"))
+            .is_none()
+    );
+    assert_eq!(ui.focus(), Some(crate::app::text_targets::REVIEW_ACCOUNT));
+    ui.key("enter");
+    ui.find(By::role_name(Role::Dialog, "Sign in to GitHub"));
 }

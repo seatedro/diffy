@@ -564,6 +564,24 @@ fn resolve(file: &ExactFile, selection: &PatchSelection) -> Result<Vec<Vec<bool>
                 }
             }
         }
+        PatchSelection::HunksAt(ranges) => {
+            for range in ranges {
+                let mut found = false;
+                for (hunk, flags) in file.hunks.iter().zip(&mut selected) {
+                    let span = hunk.span(range.side);
+                    if !range.lines.clone().any(|line| span.contains(&line)) {
+                        continue;
+                    }
+                    found = true;
+                    for (line, flag) in hunk.lines.iter().zip(flags.iter_mut()) {
+                        *flag = line.kind != LineKind::Context;
+                    }
+                }
+                if !found {
+                    return Err(PatchError::Stale);
+                }
+            }
+        }
     }
     if selected.iter().flatten().all(|flag| !flag) {
         return Err(PatchError::NothingSelected);

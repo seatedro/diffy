@@ -8,7 +8,7 @@ use crate::contracts::navigation::{
     NavigationEvent, RepositoryRevision, RepositorySnapshot, RepositorySyncReason,
 };
 use crate::contracts::shared::{CompareGeneration, FileKey, FileRevision};
-use crate::contracts::viewport::pipeline::{CompareManifestSnapshot, FileStats, ManifestFile};
+use crate::contracts::viewport::pipeline::{CompareManifestSnapshot, ManifestFile};
 use crate::core::compare::stats::CompareFilePaths;
 use crate::core::vcs::model::{
     ChangeFlags, RefKind, RepoCapabilities, RepoLocation, RevisionId, VcsChange, VcsKind,
@@ -79,14 +79,12 @@ pub fn snapshot_ready(revision: u64, snapshot: RepositorySnapshot) -> Navigation
 }
 
 pub fn file(key: u64, path: &str) -> ManifestFile {
-    ManifestFile {
-        key: FileKey(key),
-        revision: FileRevision(1),
-        paths: CompareFilePaths::from_paths(Some(path), Some(path)),
-        status: FileStatus::Modified,
-        binary: false,
-        stats: FileStats::Pending,
-    }
+    ManifestFile::new(
+        FileKey(key),
+        FileRevision(1),
+        CompareFilePaths::from_paths(Some(path), Some(path)),
+        FileStatus::Modified,
+    )
 }
 
 pub fn renamed(key: u64, old: &str, new: &str) -> ManifestFile {
@@ -103,5 +101,6 @@ pub fn manifest(generation: u64, files: Vec<ManifestFile>) -> Rc<CompareManifest
         resolved_left: String::new(),
         resolved_right: String::new(),
         files: files.into(),
+        ..CompareManifestSnapshot::default()
     })
 }

@@ -196,7 +196,6 @@ pub fn file_name(path: &str) -> (&str, &str) {
 mod tests {
     use super::*;
     use crate::contracts::shared::{FileKey, FileRevision};
-    use crate::contracts::viewport::pipeline::FileStats;
     use crate::core::compare::stats::CompareFilePaths;
     use diffy_diff::FileStatus;
 
@@ -204,13 +203,13 @@ mod tests {
         paths
             .iter()
             .enumerate()
-            .map(|(i, path)| ManifestFile {
-                key: FileKey(i as u64 + 1),
-                revision: FileRevision(1),
-                paths: CompareFilePaths::from_paths(Some(path), Some(path)),
-                status: FileStatus::Modified,
-                binary: false,
-                stats: FileStats::Pending,
+            .map(|(i, path)| {
+                ManifestFile::new(
+                    FileKey(i as u64 + 1),
+                    FileRevision(1),
+                    CompareFilePaths::from_paths(Some(path), Some(path)),
+                    FileStatus::Modified,
+                )
             })
             .collect()
     }

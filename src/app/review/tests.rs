@@ -34,7 +34,7 @@ use crate::contracts::shell::{
     ShellEffect,
 };
 use crate::contracts::viewport::CompareManifestSnapshot;
-use crate::contracts::viewport::pipeline::{FileStats, ManifestFile};
+use crate::contracts::viewport::pipeline::ManifestFile;
 use crate::core::compare::stats::CompareFilePaths;
 use crate::core::forge::github::{
     DeviceFlowState, GitHubPullRequestReviewData, GitHubPullRequestReviewThread,
@@ -174,14 +174,13 @@ fn manifest() -> Rc<CompareManifestSnapshot> {
         generation: CompareGeneration(1),
         resolved_left: "base".to_owned(),
         resolved_right: "head".to_owned(),
-        files: Arc::from([ManifestFile {
-            key: FileKey(5),
-            revision: FileRevision(2),
-            paths: CompareFilePaths::from_paths(Some("src/widget.rs"), Some("src/widget.rs")),
-            status: diffy_diff::FileStatus::Modified,
-            binary: false,
-            stats: FileStats::Pending,
-        }]),
+        files: Arc::from([ManifestFile::new(
+            FileKey(5),
+            FileRevision(2),
+            CompareFilePaths::from_paths(Some("src/widget.rs"), Some("src/widget.rs")),
+            diffy_diff::FileStatus::Modified,
+        )]),
+        ..CompareManifestSnapshot::default()
     })
 }
 

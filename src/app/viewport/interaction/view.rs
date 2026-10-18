@@ -6,7 +6,10 @@ use diffy_ui::diff_view::decorator::{DiffDecorator, DiffViewOptions};
 use quark::view;
 use quark_app::ViewContext;
 use quark_components::search_field;
-use quark_components::{Button, ButtonSize, ButtonStyle, CollectionEnv, DropdownItem, dropdown};
+use quark_components::{
+    Button, ButtonSize, ButtonStyle, CollectionEnv, DropdownItem, SegmentedControl, SegmentedItem,
+    dropdown, switch,
+};
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
 use quark_ui::style::Styled;
@@ -15,9 +18,11 @@ use quark_ui::theme::Theme;
 
 use super::keys;
 use super::state::{InteractionController, Phase};
+use crate::app::commands::keymap::WORKSPACE_CONTEXT;
 use crate::app::shell::{Slot, empty_state};
 use crate::app::text_targets::{SEARCH, TEXT_COMPARE_LEFT, TEXT_COMPARE_RIGHT};
 use crate::app::tokens::{self, Sp, TextStyle};
+use crate::contracts::commands::CommandsAction;
 use crate::contracts::shell::Action;
 use crate::contracts::viewport::interaction::{
     DiffInput, InteractionAction, TextCompareLanguage, TextCompareSide, TextCompareView,
@@ -156,18 +161,26 @@ fn toolbar(
         ]
     } else {
         let unified = interaction.layout == LayoutMode::Unified;
-        vec![
-            toggle(
+        let layout = SegmentedControl::new(vec![
+            SegmentedItem::new(
                 "Unified",
+                CommandsAction::SetLayout(LayoutMode::Unified),
                 unified,
-                InteractionAction::SetLayout(LayoutMode::Unified),
             ),
-            toggle(
+            SegmentedItem::new(
                 "Split",
+                CommandsAction::SetLayout(LayoutMode::Split),
                 !unified,
-                InteractionAction::SetLayout(LayoutMode::Split),
             ),
-            toggle("Wrap", interaction.wrap, InteractionAction::ToggleWrap),
+        ])
+        .id("diff.layout");
+        vec![
+            view! { <div class="shrink-0">{layout}</div> },
+            view! {
+                <div class="shrink-0">
+                    {switch(interaction.wrap).label("Wrap").on_toggle(CommandsAction::ToggleWrap)}
+                </div>
+            },
             toggle("Expand context", false, InteractionAction::ExpandAllContext),
             toggle(
                 "Find",
@@ -184,6 +197,7 @@ fn toolbar(
             px={tokens::scaled(Sp::SM, scale)}
             gap={tokens::scaled(Sp::XS, scale)}
             border_b={tc.border_variant}
+            key_context={WORKSPACE_CONTEXT}
             accessibility_role={AccessibilityRole::Toolbar}
             aria-label="Diff toolbar"
             test_id="diff.toolbar"
@@ -224,12 +238,9 @@ fn diff_area(
     } else {
         0.0
     };
-    let search = interaction
-        .search
-        .open
-        .then(|| search_bar(interaction, width, search_h, cx));
+    let search = search_bar(interaction, width, search_h, cx);
     let list_h = (height - search_h).max(0.0);
-    interaction.set_viewport_height(list_h);
+    interaction.set_viewport(width, list_h);
     let style = interaction.style(cx.theme.metrics.mono_font_size);
     let options = DiffViewOptions {
         decorator,
@@ -254,14 +265,15 @@ fn diff_area(
         accessible: cx.frame.accessibility_active(),
     };
     let list = diff.view_with_options(cx.theme, env, diff_event, options);
-    let mut list_box = div().w(width).h(list_h).test_id("diff.lines");
-    for (binding, action) in keys::viewport() {
-        list_box = list_box.on_key(binding, act(action));
-    }
-    let list_box = list_box.child(list);
+    let list_box = div()
+        .w(width)
+        .h(list_h)
+        .key_context(WORKSPACE_CONTEXT)
+        .test_id("diff.lines")
+        .child(list);
     view! {
         <div w={width} h={height} class="flex-col">
-            {?search}
+            {search}
             {list_box}
         </div>
     }
@@ -277,7 +289,13 @@ fn search_bar(
     let tc = &theme.colors;
     let scale = tokens::ui_scale(theme);
     let focused = cx.is_focused(SEARCH);
+    let open = interaction.search.open;
     let field = &interaction.search.field;
+    let field_h = if open {
+        (theme.metrics.ui_small_font_size * 1.5).round()
+    } else {
+        0.0
+    };
     let input = text_input("Find in diff", "")
         .field(field)
         .placeholder("Find in diff")
@@ -286,7 +304,21 @@ fn search_bar(
         .search(true)
         .bare()
         .w_full()
-        .h((theme.metrics.ui_small_font_size * 1.5).round());
+        .h(field_h);
+    let mut bar = div()
+        .w(width)
+        .h(height)
+        .flex_row()
+        .items_center()
+        .flex_shrink_0()
+        .overflow_hidden()
+        .test_id("diff.search");
+    for (binding, action) in keys::search() {
+        bar = bar.on_key(binding, act(action));
+    }
+    if !open {
+        return bar.child(input).into_any();
+    }
     let has_query = !field.text().is_empty();
     let summary = interaction.search_summary();
     let count = match (has_query, summary.matches, summary.active) {
@@ -302,37 +334,39 @@ fn search_bar(
     };
     let compact = ButtonSize::Compact;
     let field = search_field(input, has_query, None, None, theme);
-    let mut bar = div()
-        .w(width)
-        .h(height)
+    let field = div()
+        .flex_1()
+        .min_w(0.0)
+        .h_full()
         .flex_row()
         .items_center()
-        .flex_shrink_0()
-        .px(tokens::scaled(Sp::SM, scale))
+        .child(field);
+    let count = view! {
+        <text size={TextStyle::BodySmall.font_size(theme)} color={tc.text_muted}>{count}</text>
+    };
+    let case = Button::new(act(InteractionAction::ToggleSearchCaseSensitive))
+        .label("Match case")
+        .size(compact)
+        .active(interaction.search.case_sensitive);
+    let previous = Button::new(act(InteractionAction::SearchPrevious))
+        .label("Previous match")
+        .size(compact);
+    let next = Button::new(act(InteractionAction::SearchNext))
+        .label("Next match")
+        .size(compact);
+    let close = Button::new(act(InteractionAction::CloseSearch))
+        .label("Close search")
+        .size(compact);
+    bar.px(tokens::scaled(Sp::SM, scale))
         .gap(tokens::scaled(Sp::XS, scale))
         .border_b(tc.border_variant)
-        .test_id("diff.search");
-    for (binding, action) in keys::search() {
-        bar = bar.on_key(binding, act(action));
-    }
-    let content = view! {
-        <>
-            <div class="flex-1" min_w={0.0}>{field}</div>
-            <text size={TextStyle::BodySmall.font_size(theme)} color={tc.text_muted}>
-                {count}
-            </text>
-            <Button
-                on:click={act(InteractionAction::ToggleSearchCaseSensitive)}
-                label="Match case"
-                size={compact}
-                active={interaction.search.case_sensitive}
-            />
-            <Button on:click={act(InteractionAction::SearchPrevious)} label="Previous match" size={compact} />
-            <Button on:click={act(InteractionAction::SearchNext)} label="Next match" size={compact} />
-            <Button on:click={act(InteractionAction::CloseSearch)} label="Close search" size={compact} />
-        </>
-    };
-    bar.child(content).into_any()
+        .child(field)
+        .child(count)
+        .child(case)
+        .child(previous)
+        .child(next)
+        .child(close)
+        .into_any()
 }
 
 fn text_compare_editors(

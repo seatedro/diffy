@@ -103,6 +103,7 @@ impl Controllers {
         self.review.commands(cx, &mut out);
         self.mutations.commands(cx, &mut out);
         self.delivery.commands(cx, &mut out);
+        self.viewport.interaction.commands(cx, &mut out);
         out.into()
     }
 

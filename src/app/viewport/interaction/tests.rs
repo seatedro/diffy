@@ -1,6 +1,8 @@
 use std::rc::Rc;
 
 use quark_app::testing::{By, UiTestHarness};
+use quark_app::winit::keyboard::ModifiersState;
+use quark_app::{InputEvent, KeyChord, KeyKind};
 use quark_ui::accessibility::AccessibilityRole as Role;
 
 use super::fixtures::*;
@@ -10,7 +12,8 @@ use crate::contracts::shared::{CompareGeneration, FileKey, FileRevision, Side, S
 use crate::contracts::shell::{Controller, Effect, Intent};
 use crate::contracts::viewport::ViewportEffect;
 use crate::contracts::viewport::interaction::{TextCompareView, ViewportInstall};
-use crate::contracts::viewport::pipeline::PipelineEffect;
+use crate::contracts::viewport::pipeline::{PipelineEffect, PreparedDiff};
+use crate::core::compare::LayoutMode;
 
 const SIZE: (f32, f32) = (900.0, 600.0);
 const SHORT: (f32, f32) = (900.0, 240.0);
@@ -44,6 +47,44 @@ fn selections(ui: &UiTestHarness<Host>) -> Vec<SourceTarget> {
         .filter_map(|intent| match intent {
             Intent::SelectSource(Some(target)) => Some(target.clone()),
             _ => None,
+        })
+        .collect()
+}
+
+fn chord(ch: char, modifiers: ModifiersState) -> KeyChord {
+    KeyChord {
+        logical: KeyKind::Character(ch.to_string()),
+        physical: None,
+        modifiers,
+        repeat: false,
+    }
+}
+
+fn key_events(binding: &str) -> Vec<InputEvent> {
+    let primary = if cfg!(target_os = "macos") {
+        ModifiersState::SUPER
+    } else {
+        ModifiersState::CONTROL
+    };
+    let ch = binding.strip_prefix("mod+").and_then(|k| k.chars().next());
+    let ch = ch.unwrap_or_else(|| panic!("unsupported binding {binding}"));
+    vec![
+        InputEvent::ModifiersChanged(primary),
+        InputEvent::KeyPress(chord(ch, primary)),
+        InputEvent::KeyRelease(chord(ch, primary)),
+        InputEvent::ModifiersChanged(ModifiersState::empty()),
+    ]
+}
+
+fn typed(text: &str) -> Vec<InputEvent> {
+    text.chars()
+        .flat_map(|ch| {
+            let chord = chord(ch, ModifiersState::empty());
+            [
+                InputEvent::KeyPress(chord.clone()),
+                InputEvent::TextInput(ch.to_string()),
+                InputEvent::KeyRelease(chord),
+            ]
         })
         .collect()
 }
@@ -91,7 +132,7 @@ fn installed_files_render_with_identity_test_ids() {
 #[test]
 fn split_layout_shows_both_sides() {
     let mut ui = loaded(Host::new());
-    ui.click_node(By::role_name(Role::Button, "Split"));
+    ui.click_node(By::role_name(Role::RadioButton, "Split"));
     let names = line_names(&ui);
     assert!(names.iter().any(|n| n == "line 10"));
     assert!(names.iter().any(|n| n == "changed ten"));
@@ -191,6 +232,47 @@ fn find_in_diff_searches_and_steps_matches() {
 }
 
 #[test]
+fn typing_right_after_opening_find_reaches_the_field() {
+    let mut ui = loaded(Host::new());
+    focus_diff(&mut ui);
+    let closed = ui.find(By::role_name(Role::SearchInput, "Find in diff"));
+    assert!(closed.bounds.height <= 0.0, "{:?}", closed.bounds);
+    let top = ui.app().interaction.diff().map(|d| d.scroll_offset());
+    ui.send_events(key_events("mod+f").into_iter().chain(typed("ud1")));
+    assert_eq!(ui.focus(), Some(SEARCH));
+    assert_eq!(ui.app().interaction.search().field.text(), "ud1");
+    assert_eq!(ui.app().interaction.diff().map(|d| d.scroll_offset()), top);
+    assert_eq!(ui.app().interaction.layout(), LayoutMode::Unified);
+    let field = ui.find(By::role_name(Role::SearchInput, "Find in diff"));
+    assert!(field.bounds.width > SIZE.0 / 3.0, "{}", field.bounds.width);
+}
+
+#[test]
+fn workspace_shortcuts_drive_the_focused_diff() {
+    let mut ui = loaded(Host::new());
+    focus_diff(&mut ui);
+    ui.key("2");
+    assert_eq!(ui.app().interaction.layout(), LayoutMode::Split);
+    ui.key("1");
+    assert_eq!(ui.app().interaction.layout(), LayoutMode::Unified);
+}
+
+#[test]
+fn layout_survives_unrelated_settings_changes() {
+    let mut ui = loaded(Host::new());
+    ui.app_mut().update_settings(|_| {});
+    ui.click_node(By::role_name(Role::RadioButton, "Split"));
+    assert_eq!(ui.app().interaction.layout(), LayoutMode::Split);
+    ui.app_mut().update_settings(|s| s.ui_scale_pct = 110);
+    assert_eq!(ui.app().interaction.layout(), LayoutMode::Split);
+    ui.app_mut()
+        .update_settings(|s| s.viewport.layout = LayoutMode::Split);
+    ui.app_mut()
+        .update_settings(|s| s.viewport.layout = LayoutMode::Unified);
+    assert_eq!(ui.app().interaction.layout(), LayoutMode::Unified);
+}
+
+#[test]
 fn search_follows_new_revisions_of_a_file() {
     let mut ui = loaded(Host::new());
     focus_diff(&mut ui);
@@ -238,13 +320,12 @@ fn wrap_and_wrap_column_rewrap_long_lines() {
             .map_or(0.0, |d| d.content_height())
     };
     let unwrapped = height(&ui);
-    ui.click_node(By::role_name(Role::Button, "Wrap"));
+    ui.click_node(By::role_name(Role::Switch, "Wrap"));
     let wrapped = height(&ui);
     assert!(wrapped > unwrapped, "{wrapped} > {unwrapped}");
-    ui.app_mut().interaction.reduce_action(
-        crate::contracts::viewport::interaction::InteractionAction::SetWrapColumn(20),
-        &Default::default(),
-    );
+    assert!(ui.accessibility_tree().contains("Wrap"));
+    ui.app_mut()
+        .update_settings(|s| s.viewport.wrap_column = 20);
     ui.frame();
     assert!(height(&ui) > wrapped);
 }
@@ -437,4 +518,148 @@ fn large_diff_frame_and_handler_times() {
         stats(hunks),
         ui.app().interaction.search_summary().matches,
     );
+}
+
+#[test]
+fn open_text_compare_intent_enters_the_editors() {
+    let mut ui = loaded(Host::new());
+    ui.app_mut().intent(Intent::OpenTextCompare);
+    ui.frame();
+    assert!(ui.app().interaction.text_compare().active);
+    assert_eq!(
+        ui.app().interaction.text_compare().view,
+        TextCompareView::Edit
+    );
+    ui.find(By::test_id("text-compare"));
+}
+
+#[test]
+fn annotate_requests_a_review_annotation_at_the_line() {
+    let mut ui = loaded(Host::new());
+    let event = diffy_ui::DiffEvent::Annotate {
+        file: 0,
+        side: Side::New,
+        line: 10,
+    };
+    let action = crate::contracts::viewport::interaction::InteractionAction::Diff(
+        crate::contracts::viewport::interaction::DiffInput(event),
+    );
+    let reduction = ui
+        .app_mut()
+        .interaction
+        .reduce_action(action, &Default::default());
+    let requested: Vec<_> = reduction
+        .intents
+        .iter()
+        .filter_map(|intent| match intent {
+            Intent::RequestAnnotation(target) => Some(target.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        requested,
+        [SourceTarget {
+            file: FileKey(1),
+            revision: FileRevision(1),
+            side: Side::New,
+            lines: 10..11,
+        }]
+    );
+}
+
+#[test]
+fn single_file_mode_shows_the_selected_file_and_steps_files() {
+    let mut host = Host::new();
+    host.update_settings(|s| s.continuous_scroll = false);
+    let mut ui = loaded(host);
+    assert!(ui.try_find(By::test_id("diffy.diff.file.1.1")).is_some());
+    assert!(ui.try_find(By::test_id("diffy.diff.file.2.1")).is_none());
+
+    ui.app_mut().intent(Intent::SelectFile(Some(SelectedFile {
+        key: FileKey(2),
+        origin: SelectionOrigin::Sidebar,
+    })));
+    ui.frame();
+    assert!(ui.try_find(By::test_id("diffy.diff.file.1.1")).is_none());
+    assert!(ui.try_find(By::test_id("diffy.diff.file.2.1")).is_some());
+
+    focus_diff(&mut ui);
+    ui.key("shift+n");
+    assert!(ui.try_find(By::test_id("diffy.diff.file.1.1")).is_some());
+    assert_eq!(
+        ui.app().shared.selected_file.map(|s| s.key),
+        Some(FileKey(1))
+    );
+
+    ui.app_mut().update_settings(|s| s.continuous_scroll = true);
+    ui.frame();
+    assert!(ui.try_find(By::test_id("diffy.diff.file.1.1")).is_some());
+    assert!(ui.try_find(By::test_id("diffy.diff.file.2.1")).is_some());
+}
+
+#[test]
+fn placeholders_let_order_name_unloaded_files() {
+    use diffy_diff::{FileMeta, Placeholder, Revision, SlotState};
+    use std::sync::Arc;
+
+    use crate::contracts::viewport::pipeline::SlotUpdate;
+
+    let mut ui = loaded(Host::new());
+    let host = ui.app_mut();
+    let shared = host.shared.clone();
+    host.interaction.install_slot(
+        SlotUpdate::Placeholder {
+            key: FileKey(3),
+            placeholder: Placeholder::new(Revision(1), SlotState::Loading, 12, FileMeta::default()),
+        },
+        &shared,
+    );
+    let reduction = host.interaction.install(
+        ViewportInstall::Order {
+            generation: GENERATION,
+            files: Arc::from([FileKey(3), FileKey(1), FileKey(2)]),
+        },
+        &shared,
+    );
+    assert!(reduction.changed);
+    let order = ui
+        .app()
+        .interaction
+        .diff()
+        .map(|d| d.session().order().to_vec());
+    assert_eq!(order, Some(vec![FileKey(3), FileKey(1), FileKey(2)]));
+}
+
+#[test]
+fn expanding_a_patch_only_file_requests_its_sources() {
+    use diffy_diff::{FileDiffSnapshot, Revision, parse_unified};
+
+    use crate::contracts::viewport::interaction::{ContextDirection, InteractionAction};
+
+    let patch = "--- a/c.rs\n+++ b/c.rs\n@@ -10,3 +10,3 @@\n one\n-two\n+deux\n three\n";
+    let doc = parse_unified(patch).unwrap();
+    let key = FileKey(7);
+    let snapshot = FileDiffSnapshot::new(key, Revision(1), std::sync::Arc::new(doc)).unwrap();
+    let prepared = PreparedDiff::new(key, GENERATION, FileRevision(1), snapshot);
+    let mut ui = harness(Host::new(), SIZE);
+    ui.app_mut().install(ViewportInstall::File {
+        prepared,
+        remap: None,
+    });
+    ui.frame();
+    let interaction = &mut ui.app_mut().interaction;
+    interaction.reduce_action(
+        InteractionAction::ExpandContext {
+            file: key,
+            hunk: 0,
+            direction: ContextDirection::Above,
+            amount: 20,
+        },
+        &Default::default(),
+    );
+    assert_eq!(
+        interaction.take_source_requests(),
+        [(key, diffy_diff::SourcePurpose::ExpandContext)]
+    );
+    assert!(interaction.take_source_requests().is_empty());
 }

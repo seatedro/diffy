@@ -1,3 +1,4 @@
+use diffy_diff::Revision;
 use diffy_ui::DiffAnchor;
 use diffy_ui::diff_view::decorator::HunkSource;
 
@@ -9,6 +10,15 @@ pub fn source_target(anchor: &DiffAnchor) -> SourceTarget {
         revision: FileRevision(anchor.revision.0),
         side: anchor.side,
         lines: anchor.lines.clone(),
+    }
+}
+
+pub fn source_anchor(target: &SourceTarget) -> DiffAnchor {
+    DiffAnchor {
+        file: target.file,
+        revision: Revision(target.revision.0),
+        side: target.side,
+        lines: target.lines.clone(),
     }
 }
 

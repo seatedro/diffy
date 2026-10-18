@@ -1,7 +1,6 @@
 use diffy_ui::DiffKey;
 
 use crate::contracts::viewport::interaction::InteractionAction;
-use crate::core::compare::LayoutMode;
 
 pub const DIFF: &[(&str, DiffKey)] = &[
     ("]", DiffKey::NextHunk),
@@ -24,17 +23,6 @@ pub const DIFF: &[(&str, DiffKey)] = &[
     ("mod+c", DiffKey::Copy),
     ("mod+a", DiffKey::SelectAll),
 ];
-
-pub fn viewport() -> [(&'static str, InteractionAction); 6] {
-    [
-        ("mod+f", InteractionAction::OpenSearch),
-        ("w", InteractionAction::ToggleWrap),
-        ("d", InteractionAction::ScrollHalfPage(1)),
-        ("u", InteractionAction::ScrollHalfPage(-1)),
-        ("1", InteractionAction::SetLayout(LayoutMode::Unified)),
-        ("2", InteractionAction::SetLayout(LayoutMode::Split)),
-    ]
-}
 
 pub fn search() -> [(&'static str, InteractionAction); 4] {
     [

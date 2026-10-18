@@ -8,6 +8,7 @@
 //! byte ranges of lines, never copies of the text, up to
 //! [`FindOptions::max_matches`]; past that the count is a lower bound.
 
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use diffy_diff::{BlockKind, DiffDocument, Side};
@@ -130,6 +131,7 @@ pub(crate) struct SearchState {
     at_least: bool,
     coverage: SearchCoverage,
     active: Option<usize>,
+    complete: HashSet<u64>,
 }
 
 /// Calls `push` with each non-overlapping occurrence of `query` in
@@ -224,33 +226,44 @@ impl DiffViewState {
         self.search.options = options;
         self.search.active = None;
         self.search.hits.clear();
-        self.search.at_least = true;
+        self.search.complete.clear();
         self.rerun_search();
     }
 
     /// Runs the current search again over the current sources, keeping the
     /// active match when it still exists.
     pub(crate) fn rerun_search(&mut self) {
+        self.revision += 1;
+        if self.search.query.is_empty() {
+            self.search.hits.clear();
+            self.search.complete.clear();
+            self.search.active = None;
+            self.search.at_least = false;
+            self.search.coverage = SearchCoverage::Full;
+            return;
+        }
         let active = self.search.active.map(|i| self.search.hits[i].clone());
         let (query, options) = (&self.search.query, self.search.options);
         let limit = options.max_matches;
-        let mut kept: std::collections::HashMap<u64, Vec<Hit>> = std::collections::HashMap::new();
-        if !self.search.at_least {
-            for hit in std::mem::take(&mut self.search.hits) {
+        let scanned = std::mem::take(&mut self.search.complete);
+        let mut kept: HashMap<u64, Vec<Hit>> = HashMap::new();
+        for hit in std::mem::take(&mut self.search.hits) {
+            if scanned.contains(&hit.generation) {
                 kept.entry(hit.generation).or_default().push(hit);
             }
         }
+        let mut complete = HashSet::new();
         let mut hits = Vec::new();
         let mut at_least = false;
         let mut coverage = SearchCoverage::Full;
         'search: for (seg, segment) in self.segments.iter().enumerate() {
             let doc = &segment.doc;
             let generation = segment.generation;
-            if let Some(old) = kept.remove(&generation) {
-                if (0..doc.file_count()).any(|file| doc.files().partial[file as usize]) {
-                    coverage = SearchCoverage::PatchOnly;
-                }
-                for mut hit in old {
+            if (0..doc.file_count()).any(|file| doc.files().partial[file as usize]) {
+                coverage = SearchCoverage::PatchOnly;
+            }
+            if scanned.contains(&generation) {
+                for mut hit in kept.remove(&generation).unwrap_or_default() {
                     if hits.len() >= limit {
                         at_least = true;
                         break 'search;
@@ -258,15 +271,10 @@ impl DiffViewState {
                     hit.seg = seg as u32;
                     hits.push(hit);
                 }
+                complete.insert(generation);
                 continue;
             }
             for file in 0..doc.file_count() {
-                if query.is_empty() {
-                    break 'search;
-                }
-                if doc.files().partial[file as usize] {
-                    coverage = SearchCoverage::PatchOnly;
-                }
                 for side in [Side::Old, Side::New] {
                     if !options.sides.has(side) {
                         continue;
@@ -297,12 +305,13 @@ impl DiffViewState {
                     }
                 }
             }
+            complete.insert(generation);
         }
         self.search.active = active.and_then(|a| hits.iter().position(|h| h.same(&a)));
         self.search.hits = hits;
         self.search.at_least = at_least;
         self.search.coverage = coverage;
-        self.revision += 1;
+        self.search.complete = complete;
     }
 
     pub fn search_summary(&self) -> SearchSummary {

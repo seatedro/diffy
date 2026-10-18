@@ -1,6 +1,6 @@
 use quark::view;
 use quark_app::ViewContext;
-use quark_components::{Button, ButtonSize, ButtonStyle, Modal, avatar};
+use quark_components::{Avatar, Modal, avatar};
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
 use quark_ui::icons::lucide;
@@ -8,10 +8,12 @@ use quark_ui::style::Styled;
 use quark_ui::theme::{Color, Theme};
 
 use super::ReviewController;
+use super::controls::{self, GhostChip, Tone};
 use super::state::{AuthStatus, ReviewOverlay};
 use crate::app::shell::Slot;
 use crate::app::text_targets::{REVIEW_ACCOUNT, REVIEW_DIALOG};
 use crate::app::tokens::{self, Ico, Rad, Shadow, Sp, Sz, TextStyle};
+use crate::contracts::commands::CommandsAction;
 use crate::contracts::review::ReviewAction;
 use crate::contracts::shell::ShellAction;
 use crate::core::review::ReviewDecision;
@@ -21,6 +23,10 @@ const ACCOUNT_MENU_WIDTH: f32 = 260.0;
 
 fn action(action: ReviewAction) -> quark_ui::Action {
     action.into()
+}
+
+fn commands(action: CommandsAction) -> quark_ui::Action {
+    crate::contracts::shell::Action::from(action).into()
 }
 
 pub fn default_card_width(width: f32, theme: &Theme) -> f32 {
@@ -66,22 +72,24 @@ pub fn view(review: &mut ReviewController, slot: &Slot, cx: &mut ViewContext) ->
             parts.join(" \u{b7} ")
         });
         let submit = counts.filter(|_| review.signed_in()).map(|(_, pending, failed)| {
-            let style = if pending + failed > 0 {
-                ButtonStyle::Filled
+            let tone = if pending + failed > 0 {
+                Tone::Primary
             } else {
-                ButtonStyle::Subtle
+                Tone::Secondary
             };
-            let button = Button::new(action(ReviewAction::OpenSubmitMenu))
-                .label("Submit review")
-                .style(style)
-                .size(ButtonSize::Compact);
+            let button = controls::button(
+                "Submit review",
+                action(ReviewAction::OpenSubmitMenu),
+                tone,
+            );
             view! { <div test_id="review.submit">{button}</div> }
         });
-        let open = Button::new(action(ReviewAction::OpenPullRequestInBrowser))
-            .icon(lucide::EXTERNAL_LINK)
-            .tooltip("Open on GitHub")
-            .style(ButtonStyle::Ghost)
-            .size(ButtonSize::Compact);
+        let open = controls::icon_button(
+            lucide::EXTERNAL_LINK,
+            "Open on GitHub",
+            action(ReviewAction::OpenPullRequestInBrowser),
+            theme,
+        );
         view! { scale,
             <div class="flex-row items-center" gap={Sp::SM} min_w={0.0} test_id="review.pull_request">
                 <icon svg={lucide::GIT_PULL_REQUEST} size={small} color={tc.text_muted} />
@@ -94,11 +102,21 @@ pub fn view(review: &mut ReviewController, slot: &Slot, cx: &mut ViewContext) ->
             </div>
         }
     });
+    let review_pr = pull_request.is_none().then(|| {
+        let button = controls::button(
+            "Review PR",
+            commands(CommandsAction::OpenPullRequestPicker),
+            Tone::Ghost,
+        )
+        .icon(lucide::GIT_PULL_REQUEST);
+        view! { <div test_id="review.open_pull_request">{button}</div> }
+    });
     let account = account_view(review, theme);
     view! { scale,
         <div h={slot.height} class="flex-row items-center shrink-0" gap={Sp::SM} test_id="title.review"
              on:key:escape={action(ReviewAction::CloseOverlay)}>
             {?pull_request}
+            {?review_pr}
             {account}
         </div>
     }
@@ -107,28 +125,17 @@ pub fn view(review: &mut ReviewController, slot: &Slot, cx: &mut ViewContext) ->
 fn account_view(review: &ReviewController, theme: &Theme) -> AnyElement {
     let scale = tokens::ui_scale(theme);
     if !review.signed_in() {
-        let tc = &theme.colors;
-        let small = TextStyle::BodySmall.font_size(theme);
-        return view! { scale,
-            <div
-                class="flex-row items-center shrink-0"
-                gap={Sp::XS}
-                px={Sp::SM}
-                py={Sp::XXS}
-                rounded={Rad::MD}
-                bg={tc.element_background}
-                hover_bg={tc.element_hover}
-                cursor={CursorHint::Pointer}
-                focus_ring={REVIEW_ACCOUNT}
-                accessibility_role={AccessibilityRole::Button}
-                aria-label="Sign in to GitHub"
-                test_id="review.sign_in"
-                on:click={action(ReviewAction::OpenAuthModal)}
-            >
-                <icon svg={lucide::KEY} size={small} color={tc.text_muted} />
-                <text size={small} class="font-medium" color={tc.text}>"Sign in to GitHub"</text>
-            </div>
-        };
+        return controls::ghost_chip(
+            GhostChip {
+                icon: lucide::GITHUB_MARK,
+                label: "Sign in",
+                accessible: "Sign in to GitHub",
+                focus: REVIEW_ACCOUNT,
+                test_id: "review.sign_in",
+            },
+            action(ReviewAction::OpenAuthModal),
+            theme,
+        );
     }
     let account = review.account();
     let login = account
@@ -167,95 +174,117 @@ fn auth_modal(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyEleme
     let tc = &theme.colors;
     let scale = tokens::ui_scale(theme);
     let small = TextStyle::BodySmall.font_size(theme);
-    let auth = &review.account().auth;
-    let body = match auth {
-        _ if review.signed_in() => view! { scale,
-            <div class="flex-col items-center w-full" gap={Sp::MD}>
-                <icon svg={lucide::CHECK} size={small * 2.0} color={tc.accent} />
-                <text size={small} color={tc.text}>"Signed in to GitHub."</text>
-            </div>
-        },
-        AuthStatus::Idle | AuthStatus::Done => {
-            let start = Button::new(action(ReviewAction::StartDeviceFlow))
-                .icon(lucide::KEY)
-                .label("Continue with GitHub")
-                .style(ButtonStyle::Filled);
-            view! { scale,
-                <div class="flex-col items-center w-full" gap={Sp::MD}>
-                    {start}
-                    <text size={small} color={tc.text_muted}>
-                        "GitHub generates a one-time device code for this app."
-                    </text>
-                </div>
-            }
+    let note = |label: &str| {
+        let label = label.to_owned();
+        view! { <text size={small} color={tc.text_muted}>{label}</text> }
+    };
+    let cancel = || controls::button("Cancel", action(ReviewAction::CloseOverlay), Tone::Ghost);
+    let (content, actions) = match &review.account().auth {
+        _ if review.signed_in() => {
+            let login = review
+                .account()
+                .user
+                .as_ref()
+                .map_or_else(|| "GitHub".to_owned(), |user| format!("@{}", user.login));
+            (
+                note(&format!("Signed in as {login}.")),
+                vec![controls::button(
+                    "Done",
+                    action(ReviewAction::CloseOverlay),
+                    Tone::Primary,
+                )],
+            )
         }
-        AuthStatus::Starting => view! { scale,
-            <div class="flex-col items-center w-full" gap={Sp::MD} test_id="review.auth.starting">
-                <icon svg={lucide::LOADER} size={small * 2.0} color={tc.text_accent} />
-                <text size={small} color={tc.text_muted}>"Contacting GitHub\u{2026}"</text>
-            </div>
-        },
+        AuthStatus::Idle | AuthStatus::Done => (
+            note("GitHub shows a one-time code to approve this app in your browser."),
+            vec![
+                cancel(),
+                controls::button(
+                    "Continue with GitHub",
+                    action(ReviewAction::StartDeviceFlow),
+                    Tone::Primary,
+                ),
+            ],
+        ),
+        AuthStatus::Starting => (
+            view! {
+                <div test_id="review.auth.starting">{note("Contacting GitHub\u{2026}")}</div>
+            },
+            vec![cancel()],
+        ),
         AuthStatus::Awaiting(flow) => {
-            let copy = Button::new(ShellAction::CopyText(flow.user_code.clone()))
-                .icon(lucide::COPY)
-                .tooltip("Copy code")
-                .style(ButtonStyle::Subtle)
-                .size(ButtonSize::Compact);
-            let browser = Button::new(action(ReviewAction::OpenDeviceFlowBrowser))
-                .icon(lucide::EXTERNAL_LINK)
-                .label("Open GitHub in browser")
-                .style(ButtonStyle::Filled);
-            view! { scale,
-                <div class="flex-col items-center w-full" gap={Sp::MD}>
-                    <text size={small} color={tc.text_muted}>"Enter this code at"</text>
-                    <text size={small} color={tc.text_accent}>{flow.verification_uri.clone()}</text>
-                    <div class="flex-row items-center justify-center" gap={Sp::MD} p={Sp::LG}
-                         rounded={Rad::XL} bg={tc.surface} test_id="review.auth.code">
-                        <text size={small * 2.0} class="font-semibold" color={tc.text_strong}>
+            let copy = controls::icon_button(
+                lucide::COPY,
+                "Copy code",
+                ShellAction::CopyText(flow.user_code.clone()),
+                theme,
+            );
+            let content = view! { scale,
+                <div class="flex-col w-full" gap={Sp::SM}>
+                    {note(&format!("Enter this code at {}", flow.verification_uri))}
+                    <div class="flex-row items-center w-full" gap={Sp::SM} px={Sp::MD} py={Sp::SM}
+                         rounded={Rad::LG} bg={tc.element_background} test_id="review.auth.code">
+                        <text size={TextStyle::HeadingLg.font_size(theme)} class="font-mono font-semibold"
+                              color={tc.text_strong}>
                             {flow.user_code.clone()}
                         </text>
+                        <spacer />
                         {copy}
                     </div>
-                    {browser}
-                    <text size={small} color={tc.text_muted}>"Waiting for you to authorize\u{2026}"</text>
+                    {note("Waiting for you to approve\u{2026}")}
                 </div>
-            }
+            };
+            (
+                content,
+                vec![
+                    cancel(),
+                    controls::button(
+                        "Open GitHub",
+                        action(ReviewAction::OpenDeviceFlowBrowser),
+                        Tone::Primary,
+                    )
+                    .icon(lucide::EXTERNAL_LINK),
+                ],
+            )
         }
-        AuthStatus::Failed(message) => {
-            let retry = Button::new(action(ReviewAction::StartDeviceFlow))
-                .icon(lucide::REFRESH)
-                .label("Try again")
-                .style(ButtonStyle::Filled);
+        AuthStatus::Failed(message) => (
             view! { scale,
-                <div class="flex-col items-center w-full" gap={Sp::MD}>
-                    <div class="flex-row items-center w-full" gap={Sp::SM} p={Sp::MD}
-                         rounded={Rad::LG} bg={tc.surface} test_id="review.auth.error">
-                        <icon svg={lucide::ALERT_CIRCLE} size={small} color={tc.status_error} />
-                        <text size={small} color={tc.status_error}>{message.clone()}</text>
-                    </div>
-                    {retry}
+                <div class="flex-row items-center w-full" gap={Sp::SM} test_id="review.auth.error">
+                    <icon svg={lucide::ALERT_CIRCLE} size={small} color={tc.status_error} />
+                    <text size={small} color={tc.status_error}>{message.clone()}</text>
                 </div>
-            }
-        }
+            },
+            vec![
+                cancel(),
+                controls::button(
+                    "Try again",
+                    action(ReviewAction::StartDeviceFlow),
+                    Tone::Primary,
+                ),
+            ],
+        ),
     };
-    let cancel = Button::new(action(ReviewAction::CloseOverlay))
-        .label(if review.signed_in() {
-            "Close"
-        } else {
-            "Cancel"
-        })
-        .style(ButtonStyle::Ghost);
+    let body = view! { scale,
+        <div class="flex-col w-full" gap={Sp::LG}>
+            {content}
+            <div class="flex-row items-center w-full" gap={Sp::SM}>
+                <spacer />
+                {...actions}
+            </div>
+        </div>
+    };
     let modal = Modal::new(
         "Sign in to GitHub",
-        "Connect your account to load pull requests and review diffs.",
+        "Load pull requests and post reviews from Diffy.",
         lucide::GITHUB_MARK,
-        tokens::scaled(Sz::MODAL_LG, scale),
+        tokens::scaled(Sz::MODAL_SM, scale),
         slot.width,
         slot.height,
         action(ReviewAction::CloseOverlay),
     )
-    .body_child(body)
-    .footer_child(cancel);
+    .padding(Sp::XL)
+    .gap(Sp::MD)
+    .body_child(body);
     view! {
         <div class="absolute" left={0.0} top={0.0} w={slot.width} h={slot.height}
              focus_ring={REVIEW_DIALOG}
@@ -283,10 +312,7 @@ fn account_menu(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyEle
     let picture = avatar(title.clone())
         .size(Ico::HERO)
         .image(account.avatar.clone());
-    let sign_out = Button::new(action(ReviewAction::SignOut))
-        .icon(lucide::KEY)
-        .label("Sign out")
-        .style(ButtonStyle::Ghost);
+    let sign_out = controls::button("Sign out", action(ReviewAction::SignOut), Tone::Ghost);
     view! { scale,
         <div class="absolute" left={0.0} top={0.0} w={slot.width} h={slot.height}
              bg={Color::TRANSPARENT}
@@ -336,16 +362,14 @@ fn submit_menu(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyElem
         presentation.card_element(&card.key, width - tokens::scaled(Sp::MD, scale))
     });
     let add_summary = summary_card.is_none().then(|| {
-        Button::new(action(ReviewAction::OpenComposer))
-            .label("Add summary")
-            .style(ButtonStyle::Ghost)
-            .size(ButtonSize::Compact)
+        controls::button(
+            "Add summary",
+            action(ReviewAction::OpenComposer),
+            Tone::Ghost,
+        )
     });
-    let decision = |label: &str, decision: ReviewDecision, style: ButtonStyle| {
-        Button::new(action(ReviewAction::SubmitReview { decision }))
-            .label(label)
-            .style(style)
-            .size(ButtonSize::Compact)
+    let decision = |label: &str, decision: ReviewDecision, tone: Tone| {
+        controls::button(label, action(ReviewAction::SubmitReview { decision }), tone)
     };
     view! { scale,
         <div class="absolute" left={0.0} top={0.0} w={slot.width} h={slot.height}
@@ -366,10 +390,70 @@ fn submit_menu(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyElem
                 {?add_summary}
                 <div class="flex-row items-center" gap={Sp::XS}>
                     <spacer />
-                    {decision("Comment", ReviewDecision::Comment, ButtonStyle::Subtle)}
-                    {decision("Request changes", ReviewDecision::RequestChanges, ButtonStyle::Danger)}
-                    {decision("Approve", ReviewDecision::Approve, ButtonStyle::Filled)}
+                    {decision("Comment", ReviewDecision::Comment, Tone::Secondary)}
+                    {decision("Request changes", ReviewDecision::RequestChanges, Tone::Destructive)}
+                    {decision("Approve", ReviewDecision::Approve, Tone::Primary)}
                 </div>
+            </div>
+        </div>
+    }
+}
+
+pub fn author_avatar(review: &ReviewController, name: &str, email: &str) -> Avatar {
+    avatar(name.to_owned()).image(review.author_face(email))
+}
+
+pub fn accounts_settings(review: &ReviewController, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let body = TextStyle::Body.font_size(theme);
+    let small = TextStyle::BodySmall.font_size(theme);
+    let account = review.account();
+    let user = account.user.as_ref().filter(|_| review.signed_in());
+    let (title, detail) = match (user, &account.auth) {
+        (Some(user), _) if !user.name.is_empty() && user.name != user.login => {
+            (user.name.clone(), format!("Signed in as @{}", user.login))
+        }
+        (Some(user), _) => (format!("@{}", user.login), "Signed in".to_owned()),
+        (None, AuthStatus::Starting | AuthStatus::Awaiting(_)) => (
+            "GitHub".to_owned(),
+            "Waiting for you to approve in the browser\u{2026}".to_owned(),
+        ),
+        (None, _) => (
+            "GitHub".to_owned(),
+            "Sign in to load pull requests and post reviews.".to_owned(),
+        ),
+    };
+    let picture = avatar(title.clone())
+        .size(Ico::XXL)
+        .image(user.and(account.avatar.clone()));
+    let control = if review.signed_in() {
+        controls::button("Sign out", action(ReviewAction::SignOut), Tone::Secondary)
+    } else {
+        controls::button(
+            "Sign in",
+            action(ReviewAction::OpenAuthModal),
+            Tone::Primary,
+        )
+        .icon(lucide::GITHUB_MARK)
+    };
+    view! { scale,
+        <div class="flex-col w-full" gap={Sp::LG} test_id="settings.accounts">
+            <div class="flex-col" gap={Sp::XXS}>
+                <text size={body} class="font-semibold" color={tc.text_strong}>"Accounts"</text>
+                <text size={small} color={tc.text_muted}>"Services Diffy signs in to."</text>
+            </div>
+            <div class="flex-row items-center w-full" gap={Sp::MD} p={Sp::LG}
+                 bg={tc.elevated_surface} border={tc.border_variant} rounded={Rad::XL}
+                 accessibility_role={AccessibilityRole::Group}
+                 aria-label="GitHub account"
+                 test_id="settings.accounts.github">
+                {picture}
+                <div class="flex-col flex-1" min_w={0.0} gap={Sp::XXS}>
+                    <text size={body} class="font-medium truncate" color={tc.text}>{title}</text>
+                    <text size={small} class="truncate" color={tc.text_muted}>{detail}</text>
+                </div>
+                {control}
             </div>
         </div>
     }

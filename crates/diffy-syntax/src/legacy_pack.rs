@@ -319,6 +319,76 @@ pub fn verify_legacy_index(
     Ok(verified)
 }
 
+pub fn read_built_manifest(dir: &Path, platform: &str) -> Result<LegacyManifest, PackError> {
+    let bytes = std::fs::read(dir.join(MANIFEST))?;
+    let manifest: LegacyManifest =
+        serde_json::from_slice(&bytes).map_err(|e| PackError::Malformed(e.to_string()))?;
+    if manifest.schema_version != SCHEMA {
+        return Err(PackError::Schema(manifest.schema_version));
+    }
+    if manifest.platform != platform {
+        return Err(PackError::WrongTarget {
+            expected: platform.to_owned(),
+            found: manifest.platform,
+        });
+    }
+    pack::check_segment("language", &manifest.language)?;
+    pack::check_segment("version", &manifest.version)?;
+    if !pack::is_c_identifier(&manifest.symbol) {
+        return Err(pack::unsafe_field("symbol", &manifest.symbol));
+    }
+    let files = [&manifest.parser, &manifest.highlights]
+        .into_iter()
+        .chain(manifest.injections.as_ref());
+    for file in files {
+        pack::check_segment("path", &file.path)?;
+        let path = dir.join(&file.path);
+        if pack::sha256_file(&path)? != file.sha256.to_ascii_lowercase() {
+            return Err(PackError::ShaMismatch { path });
+        }
+    }
+    if !manifest.parser.path.ends_with(library_suffix(platform)) {
+        return Err(pack::unsafe_field("parser.path", &manifest.parser.path));
+    }
+    Ok(manifest)
+}
+
+pub fn check_built_pack(
+    dir: &Path,
+    typescript: Option<&Path>,
+) -> Result<LegacyManifest, PackError> {
+    let manifest = read_built_manifest(dir, platform())?;
+    if manifest.tree_sitter_abi != expected_abi() {
+        let abi = expected_abi();
+        return Err(PackError::Abi {
+            abi: manifest.tree_sitter_abi,
+            min: abi,
+            max: abi,
+        });
+    }
+    let own = std::fs::read_to_string(dir.join(&manifest.highlights.path))?;
+    let inherited = match (manifest.language.as_str(), typescript) {
+        ("tsx", Some(base)) => {
+            let base_manifest = read_built_manifest(base, platform())?;
+            let text = std::fs::read_to_string(base.join(&base_manifest.highlights.path))?;
+            Some(compose_highlights(&text, None))
+        }
+        _ => None,
+    };
+    let injections = match &manifest.injections {
+        Some(file) => Some(std::fs::read_to_string(dir.join(&file.path))?),
+        None => None,
+    };
+    Grammar::compile(
+        &dir.join(&manifest.parser.path),
+        &manifest.symbol,
+        None,
+        &compose_highlights(&own, inherited.as_deref()),
+        injections.as_deref(),
+    )?;
+    Ok(manifest)
+}
+
 pub fn verify_installed(dir: &Path, entry: &LegacyEntry) -> Result<LegacyManifest, PackError> {
     let manifest_path = dir.join(MANIFEST);
     let bytes = std::fs::read(&manifest_path)?;
@@ -538,10 +608,14 @@ fn load(state: &mut State, language: &'static LegacyLanguage, pack: &InstalledPa
                 Ok(grammar) => Some(Arc::new(grammar)),
                 Err(error) => {
                     tracing::warn!(pack = %pack.dir.display(), %error, "legacy syntax pack failed to load");
-                    state
-                        .legacy
-                        .status
-                        .insert(language.name, GrammarState::Failed(error.to_string()));
+                    let reason = error.to_string();
+                    let reason = reason.lines().next().unwrap_or_default();
+                    state.legacy.status.insert(
+                        language.name,
+                        GrammarState::Failed(format!(
+                            "the published grammar does not load: {reason}"
+                        )),
+                    );
                     None
                 }
             };
@@ -561,14 +635,23 @@ fn load(state: &mut State, language: &'static LegacyLanguage, pack: &InstalledPa
     }
 }
 
-pub(crate) fn retry(state: &mut State, language: &'static LegacyLanguage) -> bool {
-    if !matches!(
-        state.legacy.status.get(language.name),
-        Some(GrammarState::Failed(_))
-    ) {
+pub(crate) fn retry(
+    legacy: &LegacyPacks,
+    state: &mut State,
+    language: &'static LegacyLanguage,
+) -> bool {
+    if !legacy.downloads_enabled()
+        || !matches!(
+            state.legacy.status.get(language.name),
+            Some(GrammarState::Failed(_))
+        )
+    {
         return false;
     }
-    state.legacy.status.remove(language.name);
+    state
+        .legacy
+        .status
+        .insert(language.name, GrammarState::Downloading);
     state.legacy.fetched = false;
     state.legacy.index_error = None;
     state.legacy.index = None;
@@ -605,7 +688,7 @@ fn read_cached_index(legacy: &LegacyPacks) -> Arc<[LegacyEntry]> {
     }
 }
 
-fn queue(inner: &Arc<Inner>, language: &'static str) {
+pub(crate) fn queue(inner: &Arc<Inner>, language: &'static str) {
     let mut fetcher = lock(&inner.legacy_fetcher);
     if let Some(sender) = &*fetcher
         && sender.send(language).is_ok()
@@ -645,6 +728,7 @@ fn fetch_loop(store: &Weak<Inner>, languages: &Receiver<&'static str>) {
             return;
         };
         let outcome = fetch(&inner, legacy, &agent, language);
+        let installed = outcome.is_ok();
         {
             let mut state = lock(&inner.state);
             match outcome {
@@ -662,6 +746,11 @@ fn fetch_loop(store: &Weak<Inner>, languages: &Receiver<&'static str>) {
                         .insert(language, GrammarState::Failed(error.to_string()));
                     forget_tags(&mut state, language);
                 }
+            }
+        }
+        if installed {
+            for name in dependencies(language) {
+                inner.lookup(name);
             }
         }
         inner.notify();

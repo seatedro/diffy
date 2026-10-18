@@ -17,4 +17,4 @@ pub use platform::{
 };
 pub use state::{CommandsController, LayerKind, builtin_commands};
 pub use toasts::{ToastHost, ToastItem};
-pub use view::{overlays, toasts};
+pub use view::{clankers_slot, overlays, toasts};

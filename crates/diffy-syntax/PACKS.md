@@ -100,8 +100,15 @@ difftastic also reads. `StoreConfig::legacy_packs(LegacyPacks::new(dir,
   adds TypeScript's; other inherits are ignored, as Phosphor did.
 - A download installs the manifest last and removes this platform's other
   versions of the language, so difftastic reads the same pack.
-- A failed download leaves the language unavailable until
-  `GrammarStore::retry`, which also refetches the index.
+- A failed download, or a pack whose queries do not compile, leaves the
+  language failed until `GrammarStore::retry`, which refetches the index
+  and downloads again.
+- Publishing: `.github/workflows/update-phosphor-index.mjs` builds each
+  parser and query repository at its latest release tag when the registry
+  marks it `*_semver`, else at its default branch. Before signing, CI runs
+  `cargo run -p syntax-pack -- legacy-check --out .phosphor-pack-out`,
+  which loads every pack with this crate's tree-sitter and fails when one
+  of the 13 languages does not load.
 
 ## Building packs
 

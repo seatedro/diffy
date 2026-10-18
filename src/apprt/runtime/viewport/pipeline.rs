@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::apprt::services::viewport::PipelineServices;
 use crate::apprt::transport::{ProgressGate, ProgressKey, ScopedEventSender};
@@ -14,6 +14,7 @@ use crate::core::compare::{ComparePhase, ProgressSink};
 
 const FILE_STATS_STREAM_CHUNK_SIZE: usize = 8_192;
 const MAX_COMPARE_WORKERS: usize = 4;
+const INSTALL_FRAME: Duration = Duration::from_millis(8);
 
 pub struct PipelineRuntime {
     services: PipelineServices,
@@ -90,6 +91,12 @@ impl PipelineRuntime {
                 });
             }
             PipelineEffect::SupersedeCompare(generation) => self.queue.set_epoch(generation),
+            PipelineEffect::ResumeInstalls(generation) => {
+                thread::spawn(move || {
+                    thread::sleep(INSTALL_FRAME);
+                    events.send(PipelineEvent::InstallsResumed { generation });
+                });
+            }
             PipelineEffect::LoadTotalStats(request) => {
                 self.queue.enqueue(PipelineJob::TotalStats(request), events);
             }
@@ -452,6 +459,7 @@ mod tests {
                 ),
             },
             priority,
+            preparation: None,
         }))
     }
 

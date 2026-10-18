@@ -6,6 +6,7 @@ use quark_components::FuzzyMatcher;
 
 use crate::contracts::navigation::SidebarMode;
 use crate::contracts::viewport::pipeline::ManifestFile;
+use crate::core::vcs::model::ChangeBucket;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Row {
@@ -18,7 +19,19 @@ pub enum Row {
         file: u32,
         depth: u16,
     },
+    Section {
+        bucket: ChangeBucket,
+        files: u32,
+    },
 }
+
+const SECTION_ORDER: [ChangeBucket; 5] = [
+    ChangeBucket::Conflicted,
+    ChangeBucket::Staged,
+    ChangeBucket::Unstaged,
+    ChangeBucket::Untracked,
+    ChangeBucket::WorkingCopy,
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RowKey {
@@ -76,6 +89,8 @@ impl RowCache {
             self.build_filtered(files, filter);
         } else if mode == SidebarMode::Tree {
             self.build_tree(files, key.files, expanded);
+        } else if files.iter().any(staged_bucket) {
+            self.build_sections(files);
         } else {
             self.rows
                 .extend((0..files.len() as u32).map(|file| Row::File { file, depth: 0 }));
@@ -116,6 +131,31 @@ impl RowCache {
                 .into_iter()
                 .map(|(_, file)| Row::File { file, depth: 0 }),
         );
+    }
+
+    fn build_sections(&mut self, files: &[ManifestFile]) {
+        let mut groups: [Vec<u32>; SECTION_ORDER.len()] = Default::default();
+        for (index, file) in files.iter().enumerate() {
+            let bucket = file
+                .buckets
+                .iter()
+                .copied()
+                .reduce(dominant)
+                .unwrap_or(ChangeBucket::WorkingCopy);
+            let slot = SECTION_ORDER.iter().position(|b| *b == bucket).unwrap_or(0);
+            groups[slot].push(index as u32);
+        }
+        for (bucket, group) in SECTION_ORDER.into_iter().zip(groups) {
+            if group.is_empty() {
+                continue;
+            }
+            self.rows.push(Row::Section {
+                bucket,
+                files: group.len() as u32,
+            });
+            self.rows
+                .extend(group.into_iter().map(|file| Row::File { file, depth: 0 }));
+        }
     }
 
     fn build_tree(&mut self, files: &[ManifestFile], identity: usize, expanded: &HashSet<String>) {
@@ -175,6 +215,31 @@ impl RowCache {
     }
 }
 
+fn staged_bucket(file: &ManifestFile) -> bool {
+    file.buckets.iter().any(|b| *b != ChangeBucket::WorkingCopy)
+}
+
+fn dominant(a: ChangeBucket, b: ChangeBucket) -> ChangeBucket {
+    let rank = |bucket| match bucket {
+        ChangeBucket::Conflicted => 0,
+        ChangeBucket::Unstaged => 1,
+        ChangeBucket::Untracked => 2,
+        ChangeBucket::Staged => 3,
+        ChangeBucket::WorkingCopy => 4,
+    };
+    if rank(b) < rank(a) { b } else { a }
+}
+
+pub fn section_label(bucket: ChangeBucket) -> &'static str {
+    match bucket {
+        ChangeBucket::Conflicted => "Conflicts",
+        ChangeBucket::Staged => "Staged",
+        ChangeBucket::Unstaged => "Unstaged",
+        ChangeBucket::Untracked => "Untracked",
+        ChangeBucket::WorkingCopy => "Changes",
+    }
+}
+
 fn is_within(path: &str, folder: &str) -> bool {
     path.len() > folder.len() && path.starts_with(folder) && path.as_bytes()[folder.len()] == b'/'
 }
@@ -196,7 +261,6 @@ pub fn file_name(path: &str) -> (&str, &str) {
 mod tests {
     use super::*;
     use crate::contracts::shared::{FileKey, FileRevision};
-    use crate::contracts::viewport::pipeline::FileStats;
     use crate::core::compare::stats::CompareFilePaths;
     use diffy_diff::FileStatus;
 
@@ -204,13 +268,13 @@ mod tests {
         paths
             .iter()
             .enumerate()
-            .map(|(i, path)| ManifestFile {
-                key: FileKey(i as u64 + 1),
-                revision: FileRevision(1),
-                paths: CompareFilePaths::from_paths(Some(path), Some(path)),
-                status: FileStatus::Modified,
-                binary: false,
-                stats: FileStats::Pending,
+            .map(|(i, path)| {
+                ManifestFile::new(
+                    FileKey(i as u64 + 1),
+                    FileRevision(1),
+                    CompareFilePaths::from_paths(Some(path), Some(path)),
+                    FileStatus::Modified,
+                )
             })
             .collect()
     }
@@ -237,6 +301,9 @@ mod tests {
                     "  ".repeat(*depth as usize),
                     files[*file as usize].paths.display_path()
                 ),
+                Row::Section { bucket, files } => {
+                    format!("# {} {files}", section_label(*bucket))
+                }
             })
             .collect()
     }
@@ -287,5 +354,41 @@ mod tests {
         assert_eq!(labels(&cache, &files), ["src/lib.rs"]);
         cache.ensure(&files, SidebarMode::Tree, "zzz", &HashSet::new(), 0);
         assert!(cache.rows().is_empty());
+    }
+
+    #[test]
+    fn working_tree_files_group_by_bucket() {
+        let plain = manifest(&["a.rs", "b.rs", "c.rs", "d.rs"]);
+        let buckets = [
+            vec![ChangeBucket::Staged],
+            vec![ChangeBucket::Staged, ChangeBucket::Unstaged],
+            vec![ChangeBucket::Untracked],
+            vec![ChangeBucket::Staged],
+        ];
+        let files: Arc<[ManifestFile]> = plain
+            .iter()
+            .zip(buckets)
+            .map(|(file, buckets)| ManifestFile {
+                buckets,
+                ..file.clone()
+            })
+            .collect();
+        let mut cache = RowCache::default();
+        cache.ensure(&files, SidebarMode::List, "", &HashSet::new(), 0);
+        assert_eq!(
+            labels(&cache, &files),
+            [
+                "# Staged 2",
+                "a.rs",
+                "d.rs",
+                "# Unstaged 1",
+                "b.rs",
+                "# Untracked 1",
+                "c.rs"
+            ]
+        );
+        assert_eq!(cache.file_rows(), [1, 2, 4, 6]);
+        cache.ensure(&plain, SidebarMode::List, "", &HashSet::new(), 0);
+        assert_eq!(labels(&cache, &plain), ["a.rs", "b.rs", "c.rs", "d.rs"]);
     }
 }

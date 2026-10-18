@@ -4,18 +4,22 @@ use std::sync::Arc;
 use diffy_diff::{DiffStats, FileStatus};
 
 use super::PipelineController;
-use super::state::{PipelineStatus, ViewportInstall};
+use super::state::{
+    INSTALL_LINES_PER_FRAME, PipelineInstall, PipelineStatus, ViewportInstall, WORKING_SET_LINES,
+};
 use crate::apprt::services::viewport::pipeline::compare_result;
 use crate::contracts::navigation::{SelectedFile, SelectionOrigin};
 use crate::contracts::shared::{CompareGeneration, FileKey, FileRevision, SharedContext};
 use crate::contracts::shell::{Controller, Effect, Intent, Reduction};
 use crate::contracts::viewport::ViewportEffect;
+use crate::contracts::viewport::pipeline::SlotUpdate;
 use crate::contracts::viewport::pipeline::{
     CompareIntent, CompareWorkPriority, FileStat, PipelineAction, PipelineEffect, PipelineEvent,
     PipelineFailure, PreparedDiff,
 };
 use crate::core::compare::{CompareEntry, CompareOutput, LayoutMode, RendererKind};
 use crate::core::vcs::model::{VcsCompareRequest, VcsCompareSpec};
+use diffy_diff::{SlotState, SourcePurpose};
 
 const PATCH: &str = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n";
 
@@ -62,7 +66,7 @@ fn finished(generation: CompareGeneration) -> PipelineEvent {
     PipelineEvent::CompareFinished {
         generation,
         request: intent(RendererKind::Builtin).request,
-        result: compare_result(generation, ("l".into(), "r".into()), output).unwrap(),
+        result: compare_result(generation, ("l".into(), "r".into()), output, None).unwrap(),
     }
 }
 
@@ -98,7 +102,10 @@ fn stale_compare_generations_are_rejected() {
     let first = request(&mut controller);
     let second = request(&mut controller);
     assert!(second > first);
-    assert!(controller.take_installs().len() == 2);
+    assert!(matches!(
+        controller.take_installs().as_slice(),
+        [ViewportInstall::Begin { generation }] if *generation == second
+    ));
 
     let late = controller.reduce_event(finished(first), &cx);
     assert!(!late.changed && late.intents.is_empty() && late.effects.is_empty());
@@ -117,11 +124,17 @@ fn stale_compare_generations_are_rejected() {
     let current = controller.reduce_event(finished(second), &cx);
     assert_eq!(published(&current), Some(2));
     assert_eq!(controller.status(), &PipelineStatus::Ready);
-    let installs = controller.take_installs();
+    let installs = controller.take_batch();
     assert!(matches!(
         installs.as_slice(),
-        [ViewportInstall::Order { generation, files }, ViewportInstall::File { prepared, .. }]
-            if *generation == second && files.len() == 2 && prepared.key() == FileKey(0)
+        [
+            PipelineInstall::View(ViewportInstall::File { prepared, .. }),
+            PipelineInstall::Slot(SlotUpdate::Placeholder { key: FileKey(1), placeholder }),
+            PipelineInstall::View(ViewportInstall::Order { generation, files }),
+        ] if *generation == second
+            && files.len() == 2
+            && prepared.key() == FileKey(0)
+            && placeholder.state == SlotState::Unloaded
     ));
 
     let old_file = controller.reduce_event(
@@ -153,7 +166,11 @@ fn selecting_a_file_loads_it_once_at_interactive_priority() {
     assert!(pipeline_effects(&early).is_empty());
 
     let done = controller.reduce_event(finished(generation), &cx);
-    match pipeline_effects(&done).as_slice() {
+    let loads: Vec<_> = pipeline_effects(&done)
+        .into_iter()
+        .filter(|effect| matches!(effect, PipelineEffect::LoadFile(_)))
+        .collect();
+    match loads.as_slice() {
         [PipelineEffect::LoadFile(load)] => {
             assert_eq!(load.priority, CompareWorkPriority::InteractiveSelectedFile);
             assert_eq!(load.file.key, FileKey(1));
@@ -260,4 +277,225 @@ fn renderer_changes_rerun_the_current_compare() {
     }
     let same = controller.reduce_action(PipelineAction::SetRenderer(RendererKind::Difftastic), &cx);
     assert!(pipeline_effects(&same).is_empty());
+}
+
+fn big(generation: CompareGeneration, key: u64, lines: usize) -> PreparedDiff {
+    let old: String = (0..lines).map(|i| format!("{i}\n")).collect();
+    let doc = diffy_diff::diff_texts(Some("f"), Some("f"), Some(""), Some(&old), 3);
+    crate::apprt::services::viewport::pipeline::prepare(
+        FileKey(key),
+        generation,
+        FileRevision(generation.0),
+        Arc::new(doc),
+    )
+    .unwrap()
+}
+
+fn deferred_compare(controller: &mut PipelineController, files: usize) -> CompareGeneration {
+    let generation = request(controller);
+    let mut output = CompareOutput::default();
+    for i in 0..files {
+        let path = format!("f{i}.rs");
+        output.push_entry(CompareEntry::deferred(
+            Some(&path),
+            Some(&path),
+            FileStatus::Modified,
+        ));
+    }
+    controller.reduce_event(
+        PipelineEvent::CompareFinished {
+            generation,
+            request: intent(RendererKind::Builtin).request,
+            result: compare_result(generation, ("l".into(), "r".into()), output, None).unwrap(),
+        },
+        &SharedContext::default(),
+    );
+    generation
+}
+
+#[test]
+fn large_installs_spread_across_frames() {
+    let cx = SharedContext::default();
+    let mut controller = PipelineController::default();
+    let generation = deferred_compare(&mut controller, 3);
+    controller.take_batch();
+    let lines = INSTALL_LINES_PER_FRAME as usize / 2 + 1;
+    let mut paced = 0;
+    for key in 0..3 {
+        let reduction = controller.reduce_event(
+            PipelineEvent::FileLoaded {
+                generation,
+                prepared: big(generation, key, lines),
+            },
+            &cx,
+        );
+        paced += pipeline_effects(&reduction)
+            .iter()
+            .filter(|effect| matches!(effect, PipelineEffect::ResumeInstalls(_)))
+            .count();
+    }
+    assert_eq!(paced, 1);
+    let mut frames = 0;
+    while controller.has_pending_installs() {
+        let batch = controller.take_batch();
+        assert!(!batch.is_empty());
+        frames += 1;
+    }
+    assert!(frames >= 2, "{frames} frames");
+    let resumed = controller.reduce_event(PipelineEvent::InstallsResumed { generation }, &cx);
+    assert!(resumed.changed);
+}
+
+#[test]
+fn the_working_set_evicts_least_recently_used_files_but_keeps_the_selection() {
+    let cx = SharedContext::default();
+    let mut controller = PipelineController::default();
+    let generation = deferred_compare(&mut controller, 3);
+    let lines = WORKING_SET_LINES as usize / 2;
+    controller.apply_intent(&select(0), &cx);
+    for key in 0..3 {
+        controller.reduce_event(
+            PipelineEvent::FileLoaded {
+                generation,
+                prepared: big(generation, key, lines),
+            },
+            &cx,
+        );
+    }
+    let evicted: Vec<_> = std::iter::from_fn(|| {
+        controller
+            .has_pending_installs()
+            .then(|| controller.take_batch())
+    })
+    .flatten()
+    .filter_map(|install| match install {
+        PipelineInstall::Slot(SlotUpdate::Evict { key, .. }) => Some(key),
+        _ => None,
+    })
+    .collect();
+    assert_eq!(evicted, [FileKey(1)]);
+    assert!(controller.prepared(FileKey(0)).is_some());
+    assert!(controller.prepared(FileKey(1)).is_none());
+    assert_eq!(controller.slot_state(FileKey(1)), Some(SlotState::Evicted));
+    let reload = controller.apply_intent(&select(1), &cx);
+    assert!(matches!(
+        pipeline_effects(&reload).as_slice(),
+        [PipelineEffect::LoadFile(load)] if load.file.key == FileKey(1)
+    ));
+    assert_eq!(controller.slot_state(FileKey(1)), Some(SlotState::Loading));
+}
+
+#[test]
+fn totals_load_after_a_deferred_compare_and_republish() {
+    let cx = SharedContext::default();
+    let mut controller = PipelineController::default();
+    let generation = request(&mut controller);
+    let mut output = CompareOutput::default();
+    output.push_entry(CompareEntry::deferred(
+        Some("a"),
+        Some("a"),
+        FileStatus::Modified,
+    ));
+    let done = controller.reduce_event(
+        PipelineEvent::CompareFinished {
+            generation,
+            request: intent(RendererKind::Builtin).request,
+            result: compare_result(generation, ("l".into(), "r".into()), output, None).unwrap(),
+        },
+        &cx,
+    );
+    assert!(
+        pipeline_effects(&done)
+            .iter()
+            .any(|effect| matches!(effect, PipelineEffect::LoadTotalStats(_)))
+    );
+    let again = controller.reduce_action(PipelineAction::RequestTotals, &cx);
+    assert!(pipeline_effects(&again).is_empty());
+    let ready = controller.reduce_event(
+        PipelineEvent::TotalStatsReady {
+            generation,
+            additions: 10,
+            deletions: 4,
+        },
+        &cx,
+    );
+    assert_eq!(published(&ready), Some(1));
+    assert_eq!(controller.manifest().unwrap().totals.known(), Some((10, 4)));
+}
+
+#[test]
+fn source_requests_hydrate_patch_only_files_once() {
+    let cx = SharedContext::default();
+    let mut controller = PipelineController::default();
+    let generation = request(&mut controller);
+    controller.reduce_event(finished(generation), &cx);
+    let ask = || PipelineAction::RequestSources {
+        file: FileKey(0),
+        purpose: SourcePurpose::ExpandContext,
+    };
+    let first = controller.reduce_action(ask(), &cx);
+    match pipeline_effects(&first).as_slice() {
+        [PipelineEffect::LoadSources(load)] => {
+            assert_eq!(load.old_reference, "l");
+            assert_eq!(load.new_reference, "r");
+            assert_eq!(load.prepared.key(), FileKey(0));
+        }
+        other => panic!("expected a source load, got {other:?}"),
+    }
+    assert!(pipeline_effects(&controller.reduce_action(ask(), &cx)).is_empty());
+    let missing = controller.reduce_action(
+        PipelineAction::RequestSources {
+            file: FileKey(1),
+            purpose: SourcePurpose::CompleteSyntax,
+        },
+        &cx,
+    );
+    assert!(pipeline_effects(&missing).is_empty());
+}
+
+#[test]
+#[ignore = "measurement, prints a report"]
+fn report_deferred_manifest_costs() {
+    use std::time::Instant;
+
+    for files in [2_500usize, 10_000, 50_000] {
+        let mut output = CompareOutput::default();
+        for i in 0..files {
+            let path = format!("dir{}/sub{}/file{i}.rs", i % 64, i % 7);
+            output.push_entry(CompareEntry::deferred(
+                Some(&path),
+                Some(&path),
+                FileStatus::Modified,
+            ));
+        }
+        output.compact_paths();
+        let mut controller = PipelineController::default();
+        let generation = request(&mut controller);
+        controller.take_batch();
+        let start = Instant::now();
+        let result = compare_result(generation, ("l".into(), "r".into()), output, None).unwrap();
+        let worker_ms = start.elapsed().as_secs_f64() * 1e3;
+        let start = Instant::now();
+        controller.reduce_event(
+            PipelineEvent::CompareFinished {
+                generation,
+                request: intent(RendererKind::Builtin).request,
+                result,
+            },
+            &SharedContext::default(),
+        );
+        let finish_ms = start.elapsed().as_secs_f64() * 1e3;
+        let mut batches = 0;
+        let mut worst_ms = 0.0f64;
+        while controller.has_pending_installs() {
+            let start = Instant::now();
+            let batch = controller.take_batch();
+            worst_ms = worst_ms.max(start.elapsed().as_secs_f64() * 1e3);
+            batches += batch.len().min(1);
+        }
+        println!(
+            "{files} deferred files: worker manifest+placeholders {worker_ms:.1} ms, \
+             UI finish {finish_ms:.2} ms, {batches} install batches (worst take {worst_ms:.3} ms)"
+        );
+    }
 }

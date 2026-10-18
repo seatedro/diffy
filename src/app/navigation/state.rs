@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -18,10 +19,12 @@ use crate::contracts::navigation::{
 };
 use crate::contracts::shared::{CompareGeneration, FileKey, JobId, SharedContext};
 use crate::contracts::shell::{
-    AppStartup, Controller, Effect, Intent, LogicalFocus, Reduction, ShellEffect,
+    Action, AppStartup, Controller, Effect, Intent, LogicalFocus, Reduction, ShellEffect,
 };
 use crate::contracts::viewport::CompareIntent;
-use crate::contracts::viewport::pipeline::{CompareManifestSnapshot, ManifestFile};
+use crate::contracts::viewport::pipeline::{
+    CompareManifestSnapshot, CompareWorkPriority, FileStats, ManifestFile, PipelineAction,
+};
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 use crate::core::vcs::model::{VcsChange, VcsCompareRequest, VcsCompareSpec};
 use crate::platform::persistence::{PersistedCompare, Settings};
@@ -168,7 +171,13 @@ pub struct NavigationController {
     resolved: [Option<String>; 2],
     next_job: u64,
     compare_requested: bool,
+    stats_requested: HashSet<FileKey>,
+    stats_generation: Option<CompareGeneration>,
+    outbox: RefCell<Vec<Action>>,
 }
+
+const STATS_OVERSCAN_ROWS: usize = 8;
+const STATS_FALLBACK_ROWS: usize = 64;
 
 impl Default for NavigationController {
     fn default() -> Self {
@@ -195,6 +204,9 @@ impl Default for NavigationController {
             resolved: [None, None],
             next_job: 0,
             compare_requested: false,
+            stats_requested: HashSet::new(),
+            stats_generation: None,
+            outbox: RefCell::new(Vec::new()),
         }
     }
 }
@@ -266,9 +278,63 @@ impl NavigationController {
             .is_some_and(|r| r.snapshot.capabilities.operation_log)
     }
 
+    pub fn take_dispatch(&self) -> Vec<Action> {
+        self.outbox.take()
+    }
+
+    fn queue_visible_stats(&mut self) {
+        let Some(manifest) = self.manifest.clone() else {
+            return;
+        };
+        if self.tab != SidebarTab::Files || !self.visible {
+            return;
+        }
+        if self.stats_generation != Some(manifest.generation) {
+            self.stats_generation = Some(manifest.generation);
+            self.stats_requested.clear();
+        }
+        self.ensure_rows();
+        let rows = self.rows.rows();
+        let row_height = self.metrics.row_height;
+        let range = if row_height > 0.0 && self.metrics.viewport > 0.0 {
+            let first = (self.scroll_px / row_height).floor().max(0.0) as usize;
+            let count = (self.metrics.viewport / row_height).ceil() as usize;
+            let start = first.saturating_sub(STATS_OVERSCAN_ROWS).min(rows.len());
+            start..(first + count + STATS_OVERSCAN_ROWS).min(rows.len())
+        } else {
+            0..STATS_FALLBACK_ROWS.min(rows.len())
+        };
+        let mut files = Vec::new();
+        for row in &rows[range] {
+            let Row::File { file, .. } = row else {
+                continue;
+            };
+            let Some(file) = manifest.files.get(*file as usize) else {
+                continue;
+            };
+            if file.stats == FileStats::Pending && self.stats_requested.insert(file.key) {
+                files.push(file.key);
+            }
+        }
+        if !files.is_empty() {
+            self.outbox.borrow_mut().push(
+                PipelineAction::RequestStats {
+                    files,
+                    priority: CompareWorkPriority::VisibleSidebarStats,
+                }
+                .into(),
+            );
+        }
+    }
+
     pub(super) fn set_metrics(&mut self, metrics: ListMetrics) {
+        let changed = self.metrics.row_height != metrics.row_height
+            || self.metrics.viewport != metrics.viewport;
         self.metrics = metrics;
         self.clamp_scroll();
+        if changed {
+            self.queue_visible_stats();
+        }
     }
 
     pub fn rows(&mut self) -> &[Row] {
@@ -835,6 +901,26 @@ impl Controller for NavigationController {
     type Event = NavigationEvent;
 
     fn reduce_action(&mut self, action: Self::Action, cx: &SharedContext) -> Reduction {
+        let reduction = self.action(action, cx);
+        self.queue_visible_stats();
+        reduction
+    }
+
+    fn reduce_event(&mut self, event: Self::Event, cx: &SharedContext) -> Reduction {
+        let reduction = self.event(event, cx);
+        self.queue_visible_stats();
+        reduction
+    }
+
+    fn apply_intent(&mut self, intent: &Intent, cx: &SharedContext) -> Reduction {
+        let reduction = self.intent(intent, cx);
+        self.queue_visible_stats();
+        reduction
+    }
+}
+
+impl NavigationController {
+    fn action(&mut self, action: NavigationAction, cx: &SharedContext) -> Reduction {
         use NavigationAction as A;
         match action {
             A::OpenRepository(path) => Reduction::changed().intent(Intent::ActivateWorkspace {
@@ -849,7 +935,7 @@ impl Controller for NavigationController {
                 self.compare.working_copy = true;
                 self.compare_intent(cx)
             }
-            A::NewTextCompare => Reduction::default(),
+            A::NewTextCompare => Reduction::default().intent(Intent::OpenTextCompare),
             A::RefreshRepository => {
                 if self.manifest.is_some() {
                     let mut reduction = self.compare_intent(cx);
@@ -1046,7 +1132,7 @@ impl Controller for NavigationController {
         }
     }
 
-    fn reduce_event(&mut self, event: Self::Event, cx: &SharedContext) -> Reduction {
+    fn event(&mut self, event: NavigationEvent, cx: &SharedContext) -> Reduction {
         match event {
             NavigationEvent::SnapshotReady { revision, snapshot } => {
                 self.snapshot_ready(revision, snapshot, cx)
@@ -1105,7 +1191,7 @@ impl Controller for NavigationController {
         }
     }
 
-    fn apply_intent(&mut self, intent: &Intent, cx: &SharedContext) -> Reduction {
+    fn intent(&mut self, intent: &Intent, cx: &SharedContext) -> Reduction {
         match intent {
             Intent::Startup(startup) => self.startup(startup),
             Intent::ActivateWorkspace { path } => self.activate(path, cx),
@@ -1142,6 +1228,7 @@ impl TextHost for NavigationController {
         let outcome = self.filter.apply_at(command, cx.now_ms);
         if outcome.text_changed {
             self.scroll_px = 0.0;
+            self.queue_visible_stats();
         }
         Some(outcome)
     }
@@ -1166,6 +1253,7 @@ impl TextHost for NavigationController {
         self.filter.set_text(value);
         if text_changed {
             self.scroll_px = 0.0;
+            self.queue_visible_stats();
         }
         Some(TextEditOutcome {
             text_changed,

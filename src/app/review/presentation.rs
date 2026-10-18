@@ -71,6 +71,45 @@ struct HostInner {
     faces: Faces,
     viewport: (f32, f32),
     default_width: f32,
+    heights: HashMap<CardKey, Measured>,
+}
+
+#[derive(Clone, Copy)]
+struct Measured {
+    width: i32,
+    stamp: u64,
+    height: f32,
+}
+
+fn width_key(width: f32) -> i32 {
+    (width * 2.0).round() as i32
+}
+
+fn measure_stamp(
+    card: &CardModel,
+    composer: Option<&ComposerView>,
+    inner: &HostInner,
+    theme: &Theme,
+    width: f32,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    card.hash(&mut hasher);
+    width_key(width).hash(&mut hasher);
+    theme.metrics.ui_scale().to_bits().hash(&mut hasher);
+    document_font(theme).to_bits().hash(&mut hasher);
+    let doc = |doc: &CardDoc| (doc.width.to_bits(), doc.height.to_bits());
+    inner.docs.get(&card.key).map(doc).hash(&mut hasher);
+    let composer = composer.filter(|composer| composer.card == card.key);
+    composer.hash(&mut hasher);
+    if composer.is_some() {
+        inner
+            .composer
+            .as_ref()
+            .map(|editor| (editor.height.to_bits(), editor.focused))
+            .hash(&mut hasher);
+        inner.preview.as_ref().map(doc).hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 #[derive(Clone, Default)]
@@ -398,6 +437,63 @@ impl CardHost {
             cx.frame.request_frame();
         }
         changed
+    }
+
+    fn measure(
+        &self,
+        cards: &[CardModel],
+        composer: Option<&ComposerView>,
+        cx: &mut ViewContext,
+    ) -> bool {
+        let theme = cx.theme.clone();
+        let scale = cx.frame.scale_factor();
+        let store = quark::reactive::SignalStore::new();
+        let text = cx.frame.text();
+        self.with(|inner| {
+            let mut changed = false;
+            inner
+                .heights
+                .retain(|key, _| cards.iter().any(|card| card.key == *key));
+            for card in cards {
+                let width = inner
+                    .widths
+                    .get(&card.key)
+                    .copied()
+                    .unwrap_or(inner.default_width);
+                let stamp = measure_stamp(card, composer, inner, &theme, width);
+                if inner
+                    .heights
+                    .get(&card.key)
+                    .is_some_and(|measured| measured.stamp == stamp)
+                {
+                    continue;
+                }
+                let mut element = card_view(card, composer, inner, &theme, width);
+                let mut ecx = ElementContext::new(
+                    &theme,
+                    scale,
+                    &mut text.system,
+                    &mut text.layouts,
+                    None,
+                    &store,
+                );
+                let mut engine = LayoutEngine::new();
+                let root = element.request_layout(&mut engine, &mut ecx);
+                engine.compute_layout(root, width, MEASURE_HEIGHT, &mut ecx.measure_context());
+                let height = engine.layout_bounds(root).height;
+                inner.heights.insert(
+                    card.key.clone(),
+                    Measured {
+                        width: width_key(width),
+                        stamp,
+                        height,
+                    },
+                );
+                changed = true;
+            }
+            changed
+        })
+        .unwrap_or(false)
     }
 
     fn record_width(&self, card: &CardKey, width: f32, composing: bool) {
@@ -914,6 +1010,30 @@ impl ReviewPresentation {
 
     pub fn card(&self, key: &CardKey) -> Option<&CardModel> {
         self.cards.iter().find(|card| card.key == *key)
+    }
+
+    pub(super) fn measure(&self, cx: &mut ViewContext) -> bool {
+        self.host.measure(&self.cards, self.composer.as_ref(), cx)
+    }
+
+    pub fn card_height(&self, key: &CardKey, width: f32) -> Option<f32> {
+        let card = self.card(key)?;
+        let composer = self.composer.as_ref();
+        let height = self.host.with(|inner| {
+            let theme = inner.theme.as_ref()?;
+            let measured = inner.heights.get(key)?;
+            (measured.width == width_key(width)
+                && measured.stamp == measure_stamp(card, composer, inner, theme, width))
+            .then_some(measured.height)
+        })?;
+        if height.is_none() {
+            let composing = composer.is_some_and(|c| c.card == card.key);
+            self.host.record_width(key, width, composing);
+            if let Some(wake) = self.host.with(|inner| inner.wake.clone()).flatten() {
+                wake();
+            }
+        }
+        height
     }
 
     pub fn card_element(&self, key: &CardKey, width: f32) -> Option<AnyElement> {

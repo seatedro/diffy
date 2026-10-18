@@ -155,7 +155,7 @@ pub fn panel(
         .w(inner)
         .h(height);
         view! {
-            <div class="flex-col" gap={gap} test_id="mutations.composer">
+            <div class="flex-col" gap={gap} test_id="mutations.composer" on:key:mod+enter={MutationsAction::SubmitCommit}>
                 <text size={body} class="font-semibold" color={tc.text_strong}>"Commit"</text>
                 <div
                     class="rounded-md"
@@ -210,6 +210,13 @@ pub fn panel(
     });
 
     let bottom = theme.metrics.status_bar_height + gap;
+    let dismiss = if publishing {
+        MutationsAction::ClosePublishMenu
+    } else if composing {
+        MutationsAction::CloseCommitComposer
+    } else {
+        MutationsAction::ClearLineSelection
+    };
     Some(view! {
         <div
             class="absolute flex-col"
@@ -226,6 +233,7 @@ pub fn panel(
             accessibility_role={AccessibilityRole::Dialog}
             aria-label="Changes"
             test_id="mutations.panel"
+            on:key:escape={dismiss}
         >
             {?selection}
             {?composer}

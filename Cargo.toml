@@ -76,7 +76,6 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2"
 dirs = "6.0"
-glyphon = "0.10.0"
 gix = { version = "0.83", default-features = false, features = ["blob-diff", "max-performance-safe", "revision", "sha1"] }
 rfd = "0.17.2"
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }

@@ -1,23 +1,25 @@
 use std::collections::{BTreeSet, HashMap};
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use diffy_ui::diff_view::decorator::DiffDecorator;
 use quark_ui::FocusId;
-use quark_ui::text_input::{Editor, EditorMode, TextEditCommand, TextEditOutcome};
+use quark_ui::text_input::{Editor, EditorMode, TextEditCommand, TextEditOutcome, TextField};
 
 use super::presentation::{MutationPresentation, PresentationStyle};
 use crate::ai::{DEFAULT_STEERING_PROMPT, Provider};
-use crate::app::text_targets::{COMMIT_MESSAGE, TextCx, TextHost};
+use crate::app::text_targets::{
+    COMMIT_MESSAGE, SETTINGS_ANTHROPIC_KEY, SETTINGS_OPENAI_KEY, SETTINGS_STEERING_PROMPT, TextCx,
+    TextHost,
+};
 use crate::contracts::commands::{
     CommandDescriptor, CommandSource, ConfirmationRequest, ToastKind, ToastUpdate,
 };
 use crate::contracts::mutations::{
     ConfirmedMutation, FileOperationRequest, GenerateCommitMessageRequest, MutationSelection,
     MutationSource, MutationSourceKey, MutationsAction, MutationsEffect, MutationsEvent,
-    PatchOperationRequest,
+    PatchOperationRequest, StagedDigest,
 };
 use crate::contracts::navigation::RepositoryContext;
 use crate::contracts::review::Secret;
@@ -29,6 +31,7 @@ use crate::core::vcs::model::{
     ChangeBucket, FileChange, FileOperation, PublishAction, PublishPlan, RefKind, RepoCapabilities,
     VcsOperation, VcsRef,
 };
+use crate::core::vcs::source::SourceIdentity;
 use crate::platform::secrets::AiKeyKind;
 
 const JOB_BASE: u64 = 0xE << 48;
@@ -62,9 +65,16 @@ enum SourceSlot {
 }
 
 #[derive(Debug, Clone)]
+struct DisplayBinding {
+    change: FileChange,
+    identity: Option<SourceIdentity>,
+}
+
+#[derive(Debug, Clone)]
 struct PendingPatch {
     job: JobId,
     key: MutationSourceKey,
+    expected: Option<SourceIdentity>,
     selection: MutationSelection,
     operation: FileOperation,
 }
@@ -74,7 +84,14 @@ pub struct AiState {
     pub generation: u64,
     pub active: bool,
     pub error: Option<String>,
-    staged: u64,
+    pub provider: Option<Provider>,
+    pub steering: Option<String>,
+    staged: Option<StagedDigest>,
+    observed: Option<StagedDigest>,
+    has_staged: bool,
+    checks: u32,
+    finished: bool,
+    buffered: String,
     pub openai: Option<Secret>,
     pub anthropic: Option<Secret>,
     pub openai_editing: bool,
@@ -99,6 +116,10 @@ pub struct MutationsController {
     composer_open: bool,
     ai: AiState,
     publish: Option<PublishMenu>,
+    openai_field: TextField,
+    anthropic_field: TextField,
+    steering: Editor,
+    steering_synced: String,
 }
 
 impl std::fmt::Debug for MutationsController {
@@ -125,6 +146,10 @@ impl Default for MutationsController {
             composer_open: false,
             ai: AiState::default(),
             publish: None,
+            openai_field: TextField::new(""),
+            anthropic_field: TextField::new(""),
+            steering: Editor::new(EditorMode::ProseInput),
+            steering_synced: String::new(),
         }
     }
 }
@@ -178,19 +203,6 @@ fn committable(bucket: ChangeBucket, staging_area: bool) -> bool {
     } else {
         matches!(bucket, ChangeBucket::WorkingCopy | ChangeBucket::Conflicted)
     }
-}
-
-fn staged_identity(repo: Option<&RepositoryContext>) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    if let Some(repo) = repo {
-        let staging = repo.snapshot.capabilities.staging_area;
-        for change in &repo.snapshot.file_changes {
-            if committable(change.bucket, staging) {
-                change.hash(&mut hasher);
-            }
-        }
-    }
-    hasher.finish()
 }
 
 fn active_ref(refs: &[VcsRef]) -> Option<&VcsRef> {
@@ -325,55 +337,59 @@ impl MutationsController {
         }
     }
 
-    fn file_change(
+    fn display_binding(
         &self,
         cx: &SharedContext,
         file: FileKey,
         operation: FileOperation,
-    ) -> Result<FileChange, &'static str> {
+    ) -> Result<DisplayBinding, &'static str> {
         let repo = cx
             .repository
             .as_ref()
             .ok_or("Open a repository before changing files.")?;
-        let manifest = cx
+        let entry = cx
             .manifest
             .as_ref()
+            .and_then(|manifest| manifest.files.iter().find(|entry| entry.key == file))
             .ok_or("This file is no longer in the comparison.")?;
-        let entry = manifest
-            .files
+        if entry.buckets.is_empty() {
+            return Err("Only working-tree changes can be staged or discarded.");
+        }
+        let wanted: &[ChangeBucket] = match (repo.snapshot.capabilities.staging_area, operation) {
+            (false, _) => &[ChangeBucket::WorkingCopy, ChangeBucket::Conflicted],
+            (true, FileOperation::Stage) => &[ChangeBucket::Unstaged, ChangeBucket::Untracked],
+            (true, FileOperation::Unstage) => &[ChangeBucket::Staged],
+            (true, FileOperation::Discard) => &[ChangeBucket::Unstaged, ChangeBucket::Untracked],
+        };
+        let mut candidates = wanted
             .iter()
-            .find(|entry| entry.key == file)
-            .ok_or("This file is no longer in the comparison.")?;
+            .copied()
+            .filter(|bucket| entry.buckets.contains(bucket));
+        let bucket = candidates.next().ok_or(match operation {
+            FileOperation::Stage => "This file has no unstaged changes.",
+            FileOperation::Unstage => "This file has no staged changes.",
+            FileOperation::Discard => "This file has no unstaged changes to discard.",
+        })?;
+        if candidates.next().is_some() {
+            return Err("This file's changes are ambiguous here. Act on the whole file instead.");
+        }
         let path = entry
             .paths
             .new_path()
             .or_else(|| entry.paths.old_path())
             .ok_or("This file has no path.")?;
-        let staging = repo.snapshot.capabilities.staging_area;
-        let order: &[ChangeBucket] = match (staging, operation) {
-            (false, _) => &[ChangeBucket::WorkingCopy, ChangeBucket::Conflicted],
-            (true, FileOperation::Stage) => &[ChangeBucket::Unstaged, ChangeBucket::Untracked],
-            (true, FileOperation::Unstage) => &[ChangeBucket::Staged],
-            (true, FileOperation::Discard) => &[
-                ChangeBucket::Unstaged,
-                ChangeBucket::Untracked,
-                ChangeBucket::Staged,
-            ],
-        };
-        order
+        let change = repo
+            .snapshot
+            .file_changes
             .iter()
-            .find_map(|bucket| {
-                repo.snapshot
-                    .file_changes
-                    .iter()
-                    .find(|change| change.path == path && change.bucket == *bucket)
-            })
+            .find(|change| change.path == path && change.bucket == bucket)
             .cloned()
-            .ok_or(match operation {
-                FileOperation::Stage => "This file has no unstaged changes.",
-                FileOperation::Unstage => "This file has no staged changes.",
-                FileOperation::Discard => "This file has no changes to discard.",
-            })
+            .ok_or("This file changed since it was shown. Try again.")?;
+        let identity = (entry.old_id.is_some() || entry.new_id.is_some()).then(|| SourceIdentity {
+            old: entry.old_id.clone(),
+            new: entry.new_id.clone(),
+        });
+        Ok(DisplayBinding { change, identity })
     }
 
     fn request_patch(
@@ -417,10 +433,11 @@ impl MutationsController {
         if current != Some(revision) {
             return error("This file changed since it was shown. Try again.");
         }
-        let change = match self.file_change(cx, file, operation) {
-            Ok(change) => change,
+        let binding = match self.display_binding(cx, file, operation) {
+            Ok(binding) => binding,
             Err(message) => return error(message),
         };
+        let change = binding.change;
         let (Some(repo_path), Some(repository)) = (
             repo_path(cx),
             cx.repository.as_ref().map(|repo| repo.revision),
@@ -438,18 +455,16 @@ impl MutationsController {
         let pending = PendingPatch {
             job,
             key: key.clone(),
+            expected: binding.identity,
             selection,
             operation,
         };
         match self.sources.get(&key) {
             Some(SourceSlot::Ready(source)) => {
                 let source = source.clone();
-                Reduction::changed().effect(MutationsEffect::ApplyPatch(PatchOperationRequest {
-                    job,
-                    source,
-                    selection: pending.selection,
-                    operation,
-                }))
+                let mut reduction = Reduction::changed();
+                self.dispatch_patch(pending, source, &mut reduction);
+                reduction
             }
             Some(SourceSlot::Loading) => {
                 self.pending.push(pending);
@@ -479,14 +494,38 @@ impl MutationsController {
         self.pending = waiting;
         let mut reduction = Reduction::changed();
         for pending in ready {
-            reduction = reduction.effect(MutationsEffect::ApplyPatch(PatchOperationRequest {
-                job: pending.job,
-                source: source.clone(),
-                selection: pending.selection,
-                operation: pending.operation,
-            }));
+            self.dispatch_patch(pending, source.clone(), &mut reduction);
         }
         reduction
+    }
+
+    fn dispatch_patch(
+        &mut self,
+        pending: PendingPatch,
+        source: Arc<MutationSource>,
+        reduction: &mut Reduction,
+    ) {
+        if pending
+            .expected
+            .as_ref()
+            .is_some_and(|expected| !source.identity().matches(expected))
+        {
+            self.jobs.remove(&pending.job);
+            self.sources.remove(source.key());
+            reduction.intents.push(Intent::Toast(ToastUpdate::error(
+                "The file on disk no longer matches the diff shown. Refresh and try again.",
+            )));
+            return;
+        }
+        reduction.effects.push(
+            MutationsEffect::ApplyPatch(PatchOperationRequest {
+                job: pending.job,
+                source,
+                selection: pending.selection,
+                operation: pending.operation,
+            })
+            .into(),
+        );
     }
 
     fn source_failed(&mut self, key: MutationSourceKey, message: String) -> Reduction {
@@ -539,8 +578,8 @@ impl MutationsController {
         }
         let mut changes = Vec::with_capacity(files.len());
         for file in files {
-            match self.file_change(cx, file, operation) {
-                Ok(change) => changes.push(change),
+            match self.display_binding(cx, file, operation) {
+                Ok(binding) => changes.push(binding.change),
                 Err(message) => return error(message),
             }
         }
@@ -695,10 +734,26 @@ impl MutationsController {
         let Some(repo) = cx.repository.as_ref() else {
             return error("Open a repository before generating a commit message.");
         };
-        let (provider, api_key) = match (&self.ai.anthropic, &self.ai.openai) {
-            (Some(key), _) if !key.is_empty() => (Provider::Anthropic, key.clone()),
-            (_, Some(key)) if !key.is_empty() => (Provider::OpenAi, key.clone()),
-            _ => return error("Add an AI key under Settings \u{2192} Clankers first."),
+        let key = |provider: Provider| {
+            match provider {
+                Provider::OpenAi => self.ai.openai.clone(),
+                Provider::Anthropic => self.ai.anthropic.clone(),
+            }
+            .filter(|key| !key.is_empty())
+            .map(|key| (provider, key))
+        };
+        let chosen = match self.ai.provider {
+            Some(provider) => key(provider),
+            None => key(Provider::Anthropic).or_else(|| key(Provider::OpenAi)),
+        };
+        let Some((provider, api_key)) = chosen else {
+            return error(match self.ai.provider {
+                Some(provider) => format!(
+                    "Add a {} key under Settings \u{2192} Clankers first.",
+                    provider.label()
+                ),
+                None => "Add an AI key under Settings \u{2192} Clankers first.".to_owned(),
+            });
         };
         let staging = repo.snapshot.capabilities.staging_area;
         let has_staged = staging
@@ -707,7 +762,11 @@ impl MutationsController {
                 .file_changes
                 .iter()
                 .any(|change| change.bucket == ChangeBucket::Staged);
-        let steering = &cx.settings.settings.ai_steering_prompt;
+        let steering = self
+            .ai
+            .steering
+            .as_ref()
+            .unwrap_or(&cx.settings.settings.ai_steering_prompt);
         let steering_prompt = if steering.trim().is_empty() {
             DEFAULT_STEERING_PROMPT.to_owned()
         } else {
@@ -726,7 +785,12 @@ impl MutationsController {
         self.ai.generation = self.ai.generation.wrapping_add(1);
         self.ai.active = true;
         self.ai.error = None;
-        self.ai.staged = staged_identity(Some(repo));
+        self.ai.staged = None;
+        self.ai.observed = None;
+        self.ai.has_staged = has_staged;
+        self.ai.checks = 0;
+        self.ai.finished = false;
+        self.ai.buffered.clear();
         self.composer_open = true;
         Reduction::changed().effect(MutationsEffect::GenerateCommitMessage(Box::new(
             GenerateCommitMessageRequest {
@@ -742,10 +806,108 @@ impl MutationsController {
         )))
     }
 
-    fn ai_current(&self, generation: u64, cx: &SharedContext) -> bool {
-        self.ai.active
-            && generation == self.ai.generation
-            && staged_identity(cx.repository.as_deref()) == self.ai.staged
+    fn ai_current(&self, generation: u64) -> bool {
+        self.ai.active && generation == self.ai.generation
+    }
+
+    fn stop_stale_generation(&mut self) -> Reduction {
+        self.ai.active = false;
+        self.ai.buffered.clear();
+        self.ai.checks = 0;
+        Reduction::changed().intent(toast(
+            ToastKind::Info,
+            None,
+            "Staged changes moved, so commit message generation stopped.",
+        ))
+    }
+
+    fn settle_generation(&mut self) {
+        if self.ai.checks > 0 || !self.ai.active {
+            return;
+        }
+        if !self.ai.buffered.is_empty() {
+            let buffered = std::mem::take(&mut self.ai.buffered);
+            self.commit.append(&buffered);
+        }
+        if self.ai.finished {
+            self.ai.active = false;
+        }
+    }
+
+    fn staged_seen(
+        &mut self,
+        generation: u64,
+        staged: Option<StagedDigest>,
+        started: bool,
+    ) -> Reduction {
+        if !self.ai_current(generation) {
+            return Reduction::default();
+        }
+        if !started {
+            self.ai.checks = self.ai.checks.saturating_sub(1);
+        }
+        let Some(staged) = staged else {
+            return self.stop_stale_generation();
+        };
+        let expected = if started {
+            let observed = self.ai.observed.take();
+            self.ai.staged = Some(staged);
+            observed
+        } else if self.ai.staged.is_some() {
+            self.ai.staged
+        } else {
+            self.ai.observed = Some(staged);
+            None
+        };
+        if expected.is_some_and(|expected| expected != staged) {
+            return self.stop_stale_generation();
+        }
+        self.settle_generation();
+        Reduction::changed()
+    }
+
+    fn save_key_field(&mut self, kind: AiKeyKind) -> Reduction {
+        let field = match kind {
+            AiKeyKind::OpenAi => &mut self.openai_field,
+            AiKeyKind::Anthropic => &mut self.anthropic_field,
+        };
+        let value = field.text().trim().to_owned();
+        if value.is_empty() {
+            return error("Paste a key first.");
+        }
+        field.set_text("");
+        match kind {
+            AiKeyKind::OpenAi => self.ai.openai_editing = false,
+            AiKeyKind::Anthropic => self.ai.anthropic_editing = false,
+        }
+        self.set_ai_key(kind, Secret::new(value))
+    }
+
+    fn sync_steering(&mut self, prompt: &str) {
+        let shown = if prompt.trim().is_empty() {
+            DEFAULT_STEERING_PROMPT
+        } else {
+            prompt
+        };
+        if self.steering.text() == self.steering_synced && self.steering_synced != shown {
+            self.steering.set_text(shown);
+            self.steering_synced = shown.to_owned();
+        }
+    }
+
+    pub fn key_field(&self, kind: AiKeyKind) -> &TextField {
+        match kind {
+            AiKeyKind::OpenAi => &self.openai_field,
+            AiKeyKind::Anthropic => &self.anthropic_field,
+        }
+    }
+
+    pub fn steering_editor(&self) -> &Editor {
+        &self.steering
+    }
+
+    pub fn steering_editor_mut(&mut self) -> &mut Editor {
+        &mut self.steering
     }
 
     fn set_ai_key(&mut self, kind: AiKeyKind, value: Secret) -> Reduction {
@@ -1118,11 +1280,24 @@ impl Controller for MutationsController {
                 Reduction::changed().effect(MutationsEffect::ClearAiKey { kind })
             }
             A::SetAiKeyEditing { kind, editing } => {
-                match kind {
-                    AiKeyKind::OpenAi => self.ai.openai_editing = editing,
-                    AiKeyKind::Anthropic => self.ai.anthropic_editing = editing,
+                let focus = match kind {
+                    AiKeyKind::OpenAi => {
+                        self.ai.openai_editing = editing;
+                        self.openai_field.set_text("");
+                        LogicalFocus::SettingsOpenAiKey
+                    }
+                    AiKeyKind::Anthropic => {
+                        self.ai.anthropic_editing = editing;
+                        self.anthropic_field.set_text("");
+                        LogicalFocus::SettingsAnthropicKey
+                    }
+                };
+                let reduction = Reduction::changed();
+                if editing {
+                    reduction.effect(crate::contracts::shell::ShellEffect::Focus(Some(focus)))
+                } else {
+                    reduction
                 }
-                Reduction::changed()
             }
             A::GenerateCommitMessage => self.generate_commit_message(cx),
             A::OpenCommitComposer => {
@@ -1136,14 +1311,42 @@ impl Controller for MutationsController {
                 self.commit.scroll(lines as f32 * step);
                 Reduction::changed()
             }
+            A::SetAiProvider(provider) => {
+                self.ai.provider = provider;
+                Reduction::changed()
+            }
+            A::SaveAiKeyField(kind) => self.save_key_field(kind),
+            A::SaveSteeringPrompt => {
+                let prompt = self.steering.text().trim().to_owned();
+                self.steering_synced = self.steering.text().to_owned();
+                self.ai.steering = Some(prompt);
+                Reduction::changed().intent(toast(
+                    ToastKind::Success,
+                    None,
+                    "Steering prompt saved.",
+                ))
+            }
+            A::ResetSteeringPrompt => {
+                self.steering.set_text(DEFAULT_STEERING_PROMPT);
+                self.steering_synced = DEFAULT_STEERING_PROMPT.to_owned();
+                self.ai.steering = Some(String::new());
+                Reduction::changed()
+            }
+            A::ScrollSteeringPrompt(lines) => {
+                let step = self.steering.scroll_line_height_px();
+                self.steering.scroll(lines as f32 * step);
+                Reduction::changed()
+            }
             A::CloseCommitComposer => {
                 self.composer_open = false;
-                Reduction::changed()
+                Reduction::changed().effect(crate::contracts::shell::ShellEffect::Focus(Some(
+                    LogicalFocus::Viewport,
+                )))
             }
         }
     }
 
-    fn reduce_event(&mut self, event: Self::Event, cx: &SharedContext) -> Reduction {
+    fn reduce_event(&mut self, event: Self::Event, _cx: &SharedContext) -> Reduction {
         use MutationsEvent as E;
         match event {
             E::MutationSourceReady { source } => self.source_ready(source),
@@ -1359,10 +1562,16 @@ impl Controller for MutationsController {
             E::AiKeySaveFailed { message } => {
                 error(format!("Couldn't save AI key to keyring: {message}"))
             }
+            E::CommitMessageStarted { generation, staged } => {
+                self.staged_seen(generation, Some(staged), true)
+            }
+            E::StagedDiffChecked { generation, staged } => {
+                self.staged_seen(generation, staged, false)
+            }
             E::CommitMessageChunk {
                 generation, chunk, ..
             } => {
-                if !self.ai_current(generation, cx) {
+                if !self.ai_current(generation) {
                     tracing::debug!(
                         generation,
                         current = self.ai.generation,
@@ -1370,14 +1579,19 @@ impl Controller for MutationsController {
                     );
                     return Reduction::default();
                 }
+                if self.ai.checks > 0 {
+                    self.ai.buffered.push_str(&chunk);
+                    return Reduction::default();
+                }
                 self.commit.append(&chunk);
                 Reduction::changed()
             }
             E::CommitMessageFinished { generation, .. } => {
-                if !self.ai_current(generation, cx) {
+                if !self.ai_current(generation) {
                     return Reduction::default();
                 }
-                self.ai.active = false;
+                self.ai.finished = true;
+                self.settle_generation();
                 Reduction::changed()
             }
             E::CommitMessageFailed {
@@ -1385,7 +1599,7 @@ impl Controller for MutationsController {
                 message,
                 ..
             } => {
-                if !self.ai_current(generation, cx) {
+                if !self.ai_current(generation) {
                     return Reduction::default();
                 }
                 self.ai.active = false;
@@ -1401,7 +1615,16 @@ impl Controller for MutationsController {
 
     fn apply_intent(&mut self, intent: &Intent, cx: &SharedContext) -> Reduction {
         match intent {
-            Intent::Startup(_) => Reduction::default().effect(MutationsEffect::LoadAiKeys),
+            Intent::Startup(startup) => {
+                self.sync_steering(&startup.settings.ai_steering_prompt);
+                Reduction::default().effect(MutationsEffect::LoadAiKeys)
+            }
+            Intent::SettingsChanged(snapshot) => {
+                if self.ai.steering.is_none() {
+                    self.sync_steering(&snapshot.settings.ai_steering_prompt);
+                }
+                Reduction::changed()
+            }
             Intent::ActivateWorkspace { .. } => {
                 self.reset();
                 self.composer_open = false;
@@ -1429,13 +1652,13 @@ impl Controller for MutationsController {
                         "The repository changed before the lines were applied. Try again.",
                     )));
                 }
-                if self.ai.active && staged_identity(Some(repo)) != self.ai.staged {
-                    self.ai.active = false;
-                    reduction = reduction.intent(toast(
-                        ToastKind::Info,
-                        None,
-                        "Staged changes moved, so commit message generation stopped.",
-                    ));
+                if self.ai.active {
+                    self.ai.checks += 1;
+                    reduction = reduction.effect(MutationsEffect::CheckStagedDiff {
+                        generation: self.ai.generation,
+                        repo_path: repo.snapshot.path.clone(),
+                        has_staged: self.ai.has_staged,
+                    });
                 }
                 self.refresh_presentation(cx);
                 reduction
@@ -1468,7 +1691,13 @@ impl Controller for MutationsController {
 
 impl TextHost for MutationsController {
     fn owns_text(&self, target: FocusId) -> bool {
-        target == COMMIT_MESSAGE
+        [
+            COMMIT_MESSAGE,
+            SETTINGS_OPENAI_KEY,
+            SETTINGS_ANTHROPIC_KEY,
+            SETTINGS_STEERING_PROMPT,
+        ]
+        .contains(&target)
     }
 
     fn edit_text(
@@ -1477,7 +1706,13 @@ impl TextHost for MutationsController {
         command: TextEditCommand,
         cx: &TextCx,
     ) -> Option<TextEditOutcome> {
-        (target == COMMIT_MESSAGE).then(|| self.commit.apply_at(command, cx.now_ms))
+        match target {
+            COMMIT_MESSAGE => Some(self.commit.apply_at(command, cx.now_ms)),
+            SETTINGS_STEERING_PROMPT => Some(self.steering.apply_at(command, cx.now_ms)),
+            SETTINGS_OPENAI_KEY => Some(self.openai_field.apply_at(command, cx.now_ms)),
+            SETTINGS_ANTHROPIC_KEY => Some(self.anthropic_field.apply_at(command, cx.now_ms)),
+            _ => None,
+        }
     }
 
     fn set_preedit(
@@ -1486,10 +1721,13 @@ impl TextHost for MutationsController {
         text: String,
         cursor: Option<(usize, usize)>,
     ) -> bool {
-        if target != COMMIT_MESSAGE {
-            return false;
+        match target {
+            COMMIT_MESSAGE => self.commit.set_preedit(text, cursor),
+            SETTINGS_STEERING_PROMPT => self.steering.set_preedit(text, cursor),
+            SETTINGS_OPENAI_KEY => self.openai_field.set_preedit(text, cursor),
+            SETTINGS_ANTHROPIC_KEY => self.anthropic_field.set_preedit(text, cursor),
+            _ => return false,
         }
-        self.commit.set_preedit(text, cursor);
         true
     }
 
@@ -1499,10 +1737,13 @@ impl TextHost for MutationsController {
         value: String,
         _cx: &TextCx,
     ) -> Option<TextEditOutcome> {
-        if target != COMMIT_MESSAGE {
-            return None;
+        match target {
+            COMMIT_MESSAGE => self.commit.set_text(&value),
+            SETTINGS_STEERING_PROMPT => self.steering.set_text(&value),
+            SETTINGS_OPENAI_KEY => self.openai_field.set_text(value),
+            SETTINGS_ANTHROPIC_KEY => self.anthropic_field.set_text(value),
+            _ => return None,
         }
-        self.commit.set_text(&value);
         Some(TextEditOutcome {
             text_changed: true,
             ..TextEditOutcome::default()

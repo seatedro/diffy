@@ -38,7 +38,15 @@ impl std::fmt::Debug for PlatformRequest {
 }
 
 pub fn take_requests(controllers: &Controllers) -> Vec<PlatformRequest> {
-    controllers.commands.take_platform()
+    let mut requests = controllers.commands.take_platform();
+    requests.extend(
+        controllers
+            .navigation
+            .take_dispatch()
+            .into_iter()
+            .map(PlatformRequest::Dispatch),
+    );
+    requests
 }
 
 pub fn apply(requests: Vec<PlatformRequest>, cx: &mut UiContext) -> Vec<Action> {

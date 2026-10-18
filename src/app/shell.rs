@@ -6,7 +6,7 @@ use std::sync::Arc;
 use quark::view;
 use quark_app::platform::dialog::{DialogId, FileDialog, FileDialogKind};
 use quark_app::{AppEvent as WindowEvent, InputEvent, UiApp, UiContext, UiSender, ViewContext};
-use quark_components::{Axis, Pane, Split, SplitState};
+use quark_components::{Axis, Pane, Split, SplitEvent, SplitState};
 use quark_ui::FocusId;
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
@@ -19,7 +19,7 @@ use crate::app::route::{self, Controllers, MAX_INTENTS_PER_TURN, Routed};
 use crate::app::text_targets::{self, TextCx};
 use crate::app::tokens::{self, Sp, TextStyle};
 use crate::app::{commands, delivery, mutations, navigation, review, viewport};
-use crate::contracts::commands::ToastUpdate;
+use crate::contracts::commands::{CommandsAction, ToastUpdate};
 use crate::contracts::shared::{AccountEpoch, SharedContext, WorkspaceEpoch};
 use crate::contracts::shell::{
     Action, AppMessage, AppStartup, Effect, Intent, Reduction, ShellAction, ShellEffect, ShellEvent,
@@ -225,6 +225,9 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 true
             }
             Intent::SettingsChanged(settings) => {
+                if let Some(width) = settings.settings.sidebar_width_px {
+                    self.shell.sidebar.set_size(0, width as f32);
+                }
                 shared.settings = settings.clone();
                 true
             }
@@ -291,7 +294,17 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 }
             }
             ShellAction::ResizeSidebar(event) => {
+                let commit = matches!(event, SplitEvent::Release { .. } | SplitEvent::Nudge { .. });
                 self.shell.sidebar.apply(event, self.clock_ms);
+                if commit && !self.shell.sidebar.is_collapsed(0) {
+                    let width = self.shell.sidebar.size(0).round() as u32;
+                    let action = Action::from(CommandsAction::SetSidebarWidth(width));
+                    if let Routed::Stream(reduction) =
+                        self.controllers.route_action(action, &self.shared)
+                    {
+                        self.reduce(reduction);
+                    }
+                }
                 cx.window.request_redraw();
             }
             ShellAction::Bootstrap | ShellAction::Noop => {}
@@ -499,7 +512,16 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
         };
         let mutation_panel = mutations::panel(&mut self.controllers.mutations, &slot, cx);
         let review_overlay = review::overlay(&self.controllers.review, &slot, cx);
-        let overlays = commands::overlays(&mut self.controllers.commands, &slot, cx);
+        let clankers =
+            commands::clankers_slot(&self.controllers.commands, &slot, cx.theme).map(|width| {
+                mutations::clankers_settings(
+                    &mut self.controllers.mutations,
+                    &self.shared.settings,
+                    width,
+                    cx,
+                )
+            });
+        let overlays = commands::overlays(&mut self.controllers.commands, &slot, clankers, cx);
         let languages = delivery::overlay(&mut self.controllers.delivery, &slot, cx);
         let toasts = commands::toasts(&mut self.controllers.commands, &slot, cx);
         view! {

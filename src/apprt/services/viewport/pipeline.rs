@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
 use diffy_diff::{
-    DiffDocument, DocumentBuilder, FileDiffSnapshot, FileMeta, FileSources, FileStatus, Revision,
-    SourceCoverage, TextStore,
+    DiffDocument, DocumentBuilder, FileDiffSnapshot, FileMeta, FileSources, FileStatus,
+    Placeholder, Revision, SlotState, SourceCoverage, TextStore,
 };
 
 use crate::apprt::services::open_compare_repository;
 use crate::contracts::shared::{CompareGeneration, FileKey, FileRevision};
 use crate::contracts::viewport::pipeline::{
     CompareJob, CompareManifestSnapshot, CompareResult, FileLoadRequest, FileStat,
-    FileStatsRequest, ManifestFile, PipelineFailure, PreparedDiff, SourceLoadRequest,
+    FileStatsRequest, ManifestFile, PipelineFailure, Preparation, PreparedDiff, SourceLoadRequest,
     StatusDiffRequest, TextCompareRequest, TotalStatsRequest,
 };
 use crate::core::compare::service::matching_document;
@@ -47,10 +47,17 @@ pub fn prepare(
     Ok(PreparedDiff::new(key, generation, revision, snapshot))
 }
 
+pub fn estimated_lines(stats: diffy_diff::DiffStats) -> u32 {
+    stats.known().map_or(1, |(additions, deletions)| {
+        additions.saturating_add(deletions).saturating_add(1)
+    })
+}
+
 pub fn compare_result(
     generation: CompareGeneration,
     resolved: (String, String),
     output: CompareOutput,
+    preparation: Option<Preparation>,
 ) -> Result<CompareResult, PipelineFailure> {
     let revision = file_revision(generation);
     let files: Arc<[ManifestFile]> = output
@@ -64,8 +71,26 @@ pub fn compare_result(
         .iter()
         .enumerate()
         .filter_map(|(index, doc)| Some((index, doc.clone()?)))
-        .map(|(index, doc)| prepare(key_at(index), generation, revision, doc))
+        .map(|(index, doc)| {
+            prepare(key_at(index), generation, revision, doc)
+                .map(|prepared| prepared.with_segment(preparation))
+        })
         .collect::<Result<Arc<[PreparedDiff]>, _>>()?;
+    let placeholders = output
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| output.document(*index).is_none())
+        .map(|(index, entry)| {
+            let placeholder = Placeholder::new(
+                Revision(revision.0),
+                SlotState::Unloaded,
+                estimated_lines(entry.stats),
+                entry.file_meta(),
+            );
+            (key_at(index), placeholder)
+        })
+        .collect();
     let notice = output
         .used_fallback
         .then(|| output.fallback_message.clone())
@@ -76,9 +101,11 @@ pub fn compare_result(
             resolved_left: resolved.0,
             resolved_right: resolved.1,
             files,
+            totals: output.totals(),
         }),
         entries: output.entries.into(),
         prepared,
+        placeholders,
         notice,
     })
 }
@@ -116,7 +143,7 @@ impl PipelineServices {
         progress.phase(ComparePhase::ResolvingRefs);
         let resolved = repo.resolve_compare_request(request).map_err(failed)?;
         let output = repo.compare(request, Some(progress)).map_err(failed)?;
-        compare_result(job.generation, resolved, output)
+        compare_result(job.generation, resolved, output, job.preparation)
     }
 
     pub fn run_text_compare(
@@ -167,6 +194,7 @@ impl PipelineServices {
             request.file.revision,
             doc,
         )
+        .map(|prepared| prepared.with_segment(request.preparation))
     }
 
     pub fn load_file_stats(
@@ -214,6 +242,7 @@ impl PipelineServices {
             file_revision(request.generation),
             doc,
         )
+        .map(|prepared| prepared.with_segment(request.preparation))
     }
 
     pub fn load_sources(
@@ -254,6 +283,7 @@ impl PipelineServices {
             prepared.revision(),
             Arc::new(doc),
         )
+        .map(|hydrated| hydrated.with_segment(request.preparation))
     }
 }
 
@@ -282,8 +312,12 @@ mod tests {
             CompareGeneration(4),
             ("left".into(), "right".into()),
             output,
+            None,
         )
         .unwrap();
+        assert_eq!(result.placeholders.len(), 1);
+        assert_eq!(result.placeholders[0].0, key_at(1));
+        assert_eq!(result.manifest.totals, DiffStats::Pending);
         let files = &result.manifest.files;
         assert_eq!(files.len(), 2);
         assert_eq!(files[1].key, key_at(1));
@@ -354,12 +388,19 @@ mod tests {
                 repo_path: dir.path().to_path_buf(),
                 request: request.clone(),
             },
+            preparation: Some(crate::contracts::viewport::pipeline::Preparation {
+                mode: diffy_diff::Mode::Unified,
+                policy: diffy_diff::ContextPolicy::default(),
+                comparison: diffy_diff::ComparisonOptions::default(),
+            }),
         };
         let result = PipelineServices.run_compare(&job, &Phases).unwrap();
         assert_eq!(result.manifest.generation, CompareGeneration(7));
         assert_eq!(result.manifest.files.len(), 1);
         assert_eq!(result.manifest.files[0].paths.display_path(), "src/a.rs");
         assert_eq!(result.prepared[0].stats().known(), Some((1, 1)));
+        assert!(result.prepared[0].segment().is_some());
+        assert_eq!(result.manifest.totals.known(), Some((1, 1)));
         let loaded = PipelineServices
             .load_file(&FileLoadRequest {
                 generation: CompareGeneration(7),
@@ -371,8 +412,10 @@ mod tests {
                     entry: result.entries[0].clone(),
                 },
                 priority: CompareWorkPriority::InteractiveSelectedFile,
+                preparation: None,
             })
             .unwrap();
+        assert!(loaded.segment().is_none());
         assert_eq!(loaded.key(), key_at(0));
         assert_eq!(loaded.revision(), FileRevision(7));
         assert_eq!(

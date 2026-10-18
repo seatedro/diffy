@@ -67,6 +67,7 @@ pub struct Settings {
     pub auto_update: bool,
     pub continuous_scroll: bool,
     pub ai_steering_prompt: String,
+    pub ai_provider: Option<crate::ai::Provider>,
     pub keymap_overrides: Vec<KeymapOverride>,
 }
 
@@ -85,6 +86,7 @@ impl Default for Settings {
             auto_update: true,
             continuous_scroll: false,
             ai_steering_prompt: String::new(),
+            ai_provider: None,
             keymap_overrides: Vec::new(),
         }
     }

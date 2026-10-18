@@ -17,7 +17,7 @@ use crate::app::text_targets::{TextCx, TextHost};
 use crate::contracts::commands::ToastUpdate;
 use crate::contracts::mutations::{
     ConfirmedMutation, MutationSelection, MutationSource, MutationSourceKey, MutationsAction,
-    MutationsEffect, MutationsEvent,
+    MutationsEffect, MutationsEvent, StagedDigest,
 };
 use crate::contracts::navigation::{
     RepositoryContext, RepositoryRevision, RepositorySnapshot, RepositorySyncReason,
@@ -376,11 +376,30 @@ fn ai_stream_keeps_user_edits_and_drops_stale_chunks() {
     controller.reduce_event(chunk(generation.wrapping_sub(1), " stale"), &cx);
     assert_eq!(controller.commit_text(), "ui: Fix parser");
 
-    let staged = repository(2, &[ChangeBucket::Unstaged], RepoCapabilities::git());
-    cx.repository = Some(staged.clone());
-    controller.apply_intent(&Intent::RepositoryChanged(staged), &cx);
-    controller.reduce_event(chunk(generation, " after"), &cx);
+    controller.reduce_event(started(generation, 7), &cx);
+    let same = repository(2, &[ChangeBucket::Staged], RepoCapabilities::git());
+    cx.repository = Some(same.clone());
+    let check = controller.apply_intent(&Intent::RepositoryChanged(same), &cx);
+    assert!(matches!(
+        mutation_effects(&check).as_slice(),
+        [MutationsEffect::CheckStagedDiff {
+            has_staged: true,
+            ..
+        }]
+    ));
+    controller.reduce_event(chunk(generation, " held"), &cx);
     assert_eq!(controller.commit_text(), "ui: Fix parser");
+    controller.reduce_event(checked(generation, Some(7)), &cx);
+    assert_eq!(controller.commit_text(), "ui: Fix parser held");
+
+    let moved = repository(3, &[ChangeBucket::Staged], RepoCapabilities::git());
+    cx.repository = Some(moved.clone());
+    controller.apply_intent(&Intent::RepositoryChanged(moved), &cx);
+    controller.reduce_event(chunk(generation, " dropped"), &cx);
+    let stopped = controller.reduce_event(checked(generation, Some(8)), &cx);
+    assert!(!stopped.intents.is_empty());
+    controller.reduce_event(chunk(generation, " after"), &cx);
+    assert_eq!(controller.commit_text(), "ui: Fix parser held");
     assert!(!controller.ai().active);
 
     cx.repository = Some(repository(
@@ -393,10 +412,73 @@ fn ai_stream_keeps_user_edits_and_drops_stale_chunks() {
     let [MutationsEffect::GenerateCommitMessage(request)] = effects9.as_slice() else {
         panic!("expected a second generation");
     };
-    assert_eq!(request.subject_override.as_deref(), Some("ui: Fix parser"));
+    assert_eq!(
+        request.subject_override.as_deref(),
+        Some("ui: Fix parser held")
+    );
     controller.reduce_event(chunk(generation, " old"), &cx);
     controller.reduce_event(chunk(request.generation, "body"), &cx);
-    assert_eq!(controller.commit_text(), "ui: Fix parser\nbody");
+    assert_eq!(controller.commit_text(), "ui: Fix parser held\nbody");
+}
+
+fn started(generation: u64, digest: u64) -> MutationsEvent {
+    MutationsEvent::CommitMessageStarted {
+        generation,
+        staged: StagedDigest(digest),
+    }
+}
+
+fn checked(generation: u64, digest: Option<u64>) -> MutationsEvent {
+    MutationsEvent::StagedDiffChecked {
+        generation,
+        staged: digest.map(StagedDigest),
+    }
+}
+
+#[test]
+fn staged_checks_that_beat_the_start_event_still_count() {
+    let mut cx = shared();
+    let mut controller = MutationsController::default();
+    ai_ready(&mut controller, &cx);
+    let first = controller.reduce_action(MutationsAction::GenerateCommitMessage, &cx);
+    let effects = mutation_effects(&first);
+    let [MutationsEffect::GenerateCommitMessage(request)] = effects.as_slice() else {
+        panic!("expected a generation");
+    };
+    let generation = request.generation;
+    let repo = repository(2, &[ChangeBucket::Staged], RepoCapabilities::git());
+    cx.repository = Some(repo.clone());
+    controller.apply_intent(&Intent::RepositoryChanged(repo), &cx);
+    controller.reduce_event(checked(generation, Some(5)), &cx);
+    controller.reduce_event(started(generation, 4), &cx);
+    assert!(!controller.ai().active);
+    controller.reduce_event(chunk(generation, "late"), &cx);
+    assert_eq!(controller.commit_text(), "");
+}
+
+#[test]
+fn provider_preference_and_saved_prompt_steer_generation() {
+    let cx = shared();
+    let mut controller = MutationsController::default();
+    ai_ready(&mut controller, &cx);
+    controller.reduce_action(
+        MutationsAction::SetAiProvider(Some(crate::ai::Provider::OpenAi)),
+        &cx,
+    );
+    let missing = controller.reduce_action(MutationsAction::GenerateCommitMessage, &cx);
+    assert!(missing.effects.is_empty());
+    controller.reduce_action(MutationsAction::SetAiProvider(None), &cx);
+    controller
+        .steering_editor_mut()
+        .set_text("Use imperative mood");
+    controller.reduce_action(MutationsAction::SaveSteeringPrompt, &cx);
+    let reduction = controller.reduce_action(MutationsAction::GenerateCommitMessage, &cx);
+    let effects = mutation_effects(&reduction);
+    let [MutationsEffect::GenerateCommitMessage(request)] = effects.as_slice() else {
+        panic!("expected a generation");
+    };
+    assert_eq!(request.provider, crate::ai::Provider::Anthropic);
+    assert_eq!(request.steering_prompt, "Use imperative mood");
 }
 
 #[test]
@@ -695,4 +777,104 @@ fn presentation_marks_selected_lines_and_offers_hunk_controls() {
     assert_eq!(labels, ["Stage hunk", "Unstage hunk", "Discard hunk"]);
     let same = controller.presentation();
     assert!(Rc::ptr_eq(&presentation, &same));
+}
+
+struct SettingsHost {
+    controller: MutationsController,
+    shared: SharedContext,
+    reductions: Vec<Reduction>,
+    now_ms: u64,
+}
+
+impl UiApp for SettingsHost {
+    type Action = Action;
+    type Message = ();
+
+    fn view(&mut self, cx: &mut ViewContext) -> AnyElement {
+        let (width, height) = cx.frame.size();
+        let settings = self.shared.settings.clone();
+        let content = super::clankers_settings(&mut self.controller, &settings, width - 40.0, cx);
+        quark::view! { <div w={width} h={height} p={20.0}>{content}</div> }
+    }
+
+    fn update(&mut self, action: Action, _cx: &mut UiContext) {
+        if let Action::Mutations(action) = action {
+            let reduction = self.controller.reduce_action(action, &self.shared);
+            self.reductions.push(reduction);
+        }
+    }
+
+    fn edit_text(&mut self, target: FocusId, command: TextEditCommand) -> TextEditOutcome {
+        self.now_ms += 1;
+        let cx = TextCx {
+            shared: &self.shared,
+            now_ms: self.now_ms,
+        };
+        self.controller
+            .edit_text(target, command, &cx)
+            .unwrap_or_default()
+    }
+}
+
+#[test]
+fn clankers_settings_save_keys_and_prompt() {
+    let mut ui = UiTestHarness::new(
+        SettingsHost {
+            controller: MutationsController::default(),
+            shared: shared(),
+            reductions: Vec::new(),
+            now_ms: 0,
+        },
+        (900.0, 900.0),
+        2.0,
+    );
+    ui.click_node(By::role_name(Role::PasswordInput, "OpenAI API key"));
+    ui.type_text("sk-test");
+    ui.click_node(By::role_name(Role::Button, "Save OpenAI key"));
+    let saved = ui
+        .app()
+        .reductions
+        .iter()
+        .flat_map(mutation_effects)
+        .any(|effect| matches!(effect, MutationsEffect::SaveAiKey { kind: AiKeyKind::OpenAi, value } if value.expose() == "sk-test"));
+    assert!(saved);
+    assert!(
+        ui.try_find(By::role_name(Role::Button, "Replace OpenAI key"))
+            .is_some()
+    );
+    assert!(
+        ui.try_find(By::role_name(Role::Button, "Remove OpenAI key"))
+            .is_some()
+    );
+
+    ui.click_node(By::role_name(Role::Button, "Anthropic"));
+    assert_eq!(
+        ui.app().controller.ai().provider,
+        Some(crate::ai::Provider::Anthropic)
+    );
+
+    ui.click_node(By::role_name(
+        Role::MultilineTextInput,
+        "Commit steering prompt",
+    ));
+    ui.key("mod+a");
+    ui.type_text("Be brief");
+    ui.click_node(By::role_name(Role::Button, "Save prompt"));
+    assert_eq!(
+        ui.app().controller.ai().steering.as_deref(),
+        Some("Be brief")
+    );
+}
+
+#[test]
+fn mutation_controls_are_keyboard_reachable() {
+    let mut ui = harness();
+    ui.click_node(By::role_name(Role::Button, "Commit"));
+    ui.click_node(By::role_name(Role::MultilineTextInput, "Commit message"));
+    ui.type_text("Fix");
+    ui.key("tab");
+    let focused = ui.focused().expect("focus moved");
+    assert_eq!(focused.role, Some(Role::Button));
+    ui.key("escape");
+    assert!(!ui.app().controller.composer_open());
 }

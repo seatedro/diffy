@@ -313,6 +313,20 @@ impl ReviewController {
         self.avatars.len()
     }
 
+    fn open_overlay(&mut self, overlay: ReviewOverlay) {
+        self.overlay = Some(overlay);
+        self.focus_request = Some(LogicalFocus::ReviewDialog);
+    }
+
+    fn close_overlay(&mut self) {
+        if let Some(closed) = self.overlay.take() {
+            self.focus_request = Some(match closed {
+                ReviewOverlay::SubmitReview => LogicalFocus::Viewport,
+                ReviewOverlay::Auth | ReviewOverlay::AccountMenu => LogicalFocus::ReviewAccount,
+            });
+        }
+    }
+
     pub fn is_modal_open(&self) -> bool {
         self.overlay.is_some()
     }
@@ -375,7 +389,7 @@ impl ReviewController {
         match self.token() {
             Some(token) => Ok(token),
             None => {
-                self.overlay = Some(ReviewOverlay::Auth);
+                self.open_overlay(ReviewOverlay::Auth);
                 Err(Reduction::changed().intent(info(why)))
             }
         }
@@ -613,7 +627,7 @@ impl ReviewController {
             token_loaded: true,
             ..Account::default()
         };
-        self.overlay = None;
+        self.close_overlay();
         reduction = reduction
             .effect(ReviewEffect::ClearToken)
             .intent(self.bump_account())
@@ -891,7 +905,7 @@ impl ReviewController {
         let Some(pr) = self.pr.as_ref().map(|active| active.pr.clone()) else {
             return Reduction::default();
         };
-        self.overlay = None;
+        self.close_overlay();
         if self
             .composer
             .as_ref()
@@ -1130,7 +1144,7 @@ impl ReviewController {
         let flow = JobId(self.next_job);
         self.account.flow = Some(flow);
         self.account.auth = AuthStatus::Starting;
-        self.overlay = Some(ReviewOverlay::Auth);
+        self.open_overlay(ReviewOverlay::Auth);
         Reduction::changed().effect(ReviewEffect::StartDeviceFlow {
             flow,
             client_id: self.client_id.clone(),
@@ -1343,14 +1357,14 @@ impl ReviewController {
     fn reduce(&mut self, action: ReviewAction, cx: &SharedContext) -> Reduction {
         match action {
             ReviewAction::OpenAuthModal => {
-                self.overlay = Some(ReviewOverlay::Auth);
+                self.open_overlay(ReviewOverlay::Auth);
                 if self.account.auth == AuthStatus::Done && !self.signed_in() {
                     self.account.auth = AuthStatus::Idle;
                 }
                 Reduction::changed()
             }
             ReviewAction::CloseOverlay => {
-                self.overlay = None;
+                self.close_overlay();
                 Reduction::changed()
             }
             ReviewAction::StartDeviceFlow => self.device_flow(),
@@ -1363,7 +1377,7 @@ impl ReviewController {
                 _ => Reduction::default(),
             },
             ReviewAction::OpenAccountMenu => {
-                self.overlay = Some(ReviewOverlay::AccountMenu);
+                self.open_overlay(ReviewOverlay::AccountMenu);
                 Reduction::changed()
             }
             ReviewAction::SignOut => self.sign_out(cx),
@@ -1374,7 +1388,7 @@ impl ReviewController {
                 if let Err(reduction) = self.require_token("Sign in to submit a review.") {
                     return reduction;
                 }
-                self.overlay = Some(ReviewOverlay::SubmitReview);
+                self.open_overlay(ReviewOverlay::SubmitReview);
                 Reduction::changed()
             }
             ReviewAction::ToggleFileComments(path) => {
@@ -1480,7 +1494,7 @@ impl ReviewController {
                 self.account.token = Some(token.clone());
                 self.account.token_loaded = true;
                 if self.overlay == Some(ReviewOverlay::Auth) {
-                    self.overlay = None;
+                    self.close_overlay();
                 }
                 let mut reduction = Reduction::changed()
                     .effect(ReviewEffect::SaveToken(token))

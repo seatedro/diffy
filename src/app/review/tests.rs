@@ -1897,7 +1897,9 @@ fn sign_in_modal_closes_with_cancel_or_escape() {
     ui.click_node(By::role_name(Role::Button, "Sign in to GitHub"));
     ui.find(By::role_name(Role::Dialog, "Sign in to GitHub"));
     assert!(ui.app().driver.review.is_modal_open());
+    assert_eq!(ui.focus(), Some(crate::app::text_targets::REVIEW_DIALOG));
     ui.click_node(By::role_name(Role::Button, "Cancel"));
+    assert_eq!(ui.focus(), Some(crate::app::text_targets::REVIEW_ACCOUNT));
     assert!(
         ui.try_find(By::role_name(Role::Dialog, "Sign in to GitHub"))
             .is_none()
@@ -1919,4 +1921,7 @@ fn sign_in_modal_closes_with_cancel_or_escape() {
         ui.try_find(By::role_name(Role::Dialog, "Sign in to GitHub"))
             .is_none()
     );
+    assert_eq!(ui.focus(), Some(crate::app::text_targets::REVIEW_ACCOUNT));
+    ui.key("enter");
+    ui.find(By::role_name(Role::Dialog, "Sign in to GitHub"));
 }

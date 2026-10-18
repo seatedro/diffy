@@ -152,6 +152,13 @@ impl CompareOutput {
         Ok(Self::from_document(&doc))
     }
 
+    pub fn from_patch_bytes(raw: &[u8]) -> Result<Self> {
+        match std::str::from_utf8(raw) {
+            Ok(text) => Self::from_patch(text),
+            Err(_) => Self::from_patch(diffy_diff::TextStore::from_bytes(raw).as_str()),
+        }
+    }
+
     pub fn push_document(&mut self, doc: Arc<DiffDocument>) {
         debug_assert_eq!(doc.file_count(), 1);
         self.documents.resize(self.entries.len(), None);
@@ -275,6 +282,16 @@ mod tests {
             }
         );
         assert!(CompareOutput::from_patch("").unwrap().entries.is_empty());
+        let bytes = PATCH.replace("+new", "+n\u{1}w").into_bytes();
+        let mut invalid = bytes.clone();
+        let at = invalid.iter().position(|&b| b == 1).unwrap();
+        invalid[at] = 0xff;
+        let decoded = CompareOutput::from_patch_bytes(&invalid).unwrap();
+        let doc = decoded.document(0).unwrap();
+        assert_eq!(
+            doc.text(0, diffy_diff::Side::New).line(0),
+            Some("n\u{FFFD}w")
+        );
     }
 
     #[test]

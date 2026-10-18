@@ -70,10 +70,38 @@ so an unknown language costs one map lookup afterwards.
    thread downloads the index (at most once per store, cached) and then the
    pack.
 4. A language missing from the fresh index, or whose download fails, is
-   unavailable for the rest of the session.
+   unavailable until `GrammarStore::retry` (which refetches the index).
 
 - `HighlightWorker` answers a pending language with a plain result marked
   `pending`, then sends the real result for the same slot and generation.
+
+### Legacy-format packs
+
+Diffy's published grammars use the older Phosphor format, which
+difftastic also reads. `StoreConfig::legacy_packs(LegacyPacks::new(dir,
+&keys).downloads(url))` loads them (feature `download`); see
+[legacy_pack.rs](src/legacy_pack.rs).
+
+- Languages: the 13 in `legacy_pack::LANGUAGES` (Bash, C, C++, Go,
+  JavaScript, JSON, Nix, Python, Rust, TOML, TypeScript, TSX, Zig). Tags
+  resolve by name or extension; `js`/`mjs` use TypeScript and `jsx` uses
+  TSX.
+- Cache: `<dir>/<language>/<version>/<platform>/` with `manifest.json`,
+  `parser.<dylib|so|dll>`, `highlights.scm`, optional `injections.scm`;
+  `<platform>` is `macos-aarch64`, `linux-x86_64`, and so on. Diffy uses
+  `<data-local dir>/diffy/phosphor/languages`. The verified index is kept at
+  `<dir>/.index/<platform>.json`.
+- Index: `{"payload": {"schema_version": 1, "platform", "tree_sitter_abi",
+  "packs": [...]}, "signature"}`, Ed25519 over the canonical payload.
+- Trust: a cached pack loads only when its `manifest.json` matches the
+  SHA-256 in an index that verifies against a configured key, and every
+  file matches its SHA-256. Without a verified index nothing loads.
+- Queries: `; inherits: ecma` adds the built-in ECMAScript query and TSX
+  adds TypeScript's; other inherits are ignored, as Phosphor did.
+- A download installs the manifest last and removes this platform's other
+  versions of the language, so difftastic reads the same pack.
+- A failed download leaves the language unavailable until
+  `GrammarStore::retry`, which also refetches the index.
 
 ## Building packs
 

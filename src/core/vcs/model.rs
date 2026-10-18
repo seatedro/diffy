@@ -149,7 +149,7 @@ pub struct ChangeFlags {
     pub conflicted: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum FileChangeStatus {
     Added,
     Modified,
@@ -162,7 +162,7 @@ pub enum FileChangeStatus {
     Untracked,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum ChangeBucket {
     WorkingCopy,
     Staged,
@@ -171,7 +171,7 @@ pub enum ChangeBucket {
     Conflicted,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct FileChange {
     pub path: String,
     pub old_path: Option<String>,

@@ -35,6 +35,10 @@ impl JjCli {
         self.run_inner(args, true)
     }
 
+    pub fn run_bytes(&self, args: &[OsString]) -> Result<Vec<u8>> {
+        self.run_inner_bytes(args, false)
+    }
+
     pub fn run_bytes_ignored_wc(&self, args: &[OsString]) -> Result<Vec<u8>> {
         self.run_inner_bytes(args, true)
     }

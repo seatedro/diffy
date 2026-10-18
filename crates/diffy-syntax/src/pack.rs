@@ -207,7 +207,7 @@ pub fn library_suffix(target: &str) -> &'static str {
     }
 }
 
-fn unsafe_field(field: &'static str, value: &str) -> PackError {
+pub(crate) fn unsafe_field(field: &'static str, value: &str) -> PackError {
     PackError::Unsafe {
         field,
         value: value.to_owned(),
@@ -224,7 +224,7 @@ fn check_file(field: &'static str, file: &PackFile) -> Result<(), PackError> {
 
 /// One ordinary file name: no separators, no `.` or `..`, no drive or
 /// stream prefix, nothing a shell or Windows would treat specially.
-fn check_segment(field: &'static str, value: &str) -> Result<(), PackError> {
+pub(crate) fn check_segment(field: &'static str, value: &str) -> Result<(), PackError> {
     let ok = !value.is_empty()
         && value.len() <= 128
         && value != "."
@@ -250,7 +250,7 @@ fn check_tag(field: &'static str, value: &str) -> Result<(), PackError> {
     Ok(())
 }
 
-fn is_c_identifier(value: &str) -> bool {
+pub(crate) fn is_c_identifier(value: &str) -> bool {
     let mut bytes = value.bytes();
     value.len() <= 128
         && bytes
@@ -313,9 +313,9 @@ pub fn check_pack_dir(dir: &Path) -> Result<PackManifest, PackError> {
 }
 
 #[cfg(feature = "download")]
-pub(crate) use signed::unhex;
-#[cfg(feature = "download")]
 pub use signed::{VerifiedIndex, verify_index};
+#[cfg(feature = "download")]
+pub(crate) use signed::{unhex, verify_signed};
 
 #[cfg(feature = "download")]
 mod signed {
@@ -350,23 +350,9 @@ mod signed {
         keys: &[[u8; 32]],
         target: &str,
     ) -> Result<VerifiedIndex, PackError> {
-        if keys.is_empty() {
-            return Err(PackError::NoTrustedKeys);
-        }
-        let envelope: Envelope =
-            serde_json::from_slice(bytes).map_err(|e| PackError::Malformed(e.to_string()))?;
-        let signature = unhex(&envelope.signature).ok_or(PackError::BadSignature)?;
-        let message = canonical_json(&envelope.payload);
-        let trusted = keys.iter().any(|key| {
-            UnparsedPublicKey::new(&ED25519, key)
-                .verify(message.as_bytes(), &signature)
-                .is_ok()
-        });
-        if !trusted {
-            return Err(PackError::BadSignature);
-        }
-        let index: PackIndex = serde_json::from_value(envelope.payload)
-            .map_err(|e| PackError::Malformed(e.to_string()))?;
+        let payload = verify_signed(bytes, keys)?;
+        let index: PackIndex =
+            serde_json::from_value(payload).map_err(|e| PackError::Malformed(e.to_string()))?;
         if index.schema != SCHEMA {
             return Err(PackError::Schema(index.schema));
         }
@@ -387,6 +373,25 @@ mod signed {
             }
         }
         Ok(verified)
+    }
+
+    pub(crate) fn verify_signed(bytes: &[u8], keys: &[[u8; 32]]) -> Result<Value, PackError> {
+        if keys.is_empty() {
+            return Err(PackError::NoTrustedKeys);
+        }
+        let envelope: Envelope =
+            serde_json::from_slice(bytes).map_err(|e| PackError::Malformed(e.to_string()))?;
+        let signature = unhex(&envelope.signature).ok_or(PackError::BadSignature)?;
+        let message = canonical_json(&envelope.payload);
+        let trusted = keys.iter().any(|key| {
+            UnparsedPublicKey::new(&ED25519, key)
+                .verify(message.as_bytes(), &signature)
+                .is_ok()
+        });
+        if !trusted {
+            return Err(PackError::BadSignature);
+        }
+        Ok(envelope.payload)
     }
 
     pub(crate) fn unhex(text: &str) -> Option<Vec<u8>> {

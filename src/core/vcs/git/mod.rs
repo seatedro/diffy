@@ -4,7 +4,7 @@ pub mod status;
 
 pub use adapter::GitBackend;
 pub use service::{
-    BranchInfo, CommitInfo, GitService, INDEX_REF, PatchApplyTarget, PullError, PullOutcome,
-    TagInfo, WORKDIR_REF, is_pr_ref, pr_ref_path,
+    BranchInfo, CommitInfo, GitService, INDEX_REF, PullError, PullOutcome, TagInfo, WORKDIR_REF,
+    is_pr_ref, pr_ref_path,
 };
 pub use status::{StatusItem, StatusOperation, StatusScope};

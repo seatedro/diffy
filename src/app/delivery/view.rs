@@ -2,6 +2,7 @@ use diffy_syntax::{GrammarState, GrammarStatus};
 use quark::view;
 use quark_app::ViewContext;
 use quark_components::{Button, ButtonSize, ButtonStyle, popover_panel};
+use quark_ui::FocusId;
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
 use quark_ui::icons::lucide;
@@ -16,6 +17,7 @@ use crate::contracts::delivery::DeliveryAction;
 use crate::core::syntax::grammar;
 
 const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
+pub const LANGUAGES_TOGGLE: FocusId = FocusId::from_key("diffy.delivery.languages");
 
 pub fn view(delivery: &mut DeliveryController, slot: &Slot, cx: &mut ViewContext) -> AnyElement {
     let theme = cx.theme;
@@ -39,13 +41,22 @@ pub fn view(delivery: &mut DeliveryController, slot: &Slot, cx: &mut ViewContext
                     size={ButtonSize::Compact}
                 />
             }
-            <Button
-                on:click={DeliveryAction::ToggleLanguages}
-                label="Syntax languages"
-                icon={if failed { lucide::ALERT_CIRCLE } else { lucide::CODE }}
-                active={open}
-                size={ButtonSize::Compact}
-            />
+            <div
+                class="shrink-0"
+                focus_ring={LANGUAGES_TOGGLE}
+                on:key:enter={DeliveryAction::ToggleLanguages}
+                on:key:space={DeliveryAction::ToggleLanguages}
+                on:key:escape={DeliveryAction::CloseLanguages}
+                test_id="delivery.languages.toggle"
+            >
+                <Button
+                    on:click={DeliveryAction::ToggleLanguages}
+                    label="Syntax languages"
+                    icon={if failed { lucide::ALERT_CIRCLE } else { lucide::CODE }}
+                    active={open}
+                    size={ButtonSize::Compact}
+                />
+            </div>
             <text size={TextStyle::Caption.font_size(theme)} color={theme.colors.text_muted}>
                 {VERSION}
             </text>
@@ -63,6 +74,7 @@ pub fn overlay(
     }
     let theme = cx.theme;
     let scale = tokens::ui_scale(theme);
+    let (width, height) = cx.frame.size();
     let rows: Vec<AnyElement> = grammar::languages()
         .iter()
         .map(|language| {
@@ -75,12 +87,25 @@ pub fn overlay(
         .collect();
     Some(
         view! {
-            <div
-                class="absolute"
-                right={tokens::scaled(Sp::MD, scale)}
-                bottom={theme.metrics.status_bar_height + tokens::scaled(Sp::XS, scale)}
-                z_index={200}
-            >
+            <div class="absolute" left={0.0} top={0.0} w={width} h={height} z_index={199}>
+                <div
+                    class="absolute"
+                    left={0.0}
+                    top={0.0}
+                    w={width}
+                    h={height}
+                    block_mouse
+                    on:click={DeliveryAction::CloseLanguages}
+                    test_id="delivery.languages.scrim"
+                />
+                <div
+                    class="absolute"
+                    right={tokens::scaled(Sp::MD, scale)}
+                    bottom={theme.metrics.status_bar_height + tokens::scaled(Sp::XS, scale)}
+                    z_index={200}
+                    block_mouse
+                    on:click={NoopAction}
+                >
                 <popover_panel(theme)
                     class="relative"
                     w={tokens::scaled(Sz::TOAST_MAX_W, scale)}
@@ -93,6 +118,7 @@ pub fn overlay(
                     {update_row(delivery.update(), theme)}
                     {...rows}
                 </popover_panel>
+                </div>
             </div>
         }
         .into_any(),
@@ -169,7 +195,7 @@ fn language_row(
     let (label, color) = match state {
         Some(GrammarState::Ready | GrammarState::Installed) => ("Ready", theme.colors.text_muted),
         Some(GrammarState::Downloading) => ("Downloading", theme.colors.text_muted),
-        Some(GrammarState::Failed(_)) => ("Download failed", theme.colors.status_error),
+        Some(GrammarState::Failed(_)) => ("Failed", theme.colors.status_error),
         None => ("Not loaded", theme.colors.text_muted),
     };
     let reason = match state {
@@ -185,10 +211,19 @@ fn language_row(
             @when {failed} { tooltip={reason.clone().unwrap_or_default()} }
             test_id={format!("delivery.language.{language}")}
         >
-            <div class="flex-1" min_w={0.0}>
+            <div class="flex-1 flex-col" min_w={0.0}>
                 <text size={TextStyle::BodySmall.font_size(theme)} color={theme.colors.text}>
                     {language}
                 </text>
+                if let Some(reason) = reason.clone() {
+                    <text
+                        size={TextStyle::Caption.font_size(theme)}
+                        class="truncate"
+                        color={theme.colors.text_muted}
+                    >
+                        {reason}
+                    </text>
+                }
             </div>
             <text size={TextStyle::Caption.font_size(theme)} color={color}>
                 {label}

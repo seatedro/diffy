@@ -1,17 +1,21 @@
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use diffy_syntax::{GrammarState, GrammarStatus};
 
-use crate::contracts::commands::{ToastKind, ToastUpdate};
+use crate::contracts::commands::{CommandDescriptor, CommandSource, ToastKind, ToastUpdate};
 use crate::contracts::delivery::{
     DeliveryAction, DeliveryEffect, DeliveryEvent, GrammarAvailability,
 };
 use crate::contracts::shared::SharedContext;
 use crate::contracts::shell::{Controller, Intent, Reduction};
 use crate::contracts::viewport::CompareManifestSnapshot;
+use crate::core::keymap::ShortcutCommand;
 use crate::core::syntax::grammar;
 use crate::core::update::{AvailableUpdate, StagedUpdate};
+
+pub const UPDATE_POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum UpdateState {
@@ -33,6 +37,7 @@ pub struct DeliveryController {
     requested: HashSet<&'static str>,
     availability: GrammarAvailability,
     languages_open: bool,
+    poll_generation: u64,
 }
 
 impl Default for DeliveryController {
@@ -51,6 +56,7 @@ impl DeliveryController {
             requested: HashSet::new(),
             availability: GrammarAvailability::default(),
             languages_open: false,
+            poll_generation: 0,
         }
     }
 
@@ -86,6 +92,51 @@ impl DeliveryController {
         )
     }
 
+    fn staged(&self) -> bool {
+        matches!(
+            self.update,
+            UpdateState::ReadyToRestart(_) | UpdateState::Restarting(_)
+        )
+    }
+
+    fn schedule_poll(&mut self) -> Reduction {
+        self.poll_generation += 1;
+        if !self.updates_supported || !self.auto_update || self.staged() {
+            return Reduction::default();
+        }
+        Reduction::default().effect(DeliveryEffect::ScheduleUpdatePoll {
+            generation: self.poll_generation,
+            after: UPDATE_POLL_INTERVAL,
+        })
+    }
+
+    fn poll_due(&mut self, generation: u64) -> Reduction {
+        if generation != self.poll_generation {
+            return Reduction::default();
+        }
+        let mut reduction = if self.polls_for_updates() {
+            Reduction::default().effect(DeliveryEffect::CheckForUpdates { silent: true })
+        } else {
+            Reduction::default()
+        };
+        reduction.merge(self.schedule_poll());
+        reduction
+    }
+
+    fn settings_changed(&mut self, auto_update: bool) -> Reduction {
+        if auto_update == self.auto_update {
+            return Reduction::default();
+        }
+        self.auto_update = auto_update;
+        let mut reduction = if self.polls_for_updates() {
+            Reduction::default().effect(DeliveryEffect::CheckForUpdates { silent: true })
+        } else {
+            Reduction::default()
+        };
+        reduction.merge(self.schedule_poll());
+        reduction
+    }
+
     fn ensure(&mut self, languages: impl IntoIterator<Item = &'static str>) -> Reduction {
         let missing: Vec<&'static str> = languages
             .into_iter()
@@ -104,6 +155,7 @@ impl DeliveryController {
         if self.polls_for_updates() {
             reduction = reduction.effect(DeliveryEffect::CheckForUpdates { silent: true });
         }
+        reduction.merge(self.schedule_poll());
         reduction
     }
 
@@ -189,6 +241,13 @@ impl Controller for DeliveryController {
                 self.languages_open = !self.languages_open;
                 Reduction::changed()
             }
+            DeliveryAction::CloseLanguages => {
+                if !self.languages_open {
+                    return Reduction::default();
+                }
+                self.languages_open = false;
+                Reduction::changed()
+            }
             DeliveryAction::RetryGrammar { language } => {
                 let Some(position) = self
                     .grammars
@@ -247,6 +306,7 @@ impl Controller for DeliveryController {
                 }
             }
             DeliveryEvent::GrammarsChanged(grammars) => self.grammars_changed(grammars),
+            DeliveryEvent::UpdatePollDue { generation } => self.poll_due(generation),
         }
     }
 
@@ -254,20 +314,50 @@ impl Controller for DeliveryController {
         match intent {
             Intent::Startup(startup) => self.startup(startup.settings.auto_update),
             Intent::ActivateWorkspace { .. } => {
-                Reduction::default().effect(DeliveryEffect::WatchGrammars)
+                let mut reduction = Reduction::default().effect(DeliveryEffect::WatchGrammars);
+                reduction.merge(self.schedule_poll());
+                reduction
             }
             Intent::PublishManifest(manifest) => self.manifest(manifest),
             Intent::SettingsChanged(snapshot) => {
-                let enabled = snapshot.settings.auto_update && !self.auto_update;
-                self.auto_update = snapshot.settings.auto_update;
-                if enabled && self.polls_for_updates() {
-                    return Reduction::default()
-                        .effect(DeliveryEffect::CheckForUpdates { silent: true });
-                }
-                Reduction::default()
+                self.settings_changed(snapshot.settings.auto_update)
             }
             _ => Reduction::default(),
         }
+    }
+}
+
+impl CommandSource for DeliveryController {
+    fn commands(&self, _cx: &SharedContext, out: &mut Vec<CommandDescriptor>) {
+        out.push(
+            CommandDescriptor::new(
+                "delivery.check_for_updates",
+                "Check for updates",
+                DeliveryAction::CheckForUpdates,
+            )
+            .shortcut(ShortcutCommand::CheckUpdates)
+            .enabled(!self.busy()),
+        );
+        if let UpdateState::ReadyToRestart(staged) = &self.update {
+            out.push(
+                CommandDescriptor::new(
+                    "delivery.restart_to_update",
+                    "Restart to update",
+                    DeliveryAction::RestartToUpdate,
+                )
+                .detail(format!("Diffy {}", staged.update.version)),
+            );
+        }
+        let mut languages = CommandDescriptor::new(
+            "delivery.syntax_languages",
+            "Syntax languages",
+            DeliveryAction::ToggleLanguages,
+        );
+        let failed = self.failed_grammars().count();
+        if failed > 0 {
+            languages = languages.detail(format!("{failed} failed to download or load"));
+        }
+        out.push(languages);
     }
 }
 

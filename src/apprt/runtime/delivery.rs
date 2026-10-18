@@ -1,6 +1,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use diffy_syntax::GrammarStore;
 
@@ -11,12 +13,14 @@ use crate::contracts::delivery::{DeliveryEffect, DeliveryEvent};
 use crate::core::update::UpdateCheck;
 
 type Watcher = Arc<Mutex<Option<ScopedEventSender>>>;
+type Poll = (u64, Duration, ScopedEventSender);
 
 pub struct DeliveryRuntime {
     services: DeliveryServices,
     store: GrammarStore,
     watcher: Watcher,
     subscribed: AtomicBool,
+    poll: Mutex<Option<Sender<Poll>>>,
 }
 
 impl DeliveryRuntime {
@@ -30,6 +34,7 @@ impl DeliveryRuntime {
             store,
             watcher: Arc::default(),
             subscribed: AtomicBool::new(false),
+            poll: Mutex::default(),
         }
     }
 
@@ -87,6 +92,9 @@ impl DeliveryRuntime {
                     events.send(DeliveryEvent::GrammarsChanged(grammar_status(&store)));
                 });
             }
+            DeliveryEffect::ScheduleUpdatePoll { generation, after } => {
+                self.schedule_poll((generation, after, events));
+            }
             DeliveryEffect::RetryGrammar { language } => {
                 let store = self.store.clone();
                 thread::spawn(move || {
@@ -94,6 +102,26 @@ impl DeliveryRuntime {
                     events.send(DeliveryEvent::GrammarsChanged(grammar_status(&store)));
                 });
             }
+        }
+    }
+
+    fn schedule_poll(&self, poll: Poll) {
+        let mut sender = self.poll.lock().unwrap_or_else(PoisonError::into_inner);
+        let poll = match &*sender {
+            Some(existing) => match existing.send(poll) {
+                Ok(()) => return,
+                Err(failed) => failed.0,
+            },
+            None => poll,
+        };
+        let (next, requests) = channel();
+        let _ = next.send(poll);
+        let spawned = thread::Builder::new()
+            .name("diffy-update-poll".to_owned())
+            .spawn(move || poll_loop(&requests));
+        match spawned {
+            Ok(_) => *sender = Some(next),
+            Err(error) => tracing::warn!(%error, "update polling unavailable"),
         }
     }
 
@@ -118,6 +146,27 @@ impl DeliveryRuntime {
             }
             true
         });
+    }
+}
+
+fn poll_loop(requests: &Receiver<Poll>) {
+    let mut pending: Option<(u64, Instant, ScopedEventSender)> = None;
+    loop {
+        let next = match &pending {
+            Some((_, at, _)) => requests.recv_timeout(at.saturating_duration_since(Instant::now())),
+            None => requests.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        };
+        match next {
+            Ok((generation, after, events)) => {
+                pending = Some((generation, Instant::now() + after, events));
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if let Some((generation, _, events)) = pending.take() {
+                    events.send(DeliveryEvent::UpdatePollDue { generation });
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
     }
 }
 
@@ -173,5 +222,29 @@ mod tests {
                 state: GrammarState::Ready
             }]
         );
+    }
+
+    #[test]
+    fn a_newer_poll_replaces_the_pending_one() {
+        let runtime = DeliveryRuntime::with_store(DeliveryServices, GrammarStore::none());
+        let (sender, messages) = channel();
+        let events = RuntimeEventSender::from_channel(sender).scoped(WorkspaceEpoch::default());
+        let schedule = |generation, millis| DeliveryEffect::ScheduleUpdatePoll {
+            generation,
+            after: Duration::from_millis(millis),
+        };
+
+        runtime.dispatch(schedule(1, 200), events.clone());
+        runtime.dispatch(schedule(2, 20), events);
+        let due = match messages.recv_timeout(Duration::from_secs(10)) {
+            Ok(AppMessage::Runtime(envelope)) => match envelope.event {
+                AppEvent::Delivery(DeliveryEvent::UpdatePollDue { generation }) => generation,
+                other => panic!("unexpected event {other:?}"),
+            },
+            other => panic!("unexpected message {other:?}"),
+        };
+
+        assert_eq!(due, 2);
+        assert!(messages.recv_timeout(Duration::from_millis(400)).is_err());
     }
 }

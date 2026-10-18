@@ -1624,6 +1624,7 @@ impl ReviewController {
             }
             Intent::PublishManifest(_) => Reduction::changed(),
             Intent::OpenPullRequest { url } => self.open_pull_request(url.clone()),
+            Intent::RequestAnnotation(target) => self.open_composer_at(target.clone(), cx),
             Intent::GrammarAvailable(_) => {
                 self.host.grammars_changed();
                 Reduction::changed()

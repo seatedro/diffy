@@ -96,7 +96,7 @@ pub fn option_row(row: OptionRow, theme: &Theme, on_click: quark_ui::Action) -> 
             })}
             if row.detail.is_none_or(str::is_empty) { <div class="flex-1" /> }
             {?row.rhs.filter(|r| !r.is_empty()).map(|r| view! {
-                <text size={small} class="shrink-0" color={tc.text_muted}>{r}</text>
+                <text size={small} color={tc.text_muted}>{r}</text>
             })}
             if row.current {
                 <icon svg={lucide::CHECK} size={Ico::SM} color={tc.accent} />
@@ -125,13 +125,13 @@ pub fn highlighted(
             continue;
         }
         if cursor < start {
-            spans.push(view! { <text size={size} class="shrink-0" color={color}>{&label[cursor..start]}</text> });
+            spans.push(view! { <text size={size} color={color}>{&label[cursor..start]}</text> });
         }
-        spans.push(view! { <text size={size} class="shrink-0 font-semibold" color={accent}>{&label[start..end]}</text> });
+        spans.push(view! { <text size={size} class="font-semibold" color={accent}>{&label[start..end]}</text> });
         cursor = end;
     }
     if cursor < label.len() {
         spans.push(view! { <text size={size} class="truncate" color={color}>{&label[cursor..]}</text> });
     }
-    view! { <div class="flex-row items-center shrink overflow-hidden" min_w={0.0}>{...spans}</div> }
+    view! { <div class="flex-row items-center overflow-hidden" min_w={0.0}>{...spans}</div> }
 }

@@ -837,3 +837,21 @@ fn return_inserts_a_newline_in_multiline_editors() {
         "one\ntwo"
     );
 }
+
+#[test]
+fn theme_picker_offers_and_selects_the_current_default_theme() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    ui.run(CommandsAction::OpenThemePicker);
+    let current = ui.find(By::role_name(Role::ListBoxOption, "diffy-default"));
+    assert_eq!(
+        ui.find_all(Role::ListBoxOption)
+            .iter()
+            .filter(|n| n.name.as_deref() == Some("diffy-default"))
+            .count(),
+        1
+    );
+    assert!(current.bounds.height > 0.0);
+    ui.type_text("diffy-def");
+    ui.find(By::role_name(Role::ListBoxOption, "diffy-default"));
+}

@@ -470,10 +470,14 @@ impl CommandsController {
     fn open_theme_picker(&mut self) -> Reduction {
         let registry = crate::app::theme::registry();
         let current = &self.settings.settings.theme_name;
-        let candidates = registry
-            .names()
+        let default = crate::app::theme::DEFAULT_THEME;
+        let builtin = registry.get(default).is_none().then_some(default);
+        let candidates = builtin
+            .into_iter()
+            .chain(registry.names())
             .map(|name| {
                 let detail = match registry.variant(name) {
+                    _ if builtin == Some(name) => "Light and dark",
                     crate::core::themes::ThemeVariant::Dual => "Light and dark",
                     crate::core::themes::ThemeVariant::Dark => "Dark",
                     crate::core::themes::ThemeVariant::Light => "Light",

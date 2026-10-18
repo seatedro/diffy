@@ -99,6 +99,13 @@ tempfile = "3.14"
 webbrowser = "1.0"
 halogen = { path = "crates/halogen" }
 carbon = { path = "crates/carbon" }
+diffy-diff = { path = "crates/diffy-diff" }
+diffy-syntax = { path = "crates/diffy-syntax", features = ["download"] }
+diffy-ui = { path = "crates/diffy-ui" }
+quark.workspace = true
+quark-app = { workspace = true, default-features = false, features = ["ui", "components", "dialogs"] }
+quark-components.workspace = true
+quark-ui.workspace = true
 phosphor = { path = "crates/phosphor", default-features = false }
 vendored_difftastic = { package = "difftastic", path = "crates/difftastic", optional = true, default-features = false, features = ["dynamic-languages"] }
 resvg = { version = "0.45", default-features = false }
@@ -125,6 +132,7 @@ objc2-foundation = { version = "0.3", features = ["NSGeometry"] }
 
 [dev-dependencies]
 git2 = { version = "0.20", default-features = false }
+quark-app = { workspace = true, default-features = false, features = ["ui", "components", "test-support"] }
 
 [[bin]]
 name = "diffy"

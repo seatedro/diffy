@@ -1,13 +1,17 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use diffy_diff::{DiffDocument, FileDiffSnapshot, FileStatus, SourcePurpose};
+pub use diffy_diff::DiffStats as FileStats;
+use diffy_diff::{
+    ChangeSummary, ContentChange, DiffDocument, FileDiffSnapshot, FileStatus, SourcePurpose,
+    SourceRemap,
+};
 
 use crate::contracts::shared::{CompareGeneration, FileKey, FileRevision};
 use crate::contracts::shell::{Action, AppEvent, Effect};
 use crate::contracts::viewport::{ViewportAction, ViewportEffect, ViewportEvent};
 use crate::core::compare::stats::CompareFilePaths;
-use crate::core::compare::{ComparePhase, LayoutMode, RendererKind};
+use crate::core::compare::{CompareEntry, ComparePhase, LayoutMode, RendererKind};
 use crate::core::vcs::model::{FileChange, VcsCompareRequest};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -39,12 +43,6 @@ pub struct CompareIntent {
     pub request: VcsCompareRequest,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FileStats {
-    Pending,
-    Known { additions: u32, deletions: u32 },
-}
-
 #[derive(Debug, Clone)]
 pub struct ManifestFile {
     pub key: FileKey,
@@ -53,6 +51,32 @@ pub struct ManifestFile {
     pub status: FileStatus,
     pub binary: bool,
     pub stats: FileStats,
+    pub content: ContentChange,
+    pub mode_changed: bool,
+}
+
+impl ManifestFile {
+    pub fn from_entry(key: FileKey, revision: FileRevision, entry: &CompareEntry) -> Self {
+        Self {
+            key,
+            revision,
+            paths: entry.paths.clone(),
+            status: entry.summary.status,
+            binary: entry.summary.binary,
+            stats: entry.stats,
+            content: entry.summary.content,
+            mode_changed: entry.summary.mode_changed,
+        }
+    }
+
+    pub fn summary(&self) -> ChangeSummary {
+        ChangeSummary {
+            status: self.status,
+            binary: self.binary,
+            content: self.content,
+            mode_changed: self.mode_changed,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -61,6 +85,16 @@ pub struct CompareManifestSnapshot {
     pub resolved_left: String,
     pub resolved_right: String,
     pub files: Arc<[ManifestFile]>,
+}
+
+impl CompareManifestSnapshot {
+    pub fn file(&self, key: FileKey) -> Option<&ManifestFile> {
+        let index = usize::try_from(key.0).ok()?;
+        self.files
+            .get(index)
+            .filter(|file| file.key == key)
+            .or_else(|| self.files.iter().find(|file| file.key == key))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +138,14 @@ impl PreparedDiff {
 
     pub fn document(&self) -> &Arc<DiffDocument> {
         &self.snapshot.diff
+    }
+
+    pub fn stats(&self) -> FileStats {
+        self.snapshot.diff.stats(0)
+    }
+
+    pub fn summary(&self) -> ChangeSummary {
+        self.snapshot.diff.summary(0)
     }
 }
 
@@ -165,7 +207,13 @@ pub struct TextCompareRequest {
 pub struct FileTarget {
     pub key: FileKey,
     pub revision: FileRevision,
-    pub paths: CompareFilePaths,
+    pub entry: CompareEntry,
+}
+
+impl FileTarget {
+    pub fn paths(&self) -> &CompareFilePaths {
+        &self.entry.paths
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,6 +255,7 @@ pub struct SourceLoadRequest {
     pub generation: CompareGeneration,
     pub repo_path: PathBuf,
     pub file: FileTarget,
+    pub prepared: PreparedDiff,
     pub old_reference: String,
     pub new_reference: String,
     pub purpose: SourcePurpose,
@@ -268,9 +317,39 @@ pub struct FileStat {
 }
 
 #[derive(Debug, Clone)]
-pub struct LoadedSources {
-    pub old: Option<Arc<str>>,
-    pub new: Option<Arc<str>>,
+pub struct CompareResult {
+    pub manifest: Arc<CompareManifestSnapshot>,
+    pub entries: Arc<[CompareEntry]>,
+    pub prepared: Arc<[PreparedDiff]>,
+    pub notice: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ViewportInstall {
+    Begin {
+        generation: CompareGeneration,
+    },
+    File {
+        prepared: PreparedDiff,
+        remap: Option<SourceRemap>,
+    },
+    Failed {
+        generation: CompareGeneration,
+        key: FileKey,
+        revision: FileRevision,
+        message: String,
+    },
+    Remove {
+        key: FileKey,
+        revision: FileRevision,
+    },
+    Order {
+        generation: CompareGeneration,
+        files: Arc<[FileKey]>,
+    },
+    TextCompare {
+        prepared: PreparedDiff,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -282,7 +361,7 @@ pub enum PipelineEvent {
     CompareFinished {
         generation: CompareGeneration,
         request: VcsCompareRequest,
-        manifest: Arc<CompareManifestSnapshot>,
+        result: CompareResult,
     },
     CompareFailed {
         generation: CompareGeneration,
@@ -335,10 +414,8 @@ pub enum PipelineEvent {
     },
     SourcesLoaded {
         generation: CompareGeneration,
-        key: FileKey,
-        revision: FileRevision,
         purpose: SourcePurpose,
-        sources: LoadedSources,
+        prepared: PreparedDiff,
     },
     SourcesFailed {
         generation: CompareGeneration,

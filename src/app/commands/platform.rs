@@ -113,11 +113,7 @@ pub fn key_action(
         && !controllers.commands.settings_open()
         && !controllers.review.is_modal_open()
         && !controllers.viewport.interaction.search().open
-        && controllers
-            .viewport
-            .interaction
-            .selection_target()
-            .is_none()
+        && !controllers.viewport.interaction.has_text_selection()
         && controllers.mutations.selected_lines().is_empty()
         && !focus.is_some_and(|f| TEXT_FIELDS.contains(&f));
     leaves_commit.then(|| NavigationAction::ClearHistoryCommit.into())

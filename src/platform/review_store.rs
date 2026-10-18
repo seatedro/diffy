@@ -32,9 +32,9 @@ impl std::fmt::Debug for ReviewStore {
 
 impl ReviewStore {
     pub fn new_default() -> Self {
-        let base = dirs::config_dir()
+        let base = crate::platform::startup::app_config_dir()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        Self::open_or_default(base.join("diffy").join(REVIEW_STORE_FILE_NAME))
+        Self::open_or_default(base.join(REVIEW_STORE_FILE_NAME))
     }
 
     pub fn for_settings_store(settings_store: &SettingsStore) -> Self {

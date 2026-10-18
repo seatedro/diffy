@@ -74,7 +74,11 @@ high enough that you explicitly call out why.
 - macOS Computer Use dev app: `scripts/dev-loop.sh app` builds and launches
   `Diffy Dev.app` (bundle id `io.github.seatedro.diffy.dev`; ad-hoc signed,
   keyring disabled, dev token file for GitHub auth, startup args after `--`).
-  Target it, not any installed `/Applications/Diffy.app`.
+  Target it, not any installed `/Applications/Diffy.app`. Its settings live in
+  `DIFFY_CONFIG_DIR` (default `~/Library/Application Support/diffy-dev`), never
+  the release app's. `--bundle-dir DIR --bundle-suffix NAME` builds a separate
+  `Diffy Dev NAME.app` with its own bundle id and `DIR/config`, so parallel work
+  never overwrites a shared bundle.
 - GUI validation: use the global `$cua` skill/CLI; keep captures under `/tmp/cua/`.
 
 Headless UI loop: drive surfaces with `quark_app::testing::UiTestHarness`

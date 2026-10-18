@@ -392,7 +392,7 @@ impl DiffColors {
             add_text: c.line_add_text,
             del_text: c.line_del_text,
             file_header: pick(o.file_header, c.file_header_bg),
-            separator: pick(o.separator, c.hunk_header_bg),
+            separator: pick(o.separator, gutter),
             hover: c.ghost_element_hover,
             search_match: pick(o.search_match, c.search_match_bg),
             search_active: pick(o.search_active, c.search_match_active_bg),

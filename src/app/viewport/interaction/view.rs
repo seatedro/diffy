@@ -212,7 +212,23 @@ fn diff_area(
         0.0
     };
     let search = search_bar(interaction, width, search_h, cx);
-    let list_h = (height - search_h).max(0.0);
+    let banner = decorator
+        .as_ref()
+        .and_then(|d| d.banner(width))
+        .map(|(h, element)| {
+            let h = h.clamp(0.0, (height - search_h).max(0.0));
+            let banner = div()
+                .w(width)
+                .h(h)
+                .flex_shrink_0()
+                .overflow_hidden()
+                .test_id("diff.banner")
+                .child(element);
+            (h, banner)
+        });
+    let banner_h = banner.as_ref().map_or(0.0, |(h, _)| *h);
+    let banner = banner.map(|(_, banner)| banner);
+    let list_h = (height - search_h - banner_h).max(0.0);
     interaction.set_viewport(width, list_h);
     let style = interaction.style(cx.theme.metrics.mono_font_size);
     let options = DiffViewOptions {
@@ -249,6 +265,7 @@ fn diff_area(
     view! {
         <div w={width} h={height} class="flex-col">
             {search}
+            {?banner}
             {list_box}
         </div>
     }

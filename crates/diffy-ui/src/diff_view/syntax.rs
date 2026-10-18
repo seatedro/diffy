@@ -218,6 +218,30 @@ impl DiffSyntax {
         self.worker.is_some()
     }
 
+    pub fn requested(&self) -> u64 {
+        self.document
+    }
+
+    pub fn is_shown(&self) -> bool {
+        self.visible.as_ref().is_some_and(|v| !v.is_empty())
+    }
+
+    pub fn forget_requests(&mut self) {
+        self.document = 0;
+        for side in self.sides.iter_mut().flatten() {
+            side.source = None;
+            side.request = 0;
+        }
+    }
+
+    pub fn is_pending(&self) -> bool {
+        self.worker.is_some()
+            && self.sides.iter().flatten().any(|s| {
+                s.request != 0
+                    && (!s.answered || matches!(s.status, Some(SyntaxStatus::Streaming { .. })))
+            })
+    }
+
     fn attach(&mut self, worker: HighlightWorker, store: GrammarStore) {
         if let Some(wake) = &self.wake {
             let wake = wake.clone();
@@ -743,7 +767,28 @@ impl DiffViewState {
             });
             bridge.enable_shared(worker, store.clone());
         }
+        if bridge.requested() == 0 && !bridge.is_shown() {
+            return;
+        }
         bridge.request(&segment.doc, segment.generation);
+    }
+
+    pub fn refresh_syntax(&mut self) {
+        if self.files.is_static() {
+            if let Some(segment) = self.segments.first() {
+                self.syntax.forget_requests();
+                self.syntax.request(&segment.doc, segment.generation);
+            }
+        } else {
+            for bridge in &mut self.slot_syntax {
+                bridge.forget_requests();
+            }
+        }
+        self.revision += 1;
+    }
+
+    pub fn syntax_pending(&self) -> bool {
+        self.syntax.is_pending() || self.slot_syntax.iter().any(DiffSyntax::is_pending)
     }
 
     /// Drops the colors of a slot whose file left the session.

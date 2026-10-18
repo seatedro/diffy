@@ -24,7 +24,8 @@ use quark_ui::style::Styled;
 use quark_ui::theme::Theme;
 
 use super::decorator::{
-    AnnotationContext, DiffDecorator, GutterContext, HeaderContext, HeaderSlot, SeparatorContext,
+    AnnotationContext, DiffDecorator, DiffSources, DiffViewOptions, GutterContext, HeaderContext,
+    HeaderSlot, LineContext, LineMark, SeparatorContext,
 };
 use super::interaction::AUTOSCROLL_FRAME_MS;
 use super::paint::{self, Cue, LineColors};
@@ -39,7 +40,7 @@ use super::presentation::{
 use super::{DiffEvent, DiffKey, DiffViewState, REVEAL_STEP};
 use quark_components::CollectionEnv;
 
-const KEYS: &[(&str, DiffKey)] = &[
+pub(crate) const KEYS: &[(&str, DiffKey)] = &[
     ("n", DiffKey::NextHunk),
     ("p", DiffKey::PrevHunk),
     ("alt+arrowdown", DiffKey::NextHunk),
@@ -72,15 +73,37 @@ struct Look {
 #[derive(Clone)]
 struct Deco {
     decorator: Option<Rc<dyn DiffDecorator>>,
-    key: (usize, u64),
+    sources: Option<Rc<DiffSources>>,
+    key: (usize, u64, usize),
 }
 
 impl Deco {
-    fn new(decorator: Option<Rc<dyn DiffDecorator>>) -> Self {
-        let key = decorator.as_ref().map_or((0, 0), |d| {
+    fn new(decorator: Option<Rc<dyn DiffDecorator>>, sources: Option<Rc<DiffSources>>) -> Self {
+        let (ptr, revision) = decorator.as_ref().map_or((0, 0), |d| {
             (Rc::as_ptr(d) as *const () as usize, d.revision())
         });
-        Self { decorator, key }
+        let sources_ptr = sources.as_ref().map_or(0, |s| Rc::as_ptr(s) as usize);
+        Self {
+            decorator,
+            sources,
+            key: (ptr, revision, sources_ptr),
+        }
+    }
+
+    fn file(&self, unit: u32) -> Option<super::decorator::FileSource> {
+        self.sources.as_ref()?.file(unit)
+    }
+
+    fn mark(&self, paint: &RowPaint, kind: RowKind, side: Side) -> Option<LineMark> {
+        let decorator = self.decorator.as_ref()?;
+        let line = paint.source_lines[side as usize]?;
+        decorator.line_mark(&LineContext {
+            file: paint.file,
+            source: self.file(paint.file),
+            side,
+            line,
+            kind,
+        })
     }
 }
 
@@ -105,6 +128,25 @@ pub fn diff_view_with(
     on_event: fn(DiffEvent) -> Action,
     decorator: Option<Rc<dyn DiffDecorator>>,
 ) -> AnyElement {
+    diff_view_custom(
+        state,
+        theme,
+        env,
+        on_event,
+        DiffViewOptions {
+            decorator,
+            ..DiffViewOptions::default()
+        },
+    )
+}
+
+pub(crate) fn diff_view_custom(
+    state: &mut DiffViewState,
+    theme: &Theme,
+    env: CollectionEnv,
+    on_event: fn(DiffEvent) -> Action,
+    options: DiffViewOptions,
+) -> AnyElement {
     let (width, height) = state.viewport;
     let Some(frame) = state.frame.clone() else {
         return view! { <div w={width} h={height} /> };
@@ -116,7 +158,8 @@ pub fn diff_view_with(
         presentation: frame.presentation,
         env,
     };
-    let deco = Deco::new(decorator);
+    let deco = Deco::new(options.decorator, options.sources);
+    let keys = options.keys.unwrap_or(KEYS);
     // The cache watches the sideways scroll handles itself.
     let hash = inputs_hash(&(
         state.frame_id,
@@ -124,10 +167,12 @@ pub fn diff_view_with(
         on_event as usize,
         look.colors_key,
         deco.key,
+        keys.as_ptr() as usize,
+        keys.len(),
     ));
     BoundsProbe {
         child: view! {
-            <cached(state.id, hash, move || build(&frame, look, &deco, on_event))
+            <cached(state.id, hash, move || build(&frame, look, &deco, keys, on_event))
                 w={width}
                 h={height}
             />
@@ -142,6 +187,7 @@ fn build(
     frame: &Rc<ViewFrame>,
     look: Look,
     deco: &Deco,
+    keys: &'static [(&'static str, DiffKey)],
     on_event: fn(DiffEvent) -> Action,
 ) -> AnyElement {
     let (width, height) = frame.viewport;
@@ -204,7 +250,7 @@ fn build(
                 scrollbar_visibility={&frame.scrollbar}
                 class="scrollbar-auto-hide"
             }
-            @for &(binding, key) in KEYS { on_key={(binding, on_event(DiffEvent::Key(key)))} }
+            @for &(binding, key) in keys { on_key={(binding, on_event(DiffEvent::Key(key)))} }
             @when {env.accessible} {
                 accessibility_id={frame.id}
                 accessibility_role={Role::List}
@@ -232,7 +278,7 @@ fn build(
                     >
                         <div w={column.gutter_w} class="flex-col" translate={(0.0, first_top)}>
                             for row in &frame.rows {
-                                {gutter_cell(frame, row, side, column.gutter_w, look)}
+                                {gutter_cell(frame, row, side, column.gutter_w, look, deco)}
                             }
                         </div>
                     </div>
@@ -284,7 +330,13 @@ fn build(
                     .rows
                     .iter()
                     .filter(|r| !r.paint.kind.is_line() && r.height > 0.0) {
-                    <div class="absolute left-0" top={row.top} w={width} h={row.height}>
+                    <div
+                        class="absolute left-0"
+                        top={row.top}
+                        w={width}
+                        h={row.height}
+                        @when {let Some(id) = band_id(frame, row, deco)} { test_id={id} }
+                    >
                         {band(frame, row, look, deco, on_event)}
                     </div>
                 }
@@ -293,6 +345,26 @@ fn build(
                 }
             </div>
         </div>
+    }
+}
+
+fn band_id(frame: &ViewFrame, row: &FrameRow, deco: &Deco) -> Option<String> {
+    let paint = &row.paint;
+    let sources = deco.sources.as_ref()?;
+    let source = sources.file(paint.file)?;
+    let (id, file, revision) = (frame.id, source.id.0, source.revision.0);
+    let hunk = |global: u32| sources.hunk(paint.file, global).map(|h| h.hunk);
+    match paint.kind.diff()? {
+        RowKind::FileHeader => Some(format!("{id}.file.{file}.{revision}")),
+        RowKind::HunkHeader => {
+            let local = hunk((row.key & 0x3F_FFFF_FFFF) as u32)?;
+            Some(format!("{id}.hunk.{file}.{revision}.{local}"))
+        }
+        RowKind::Gap => match paint.gap.and_then(|g| g.hunk) {
+            Some(global) => Some(format!("{id}.gap.{file}.{revision}.{}", hunk(global)?)),
+            None => Some(format!("{id}.gap.{file}.{revision}.end")),
+        },
+        _ => None,
     }
 }
 
@@ -342,6 +414,7 @@ fn gutter_cell(
     side: Side,
     width: f32,
     look: Look,
+    deco: &Deco,
 ) -> AnyElement {
     let height = row.height;
     let Some(kind) = row.paint.kind.diff().filter(|k| k.is_line()) else {
@@ -358,6 +431,7 @@ fn gutter_cell(
         gutter_numbers(presentation.numbers, mode, row.paint.numbers(), side, shown);
     let m = frame.metrics;
     let colors = look.colors;
+    let mark = deco.mark(&row.paint, kind, shown);
     let hash = inputs_hash(&(
         row.paint.stamp,
         numbers,
@@ -367,14 +441,19 @@ fn gutter_cell(
         width.to_bits(),
         look.colors_key,
         presentation.markers,
+        mark,
     ));
     let build = move || {
+        let bg = match mark {
+            Some(LineMark::Selected) => Some(colors.selection),
+            None => colors.line(kind, shown),
+        };
         view! {
             <div
                 w={width}
                 h={height}
                 class="shrink-0"
-                @when {let Some(bg) = colors.line(kind, shown)} { bg={bg} }
+                @when {let Some(bg) = bg} { bg={bg} }
             >
                 <canvas(
                     move |bounds, scene, cx| {
@@ -695,6 +774,7 @@ fn focus_overlay(frame: &ViewFrame, row: &FrameRow, look: Look, deco: &Deco) -> 
             let column = frame.columns.of(side);
             let cx = GutterContext {
                 file: row.paint.file,
+                source: deco.file(row.paint.file),
                 side,
                 line,
                 kind,
@@ -744,6 +824,7 @@ fn band(
     let id = frame.id;
     let columns = frame.columns;
     let deco = deco.clone();
+    let key = row.key;
     let hash = inputs_hash(&(
         paint.stamp,
         width.to_bits(),
@@ -761,9 +842,16 @@ fn band(
         }
         PreparedKind::Diff(_) => {
             let custom = deco.decorator.as_ref().and_then(|d| {
+                let hunk = match paint.kind.diff() {
+                    Some(RowKind::Gap) => paint.gap.and_then(|g| g.hunk),
+                    _ => Some((key & 0x3F_FFFF_FFFF) as u32),
+                };
+                let sources = deco.sources.as_ref();
                 d.separator(&SeparatorContext {
                     file: paint.file,
                     gap: paint.gap,
+                    source: deco.file(paint.file),
+                    hunk: hunk.and_then(|h| sources?.hunk(paint.file, h)),
                     hidden: paint.hidden,
                     title: &paint.title,
                     columns,
@@ -872,6 +960,7 @@ fn file_header(
     let (adds, dels) = paint.stats;
     let cx = HeaderContext {
         file: paint.file,
+        source: deco.file(paint.file),
         title: &paint.title,
         status: paint.status,
         additions: adds,

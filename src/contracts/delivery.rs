@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use diffy_syntax::GrammarStatus;
 
@@ -9,6 +10,7 @@ pub enum DeliveryAction {
     CheckForUpdates,
     RestartToUpdate,
     ToggleLanguages,
+    CloseLanguages,
     RetryGrammar { language: String },
 }
 
@@ -28,6 +30,10 @@ pub enum DeliveryEffect {
     },
     RetryGrammar {
         language: String,
+    },
+    ScheduleUpdatePoll {
+        generation: u64,
+        after: Duration,
     },
 }
 
@@ -53,6 +59,9 @@ pub enum DeliveryEvent {
         silent: bool,
     },
     GrammarsChanged(Arc<[GrammarStatus]>),
+    UpdatePollDue {
+        generation: u64,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

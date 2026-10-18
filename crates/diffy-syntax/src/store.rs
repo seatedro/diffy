@@ -80,10 +80,15 @@ impl GrammarStore {
             let tag = tag.to_ascii_lowercase();
             let mut state = lock(&inner.state);
             #[cfg(feature = "download")]
-            if inner.config.legacy.is_some()
+            if let Some(legacy) = &inner.config.legacy
                 && let Some(language) = crate::legacy_pack::language_for_tag(&tag)
             {
-                return crate::legacy_pack::retry(&mut state, language);
+                let retried = crate::legacy_pack::retry(legacy, &mut state, language);
+                drop(state);
+                if retried {
+                    crate::legacy_pack::queue(inner, language.name);
+                }
+                return retried;
             }
             if !matches!(state.tags.get(&tag), Some(Tag::Unavailable)) {
                 return false;

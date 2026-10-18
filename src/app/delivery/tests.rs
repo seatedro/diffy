@@ -9,9 +9,11 @@ use quark_ui::accessibility::AccessibilityRole as Role;
 use quark_ui::element::*;
 use quark_ui::style::Styled;
 
-use super::state::{DeliveryController, UpdateState, grammar_languages};
+use super::LANGUAGES_TOGGLE;
+use super::state::{DeliveryController, UPDATE_POLL_INTERVAL, UpdateState, grammar_languages};
 use crate::app::shell::Slot;
 use crate::app::testing::*;
+use crate::contracts::commands::{CommandDescriptor, CommandSource, SettingsSnapshot};
 use crate::contracts::delivery::{DeliveryEffect, DeliveryEvent, GrammarAvailability};
 use crate::contracts::shared::SharedContext;
 use crate::contracts::shell::{Action, Controller, Effect, Intent};
@@ -109,6 +111,10 @@ fn startup_watches_grammars_and_checks_silently_per_settings() {
     ];
     let mut checking = base.clone();
     checking.push(DeliveryEffect::CheckForUpdates { silent: true });
+    checking.push(DeliveryEffect::ScheduleUpdatePoll {
+        generation: 1,
+        after: UPDATE_POLL_INTERVAL,
+    });
 
     assert_eq!(startup_effects(true, true), checking);
     assert_eq!(startup_effects(true, false), base);
@@ -323,4 +329,140 @@ fn staged_update_offers_restart_in_the_status_bar() {
         ui.try_find(By::role_name(Role::Button, "Restart to update"))
             .is_none()
     );
+}
+
+fn reduce_effects(reduction: crate::contracts::shell::Reduction) -> Vec<DeliveryEffect> {
+    reduction
+        .effects
+        .into_iter()
+        .filter_map(|effect| match effect {
+            Effect::Delivery(effect) => Some(effect),
+            _ => None,
+        })
+        .collect()
+}
+
+fn settings(auto_update: bool) -> Intent {
+    let mut snapshot = SettingsSnapshot::default();
+    snapshot.settings.auto_update = auto_update;
+    Intent::SettingsChanged(snapshot.into())
+}
+
+#[test]
+fn update_polling_follows_settings_and_drops_superseded_timers() {
+    let cx = SharedContext::default();
+    let mut delivery = DeliveryController::new(true);
+    let poll = |generation| DeliveryEffect::ScheduleUpdatePoll {
+        generation,
+        after: UPDATE_POLL_INTERVAL,
+    };
+    let check = DeliveryEffect::CheckForUpdates { silent: true };
+
+    let enabled = reduce_effects(delivery.apply_intent(&settings(true), &cx));
+    let stale =
+        reduce_effects(delivery.reduce_event(DeliveryEvent::UpdatePollDue { generation: 0 }, &cx));
+    let due =
+        reduce_effects(delivery.reduce_event(DeliveryEvent::UpdatePollDue { generation: 1 }, &cx));
+    delivery.reduce_event(DeliveryEvent::UpdateNotAvailable { silent: true }, &cx);
+    let disabled = reduce_effects(delivery.apply_intent(&settings(false), &cx));
+    let after_disable =
+        reduce_effects(delivery.reduce_event(DeliveryEvent::UpdatePollDue { generation: 2 }, &cx));
+
+    assert_eq!(enabled, vec![check.clone(), poll(1)]);
+    assert!(stale.is_empty());
+    assert_eq!(due, vec![check, poll(2)]);
+    assert!(disabled.is_empty() && after_disable.is_empty());
+}
+
+#[test]
+fn staged_update_stops_polling() {
+    let cx = SharedContext::default();
+    let mut delivery = DeliveryController::new(true);
+    delivery.apply_intent(&settings(true), &cx);
+    delivery.reduce_event(
+        DeliveryEvent::UpdateStaged {
+            staged: Box::new(staged()),
+            silent: true,
+        },
+        &cx,
+    );
+
+    assert!(
+        reduce_effects(delivery.reduce_event(DeliveryEvent::UpdatePollDue { generation: 1 }, &cx))
+            .is_empty()
+    );
+}
+
+#[test]
+fn commands_follow_update_and_grammar_state() {
+    let cx = SharedContext::default();
+    let mut delivery = DeliveryController::new(true);
+    let titles = |delivery: &DeliveryController| {
+        let mut out: Vec<CommandDescriptor> = Vec::new();
+        delivery.commands(&cx, &mut out);
+        out.into_iter()
+            .map(|command| (command.title, command.detail, command.enabled))
+            .collect::<Vec<_>>()
+    };
+
+    let idle = titles(&delivery);
+    delivery.reduce_event(
+        grammars(&[("python", GrammarState::Failed("no".to_owned()))]),
+        &cx,
+    );
+    delivery.reduce_event(
+        DeliveryEvent::UpdateStaged {
+            staged: Box::new(staged()),
+            silent: true,
+        },
+        &cx,
+    );
+    let staged_titles = titles(&delivery);
+
+    assert_eq!(
+        idle,
+        vec![
+            ("Check for updates".to_owned(), None, true),
+            ("Syntax languages".to_owned(), None, true),
+        ]
+    );
+    assert_eq!(
+        staged_titles,
+        vec![
+            ("Check for updates".to_owned(), None, false),
+            (
+                "Restart to update".to_owned(),
+                Some("Diffy 9.9.9".to_owned()),
+                true
+            ),
+            (
+                "Syntax languages".to_owned(),
+                Some("1 failed to download or load".to_owned()),
+                true
+            ),
+        ]
+    );
+}
+
+#[test]
+fn languages_panel_closes_on_escape_and_outside_click_keeping_focus_on_the_toggle() {
+    let mut ui = host();
+    ui.click_node(By::role_name(Role::Button, "Syntax languages"));
+    assert_eq!(ui.focus(), Some(LANGUAGES_TOGGLE));
+    let panel = ui.find(By::test_id("delivery.languages"));
+
+    ui.click((panel.bounds.x + 4.0, panel.bounds.y + 4.0));
+    assert!(ui.app().delivery.languages_open());
+    assert_eq!(ui.focus(), Some(LANGUAGES_TOGGLE));
+    ui.key("escape");
+    assert!(!ui.app().delivery.languages_open());
+    assert!(ui.try_find(By::test_id("delivery.languages")).is_none());
+    assert_eq!(ui.focus(), Some(LANGUAGES_TOGGLE));
+
+    ui.key("enter");
+    assert!(ui.app().delivery.languages_open());
+    ui.click((8.0, 8.0));
+    assert!(!ui.app().delivery.languages_open());
+    assert_eq!(ui.focus(), Some(LANGUAGES_TOGGLE));
+    assert!(ui.app().effects.is_empty());
 }

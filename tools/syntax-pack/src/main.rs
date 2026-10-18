@@ -230,6 +230,7 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("index") => index(&lock, &options()?),
         Some("verify") => verify(&lock, &options()?),
         Some("remote-check") => remote_check(&lock, &options()?),
+        Some("legacy-check") => legacy_check(&parse_options(&args[1..])?),
         Some("public-key") => {
             let key =
                 quark_update::manifest::public_key(&signing_seed()?).map_err(|e| e.to_string())?;
@@ -246,10 +247,72 @@ fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         _ => Err(
-            "usage: syntax-pack build|check|index|verify|remote-check|public-key|list \
+            "usage: syntax-pack build|check|index|verify|remote-check|legacy-check|public-key|list \
              (see src/main.rs)"
                 .to_owned(),
         ),
+    }
+}
+
+fn legacy_check(options: &Options) -> Result<(), String> {
+    use diffy_syntax::legacy_pack;
+
+    let root = options.out.join(legacy_pack::platform());
+    let language_of = |dir: &Path| {
+        dir.parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let mut packs = Vec::new();
+    for language in fs::read_dir(&root).map_err(|e| format!("{}: {e}", root.display()))? {
+        let language = language.map_err(|e| e.to_string())?.path();
+        for version in fs::read_dir(&language).map_err(|e| e.to_string())? {
+            let dir = version.map_err(|e| e.to_string())?.path();
+            if dir.join(legacy_pack::MANIFEST).is_file() {
+                packs.push(dir);
+            }
+        }
+    }
+    packs.sort();
+    let typescript = packs
+        .iter()
+        .find(|dir| language_of(dir) == "typescript")
+        .cloned();
+    let required: Vec<String> = if options.languages.is_empty() {
+        legacy_pack::LANGUAGES
+            .iter()
+            .map(|language| language.name.to_owned())
+            .collect()
+    } else {
+        options.languages.clone()
+    };
+    let mut problems = Vec::new();
+    let mut loaded = 0;
+    for dir in &packs {
+        let language = language_of(dir);
+        match legacy_pack::check_built_pack(dir, typescript.as_deref()) {
+            Ok(_) => loaded += 1,
+            Err(error) if required.contains(&language) => {
+                problems.push(format!("{language}: {error}"));
+            }
+            Err(error) => eprintln!("warning {language}: {error}"),
+        }
+    }
+    for language in &required {
+        if !packs.iter().any(|dir| language_of(dir) == *language) {
+            problems.push(format!("{language}: no pack"));
+        }
+    }
+    println!("{loaded} of {} packs load", packs.len());
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "packs Diffy uses do not load:\n{}",
+            problems.join("\n")
+        ))
     }
 }
 

@@ -46,13 +46,16 @@ pub struct SideRange {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PatchSelection {
     Hunks(Vec<SideRange>),
+    HunksAt(Vec<SideRange>),
     Lines(Vec<SideRange>),
 }
 
 impl PatchSelection {
     pub fn is_empty(&self) -> bool {
         match self {
-            Self::Hunks(ranges) | Self::Lines(ranges) => ranges.iter().all(|r| r.lines.is_empty()),
+            Self::Hunks(ranges) | Self::HunksAt(ranges) | Self::Lines(ranges) => {
+                ranges.iter().all(|r| r.lines.is_empty())
+            }
         }
     }
 }

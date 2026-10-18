@@ -38,6 +38,7 @@ struct CmdApp {
     effects: Vec<Effect>,
     clock: u64,
     pending: Vec<Pending>,
+    intents: Vec<Intent>,
 }
 
 impl CmdApp {
@@ -49,6 +50,7 @@ impl CmdApp {
             effects: Vec::new(),
             clock: 0,
             pending: Vec::new(),
+            intents: Vec::new(),
         };
         app.push_intent(Intent::Startup(Rc::new(startup(no_args(), settings))));
         app
@@ -66,6 +68,7 @@ impl CmdApp {
             let next = self.commands.apply_intent(&intent, &self.shared);
             self.effects.extend(next.effects);
             queue.extend(next.intents);
+            self.intents.push(intent);
         }
     }
 
@@ -278,6 +281,24 @@ fn palette_routes_other_streams_actions_through_dispatch() {
         ui.app().dispatched,
         vec![Action::from(NavigationAction::RefreshRepository)]
     );
+    assert_eq!(ui.focus(), Some(SIDEBAR));
+}
+
+#[test]
+fn palette_hands_a_pull_request_url_to_review() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    ui.run(CommandsAction::OpenCommandPalette);
+    ui.type_text("open pull request");
+    ui.key("enter");
+    ui.find(By::role_name(Role::Dialog, "Open pull request"));
+    assert_eq!(ui.focus(), Some(PICKER));
+    ui.type_text("https://github.com/o/r/pull/7");
+    ui.key("enter");
+    assert!(ui.app().intents.iter().any(|i| matches!(
+        i,
+        Intent::OpenPullRequest { url } if url == "https://github.com/o/r/pull/7"
+    )));
     assert_eq!(ui.focus(), Some(SIDEBAR));
 }
 

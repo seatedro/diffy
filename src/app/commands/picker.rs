@@ -16,6 +16,7 @@ pub enum PickerKind {
     Theme,
     Font(FontRole),
     CompareMenu,
+    PullRequest,
 }
 
 impl PickerKind {
@@ -28,6 +29,7 @@ impl PickerKind {
             Self::Font(FontRole::Ui) => "UI font",
             Self::Font(FontRole::Mono) => "Code font",
             Self::CompareMenu => "Compare",
+            Self::PullRequest => "Open pull request",
         }
     }
 
@@ -38,6 +40,7 @@ impl PickerKind {
             Self::Theme => "Search themes",
             Self::Font(_) => "Search fonts",
             Self::CompareMenu => "Search compare options",
+            Self::PullRequest => "Paste a GitHub pull request URL",
         }
     }
 }
@@ -49,6 +52,7 @@ pub enum PickerChoice {
     Theme(String),
     Font(String),
     Action(Action),
+    PullRequest(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -171,6 +175,7 @@ impl PickerState {
         let choice = match self.kind {
             PickerKind::Repository => PickerChoice::Repository(expand_path(query)),
             PickerKind::Ref(_) => PickerChoice::Ref(query.to_owned()),
+            PickerKind::PullRequest => PickerChoice::PullRequest(query.to_owned()),
             _ => return None,
         };
         if self.rows.iter().any(|r| r.label == query) {
@@ -180,6 +185,7 @@ impl PickerState {
             label: query.to_owned(),
             detail: Some(match self.kind {
                 PickerKind::Repository => "Open this path".to_owned(),
+                PickerKind::PullRequest => "Load this pull request".to_owned(),
                 _ => "Use this revision".to_owned(),
             }),
             highlights: Vec::new(),

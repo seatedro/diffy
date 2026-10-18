@@ -483,6 +483,9 @@ impl CommandsController {
                 reduction.merge(self.reduce_action(CommandsAction::SetMonoFontFamily(family), cx));
             }
             (_, PickerChoice::Action(action)) => reduction.merge(self.run(action, cx)),
+            (_, PickerChoice::PullRequest(url)) => {
+                reduction = reduction.intent(Intent::OpenPullRequest { url });
+            }
             (_, PickerChoice::Ref(_) | PickerChoice::Font(_)) => {}
         }
         reduction
@@ -822,6 +825,11 @@ pub fn builtin_commands(settings: &Settings) -> Vec<CommandDescriptor> {
         )
         .shortcut(S::OpenCompareMenu),
         D::new(
+            "review.open_pull_request",
+            "Open Pull Request…",
+            CommandsAction::OpenPullRequestPicker,
+        ),
+        D::new(
             ids::TOGGLE_SIDEBAR,
             "Toggle Sidebar",
             NavigationAction::ToggleSidebar,
@@ -977,6 +985,7 @@ impl Controller for CommandsController {
                     picker::compare_menu_candidates(mode),
                 )
             }
+            A::OpenPullRequestPicker => self.open_picker(PickerKind::PullRequest, Vec::new()),
             A::OpenThemePicker => self.open_theme_picker(),
             A::OpenUiFontPicker => self.open_font_picker(FontRole::Ui),
             A::OpenMonoFontPicker => self.open_font_picker(FontRole::Mono),

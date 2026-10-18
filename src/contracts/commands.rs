@@ -116,6 +116,7 @@ pub enum CommandsAction {
     OpenRepoPicker,
     OpenRefPicker(CompareField),
     OpenCompareMenu,
+    OpenPullRequestPicker,
     OpenThemePicker,
     OpenUiFontPicker,
     OpenMonoFontPicker,

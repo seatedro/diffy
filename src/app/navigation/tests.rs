@@ -19,7 +19,9 @@ use crate::contracts::navigation::{
     SelectionOrigin, SidebarTab,
 };
 use crate::contracts::shared::{CompareGeneration, FileKey, SharedContext, WorkspaceEpoch};
-use crate::contracts::shell::{Action, Controller, Effect, Intent, Reduction, ShellAction};
+use crate::contracts::shell::{
+    Action, Controller, Effect, Intent, Reduction, ShellAction, ShellEffect,
+};
 use crate::contracts::viewport::pipeline::{CompareManifestSnapshot, FileStats};
 use crate::core::compare::CompareMode;
 use crate::core::vcs::model::VcsCompareSpec;
@@ -66,7 +68,15 @@ impl NavApp {
     }
 
     fn drain(&mut self, cx: &mut UiContext) {
-        crate::app::commands::apply_platform(self.nav.take_platform(), cx);
+        let focus = self.effects.iter().rev().find_map(|e| match e {
+            Effect::Shell(ShellEffect::Focus(focus)) => Some(*focus),
+            _ => None,
+        });
+        self.effects
+            .retain(|e| !matches!(e, Effect::Shell(ShellEffect::Focus(_))));
+        if let Some(focus) = focus {
+            cx.set_focus(focus.map(text_targets::focus_id));
+        }
     }
 }
 

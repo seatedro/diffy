@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -8,8 +7,8 @@ use quark_ui::FocusId;
 use quark_ui::text_input::{TextEditCommand, TextEditOutcome, TextField};
 
 use super::rows::{self, Row, RowCache};
-use crate::app::commands::PlatformRequest;
-use crate::app::text_targets::{SIDEBAR, SIDEBAR_FILTER, TextCx, TextHost};
+
+use crate::app::text_targets::{SIDEBAR_FILTER, TextCx, TextHost};
 use crate::contracts::commands::{SettingsSnapshot, ToastUpdate};
 use crate::contracts::navigation::{
     CompareField, HistoryRequest, NavigationAction, NavigationEffect, NavigationEvent,
@@ -18,7 +17,9 @@ use crate::contracts::navigation::{
     SidebarTab, SyncRepositoryRequest,
 };
 use crate::contracts::shared::{CompareGeneration, FileKey, JobId, SharedContext};
-use crate::contracts::shell::{AppStartup, Controller, Effect, Intent, Reduction, ShellEffect};
+use crate::contracts::shell::{
+    AppStartup, Controller, Effect, Intent, LogicalFocus, Reduction, ShellEffect,
+};
 use crate::contracts::viewport::CompareIntent;
 use crate::contracts::viewport::pipeline::{CompareManifestSnapshot, ManifestFile};
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
@@ -167,7 +168,6 @@ pub struct NavigationController {
     resolved: [Option<String>; 2],
     next_job: u64,
     compare_requested: bool,
-    outbox: RefCell<Vec<PlatformRequest>>,
 }
 
 impl Default for NavigationController {
@@ -195,7 +195,6 @@ impl Default for NavigationController {
             resolved: [None, None],
             next_job: 0,
             compare_requested: false,
-            outbox: RefCell::new(Vec::new()),
         }
     }
 }
@@ -267,10 +266,6 @@ impl NavigationController {
             .is_some_and(|r| r.snapshot.capabilities.operation_log)
     }
 
-    pub fn take_platform(&self) -> Vec<PlatformRequest> {
-        self.outbox.take()
-    }
-
     pub(super) fn set_metrics(&mut self, metrics: ListMetrics) {
         self.metrics = metrics;
         self.clamp_scroll();
@@ -309,10 +304,6 @@ impl NavigationController {
     fn next_job(&mut self) -> JobId {
         self.next_job += 1;
         JobId(self.next_job)
-    }
-
-    fn request_focus(&self, focus: Option<FocusId>) {
-        self.outbox.borrow_mut().push(PlatformRequest::Focus(focus));
     }
 
     fn row_count(&mut self) -> usize {
@@ -1012,8 +1003,7 @@ impl Controller for NavigationController {
                 self.filter.set_text("");
                 self.scroll_px = 0.0;
                 self.reveal_selected();
-                self.request_focus(Some(SIDEBAR));
-                Reduction::changed()
+                Reduction::changed().effect(ShellEffect::Focus(Some(LogicalFocus::Sidebar)))
             }
             A::ScrollFiles(lines) => {
                 self.scroll_px += lines as f32 * self.metrics.row_height;

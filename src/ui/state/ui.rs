@@ -27,29 +27,9 @@ pub enum AppView {
     Settings,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum SettingsSection {
-    #[default]
-    Appearance,
-    Editor,
-    Behavior,
-    Keymaps,
-    Clankers,
-    About,
-}
+pub use crate::contracts::commands::SettingsSection;
 
 impl SettingsSection {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Appearance => "Appearance",
-            Self::Editor => "Editor",
-            Self::Behavior => "Behavior",
-            Self::Keymaps => "Keymaps",
-            Self::Clankers => "Clankers",
-            Self::About => "About",
-        }
-    }
-
     pub fn icon(self) -> &'static str {
         match self {
             Self::Appearance => lucide::SUN,
@@ -60,15 +40,6 @@ impl SettingsSection {
             Self::About => lucide::INFO,
         }
     }
-
-    pub const ALL: [Self; 6] = [
-        Self::Appearance,
-        Self::Editor,
-        Self::Behavior,
-        Self::Keymaps,
-        Self::Clankers,
-        Self::About,
-    ];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

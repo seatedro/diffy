@@ -254,12 +254,7 @@ pub enum SidebarMode {
     TreeView,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SidebarTab {
-    #[default]
-    Files,
-    Commits,
-}
+pub use crate::contracts::navigation::SidebarTab;
 
 #[derive(Debug, Clone, PartialEq, Store)]
 pub struct FileListState {

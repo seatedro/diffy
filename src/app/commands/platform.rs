@@ -3,10 +3,14 @@ use quark_app::{InputEvent, UiContext, WindowOptions};
 use quark_ui::FocusId;
 use quark_ui::accessibility::Politeness;
 use quark_ui::key_context::KeyBindings;
+use quark_ui::text_input::TextEditCommand;
 use quark_ui::theme::Theme;
 
 use super::state::{CommandsController, LayerKind};
 use crate::app::route::Controllers;
+use crate::app::text_targets::{
+    COMMIT_MESSAGE, REVIEW_COMPOSER, SETTINGS_STEERING_PROMPT, TEXT_COMPARE_LEFT, TEXT_COMPARE_RIGHT,
+};
 use crate::contracts::commands::{CommandDescriptor, CommandsAction};
 use crate::contracts::shell::Action;
 use crate::fonts::FontSettings;
@@ -77,6 +81,27 @@ pub fn key_action(controllers: &Controllers, event: &InputEvent) -> Option<Actio
     };
     let binding = chord.binding()?;
     controllers.commands.key_action(&binding.to_string())
+}
+
+const MULTILINE_EDITORS: [FocusId; 5] = [
+    COMMIT_MESSAGE,
+    REVIEW_COMPOSER,
+    TEXT_COMPARE_LEFT,
+    TEXT_COMPARE_RIGHT,
+    SETTINGS_STEERING_PROMPT,
+];
+
+pub fn editor_command(
+    focus: Option<FocusId>,
+    event: &InputEvent,
+) -> Option<(FocusId, TextEditCommand)> {
+    let target = focus.filter(|f| MULTILINE_EDITORS.contains(f))?;
+    let InputEvent::KeyPress(chord) = event else {
+        return None;
+    };
+    let binding = chord.binding()?.to_string();
+    matches!(binding.as_str(), "enter" | "shift+enter")
+        .then(|| (target, TextEditCommand::InsertText("\n".to_owned())))
 }
 
 pub fn menu_action(controllers: &Controllers, id: &str) -> Option<Action> {

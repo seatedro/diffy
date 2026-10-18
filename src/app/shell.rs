@@ -622,6 +622,11 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
 
     fn event(&mut self, event: &InputEvent, cx: &mut UiContext) -> bool {
         self.tick(cx);
+        if let Some((target, command)) = commands::editor_command(cx.focus(), event) {
+            self.edit_text(target, command);
+            cx.window.request_redraw();
+            return true;
+        }
         let Some(action) = commands::key_action(&self.controllers, event) else {
             return false;
         };

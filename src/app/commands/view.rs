@@ -1,8 +1,7 @@
 use quark::view;
 use quark_app::ViewContext;
 use quark_components::{
-    Modal, PALETTE_INPUT, PaletteEvent, SegmentedControl, SegmentedItem, picker_list, progress_bar,
-    switch,
+    Modal, PALETTE_INPUT, PaletteEvent, SegmentedControl, SegmentedItem, progress_bar, switch,
 };
 use quark_ui::FocusId;
 use quark_ui::accessibility::AccessibilityRole;
@@ -13,6 +12,7 @@ use quark_ui::theme::{Color, Theme};
 
 use super::CommandsController;
 use super::keymap::{self, KEYMAP};
+use super::list::{self, OptionRow};
 use super::picker::PICKER_VISIBLE_ROWS;
 use super::state::{CONFIRM_ACCEPT, CONFIRM_CANCEL, LayerKind, SettingsPage};
 use crate::app::shell::Slot;
@@ -102,7 +102,10 @@ fn picker_panel(
     let theme = cx.theme;
     let tc = &theme.colors;
     let scale = tokens::ui_scale(theme);
-    let picker = commands.picker()?;
+    let row_stride = list::row_stride(theme);
+    let picker = commands.picker_mut()?;
+    picker.reveal_pending(row_stride);
+    let picker = &*picker;
     let title = picker.kind.title();
     let panel_w = (Sz::MODAL_MD * scale)
         .min(size.0 - tokens::scaled(Sz::MODAL_MARGIN, scale))
@@ -123,13 +126,29 @@ fn picker_panel(
             </div>
         }
     } else {
-        picker_list(
-            &picker.rows,
-            picker.selected,
+        list::virtual_list(
+            picker.rows.len(),
             picker.scroll_px,
             PICKER_VISIBLE_ROWS,
             theme,
-            |i| Action::from(CommandsAction::SelectOverlayEntry(i)).into(),
+            title,
+            |i| {
+                let row = &picker.rows[i];
+                list::option_row(
+                    OptionRow {
+                        id: format!("picker-row:{i}:{}", row.label),
+                        label: &row.label,
+                        highlights: &row.highlights,
+                        detail: row.detail.as_deref(),
+                        rhs: None,
+                        icon: None,
+                        selected: i == picker.selected,
+                        current: row.current,
+                    },
+                    theme,
+                    Action::from(CommandsAction::SelectOverlayEntry(i)).into(),
+                )
+            },
             ScrollActionBuilder::new(|lines| {
                 Action::from(CommandsAction::ScrollOverlay(lines)).into()
             }),

@@ -1,12 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use quark_components::PickerItem;
+use quark_components::FuzzyMatcher;
 use quark_ui::text_input::TextField;
 
 use crate::contracts::navigation::{CompareField, NavigationAction};
 use crate::contracts::shell::Action;
 use crate::core::compare::CompareMode;
-use crate::core::search::fuzzy::fuzzy_score;
 use crate::fonts::{FontFamilyEntry, FontRole};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,24 +63,6 @@ pub struct PickerRow {
     pub current: bool,
 }
 
-impl PickerItem for PickerRow {
-    fn label(&self) -> &str {
-        &self.label
-    }
-
-    fn detail(&self) -> Option<&str> {
-        self.detail.as_deref()
-    }
-
-    fn highlight_ranges(&self) -> &[(usize, usize)] {
-        &self.highlights
-    }
-
-    fn rhs(&self) -> Option<&str> {
-        self.current.then_some("Current")
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct PickerCandidate {
     pub label: String,
@@ -119,6 +100,8 @@ pub struct PickerState {
     pub rows: Vec<PickerRow>,
     pub selected: usize,
     pub scroll_px: f32,
+    pub pending_reveal: bool,
+    matcher: FuzzyMatcher,
 }
 
 pub const PICKER_VISIBLE_ROWS: usize = 9;
@@ -132,6 +115,8 @@ impl PickerState {
             rows: Vec::new(),
             selected: 0,
             scroll_px: 0.0,
+            pending_reveal: true,
+            matcher: FuzzyMatcher::default(),
         };
         state.refilter();
         state
@@ -150,19 +135,21 @@ impl PickerState {
                 .extend(self.candidates.iter().map(|c| row(c, Vec::new())));
             self.selected = self.rows.iter().position(|r| r.current).unwrap_or(0);
         } else {
-            let mut scored: Vec<(i32, usize)> = self
-                .candidates
-                .iter()
-                .enumerate()
-                .filter_map(|(i, c)| fuzzy_score(query, &c.label).map(|s| (s, i)))
-                .collect();
+            self.matcher.set_query(query);
+            let mut positions = Vec::new();
+            let mut scored: Vec<(i32, usize, Vec<(usize, usize)>)> = Vec::new();
+            for (i, candidate) in self.candidates.iter().enumerate() {
+                positions.clear();
+                if let Some(score) = self.matcher.score(&candidate.label, &mut positions) {
+                    scored.push((score, i, match_ranges(&candidate.label, &positions)));
+                }
+            }
             scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-            self.rows.extend(scored.into_iter().map(|(_, i)| {
-                row(
-                    &self.candidates[i],
-                    prefix_highlight(query, &self.candidates[i].label),
-                )
-            }));
+            self.rows.extend(
+                scored
+                    .into_iter()
+                    .map(|(_, i, ranges)| row(&self.candidates[i], ranges)),
+            );
             if let Some(typed) = self.typed_choice(query) {
                 self.rows.push(typed);
             }
@@ -192,6 +179,13 @@ impl PickerState {
             choice,
             current: false,
         })
+    }
+
+    pub fn reveal_pending(&mut self, row_stride: f32) {
+        if self.pending_reveal && row_stride > 0.0 {
+            self.pending_reveal = false;
+            self.reveal(row_stride);
+        }
     }
 
     pub fn move_selection(&mut self, delta: i32, row_stride: f32) {
@@ -252,12 +246,20 @@ fn row(candidate: &PickerCandidate, highlights: Vec<(usize, usize)>) -> PickerRo
     }
 }
 
-fn prefix_highlight(query: &str, label: &str) -> Vec<(usize, usize)> {
-    let lower = label.to_lowercase();
-    match lower.find(&query.to_lowercase()) {
-        Some(start) if lower.len() == label.len() => vec![(start, start + query.len())],
-        _ => Vec::new(),
+pub fn match_ranges(label: &str, positions: &[u32]) -> Vec<(usize, usize)> {
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for &position in positions {
+        let start = position as usize;
+        let Some(ch) = label.get(start..).and_then(|rest| rest.chars().next()) else {
+            continue;
+        };
+        let end = start + ch.len_utf8();
+        match ranges.last_mut() {
+            Some(last) if last.1 == start => last.1 = end,
+            _ => ranges.push((start, end)),
+        }
     }
+    ranges
 }
 
 pub fn expand_path(query: &str) -> PathBuf {

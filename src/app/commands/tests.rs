@@ -820,3 +820,20 @@ impl Drive for Cmd {
         self.send_message(());
     }
 }
+
+#[test]
+fn return_inserts_a_newline_in_multiline_editors() {
+    let mut ui = harness::harness();
+    ui.key("mod+k");
+    ui.type_text("new text compare");
+    ui.key("enter");
+    ui.click_node(By::test_id("text-compare.left"));
+    ui.type_text("one");
+    ui.key("enter");
+    ui.type_text("two");
+    let controllers = ui.app().0.controllers();
+    assert_eq!(
+        controllers.viewport.interaction.text_compare().left.text(),
+        "one\ntwo"
+    );
+}

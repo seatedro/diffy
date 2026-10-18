@@ -146,6 +146,10 @@ impl CommandsController {
         self.picker.as_ref()
     }
 
+    pub(super) fn picker_mut(&mut self) -> Option<&mut PickerState> {
+        self.picker.as_mut()
+    }
+
     pub fn confirmation(&self) -> Option<&ConfirmationRequest> {
         self.confirmation.as_ref()
     }

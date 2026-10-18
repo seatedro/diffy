@@ -54,6 +54,7 @@ pub enum MutationsAction {
     RunConfirmedOperation(VcsOperation),
     OpenCommitComposer,
     CloseCommitComposer,
+    ScrollCommitMessage(i32),
     ClosePublishMenu,
 }
 

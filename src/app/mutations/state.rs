@@ -1078,6 +1078,11 @@ impl Controller for MutationsController {
                     LogicalFocus::CommitMessage,
                 )))
             }
+            A::ScrollCommitMessage(lines) => {
+                let step = self.commit.scroll_line_height_px();
+                self.commit.scroll(lines as f32 * step);
+                Reduction::changed()
+            }
             A::CloseCommitComposer => {
                 self.composer_open = false;
                 Reduction::changed()

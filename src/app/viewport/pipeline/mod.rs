@@ -4,3 +4,4 @@ mod tests;
 mod view;
 
 pub use state::PipelineController;
+pub use view::view;

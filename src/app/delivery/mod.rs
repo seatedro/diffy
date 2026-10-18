@@ -4,3 +4,4 @@ mod tests;
 mod view;
 
 pub use state::DeliveryController;
+pub use view::view;

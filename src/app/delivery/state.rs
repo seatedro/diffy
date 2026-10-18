@@ -18,3 +18,5 @@ impl Controller for DeliveryController {
         Reduction::default()
     }
 }
+
+impl crate::app::text_targets::TextHost for DeliveryController {}

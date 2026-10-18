@@ -3,4 +3,5 @@ mod state;
 mod tests;
 mod view;
 
-pub use state::MutationsController;
+pub use state::{MutationPresentation, MutationsController};
+pub use view::view;

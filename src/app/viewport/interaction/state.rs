@@ -18,3 +18,5 @@ impl Controller for InteractionController {
         Reduction::default()
     }
 }
+
+impl crate::app::text_targets::TextHost for InteractionController {}

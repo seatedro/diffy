@@ -1,1 +1,19 @@
+use quark::view;
+use quark_app::ViewContext;
+use quark_ui::element::*;
+use quark_ui::style::Styled;
 
+use super::ReviewController;
+use crate::app::shell::Slot;
+use crate::app::tokens::TextStyle;
+
+pub fn view(_review: &mut ReviewController, slot: &Slot, cx: &mut ViewContext) -> AnyElement {
+    let theme = cx.theme;
+    view! {
+        <div h={slot.height} class="flex-row items-center shrink-0" test_id="title.review">
+            <text size={TextStyle::BodySmall.font_size(theme)} color={theme.colors.text_muted}>
+                "No pull request"
+            </text>
+        </div>
+    }
+}

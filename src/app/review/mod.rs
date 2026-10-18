@@ -3,4 +3,5 @@ mod state;
 mod tests;
 mod view;
 
-pub use state::ReviewController;
+pub use state::{ReviewController, ReviewPresentation};
+pub use view::view;

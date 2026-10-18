@@ -458,7 +458,6 @@ impl DiffColors {
         self.syntax[kind as usize]
     }
 
-    /// An opaque tint of `tone` over `base`, for pills and washes.
     pub fn tint(base: Color, tone: Color) -> Color {
         base.lerp(tone, TINT)
     }

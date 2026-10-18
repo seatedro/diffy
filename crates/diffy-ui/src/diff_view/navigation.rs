@@ -127,8 +127,6 @@ impl DiffViewState {
         }
     }
 
-    /// Moves the keyboard focus to the next (or previous) added, removed or
-    /// modified line row and scrolls it into view; returns its line.
     pub fn focus_change(&mut self, forward: bool) -> Option<super::selection::LineHit> {
         let count = self.refs.len();
         let start = self.focused_index.map(|i| i as usize);

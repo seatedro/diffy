@@ -358,8 +358,8 @@ fn build(
                         {utility}
                     }
                 }
-                for row in frame.rows.iter().filter(|r| r.focused && r.height > 0.0) {
-                    {focus_overlay(frame, row, look, deco)}
+                for (i, row) in frame.rows.iter().enumerate().filter(|(_, r)| r.focused && r.height > 0.0) {
+                    {focus_overlay(frame, row, look, deco, picks.iter().any(|p| p[i].on))}
                 }
                 if let Some(row) = &frame.sticky_header {
                     <div
@@ -436,8 +436,6 @@ fn gutter_numbers(
     }
 }
 
-/// Whether a row's line on one side is in the app's line selection, and
-/// whether it starts or ends a selected range.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 struct Pick {
     on: bool,
@@ -445,7 +443,6 @@ struct Pick {
     bottom: bool,
 }
 
-/// The [`Pick`] of each row's line in the column showing `side`.
 fn picked_rows(frame: &ViewFrame, side: Side, deco: &Deco) -> Vec<Pick> {
     let mode = frame.columns.mode;
     let on: Vec<bool> = frame
@@ -469,7 +466,6 @@ fn picked_rows(frame: &ViewFrame, side: Side, deco: &Deco) -> Vec<Pick> {
         .collect()
 }
 
-/// The 1 pt rules at the top and bottom of a selected range.
 fn pick_rules(scene: &mut Scene, bounds: Bounds, pick: Pick, color: Color, scale: f32) {
     let rule = paint::whole_pixels(1.0, scale);
     let mut draw = |y: f32| {
@@ -847,8 +843,6 @@ fn empty_side(frame: &ViewFrame, row: &FrameRow, side: Side, look: Look) -> AnyE
     }
 }
 
-/// The decorator's gutter utility for a line row, and where it sits:
-/// a row-high square just right of the change bar.
 fn utility(frame: &ViewFrame, row: &FrameRow, deco: &Deco) -> Option<(ColumnBox, f32, AnyElement)> {
     let kind = row.paint.kind.diff().filter(|k| k.is_line())?;
     let decorator = deco.decorator.as_ref()?;
@@ -874,8 +868,6 @@ fn utility(frame: &ViewFrame, row: &FrameRow, deco: &Deco) -> Option<(ColumnBox,
     Some((column, size, decorator.gutter_utility(&cx)?))
 }
 
-/// A line row's gutter utility, shown while the pointer is over the row.
-/// Covers only the code column, so gutter presses still reach the gutter.
 fn hover_utility(frame: &ViewFrame, row: &FrameRow, deco: &Deco) -> Option<AnyElement> {
     let group = GroupId::new("diff.line");
     let (column, size, element) = utility(frame, row, deco)?;
@@ -902,26 +894,38 @@ fn hover_utility(frame: &ViewFrame, row: &FrameRow, deco: &Deco) -> Option<AnyEl
 
 /// The keyboard focus outline over a row, painted after everything else
 /// in it, with the decorator's gutter utility for a line row.
-fn focus_overlay(frame: &ViewFrame, row: &FrameRow, look: Look, deco: &Deco) -> AnyElement {
+/// The keyboard focus outline over a row, painted after everything else
+/// in it, with the decorator's gutter utility for a line row.
+fn focus_overlay(
+    frame: &ViewFrame,
+    row: &FrameRow,
+    look: Look,
+    deco: &Deco,
+    picked: bool,
+) -> AnyElement {
     let (width, height) = (frame.viewport.0, row.height);
     let color = look.colors.focused_row;
     let utility = utility(frame, row, deco);
+    let header = row.paint.kind.diff() == Some(RowKind::FileHeader);
+    let outline = look.env.focused && !header && !picked;
     view! {
         <div class="absolute left-0" top={row.top} w={width} h={height}>
-            <canvas(
-                move |bounds, scene, cx| {
-                    let rect = Rect {
-                        x: bounds.x,
-                        y: bounds.y,
-                        width: bounds.width,
-                        height: bounds.height
-                    };
-                    paint::focus_outline(scene, rect, color, cx.scale_factor);
-                }
-            )
-                w={width}
-                h={height}
-            />
+            if outline {
+                <canvas(
+                    move |bounds, scene, cx| {
+                        let rect = Rect {
+                            x: bounds.x,
+                            y: bounds.y,
+                            width: bounds.width,
+                            height: bounds.height
+                        };
+                        paint::focus_outline(scene, rect, color, cx.scale_factor);
+                    }
+                )
+                    w={width}
+                    h={height}
+                />
+            }
             if let Some((column, size, element)) = utility {
                 <div class="absolute top-0" left={column.text_x} w={size} h={size}>
                     {element}
@@ -1077,8 +1081,6 @@ fn band(
     view! { <cached(part_key(row.key, 4), hash, build) w={width} h={height} /> }
 }
 
-/// A file whose diff is not installed: its header, then a band as tall as
-/// its estimated lines saying why.
 #[allow(clippy::too_many_arguments)]
 fn pending_band(
     header: AnyElement,
@@ -1149,7 +1151,6 @@ fn status_tone(status: FileStatus, colors: DiffColors) -> Color {
     }
 }
 
-/// A path as breadcrumb segments: its directories, then its name.
 fn path_segments(title: &str) -> Option<Vec<String>> {
     (!title.contains('\u{2192}')).then(|| title.split('/').map(str::to_owned).collect())
 }
@@ -1308,7 +1309,6 @@ fn file_header(
     }
 }
 
-/// The `@@` range of a hunk, from its source lines.
 fn hunk_range(hunk: &HunkSource) -> String {
     format!(
         "@@ \u{2212}{},{} +{},{} @@",
@@ -1319,9 +1319,7 @@ fn hunk_range(hunk: &HunkSource) -> String {
     )
 }
 
-/// A hunk header or collapsed gap: expand controls over the gutter, the
-/// enclosing scope, the hidden-line count, the dim `@@` range, and the
-/// app's hunk actions; or a thin fold bar under the compact choice.
+/// A hunk header or collapsed gap, drawn as the separator choice says.
 #[allow(clippy::too_many_arguments)]
 fn separator(
     paint: &RowPaint,
@@ -1420,11 +1418,11 @@ fn separator(
             if let Some(lead) = lead.filter(|_| !has_scope) {
                 <text size={small} color={colors.muted}>{lead}</text>
             }
-            if let Some(section) = section.filter(|_| !has_scope) {
-                <text size={small} class="truncate" color={colors.muted}>{section}</text>
-            }
             if let Some(range) = range {
                 <text size={small * 0.95} class="font-mono" color={colors.faint}>{range}</text>
+            }
+            if let Some(section) = section.filter(|_| !has_scope) {
+                <text size={small * 0.95} class="font-mono truncate" color={colors.faint}>{section}</text>
             }
             <div class="flex-1" min_w={0.0} />
             if let Some(actions) = actions {
@@ -1485,8 +1483,6 @@ fn expand_button(
     }
 }
 
-/// A press or drag over a line gutter, reported to the app for line
-/// selection.
 struct LineDrag {
     press: ClickEvent,
     on_line: fn(LinePointer) -> Action,

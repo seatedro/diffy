@@ -145,12 +145,10 @@ impl DiffViewState {
     }
 }
 
-/// A press or drag over a line gutter, in window points.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LinePointer {
     pub x: f32,
     pub y: f32,
-    /// Whether the pointer moved with the button held since the press.
     pub drag: bool,
 }
 
@@ -159,7 +157,6 @@ pub struct DiffViewOptions {
     pub decorator: Option<std::rc::Rc<dyn DiffDecorator>>,
     pub sources: Option<std::rc::Rc<DiffSources>>,
     pub keys: Option<&'static [(&'static str, super::DiffKey)]>,
-    /// Presses and drags over line gutters, for line selection.
     pub on_line: Option<fn(LinePointer) -> quark_ui::Action>,
 }
 
@@ -186,9 +183,7 @@ pub enum HeaderSlot {
     Metadata,
     /// At the trailing edge, after the counts: the app's file actions.
     Actions,
-    /// After the actions and a divider: the app's view controls.
     Trailing,
-    /// After the path while the file is collapsed, saying why.
     Collapsed,
 }
 
@@ -250,7 +245,6 @@ pub struct GutterContext {
     pub file: u32,
     pub source: Option<FileSource>,
     pub side: Side,
-    /// Zero-based source line on `side`.
     pub line: u32,
     pub kind: RowKind,
     /// The gutter's size in points.
@@ -299,24 +293,18 @@ pub trait DiffDecorator {
         None
     }
 
-    /// The text of a header's state pill, such as "Modified · unstaged";
-    /// `None` shows the file status alone.
     fn file_state(&self, _cx: &HeaderContext) -> Option<String> {
         None
     }
 
-    /// The syntax scopes around a hunk, outermost first.
     fn hunk_scope(&self, _cx: &SeparatorContext) -> Option<Arc<[Arc<str>]>> {
         None
     }
 
-    /// Actions at the trailing edge of a hunk header or gap row.
     fn hunk_actions(&self, _cx: &SeparatorContext) -> Option<AnyElement> {
         None
     }
 
-    /// A band above the diff, outside its rows, such as a commit header:
-    /// its height and content for a view `width` points wide.
     fn banner(&self, _width: f32) -> Option<(f32, AnyElement)> {
         None
     }

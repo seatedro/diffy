@@ -179,9 +179,6 @@ fn runs(px: &Pixels, x: u32, rows: std::ops::Range<u32>, color: Color) -> Vec<(b
     out
 }
 
-// Catches the change bar drifting off the code's edge or losing its
-// pixel alignment: added and removed lines both get a solid bar three
-// points wide in whole pixels, ending where the code column starts.
 #[test]
 fn changed_lines_get_a_solid_bar_against_the_code() {
     let same = DiffAppearance::both(DiffColorOverrides {
@@ -202,7 +199,11 @@ fn changed_lines_get_a_solid_bar_against_the_code() {
             let bar: Vec<u32> = (0..code + 2)
                 .filter(|&x| is(px.pixel(x, y), MAGENTA))
                 .collect();
-            assert_eq!(bar.len(), (3.0 * scale).round() as usize, "{scale}x: {bar:?}");
+            assert_eq!(
+                bar.len(),
+                (3.0 * scale).round() as usize,
+                "{scale}x: {bar:?}"
+            );
             assert_eq!(bar.last().copied(), Some(code - 1), "{scale}x: {bar:?}");
             let column = runs(&px, bar[0], pixel_rows(row.y, row.height, scale), MAGENTA);
             assert!(matches!(column[..], [(true, _)]), "{scale}x: {column:?}");

@@ -10,6 +10,7 @@ use quark_ui::theme::{Color, Theme};
 use super::ReviewController;
 use super::state::{AuthStatus, ReviewOverlay};
 use crate::app::shell::Slot;
+use crate::app::text_targets::{REVIEW_ACCOUNT, REVIEW_DIALOG};
 use crate::app::tokens::{self, Ico, Rad, Shadow, Sp, Sz, TextStyle};
 use crate::contracts::review::ReviewAction;
 use crate::contracts::shell::ShellAction;
@@ -104,12 +105,28 @@ pub fn view(review: &mut ReviewController, slot: &Slot, cx: &mut ViewContext) ->
 fn account_view(review: &ReviewController, theme: &Theme) -> AnyElement {
     let scale = tokens::ui_scale(theme);
     if !review.signed_in() {
-        let button = Button::new(action(ReviewAction::OpenAuthModal))
-            .icon(lucide::KEY)
-            .label("Sign in to GitHub")
-            .style(ButtonStyle::Subtle)
-            .size(ButtonSize::Compact);
-        return view! { <div test_id="review.sign_in">{button}</div> };
+        let tc = &theme.colors;
+        let small = TextStyle::BodySmall.font_size(theme);
+        return view! { scale,
+            <div
+                class="flex-row items-center shrink-0"
+                gap={Sp::XS}
+                px={Sp::SM}
+                py={Sp::XXS}
+                rounded={Rad::MD}
+                bg={tc.element_background}
+                hover_bg={tc.element_hover}
+                cursor={CursorHint::Pointer}
+                focus_ring={REVIEW_ACCOUNT}
+                accessibility_role={AccessibilityRole::Button}
+                aria-label="Sign in to GitHub"
+                test_id="review.sign_in"
+                on:click={action(ReviewAction::OpenAuthModal)}
+            >
+                <icon svg={lucide::KEY} size={small} color={tc.text_muted} />
+                <text size={small} class="font-medium" color={tc.text}>"Sign in to GitHub"</text>
+            </div>
+        };
     }
     let account = review.account();
     let login = account
@@ -126,6 +143,7 @@ fn account_view(review: &ReviewController, theme: &Theme) -> AnyElement {
             p={Sp::XXS}
             accessibility_role={AccessibilityRole::Button}
             aria-label="GitHub account"
+            focus_ring={REVIEW_ACCOUNT}
             test_id="review.account"
             on:click={action(ReviewAction::OpenAccountMenu)}
         >
@@ -238,6 +256,7 @@ fn auth_modal(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyEleme
     .footer_child(cancel);
     view! {
         <div class="absolute" left={0.0} top={0.0} w={slot.width} h={slot.height}
+             focus_ring={REVIEW_DIALOG}
              on:key:escape={action(ReviewAction::CloseOverlay)}>
             {modal}
         </div>
@@ -276,6 +295,7 @@ fn account_menu(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyEle
                  shadow_preset={Shadow::DROPDOWN}
                  accessibility_role={AccessibilityRole::Menu}
                  aria-label="GitHub account"
+                 focus_ring={REVIEW_DIALOG}
                  test_id="review.account_menu"
                  on:click={quark_ui::element::NoopAction}>
                 <div class="flex-row items-center" gap={Sp::SM} p={Sp::SM}>
@@ -335,6 +355,7 @@ fn submit_menu(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyElem
                  shadow_preset={Shadow::DROPDOWN}
                  accessibility_role={AccessibilityRole::Dialog}
                  aria-label="Submit review"
+                 focus_ring={REVIEW_DIALOG}
                  test_id="review.submit_menu"
                  on:click={quark_ui::element::NoopAction}>
                 <text size={small} class="font-medium" color={tc.text_strong}>"Submit review"</text>

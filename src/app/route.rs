@@ -21,10 +21,6 @@ pub enum Stream {
     Delivery,
 }
 
-// Owners of authoritative state see an intent before its consumers: B owns
-// the workspace and selection, A1/A2 the comparison, E the repository
-// snapshot, D the review session, F grammars, and C presents settings,
-// confirmations and toasts last.
 pub const INTENT_ORDER: [Stream; 6] = [
     Stream::Navigation,
     Stream::Viewport,
@@ -100,11 +96,8 @@ impl Controllers {
     }
 }
 
-// Root `Action` derives `Eq`, so it cannot carry `SplitEvent`'s f32 deltas;
-// until the contract gains a layout action the divider renders and takes
-// focus but its drags are dropped.
-pub fn sidebar_split(_event: SplitEvent) -> quark_ui::Action {
-    Action::Shell(ShellAction::Noop).into()
+pub fn sidebar_split(event: SplitEvent) -> quark_ui::Action {
+    Action::Shell(ShellAction::ResizeSidebar(event)).into()
 }
 
 impl From<Action> for quark_ui::Action {

@@ -197,7 +197,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 shared.review = review.clone();
                 true
             }
-            Intent::AccountChanged(_) => {
+            Intent::AccountChanged => {
                 shared.account = AccountEpoch(shared.account.0 + 1);
                 true
             }
@@ -246,6 +246,10 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 if let Some(window) = cx.window.window_handle() {
                     cx.window.close_window(window);
                 }
+            }
+            ShellAction::ResizeSidebar(event) => {
+                self.shell.sidebar.apply(event, self.clock_ms);
+                cx.window.request_redraw();
             }
             ShellAction::Bootstrap | ShellAction::Noop => {}
         }

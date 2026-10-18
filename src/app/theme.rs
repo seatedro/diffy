@@ -141,8 +141,6 @@ fn colors(palette: &SemanticPalette) -> ThemeColors {
     }
 }
 
-// Quark blends in linear light, so the catalog's translucent tints are
-// composited over the surface they sit on to keep their sRGB appearance.
 fn flatten(tint: Color, base: Color) -> Color {
     base.lerp(tint.with_alpha(255), f32::from(tint.a) / 255.0)
         .with_alpha(255)

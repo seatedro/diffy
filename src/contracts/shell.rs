@@ -10,16 +10,17 @@ use crate::contracts::navigation::{
     NavigationAction, NavigationEffect, NavigationEvent, RepositoryContext,
 };
 use crate::contracts::review::{ReviewAction, ReviewContext, ReviewEffect, ReviewEvent};
-use crate::contracts::shared::{AccountEpoch, SharedContext, SourceTarget, WorkspaceEpoch};
+use crate::contracts::shared::{SharedContext, SourceTarget, WorkspaceEpoch};
 use crate::contracts::viewport::{
     CompareIntent, CompareManifestSnapshot, ViewportAction, ViewportEffect, ViewportEvent,
 };
 use std::path::PathBuf;
 use std::rc::Rc;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ShellAction {
     Bootstrap,
+    ResizeSidebar(quark_components::SplitEvent),
     FocusLogical(Option<crate::contracts::shell::LogicalFocus>),
     CopyText(String),
     ToggleDebugOverlay,
@@ -57,7 +58,7 @@ pub enum ShellEvent {
     BrowserOpenFailed { message: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     Shell(ShellAction),
     Viewport(ViewportAction),
@@ -111,7 +112,7 @@ pub enum Intent {
     RepositoryChanged(Rc<RepositoryContext>),
     InvalidateRepository,
     SetReviewTarget(Option<Rc<ReviewContext>>),
-    AccountChanged(AccountEpoch),
+    AccountChanged,
     GrammarAvailable(GrammarAvailability),
     SettingsChanged(Rc<SettingsSnapshot>),
     RequestConfirmation(ConfirmationRequest),

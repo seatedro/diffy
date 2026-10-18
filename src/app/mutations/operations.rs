@@ -142,6 +142,8 @@ mod tests {
             short_revision: "c0f".to_owned(),
             summary: "s".to_owned(),
             author_name: "a".to_owned(),
+            author_email: None,
+            parents: Vec::new(),
             timestamp: 0,
             flags: ChangeFlags::default(),
         };

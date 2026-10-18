@@ -127,6 +127,8 @@ pub struct VcsChange {
     pub short_revision: String,
     pub summary: String,
     pub author_name: String,
+    pub author_email: Option<String>,
+    pub parents: Vec<String>,
     pub timestamp: i64,
     pub flags: ChangeFlags,
 }

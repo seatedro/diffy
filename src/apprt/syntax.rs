@@ -3,8 +3,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Instant;
 
-use super::runtime::RuntimeEventSender;
-use super::services::AppServices;
+use super::legacy_runtime::RuntimeEventSender;
+use super::legacy_services::AppServices;
 use crate::effects::{LoadFileSyntaxRequest, Task};
 use crate::events::SyntaxEvent;
 

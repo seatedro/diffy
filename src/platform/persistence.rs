@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 use crate::core::error::{DiffyError, Result};
 use crate::core::forge::github::GitHubUser;
+use crate::core::keymap::KeymapOverride;
+use crate::core::theme_types::ThemeMode;
 use crate::fonts::FontSettings;
-use crate::input::KeymapOverride;
-use crate::ui::theme::ThemeMode;
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
 

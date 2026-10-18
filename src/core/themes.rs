@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::ui::theme::{Color, ThemeColors};
+use crate::core::theme_types::Rgba;
 
 static THEMES_JSON: &str = include_str!("../../data/themes.json");
 
@@ -24,39 +24,39 @@ pub struct ThemeEntry {
 }
 
 pub struct SemanticPalette {
-    pub app_bg: Color,
-    pub canvas: Color,
-    pub panel: Color,
-    pub panel_strong: Color,
-    pub panel_tint: Color,
-    pub border_soft: Color,
-    pub border_strong: Color,
-    pub text_strong: Color,
-    pub text_base: Color,
-    pub text_muted: Color,
-    pub text_faint: Color,
-    pub accent: Color,
-    pub accent_strong: Color,
-    pub accent_soft: Color,
-    pub success_bg: Color,
-    pub success_text: Color,
-    pub danger_bg: Color,
-    pub danger_text: Color,
-    pub warning_text: Color,
-    pub selection_bg: Color,
-    pub line_context: Color,
-    pub line_add: Color,
-    pub line_add_accent: Color,
-    pub line_del: Color,
-    pub line_del_accent: Color,
-    pub syn_keyword: Color,
-    pub syn_string: Color,
-    pub syn_comment: Color,
-    pub syn_function: Color,
-    pub syn_type: Color,
-    pub syn_number: Color,
-    pub syn_property: Color,
-    pub syn_operator: Color,
+    pub app_bg: Rgba,
+    pub canvas: Rgba,
+    pub panel: Rgba,
+    pub panel_strong: Rgba,
+    pub panel_tint: Rgba,
+    pub border_soft: Rgba,
+    pub border_strong: Rgba,
+    pub text_strong: Rgba,
+    pub text_base: Rgba,
+    pub text_muted: Rgba,
+    pub text_faint: Rgba,
+    pub accent: Rgba,
+    pub accent_strong: Rgba,
+    pub accent_soft: Rgba,
+    pub success_bg: Rgba,
+    pub success_text: Rgba,
+    pub danger_bg: Rgba,
+    pub danger_text: Rgba,
+    pub warning_text: Rgba,
+    pub selection_bg: Rgba,
+    pub line_context: Rgba,
+    pub line_add: Rgba,
+    pub line_add_accent: Rgba,
+    pub line_del: Rgba,
+    pub line_del_accent: Rgba,
+    pub syn_keyword: Rgba,
+    pub syn_string: Rgba,
+    pub syn_comment: Rgba,
+    pub syn_function: Rgba,
+    pub syn_type: Rgba,
+    pub syn_number: Rgba,
+    pub syn_property: Rgba,
+    pub syn_operator: Rgba,
     pub is_dark: bool,
 }
 
@@ -111,73 +111,28 @@ impl ThemeRegistry {
     }
 }
 
-fn parse_hex(s: &str) -> Color {
+fn parse_hex(s: &str) -> Rgba {
     let s = s.strip_prefix('#').unwrap_or(s);
     let bytes = |i: usize| u8::from_str_radix(&s[i..i + 2], 16).unwrap_or(0);
     match s.len() {
-        8 => Color::rgba(bytes(0), bytes(2), bytes(4), bytes(6)),
-        6 => Color::rgba(bytes(0), bytes(2), bytes(4), 255),
-        _ => Color::rgba(0, 0, 0, 255),
+        8 => Rgba::new(bytes(0), bytes(2), bytes(4), bytes(6)),
+        6 => Rgba::new(bytes(0), bytes(2), bytes(4), 255),
+        _ => Rgba::BLACK,
     }
 }
 
-fn hex_field(obj: &serde_json::Value, key: &str) -> Color {
-    obj[key]
-        .as_str()
-        .map(parse_hex)
-        .unwrap_or(Color::rgba(0, 0, 0, 255))
-}
-
-fn relative_luminance(c: Color) -> f32 {
-    fn linearize(v: u8) -> f32 {
-        let s = v as f32 / 255.0;
-        if s <= 0.04045 {
-            s / 12.92
-        } else {
-            ((s + 0.055) / 1.055).powf(2.4)
-        }
-    }
-    0.2126 * linearize(c.r) + 0.7152 * linearize(c.g) + 0.0722 * linearize(c.b)
-}
-
-fn contrast_ratio(fg: Color, bg: Color) -> f32 {
-    let l1 = relative_luminance(fg);
-    let l2 = relative_luminance(bg);
-    let (lighter, darker) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
-    (lighter + 0.05) / (darker + 0.05)
-}
-
-fn ensure_contrast(text: Color, bg: Color, min_ratio: f32, is_dark: bool) -> Color {
-    if contrast_ratio(text, bg) >= min_ratio {
-        return text;
-    }
-    let target = if is_dark {
-        Color::rgba(255, 255, 255, 255)
-    } else {
-        Color::rgba(0, 0, 0, 255)
-    };
-    let mut lo = 0.0_f32;
-    let mut hi = 1.0_f32;
-    for _ in 0..12 {
-        let mid = (lo + hi) * 0.5;
-        let candidate = text.lerp(target, mid);
-        if contrast_ratio(candidate, bg) >= min_ratio {
-            hi = mid;
-        } else {
-            lo = mid;
-        }
-    }
-    text.lerp(target, hi)
+fn hex_field(obj: &serde_json::Value, key: &str) -> Rgba {
+    obj[key].as_str().map(parse_hex).unwrap_or(Rgba::BLACK)
 }
 
 impl SemanticPalette {
-    fn hex_field_opt(obj: &serde_json::Value, key: &str) -> Option<Color> {
+    fn hex_field_opt(obj: &serde_json::Value, key: &str) -> Option<Rgba> {
         obj[key].as_str().map(parse_hex)
     }
 
     fn from_json(obj: &serde_json::Value) -> Self {
         let app_bg = hex_field(obj, "appBg");
-        let is_dark = relative_luminance(app_bg) < 0.5;
+        let is_dark = app_bg.relative_luminance() < 0.5;
 
         let accent = hex_field(obj, "accent");
         let accent_strong = hex_field(obj, "accentStrong");
@@ -222,121 +177,6 @@ impl SemanticPalette {
             syn_property: Self::hex_field_opt(obj, "synProperty").unwrap_or(danger_text),
             syn_operator: Self::hex_field_opt(obj, "synOperator").unwrap_or(text_muted),
             is_dark,
-        }
-    }
-
-    pub fn to_theme_colors(&self) -> ThemeColors {
-        let s = self;
-        let d = s.is_dark;
-
-        let text = ensure_contrast(s.text_base, s.panel, 4.5, d);
-        let text_strong = ensure_contrast(s.text_strong, s.panel_strong, 4.5, d);
-        let text_muted = ensure_contrast(s.text_muted, s.panel, 3.0, d);
-        let icon = ensure_contrast(s.text_base, s.panel, 4.5, d);
-
-        // element_* are opaque tiers above panel (Radix step 3→4→5 pattern).
-        // Ghost_* use alpha overlays so they work on any surface (sidebar rows,
-        // toolbar slots) — the element renders as the parent bg + overlay.
-        // Dark themes brighten with white, light themes darken with black.
-        let overlay = if d {
-            Color::rgba(255, 255, 255, 255)
-        } else {
-            Color::rgba(0, 0, 0, 255)
-        };
-
-        let element_hover = s.panel.lerp(overlay, if d { 0.12 } else { 0.08 });
-        let element_active = s.panel.lerp(overlay, if d { 0.20 } else { 0.14 });
-        let ghost_hover = overlay.with_alpha(if d { 18 } else { 22 });
-        let ghost_active = overlay.with_alpha(if d { 32 } else { 40 });
-
-        // Accent-tinted hover for "primary" slots (sidebar rows, selected
-        // items). Alpha so it tints whatever surface it sits on.
-        let accent_tint_hover = s.accent.with_alpha(if d { 38 } else { 48 });
-        let accent_tint_selected = s.accent.with_alpha(if d { 66 } else { 76 });
-
-        ThemeColors {
-            app_bg: s.app_bg,
-            canvas: s.canvas,
-            panel: s.panel,
-            panel_strong: s.panel_strong,
-            border_soft: s.border_soft,
-
-            background: s.app_bg,
-            surface: s.panel,
-            editor_surface: s.canvas,
-            elevated_surface: s.panel_strong,
-            modal_surface: s.panel_strong,
-
-            title_bar_background: s.panel_strong,
-            status_bar_background: s.canvas,
-            sidebar_background: s.canvas,
-            empty_state_background: s.panel,
-            gutter_bg: if d { s.app_bg } else { s.panel_strong },
-            file_header_bg: s.panel_strong,
-            hunk_header_bg: s.panel_tint,
-
-            element_background: s.panel,
-            element_hover,
-            element_active,
-            element_selected: accent_tint_selected,
-            ghost_element_hover: ghost_hover,
-            ghost_element_active: ghost_active,
-            ghost_element_selected: accent_tint_selected,
-            hover_overlay: accent_tint_hover,
-
-            sidebar_row_hover: accent_tint_hover,
-            sidebar_row_selected: accent_tint_selected,
-
-            border: s.border_strong,
-            border_variant: s.border_soft,
-            focus_border: s.accent,
-            empty_state_border: s.border_strong,
-
-            text_strong,
-            text,
-            text_muted,
-            text_accent: s.accent,
-            icon,
-            gutter_text: s.text_faint,
-
-            accent: s.accent,
-            accent_strong: s.accent_strong,
-            selection_bg: s.selection_bg,
-
-            overlay_scrim: if d {
-                Color::rgba(0, 0, 0, 180)
-            } else {
-                Color::rgba(0, 0, 0, 80)
-            },
-            scrollbar_thumb: if d {
-                Color::rgba(255, 255, 255, 100)
-            } else {
-                s.text_muted
-            },
-
-            status_info: s.accent,
-            status_warning: s.warning_text,
-            status_error: s.danger_text,
-
-            line_add: s.line_add,
-            line_del: s.line_del,
-            line_modified: s.app_bg.lerp(s.accent, 0.15),
-            line_add_text: s.success_text,
-            line_del_text: s.danger_text,
-            line_add_word_bg: s.line_add_accent,
-            line_del_word_bg: s.line_del_accent,
-
-            search_match_bg: s.warning_text.with_alpha(if d { 90 } else { 120 }),
-            search_match_active_bg: s.warning_text.with_alpha(if d { 180 } else { 200 }),
-
-            syntax_keyword: s.syn_keyword,
-            syntax_string: s.syn_string,
-            syntax_comment: s.syn_comment,
-            syntax_function: s.syn_function,
-            syntax_type: s.syn_type,
-            syntax_number: s.syn_number,
-            syntax_property: s.syn_property,
-            syntax_operator: s.syn_operator,
         }
     }
 }

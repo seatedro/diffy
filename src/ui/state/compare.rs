@@ -331,12 +331,7 @@ pub(super) const COMPARE_STATS_VISIBLE_ONLY_FILE_LIMIT: usize = 10_000;
 
 pub(super) const COMPARE_STATS_VISIBLE_OVERSCAN_ROWS: usize = 32;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum CompareField {
-    #[default]
-    Left,
-    Right,
-}
+pub use crate::contracts::navigation::CompareField;
 
 #[derive(Debug, Clone, PartialEq, Eq, Store)]
 pub struct CompareState {

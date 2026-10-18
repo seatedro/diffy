@@ -2,8 +2,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
-use super::runtime::RuntimeEventSender;
-use super::services::AppServices;
+use super::legacy_runtime::RuntimeEventSender;
+use super::legacy_services::AppServices;
 use crate::effects::{
     CompareFileRequest, CompareFileStatsRequest, CompareStatsRequest, CompareWorkPriority, Task,
 };

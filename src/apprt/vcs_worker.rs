@@ -1,234 +1,208 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::Duration;
 
-use crate::apprt::ProgressReporter;
-use crate::apprt::runtime::RuntimeEventSender;
+use crate::contracts::navigation::{
+    RepositoryChangeKind, RepositorySnapshot, RepositorySyncReason,
+};
+use crate::contracts::shared::{JobId, WorkspaceEpoch};
 use crate::core::compare::{ComparePhase, ProgressSink};
 use crate::core::vcs::{
     backend::VcsRepository,
     discovery,
     model::{
-        ChangeBucket, FileChange, FileOperation, PublishAction, PullFastForwardOutcome,
-        RepoLocation, VcsOperation, VcsSnapshot,
+        ChangeBucket, FileChange, FileOperation, PublishAction, PublishPlan,
+        PullFastForwardOutcome, RepoLocation, VcsOperation, VcsSnapshot,
     },
-};
-use crate::events::{
-    RepositoryChangeKind, RepositoryEvent, RepositorySnapshot, RepositorySyncReason,
 };
 
 const VCS_DIRTY_DEBOUNCE: Duration = Duration::from_millis(150);
 
-pub struct VcsWorker {
-    sender: Sender<VcsWorkerCommand>,
-    event_sender: RuntimeEventSender,
-}
-
-impl VcsWorker {
-    pub fn new(event_sender: RuntimeEventSender) -> Self {
-        let (sender, receiver) = mpsc::channel();
-        let worker_events = event_sender.clone();
-        thread::spawn(move || vcs_worker_loop(worker_events, receiver));
-        Self {
-            sender,
-            event_sender,
-        }
-    }
-
-    /// Sends a command to the worker thread. If the thread died, every repo
-    /// operation would otherwise silently evaporate, so report it through the
-    /// runtime event loop where state turns it into a visible error.
-    fn send(&self, command: VcsWorkerCommand) {
-        if self.sender.send(command).is_err() {
-            tracing::error!("VCS worker thread stopped; dropping repository command");
-            self.event_sender.send(RepositoryEvent::WorkerStopped);
-        }
-    }
-
-    pub fn dispatch_sync(
-        &self,
-        path: PathBuf,
-        reason: RepositorySyncReason,
-        reporter_generation: Option<u64>,
-    ) {
-        self.send(VcsWorkerCommand::Sync {
-            path,
-            reason,
-            reporter_generation,
-        });
-    }
-
-    pub fn dispatch_operation(
-        &self,
-        path: PathBuf,
-        file_change: FileChange,
-        operation: FileOperation,
-    ) {
-        self.send(VcsWorkerCommand::ApplyOperation {
-            path,
-            file_change,
-            operation,
-        });
-    }
-
-    pub fn dispatch_batch_operation(
-        &self,
-        path: PathBuf,
-        file_changes: Vec<FileChange>,
-        operation: FileOperation,
-    ) {
-        self.send(VcsWorkerCommand::ApplyBatchOperation {
-            path,
-            file_changes,
-            operation,
-        });
-    }
-
-    pub fn dispatch_patch_operation(
-        &self,
-        path: PathBuf,
-        patch: String,
-        bucket: ChangeBucket,
-        operation: FileOperation,
-    ) {
-        self.send(VcsWorkerCommand::ApplyPatch {
-            path,
-            patch,
-            bucket,
-            operation,
-        });
-    }
-
-    pub fn dispatch_commit(&self, path: PathBuf, message: String) {
-        self.send(VcsWorkerCommand::Commit { path, message });
-    }
-
-    pub fn dispatch_operation_command(
-        &self,
-        path: PathBuf,
-        operation: VcsOperation,
-        toast_id: u64,
-    ) {
-        self.send(VcsWorkerCommand::RunOperation {
-            path,
-            operation,
-            toast_id,
-        });
-    }
-
-    pub fn dispatch_fetch(&self, path: PathBuf, remote: String, toast_id: u64) {
-        self.send(VcsWorkerCommand::Fetch {
-            path,
-            remote,
-            toast_id,
-        });
-    }
-
-    pub fn dispatch_push(
-        &self,
-        path: PathBuf,
-        remote: String,
-        refspec: String,
-        force_with_lease: bool,
-        toast_id: u64,
-    ) {
-        self.send(VcsWorkerCommand::Push {
-            path,
-            remote,
-            refspec,
-            force_with_lease,
-            toast_id,
-        });
-    }
-
-    pub fn dispatch_publish(&self, path: PathBuf, action: Option<PublishAction>, toast_id: u64) {
-        self.send(VcsWorkerCommand::Publish {
-            path,
-            action,
-            toast_id,
-        });
-    }
-
-    pub fn dispatch_publish_plan(&self, path: PathBuf, toast_id: Option<u64>) {
-        self.send(VcsWorkerCommand::PublishPlan { path, toast_id });
-    }
-
-    pub fn dispatch_pull_ff(&self, path: PathBuf, remote: String, branch: String, toast_id: u64) {
-        self.send(VcsWorkerCommand::PullFf {
-            path,
-            remote,
-            branch,
-            toast_id,
-        });
-    }
-
-    pub(crate) fn sender(&self) -> Sender<VcsWorkerCommand> {
-        self.sender.clone()
-    }
+pub(crate) trait VcsEvents: Send + Sync + 'static {
+    fn emit(&self, workspace: WorkspaceEpoch, event: VcsWorkerEvent);
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum VcsWorkerCommand {
+pub(crate) enum VcsWorkerEvent {
+    Progress {
+        generation: u64,
+        phase: ComparePhase,
+    },
+    SnapshotReady {
+        revision: u64,
+        snapshot: RepositorySnapshot,
+    },
+    SnapshotFailed {
+        path: PathBuf,
+        reason: RepositorySyncReason,
+        message: String,
+    },
+    FileOperationApplied {
+        job: JobId,
+        path: PathBuf,
+    },
+    FileOperationFailed {
+        job: JobId,
+        path: PathBuf,
+        message: String,
+    },
+    CommitCreated {
+        job: JobId,
+        path: PathBuf,
+    },
+    CommitFailed {
+        job: JobId,
+        path: PathBuf,
+        message: String,
+    },
+    OperationComplete {
+        job: JobId,
+        path: PathBuf,
+        operation: VcsOperation,
+        message: String,
+    },
+    OperationFailed {
+        job: JobId,
+        operation: VcsOperation,
+        message: String,
+    },
+    FetchProgress {
+        job: JobId,
+        received_objects: usize,
+        total_objects: usize,
+        received_bytes: usize,
+    },
+    FetchComplete {
+        job: JobId,
+        path: PathBuf,
+        remote: String,
+    },
+    FetchFailed {
+        job: JobId,
+        remote: String,
+        message: String,
+    },
+    PushProgress {
+        job: JobId,
+        current: usize,
+        total: usize,
+        bytes: usize,
+    },
+    PushComplete {
+        job: JobId,
+        path: PathBuf,
+        remote: String,
+        branch: String,
+    },
+    PushFailed {
+        job: JobId,
+        remote: String,
+        message: String,
+    },
+    PublishComplete {
+        job: JobId,
+        path: PathBuf,
+        label: String,
+    },
+    PublishFailed {
+        job: JobId,
+        message: String,
+    },
+    PublishPlanReady {
+        job: Option<JobId>,
+        path: PathBuf,
+        plan: PublishPlan,
+    },
+    PublishPlanFailed {
+        job: Option<JobId>,
+        message: String,
+    },
+    PullComplete {
+        job: JobId,
+        path: PathBuf,
+        remote: String,
+        branch: String,
+        already_up_to_date: bool,
+        behind: usize,
+    },
+    PullFailed {
+        job: JobId,
+        remote: String,
+        branch: String,
+        message: String,
+    },
+    /// The VCS worker thread is gone, so dispatched repository commands are
+    /// being dropped. Surfaced so the user knows repo operations stopped.
+    WorkerStopped,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum VcsCommand {
     Sync {
         path: PathBuf,
         reason: RepositorySyncReason,
         /// When `Some`, the worker emits `CompareProgressUpdate` events
         /// tagged with this generation so the loading panel follows the
         /// repo-open phases. `None` for background resyncs.
-        reporter_generation: Option<u64>,
+        progress: Option<u64>,
     },
     ApplyOperation {
+        job: JobId,
         path: PathBuf,
         file_change: FileChange,
         operation: FileOperation,
     },
     ApplyBatchOperation {
+        job: JobId,
         path: PathBuf,
         file_changes: Vec<FileChange>,
         operation: FileOperation,
     },
     ApplyPatch {
+        job: JobId,
         path: PathBuf,
         patch: String,
         bucket: ChangeBucket,
         operation: FileOperation,
     },
     Commit {
+        job: JobId,
         path: PathBuf,
         message: String,
     },
     RunOperation {
+        job: JobId,
         path: PathBuf,
         operation: VcsOperation,
-        toast_id: u64,
     },
     Fetch {
+        job: JobId,
         path: PathBuf,
         remote: String,
-        toast_id: u64,
     },
     Push {
+        job: JobId,
         path: PathBuf,
         remote: String,
         refspec: String,
         force_with_lease: bool,
-        toast_id: u64,
     },
     Publish {
+        job: JobId,
         path: PathBuf,
         action: Option<PublishAction>,
-        toast_id: u64,
     },
     PublishPlan {
+        job: Option<JobId>,
         path: PathBuf,
-        toast_id: Option<u64>,
     },
     PullFf {
+        job: JobId,
         path: PathBuf,
         remote: String,
         branch: String,
-        toast_id: u64,
     },
     Dirty {
         path: PathBuf,
@@ -236,16 +210,88 @@ pub(crate) enum VcsWorkerCommand {
     },
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct VcsWorkerCommand {
+    pub workspace: WorkspaceEpoch,
+    pub command: VcsCommand,
+}
+
+#[derive(Clone)]
+pub(crate) struct VcsWorker {
+    sender: Sender<VcsWorkerCommand>,
+    events: Arc<dyn VcsEvents>,
+}
+
+impl VcsWorker {
+    pub fn new(events: Arc<dyn VcsEvents>) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        let worker_events = Arc::clone(&events);
+        thread::spawn(move || vcs_worker_loop(worker_events, receiver));
+        Self { sender, events }
+    }
+
+    /// Sends a command to the worker thread. If the thread died, every repo
+    /// operation would otherwise silently evaporate, so report it through the
+    /// runtime event loop where state turns it into a visible error.
+    pub fn dispatch(&self, workspace: WorkspaceEpoch, command: VcsCommand) {
+        if self
+            .sender
+            .send(VcsWorkerCommand { workspace, command })
+            .is_err()
+        {
+            tracing::error!("VCS worker thread stopped; dropping repository command");
+            self.events.emit(workspace, VcsWorkerEvent::WorkerStopped);
+        }
+    }
+
+    pub fn sender(&self) -> Sender<VcsWorkerCommand> {
+        self.sender.clone()
+    }
+}
+
+#[derive(Clone)]
+struct Emitter {
+    events: Arc<dyn VcsEvents>,
+    workspace: WorkspaceEpoch,
+}
+
+impl Emitter {
+    fn emit(&self, event: VcsWorkerEvent) {
+        self.events.emit(self.workspace, event);
+    }
+}
+
+struct SyncProgress {
+    emitter: Emitter,
+    generation: u64,
+}
+
+impl ProgressSink for SyncProgress {
+    fn phase(&self, phase: ComparePhase) {
+        self.emitter.emit(VcsWorkerEvent::Progress {
+            generation: self.generation,
+            phase,
+        });
+    }
+}
+
 #[derive(Default)]
 struct VcsWorkerState {
     vcs_repo: Option<Box<dyn VcsRepository>>,
     active_path: Option<PathBuf>,
     last_snapshot: Option<VcsSnapshot>,
+    snapshot_revision: u64,
 }
 
-fn vcs_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<VcsWorkerCommand>) {
+struct PendingDirty {
+    workspace: WorkspaceEpoch,
+    path: PathBuf,
+    change_hint: RepositoryChangeKind,
+}
+
+fn vcs_worker_loop(events: Arc<dyn VcsEvents>, receiver: Receiver<VcsWorkerCommand>) {
     let mut state = VcsWorkerState::default();
-    let mut pending_dirty: Option<(PathBuf, RepositoryChangeKind)> = None;
+    let mut pending_dirty: Option<PendingDirty> = None;
 
     loop {
         let command = if pending_dirty.is_some() {
@@ -261,180 +307,142 @@ fn vcs_worker_loop(event_sender: RuntimeEventSender, receiver: Receiver<VcsWorke
             }
         };
 
-        match command {
-            Some(VcsWorkerCommand::Sync {
-                path,
-                reason,
-                reporter_generation,
-            }) => {
-                pending_dirty = None;
-                sync_repository(
-                    &mut state,
-                    &event_sender,
-                    path,
-                    reason,
-                    None,
-                    reporter_generation,
-                );
-            }
-            Some(VcsWorkerCommand::ApplyOperation {
-                path,
-                file_change,
-                operation,
-            }) => {
-                pending_dirty = None;
-                apply_status_operation(&mut state, &event_sender, path, file_change, operation);
-            }
-            Some(VcsWorkerCommand::ApplyBatchOperation {
-                path,
-                file_changes,
-                operation,
-            }) => {
-                pending_dirty = None;
-                apply_batch_status_operation(
-                    &mut state,
-                    &event_sender,
-                    path,
-                    file_changes,
-                    operation,
-                );
-            }
-            Some(VcsWorkerCommand::ApplyPatch {
-                path,
-                patch,
-                bucket,
-                operation,
-            }) => {
-                pending_dirty = None;
-                apply_patch_operation(&mut state, &event_sender, path, &patch, bucket, operation);
-            }
-            Some(VcsWorkerCommand::Commit { path, message }) => {
-                pending_dirty = None;
-                apply_commit(&mut state, &event_sender, path, &message);
-            }
-            Some(VcsWorkerCommand::RunOperation {
-                path,
-                operation,
-                toast_id,
-            }) => {
-                pending_dirty = None;
-                apply_vcs_operation(&mut state, &event_sender, path, operation, toast_id);
-            }
-            Some(VcsWorkerCommand::Fetch {
-                path,
-                remote,
-                toast_id,
-            }) => {
-                pending_dirty = None;
-                apply_fetch(&mut state, &event_sender, path, remote, toast_id);
-            }
-            Some(VcsWorkerCommand::Push {
-                path,
-                remote,
-                refspec,
-                force_with_lease,
-                toast_id,
-            }) => {
-                pending_dirty = None;
-                apply_push(
-                    &mut state,
-                    &event_sender,
-                    path,
-                    remote,
-                    refspec,
-                    force_with_lease,
-                    toast_id,
-                );
-            }
-            Some(VcsWorkerCommand::Publish {
-                path,
-                action,
-                toast_id,
-            }) => {
-                pending_dirty = None;
-                apply_publish(&mut state, &event_sender, path, action, toast_id);
-            }
-            Some(VcsWorkerCommand::PublishPlan { path, toast_id }) => {
-                pending_dirty = None;
-                apply_publish_plan(&event_sender, path, toast_id);
-            }
-            Some(VcsWorkerCommand::PullFf {
-                path,
-                remote,
-                branch,
-                toast_id,
-            }) => {
-                pending_dirty = None;
-                apply_pull_ff(&mut state, &event_sender, path, remote, branch, toast_id);
-            }
-            Some(VcsWorkerCommand::Dirty { path, change_hint }) => {
-                pending_dirty = Some(match pending_dirty.take() {
-                    Some((pending_path, pending_hint)) if pending_path == path => {
-                        (path, pending_hint.merge(change_hint))
+        let Some(VcsWorkerCommand { workspace, command }) = command else {
+            let Some(dirty) = pending_dirty.take() else {
+                continue;
+            };
+            let emitter = Emitter {
+                events: Arc::clone(&events),
+                workspace: dirty.workspace,
+            };
+            sync_repository(
+                &mut state,
+                &emitter,
+                dirty.path,
+                RepositorySyncReason::Dirty,
+                Some(dirty.change_hint),
+                None,
+            );
+            continue;
+        };
+
+        if let VcsCommand::Dirty { path, change_hint } = command {
+            pending_dirty = Some(match pending_dirty.take() {
+                Some(pending) if pending.path == path && pending.workspace == workspace => {
+                    PendingDirty {
+                        change_hint: pending.change_hint.merge(change_hint),
+                        ..pending
                     }
-                    _ => (path, change_hint),
-                });
-            }
-            None => {
-                let Some((path, change_hint)) = pending_dirty.take() else {
-                    continue;
-                };
-                sync_repository(
-                    &mut state,
-                    &event_sender,
+                }
+                _ => PendingDirty {
+                    workspace,
                     path,
-                    RepositorySyncReason::Dirty,
-                    Some(change_hint),
-                    None,
-                );
-            }
+                    change_hint,
+                },
+            });
+            continue;
         }
+
+        pending_dirty = None;
+        let emitter = Emitter {
+            events: Arc::clone(&events),
+            workspace,
+        };
+        run_command(&mut state, &emitter, command);
     }
 }
 
-fn apply_status_operation(
+fn run_command(state: &mut VcsWorkerState, emitter: &Emitter, command: VcsCommand) {
+    match command {
+        VcsCommand::Sync {
+            path,
+            reason,
+            progress,
+        } => sync_repository(state, emitter, path, reason, None, progress),
+        VcsCommand::ApplyOperation {
+            job,
+            path,
+            file_change,
+            operation,
+        } => {
+            let result = discovery::open_repository(&path)
+                .and_then(|mut repo| repo.apply_file_operation(&file_change, operation));
+            finish_file_operation(state, emitter, job, path, result);
+        }
+        VcsCommand::ApplyBatchOperation {
+            job,
+            path,
+            file_changes,
+            operation,
+        } => {
+            let result = discovery::open_repository(&path)
+                .and_then(|mut repo| repo.apply_batch_file_operation(&file_changes, operation));
+            finish_file_operation(state, emitter, job, path, result);
+        }
+        VcsCommand::ApplyPatch {
+            job,
+            path,
+            patch,
+            bucket,
+            operation,
+        } => apply_patch_operation(state, emitter, job, path, &patch, bucket, operation),
+        VcsCommand::Commit { job, path, message } => {
+            apply_commit(state, emitter, job, path, &message)
+        }
+        VcsCommand::RunOperation {
+            job,
+            path,
+            operation,
+        } => apply_vcs_operation(state, emitter, job, path, operation),
+        VcsCommand::Fetch { job, path, remote } => apply_fetch(state, emitter, job, path, remote),
+        VcsCommand::Push {
+            job,
+            path,
+            remote,
+            refspec,
+            force_with_lease,
+        } => apply_push(state, emitter, job, path, remote, refspec, force_with_lease),
+        VcsCommand::Publish { job, path, action } => {
+            apply_publish(state, emitter, job, path, action)
+        }
+        VcsCommand::PublishPlan { job, path } => apply_publish_plan(emitter, job, path),
+        VcsCommand::PullFf {
+            job,
+            path,
+            remote,
+            branch,
+        } => apply_pull_ff(state, emitter, job, path, remote, branch),
+        VcsCommand::Dirty { .. } => {}
+    }
+}
+
+fn finish_file_operation(
     state: &mut VcsWorkerState,
-    event_sender: &RuntimeEventSender,
+    emitter: &Emitter,
+    job: JobId,
     path: PathBuf,
-    file_change: FileChange,
-    operation: FileOperation,
+    result: crate::core::error::Result<()>,
 ) {
-    let result = discovery::open_repository(&path)
-        .and_then(|mut repo| repo.apply_file_operation(&file_change, operation));
     if let Err(error) = result {
-        event_sender.send(RepositoryEvent::FileOperationFailed {
-            path: path.clone(),
+        emitter.emit(VcsWorkerEvent::FileOperationFailed {
+            job,
+            path,
             message: error.user_message(),
         });
         return;
     }
 
-    sync_repository_forced(state, event_sender, path, RepositorySyncReason::Dirty);
-}
-
-fn apply_batch_status_operation(
-    state: &mut VcsWorkerState,
-    event_sender: &RuntimeEventSender,
-    path: PathBuf,
-    file_changes: Vec<FileChange>,
-    operation: FileOperation,
-) {
-    let result = discovery::open_repository(&path)
-        .and_then(|mut repo| repo.apply_batch_file_operation(&file_changes, operation));
-    if let Err(error) = result {
-        event_sender.send(RepositoryEvent::FileOperationFailed {
-            path: path.clone(),
-            message: error.user_message(),
-        });
-        return;
-    }
-
-    sync_repository_forced(state, event_sender, path, RepositorySyncReason::Dirty);
+    emitter.emit(VcsWorkerEvent::FileOperationApplied {
+        job,
+        path: path.clone(),
+    });
+    sync_repository_forced(state, emitter, path, RepositorySyncReason::Dirty);
 }
 
 fn apply_patch_operation(
     state: &mut VcsWorkerState,
-    event_sender: &RuntimeEventSender,
+    emitter: &Emitter,
+    job: JobId,
     path: PathBuf,
     patch: &str,
     _bucket: ChangeBucket,
@@ -450,47 +458,57 @@ fn apply_patch_operation(
             patch = %patch,
             "patch apply failed"
         );
-        event_sender.send(RepositoryEvent::FileOperationFailed {
-            path: path.clone(),
+        emitter.emit(VcsWorkerEvent::FileOperationFailed {
+            job,
+            path,
             message: format!("{} failed: {}", operation.label(), error),
         });
         return;
     }
 
-    sync_repository_forced(state, event_sender, path, RepositorySyncReason::Dirty);
+    emitter.emit(VcsWorkerEvent::FileOperationApplied {
+        job,
+        path: path.clone(),
+    });
+    sync_repository_forced(state, emitter, path, RepositorySyncReason::Dirty);
 }
 
 fn apply_commit(
     state: &mut VcsWorkerState,
-    event_sender: &RuntimeEventSender,
+    emitter: &Emitter,
+    job: JobId,
     path: PathBuf,
     message: &str,
 ) {
     if let Err(error) =
         discovery::open_repository(&path).and_then(|mut repo| repo.create_commit(message))
     {
-        event_sender.send(RepositoryEvent::CommitFailed {
+        emitter.emit(VcsWorkerEvent::CommitFailed {
+            job,
             path,
             message: error.user_message(),
         });
         return;
     }
 
-    event_sender.send(RepositoryEvent::CommitCreated { path: path.clone() });
-    sync_repository_forced(state, event_sender, path, RepositorySyncReason::Dirty);
+    emitter.emit(VcsWorkerEvent::CommitCreated {
+        job,
+        path: path.clone(),
+    });
+    sync_repository_forced(state, emitter, path, RepositorySyncReason::Dirty);
 }
 
 fn apply_vcs_operation(
     state: &mut VcsWorkerState,
-    event_sender: &RuntimeEventSender,
+    emitter: &Emitter,
+    job: JobId,
     path: PathBuf,
     operation: VcsOperation,
-    toast_id: u64,
 ) {
     tracing::debug!(
         path = %path.display(),
         operation = %operation.label(),
-        toast_id,
+        job = job.0,
         "vcs: operation requested",
     );
     let result =
@@ -503,13 +521,13 @@ fn apply_vcs_operation(
                 operation = %operation.label(),
                 "vcs: operation complete",
             );
-            event_sender.send(RepositoryEvent::VcsOperationComplete {
-                toast_id,
+            emitter.emit(VcsWorkerEvent::OperationComplete {
+                job,
                 path: path.clone(),
                 operation,
                 message,
             });
-            sync_repository_forced(state, event_sender, path, RepositorySyncReason::Rescan);
+            sync_repository_forced(state, emitter, path, RepositorySyncReason::Rescan);
         }
         Err(error) => {
             tracing::warn!(
@@ -518,8 +536,8 @@ fn apply_vcs_operation(
                 %error,
                 "vcs: operation failed",
             );
-            event_sender.send(RepositoryEvent::VcsOperationFailed {
-                toast_id,
+            emitter.emit(VcsWorkerEvent::OperationFailed {
+                job,
                 operation,
                 message: error.user_message(),
             });
@@ -529,18 +547,18 @@ fn apply_vcs_operation(
 
 fn apply_fetch(
     state: &mut VcsWorkerState,
-    event_sender: &RuntimeEventSender,
+    emitter: &Emitter,
+    job: JobId,
     path: PathBuf,
     remote: String,
-    toast_id: u64,
 ) {
-    tracing::debug!(path = %path.display(), %remote, toast_id, "vcs: fetch requested");
+    tracing::debug!(path = %path.display(), %remote, job = job.0, "vcs: fetch requested");
     let result = discovery::open_repository(&path).and_then(|mut repo| {
         repo.fetch_remote(
             &remote,
             &mut |received_objects, total_objects, received_bytes| {
-                event_sender.send(RepositoryEvent::FetchProgress {
-                    toast_id,
+                emitter.emit(VcsWorkerEvent::FetchProgress {
+                    job,
                     received_objects,
                     total_objects,
                     received_bytes,
@@ -552,17 +570,17 @@ fn apply_fetch(
     match result {
         Ok(()) => {
             tracing::debug!(path = %path.display(), %remote, "vcs: fetch complete");
-            event_sender.send(RepositoryEvent::FetchComplete {
-                toast_id,
+            emitter.emit(VcsWorkerEvent::FetchComplete {
+                job,
                 path: path.clone(),
                 remote,
             });
-            sync_repository_forced(state, event_sender, path, RepositorySyncReason::Rescan);
+            sync_repository_forced(state, emitter, path, RepositorySyncReason::Rescan);
         }
         Err(error) => {
             tracing::warn!(path = %path.display(), %remote, %error, "vcs: fetch failed");
-            event_sender.send(RepositoryEvent::FetchFailed {
-                toast_id,
+            emitter.emit(VcsWorkerEvent::FetchFailed {
+                job,
                 remote,
                 message: error.user_message(),
             });
@@ -572,19 +590,19 @@ fn apply_fetch(
 
 fn apply_push(
     state: &mut VcsWorkerState,
-    event_sender: &RuntimeEventSender,
+    emitter: &Emitter,
+    job: JobId,
     path: PathBuf,
     remote: String,
     refspec: String,
     force_with_lease: bool,
-    toast_id: u64,
 ) {
     tracing::debug!(
         path = %path.display(),
         %remote,
         %refspec,
         force_with_lease,
-        toast_id,
+        job = job.0,
         "vcs: push requested",
     );
     // Parse the branch out of the refspec for the completion event, e.g.
@@ -602,8 +620,8 @@ fn apply_push(
             &refspec,
             force_with_lease,
             &mut |current, total, bytes| {
-                event_sender.send(RepositoryEvent::PushProgress {
-                    toast_id,
+                emitter.emit(VcsWorkerEvent::PushProgress {
+                    job,
                     current,
                     total,
                     bytes,
@@ -615,18 +633,18 @@ fn apply_push(
     match result {
         Ok(()) => {
             tracing::debug!(path = %path.display(), %remote, %branch, "vcs: push complete");
-            event_sender.send(RepositoryEvent::PushComplete {
-                toast_id,
+            emitter.emit(VcsWorkerEvent::PushComplete {
+                job,
                 path: path.clone(),
                 remote,
                 branch,
             });
-            sync_repository_forced(state, event_sender, path, RepositorySyncReason::Rescan);
+            sync_repository_forced(state, emitter, path, RepositorySyncReason::Rescan);
         }
         Err(error) => {
             tracing::warn!(path = %path.display(), %remote, %error, "vcs: push failed");
-            event_sender.send(RepositoryEvent::PushFailed {
-                toast_id,
+            emitter.emit(VcsWorkerEvent::PushFailed {
+                job,
                 remote,
                 message: error.user_message(),
             });
@@ -636,12 +654,12 @@ fn apply_push(
 
 fn apply_publish(
     state: &mut VcsWorkerState,
-    event_sender: &RuntimeEventSender,
+    emitter: &Emitter,
+    job: JobId,
     path: PathBuf,
     action: Option<PublishAction>,
-    toast_id: u64,
 ) {
-    tracing::debug!(path = %path.display(), toast_id, "vcs: publish requested");
+    tracing::debug!(path = %path.display(), job = job.0, "vcs: publish requested");
     let result = discovery::open_repository(&path).and_then(|mut repo| {
         let action = match action {
             Some(action) => action,
@@ -653,40 +671,36 @@ fn apply_publish(
     match result {
         Ok(outcome) => {
             tracing::debug!(path = %path.display(), label = %outcome.label, "vcs: publish complete");
-            event_sender.send(RepositoryEvent::PublishComplete {
-                toast_id,
+            emitter.emit(VcsWorkerEvent::PublishComplete {
+                job,
                 path: path.clone(),
                 label: outcome.label,
             });
-            sync_repository_forced(state, event_sender, path, RepositorySyncReason::Rescan);
+            sync_repository_forced(state, emitter, path, RepositorySyncReason::Rescan);
         }
         Err(error) => {
             tracing::warn!(path = %path.display(), %error, "vcs: publish failed");
-            event_sender.send(RepositoryEvent::PublishFailed {
-                toast_id,
+            emitter.emit(VcsWorkerEvent::PublishFailed {
+                job,
                 message: error.user_message(),
             });
         }
     }
 }
 
-fn apply_publish_plan(event_sender: &RuntimeEventSender, path: PathBuf, toast_id: Option<u64>) {
-    tracing::debug!(path = %path.display(), ?toast_id, "vcs: publish-plan requested");
+fn apply_publish_plan(emitter: &Emitter, job: Option<JobId>, path: PathBuf) {
+    tracing::debug!(path = %path.display(), ?job, "vcs: publish-plan requested");
     let result = discovery::open_repository(&path).and_then(|mut repo| repo.publish_plan());
 
     match result {
         Ok(plan) => {
             tracing::debug!(path = %path.display(), "vcs: publish-plan ready");
-            event_sender.send(RepositoryEvent::PublishPlanReady {
-                toast_id,
-                path,
-                plan,
-            });
+            emitter.emit(VcsWorkerEvent::PublishPlanReady { job, path, plan });
         }
         Err(error) => {
             tracing::warn!(path = %path.display(), %error, "vcs: publish-plan failed");
-            event_sender.send(RepositoryEvent::PublishPlanFailed {
-                toast_id,
+            emitter.emit(VcsWorkerEvent::PublishPlanFailed {
+                job,
                 message: error.user_message(),
             });
         }
@@ -695,17 +709,17 @@ fn apply_publish_plan(event_sender: &RuntimeEventSender, path: PathBuf, toast_id
 
 fn apply_pull_ff(
     state: &mut VcsWorkerState,
-    event_sender: &RuntimeEventSender,
+    emitter: &Emitter,
+    job: JobId,
     path: PathBuf,
     remote: String,
     branch: String,
-    toast_id: u64,
 ) {
     tracing::debug!(
         path = %path.display(),
         %remote,
         %branch,
-        toast_id,
+        job = job.0,
         "vcs: pull-ff requested",
     );
     let result = discovery::open_repository(&path)
@@ -725,15 +739,15 @@ fn apply_pull_ff(
                 behind,
                 "vcs: pull-ff complete",
             );
-            event_sender.send(RepositoryEvent::PullComplete {
-                toast_id,
+            emitter.emit(VcsWorkerEvent::PullComplete {
+                job,
                 path: path.clone(),
                 remote,
                 branch,
                 already_up_to_date,
                 behind,
             });
-            sync_repository_forced(state, event_sender, path, RepositorySyncReason::Rescan);
+            sync_repository_forced(state, emitter, path, RepositorySyncReason::Rescan);
         }
         Err(error) => {
             tracing::warn!(
@@ -743,8 +757,8 @@ fn apply_pull_ff(
                 %error,
                 "vcs: pull-ff failed",
             );
-            event_sender.send(RepositoryEvent::PullFailed {
-                toast_id,
+            emitter.emit(VcsWorkerEvent::PullFailed {
+                job,
                 remote,
                 branch,
                 message: error.user_message(),
@@ -755,43 +769,37 @@ fn apply_pull_ff(
 
 fn sync_repository_forced(
     state: &mut VcsWorkerState,
-    event_sender: &RuntimeEventSender,
+    emitter: &Emitter,
     path: PathBuf,
     reason: RepositorySyncReason,
 ) {
-    sync_repository_inner(state, event_sender, path, reason, true, None, None);
+    sync_repository_inner(state, emitter, path, reason, true, None, None);
 }
 
 fn sync_repository(
     state: &mut VcsWorkerState,
-    event_sender: &RuntimeEventSender,
+    emitter: &Emitter,
     path: PathBuf,
     reason: RepositorySyncReason,
     dirty_hint: Option<RepositoryChangeKind>,
-    reporter_generation: Option<u64>,
+    progress: Option<u64>,
 ) {
-    sync_repository_inner(
-        state,
-        event_sender,
-        path,
-        reason,
-        false,
-        dirty_hint,
-        reporter_generation,
-    );
+    sync_repository_inner(state, emitter, path, reason, false, dirty_hint, progress);
 }
 
 fn sync_repository_inner(
     state: &mut VcsWorkerState,
-    event_sender: &RuntimeEventSender,
+    emitter: &Emitter,
     path: PathBuf,
     reason: RepositorySyncReason,
     force_emit: bool,
     dirty_hint: Option<RepositoryChangeKind>,
-    reporter_generation: Option<u64>,
+    progress: Option<u64>,
 ) {
-    let reporter = reporter_generation
-        .map(|generation| ProgressReporter::new(generation, event_sender.clone()));
+    let reporter = progress.map(|generation| SyncProgress {
+        emitter: emitter.clone(),
+        generation,
+    });
     let reporter_ref: Option<&dyn ProgressSink> = reporter.as_ref().map(|r| r as &dyn ProgressSink);
 
     if let Some(r) = reporter_ref {
@@ -800,7 +808,7 @@ fn sync_repository_inner(
     let location = match discovery::discover_repository(&path) {
         Ok(Some(location)) => location,
         Ok(None) => {
-            event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
+            emitter.emit(VcsWorkerEvent::SnapshotFailed {
                 path: path.clone(),
                 reason,
                 message: format!("{} is not a supported repository", path.display()),
@@ -808,7 +816,7 @@ fn sync_repository_inner(
             return;
         }
         Err(error) => {
-            event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
+            emitter.emit(VcsWorkerEvent::SnapshotFailed {
                 path,
                 reason,
                 message: error.user_message(),
@@ -823,7 +831,7 @@ fn sync_repository_inner(
     }
     sync_vcs_repository(
         state,
-        event_sender,
+        emitter,
         path,
         reason,
         force_emit,
@@ -833,9 +841,10 @@ fn sync_repository_inner(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sync_vcs_repository(
     state: &mut VcsWorkerState,
-    event_sender: &RuntimeEventSender,
+    emitter: &Emitter,
     path: PathBuf,
     reason: RepositorySyncReason,
     force_emit: bool,
@@ -851,7 +860,7 @@ fn sync_vcs_repository(
         state.vcs_repo = match discovery::open_location(location) {
             Ok(repo) => Some(repo),
             Err(error) => {
-                event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
+                emitter.emit(VcsWorkerEvent::SnapshotFailed {
                     path,
                     reason,
                     message: error.user_message(),
@@ -861,7 +870,7 @@ fn sync_vcs_repository(
         };
     }
     let Some(repo) = state.vcs_repo.as_mut() else {
-        event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
+        emitter.emit(VcsWorkerEvent::SnapshotFailed {
             path,
             reason,
             message: "repository backend is not open".to_owned(),
@@ -871,7 +880,7 @@ fn sync_vcs_repository(
     let mut snapshot = match repo.snapshot(reason, reporter) {
         Ok(snapshot) => snapshot,
         Err(error) => {
-            event_sender.send(RepositoryEvent::RepositorySnapshotFailed {
+            emitter.emit(VcsWorkerEvent::SnapshotFailed {
                 path,
                 reason,
                 message: error.user_message(),
@@ -909,7 +918,11 @@ fn sync_vcs_repository(
                 tracing::debug!(path = %path.display(), %error, "vcs: no publish plan for snapshot");
             })
             .ok();
-        event_sender.send(RepositoryEvent::RepositorySnapshotReady(payload));
+        state.snapshot_revision = state.snapshot_revision.saturating_add(1);
+        emitter.emit(VcsWorkerEvent::SnapshotReady {
+            revision: state.snapshot_revision,
+            snapshot: payload,
+        });
     }
     state.last_snapshot = Some(snapshot);
 }

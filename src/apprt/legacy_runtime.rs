@@ -1,13 +1,15 @@
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::Duration;
 
 use crate::apprt::compare::CompareScheduler;
-use crate::apprt::services::AppServices;
+use crate::apprt::legacy_services::AppServices;
 use crate::apprt::syntax::SyntaxScheduler;
-use crate::apprt::vcs_worker::VcsWorker;
+use crate::apprt::vcs_worker::{VcsCommand, VcsEvents, VcsWorker, VcsWorkerEvent};
 use crate::apprt::watcher::RepoWatchWorker;
+use crate::contracts::shared::{JobId, WorkspaceEpoch};
 use crate::effects::{
     AiEffect, CompareEffect, Effect, GitHubEffect, RepositoryEffect, SettingsEffect, SyntaxEffect,
     UiEffect, UpdateEffect,
@@ -37,7 +39,7 @@ impl AppRuntime {
         let (sender, receiver) = mpsc::channel();
         let event_sender = RuntimeEventSender::new(sender, wake_proxy);
         let save_worker = SaveWorker::new(services.clone(), event_sender.clone());
-        let vcs_worker = VcsWorker::new(event_sender.clone());
+        let vcs_worker = VcsWorker::new(Arc::new(event_sender.clone()));
         let compare_scheduler = CompareScheduler::new(services.clone(), event_sender.clone());
         let syntax_scheduler = SyntaxScheduler::new(services.clone(), event_sender.clone());
         let repo_watch_worker = RepoWatchWorker::new(vcs_worker.sender());
@@ -105,6 +107,169 @@ impl RuntimeEventSender {
     }
 }
 
+impl VcsEvents for RuntimeEventSender {
+    fn emit(&self, _workspace: WorkspaceEpoch, event: VcsWorkerEvent) {
+        match event {
+            VcsWorkerEvent::Progress { generation, phase } => {
+                self.send(CompareEvent::CompareProgressUpdate { generation, phase });
+            }
+            VcsWorkerEvent::SnapshotReady { snapshot, .. } => {
+                self.send(RepositoryEvent::RepositorySnapshotReady(snapshot));
+            }
+            VcsWorkerEvent::SnapshotFailed {
+                path,
+                reason,
+                message,
+            } => self.send(RepositoryEvent::RepositorySnapshotFailed {
+                path,
+                reason,
+                message,
+            }),
+            VcsWorkerEvent::FileOperationApplied { .. } => {}
+            VcsWorkerEvent::FileOperationFailed { path, message, .. } => {
+                self.send(RepositoryEvent::FileOperationFailed { path, message });
+            }
+            VcsWorkerEvent::CommitCreated { path, .. } => {
+                self.send(RepositoryEvent::CommitCreated { path });
+            }
+            VcsWorkerEvent::CommitFailed { path, message, .. } => {
+                self.send(RepositoryEvent::CommitFailed { path, message });
+            }
+            VcsWorkerEvent::OperationComplete {
+                job,
+                path,
+                operation,
+                message,
+            } => self.send(RepositoryEvent::VcsOperationComplete {
+                toast_id: job.0,
+                path,
+                operation,
+                message,
+            }),
+            VcsWorkerEvent::OperationFailed {
+                job,
+                operation,
+                message,
+            } => self.send(RepositoryEvent::VcsOperationFailed {
+                toast_id: job.0,
+                operation,
+                message,
+            }),
+            VcsWorkerEvent::FetchProgress {
+                job,
+                received_objects,
+                total_objects,
+                received_bytes,
+            } => self.send(RepositoryEvent::FetchProgress {
+                toast_id: job.0,
+                received_objects,
+                total_objects,
+                received_bytes,
+            }),
+            VcsWorkerEvent::FetchComplete { job, path, remote } => {
+                self.send(RepositoryEvent::FetchComplete {
+                    toast_id: job.0,
+                    path,
+                    remote,
+                });
+            }
+            VcsWorkerEvent::FetchFailed {
+                job,
+                remote,
+                message,
+            } => self.send(RepositoryEvent::FetchFailed {
+                toast_id: job.0,
+                remote,
+                message,
+            }),
+            VcsWorkerEvent::PushProgress {
+                job,
+                current,
+                total,
+                bytes,
+            } => self.send(RepositoryEvent::PushProgress {
+                toast_id: job.0,
+                current,
+                total,
+                bytes,
+            }),
+            VcsWorkerEvent::PushComplete {
+                job,
+                path,
+                remote,
+                branch,
+            } => self.send(RepositoryEvent::PushComplete {
+                toast_id: job.0,
+                path,
+                remote,
+                branch,
+            }),
+            VcsWorkerEvent::PushFailed {
+                job,
+                remote,
+                message,
+            } => self.send(RepositoryEvent::PushFailed {
+                toast_id: job.0,
+                remote,
+                message,
+            }),
+            VcsWorkerEvent::PublishComplete { job, path, label } => {
+                self.send(RepositoryEvent::PublishComplete {
+                    toast_id: job.0,
+                    path,
+                    label,
+                });
+            }
+            VcsWorkerEvent::PublishFailed { job, message } => {
+                self.send(RepositoryEvent::PublishFailed {
+                    toast_id: job.0,
+                    message,
+                });
+            }
+            VcsWorkerEvent::PublishPlanReady { job, path, plan } => {
+                self.send(RepositoryEvent::PublishPlanReady {
+                    toast_id: job.map(|job| job.0),
+                    path,
+                    plan,
+                });
+            }
+            VcsWorkerEvent::PublishPlanFailed { job, message } => {
+                self.send(RepositoryEvent::PublishPlanFailed {
+                    toast_id: job.map(|job| job.0),
+                    message,
+                });
+            }
+            VcsWorkerEvent::PullComplete {
+                job,
+                path,
+                remote,
+                branch,
+                already_up_to_date,
+                behind,
+            } => self.send(RepositoryEvent::PullComplete {
+                toast_id: job.0,
+                path,
+                remote,
+                branch,
+                already_up_to_date,
+                behind,
+            }),
+            VcsWorkerEvent::PullFailed {
+                job,
+                remote,
+                branch,
+                message,
+            } => self.send(RepositoryEvent::PullFailed {
+                toast_id: job.0,
+                remote,
+                branch,
+                message,
+            }),
+            VcsWorkerEvent::WorkerStopped => self.send(RepositoryEvent::WorkerStopped),
+        }
+    }
+}
+
 impl SaveWorker {
     fn new(services: AppServices, event_sender: RuntimeEventSender) -> Self {
         let (sender, receiver) = mpsc::channel();
@@ -118,6 +283,10 @@ impl SaveWorker {
 }
 
 impl EffectRunner {
+    fn dispatch_vcs(&self, command: VcsCommand) {
+        self.vcs_worker.dispatch(WorkspaceEpoch::default(), command);
+    }
+
     fn dispatch(&self, effect: Effect) {
         match effect {
             Effect::Ui(UiEffect::OpenRepositoryDialog) => {
@@ -130,80 +299,95 @@ impl EffectRunner {
                 });
             }
             Effect::Repository(RepositoryEffect::WatchRepository { path }) => {
-                self.repo_watch_worker.dispatch(path);
+                self.repo_watch_worker
+                    .dispatch(WorkspaceEpoch::default(), path);
             }
             Effect::Repository(RepositoryEffect::SyncRepository {
                 path,
                 reason,
                 reporter_generation,
             }) => {
-                self.vcs_worker
-                    .dispatch_sync(path, reason, reporter_generation);
+                self.dispatch_vcs(VcsCommand::Sync {
+                    path,
+                    reason,
+                    progress: reporter_generation,
+                });
             }
             Effect::Repository(RepositoryEffect::ApplyFileOperation(request)) => {
-                self.vcs_worker.dispatch_operation(
-                    request.repo_path,
-                    request.file_change,
-                    request.operation,
-                );
+                self.dispatch_vcs(VcsCommand::ApplyOperation {
+                    job: JobId::default(),
+                    path: request.repo_path,
+                    file_change: request.file_change,
+                    operation: request.operation,
+                });
             }
             Effect::Repository(RepositoryEffect::ApplyBatchFileOperation(request)) => {
-                self.vcs_worker.dispatch_batch_operation(
-                    request.repo_path,
-                    request.file_changes,
-                    request.operation,
-                );
+                self.dispatch_vcs(VcsCommand::ApplyBatchOperation {
+                    job: JobId::default(),
+                    path: request.repo_path,
+                    file_changes: request.file_changes,
+                    operation: request.operation,
+                });
             }
             Effect::Repository(RepositoryEffect::ApplyPatchOperation(request)) => {
-                self.vcs_worker.dispatch_patch_operation(
-                    request.repo_path,
-                    request.patch,
-                    request.bucket,
-                    request.operation,
-                );
+                self.dispatch_vcs(VcsCommand::ApplyPatch {
+                    job: JobId::default(),
+                    path: request.repo_path,
+                    patch: request.patch,
+                    bucket: request.bucket,
+                    operation: request.operation,
+                });
             }
             Effect::Repository(RepositoryEffect::CreateCommit(request)) => {
-                self.vcs_worker
-                    .dispatch_commit(request.repo_path, request.message);
+                self.dispatch_vcs(VcsCommand::Commit {
+                    job: JobId::default(),
+                    path: request.repo_path,
+                    message: request.message,
+                });
             }
             Effect::Repository(RepositoryEffect::RunOperation(request)) => {
-                self.vcs_worker.dispatch_operation_command(
-                    request.repo_path,
-                    request.operation,
-                    request.toast_id,
-                );
+                self.dispatch_vcs(VcsCommand::RunOperation {
+                    job: JobId(request.toast_id),
+                    path: request.repo_path,
+                    operation: request.operation,
+                });
             }
             Effect::Repository(RepositoryEffect::FetchRemote(request)) => {
-                self.vcs_worker
-                    .dispatch_fetch(request.repo_path, request.remote, request.toast_id);
+                self.dispatch_vcs(VcsCommand::Fetch {
+                    job: JobId(request.toast_id),
+                    path: request.repo_path,
+                    remote: request.remote,
+                });
             }
             Effect::Repository(RepositoryEffect::Push(request)) => {
-                self.vcs_worker.dispatch_push(
-                    request.repo_path,
-                    request.remote,
-                    request.refspec,
-                    request.force_with_lease,
-                    request.toast_id,
-                );
+                self.dispatch_vcs(VcsCommand::Push {
+                    job: JobId(request.toast_id),
+                    path: request.repo_path,
+                    remote: request.remote,
+                    refspec: request.refspec,
+                    force_with_lease: request.force_with_lease,
+                });
             }
             Effect::Repository(RepositoryEffect::PublishDefault(request)) => {
-                self.vcs_worker.dispatch_publish(
-                    request.repo_path,
-                    request.action,
-                    request.toast_id,
-                );
+                self.dispatch_vcs(VcsCommand::Publish {
+                    job: JobId(request.toast_id),
+                    path: request.repo_path,
+                    action: request.action,
+                });
             }
             Effect::Repository(RepositoryEffect::LoadPublishPlan(request)) => {
-                self.vcs_worker
-                    .dispatch_publish_plan(request.repo_path, request.toast_id);
+                self.dispatch_vcs(VcsCommand::PublishPlan {
+                    job: request.toast_id.map(JobId),
+                    path: request.repo_path,
+                });
             }
             Effect::Repository(RepositoryEffect::PullFf(request)) => {
-                self.vcs_worker.dispatch_pull_ff(
-                    request.repo_path,
-                    request.remote,
-                    request.branch,
-                    request.toast_id,
-                );
+                self.dispatch_vcs(VcsCommand::PullFf {
+                    job: JobId(request.toast_id),
+                    path: request.repo_path,
+                    remote: request.remote,
+                    branch: request.branch,
+                });
             }
             Effect::Compare(CompareEffect::Run(task)) => {
                 let generation = task.generation;
@@ -1194,7 +1378,7 @@ impl EffectRunner {
                 }
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
-                    let event = match crate::apprt::services::load_ai_keys() {
+                    let event = match crate::apprt::legacy_services::load_ai_keys() {
                         Ok((openai, anthropic)) => AiEvent::AiKeysLoaded { openai, anthropic },
                         Err(error) => AiEvent::AiKeysLoadFailed {
                             message: error.user_message(),
@@ -1301,7 +1485,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{AppRuntime, SETTINGS_SAVE_DEBOUNCE};
-    use crate::apprt::services::AppServices;
+    use crate::apprt::legacy_services::AppServices;
     use crate::effects::SettingsEffect;
     use crate::events::{AppEvent, SettingsEvent};
     use crate::platform::persistence::{Settings, SettingsStore};

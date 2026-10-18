@@ -10,7 +10,7 @@ use quark_ui::element::*;
 use quark_ui::style::Styled;
 use quark_ui::text_input::{TextEditCommand, TextEditOutcome};
 
-use super::presentation::{PresentedFile, action_buttons, hunk_target_from_title};
+use super::presentation::action_buttons;
 use super::{MutationsController, panel, view};
 use crate::app::shell::Slot;
 use crate::app::text_targets::{TextCx, TextHost};
@@ -47,7 +47,11 @@ fn change(bucket: ChangeBucket) -> FileChange {
     }
 }
 
-fn repository(revision: u64, buckets: &[ChangeBucket], capabilities: RepoCapabilities) -> Rc<RepositoryContext> {
+fn repository(
+    revision: u64,
+    buckets: &[ChangeBucket],
+    capabilities: RepoCapabilities,
+) -> Rc<RepositoryContext> {
     Rc::new(RepositoryContext {
         revision: RepositoryRevision(revision),
         snapshot: Arc::new(RepositorySnapshot {
@@ -113,12 +117,10 @@ fn target(side: Side, lines: std::ops::Range<u32>) -> SourceTarget {
 }
 
 fn hunk() -> crate::contracts::shared::HunkTarget {
-    let file = PresentedFile {
-        key: FILE,
-        revision: REVISION,
-        path: "f.txt".to_owned(),
-    };
-    hunk_target_from_title(&file, "@@ -1,3 +1,4 @@").unwrap()
+    crate::contracts::shared::HunkTarget {
+        source: target(Side::New, 0..4),
+        hunk: 0,
+    }
 }
 
 fn mutation_effects(reduction: &Reduction) -> Vec<MutationsEffect> {
@@ -147,7 +149,8 @@ fn hunk_operations_load_exact_sources_lazily_then_apply() {
     let cx = shared();
     let mut controller = MutationsController::default();
     let reduction = controller.reduce_action(MutationsAction::StageHunkAt(hunk()), &cx);
-    let [MutationsEffect::LoadMutationSource(key)] = mutation_effects(&reduction).as_slice() else {
+    let effects1 = mutation_effects(&reduction);
+    let [MutationsEffect::LoadMutationSource(key)] = effects1.as_slice() else {
         panic!("expected a source load, got {:?}", reduction.effects);
     };
     assert_eq!(key.change.bucket, ChangeBucket::Unstaged);
@@ -160,7 +163,8 @@ fn hunk_operations_load_exact_sources_lazily_then_apply() {
         },
         &cx,
     );
-    let [MutationsEffect::ApplyPatch(request)] = mutation_effects(&ready).as_slice() else {
+    let effects2 = mutation_effects(&ready);
+    let [MutationsEffect::ApplyPatch(request)] = effects2.as_slice() else {
         panic!("expected a patch, got {:?}", ready.effects);
     };
     assert_eq!(request.operation, FileOperation::Stage);
@@ -183,7 +187,8 @@ fn hunk_operations_load_exact_sources_lazily_then_apply() {
     );
     assert!(!controller.busy());
     let unstage = controller.reduce_action(MutationsAction::UnstageHunkAt(hunk()), &cx);
-    let [MutationsEffect::LoadMutationSource(key)] = mutation_effects(&unstage).as_slice() else {
+    let effects3 = mutation_effects(&unstage);
+    let [MutationsEffect::LoadMutationSource(key)] = effects3.as_slice() else {
         panic!("expected a source load");
     };
     assert_eq!(key.change.bucket, ChangeBucket::Staged);
@@ -205,10 +210,14 @@ fn stale_targets_and_sources_are_rejected() {
         &cx,
     );
     assert!(reduction.effects.is_empty());
-    assert!(matches!(reduction.intents.as_slice(), [Intent::Toast(ToastUpdate::Show { .. })]));
+    assert!(matches!(
+        reduction.intents.as_slice(),
+        [Intent::Toast(ToastUpdate::Show { .. })]
+    ));
 
     let reduction = controller.reduce_action(MutationsAction::StageHunkAt(hunk()), &cx);
-    let [MutationsEffect::LoadMutationSource(key)] = mutation_effects(&reduction).as_slice() else {
+    let effects4 = mutation_effects(&reduction);
+    let [MutationsEffect::LoadMutationSource(key)] = effects4.as_slice() else {
         panic!("expected a source load");
     };
     let repo = repository(2, &[ChangeBucket::Unstaged], RepoCapabilities::git());
@@ -237,15 +246,16 @@ fn discards_need_confirmation_through_the_commands_host() {
     assert!(request.destructive);
     assert_eq!(
         *request.confirm,
-        Action::Mutations(MutationsAction::ApplyConfirmed(ConfirmedMutation::Selection(
-            MutationSelection::Hunks(vec![hunk()])
-        )))
+        Action::Mutations(MutationsAction::ApplyConfirmed(
+            ConfirmedMutation::Selection(MutationSelection::Hunks(vec![hunk()]))
+        ))
     );
     let Action::Mutations(confirmed) = *request.confirm.clone() else {
         unreachable!()
     };
     let reduction = controller.reduce_action(confirmed, &cx);
-    let [MutationsEffect::LoadMutationSource(key)] = mutation_effects(&reduction).as_slice() else {
+    let effects5 = mutation_effects(&reduction);
+    let [MutationsEffect::LoadMutationSource(key)] = effects5.as_slice() else {
         panic!("expected a source load");
     };
     assert_eq!(key.change.bucket, ChangeBucket::Unstaged);
@@ -256,15 +266,28 @@ fn selected_lines_are_separate_from_the_text_selection() {
     let mut cx = shared();
     cx.selection = Some(target(Side::New, 7..9));
     let mut controller = MutationsController::default();
-    controller.reduce_action(MutationsAction::ToggleLineSelection(target(Side::New, 2..3)), &cx);
-    controller.reduce_action(MutationsAction::ExtendLineSelection(target(Side::New, 5..6)), &cx);
-    controller.reduce_action(MutationsAction::ToggleLineSelection(target(Side::Old, 1..2)), &cx);
-    controller.reduce_action(MutationsAction::ToggleLineSelection(target(Side::New, 4..5)), &cx);
+    controller.reduce_action(
+        MutationsAction::ToggleLineSelection(target(Side::New, 2..3)),
+        &cx,
+    );
+    controller.reduce_action(
+        MutationsAction::ExtendLineSelection(target(Side::New, 5..6)),
+        &cx,
+    );
+    controller.reduce_action(
+        MutationsAction::ToggleLineSelection(target(Side::Old, 1..2)),
+        &cx,
+    );
+    controller.reduce_action(
+        MutationsAction::ToggleLineSelection(target(Side::New, 4..5)),
+        &cx,
+    );
     assert_eq!(controller.selected_lines().len(), 4);
     assert_eq!(cx.selection, Some(target(Side::New, 7..9)));
 
     let reduction = controller.reduce_action(MutationsAction::UnstageSelectedLines, &cx);
-    let [MutationsEffect::LoadMutationSource(key)] = mutation_effects(&reduction).as_slice() else {
+    let effects6 = mutation_effects(&reduction);
+    let [MutationsEffect::LoadMutationSource(key)] = effects6.as_slice() else {
         panic!("expected a source load");
     };
     assert!(controller.selected_lines().is_empty());
@@ -274,7 +297,8 @@ fn selected_lines_are_separate_from_the_text_selection() {
         },
         &cx,
     );
-    let [MutationsEffect::ApplyPatch(request)] = mutation_effects(&ready).as_slice() else {
+    let effects7 = mutation_effects(&ready);
+    let [MutationsEffect::ApplyPatch(request)] = effects7.as_slice() else {
         panic!("expected a patch");
     };
     assert_eq!(
@@ -292,7 +316,10 @@ fn selected_lines_are_separate_from_the_text_selection() {
 fn manifest_republish_drops_selection_for_old_revisions() {
     let mut cx = shared();
     let mut controller = MutationsController::default();
-    controller.reduce_action(MutationsAction::ToggleLineSelection(target(Side::New, 0..2)), &cx);
+    controller.reduce_action(
+        MutationsAction::ToggleLineSelection(target(Side::New, 0..2)),
+        &cx,
+    );
     let next = manifest(FileRevision(5));
     cx.manifest = Some(next.clone());
     controller.apply_intent(&Intent::PublishManifest(next), &cx);
@@ -323,7 +350,8 @@ fn ai_stream_keeps_user_edits_and_drops_stale_chunks() {
     let mut controller = MutationsController::default();
     ai_ready(&mut controller, &cx);
     let first = controller.reduce_action(MutationsAction::GenerateCommitMessage, &cx);
-    let [MutationsEffect::GenerateCommitMessage(request)] = mutation_effects(&first).as_slice() else {
+    let effects8 = mutation_effects(&first);
+    let [MutationsEffect::GenerateCommitMessage(request)] = effects8.as_slice() else {
         panic!("expected a generation");
     };
     let generation = request.generation;
@@ -361,7 +389,8 @@ fn ai_stream_keeps_user_edits_and_drops_stale_chunks() {
         RepoCapabilities::git(),
     ));
     let second = controller.reduce_action(MutationsAction::GenerateCommitMessage, &cx);
-    let [MutationsEffect::GenerateCommitMessage(request)] = mutation_effects(&second).as_slice() else {
+    let effects9 = mutation_effects(&second);
+    let [MutationsEffect::GenerateCommitMessage(request)] = effects9.as_slice() else {
         panic!("expected a second generation");
     };
     assert_eq!(request.subject_override.as_deref(), Some("ui: Fix parser"));
@@ -378,8 +407,8 @@ fn commits_need_a_message_and_committable_changes() {
     assert!(empty.effects.is_empty());
     controller.commit_editor_mut().set_text("Add parser");
     let reduction = controller.reduce_action(MutationsAction::SubmitCommit, &cx);
-    let [MutationsEffect::CreateCommit { job, message, .. }] = mutation_effects(&reduction).as_slice()
-    else {
+    let commit_effects = mutation_effects(&reduction);
+    let [MutationsEffect::CreateCommit { job, message, .. }] = commit_effects.as_slice() else {
         panic!("expected a commit");
     };
     assert_eq!(message, "Add parser");
@@ -398,14 +427,22 @@ fn jj_operations_confirm_and_report_progress() {
     use crate::core::vcs::jj::service::jj_capabilities;
     use crate::core::vcs::model::{JjOperation, VcsOperation};
     let cx = SharedContext {
-        repository: Some(repository(1, &[ChangeBucket::WorkingCopy], jj_capabilities(true))),
+        repository: Some(repository(
+            1,
+            &[ChangeBucket::WorkingCopy],
+            jj_capabilities(true),
+        )),
         ..SharedContext::default()
     };
     let mut controller = MutationsController::default();
     let operation = VcsOperation::Jj(JjOperation::AbandonChange);
     let reduction = controller.reduce_action(MutationsAction::RunOperation(operation.clone()), &cx);
-    assert!(matches!(reduction.intents.as_slice(), [Intent::RequestConfirmation(_)]));
-    let reduction = controller.reduce_action(MutationsAction::RunConfirmedOperation(operation), &cx);
+    assert!(matches!(
+        reduction.intents.as_slice(),
+        [Intent::RequestConfirmation(_)]
+    ));
+    let reduction =
+        controller.reduce_action(MutationsAction::RunConfirmedOperation(operation), &cx);
     assert!(matches!(
         mutation_effects(&reduction).as_slice(),
         [MutationsEffect::RunOperation { .. }]
@@ -425,10 +462,19 @@ struct Host {
     now_ms: u64,
 }
 
+enum HostMessage {
+    Action(MutationsAction),
+    Event(MutationsEvent),
+}
+
 impl Host {
     fn new(shared: SharedContext) -> Self {
+        let mut controller = MutationsController::default();
+        if let Some(repo) = shared.repository.clone() {
+            controller.apply_intent(&Intent::RepositoryChanged(repo), &shared);
+        }
         Self {
-            controller: MutationsController::default(),
+            controller,
             shared,
             reductions: Vec::new(),
             now_ms: 0,
@@ -446,7 +492,16 @@ impl Host {
 
 impl UiApp for Host {
     type Action = Action;
-    type Message = ();
+    type Message = HostMessage;
+
+    fn message(&mut self, message: HostMessage, cx: &mut UiContext) {
+        let reduction = match message {
+            HostMessage::Action(action) => self.controller.reduce_action(action, &self.shared),
+            HostMessage::Event(event) => self.controller.reduce_event(event, &self.shared),
+        };
+        self.reductions.push(reduction);
+        cx.window.request_redraw();
+    }
 
     fn view(&mut self, cx: &mut ViewContext) -> AnyElement {
         let (width, height) = cx.frame.size();
@@ -458,7 +513,7 @@ impl UiApp for Host {
         };
         let status = view(&mut self.controller, &slot, cx);
         let panel = panel(&mut self.controller, &slot, cx);
-        let presentation = self.controller.presentation_rc();
+        let presentation = self.controller.presentation();
         let hunk = action_buttons(presentation.hunk_actions(&hunk()), 4.0);
         quark::view! {
             <div w={width} h={height} class="flex-col relative">
@@ -510,11 +565,9 @@ fn stage_hunk_control_requests_the_exact_source() {
 fn selected_line_controls_unstage_and_confirm_discard() {
     let mut ui = harness();
     assert!(ui.try_find(By::name("Unstage selected lines")).is_none());
-    let shared = ui.app().shared.clone();
-    let host = ui.app_mut();
-    host.controller
-        .reduce_action(MutationsAction::ToggleLineSelection(target(Side::New, 1..3)), &shared);
-    ui.run_until_idle();
+    ui.send_message(HostMessage::Action(MutationsAction::ToggleLineSelection(
+        target(Side::New, 1..3),
+    )));
     assert!(ui.painted_text().contains("2 lines selected"));
     ui.click_node(By::role_name(Role::Button, "Discard selected lines"));
     assert!(matches!(
@@ -536,16 +589,15 @@ fn commit_message_editor_takes_typing_and_generates() {
     ui.click_node(By::role_name(Role::MultilineTextInput, "Commit message"));
     ui.type_text("Fix parser");
     assert_eq!(ui.app().controller.commit_text(), "Fix parser");
-    assert_eq!(ui.find(By::name("Commit message")).value.as_deref(), Some("Fix parser"));
-
-    let shared = ui.app().shared.clone();
-    ui.app_mut().controller.reduce_action(
-        MutationsAction::SetAiKey {
-            kind: AiKeyKind::OpenAi,
-            value: crate::contracts::review::Secret::new("key"),
-        },
-        &shared,
+    assert_eq!(
+        ui.find(By::name("Commit message")).value.as_deref(),
+        Some("Fix parser")
     );
+
+    ui.send_message(HostMessage::Action(MutationsAction::SetAiKey {
+        kind: AiKeyKind::OpenAi,
+        value: crate::contracts::review::Secret::new("key"),
+    }));
     ui.click_node(By::role_name(Role::Button, "Generate commit message"));
     let effects = ui.app().effects();
     let Some(MutationsEffect::GenerateCommitMessage(request)) = effects.last() else {
@@ -553,11 +605,7 @@ fn commit_message_editor_takes_typing_and_generates() {
     };
     assert_eq!(request.subject_override.as_deref(), Some("Fix parser"));
     let generation = request.generation;
-    let shared = ui.app().shared.clone();
-    ui.app_mut()
-        .controller
-        .reduce_event(chunk(generation, "Body text"), &shared);
-    ui.run_until_idle();
+    ui.send_message(HostMessage::Event(chunk(generation, "Body text")));
     assert_eq!(
         ui.find(By::name("Commit message")).value.as_deref(),
         Some("Fix parser\nBody text")
@@ -573,7 +621,8 @@ fn commit_message_editor_takes_typing_and_generates() {
 fn publish_menu_lists_plan_actions() {
     let mut ui = harness();
     ui.click_node(By::role_name(Role::Button, "Publish"));
-    let Some(MutationsEffect::LoadPublishPlan { job, .. }) = ui.app().effects().last().cloned() else {
+    let Some(MutationsEffect::LoadPublishPlan { job, .. }) = ui.app().effects().last().cloned()
+    else {
         panic!("expected a plan load");
     };
     let plan = PublishPlan {
@@ -590,20 +639,60 @@ fn publish_menu_lists_plan_actions() {
         },
         alternatives: Vec::new(),
     };
-    let shared = ui.app().shared.clone();
-    ui.app_mut().controller.reduce_event(
-        MutationsEvent::PublishPlanReady {
-            job,
-            path: PathBuf::from("/repo"),
-            plan: Box::new(plan),
-        },
-        &shared,
-    );
-    ui.run_until_idle();
+    ui.send_message(HostMessage::Event(MutationsEvent::PublishPlanReady {
+        job,
+        path: PathBuf::from("/repo"),
+        plan: Box::new(plan),
+    }));
     ui.click_node(By::role_name(Role::Button, "Push main"));
     assert!(matches!(
         ui.app().effects().last(),
-        Some(MutationsEffect::Publish { action: Some(_), .. })
+        Some(MutationsEffect::Publish {
+            action: Some(_),
+            ..
+        })
     ));
-    assert!(ui.try_find(By::role_name(Role::Button, "Push main")).is_none());
+    assert!(
+        ui.try_find(By::role_name(Role::Button, "Push main"))
+            .is_none()
+    );
+}
+
+#[test]
+fn presentation_marks_selected_lines_and_offers_hunk_controls() {
+    use diffy_ui::diff_view::decorator::{DiffDecorator, FileSource, LineContext, LineMark};
+    let cx = shared();
+    let mut controller = MutationsController::default();
+    controller.apply_intent(
+        &Intent::RepositoryChanged(cx.repository.clone().unwrap()),
+        &cx,
+    );
+    let before = controller.presentation();
+    controller.reduce_action(
+        MutationsAction::ToggleLineSelection(target(Side::New, 3..4)),
+        &cx,
+    );
+    let presentation = controller.presentation();
+    assert!(!Rc::ptr_eq(&before, &presentation));
+    assert_ne!(before.revision(), presentation.revision());
+    let line = |line| LineContext {
+        file: 0,
+        source: Some(FileSource {
+            id: FILE,
+            revision: diffy_diff::Revision(REVISION.0),
+        }),
+        side: Side::New,
+        line,
+        kind: diffy_diff::RowKind::Added,
+    };
+    assert_eq!(presentation.line_mark(&line(3)), Some(LineMark::Selected));
+    assert_eq!(presentation.line_mark(&line(4)), None);
+    let labels: Vec<_> = presentation
+        .hunk_actions(&hunk())
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect();
+    assert_eq!(labels, ["Stage hunk", "Unstage hunk", "Discard hunk"]);
+    let same = controller.presentation();
+    assert!(Rc::ptr_eq(&presentation, &same));
 }

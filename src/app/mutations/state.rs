@@ -8,10 +8,12 @@ use diffy_ui::diff_view::decorator::DiffDecorator;
 use quark_ui::FocusId;
 use quark_ui::text_input::{Editor, EditorMode, TextEditCommand, TextEditOutcome};
 
-use super::presentation::{MutationPresentation, PresentationStyle, PresentedFile};
+use super::presentation::{MutationPresentation, PresentationStyle};
 use crate::ai::{DEFAULT_STEERING_PROMPT, Provider};
 use crate::app::text_targets::{COMMIT_MESSAGE, TextCx, TextHost};
-use crate::contracts::commands::{ConfirmationRequest, ToastKind, ToastUpdate};
+use crate::contracts::commands::{
+    CommandDescriptor, CommandSource, ConfirmationRequest, ToastKind, ToastUpdate,
+};
 use crate::contracts::mutations::{
     ConfirmedMutation, FileOperationRequest, GenerateCommitMessageRequest, MutationSelection,
     MutationSource, MutationSourceKey, MutationsAction, MutationsEffect, MutationsEvent,
@@ -19,10 +21,10 @@ use crate::contracts::mutations::{
 };
 use crate::contracts::navigation::RepositoryContext;
 use crate::contracts::review::Secret;
-use crate::contracts::shared::{
-    FileKey, FileRevision, JobId, SharedContext, Side, SourceTarget,
-};
+use crate::contracts::shared::{FileKey, FileRevision, JobId, SharedContext, Side, SourceTarget};
 use crate::contracts::shell::{Action, Controller, Intent, LogicalFocus, Reduction};
+use crate::core::keymap::ShortcutCommand;
+use crate::core::vcs::model::JjOperation;
 use crate::core::vcs::model::{
     ChangeBucket, FileChange, FileOperation, PublishAction, PublishPlan, RefKind, RepoCapabilities,
     VcsOperation, VcsRef,
@@ -165,7 +167,9 @@ fn capabilities(cx: &SharedContext) -> Option<RepoCapabilities> {
 }
 
 fn repo_path(cx: &SharedContext) -> Option<PathBuf> {
-    cx.repository.as_ref().map(|repo| repo.snapshot.path.clone())
+    cx.repository
+        .as_ref()
+        .map(|repo| repo.snapshot.path.clone())
 }
 
 fn committable(bucket: ChangeBucket, staging_area: bool) -> bool {
@@ -204,11 +208,17 @@ fn upstream_pair(upstream: &str) -> Option<(String, String)> {
 fn remote_names(refs: &[VcsRef]) -> BTreeSet<String> {
     let mut remotes = BTreeSet::new();
     for reference in refs {
-        if let Some((remote, _)) = reference.upstream.as_deref().and_then(|u| u.split_once('/')) {
+        if let Some((remote, _)) = reference
+            .upstream
+            .as_deref()
+            .and_then(|u| u.split_once('/'))
+        {
             remotes.insert(remote.to_owned());
         }
-        if matches!(reference.kind, RefKind::RemoteBranch | RefKind::RemoteBookmark)
-            && let Some((remote, _)) = reference.name.split_once('/')
+        if matches!(
+            reference.kind,
+            RefKind::RemoteBranch | RefKind::RemoteBookmark
+        ) && let Some((remote, _)) = reference.name.split_once('/')
         {
             remotes.insert(remote.to_owned());
         }
@@ -248,11 +258,7 @@ fn keys(target: &SourceTarget) -> impl Iterator<Item = LineKey> + '_ {
 }
 
 impl MutationsController {
-    pub fn presentation(&self) -> &MutationPresentation {
-        &self.presentation
-    }
-
-    pub fn presentation_rc(&self) -> Rc<MutationPresentation> {
+    pub fn presentation(&self) -> Rc<MutationPresentation> {
         self.presentation.clone()
     }
 
@@ -307,27 +313,11 @@ impl MutationsController {
 
     fn refresh_presentation(&mut self, cx: &SharedContext) {
         let capabilities = capabilities(cx);
-        let files = cx
-            .manifest
-            .as_ref()
-            .map(|manifest| {
-                manifest
-                    .files
-                    .iter()
-                    .map(|file| PresentedFile {
-                        key: file.key,
-                        revision: file.revision,
-                        path: file.paths.display_path().into_owned(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
         let next = MutationPresentation::new(
             self.presentation.revision().wrapping_add(1),
             self.presentation.style(),
             capabilities.is_some_and(|c| c.staging_area),
             capabilities.is_some_and(|c| c.partial_hunk_mutation),
-            files,
             self.selection.clone(),
         );
         if !self.presentation.same_content(&next) {
@@ -578,7 +568,12 @@ impl MutationsController {
         }))
     }
 
-    fn all_in(&mut self, buckets: &[ChangeBucket], operation: FileOperation, cx: &SharedContext) -> Reduction {
+    fn all_in(
+        &mut self,
+        buckets: &[ChangeBucket],
+        operation: FileOperation,
+        cx: &SharedContext,
+    ) -> Reduction {
         if !capabilities(cx).is_some_and(|c| c.staging_area) {
             return error("This repository backend does not support staging.");
         }
@@ -633,10 +628,9 @@ impl MutationsController {
     }
 
     fn extend_lines(&mut self, target: &SourceTarget) {
-        let Some(anchor) = self
-            .anchor
-            .filter(|a| a.file == target.file && a.revision == target.revision && a.side == target.side)
-        else {
+        let Some(anchor) = self.anchor.filter(|a| {
+            a.file == target.file && a.revision == target.revision && a.side == target.side
+        }) else {
             self.toggle_lines(target);
             return;
         };
@@ -771,7 +765,12 @@ impl MutationsController {
         Reduction::changed().effect(effect)
     }
 
-    fn run_operation(&mut self, operation: VcsOperation, confirmed: bool, cx: &SharedContext) -> Reduction {
+    fn run_operation(
+        &mut self,
+        operation: VcsOperation,
+        confirmed: bool,
+        cx: &SharedContext,
+    ) -> Reduction {
         let Some(repo_path) = repo_path(cx) else {
             return error("Open a repository before running repository operations.");
         };
@@ -788,7 +787,9 @@ impl MutationsController {
                 message,
                 confirm_label: operation.label(),
                 destructive: true,
-                confirm: Box::new(Action::from(MutationsAction::RunConfirmedOperation(operation))),
+                confirm: Box::new(Action::from(MutationsAction::RunConfirmedOperation(
+                    operation,
+                ))),
                 return_focus: None,
             }));
         }
@@ -803,7 +804,10 @@ impl MutationsController {
             .intent(progress(job, label))
     }
 
-    fn remotes_allowed(cx: &SharedContext, what: &str) -> Result<(PathBuf, Rc<RepositoryContext>), Reduction> {
+    fn remotes_allowed(
+        cx: &SharedContext,
+        what: &str,
+    ) -> Result<(PathBuf, Rc<RepositoryContext>), Reduction> {
         let Some(repo) = cx.repository.clone() else {
             return Err(error(format!("Open a repository before {what}.")));
         };
@@ -842,7 +846,9 @@ impl MutationsController {
         };
         let name = branch.name.clone();
         let (remote, refspec) = match branch.upstream.as_deref().and_then(upstream_pair) {
-            Some((remote, upstream)) => (remote, format!("refs/heads/{name}:refs/heads/{upstream}")),
+            Some((remote, upstream)) => {
+                (remote, format!("refs/heads/{name}:refs/heads/{upstream}"))
+            }
             None => {
                 let remotes = remote_names(refs);
                 let Some(remote) = remotes
@@ -882,9 +888,10 @@ impl MutationsController {
         {
             return error(reason.clone());
         }
-        let label = action
-            .as_ref()
-            .map_or_else(|| "Publishing\u{2026}".to_owned(), |a| format!("{}\u{2026}", a.label));
+        let label = action.as_ref().map_or_else(
+            || "Publishing\u{2026}".to_owned(),
+            |a| format!("{}\u{2026}", a.label),
+        );
         self.publish = None;
         let job = self.job(Job::Publish);
         Reduction::changed()
@@ -930,7 +937,10 @@ impl MutationsController {
         };
         let job = self.job(Job::Pull(remote.clone()));
         Reduction::changed()
-            .intent(progress(job, format!("Pulling {} from {remote}\u{2026}", branch.name)))
+            .intent(progress(
+                job,
+                format!("Pulling {} from {remote}\u{2026}", branch.name),
+            ))
             .effect(MutationsEffect::PullFastForward {
                 job,
                 repo_path: repo.snapshot.path.clone(),
@@ -963,13 +973,36 @@ impl Controller for MutationsController {
         use MutationsAction as A;
         let selected = cx.selected_file.map(|file| file.key);
         match action {
-            A::StageSelectedFile => self.file_operation(selected.into_iter().collect(), FileOperation::Stage, false, cx),
-            A::UnstageSelectedFile => self.file_operation(selected.into_iter().collect(), FileOperation::Unstage, false, cx),
-            A::DiscardSelectedFile => self.file_operation(selected.into_iter().collect(), FileOperation::Discard, false, cx),
+            A::StageSelectedFile => self.file_operation(
+                selected.into_iter().collect(),
+                FileOperation::Stage,
+                false,
+                cx,
+            ),
+            A::UnstageSelectedFile => self.file_operation(
+                selected.into_iter().collect(),
+                FileOperation::Unstage,
+                false,
+                cx,
+            ),
+            A::DiscardSelectedFile => self.file_operation(
+                selected.into_iter().collect(),
+                FileOperation::Discard,
+                false,
+                cx,
+            ),
             A::StageFile(file) => self.file_operation(vec![file], FileOperation::Stage, false, cx),
-            A::UnstageFile(file) => self.file_operation(vec![file], FileOperation::Unstage, false, cx),
-            A::DiscardFile(file) => self.file_operation(vec![file], FileOperation::Discard, false, cx),
-            A::StageAllFiles => self.all_in(&[ChangeBucket::Unstaged, ChangeBucket::Untracked], FileOperation::Stage, cx),
+            A::UnstageFile(file) => {
+                self.file_operation(vec![file], FileOperation::Unstage, false, cx)
+            }
+            A::DiscardFile(file) => {
+                self.file_operation(vec![file], FileOperation::Discard, false, cx)
+            }
+            A::StageAllFiles => self.all_in(
+                &[ChangeBucket::Unstaged, ChangeBucket::Untracked],
+                FileOperation::Stage,
+                cx,
+            ),
             A::UnstageAllFiles => self.all_in(&[ChangeBucket::Staged], FileOperation::Unstage, cx),
             A::StageHunk | A::UnstageHunk | A::DiscardHunk => {
                 let operation = match action {
@@ -978,13 +1011,33 @@ impl Controller for MutationsController {
                     _ => FileOperation::Discard,
                 };
                 match cx.selection.clone() {
-                    Some(target) => self.request_patch(MutationSelection::HunksAt(vec![target]), operation, false, cx),
+                    Some(target) => self.request_patch(
+                        MutationSelection::HunksAt(vec![target]),
+                        operation,
+                        false,
+                        cx,
+                    ),
                     None => error("Move the cursor into a hunk first."),
                 }
             }
-            A::StageHunkAt(target) => self.request_patch(MutationSelection::Hunks(vec![target]), FileOperation::Stage, false, cx),
-            A::UnstageHunkAt(target) => self.request_patch(MutationSelection::Hunks(vec![target]), FileOperation::Unstage, false, cx),
-            A::DiscardHunkAt(target) => self.request_patch(MutationSelection::Hunks(vec![target]), FileOperation::Discard, false, cx),
+            A::StageHunkAt(target) => self.request_patch(
+                MutationSelection::Hunks(vec![target]),
+                FileOperation::Stage,
+                false,
+                cx,
+            ),
+            A::UnstageHunkAt(target) => self.request_patch(
+                MutationSelection::Hunks(vec![target]),
+                FileOperation::Unstage,
+                false,
+                cx,
+            ),
+            A::DiscardHunkAt(target) => self.request_patch(
+                MutationSelection::Hunks(vec![target]),
+                FileOperation::Discard,
+                false,
+                cx,
+            ),
             A::SelectLines(target) => {
                 self.select_lines(&target);
                 self.refresh_presentation(cx);
@@ -1147,7 +1200,9 @@ impl Controller for MutationsController {
                 };
                 let kib = received_bytes / 1024;
                 let message = if kib > 0 {
-                    format!("Fetching {remote}: {received_objects}/{total_objects} objects ({kib} KiB)\u{2026}")
+                    format!(
+                        "Fetching {remote}: {received_objects}/{total_objects} objects ({kib} KiB)\u{2026}"
+                    )
                 } else {
                     format!("Fetching {remote}: {received_objects}/{total_objects} objects\u{2026}")
                 };
@@ -1160,7 +1215,11 @@ impl Controller for MutationsController {
             }
             E::FetchComplete { job, remote, .. } => {
                 self.finish(job);
-                Reduction::changed().intent(toast(ToastKind::Success, Some(job), format!("Fetched {remote}")))
+                Reduction::changed().intent(toast(
+                    ToastKind::Success,
+                    Some(job),
+                    format!("Fetched {remote}"),
+                ))
             }
             E::FetchFailed {
                 job,
@@ -1168,7 +1227,11 @@ impl Controller for MutationsController {
                 message,
             } => {
                 self.finish(job);
-                Reduction::changed().intent(failure(Some(job), format!("Fetch from {remote} failed"), message))
+                Reduction::changed().intent(failure(
+                    Some(job),
+                    format!("Fetch from {remote} failed"),
+                    message,
+                ))
             }
             E::PushProgress {
                 job,
@@ -1211,7 +1274,11 @@ impl Controller for MutationsController {
                 message,
             } => {
                 self.finish(job);
-                Reduction::changed().intent(failure(Some(job), format!("Push to {remote} failed"), message))
+                Reduction::changed().intent(failure(
+                    Some(job),
+                    format!("Push to {remote} failed"),
+                    message,
+                ))
             }
             E::PublishComplete { job, label, .. } => {
                 self.finish(job);
@@ -1268,7 +1335,11 @@ impl Controller for MutationsController {
                 ..
             } => {
                 self.finish(job);
-                Reduction::changed().intent(failure(Some(job), format!("Pull into {branch} failed"), message))
+                Reduction::changed().intent(failure(
+                    Some(job),
+                    format!("Pull into {branch} failed"),
+                    message,
+                ))
             }
             E::WorkerStopped => {
                 self.jobs.clear();
@@ -1285,12 +1356,18 @@ impl Controller for MutationsController {
                 tracing::warn!("failed to load AI keys from keyring: {message}");
                 Reduction::default()
             }
-            E::AiKeySaveFailed { message } => error(format!("Couldn't save AI key to keyring: {message}")),
+            E::AiKeySaveFailed { message } => {
+                error(format!("Couldn't save AI key to keyring: {message}"))
+            }
             E::CommitMessageChunk {
                 generation, chunk, ..
             } => {
                 if !self.ai_current(generation, cx) {
-                    tracing::debug!(generation, current = self.ai.generation, "ai: dropping stale chunk");
+                    tracing::debug!(
+                        generation,
+                        current = self.ai.generation,
+                        "ai: dropping stale chunk"
+                    );
                     return Reduction::default();
                 }
                 self.commit.append(&chunk);
@@ -1313,7 +1390,11 @@ impl Controller for MutationsController {
                 }
                 self.ai.active = false;
                 self.ai.error = Some(message.clone());
-                Reduction::changed().intent(failure(None, "Commit message generation failed", message))
+                Reduction::changed().intent(failure(
+                    None,
+                    "Commit message generation failed",
+                    message,
+                ))
             }
         }
     }
@@ -1399,7 +1480,12 @@ impl TextHost for MutationsController {
         (target == COMMIT_MESSAGE).then(|| self.commit.apply_at(command, cx.now_ms))
     }
 
-    fn set_preedit(&mut self, target: FocusId, text: String, cursor: Option<(usize, usize)>) -> bool {
+    fn set_preedit(
+        &mut self,
+        target: FocusId,
+        text: String,
+        cursor: Option<(usize, usize)>,
+    ) -> bool {
         if target != COMMIT_MESSAGE {
             return false;
         }
@@ -1407,7 +1493,12 @@ impl TextHost for MutationsController {
         true
     }
 
-    fn set_text_value(&mut self, target: FocusId, value: String, _cx: &TextCx) -> Option<TextEditOutcome> {
+    fn set_text_value(
+        &mut self,
+        target: FocusId,
+        value: String,
+        _cx: &TextCx,
+    ) -> Option<TextEditOutcome> {
         if target != COMMIT_MESSAGE {
             return None;
         }
@@ -1416,5 +1507,203 @@ impl TextHost for MutationsController {
             text_changed: true,
             ..TextEditOutcome::default()
         })
+    }
+}
+
+impl CommandSource for MutationsController {
+    fn commands(&self, cx: &SharedContext, out: &mut Vec<CommandDescriptor>) {
+        let Some(capabilities) = capabilities(cx) else {
+            return;
+        };
+        let lines = !self.selection.is_empty();
+        let partial = capabilities.partial_hunk_mutation;
+        let file = cx.selected_file.is_some();
+        let (stage, unstage, discard) = if lines {
+            (
+                MutationsAction::StageSelectedLines,
+                MutationsAction::UnstageSelectedLines,
+                MutationsAction::DiscardSelectedLines,
+            )
+        } else {
+            (
+                MutationsAction::StageHunk,
+                MutationsAction::UnstageHunk,
+                MutationsAction::DiscardHunk,
+            )
+        };
+        let target = if lines { "selected lines" } else { "hunk" };
+        if capabilities.staging_area {
+            out.push(
+                CommandDescriptor::new("mutations.stage", format!("Stage {target}"), stage)
+                    .shortcut(ShortcutCommand::Stage)
+                    .enabled(partial),
+            );
+            out.push(
+                CommandDescriptor::new("mutations.unstage", format!("Unstage {target}"), unstage)
+                    .shortcut(ShortcutCommand::Unstage)
+                    .enabled(partial),
+            );
+            out.push(
+                CommandDescriptor::new(
+                    "mutations.stage_file",
+                    "Stage file",
+                    MutationsAction::StageSelectedFile,
+                )
+                .enabled(file),
+            );
+            out.push(
+                CommandDescriptor::new(
+                    "mutations.unstage_file",
+                    "Unstage file",
+                    MutationsAction::UnstageSelectedFile,
+                )
+                .enabled(file),
+            );
+            out.push(
+                CommandDescriptor::new(
+                    "mutations.stage_all",
+                    "Stage all changes",
+                    MutationsAction::StageAllFiles,
+                )
+                .shortcut(ShortcutCommand::StageAll),
+            );
+            out.push(
+                CommandDescriptor::new(
+                    "mutations.unstage_all",
+                    "Unstage all changes",
+                    MutationsAction::UnstageAllFiles,
+                )
+                .shortcut(ShortcutCommand::UnstageAll),
+            );
+        }
+        out.push(
+            CommandDescriptor::new("mutations.discard", format!("Discard {target}"), discard)
+                .shortcut(ShortcutCommand::Discard)
+                .enabled(partial),
+        );
+        out.push(
+            CommandDescriptor::new(
+                "mutations.discard_file",
+                "Discard file",
+                MutationsAction::DiscardSelectedFile,
+            )
+            .enabled(file),
+        );
+        out.push(
+            CommandDescriptor::new(
+                "mutations.toggle_line",
+                "Toggle line selection",
+                MutationsAction::ToggleCurrentLineSelection,
+            )
+            .shortcut(ShortcutCommand::ToggleLineSelection)
+            .enabled(partial),
+        );
+        out.push(
+            CommandDescriptor::new(
+                "mutations.toggle_line_range",
+                "Extend line selection",
+                MutationsAction::ToggleCurrentLineSelectionRange,
+            )
+            .shortcut(ShortcutCommand::ToggleLineSelectionRange)
+            .enabled(partial),
+        );
+        if lines {
+            out.push(CommandDescriptor::new(
+                "mutations.clear_lines",
+                "Clear line selection",
+                MutationsAction::ClearLineSelection,
+            ));
+        }
+        if capabilities.create_commit {
+            out.push(
+                CommandDescriptor::new(
+                    "mutations.commit_message",
+                    "Write commit message",
+                    MutationsAction::OpenCommitComposer,
+                )
+                .shortcut(ShortcutCommand::FocusCommitMessage),
+            );
+            out.push(
+                CommandDescriptor::new(
+                    "mutations.commit",
+                    "Create commit",
+                    MutationsAction::SubmitCommit,
+                )
+                .shortcut(ShortcutCommand::SubmitCommit)
+                .enabled(!self.commit.text().trim().is_empty()),
+            );
+            out.push(
+                CommandDescriptor::new(
+                    "mutations.generate",
+                    "Generate commit message",
+                    MutationsAction::GenerateCommitMessage,
+                )
+                .enabled(!self.ai.active),
+            );
+        }
+        if capabilities.remotes {
+            out.push(
+                CommandDescriptor::new(
+                    "mutations.fetch",
+                    "Fetch all remotes",
+                    MutationsAction::FetchAllRemotes,
+                )
+                .shortcut(ShortcutCommand::FetchRemotes),
+            );
+            out.push(
+                CommandDescriptor::new(
+                    "mutations.publish_menu",
+                    "Publish\u{2026}",
+                    MutationsAction::OpenPublishMenu,
+                )
+                .shortcut(ShortcutCommand::OpenPublishMenu),
+            );
+            out.push(CommandDescriptor::new(
+                "mutations.publish",
+                "Publish",
+                MutationsAction::PublishDefault,
+            ));
+            out.push(CommandDescriptor::new(
+                "mutations.push_force",
+                "Force push with lease",
+                MutationsAction::Push {
+                    force_with_lease: true,
+                },
+            ));
+        }
+        if capabilities.pull_fast_forward {
+            out.push(
+                CommandDescriptor::new(
+                    "mutations.pull",
+                    "Pull current branch",
+                    MutationsAction::PullCurrentBranch,
+                )
+                .shortcut(ShortcutCommand::PullCurrentBranch),
+            );
+        }
+        if capabilities.operation_log {
+            for operation in JjOperation::ALL {
+                out.push(
+                    CommandDescriptor::new(
+                        jj_command_id(operation),
+                        operation.label(),
+                        MutationsAction::RunOperation(VcsOperation::Jj(operation)),
+                    )
+                    .detail(operation.detail()),
+                );
+            }
+        }
+    }
+}
+
+fn jj_command_id(operation: JjOperation) -> &'static str {
+    match operation {
+        JjOperation::NewChange => "mutations.jj.new",
+        JjOperation::NewSiblingChange => "mutations.jj.new_sibling",
+        JjOperation::DuplicateChange => "mutations.jj.duplicate",
+        JjOperation::AbandonChange => "mutations.jj.abandon",
+        JjOperation::SquashIntoParent => "mutations.jj.squash",
+        JjOperation::AbsorbIntoStack => "mutations.jj.absorb",
+        JjOperation::UndoLastOperation => "mutations.jj.undo",
     }
 }

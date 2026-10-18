@@ -237,6 +237,10 @@ pub enum PreparedKind {
     /// The last row of a bounded preview, standing for `hidden_rows`
     /// logical rows left out; it carries the open-full-diff control.
     More { hidden_rows: u32 },
+    Pending {
+        state: diffy_diff::SlotState,
+        estimated_lines: u32,
+    },
 }
 
 impl PreparedKind {

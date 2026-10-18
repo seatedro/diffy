@@ -152,6 +152,7 @@ impl DiffViewState {
                 segment.unit(segment.projection.file[row as usize])
             }
             RowRef::Fact { seg, file, .. } => self.segments[seg as usize].unit(file),
+            RowRef::Pending { seg } => self.segments[seg as usize].unit(0),
             RowRef::Annotation { .. } | RowRef::More { .. } => return None,
         };
         Some(self.file_id(unit))
@@ -194,6 +195,10 @@ impl DiffViewState {
                 }));
             }
             RowRef::More { .. } => return None,
+            RowRef::Pending { seg } => {
+                let unit = self.segments[seg as usize].unit(0);
+                return Some(DiffTarget::File(self.file_id(unit)));
+            }
         };
         let segment = &self.segments[seg];
         let p = &segment.projection;

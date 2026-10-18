@@ -262,9 +262,21 @@ fn pending_stats_are_requested_once_and_republished() {
 }
 
 #[test]
-fn renderer_changes_rerun_the_current_compare() {
+fn renderer_changes_rerun_the_current_compare_and_persist() {
     let cx = SharedContext::default();
     let mut controller = PipelineController::default();
+    let persisted = |reduction: &Reduction| {
+        reduction.intents.iter().find_map(|intent| match intent {
+            Intent::SettingsChanged(snapshot) => snapshot
+                .settings
+                .last_compare
+                .as_ref()
+                .map(|compare| compare.renderer),
+            _ => None,
+        })
+    };
+    let idle = controller.reduce_action(PipelineAction::SetRenderer(RendererKind::Difftastic), &cx);
+    assert!(pipeline_effects(&idle).is_empty());
     let first = request(&mut controller);
     let rerun =
         controller.reduce_action(PipelineAction::SetRenderer(RendererKind::Difftastic), &cx);
@@ -275,8 +287,58 @@ fn renderer_changes_rerun_the_current_compare() {
         }
         other => panic!("expected a new compare, got {other:?}"),
     }
+    let saved = std::rc::Rc::new(crate::contracts::commands::SettingsSnapshot {
+        revision: 1,
+        settings: crate::platform::persistence::Settings {
+            last_compare: Some(crate::platform::persistence::PersistedCompare {
+                renderer: RendererKind::Difftastic,
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    });
+    let cx = SharedContext {
+        settings: saved,
+        ..SharedContext::default()
+    };
     let same = controller.reduce_action(PipelineAction::SetRenderer(RendererKind::Difftastic), &cx);
     assert!(pipeline_effects(&same).is_empty());
+    assert_eq!(persisted(&same), None);
+    let back = controller.reduce_action(PipelineAction::SetRenderer(RendererKind::Builtin), &cx);
+    assert_eq!(persisted(&back), Some(RendererKind::Builtin));
+    assert_eq!(persisted(&idle), Some(RendererKind::Difftastic));
+    assert_eq!(persisted(&rerun), Some(RendererKind::Difftastic));
+}
+
+#[test]
+fn an_empty_compare_publishes_an_empty_manifest_and_finishes() {
+    let cx = SharedContext::default();
+    let mut controller = PipelineController::default();
+    let generation = request(&mut controller);
+    controller.take_batch();
+    let done = controller.reduce_event(
+        PipelineEvent::CompareFinished {
+            generation,
+            request: intent(RendererKind::Builtin).request,
+            result: compare_result(
+                generation,
+                ("l".into(), "r".into()),
+                CompareOutput::default(),
+                None,
+            )
+            .unwrap(),
+        },
+        &cx,
+    );
+    assert_eq!(published(&done), Some(0));
+    assert_eq!(controller.status(), &PipelineStatus::Ready);
+    assert!(controller.manifest().unwrap().working_tree);
+    assert!(matches!(
+        controller.take_batch().as_slice(),
+        [PipelineInstall::View(ViewportInstall::Order { generation: g, files })]
+            if *g == generation && files.is_empty()
+    ));
+    assert!(pipeline_effects(&done).is_empty());
 }
 
 fn big(generation: CompareGeneration, key: u64, lines: usize) -> PreparedDiff {
@@ -454,11 +516,12 @@ fn source_requests_hydrate_patch_only_files_once() {
 }
 
 #[test]
-#[ignore = "measurement, prints a report"]
-fn report_deferred_manifest_costs() {
-    use std::time::Instant;
+#[ignore = "release measurement: cargo test --release --lib ui_turns -- --ignored --nocapture"]
+fn ui_turns_stay_within_budget_for_50k_deferred_files() {
+    use std::time::{Duration, Instant};
 
-    for files in [2_500usize, 10_000, 50_000] {
+    let cx = SharedContext::default();
+    let manifest = |files: usize| {
         let mut output = CompareOutput::default();
         for i in 0..files {
             let path = format!("dir{}/sub{}/file{i}.rs", i % 64, i % 7);
@@ -469,33 +532,73 @@ fn report_deferred_manifest_costs() {
             ));
         }
         output.compact_paths();
-        let mut controller = PipelineController::default();
-        let generation = request(&mut controller);
-        controller.take_batch();
+        output
+    };
+    let mut worst = Duration::ZERO;
+    fn turn(label: &str, work: &mut dyn FnMut()) -> Duration {
         let start = Instant::now();
-        let result = compare_result(generation, ("l".into(), "r".into()), output, None).unwrap();
-        let worker_ms = start.elapsed().as_secs_f64() * 1e3;
-        let start = Instant::now();
+        work();
+        let took = start.elapsed();
+        println!("{label}: {:.3} ms", took.as_secs_f64() * 1e3);
+        took
+    }
+    let files = 50_000;
+    let mut controller = PipelineController::default();
+    let generation = request(&mut controller);
+    controller.take_batch();
+    let start = Instant::now();
+    let result =
+        compare_result(generation, ("l".into(), "r".into()), manifest(files), None).unwrap();
+    println!(
+        "worker manifest, placeholders and install list: {:.1} ms",
+        start.elapsed().as_secs_f64() * 1e3
+    );
+    let mut result = Some(result);
+    worst = worst.max(turn("finish compare + first batch", &mut || {
+        let result = result.take().unwrap();
         controller.reduce_event(
             PipelineEvent::CompareFinished {
                 generation,
                 request: intent(RendererKind::Builtin).request,
                 result,
             },
-            &SharedContext::default(),
+            &cx,
         );
-        let finish_ms = start.elapsed().as_secs_f64() * 1e3;
-        let mut batches = 0;
-        let mut worst_ms = 0.0f64;
-        while controller.has_pending_installs() {
-            let start = Instant::now();
-            let batch = controller.take_batch();
-            worst_ms = worst_ms.max(start.elapsed().as_secs_f64() * 1e3);
-            batches += batch.len().min(1);
-        }
-        println!(
-            "{files} deferred files: worker manifest+placeholders {worker_ms:.1} ms, \
-             UI finish {finish_ms:.2} ms, {batches} install batches (worst take {worst_ms:.3} ms)"
+        controller.take_batch();
+    }));
+    let mut resumes = 0;
+    while controller.has_pending_installs() {
+        resumes += 1;
+        let start = Instant::now();
+        controller.reduce_event(PipelineEvent::InstallsResumed { generation }, &cx);
+        controller.take_batch();
+        worst = worst.max(start.elapsed());
+    }
+    println!("{resumes} resume turns");
+    let visible: Arc<[FileStat]> = controller.manifest().unwrap().files[..100]
+        .iter()
+        .map(|file| FileStat {
+            key: file.key,
+            additions: 1,
+            deletions: 1,
+        })
+        .collect();
+    worst = worst.max(turn("visible sidebar stats", &mut || {
+        controller.reduce_event(
+            PipelineEvent::FileStatsReady {
+                generation,
+                stats: visible.clone(),
+                complete: false,
+            },
+            &cx,
         );
+    }));
+    worst = worst.max(turn("recompare (retires 50k state)", &mut || {
+        controller.apply_intent(&Intent::RequestCompare(intent(RendererKind::Builtin)), &cx);
+        controller.take_batch();
+    }));
+    println!("worst UI turn: {:.3} ms", worst.as_secs_f64() * 1e3);
+    if !cfg!(debug_assertions) {
+        assert!(worst < Duration::from_millis(4), "worst UI turn {worst:?}");
     }
 }

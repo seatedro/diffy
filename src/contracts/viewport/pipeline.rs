@@ -2,14 +2,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub use diffy_diff::DiffStats as FileStats;
-use diffy_diff::{ChangeSummary, DiffDocument, FileDiffSnapshot, FileStatus, SourcePurpose};
+use diffy_diff::{
+    ChangeSummary, ContentChange, DiffDocument, FileDiffSnapshot, FileStatus, ObjectId,
+    Placeholder, SourcePurpose,
+};
+pub use diffy_ui::diff_view::{Preparation, PreparedSegment};
 
 use crate::contracts::shared::{CompareGeneration, FileKey, FileRevision};
 use crate::contracts::shell::{Action, AppEvent, Effect};
 use crate::contracts::viewport::{ViewportAction, ViewportEffect, ViewportEvent};
 use crate::core::compare::stats::CompareFilePaths;
 use crate::core::compare::{CompareEntry, ComparePhase, LayoutMode, RendererKind};
-use crate::core::vcs::model::{FileChange, VcsCompareRequest};
+use crate::core::vcs::model::{ChangeBucket, FileChange, VcsCompareRequest};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CompareWorkPriority {
@@ -48,9 +52,35 @@ pub struct ManifestFile {
     pub status: FileStatus,
     pub binary: bool,
     pub stats: FileStats,
+    pub content: ContentChange,
+    pub mode_changed: bool,
+    pub old_id: Option<ObjectId>,
+    pub new_id: Option<ObjectId>,
+    pub buckets: Vec<ChangeBucket>,
 }
 
 impl ManifestFile {
+    pub fn new(
+        key: FileKey,
+        revision: FileRevision,
+        paths: CompareFilePaths,
+        status: FileStatus,
+    ) -> Self {
+        Self {
+            key,
+            revision,
+            paths,
+            status,
+            binary: false,
+            stats: FileStats::Pending,
+            content: ContentChange::Unknown,
+            mode_changed: false,
+            old_id: None,
+            new_id: None,
+            buckets: Vec::new(),
+        }
+    }
+
     pub fn from_entry(key: FileKey, revision: FileRevision, entry: &CompareEntry) -> Self {
         Self {
             key,
@@ -59,6 +89,20 @@ impl ManifestFile {
             status: entry.summary.status,
             binary: entry.summary.binary,
             stats: entry.stats,
+            content: entry.summary.content,
+            mode_changed: entry.summary.mode_changed,
+            old_id: entry.old_id.clone(),
+            new_id: entry.new_id.clone(),
+            buckets: Vec::new(),
+        }
+    }
+
+    pub fn summary(&self) -> ChangeSummary {
+        ChangeSummary {
+            status: self.status,
+            binary: self.binary,
+            content: self.content,
+            mode_changed: self.mode_changed,
         }
     }
 }
@@ -69,6 +113,7 @@ pub struct CompareManifestSnapshot {
     pub resolved_left: String,
     pub resolved_right: String,
     pub files: Arc<[ManifestFile]>,
+    pub totals: FileStats,
 }
 
 impl CompareManifestSnapshot {
@@ -87,6 +132,7 @@ pub struct PreparedDiff {
     generation: CompareGeneration,
     revision: FileRevision,
     snapshot: FileDiffSnapshot,
+    segment: Option<Arc<PreparedSegment>>,
 }
 
 impl PreparedDiff {
@@ -101,7 +147,23 @@ impl PreparedDiff {
             generation,
             revision,
             snapshot,
+            segment: None,
         }
+    }
+
+    pub fn with_segment(mut self, preparation: Option<Preparation>) -> Self {
+        self.segment = preparation.map(|preparation| {
+            Arc::new(PreparedSegment::prepare(self.snapshot.clone(), preparation))
+        });
+        self
+    }
+
+    pub fn segment(&self) -> Option<&Arc<PreparedSegment>> {
+        self.segment.as_ref()
+    }
+
+    pub fn estimated_lines(&self) -> u32 {
+        self.snapshot.estimated_lines()
     }
 
     pub fn key(&self) -> FileKey {
@@ -169,12 +231,18 @@ pub enum PipelineAction {
         files: Vec<FileKey>,
         priority: CompareWorkPriority,
     },
+    RequestTotals,
+    RequestSources {
+        file: FileKey,
+        purpose: SourcePurpose,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompareJob {
     pub generation: CompareGeneration,
     pub intent: CompareIntent,
+    pub preparation: Option<Preparation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,6 +275,7 @@ pub struct FileLoadRequest {
     pub request: VcsCompareRequest,
     pub file: FileTarget,
     pub priority: CompareWorkPriority,
+    pub preparation: Option<Preparation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -232,6 +301,7 @@ pub struct StatusDiffRequest {
     pub key: FileKey,
     pub change: FileChange,
     pub renderer: RendererKind,
+    pub preparation: Option<Preparation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,6 +313,7 @@ pub struct SourceLoadRequest {
     pub old_reference: String,
     pub new_reference: String,
     pub purpose: SourcePurpose,
+    pub preparation: Option<Preparation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -255,6 +326,7 @@ pub enum PipelineEffect {
     LoadFileStats(Box<FileStatsRequest>),
     LoadStatusDiff(Box<StatusDiffRequest>),
     LoadSources(Box<SourceLoadRequest>),
+    ResumeInstalls(CompareGeneration),
 }
 
 impl From<PipelineAction> for ViewportAction {
@@ -305,11 +377,28 @@ pub struct CompareResult {
     pub manifest: Arc<CompareManifestSnapshot>,
     pub entries: Arc<[CompareEntry]>,
     pub prepared: Arc<[PreparedDiff]>,
+    pub placeholders: Arc<[(FileKey, Placeholder)]>,
     pub notice: Option<String>,
 }
 
 #[derive(Debug, Clone)]
+pub enum SlotUpdate {
+    Placeholder {
+        key: FileKey,
+        placeholder: Placeholder,
+    },
+    Evict {
+        key: FileKey,
+        revision: FileRevision,
+        estimated_lines: u32,
+    },
+}
+
+#[derive(Debug, Clone)]
 pub enum PipelineEvent {
+    InstallsResumed {
+        generation: CompareGeneration,
+    },
     CompareProgress {
         generation: CompareGeneration,
         phase: ComparePhase,

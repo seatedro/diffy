@@ -66,9 +66,10 @@ impl DiffViewState {
             return;
         }
         let anchor = self.anchor();
+        let from = self.mode;
         self.mode = mode;
         for segment in &mut self.segments {
-            segment.rebuild(mode);
+            segment.switch(from, mode);
         }
         self.rebuild_rows(anchor);
     }

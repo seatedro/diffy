@@ -71,8 +71,9 @@ pub use projection::{
 pub use remap::{LineMap, RemapError, SourceRemap};
 pub use semantic::{AlignedRow, ChangeIntensity, FileSemantics, SemanticError, SemanticSpan};
 pub use session::{
-    DiffSession, DiffUpdate, FileDiffSnapshot, FileId, Revision, SessionIntegrityError,
-    SourcePurpose, SourceRequest, UpdateError, UpdateOutcome,
+    DiffSession, DiffUpdate, FileDiffSnapshot, FileId, Placeholder, Revision,
+    SessionIntegrityError, Slot, SlotState, SourcePurpose, SourceRequest, UpdateError,
+    UpdateOutcome,
 };
 pub use source::{ContextLen, FileSources, HydrationError, SourceCoverage};
 pub use text::{ByteEscapes, TextStore};

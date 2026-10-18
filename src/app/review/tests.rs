@@ -35,6 +35,7 @@ use crate::contracts::shell::{
 };
 use crate::contracts::viewport::CompareManifestSnapshot;
 use crate::contracts::viewport::pipeline::ManifestFile;
+use crate::core::compare::stats::CompareFilePaths;
 use crate::core::forge::github::{
     DeviceFlowState, GitHubPullRequestReviewData, GitHubPullRequestReviewThread,
     GitHubPullRequestReviewThreadComment, GitHubReviewSide, GitHubReviewThreadResolution,
@@ -174,15 +175,13 @@ fn manifest() -> Rc<CompareManifestSnapshot> {
         generation: CompareGeneration(1),
         resolved_left: "base".to_owned(),
         resolved_right: "head".to_owned(),
-        files: Arc::from([ManifestFile::from_entry(
+        files: Arc::from([ManifestFile::new(
             FileKey(5),
             FileRevision(2),
-            &crate::core::compare::output::CompareEntry::deferred(
-                Some("src/widget.rs"),
-                Some("src/widget.rs"),
-                diffy_diff::FileStatus::Modified,
-            ),
+            CompareFilePaths::from_paths(Some("src/widget.rs"), Some("src/widget.rs")),
+            diffy_diff::FileStatus::Modified,
         )]),
+        ..CompareManifestSnapshot::default()
     })
 }
 

@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use quark::view;
 use quark_app::platform::dialog::{DialogId, FileDialog, FileDialogKind};
@@ -28,6 +29,10 @@ pub trait EffectDispatcher: 'static {
     fn attach(&mut self, _sender: UiSender<AppMessage>) {}
 
     fn syntax_wake_handled(&mut self) {}
+
+    fn syntax_wake(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+        None
+    }
 
     fn dispatch(&mut self, effect: Effect, workspace: WorkspaceEpoch);
 }

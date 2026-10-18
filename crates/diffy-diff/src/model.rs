@@ -12,6 +12,7 @@ use std::fmt;
 use std::ops::Range;
 use std::sync::Arc;
 
+use crate::semantic::FileSemantics;
 use crate::text::TextStore;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -32,6 +33,129 @@ impl FileStatus {
             Self::Deleted => "deleted",
             Self::Renamed => "renamed",
             Self::Copied => "copied",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ObjectId(Arc<str>);
+
+impl ObjectId {
+    pub fn parse(hex: &str) -> Option<Self> {
+        let valid = !hex.is_empty()
+            && hex.bytes().all(|b| b.is_ascii_hexdigit())
+            && hex.bytes().any(|b| b != b'0');
+        valid.then(|| Self(Arc::from(hex.to_ascii_lowercase())))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn matches(&self, other: &ObjectId) -> bool {
+        let (a, b) = (self.as_str(), other.as_str());
+        a.starts_with(b) || b.starts_with(a)
+    }
+}
+
+impl fmt::Display for ObjectId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum DiffStats {
+    #[default]
+    Pending,
+    Known {
+        additions: u32,
+        deletions: u32,
+    },
+}
+
+impl DiffStats {
+    pub const fn known(self) -> Option<(u32, u32)> {
+        match self {
+            Self::Pending => None,
+            Self::Known {
+                additions,
+                deletions,
+            } => Some((additions, deletions)),
+        }
+    }
+
+    pub const fn is_pending(self) -> bool {
+        matches!(self, Self::Pending)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ContentChange {
+    #[default]
+    Unknown,
+    Unchanged,
+    Changed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ChangeSummary {
+    pub status: FileStatus,
+    pub binary: bool,
+    pub content: ContentChange,
+    pub mode_changed: bool,
+}
+
+impl ChangeSummary {
+    pub const fn is_added(&self) -> bool {
+        matches!(self.status, FileStatus::Added)
+    }
+
+    pub const fn is_deleted(&self) -> bool {
+        matches!(self.status, FileStatus::Deleted)
+    }
+
+    pub const fn is_renamed(&self) -> bool {
+        matches!(self.status, FileStatus::Renamed)
+    }
+
+    pub const fn is_copied(&self) -> bool {
+        matches!(self.status, FileStatus::Copied)
+    }
+
+    pub const fn content_changed(&self) -> Option<bool> {
+        match self.content {
+            ContentChange::Unknown => None,
+            ContentChange::Unchanged => Some(false),
+            ContentChange::Changed => Some(true),
+        }
+    }
+
+    pub const fn is_rename_only(&self) -> bool {
+        (self.is_renamed() || self.is_copied())
+            && matches!(self.content, ContentChange::Unchanged)
+            && !self.mode_changed
+    }
+
+    pub const fn is_mode_only(&self) -> bool {
+        matches!(self.status, FileStatus::Modified)
+            && self.mode_changed
+            && matches!(self.content, ContentChange::Unchanged)
+    }
+
+    pub const fn label(&self) -> &'static str {
+        let changed = matches!(self.content, ContentChange::Changed);
+        match self.status {
+            FileStatus::Added => "added",
+            FileStatus::Deleted => "deleted",
+            FileStatus::Renamed if changed => "renamed, modified",
+            FileStatus::Renamed if self.mode_changed => "renamed, mode changed",
+            FileStatus::Renamed => "renamed",
+            FileStatus::Copied if changed => "copied, modified",
+            FileStatus::Copied => "copied",
+            FileStatus::Modified if self.binary => "binary",
+            FileStatus::Modified if self.mode_changed && !changed => "mode changed",
+            FileStatus::Modified => "modified",
         }
     }
 }
@@ -57,6 +181,9 @@ pub struct FileMeta {
     pub binary: bool,
     pub old_mode: Option<Arc<str>>,
     pub new_mode: Option<Arc<str>>,
+    pub old_id: Option<ObjectId>,
+    pub new_id: Option<ObjectId>,
+    pub content: ContentChange,
 }
 
 /// File columns. Read through [`DiffDocument::files`].
@@ -70,6 +197,7 @@ pub struct FileTable {
     pub additions: Vec<u32>,
     pub deletions: Vec<u32>,
     pub hunks: Vec<Range<u32>>,
+    pub semantics: Vec<Option<Arc<FileSemantics>>>,
 }
 
 /// Hunk columns. Starts and lengths are the header's: a start is the
@@ -137,6 +265,18 @@ pub struct FileFacts {
     /// or the patch's marker states it.
     pub old_missing_newline: bool,
     pub new_missing_newline: bool,
+    pub content: ContentChange,
+}
+
+impl FileFacts {
+    pub fn summary(&self) -> ChangeSummary {
+        ChangeSummary {
+            status: self.status,
+            binary: self.binary,
+            content: self.content,
+            mode_changed: self.mode_change.is_some(),
+        }
+    }
 }
 
 /// Lines before a hunk side: its start, less one when it is not empty.
@@ -218,7 +358,47 @@ impl DiffDocument {
             has_hunks: !self.files.hunks[f].is_empty(),
             old_missing_newline: self.files.old_text[f].no_newline_at_eof(),
             new_missing_newline: self.files.new_text[f].no_newline_at_eof(),
+            content: self.content_change(file),
         }
+    }
+
+    pub fn summary(&self, file: u32) -> ChangeSummary {
+        self.facts(file).summary()
+    }
+
+    pub fn stats(&self, file: u32) -> DiffStats {
+        let f = file as usize;
+        DiffStats::Known {
+            additions: self.files.additions[f],
+            deletions: self.files.deletions[f],
+        }
+    }
+
+    fn content_change(&self, file: u32) -> ContentChange {
+        let f = file as usize;
+        let meta = &self.files.meta[f];
+        if meta.content != ContentChange::Unknown {
+            return meta.content;
+        }
+        if self.files.additions[f] > 0 || self.files.deletions[f] > 0 {
+            return ContentChange::Changed;
+        }
+        if let (Some(old), Some(new)) = (&meta.old_id, &meta.new_id) {
+            return if old.matches(new) {
+                ContentChange::Unchanged
+            } else {
+                ContentChange::Changed
+            };
+        }
+        if meta.binary {
+            ContentChange::Changed
+        } else {
+            ContentChange::Unchanged
+        }
+    }
+
+    pub fn semantics(&self, file: u32) -> Option<&FileSemantics> {
+        self.files.semantics.get(file as usize)?.as_deref()
     }
 
     /// Added and deleted lines over every file.
@@ -277,6 +457,7 @@ impl DiffDocument {
         f.additions.push(0);
         f.deletions.push(0);
         f.hunks.push(hunks..hunks);
+        f.semantics.push(None);
         f.meta.len() as u32 - 1
     }
 
@@ -329,10 +510,20 @@ impl DiffDocument {
     }
 
     pub(crate) fn finish_file(&mut self, old: TextStore, new: TextStore) {
+        self.set_texts(old, new);
+        debug_assert_eq!(self.verify_file(self.file_count() - 1), Ok(()));
+    }
+
+    pub(crate) fn set_texts(&mut self, old: TextStore, new: TextStore) {
         let f = self.file_count() as usize - 1;
         self.files.old_text[f] = old;
         self.files.new_text[f] = new;
-        debug_assert_eq!(self.verify_file(f as u32), Ok(()));
+    }
+
+    pub(crate) fn set_semantics(&mut self, semantics: Option<Arc<FileSemantics>>) {
+        if let Some(slot) = self.files.semantics.last_mut() {
+            *slot = semantics;
+        }
     }
 
     /// Appends file `file` of `src`. With `full` stores the copy holds the
@@ -379,6 +570,7 @@ impl DiffDocument {
         }
         let (old, new) =
             full.unwrap_or_else(|| (src.files.old_text[f].clone(), src.files.new_text[f].clone()));
+        self.set_semantics(src.files.semantics[f].clone());
         self.finish_file(old, new);
     }
 
@@ -409,6 +601,7 @@ impl DiffDocument {
         self.files
             .hunks
             .extend(files.hunks.iter().map(|r| shift(r, hunk_base)));
+        self.files.semantics.extend(files.semantics);
         self.hunks
             .file
             .extend(hunks.file.iter().map(|f| f + file_base));
@@ -444,6 +637,7 @@ impl DiffDocument {
             f.additions.len(),
             f.deletions.len(),
             f.hunks.len(),
+            f.semantics.len(),
         ];
         let h = &self.hunks;
         let hunk_columns = [
@@ -568,6 +762,11 @@ impl DiffDocument {
         if adds != f.additions[fi] || dels != f.deletions[fi] {
             return Err(IntegrityError::Stats { file });
         }
+        if let Some(semantics) = f.semantics.get(fi).and_then(Option::as_deref) {
+            semantics
+                .verify(self, file)
+                .map_err(|_| IntegrityError::Semantics { file })?;
+        }
         Ok(())
     }
 }
@@ -594,6 +793,9 @@ pub enum IntegrityError {
         file: u32,
     },
     Stats {
+        file: u32,
+    },
+    Semantics {
         file: u32,
     },
 }

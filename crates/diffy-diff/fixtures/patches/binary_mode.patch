@@ -1,0 +1,6 @@
+diff --git a/assets/logo.png b/assets/logo.png
+index 0123456..abcdef0 100644
+Binary files a/assets/logo.png and b/assets/logo.png differ
+diff --git a/scripts/tool.sh b/scripts/tool.sh
+old mode 100644
+new mode 100755

@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use quark::view;
 use quark_app::platform::dialog::{DialogId, FileDialog, FileDialogKind};
@@ -28,6 +29,10 @@ pub trait EffectDispatcher: 'static {
     fn attach(&mut self, _sender: UiSender<AppMessage>) {}
 
     fn syntax_wake_handled(&mut self) {}
+
+    fn syntax_wake(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+        None
+    }
 
     fn dispatch(&mut self, effect: Effect, workspace: WorkspaceEpoch);
 }
@@ -171,7 +176,9 @@ impl<D: EffectDispatcher> DiffyApp<D> {
         for effect in effects {
             match effect {
                 Effect::Shell(
-                    effect @ (ShellEffect::OpenRepositoryDialog | ShellEffect::SetClipboard(_)),
+                    effect @ (ShellEffect::OpenRepositoryDialog
+                    | ShellEffect::SetClipboard(_)
+                    | ShellEffect::Focus(_)),
                 ) => self.deferred.push(effect),
                 effect => self.dispatcher.dispatch(effect, self.shared.workspace),
             }
@@ -241,6 +248,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                     }));
                 }
                 ShellEffect::SetClipboard(text) => cx.window.set_clipboard_text(&text),
+                ShellEffect::Focus(focus) => cx.set_focus(focus.map(text_targets::focus_id)),
                 effect => self
                     .dispatcher
                     .dispatch(Effect::Shell(effect), self.shared.workspace),

@@ -1,7 +1,10 @@
 pub mod backend;
 pub mod cache;
+pub mod compare_port;
 pub mod discovery;
 pub mod git;
 pub mod jj;
 pub mod model;
+pub mod mutation;
 pub mod patch;
+pub mod source;

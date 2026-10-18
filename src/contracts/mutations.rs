@@ -1,4 +1,3 @@
-use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -9,6 +8,8 @@ use crate::contracts::shared::{FileKey, FileRevision, HunkTarget, JobId, SourceT
 use crate::core::vcs::model::{
     ChangeBucket, FileChange, FileOperation, PublishAction, PublishPlan, VcsOperation,
 };
+use crate::core::vcs::mutation::{MutationMaterial, PatchSelection, SideRange};
+use crate::core::vcs::source::SourceIdentity;
 use crate::platform::secrets::AiKeyKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,70 +51,98 @@ pub enum MutationsAction {
     GenerateCommitMessage,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MutationSourceKey {
+    pub repo_path: PathBuf,
+    pub file: FileKey,
+    pub revision: FileRevision,
+    pub repository: RepositoryRevision,
+    pub change: FileChange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MutationSource {
-    repo_path: PathBuf,
-    file: FileKey,
-    revision: FileRevision,
-    repository: RepositoryRevision,
-    bucket: ChangeBucket,
-    patch: Arc<[u8]>,
+    key: MutationSourceKey,
+    material: MutationMaterial,
 }
 
 impl MutationSource {
-    pub fn new(
-        repo_path: PathBuf,
-        file: FileKey,
-        revision: FileRevision,
-        repository: RepositoryRevision,
-        bucket: ChangeBucket,
-        patch: Arc<[u8]>,
-    ) -> Self {
-        Self {
-            repo_path,
-            file,
-            revision,
-            repository,
-            bucket,
-            patch,
-        }
+    pub fn new(key: MutationSourceKey, material: MutationMaterial) -> Self {
+        Self { key, material }
+    }
+
+    pub fn key(&self) -> &MutationSourceKey {
+        &self.key
     }
 
     pub fn repo_path(&self) -> &Path {
-        &self.repo_path
+        &self.key.repo_path
     }
 
     pub fn file(&self) -> FileKey {
-        self.file
+        self.key.file
     }
 
     pub fn revision(&self) -> FileRevision {
-        self.revision
+        self.key.revision
     }
 
     pub fn repository(&self) -> RepositoryRevision {
-        self.repository
+        self.key.repository
+    }
+
+    pub fn change(&self) -> &FileChange {
+        &self.key.change
     }
 
     pub fn bucket(&self) -> ChangeBucket {
-        self.bucket
+        self.key.change.bucket
+    }
+
+    pub fn identity(&self) -> &SourceIdentity {
+        &self.material.identity
     }
 
     pub fn patch(&self) -> &[u8] {
-        &self.patch
+        &self.material.patch
+    }
+
+    pub fn material(&self) -> &MutationMaterial {
+        &self.material
     }
 }
 
-impl fmt::Debug for MutationSource {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MutationSource")
-            .field("repo_path", &self.repo_path)
-            .field("file", &self.file)
-            .field("revision", &self.revision)
-            .field("repository", &self.repository)
-            .field("bucket", &self.bucket)
-            .field("patch_len", &self.patch.len())
-            .finish()
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum MutationSelection {
+    Hunks(Vec<HunkTarget>),
+    Lines(Vec<SourceTarget>),
+}
+
+impl MutationSelection {
+    pub fn targets(&self) -> impl Iterator<Item = &SourceTarget> {
+        let (hunks, lines): (&[HunkTarget], &[SourceTarget]) = match self {
+            Self::Hunks(hunks) => (hunks, &[]),
+            Self::Lines(lines) => (&[], lines),
+        };
+        hunks.iter().map(|hunk| &hunk.source).chain(lines)
+    }
+
+    pub fn is_for(&self, file: FileKey, revision: FileRevision) -> bool {
+        self.targets()
+            .all(|target| target.file == file && target.revision == revision)
+    }
+
+    pub fn patch_selection(&self) -> PatchSelection {
+        let range = |target: &SourceTarget| SideRange {
+            side: target.side,
+            lines: target.lines.clone(),
+        };
+        match self {
+            Self::Hunks(hunks) => {
+                PatchSelection::Hunks(hunks.iter().map(|h| range(&h.source)).collect())
+            }
+            Self::Lines(lines) => PatchSelection::Lines(lines.iter().map(range).collect()),
+        }
     }
 }
 
@@ -128,7 +157,8 @@ pub struct FileOperationRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatchOperationRequest {
     pub job: JobId,
-    pub source: MutationSource,
+    pub source: Arc<MutationSource>,
+    pub selection: MutationSelection,
     pub operation: FileOperation,
 }
 
@@ -147,6 +177,7 @@ pub struct GenerateCommitMessageRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MutationsEffect {
     ApplyFileOperation(FileOperationRequest),
+    LoadMutationSource(MutationSourceKey),
     ApplyPatch(PatchOperationRequest),
     CreateCommit {
         job: JobId,
@@ -290,6 +321,13 @@ pub enum MutationsEvent {
         job: JobId,
         remote: String,
         branch: String,
+        message: String,
+    },
+    MutationSourceReady {
+        source: Arc<MutationSource>,
+    },
+    MutationSourceFailed {
+        key: MutationSourceKey,
         message: String,
     },
     WorkerStopped,

@@ -8,6 +8,7 @@ pub struct Shell;
 impl Shell {
     pub const SIDEBAR_MIN_FACTOR: f32 = 0.64;
     pub const TRAFFIC_LIGHT_MARGIN: f32 = 16.0;
+    pub const TRAFFIC_LIGHTS_WIDTH: f32 = 54.0;
     pub const DEFAULT_WINDOW: (f64, f64) = (1320.0, 840.0);
     pub const MIN_WINDOW: (f64, f64) = (640.0, 480.0);
 }
@@ -37,9 +38,10 @@ pub fn sidebar_fits(theme: &Theme, width: f32) -> bool {
 }
 
 pub fn title_leading_inset(theme: &Theme) -> f32 {
+    let gap = scaled(Sp::MD, ui_scale(theme));
     if cfg!(target_os = "macos") {
-        Sz::CHROME_TRAFFIC_INSET
+        Shell::TRAFFIC_LIGHT_MARGIN + Shell::TRAFFIC_LIGHTS_WIDTH + gap
     } else {
-        scaled(Sp::MD, ui_scale(theme))
+        gap
     }
 }

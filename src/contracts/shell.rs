@@ -53,6 +53,7 @@ pub enum ShellEffect {
     OpenRepositoryDialog,
     OpenBrowser { url: String },
     SetClipboard(String),
+    Focus(Option<LogicalFocus>),
 }
 
 #[derive(Debug, Clone)]

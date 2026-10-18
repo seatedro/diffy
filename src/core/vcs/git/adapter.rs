@@ -1,22 +1,22 @@
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
-use carbon::TextStore;
-
 use crate::contracts::navigation::{RepositoryChangeKind, RepositorySyncReason};
-use crate::core::compare::backends::{DifftasticBackend, GitDiffBackend};
-use crate::core::compare::{
-    CompareFileStatsTarget, CompareFileSummary, CompareMode, ComparePhase, CompareService,
-    CompareSpec, ProgressSink, RendererKind,
-};
+use crate::core::compare::backends::GitDiffBackend;
+use crate::core::compare::output::{CompareEntry, CompareOutput};
+use crate::core::compare::stats::COMPARE_SUMMARY_FILE_LIMIT;
+use crate::core::compare::{CompareMode, ComparePhase, CompareSpec, ProgressSink, RendererKind};
 use crate::core::error::{DiffyError, Result, VcsBackendKind};
 use crate::core::vcs::backend::{VcsBackend, VcsRepository, VcsWatchPaths};
 use crate::core::vcs::cache::VcsReadCache;
+use crate::core::vcs::compare_port::{
+    entry_stats, name_status_entry, output_from_patch, patch_stats, with_semantic_fallback,
+};
 use crate::core::vcs::git::service::is_full_hex_oid;
 use crate::core::vcs::git::status::StatusBits;
 use crate::core::vcs::git::{
-    BranchInfo, CommitInfo, GitService, PatchApplyTarget, PullOutcome, StatusItem, StatusOperation,
-    StatusScope, TagInfo, WORKDIR_REF, status::status_items_from_entry_with_old_path,
+    BranchInfo, CommitInfo, GitService, PullOutcome, StatusItem, StatusOperation, StatusScope,
+    TagInfo, WORKDIR_REF, status::status_items_from_entry_with_old_path,
 };
 use crate::core::vcs::model::{
     ChangeBucket, ChangeFlags, FileChange, FileChangeStatus, FileOperation, PublishAction,
@@ -24,6 +24,11 @@ use crate::core::vcs::model::{
     RepoCapabilities, RepoLocation, RevisionId, VCS_PROFILE_GIT, VcsChange, VcsCompareRequest,
     VcsCompareSpec, VcsKind, VcsRef, VcsSnapshot,
 };
+use crate::core::vcs::mutation::{MutationMaterial, PatchApplication};
+use crate::core::vcs::patch::patch_identity;
+use crate::core::vcs::source::SourceText;
+
+const GIT_STATS_PATH_CHUNK: usize = 256;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GitBackend;
@@ -124,64 +129,26 @@ impl GitRepository {
         &mut self,
         request: &VcsCompareRequest,
         path: &str,
-        deferred_file: Option<&CompareFileSummary>,
-    ) -> Result<crate::core::compare::CompareOutput> {
-        let spec = git_compare_spec(request);
-        let deferred_file = deferred_file.map(CompareFileSummary::to_file_diff);
-        let summary_fallback = deferred_file.is_some();
-        match request.renderer {
-            crate::core::compare::RendererKind::Builtin => {
-                let output = deferred_file
-                    .as_ref()
-                    .map(|file| GitDiffBackend.compare_deferred_file(file, &self.service))
-                    .transpose()?
-                    .flatten();
-                match output {
-                    Some(output) => Ok(output),
-                    None if summary_fallback => GitDiffBackend
-                        .compare_path_no_renames(&spec, path, &self.service)?
-                        .ok_or_else(|| {
-                            DiffyError::General("compare file returned no result".to_owned())
-                        }),
-                    None => GitDiffBackend
-                        .compare_path(&spec, path, &self.service)?
-                        .ok_or_else(|| {
-                            DiffyError::General("compare file returned no result".to_owned())
-                        }),
-                }
-            }
-            crate::core::compare::RendererKind::Difftastic if DifftasticBackend::is_available() => {
-                DifftasticBackend
-                    .compare_path(&spec, path, &self.service)?
-                    .ok_or_else(|| {
-                        DiffyError::General("compare file returned no result".to_owned())
-                    })
-            }
-            crate::core::compare::RendererKind::Difftastic => {
-                let output = deferred_file
-                    .as_ref()
-                    .map(|file| GitDiffBackend.compare_deferred_file(file, &self.service))
-                    .transpose()?
-                    .flatten();
-                match output {
-                    Some(output) => Ok(output),
-                    None => {
-                        let path_output = if summary_fallback {
-                            GitDiffBackend.compare_path_no_renames(&spec, path, &self.service)?
-                        } else {
-                            GitDiffBackend.compare_path(&spec, path, &self.service)?
-                        };
-                        let mut output = path_output.ok_or_else(|| {
-                            DiffyError::General("compare file returned no result".to_owned())
-                        })?;
-                        output.used_fallback = true;
-                        output.fallback_message =
-                            "difftastic not compiled in, used built-in backend".to_owned();
-                        Ok(output)
-                    }
-                }
-            }
-        }
+        deferred_file: Option<&CompareEntry>,
+    ) -> Result<CompareOutput> {
+        let (left, right) = self.resolve_compare_request(request)?;
+        let raw = match deferred_file {
+            Some(_) => self
+                .service
+                .diff_two_refs_path_no_renames(&left, &right, path)?,
+            None => self.service.diff_two_refs_path(&left, &right, path)?,
+        };
+        Ok(renderer_output(
+            request.renderer,
+            output_from_patch(raw.as_bytes())?,
+        ))
+    }
+}
+
+fn renderer_output(renderer: RendererKind, output: CompareOutput) -> CompareOutput {
+    match renderer {
+        RendererKind::Builtin => output,
+        RendererKind::Difftastic => with_semantic_fallback(output),
     }
 }
 
@@ -247,7 +214,7 @@ impl VcsRepository for GitRepository {
         &mut self,
         request: &VcsCompareRequest,
         reporter: Option<&dyn ProgressSink>,
-    ) -> Result<crate::core::compare::CompareOutput> {
+    ) -> Result<CompareOutput> {
         let cacheable = compare_request_is_immutable(request);
         let epoch = self.immutable_cache_epoch();
         if cacheable
@@ -256,8 +223,24 @@ impl VcsRepository for GitRepository {
         {
             return Ok(output);
         }
-        let spec = git_compare_spec(request);
-        let output = CompareService::default().compare(&spec, &self.service, reporter)?;
+        if let Some(reporter) = reporter {
+            reporter.phase(ComparePhase::ResolvingRefs);
+        }
+        let (left, right) = self.resolve_compare_request(request)?;
+        let entries = self.service.diff_name_status(&left, &right, None)?;
+        let output = if entries.len() > COMPARE_SUMMARY_FILE_LIMIT {
+            CompareOutput::deferred(
+                entries
+                    .iter()
+                    .map(|(label, old, new)| {
+                        name_status_entry(label, old.as_deref(), new.as_deref())
+                    })
+                    .collect(),
+            )
+        } else {
+            let raw = self.service.diff_two_refs(&left, &right)?;
+            renderer_output(request.renderer, output_from_patch(raw.as_bytes())?)
+        };
         if cacheable && let Ok(mut cache) = IMMUTABLE_READ_CACHE.lock() {
             cache.insert_diff(Some(epoch), request.clone(), None, output.clone());
         }
@@ -299,15 +282,32 @@ impl VcsRepository for GitRepository {
     fn compare_file_stats(
         &mut self,
         request: &VcsCompareRequest,
-        files: &[CompareFileStatsTarget],
+        files: &[CompareEntry],
     ) -> Result<Vec<(i32, i32)>> {
-        let spec = git_compare_spec(request);
-        let file_stats =
-            GitDiffBackend.deferred_file_line_stats_batch_for_request(&spec, &self.service, files);
+        let (left, right) = self.resolve_compare_request(request)?;
+        let mut stats = std::collections::HashMap::with_capacity(files.len());
+        for chunk in files.chunks(GIT_STATS_PATH_CHUNK) {
+            let paths = chunk
+                .iter()
+                .flat_map(|file| [file.paths.old_path(), file.paths.new_path()])
+                .flatten()
+                .collect::<Vec<_>>();
+            let paths = paths
+                .iter()
+                .map(|path| path.as_ref())
+                .collect::<Vec<&str>>();
+            stats.extend(patch_stats(
+                &self.service.diff_refs_paths(&left, &right, &paths)?,
+            )?);
+        }
         Ok(files
             .iter()
-            .zip(file_stats)
-            .map(|(file, stat)| stat.unwrap_or_else(|| file.fallback_stats()))
+            .map(|file| {
+                stats
+                    .get(file.path().as_ref())
+                    .copied()
+                    .unwrap_or_else(|| entry_stats(file))
+            })
             .collect())
     }
 
@@ -315,8 +315,8 @@ impl VcsRepository for GitRepository {
         &mut self,
         request: &VcsCompareRequest,
         path: &str,
-        deferred_file: Option<&CompareFileSummary>,
-    ) -> Result<crate::core::compare::CompareOutput> {
+        deferred_file: Option<&CompareEntry>,
+    ) -> Result<CompareOutput> {
         // Only the summary-less path shells out to `git diff`; deferred-file
         // compares already run in-process on gix blobs, and their rename
         // handling differs, so they are not folded into the same cache key.
@@ -344,21 +344,12 @@ impl VcsRepository for GitRepository {
         &mut self,
         change: &FileChange,
         renderer: RendererKind,
-    ) -> Result<crate::core::compare::CompareOutput> {
+    ) -> Result<CompareOutput> {
         let item = status_item_from_file_change(change);
-        let mut output = match renderer {
-            RendererKind::Builtin => self.service.diff_status_item(&item)?,
-            RendererKind::Difftastic if DifftasticBackend::is_available() => {
-                compare_status_item_with_difftastic(&item, &self.service)?
-            }
-            RendererKind::Difftastic => self.service.diff_status_item(&item)?,
-        };
-        if renderer == RendererKind::Difftastic && !DifftasticBackend::is_available() {
-            output.used_fallback = true;
-            output.fallback_message =
-                "difftastic not compiled in, used built-in backend".to_owned();
-        }
-        Ok(output)
+        Ok(renderer_output(
+            renderer,
+            self.service.diff_status_item(&item)?,
+        ))
     }
 
     fn commit_diff(&mut self, has_staged: bool) -> Result<String> {
@@ -388,12 +379,18 @@ impl VcsRepository for GitRepository {
             .apply_batch_status_operation(&items, status_operation_from_file_operation(operation))
     }
 
-    fn apply_patch_operation(&mut self, patch: &str, operation: FileOperation) -> Result<()> {
-        let target = match operation {
-            FileOperation::Discard => PatchApplyTarget::Workdir,
-            FileOperation::Stage | FileOperation::Unstage => PatchApplyTarget::Index,
-        };
-        self.service.apply_patch(patch, target)
+    fn mutation_material(&mut self, change: &FileChange) -> Result<MutationMaterial> {
+        let item = status_item_from_file_change(change);
+        let patch = self.service.status_item_exact_patch(&item)?;
+        let identity = patch_identity(&patch);
+        Ok(MutationMaterial {
+            patch: patch.into(),
+            identity,
+        })
+    }
+
+    fn apply_patch(&mut self, patch: &[u8], application: PatchApplication) -> Result<()> {
+        self.service.apply_patch(patch, application)
     }
 
     fn create_commit(&mut self, message: &str) -> Result<()> {
@@ -493,28 +490,33 @@ impl VcsRepository for GitRepository {
             .resolve_pull_request_comparison(pull_request_url, github_token)
     }
 
-    fn compare_working_file(&mut self, path: &str) -> Result<crate::core::compare::CompareOutput> {
+    fn compare_working_file(&mut self, path: &str) -> Result<CompareOutput> {
         Err(DiffyError::General(format!(
             "Git working-file compare requires a status scope for {path}"
         )))
     }
 
-    fn read_file_text(&mut self, revision: &RevisionId, path: &str) -> Result<TextStore> {
+    fn read_file_source(&mut self, revision: &RevisionId, path: &str) -> Result<SourceText> {
         // Blob content at a fixed commit OID is immutable; workdir, index,
         // and symbolic refs are not and bypass the cache.
         let cacheable = is_full_hex_oid(&revision.id);
         let epoch = self.immutable_cache_epoch();
         if cacheable
             && let Ok(cache) = IMMUTABLE_READ_CACHE.lock()
-            && let Some(text) = cache.cached_file_text(Some(&epoch), revision, path)
+            && let Some(source) = cache.cached_file_source(Some(&epoch), revision, path)
         {
-            return Ok(text);
+            return Ok(source);
         }
-        let text = self.service.read_file_text_store_at(&revision.id, path)?;
+        let source = self.service.read_file_source_at(&revision.id, path)?;
         if cacheable && let Ok(mut cache) = IMMUTABLE_READ_CACHE.lock() {
-            cache.insert_file_text(Some(epoch), revision.clone(), path.to_owned(), text.clone());
+            cache.insert_file_source(
+                Some(epoch),
+                revision.clone(),
+                path.to_owned(),
+                source.clone(),
+            );
         }
-        Ok(text)
+        Ok(source)
     }
 }
 
@@ -619,22 +621,6 @@ fn file_change_status_label(status: FileChangeStatus, bucket: ChangeBucket) -> &
         (FileChangeStatus::Binary, _) => "B",
         (FileChangeStatus::Modified, _) => "M",
     }
-}
-
-#[cfg(feature = "difftastic")]
-fn compare_status_item_with_difftastic(
-    item: &StatusItem,
-    git: &GitService,
-) -> Result<crate::core::compare::CompareOutput> {
-    DifftasticBackend.compare_status_item(item, git)
-}
-
-#[cfg(not(feature = "difftastic"))]
-fn compare_status_item_with_difftastic(
-    _item: &StatusItem,
-    _git: &GitService,
-) -> Result<crate::core::compare::CompareOutput> {
-    unreachable!("difftastic status compare is gated by DifftasticBackend::is_available()")
 }
 
 pub fn git_snapshot_from_parts(
@@ -1084,7 +1070,7 @@ mod tests {
     }
 
     #[test]
-    fn read_file_text_returns_content_at_revision() {
+    fn read_file_source_returns_content_at_revision() {
         let repo_dir = TempDir::new().unwrap();
         let repo = Repository::init(repo_dir.path()).unwrap();
         let first = commit_file(&repo, "src/lib.rs", b"hello\nworld\n", "first");
@@ -1093,33 +1079,34 @@ mod tests {
         let mut adapter = open_adapter(repo_dir.path());
 
         let old_text = adapter
-            .read_file_text(&RevisionId::git(first), "src/lib.rs")
+            .read_file_source(&RevisionId::git(first), "src/lib.rs")
             .unwrap();
-        assert_eq!(old_text.as_str(), Some("hello\nworld\n"));
+        assert_eq!(&*old_text.bytes(), b"hello\nworld\n");
 
         let workdir_text = adapter
-            .read_file_text(&RevisionId::git(WORKDIR_REF), "src/lib.rs")
+            .read_file_source(&RevisionId::git(WORKDIR_REF), "src/lib.rs")
             .unwrap();
-        assert_eq!(workdir_text.as_str(), Some("changed\n"));
+        assert_eq!(&*workdir_text.bytes(), b"changed\n");
 
         assert!(
             adapter
-                .read_file_text(&RevisionId::git("HEAD"), "src/missing.rs")
+                .read_file_source(&RevisionId::git("HEAD"), "src/missing.rs")
                 .is_err()
         );
     }
 
     #[test]
-    fn read_file_text_rejects_binary_content() {
+    fn read_file_source_marks_binary_content() {
         let repo_dir = TempDir::new().unwrap();
         let repo = Repository::init(repo_dir.path()).unwrap();
         let oid = commit_file(&repo, "blob.bin", b"\x00\x01\x02binary", "add binary");
 
         let mut adapter = open_adapter(repo_dir.path());
-        let error = adapter
-            .read_file_text(&RevisionId::git(oid), "blob.bin")
-            .expect_err("binary content rejected");
-        assert!(error.to_string().contains("binary"), "{error}");
+        let source = adapter
+            .read_file_source(&RevisionId::git(oid), "blob.bin")
+            .unwrap();
+        assert!(source.is_binary());
+        assert_eq!(&*source.bytes(), b"\x00\x01\x02binary");
     }
 
     #[test]
@@ -1176,7 +1163,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(output.file_count(), 1);
-        let summary = output.summary_at(0).expect("file summary");
+        let summary = output.entry(0).expect("file entry");
+        assert!(output.document(0).is_some());
         assert_eq!(summary.paths.display_path(), "src/lib.rs");
         assert!(!output.used_fallback);
     }

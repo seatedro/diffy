@@ -45,26 +45,18 @@ impl MutationsRuntime {
                 };
                 self.vcs.dispatch(workspace, command);
             }
+            MutationsEffect::LoadMutationSource(key) => {
+                self.vcs
+                    .dispatch(workspace, VcsCommand::LoadMutationSource { key });
+            }
             MutationsEffect::ApplyPatch(request) => {
-                let source = request.source;
-                let Ok(patch) = std::str::from_utf8(source.patch()) else {
-                    events.send(MutationsEvent::FileOperationFailed {
-                        job: request.job,
-                        path: source.repo_path().to_path_buf(),
-                        message: format!(
-                            "{} failed: patch is not valid UTF-8",
-                            request.operation.label()
-                        ),
-                    });
-                    return;
-                };
+                let selection = request.selection.patch_selection();
                 self.vcs.dispatch(
                     workspace,
                     VcsCommand::ApplyPatch {
                         job: request.job,
-                        path: source.repo_path().to_path_buf(),
-                        patch: patch.to_owned(),
-                        bucket: source.bucket(),
+                        source: request.source,
+                        selection,
                         operation: request.operation,
                     },
                 );
@@ -409,6 +401,12 @@ impl VcsEvents for VcsEventRouter {
                     branch,
                     message,
                 });
+            }
+            VcsWorkerEvent::MutationSourceReady { source } => {
+                events.send(MutationsEvent::MutationSourceReady { source });
+            }
+            VcsWorkerEvent::MutationSourceFailed { key, message } => {
+                events.send(MutationsEvent::MutationSourceFailed { key, message });
             }
             VcsWorkerEvent::WorkerStopped => {
                 events.send(MutationsEvent::WorkerStopped);

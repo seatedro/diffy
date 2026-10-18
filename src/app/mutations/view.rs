@@ -55,7 +55,7 @@ pub fn commit_box(
     mutations: &mut MutationsController,
     slot: &Slot,
     cx: &mut ViewContext,
-) -> Option<AnyElement> {
+) -> Option<(AnyElement, f32)> {
     let repo = slot.shared.repository.as_ref()?;
     let capabilities = repo.snapshot.capabilities;
     if !working_tree(slot.shared) || !capabilities.create_commit {
@@ -274,10 +274,14 @@ pub fn commit_box(
     } else {
         MutationsAction::CancelAmend
     };
-    Some(view! {
+    let banner_h = if banner.is_some() { line + inset } else { 0.0 };
+    let box_h = height + banner_h + 2.0 * inset;
+    let total = box_h + chrome.height + gap + 2.0 * pad;
+    let element = view! {
         <div
             class="flex-col shrink-0 relative"
             w={slot.width}
+            h={total}
             p={pad}
             gap={gap}
             border_t={tc.border_variant}
@@ -292,6 +296,7 @@ pub fn commit_box(
         >
             <div
                 class="flex-col"
+                h={box_h}
                 rounded={theme.metrics.panel_radius}
                 bg={tc.editor_surface}
                 border={if focused { tc.focus_border } else { tc.border }}
@@ -301,14 +306,15 @@ pub fn commit_box(
                     {editor}
                 </div>
             </div>
-            <div class="flex-row items-center" gap={gap}>
+            <div class="flex-row items-center" h={chrome.height} gap={gap}>
                 {?counter}
                 <div class="flex-1" />
                 {actions}
             </div>
             {?commit_menu}
         </div>
-    })
+    };
+    Some((element, total))
 }
 
 pub fn selection_bar(

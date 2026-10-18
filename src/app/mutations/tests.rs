@@ -624,7 +624,7 @@ impl UiApp for Host {
             width: width * 0.4,
             height,
         };
-        let commit = super::commit_box(&mut self.controller, &sidebar, cx);
+        let commit = super::commit_box(&mut self.controller, &sidebar, cx).map(|(commit, _)| commit);
         let body = Slot {
             shared: &self.shared,
             width,

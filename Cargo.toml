@@ -69,7 +69,7 @@ appdata-paths = ["$LOCALAPPDATA/$PUBLISHER/$PRODUCTNAME"]
 [features]
 default = ["difftastic"]
 hot-reload = ["dep:tungstenite", "dep:subsecond"]
-difftastic = ["dep:vendored_difftastic"]
+difftastic = ["dep:vendored_difftastic", "dep:rayon"]
 headless-render = []
 
 [dependencies]
@@ -84,10 +84,9 @@ rfd = "0.17.2"
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 heed = "0.22"
 parking_lot = "0.12"
-rayon = "1.10"
+rayon = { version = "1.10", optional = true }
 tempfile = "3.14"
 webbrowser = "1.0"
-carbon = { path = "crates/carbon" }
 diffy-diff = { path = "crates/diffy-diff" }
 diffy-syntax = { path = "crates/diffy-syntax", features = ["download"] }
 diffy-ui = { path = "crates/diffy-ui" }

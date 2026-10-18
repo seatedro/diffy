@@ -4,6 +4,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::Duration;
 
+use crate::contracts::mutations::{MutationSource, MutationSourceKey};
 use crate::contracts::navigation::{
     RepositoryChangeKind, RepositorySnapshot, RepositorySyncReason,
 };
@@ -13,9 +14,10 @@ use crate::core::vcs::{
     backend::VcsRepository,
     discovery,
     model::{
-        ChangeBucket, FileChange, FileOperation, PublishAction, PublishPlan,
-        PullFastForwardOutcome, RepoLocation, VcsOperation, VcsSnapshot,
+        FileChange, FileOperation, PublishAction, PublishPlan, PullFastForwardOutcome,
+        RepoLocation, VcsOperation, VcsSnapshot,
     },
+    mutation::{self, PatchSelection},
 };
 
 const VCS_DIRTY_DEBOUNCE: Duration = Duration::from_millis(150);
@@ -133,6 +135,13 @@ pub(crate) enum VcsWorkerEvent {
         branch: String,
         message: String,
     },
+    MutationSourceReady {
+        source: Arc<MutationSource>,
+    },
+    MutationSourceFailed {
+        key: MutationSourceKey,
+        message: String,
+    },
     /// The VCS worker thread is gone, so dispatched repository commands are
     /// being dropped. Surfaced so the user knows repo operations stopped.
     WorkerStopped,
@@ -160,11 +169,13 @@ pub(crate) enum VcsCommand {
         file_changes: Vec<FileChange>,
         operation: FileOperation,
     },
+    LoadMutationSource {
+        key: MutationSourceKey,
+    },
     ApplyPatch {
         job: JobId,
-        path: PathBuf,
-        patch: String,
-        bucket: ChangeBucket,
+        source: Arc<MutationSource>,
+        selection: PatchSelection,
         operation: FileOperation,
     },
     Commit {
@@ -379,13 +390,13 @@ fn run_command(state: &mut VcsWorkerState, emitter: &Emitter, command: VcsComman
                 .and_then(|mut repo| repo.apply_batch_file_operation(&file_changes, operation));
             finish_file_operation(state, emitter, job, path, result);
         }
+        VcsCommand::LoadMutationSource { key } => load_mutation_source(emitter, key),
         VcsCommand::ApplyPatch {
             job,
-            path,
-            patch,
-            bucket,
+            source,
+            selection,
             operation,
-        } => apply_patch_operation(state, emitter, job, path, &patch, bucket, operation),
+        } => apply_patch_operation(state, emitter, job, &source, &selection, operation),
         VcsCommand::Commit { job, path, message } => {
             apply_commit(state, emitter, job, path, &message)
         }
@@ -439,33 +450,57 @@ fn finish_file_operation(
     sync_repository_forced(state, emitter, path, RepositorySyncReason::Dirty);
 }
 
+fn load_mutation_source(emitter: &Emitter, key: MutationSourceKey) {
+    let result = discovery::open_repository(&key.repo_path)
+        .and_then(|mut repo| repo.mutation_material(&key.change));
+    match result {
+        Ok(material) => emitter.emit(VcsWorkerEvent::MutationSourceReady {
+            source: Arc::new(MutationSource::new(key, material)),
+        }),
+        Err(error) => emitter.emit(VcsWorkerEvent::MutationSourceFailed {
+            key,
+            message: error.user_message(),
+        }),
+    }
+}
+
 fn apply_patch_operation(
     state: &mut VcsWorkerState,
     emitter: &Emitter,
     job: JobId,
-    path: PathBuf,
-    patch: &str,
-    _bucket: ChangeBucket,
+    source: &MutationSource,
+    selection: &PatchSelection,
     operation: FileOperation,
 ) {
-    if let Err(error) = discovery::open_repository(&path)
-        .and_then(|mut repo| repo.apply_patch_operation(patch, operation))
-    {
-        tracing::error!(
+    let path = source.repo_path().to_path_buf();
+    let result = discovery::open_repository(&path).and_then(|mut repo| {
+        mutation::apply_selection(
+            repo.as_mut(),
+            source.material(),
+            source.change(),
+            selection,
+            operation,
+        )
+    });
+    if let Err(error) = result {
+        tracing::warn!(
             ?operation,
             path = %path.display(),
+            file = %source.change().path,
             error = %error,
-            patch = %patch,
             "patch apply failed"
         );
         emitter.emit(VcsWorkerEvent::FileOperationFailed {
             job,
             path,
-            message: format!("{} failed: {}", operation.label(), error),
+            message: format!(
+                "Could not {} lines: {}",
+                operation.label(),
+                error.user_message()
+            ),
         });
         return;
     }
-
     emitter.emit(VcsWorkerEvent::FileOperationApplied {
         job,
         path: path.clone(),

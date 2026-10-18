@@ -8,11 +8,163 @@
 //! scope, or undo.
 
 use std::ops::Range;
+use std::sync::Arc;
 
-use diffy_diff::{FileStatus, GapId, RowKind, Side};
+use diffy_diff::{DiffDocument, FileStatus, GapId, RowKind, Side};
 use quark_ui::element::AnyElement;
 
+use super::DiffViewState;
+use super::navigation::{FileId, Revision};
 use super::prepared::{AnnotationId, Columns};
+use super::state::NONE;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FileSource {
+    pub id: FileId,
+    pub revision: Revision,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HunkSource {
+    pub file: FileSource,
+    pub hunk: u32,
+    pub old: Range<u32>,
+    pub new: Range<u32>,
+}
+
+#[derive(Debug, Clone)]
+struct UnitSource {
+    source: FileSource,
+    doc: Arc<DiffDocument>,
+    file: u32,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DiffSources {
+    units: Vec<Option<UnitSource>>,
+}
+
+impl DiffSources {
+    pub fn file(&self, unit: u32) -> Option<FileSource> {
+        Some(self.units.get(unit as usize)?.as_ref()?.source)
+    }
+
+    pub fn hunk(&self, unit: u32, global: u32) -> Option<HunkSource> {
+        let unit = self.units.get(unit as usize)?.as_ref()?;
+        let hunks = unit.doc.files().hunks[unit.file as usize].clone();
+        if !hunks.contains(&global) {
+            return None;
+        }
+        let h = unit.doc.hunks();
+        let i = global as usize;
+        let lines = |start: u32, len: u32| {
+            let start = start.saturating_sub(1);
+            start..start + len
+        };
+        Some(HunkSource {
+            file: unit.source,
+            hunk: global - hunks.start,
+            old: lines(h.old_start[i], h.old_len[i]),
+            new: lines(h.new_start[i], h.new_len[i]),
+        })
+    }
+
+    pub fn global_hunk(&self, unit: u32, hunk: u32) -> Option<u32> {
+        let entry = self.units.get(unit as usize)?.as_ref()?;
+        let hunks = entry.doc.files().hunks[entry.file as usize].clone();
+        let global = hunks.start.checked_add(hunk)?;
+        hunks.contains(&global).then_some(global)
+    }
+
+    pub fn hunk_at(&self, unit: u32, hunk: u32) -> Option<HunkSource> {
+        let entry = self.units.get(unit as usize)?.as_ref()?;
+        let start = entry.doc.files().hunks[entry.file as usize].start;
+        self.hunk(unit, start.checked_add(hunk)?)
+    }
+
+    pub fn hunk_of_line(&self, unit: u32, side: Side, line: u32) -> Option<HunkSource> {
+        let entry = self.units.get(unit as usize)?.as_ref()?;
+        entry.doc.files().hunks[entry.file as usize]
+            .clone()
+            .filter_map(|global| self.hunk(unit, global))
+            .find(|hunk| {
+                let range = match side {
+                    Side::Old => &hunk.old,
+                    Side::New => &hunk.new,
+                };
+                range.contains(&line)
+            })
+    }
+
+    pub fn unit_of(&self, id: FileId) -> Option<u32> {
+        self.units
+            .iter()
+            .position(|u| u.as_ref().is_some_and(|u| u.source.id == id))
+            .map(|unit| unit as u32)
+    }
+}
+
+impl DiffViewState {
+    pub fn sources(&self) -> DiffSources {
+        if self.files.is_static() {
+            let Some(segment) = self.segments.first() else {
+                return DiffSources::default();
+            };
+            let units = (0..segment.doc.file_count())
+                .map(|file| {
+                    Some(UnitSource {
+                        source: FileSource {
+                            id: FileId(u64::from(file)),
+                            revision: Revision(segment.revision),
+                        },
+                        doc: segment.doc.clone(),
+                        file,
+                    })
+                })
+                .collect();
+            return DiffSources { units };
+        }
+        let units = self
+            .files
+            .slot_seg
+            .iter()
+            .zip(&self.files.slot_ids)
+            .map(|(&seg, &id)| {
+                let segment = self.segments.get(seg as usize).filter(|_| seg != NONE)?;
+                Some(UnitSource {
+                    source: FileSource {
+                        id,
+                        revision: Revision(segment.revision),
+                    },
+                    doc: segment.doc.clone(),
+                    file: 0,
+                })
+            })
+            .collect();
+        DiffSources { units }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct DiffViewOptions {
+    pub decorator: Option<std::rc::Rc<dyn DiffDecorator>>,
+    pub sources: Option<std::rc::Rc<DiffSources>>,
+    pub keys: Option<&'static [(&'static str, super::DiffKey)]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LineMark {
+    Selected,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LineContext {
+    pub file: u32,
+    pub source: Option<FileSource>,
+    pub side: Side,
+    pub line: u32,
+    pub kind: RowKind,
+}
 
 /// A place in a built-in file header that a decorator can fill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -30,6 +182,7 @@ pub enum HeaderSlot {
 pub struct HeaderContext<'a> {
     /// The document's file index.
     pub file: u32,
+    pub source: Option<FileSource>,
     /// The path, or `old → new` for a rename or copy.
     pub title: &'a str,
     pub status: FileStatus,
@@ -55,12 +208,14 @@ pub struct AnnotationContext<'a> {
 }
 
 /// A hunk header or collapsed gap row.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct SeparatorContext<'a> {
     pub file: u32,
     /// The gap the row folds, for [`super::DiffEvent::Expand`]; `None` for
     /// a hunk header.
     pub gap: Option<GapId>,
+    pub source: Option<FileSource>,
+    pub hunk: Option<HunkSource>,
     /// Lines the gap hides; zero for a hunk header.
     pub hidden: u32,
     /// The built-in row's text: the hidden-line count and the hunk header.
@@ -78,6 +233,7 @@ pub struct SeparatorContext<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct GutterContext {
     pub file: u32,
+    pub source: Option<FileSource>,
     pub side: Side,
     /// Zero-based source line on `side`.
     pub line: u32,
@@ -121,6 +277,10 @@ pub trait DiffDecorator {
 
     /// A control drawn over the focused line row's gutter.
     fn gutter_utility(&self, _cx: &GutterContext) -> Option<AnyElement> {
+        None
+    }
+
+    fn line_mark(&self, _cx: &LineContext) -> Option<LineMark> {
         None
     }
 }

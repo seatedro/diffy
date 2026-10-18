@@ -53,6 +53,7 @@ pub enum ShellEffect {
     OpenRepositoryDialog,
     OpenBrowser { url: String },
     SetClipboard(String),
+    Focus(Option<LogicalFocus>),
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +124,7 @@ pub enum Intent {
     RepositoryChanged(Rc<RepositoryContext>),
     InvalidateRepository,
     SetReviewTarget(Option<Rc<ReviewContext>>),
+    OpenPullRequest { url: String },
     AccountChanged,
     GrammarAvailable(GrammarAvailability),
     SettingsChanged(Rc<SettingsSnapshot>),

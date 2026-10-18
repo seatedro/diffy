@@ -7,7 +7,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use crate::model::{BlockKind, DiffDocument, FileMeta, FileStatus, Side, lines_before};
+use crate::model::{BlockKind, DiffDocument, FileMeta, FileStatus, ObjectId, Side, lines_before};
 use crate::text::TextStore;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,6 +192,23 @@ impl FileBuilder {
             m.new_path = Some(unquote(path).into());
         } else if line.starts_with("Binary files ") && line.ends_with(" differ") {
             m.binary = true;
+        } else if let Some(rest) = line.strip_prefix("index ") {
+            let (ids, mode) = match rest.split_once(' ') {
+                Some((ids, mode)) => (ids, Some(mode.trim())),
+                None => (rest, None),
+            };
+            if let Some((old, new)) = ids.split_once("..") {
+                m.old_id = ObjectId::parse(old);
+                m.new_id = ObjectId::parse(new);
+            }
+            if let Some(mode) = mode.filter(|mode| !mode.is_empty()) {
+                if m.old_mode.is_none() && m.status != FileStatus::Added {
+                    m.old_mode = Some(mode.into());
+                }
+                if m.new_mode.is_none() && m.status != FileStatus::Deleted {
+                    m.new_mode = Some(mode.into());
+                }
+            }
         }
     }
 
@@ -473,6 +490,17 @@ fn write_file(doc: &DiffDocument, file: u32, out: &mut String) {
                 out.push_str(&format!("old mode {o}\nnew mode {n}\n"));
             }
         }
+    }
+    if meta.old_id.is_some() || meta.new_id.is_some() {
+        let id = |id: &Option<ObjectId>| id.as_ref().map_or("0000000", ObjectId::as_str).to_owned();
+        out.push_str(&format!("index {}..{}", id(&meta.old_id), id(&meta.new_id)));
+        if !matches!(meta.status, FileStatus::Added | FileStatus::Deleted)
+            && let (Some(o), Some(n)) = (&meta.old_mode, &meta.new_mode)
+            && o == n
+        {
+            out.push_str(&format!(" {o}"));
+        }
+        out.push('\n');
     }
     let minus = old.map_or_else(|| "/dev/null".to_owned(), |p| format!("a/{p}"));
     let plus = new.map_or_else(|| "/dev/null".to_owned(), |p| format!("b/{p}"));

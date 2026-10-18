@@ -93,6 +93,7 @@ pub struct SearchSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Hit {
     seg: u32,
+    generation: u64,
     file: u32,
     side: Side,
     index: u32,
@@ -102,6 +103,22 @@ pub(crate) struct Hit {
 impl Hit {
     fn order(&self) -> (u32, u32, Side, u32) {
         (self.seg, self.file, self.side, self.index)
+    }
+
+    fn same(&self, other: &Self) -> bool {
+        (
+            self.generation,
+            self.file,
+            self.side,
+            self.index,
+            &self.range,
+        ) == (
+            other.generation,
+            other.file,
+            other.side,
+            other.index,
+            &other.range,
+        )
     }
 }
 
@@ -206,6 +223,8 @@ impl DiffViewState {
         self.search.query = query.to_owned();
         self.search.options = options;
         self.search.active = None;
+        self.search.hits.clear();
+        self.search.at_least = true;
         self.rerun_search();
     }
 
@@ -215,11 +234,32 @@ impl DiffViewState {
         let active = self.search.active.map(|i| self.search.hits[i].clone());
         let (query, options) = (&self.search.query, self.search.options);
         let limit = options.max_matches;
+        let mut kept: std::collections::HashMap<u64, Vec<Hit>> = std::collections::HashMap::new();
+        if !self.search.at_least {
+            for hit in std::mem::take(&mut self.search.hits) {
+                kept.entry(hit.generation).or_default().push(hit);
+            }
+        }
         let mut hits = Vec::new();
         let mut at_least = false;
         let mut coverage = SearchCoverage::Full;
         'search: for (seg, segment) in self.segments.iter().enumerate() {
             let doc = &segment.doc;
+            let generation = segment.generation;
+            if let Some(old) = kept.remove(&generation) {
+                if (0..doc.file_count()).any(|file| doc.files().partial[file as usize]) {
+                    coverage = SearchCoverage::PatchOnly;
+                }
+                for mut hit in old {
+                    if hits.len() >= limit {
+                        at_least = true;
+                        break 'search;
+                    }
+                    hit.seg = seg as u32;
+                    hits.push(hit);
+                }
+                continue;
+            }
             for file in 0..doc.file_count() {
                 if query.is_empty() {
                     break 'search;
@@ -242,6 +282,7 @@ impl DiffViewState {
                                 }
                                 hits.push(Hit {
                                     seg: seg as u32,
+                                    generation,
                                     file,
                                     side,
                                     index,
@@ -257,7 +298,7 @@ impl DiffViewState {
                 }
             }
         }
-        self.search.active = active.and_then(|a| hits.iter().position(|h| *h == a));
+        self.search.active = active.and_then(|a| hits.iter().position(|h| h.same(&a)));
         self.search.hits = hits;
         self.search.at_least = at_least;
         self.search.coverage = coverage;

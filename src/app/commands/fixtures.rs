@@ -66,6 +66,8 @@ pub fn change(revision: &str, summary: &str) -> VcsChange {
         short_revision: revision.to_owned(),
         summary: summary.to_owned(),
         author_name: "author".to_owned(),
+        author_email: None,
+        parents: Vec::new(),
         timestamp: 0,
         flags: ChangeFlags::default(),
     }

@@ -548,7 +548,7 @@ impl VcsRepository for JjRepository {
             OsString::from("ancestors(@, 200) ~ root()"),
             OsString::from("-T"),
             OsString::from(
-                "change_id ++ \"\\t\" ++ change_id.shortest(8).prefix() ++ \"\\t\" ++ change_id.shortest(8).rest() ++ \"\\t\" ++ commit_id ++ \"\\t\" ++ description.first_line() ++ \"\\t\" ++ author.name() ++ \"\\t\" ++ committer.timestamp() ++ \"\\n\"",
+                "change_id ++ \"\\t\" ++ change_id.shortest(8).prefix() ++ \"\\t\" ++ change_id.shortest(8).rest() ++ \"\\t\" ++ commit_id ++ \"\\t\" ++ description.first_line() ++ \"\\t\" ++ author.name() ++ \"\\t\" ++ committer.timestamp() ++ \"\\t\" ++ author.email() ++ \"\\t\" ++ parents.map(|c| c.commit_id()).join(\" \") ++ \"\\n\"",
             ),
         ])?;
         let bookmarks = self.cli.run_ignored_wc(&[
@@ -1630,6 +1630,9 @@ mod tests {
         let snapshot = repo
             .snapshot(RepositorySyncReason::Open, None)
             .expect("jj snapshot");
+        let working = &snapshot.changes[0];
+        assert_eq!(working.parents.len(), 1);
+        assert!(working.parents[0].chars().all(|c| c.is_ascii_hexdigit()));
         assert!(snapshot.capabilities.bookmarks);
         assert!(!snapshot.capabilities.staging_area);
         assert!(snapshot.capabilities.github_pull_requests);

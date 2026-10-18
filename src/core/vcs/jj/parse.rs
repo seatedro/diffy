@@ -13,13 +13,23 @@ pub fn parse_change_log(output: &str) -> Vec<VcsChange> {
 }
 
 pub fn parse_change_log_line(line: &str) -> Option<VcsChange> {
-    let mut fields = line.splitn(7, '\t');
+    let mut fields = line.splitn(9, '\t');
     let change_id = fields.next()?.to_owned();
     let short_change_prefix = fields.next()?.to_owned();
     let short_change_rest = fields.next()?.to_owned();
     let commit_id = fields.next()?.to_owned();
     let summary = fields.next().unwrap_or_default().to_owned();
     let author_name = fields.next().unwrap_or_default().to_owned();
+    fields.next();
+    let author_email = fields
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let parents = fields
+        .next()
+        .map(|value| value.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default();
     let short_change_id = format!("{short_change_prefix}{short_change_rest}");
     let short_change_id_prefix_len = short_change_prefix.len();
     let short_revision = commit_id.chars().take(12).collect::<String>();
@@ -35,6 +45,8 @@ pub fn parse_change_log_line(line: &str) -> Option<VcsChange> {
         short_revision,
         summary,
         author_name,
+        author_email,
+        parents,
         timestamp: 0,
         flags: ChangeFlags {
             current: false,
@@ -188,6 +200,20 @@ mod tests {
         assert_eq!(change.short_revision, "abcdef123456");
         assert_eq!(change.summary, "my change");
         assert!(!change.flags.working_copy);
+    }
+
+    #[test]
+    fn parses_author_email_and_parents() {
+        let change = parse_change_log_line(
+            "change123\tch\tange\tabcdef1234567890\tmerge\tro\t2024-01-01 00:00:00.000 +00:00\tro@example.com\t1111aaaa 2222bbbb",
+        )
+        .unwrap();
+        assert_eq!(change.author_email.as_deref(), Some("ro@example.com"));
+        assert_eq!(change.parents, ["1111aaaa", "2222bbbb"]);
+        let old =
+            parse_change_log_line("change123\tch\tange\tabcdef1234567890\ts\tro\tignored").unwrap();
+        assert_eq!(old.author_email, None);
+        assert!(old.parents.is_empty());
     }
 
     #[test]

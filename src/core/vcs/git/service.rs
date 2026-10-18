@@ -90,6 +90,8 @@ pub struct CommitInfo {
     pub short_oid: String,
     pub summary: String,
     pub author_name: String,
+    pub author_email: Option<String>,
+    pub parents: Vec<String>,
     pub timestamp: i64,
 }
 
@@ -1682,7 +1684,7 @@ impl GitService {
         let mut args = vec![
             OsString::from("log"),
             OsString::from("--date-order"),
-            OsString::from("--format=%H%x00%h%x00%s%x00%an%x00%ct"),
+            OsString::from("--format=%H%x00%h%x00%s%x00%an%x00%ct%x00%ae%x00%P"),
         ];
         args.extend_from_slice(rev_args);
         let output = run_system_git_capture(self.repo_path_ref()?, &args)?;
@@ -1771,11 +1773,21 @@ fn parse_commit_info_line(line: &str) -> Option<CommitInfo> {
         .next()
         .and_then(|value| value.parse().ok())
         .unwrap_or(0);
+    let author_email = fields
+        .next()
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let parents = fields
+        .next()
+        .map(|value| value.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default();
     Some(CommitInfo {
         oid,
         short_oid,
         summary,
         author_name,
+        author_email,
+        parents,
         timestamp,
     })
 }
@@ -2038,6 +2050,25 @@ mod tests {
     };
     use crate::core::vcs::git::{GitService, StatusItem, StatusOperation, StatusScope};
     use crate::core::vcs::mutation::{ApplyTarget, PatchApplication};
+
+    #[test]
+    fn commits_carry_author_email_and_parents() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        let first = commit_file(&repo, "a.txt", "one\n", "first");
+        let second = commit_file(&repo, "a.txt", "two\n", "second");
+        let mut git = GitService::new();
+        git.open(repo_dir.path().to_str().unwrap()).unwrap();
+        let commits = git.commits("HEAD", 5).unwrap();
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].oid, second);
+        assert_eq!(commits[0].parents, std::slice::from_ref(&first));
+        assert!(commits[1].parents.is_empty());
+        let author = repo
+            .find_commit(git2::Oid::from_str(&first).unwrap())
+            .unwrap();
+        assert_eq!(commits[1].author_email.as_deref(), author.author().email());
+    }
 
     fn commit_file(repo: &Repository, relative_path: &str, content: &str, message: &str) -> String {
         // Pin `core.autocrlf=false` on the test repo so LF content written

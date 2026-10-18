@@ -3,21 +3,19 @@ use std::sync::Arc;
 
 use diffy_diff::{DiffStats, FileStatus};
 
-use crate::core::compare::output::{CompareEntry, CompareOutput};
+use crate::core::compare::service::SEMANTIC_UNAVAILABLE;
+use crate::core::compare::{CompareEntry, CompareOutput};
 use crate::core::error::{DiffyError, Result};
 use crate::core::vcs::model::FileChangeStatus;
 use crate::core::vcs::patch::parse_exact_patch;
 
-pub const SEMANTIC_FALLBACK: &str =
-    "Semantic comparison is not available here yet; showing the line diff.";
-
 pub fn output_from_patch(raw_diff: &[u8]) -> Result<CompareOutput> {
-    CompareOutput::from_patch(&String::from_utf8_lossy(raw_diff))
+    CompareOutput::from_patch_bytes(raw_diff)
 }
 
 pub fn with_semantic_fallback(mut output: CompareOutput) -> CompareOutput {
     output.used_fallback = true;
-    output.fallback_message = SEMANTIC_FALLBACK.to_owned();
+    output.fallback_message = SEMANTIC_UNAVAILABLE.to_owned();
     output
 }
 
@@ -46,21 +44,6 @@ pub fn deferred_entry(
     };
     CompareEntry::deferred(old_path, new_path, file_status(status))
         .with_binary(status == FileChangeStatus::Binary)
-}
-
-pub fn name_status_entry(
-    label: &str,
-    old_path: Option<&str>,
-    new_path: Option<&str>,
-) -> CompareEntry {
-    let status = match label {
-        "A" => FileStatus::Added,
-        "D" => FileStatus::Deleted,
-        "R" => FileStatus::Renamed,
-        "C" => FileStatus::Copied,
-        _ => FileStatus::Modified,
-    };
-    CompareEntry::deferred(old_path, new_path, status)
 }
 
 pub fn entry_stats(entry: &CompareEntry) -> (i32, i32) {

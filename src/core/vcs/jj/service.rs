@@ -3,8 +3,11 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crate::contracts::navigation::RepositorySyncReason;
-use crate::core::compare::output::{CompareEntry, CompareOutput};
-use crate::core::compare::{COMPARE_SUMMARY_FILE_LIMIT, ProgressSink, RendererKind};
+#[cfg(feature = "difftastic")]
+use crate::core::compare::semantic;
+use crate::core::compare::{
+    COMPARE_SUMMARY_FILE_LIMIT, CompareEntry, CompareOutput, ProgressSink, RendererKind,
+};
 use crate::core::error::{DiffyError, Result, VcsBackendKind};
 use crate::core::vcs::backend::{VcsBackend, VcsRepository, VcsWatchPaths};
 use crate::core::vcs::cache::VcsReadCache;
@@ -149,6 +152,83 @@ impl JjRepository {
         args.retain(|arg| arg != "--git");
         args.push(OsString::from("--stat"));
         Ok(args)
+    }
+
+    fn compare_uncached(
+        &self,
+        request: &VcsCompareRequest,
+        reporter: Option<&dyn ProgressSink>,
+        only_path: Option<&str>,
+    ) -> Result<CompareOutput> {
+        let path_args = |mut args: Vec<OsString>| {
+            args.extend(only_path.map(jj_root_pathspec));
+            args
+        };
+        let semantic = request.renderer == RendererKind::Difftastic;
+        if only_path.is_none() || (semantic && cfg!(feature = "difftastic")) {
+            let summary = self
+                .cli
+                .run_ignored_wc(&path_args(self.diff_summary_args_for_spec(&request.spec)?))?;
+            let changes = parse_diff_summary(&summary);
+            if only_path.is_none() && changes.len() > COMPARE_SUMMARY_FILE_LIMIT {
+                return Ok(CompareOutput::deferred(compare_entries(&changes)));
+            }
+            #[cfg(feature = "difftastic")]
+            if semantic {
+                let (old_rev, new_rev) = semantic_revisions(&request.spec);
+                let changed = changes
+                    .iter()
+                    .map(|change| self.changed_path(change, &old_rev, &new_rev))
+                    .collect::<Result<Vec<_>>>()?;
+                return semantic::compare_changed_paths(changed, reporter);
+            }
+        }
+        let _ = reporter;
+        let raw_diff = self
+            .cli
+            .run_bytes_ignored_wc(&path_args(self.diff_args_for_spec(&request.spec)?))?;
+        let output = output_from_patch(&raw_diff)?;
+        Ok(if semantic {
+            with_semantic_fallback(output)
+        } else {
+            output
+        })
+    }
+
+    #[cfg(feature = "difftastic")]
+    fn changed_path(
+        &self,
+        change: &FileChange,
+        old_rev: &str,
+        new_rev: &str,
+    ) -> Result<semantic::ChangedPath> {
+        use crate::core::vcs::compare_port::file_status;
+        use crate::core::vcs::model::FileChangeStatus;
+        let old_path = match change.status {
+            FileChangeStatus::Added | FileChangeStatus::Untracked => None,
+            _ => Some(change.old_path.as_deref().unwrap_or(&change.path)),
+        };
+        let new_path = (change.status != FileChangeStatus::Deleted).then_some(change.path.as_str());
+        let read = |revision: &str, path: Option<&str>| -> Result<Vec<u8>> {
+            path.map(|path| {
+                self.cli.run_bytes_ignored_wc(&[
+                    OsString::from("file"),
+                    OsString::from("show"),
+                    OsString::from("-r"),
+                    OsString::from(revision),
+                    jj_root_pathspec(path),
+                ])
+            })
+            .transpose()
+            .map(Option::unwrap_or_default)
+        };
+        Ok(semantic::ChangedPath {
+            status: file_status(change.status),
+            old_content: read(old_rev, old_path)?,
+            new_content: read(new_rev, new_path)?,
+            old_path: old_path.map(str::to_owned),
+            new_path: new_path.map(str::to_owned),
+        })
     }
 
     fn current_operation_id(&self) -> Result<String> {
@@ -575,7 +655,7 @@ impl VcsRepository for JjRepository {
     fn compare(
         &mut self,
         request: &VcsCompareRequest,
-        _reporter: Option<&dyn ProgressSink>,
+        reporter: Option<&dyn ProgressSink>,
     ) -> Result<CompareOutput> {
         let operation_id = self.ensure_read_epoch()?;
         if let Some(output) = self
@@ -584,18 +664,7 @@ impl VcsRepository for JjRepository {
         {
             return Ok(output);
         }
-        let summary_args = self.diff_summary_args_for_spec(&request.spec)?;
-        let summary = self.cli.run_ignored_wc(&summary_args)?;
-        let entries = compare_entries_from_jj_diff_summary(&summary);
-        if entries.len() > COMPARE_SUMMARY_FILE_LIMIT {
-            let output = CompareOutput::deferred(entries);
-            self.read_cache
-                .insert_diff(operation_id, request.clone(), None, output.clone());
-            return Ok(output);
-        }
-        let args = self.diff_args_for_spec(&request.spec)?;
-        let raw_diff = self.cli.run_bytes_ignored_wc(&args)?;
-        let output = jj_renderer_output(request.renderer, output_from_patch(&raw_diff)?);
+        let output = self.compare_uncached(request, reporter, None)?;
         self.read_cache
             .insert_diff(operation_id, request.clone(), None, output.clone());
         Ok(output)
@@ -660,10 +729,7 @@ impl VcsRepository for JjRepository {
         {
             return Ok(output);
         }
-        let mut args = self.diff_args_for_spec(&request.spec)?;
-        args.push(jj_root_pathspec(path));
-        let raw_diff = self.cli.run_bytes_ignored_wc(&args)?;
-        let output = jj_renderer_output(request.renderer, output_from_patch(&raw_diff)?);
+        let output = self.compare_uncached(request, None, Some(path))?;
         self.read_cache.insert_diff(
             operation_id,
             request.clone(),
@@ -1232,18 +1298,11 @@ fn jj_error_fatal(op: impl Into<String>, details: impl Into<String>) -> DiffyErr
     DiffyError::vcs_fatal(VcsBackendKind::Jj, op, details)
 }
 
-fn compare_entries_from_jj_diff_summary(output: &str) -> Vec<CompareEntry> {
-    parse_diff_summary(output)
-        .into_iter()
+fn compare_entries(changes: &[FileChange]) -> Vec<CompareEntry> {
+    changes
+        .iter()
         .map(|change| deferred_entry(change.old_path.as_deref(), &change.path, change.status))
         .collect()
-}
-
-fn jj_renderer_output(renderer: RendererKind, output: CompareOutput) -> CompareOutput {
-    match renderer {
-        RendererKind::Builtin => output,
-        RendererKind::Difftastic => with_semantic_fallback(output),
-    }
 }
 
 fn parse_jj_diff_stat_total(output: &str) -> Option<(i32, i32)> {
@@ -1359,6 +1418,18 @@ fn jj_fork_point_revset(base: &str, head: &str) -> String {
     format!("fork_point(({base})|({head}))")
 }
 
+#[cfg(feature = "difftastic")]
+fn semantic_revisions(spec: &VcsCompareSpec) -> (String, String) {
+    match spec {
+        VcsCompareSpec::WorkingCopy => ("@-".to_owned(), "@".to_owned()),
+        VcsCompareSpec::Change { revision } => (format!("({revision})-"), revision.clone()),
+        VcsCompareSpec::Range { from, to } => (from.clone(), to.clone()),
+        VcsCompareSpec::MergeBaseRange { base, head } => {
+            (jj_fork_point_revset(base, head), head.clone())
+        }
+    }
+}
+
 /// Local bookmarks are always movable. Remote bookmarks are movable only when
 /// they live on the preferred remote and are untracked with no local
 /// counterpart — moving them means track + move. Tracked remote bookmarks
@@ -1462,7 +1533,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        JjBackend, compare_entries_from_jj_diff_summary, jj_fork_point_revset,
+        JjBackend, compare_entries, jj_fork_point_revset, parse_diff_summary,
         parse_jj_diff_stat_total, parse_movable_bookmark_list,
     };
     use crate::contracts::navigation::RepositorySyncReason;
@@ -1498,11 +1569,26 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "difftastic")]
+    #[test]
+    fn jj_semantic_revisions_follow_compare_spec() {
+        assert_eq!(
+            super::semantic_revisions(&VcsCompareSpec::MergeBaseRange {
+                base: "main".to_owned(),
+                head: "feature".to_owned(),
+            }),
+            (
+                "fork_point((main)|(feature))".to_owned(),
+                "feature".to_owned()
+            )
+        );
+    }
+
     #[test]
     fn jj_diff_summary_builds_compare_summaries() {
-        let summaries = compare_entries_from_jj_diff_summary(
+        let summaries = compare_entries(&parse_diff_summary(
             "A README.md\nM src/lib.rs\nR src/{old => new}.rs\n",
-        );
+        ));
 
         assert_eq!(summaries.len(), 3);
         assert_eq!(summaries[0].path(), "README.md");

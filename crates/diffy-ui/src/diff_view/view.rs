@@ -837,7 +837,7 @@ fn band(
         &paint.kind,
     ));
     let build = move || match &paint.kind {
-        PreparedKind::Diff(RowKind::FileHeader) => {
+        PreparedKind::Diff(RowKind::FileHeader) | PreparedKind::Pending { .. } => {
             file_header(&paint, id, width, height, pad, font_size, look, &deco)
         }
         PreparedKind::Diff(_) => {

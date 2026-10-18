@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -114,6 +115,7 @@ pub struct CompareManifestSnapshot {
     pub resolved_right: String,
     pub files: Arc<[ManifestFile]>,
     pub totals: FileStats,
+    pub working_tree: bool,
 }
 
 impl CompareManifestSnapshot {
@@ -164,6 +166,15 @@ impl PreparedDiff {
 
     pub fn estimated_lines(&self) -> u32 {
         self.snapshot.estimated_lines()
+    }
+
+    pub fn evicted_placeholder(&self) -> Placeholder {
+        Placeholder::new(
+            diffy_diff::Revision(self.revision.0),
+            diffy_diff::SlotState::Evicted,
+            self.estimated_lines(),
+            self.document().files().meta[0].clone(),
+        )
     }
 
     pub fn key(&self) -> FileKey {
@@ -236,6 +247,24 @@ pub enum PipelineAction {
         file: FileKey,
         purpose: SourcePurpose,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffSizeRequest {
+    pub token: u64,
+    pub repo_path: PathBuf,
+    pub left: String,
+    pub right: String,
+    pub mode: crate::core::compare::CompareMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DiffSize {
+    pub files: Option<u32>,
+    pub additions: u32,
+    pub deletions: u32,
+    pub commits: u32,
+    pub commits_capped: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -372,12 +401,38 @@ pub struct FileStat {
     pub deletions: u32,
 }
 
+pub const INSTALL_LINES_PER_FRAME: u64 = 40_000;
+pub const INSTALL_ITEMS_PER_FRAME: usize = 256;
+pub const WORKING_SET_LINES: u64 = 400_000;
+pub const WORKING_SET_FILES: usize = 512;
+
+#[derive(Debug, Clone)]
+pub enum PipelineInstall {
+    View(crate::contracts::viewport::interaction::ViewportInstall),
+    Slot(SlotUpdate),
+}
+
+impl PipelineInstall {
+    pub fn cost(&self) -> u64 {
+        use crate::contracts::viewport::interaction::ViewportInstall;
+        match self {
+            Self::View(ViewportInstall::File { prepared, .. })
+            | Self::View(ViewportInstall::TextCompare { prepared }) => {
+                u64::from(prepared.estimated_lines())
+            }
+            _ => 1,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CompareResult {
     pub manifest: Arc<CompareManifestSnapshot>,
     pub entries: Arc<[CompareEntry]>,
-    pub prepared: Arc<[PreparedDiff]>,
-    pub placeholders: Arc<[(FileKey, Placeholder)]>,
+    pub positions: HashMap<FileKey, usize>,
+    pub loaded: Vec<PreparedDiff>,
+    pub placeholders: HashMap<FileKey, Placeholder>,
+    pub installs: Vec<PipelineInstall>,
     pub notice: Option<String>,
 }
 

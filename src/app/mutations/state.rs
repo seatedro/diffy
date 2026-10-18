@@ -64,9 +64,9 @@ enum SourceSlot {
     Ready(Arc<MutationSource>),
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct DisplayBinding {
-    bucket: Option<ChangeBucket>,
+    change: FileChange,
     identity: Option<SourceIdentity>,
 }
 
@@ -337,63 +337,59 @@ impl MutationsController {
         }
     }
 
-    fn file_change(
+    fn display_binding(
         &self,
         cx: &SharedContext,
         file: FileKey,
         operation: FileOperation,
-        bucket: Option<ChangeBucket>,
-    ) -> Result<FileChange, &'static str> {
+    ) -> Result<DisplayBinding, &'static str> {
         let repo = cx
             .repository
             .as_ref()
             .ok_or("Open a repository before changing files.")?;
-        let manifest = cx
+        let entry = cx
             .manifest
             .as_ref()
+            .and_then(|manifest| manifest.files.iter().find(|entry| entry.key == file))
             .ok_or("This file is no longer in the comparison.")?;
-        let entry = manifest
-            .files
+        if entry.buckets.is_empty() {
+            return Err("Only working-tree changes can be staged or discarded.");
+        }
+        let wanted: &[ChangeBucket] = match (repo.snapshot.capabilities.staging_area, operation) {
+            (false, _) => &[ChangeBucket::WorkingCopy, ChangeBucket::Conflicted],
+            (true, FileOperation::Stage) => &[ChangeBucket::Unstaged, ChangeBucket::Untracked],
+            (true, FileOperation::Unstage) => &[ChangeBucket::Staged],
+            (true, FileOperation::Discard) => &[ChangeBucket::Unstaged, ChangeBucket::Untracked],
+        };
+        let mut candidates = wanted
             .iter()
-            .find(|entry| entry.key == file)
-            .ok_or("This file is no longer in the comparison.")?;
+            .copied()
+            .filter(|bucket| entry.buckets.contains(bucket));
+        let bucket = candidates.next().ok_or(match operation {
+            FileOperation::Stage => "This file has no unstaged changes.",
+            FileOperation::Unstage => "This file has no staged changes.",
+            FileOperation::Discard => "This file has no unstaged changes to discard.",
+        })?;
+        if candidates.next().is_some() {
+            return Err("This file's changes are ambiguous here. Act on the whole file instead.");
+        }
         let path = entry
             .paths
             .new_path()
             .or_else(|| entry.paths.old_path())
             .ok_or("This file has no path.")?;
-        let staging = repo.snapshot.capabilities.staging_area;
-        let bound;
-        let order: &[ChangeBucket] = match (bucket, staging, operation) {
-            (Some(bucket), _, _) => {
-                bound = [bucket];
-                &bound
-            }
-            (None, false, _) => &[ChangeBucket::WorkingCopy, ChangeBucket::Conflicted],
-            (None, true, FileOperation::Stage) => {
-                &[ChangeBucket::Unstaged, ChangeBucket::Untracked]
-            }
-            (None, true, FileOperation::Unstage) => &[ChangeBucket::Staged],
-            (None, true, FileOperation::Discard) => &[
-                ChangeBucket::Unstaged,
-                ChangeBucket::Untracked,
-                ChangeBucket::Staged,
-            ],
-        };
-        order
+        let change = repo
+            .snapshot
+            .file_changes
             .iter()
-            .find_map(|bucket| {
-                repo.snapshot
-                    .file_changes
-                    .iter()
-                    .find(|change| change.path == path && change.bucket == *bucket)
-            })
+            .find(|change| change.path == path && change.bucket == bucket)
             .cloned()
-            .ok_or(match operation {
-                FileOperation::Stage => "This file has no unstaged changes.",
-                FileOperation::Unstage => "This file has no staged changes.",
-                FileOperation::Discard => "This file has no changes to discard.",
-            })
+            .ok_or("This file changed since it was shown. Try again.")?;
+        let identity = (entry.old_id.is_some() || entry.new_id.is_some()).then(|| SourceIdentity {
+            old: entry.old_id.clone(),
+            new: entry.new_id.clone(),
+        });
+        Ok(DisplayBinding { change, identity })
     }
 
     fn request_patch(
@@ -437,11 +433,11 @@ impl MutationsController {
         if current != Some(revision) {
             return error("This file changed since it was shown. Try again.");
         }
-        let binding = DisplayBinding::default();
-        let change = match self.file_change(cx, file, operation, binding.bucket) {
-            Ok(change) => change,
+        let binding = match self.display_binding(cx, file, operation) {
+            Ok(binding) => binding,
             Err(message) => return error(message),
         };
+        let change = binding.change;
         let (Some(repo_path), Some(repository)) = (
             repo_path(cx),
             cx.repository.as_ref().map(|repo| repo.revision),
@@ -582,8 +578,8 @@ impl MutationsController {
         }
         let mut changes = Vec::with_capacity(files.len());
         for file in files {
-            match self.file_change(cx, file, operation, None) {
-                Ok(change) => changes.push(change),
+            match self.display_binding(cx, file, operation) {
+                Ok(binding) => changes.push(binding.change),
                 Err(message) => return error(message),
             }
         }

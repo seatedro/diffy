@@ -83,12 +83,15 @@ fn repository(
 
 fn manifest(revision: FileRevision) -> Rc<CompareManifestSnapshot> {
     Rc::new(CompareManifestSnapshot {
-        files: Arc::from(vec![ManifestFile::new(
-            FILE,
-            revision,
-            CompareFilePaths::from_paths(Some("f.txt"), Some("f.txt")),
-            diffy_diff::FileStatus::Modified,
-        )]),
+        files: Arc::from(vec![ManifestFile {
+            buckets: vec![ChangeBucket::Unstaged, ChangeBucket::Staged],
+            ..ManifestFile::new(
+                FILE,
+                revision,
+                CompareFilePaths::from_paths(Some("f.txt"), Some("f.txt")),
+                diffy_diff::FileStatus::Modified,
+            )
+        }]),
         ..CompareManifestSnapshot::default()
     })
 }
@@ -875,4 +878,84 @@ fn mutation_controls_are_keyboard_reachable() {
     assert_eq!(focused.role, Some(Role::Button));
     ui.key("escape");
     assert!(!ui.app().controller.composer_open());
+}
+
+#[test]
+fn line_operations_bind_to_displayed_buckets_and_objects() {
+    let mut cx = shared();
+    let mut controller = MutationsController::default();
+    let entry = |buckets: Vec<ChangeBucket>, ids: Option<(&str, &str)>| {
+        Rc::new(CompareManifestSnapshot {
+            files: Arc::from(vec![ManifestFile {
+                buckets,
+                old_id: ids.and_then(|(old, _)| diffy_diff::ObjectId::parse(old)),
+                new_id: ids.and_then(|(_, new)| diffy_diff::ObjectId::parse(new)),
+                ..ManifestFile::new(
+                    FILE,
+                    REVISION,
+                    CompareFilePaths::from_paths(Some("f.txt"), Some("f.txt")),
+                    diffy_diff::FileStatus::Modified,
+                )
+            }]),
+            ..CompareManifestSnapshot::default()
+        })
+    };
+
+    cx.manifest = Some(entry(Vec::new(), None));
+    let refs = controller.reduce_action(MutationsAction::StageHunkAt(hunk()), &cx);
+    assert!(refs.effects.is_empty());
+
+    cx.manifest = Some(entry(vec![ChangeBucket::Staged], None));
+    let nothing = controller.reduce_action(MutationsAction::StageHunkAt(hunk()), &cx);
+    assert!(nothing.effects.is_empty());
+
+    cx.manifest = Some(entry(
+        vec![ChangeBucket::Unstaged],
+        Some(("1111111111", "2222222222")),
+    ));
+    let load = controller.reduce_action(MutationsAction::StageHunkAt(hunk()), &cx);
+    let effects = mutation_effects(&load);
+    let [MutationsEffect::LoadMutationSource(key)] = effects.as_slice() else {
+        panic!("expected a source load");
+    };
+    let mismatched = Arc::new(MutationSource::new(
+        key.clone(),
+        MutationMaterial {
+            patch: Arc::from(&b"--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-a\n+b\n"[..]),
+            identity: SourceIdentity {
+                old: diffy_diff::ObjectId::parse("3333333333"),
+                new: diffy_diff::ObjectId::parse("2222222222"),
+            },
+        },
+    ));
+    let rejected = controller.reduce_event(
+        MutationsEvent::MutationSourceReady { source: mismatched },
+        &cx,
+    );
+    assert!(mutation_effects(&rejected).is_empty());
+    assert!(!controller.busy());
+
+    let load = controller.reduce_action(MutationsAction::StageHunkAt(hunk()), &cx);
+    let effects = mutation_effects(&load);
+    let [MutationsEffect::LoadMutationSource(key)] = effects.as_slice() else {
+        panic!("expected a fresh source load");
+    };
+    let matching = Arc::new(MutationSource::new(
+        key.clone(),
+        MutationMaterial {
+            patch: Arc::from(&b"--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-a\n+b\n"[..]),
+            identity: SourceIdentity {
+                old: diffy_diff::ObjectId::parse("1111111"),
+                new: diffy_diff::ObjectId::parse("2222222222"),
+            },
+        },
+    ));
+    let applied = controller.reduce_event(
+        MutationsEvent::MutationSourceReady { source: matching },
+        &cx,
+    );
+    assert!(matches!(
+        mutation_effects(&applied).as_slice(),
+        [MutationsEffect::ApplyPatch(_)]
+    ));
 }

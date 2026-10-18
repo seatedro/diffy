@@ -1,11 +1,17 @@
-use gix::bstr::{BStr, ByteSlice};
+use gix::bstr::ByteSlice;
 use gix::diff::blob::{
     Algorithm, Diff, InternedInput, UnifiedDiff, diff_with_slider_heuristics,
     platform::resource::ByteLinesWithoutTerminator,
     unified_diff::{ConsumeBinaryHunk, ContextSize},
 };
 
-use crate::core::compare::backends::{DiffBackend, RENAME_DETECTION_LIMIT};
+use crate::core::compare::backends::DiffBackend;
+use crate::core::compare::git::{
+    GixBlobContent, GixChange, bstr_to_str, collect_gix_changes, deferred_stats_worker_count,
+    gix_change_contents, gix_changes_may_include_rewrites, gix_mode, gix_object_id,
+    gix_tree_for_oid, is_binary_bytes, load_gix_blob_id, load_gix_tree_blob_content, open_gix_repo,
+    open_gix_repo_path, resolve_compare_refs,
+};
 use crate::core::compare::progress::{ComparePhase, ProgressSink};
 use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::CompareSpec;
@@ -18,10 +24,6 @@ use crate::core::vcs::git::{GitService, WORKDIR_REF};
 /// Throttle file-progress emits so a 3,000-file diff doesn't post 3,000
 /// mpsc sends + winit wakes. Emits on every Nth file plus the final one.
 const LOADING_FILE_EMIT_STRIDE: usize = 16;
-/// Line-stat work parallelism. Hunk deferral uses the VCS-neutral
-/// `COMPARE_SUMMARY_FILE_LIMIT`.
-const LINE_STATS_MAX_WORKERS: usize = 8;
-const DEFERRED_STATS_MIN_FILES_PER_WORKER: usize = 16;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GitDiffBackend;
@@ -258,33 +260,6 @@ fn deferred_file_stats_target_chunk(
         .collect()
 }
 
-fn deferred_stats_worker_count(file_count: usize) -> usize {
-    let available = std::thread::available_parallelism()
-        .map(usize::from)
-        .unwrap_or(1);
-    let useful = file_count.div_ceil(DEFERRED_STATS_MIN_FILES_PER_WORKER);
-    available.min(LINE_STATS_MAX_WORKERS).min(useful).max(1)
-}
-
-fn resolve_compare_refs(spec: &CompareSpec, git: &GitService) -> Result<(String, String)> {
-    match spec.mode {
-        crate::core::compare::spec::CompareMode::TwoDot => {
-            if spec.right_ref == WORKDIR_REF {
-                Ok((git.resolve_ref(&spec.left_ref)?, WORKDIR_REF.to_owned()))
-            } else {
-                Ok((
-                    git.resolve_ref(&spec.left_ref)?,
-                    git.resolve_ref(&spec.right_ref)?,
-                ))
-            }
-        }
-        crate::core::compare::spec::CompareMode::ThreeDot
-        | crate::core::compare::spec::CompareMode::SingleCommit => {
-            Ok(git.resolve_comparison(&spec.left_ref, &spec.right_ref, spec.mode)?)
-        }
-    }
-}
-
 pub(crate) fn compare_output_from_raw_patch(raw_diff: &str) -> Result<CompareOutput> {
     let mut output = CompareOutput::default();
     let mut document = carbon::parse_unified_patch(raw_diff)
@@ -357,100 +332,6 @@ fn hydrate_text_compare_sources(output: &mut CompareOutput, left_text: &str, rig
     }
 }
 
-type GixChange = gix::object::tree::diff::ChangeDetached;
-
-fn open_gix_repo(git: &GitService) -> Result<gix::Repository> {
-    open_gix_repo_path(git.repo_path())
-}
-
-fn open_gix_repo_path(repo_path: &str) -> Result<gix::Repository> {
-    let mut repo = gix::open(repo_path).map_err(gix_error)?;
-    repo.object_cache_size_if_unset(64 * 1024 * 1024);
-    Ok(repo)
-}
-
-fn gix_error(error: impl std::fmt::Display) -> DiffyError {
-    DiffyError::General(format!("Gitoxide error: {error}"))
-}
-
-fn collect_gix_changes(
-    repo: &mut gix::Repository,
-    left: &str,
-    right: &str,
-    path_filter: Option<&str>,
-    track_rewrites: bool,
-) -> Result<Vec<GixChange>> {
-    let left_tree = gix_tree_for_oid(repo, left)?;
-    let right_tree = gix_tree_for_oid(repo, right)?;
-    let mut options = gix::diff::Options::default();
-    options.track_path();
-    if track_rewrites {
-        options.track_rewrites(Some(gix::diff::Rewrites {
-            limit: RENAME_DETECTION_LIMIT,
-            ..Default::default()
-        }));
-    } else {
-        options.track_rewrites(None);
-    }
-    let mut changes = repo
-        .diff_tree_to_tree(Some(&left_tree), Some(&right_tree), Some(options))
-        .map_err(gix_error)?;
-    changes.retain(gix_change_is_file);
-    if let Some(path) = path_filter {
-        changes.retain(|change| gix_change_matches_path(change, path));
-    }
-    Ok(changes)
-}
-
-fn gix_tree_for_oid<'repo>(repo: &'repo gix::Repository, oid: &str) -> Result<gix::Tree<'repo>> {
-    let oid = gix_object_id(oid)?;
-    let object = repo.find_object(oid).map_err(gix_error)?;
-    object.peel_to_tree().map_err(gix_error)
-}
-
-fn gix_object_id(oid: &str) -> Result<gix::ObjectId> {
-    gix::ObjectId::from_hex(oid.as_bytes()).map_err(gix_error)
-}
-
-fn gix_change_matches_path(change: &GixChange, path: &str) -> bool {
-    let path = path.as_bytes();
-    change.location().as_bytes() == path || change.source_location().as_bytes() == path
-}
-
-fn gix_change_is_file(change: &GixChange) -> bool {
-    match change {
-        GixChange::Addition { entry_mode, .. } | GixChange::Deletion { entry_mode, .. } => {
-            entry_mode.is_no_tree()
-        }
-        GixChange::Modification {
-            previous_entry_mode,
-            entry_mode,
-            ..
-        } => previous_entry_mode.is_no_tree() && entry_mode.is_no_tree(),
-        GixChange::Rewrite {
-            source_entry_mode,
-            entry_mode,
-            ..
-        } => source_entry_mode.is_no_tree() && entry_mode.is_no_tree(),
-    }
-}
-
-fn gix_changes_may_include_rewrites(changes: &[GixChange]) -> bool {
-    let mut has_addition = false;
-    let mut has_deletion = false;
-    for change in changes {
-        match change {
-            GixChange::Addition { .. } => has_addition = true,
-            GixChange::Deletion { .. } => has_deletion = true,
-            GixChange::Modification { .. } | GixChange::Rewrite { .. } => {}
-        }
-        if has_addition && has_deletion {
-            return true;
-        }
-    }
-    false
-}
-
 fn compare_output_from_gix_changes(
     repo: &gix::Repository,
     changes: Vec<GixChange>,
@@ -509,70 +390,6 @@ fn compare_output_from_gix_changes(
     Ok(output)
 }
 
-enum GixBlobContent<'repo> {
-    Empty,
-    Blob(gix::Blob<'repo>),
-}
-
-impl GixBlobContent<'_> {
-    fn as_bytes(&self) -> &[u8] {
-        match self {
-            Self::Empty => &[],
-            Self::Blob(blob) => &blob.data,
-        }
-    }
-}
-
-fn gix_change_contents<'repo>(
-    repo: &'repo gix::Repository,
-    change: &GixChange,
-) -> Result<Option<(GixBlobContent<'repo>, GixBlobContent<'repo>)>> {
-    match change {
-        GixChange::Addition { entry_mode, id, .. } => {
-            if !entry_mode.is_no_tree() {
-                return Ok(None);
-            }
-            Ok(Some((GixBlobContent::Empty, load_gix_blob_id(repo, *id)?)))
-        }
-        GixChange::Deletion { entry_mode, id, .. } => {
-            if !entry_mode.is_no_tree() {
-                return Ok(None);
-            }
-            Ok(Some((load_gix_blob_id(repo, *id)?, GixBlobContent::Empty)))
-        }
-        GixChange::Modification {
-            previous_entry_mode,
-            previous_id,
-            entry_mode,
-            id,
-            ..
-        } => {
-            if !previous_entry_mode.is_no_tree() || !entry_mode.is_no_tree() {
-                return Ok(None);
-            }
-            Ok(Some((
-                load_gix_blob_id(repo, *previous_id)?,
-                load_gix_blob_id(repo, *id)?,
-            )))
-        }
-        GixChange::Rewrite {
-            source_entry_mode,
-            source_id,
-            entry_mode,
-            id,
-            ..
-        } => {
-            if !source_entry_mode.is_no_tree() || !entry_mode.is_no_tree() {
-                return Ok(None);
-            }
-            Ok(Some((
-                load_gix_blob_id(repo, *source_id)?,
-                load_gix_blob_id(repo, *id)?,
-            )))
-        }
-    }
-}
-
 fn load_gix_blob_content<'repo>(
     repo: &'repo gix::Repository,
     oid: Option<&carbon::ObjectId>,
@@ -581,36 +398,6 @@ fn load_gix_blob_content<'repo>(
         return Ok(GixBlobContent::Empty);
     };
     load_gix_blob_id(repo, gix_object_id(&oid.0)?)
-}
-
-fn load_gix_tree_blob_content<'repo>(
-    repo: &'repo gix::Repository,
-    tree: &gix::Tree<'_>,
-    path: Option<&str>,
-) -> Result<Option<GixBlobContent<'repo>>> {
-    let Some(path) = path else {
-        return Ok(Some(GixBlobContent::Empty));
-    };
-    let Some(entry) = tree.lookup_entry_by_path(path).map_err(gix_error)? else {
-        return Ok(None);
-    };
-    if !entry.mode().is_blob_or_symlink() {
-        return Ok(None);
-    }
-    Ok(Some(load_gix_blob_id(repo, entry.object_id())?))
-}
-
-fn load_gix_blob_id(repo: &gix::Repository, oid: gix::ObjectId) -> Result<GixBlobContent<'_>> {
-    if oid.is_null() {
-        return Ok(GixBlobContent::Empty);
-    }
-    Ok(GixBlobContent::Blob(
-        repo.find_blob(oid).map_err(gix_error)?,
-    ))
-}
-
-fn is_binary_bytes(bytes: &[u8]) -> bool {
-    bytes.iter().take(8192).any(|byte| *byte == 0)
 }
 
 fn gix_line_stats(old_content: &[u8], new_content: &[u8]) -> (u32, u32) {
@@ -820,14 +607,6 @@ fn gix_change_meta(change: &GixChange) -> GixChangeMeta<'_> {
             status: carbon::FileStatus::Renamed,
         },
     }
-}
-
-fn bstr_to_str(path: &BStr) -> &str {
-    path.to_str().unwrap_or("")
-}
-
-fn gix_mode(mode: &gix::objs::tree::EntryMode) -> String {
-    format!("{:06o}", mode.value())
 }
 
 fn carbon_summary_from_gix_change(

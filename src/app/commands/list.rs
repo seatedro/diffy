@@ -131,7 +131,9 @@ pub fn highlighted(
         cursor = end;
     }
     if cursor < label.len() {
-        spans.push(view! { <text size={size} class="truncate" color={color}>{&label[cursor..]}</text> });
+        spans.push(
+            view! { <text size={size} class="truncate" color={color}>{&label[cursor..]}</text> },
+        );
     }
     view! { <div class="flex-row items-center overflow-hidden" min_w={0.0}>{...spans}</div> }
 }

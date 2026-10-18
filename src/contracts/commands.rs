@@ -1,12 +1,16 @@
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use quark_components::PaletteEvent;
 
-use crate::contracts::navigation::CompareField;
+use crate::contracts::navigation::{CompareField, RepositorySnapshot};
 use crate::contracts::shared::{JobId, SharedContext};
 use crate::contracts::shell::{Action, LogicalFocus};
-use crate::core::compare::LayoutMode;
+use crate::contracts::viewport::pipeline::{DiffSize, DiffSizeRequest};
+use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 use crate::core::keymap::ShortcutCommand;
+use crate::core::ref_catalog::{RefCatalog, RefResults};
 use crate::core::theme_types::ThemeMode;
 use crate::fonts::FontFamilyEntry;
 use crate::platform::persistence::Settings;
@@ -115,6 +119,8 @@ pub enum CommandsAction {
     OpenCommandPalette,
     OpenRepoPicker,
     OpenRefPicker(CompareField),
+    ShowRefPicker(Box<RefPickerRequest>),
+    RefPicker(RefPickerAction),
     OpenCompareMenu,
     OpenPullRequestPicker,
     OpenThemePicker,
@@ -183,6 +189,7 @@ impl CommandsAction {
             Self::OpenCommandPalette
                 | Self::OpenRepoPicker
                 | Self::OpenRefPicker(_)
+                | Self::ShowRefPicker(_)
                 | Self::OpenCompareMenu
                 | Self::OpenPullRequestPicker
                 | Self::OpenThemePicker
@@ -206,6 +213,53 @@ impl CommandsAction {
 pub enum CommandsEffect {
     SaveSettings(Box<Settings>),
     LoadFontCatalog,
+    LoadRefCatalog(Box<RefCatalogRequest>),
+    FilterRefs {
+        generation: u64,
+        catalog: Arc<RefCatalog>,
+        query: String,
+    },
+    LoadDiffSize(Box<DiffSizeRequest>),
+}
+
+#[derive(Debug, Clone)]
+pub struct RefCatalogRequest {
+    pub generation: u64,
+    pub repo_path: PathBuf,
+    pub snapshot: Arc<RepositorySnapshot>,
+    pub recent: Vec<String>,
+    pub git: bool,
+}
+
+impl PartialEq for RefCatalogRequest {
+    fn eq(&self, other: &Self) -> bool {
+        self.generation == other.generation
+            && self.repo_path == other.repo_path
+            && Arc::ptr_eq(&self.snapshot, &other.snapshot)
+            && self.recent == other.recent
+    }
+}
+
+impl Eq for RefCatalogRequest {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefPickerRequest {
+    pub side: CompareField,
+    pub left: String,
+    pub right: String,
+    pub working_copy: bool,
+    pub mode: CompareMode,
+    pub renderer: RendererKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefPickerAction {
+    ToggleSide,
+    SetSide(CompareField),
+    Choose(usize),
+    SetMode(CompareMode),
+    SetEngine(RendererKind),
+    CopySha,
 }
 
 #[derive(Debug, Clone)]
@@ -217,6 +271,18 @@ pub enum CommandsEvent {
     FontCatalogReady {
         ui: &'static [FontFamilyEntry],
         mono: &'static [FontFamilyEntry],
+    },
+    RefCatalogReady {
+        generation: u64,
+        catalog: Arc<RefCatalog>,
+    },
+    RefsFiltered {
+        generation: u64,
+        results: Arc<RefResults>,
+    },
+    DiffSizeReady {
+        token: u64,
+        size: Option<DiffSize>,
     },
 }
 

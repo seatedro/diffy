@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use quark_components::{
     CommandPalette, ContextMenuOutcome, ContextMenuState, PALETTE_INPUT, PaletteOutcome,
@@ -13,11 +14,13 @@ use super::keymap;
 use super::palette::{self, PaletteCommand, PaletteSource};
 use super::picker::{self, PickerCandidate, PickerChoice, PickerKind, PickerState};
 use super::platform::{self, PlatformRequest, ids};
+use super::ref_picker::{RefPicker, is_working_tree};
 use super::toasts::ToastHost;
 use crate::app::text_targets::{PICKER, SETTINGS, TextCx, TextHost};
 use crate::contracts::commands::{
     CommandDescriptor, CommandsAction, CommandsEffect, CommandsEvent, ConfirmationRequest,
-    ContextMenuEntry, SettingsSection, SettingsSnapshot, ToastUpdate,
+    ContextMenuEntry, RefCatalogRequest, RefPickerAction, RefPickerRequest, SettingsSection,
+    SettingsSnapshot, ToastUpdate,
 };
 use crate::contracts::navigation::{
     CompareField, NavigationAction, RepositorySyncReason, SidebarTab,
@@ -26,10 +29,14 @@ use crate::contracts::shared::SharedContext;
 use crate::contracts::shell::{
     Action, Controller, Intent, LogicalFocus, Reduction, ShellAction, ShellEffect,
 };
+use crate::contracts::viewport::pipeline::{DiffSizeRequest, PipelineAction};
 use crate::core::compare::LayoutMode;
 use crate::core::frecency::{FrecencyStore, recent_repo_paths};
 use crate::core::keymap::{KeymapOverride, ShortcutCommand};
+use crate::core::ref_catalog::{RefCatalog, RefEntryKind, WORKING_TREE_LABEL};
 use crate::core::theme_types::ThemeMode;
+use crate::core::vcs::git::WORKDIR_REF;
+use crate::core::vcs::model::VcsKind;
 use crate::fonts::{FontFamilyEntry, FontRole, bundled_font_entries, normalize_font_selection};
 use crate::platform::persistence::Settings;
 
@@ -44,6 +51,7 @@ const RECENT_REPOSITORIES: usize = 12;
 const RECENT_COMMANDS: usize = 8;
 const PROJECT_URL: &str = "https://github.com/seatedro/diffy";
 const QUIT_BINDING: &str = "mod+q";
+const REF_FRECENCY_PREFIX: &str = "ref:";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayerKind {
@@ -51,6 +59,7 @@ pub enum LayerKind {
     Picker,
     Confirmation,
     ContextMenu,
+    RefPicker,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -81,6 +90,9 @@ pub struct CommandsController {
     palette: CommandPalette<PaletteSource>,
     palette_source: PaletteSource,
     picker: Option<PickerState>,
+    ref_picker: Option<RefPicker>,
+    ref_generation: u64,
+    ref_catalog: Option<(usize, Arc<RefCatalog>)>,
     confirmation: Option<ConfirmationRequest>,
     context_menu: ContextMenuState,
     context_entries: Vec<Action>,
@@ -118,6 +130,9 @@ impl Default for CommandsController {
             palette,
             palette_source: PaletteSource::default(),
             picker: None,
+            ref_picker: None,
+            ref_generation: 0,
+            ref_catalog: None,
             confirmation: None,
             context_menu: ContextMenuState::default(),
             context_entries: Vec::new(),
@@ -144,6 +159,14 @@ impl CommandsController {
 
     pub fn picker(&self) -> Option<&PickerState> {
         self.picker.as_ref()
+    }
+
+    pub fn ref_picker(&self) -> Option<&RefPicker> {
+        self.ref_picker.as_ref()
+    }
+
+    pub(super) fn ref_picker_mut(&mut self) -> Option<&mut RefPicker> {
+        self.ref_picker.as_mut()
     }
 
     pub(super) fn picker_mut(&mut self) -> Option<&mut PickerState> {
@@ -274,6 +297,7 @@ impl CommandsController {
                 self.palette.close();
             }
             LayerKind::Picker => self.picker = None,
+            LayerKind::RefPicker => self.ref_picker = None,
             LayerKind::Confirmation => self.confirmation = None,
             LayerKind::ContextMenu => {
                 self.context_menu.close();
@@ -434,37 +458,202 @@ impl CommandsController {
         Reduction::changed()
     }
 
-    fn open_ref_picker(&mut self, field: CompareField, cx: &SharedContext) -> Reduction {
-        let current = self
-            .settings
-            .settings
-            .last_compare
+    fn open_ref_picker(&mut self, request: RefPickerRequest, cx: &SharedContext) -> Reduction {
+        let Some(return_focus) = self.admit(LayerKind::RefPicker) else {
+            return Reduction::default();
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        self.ref_picker = Some(RefPicker::new(request, now));
+        self.push_layer(LayerKind::RefPicker, return_focus);
+        let Some(repo) = cx.repository.as_ref() else {
+            return Reduction::changed();
+        };
+        let identity = Arc::as_ptr(&repo.snapshot) as usize;
+        if let Some((cached, catalog)) = &self.ref_catalog
+            && *cached == identity
+        {
+            let catalog = catalog.clone();
+            return self.install_ref_catalog(catalog);
+        }
+        self.ref_generation += 1;
+        let recent = self
+            .frecency
             .as_ref()
-            .map(|c| match field {
-                CompareField::Left => c.left_ref.clone(),
-                CompareField::Right => c.right_ref.clone(),
-            });
-        let candidates = cx
-            .repository
-            .as_ref()
-            .map(|repo| {
-                let snapshot = &repo.snapshot;
-                let refs = snapshot.refs.iter().map(|r| {
-                    PickerCandidate::new(r.name.clone(), PickerChoice::Ref(r.name.clone()))
-                        .detail(format!("{:?}", r.kind).to_lowercase())
-                        .current(current.as_deref() == Some(r.name.as_str()))
-                });
-                let changes = snapshot.changes.iter().map(|change| {
-                    PickerCandidate::new(
-                        change.short_revision.clone(),
-                        PickerChoice::Ref(change.short_revision.clone()),
-                    )
-                    .detail(change.summary.clone())
-                });
-                refs.chain(changes).collect()
+            .map(|store| {
+                store
+                    .recent(64)
+                    .iter()
+                    .filter_map(|key| key.strip_prefix(REF_FRECENCY_PREFIX))
+                    .map(str::to_owned)
+                    .collect()
             })
             .unwrap_or_default();
-        self.open_picker(PickerKind::Ref(field), candidates)
+        if let Some(picker) = &mut self.ref_picker {
+            picker.catalog_generation = self.ref_generation;
+        }
+        Reduction::changed().effect(CommandsEffect::LoadRefCatalog(Box::new(
+            RefCatalogRequest {
+                generation: self.ref_generation,
+                repo_path: repo.snapshot.path.clone(),
+                snapshot: repo.snapshot.clone(),
+                recent,
+                git: repo.snapshot.location.kind == VcsKind::GIT,
+            },
+        )))
+    }
+
+    fn install_ref_catalog(&mut self, catalog: Arc<RefCatalog>) -> Reduction {
+        let Some(picker) = &mut self.ref_picker else {
+            return Reduction::default();
+        };
+        picker.catalog = Some(catalog);
+        self.filter_refs()
+    }
+
+    fn filter_refs(&mut self) -> Reduction {
+        let Some(picker) = &mut self.ref_picker else {
+            return Reduction::default();
+        };
+        let Some(catalog) = picker.catalog.clone() else {
+            return Reduction::changed();
+        };
+        picker.query_dirty = false;
+        self.ref_generation += 1;
+        picker.filter_generation = self.ref_generation;
+        Reduction::changed().effect(CommandsEffect::FilterRefs {
+            generation: self.ref_generation,
+            catalog,
+            query: picker.query.text().to_owned(),
+        })
+    }
+
+    fn request_diff_size(&mut self, cx: &SharedContext) -> Reduction {
+        let Some(repo) = cx.repository.as_ref() else {
+            return Reduction::default();
+        };
+        let Some(picker) = &mut self.ref_picker else {
+            return Reduction::default();
+        };
+        let Some(entry) = picker.selected_entry() else {
+            return Reduction::default();
+        };
+        if entry.kind == RefEntryKind::WorkingTree {
+            return Reduction::default();
+        }
+        let chosen = entry.name.clone();
+        let other = match picker.other_name() {
+            name if name.is_empty() || name == WORKING_TREE_LABEL => "HEAD".to_owned(),
+            name => name.to_owned(),
+        };
+        let (left, right) = match picker.side() {
+            CompareField::Left => (chosen, other),
+            CompareField::Right => (other, chosen),
+        };
+        self.ref_generation += 1;
+        picker.size_token = self.ref_generation;
+        picker.size = None;
+        Reduction::default().effect(CommandsEffect::LoadDiffSize(Box::new(DiffSizeRequest {
+            token: self.ref_generation,
+            repo_path: repo.snapshot.path.clone(),
+            left,
+            right,
+            mode: picker.request.mode,
+        })))
+    }
+
+    fn ref_picker_action(&mut self, action: RefPickerAction, cx: &SharedContext) -> Reduction {
+        let Some(picker) = &mut self.ref_picker else {
+            return Reduction::default();
+        };
+        let mut reduction = match action {
+            RefPickerAction::ToggleSide => {
+                let side = match picker.side() {
+                    CompareField::Left => CompareField::Right,
+                    CompareField::Right => CompareField::Left,
+                };
+                picker.switch_side(side);
+                self.request_diff_size(cx)
+            }
+            RefPickerAction::SetSide(side) => {
+                picker.switch_side(side);
+                self.request_diff_size(cx)
+            }
+            RefPickerAction::Choose(row) => return self.choose_ref(Some(row), cx),
+            RefPickerAction::SetMode(mode) => {
+                picker.request.mode = mode;
+                self.request(PlatformRequest::Dispatch(
+                    NavigationAction::SetCompareMode(mode).into(),
+                ));
+                self.request_diff_size(cx)
+            }
+            RefPickerAction::SetEngine(renderer) => {
+                picker.request.renderer = renderer;
+                self.request(PlatformRequest::Dispatch(
+                    PipelineAction::SetRenderer(renderer).into(),
+                ));
+                Reduction::default()
+            }
+            RefPickerAction::CopySha => match picker.selected_entry() {
+                Some(entry) if !entry.oid.is_empty() => {
+                    Reduction::default().effect(ShellEffect::SetClipboard(entry.oid.clone()))
+                }
+                _ => Reduction::default(),
+            },
+        };
+        reduction.changed = true;
+        reduction
+    }
+
+    fn choose_ref(&mut self, row: Option<usize>, cx: &SharedContext) -> Reduction {
+        let Some(picker) = &self.ref_picker else {
+            return Reduction::default();
+        };
+        let request = picker.request.clone();
+        let choice = match row.and_then(|row| picker.entry(row)) {
+            Some(entry) if is_working_tree(entry) => None,
+            Some(entry) => Some(entry.name.clone()),
+            None => match picker.query.text().trim() {
+                "" => return Reduction::default(),
+                typed => Some(typed.to_owned()),
+            },
+        };
+        self.pop_layer(LayerKind::RefPicker);
+        let Some(name) = choice else {
+            self.request(PlatformRequest::Dispatch(
+                NavigationAction::ShowWorkingTree.into(),
+            ));
+            return Reduction::changed();
+        };
+        if let Some(store) = &self.frecency {
+            store.record_access(&format!("{REF_FRECENCY_PREFIX}{name}"));
+        }
+        let workdir = match cx.repository.as_ref() {
+            Some(repo) if repo.snapshot.location.kind != VcsKind::GIT => "@",
+            _ => WORKDIR_REF,
+        };
+        let mut refs = Vec::with_capacity(2);
+        match (request.side, request.working_copy) {
+            (CompareField::Left, true) => {
+                refs.push((CompareField::Left, name));
+                refs.push((CompareField::Right, workdir.to_owned()));
+            }
+            (CompareField::Right, true) => {
+                refs.push((CompareField::Left, request.left));
+                refs.push((CompareField::Right, name));
+            }
+            (field, false) => refs.push((field, name)),
+        }
+        for (field, value) in refs {
+            self.request(PlatformRequest::Dispatch(
+                NavigationAction::SetRef { field, value }.into(),
+            ));
+        }
+        self.request(PlatformRequest::Dispatch(
+            NavigationAction::StartCompare.into(),
+        ));
+        Reduction::changed()
     }
 
     fn open_theme_picker(&mut self) -> Reduction {
@@ -801,7 +990,7 @@ impl CommandsController {
 fn layer_focus(kind: LayerKind) -> FocusId {
     match kind {
         LayerKind::Palette => PALETTE_INPUT,
-        LayerKind::Picker => PICKER,
+        LayerKind::Picker | LayerKind::RefPicker => PICKER,
         LayerKind::Confirmation => CONFIRM_CANCEL,
         LayerKind::ContextMenu => crate::app::text_targets::VIEWPORT,
     }
@@ -1058,7 +1247,14 @@ impl Controller for CommandsController {
                 let candidates = picker::repository_candidates(&recent, current.as_deref());
                 self.open_picker(PickerKind::Repository, candidates)
             }
-            A::OpenRefPicker(field) => self.open_ref_picker(field, cx),
+            A::OpenRefPicker(field) => {
+                self.request(PlatformRequest::Dispatch(
+                    NavigationAction::ChooseRef(field).into(),
+                ));
+                Reduction::default()
+            }
+            A::ShowRefPicker(request) => self.open_ref_picker(*request, cx),
+            A::RefPicker(action) => self.ref_picker_action(action, cx),
             A::OpenCompareMenu => {
                 let mode = self
                     .settings
@@ -1081,6 +1277,14 @@ impl Controller for CommandsController {
             }
             A::CloseOverlay => self.close_top(),
             A::DismissOverlays => self.dismiss_overlays(),
+            A::MoveOverlaySelection(delta) if self.ref_picker.is_some() => {
+                if let Some(picker) = &mut self.ref_picker {
+                    picker.move_selection(delta, self.row_stride);
+                }
+                let mut reduction = self.request_diff_size(cx);
+                reduction.changed = true;
+                reduction
+            }
             A::MoveOverlaySelection(delta) => match &mut self.picker {
                 Some(picker) => {
                     picker.move_selection(delta, self.row_stride);
@@ -1088,6 +1292,19 @@ impl Controller for CommandsController {
                 }
                 None => Reduction::default(),
             },
+            A::SelectOverlayEntry(row) if self.ref_picker.is_some() => {
+                self.choose_ref(Some(row), cx)
+            }
+            A::ConfirmOverlaySelection if self.ref_picker.is_some() => {
+                let row = self.ref_picker.as_ref().and_then(|p| p.selected);
+                self.choose_ref(row, cx)
+            }
+            A::ScrollOverlay(lines) if self.ref_picker.is_some() => {
+                if let Some(picker) = &mut self.ref_picker {
+                    picker.scroll(lines, self.row_stride);
+                }
+                Reduction::changed()
+            }
             A::SelectOverlayEntry(index) => {
                 let in_range = self.picker.as_mut().is_some_and(|picker| {
                     let ok = index < picker.rows.len();
@@ -1278,7 +1495,7 @@ impl Controller for CommandsController {
         }
     }
 
-    fn reduce_event(&mut self, event: Self::Event, _cx: &SharedContext) -> Reduction {
+    fn reduce_event(&mut self, event: Self::Event, cx: &SharedContext) -> Reduction {
         match event {
             CommandsEvent::SettingsSaved => Reduction::default(),
             CommandsEvent::SettingsSaveFailed { message } => {
@@ -1287,6 +1504,42 @@ impl Controller for CommandsController {
                 )));
                 Reduction::changed()
             }
+            CommandsEvent::RefCatalogReady {
+                generation,
+                catalog,
+            } => {
+                let current = self
+                    .ref_picker
+                    .as_ref()
+                    .is_some_and(|p| p.catalog_generation == generation);
+                if !current {
+                    return Reduction::default();
+                }
+                if let Some(repo) = cx.repository.as_ref() {
+                    self.ref_catalog =
+                        Some((Arc::as_ptr(&repo.snapshot) as usize, catalog.clone()));
+                }
+                self.install_ref_catalog(catalog)
+            }
+            CommandsEvent::RefsFiltered {
+                generation,
+                results,
+            } => match &mut self.ref_picker {
+                Some(picker) if picker.filter_generation == generation => {
+                    picker.set_results(results);
+                    let mut reduction = self.request_diff_size(cx);
+                    reduction.changed = true;
+                    reduction
+                }
+                _ => Reduction::default(),
+            },
+            CommandsEvent::DiffSizeReady { token, size } => match &mut self.ref_picker {
+                Some(picker) if picker.size_token == token => {
+                    picker.size = size;
+                    Reduction::changed()
+                }
+                _ => Reduction::default(),
+            },
             CommandsEvent::FontCatalogReady { ui, mono } => {
                 self.fonts = Some(FontCatalog { ui, mono });
                 if let Some(PickerKind::Font(role)) = self.picker.as_ref().map(|p| p.kind) {
@@ -1345,6 +1598,13 @@ impl TextHost for CommandsController {
         target == PALETTE_INPUT || target == PICKER
     }
 
+    fn after_edit(&mut self, target: FocusId, _cx: &SharedContext) -> Reduction {
+        if target == PICKER && self.ref_picker.as_ref().is_some_and(|p| p.query_dirty) {
+            return self.filter_refs();
+        }
+        Reduction::default()
+    }
+
     fn edit_text(
         &mut self,
         target: FocusId,
@@ -1353,6 +1613,11 @@ impl TextHost for CommandsController {
     ) -> Option<TextEditOutcome> {
         if target == PALETTE_INPUT {
             return Some(self.palette.edit(command, cx.now_ms));
+        }
+        if let Some(picker) = &mut self.ref_picker {
+            let outcome = picker.query.apply_at(command, cx.now_ms);
+            picker.query_dirty |= outcome.text_changed;
+            return Some(outcome);
         }
         let picker = self.picker.as_mut()?;
         let outcome = picker.query.apply_at(command, cx.now_ms);
@@ -1370,6 +1635,10 @@ impl TextHost for CommandsController {
     ) -> bool {
         if target == PALETTE_INPUT {
             self.palette.set_preedit(text, cursor);
+            return true;
+        }
+        if let Some(picker) = &mut self.ref_picker {
+            picker.query.set_preedit(text, cursor);
             return true;
         }
         match &mut self.picker {
@@ -1391,6 +1660,16 @@ impl TextHost for CommandsController {
             self.palette.set_query(&value);
             return Some(TextEditOutcome {
                 text_changed: true,
+                ..TextEditOutcome::default()
+            });
+        }
+        if let Some(picker) = &mut self.ref_picker {
+            let changed = picker.query.text() != value;
+            picker.query.set_text(value);
+            picker.query_dirty |= changed;
+            return Some(TextEditOutcome {
+                text_changed: changed,
+                selection_changed: true,
                 ..TextEditOutcome::default()
             });
         }

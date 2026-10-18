@@ -18,8 +18,8 @@ use super::{CommandsController, LayerKind, PlatformRequest};
 use crate::app::shell::Slot;
 use crate::app::text_targets::{self, PICKER, SETTINGS, SIDEBAR, TextCx, TextHost};
 use crate::contracts::commands::{
-    CommandDescriptor, CommandsAction, CommandsEffect, ConfirmationRequest, SettingsSnapshot,
-    ToastUpdate,
+    CommandDescriptor, CommandsAction, CommandsEffect, CommandsEvent, ConfirmationRequest,
+    RefPickerRequest, SettingsSnapshot, ToastUpdate,
 };
 use crate::contracts::navigation::{CompareField, NavigationAction, RepositorySyncReason};
 use crate::contracts::shared::{JobId, SharedContext};
@@ -57,6 +57,7 @@ impl CmdApp {
     }
 
     fn reduce(&mut self, reduction: Reduction) {
+        let events: Vec<CommandsEvent> = reduction.effects.iter().filter_map(run_worker).collect();
         self.effects.extend(reduction.effects);
         let mut queue = VecDeque::from(reduction.intents);
         while let Some(intent) = queue.pop_front() {
@@ -69,6 +70,10 @@ impl CmdApp {
             self.effects.extend(next.effects);
             queue.extend(next.intents);
             self.intents.push(intent);
+        }
+        for event in events {
+            let next = self.commands.reduce_event(event, &self.shared);
+            self.reduce(next);
         }
     }
 
@@ -183,9 +188,13 @@ impl UiApp for CmdApp {
             shared: &self.shared,
             now_ms: self.clock,
         };
-        self.commands
+        let outcome = self
+            .commands
             .edit_text(target, command, &cx)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let next = self.commands.after_edit(target, &self.shared);
+        self.reduce(next);
+        outcome
     }
 
     fn set_preedit(&mut self, target: FocusId, text: String, cursor: Option<(usize, usize)>) {
@@ -725,10 +734,23 @@ fn confirming_dispatches_the_requested_action() {
     assert_eq!(ui.focus(), Some(SIDEBAR));
 }
 
-#[test]
-fn ref_picker_lists_repository_refs_and_commits_the_choice() {
-    let mut ui = cmd_harness(Settings::default());
-    focus_anchor(&mut ui);
+fn ref_request(side: CompareField, working_copy: bool) -> CommandsAction {
+    CommandsAction::ShowRefPicker(Box::new(RefPickerRequest {
+        side,
+        left: "main".to_owned(),
+        right: if working_copy {
+            "Working tree"
+        } else {
+            "feature"
+        }
+        .to_owned(),
+        working_copy,
+        mode: crate::core::compare::CompareMode::ThreeDot,
+        renderer: crate::core::compare::RendererKind::Builtin,
+    }))
+}
+
+fn with_repository(ui: &mut Cmd) {
     ui.inject(Intent::RepositoryChanged(Rc::new(
         crate::contracts::navigation::RepositoryContext {
             revision: crate::contracts::navigation::RepositoryRevision(1),
@@ -738,10 +760,34 @@ fn ref_picker_lists_repository_refs_and_commits_the_choice() {
             )),
         },
     )));
-    ui.run(CommandsAction::OpenRefPicker(CompareField::Right));
+}
+
+#[test]
+fn palette_ref_command_asks_navigation_for_the_compare() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    ui.run(CommandsAction::OpenRefPicker(CompareField::Left));
+    assert_eq!(
+        ui.app().dispatched,
+        vec![Action::from(NavigationAction::ChooseRef(
+            CompareField::Left
+        ))]
+    );
+}
+
+#[test]
+fn ref_picker_groups_refs_and_commits_the_choice() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    with_repository(&mut ui);
+    ui.run(ref_request(CompareField::Right, false));
     ui.find(By::role_name(Role::Dialog, "Head ref"));
     assert_eq!(ui.focus(), Some(PICKER));
+    ui.find(By::role_name(Role::Heading, "Branches \u{00B7} 2"));
+    let current = ui.find(By::role_name(Role::ListBoxOption, "feature"));
+    assert!(current.bounds.height > 0.0);
     ui.type_text("feat");
+    ui.find(By::role_name(Role::Heading, "Branches \u{00B7} 1 match"));
     ui.key("enter");
     assert_eq!(
         ui.app().dispatched,
@@ -754,6 +800,87 @@ fn ref_picker_lists_repository_refs_and_commits_the_choice() {
         ]
     );
     assert_eq!(ui.focus(), Some(SIDEBAR));
+}
+
+#[test]
+fn ref_picker_tab_swaps_sides_and_footer_sets_mode_and_engine() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    with_repository(&mut ui);
+    ui.run(ref_request(CompareField::Left, false));
+    ui.find(By::role_name(Role::Dialog, "Base ref"));
+    ui.key("tab");
+    ui.find(By::role_name(Role::Dialog, "Head ref"));
+    assert_eq!(ui.focus(), Some(PICKER));
+    ui.click_node(By::role_name(Role::RadioButton, "Directly"));
+    ui.click_node(By::role_name(Role::RadioButton, "Difftastic"));
+    assert_eq!(
+        ui.app().dispatched,
+        vec![
+            Action::from(NavigationAction::SetCompareMode(
+                crate::core::compare::CompareMode::TwoDot
+            )),
+            Action::from(
+                crate::contracts::viewport::pipeline::PipelineAction::SetRenderer(
+                    crate::core::compare::RendererKind::Difftastic
+                )
+            ),
+        ]
+    );
+    ui.find(By::role_name(Role::Dialog, "Head ref"));
+}
+
+#[test]
+fn ref_picker_against_the_working_tree_keeps_the_worktree_side() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    with_repository(&mut ui);
+    ui.run(ref_request(CompareField::Left, true));
+    ui.type_text("feature");
+    ui.key("enter");
+    assert_eq!(
+        ui.app().dispatched[..2],
+        [
+            Action::from(NavigationAction::SetRef {
+                field: CompareField::Left,
+                value: "feature".to_owned()
+            }),
+            Action::from(NavigationAction::SetRef {
+                field: CompareField::Right,
+                value: crate::core::vcs::git::WORKDIR_REF.to_owned()
+            }),
+        ]
+    );
+}
+
+#[test]
+fn ref_picker_lays_out_only_visible_rows_for_thousands_of_refs() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    let mut snapshot = super::fixtures::snapshot(RepositorySyncReason::Open, false);
+    snapshot
+        .refs
+        .extend((0..10_000).map(|i| crate::core::vcs::model::VcsRef {
+            name: format!("tag-{i}"),
+            kind: crate::core::vcs::model::RefKind::Tag,
+            target: crate::core::vcs::model::RevisionId::git(format!("{i:07}")),
+            active: false,
+            upstream: None,
+            ahead_behind: None,
+        }));
+    ui.inject(Intent::RepositoryChanged(Rc::new(
+        crate::contracts::navigation::RepositoryContext {
+            revision: crate::contracts::navigation::RepositoryRevision(1),
+            snapshot: std::sync::Arc::new(snapshot),
+        },
+    )));
+    ui.run(ref_request(CompareField::Left, false));
+    let options = ui.find_all(Role::ListBoxOption).len();
+    assert!(options > 0 && options < 40, "{options} options laid out");
+    ui.key("pagedown");
+    ui.key("pagedown");
+    let selected = ui.app().commands.ref_picker().and_then(|p| p.selected);
+    assert!(selected.is_some_and(|row| row > 10));
 }
 
 #[test]
@@ -797,6 +924,32 @@ fn toasts_show_progress_and_dismiss() {
         ui.try_find(By::role_name(Role::Status, "Fetching origin"))
             .is_none()
     );
+}
+
+fn run_worker(effect: &Effect) -> Option<CommandsEvent> {
+    match effect {
+        Effect::Commands(CommandsEffect::LoadRefCatalog(request)) => {
+            Some(CommandsEvent::RefCatalogReady {
+                generation: request.generation,
+                catalog: std::sync::Arc::new(crate::core::ref_catalog::build_catalog(
+                    &request.snapshot.refs,
+                    &request.snapshot.changes,
+                    &[],
+                    &request.recent,
+                    true,
+                )),
+            })
+        }
+        Effect::Commands(CommandsEffect::FilterRefs {
+            generation,
+            catalog,
+            query,
+        }) => Some(CommandsEvent::RefsFiltered {
+            generation: *generation,
+            results: std::sync::Arc::new(crate::core::ref_catalog::filter(catalog, query)),
+        }),
+        _ => None,
+    }
 }
 
 enum Pending {

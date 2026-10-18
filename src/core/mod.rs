@@ -4,6 +4,7 @@ pub mod forge;
 pub mod frecency;
 pub mod http;
 pub mod keymap;
+pub mod ref_catalog;
 pub mod review;
 pub mod search;
 pub mod syntax;

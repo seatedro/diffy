@@ -10,7 +10,7 @@ use quark_ui::text_input::{TextEditCommand, TextEditOutcome, TextField};
 use super::rows::{self, Row, RowCache};
 
 use crate::app::text_targets::{SIDEBAR_FILTER, TextCx, TextHost};
-use crate::contracts::commands::{SettingsSnapshot, ToastUpdate};
+use crate::contracts::commands::{CommandsAction, RefPickerRequest, SettingsSnapshot, ToastUpdate};
 use crate::contracts::navigation::{
     CompareField, HistoryRequest, NavigationAction, NavigationEffect, NavigationEvent,
     RepositoryChangeKind, RepositoryContext, RepositoryRevision, RepositorySnapshot,
@@ -26,7 +26,8 @@ use crate::contracts::viewport::pipeline::{
     CompareManifestSnapshot, CompareWorkPriority, FileStats, ManifestFile, PipelineAction,
 };
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
-use crate::core::vcs::model::{VcsChange, VcsCompareRequest, VcsCompareSpec};
+use crate::core::ref_catalog::WORKING_TREE_LABEL;
+use crate::core::vcs::model::{RefKind, VcsChange, VcsCompareRequest, VcsCompareSpec};
 use crate::platform::persistence::{PersistedCompare, Settings};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,6 +277,24 @@ impl NavigationController {
         self.repository
             .as_ref()
             .is_some_and(|r| r.snapshot.capabilities.operation_log)
+    }
+
+    pub fn compare_labels(&self) -> (String, String) {
+        if self.compare.working_copy {
+            let base = self
+                .repository
+                .as_ref()
+                .and_then(|repo| {
+                    repo.snapshot
+                        .refs
+                        .iter()
+                        .find(|r| r.active && matches!(r.kind, RefKind::Branch | RefKind::Bookmark))
+                        .map(|r| r.name.clone())
+                })
+                .unwrap_or_else(|| "HEAD".to_owned());
+            return (base, WORKING_TREE_LABEL.to_owned());
+        }
+        (self.compare.left.clone(), self.compare.right.clone())
     }
 
     pub fn take_dispatch(&self) -> Vec<Action> {
@@ -882,7 +901,7 @@ fn non_empty(value: &str) -> Option<String> {
 }
 
 fn is_working_copy_ref(reference: &str) -> bool {
-    matches!(reference, "" | "@" | "WORKTREE" | "worktree")
+    matches!(reference, "" | "@" | "@workdir" | "WORKTREE" | "worktree")
 }
 
 pub fn normalize_repository_path(path: PathBuf) -> PathBuf {
@@ -956,6 +975,21 @@ impl NavigationController {
                 self.resolved[field_index(field)] = None;
                 self.compare.auto_select_mode();
                 Reduction::changed()
+            }
+            A::ChooseRef(side) => {
+                let (left, right) = self.compare_labels();
+                let request = RefPickerRequest {
+                    side,
+                    left,
+                    right,
+                    working_copy: self.compare.working_copy,
+                    mode: self.compare.mode,
+                    renderer: self.compare.renderer,
+                };
+                self.outbox
+                    .borrow_mut()
+                    .push(CommandsAction::ShowRefPicker(Box::new(request)).into());
+                Reduction::default()
             }
             A::SwapRefs => {
                 if self.compare.left.trim().is_empty() || self.compare.right.trim().is_empty() {
@@ -1207,6 +1241,13 @@ impl NavigationController {
                 self.select(selected.key, SelectionOrigin::Viewport)
             }
             Intent::InvalidateRepository => self.sync(RepositorySyncReason::Dirty),
+            Intent::SettingsChanged(settings) => match settings.settings.last_compare.as_ref() {
+                Some(last) if last.renderer != self.compare.renderer => {
+                    self.compare.renderer = last.renderer;
+                    Reduction::changed()
+                }
+                _ => Reduction::default(),
+            },
             _ => Reduction::default(),
         }
     }

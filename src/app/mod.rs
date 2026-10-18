@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod delivery;
 pub mod diff_slots;
+pub mod icons;
 pub mod mutations;
 pub mod navigation;
 pub mod review;

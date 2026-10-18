@@ -9,9 +9,10 @@ use quark_ui::theme::Theme;
 use super::state::{CommandsController, LayerKind};
 use crate::app::route::Controllers;
 use crate::app::text_targets::{
-    COMMIT_MESSAGE, REVIEW_COMPOSER, SETTINGS_STEERING_PROMPT, TEXT_COMPARE_LEFT, TEXT_COMPARE_RIGHT,
+    COMMIT_MESSAGE, REVIEW_COMPOSER, SETTINGS_STEERING_PROMPT, TEXT_COMPARE_LEFT,
+    TEXT_COMPARE_RIGHT,
 };
-use crate::contracts::commands::{CommandDescriptor, CommandsAction};
+use crate::contracts::commands::{CommandDescriptor, CommandsAction, RefPickerAction};
 use crate::contracts::shell::Action;
 use crate::fonts::FontSettings;
 
@@ -233,6 +234,19 @@ impl CommandsController {
                 }
                 _ => None,
             },
+            Some(LayerKind::RefPicker) => match binding {
+                "escape" => Some(CommandsAction::CloseOverlay),
+                "enter" => Some(CommandsAction::ConfirmOverlaySelection),
+                "arrowdown" | "ctrl+n" => Some(CommandsAction::MoveOverlaySelection(1)),
+                "arrowup" | "ctrl+p" => Some(CommandsAction::MoveOverlaySelection(-1)),
+                "pagedown" => Some(CommandsAction::MoveOverlaySelection(8)),
+                "pageup" => Some(CommandsAction::MoveOverlaySelection(-8)),
+                "tab" | "shift+tab" => Some(CommandsAction::RefPicker(RefPickerAction::ToggleSide)),
+                "mod+c" if self.ref_picker_query_empty() => {
+                    Some(CommandsAction::RefPicker(RefPickerAction::CopySha))
+                }
+                _ => None,
+            },
             Some(LayerKind::Confirmation) => {
                 (binding == "escape").then_some(CommandsAction::CancelConfirmation)
             }
@@ -242,6 +256,10 @@ impl CommandsController {
             None => None,
         };
         action.map(Action::from)
+    }
+
+    fn ref_picker_query_empty(&self) -> bool {
+        self.ref_picker().is_some_and(|p| p.query.text().is_empty())
     }
 
     pub(super) fn menu_action(&self, id: &str) -> Option<Action> {

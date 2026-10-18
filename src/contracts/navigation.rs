@@ -130,6 +130,7 @@ pub enum NavigationAction {
     NewTextCompare,
     RefreshRepository,
     SetRef { field: CompareField, value: String },
+    ChooseRef(CompareField),
     SwapRefs,
     ResolveRef { field: CompareField, query: String },
     SetCompareMode(CompareMode),

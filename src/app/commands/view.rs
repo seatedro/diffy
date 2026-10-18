@@ -62,6 +62,7 @@ pub fn overlays(
     }
     let layers: Vec<LayerKind> = [
         LayerKind::Picker,
+        LayerKind::RefPicker,
         LayerKind::Palette,
         LayerKind::Confirmation,
         LayerKind::ContextMenu,
@@ -78,6 +79,7 @@ pub fn overlays(
                     .render(size, cx.theme, focused, palette_event)
             }
             LayerKind::Picker => picker_panel(commands, size, cx),
+            LayerKind::RefPicker => super::ref_picker_view::ref_picker_panel(commands, size, cx),
             LayerKind::Confirmation => confirmation(commands, size, cx.theme),
             LayerKind::ContextMenu => context_menu(commands, size, cx.theme),
         };

@@ -22,7 +22,8 @@ use std::sync::Arc;
 
 use diffy_diff::{
     BlockKind, Comparison, ComparisonOptions, ContextPolicy, DiffDocument, Expansion,
-    InlineOptions, LinePair, Mode, PairedInlineDiff, Projection, RowKind, Side, paired_inline_diff,
+    InlineOptions, LinePair, Mode, PairedInlineDiff, Projection, RowKind, Side, SlotState,
+    paired_inline_diff,
 };
 use quark_ui::virtual_list::{RowTable, VariableList};
 
@@ -61,6 +62,8 @@ pub(crate) struct Segment {
     /// options.
     pub comparison: Comparison,
     pub projection: Projection,
+    pub alternate: Option<(Mode, Projection)>,
+    pub pending: Option<(SlotState, u32)>,
     /// Where each projection row sits in the list, if it is shown.
     pub list_rows: ListRows,
     /// Changed ranges of each line pair shown, computed once for both
@@ -88,6 +91,8 @@ impl Segment {
             expansion,
             comparison,
             projection,
+            alternate: None,
+            pending: None,
             list_rows: ListRows::default(),
             inline: RefCell::default(),
         }
@@ -100,6 +105,7 @@ impl Segment {
         expansion: Expansion,
         comparison: Comparison,
         projection: Projection,
+        alternate: Option<(Mode, Projection)>,
     ) -> Self {
         Self {
             doc,
@@ -109,8 +115,20 @@ impl Segment {
             expansion,
             comparison,
             projection,
+            alternate,
+            pending: None,
             list_rows: ListRows::default(),
             inline: RefCell::default(),
+        }
+    }
+
+    pub fn switch(&mut self, from: Mode, to: Mode) {
+        match self.alternate.take() {
+            Some((mode, projection)) if mode == to => {
+                let previous = std::mem::replace(&mut self.projection, projection);
+                self.alternate = Some((from, previous));
+            }
+            _ => self.rebuild(to),
         }
     }
 
@@ -120,6 +138,7 @@ impl Segment {
 
     /// Re-projects after an expansion or mode change.
     pub fn rebuild(&mut self, mode: Mode) {
+        self.alternate = None;
         self.projection
             .rebuild_with(&self.doc, mode, &self.expansion, &self.comparison);
     }
@@ -173,6 +192,7 @@ pub(crate) struct FileMap {
     pub id_slots: HashMap<super::FileId, u32>,
     /// Session mode, even while it holds no files.
     pub session: bool,
+    pub solo: Option<u32>,
 }
 
 impl FileMap {
@@ -578,8 +598,13 @@ impl DiffViewState {
         let annotated: HashSet<u32> = placed.at_line.keys().map(|&(unit, ..)| unit).collect();
         let mut b = RefsBuilder::default();
         let mut hidden = 0u32;
+        let solo = self.files.solo;
         for (si, segment) in self.segments.iter_mut().enumerate() {
             let seg = si as u32;
+            if solo.is_some_and(|slot| slot != segment.slot) {
+                segment.list_rows = ListRows::default();
+                continue;
+            }
             let p = &segment.projection;
             let mut shown = ListRows::default();
             for (file, &header) in p.file_rows.iter().enumerate() {
@@ -598,7 +623,7 @@ impl DiffViewState {
                     // The common case, a run at a time: the header, its
                     // metadata rows, then every other row of the file.
                     shown.push(header, b.push(RowRef::Line { seg, row: header }), 1);
-                    if !folded {
+                    if !folded && segment.pending.is_none() {
                         b.file_extras(&segment.doc, outdated, seg, file);
                     }
                     let lines = header + 1..rows.end;
@@ -613,7 +638,7 @@ impl DiffViewState {
                     }
                     shown.push(row, b.push(RowRef::Line { seg, row }), 1);
                     let kind = p.kind[row as usize];
-                    if kind == RowKind::FileHeader && !folded {
+                    if kind == RowKind::FileHeader && !folded && segment.pending.is_none() {
                         b.file_extras(&segment.doc, outdated, seg, file);
                     }
                     if kind.is_line() {

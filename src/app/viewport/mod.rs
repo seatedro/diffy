@@ -15,6 +15,12 @@ pub struct ViewportController {
 }
 
 impl ViewportController {
+    fn prepare(&mut self) {
+        if let Some(diff) = self.interaction.diff() {
+            self.pipeline.set_preparation(diff.preparation());
+        }
+    }
+
     fn install(&mut self, mut reduction: Reduction, cx: &SharedContext) -> Reduction {
         for install in self.pipeline.take_installs() {
             reduction.merge(self.interaction.install(install, cx));
@@ -30,6 +36,7 @@ impl Controller for ViewportController {
     fn reduce_action(&mut self, action: ViewportAction, cx: &SharedContext) -> Reduction {
         match action {
             ViewportAction::Pipeline(action) => {
+                self.prepare();
                 let reduction = self.pipeline.reduce_action(action, cx);
                 self.install(reduction, cx)
             }
@@ -40,6 +47,7 @@ impl Controller for ViewportController {
     fn reduce_event(&mut self, event: ViewportEvent, cx: &SharedContext) -> Reduction {
         match event {
             ViewportEvent::Pipeline(event) => {
+                self.prepare();
                 let reduction = self.pipeline.reduce_event(event, cx);
                 self.install(reduction, cx)
             }
@@ -48,6 +56,7 @@ impl Controller for ViewportController {
     }
 
     fn apply_intent(&mut self, intent: &Intent, cx: &SharedContext) -> Reduction {
+        self.prepare();
         let reduction = self.pipeline.apply_intent(intent, cx);
         let mut reduction = self.install(reduction, cx);
         reduction.merge(self.interaction.apply_intent(intent, cx));

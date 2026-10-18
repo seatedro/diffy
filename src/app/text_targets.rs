@@ -41,6 +41,7 @@ pub fn focus_id(focus: LogicalFocus) -> FocusId {
         LogicalFocus::SettingsSteeringPrompt => SETTINGS_STEERING_PROMPT,
         LogicalFocus::ReviewAccount => REVIEW_ACCOUNT,
         LogicalFocus::ReviewDialog => REVIEW_DIALOG,
+        LogicalFocus::DeliveryLanguages => crate::app::delivery::LANGUAGES_TOGGLE,
     }
 }
 

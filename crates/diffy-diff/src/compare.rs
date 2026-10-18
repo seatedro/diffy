@@ -11,6 +11,7 @@ use std::ops::Range;
 use crate::model::{BlockKind, DiffDocument, Side};
 use crate::myers::{diff, intern};
 use crate::projection::NONE;
+use crate::semantic::AlignedRow;
 use crate::text::TextStore;
 
 /// Which spaces a comparison ignores. Only spaces and tabs count; a `\r`,
@@ -111,16 +112,29 @@ impl Comparison {
         for file in 0..doc.file_count() {
             let (old, new) = (doc.text(file, Side::Old), doc.text(file, Side::New));
             let (mut hidden, mut limited) = (0, 0);
+            let structural = options.pairing == PairingMode::Similarity
+                && options.whitespace == WhitespaceMode::Exact
+                && doc.prefers_structural(file);
             for hunk in doc.files().hunks[file as usize].clone() {
+                let rows = if structural {
+                    doc.aligned_rows(hunk)
+                } else {
+                    &[]
+                };
                 for block in h.blocks[hunk as usize].clone() {
                     let bi = block as usize;
                     let start = out.steps.len() as u32;
                     if b.kind[bi] == BlockKind::Change {
                         let olds = b.old_store[bi]..b.old_store[bi] + b.old_len[bi];
                         let news = b.new_store[bi]..b.new_store[bi] + b.new_len[bi];
-                        let (h, l) = out.align_block(old, new, olds, news, &mut keys);
-                        hidden += h;
-                        limited += l;
+                        let lines = (b.old_line[bi] - 1, b.new_line[bi] - 1);
+                        if rows.is_empty()
+                            || !out.align_structural(rows, lines, olds.clone(), news.clone())
+                        {
+                            let (h, l) = out.align_block(old, new, olds, news, &mut keys);
+                            hidden += h;
+                            limited += l;
+                        }
                     }
                     out.block_steps.push(start..out.steps.len() as u32);
                 }
@@ -200,6 +214,43 @@ impl Comparison {
         }
         equal(self, &mut o, &mut n, olds.end);
         (hidden, limited)
+    }
+
+    fn align_structural(
+        &mut self,
+        rows: &[AlignedRow],
+        (old_line, new_line): (u32, u32),
+        olds: Range<u32>,
+        news: Range<u32>,
+    ) -> bool {
+        let store = |line: Option<u32>, first: u32, stores: &Range<u32>| {
+            line.and_then(|line| line.checked_sub(first))
+                .map(|offset| stores.start + offset)
+                .filter(|index| stores.contains(index))
+        };
+        let start = self.steps.len();
+        let (mut o, mut n) = (olds.start, news.start);
+        for row in rows {
+            let ro = store(row.old, old_line, &olds);
+            let rn = store(row.new, new_line, &news);
+            if ro.is_some_and(|i| i != o) || rn.is_some_and(|i| i != n) {
+                self.steps.truncate(start);
+                return false;
+            }
+            match (ro, rn) {
+                (Some(a), Some(b)) => self.steps.push(Step::Paired(a, b)),
+                (Some(a), None) => self.steps.push(Step::Removed(a)),
+                (None, Some(b)) => self.steps.push(Step::Added(b)),
+                (None, None) => continue,
+            }
+            o += u32::from(ro.is_some());
+            n += u32::from(rn.is_some());
+        }
+        if o != olds.end || n != news.end {
+            self.steps.truncate(start);
+            return false;
+        }
+        true
     }
 
     /// Appends the steps of a run of removed lines replaced by added

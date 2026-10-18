@@ -31,6 +31,7 @@ use crate::core::vcs::model::{
     ChangeBucket, FileChange, FileOperation, PublishAction, PublishPlan, RefKind, RepoCapabilities,
     VcsOperation, VcsRef,
 };
+use crate::core::vcs::source::SourceIdentity;
 use crate::platform::secrets::AiKeyKind;
 
 const JOB_BASE: u64 = 0xE << 48;
@@ -63,10 +64,17 @@ enum SourceSlot {
     Ready(Arc<MutationSource>),
 }
 
+#[derive(Debug, Clone, Default)]
+struct DisplayBinding {
+    bucket: Option<ChangeBucket>,
+    identity: Option<SourceIdentity>,
+}
+
 #[derive(Debug, Clone)]
 struct PendingPatch {
     job: JobId,
     key: MutationSourceKey,
+    expected: Option<SourceIdentity>,
     selection: MutationSelection,
     operation: FileOperation,
 }
@@ -334,6 +342,7 @@ impl MutationsController {
         cx: &SharedContext,
         file: FileKey,
         operation: FileOperation,
+        bucket: Option<ChangeBucket>,
     ) -> Result<FileChange, &'static str> {
         let repo = cx
             .repository
@@ -354,11 +363,18 @@ impl MutationsController {
             .or_else(|| entry.paths.old_path())
             .ok_or("This file has no path.")?;
         let staging = repo.snapshot.capabilities.staging_area;
-        let order: &[ChangeBucket] = match (staging, operation) {
-            (false, _) => &[ChangeBucket::WorkingCopy, ChangeBucket::Conflicted],
-            (true, FileOperation::Stage) => &[ChangeBucket::Unstaged, ChangeBucket::Untracked],
-            (true, FileOperation::Unstage) => &[ChangeBucket::Staged],
-            (true, FileOperation::Discard) => &[
+        let bound;
+        let order: &[ChangeBucket] = match (bucket, staging, operation) {
+            (Some(bucket), _, _) => {
+                bound = [bucket];
+                &bound
+            }
+            (None, false, _) => &[ChangeBucket::WorkingCopy, ChangeBucket::Conflicted],
+            (None, true, FileOperation::Stage) => {
+                &[ChangeBucket::Unstaged, ChangeBucket::Untracked]
+            }
+            (None, true, FileOperation::Unstage) => &[ChangeBucket::Staged],
+            (None, true, FileOperation::Discard) => &[
                 ChangeBucket::Unstaged,
                 ChangeBucket::Untracked,
                 ChangeBucket::Staged,
@@ -421,7 +437,8 @@ impl MutationsController {
         if current != Some(revision) {
             return error("This file changed since it was shown. Try again.");
         }
-        let change = match self.file_change(cx, file, operation) {
+        let binding = DisplayBinding::default();
+        let change = match self.file_change(cx, file, operation, binding.bucket) {
             Ok(change) => change,
             Err(message) => return error(message),
         };
@@ -442,18 +459,16 @@ impl MutationsController {
         let pending = PendingPatch {
             job,
             key: key.clone(),
+            expected: binding.identity,
             selection,
             operation,
         };
         match self.sources.get(&key) {
             Some(SourceSlot::Ready(source)) => {
                 let source = source.clone();
-                Reduction::changed().effect(MutationsEffect::ApplyPatch(PatchOperationRequest {
-                    job,
-                    source,
-                    selection: pending.selection,
-                    operation,
-                }))
+                let mut reduction = Reduction::changed();
+                self.dispatch_patch(pending, source, &mut reduction);
+                reduction
             }
             Some(SourceSlot::Loading) => {
                 self.pending.push(pending);
@@ -483,14 +498,38 @@ impl MutationsController {
         self.pending = waiting;
         let mut reduction = Reduction::changed();
         for pending in ready {
-            reduction = reduction.effect(MutationsEffect::ApplyPatch(PatchOperationRequest {
-                job: pending.job,
-                source: source.clone(),
-                selection: pending.selection,
-                operation: pending.operation,
-            }));
+            self.dispatch_patch(pending, source.clone(), &mut reduction);
         }
         reduction
+    }
+
+    fn dispatch_patch(
+        &mut self,
+        pending: PendingPatch,
+        source: Arc<MutationSource>,
+        reduction: &mut Reduction,
+    ) {
+        if pending
+            .expected
+            .as_ref()
+            .is_some_and(|expected| !source.identity().matches(expected))
+        {
+            self.jobs.remove(&pending.job);
+            self.sources.remove(source.key());
+            reduction.intents.push(Intent::Toast(ToastUpdate::error(
+                "The file on disk no longer matches the diff shown. Refresh and try again.",
+            )));
+            return;
+        }
+        reduction.effects.push(
+            MutationsEffect::ApplyPatch(PatchOperationRequest {
+                job: pending.job,
+                source,
+                selection: pending.selection,
+                operation: pending.operation,
+            })
+            .into(),
+        );
     }
 
     fn source_failed(&mut self, key: MutationSourceKey, message: String) -> Reduction {
@@ -543,7 +582,7 @@ impl MutationsController {
         }
         let mut changes = Vec::with_capacity(files.len());
         for file in files {
-            match self.file_change(cx, file, operation) {
+            match self.file_change(cx, file, operation, None) {
                 Ok(change) => changes.push(change),
                 Err(message) => return error(message),
             }

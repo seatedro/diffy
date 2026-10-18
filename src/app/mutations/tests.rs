@@ -25,7 +25,7 @@ use crate::contracts::navigation::{
 use crate::contracts::shared::{FileKey, FileRevision, SharedContext, Side, SourceTarget};
 use crate::contracts::shell::{Action, Controller, Effect, Intent, Reduction};
 use crate::contracts::viewport::CompareManifestSnapshot;
-use crate::contracts::viewport::pipeline::{FileStats, ManifestFile};
+use crate::contracts::viewport::pipeline::ManifestFile;
 use crate::core::compare::stats::CompareFilePaths;
 use crate::core::vcs::model::{
     ChangeBucket, FileChange, FileChangeStatus, FileOperation, PublishAction, PublishActionKind,
@@ -83,14 +83,12 @@ fn repository(
 
 fn manifest(revision: FileRevision) -> Rc<CompareManifestSnapshot> {
     Rc::new(CompareManifestSnapshot {
-        files: Arc::from(vec![ManifestFile {
-            key: FILE,
+        files: Arc::from(vec![ManifestFile::new(
+            FILE,
             revision,
-            paths: CompareFilePaths::from_paths(Some("f.txt"), Some("f.txt")),
-            status: diffy_diff::FileStatus::Modified,
-            binary: false,
-            stats: FileStats::Pending,
-        }]),
+            CompareFilePaths::from_paths(Some("f.txt"), Some("f.txt")),
+            diffy_diff::FileStatus::Modified,
+        )]),
         ..CompareManifestSnapshot::default()
     })
 }

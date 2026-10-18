@@ -48,6 +48,7 @@ pub enum LogicalFocus {
     SettingsSteeringPrompt,
     ReviewAccount,
     ReviewDialog,
+    DeliveryLanguages,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

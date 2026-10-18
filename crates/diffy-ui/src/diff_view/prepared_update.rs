@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use diffy_diff::{
     Comparison, ComparisonOptions, ContextPolicy, DiffDocument, Expansion, FileDiffSnapshot,
     FileStatus, Mode, Projection, Side,
@@ -14,13 +16,14 @@ pub struct Preparation {
     pub comparison: ComparisonOptions,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PreparedSegment {
     snapshot: FileDiffSnapshot,
     preparation: Preparation,
     expansion: Expansion,
     comparison: Comparison,
     projection: Projection,
+    alternate: Projection,
 }
 
 impl PreparedSegment {
@@ -28,14 +31,16 @@ impl PreparedSegment {
         let doc = &snapshot.diff;
         let expansion = Expansion::with_policy(doc, preparation.policy);
         let comparison = Comparison::new(doc, preparation.comparison);
-        let projection =
-            Projection::with_comparison(doc, preparation.mode, &expansion, &comparison);
+        let project = |mode| Projection::with_comparison(doc, mode, &expansion, &comparison);
+        let projection = project(preparation.mode);
+        let alternate = project(other(preparation.mode));
         Self {
             snapshot,
             preparation,
             expansion,
             comparison,
             projection,
+            alternate,
         }
     }
 
@@ -48,40 +53,64 @@ impl PreparedSegment {
     }
 }
 
+fn other(mode: Mode) -> Mode {
+    match mode {
+        Mode::Unified => Mode::Split,
+        Mode::Split => Mode::Unified,
+    }
+}
+
 pub(super) fn segment_for(
     view: &DiffViewState,
-    snapshot: &FileDiffSnapshot,
+    doc: &Arc<DiffDocument>,
     slot: u32,
-    prepared: Option<PreparedSegment>,
+    prepared: Option<Arc<PreparedSegment>>,
 ) -> Segment {
     let wanted = Preparation {
         mode: view.mode,
         policy: view.context_policy,
         comparison: view.comparison,
     };
-    match prepared {
-        Some(prepared)
-            if prepared.preparation == wanted
-                && std::sync::Arc::ptr_eq(&prepared.snapshot.diff, &snapshot.diff) =>
-        {
-            Segment::from_parts(
-                snapshot.diff.clone(),
-                slot,
-                view.generations,
-                prepared.expansion,
-                prepared.comparison,
-                prepared.projection,
-            )
-        }
-        _ => Segment::new(
-            snapshot.diff.clone(),
+    let fresh = || {
+        Segment::new(
+            doc.clone(),
             slot,
             view.generations,
             view.mode,
             view.context_policy,
             view.comparison,
-        ),
+        )
+    };
+    let Some(prepared) = prepared else {
+        return fresh();
+    };
+    let reusable = Arc::ptr_eq(&prepared.snapshot.diff, doc)
+        && prepared.preparation.policy == wanted.policy
+        && prepared.preparation.comparison == wanted.comparison;
+    if !reusable {
+        return fresh();
     }
+    let prepared = Arc::unwrap_or_clone(prepared);
+    let (projection, alternate) = if prepared.preparation.mode == wanted.mode {
+        (
+            prepared.projection,
+            (other(wanted.mode), prepared.alternate),
+        )
+    } else {
+        (
+            prepared.alternate,
+            (prepared.preparation.mode, prepared.projection),
+        )
+    };
+    Segment::from_parts(
+        doc.clone(),
+        slot,
+        view.generations,
+        prepared.expansion,
+        prepared.comparison,
+        projection,
+        Some(alternate),
+    )
 }
 
 /// Facts about `file` its line rows do not show. See [`FileFact`]. A

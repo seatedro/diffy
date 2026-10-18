@@ -1,7 +1,8 @@
 use diffy_diff::{
-    AlignedRow, BuildError, ChangeIntensity, ContentChange, DiffDocument, DiffStats,
-    DocumentBuilder, FileMeta, FileStatus, ObjectId, SemanticError, SemanticSpan, Side,
-    SourceCoverage, TextStore, diff_from_changes, myers::Change, parse_unified, write_unified,
+    AlignedRow, BuildError, ChangeIntensity, Comparison, ComparisonOptions, ContentChange,
+    DiffDocument, DiffStats, DocumentBuilder, Expansion, FileMeta, FileStatus, Mode, ObjectId,
+    PairingMode, Projection, RowKind, SemanticError, SemanticSpan, Side, SourceCoverage, TextStore,
+    diff_from_changes, myers::Change, parse_unified, write_unified,
 };
 
 fn fixture(name: &str) -> DiffDocument {
@@ -476,4 +477,74 @@ fn deferred_files_carry_pending_stats_and_content_facts() {
     assert!(a.matches(&ObjectId::parse("abcdef1234").unwrap()));
     assert_eq!(ObjectId::parse("0000000"), None);
     assert_eq!(ObjectId::parse("xyz"), None);
+}
+
+#[test]
+fn structural_pairing_follows_aligned_rows_that_cover_the_change() {
+    let build = |rows: &[(Option<u32>, Option<u32>)]| {
+        let old = TextStore::new("a();\nb();\nc();\n");
+        let new = TextStore::new("x();\nb2();\n");
+        let mut builder = DocumentBuilder::new();
+        let mut file = builder.file(
+            meta("f.rs", FileStatus::Modified),
+            SourceCoverage::Full,
+            old,
+            new,
+        );
+        file.structural(true).hunk(0, 0).change(3, 2);
+        for &(old, new) in rows {
+            file.row(AlignedRow { old, new });
+        }
+        file.finish().unwrap();
+        builder.build()
+    };
+    let split = |doc: &DiffDocument, pairing| {
+        let comparison = Comparison::new(
+            doc,
+            ComparisonOptions {
+                pairing,
+                ..ComparisonOptions::default()
+            },
+        );
+        comparison.verify_integrity(doc).unwrap();
+        let expansion = Expansion::new(doc);
+        let projection = Projection::with_comparison(doc, Mode::Split, &expansion, &comparison);
+        (0..projection.len())
+            .filter(|&row| projection.kind[row as usize] != RowKind::FileHeader)
+            .map(|row| {
+                (
+                    projection.line(row, Side::Old),
+                    projection.line(row, Side::New),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let positional = [(Some(0), Some(0)), (Some(1), Some(1)), (Some(2), None)];
+    let covered = build(&[
+        (Some(0), None),
+        (None, Some(0)),
+        (Some(1), Some(1)),
+        (Some(2), None),
+    ]);
+    assert_eq!(
+        split(&covered, PairingMode::Similarity),
+        [
+            (Some(0), None),
+            (None, Some(0)),
+            (Some(1), Some(1)),
+            (Some(2), None)
+        ]
+    );
+    assert_eq!(split(&covered, PairingMode::Positional), positional);
+    let partial = build(&[(Some(0), None), (Some(1), Some(1)), (Some(2), None)]);
+    let plain = Comparison::new(&partial, ComparisonOptions::default());
+    let fallback = Comparison::new(&build(&[]), ComparisonOptions::default());
+    let rows = |c: &Comparison, doc: &DiffDocument| {
+        let expansion = Expansion::new(doc);
+        let p = Projection::with_comparison(doc, Mode::Split, &expansion, c);
+        (0..p.len())
+            .map(|row| (p.line(row, Side::Old), p.line(row, Side::New)))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(rows(&plain, &partial), rows(&fallback, &build(&[])));
 }

@@ -1635,6 +1635,36 @@ mod legacy {
     }
 
     #[test]
+    fn grammar_whose_query_does_not_compile_fails_until_republished() {
+        let Some(good) = rust() else { return };
+        let mut broken = good.clone();
+        broken.version = "badbadbadbad-000000000000".to_owned();
+        broken.highlights = b"(no_such_node) @keyword".to_vec();
+        let storage = tempfile::tempdir().unwrap();
+        let server = Server::start();
+        publish(&server, std::slice::from_ref(&broken));
+        let (store, resolved) = downloading(&server, storage.path());
+
+        store.status(&language("rs"));
+        wait(&resolved);
+        let reason = failed(&store, "rust");
+        let before_republish = store.status(&language("rs"));
+        publish(&server, std::slice::from_ref(&good));
+        let retried = store.retry("rust");
+        store.status(&language("rs"));
+        wait(&resolved);
+
+        assert!(
+            reason.starts_with("the published grammar does not load"),
+            "{reason}"
+        );
+        assert_eq!(before_republish, LanguageStatus::Unavailable);
+        assert!(retried);
+        assert_eq!(state(&store, "rust"), Some(GrammarState::Ready));
+        assert_eq!(keywords(&store, RUST), RUST_DUMP_KEYWORDS);
+    }
+
+    #[test]
     fn tsx_downloads_and_inherits_typescript() {
         let Some(packs) = fixture::native_packs(&[("typescript", "typescript"), ("tsx", "tsx")])
         else {

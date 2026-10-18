@@ -62,17 +62,18 @@ pub fn view(review: &mut ReviewController, slot: &Slot, cx: &mut ViewContext) ->
             }
             parts.join(" \u{b7} ")
         });
-        let submit = counts
-            .filter(|(_, pending, failed)| pending + failed > 0)
-            .map(|_| {
-                let button = Button::new(action(ReviewAction::SubmitReview {
-                    decision: ReviewDecision::Comment,
-                }))
+        let submit = counts.filter(|_| review.signed_in()).map(|(_, pending, failed)| {
+            let style = if pending + failed > 0 {
+                ButtonStyle::Filled
+            } else {
+                ButtonStyle::Subtle
+            };
+            let button = Button::new(action(ReviewAction::OpenSubmitMenu))
                 .label("Submit review")
-                .style(ButtonStyle::Filled)
+                .style(style)
                 .size(ButtonSize::Compact);
-                view! { <div test_id="review.submit">{button}</div> }
-            });
+            view! { <div test_id="review.submit">{button}</div> }
+        });
         let open = Button::new(action(ReviewAction::OpenPullRequestInBrowser))
             .icon(lucide::EXTERNAL_LINK)
             .tooltip("Open on GitHub")
@@ -137,6 +138,7 @@ pub fn overlay(review: &ReviewController, slot: &Slot, cx: &mut ViewContext) -> 
     match review.overlay_open()? {
         ReviewOverlay::Auth => Some(auth_modal(review, slot, theme)),
         ReviewOverlay::AccountMenu => Some(account_menu(review, slot, theme)),
+        ReviewOverlay::SubmitReview => Some(submit_menu(review, slot, theme)),
     }
 }
 
@@ -273,6 +275,64 @@ fn account_menu(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyEle
                 </div>
                 <div class="w-full" h={Sz::SEPARATOR_W} bg={tc.border_variant} />
                 {sign_out}
+            </div>
+        </div>
+    }
+}
+
+fn submit_menu(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let small = TextStyle::BodySmall.font_size(theme);
+    let width = tokens::scaled(Sz::CARD_SM, scale).min(slot.width);
+    let left = (slot.width - width - tokens::scaled(Sp::MD, scale)).max(0.0);
+    let top = theme.metrics.title_bar_height + tokens::scaled(Sp::XS, scale);
+    let (pending, failed) = review
+        .review_counts()
+        .map_or((0, 0), |(_, pending, failed)| (pending, failed));
+    let summary = match (pending, failed) {
+        (0, 0) => "No pending comments".to_owned(),
+        (pending, 0) => format!("{pending} pending comments will be submitted"),
+        (pending, failed) => format!("{pending} pending, {failed} to retry"),
+    };
+    let presentation = review.presentation();
+    let summary_card = presentation.general_composer().and_then(|card| {
+        presentation.card_element(&card.key, width - tokens::scaled(Sp::MD, scale))
+    });
+    let add_summary = summary_card.is_none().then(|| {
+        Button::new(action(ReviewAction::OpenComposer))
+            .label("Add summary")
+            .style(ButtonStyle::Ghost)
+            .size(ButtonSize::Compact)
+    });
+    let decision = |label: &str, decision: ReviewDecision, style: ButtonStyle| {
+        Button::new(action(ReviewAction::SubmitReview { decision }))
+            .label(label)
+            .style(style)
+            .size(ButtonSize::Compact)
+    };
+    view! { scale,
+        <div class="absolute" left={0.0} top={0.0} w={slot.width} h={slot.height}
+             bg={Color::TRANSPARENT}
+             on:click={action(ReviewAction::CloseOverlay)}
+             on:key:escape={action(ReviewAction::CloseOverlay)}>
+            <div class="absolute flex-col" left={left} top={top} w={width} p={Sp::SM} gap={Sp::SM}
+                 bg={tc.elevated_surface} border={tc.border} rounded={Rad::XL}
+                 shadow_preset={Shadow::DROPDOWN}
+                 accessibility_role={AccessibilityRole::Dialog}
+                 aria-label="Submit review"
+                 test_id="review.submit_menu"
+                 on:click={quark_ui::element::NoopAction}>
+                <text size={small} class="font-medium" color={tc.text_strong}>"Submit review"</text>
+                <text size={small} color={tc.text_muted}>{summary}</text>
+                {?summary_card}
+                {?add_summary}
+                <div class="flex-row items-center" gap={Sp::XS}>
+                    <spacer />
+                    {decision("Comment", ReviewDecision::Comment, ButtonStyle::Subtle)}
+                    {decision("Request changes", ReviewDecision::RequestChanges, ButtonStyle::Danger)}
+                    {decision("Approve", ReviewDecision::Approve, ButtonStyle::Filled)}
+                </div>
             </div>
         </div>
     }

@@ -9,8 +9,11 @@ pub enum ComposerTarget {
     Inline {
         path: String,
         target: SourceTarget,
+        draft: Option<ReviewDraftId>,
     },
-    General,
+    General {
+        draft: Option<ReviewDraftId>,
+    },
     Draft(ReviewDraftId),
     Reply {
         thread: ReviewThreadId,
@@ -26,13 +29,14 @@ impl ComposerTarget {
     pub fn draft(&self) -> Option<ReviewDraftId> {
         match self {
             Self::Draft(id) | Self::Reply { draft: id, .. } => Some(*id),
-            Self::Inline { .. } | Self::General | Self::Edit { .. } => None,
+            Self::Inline { draft, .. } | Self::General { draft } => *draft,
+            Self::Edit { .. } => None,
         }
     }
 
     pub fn card(&self) -> CardKey {
         match self {
-            Self::Inline { .. } | Self::General => CardKey::NewComment,
+            Self::Inline { .. } | Self::General { .. } => CardKey::NewComment,
             Self::Draft(id) => CardKey::Draft(*id),
             Self::Reply { thread, .. } | Self::Edit { thread, .. } => {
                 CardKey::Thread(thread.clone())
@@ -42,7 +46,7 @@ impl ComposerTarget {
 
     pub fn submit_label(&self) -> &'static str {
         match self {
-            Self::Inline { .. } | Self::General => "Add review comment",
+            Self::Inline { .. } | Self::General { .. } => "Add review comment",
             Self::Draft(_) => "Update comment",
             Self::Reply { .. } => "Reply",
             Self::Edit { .. } => "Save",
@@ -51,7 +55,7 @@ impl ComposerTarget {
 
     pub fn test_id(&self) -> String {
         match self {
-            Self::Inline { .. } | Self::General => "review.composer.new".to_owned(),
+            Self::Inline { .. } | Self::General { .. } => "review.composer.new".to_owned(),
             Self::Draft(id) | Self::Reply { draft: id, .. } => {
                 format!("review.composer.draft.{}", id.0)
             }

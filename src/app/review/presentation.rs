@@ -6,10 +6,12 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use diffy_ui::diff_view::AnnotationId;
-use diffy_ui::diff_view::decorator::{AnnotationContext, DiffDecorator};
+use diffy_ui::diff_view::decorator::{AnnotationContext, DiffDecorator, HeaderContext, HeaderSlot};
 use quark::view;
 use quark_app::ViewContext;
-use quark_components::{Button, ButtonSize, ButtonStyle, avatar};
+use quark_components::{
+    AvatarImage, Button, ButtonSize, ButtonStyle, PopoverSide, anchored, avatar, popover_panel,
+};
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::document::{
     DocumentEvent, DocumentStyle, MarkdownDocument, MarkdownEntry, RowChrome, RowDecorator,
@@ -52,7 +54,10 @@ struct CardDoc {
 pub struct CommentRow {
     pub label: String,
     pub markdown: String,
+    pub face: bool,
 }
+
+type Faces = Rc<RefCell<HashMap<String, AvatarImage>>>;
 
 #[derive(Default)]
 struct HostInner {
@@ -63,12 +68,17 @@ struct HostInner {
     widths: HashMap<CardKey, f32>,
     grammars: Option<Arc<Grammars>>,
     wake: Option<Wake>,
+    faces: Faces,
+    viewport: (f32, f32),
+    default_width: f32,
 }
 
 #[derive(Clone, Default)]
 pub struct CardHost(Rc<RefCell<HostInner>>);
 
-struct CommentChrome;
+struct CommentChrome {
+    faces: Faces,
+}
 
 impl RowDecorator for CommentChrome {
     fn header(&self, chrome: &RowChrome, _width: f32, theme: &Theme) -> Option<AnyElement> {
@@ -81,9 +91,15 @@ impl RowDecorator for CommentChrome {
             .to_owned();
         let scale = theme.metrics.ui_scale();
         let size = TextStyle::BodySmall.font_size(theme);
+        let face = self
+            .faces
+            .try_borrow()
+            .ok()
+            .and_then(|faces| faces.get(&login).cloned());
+        let test_id = format!("review.avatar.{login}");
         Some(view! { scale,
             <div class="flex-row items-center" gap={Sp::XS}>
-                {avatar(login).size(size * 1.4 / scale)}
+                <div test_id={test_id}>{avatar(login).size(size * 1.4 / scale).image(face)}</div>
                 <text size={size} class="font-medium truncate" color={theme.colors.text_strong}>
                     {label}
                 </text>
@@ -101,7 +117,9 @@ fn new_doc(inner: &mut HostInner, theme_font: f32, rows: &[CommentRow]) -> CardD
         pad_x: 0.0,
         ..DocumentStyle::for_font_size(theme_font)
     });
-    doc.set_decorator(CommentChrome);
+    doc.set_decorator(CommentChrome {
+        faces: Rc::clone(&inner.faces),
+    });
     let grammars: &Grammars = match inner.grammars.as_deref() {
         Some(grammars) => grammars,
         None => Grammars::shared(),
@@ -117,6 +135,7 @@ fn new_doc(inner: &mut HostInner, theme_font: f32, rows: &[CommentRow]) -> CardD
         chrome: RowChrome {
             header_height: if row.label.is_empty() { 0.0 } else { header },
             label: (!row.label.is_empty()).then(|| Arc::from(row.label.as_str())),
+            kind: u32::from(row.face),
             ..RowChrome::default()
         },
         markdown: row.markdown.clone(),
@@ -139,6 +158,27 @@ impl CardHost {
 
     pub fn set_wake(&self, wake: Wake) {
         self.with(|inner| inner.wake = Some(wake));
+    }
+
+    pub fn set_face(&self, login: String, face: AvatarImage) {
+        self.with(|inner| {
+            if let Ok(mut faces) = inner.faces.try_borrow_mut() {
+                faces.insert(login, face);
+            }
+        });
+    }
+
+    pub fn remove_face(&self, login: &str) {
+        self.with(|inner| {
+            if let Ok(mut faces) = inner.faces.try_borrow_mut() {
+                faces.remove(login);
+            }
+        });
+    }
+
+    fn faces(&self) -> Faces {
+        self.with(|inner| Rc::clone(&inner.faces))
+            .unwrap_or_default()
     }
 
     pub fn set_grammars(&self, grammars: Arc<Grammars>) {
@@ -257,6 +297,7 @@ impl CardHost {
             match preview {
                 Some(markdown) => {
                     let row = [CommentRow {
+                        face: false,
                         label: String::new(),
                         markdown: if markdown.trim().is_empty() {
                             "Nothing to preview".to_owned()
@@ -278,9 +319,12 @@ impl CardHost {
         let scale = cx.frame.scale_factor();
         let now_ms = cx.frame.elapsed().as_millis() as u64;
         let focused = cx.is_focused(REVIEW_COMPOSER);
+        let viewport = cx.frame.size();
         let mut measuring = false;
         let changed = self
             .with(|inner| {
+                inner.viewport = viewport;
+                inner.default_width = default_width;
                 let mut changed = inner.theme.as_ref() != Some(&theme);
                 if changed {
                     inner.theme = Some(theme.clone());
@@ -401,6 +445,7 @@ pub struct CardModel {
     pub delete_node: Option<String>,
     pub failure: Option<String>,
     pub retry_draft: Option<crate::core::review::ReviewDraftId>,
+    pub file_level: bool,
     pub test_id: String,
     pub accessible: String,
 }
@@ -417,6 +462,8 @@ pub struct ReviewPresentation {
     revision: u64,
     cards: Rc<[CardModel]>,
     annotations: Rc<[ReviewAnnotation]>,
+    files: Rc<[(String, Vec<CardKey>)]>,
+    open_file: Option<String>,
     composer: Option<ComposerView>,
     host: CardHost,
 }
@@ -469,6 +516,19 @@ fn locate(
             .then(|| anchor.to_source_target(file.key, file.revision, &file.paths))
             .flatten()
     })
+}
+
+fn file_level(anchor: Option<&crate::core::review::ReviewAnchor>, cx: &SharedContext) -> bool {
+    let Some(anchor) = anchor else {
+        return false;
+    };
+    anchor.active_line_range().is_none()
+        && cx.manifest.as_ref().is_some_and(|manifest| {
+            manifest
+                .files
+                .iter()
+                .any(|file| anchor.matches_paths(&file.paths))
+        })
 }
 
 pub fn thread_line_label(anchor: Option<&crate::core::review::ReviewAnchor>) -> String {
@@ -529,7 +589,7 @@ fn first_line(body: &str) -> String {
         .to_owned()
 }
 
-fn comment_rows(thread: &ReviewThread) -> Vec<CommentRow> {
+fn comment_rows(thread: &ReviewThread, faces: &HashMap<String, AvatarImage>) -> Vec<CommentRow> {
     thread
         .comments
         .iter()
@@ -552,7 +612,11 @@ fn comment_rows(thread: &ReviewThread) -> Vec<CommentRow> {
             } else {
                 comment.body.clone()
             };
-            CommentRow { label, markdown }
+            CommentRow {
+                face: faces.contains_key(author),
+                label,
+                markdown,
+            }
         })
         .collect()
 }
@@ -625,6 +689,7 @@ fn thread_model(
             .and_then(|c| c.backend_node_id.clone()),
         failure: failed.as_ref().map(|(_, message)| message.clone()),
         retry_draft: failed.map(|(id, _)| id),
+        file_level: file_level(thread.anchor.as_ref(), cx),
         test_id: card_test_id(&key),
         key,
     }
@@ -663,10 +728,12 @@ fn draft_model(draft: &ReviewDraft, cx: &SharedContext) -> (CardModel, Vec<Comme
         delete_node: None,
         failure,
         retry_draft: None,
+        file_level: file_level(draft.anchor.as_ref(), cx),
         test_id: card_test_id(&key),
         key,
     };
     let rows = vec![CommentRow {
+        face: false,
         label: String::new(),
         markdown: if draft.body.trim().is_empty() {
             "(empty comment)".to_owned()
@@ -683,6 +750,8 @@ impl ReviewPresentation {
             revision: 0,
             cards: Rc::from([]),
             annotations: Rc::from([]),
+            files: Rc::from([]),
+            open_file: None,
             composer: None,
             host,
         }
@@ -693,6 +762,8 @@ impl ReviewPresentation {
             revision: self.revision + 1,
             cards: Rc::clone(&self.cards),
             annotations: Rc::clone(&self.annotations),
+            files: Rc::clone(&self.files),
+            open_file: self.open_file.clone(),
             composer: self.composer.clone(),
             host: self.host.clone(),
         }
@@ -708,15 +779,23 @@ impl ReviewPresentation {
         });
         let mut cards = Vec::new();
         let mut docs = Vec::new();
+        let faces = controller.host.faces();
+        let faces = faces.try_borrow().map(|f| f.clone()).unwrap_or_default();
+        let composing = controller.composer.as_ref().and_then(|c| match &c.target {
+            ComposerTarget::Inline { draft, .. } | ComposerTarget::General { draft } => *draft,
+            _ => None,
+        });
         if let Some(session) = controller.session() {
             for thread in &session.threads {
                 let expanded = controller.thread_expanded(&thread.id);
                 let model = thread_model(thread, session, expanded, cx);
-                docs.push((model.key.clone(), comment_rows(thread)));
+                docs.push((model.key.clone(), comment_rows(thread, &faces)));
                 cards.push(model);
             }
             for draft in session.drafts.values() {
-                if matches!(draft.kind, ReviewDraftKind::Reply { .. }) {
+                if matches!(draft.kind, ReviewDraftKind::Reply { .. })
+                    || Some(draft.id) == composing
+                {
                     continue;
                 }
                 let (model, rows) = draft_model(draft, cx);
@@ -724,17 +803,30 @@ impl ReviewPresentation {
                 cards.push(model);
             }
         }
-        if let Some(composer) = controller.composer.as_ref()
-            && let ComposerTarget::Inline { path, target } = &composer.target
-        {
+        let fresh = controller
+            .composer
+            .as_ref()
+            .and_then(|composer| match &composer.target {
+                ComposerTarget::Inline { path, target, .. } => {
+                    let anchor =
+                        crate::core::review::ReviewAnchor::from_source_target(path.clone(), target);
+                    Some((
+                        thread_line_label(Some(&anchor)),
+                        Some(target.clone()),
+                        path.clone(),
+                    ))
+                }
+                ComposerTarget::General { .. } => {
+                    Some(("Review summary".to_owned(), None, String::new()))
+                }
+                _ => None,
+            });
+        if let Some((title, target, path)) = fresh {
             let key = CardKey::NewComment;
-            let anchor =
-                crate::core::review::ReviewAnchor::from_source_target(path.clone(), target);
-            let title = thread_line_label(Some(&anchor));
             cards.push(CardModel {
                 id: annotation_id(&key),
-                target: Some(target.clone()),
-                path: path.clone(),
+                target,
+                path,
                 accessible: format!("New review comment, {title}"),
                 title,
                 status: "New".to_owned(),
@@ -747,6 +839,7 @@ impl ReviewPresentation {
                 delete_node: None,
                 failure: None,
                 retry_draft: None,
+                file_level: false,
                 test_id: card_test_id(&key),
                 key,
             });
@@ -771,13 +864,34 @@ impl ReviewPresentation {
                 })
             })
             .collect::<Vec<_>>();
+        let mut files: Vec<(String, Vec<CardKey>)> = Vec::new();
+        for card in cards.iter().filter(|card| card.file_level) {
+            match files.iter_mut().find(|(path, _)| *path == card.path) {
+                Some((_, keys)) => keys.push(card.key.clone()),
+                None => files.push((card.path.clone(), vec![card.key.clone()])),
+            }
+        }
         Self {
             revision: previous.revision + 1,
             cards: cards.into(),
             annotations: annotations.into(),
+            files: files.into(),
+            open_file: controller.file_comments.clone(),
             composer,
             host: controller.host.clone(),
         }
+    }
+
+    pub fn file_comments(&self, title: &str) -> Option<(&str, &[CardKey])> {
+        self.files
+            .iter()
+            .find(|(path, _)| title == path || title.split(" \u{2192} ").any(|part| part == path))
+            .map(|(path, keys)| (path.as_str(), keys.as_slice()))
+    }
+
+    pub fn general_composer(&self) -> Option<&CardModel> {
+        self.card(&CardKey::NewComment)
+            .filter(|card| card.target.is_none() && card.path.is_empty())
     }
 
     pub fn annotations(&self) -> &[ReviewAnnotation] {
@@ -817,6 +931,56 @@ impl DiffDecorator for ReviewPresentation {
     fn annotation(&self, cx: &AnnotationContext) -> Option<AnyElement> {
         let key = self.cards.iter().find(|card| card.id == cx.id)?.key.clone();
         self.card_element(&key, cx.width)
+    }
+
+    fn header_slot(&self, slot: HeaderSlot, cx: &HeaderContext) -> Option<AnyElement> {
+        if slot != HeaderSlot::Metadata {
+            return None;
+        }
+        self.file_comments_element(cx.title)
+    }
+}
+
+impl ReviewPresentation {
+    pub fn file_comments_element(&self, title: &str) -> Option<AnyElement> {
+        let (path, keys) = self.file_comments(title)?;
+        let (theme, viewport, width) = self
+            .host
+            .with(|inner| (inner.theme.clone(), inner.viewport, inner.default_width))?;
+        let theme = theme.unwrap_or_else(Theme::default_dark);
+        let label = match keys.len() {
+            1 => "1 file comment".to_owned(),
+            n => format!("{n} file comments"),
+        };
+        let open = self.open_file.as_deref() == Some(path);
+        let toggle = Button::new(action(ReviewAction::ToggleFileComments(path.to_owned())))
+            .label(label)
+            .style(ButtonStyle::Ghost)
+            .size(ButtonSize::Compact)
+            .active(open);
+        let popover = open.then(|| {
+            let cards: Vec<AnyElement> = keys
+                .iter()
+                .filter_map(|key| self.card_element(key, width))
+                .collect();
+            let scale = theme.metrics.ui_scale();
+            let gap = (Sp::XS * scale).round();
+            let panel = popover_panel(&theme)
+                .flex_col()
+                .gap(gap)
+                .p(gap)
+                .accessibility_role(AccessibilityRole::Group)
+                .accessibility_label(format!("File comments on {path}"))
+                .test_id(format!("review.file_comments.{path}"))
+                .children(cards);
+            anchored(panel, PopoverSide::Bottom, viewport)
+        });
+        Some(view! {
+            <div class="relative" test_id={format!("review.file.{path}")}>
+                {toggle}
+                {?popover}
+            </div>
+        })
     }
 }
 

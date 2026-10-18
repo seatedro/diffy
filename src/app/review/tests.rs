@@ -407,7 +407,8 @@ impl Fake {
                     },
                 },
             ),
-            ReviewEffect::SaveSession { scope, session } => {
+            ReviewEffect::SaveSession { scope, session }
+            | ReviewEffect::SaveSessionDraft { scope, session } => {
                 let key = self.services.save_session(&session).unwrap();
                 events.push(ReviewEvent::SessionSaved { scope, key });
             }
@@ -559,6 +560,8 @@ impl Driver {
             TextEditCommand::InsertText(text.to_owned()),
             &cx,
         );
+        let reduction = self.review.after_edit(REVIEW_COMPOSER, &self.shared);
+        self.drive(reduction);
     }
 
     fn thread(&self) -> ReviewThreadId {
@@ -793,7 +796,6 @@ fn drafts_persist_across_a_simulated_restart() {
         driver.act(ReviewAction::SubmitComment);
         driver.act(ReviewAction::ReplyToThread(driver.thread()));
         driver.type_text("Half-written reply");
-        driver.act(ReviewAction::CloseOverlay);
     }
 
     let mut driver = Driver::new(Fake::at(dir.path()));
@@ -1085,10 +1087,14 @@ impl UiApp for App {
             shared: &self.driver.shared,
             now_ms: 0,
         };
-        self.driver
+        let outcome = self
+            .driver
             .review
             .edit_text(target, command, &cx)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let reduction = self.driver.review.after_edit(target, &self.driver.shared);
+        self.driver.drive(reduction);
+        outcome
     }
 
     fn set_preedit(&mut self, target: FocusId, text: String, cursor: Option<(usize, usize)>) {
@@ -1274,10 +1280,16 @@ fn staged_drafts_render_cards_and_submit_review() {
     assert!(card.bounds.height > 0.0);
     assert!(ui.painted_text().contains("Pending"));
     ui.click_node(By::role_name(Role::Button, "Submit review"));
+    ui.find(By::role_name(Role::Dialog, "Submit review"));
+    assert!(
+        ui.painted_text()
+            .contains("1 pending comments will be submitted")
+    );
+    ui.click_node(By::role_name(Role::Button, "Comment"));
 
     assert!(ui.try_find(By::test_id("review.draft.1")).is_none());
     assert!(
-        ui.try_find(By::role_name(Role::Button, "Submit review"))
+        ui.try_find(By::role_name(Role::Dialog, "Submit review"))
             .is_none()
     );
 }

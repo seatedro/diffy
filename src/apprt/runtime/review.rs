@@ -1,19 +1,121 @@
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::thread;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use crate::apprt::services::ReviewServices;
 use crate::apprt::transport::ScopedEventSender;
-use crate::contracts::review::{ReviewEffect, ReviewEvent};
+use crate::contracts::review::{ReviewEffect, ReviewEvent, ReviewScope};
+use crate::core::review::ReviewSession;
 use crate::platform::startup::GitHubTokenStore;
+
+pub(crate) const DRAFT_SAVE_DEBOUNCE: Duration = Duration::from_millis(400);
+
+struct DraftSave {
+    scope: ReviewScope,
+    session: Box<ReviewSession>,
+    events: ScopedEventSender,
+    immediate: bool,
+}
+
+struct DraftSaver {
+    sender: Option<Sender<DraftSave>>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl DraftSaver {
+    fn new(services: ReviewServices) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::Builder::new()
+            .name("diffy-review-drafts".to_owned())
+            .spawn(move || draft_save_loop(&services, &receiver))
+            .ok();
+        Self {
+            sender: Some(sender),
+            worker,
+        }
+    }
+
+    fn save(&self, request: DraftSave) {
+        let rejected = match &self.sender {
+            Some(sender) => sender.send(request).err().map(|error| error.0),
+            None => Some(request),
+        };
+        if let Some(request) = rejected {
+            request.events.send(ReviewEvent::SessionSaveFailed {
+                scope: request.scope,
+                key: request.session.key(),
+                message: "review draft writer stopped".to_owned(),
+            });
+        }
+    }
+}
+
+impl Drop for DraftSaver {
+    fn drop(&mut self) {
+        self.sender = None;
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn draft_save_loop(services: &ReviewServices, receiver: &Receiver<DraftSave>) {
+    let mut pending: HashMap<String, DraftSave> = HashMap::new();
+    loop {
+        let next = if pending.is_empty() {
+            receiver.recv().map_err(|_| RecvTimeoutError::Disconnected)
+        } else {
+            receiver.recv_timeout(DRAFT_SAVE_DEBOUNCE)
+        };
+        match next {
+            Ok(request) => {
+                let immediate = request.immediate;
+                pending.insert(request.session.key().storage_key(), request);
+                if immediate {
+                    write_drafts(services, &mut pending);
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => write_drafts(services, &mut pending),
+            Err(RecvTimeoutError::Disconnected) => {
+                write_drafts(services, &mut pending);
+                return;
+            }
+        }
+    }
+}
+
+fn write_drafts(services: &ReviewServices, pending: &mut HashMap<String, DraftSave>) {
+    for (_, request) in pending.drain() {
+        let DraftSave {
+            scope,
+            session,
+            events,
+            ..
+        } = request;
+        let event = match services.save_session(&session) {
+            Ok(key) => ReviewEvent::SessionSaved { scope, key },
+            Err(error) => ReviewEvent::SessionSaveFailed {
+                scope,
+                key: session.key(),
+                message: error.user_message(),
+            },
+        };
+        events.send(event);
+    }
+}
 
 pub struct ReviewRuntime {
     services: ReviewServices,
     token_store: GitHubTokenStore,
+    drafts: DraftSaver,
 }
 
 impl ReviewRuntime {
     pub fn new(services: ReviewServices, token_store: GitHubTokenStore) -> Self {
         Self {
+            drafts: DraftSaver::new(services.clone()),
             services,
             token_store,
         }
@@ -145,20 +247,18 @@ impl ReviewRuntime {
                     events.send(event);
                 });
             }
-            ReviewEffect::SaveSession { scope, session } => {
-                let services = self.services.clone();
-                thread::spawn(move || {
-                    let event = match services.save_session(&session) {
-                        Ok(key) => ReviewEvent::SessionSaved { scope, key },
-                        Err(error) => ReviewEvent::SessionSaveFailed {
-                            scope,
-                            key: session.key(),
-                            message: error.user_message(),
-                        },
-                    };
-                    events.send(event);
-                });
-            }
+            ReviewEffect::SaveSession { scope, session } => self.drafts.save(DraftSave {
+                scope,
+                session,
+                events,
+                immediate: true,
+            }),
+            ReviewEffect::SaveSessionDraft { scope, session } => self.drafts.save(DraftSave {
+                scope,
+                session,
+                events,
+                immediate: false,
+            }),
             ReviewEffect::FetchAvatar { url } => {
                 let services = self.services.clone();
                 thread::spawn(move || {

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -19,20 +19,79 @@ use crate::contracts::shared::{AccountEpoch, JobId, SharedContext, SourceTarget}
 use crate::contracts::shell::{Controller, Intent, LogicalFocus, Reduction, ShellEffect};
 use crate::contracts::viewport::CompareIntent;
 use crate::core::compare::RendererKind;
+use crate::core::forge::github::PullRequestInfo;
 use crate::core::forge::github::{DeviceFlowState, GitHubUser, parse_pr_url};
 use crate::core::review::{
     ReviewAnchor, ReviewDecision, ReviewDraftId, ReviewDraftKind, ReviewDraftState,
     ReviewResolution, ReviewSession, ReviewSessionStatus, ReviewTarget, ReviewThreadId,
 };
 use crate::core::syntax::grammar::Grammars;
-use crate::core::vcs::model::{VcsCompareRequest, VcsCompareSpec};
+use crate::core::vcs::git::WORKDIR_REF;
+use crate::core::vcs::model::{RefKind, VcsCompareRequest, VcsCompareSpec, VcsKind, VcsRef};
 
 const ACCOUNT_AVATAR_PX: u32 = 128;
+pub(super) const REVIEW_AVATAR_PX: u32 = 64;
+pub(super) const AVATAR_CACHE_LIMIT: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewOverlay {
     Auth,
     AccountMenu,
+    SubmitReview,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PeekState {
+    Loading,
+    Ready(Box<PullRequestInfo>),
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AvatarState {
+    Fetching,
+    Ready,
+    Failed,
+}
+
+#[derive(Debug, Default)]
+struct AvatarCache {
+    entries: HashMap<String, (String, AvatarState)>,
+    order: VecDeque<String>,
+}
+
+impl AvatarCache {
+    fn contains(&self, url: &str) -> bool {
+        self.entries.contains_key(url)
+    }
+
+    fn insert(&mut self, url: String, login: String) -> Vec<String> {
+        self.order.push_back(url.clone());
+        self.entries.insert(url, (login, AvatarState::Fetching));
+        let mut evicted = Vec::new();
+        while self.order.len() > AVATAR_CACHE_LIMIT {
+            if let Some(old) = self.order.pop_front()
+                && let Some((login, _)) = self.entries.remove(&old)
+            {
+                evicted.push(login);
+            }
+        }
+        evicted
+    }
+
+    fn settle(&mut self, url: &str, ready: bool) -> Option<String> {
+        let (login, state) = self.entries.get_mut(url)?;
+        *state = if ready {
+            AvatarState::Ready
+        } else {
+            AvatarState::Failed
+        };
+        Some(login.clone())
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -66,6 +125,7 @@ enum Pending {
     Mutation,
     SubmitDrafts,
     Session,
+    Peek,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +181,9 @@ pub struct ReviewController {
     pub(super) expanded: HashMap<ReviewThreadId, bool>,
     pub(super) composer: Option<Composer>,
     focus_request: Option<LogicalFocus>,
+    avatars: AvatarCache,
+    peeks: HashMap<PullRequestRef, PeekState>,
+    pub(super) file_comments: Option<String>,
     pub(super) host: CardHost,
     presentation: Rc<ReviewPresentation>,
 }
@@ -141,6 +204,9 @@ impl Default for ReviewController {
             expanded: HashMap::new(),
             composer: None,
             focus_request: None,
+            avatars: AvatarCache::default(),
+            peeks: HashMap::new(),
+            file_comments: None,
             presentation: Rc::new(ReviewPresentation::empty(host.clone())),
             host,
         }
@@ -235,6 +301,14 @@ impl ReviewController {
             }
         }
         Some((session.unresolved_thread_count(), pending, failed))
+    }
+
+    pub fn peek(&self, pr: &PullRequestRef) -> Option<&PeekState> {
+        self.peeks.get(pr)
+    }
+
+    pub fn avatar_cache_len(&self) -> usize {
+        self.avatars.len()
     }
 
     pub fn overlay_open(&self) -> Option<ReviewOverlay> {
@@ -585,7 +659,14 @@ impl ReviewController {
         let Some(path) = path.filter(|path| !path.is_empty()) else {
             return Reduction::changed().intent(error("Select a line in the diff to comment on."));
         };
-        self.open_composer(ComposerTarget::Inline { path, target }, "")
+        self.open_composer(
+            ComposerTarget::Inline {
+                path,
+                target,
+                draft: None,
+            },
+            "",
+        )
     }
 
     fn reply_to(&mut self, thread: ReviewThreadId) -> Reduction {
@@ -679,7 +760,12 @@ impl ReviewController {
         };
         self.close_composer();
         let mut reduction = Reduction::changed();
-        if let ComposerTarget::Reply { draft, .. } = target
+        let fresh = match &target {
+            ComposerTarget::Reply { draft, .. } => Some(*draft),
+            ComposerTarget::Inline { draft, .. } | ComposerTarget::General { draft } => *draft,
+            ComposerTarget::Draft(_) | ComposerTarget::Edit { .. } => None,
+        };
+        if let Some(draft) = fresh
             && let Some(session) = self.session_mut()
             && session
                 .drafts
@@ -711,16 +797,34 @@ impl ReviewController {
         };
         let mut reduction = Reduction::changed();
         match composer.target {
-            ComposerTarget::Inline { path, target } => {
-                let anchor = ReviewAnchor::from_source_target(path, &target);
+            ComposerTarget::Inline {
+                path,
+                target,
+                draft,
+            } => {
                 if let Some(session) = self.session_mut() {
-                    session.create_inline_draft(anchor, body);
+                    match draft {
+                        Some(id) => {
+                            session.update_draft_body(id, body);
+                        }
+                        None => {
+                            let anchor = ReviewAnchor::from_source_target(path, &target);
+                            session.create_inline_draft(anchor, body);
+                        }
+                    }
                 }
                 reduction = reduction.intent(info("Review comment staged."));
             }
-            ComposerTarget::General => {
+            ComposerTarget::General { draft } => {
                 if let Some(session) = self.session_mut() {
-                    session.create_general_draft(body);
+                    match draft {
+                        Some(id) => {
+                            session.update_draft_body(id, body);
+                        }
+                        None => {
+                            session.create_general_draft(body);
+                        }
+                    }
                 }
                 reduction = reduction.intent(info("Review comment staged."));
             }
@@ -777,6 +881,8 @@ impl ReviewController {
         let Some(pr) = self.pr.as_ref().map(|active| active.pr.clone()) else {
             return Reduction::default();
         };
+        self.overlay = None;
+        let composing = self.composer.as_ref().and_then(|c| c.target.draft());
         let Some(session) = self.session_mut() else {
             return Reduction::default();
         };
@@ -793,7 +899,7 @@ impl ReviewController {
         }
         let pending: Vec<(ReviewDraftId, ReviewDraftKind, String)> = session
             .pending_drafts()
-            .filter(|draft| !draft.body.trim().is_empty())
+            .filter(|draft| !draft.body.trim().is_empty() && Some(draft.id) != composing)
             .map(|draft| (draft.id, draft.kind.clone(), draft.body.clone()))
             .collect();
         let batch: Vec<ReviewDraftId> = pending
@@ -958,13 +1064,39 @@ impl ReviewController {
     }
 
     fn sync_composer_draft(&mut self) {
-        let Some(draft) = self.composer.as_ref().and_then(|c| match c.target {
-            ComposerTarget::Reply { draft, .. } => Some(draft),
-            _ => None,
-        }) else {
+        let body = self.host.composer_text();
+        let Some(composer) = self.composer.as_mut() else {
             return;
         };
-        let body = self.host.composer_text();
+        let draft = match &mut composer.target {
+            ComposerTarget::Reply { draft, .. } => *draft,
+            ComposerTarget::Inline {
+                path,
+                target,
+                draft,
+            } => match draft {
+                Some(id) => *id,
+                None if body.trim().is_empty() => return,
+                None => {
+                    let anchor = ReviewAnchor::from_source_target(path.clone(), target);
+                    let Some(session) = self.pr.as_mut().and_then(|pr| pr.session.as_mut()) else {
+                        return;
+                    };
+                    *draft.insert(session.create_inline_draft(anchor, ""))
+                }
+            },
+            ComposerTarget::General { draft } => match draft {
+                Some(id) => *id,
+                None if body.trim().is_empty() => return,
+                None => {
+                    let Some(session) = self.pr.as_mut().and_then(|pr| pr.session.as_mut()) else {
+                        return;
+                    };
+                    *draft.insert(session.create_general_draft(""))
+                }
+            },
+            ComposerTarget::Draft(_) | ComposerTarget::Edit { .. } => return,
+        };
         if let Some(active) = self.pr.as_mut()
             && let Some(session) = active.session.as_mut()
             && let Some(entry) = session.drafts.get_mut(&draft)
@@ -1168,8 +1300,14 @@ impl ReviewController {
             | GitHubResponse::ReviewSubmitFailed { message, .. } => {
                 Reduction::changed().intent(error(message))
             }
-            GitHubResponse::PullRequestPeeked { .. }
-            | GitHubResponse::PullRequestPeekFailed { .. } => Reduction::default(),
+            GitHubResponse::PullRequestPeeked { pr, info } => {
+                self.peeks.insert(pr, PeekState::Ready(Box::new(info)));
+                Reduction::changed()
+            }
+            GitHubResponse::PullRequestPeekFailed { pr, message } => {
+                self.peeks.insert(pr, PeekState::Failed(message));
+                Reduction::changed()
+            }
         }
     }
 
@@ -1211,15 +1349,24 @@ impl ReviewController {
                 Reduction::changed()
             }
             ReviewAction::SignOut => self.sign_out(cx),
-            ReviewAction::LoadPullRequest { url } => {
-                self.pending_url = Some(url);
-                let reduction = self.load_pending();
-                if self.pending_url.is_some() && self.repo_path.is_none() {
-                    return reduction.intent(info("Open a repository to load the pull request."));
+            ReviewAction::LoadPullRequest { url } => self.open_pull_request(url),
+            ReviewAction::PreviewPullRequest => self.preview_pull_request(cx),
+            ReviewAction::PeekPullRequest { url } => self.peek_pull_request(&url),
+            ReviewAction::OpenSubmitMenu => {
+                if let Err(reduction) = self.require_token("Sign in to submit a review.") {
+                    return reduction;
                 }
-                reduction
+                self.overlay = Some(ReviewOverlay::SubmitReview);
+                Reduction::changed()
             }
-            ReviewAction::PreviewPullRequest => Reduction::default(),
+            ReviewAction::ToggleFileComments(path) => {
+                self.file_comments = if self.file_comments.as_ref() == Some(&path) {
+                    None
+                } else {
+                    Some(path)
+                };
+                Reduction::changed()
+            }
             ReviewAction::OpenPullRequestInBrowser => match self.pr.as_ref() {
                 Some(active) => Reduction::default().effect(ShellEffect::OpenBrowser {
                     url: active.web_url(),
@@ -1233,7 +1380,7 @@ impl ReviewController {
                 if self.session().is_none() {
                     return Reduction::default();
                 }
-                self.open_composer(ComposerTarget::General, "")
+                self.open_composer(ComposerTarget::General { draft: None }, "")
             }
             ReviewAction::OpenComposerAt(target) => self.open_composer_at(target, cx),
             ReviewAction::SubmitComment => self.submit_comment(),
@@ -1385,19 +1532,30 @@ impl ReviewController {
                     .intent(error(format!("Couldn't save review drafts: {message}")))
             }
             ReviewEvent::AvatarFetched { url, image } => {
-                if self.account.avatar_url.as_deref() != Some(url.as_str()) {
-                    return Reduction::default();
-                }
-                self.account.avatar = Some(AvatarImage {
+                let picture = AvatarImage {
                     rgba: Arc::from(image.rgba.as_slice()),
                     width: image.width,
                     height: image.height,
                     cache_key: avatar_cache_key(&url),
-                });
-                Reduction::changed()
+                };
+                let mut changed = false;
+                if self.account.avatar_url.as_deref() == Some(url.as_str()) {
+                    self.account.avatar = Some(picture.clone());
+                    changed = true;
+                }
+                if let Some(login) = self.avatars.settle(&url, true) {
+                    self.host.set_face(login, picture);
+                    changed = true;
+                }
+                if changed {
+                    Reduction::changed()
+                } else {
+                    Reduction::default()
+                }
             }
             ReviewEvent::AvatarFetchFailed { url, message } => {
                 tracing::warn!("failed to fetch avatar {url}: {message}");
+                self.avatars.settle(&url, false);
                 Reduction::default()
             }
         }
@@ -1433,6 +1591,7 @@ impl ReviewController {
                 Reduction::default()
             }
             Intent::PublishManifest(_) => Reduction::changed(),
+            Intent::OpenPullRequest { url } => self.open_pull_request(url.clone()),
             Intent::GrammarAvailable(_) => {
                 self.host.grammars_changed();
                 Reduction::changed()
@@ -1451,9 +1610,101 @@ impl ReviewController {
             reduction.effects.push(effect.into());
         }
         if reduction.changed {
+            for effect in self.avatar_requests() {
+                reduction.effects.push(effect.into());
+            }
             self.refresh(cx);
         }
         reduction
+    }
+
+    fn avatar_requests(&mut self) -> Vec<ReviewEffect> {
+        let Some(session) = self.session() else {
+            return Vec::new();
+        };
+        let mut wanted: Vec<(String, String)> = Vec::new();
+        for comment in session.threads.iter().flat_map(|thread| &thread.comments) {
+            let (Some(login), Some(raw)) = (
+                comment.author_login.as_deref(),
+                comment.author_avatar_url.as_deref(),
+            ) else {
+                continue;
+            };
+            let Some(url) = avatar_url_sized(raw, REVIEW_AVATAR_PX) else {
+                continue;
+            };
+            if !self.avatars.contains(&url) && wanted.iter().all(|(u, _)| *u != url) {
+                wanted.push((url, login.to_owned()));
+            }
+        }
+        wanted
+            .into_iter()
+            .map(|(url, login)| {
+                for evicted in self.avatars.insert(url.clone(), login) {
+                    self.host.remove_face(&evicted);
+                }
+                ReviewEffect::FetchAvatar { url }
+            })
+            .collect()
+    }
+
+    fn open_pull_request(&mut self, url: String) -> Reduction {
+        self.pending_url = Some(url);
+        let reduction = self.load_pending();
+        if self.pending_url.is_some() && self.repo_path.is_none() {
+            return reduction.intent(info("Open a repository to load the pull request."));
+        }
+        reduction
+    }
+
+    fn peek_pull_request(&mut self, url: &str) -> Reduction {
+        let Some(parsed) = parse_pr_url(url) else {
+            return Reduction::default();
+        };
+        let pr = PullRequestRef {
+            owner: parsed.owner,
+            repo: parsed.repo,
+            number: parsed.number,
+        };
+        if matches!(
+            self.peeks.get(&pr),
+            Some(PeekState::Loading | PeekState::Ready(_))
+        ) {
+            return Reduction::default();
+        }
+        self.peeks.insert(pr.clone(), PeekState::Loading);
+        let scope = self.job(None, Pending::Peek);
+        let token = self.token();
+        Reduction::changed().effect(ReviewEffect::GitHub {
+            scope,
+            request: Box::new(GitHubRequest::PeekPullRequest { pr, token }),
+        })
+    }
+
+    fn preview_pull_request(&mut self, cx: &SharedContext) -> Reduction {
+        let Some(repository) = cx.repository.as_ref() else {
+            return Reduction::changed()
+                .intent(error("Open a repository to preview a pull request."));
+        };
+        let snapshot = &repository.snapshot;
+        if snapshot.location.kind != VcsKind::GIT {
+            return Reduction::changed()
+                .intent(error("PR preview is only available for Git repositories."));
+        }
+        let Some(base) = default_pull_request_base(&snapshot.refs) else {
+            return Reduction::changed().intent(error("No default branch found for PR preview."));
+        };
+        Reduction::changed().intent(Intent::RequestCompare(CompareIntent {
+            repo_path: snapshot.path.clone(),
+            request: VcsCompareRequest {
+                spec: VcsCompareSpec::MergeBaseRange {
+                    base,
+                    head: WORKDIR_REF.to_owned(),
+                },
+                layout: cx.settings.settings.viewport.layout,
+                renderer: RendererKind::default(),
+            },
+        }))
     }
 
     pub(super) fn refresh(&mut self, cx: &SharedContext) {
@@ -1463,6 +1714,49 @@ impl ReviewController {
     pub(super) fn bump_presentation(&mut self) {
         self.presentation = Rc::new(self.presentation.bumped());
     }
+}
+
+pub(super) fn default_pull_request_base(refs: &[VcsRef]) -> Option<String> {
+    let active = refs
+        .iter()
+        .find(|reference| reference.active && reference.kind == RefKind::Branch)
+        .map(|reference| reference.name.as_str());
+    let candidate = |name: &str| {
+        refs.iter()
+            .find(|reference| {
+                reference.name == name
+                    && active != Some(reference.name.as_str())
+                    && matches!(reference.kind, RefKind::Branch | RefKind::RemoteBranch)
+            })
+            .map(|reference| reference.name.clone())
+    };
+    const PREFERRED: [&str; 10] = [
+        "origin/main",
+        "origin/master",
+        "upstream/main",
+        "upstream/master",
+        "origin/develop",
+        "origin/development",
+        "main",
+        "master",
+        "develop",
+        "development",
+    ];
+    if let Some(found) = PREFERRED.iter().find_map(|name| candidate(name)) {
+        return Some(found);
+    }
+    ["main", "master", "develop", "development"]
+        .iter()
+        .find_map(|trunk| {
+            let suffix = format!("/{trunk}");
+            refs.iter()
+                .find(|reference| {
+                    reference.name.ends_with(&suffix)
+                        && active != Some(reference.name.as_str())
+                        && reference.kind == RefKind::RemoteBranch
+                })
+                .map(|reference| reference.name.clone())
+        })
 }
 
 pub(super) fn avatar_cache_key(url: &str) -> u64 {
@@ -1529,6 +1823,27 @@ impl TextHost for ReviewController {
             self.bump_presentation();
         }
         Some(outcome)
+    }
+
+    fn after_edit(&mut self, target: FocusId, _cx: &SharedContext) -> Reduction {
+        if target != REVIEW_COMPOSER {
+            return Reduction::default();
+        }
+        let Some(active) = self.pr.as_mut().filter(|pr| pr.session_dirty) else {
+            return Reduction::default();
+        };
+        active.session_dirty = false;
+        let Some(session) = active.session.clone() else {
+            return Reduction::default();
+        };
+        let scope = ReviewScope {
+            account: self.epoch,
+            request: JobId(0),
+        };
+        Reduction::default().effect(ReviewEffect::SaveSessionDraft {
+            scope,
+            session: Box::new(session),
+        })
     }
 
     fn set_preedit(

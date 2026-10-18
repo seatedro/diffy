@@ -834,6 +834,13 @@ fn pill(label: &str, theme: &Theme) -> AnyElement {
     }
 }
 
+pub fn commit_header_height(theme: &Theme) -> f32 {
+    let scale = tokens::ui_scale(theme);
+    tokens::scaled(Sp::MD, scale) * 3.0
+        + tokens::scaled(Layout::AVATAR_MD, scale).max(TextStyle::Heading.font_size(theme) * 2.2)
+        + theme.metrics.ui_row_height.round()
+}
+
 pub fn commit_header(
     nav: &NavigationController,
     review: &ReviewController,
@@ -891,6 +898,7 @@ pub fn commit_header(
     Some(view! {
         <div
             class="flex-col w-full"
+            h={commit_header_height(theme)}
             gap={tokens::scaled(Sp::MD, scale)}
             px={tokens::scaled(Sp::LG, scale)}
             py={tokens::scaled(Sp::MD, scale)}

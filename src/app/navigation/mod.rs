@@ -11,4 +11,4 @@ pub use state::{
     ClickModifiers, CompareSelection, NavigationController, RepoStatus, normalize_repository_path,
 };
 pub use title::{compare_bar, repo_chip};
-pub use view::{commit_header, view, viewing_status};
+pub use view::{commit_header, commit_header_height, view, viewing_status};

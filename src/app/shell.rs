@@ -19,6 +19,7 @@ use crate::app::route::{self, Controllers, MAX_INTENTS_PER_TURN, Routed};
 use crate::app::text_targets::{self, TextCx};
 use crate::app::tokens::{self, Sp, TextStyle};
 use crate::app::{commands, delivery, mutations, navigation, review, viewport};
+use crate::core::compare::LayoutMode;
 use crate::contracts::commands::{CommandsAction, ToastUpdate};
 use crate::contracts::shared::{AccountEpoch, SharedContext, WorkspaceEpoch};
 use crate::contracts::shell::{
@@ -410,17 +411,38 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             self.controllers.mutations.presentation(),
             tokens::ui_scale(theme),
         );
+        let unified = self.shared.settings.settings.viewport.layout == LayoutMode::Unified;
+        let header = navigation::commit_header(
+            &self.controllers.navigation,
+            &self.controllers.review,
+            unified,
+            theme,
+        );
+        let header_h = if header.is_some() {
+            navigation::commit_header_height(theme).min(height)
+        } else {
+            0.0
+        };
         let slot = Slot {
             shared: &self.shared,
             width: main_w,
-            height,
+            height: height - header_h,
         };
-        let main = viewport::interaction::view_shared(
+        let diff = viewport::interaction::view_shared(
             &mut self.controllers.viewport.interaction,
             &slot,
             decorator,
             cx,
         );
+        let main = match header {
+            Some(header) => view! {
+                <div w={main_w} h={height} class="flex-col">
+                    <div class="w-full shrink-0 overflow-hidden" h={header_h}>{header}</div>
+                    {diff}
+                </div>
+            },
+            None => diff,
+        };
         let content = match files {
             Some(files) => Split::new(
                 "diffy.sidebar",
@@ -448,6 +470,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
         let compare = viewport::pipeline::view(&mut self.controllers.viewport.pipeline, &slot, cx);
         let changes = mutations::view(&mut self.controllers.mutations, &slot, cx);
         let delivery = delivery::view(&mut self.controllers.delivery, &slot, cx);
+        let viewing = navigation::viewing_status(&self.controllers.navigation, theme);
         view! {
             <div
                 w={width}
@@ -462,6 +485,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 test_id="status"
             >
                 <div class="flex-1 flex-row items-center" min_w={0.0}>{compare}</div>
+                {?viewing}
                 {changes}
                 {delivery}
             </div>

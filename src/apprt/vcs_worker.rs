@@ -4,7 +4,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::apprt::ProgressReporter;
-use crate::apprt::runtime::RuntimeEventSender;
+use crate::apprt::legacy_runtime::RuntimeEventSender;
 use crate::core::compare::{ComparePhase, ProgressSink};
 use crate::core::vcs::{
     backend::VcsRepository,

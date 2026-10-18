@@ -4,7 +4,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::apprt::compare::CompareScheduler;
-use crate::apprt::services::AppServices;
+use crate::apprt::legacy_services::AppServices;
 use crate::apprt::syntax::SyntaxScheduler;
 use crate::apprt::vcs_worker::VcsWorker;
 use crate::apprt::watcher::RepoWatchWorker;
@@ -1194,7 +1194,7 @@ impl EffectRunner {
                 }
                 let event_sender = self.event_sender.clone();
                 thread::spawn(move || {
-                    let event = match crate::apprt::services::load_ai_keys() {
+                    let event = match crate::apprt::legacy_services::load_ai_keys() {
                         Ok((openai, anthropic)) => AiEvent::AiKeysLoaded { openai, anthropic },
                         Err(error) => AiEvent::AiKeysLoadFailed {
                             message: error.user_message(),
@@ -1301,7 +1301,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{AppRuntime, SETTINGS_SAVE_DEBOUNCE};
-    use crate::apprt::services::AppServices;
+    use crate::apprt::legacy_services::AppServices;
     use crate::effects::SettingsEffect;
     use crate::events::{AppEvent, SettingsEvent};
     use crate::platform::persistence::{Settings, SettingsStore};

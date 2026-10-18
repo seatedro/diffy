@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::ai::{self, GenerateRequest, StreamMessage};
 use crate::apprt::ProgressReporter;
-use crate::apprt::runtime::RuntimeEventSender;
+use crate::apprt::legacy_runtime::RuntimeEventSender;
 use crate::core::compare::{ComparePhase, LayoutMode, ProgressSink, RendererKind};
 use crate::core::error::{DiffyError, Result};
 use crate::core::forge::github::{

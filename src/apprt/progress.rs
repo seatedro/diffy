@@ -9,7 +9,7 @@
 //! The reporter implements `core::compare::ProgressSink` so backends can
 //! take the trait object without depending on apprt directly.
 
-use crate::apprt::runtime::RuntimeEventSender;
+use crate::apprt::legacy_runtime::RuntimeEventSender;
 use crate::core::compare::{ComparePhase, ProgressSink};
 use crate::events::CompareEvent;
 

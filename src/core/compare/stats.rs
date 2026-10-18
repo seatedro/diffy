@@ -463,11 +463,18 @@ pub fn u32_to_i32_saturating(value: u32) -> i32 {
 }
 
 pub fn compact_summary_paths(summaries: &mut [CompareFileSummary]) {
-    if summaries.is_empty() {
+    compact_paths_by(summaries, |summary| &mut summary.paths);
+}
+
+pub fn compact_paths_by<T>(
+    items: &mut [T],
+    mut paths: impl FnMut(&mut T) -> &mut CompareFilePaths,
+) {
+    if items.is_empty() {
         return;
     }
 
-    let path_count = compact_path_count(summaries);
+    let path_count = compact_path_count(items.iter_mut().map(&mut paths));
     let mut dirs = String::new();
     let mut dir_offsets = Vec::with_capacity(path_count.saturating_add(1));
     dir_offsets.push(0);
@@ -479,9 +486,9 @@ pub fn compact_summary_paths(summaries: &mut [CompareFileSummary]) {
     basename_offsets.push(0);
     let mut entries = Vec::with_capacity(path_count);
 
-    for summary in summaries.iter() {
+    for item in items.iter_mut() {
         push_paths_to_store(
-            &summary.paths,
+            paths(item),
             &mut dirs,
             &mut dir_offsets,
             &mut dir_ids,
@@ -501,17 +508,18 @@ pub fn compact_summary_paths(summaries: &mut [CompareFileSummary]) {
         entries: entries.into_boxed_slice(),
     });
     let mut next_id = 0;
-    for summary in summaries.iter_mut() {
-        summary.paths = compact_paths_with_ids(&summary.paths, Arc::clone(&store), &mut next_id);
+    for item in items.iter_mut() {
+        let slot = paths(item);
+        *slot = compact_paths_with_ids(slot, Arc::clone(&store), &mut next_id);
     }
 
     debug_assert_eq!(next_id, path_count);
 }
 
-fn compact_path_count(summaries: &[CompareFileSummary]) -> usize {
+fn compact_path_count<'a>(paths: impl Iterator<Item = &'a mut CompareFilePaths>) -> usize {
     let mut count = 0;
-    for summary in summaries {
-        match &summary.paths {
+    for paths in paths {
+        match paths {
             CompareFilePaths::Unknown => {}
             CompareFilePaths::Same(_)
             | CompareFilePaths::Added(_)

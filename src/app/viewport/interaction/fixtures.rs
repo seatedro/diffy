@@ -239,9 +239,13 @@ impl UiApp for Host {
             shared: &self.shared,
             now_ms: self.clock,
         };
-        self.interaction
+        let outcome = self
+            .interaction
             .edit_text(target, command, &cx)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let reduction = self.interaction.after_edit(target, &self.shared);
+        self.absorb_detached(reduction);
+        outcome
     }
 
     fn set_preedit(&mut self, target: FocusId, text: String, cursor: Option<(usize, usize)>) {

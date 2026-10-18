@@ -26,6 +26,9 @@ pub enum SearchSides {
     New,
     /// Old and new occurrences are separate matches.
     Both,
+    /// Each line the diff shows once: every new line, and old lines only
+    /// where they were removed or changed.
+    Shown,
 }
 
 impl SearchSides {
@@ -33,7 +36,7 @@ impl SearchSides {
         match self {
             Self::Old => side == Side::Old,
             Self::New => side == Side::New,
-            Self::Both => true,
+            Self::Both | Self::Shown => true,
         }
     }
 }
@@ -280,7 +283,9 @@ impl DiffViewState {
                         continue;
                     }
                     let store = doc.text(file, side);
-                    for lines in searched_lines(doc, file, side, options.include_unchanged) {
+                    let unchanged = options.include_unchanged
+                        && !(options.sides == SearchSides::Shown && side == Side::Old);
+                    for lines in searched_lines(doc, file, side, unchanged) {
                         for index in lines {
                             let line = store.display_line(index).unwrap_or("");
                             find_in(line, query, options.case_sensitive, |range| {

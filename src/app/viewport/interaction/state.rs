@@ -10,7 +10,7 @@ use diffy_ui::diff_view::decorator::{DiffDecorator, DiffSources};
 use diffy_ui::diff_view::presentation::{DiffLayout, DiffPresentation};
 use diffy_ui::{
     DiffAnnotation, DiffEvent, DiffKey, DiffOutcome, DiffSessionViewState, DiffStyle, DiffTarget,
-    FindOptions, RevealAlign, SearchDirection, SearchSummary, SourcePoint,
+    FindOptions, RevealAlign, SearchDirection, SearchSides, SearchSummary, SourcePoint,
 };
 use quark_ui::FocusId;
 use quark_ui::text_input::{TextEditCommand, TextEditOutcome, TextField};
@@ -77,6 +77,7 @@ pub struct InteractionController {
     pub(super) viewport_width: f32,
     pub(super) continuous: bool,
     pub(super) source_requests: Vec<(FileKey, SourcePurpose)>,
+    pub(super) search_reduction: Reduction,
 }
 
 struct Pending {
@@ -118,6 +119,7 @@ impl Default for InteractionController {
             viewport_width: 0.0,
             continuous: false,
             source_requests: Vec::new(),
+            search_reduction: Reduction::default(),
         }
     }
 }
@@ -265,6 +267,7 @@ impl InteractionController {
 
     fn find_options(&self) -> FindOptions {
         FindOptions {
+            sides: SearchSides::Shown,
             case_sensitive: self.search.case_sensitive,
             ..FindOptions::default()
         }
@@ -541,7 +544,14 @@ impl InteractionController {
                 }
             }
             ViewportInstall::Order { generation, files } => {
-                if generation != self.generation || self.diff.is_none() {
+                if generation != self.generation {
+                    return Reduction::default();
+                }
+                if files.is_empty() && self.phase == Phase::Loading {
+                    self.phase = Phase::Ready;
+                    return Reduction::changed();
+                }
+                if self.diff.is_none() {
                     return Reduction::default();
                 }
                 self.order_revision += 1;
@@ -660,19 +670,41 @@ impl InteractionController {
         self.follow(reduction, false)
     }
 
-    fn rerun_search(&mut self) {
+    fn rerun_search(&mut self) -> Reduction {
         let options = self.find_options();
         let query = if self.search.open {
             self.search.field.text().to_owned()
         } else {
             String::new()
         };
-        if let Some(diff) = &mut self.diff {
-            diff.set_find_query(&query, options);
-            if !query.is_empty() {
-                diff.next_match(SearchDirection::Forward);
-            }
+        let Some(diff) = &mut self.diff else {
+            return Reduction::default();
+        };
+        diff.set_find_query(&query, options);
+        if query.is_empty() {
+            return Reduction::default();
         }
+        self.step_match(SearchDirection::Forward)
+    }
+
+    fn step_match(&mut self, direction: SearchDirection) -> Reduction {
+        let Some(point) = self.diff.as_mut().and_then(|d| d.next_match(direction)) else {
+            return Reduction::default();
+        };
+        let mut reduction = Reduction::changed();
+        let solo = self.diff.as_ref().and_then(DiffSessionViewState::solo);
+        if solo.is_some() && solo != Some(point.file) && self.sync_solo(Some(point.file)) {
+            if let Some(diff) = &mut self.diff {
+                diff.reveal_target(DiffTarget::Source(point), RevealAlign::Center);
+            }
+            reduction
+                .intents
+                .push(Intent::SelectFile(Some(SelectedFile {
+                    key: point.file,
+                    origin: SelectionOrigin::Viewport,
+                })));
+        }
+        self.follow(reduction, false)
     }
 
     fn expand(
@@ -825,13 +857,15 @@ impl Controller for InteractionController {
             A::GoToPreviousFile => self.navigate(DiffKey::PrevFile),
             A::OpenSearch => {
                 self.search.open = true;
-                self.rerun_search();
-                Reduction::changed().effect(focus(LogicalFocus::Search))
+                let mut reduction = Reduction::changed().effect(focus(LogicalFocus::Search));
+                reduction.merge(self.rerun_search());
+                reduction
             }
             A::CloseSearch => {
                 self.search.open = false;
-                self.rerun_search();
-                Reduction::changed().effect(focus(LogicalFocus::Viewport))
+                let mut reduction = Reduction::changed().effect(focus(LogicalFocus::Viewport));
+                reduction.merge(self.rerun_search());
+                reduction
             }
             A::SearchNext | A::SearchPrevious => {
                 let direction = if action == A::SearchNext {
@@ -839,21 +873,13 @@ impl Controller for InteractionController {
                 } else {
                     SearchDirection::Backward
                 };
-                let moved = self
-                    .diff
-                    .as_mut()
-                    .and_then(|diff| diff.next_match(direction))
-                    .is_some();
-                let reduction = Reduction {
-                    changed: moved,
-                    ..Reduction::default()
-                };
-                self.follow(reduction, false)
+                self.step_match(direction)
             }
             A::ToggleSearchCaseSensitive => {
                 self.search.case_sensitive = !self.search.case_sensitive;
-                self.rerun_search();
-                Reduction::changed()
+                let mut reduction = Reduction::changed();
+                reduction.merge(self.rerun_search());
+                reduction
             }
             A::CopySelection => {
                 let text = self
@@ -966,7 +992,6 @@ impl Controller for InteractionController {
             Intent::ActivateWorkspace { .. } => {
                 self.text_compare.active = false;
                 self.reset(self.generation);
-                self.phase = Phase::Idle;
                 true
             }
             _ => false,
@@ -983,6 +1008,13 @@ impl TextHost for InteractionController {
         target == SEARCH || Self::text_side(target).is_some()
     }
 
+    fn after_edit(&mut self, target: FocusId, _cx: &SharedContext) -> Reduction {
+        if target != SEARCH {
+            return Reduction::default();
+        }
+        std::mem::take(&mut self.search_reduction)
+    }
+
     fn edit_text(
         &mut self,
         target: FocusId,
@@ -994,7 +1026,8 @@ impl TextHost for InteractionController {
         }
         let outcome = self.search.field.apply_at(command, cx.now_ms);
         if outcome.text_changed {
-            self.rerun_search();
+            let reduction = self.rerun_search();
+            self.search_reduction.merge(reduction);
         }
         Some(outcome)
     }
@@ -1032,7 +1065,8 @@ impl TextHost for InteractionController {
                 let changed = self.search.field.text() != value;
                 self.search.field.set_text(value);
                 if changed {
-                    self.rerun_search();
+                    let reduction = self.rerun_search();
+                    self.search_reduction.merge(reduction);
                 }
                 changed
             }

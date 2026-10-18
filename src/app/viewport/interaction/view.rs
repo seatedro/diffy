@@ -225,8 +225,8 @@ fn diff_area(
                 "Nothing to compare",
                 "Open a repository to review its changes",
             ),
-            Phase::Loading => ("Loading diff", "Comparing files"),
-            Phase::Ready => ("No changes", "Both sides are identical"),
+            Phase::Loading => ("Loading diff", "Comparing revisions"),
+            Phase::Ready => ("No changes", "Nothing differs between these revisions"),
             Phase::Failed(message) => ("Couldn't load the diff", message.as_str()),
         };
         let state = empty_state(title, detail, theme);

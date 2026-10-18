@@ -682,3 +682,49 @@ fn scrolled_file_keeps_its_header_pinned() {
         "{header:?} {list:?}"
     );
 }
+
+#[test]
+fn find_steps_reveal_matches_in_other_files_in_single_file_mode() {
+    let mut host = Host::new();
+    host.update_settings(|s| s.continuous_scroll = false);
+    let mut ui = loaded(host);
+    focus_diff(&mut ui);
+    ui.key("mod+f");
+    ui.type_text("changed");
+    assert_eq!(ui.app().interaction.search_summary().matches, 2);
+    ui.key("enter");
+    assert_eq!(ui.app().interaction.search_summary().active, Some(1));
+    ui.key("mod+a");
+    ui.type_text("needle");
+    ui.frame();
+    assert!(ui.try_find(By::test_id("diffy.diff.file.2.1")).is_some());
+    assert_eq!(
+        ui.app().shared.selected_file.map(|s| s.key),
+        Some(FileKey(2))
+    );
+    assert!(line_names(&ui).iter().any(|n| n == "needle five"));
+}
+
+#[test]
+fn find_matches_removed_lines_once() {
+    let mut ui = loaded(Host::new());
+    focus_diff(&mut ui);
+    ui.key("mod+f");
+    ui.type_text("line 10");
+    let summary = ui.app().interaction.search_summary();
+    assert_eq!((summary.old_matches, summary.new_matches), (1, 1));
+}
+
+#[test]
+fn an_empty_compare_shows_no_changes() {
+    let mut ui = harness(Host::new(), SIZE);
+    ui.app_mut().install(ViewportInstall::Begin {
+        generation: GENERATION,
+    });
+    ui.app_mut().install(ViewportInstall::Order {
+        generation: GENERATION,
+        files: std::sync::Arc::from([]),
+    });
+    ui.frame();
+    assert!(ui.painted_text().contains("No changes"));
+}

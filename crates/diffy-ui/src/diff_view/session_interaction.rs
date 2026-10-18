@@ -17,7 +17,7 @@ use super::navigation::{DiffTarget, FileId, RevealAlign, SourcePoint};
 use super::prepared::{AnnotationId, DiffPreviewLimit, ViewFrame};
 use super::presentation::{DiffAppearance, DiffPresentation};
 use super::search::{FindOptions, SearchDirection, SearchSummary};
-use super::selection::CopyContent;
+use super::selection::{CopyContent, LineHit};
 use super::session::{DiffSessionViewState, forward};
 use super::{DiffEvent, DiffOutcome, DiffStyle};
 
@@ -41,6 +41,7 @@ impl DiffSessionViewState {
         fn focused_hunk() -> Option<(FileId, u32)>;
         fn top_file() -> Option<FileId>;
         fn selected_lines() -> Option<DiffAnchor>;
+        fn line_at(x: f32, y: f32) -> Option<LineHit>;
     }
 
     forward! { mut
@@ -51,6 +52,7 @@ impl DiffSessionViewState {
         fn set_viewport(width: f32, height: f32) -> ();
         fn set_selection(selection: Option<Selection>, side: Side) -> ();
         fn select_all() -> ();
+        fn focus_change(forward: bool) -> Option<LineHit>;
         fn reveal_target(target: DiffTarget, align: RevealAlign) -> bool;
         fn set_find_query(query: &str, options: FindOptions) -> ();
         fn next_match(direction: SearchDirection) -> Option<SourcePoint>;

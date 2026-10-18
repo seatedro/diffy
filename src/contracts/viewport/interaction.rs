@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use diffy_diff::SourceRemap;
 use diffy_ui::DiffEvent;
+use diffy_ui::diff_view::decorator::LinePointer;
 
 use crate::contracts::shared::{
     CompareGeneration, FileKey, FileRevision, JobId, Side, SourceTarget,
@@ -22,9 +23,16 @@ pub struct DiffInput(pub DiffEvent);
 
 impl Eq for DiffInput {}
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LineInput(pub LinePointer);
+
+impl Eq for LineInput {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InteractionAction {
     Diff(DiffInput),
+    Line(LineInput),
+    ClearSelection,
     ToggleSearchCaseSensitive,
     ToggleTextCompareLanguageMenu,
     ScrollTextCompare(TextCompareSide, i32),

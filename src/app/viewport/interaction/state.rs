@@ -1,20 +1,23 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use diffy_diff::{
-    DiffSession, DiffUpdate, GapId, Reveal, Revision, SourcePurpose, SourceRemap, UpdateError,
+    DiffSession, DiffUpdate, GapId, Reveal, Revision, RowKind, Side, SourcePurpose, SourceRemap,
+    UpdateError,
 };
-use diffy_ui::diff_view::decorator::{DiffDecorator, DiffSources};
-use diffy_ui::diff_view::presentation::{DiffLayout, DiffPresentation};
+use diffy_ui::diff_view::decorator::{DiffDecorator, DiffSources, LinePointer};
+use diffy_ui::diff_view::presentation::{DiffLayout, DiffMarkers, DiffPresentation};
 use diffy_ui::{
     DiffAnnotation, DiffEvent, DiffKey, DiffOutcome, DiffSessionViewState, DiffStyle, DiffTarget,
-    FindOptions, RevealAlign, SearchDirection, SearchSummary, SourcePoint,
+    FindOptions, RevealAlign, SearchDirection, SearchSides, SearchSummary, SourcePoint,
 };
 use quark_ui::FocusId;
 use quark_ui::text_input::{TextEditCommand, TextEditOutcome, TextField};
 
+use super::decorations::{Decorations, HeaderControls, Plain, is_generated};
+use super::scopes::SharedScopes;
 use super::syntax::{SyntaxWake, ViewportSyntax};
 use super::targets::{hunk_target, source_anchor, source_target};
 use super::text_compare::TextCompare;
@@ -23,15 +26,17 @@ use crate::app::text_targets::{
     SEARCH, TEXT_COMPARE_LEFT, TEXT_COMPARE_RIGHT, TextCx, TextHost, VIEWPORT,
 };
 use crate::contracts::commands::{CommandDescriptor, CommandSource};
+use crate::contracts::mutations::MutationsAction;
 use crate::contracts::navigation::{SelectedFile, SelectionOrigin};
 use crate::contracts::shared::{
-    CompareGeneration, FileKey, HunkTarget, SharedContext, SourceTarget,
+    CompareGeneration, FileKey, FileRevision, HunkTarget, SharedContext, SourceTarget,
 };
 use crate::contracts::shell::{Controller, Intent, LogicalFocus, Reduction, ShellEffect};
 use crate::contracts::viewport::InteractionAction;
 use crate::contracts::viewport::InteractionEvent;
 use crate::contracts::viewport::interaction::{
-    ContextDirection, DiffInput, InstallItem, TextCompareSide, TextCompareView, ViewportInstall,
+    ContextDirection, DiffInput, InstallItem, LineInput, TextCompareSide, TextCompareView,
+    ViewportInstall,
 };
 use crate::contracts::viewport::pipeline::{PreparedDiff, PreparedSegment, SlotUpdate};
 use crate::core::compare::LayoutMode;
@@ -77,6 +82,21 @@ pub struct InteractionController {
     pub(super) viewport_width: f32,
     pub(super) continuous: bool,
     pub(super) source_requests: Vec<(FileKey, SourcePurpose)>,
+    pub(super) search_reduction: Reduction,
+    pub(super) decorations: Option<Rc<Decorations>>,
+    pub(super) plain: Rc<dyn DiffDecorator>,
+    pub(super) seeded: HashSet<FileKey>,
+    pub(super) scopes: SharedScopes,
+    pub(super) scope_revision: u64,
+    pub(super) modifiers: LineModifiers,
+    pub(super) line_actions: Vec<MutationsAction>,
+    pub(super) line_drag: Option<SourceTarget>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LineModifiers {
+    pub extend: bool,
+    pub toggle: bool,
 }
 
 struct Pending {
@@ -118,6 +138,15 @@ impl Default for InteractionController {
             viewport_width: 0.0,
             continuous: false,
             source_requests: Vec::new(),
+            search_reduction: Reduction::default(),
+            decorations: None,
+            plain: Rc::new(Plain),
+            seeded: HashSet::new(),
+            scopes: SharedScopes::default(),
+            scope_revision: 0,
+            modifiers: LineModifiers::default(),
+            line_actions: Vec::new(),
+            line_drag: None,
         }
     }
 }
@@ -238,6 +267,70 @@ impl InteractionController {
         }
     }
 
+    pub(super) fn decorations(
+        &mut self,
+        inner: Option<Rc<dyn DiffDecorator>>,
+        theme: &quark_ui::theme::Theme,
+    ) -> Rc<dyn DiffDecorator> {
+        let inner = inner.unwrap_or_else(|| self.plain.clone());
+        if self.scopes.borrow_mut().poll() {
+            self.scope_revision += 1;
+        }
+        let controls = HeaderControls {
+            layout: self.layout,
+            wrap: self.wrap,
+            search_open: self.search.open,
+            scopes: self.scope_revision,
+        };
+        if let Some(current) = &self.decorations
+            && current.matches(&inner, controls, theme)
+        {
+            return current.clone();
+        }
+        let decorations = Rc::new(Decorations::new(
+            inner,
+            controls,
+            self.scopes.clone(),
+            theme,
+        ));
+        self.decorations = Some(decorations.clone());
+        decorations
+    }
+
+    fn request_scopes(&mut self, keys: &[FileKey]) {
+        let Some(diff) = &self.diff else {
+            return;
+        };
+        let mut scopes = self.scopes.borrow_mut();
+        if !scopes.has_worker() {
+            scopes.set_worker(self.syntax.scope_worker());
+        }
+        for key in keys {
+            if let Some(snapshot) = diff.session().file(*key) {
+                scopes.request(snapshot);
+            }
+        }
+    }
+
+    fn collapse_generated(&mut self, keys: &[FileKey]) {
+        let Some(diff) = &mut self.diff else {
+            return;
+        };
+        for &key in keys {
+            if !self.seeded.insert(key) {
+                continue;
+            }
+            let generated = diff
+                .session()
+                .file(key)
+                .map(|snapshot| snapshot.diff.path(0))
+                .is_some_and(is_generated);
+            if generated {
+                diff.set_file_collapsed(key, true);
+            }
+        }
+    }
+
     pub(super) fn set_viewport(&mut self, width: f32, height: f32) {
         self.viewport_width = width;
         self.viewport_height = height;
@@ -257,6 +350,7 @@ impl InteractionController {
                 LayoutMode::Unified => DiffLayout::Unified,
                 LayoutMode::Split => DiffLayout::Split,
             },
+            markers: DiffMarkers::Bars,
             wrap_column: (self.wrap_column > 0).then_some(self.wrap_column),
             sticky_headers: true,
             ..DiffPresentation::default()
@@ -265,6 +359,7 @@ impl InteractionController {
 
     fn find_options(&self) -> FindOptions {
         FindOptions {
+            sides: SearchSides::Shown,
             case_sensitive: self.search.case_sensitive,
             ..FindOptions::default()
         }
@@ -299,6 +394,8 @@ impl InteractionController {
         self.published = None;
         self.shown_file = None;
         self.review_revision = None;
+        self.seeded.clear();
+        self.scopes.borrow_mut().clear();
         self.phase = Phase::Loading;
     }
 
@@ -422,6 +519,8 @@ impl InteractionController {
             return Reduction::default();
         }
         self.refresh_sources();
+        self.collapse_generated(&installed);
+        self.request_scopes(&installed);
         if let Some(selected) = cx.selected_file
             && selected.origin != SelectionOrigin::Viewport
             && installed.contains(&selected.key)
@@ -476,6 +575,83 @@ impl InteractionController {
             key,
             origin: SelectionOrigin::Viewport,
         })))
+    }
+
+    pub fn set_modifiers(&mut self, shift: bool, primary: bool) {
+        self.modifiers = LineModifiers {
+            extend: shift,
+            toggle: primary,
+        };
+    }
+
+    pub fn take_line_actions(&mut self) -> Vec<MutationsAction> {
+        std::mem::take(&mut self.line_actions)
+    }
+
+    fn line_pointer(&mut self, pointer: LinePointer) -> Reduction {
+        let Some(hit) = self
+            .diff
+            .as_ref()
+            .and_then(|diff| diff.line_at(pointer.x, pointer.y))
+            .filter(|hit| {
+                matches!(
+                    hit.kind,
+                    RowKind::Added | RowKind::Removed | RowKind::Modified
+                )
+            })
+        else {
+            return Reduction::default();
+        };
+        let target = SourceTarget {
+            file: hit.file,
+            revision: FileRevision(hit.revision.0),
+            side: hit.side,
+            lines: hit.line..hit.line + 1,
+        };
+        if pointer.drag && self.line_drag.as_ref() == Some(&target) {
+            return Reduction::default();
+        }
+        let action = match (pointer.drag, self.modifiers) {
+            (true, _) => MutationsAction::ExtendLineSelection(target.clone()),
+            (false, LineModifiers { toggle: true, .. }) => {
+                MutationsAction::ToggleLineSelection(target.clone())
+            }
+            (false, LineModifiers { extend: true, .. }) => {
+                MutationsAction::ExtendLineSelection(target.clone())
+            }
+            (false, _) => MutationsAction::SelectLines(target.clone()),
+        };
+        self.line_drag = Some(target);
+        self.line_actions.push(action);
+        Reduction::changed()
+    }
+
+    fn move_to_change(&mut self, steps: i32) -> Reduction {
+        let Some(diff) = &mut self.diff else {
+            return Reduction::default();
+        };
+        let mut hit = None;
+        for _ in 0..steps.unsigned_abs().min(MAX_REPEAT) {
+            match diff.focus_change(steps > 0) {
+                Some(next) => hit = Some(next),
+                None => break,
+            }
+        }
+        let Some(hit) = hit else {
+            return Reduction::default();
+        };
+        let target = Some(SourceTarget {
+            file: hit.file,
+            revision: FileRevision(hit.revision.0),
+            side: hit.side,
+            lines: hit.line..hit.line + 1,
+        });
+        let mut reduction = Reduction::changed();
+        if target != self.published {
+            self.published = target.clone();
+            reduction.intents.push(Intent::SelectSource(target));
+        }
+        self.follow(reduction, false)
     }
 
     pub fn take_source_requests(&mut self) -> Vec<(FileKey, SourcePurpose)> {
@@ -541,7 +717,14 @@ impl InteractionController {
                 }
             }
             ViewportInstall::Order { generation, files } => {
-                if generation != self.generation || self.diff.is_none() {
+                if generation != self.generation {
+                    return Reduction::default();
+                }
+                if files.is_empty() && self.phase == Phase::Loading {
+                    self.phase = Phase::Ready;
+                    return Reduction::changed();
+                }
+                if self.diff.is_none() {
                     return Reduction::default();
                 }
                 self.order_revision += 1;
@@ -660,19 +843,41 @@ impl InteractionController {
         self.follow(reduction, false)
     }
 
-    fn rerun_search(&mut self) {
+    fn rerun_search(&mut self) -> Reduction {
         let options = self.find_options();
         let query = if self.search.open {
             self.search.field.text().to_owned()
         } else {
             String::new()
         };
-        if let Some(diff) = &mut self.diff {
-            diff.set_find_query(&query, options);
-            if !query.is_empty() {
-                diff.next_match(SearchDirection::Forward);
-            }
+        let Some(diff) = &mut self.diff else {
+            return Reduction::default();
+        };
+        diff.set_find_query(&query, options);
+        if query.is_empty() {
+            return Reduction::default();
         }
+        self.step_match(SearchDirection::Forward)
+    }
+
+    fn step_match(&mut self, direction: SearchDirection) -> Reduction {
+        let Some(point) = self.diff.as_mut().and_then(|d| d.next_match(direction)) else {
+            return Reduction::default();
+        };
+        let mut reduction = Reduction::changed();
+        let solo = self.diff.as_ref().and_then(DiffSessionViewState::solo);
+        if solo.is_some() && solo != Some(point.file) && self.sync_solo(Some(point.file)) {
+            if let Some(diff) = &mut self.diff {
+                diff.reveal_target(DiffTarget::Source(point), RevealAlign::Center);
+            }
+            reduction
+                .intents
+                .push(Intent::SelectFile(Some(SelectedFile {
+                    key: point.file,
+                    origin: SelectionOrigin::Viewport,
+                })));
+        }
+        self.follow(reduction, false)
     }
 
     fn expand(
@@ -797,7 +1002,19 @@ impl Controller for InteractionController {
                 let reduction = self.outcome(outcome);
                 self.follow(reduction, select)
             }
-            A::ScrollLines(lines) | A::MoveRowCursor(lines) => {
+            A::Line(LineInput(pointer)) => self.line_pointer(pointer),
+            A::ClearSelection => {
+                let Some(diff) = &mut self.diff else {
+                    return Reduction::default();
+                };
+                if diff.selection().is_none() {
+                    return Reduction::default();
+                }
+                diff.set_selection(None, Side::New);
+                self.follow(Reduction::changed(), true)
+            }
+            A::MoveRowCursor(steps) => self.move_to_change(steps),
+            A::ScrollLines(lines) => {
                 let key = if lines < 0 {
                     DiffKey::LineUp
                 } else {
@@ -825,13 +1042,15 @@ impl Controller for InteractionController {
             A::GoToPreviousFile => self.navigate(DiffKey::PrevFile),
             A::OpenSearch => {
                 self.search.open = true;
-                self.rerun_search();
-                Reduction::changed().effect(focus(LogicalFocus::Search))
+                let mut reduction = Reduction::changed().effect(focus(LogicalFocus::Search));
+                reduction.merge(self.rerun_search());
+                reduction
             }
             A::CloseSearch => {
                 self.search.open = false;
-                self.rerun_search();
-                Reduction::changed().effect(focus(LogicalFocus::Viewport))
+                let mut reduction = Reduction::changed().effect(focus(LogicalFocus::Viewport));
+                reduction.merge(self.rerun_search());
+                reduction
             }
             A::SearchNext | A::SearchPrevious => {
                 let direction = if action == A::SearchNext {
@@ -839,21 +1058,13 @@ impl Controller for InteractionController {
                 } else {
                     SearchDirection::Backward
                 };
-                let moved = self
-                    .diff
-                    .as_mut()
-                    .and_then(|diff| diff.next_match(direction))
-                    .is_some();
-                let reduction = Reduction {
-                    changed: moved,
-                    ..Reduction::default()
-                };
-                self.follow(reduction, false)
+                self.step_match(direction)
             }
             A::ToggleSearchCaseSensitive => {
                 self.search.case_sensitive = !self.search.case_sensitive;
-                self.rerun_search();
-                Reduction::changed()
+                let mut reduction = Reduction::changed();
+                reduction.merge(self.rerun_search());
+                reduction
             }
             A::CopySelection => {
                 let text = self
@@ -966,7 +1177,6 @@ impl Controller for InteractionController {
             Intent::ActivateWorkspace { .. } => {
                 self.text_compare.active = false;
                 self.reset(self.generation);
-                self.phase = Phase::Idle;
                 true
             }
             _ => false,
@@ -983,6 +1193,13 @@ impl TextHost for InteractionController {
         target == SEARCH || Self::text_side(target).is_some()
     }
 
+    fn after_edit(&mut self, target: FocusId, _cx: &SharedContext) -> Reduction {
+        if target != SEARCH {
+            return Reduction::default();
+        }
+        std::mem::take(&mut self.search_reduction)
+    }
+
     fn edit_text(
         &mut self,
         target: FocusId,
@@ -994,7 +1211,8 @@ impl TextHost for InteractionController {
         }
         let outcome = self.search.field.apply_at(command, cx.now_ms);
         if outcome.text_changed {
-            self.rerun_search();
+            let reduction = self.rerun_search();
+            self.search_reduction.merge(reduction);
         }
         Some(outcome)
     }
@@ -1032,7 +1250,8 @@ impl TextHost for InteractionController {
                 let changed = self.search.field.text() != value;
                 self.search.field.set_text(value);
                 if changed {
-                    self.rerun_search();
+                    let reduction = self.rerun_search();
+                    self.search_reduction.merge(reduction);
                 }
                 changed
             }

@@ -17,7 +17,7 @@ use diffy_diff::{Mode, RowKind, Side, write_unified};
 use quark::selection::{BlockKey, Selection, SelectionPoint};
 
 use super::frame::{column_slot, floor_boundary, shown_len};
-use super::navigation::FileId;
+use super::navigation::{FileId, Revision};
 use super::state::{RowRef, store_index};
 use super::{CopySide, DiffViewState};
 
@@ -363,5 +363,58 @@ impl DiffViewState {
         }
         let (s, i, seg, r) = rows[..hit].iter().rev().find_map(line_of)?;
         Some(SelectionPoint::new(key_of(seg, r, s, i), usize::MAX))
+    }
+}
+
+/// The changed or unchanged line under a point of the view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineHit {
+    pub file: FileId,
+    pub revision: Revision,
+    pub side: Side,
+    /// Zero-based source line on `side`.
+    pub line: u32,
+    pub kind: RowKind,
+}
+
+impl DiffViewState {
+    /// The line under window point `(x, y)`: the side of the column it
+    /// is over, or in unified the side the row shows.
+    pub fn line_at(&self, x: f32, y: f32) -> Option<LineHit> {
+        let (x, y) = self.local(x, y);
+        let frame = self.frame.as_ref()?;
+        let row = frame
+            .rows
+            .iter()
+            .find(|r| y >= r.top && y < r.top + r.height)?;
+        let kind = row.paint.kind.diff().filter(|k| k.is_line())?;
+        let side = match frame.columns.mode {
+            Mode::Split => self.side_at(x),
+            Mode::Unified if kind == RowKind::Removed => Side::Old,
+            Mode::Unified => Side::New,
+        };
+        self.line_hit(
+            row.paint.file,
+            side,
+            row.paint.source_lines[side as usize]?,
+            kind,
+        )
+    }
+
+    pub(crate) fn line_hit(
+        &self,
+        unit: u32,
+        side: Side,
+        line: u32,
+        kind: RowKind,
+    ) -> Option<LineHit> {
+        let (seg, _) = self.locate(unit)?;
+        Some(LineHit {
+            file: self.file_id(unit),
+            revision: Revision(self.segments[seg].revision),
+            side,
+            line,
+            kind,
+        })
     }
 }

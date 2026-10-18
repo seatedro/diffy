@@ -376,7 +376,9 @@ fn text_compare_edits_requests_and_installs_only_the_current_result() {
 #[ignore = "timing; run in release with --ignored --nocapture"]
 fn large_diff_frame_and_handler_times() {
     use std::time::{Duration, Instant};
-    let old: String = (0..100_000).map(|i| format!("let value_{i} = compute({i});\n")).collect();
+    let old: String = (0..100_000)
+        .map(|i| format!("let value_{i} = compute({i});\n"))
+        .collect();
     let new: String = old
         .lines()
         .enumerate()

@@ -115,14 +115,22 @@ pub struct Host {
     pub clock: u64,
 }
 
+impl Default for Host {
+    fn default() -> Self {
+        Self::with_decorator(Rc::new(Recorder::default()))
+    }
+}
+
 impl Host {
     pub fn new() -> Self {
-        Self::with_decorator(Rc::new(Recorder::default()))
+        Self::default()
     }
 
     pub fn with_decorator(decorator: Rc<dyn DiffDecorator>) -> Self {
+        let mut interaction = InteractionController::default();
+        interaction.set_grammars(crate::core::syntax::grammar::Grammars::none());
         Self {
-            interaction: InteractionController::default(),
+            interaction,
             shared: SharedContext::default(),
             decorator,
             effects: Vec::new(),

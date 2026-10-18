@@ -111,6 +111,10 @@ impl InteractionController {
         }
     }
 
+    pub fn set_grammars(&mut self, grammars: crate::core::syntax::grammar::Grammars) {
+        self.syntax.set_grammars(grammars);
+    }
+
     pub fn diff(&self) -> Option<&DiffSessionViewState> {
         self.diff.as_ref()
     }
@@ -267,7 +271,8 @@ impl InteractionController {
                 if prepared.generation() < self.generation {
                     return Reduction::default();
                 }
-                if prepared.generation() > self.generation {
+                if prepared.generation() > self.generation || self.text_compare.active {
+                    self.text_compare.active = false;
                     self.reset(prepared.generation());
                 }
                 let key = prepared.key();
@@ -339,7 +344,7 @@ impl InteractionController {
                 self.text_compare.pending = false;
                 self.text_compare.active = true;
                 self.text_compare.view = TextCompareView::Diff;
-                self.reset(prepared.generation());
+                self.reset(self.generation);
                 self.apply(DiffUpdate::Upsert {
                     file: prepared.snapshot().clone(),
                     remap: None,
@@ -707,6 +712,13 @@ impl Controller for InteractionController {
             Intent::SelectFile(Some(selected)) if selected.origin != SelectionOrigin::Viewport => {
                 self.reveal_file(selected.key)
             }
+            Intent::GrammarAvailable(_) => match &mut self.diff {
+                Some(diff) => {
+                    diff.refresh_syntax();
+                    true
+                }
+                None => false,
+            },
             Intent::ActivateWorkspace { .. } => {
                 self.text_compare.active = false;
                 self.reset(self.generation);

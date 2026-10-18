@@ -82,6 +82,7 @@ impl Controllers {
         let mut out = Vec::new();
         self.review.commands(cx, &mut out);
         self.mutations.commands(cx, &mut out);
+        self.delivery.commands(cx, &mut out);
         out.into()
     }
 

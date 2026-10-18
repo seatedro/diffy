@@ -12,7 +12,7 @@ use crate::contracts::shared::{CompareGeneration, FileKey, FileRevision, Side, S
 use crate::contracts::shell::{Controller, Effect, Intent};
 use crate::contracts::viewport::ViewportEffect;
 use crate::contracts::viewport::interaction::{TextCompareView, ViewportInstall};
-use crate::contracts::viewport::pipeline::PipelineEffect;
+use crate::contracts::viewport::pipeline::{PipelineEffect, PreparedDiff};
 use crate::core::compare::LayoutMode;
 
 const SIZE: (f32, f32) = (900.0, 600.0);
@@ -565,4 +565,101 @@ fn annotate_requests_a_review_annotation_at_the_line() {
             lines: 10..11,
         }]
     );
+}
+
+#[test]
+fn single_file_mode_shows_the_selected_file_and_steps_files() {
+    let mut host = Host::new();
+    host.update_settings(|s| s.continuous_scroll = false);
+    let mut ui = loaded(host);
+    assert!(ui.try_find(By::test_id("diffy.diff.file.1.1")).is_some());
+    assert!(ui.try_find(By::test_id("diffy.diff.file.2.1")).is_none());
+
+    ui.app_mut().intent(Intent::SelectFile(Some(SelectedFile {
+        key: FileKey(2),
+        origin: SelectionOrigin::Sidebar,
+    })));
+    ui.frame();
+    assert!(ui.try_find(By::test_id("diffy.diff.file.1.1")).is_none());
+    assert!(ui.try_find(By::test_id("diffy.diff.file.2.1")).is_some());
+
+    focus_diff(&mut ui);
+    ui.key("shift+n");
+    assert!(ui.try_find(By::test_id("diffy.diff.file.1.1")).is_some());
+    assert_eq!(
+        ui.app().shared.selected_file.map(|s| s.key),
+        Some(FileKey(1))
+    );
+
+    ui.app_mut().update_settings(|s| s.continuous_scroll = true);
+    ui.frame();
+    assert!(ui.try_find(By::test_id("diffy.diff.file.1.1")).is_some());
+    assert!(ui.try_find(By::test_id("diffy.diff.file.2.1")).is_some());
+}
+
+#[test]
+fn placeholders_let_order_name_unloaded_files() {
+    use diffy_diff::{FileMeta, Placeholder, Revision, SlotState};
+    use std::sync::Arc;
+
+    use crate::contracts::viewport::pipeline::SlotUpdate;
+
+    let mut ui = loaded(Host::new());
+    let host = ui.app_mut();
+    let shared = host.shared.clone();
+    host.interaction.install_slot(
+        SlotUpdate::Placeholder {
+            key: FileKey(3),
+            placeholder: Placeholder::new(Revision(1), SlotState::Loading, 12, FileMeta::default()),
+        },
+        &shared,
+    );
+    let reduction = host.interaction.install(
+        ViewportInstall::Order {
+            generation: GENERATION,
+            files: Arc::from([FileKey(3), FileKey(1), FileKey(2)]),
+        },
+        &shared,
+    );
+    assert!(reduction.changed);
+    let order = ui
+        .app()
+        .interaction
+        .diff()
+        .map(|d| d.session().order().to_vec());
+    assert_eq!(order, Some(vec![FileKey(3), FileKey(1), FileKey(2)]));
+}
+
+#[test]
+fn expanding_a_patch_only_file_requests_its_sources() {
+    use diffy_diff::{FileDiffSnapshot, Revision, parse_unified};
+
+    use crate::contracts::viewport::interaction::{ContextDirection, InteractionAction};
+
+    let patch = "--- a/c.rs\n+++ b/c.rs\n@@ -10,3 +10,3 @@\n one\n-two\n+deux\n three\n";
+    let doc = parse_unified(patch).unwrap();
+    let key = FileKey(7);
+    let snapshot = FileDiffSnapshot::new(key, Revision(1), std::sync::Arc::new(doc)).unwrap();
+    let prepared = PreparedDiff::new(key, GENERATION, FileRevision(1), snapshot);
+    let mut ui = harness(Host::new(), SIZE);
+    ui.app_mut().install(ViewportInstall::File {
+        prepared,
+        remap: None,
+    });
+    ui.frame();
+    let interaction = &mut ui.app_mut().interaction;
+    interaction.reduce_action(
+        InteractionAction::ExpandContext {
+            file: key,
+            hunk: 0,
+            direction: ContextDirection::Above,
+            amount: 20,
+        },
+        &Default::default(),
+    );
+    assert_eq!(
+        interaction.take_source_requests(),
+        [(key, diffy_diff::SourcePurpose::ExpandContext)]
+    );
+    assert!(interaction.take_source_requests().is_empty());
 }

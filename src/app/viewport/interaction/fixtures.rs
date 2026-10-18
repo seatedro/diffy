@@ -132,14 +132,16 @@ impl Host {
     pub fn with_decorator(decorator: Rc<dyn DiffDecorator>) -> Self {
         let mut interaction = InteractionController::default();
         interaction.set_grammars(crate::core::syntax::grammar::Grammars::none());
-        Self {
+        let mut host = Self {
             interaction,
             shared: SharedContext::default(),
             decorator,
             effects: Vec::new(),
             intents: Vec::new(),
             clock: 0,
-        }
+        };
+        host.update_settings(|s| s.continuous_scroll = true);
+        host
     }
 
     pub fn update_settings(&mut self, change: impl FnOnce(&mut Settings)) {
@@ -217,6 +219,14 @@ impl UiApp for Host {
                 self.absorb(reduction, cx);
             }
             Action::Shell(ShellAction::FocusLogical(focus)) => cx.set_focus(focus.map(focus_id)),
+            Action::Commands(CommandsAction::Shortcut(command)) => {
+                if let Some(action) = keymap::builtin_action(command) {
+                    self.update(action, cx);
+                }
+            }
+            Action::Commands(CommandsAction::SetLayout(layout)) => {
+                self.update_settings(|s| s.viewport.layout = layout)
+            }
             Action::Commands(CommandsAction::ToggleWrap) => {
                 self.update_settings(|s| s.viewport.wrap_enabled = !s.viewport.wrap_enabled)
             }
@@ -240,7 +250,7 @@ impl UiApp for Host {
 }
 
 pub fn harness(host: Host, size: (f32, f32)) -> UiTestHarness<Host> {
-    let adapter = UiAdapter::new(host, "Test").with_key_bindings(keymap::key_bindings(&[], &[]));
+    let adapter = UiAdapter::new(host, "Test").with_key_bindings(keymap::key_bindings(&[]));
     let mut ui = UiTestHarness::with_adapter(adapter, size, 1.0);
     ui.set_accessibility_active(true);
     ui.frame();

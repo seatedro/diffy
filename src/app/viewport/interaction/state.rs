@@ -1,8 +1,11 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
+use std::sync::Arc;
 
-use diffy_diff::{DiffSession, DiffUpdate, GapId, Reveal, Revision, UpdateError};
+use diffy_diff::{
+    DiffSession, DiffUpdate, GapId, Reveal, Revision, SourcePurpose, SourceRemap, UpdateError,
+};
 use diffy_ui::diff_view::decorator::{DiffDecorator, DiffSources};
 use diffy_ui::diff_view::presentation::{DiffLayout, DiffPresentation};
 use diffy_ui::{
@@ -28,11 +31,12 @@ use crate::contracts::shell::{Controller, Intent, LogicalFocus, Reduction, Shell
 use crate::contracts::viewport::InteractionAction;
 use crate::contracts::viewport::InteractionEvent;
 use crate::contracts::viewport::interaction::{
-    ContextDirection, DiffInput, TextCompareSide, TextCompareView, ViewportInstall,
+    ContextDirection, DiffInput, InstallItem, TextCompareSide, TextCompareView, ViewportInstall,
 };
+use crate::contracts::viewport::pipeline::{PreparedDiff, PreparedSegment, SlotUpdate};
 use crate::core::compare::LayoutMode;
 use crate::core::keymap::ShortcutCommand;
-use crate::platform::persistence::PersistedViewport;
+use crate::platform::persistence::{PersistedViewport, Settings};
 
 pub const DIFF_ID: &str = "diffy.diff";
 const MAX_REPEAT: u32 = 64;
@@ -69,7 +73,26 @@ pub struct InteractionController {
     pub(super) text_compare: TextCompare,
     pub(super) viewport_height: f32,
     pub(super) persisted: Option<PersistedViewport>,
-    pub(super) review_revision: Option<u64>,
+    pub(super) review_revision: Option<(u64, u32)>,
+    pub(super) viewport_width: f32,
+    pub(super) continuous: bool,
+    pub(super) source_requests: Vec<(FileKey, SourcePurpose)>,
+}
+
+struct Pending {
+    key: Option<FileKey>,
+    segment: Option<Arc<PreparedSegment>>,
+    update: DiffUpdate,
+}
+
+impl Pending {
+    fn slot(update: DiffUpdate) -> Self {
+        Self {
+            key: None,
+            segment: None,
+            update,
+        }
+    }
 }
 
 impl Default for InteractionController {
@@ -92,6 +115,9 @@ impl Default for InteractionController {
             viewport_height: 0.0,
             persisted: None,
             review_revision: None,
+            viewport_width: 0.0,
+            continuous: false,
+            source_requests: Vec::new(),
         }
     }
 }
@@ -184,14 +210,15 @@ impl InteractionController {
     }
 
     pub fn sync_review(&mut self, review: &ReviewPresentation) {
+        let width = self.viewport_width;
         let Some(diff) = &mut self.diff else {
             return;
         };
-        let revision = review.revision();
-        if self.review_revision == Some(revision) {
+        let stamp = (review.revision(), width.to_bits());
+        if width <= 0.0 || self.review_revision == Some(stamp) {
             return;
         }
-        self.review_revision = Some(revision);
+        self.review_revision = Some(stamp);
         let annotations: Vec<DiffAnnotation> = review
             .annotations()
             .iter()
@@ -201,13 +228,18 @@ impl InteractionController {
                 revision: annotation.revision,
             })
             .collect();
-        if diff.annotations().map(|(a, _)| a).eq(annotations.iter()) {
-            return;
+        if !diff.annotations().map(|(a, _)| a).eq(annotations.iter()) {
+            diff.set_annotations(annotations);
         }
-        diff.set_annotations(annotations);
+        for annotation in review.annotations() {
+            if let Some(height) = review.card_height(&annotation.card, width) {
+                diff.set_annotation_height(annotation.id, annotation.revision, height);
+            }
+        }
     }
 
-    pub(super) fn set_viewport_height(&mut self, height: f32) {
+    pub(super) fn set_viewport(&mut self, width: f32, height: f32) {
+        self.viewport_width = width;
         self.viewport_height = height;
     }
 
@@ -291,6 +323,181 @@ impl InteractionController {
     }
 
     pub fn install(&mut self, update: ViewportInstall, cx: &SharedContext) -> Reduction {
+        self.install_batch([InstallItem::View(update)], cx)
+    }
+
+    pub fn install_slot(&mut self, update: SlotUpdate, cx: &SharedContext) -> Reduction {
+        self.install_batch([InstallItem::Slot(update)], cx)
+    }
+
+    pub fn install_batch(
+        &mut self,
+        batch: impl IntoIterator<Item = InstallItem>,
+        cx: &SharedContext,
+    ) -> Reduction {
+        let mut reduction = Reduction::default();
+        let mut pending = Vec::new();
+        for install in batch {
+            match install {
+                InstallItem::View(ViewportInstall::File { prepared, remap }) => {
+                    reduction.merge(self.queue_file(prepared, remap, &mut pending, cx));
+                }
+                InstallItem::Slot(SlotUpdate::Placeholder { key, placeholder }) => {
+                    pending.push(Pending::slot(DiffUpdate::Placeholder {
+                        file: key,
+                        placeholder,
+                    }));
+                }
+                InstallItem::Slot(SlotUpdate::Evict {
+                    key,
+                    revision,
+                    estimated_lines,
+                }) => pending.push(Pending::slot(DiffUpdate::Evict {
+                    file: key,
+                    revision: Revision(revision.0),
+                    estimated_lines,
+                })),
+                InstallItem::View(update) => {
+                    reduction.merge(self.flush(std::mem::take(&mut pending), cx));
+                    reduction.merge(self.install_view(update, cx));
+                }
+            }
+        }
+        reduction.merge(self.flush(pending, cx));
+        reduction
+    }
+
+    fn queue_file(
+        &mut self,
+        prepared: PreparedDiff,
+        remap: Option<SourceRemap>,
+        pending: &mut Vec<Pending>,
+        cx: &SharedContext,
+    ) -> Reduction {
+        if prepared.generation() < self.generation {
+            return Reduction::default();
+        }
+        let mut reduction = Reduction::default();
+        if prepared.generation() > self.generation || self.text_compare.active {
+            reduction = self.flush(std::mem::take(pending), cx);
+            self.text_compare.active = false;
+            self.reset(prepared.generation());
+        }
+        pending.push(Pending {
+            key: Some(prepared.key()),
+            segment: prepared.segment().cloned(),
+            update: DiffUpdate::Upsert {
+                file: prepared.snapshot().clone(),
+                remap,
+            },
+        });
+        reduction
+    }
+
+    fn flush(&mut self, pending: Vec<Pending>, cx: &SharedContext) -> Reduction {
+        if pending.is_empty() {
+            return Reduction::default();
+        }
+        let keys: Vec<Option<FileKey>> = pending.iter().map(|p| p.key).collect();
+        let results = self
+            .ensure_diff()
+            .apply_updates(pending.into_iter().map(|p| (p.update, p.segment)));
+        let mut changed = false;
+        let mut installed = Vec::new();
+        for (key, result) in keys.into_iter().zip(results) {
+            match result {
+                Ok(_) => {
+                    changed = true;
+                    if let Some(key) = key {
+                        self.failures.remove(&key);
+                        self.phase = Phase::Ready;
+                        installed.push(key);
+                    }
+                }
+                Err(UpdateError::Stale { .. } | UpdateError::Removed { .. }) => {}
+                Err(error) => tracing::warn!(?error, "viewport refused a diff update"),
+            }
+        }
+        if !changed {
+            return Reduction::default();
+        }
+        self.refresh_sources();
+        if let Some(selected) = cx.selected_file
+            && selected.origin != SelectionOrigin::Viewport
+            && installed.contains(&selected.key)
+        {
+            self.reveal_file(selected.key);
+        }
+        self.sync_solo(cx.selected_file.map(|s| s.key));
+        Reduction::changed()
+    }
+
+    fn sync_solo(&mut self, selected: Option<FileKey>) -> bool {
+        let continuous = self.continuous || self.text_compare.active;
+        let Some(diff) = &mut self.diff else {
+            return false;
+        };
+        if continuous {
+            return diff.set_solo(None);
+        }
+        let session = diff.session();
+        let live = |key: &FileKey| session.file(*key).is_some();
+        let target = selected
+            .filter(live)
+            .or(diff.solo().filter(live))
+            .or_else(|| session.order().iter().copied().find(live));
+        let changed = diff.set_solo(target);
+        if changed {
+            self.shown_file = target;
+        }
+        changed
+    }
+
+    fn step_solo(&mut self, forward: bool) -> Reduction {
+        let Some(diff) = &self.diff else {
+            return Reduction::default();
+        };
+        let session = diff.session();
+        let order = session.order();
+        let at = diff
+            .solo()
+            .and_then(|key| order.iter().position(|k| *k == key));
+        let live = |key: &&FileKey| session.file(**key).is_some();
+        let next = match (at, forward) {
+            (Some(at), true) => order[at + 1..].iter().find(live),
+            (Some(at), false) => order[..at].iter().rev().find(live),
+            (None, _) => order.iter().find(live),
+        };
+        let Some(&key) = next else {
+            return Reduction::default();
+        };
+        self.sync_solo(Some(key));
+        Reduction::changed().intent(Intent::SelectFile(Some(SelectedFile {
+            key,
+            origin: SelectionOrigin::Viewport,
+        })))
+    }
+
+    pub fn take_source_requests(&mut self) -> Vec<(FileKey, SourcePurpose)> {
+        std::mem::take(&mut self.source_requests)
+    }
+
+    fn request_sources(&mut self, unit: u32) {
+        let Some(file) = self.sources.file(unit) else {
+            return;
+        };
+        let wanted = self.diff.as_ref().is_some_and(|diff| {
+            diff.session()
+                .source_request(file.id, SourcePurpose::ExpandContext)
+                .is_some()
+        });
+        let request = (file.id, SourcePurpose::ExpandContext);
+        if wanted && !self.source_requests.contains(&request) {
+            self.source_requests.push(request);
+        }
+    }
+
+    fn install_view(&mut self, update: ViewportInstall, cx: &SharedContext) -> Reduction {
         match update {
             ViewportInstall::Begin { generation } => {
                 if generation < self.generation {
@@ -301,30 +508,9 @@ impl InteractionController {
                 Reduction::changed()
             }
             ViewportInstall::File { prepared, remap } => {
-                if prepared.generation() < self.generation {
-                    return Reduction::default();
-                }
-                if prepared.generation() > self.generation || self.text_compare.active {
-                    self.text_compare.active = false;
-                    self.reset(prepared.generation());
-                }
-                let key = prepared.key();
-                let installed = self.apply(DiffUpdate::Upsert {
-                    file: prepared.snapshot().clone(),
-                    remap,
-                });
-                if !installed {
-                    return Reduction::default();
-                }
-                self.failures.remove(&key);
-                self.phase = Phase::Ready;
-                if let Some(selected) = cx.selected_file
-                    && selected.key == key
-                    && selected.origin != SelectionOrigin::Viewport
-                {
-                    self.reveal_file(key);
-                }
-                Reduction::changed()
+                let mut pending = Vec::new();
+                self.queue_file(prepared, remap, &mut pending, cx);
+                self.flush(pending, cx)
             }
             ViewportInstall::Failed {
                 generation,
@@ -442,6 +628,13 @@ impl InteractionController {
     }
 
     fn navigate(&mut self, key: DiffKey) -> Reduction {
+        if !self.continuous && !self.text_compare.active {
+            match key {
+                DiffKey::NextFile => return self.step_solo(true),
+                DiffKey::PrevFile => return self.step_solo(false),
+                _ => {}
+            }
+        }
         let outcome = self.key(key);
         let mut reduction = self.outcome(outcome);
         if let Some(hunk) = self
@@ -513,6 +706,15 @@ impl InteractionController {
         )
     }
 
+    fn apply_settings(&mut self, settings: &Settings, startup: bool, cx: &SharedContext) -> bool {
+        let mut changed = self.apply_viewport_settings(&settings.viewport, startup);
+        if self.continuous != settings.continuous_scroll {
+            self.continuous = settings.continuous_scroll;
+            changed = true;
+        }
+        changed | self.sync_solo(cx.selected_file.map(|s| s.key))
+    }
+
     fn apply_viewport_settings(&mut self, viewport: &PersistedViewport, startup: bool) -> bool {
         let previous = self.persisted.replace(viewport.clone());
         let old = previous.as_ref().filter(|_| !startup);
@@ -573,6 +775,16 @@ impl Controller for InteractionController {
                 | DiffKey::Home
                 | DiffKey::End),
             ))) => self.navigate(key),
+            A::Diff(DiffInput(DiffEvent::Expand(gap, reveal))) => {
+                let outcome = match &mut self.diff {
+                    Some(diff) => diff.handle(DiffEvent::Expand(gap, reveal)),
+                    None => DiffOutcome::Unchanged,
+                };
+                if outcome == DiffOutcome::Unchanged {
+                    self.request_sources(gap.file);
+                }
+                self.outcome(outcome)
+            }
             A::Diff(DiffInput(event)) => {
                 let select = matches!(
                     event,
@@ -671,22 +883,20 @@ impl Controller for InteractionController {
                 hunk,
                 direction,
                 amount,
-            } => Reduction {
-                changed: self.expand(file, hunk, direction, amount),
-                ..Reduction::default()
-            },
+            } => {
+                let changed = self.expand(file, hunk, direction, amount);
+                if !changed && let Some(unit) = self.sources.unit_of(file) {
+                    self.request_sources(unit);
+                }
+                Reduction {
+                    changed,
+                    ..Reduction::default()
+                }
+            }
             A::ExpandAllContext => Reduction {
                 changed: self.diff.as_mut().is_some_and(|diff| diff.expand_all()),
                 ..Reduction::default()
             },
-            A::SetLayout(layout) => {
-                if self.layout == layout {
-                    return Reduction::default();
-                }
-                self.layout = layout;
-                self.sync_presentation();
-                Reduction::changed()
-            }
             A::SetTextCompareView(view) => {
                 self.text_compare.active = true;
                 self.text_compare.view = view;
@@ -740,14 +950,11 @@ impl Controller for InteractionController {
                 let open = InteractionAction::SetTextCompareView(TextCompareView::Edit);
                 return self.reduce_action(open, cx);
             }
-            Intent::Startup(startup) => {
-                self.apply_viewport_settings(&startup.settings.viewport, true)
-            }
-            Intent::SettingsChanged(settings) => {
-                self.apply_viewport_settings(&settings.settings.viewport, false)
-            }
+            Intent::Startup(startup) => self.apply_settings(&startup.settings, true, cx),
+            Intent::SettingsChanged(settings) => self.apply_settings(&settings.settings, false, cx),
             Intent::SelectFile(Some(selected)) if selected.origin != SelectionOrigin::Viewport => {
-                self.reveal_file(selected.key)
+                let solo = self.sync_solo(Some(selected.key));
+                self.reveal_file(selected.key) | solo
             }
             Intent::GrammarAvailable(_) => match &mut self.diff {
                 Some(diff) => {
@@ -849,7 +1056,6 @@ impl CommandSource for InteractionController {
         let has_files = self.diff.as_ref().is_some_and(|d| !d.session().is_empty());
         let matches = self.search.open && self.search_summary().matches > 0;
         let selected = self.diff.as_ref().is_some_and(|d| d.selection().is_some());
-        let unified = self.layout == LayoutMode::Unified;
         out.extend([
             CommandDescriptor::new("diff.find", "Find in Diff", A::OpenSearch)
                 .shortcut(S::OpenSearch)
@@ -875,16 +1081,6 @@ impl CommandSource for InteractionController {
             CommandDescriptor::new("diff.bottom", "Go to Bottom", A::ScrollToBottom)
                 .shortcut(S::GoToBottom)
                 .enabled(has_files),
-            CommandDescriptor::new(
-                "diff.unified",
-                "Unified View",
-                A::SetLayout(LayoutMode::Unified),
-            )
-            .shortcut(S::UnifiedView)
-            .enabled(!unified),
-            CommandDescriptor::new("diff.split", "Split View", A::SetLayout(LayoutMode::Split))
-                .shortcut(S::SplitView)
-                .enabled(unified),
             CommandDescriptor::new("diff.expand_all", "Expand All Context", A::ExpandAllContext)
                 .enabled(has_files),
             CommandDescriptor::new("diff.copy", "Copy Selection", A::CopySelection)

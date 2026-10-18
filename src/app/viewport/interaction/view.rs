@@ -164,12 +164,12 @@ fn toolbar(
         let layout = SegmentedControl::new(vec![
             SegmentedItem::new(
                 "Unified",
-                act(InteractionAction::SetLayout(LayoutMode::Unified)),
+                CommandsAction::SetLayout(LayoutMode::Unified),
                 unified,
             ),
             SegmentedItem::new(
                 "Split",
-                act(InteractionAction::SetLayout(LayoutMode::Split)),
+                CommandsAction::SetLayout(LayoutMode::Split),
                 !unified,
             ),
         ])
@@ -240,7 +240,7 @@ fn diff_area(
     };
     let search = search_bar(interaction, width, search_h, cx);
     let list_h = (height - search_h).max(0.0);
-    interaction.set_viewport_height(list_h);
+    interaction.set_viewport(width, list_h);
     let style = interaction.style(cx.theme.metrics.mono_font_size);
     let options = DiffViewOptions {
         decorator,

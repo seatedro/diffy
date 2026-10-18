@@ -7,9 +7,8 @@ use crate::contracts::shared::{
     CompareGeneration, FileKey, FileRevision, JobId, Side, SourceTarget,
 };
 use crate::contracts::shell::{Action, AppEvent, Effect};
-use crate::contracts::viewport::pipeline::PreparedDiff;
+use crate::contracts::viewport::pipeline::{PreparedDiff, SlotUpdate};
 use crate::contracts::viewport::{ViewportAction, ViewportEffect, ViewportEvent};
-use crate::core::compare::LayoutMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContextDirection {
@@ -52,7 +51,6 @@ pub enum InteractionAction {
         amount: u32,
     },
     ExpandAllContext,
-    SetLayout(LayoutMode),
     SetTextCompareView(TextCompareView),
     SwapTextCompareSides,
     ClearTextCompareSide(TextCompareSide),
@@ -86,6 +84,12 @@ pub enum ViewportInstall {
     TextCompare {
         prepared: PreparedDiff,
     },
+}
+
+#[derive(Debug, Clone)]
+pub enum InstallItem {
+    View(ViewportInstall),
+    Slot(SlotUpdate),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

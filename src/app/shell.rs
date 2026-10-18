@@ -176,7 +176,9 @@ impl<D: EffectDispatcher> DiffyApp<D> {
         for effect in effects {
             match effect {
                 Effect::Shell(
-                    effect @ (ShellEffect::OpenRepositoryDialog | ShellEffect::SetClipboard(_)),
+                    effect @ (ShellEffect::OpenRepositoryDialog
+                    | ShellEffect::SetClipboard(_)
+                    | ShellEffect::Focus(_)),
                 ) => self.deferred.push(effect),
                 effect => self.dispatcher.dispatch(effect, self.shared.workspace),
             }
@@ -246,6 +248,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                     }));
                 }
                 ShellEffect::SetClipboard(text) => cx.window.set_clipboard_text(&text),
+                ShellEffect::Focus(focus) => cx.set_focus(focus.map(text_targets::focus_id)),
                 effect => self
                     .dispatcher
                     .dispatch(Effect::Shell(effect), self.shared.workspace),

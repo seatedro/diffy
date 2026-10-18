@@ -19,9 +19,9 @@
 //! Rendering and interaction are the static view's: [`diff_session_view`]
 //! draws with [`super::diff_view`], and events go through
 //! [`DiffSessionViewState::handle`]. With syntax on
-//! ([`DiffSessionViewState::enable_syntax`]) every file revision is
-//! highlighted as it arrives, and sides an update leaves unchanged keep
-//! their colors.
+//! ([`DiffSessionViewState::enable_syntax`]) file revisions are
+//! highlighted once they are visible, and sides an update leaves unchanged
+//! keep their colors.
 
 use diffy_diff::{
     ComparisonOptions, ContextPolicy, DiffLimits, DiffSession, DiffUpdate, GapId, InlineOptions,
@@ -33,6 +33,7 @@ use quark_ui::FocusId;
 use diffy_diff::RowKind;
 
 use super::navigation::FileId;
+use super::prepared_update::{Preparation, PreparedSegment, segment_for};
 use super::selection::{block_key, decode_key};
 #[cfg(doc)]
 use super::session_interaction::diff_session_view;
@@ -76,7 +77,7 @@ impl DiffSessionViewState {
         let mut state = Self { view, session };
         for index in 0..state.session.len() {
             let snapshot = state.session.at(index).expect("ordered file").clone();
-            state.insert_segment(index as usize, snapshot.id, snapshot);
+            state.insert_segment(index as usize, snapshot.id, snapshot, None);
         }
         state.view.rebuild_rows(None);
         state
@@ -124,19 +125,44 @@ impl DiffSessionViewState {
     /// update changes nothing; [`UpdateError::Stale`] and
     /// [`UpdateError::Removed`] are late arrivals the app can drop.
     pub fn apply_update(&mut self, update: DiffUpdate) -> Result<UpdateOutcome, UpdateError> {
+        self.apply(update, None)
+    }
+
+    pub fn preparation(&self) -> Preparation {
+        Preparation {
+            mode: self.view.mode,
+            policy: self.view.context_policy,
+            comparison: self.view.comparison,
+        }
+    }
+
+    pub fn install_prepared(
+        &mut self,
+        prepared: PreparedSegment,
+        remap: Option<SourceRemap>,
+    ) -> Result<UpdateOutcome, UpdateError> {
+        let file = prepared.snapshot().clone();
+        self.apply(DiffUpdate::Upsert { file, remap }, Some(prepared))
+    }
+
+    fn apply(
+        &mut self,
+        update: DiffUpdate,
+        prepared: Option<PreparedSegment>,
+    ) -> Result<UpdateOutcome, UpdateError> {
         let outcome = self.session.apply(update)?;
         let anchor = self.view.anchor();
         let anchor = match &outcome {
             UpdateOutcome::Inserted { index } => {
                 let snapshot = self.session.at(*index).expect("inserted file").clone();
-                self.insert_segment(*index as usize, snapshot.id, snapshot);
+                self.insert_segment(*index as usize, snapshot.id, snapshot, prepared);
                 anchor
             }
             UpdateOutcome::Replaced { index, remap, .. } => {
-                self.replace_segment(*index as usize, remap.as_ref(), anchor)
+                self.replace_segment(*index as usize, remap.as_ref(), anchor, prepared)
             }
             UpdateOutcome::Hydrated { index } => {
-                self.replace_segment(*index as usize, None, anchor)
+                self.replace_segment(*index as usize, None, anchor, None)
             }
             UpdateOutcome::Removed { index } => {
                 if let Some(index) = index {
@@ -158,21 +184,20 @@ impl DiffSessionViewState {
     }
 
     /// Adds a segment for a new file at `index`, with a fresh slot.
-    fn insert_segment(&mut self, index: usize, id: FileId, snapshot: diffy_diff::FileDiffSnapshot) {
+    fn insert_segment(
+        &mut self,
+        index: usize,
+        id: FileId,
+        snapshot: diffy_diff::FileDiffSnapshot,
+        prepared: Option<PreparedSegment>,
+    ) {
         let view = &mut self.view;
         let slot = view.files.slot_ids.len() as u32;
         view.files.slot_ids.push(id);
         view.files.id_slots.insert(id, slot);
         view.files.slot_seg.push(NONE);
         view.generations += 1;
-        let mut segment = Segment::new(
-            snapshot.diff.clone(),
-            slot,
-            view.generations,
-            view.mode,
-            view.context_policy,
-            view.comparison,
-        );
+        let mut segment = segment_for(view, &snapshot, slot, prepared);
         segment.revision = snapshot.revision.0;
         view.segments.insert(index, segment);
         self.index_slots();
@@ -190,6 +215,7 @@ impl DiffSessionViewState {
         index: usize,
         remap: Option<&SourceRemap>,
         anchor: Option<Anchor>,
+        prepared: Option<PreparedSegment>,
     ) -> Option<Anchor> {
         let slot = self.view.segments[index].slot;
         let id = self.view.files.slot_ids[slot as usize];
@@ -271,14 +297,8 @@ impl DiffSessionViewState {
         });
 
         view.generations += 1;
-        let mut segment = Segment::new(
-            new_doc,
-            slot,
-            view.generations,
-            view.mode,
-            view.context_policy,
-            view.comparison,
-        );
+        drop(new_doc);
+        let mut segment = segment_for(view, &snapshot, slot, prepared);
         segment.revision = snapshot.revision.0;
         if let Some(remap) = remap {
             carry_expansion(&view.segments[index], &mut segment, remap, view.mode);
@@ -475,5 +495,54 @@ mod tests {
 
         // Lines 0 to 19 stay above the edited line 20.
         assert_eq!(shown(&mut state, &mut text)[..20], opened[..20]);
+    }
+
+    #[test]
+    fn worker_prepared_segments_install_like_direct_updates() {
+        fn sendable<T: Send>(_: &T) {}
+        let base = numbered(0..30);
+        let edited = base.replace("line 12\n", "twelve\n");
+        let mut text = TextSystem::vendored_only(&Default::default());
+        let mut direct =
+            DiffSessionViewState::new("direct.diff", FocusId::new(1), DiffSession::new());
+        let mut prepared =
+            DiffSessionViewState::new("prepared.diff", FocusId::new(2), DiffSession::new());
+        for state in [&mut direct, &mut prepared] {
+            state.set_viewport(600.0, 4000.0);
+        }
+        direct
+            .apply_update(DiffUpdate::Upsert {
+                file: snap(1, &base, &edited),
+                remap: None,
+            })
+            .unwrap();
+        let segment = PreparedSegment::prepare(snap(1, &base, &edited), prepared.preparation());
+        sendable(&segment);
+        let outcome = std::thread::spawn(move || segment).join().unwrap();
+        assert!(matches!(
+            prepared.install_prepared(outcome, None),
+            Ok(UpdateOutcome::Inserted { index: 0 })
+        ));
+        assert_eq!(
+            shown(&mut prepared, &mut text),
+            shown(&mut direct, &mut text)
+        );
+
+        let stale = PreparedSegment::prepare(snap(1, &base, &base), prepared.preparation());
+        assert!(matches!(
+            prepared.install_prepared(stale, None),
+            Err(UpdateError::Stale { .. })
+        ));
+        let mut other = prepared.preparation();
+        other.mode = match other.mode {
+            Mode::Unified => Mode::Split,
+            Mode::Split => Mode::Unified,
+        };
+        let mismatched = PreparedSegment::prepare(snap(2, &base, &edited), other);
+        prepared.install_prepared(mismatched, None).unwrap();
+        assert_eq!(
+            shown(&mut prepared, &mut text),
+            shown(&mut direct, &mut text)
+        );
     }
 }

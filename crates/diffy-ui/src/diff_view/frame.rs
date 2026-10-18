@@ -382,6 +382,9 @@ impl DiffViewState {
             if let Some(bridge) = self.slot_syntax.get_mut(segment.slot as usize) {
                 let shown = (first.0..=last.0).contains(&(seg as u32));
                 bridge.set_visible_files(0..u32::from(shown));
+                if shown && bridge.is_enabled() && bridge.requested() != segment.generation {
+                    bridge.request(&segment.doc, segment.generation);
+                }
             }
         }
     }
@@ -446,7 +449,9 @@ impl DiffViewState {
                 if self.style.wrap {
                     let m = self.metrics();
                     for side in [Side::Old, Side::New] {
-                        columns.wrap_width(side, &m).to_bits().hash(&mut h);
+                        super::presentation::wrap_width(columns, side, &m, &self.presentation)
+                            .to_bits()
+                            .hash(&mut h);
                     }
                 } else if p.kind[row as usize].is_line() {
                     for side in [Side::Old, Side::New] {
@@ -694,7 +699,9 @@ impl DiffViewState {
                     let params = TextParams::new(line, self.text_style())
                         .spans(spans)
                         .scale_factor(scale)
-                        .wrap_width(self.style.wrap.then(|| columns.wrap_width(side, &m)));
+                        .wrap_width(self.style.wrap.then(|| {
+                            super::presentation::wrap_width(columns, side, &m, &self.presentation)
+                        }));
                     let Ok(layout) = layouts.layout(text, &params) else {
                         continue;
                     };

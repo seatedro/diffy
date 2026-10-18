@@ -38,6 +38,15 @@ impl CommandsRuntime {
                     });
                 }
             }
+            CommandsEffect::LoadFontCatalog => {
+                thread::spawn(move || {
+                    let (ui, mono) = crate::fonts::scan_font_catalog();
+                    events.send(CommandsEvent::FontCatalogReady {
+                        ui: ui.into(),
+                        mono: mono.into(),
+                    });
+                });
+            }
         }
     }
 }

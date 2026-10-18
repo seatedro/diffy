@@ -11,5 +11,4 @@ pub mod apprt;
 pub mod contracts;
 pub mod core;
 pub mod fonts;
-pub mod hot_reload;
 pub mod platform;

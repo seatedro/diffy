@@ -12,7 +12,7 @@ use quark_ui::theme::Theme;
 #[cfg(doc)]
 use super::DiffViewState;
 use super::annotations::{DiffAnchor, DiffAnnotation};
-use super::decorator::DiffDecorator;
+use super::decorator::{DiffDecorator, DiffSources, DiffViewOptions};
 use super::navigation::{DiffTarget, FileId, RevealAlign, SourcePoint};
 use super::prepared::{AnnotationId, DiffPreviewLimit, ViewFrame};
 use super::presentation::{DiffAppearance, DiffPresentation};
@@ -37,6 +37,10 @@ impl DiffSessionViewState {
         fn focused_target() -> Option<DiffTarget>;
         fn point_at(x: f32, y: f32) -> Option<SelectionPoint>;
         fn is_file_collapsed(file: FileId) -> bool;
+        fn syntax_pending() -> bool;
+        fn focused_hunk() -> Option<(FileId, u32)>;
+        fn top_file() -> Option<FileId>;
+        fn selected_lines() -> Option<DiffAnchor>;
     }
 
     forward! { mut
@@ -57,6 +61,7 @@ impl DiffSessionViewState {
         fn enable_syntax(store: GrammarStore) -> ();
         fn enable_syntax_shared(worker: &HighlightWorker, store: GrammarStore) -> ();
         fn finish_syntax() -> bool;
+        fn refresh_syntax() -> ();
     }
 
     /// See [`DiffViewState::set_syntax_wake`].
@@ -78,6 +83,20 @@ impl DiffSessionViewState {
         now_ms: u64,
     ) {
         self.view.prepare(text, layouts, scale, now_ms);
+    }
+
+    pub fn sources(&self) -> DiffSources {
+        self.view.sources()
+    }
+
+    pub fn view_with_options(
+        &mut self,
+        theme: &Theme,
+        env: CollectionEnv,
+        on_event: fn(DiffEvent) -> Action,
+        options: DiffViewOptions,
+    ) -> AnyElement {
+        super::view::diff_view_custom(&mut self.view, theme, env, on_event, options)
     }
 
     /// An anchor on `lines` of `file`'s current revision, when they exist.

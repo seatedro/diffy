@@ -74,6 +74,7 @@ use quark_ui::virtual_list::VariableList;
 pub use annotations::{DiffAnchor, DiffAnnotation};
 pub use navigation::{DiffTarget, FileId, RevealAlign, Revision, SourcePoint};
 pub use prepared::{AnnotationId, DiffPreviewLimit};
+pub use prepared_update::{Preparation, PreparedSegment};
 pub use search::{FindOptions, SearchCoverage, SearchDirection, SearchSides, SearchSummary};
 pub use selection::CopyContent;
 pub use session::DiffSessionViewState;

@@ -140,7 +140,7 @@ fn picker_panel(
             pt={tokens::scaled(Sz::MODAL_TOP_OFFSET, scale)}
             bg={tc.overlay_scrim}
             test_id="picker-backdrop"
-            on:click={CommandsAction::CloseOverlay}
+            on:click={CommandsAction::BackdropDismiss}
             block_mouse
         >
             <div

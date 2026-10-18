@@ -90,9 +90,14 @@ pub fn key_action(controllers: &Controllers, event: &InputEvent) -> Option<Actio
             });
         return None;
     }
+    if let InputEvent::Focused(focused) = event {
+        controllers.commands.observe_window_focus(*focused);
+        return None;
+    }
     let InputEvent::KeyPress(chord) = event else {
         return None;
     };
+    controllers.commands.observe_key();
     let binding = chord.binding()?;
     controllers.commands.key_action(&binding.to_string())
 }

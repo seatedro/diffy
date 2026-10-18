@@ -1,10 +1,11 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use quark_components::{
-    CommandPalette, ContextMenuOutcome, ContextMenuState, PALETTE_INPUT, PaletteOutcome,
+    CommandPalette, ContextMenuOutcome, ContextMenuState, PALETTE_INPUT, PaletteEvent,
+    PaletteOutcome,
 };
 use quark_ui::FocusId;
 use quark_ui::element::{Binding, ScrollHandle};
@@ -105,6 +106,7 @@ pub struct CommandsController {
     frecency: Option<FrecencyStore>,
     row_stride: f32,
     outbox: RefCell<Vec<PlatformRequest>>,
+    activation_click: Cell<bool>,
 }
 
 impl std::fmt::Debug for CommandsController {
@@ -145,6 +147,7 @@ impl Default for CommandsController {
             frecency: None,
             row_stride: 0.0,
             outbox: RefCell::new(Vec::new()),
+            activation_click: Cell::new(false),
         }
     }
 }
@@ -160,6 +163,15 @@ impl CommandsController {
 
     pub fn picker(&self) -> Option<&PickerState> {
         self.picker.as_ref()
+    }
+
+    pub(super) fn observe_window_focus(&self, focused: bool) {
+        self.activation_click
+            .set(focused && !self.layers.is_empty());
+    }
+
+    pub(super) fn observe_key(&self) {
+        self.activation_click.set(false);
     }
 
     pub fn editing_ref(&self) -> Option<CompareField> {
@@ -1339,6 +1351,13 @@ impl Controller for CommandsController {
                 self.open_settings(Some(SettingsSection::Keymaps))
             }
             A::CloseOverlay => self.close_top(),
+            A::BackdropDismiss => {
+                if self.activation_click.replace(false) {
+                    Reduction::default()
+                } else {
+                    self.close_top()
+                }
+            }
             A::DismissOverlays => self.dismiss_overlays(),
             A::MoveOverlaySelection(delta) if self.ref_picker.is_some() => {
                 if let Some(picker) = &mut self.ref_picker {
@@ -1412,7 +1431,11 @@ impl Controller for CommandsController {
                 Some(LayerKind::ContextMenu) => self.context_menu_key(&binding, cx),
                 _ => Reduction::default(),
             },
+            A::Palette(PaletteEvent::Dismiss) if self.activation_click.replace(false) => {
+                Reduction::default()
+            }
             A::Palette(event) => {
+                self.activation_click.set(false);
                 let outcome = self.palette.apply(event);
                 self.palette_outcome(outcome, cx)
             }

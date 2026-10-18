@@ -49,7 +49,7 @@ pub fn title_leading_inset(theme: &Theme) -> f32 {
 pub struct Layout;
 
 impl Layout {
-    pub const REF_PICKER_W: f32 = 470.0;
+    pub const REF_PICKER_W: f32 = 540.0;
     pub const HOVER_CARD_W: f32 = 330.0;
     pub const POPOVER_GAP: f32 = 4.0;
     pub const COMPARE_CHIP_H: f32 = 26.0;

@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -180,6 +180,7 @@ pub struct NavigationController {
     anchor: Option<FileKey>,
     modifiers: Cell<ClickModifiers>,
     banner: RefCell<super::banner::BannerCache>,
+    tags: RefCell<(usize, Rc<HashMap<String, Vec<String>>>)>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -223,6 +224,7 @@ impl Default for NavigationController {
             anchor: None,
             modifiers: Cell::new(ClickModifiers::default()),
             banner: RefCell::new(None),
+            tags: RefCell::new((0, Rc::default())),
         }
     }
 }
@@ -292,6 +294,24 @@ impl NavigationController {
         self.repository
             .as_ref()
             .is_some_and(|r| r.snapshot.capabilities.operation_log)
+    }
+
+    pub fn tags_by_target(&self) -> Rc<HashMap<String, Vec<String>>> {
+        let Some(repo) = &self.repository else {
+            return Rc::default();
+        };
+        let identity = Arc::as_ptr(&repo.snapshot) as usize;
+        let mut cache = self.tags.borrow_mut();
+        if cache.0 != identity {
+            let mut map: HashMap<String, Vec<String>> = HashMap::new();
+            for r in repo.snapshot.refs.iter().filter(|r| r.kind == RefKind::Tag) {
+                map.entry(r.target.id.clone())
+                    .or_default()
+                    .push(r.name.clone());
+            }
+            *cache = (identity, Rc::new(map));
+        }
+        cache.1.clone()
     }
 
     pub(super) fn banner_cache(&self) -> &RefCell<super::banner::BannerCache> {
@@ -383,8 +403,18 @@ impl NavigationController {
         let shown = |reference: &str| match reference {
             "" => String::new(),
             r if is_working_copy_ref(r) => WORKING_TREE_LABEL.to_owned(),
+            r if r.len() >= 12 && r.bytes().all(|b| b.is_ascii_hexdigit()) => r[..7].to_owned(),
             r => r.to_owned(),
         };
+        if self.compare.mode == CompareMode::SingleCommit {
+            let commit = if self.compare.right.is_empty() {
+                &self.compare.left
+            } else {
+                &self.compare.right
+            };
+            let commit = shown(commit);
+            return (format!("{commit}^"), commit);
+        }
         (shown(&self.compare.left), shown(&self.compare.right))
     }
 
@@ -677,7 +707,12 @@ impl NavigationController {
         }
         match self.compare.mode {
             CompareMode::TwoDot | CompareMode::ThreeDot if self.compare.refs_valid() => {
-                Some((self.compare.left.clone(), self.compare.right.clone()))
+                let right = if is_working_copy_ref(&self.compare.right) {
+                    "HEAD".to_owned()
+                } else {
+                    self.compare.right.clone()
+                };
+                Some((self.compare.left.clone(), right))
             }
             _ => None,
         }

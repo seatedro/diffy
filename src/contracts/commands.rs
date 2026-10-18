@@ -143,6 +143,7 @@ pub enum CommandsAction {
     OpenMonoFontPicker,
     ShowKeyboardShortcuts,
     CloseOverlay,
+    BackdropDismiss,
     DismissOverlays,
     MoveOverlaySelection(i32),
     SelectOverlayEntry(usize),

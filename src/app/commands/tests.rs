@@ -159,6 +159,10 @@ impl UiApp for CmdApp {
     }
 
     fn event(&mut self, event: &InputEvent, cx: &mut UiContext) -> bool {
+        if let InputEvent::Focused(focused) = event {
+            self.commands.observe_window_focus(*focused);
+            return false;
+        }
         let InputEvent::KeyPress(chord) = event else {
             return false;
         };
@@ -1057,4 +1061,20 @@ fn settings_search_finds_rows_across_sections_and_keys() {
     ui.find(By::role_name(Role::Group, "Wrap column"));
     assert!(ui.try_find(By::role_name(Role::Group, "Theme")).is_none());
     ui.find(By::role_name(Role::Button, "Rebind Toggle line wrapping"));
+}
+
+#[test]
+fn activation_click_on_the_backdrop_keeps_the_palette_open() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    ui.run(CommandsAction::OpenCommandPalette);
+    ui.send_event(InputEvent::Focused(true));
+    ui.run(CommandsAction::Palette(
+        quark_components::PaletteEvent::Dismiss,
+    ));
+    assert_eq!(ui.app().commands.top_layer(), Some(LayerKind::Palette));
+    ui.run(CommandsAction::Palette(
+        quark_components::PaletteEvent::Dismiss,
+    ));
+    assert_eq!(ui.app().commands.top_layer(), None);
 }

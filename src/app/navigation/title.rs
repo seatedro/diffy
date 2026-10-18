@@ -155,7 +155,11 @@ fn ref_icon(nav: &NavigationController, label: &str) -> &'static str {
     match kind {
         Some(RefKind::Tag) => icons::TAG,
         Some(_) => lucide::GIT_BRANCH,
-        None if label.len() >= 7 && label.bytes().all(|b| b.is_ascii_hexdigit()) => icons::COMMIT,
+        None if is_sha(label.trim_end_matches('^')) => icons::COMMIT,
         None => lucide::GIT_BRANCH,
     }
+}
+
+fn is_sha(label: &str) -> bool {
+    label.len() >= 7 && label.bytes().all(|b| b.is_ascii_hexdigit())
 }

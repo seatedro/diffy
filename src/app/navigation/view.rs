@@ -28,10 +28,11 @@ use crate::contracts::shared::SharedContext;
 use crate::contracts::shell::{Action, LogicalFocus, ShellAction};
 use crate::contracts::viewport::pipeline::{FileStats, ManifestFile};
 use crate::core::ref_catalog::relative_age;
-use crate::core::vcs::model::{ChangeBucket, RefKind, VcsChange};
+use crate::core::vcs::model::{ChangeBucket, VcsChange};
 use diffy_diff::FileStatus;
 
 const OVERSCAN_ROWS: usize = 8;
+const MAX_TAG_PILLS: usize = 2;
 
 pub fn view(
     nav: &mut NavigationController,
@@ -625,7 +626,9 @@ fn text_action(action: &RowAction, theme: &Theme) -> AnyElement {
 }
 
 fn row_label(path: &str, file: &ManifestFile, stats: Option<(u32, u32)>) -> String {
-    let status = if file.binary {
+    let status = if file.buckets.contains(&ChangeBucket::Untracked) {
+        "untracked"
+    } else if file.binary {
         "binary"
     } else {
         match file.status {
@@ -711,17 +714,7 @@ fn history(
             empty_state("No matching commits", "Try a different filter", theme)
         };
     }
-    let tags: Vec<(&str, &str)> = nav
-        .repository()
-        .map(|repo| {
-            repo.snapshot
-                .refs
-                .iter()
-                .filter(|r| r.kind == RefKind::Tag)
-                .map(|r| (r.target.id.as_str(), r.name.as_str()))
-                .collect()
-        })
-        .unwrap_or_default();
+    let tags = nav.tags_by_target();
     let capabilities = nav.repository().map(|repo| repo.snapshot.capabilities);
     let row_height = tokens::scaled(Layout::HISTORY_ROW_H, scale);
     let window = virtual_list_window(
@@ -757,11 +750,15 @@ fn history(
                 actions.extend(change_actions(commit, caps));
             }
             let menu = row_menu(actions);
-            let pills: Vec<AnyElement> = tags
+            let names = tags.get(&revision).map_or(&[][..], Vec::as_slice);
+            let mut pills: Vec<AnyElement> = names
                 .iter()
-                .filter(|(target, _)| *target == revision)
-                .map(|(_, name)| pill(name, theme))
+                .take(MAX_TAG_PILLS)
+                .map(|name| pill(name, theme))
                 .collect();
+            if names.len() > MAX_TAG_PILLS {
+                pills.push(pill(&format!("+{}", names.len() - MAX_TAG_PILLS), theme));
+            }
             let avatar = author_avatar(review, &commit.author_name, "").size(Layout::AVATAR_SM);
             let age = relative_age(now, commit.timestamp);
             let meta = [commit.short_revision.as_str(), commit.author_name.as_str(), age.as_str()]

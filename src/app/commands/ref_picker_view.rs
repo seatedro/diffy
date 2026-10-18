@@ -96,7 +96,7 @@ pub fn ref_picker_panel(
             z_index={300}
             bg={tc.overlay_scrim}
             test_id="ref-picker-backdrop"
-            on:click={CommandsAction::CloseOverlay}
+            on:click={CommandsAction::BackdropDismiss}
             block_mouse
         >
             <div
@@ -308,7 +308,7 @@ fn hover_card(picker: &RefPicker, theme: &Theme) -> Option<AnyElement> {
         (true, true) => String::new(),
     };
     let other = match picker.other_name() {
-        "" => "HEAD",
+        "" | crate::core::ref_catalog::WORKING_TREE_LABEL => "HEAD",
         name => name,
     };
     let range = match picker.side() {
@@ -316,15 +316,17 @@ fn hover_card(picker: &RefPicker, theme: &Theme) -> Option<AnyElement> {
         CompareField::Right => format!("{other} \u{2192} {}", entry.name),
     };
     let size_line = picker.size.map(|size| {
+        let plural =
+            |n: u32, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
         let files = size
             .files
-            .map(|f| format!("{f} files \u{00B7} "))
+            .map(|f| format!("{} \u{00B7} ", plural(f, "file", "files")))
             .unwrap_or_default();
         let plus = if size.commits_capped { "+" } else { "" };
         (
             format!("+{}", size.additions),
             format!("\u{2212}{}", size.deletions),
-            format!("{files}{}{plus} commits", size.commits),
+            format!("{files}{}{plus}", plural(size.commits, "commit", "commits")),
         )
     });
     Some(view! {

@@ -430,6 +430,8 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             decorator,
             cx,
         );
+        let bar = mutations::selection_bar(&mut self.controllers.mutations, &slot, cx);
+        let main = view! { <div w={main_w} h={height} class="relative">{main}{?bar}</div> };
         let content = match files {
             Some(files) => Split::new(
                 "diffy.sidebar",

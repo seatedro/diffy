@@ -19,12 +19,13 @@ use crate::app::route::{self, Controllers, MAX_INTENTS_PER_TURN, Routed};
 use crate::app::text_targets::{self, TextCx};
 use crate::app::tokens::{self, Sp, TextStyle};
 use crate::app::{commands, delivery, mutations, navigation, review, viewport};
-use crate::core::compare::LayoutMode;
+use crate::contracts::commands::SettingsSection;
 use crate::contracts::commands::{CommandsAction, ToastUpdate};
 use crate::contracts::shared::{AccountEpoch, SharedContext, WorkspaceEpoch};
 use crate::contracts::shell::{
     Action, AppMessage, AppStartup, Effect, Intent, Reduction, ShellAction, ShellEffect, ShellEvent,
 };
+use crate::core::compare::LayoutMode;
 
 pub trait EffectDispatcher: 'static {
     fn attach(&mut self, _sender: UiSender<AppMessage>) {}
@@ -551,16 +552,26 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
         };
         let mutation_panel = mutations::panel(&mut self.controllers.mutations, &slot, cx);
         let review_overlay = review::overlay(&self.controllers.review, &slot, cx);
-        let clankers =
-            commands::clankers_slot(&self.controllers.commands, &slot, cx.theme).map(|width| {
-                mutations::clankers_settings(
+        let external = commands::settings_slot(&self.controllers.commands, &slot, cx.theme).map(
+            |(section, width)| match section {
+                SettingsSection::Clankers => mutations::clankers_settings(
                     &mut self.controllers.mutations,
                     &self.shared.settings,
                     width,
                     cx,
-                )
-            });
-        let overlays = commands::overlays(&mut self.controllers.commands, &slot, clankers, cx);
+                ),
+                SettingsSection::Accounts => {
+                    review::accounts_settings(&self.controllers.review, cx.theme)
+                }
+                _ => delivery::updates_settings(
+                    &self.controllers.delivery,
+                    &self.shared.settings,
+                    width,
+                    cx,
+                ),
+            },
+        );
+        let overlays = commands::overlays(&mut self.controllers.commands, &slot, external, cx);
         let languages = delivery::overlay(&mut self.controllers.delivery, &slot, cx);
         let toasts = commands::toasts(&mut self.controllers.commands, &slot, cx);
         view! {

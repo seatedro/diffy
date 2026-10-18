@@ -23,28 +23,43 @@ pub enum SettingsSection {
     Behavior,
     Keymaps,
     Clankers,
-    About,
+    Accounts,
+    Updates,
 }
 
 impl SettingsSection {
     pub fn label(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
-            Self::Editor => "Editor",
+            Self::Editor => "Diff",
             Self::Behavior => "Behavior",
-            Self::Keymaps => "Keymaps",
-            Self::Clankers => "Clankers",
-            Self::About => "About",
+            Self::Keymaps => "Keyboard",
+            Self::Clankers => "AI",
+            Self::Accounts => "Accounts",
+            Self::Updates => "Updates",
         }
     }
 
-    pub const ALL: [Self; 6] = [
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Appearance => "How Diffy looks. Changes apply as you make them.",
+            Self::Editor => "How diffs are computed and laid out.",
+            Self::Behavior => "How Diffy behaves in the background.",
+            Self::Keymaps => "Every shortcut. Click a binding to change it.",
+            Self::Clankers => "Commit messages written by a model you choose.",
+            Self::Accounts => "Services Diffy signs in to.",
+            Self::Updates => "The installed version and how it updates.",
+        }
+    }
+
+    pub const ALL: [Self; 7] = [
         Self::Appearance,
         Self::Editor,
         Self::Behavior,
         Self::Keymaps,
         Self::Clankers,
-        Self::About,
+        Self::Accounts,
+        Self::Updates,
     ];
 }
 
@@ -156,6 +171,7 @@ pub enum CommandsAction {
     SetSettingsSection(SettingsSection),
     ToggleWrap,
     SetLayout(LayoutMode),
+    SetEngine(RendererKind),
     SetWrapColumn(u32),
     SetSidebarWidth(u32),
     IncreaseUiScale,

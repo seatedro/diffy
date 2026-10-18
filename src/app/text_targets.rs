@@ -13,6 +13,7 @@ pub const SEARCH: FocusId = FocusId::from_key("diffy.viewport.search");
 pub const PALETTE: FocusId = quark_components::PALETTE_INPUT;
 pub const PICKER: FocusId = FocusId::from_key("diffy.picker");
 pub const SETTINGS: FocusId = FocusId::from_key("diffy.settings");
+pub const SETTINGS_SEARCH: FocusId = FocusId::from_key("diffy.settings.search");
 pub const COMMIT_MESSAGE: FocusId = FocusId::from_key("diffy.commit.message");
 pub const REVIEW_COMPOSER: FocusId = FocusId::from_key("diffy.review.composer");
 pub const TEXT_COMPARE_LEFT: FocusId = FocusId::from_key("diffy.text_compare.left");

@@ -131,7 +131,10 @@ fn current_workspace_events_change_the_title_and_stale_ones_do_not() {
 
     deliver_current(&mut ui, opened("/fixtures/alpha"));
     let title = ui.find(By::test_id("title"));
-    assert!(contains(title.bounds, ui.find(By::name("Repository alpha")).bounds));
+    assert!(contains(
+        title.bounds,
+        ui.find(By::name("Repository alpha")).bounds
+    ));
     assert!(ui.frame_count() > frames);
     assert_eq!(ui.app().shared().workspace, WorkspaceEpoch(1));
     assert_eq!(ui.app().shared().revision, 1);

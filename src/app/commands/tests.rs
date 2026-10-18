@@ -424,14 +424,15 @@ fn settings_open_from_the_shortcut_and_escape_returns_focus() {
     ui.click_node(By::role_name(Role::SearchInput, "Filter files"));
     let filter = ui.focus();
     ui.key("mod+,");
-    ui.find(By::role_name(Role::Region, "Settings"));
+    ui.find(By::role_name(Role::Dialog, "Settings"));
     assert_eq!(ui.focus(), Some(SETTINGS));
+    ui.find(By::role_name(Role::Navigation, "Files"));
 
-    ui.click_node(By::role_name(Role::Tab, "Editor"));
+    ui.click_node(By::role_name(Role::Tab, "Diff"));
     ui.find(By::role_name(Role::Switch, "Wrap lines"));
     ui.key("escape");
     assert!(
-        ui.try_find(By::role_name(Role::Region, "Settings"))
+        ui.try_find(By::role_name(Role::Dialog, "Settings"))
             .is_none()
     );
     assert_eq!(ui.focus(), filter);
@@ -442,9 +443,11 @@ fn settings_controls_update_and_persist_the_snapshot() {
     let mut ui = cmd_harness(Settings::default());
     focus_anchor(&mut ui);
     ui.run(CommandsAction::OpenSettings);
-    ui.click_node(By::role_name(Role::Button, "Increase interface scale"));
+    ui.find(By::test_id("settings.preview"));
+    ui.click_node(By::role_name(Role::RadioButton, "System"));
+    assert_eq!(settings(&ui).theme_mode, ThemeMode::System);
+    ui.run(CommandsAction::IncreaseUiScale);
     assert_eq!(settings(&ui).ui_scale_pct, 110);
-    ui.find(By::name("110%"));
     ui.run(CommandsAction::SetThemeMode(ThemeMode::Light));
     assert_eq!(settings(&ui).theme_mode, ThemeMode::Light);
     for _ in 0..20 {
@@ -569,7 +572,7 @@ fn keymap_rebinding_rejects_conflicts_and_saves_overrides() {
     let mut ui = cmd_harness(Settings::default());
     focus_anchor(&mut ui);
     ui.run(CommandsAction::OpenKeymaps);
-    ui.find(By::role_name(Role::Tab, "Keymaps"));
+    ui.find(By::role_name(Role::Tab, "Keyboard"));
     ui.click_node(By::role_name(Role::Button, "Rebind Next hunk"));
     ui.find(By::role_name(Role::Button, "Press keys for Next hunk"));
 
@@ -596,7 +599,7 @@ fn keymap_rebinding_rejects_conflicts_and_saves_overrides() {
         ui.try_find(By::role_name(Role::Button, "Press keys for Next file"))
             .is_none()
     );
-    ui.find(By::role_name(Role::Region, "Settings"));
+    ui.find(By::role_name(Role::Dialog, "Settings"));
 
     ui.click_node(By::role_name(Role::Button, "Reset Next hunk"));
     assert!(settings(&ui).keymap_overrides.is_empty());
@@ -677,10 +680,10 @@ fn menu_items_route_through_command_descriptors() {
         vec![Action::from(NavigationAction::OpenRepositoryDialog)]
     );
     ui.app_event(WindowEvent::Menu("app.about".to_owned()));
-    ui.find(By::role_name(Role::Tab, "About"));
+    ui.find(By::role_name(Role::Tab, "Updates"));
     assert_eq!(
         ui.app().commands.settings_page().map(|p| p.section),
-        Some(crate::contracts::commands::SettingsSection::About)
+        Some(crate::contracts::commands::SettingsSection::Updates)
     );
 }
 
@@ -1041,4 +1044,17 @@ fn undo_toasts_dispatch_undo_or_expiry_once() {
         ui.app().dispatched[1..],
         [Action::from(NavigationAction::StartCompare)]
     );
+}
+
+#[test]
+fn settings_search_finds_rows_across_sections_and_keys() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    ui.run(CommandsAction::OpenSettings);
+    ui.click_node(By::role_name(Role::SearchInput, "Search settings"));
+    ui.type_text("wrap");
+    ui.find(By::role_name(Role::Switch, "Wrap lines"));
+    ui.find(By::role_name(Role::Group, "Wrap column"));
+    assert!(ui.try_find(By::role_name(Role::Group, "Theme")).is_none());
+    ui.find(By::role_name(Role::Button, "Rebind Toggle line wrapping"));
 }

@@ -4,7 +4,6 @@ use quark_ui::FocusId;
 use quark_ui::accessibility::Politeness;
 use quark_ui::key_context::KeyBindings;
 use quark_ui::text_input::TextEditCommand;
-use quark_ui::theme::Theme;
 
 use super::state::{CommandsController, LayerKind};
 use crate::app::route::Controllers;
@@ -18,7 +17,7 @@ use crate::fonts::FontSettings;
 
 pub enum PlatformRequest {
     Focus(Option<FocusId>),
-    Theme(Box<Theme>),
+    Theme(Box<crate::app::theme::ThemeSelection>),
     Fonts(FontSettings),
     KeyBindings(KeyBindings),
     Menus(Vec<Menu>),
@@ -31,7 +30,7 @@ impl std::fmt::Debug for PlatformRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Focus(focus) => f.debug_tuple("Focus").field(focus).finish(),
-            Self::Theme(theme) => f.debug_tuple("Theme").field(&theme.mode).finish(),
+            Self::Theme(_) => f.write_str("Theme"),
             Self::Fonts(fonts) => f.debug_tuple("Fonts").field(fonts).finish(),
             Self::KeyBindings(_) => f.write_str("KeyBindings"),
             Self::Menus(menus) => f.debug_tuple("Menus").field(&menus.len()).finish(),
@@ -59,7 +58,12 @@ pub fn apply(requests: Vec<PlatformRequest>, cx: &mut UiContext) -> Vec<Action> 
     for request in requests {
         match request {
             PlatformRequest::Focus(focus) => cx.set_focus(focus),
-            PlatformRequest::Theme(theme) => cx.set_theme(*theme),
+            PlatformRequest::Theme(selection) => match *selection {
+                crate::app::theme::ThemeSelection::Fixed(theme) => cx.set_theme(theme),
+                crate::app::theme::ThemeSelection::System(pair) => {
+                    cx.set_themes(pair.light, pair.dark)
+                }
+            },
             PlatformRequest::Fonts(fonts) => {
                 let mut quark_fonts = WindowOptions::default().fonts;
                 quark_fonts.ui_family = fonts.ui_family;

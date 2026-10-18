@@ -8,7 +8,7 @@ use quark_components::{
 };
 use quark_ui::FocusId;
 use quark_ui::element::{Binding, ScrollHandle};
-use quark_ui::text_input::{TextEditCommand, TextEditOutcome};
+use quark_ui::text_input::{TextEditCommand, TextEditOutcome, TextField};
 
 use super::keymap;
 use super::palette::{self, PaletteCommand, PaletteSource};
@@ -16,7 +16,7 @@ use super::picker::{self, PickerCandidate, PickerChoice, PickerKind, PickerState
 use super::platform::{self, PlatformRequest, ids};
 use super::ref_picker::{RefPicker, is_working_tree};
 use super::toasts::ToastHost;
-use crate::app::text_targets::{PICKER, SETTINGS, TextCx, TextHost};
+use crate::app::text_targets::{PICKER, SETTINGS, SETTINGS_SEARCH, TextCx, TextHost};
 use crate::contracts::commands::{
     CommandDescriptor, CommandsAction, CommandsEffect, CommandsEvent, ConfirmationRequest,
     ContextMenuEntry, RefCatalogRequest, RefPickerAction, RefPickerRequest, SettingsSection,
@@ -74,6 +74,7 @@ pub struct SettingsPage {
     pub capture: Option<ShortcutCommand>,
     pub notice: Option<String>,
     pub scroll: ScrollHandle,
+    pub search: TextField,
     return_focus: Option<FocusId>,
 }
 
@@ -767,6 +768,7 @@ impl CommandsController {
                     capture: None,
                     notice: None,
                     scroll: ScrollHandle::new(),
+                    search: TextField::new(""),
                     return_focus: self.view_focus,
                 });
             }
@@ -1041,7 +1043,7 @@ pub fn builtin_commands(settings: &Settings) -> Vec<CommandDescriptor> {
     use ShortcutCommand as S;
     let other_mode = match settings.theme_mode {
         ThemeMode::Dark => "Switch to Light Mode",
-        ThemeMode::Light => "Switch to Dark Mode",
+        ThemeMode::Light | ThemeMode::System => "Switch to Dark Mode",
     };
     let name = crate::platform::startup::app_display_name();
     vec![
@@ -1439,6 +1441,12 @@ impl Controller for CommandsController {
             }
             A::SetWrapColumn(column) => self.update_settings(|s| s.viewport.wrap_column = column),
             A::SetLayout(layout) => self.update_settings(|s| s.viewport.layout = layout),
+            A::SetEngine(renderer) => {
+                self.request(PlatformRequest::Dispatch(
+                    PipelineAction::SetRenderer(renderer).into(),
+                ));
+                Reduction::changed()
+            }
             A::SetSidebarWidth(width) => self.update_settings(|s| s.sidebar_width_px = Some(width)),
             A::IncreaseUiScale => self.update_settings(|s| {
                 s.ui_scale_pct = step_scale(s.ui_scale_pct, i32::from(UI_SCALE_STEP_PCT))
@@ -1450,7 +1458,7 @@ impl Controller for CommandsController {
             A::ToggleThemeMode => self.update_settings(|s| {
                 s.theme_mode = match s.theme_mode {
                     ThemeMode::Dark => ThemeMode::Light,
-                    ThemeMode::Light => ThemeMode::Dark,
+                    ThemeMode::Light | ThemeMode::System => ThemeMode::Dark,
                 }
             }),
             A::SetThemeMode(mode) => self.update_settings(|s| s.theme_mode = mode),
@@ -1499,7 +1507,7 @@ impl Controller for CommandsController {
                 }
                 _ => Reduction::default(),
             },
-            A::ShowAbout => self.open_settings(Some(SettingsSection::About)),
+            A::ShowAbout => self.open_settings(Some(SettingsSection::Updates)),
             A::OpenProjectPage => Reduction::default().effect(ShellEffect::OpenBrowser {
                 url: PROJECT_URL.to_owned(),
             }),
@@ -1626,7 +1634,7 @@ impl Controller for CommandsController {
 
 impl TextHost for CommandsController {
     fn owns_text(&self, target: FocusId) -> bool {
-        target == PALETTE_INPUT || target == PICKER
+        target == PALETTE_INPUT || target == PICKER || target == SETTINGS_SEARCH
     }
 
     fn after_edit(&mut self, target: FocusId, _cx: &SharedContext) -> Reduction {
@@ -1644,6 +1652,14 @@ impl TextHost for CommandsController {
     ) -> Option<TextEditOutcome> {
         if target == PALETTE_INPUT {
             return Some(self.palette.edit(command, cx.now_ms));
+        }
+        if target == SETTINGS_SEARCH {
+            let page = self.settings_page.as_mut()?;
+            let outcome = page.search.apply_at(command, cx.now_ms);
+            if outcome.text_changed {
+                page.scroll.set_offset(0.0, 0.0);
+            }
+            return Some(outcome);
         }
         if let Some(picker) = &mut self.ref_picker {
             let outcome = picker.query.apply_at(command, cx.now_ms);
@@ -1668,6 +1684,15 @@ impl TextHost for CommandsController {
             self.palette.set_preedit(text, cursor);
             return true;
         }
+        if target == SETTINGS_SEARCH {
+            return match &mut self.settings_page {
+                Some(page) => {
+                    page.search.set_preedit(text, cursor);
+                    true
+                }
+                None => false,
+            };
+        }
         if let Some(picker) = &mut self.ref_picker {
             picker.query.set_preedit(text, cursor);
             return true;
@@ -1691,6 +1716,16 @@ impl TextHost for CommandsController {
             self.palette.set_query(&value);
             return Some(TextEditOutcome {
                 text_changed: true,
+                ..TextEditOutcome::default()
+            });
+        }
+        if target == SETTINGS_SEARCH {
+            let page = self.settings_page.as_mut()?;
+            let changed = page.search.text() != value;
+            page.search.set_text(value);
+            return Some(TextEditOutcome {
+                text_changed: changed,
+                selection_changed: true,
                 ..TextEditOutcome::default()
             });
         }

@@ -500,10 +500,10 @@ fn history_tab_loads_range_commits_and_drills_into_one() {
         Intent::RequestCompare(c) if c.request.spec == VcsCompareSpec::Change { revision: "e5aaaa".to_owned() }
     )));
 
-    let reduction = ui
-        .app_mut()
-        .nav
-        .reduce_action(NavigationAction::ClearHistoryCommit, &SharedContext::default());
+    let reduction = ui.app_mut().nav.reduce_action(
+        NavigationAction::ClearHistoryCommit,
+        &SharedContext::default(),
+    );
     ui.app_mut().reduce(reduction);
     assert_eq!(ui.app().nav.compare().mode, CompareMode::TwoDot);
     assert_eq!(ui.app().nav.compare().left, "main");

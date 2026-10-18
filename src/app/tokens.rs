@@ -59,6 +59,7 @@ impl Layout {
     pub const SETTINGS_SHEET_H: f32 = 600.0;
     pub const SETTINGS_SHEET_NAV_W: f32 = 210.0;
     pub const SETTINGS_PREVIEW_W: f32 = 330.0;
+    pub const SETTINGS_SLIDER_W: f32 = 220.0;
     pub const HISTORY_ROW_H: f32 = 46.0;
     pub const AVATAR_SM: f32 = 20.0;
     pub const AVATAR_MD: f32 = 28.0;

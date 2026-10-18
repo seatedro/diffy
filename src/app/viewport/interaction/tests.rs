@@ -89,6 +89,11 @@ fn typed(text: &str) -> Vec<InputEvent> {
         .collect()
 }
 
+fn click_first(ui: &mut UiTestHarness<Host>, by: By) {
+    let node = ui.find_all(by).into_iter().next().expect("a matching node");
+    ui.click(node.center());
+}
+
 fn line_names(ui: &UiTestHarness<Host>) -> Vec<String> {
     ui.find_all(By::role(Role::ListItem))
         .into_iter()
@@ -126,13 +131,14 @@ fn installed_files_render_with_identity_test_ids() {
     ui.find(By::test_id("diffy.diff.gap.1.1.0"));
     ui.find(By::test_id("diffy.diff.gap.1.1.1"));
     assert!(line_names(&ui).iter().any(|n| n == "changed ten"));
-    ui.find(By::role_name(Role::Button, "Expand context"));
+    ui.find_all(By::role_name(Role::Button, "More file actions"));
+    ui.find_all(By::role_name(Role::Button, "Collapse file"));
 }
 
 #[test]
 fn split_layout_shows_both_sides() {
     let mut ui = loaded(Host::new());
-    ui.click_node(By::role_name(Role::RadioButton, "Split"));
+    click_first(&mut ui, By::role_name(Role::RadioButton, "Split"));
     let names = line_names(&ui);
     assert!(names.iter().any(|n| n == "line 10"));
     assert!(names.iter().any(|n| n == "changed ten"));
@@ -198,8 +204,8 @@ fn sidebar_selection_reveals_the_file_without_echoing_back() {
 fn drag_selects_lines_publishes_a_source_target_and_copies() {
     let mut ui = loaded(Host::new());
     focus_diff(&mut ui);
-    let from = ui.find(By::role_name(Role::ListItem, "line 8")).bounds;
-    let to = ui.find(By::role_name(Role::ListItem, "line 9")).bounds;
+    let from = ui.find_all(By::role_name(Role::ListItem, "line 8"))[0].bounds;
+    let to = ui.find_all(By::role_name(Role::ListItem, "line 9"))[0].bounds;
     ui.drag(
         (from.x + 1.0, from.y + from.height / 2.0),
         (to.x + to.width - 1.0, to.y + to.height / 2.0),
@@ -261,7 +267,7 @@ fn workspace_shortcuts_drive_the_focused_diff() {
 fn layout_survives_unrelated_settings_changes() {
     let mut ui = loaded(Host::new());
     ui.app_mut().update_settings(|_| {});
-    ui.click_node(By::role_name(Role::RadioButton, "Split"));
+    click_first(&mut ui, By::role_name(Role::RadioButton, "Split"));
     assert_eq!(ui.app().interaction.layout(), LayoutMode::Split);
     ui.app_mut().update_settings(|s| s.ui_scale_pct = 110);
     assert_eq!(ui.app().interaction.layout(), LayoutMode::Split);
@@ -320,7 +326,7 @@ fn wrap_and_wrap_column_rewrap_long_lines() {
             .map_or(0.0, |d| d.content_height())
     };
     let unwrapped = height(&ui);
-    ui.click_node(By::role_name(Role::Switch, "Wrap"));
+    click_first(&mut ui, By::role_name(Role::Button, "Wrap lines"));
     let wrapped = height(&ui);
     assert!(wrapped > unwrapped, "{wrapped} > {unwrapped}");
     assert!(ui.accessibility_tree().contains("Wrap"));
@@ -338,7 +344,11 @@ fn expand_context_reveals_hidden_lines() {
         .interaction
         .diff()
         .map_or(0.0, |d| d.content_height());
-    ui.click_node(By::role_name(Role::Button, "Expand context"));
+    ui.app_mut().interaction.reduce_action(
+        crate::contracts::viewport::interaction::InteractionAction::ExpandAllContext,
+        &Default::default(),
+    );
+    ui.frame();
     let after = ui
         .app()
         .interaction

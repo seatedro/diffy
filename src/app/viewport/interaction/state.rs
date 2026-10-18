@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -7,7 +7,7 @@ use diffy_diff::{
     DiffSession, DiffUpdate, GapId, Reveal, Revision, SourcePurpose, SourceRemap, UpdateError,
 };
 use diffy_ui::diff_view::decorator::{DiffDecorator, DiffSources};
-use diffy_ui::diff_view::presentation::{DiffLayout, DiffPresentation};
+use diffy_ui::diff_view::presentation::{DiffLayout, DiffMarkers, DiffPresentation};
 use diffy_ui::{
     DiffAnnotation, DiffEvent, DiffKey, DiffOutcome, DiffSessionViewState, DiffStyle, DiffTarget,
     FindOptions, RevealAlign, SearchDirection, SearchSides, SearchSummary, SourcePoint,
@@ -15,6 +15,7 @@ use diffy_ui::{
 use quark_ui::FocusId;
 use quark_ui::text_input::{TextEditCommand, TextEditOutcome, TextField};
 
+use super::decorations::{Decorations, HeaderControls, Plain, is_generated};
 use super::syntax::{SyntaxWake, ViewportSyntax};
 use super::targets::{hunk_target, source_anchor, source_target};
 use super::text_compare::TextCompare;
@@ -78,6 +79,9 @@ pub struct InteractionController {
     pub(super) continuous: bool,
     pub(super) source_requests: Vec<(FileKey, SourcePurpose)>,
     pub(super) search_reduction: Reduction,
+    pub(super) decorations: Option<Rc<Decorations>>,
+    pub(super) plain: Rc<dyn DiffDecorator>,
+    pub(super) seeded: HashSet<FileKey>,
 }
 
 struct Pending {
@@ -120,6 +124,9 @@ impl Default for InteractionController {
             continuous: false,
             source_requests: Vec::new(),
             search_reduction: Reduction::default(),
+            decorations: None,
+            plain: Rc::new(Plain),
+            seeded: HashSet::new(),
         }
     }
 }
@@ -240,6 +247,46 @@ impl InteractionController {
         }
     }
 
+    pub(super) fn decorations(
+        &mut self,
+        inner: Option<Rc<dyn DiffDecorator>>,
+        theme: &quark_ui::theme::Theme,
+    ) -> Rc<dyn DiffDecorator> {
+        let inner = inner.unwrap_or_else(|| self.plain.clone());
+        let controls = HeaderControls {
+            layout: self.layout,
+            wrap: self.wrap,
+            search_open: self.search.open,
+        };
+        if let Some(current) = &self.decorations
+            && current.matches(&inner, controls, theme)
+        {
+            return current.clone();
+        }
+        let decorations = Rc::new(Decorations::new(inner, controls, theme));
+        self.decorations = Some(decorations.clone());
+        decorations
+    }
+
+    fn collapse_generated(&mut self, keys: &[FileKey]) {
+        let Some(diff) = &mut self.diff else {
+            return;
+        };
+        for &key in keys {
+            if !self.seeded.insert(key) {
+                continue;
+            }
+            let generated = diff
+                .session()
+                .file(key)
+                .map(|snapshot| snapshot.diff.path(0))
+                .is_some_and(is_generated);
+            if generated {
+                diff.set_file_collapsed(key, true);
+            }
+        }
+    }
+
     pub(super) fn set_viewport(&mut self, width: f32, height: f32) {
         self.viewport_width = width;
         self.viewport_height = height;
@@ -259,6 +306,7 @@ impl InteractionController {
                 LayoutMode::Unified => DiffLayout::Unified,
                 LayoutMode::Split => DiffLayout::Split,
             },
+            markers: DiffMarkers::Bars,
             wrap_column: (self.wrap_column > 0).then_some(self.wrap_column),
             sticky_headers: true,
             ..DiffPresentation::default()
@@ -302,6 +350,7 @@ impl InteractionController {
         self.published = None;
         self.shown_file = None;
         self.review_revision = None;
+        self.seeded.clear();
         self.phase = Phase::Loading;
     }
 
@@ -425,6 +474,7 @@ impl InteractionController {
             return Reduction::default();
         }
         self.refresh_sources();
+        self.collapse_generated(&installed);
         if let Some(selected) = cx.selected_file
             && selected.origin != SelectionOrigin::Viewport
             && installed.contains(&selected.key)

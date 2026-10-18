@@ -1,3 +1,4 @@
+mod decorations;
 #[cfg(test)]
 pub mod fixtures;
 mod keys;

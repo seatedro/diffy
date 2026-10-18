@@ -175,6 +175,10 @@ pub enum HeaderSlot {
     Metadata,
     /// At the trailing edge, after the counts: the app's file actions.
     Actions,
+    /// After the actions and a divider: the app's view controls.
+    Trailing,
+    /// After the path while the file is collapsed, saying why.
+    Collapsed,
 }
 
 /// The file a header shows.
@@ -281,6 +285,22 @@ pub trait DiffDecorator {
     }
 
     fn line_mark(&self, _cx: &LineContext) -> Option<LineMark> {
+        None
+    }
+
+    /// The text of a header's state pill, such as "Modified · unstaged";
+    /// `None` shows the file status alone.
+    fn file_state(&self, _cx: &HeaderContext) -> Option<String> {
+        None
+    }
+
+    /// The syntax scopes around a hunk, outermost first.
+    fn hunk_scope(&self, _cx: &SeparatorContext) -> Option<Arc<[Arc<str>]>> {
+        None
+    }
+
+    /// Actions at the trailing edge of a hunk header or gap row.
+    fn hunk_actions(&self, _cx: &SeparatorContext) -> Option<AnyElement> {
         None
     }
 }

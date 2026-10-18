@@ -35,51 +35,6 @@ pub(super) enum Cue {
     Removed,
 }
 
-/// A change marker strip `width` points wide from `(x, y)` down `height`:
-/// solid for an addition, and for a removal repeated horizontal segments
-/// one pixel-rounded point tall with equal gaps, starting at the top. The
-/// shape tells the two apart without their colors.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn marker(
-    scene: &mut Scene,
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-    cue: Cue,
-    color: Color,
-    scale: f32,
-) {
-    let width = whole_pixels(width, scale);
-    match cue {
-        Cue::Added => scene.rect(RectPrimitive {
-            rect: Rect {
-                x,
-                y,
-                width,
-                height,
-            },
-            color,
-        }),
-        Cue::Removed => {
-            let on = whole_pixels(1.0, scale);
-            let mut top = 0.0;
-            while top < height {
-                scene.rect(RectPrimitive {
-                    rect: Rect {
-                        x,
-                        y: y + top,
-                        width,
-                        height: on.min(height - top),
-                    },
-                    color,
-                });
-                top += on * 2.0;
-            }
-        }
-    }
-}
-
 /// Diagonal hatch lines over `rect`, clipped to it. `phase` is the
 /// rect's top in document coordinates, so the hatches of stacked rows
 /// continue each other wherever the rows scroll.

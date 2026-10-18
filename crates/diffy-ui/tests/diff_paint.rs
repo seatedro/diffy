@@ -179,12 +179,11 @@ fn runs(px: &Pixels, x: u32, rows: std::ops::Range<u32>, color: Color) -> Vec<(b
     out
 }
 
-// Catches the change markers losing their shape cue or their pixel
-// alignment: with both markers in one color, a removed line's bar is
-// whole-pixel stripes with equal gaps and an added line's is solid, both
-// four points wide in whole pixels.
+// Catches the change bar drifting off the code's edge or losing its
+// pixel alignment: added and removed lines both get a solid bar three
+// points wide in whole pixels, ending where the code column starts.
 #[test]
-fn removed_lines_get_a_striped_bar_and_added_lines_a_solid_one() {
+fn changed_lines_get_a_solid_bar_against_the_code() {
     let same = DiffAppearance::both(DiffColorOverrides {
         add_marker: Some(MAGENTA),
         del_marker: Some(MAGENTA),
@@ -197,24 +196,17 @@ fn removed_lines_get_a_striped_bar_and_added_lines_a_solid_one() {
         let removed = line(&ui, "total - percent;").bounds;
         let added = line(&ui, "total - off;").bounds;
         let Some(px) = pixels(&mut ui) else { return };
-        let period = scale.round() as u32;
-
-        let stripes = runs(
-            &px,
-            1,
-            pixel_rows(removed.y, removed.height, scale),
-            MAGENTA,
-        );
-        assert!(stripes.len() > 6, "{scale}x: {stripes:?}");
-        // The first and last runs may be cut by the row's edges.
-        for &(_, n) in &stripes[1..stripes.len() - 1] {
-            assert_eq!(n, period, "{scale}x: {stripes:?}");
+        for row in [removed, added] {
+            let y = ((row.y + row.height / 2.0) * scale) as u32;
+            let code = (row.x * scale).round() as u32;
+            let bar: Vec<u32> = (0..code + 2)
+                .filter(|&x| is(px.pixel(x, y), MAGENTA))
+                .collect();
+            assert_eq!(bar.len(), (3.0 * scale).round() as usize, "{scale}x: {bar:?}");
+            assert_eq!(bar.last().copied(), Some(code - 1), "{scale}x: {bar:?}");
+            let column = runs(&px, bar[0], pixel_rows(row.y, row.height, scale), MAGENTA);
+            assert!(matches!(column[..], [(true, _)]), "{scale}x: {column:?}");
         }
-        let solid = runs(&px, 1, pixel_rows(added.y, added.height, scale), MAGENTA);
-        assert!(matches!(solid[..], [(true, _)]), "{scale}x: {solid:?}");
-        let y = (added.y * scale) as u32 + 2;
-        let width = (0..20).filter(|&x| is(px.pixel(x, y), MAGENTA)).count();
-        assert_eq!(width, (4.0 * scale).round() as usize, "{scale}x");
     }
 }
 

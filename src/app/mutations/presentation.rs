@@ -306,7 +306,7 @@ impl DiffDecorator for MutationPresentation {
         if controls.is_empty() {
             return None;
         }
-        Some(controls::row(controls, &self.style.chrome))
+        Some(controls::row(controls, &self.style.chrome.fit(cx.height)))
     }
 
     fn file_state(&self, cx: &HeaderContext) -> Option<String> {
@@ -325,7 +325,7 @@ impl DiffDecorator for MutationPresentation {
         if actions.is_empty() {
             return None;
         }
-        Some(controls::row(actions, &self.style.chrome))
+        Some(controls::row(actions, &self.style.chrome.fit(cx.height)))
     }
 
     fn gutter_utility(&self, cx: &GutterContext) -> Option<AnyElement> {
@@ -362,10 +362,7 @@ impl DiffDecorator for MutationPresentation {
         } else {
             lucide::PLUS
         });
-        let mut chrome = self.style.chrome;
-        chrome.height = cx.width.min(cx.height);
-        chrome.icon = chrome.icon.min(chrome.height * 0.75);
-        chrome.radius = chrome.radius.min(chrome.height * 0.25);
+        let mut chrome = self.style.chrome.square(cx.width.min(cx.height));
         chrome.muted = chrome.accent;
         Some(view! {
             <div w={cx.width} h={cx.height} class="flex-row items-center justify-center">

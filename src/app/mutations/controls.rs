@@ -10,6 +10,9 @@ use quark_ui::theme::{Color, Theme};
 use crate::app::tokens::{self, Ico, Sp, TextStyle};
 use crate::contracts::shell::Action;
 
+const ROW_FILL: f32 = 0.72;
+const ICON_FILL: f32 = 0.7;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Primary,
@@ -133,6 +136,25 @@ impl Chrome {
             muted: tc.text_muted,
             danger: tc.status_error,
         }
+    }
+}
+
+impl Chrome {
+    pub fn fit(mut self, row: f32) -> Self {
+        let height = (row * ROW_FILL).floor().min(self.height);
+        if height < self.height {
+            self.icon = self.icon.min((height * ICON_FILL).round());
+            self.pad_x = self.pad_x.min(height * 0.5);
+            self.height = height;
+        }
+        self
+    }
+
+    pub fn square(mut self, size: f32) -> Self {
+        self.height = size;
+        self.icon = self.icon.min((size * ICON_FILL).round());
+        self.radius = self.radius.min(size * 0.25);
+        self
     }
 }
 

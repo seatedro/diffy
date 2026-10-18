@@ -563,6 +563,10 @@ impl ReviewController {
         cx: &SharedContext,
     ) -> Reduction {
         let info = comparison.info.clone();
+        if let Some(active) = self.pr.as_ref() {
+            self.peeks
+                .insert(active.pr.clone(), PeekState::Ready(Box::new(info.clone())));
+        }
         let mut reduction = self.set_comparison(comparison, cx);
         let Some(active) = self.pr.as_mut() else {
             return reduction;
@@ -882,6 +886,14 @@ impl ReviewController {
             return Reduction::default();
         };
         self.overlay = None;
+        if self
+            .composer
+            .as_ref()
+            .is_some_and(|c| matches!(c.target, ComposerTarget::General { .. }))
+        {
+            self.sync_composer_draft();
+            self.close_composer();
+        }
         let composing = self.composer.as_ref().and_then(|c| c.target.draft());
         let Some(session) = self.session_mut() else {
             return Reduction::default();

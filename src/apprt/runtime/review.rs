@@ -278,3 +278,122 @@ impl ReviewRuntime {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+
+    use super::*;
+    use crate::apprt::services::LiveGitHub;
+    use crate::apprt::transport::RuntimeEventSender;
+    use crate::contracts::shared::{AccountEpoch, JobId, WorkspaceEpoch};
+    use crate::contracts::shell::{AppEvent, AppMessage};
+    use crate::core::forge::github::PullRequestInfo;
+    use crate::core::review::{ReviewAnchor, ReviewLineRange, ReviewSide, ReviewTarget};
+    use crate::platform::persistence::SettingsStore;
+    use crate::platform::review_store::ReviewStore;
+
+    fn session(body: &str) -> Box<ReviewSession> {
+        let mut session = ReviewSession::new(
+            ReviewTarget::github("owner", "repo", 42),
+            PullRequestInfo {
+                head_sha: "head".to_owned(),
+                ..PullRequestInfo::default()
+            },
+        );
+        session.create_inline_draft(
+            ReviewAnchor::inline("a.rs", ReviewSide::New, ReviewLineRange::new(1, 1)),
+            body,
+        );
+        Box::new(session)
+    }
+
+    fn runtime(dir: &std::path::Path) -> ReviewRuntime {
+        let store = ReviewStore::open(dir.join("review-sessions.json")).unwrap();
+        let services = ReviewServices::new(
+            SettingsStore::new_in(dir.join("settings.json")),
+            store.clone(),
+            Arc::new(LiveGitHub::new(store)),
+        );
+        ReviewRuntime::new(services, GitHubTokenStore::Disabled)
+    }
+
+    fn saved_body(dir: &std::path::Path) -> Option<String> {
+        let store = ReviewStore::open(dir.join("review-sessions.json")).unwrap();
+        let session = store
+            .load_session(&ReviewTarget::github("owner", "repo", 42), "head")
+            .unwrap()?;
+        session
+            .drafts
+            .values()
+            .next()
+            .map(|draft| draft.body.clone())
+    }
+
+    fn scope(request: u64) -> ReviewScope {
+        ReviewScope {
+            account: AccountEpoch(0),
+            request: JobId(request),
+        }
+    }
+
+    #[test]
+    fn draft_saves_coalesce_and_flush_when_the_runtime_stops() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sender, messages) = mpsc::channel::<AppMessage>();
+        let events = RuntimeEventSender::from_channel(sender);
+        let runtime = runtime(dir.path());
+        for (n, body) in ["a", "ab", "abc"].into_iter().enumerate() {
+            runtime.dispatch(
+                ReviewEffect::SaveSessionDraft {
+                    scope: scope(n as u64),
+                    session: session(body),
+                },
+                events.scoped(WorkspaceEpoch(1)),
+            );
+        }
+        assert_eq!(saved_body(dir.path()), None);
+
+        drop(runtime);
+
+        assert_eq!(saved_body(dir.path()).as_deref(), Some("abc"));
+        let saved = messages
+            .try_iter()
+            .filter(|message| match message {
+                AppMessage::Runtime(envelope) => matches!(
+                    envelope.event,
+                    AppEvent::Review(ReviewEvent::SessionSaved { .. })
+                ),
+                AppMessage::SyntaxWake => false,
+            })
+            .count();
+        assert_eq!(saved, 1);
+    }
+
+    #[test]
+    fn an_immediate_save_supersedes_a_pending_draft_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sender, _messages) = mpsc::channel::<AppMessage>();
+        let events = RuntimeEventSender::from_channel(sender);
+        let runtime = runtime(dir.path());
+        runtime.dispatch(
+            ReviewEffect::SaveSessionDraft {
+                scope: scope(1),
+                session: session("typing"),
+            },
+            events.scoped(WorkspaceEpoch(1)),
+        );
+        runtime.dispatch(
+            ReviewEffect::SaveSession {
+                scope: scope(2),
+                session: session("submitted"),
+            },
+            events.scoped(WorkspaceEpoch(1)),
+        );
+        thread::sleep(DRAFT_SAVE_DEBOUNCE * 2);
+
+        assert_eq!(saved_body(dir.path()).as_deref(), Some("submitted"));
+        drop(runtime);
+        assert_eq!(saved_body(dir.path()).as_deref(), Some("submitted"));
+    }
+}

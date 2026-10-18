@@ -86,20 +86,20 @@ impl DeliveryRuntime {
             }
             DeliveryEffect::WatchGrammars => self.watch(events),
             DeliveryEffect::EnsureGrammars { languages } => {
-                let store = self.store.clone();
+                let (store, watcher) = (self.store.clone(), self.watcher.clone());
                 thread::spawn(move || {
                     ensure_grammars(&store, &languages);
-                    events.send(DeliveryEvent::GrammarsChanged(grammar_status(&store)));
+                    report(&watcher, &events, &store);
                 });
             }
             DeliveryEffect::ScheduleUpdatePoll { generation, after } => {
                 self.schedule_poll((generation, after, events));
             }
             DeliveryEffect::RetryGrammar { language } => {
-                let store = self.store.clone();
+                let (store, watcher) = (self.store.clone(), self.watcher.clone());
                 thread::spawn(move || {
                     retry_grammar(&store, &language);
-                    events.send(DeliveryEvent::GrammarsChanged(grammar_status(&store)));
+                    report(&watcher, &events, &store);
                 });
             }
         }
@@ -133,7 +133,7 @@ impl DeliveryRuntime {
         }
         let watcher = Arc::downgrade(&self.watcher);
         let store = self.store.clone();
-        self.store.subscribe(move || {
+        self.store.subscribe_status(move || {
             let Some(watcher) = watcher.upgrade() else {
                 return false;
             };
@@ -147,6 +147,15 @@ impl DeliveryRuntime {
             true
         });
     }
+}
+
+fn report(watcher: &Watcher, fallback: &ScopedEventSender, store: &GrammarStore) {
+    let current = watcher
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    let events = current.as_ref().unwrap_or(fallback);
+    events.send(DeliveryEvent::GrammarsChanged(grammar_status(store)));
 }
 
 fn poll_loop(requests: &Receiver<Poll>) {
@@ -214,7 +223,13 @@ mod tests {
             events,
         );
 
-        assert!(watched.is_empty());
+        assert_eq!(
+            watched,
+            vec![GrammarStatus {
+                language: "rust",
+                state: GrammarState::Installed
+            }]
+        );
         assert_eq!(
             next(&messages),
             vec![GrammarStatus {

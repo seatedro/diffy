@@ -35,6 +35,7 @@ pub(crate) struct Grammar {
     /// uses it so a fenced block's content is not all `@text.literal`).
     none: Option<u32>,
     injections: Option<Injections>,
+    scopes: std::sync::OnceLock<Option<Arc<crate::scope::ScopeQuery>>>,
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -117,7 +118,24 @@ impl Grammar {
             none,
             capture_kinds,
             injections,
+            scopes: std::sync::OnceLock::new(),
         })
+    }
+
+    pub(crate) fn scope_query(&self, language: &str) -> Option<Arc<crate::scope::ScopeQuery>> {
+        self.scopes
+            .get_or_init(|| {
+                crate::scope::ScopeQuery::compile(&self.language, language).map(Arc::new)
+            })
+            .clone()
+    }
+
+    pub(crate) fn parse_document(
+        &self,
+        source: &str,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<ts::Tree> {
+        self.parse(source, &[], cancelled)
     }
 
     /// Parses `source`, reading only `ranges` when there are any; `None`

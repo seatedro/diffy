@@ -1459,12 +1459,40 @@ mod legacy {
             }
             let store = fixture::cached_store(storage.path()).unwrap();
 
+            let loaded = store
+                .legacy_status()
+                .iter()
+                .any(|status| status.state == GrammarState::Ready);
             assert_eq!(
-                (store.status(&language("rs")), store.legacy_status()),
-                (LanguageStatus::Unavailable, Vec::new()),
+                (store.status(&language("rs")), loaded),
+                (LanguageStatus::Unavailable, false),
                 "{case}"
             );
         }
+    }
+
+    #[test]
+    fn status_reports_installed_packs_and_tells_listeners_when_one_loads() {
+        let Some(pack) = rust() else { return };
+        let storage = tempfile::tempdir().unwrap();
+        fixture::install_signed(storage.path(), std::slice::from_ref(&pack)).unwrap();
+        let store = fixture::cached_store(storage.path()).unwrap();
+        let (sender, changed) = channel();
+        store.subscribe_status(move || sender.send(()).is_ok());
+
+        let before = state(&store, "rust");
+        store.status(&language("rs"));
+        let heard = changed.try_recv().is_ok();
+
+        assert_eq!(
+            (before, heard, state(&store, "rust"), state(&store, "go")),
+            (
+                Some(GrammarState::Installed),
+                true,
+                Some(GrammarState::Ready),
+                None
+            )
+        );
     }
 
     #[test]
@@ -1705,5 +1733,128 @@ mod legacy {
         assert!(typescript.starts_with(legacy_pack::ECMA_HIGHLIGHTS));
         assert!(tsx.contains("(type_identifier) @type") && tsx.ends_with("(jsx_element) @tag\n"));
         assert_eq!(plain, "; inherits: c\n(identifier) @variable\n");
+    }
+}
+
+mod scope {
+    use std::sync::Arc;
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+
+    use super::*;
+
+    fn paths(store: &GrammarStore, tag: &str, source: &str, lines: &[u32]) -> Vec<String> {
+        let table = scope_table(store, &language(tag), source);
+        lines
+            .iter()
+            .map(|line| table.at(*line).join(" › "))
+            .collect()
+    }
+
+    #[test]
+    fn enclosing_scopes_by_language_table() {
+        type Case<'a> = (&'a str, &'a str, &'a str, &'a [u32], &'a [&'a str]);
+        let cases: &[Case] = &[
+            (
+                "rust",
+                "rs",
+                "mod a {\n    impl Worker {\n        fn new() {\n            run();\n        }\n    }\n    impl Display for Worker {\n        fn fmt(&self) {}\n    }\n}\n",
+                &[0, 3, 7, 9],
+                &[
+                    "mod a",
+                    "mod a › impl Worker › fn new",
+                    "mod a › impl Display for Worker › fn fmt",
+                    "mod a",
+                ],
+            ),
+            (
+                "typescript",
+                "ts",
+                "class Store {\n  load() {\n    return 1;\n  }\n}\nconst run = () => {\n  go();\n};\n",
+                &[2, 6, 4],
+                &["class Store › load()", "run()", "class Store"],
+            ),
+            (
+                "go",
+                "go",
+                "package main\n\nfunc (w *Worker) Run() {\n\tgo()\n}\n\nfunc main() {}\n",
+                &[3, 6, 0],
+                &["func (*Worker) Run", "func main", ""],
+            ),
+            (
+                "python",
+                "py",
+                "class Store:\n    def load(self):\n        return 1\n",
+                &[2],
+                &["class Store › def load"],
+            ),
+            (
+                "c",
+                "c",
+                "struct point {\n  int x;\n};\nstatic int add(int a) {\n  return a;\n}\n",
+                &[1, 4],
+                &["struct point", "add()"],
+            ),
+            (
+                "cpp",
+                "cpp",
+                "namespace demo {\nclass Box {\n  int size() { return 1; }\n};\n}\n",
+                &[2],
+                &["namespace demo › class Box › size()"],
+            ),
+        ];
+        for (pack, tag, source, lines, expected) in cases {
+            let Some(store) = testing::store_with(pack) else {
+                continue;
+            };
+            assert_eq!(paths(&store, tag, source, lines), *expected, "{pack}");
+        }
+    }
+
+    #[test]
+    fn languages_without_scope_queries_and_plain_stores_are_empty() {
+        assert!(scope_table(&GrammarStore::none(), &language("rs"), "fn a() {}\n").is_empty());
+        let Some(store) = testing::store_with("json") else {
+            return;
+        };
+        assert!(scope_table(&store, &language("json"), "{\"a\": 1}\n").is_empty());
+    }
+
+    #[test]
+    fn worker_answers_per_key_and_drops_superseded_generations() {
+        let Some(store) = testing::store_with("rust") else {
+            return;
+        };
+        let worker = ScopeWorker::new(store);
+        let (wake, woken) = channel();
+        worker.set_wake(move || {
+            let _ = wake.send(());
+        });
+        let old: Arc<str> = "fn old() {\n    a();\n}\n".into();
+        let new: Arc<str> = "fn new() {\n    a();\n}\n".into();
+
+        worker.request(7, 1, language("rs"), old);
+        worker.request(7, 2, language("rs"), new);
+        let mut results = Vec::new();
+        while results
+            .last()
+            .is_none_or(|r: &ScopeResult| r.generation != 2)
+        {
+            woken.recv_timeout(Duration::from_secs(30)).unwrap();
+            while let Some(result) = worker.try_recv() {
+                results.push(result);
+            }
+        }
+
+        let last = results.last().unwrap();
+        assert_eq!(
+            (last.key, last.pending, last.table.at(1)),
+            (7, false, vec!["fn new"])
+        );
+        assert!(
+            results
+                .iter()
+                .all(|r| r.generation == 2 || r.table.at(1) == vec!["fn old"])
+        );
     }
 }

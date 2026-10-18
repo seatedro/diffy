@@ -1,7 +1,7 @@
 use diffy_syntax::{GrammarState, GrammarStatus};
 use quark::view;
 use quark_app::ViewContext;
-use quark_components::{Button, ButtonSize, ButtonStyle, popover_panel};
+use quark_components::{Button, ButtonSize, ButtonStyle, popover_divider, popover_panel};
 use quark_ui::FocusId;
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
@@ -96,6 +96,8 @@ pub fn overlay(
                     h={height}
                     block_mouse
                     on:click={DeliveryAction::CloseLanguages}
+                    role="button"
+                    aria-label="Close syntax languages"
                     test_id="delivery.languages.scrim"
                 />
                 <div
@@ -115,8 +117,22 @@ pub fn overlay(
                     aria-label="Syntax languages"
                     test_id="delivery.languages"
                 >
-                    {update_row(delivery.update(), theme)}
+                    <div class="flex-col w-full" gap={tokens::scaled(Sp::XXS, scale)}>
+                        <text
+                            size={TextStyle::Body.font_size(theme)}
+                            class="font-semibold"
+                            color={theme.colors.text_strong}
+                        >
+                            "Syntax languages"
+                        </text>
+                        <text size={TextStyle::Caption.font_size(theme)} color={theme.colors.text_muted}>
+                            "Grammars download the first time a file needs them."
+                        </text>
+                    </div>
+                    {popover_divider(theme)}
                     {...rows}
+                    {popover_divider(theme)}
+                    {update_row(delivery.update(), theme)}
                 </popover_panel>
                 </div>
             </div>
@@ -193,10 +209,11 @@ fn language_row(
 ) -> AnyElement {
     let state = status.map(|status| &status.state);
     let (label, color) = match state {
-        Some(GrammarState::Ready | GrammarState::Installed) => ("Ready", theme.colors.text_muted),
+        Some(GrammarState::Ready) => ("Ready", theme.colors.text),
+        Some(GrammarState::Installed) => ("Installed", theme.colors.text_muted),
         Some(GrammarState::Downloading) => ("Downloading", theme.colors.text_muted),
         Some(GrammarState::Failed(_)) => ("Failed", theme.colors.status_error),
-        None => ("Not loaded", theme.colors.text_muted),
+        None => ("Not installed", theme.colors.text_muted),
     };
     let reason = match state {
         Some(GrammarState::Failed(reason)) => Some(reason.clone()),
@@ -205,17 +222,32 @@ fn language_row(
     let failed = reason.is_some();
     view! {
         <div
-            class="flex-row items-center w-full"
+            class="flex-col w-full"
+            min_w={0.0}
             accessibility_role={AccessibilityRole::Row}
-            aria-label={language}
+            aria-label={display_name(language)}
             @when {failed} { tooltip={reason.clone().unwrap_or_default()} }
             test_id={format!("delivery.language.{language}")}
         >
-            <div class="flex-1 flex-col" min_w={0.0}>
-                <text size={TextStyle::BodySmall.font_size(theme)} color={theme.colors.text}>
-                    {language}
+            <div class="flex-row items-center w-full" gap={tokens::scaled(Sp::SM, tokens::ui_scale(theme))}>
+                <div class="flex-1" min_w={0.0}>
+                    <text size={TextStyle::BodySmall.font_size(theme)} color={theme.colors.text}>
+                        {display_name(language)}
+                    </text>
+                </div>
+                <text size={TextStyle::Caption.font_size(theme)} color={color}>
+                    {label}
                 </text>
-                if let Some(reason) = reason.clone() {
+                if failed {
+                    <Button
+                        on:click={DeliveryAction::RetryGrammar { language: language.to_owned() }}
+                        label="Retry download"
+                        size={ButtonSize::Compact}
+                    />
+                }
+            </div>
+            if let Some(reason) = reason.clone() {
+                <div class="w-full overflow-hidden" min_w={0.0}>
                     <text
                         size={TextStyle::Caption.font_size(theme)}
                         class="truncate"
@@ -223,19 +255,28 @@ fn language_row(
                     >
                         {reason}
                     </text>
-                }
-            </div>
-            <text size={TextStyle::Caption.font_size(theme)} color={color}>
-                {label}
-            </text>
-            if failed {
-                <Button
-                    on:click={DeliveryAction::RetryGrammar { language: language.to_owned() }}
-                    label="Retry download"
-                    size={ButtonSize::Compact}
-                />
+                </div>
             }
         </div>
     }
     .into_any()
+}
+
+fn display_name(language: &str) -> &str {
+    match language {
+        "bash" => "Bash",
+        "c" => "C",
+        "cpp" => "C++",
+        "go" => "Go",
+        "javascript" => "JavaScript",
+        "json" => "JSON",
+        "nix" => "Nix",
+        "python" => "Python",
+        "rust" => "Rust",
+        "toml" => "TOML",
+        "typescript" => "TypeScript",
+        "tsx" => "TSX",
+        "zig" => "Zig",
+        other => other,
+    }
 }

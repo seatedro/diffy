@@ -13,7 +13,9 @@ use super::LANGUAGES_TOGGLE;
 use super::state::{DeliveryController, UPDATE_POLL_INTERVAL, UpdateState, grammar_languages};
 use crate::app::shell::Slot;
 use crate::app::testing::*;
-use crate::contracts::commands::{CommandDescriptor, CommandSource, SettingsSnapshot};
+use crate::contracts::commands::{
+    CommandDescriptor, CommandSource, CommandsAction, SettingsSnapshot,
+};
 use crate::contracts::delivery::{DeliveryEffect, DeliveryEvent, GrammarAvailability};
 use crate::contracts::shared::SharedContext;
 use crate::contracts::shell::{Action, Controller, Effect, Intent};
@@ -175,6 +177,8 @@ struct Host {
     delivery: DeliveryController,
     shared: SharedContext,
     effects: Vec<DeliveryEffect>,
+    commands: Vec<CommandsAction>,
+    settings: bool,
 }
 
 impl UiApp for Host {
@@ -189,6 +193,10 @@ impl UiApp for Host {
             width,
             height: status_h,
         };
+        if self.settings {
+            let page = super::updates_settings(&self.delivery, &self.shared.settings, width, cx);
+            return view! { <div w={width} h={height}>{page}</div> };
+        }
         let status = super::view(&mut self.delivery, &slot, cx);
         let overlay = super::overlay(&mut self.delivery, &slot, cx);
         view! {
@@ -206,6 +214,9 @@ impl UiApp for Host {
     }
 
     fn update(&mut self, action: Action, _cx: &mut UiContext) {
+        if let Action::Commands(action) = &action {
+            self.commands.push(action.clone());
+        }
         if let Action::Delivery(action) = action {
             let reduction = self.delivery.reduce_action(action, &self.shared);
             self.effects.extend(
@@ -222,11 +233,17 @@ impl UiApp for Host {
 }
 
 fn host() -> UiTestHarness<Host> {
+    host_showing(false)
+}
+
+fn host_showing(settings: bool) -> UiTestHarness<Host> {
     UiTestHarness::new(
         Host {
             delivery: DeliveryController::default(),
             shared: SharedContext::default(),
             effects: Vec::new(),
+            commands: Vec::new(),
+            settings,
         },
         (720.0, 560.0),
         2.0,
@@ -465,4 +482,63 @@ fn languages_panel_closes_on_escape_and_outside_click_keeping_focus_on_the_toggl
     assert!(!ui.app().delivery.languages_open());
     assert_eq!(ui.focus(), Some(LANGUAGES_TOGGLE));
     assert!(ui.app().effects.is_empty());
+}
+
+#[test]
+fn languages_panel_has_a_title_and_reports_each_state() {
+    let mut ui = host();
+    event(
+        &mut ui,
+        grammars(&[
+            ("rust", GrammarState::Ready),
+            ("go", GrammarState::Installed),
+            ("zig", GrammarState::Downloading),
+        ]),
+    );
+    ui.click_node(By::role_name(Role::Button, "Syntax languages"));
+    let text = ui.painted_text();
+    let state = |language: &str| {
+        let row = ui.find(By::test_id(format!("delivery.language.{language}")));
+        ui.painted_texts()
+            .into_iter()
+            .filter(|painted| {
+                painted.bounds.y >= row.bounds.y
+                    && painted.bounds.y < row.bounds.y + row.bounds.height
+            })
+            .map(|painted| painted.text)
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+
+    assert!(text.contains("Syntax languages"));
+    assert_eq!(state("rust"), "Rust Ready");
+    assert_eq!(state("go"), "Go Installed");
+    assert_eq!(state("zig"), "Zig Downloading");
+    assert_eq!(state("nix"), "Nix Not installed");
+}
+
+#[test]
+fn updates_settings_toggle_check_and_restart() {
+    let mut ui = host_showing(true);
+    ui.find(By::test_id("settings.updates"));
+    ui.click_node(By::role_name(Role::Button, "Check for updates"));
+    ui.click_node(By::role_name(Role::Switch, "Automatic updates"));
+    event(
+        &mut ui,
+        DeliveryEvent::UpdateStaged {
+            staged: Box::new(staged()),
+            silent: true,
+        },
+    );
+    ui.click_node(By::role_name(Role::Button, "Restart to update"));
+
+    assert_eq!(
+        ui.app().effects,
+        vec![
+            DeliveryEffect::CheckForUpdates { silent: false },
+            DeliveryEffect::ApplyStagedUpdate(Box::new(staged())),
+        ]
+    );
+    assert_eq!(ui.app().commands, vec![CommandsAction::ToggleAutoUpdate]);
+    assert!(ui.painted_text().contains(crate::APP_VERSION));
 }

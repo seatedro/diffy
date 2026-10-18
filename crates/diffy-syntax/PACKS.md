@@ -110,6 +110,21 @@ difftastic also reads. `StoreConfig::legacy_packs(LegacyPacks::new(dir,
   which loads every pack with this crate's tree-sitter and fails when one
   of the 13 languages does not load.
 
+### Enclosing scopes
+
+`scope_table(store, language, source)` parses a source with its grammar
+and lists the named scopes (`impl Worker`, `fn new`, `class Store`) with
+their line ranges; `ScopeTable::at(line)` returns the ones enclosing a
+0-based line, outermost first. `ScopeWorker` does the same on its own
+thread: `request(key, generation, language, source)` answers with a
+`ScopeResult`, keeps only the newest generation per key, caches tables
+per key, and answers again when a pending grammar arrives. A key names
+one source at one revision.
+
+Built-in queries cover Rust, TypeScript/TSX/JavaScript, Go, Python,
+C/C++, Zig and Nix; each pattern that does not compile against a pack's
+grammar is skipped, and other languages get an empty table.
+
 ## Building packs
 
 [tools/syntax-pack](../../tools/syntax-pack/src/main.rs) builds packs from

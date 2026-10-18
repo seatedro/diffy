@@ -65,6 +65,7 @@ mod engine;
 pub mod legacy_pack;
 #[cfg(feature = "engine")]
 pub mod pack;
+mod scope;
 mod store;
 #[cfg(feature = "engine")]
 #[doc(hidden)]
@@ -79,6 +80,7 @@ pub use download::{Downloads, default_cache_dir};
 pub use legacy_pack::{GrammarState, GrammarStatus, LegacyPacks};
 #[cfg(feature = "download")]
 pub use quark_update::PublicKey;
+pub use scope::{ScopeResult, ScopeSpan, ScopeTable, ScopeWorker, scope_table};
 #[cfg(feature = "engine")]
 pub use store::StoreConfig;
 pub use store::{GrammarStore, LanguageStatus};

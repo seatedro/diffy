@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -6,7 +6,7 @@ use quark_components::FuzzyMatcher;
 
 use crate::contracts::navigation::SidebarMode;
 use crate::contracts::viewport::pipeline::ManifestFile;
-use crate::core::vcs::model::{ChangeBucket, FileChange};
+use crate::core::vcs::model::ChangeBucket;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Row {
@@ -25,12 +25,6 @@ pub enum Row {
     },
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct Sections<'a> {
-    pub identity: usize,
-    pub changes: &'a [FileChange],
-}
-
 const SECTION_ORDER: [ChangeBucket; 5] = [
     ChangeBucket::Conflicted,
     ChangeBucket::Staged,
@@ -46,7 +40,6 @@ struct RowKey {
     mode: SidebarMode,
     filter: String,
     expanded: u64,
-    sections: Option<usize>,
 }
 
 #[derive(Debug, Default)]
@@ -79,7 +72,6 @@ impl RowCache {
         filter: &str,
         expanded: &HashSet<String>,
         expanded_revision: u64,
-        sections: Option<Sections>,
     ) {
         let filter = filter.trim();
         let key = RowKey {
@@ -88,7 +80,6 @@ impl RowCache {
             mode,
             filter: filter.to_owned(),
             expanded: expanded_revision,
-            sections: sections.map(|s| s.identity),
         };
         if self.key.as_ref() == Some(&key) {
             return;
@@ -98,8 +89,8 @@ impl RowCache {
             self.build_filtered(files, filter);
         } else if mode == SidebarMode::Tree {
             self.build_tree(files, key.files, expanded);
-        } else if let Some(sections) = sections {
-            self.build_sections(files, sections.changes);
+        } else if files.iter().any(staged_bucket) {
+            self.build_sections(files);
         } else {
             self.rows
                 .extend((0..files.len() as u32).map(|file| Row::File { file, depth: 0 }));
@@ -142,25 +133,14 @@ impl RowCache {
         );
     }
 
-    fn build_sections(&mut self, files: &[ManifestFile], changes: &[FileChange]) {
-        let mut buckets: HashMap<&str, ChangeBucket> = HashMap::with_capacity(changes.len());
-        for change in changes {
-            buckets
-                .entry(change.path.as_str())
-                .and_modify(|b| *b = dominant(*b, change.bucket))
-                .or_insert(change.bucket);
-        }
+    fn build_sections(&mut self, files: &[ManifestFile]) {
         let mut groups: [Vec<u32>; SECTION_ORDER.len()] = Default::default();
         for (index, file) in files.iter().enumerate() {
-            let path = file.paths.display_path();
-            let bucket = buckets
-                .get(path.as_ref())
-                .or_else(|| {
-                    file.paths
-                        .old_path()
-                        .and_then(|old| buckets.get(old.as_ref()))
-                })
+            let bucket = file
+                .buckets
+                .iter()
                 .copied()
+                .reduce(dominant)
                 .unwrap_or(ChangeBucket::WorkingCopy);
             let slot = SECTION_ORDER.iter().position(|b| *b == bucket).unwrap_or(0);
             groups[slot].push(index as u32);
@@ -233,6 +213,10 @@ impl RowCache {
             }
         }
     }
+}
+
+fn staged_bucket(file: &ManifestFile) -> bool {
+    file.buckets.iter().any(|b| *b != ChangeBucket::WorkingCopy)
 }
 
 fn dominant(a: ChangeBucket, b: ChangeBucket) -> ChangeBucket {
@@ -335,18 +319,18 @@ mod tests {
         ]);
         let mut cache = RowCache::default();
         let mut expanded = HashSet::new();
-        cache.ensure(&files, SidebarMode::Tree, "", &expanded, 0, None);
+        cache.ensure(&files, SidebarMode::Tree, "", &expanded, 0);
         assert_eq!(labels(&cache, &files), ["README", "docs/+", "src/+"]);
 
         expanded.insert("src".to_owned());
-        cache.ensure(&files, SidebarMode::Tree, "", &expanded, 1, None);
+        cache.ensure(&files, SidebarMode::Tree, "", &expanded, 1);
         assert_eq!(
             labels(&cache, &files),
             ["README", "docs/+", "src/", "  src/a/+", "  src/b.rs"]
         );
 
         expanded.insert("src/a".to_owned());
-        cache.ensure(&files, SidebarMode::Tree, "", &expanded, 2, None);
+        cache.ensure(&files, SidebarMode::Tree, "", &expanded, 2);
         assert_eq!(
             labels(&cache, &files),
             [
@@ -366,41 +350,31 @@ mod tests {
     fn filter_ranks_matches_in_a_flat_list() {
         let files = manifest(&["src/main.rs", "src/lib.rs", "docs/main.md"]);
         let mut cache = RowCache::default();
-        cache.ensure(&files, SidebarMode::Tree, "lib", &HashSet::new(), 0, None);
+        cache.ensure(&files, SidebarMode::Tree, "lib", &HashSet::new(), 0);
         assert_eq!(labels(&cache, &files), ["src/lib.rs"]);
-        cache.ensure(&files, SidebarMode::Tree, "zzz", &HashSet::new(), 0, None);
+        cache.ensure(&files, SidebarMode::Tree, "zzz", &HashSet::new(), 0);
         assert!(cache.rows().is_empty());
     }
 
     #[test]
     fn working_tree_files_group_by_bucket() {
-        let files = manifest(&["a.rs", "b.rs", "c.rs", "d.rs"]);
-        let change = |path: &str, bucket| FileChange {
-            path: path.to_owned(),
-            old_path: None,
-            status: crate::core::vcs::model::FileChangeStatus::Modified,
-            bucket,
-        };
-        let changes = [
-            change("a.rs", ChangeBucket::Staged),
-            change("b.rs", ChangeBucket::Staged),
-            change("b.rs", ChangeBucket::Unstaged),
-            change("c.rs", ChangeBucket::Untracked),
-            change("d.rs", ChangeBucket::Staged),
+        let plain = manifest(&["a.rs", "b.rs", "c.rs", "d.rs"]);
+        let buckets = [
+            vec![ChangeBucket::Staged],
+            vec![ChangeBucket::Staged, ChangeBucket::Unstaged],
+            vec![ChangeBucket::Untracked],
+            vec![ChangeBucket::Staged],
         ];
-        let sections = Sections {
-            identity: 1,
-            changes: &changes,
-        };
+        let files: Arc<[ManifestFile]> = plain
+            .iter()
+            .zip(buckets)
+            .map(|(file, buckets)| ManifestFile {
+                buckets,
+                ..file.clone()
+            })
+            .collect();
         let mut cache = RowCache::default();
-        cache.ensure(
-            &files,
-            SidebarMode::List,
-            "",
-            &HashSet::new(),
-            0,
-            Some(sections),
-        );
+        cache.ensure(&files, SidebarMode::List, "", &HashSet::new(), 0);
         assert_eq!(
             labels(&cache, &files),
             [
@@ -414,7 +388,7 @@ mod tests {
             ]
         );
         assert_eq!(cache.file_rows(), [1, 2, 4, 6]);
-        cache.ensure(&files, SidebarMode::List, "", &HashSet::new(), 0, None);
-        assert_eq!(labels(&cache, &files), ["a.rs", "b.rs", "c.rs", "d.rs"]);
+        cache.ensure(&plain, SidebarMode::List, "", &HashSet::new(), 0);
+        assert_eq!(labels(&cache, &plain), ["a.rs", "b.rs", "c.rs", "d.rs"]);
     }
 }

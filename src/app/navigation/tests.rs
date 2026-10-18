@@ -10,6 +10,7 @@ use quark_ui::element::AnyElement;
 use quark_ui::text_input::{TextEditCommand, TextEditOutcome};
 
 use super::NavigationController;
+use super::state::ListMetrics;
 use crate::app::commands::fixtures::{self, REPO};
 use crate::app::commands::harness::{self, effects, no_args, startup};
 use crate::app::shell::Slot;
@@ -22,9 +23,12 @@ use crate::contracts::shared::{CompareGeneration, FileKey, SharedContext, Worksp
 use crate::contracts::shell::{
     Action, Controller, Effect, Intent, Reduction, ShellAction, ShellEffect,
 };
-use crate::contracts::viewport::pipeline::{CompareManifestSnapshot, FileStats};
+use crate::contracts::viewport::ViewportAction;
+use crate::contracts::viewport::pipeline::{
+    CompareManifestSnapshot, CompareWorkPriority, FileStats, PipelineAction,
+};
 use crate::core::compare::CompareMode;
-use crate::core::vcs::model::{ChangeBucket, FileChange, FileChangeStatus, VcsCompareSpec};
+use crate::core::vcs::model::{ChangeBucket, VcsCompareSpec};
 use crate::platform::persistence::Settings;
 
 #[derive(Default)]
@@ -521,29 +525,11 @@ fn file_rows_are_labeled_selectable_options() {
 #[test]
 fn working_tree_files_group_by_staging_bucket() {
     let mut ui = nav_harness();
-    let change = |path: &str, bucket| FileChange {
-        path: path.to_owned(),
-        old_path: None,
-        status: FileChangeStatus::Modified,
-        bucket,
-    };
-    let mut snapshot = fixtures::snapshot(RepositorySyncReason::Open, false);
-    snapshot.file_changes = vec![
-        change("src/b.rs", ChangeBucket::Staged),
-        change("src/a.rs", ChangeBucket::Unstaged),
-        change("docs/c.md", ChangeBucket::Untracked),
-    ];
-    let app = ui.app_mut();
-    app.inject(Intent::ActivateWorkspace {
-        path: PathBuf::from(REPO),
-    });
-    app.event(fixtures::snapshot_ready(1, snapshot));
-    app.inject(Intent::PublishManifest(fixtures::manifest(
-        1,
-        three_files(),
-    )));
-    ui.frame();
-    assert!(ui.app().nav.compare().working_copy);
+    let mut files = three_files();
+    files[0].buckets = vec![ChangeBucket::Unstaged];
+    files[1].buckets = vec![ChangeBucket::Staged];
+    files[2].buckets = vec![ChangeBucket::Untracked];
+    open(&mut ui, files);
 
     let staged = ui.find(By::role_name(Role::Heading, "Staged, 1 file"));
     let unstaged = ui.find(By::role_name(Role::Heading, "Unstaged, 1 file"));
@@ -589,6 +575,49 @@ fn new_text_compare_hands_off_to_the_viewport() {
             .iter()
             .any(|i| matches!(i, Intent::OpenTextCompare))
     );
+}
+
+#[test]
+fn visible_rows_request_their_stats_once() {
+    let mut nav = NavigationController::default();
+    nav.set_metrics(ListMetrics {
+        row_height: 20.0,
+        viewport: 200.0,
+    });
+    let shared = SharedContext::default();
+    let files: Vec<_> = (0..200)
+        .map(|i| fixtures::file(i + 1, &format!("f{i:03}.rs")))
+        .collect();
+    nav.apply_intent(
+        &Intent::PublishManifest(fixtures::manifest(1, files)),
+        &shared,
+    );
+    let requested = |nav: &NavigationController| -> Vec<FileKey> {
+        nav.take_dispatch()
+            .into_iter()
+            .flat_map(|action| match action {
+                Action::Viewport(ViewportAction::Pipeline(PipelineAction::RequestStats {
+                    files,
+                    priority: CompareWorkPriority::VisibleSidebarStats,
+                })) => files,
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect()
+    };
+    let first = requested(&nav);
+    assert!(!first.is_empty() && first.len() < 200);
+    assert_eq!(first[0], FileKey(1));
+
+    nav.apply_intent(&Intent::SelectFile(None), &shared);
+    assert!(
+        requested(&nav).is_empty(),
+        "already requested rows are not asked again"
+    );
+
+    nav.reduce_action(NavigationAction::ScrollFilesTo(u32::MAX), &shared);
+    let after = requested(&nav);
+    assert!(after.contains(&FileKey(200)));
+    assert!(!after.iter().any(|key| first.contains(key)));
 }
 
 #[test]

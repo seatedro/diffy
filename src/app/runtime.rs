@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use quark_app::UiSender;
 
 use crate::app::shell::EffectDispatcher;
@@ -50,6 +52,14 @@ impl EffectDispatcher for RuntimeDispatcher {
             Some(runtime) => runtime.dispatch(effect, workspace),
             None => self.pending.push((effect, workspace)),
         }
+    }
+
+    fn syntax_wake(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+        self.syntax.clone().map(|waker| {
+            Arc::new(move || {
+                waker.wake();
+            }) as Arc<dyn Fn() + Send + Sync>
+        })
     }
 
     fn syntax_wake_handled(&mut self) {

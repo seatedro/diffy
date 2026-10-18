@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -9,10 +9,12 @@ use diffy_diff::{
 
 use crate::apprt::services::open_compare_repository;
 use crate::contracts::shared::{CompareGeneration, FileKey, FileRevision};
+use crate::contracts::viewport::interaction::ViewportInstall;
 use crate::contracts::viewport::pipeline::{
     CompareJob, CompareManifestSnapshot, CompareResult, FileLoadRequest, FileStat,
-    FileStatsRequest, ManifestFile, PipelineFailure, Preparation, PreparedDiff, SourceLoadRequest,
-    StatusDiffRequest, TextCompareRequest, TotalStatsRequest,
+    FileStatsRequest, ManifestFile, PipelineFailure, PipelineInstall, Preparation, PreparedDiff,
+    SlotUpdate, SourceLoadRequest, StatusDiffRequest, TextCompareRequest, TotalStatsRequest,
+    WORKING_SET_FILES, WORKING_SET_LINES,
 };
 use crate::core::compare::git::{compare_worktree, compare_worktree_entry};
 use crate::core::compare::service::matching_document;
@@ -105,31 +107,54 @@ pub fn compare_result(
             file
         })
         .collect();
-    let prepared = output
-        .documents
+    let positions: HashMap<FileKey, usize> = keys
         .iter()
         .enumerate()
-        .filter_map(|(index, doc)| Some((index, doc.clone()?)))
-        .map(|(index, doc)| {
-            prepare(key_at(index), generation, revision, doc)
-                .map(|prepared| prepared.with_segment(preparation))
-        })
-        .collect::<Result<Arc<[PreparedDiff]>, _>>()?;
-    let placeholders = output
-        .entries
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| output.document(*index).is_none())
-        .map(|(index, entry)| {
-            let placeholder = Placeholder::new(
-                Revision(revision.0),
-                SlotState::Unloaded,
-                estimated_lines(entry.stats),
-                entry.file_meta(),
-            );
-            (key_at(index), placeholder)
-        })
+        .map(|(index, &key)| (key, index))
         .collect();
+    let mut loaded = Vec::new();
+    let mut placeholders = HashMap::with_capacity(keys.len());
+    let mut installs = Vec::with_capacity(keys.len() + 1);
+    let mut budget = (0u64, 0usize);
+    for (index, entry) in output.entries.iter().enumerate() {
+        let key = key_at(index);
+        if let Some(doc) = output.document(index) {
+            let file = prepare(key, generation, revision, doc.clone())?;
+            let lines = u64::from(file.estimated_lines());
+            if budget.0 + lines <= WORKING_SET_LINES && budget.1 < WORKING_SET_FILES {
+                budget = (budget.0 + lines, budget.1 + 1);
+                let file = file.with_segment(preparation);
+                loaded.push(file.clone());
+                installs.push(PipelineInstall::View(ViewportInstall::File {
+                    prepared: file,
+                    remap: None,
+                }));
+                continue;
+            }
+            let placeholder = file.evicted_placeholder();
+            installs.push(PipelineInstall::Slot(SlotUpdate::Placeholder {
+                key,
+                placeholder: placeholder.clone(),
+            }));
+            placeholders.insert(key, placeholder);
+            continue;
+        }
+        let placeholder = Placeholder::new(
+            Revision(revision.0),
+            SlotState::Unloaded,
+            estimated_lines(entry.stats),
+            entry.file_meta(),
+        );
+        installs.push(PipelineInstall::Slot(SlotUpdate::Placeholder {
+            key,
+            placeholder: placeholder.clone(),
+        }));
+        placeholders.insert(key, placeholder);
+    }
+    installs.push(PipelineInstall::View(ViewportInstall::Order {
+        generation,
+        files: keys.iter().copied().collect(),
+    }));
     let notice = output
         .used_fallback
         .then(|| output.fallback_message.clone())
@@ -143,8 +168,10 @@ pub fn compare_result(
             totals: output.totals(),
         }),
         entries: output.entries.into(),
-        prepared,
+        positions,
+        loaded,
         placeholders,
+        installs,
         notice,
     })
 }
@@ -411,7 +438,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.placeholders.len(), 1);
-        assert_eq!(result.placeholders[0].0, key_at(1));
+        assert!(result.placeholders.contains_key(&key_at(1)));
+        assert_eq!(result.installs.len(), 3);
+        assert_eq!(result.positions[&key_at(1)], 1);
         assert_eq!(result.manifest.totals, DiffStats::Pending);
         let files = &result.manifest.files;
         assert_eq!(files.len(), 2);
@@ -424,9 +453,9 @@ mod tests {
             result.manifest.file(key_at(1)).unwrap().status,
             FileStatus::Renamed
         );
-        assert_eq!(result.prepared.len(), 1);
-        assert_eq!(result.prepared[0].key(), key_at(0));
-        assert_eq!(result.prepared[0].stats().known(), Some((1, 1)));
+        assert_eq!(result.loaded.len(), 1);
+        assert_eq!(result.loaded[0].key(), key_at(0));
+        assert_eq!(result.loaded[0].stats().known(), Some((1, 1)));
         assert_eq!(result.entries.len(), 2);
     }
 
@@ -493,8 +522,8 @@ mod tests {
         assert_eq!(result.manifest.generation, CompareGeneration(7));
         assert_eq!(result.manifest.files.len(), 1);
         assert_eq!(result.manifest.files[0].paths.display_path(), "src/a.rs");
-        assert_eq!(result.prepared[0].stats().known(), Some((1, 1)));
-        assert!(result.prepared[0].segment().is_some());
+        assert_eq!(result.loaded[0].stats().known(), Some((1, 1)));
+        assert!(result.loaded[0].segment().is_some());
         assert_eq!(result.manifest.totals.known(), Some((1, 1)));
         let loaded = PipelineServices
             .load_file(&FileLoadRequest {
@@ -576,7 +605,7 @@ mod tests {
             );
             assert_ne!(files[0].key, files[1].key);
             let lines = |key| {
-                let prepared = first.prepared.iter().find(|p| p.key() == key).unwrap();
+                let prepared = first.loaded.iter().find(|p| p.key() == key).unwrap();
                 let doc = prepared.document();
                 let line = |side| {
                     let store = doc.text(0, side);

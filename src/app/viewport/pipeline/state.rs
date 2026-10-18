@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use diffy_diff::{Placeholder, Revision, SlotState, SourceCoverage, SourcePurpose};
+use diffy_diff::{Placeholder, SlotState, SourceCoverage, SourcePurpose};
 
 use crate::contracts::commands::{ToastKind, ToastUpdate};
 use crate::contracts::shared::{CompareGeneration, FileKey, FileRevision, SharedContext};
@@ -15,34 +15,15 @@ use crate::contracts::viewport::pipeline::{
     PipelineEffect, PipelineFailure, Preparation, PreparedDiff, SlotUpdate, SourceLoadRequest,
     TotalStatsRequest,
 };
+pub use crate::contracts::viewport::pipeline::{
+    INSTALL_ITEMS_PER_FRAME, INSTALL_LINES_PER_FRAME, PipelineInstall, WORKING_SET_FILES,
+    WORKING_SET_LINES,
+};
 use crate::core::compare::git::bucket_refs;
 use crate::core::compare::{CompareEntry, ComparePhase};
 use crate::core::vcs::model::{ChangeBucket, VcsCompareSpec};
 
 pub use crate::contracts::viewport::interaction::ViewportInstall;
-
-pub const INSTALL_LINES_PER_FRAME: u64 = 40_000;
-pub const INSTALL_ITEMS_PER_FRAME: usize = 256;
-pub const WORKING_SET_LINES: u64 = 400_000;
-pub const WORKING_SET_FILES: usize = 512;
-
-#[derive(Debug, Clone)]
-pub enum PipelineInstall {
-    View(ViewportInstall),
-    Slot(SlotUpdate),
-}
-
-impl PipelineInstall {
-    fn cost(&self) -> u64 {
-        match self {
-            Self::View(ViewportInstall::File { prepared, .. })
-            | Self::View(ViewportInstall::TextCompare { prepared }) => {
-                u64::from(prepared.estimated_lines())
-            }
-            _ => 1,
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PipelineStatus {
@@ -198,7 +179,10 @@ impl PipelineController {
     fn start_compare(&mut self, intent: CompareIntent) -> Reduction {
         let generation = self.next_generation();
         let selected = self.active.as_ref().and_then(|active| active.selected);
-        self.active = Some(ActiveCompare::new(generation, intent.clone(), selected));
+        let previous =
+            self.active
+                .replace(ActiveCompare::new(generation, intent.clone(), selected));
+        retire(previous);
         self.status = PipelineStatus::Comparing(None);
         self.queue.clear();
         self.push(ViewportInstall::Begin { generation });
@@ -232,55 +216,22 @@ impl PipelineController {
             tag_buckets(&mut manifest, cx);
         }
         let manifest = Rc::new(manifest);
-        let files: Arc<[FileKey]> = manifest.files.iter().map(|file| file.key).collect();
         let pending_totals = manifest.totals.is_pending() && !manifest.files.is_empty();
         active.entries = result.entries;
-        active.positions = manifest
-            .files
-            .iter()
-            .enumerate()
-            .map(|(index, file)| (file.key, index))
+        active.positions = result.positions;
+        active.placeholders = result.placeholders;
+        active.loaded = result
+            .loaded
+            .into_iter()
+            .map(|prepared| (prepared.key(), prepared))
             .collect();
         active.manifest = Some(manifest.clone());
-        let mut prepared: HashMap<FileKey, PreparedDiff> = result
-            .prepared
-            .iter()
-            .filter(|prepared| prepared.generation() == generation)
-            .map(|prepared| (prepared.key(), prepared.clone()))
-            .collect();
-        let mut placeholders: HashMap<FileKey, Placeholder> =
-            result.placeholders.iter().cloned().collect();
-        let mut budget = (0u64, 0usize);
-        let mut installs = Vec::with_capacity(files.len());
-        for &key in files.iter() {
-            if let Some(file) = prepared.remove(&key) {
-                let lines = u64::from(file.estimated_lines());
-                if budget.0 + lines <= WORKING_SET_LINES && budget.1 < WORKING_SET_FILES {
-                    budget = (budget.0 + lines, budget.1 + 1);
-                    active.loaded.insert(key, file.clone());
-                    installs.push(PipelineInstall::View(ViewportInstall::File {
-                        prepared: file,
-                        remap: None,
-                    }));
-                    continue;
-                }
-                let placeholder = evicted_placeholder(&file);
-                placeholders.insert(key, placeholder);
-            }
-            if let Some(placeholder) = placeholders.get(&key) {
-                active.placeholders.insert(key, placeholder.clone());
-                installs.push(PipelineInstall::Slot(SlotUpdate::Placeholder {
-                    key,
-                    placeholder: placeholder.clone(),
-                }));
-            }
-        }
-        installs.push(PipelineInstall::View(ViewportInstall::Order {
-            generation,
-            files,
-        }));
         let selected = active.selected;
-        self.queue.extend(installs);
+        if self.queue.is_empty() {
+            self.queue = VecDeque::from(result.installs);
+        } else {
+            self.queue.extend(result.installs);
+        }
         self.status = PipelineStatus::Ready;
         let mut reduction = Reduction::changed().intent(Intent::PublishManifest(manifest));
         if let Some(notice) = result.notice {
@@ -524,7 +475,7 @@ impl PipelineController {
             };
             lines = lines.saturating_sub(u64::from(prepared.estimated_lines()));
             files -= 1;
-            let placeholder = evicted_placeholder(&prepared);
+            let placeholder = prepared.evicted_placeholder();
             active.placeholders.insert(key, placeholder);
             evicted.push(SlotUpdate::Evict {
                 key,
@@ -750,19 +701,13 @@ impl PipelineController {
     }
 }
 
-fn evicted_placeholder(prepared: &PreparedDiff) -> Placeholder {
-    Placeholder::new(
-        Revision(prepared.revision().0),
-        SlotState::Evicted,
-        prepared.estimated_lines(),
-        prepared.document().files().meta[0].clone(),
-    )
-}
-
 fn tag_buckets(manifest: &mut CompareManifestSnapshot, cx: &SharedContext) {
     let Some(repository) = cx.repository.as_ref() else {
         return;
     };
+    if manifest.files.iter().all(|file| !file.buckets.is_empty()) {
+        return;
+    }
     let mut buckets: HashMap<&str, Vec<ChangeBucket>> = HashMap::new();
     for change in &repository.snapshot.file_changes {
         let list = buckets.entry(change.path.as_str()).or_default();
@@ -781,6 +726,24 @@ fn tag_buckets(manifest: &mut CompareManifestSnapshot, cx: &SharedContext) {
         }
     }
     manifest.files = files.into();
+}
+
+fn retire(previous: Option<ActiveCompare>) {
+    let Some(previous) = previous else {
+        return;
+    };
+    if previous.positions.len() < 4_096 {
+        return;
+    }
+    let ActiveCompare {
+        entries,
+        loaded,
+        placeholders,
+        positions,
+        used,
+        ..
+    } = previous;
+    std::thread::spawn(move || drop((entries, loaded, placeholders, positions, used)));
 }
 
 fn stale(generation: CompareGeneration) -> Reduction {
@@ -832,7 +795,7 @@ impl Controller for PipelineController {
             Intent::RequestCompare(intent) => self.start_compare(intent.clone()),
             Intent::SelectFile(selected) => self.select(selected.map(|file| file.key)),
             Intent::ActivateWorkspace { .. } => {
-                self.active = None;
+                retire(self.active.take());
                 self.queue.clear();
                 self.status = PipelineStatus::Idle;
                 Reduction::changed()

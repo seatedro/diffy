@@ -454,11 +454,12 @@ fn source_requests_hydrate_patch_only_files_once() {
 }
 
 #[test]
-#[ignore = "measurement, prints a report"]
-fn report_deferred_manifest_costs() {
-    use std::time::Instant;
+#[ignore = "release measurement: cargo test --release --lib ui_turns -- --ignored --nocapture"]
+fn ui_turns_stay_within_budget_for_50k_deferred_files() {
+    use std::time::{Duration, Instant};
 
-    for files in [2_500usize, 10_000, 50_000] {
+    let cx = SharedContext::default();
+    let manifest = |files: usize| {
         let mut output = CompareOutput::default();
         for i in 0..files {
             let path = format!("dir{}/sub{}/file{i}.rs", i % 64, i % 7);
@@ -469,33 +470,73 @@ fn report_deferred_manifest_costs() {
             ));
         }
         output.compact_paths();
-        let mut controller = PipelineController::default();
-        let generation = request(&mut controller);
-        controller.take_batch();
+        output
+    };
+    let mut worst = Duration::ZERO;
+    fn turn(label: &str, work: &mut dyn FnMut()) -> Duration {
         let start = Instant::now();
-        let result = compare_result(generation, ("l".into(), "r".into()), output, None).unwrap();
-        let worker_ms = start.elapsed().as_secs_f64() * 1e3;
-        let start = Instant::now();
+        work();
+        let took = start.elapsed();
+        println!("{label}: {:.3} ms", took.as_secs_f64() * 1e3);
+        took
+    }
+    let files = 50_000;
+    let mut controller = PipelineController::default();
+    let generation = request(&mut controller);
+    controller.take_batch();
+    let start = Instant::now();
+    let result =
+        compare_result(generation, ("l".into(), "r".into()), manifest(files), None).unwrap();
+    println!(
+        "worker manifest, placeholders and install list: {:.1} ms",
+        start.elapsed().as_secs_f64() * 1e3
+    );
+    let mut result = Some(result);
+    worst = worst.max(turn("finish compare + first batch", &mut || {
+        let result = result.take().unwrap();
         controller.reduce_event(
             PipelineEvent::CompareFinished {
                 generation,
                 request: intent(RendererKind::Builtin).request,
                 result,
             },
-            &SharedContext::default(),
+            &cx,
         );
-        let finish_ms = start.elapsed().as_secs_f64() * 1e3;
-        let mut batches = 0;
-        let mut worst_ms = 0.0f64;
-        while controller.has_pending_installs() {
-            let start = Instant::now();
-            let batch = controller.take_batch();
-            worst_ms = worst_ms.max(start.elapsed().as_secs_f64() * 1e3);
-            batches += batch.len().min(1);
-        }
-        println!(
-            "{files} deferred files: worker manifest+placeholders {worker_ms:.1} ms, \
-             UI finish {finish_ms:.2} ms, {batches} install batches (worst take {worst_ms:.3} ms)"
+        controller.take_batch();
+    }));
+    let mut resumes = 0;
+    while controller.has_pending_installs() {
+        resumes += 1;
+        let start = Instant::now();
+        controller.reduce_event(PipelineEvent::InstallsResumed { generation }, &cx);
+        controller.take_batch();
+        worst = worst.max(start.elapsed());
+    }
+    println!("{resumes} resume turns");
+    let visible: Arc<[FileStat]> = controller.manifest().unwrap().files[..100]
+        .iter()
+        .map(|file| FileStat {
+            key: file.key,
+            additions: 1,
+            deletions: 1,
+        })
+        .collect();
+    worst = worst.max(turn("visible sidebar stats", &mut || {
+        controller.reduce_event(
+            PipelineEvent::FileStatsReady {
+                generation,
+                stats: visible.clone(),
+                complete: false,
+            },
+            &cx,
         );
+    }));
+    worst = worst.max(turn("recompare (retires 50k state)", &mut || {
+        controller.apply_intent(&Intent::RequestCompare(intent(RendererKind::Builtin)), &cx);
+        controller.take_batch();
+    }));
+    println!("worst UI turn: {:.3} ms", worst.as_secs_f64() * 1e3);
+    if !cfg!(debug_assertions) {
+        assert!(worst < Duration::from_millis(4), "worst UI turn {worst:?}");
     }
 }

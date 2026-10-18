@@ -1,19 +1,36 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 
+use diffy_syntax::GrammarStore;
+
 use crate::apprt::services::DeliveryServices;
+use crate::apprt::services::delivery::{ensure_grammars, grammar_status, retry_grammar};
 use crate::apprt::transport::ScopedEventSender;
 use crate::contracts::delivery::{DeliveryEffect, DeliveryEvent};
 use crate::core::update::UpdateCheck;
 
-const COMMON_GRAMMARS_LABEL: &str = "common syntax";
+type Watcher = Arc<Mutex<Option<ScopedEventSender>>>;
 
 pub struct DeliveryRuntime {
     services: DeliveryServices,
+    store: GrammarStore,
+    watcher: Watcher,
+    subscribed: AtomicBool,
 }
 
 impl DeliveryRuntime {
     pub fn new(services: DeliveryServices) -> Self {
-        Self { services }
+        Self::with_store(services, services.grammar_store())
+    }
+
+    pub fn with_store(services: DeliveryServices, store: GrammarStore) -> Self {
+        Self {
+            services,
+            store,
+            watcher: Arc::default(),
+            subscribed: AtomicBool::new(false),
+        }
     }
 
     pub fn dispatch(&self, effect: DeliveryEffect, events: ScopedEventSender) {
@@ -62,109 +79,99 @@ impl DeliveryRuntime {
                     }
                 });
             }
-            DeliveryEffect::InstallCommonGrammars => {
-                thread::spawn(move || install_common_grammars(services, events));
-            }
-            DeliveryEffect::EnsureGrammarForPath { path } => {
-                thread::spawn(move || ensure_grammar_for_path(services, events, path));
-            }
-            DeliveryEffect::EnsureGrammarsForPaths { paths } => {
-                thread::spawn(move || ensure_grammars_for_paths(services, events, paths));
-            }
-        }
-    }
-}
-
-fn install_common_grammars(services: DeliveryServices, events: ScopedEventSender) {
-    let language = COMMON_GRAMMARS_LABEL.to_owned();
-    tracing::info!("syntax pack install started");
-    events.send(DeliveryEvent::GrammarInstallStarted {
-        language: language.clone(),
-    });
-    match services.install_common_grammars() {
-        Ok(languages) => {
-            let installed_count = languages.len();
-            if installed_count > 0 {
-                events.send(DeliveryEvent::GrammarsInstalled {
-                    languages: languages.into(),
+            DeliveryEffect::WatchGrammars => self.watch(events),
+            DeliveryEffect::EnsureGrammars { languages } => {
+                let store = self.store.clone();
+                thread::spawn(move || {
+                    ensure_grammars(&store, &languages);
+                    events.send(DeliveryEvent::GrammarsChanged(grammar_status(&store)));
                 });
             }
-            tracing::info!(installed_count, "syntax pack install finished");
-            events.send(DeliveryEvent::GrammarInstallFinished { language });
-        }
-        Err(error) => {
-            tracing::warn!(%error, "syntax pack install failed");
-            events.send(DeliveryEvent::GrammarInstallFailed { language });
+            DeliveryEffect::RetryGrammar { language } => {
+                let store = self.store.clone();
+                thread::spawn(move || {
+                    retry_grammar(&store, &language);
+                    events.send(DeliveryEvent::GrammarsChanged(grammar_status(&store)));
+                });
+            }
         }
     }
-}
 
-fn ensure_grammar_for_path(services: DeliveryServices, events: ScopedEventSender, path: String) {
-    let language = services.missing_grammar_for_path(&path);
-    if let Some(language) = &language {
-        tracing::info!(language, path = %path, "syntax pack install started");
-        events.send(DeliveryEvent::GrammarInstallStarted {
-            language: language.clone(),
+    fn watch(&self, events: ScopedEventSender) {
+        events.send(DeliveryEvent::GrammarsChanged(grammar_status(&self.store)));
+        *self.watcher.lock().unwrap_or_else(PoisonError::into_inner) = Some(events);
+        if self.subscribed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let watcher = Arc::downgrade(&self.watcher);
+        let store = self.store.clone();
+        self.store.subscribe(move || {
+            let Some(watcher) = watcher.upgrade() else {
+                return false;
+            };
+            let events = watcher
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            if let Some(events) = events {
+                events.send(DeliveryEvent::GrammarsChanged(grammar_status(&store)));
+            }
+            true
         });
     }
-    match services.ensure_grammar_for_path(&path) {
-        Ok(installed) => {
-            if let Some(installed) = installed {
-                tracing::info!(language = %installed, path = %path, "syntax pack installed");
-                events.send(DeliveryEvent::GrammarsInstalled {
-                    languages: vec![installed].into(),
-                });
-            }
-            if let Some(language) = language {
-                events.send(DeliveryEvent::GrammarInstallFinished { language });
-            }
-        }
-        Err(error) => {
-            tracing::warn!(path = %path, %error, "syntax pack install failed");
-            if let Some(language) = language {
-                events.send(DeliveryEvent::GrammarInstallFailed { language });
-            }
-        }
-    }
 }
 
-fn ensure_grammars_for_paths(
-    services: DeliveryServices,
-    events: ScopedEventSender,
-    paths: Vec<String>,
-) {
-    let languages = services.missing_grammars_for_paths(&paths);
-    if languages.is_empty() {
-        return;
-    }
-    tracing::info!(
-        languages = ?languages,
-        path_count = paths.len(),
-        "syntax pack batch install started"
-    );
-    for language in &languages {
-        events.send(DeliveryEvent::GrammarInstallStarted {
-            language: language.clone(),
-        });
-    }
-    match services.ensure_grammars_for_paths(&paths) {
-        Ok(installed) => {
-            let installed_count = installed.len();
-            if installed_count > 0 {
-                events.send(DeliveryEvent::GrammarsInstalled {
-                    languages: installed.into(),
-                });
-            }
-            tracing::info!(installed_count, "syntax pack batch install finished");
-            for language in languages {
-                events.send(DeliveryEvent::GrammarInstallFinished { language });
-            }
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc::{Receiver, channel};
+    use std::time::Duration;
+
+    use diffy_syntax::testing::legacy as fixture;
+    use diffy_syntax::{GrammarState, GrammarStatus};
+
+    use super::*;
+    use crate::apprt::transport::RuntimeEventSender;
+    use crate::contracts::shared::WorkspaceEpoch;
+    use crate::contracts::shell::{AppEvent, AppMessage};
+
+    fn next(messages: &Receiver<AppMessage>) -> Vec<GrammarStatus> {
+        match messages.recv_timeout(Duration::from_secs(30)) {
+            Ok(AppMessage::Runtime(envelope)) => match envelope.event {
+                AppEvent::Delivery(DeliveryEvent::GrammarsChanged(grammars)) => grammars.to_vec(),
+                other => panic!("unexpected event {other:?}"),
+            },
+            other => panic!("unexpected message {other:?}"),
         }
-        Err(error) => {
-            tracing::warn!(%error, "syntax pack batch install failed");
-            for language in languages {
-                events.send(DeliveryEvent::GrammarInstallFailed { language });
-            }
-        }
+    }
+
+    #[test]
+    fn grammar_effects_report_store_status() {
+        let Some(packs) = fixture::native_packs(&[("rust", "rust")]) else {
+            return;
+        };
+        let storage = tempfile::tempdir().unwrap();
+        fixture::install_signed(storage.path(), &packs).unwrap();
+        let store = fixture::cached_store(storage.path()).unwrap();
+        let runtime = DeliveryRuntime::with_store(DeliveryServices, store);
+        let (sender, messages) = channel();
+        let events = RuntimeEventSender::from_channel(sender).scoped(WorkspaceEpoch::default());
+
+        runtime.dispatch(DeliveryEffect::WatchGrammars, events.clone());
+        let watched = next(&messages);
+        runtime.dispatch(
+            DeliveryEffect::EnsureGrammars {
+                languages: vec!["rust"],
+            },
+            events,
+        );
+
+        assert!(watched.is_empty());
+        assert_eq!(
+            next(&messages),
+            vec![GrammarStatus {
+                language: "rust",
+                state: GrammarState::Ready
+            }]
+        );
     }
 }

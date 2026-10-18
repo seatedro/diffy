@@ -93,7 +93,8 @@ pub fn view(review: &mut ReviewController, slot: &Slot, cx: &mut ViewContext) ->
     });
     let account = account_view(review, theme);
     view! { scale,
-        <div h={slot.height} class="flex-row items-center shrink-0" gap={Sp::SM} test_id="title.review">
+        <div h={slot.height} class="flex-row items-center shrink-0" gap={Sp::SM} test_id="title.review"
+             on:key:escape={action(ReviewAction::CloseOverlay)}>
             {?pull_request}
             {account}
         </div>
@@ -217,7 +218,14 @@ fn auth_modal(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyEleme
             }
         }
     };
-    Modal::new(
+    let cancel = Button::new(action(ReviewAction::CloseOverlay))
+        .label(if review.signed_in() {
+            "Close"
+        } else {
+            "Cancel"
+        })
+        .style(ButtonStyle::Ghost);
+    let modal = Modal::new(
         "Sign in to GitHub",
         "Connect your account to load pull requests and review diffs.",
         lucide::GITHUB_MARK,
@@ -227,7 +235,13 @@ fn auth_modal(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyEleme
         action(ReviewAction::CloseOverlay),
     )
     .body_child(body)
-    .into_any()
+    .footer_child(cancel);
+    view! {
+        <div class="absolute" left={0.0} top={0.0} w={slot.width} h={slot.height}
+             on:key:escape={action(ReviewAction::CloseOverlay)}>
+            {modal}
+        </div>
+    }
 }
 
 fn account_menu(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyElement {

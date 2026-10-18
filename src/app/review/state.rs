@@ -10,7 +10,9 @@ use quark_ui::text_input::{InlineStyle, TextEditCommand, TextEditOutcome};
 use super::composer::ComposerTarget;
 use super::presentation::{CardHost, ReviewPresentation};
 use crate::app::text_targets::{REVIEW_COMPOSER, TextCx, TextHost};
-use crate::contracts::commands::{SettingsSnapshot, ToastKind, ToastUpdate};
+use crate::contracts::commands::{
+    CommandDescriptor, CommandSource, CommandsAction, SettingsSnapshot, ToastKind, ToastUpdate,
+};
 use crate::contracts::review::{
     ComposerFormat, GitHubRequest, GitHubResponse, PullRequestComparison, PullRequestRef,
     ReviewAction, ReviewContext, ReviewEffect, ReviewEvent, ReviewScope, Secret,
@@ -309,6 +311,10 @@ impl ReviewController {
 
     pub fn avatar_cache_len(&self) -> usize {
         self.avatars.len()
+    }
+
+    pub fn is_modal_open(&self) -> bool {
+        self.overlay.is_some()
     }
 
     pub fn overlay_open(&self) -> Option<ReviewOverlay> {
@@ -1888,5 +1894,83 @@ impl TextHost for ReviewController {
             text_changed: true,
             ..TextEditOutcome::default()
         })
+    }
+}
+
+impl CommandSource for ReviewController {
+    fn commands(&self, cx: &SharedContext, out: &mut Vec<CommandDescriptor>) {
+        let signed_in = self.signed_in();
+        let reviewing = self.session().is_some();
+        let vcs_git = cx
+            .repository
+            .as_ref()
+            .is_some_and(|repository| repository.snapshot.location.kind == VcsKind::GIT);
+        out.push(
+            CommandDescriptor::new(
+                "review.open_pull_request",
+                "Open pull request",
+                CommandsAction::OpenPullRequestPicker,
+            )
+            .detail("Load a GitHub pull request by URL")
+            .enabled(cx.repository.is_some()),
+        );
+        out.push(
+            CommandDescriptor::new(
+                "review.preview_pull_request",
+                "Preview pull request",
+                ReviewAction::PreviewPullRequest,
+            )
+            .detail("Compare the working tree with the default branch")
+            .enabled(vcs_git),
+        );
+        out.push(
+            CommandDescriptor::new(
+                "review.submit",
+                "Submit review",
+                ReviewAction::OpenSubmitMenu,
+            )
+            .enabled(reviewing && signed_in),
+        );
+        out.push(
+            CommandDescriptor::new(
+                "review.approve",
+                "Approve pull request",
+                ReviewAction::SubmitReview {
+                    decision: ReviewDecision::Approve,
+                },
+            )
+            .enabled(reviewing && signed_in),
+        );
+        out.push(
+            CommandDescriptor::new(
+                "review.request_changes",
+                "Request changes",
+                ReviewAction::SubmitReview {
+                    decision: ReviewDecision::RequestChanges,
+                },
+            )
+            .enabled(reviewing && signed_in),
+        );
+        out.push(
+            CommandDescriptor::new(
+                "review.open_in_browser",
+                "Open pull request on GitHub",
+                ReviewAction::OpenPullRequestInBrowser,
+            )
+            .enabled(self.pr.is_some()),
+        );
+        out.push(if signed_in {
+            CommandDescriptor::new(
+                "review.sign_out",
+                "Sign out of GitHub",
+                ReviewAction::SignOut,
+            )
+        } else {
+            CommandDescriptor::new(
+                "review.sign_in",
+                "Sign in to GitHub",
+                ReviewAction::OpenAuthModal,
+            )
+        });
     }
 }

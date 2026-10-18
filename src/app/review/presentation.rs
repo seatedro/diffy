@@ -30,7 +30,7 @@ use super::state::ReviewController;
 use crate::app::text_targets::REVIEW_COMPOSER;
 use crate::app::tokens::{Rad, Sp, TextStyle};
 use crate::contracts::review::{CardKey, ComposerFormat, ReviewAction};
-use crate::contracts::shared::{SharedContext, SourceTarget};
+use crate::contracts::shared::{FileKey, SharedContext, SourceTarget};
 use crate::core::review::{
     ReviewDraft, ReviewDraftKind, ReviewDraftState, ReviewResolution, ReviewSession, ReviewSide,
     ReviewThread,
@@ -445,7 +445,7 @@ pub struct CardModel {
     pub delete_node: Option<String>,
     pub failure: Option<String>,
     pub retry_draft: Option<crate::core::review::ReviewDraftId>,
-    pub file_level: bool,
+    pub file_level: Option<FileKey>,
     pub test_id: String,
     pub accessible: String,
 }
@@ -462,7 +462,7 @@ pub struct ReviewPresentation {
     revision: u64,
     cards: Rc<[CardModel]>,
     annotations: Rc<[ReviewAnnotation]>,
-    files: Rc<[(String, Vec<CardKey>)]>,
+    files: Rc<[(String, FileKey, Vec<CardKey>)]>,
     open_file: Option<String>,
     composer: Option<ComposerView>,
     host: CardHost,
@@ -518,17 +518,17 @@ fn locate(
     })
 }
 
-fn file_level(anchor: Option<&crate::core::review::ReviewAnchor>, cx: &SharedContext) -> bool {
-    let Some(anchor) = anchor else {
-        return false;
-    };
-    anchor.active_line_range().is_none()
-        && cx.manifest.as_ref().is_some_and(|manifest| {
-            manifest
-                .files
-                .iter()
-                .any(|file| anchor.matches_paths(&file.paths))
-        })
+fn file_level(
+    anchor: Option<&crate::core::review::ReviewAnchor>,
+    cx: &SharedContext,
+) -> Option<FileKey> {
+    let anchor = anchor.filter(|anchor| anchor.active_line_range().is_none())?;
+    cx.manifest
+        .as_ref()?
+        .files
+        .iter()
+        .find(|file| anchor.matches_paths(&file.paths))
+        .map(|file| file.key)
 }
 
 pub fn thread_line_label(anchor: Option<&crate::core::review::ReviewAnchor>) -> String {
@@ -839,7 +839,7 @@ impl ReviewPresentation {
                 delete_node: None,
                 failure: None,
                 retry_draft: None,
-                file_level: false,
+                file_level: None,
                 test_id: card_test_id(&key),
                 key,
             });
@@ -864,11 +864,14 @@ impl ReviewPresentation {
                 })
             })
             .collect::<Vec<_>>();
-        let mut files: Vec<(String, Vec<CardKey>)> = Vec::new();
-        for card in cards.iter().filter(|card| card.file_level) {
-            match files.iter_mut().find(|(path, _)| *path == card.path) {
-                Some((_, keys)) => keys.push(card.key.clone()),
-                None => files.push((card.path.clone(), vec![card.key.clone()])),
+        let mut files: Vec<(String, FileKey, Vec<CardKey>)> = Vec::new();
+        for card in &cards {
+            let Some(file) = card.file_level else {
+                continue;
+            };
+            match files.iter_mut().find(|(_, key, _)| *key == file) {
+                Some((_, _, keys)) => keys.push(card.key.clone()),
+                None => files.push((card.path.clone(), file, vec![card.key.clone()])),
             }
         }
         Self {
@@ -882,11 +885,18 @@ impl ReviewPresentation {
         }
     }
 
-    pub fn file_comments(&self, title: &str) -> Option<(&str, &[CardKey])> {
+    pub fn file_comments(
+        &self,
+        source: Option<FileKey>,
+        title: &str,
+    ) -> Option<(&str, &[CardKey])> {
         self.files
             .iter()
-            .find(|(path, _)| title == path || title.split(" \u{2192} ").any(|part| part == path))
-            .map(|(path, keys)| (path.as_str(), keys.as_slice()))
+            .find(|(path, key, _)| match source {
+                Some(source) => source == *key,
+                None => title == path || title.split(" \u{2192} ").any(|part| part == path),
+            })
+            .map(|(path, _, keys)| (path.as_str(), keys.as_slice()))
     }
 
     pub fn general_composer(&self) -> Option<&CardModel> {
@@ -937,13 +947,17 @@ impl DiffDecorator for ReviewPresentation {
         if slot != HeaderSlot::Metadata {
             return None;
         }
-        self.file_comments_element(cx.title)
+        self.file_comments_element(cx.source.map(|source| source.id), cx.title)
     }
 }
 
 impl ReviewPresentation {
-    pub fn file_comments_element(&self, title: &str) -> Option<AnyElement> {
-        let (path, keys) = self.file_comments(title)?;
+    pub fn file_comments_element(
+        &self,
+        source: Option<FileKey>,
+        title: &str,
+    ) -> Option<AnyElement> {
+        let (path, keys) = self.file_comments(source, title)?;
         let (theme, viewport, width) = self
             .host
             .with(|inner| (inner.theme.clone(), inner.viewport, inner.default_width))?;

@@ -34,8 +34,7 @@ use crate::contracts::shell::{
     ShellEffect,
 };
 use crate::contracts::viewport::CompareManifestSnapshot;
-use crate::contracts::viewport::pipeline::{FileStats, ManifestFile};
-use crate::core::compare::stats::CompareFilePaths;
+use crate::contracts::viewport::pipeline::ManifestFile;
 use crate::core::forge::github::{
     DeviceFlowState, GitHubPullRequestReviewData, GitHubPullRequestReviewThread,
     GitHubPullRequestReviewThreadComment, GitHubReviewSide, GitHubReviewThreadResolution,
@@ -175,14 +174,15 @@ fn manifest() -> Rc<CompareManifestSnapshot> {
         generation: CompareGeneration(1),
         resolved_left: "base".to_owned(),
         resolved_right: "head".to_owned(),
-        files: Arc::from([ManifestFile {
-            key: FileKey(5),
-            revision: FileRevision(2),
-            paths: CompareFilePaths::from_paths(Some("src/widget.rs"), Some("src/widget.rs")),
-            status: diffy_diff::FileStatus::Modified,
-            binary: false,
-            stats: FileStats::Pending,
-        }]),
+        files: Arc::from([ManifestFile::from_entry(
+            FileKey(5),
+            FileRevision(2),
+            &crate::core::compare::output::CompareEntry::deferred(
+                Some("src/widget.rs"),
+                Some("src/widget.rs"),
+                diffy_diff::FileStatus::Modified,
+            ),
+        )]),
     })
 }
 
@@ -1070,11 +1070,12 @@ impl UiApp for App {
             .cards()
             .iter()
             .filter(|card| {
-                !card.file_level && !(card.key == CardKey::NewComment && card.target.is_none())
+                card.file_level.is_none()
+                    && !(card.key == CardKey::NewComment && card.target.is_none())
             })
             .filter_map(|card| presentation.card_element(&card.key, card_width))
             .collect();
-        let header = presentation.file_comments_element("src/widget.rs");
+        let header = presentation.file_comments_element(Some(FileKey(5)), "src/widget.rs");
         let full = Slot {
             shared: &shared,
             width,
@@ -1678,15 +1679,26 @@ fn file_level_comments_live_in_the_file_header_slot() {
             .iter()
             .all(|a| a.card != file_card)
     );
-    let (path, keys) = presentation.file_comments("src/widget.rs").unwrap();
+    let (path, keys) = presentation
+        .file_comments(Some(FileKey(5)), "renamed.rs")
+        .unwrap();
     assert_eq!((path, keys), ("src/widget.rs", &[file_card.clone()][..]));
     assert!(
         presentation
-            .file_comments("old.rs \u{2192} src/widget.rs")
+            .file_comments(None, "old.rs \u{2192} src/widget.rs")
             .is_some()
+    );
+    assert!(
+        presentation
+            .file_comments(Some(FileKey(9)), "src/widget.rs")
+            .is_none()
     );
     let header = diffy_ui::diff_view::decorator::HeaderContext {
         file: 0,
+        source: Some(diffy_ui::diff_view::decorator::FileSource {
+            id: FileKey(5),
+            revision: diffy_diff::Revision(2),
+        }),
         title: "src/widget.rs",
         status: diffy_diff::FileStatus::Modified,
         additions: 1,
@@ -1848,4 +1860,63 @@ fn reply_composer_sits_between_body_and_actions() {
     let grown = ui.find(By::role_name(Role::MultilineTextInput, "Review comment"));
     assert!(grown.bounds.height > before, "composer grows with its text");
     assert_eq!(ui.focus(), Some(REVIEW_COMPOSER));
+}
+
+#[test]
+fn command_source_offers_review_commands() {
+    use crate::contracts::commands::CommandSource;
+
+    let mut driver = Driver::signed_in_with_pr();
+    let ids = |driver: &Driver| {
+        let mut out = Vec::new();
+        driver.review.commands(&driver.shared, &mut out);
+        out.into_iter()
+            .map(|c| (c.id, c.enabled))
+            .collect::<Vec<_>>()
+    };
+
+    let commands = ids(&driver);
+    assert!(commands.contains(&("review.submit", true)));
+    assert!(commands.contains(&("review.approve", true)));
+    assert!(commands.contains(&("review.sign_out", true)));
+    assert!(commands.contains(&("review.preview_pull_request", true)));
+
+    driver.act(ReviewAction::SignOut);
+    let commands = ids(&driver);
+    assert!(commands.contains(&("review.sign_in", true)));
+    assert!(commands.contains(&("review.submit", false)));
+}
+
+#[test]
+fn sign_in_modal_closes_with_cancel_or_escape() {
+    let mut driver = Driver::new(Fake::new());
+    driver.startup(None);
+    driver.act(ReviewAction::SignOut);
+    let mut ui = harness(driver);
+
+    ui.click_node(By::role_name(Role::Button, "Sign in to GitHub"));
+    ui.find(By::role_name(Role::Dialog, "Sign in to GitHub"));
+    assert!(ui.app().driver.review.is_modal_open());
+    ui.click_node(By::role_name(Role::Button, "Cancel"));
+    assert!(
+        ui.try_find(By::role_name(Role::Dialog, "Sign in to GitHub"))
+            .is_none()
+    );
+    assert!(!ui.app().driver.review.is_modal_open());
+
+    ui.click_node(By::role_name(Role::Button, "Sign in to GitHub"));
+    ui.find(By::role_name(Role::Dialog, "Sign in to GitHub"));
+    ui.key("escape");
+    assert!(
+        ui.try_find(By::role_name(Role::Dialog, "Sign in to GitHub"))
+            .is_none()
+    );
+
+    ui.click_node(By::role_name(Role::Button, "Sign in to GitHub"));
+    ui.key("tab");
+    ui.key("escape");
+    assert!(
+        ui.try_find(By::role_name(Role::Dialog, "Sign in to GitHub"))
+            .is_none()
+    );
 }

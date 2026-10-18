@@ -3,15 +3,16 @@ use std::sync::{LazyLock, Mutex};
 
 use crate::contracts::navigation::{RepositoryChangeKind, RepositorySyncReason};
 use crate::core::compare::backends::GitDiffBackend;
-use crate::core::compare::output::{CompareEntry, CompareOutput};
-use crate::core::compare::stats::COMPARE_SUMMARY_FILE_LIMIT;
-use crate::core::compare::{CompareMode, ComparePhase, CompareSpec, ProgressSink, RendererKind};
+#[cfg(feature = "difftastic")]
+use crate::core::compare::semantic;
+use crate::core::compare::{
+    CompareEntry, CompareMode, CompareOutput, ComparePhase, CompareService, CompareSpec,
+    ProgressSink, RendererKind, git, u32_to_i32_saturating,
+};
 use crate::core::error::{DiffyError, Result, VcsBackendKind};
 use crate::core::vcs::backend::{VcsBackend, VcsRepository, VcsWatchPaths};
 use crate::core::vcs::cache::VcsReadCache;
-use crate::core::vcs::compare_port::{
-    entry_stats, name_status_entry, output_from_patch, patch_stats, with_semantic_fallback,
-};
+use crate::core::vcs::compare_port::{entry_stats, patch_stats, with_semantic_fallback};
 use crate::core::vcs::git::service::is_full_hex_oid;
 use crate::core::vcs::git::status::StatusBits;
 use crate::core::vcs::git::{
@@ -131,16 +132,20 @@ impl GitRepository {
         path: &str,
         deferred_file: Option<&CompareEntry>,
     ) -> Result<CompareOutput> {
-        let (left, right) = self.resolve_compare_request(request)?;
-        let raw = match deferred_file {
-            Some(_) => self
-                .service
-                .diff_two_refs_path_no_renames(&left, &right, path)?,
-            None => self.service.diff_two_refs_path(&left, &right, path)?,
-        };
+        let spec = git_compare_spec(request);
+        if let Some(entry) = deferred_file {
+            let doc = CompareService.compare_file(&spec, entry, &self.service)?;
+            let mut output = CompareOutput::default();
+            output.push_document(doc);
+            return Ok(output);
+        }
+        if request.renderer == RendererKind::Difftastic {
+            #[cfg(feature = "difftastic")]
+            return semantic::compare_path(&spec, path, &self.service);
+        }
         Ok(renderer_output(
             request.renderer,
-            output_from_patch(raw.as_bytes())?,
+            git::compare_path(&spec, path, &self.service, true)?,
         ))
     }
 }
@@ -223,24 +228,8 @@ impl VcsRepository for GitRepository {
         {
             return Ok(output);
         }
-        if let Some(reporter) = reporter {
-            reporter.phase(ComparePhase::ResolvingRefs);
-        }
-        let (left, right) = self.resolve_compare_request(request)?;
-        let entries = self.service.diff_name_status(&left, &right, None)?;
-        let output = if entries.len() > COMPARE_SUMMARY_FILE_LIMIT {
-            CompareOutput::deferred(
-                entries
-                    .iter()
-                    .map(|(label, old, new)| {
-                        name_status_entry(label, old.as_deref(), new.as_deref())
-                    })
-                    .collect(),
-            )
-        } else {
-            let raw = self.service.diff_two_refs(&left, &right)?;
-            renderer_output(request.renderer, output_from_patch(raw.as_bytes())?)
-        };
+        let spec = git_compare_spec(request);
+        let output = CompareService.compare(&spec, &self.service, reporter)?;
         if cacheable && let Ok(mut cache) = IMMUTABLE_READ_CACHE.lock() {
             cache.insert_diff(Some(epoch), request.clone(), None, output.clone());
         }
@@ -284,30 +273,47 @@ impl VcsRepository for GitRepository {
         request: &VcsCompareRequest,
         files: &[CompareEntry],
     ) -> Result<Vec<(i32, i32)>> {
-        let (left, right) = self.resolve_compare_request(request)?;
-        let mut stats = std::collections::HashMap::with_capacity(files.len());
-        for chunk in files.chunks(GIT_STATS_PATH_CHUNK) {
-            let paths = chunk
-                .iter()
-                .flat_map(|file| [file.paths.old_path(), file.paths.new_path()])
-                .flatten()
-                .collect::<Vec<_>>();
-            let paths = paths
-                .iter()
-                .map(|path| path.as_ref())
-                .collect::<Vec<&str>>();
-            stats.extend(patch_stats(
-                &self.service.diff_refs_paths(&left, &right, &paths)?,
-            )?);
+        let spec = git_compare_spec(request);
+        let known = git::entry_stats(&spec, &self.service, files);
+        let missing: Vec<&CompareEntry> = files
+            .iter()
+            .zip(&known)
+            .filter(|(_, stats)| stats.is_none())
+            .map(|(file, _)| file)
+            .collect();
+        let mut patched = std::collections::HashMap::new();
+        if !missing.is_empty() {
+            let (left, right) = self.resolve_compare_request(request)?;
+            for chunk in missing.chunks(GIT_STATS_PATH_CHUNK) {
+                let paths = chunk
+                    .iter()
+                    .flat_map(|file| [file.paths.old_path(), file.paths.new_path()])
+                    .flatten()
+                    .collect::<Vec<_>>();
+                let paths = paths
+                    .iter()
+                    .map(|path| path.as_ref())
+                    .collect::<Vec<&str>>();
+                patched.extend(patch_stats(
+                    &self.service.diff_refs_paths(&left, &right, &paths)?,
+                )?);
+            }
         }
         Ok(files
             .iter()
-            .map(|file| {
-                stats
-                    .get(file.path().as_ref())
-                    .copied()
-                    .unwrap_or_else(|| entry_stats(file))
-            })
+            .zip(known)
+            .map(
+                |(file, stats)| match stats.and_then(|stats| stats.known()) {
+                    Some((additions, deletions)) => (
+                        u32_to_i32_saturating(additions),
+                        u32_to_i32_saturating(deletions),
+                    ),
+                    None => patched
+                        .get(file.path().as_ref())
+                        .copied()
+                        .unwrap_or_else(|| entry_stats(file)),
+                },
+            )
             .collect())
     }
 
@@ -346,6 +352,10 @@ impl VcsRepository for GitRepository {
         renderer: RendererKind,
     ) -> Result<CompareOutput> {
         let item = status_item_from_file_change(change);
+        if renderer == RendererKind::Difftastic {
+            #[cfg(feature = "difftastic")]
+            return semantic::compare_status_item(&item, &self.service);
+        }
         Ok(renderer_output(
             renderer,
             self.service.diff_status_item(&item)?,

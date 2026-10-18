@@ -1049,6 +1049,7 @@ impl GitService {
         self.diff_between_refs_path(left, right, path, false)
     }
 
+    #[cfg_attr(not(feature = "difftastic"), allow(dead_code))]
     pub(crate) fn diff_name_status(
         &self,
         left: &str,
